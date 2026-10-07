@@ -667,8 +667,8 @@ import {
   getDefaultRelayBaseUrl,
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,
-  probeDirectoryRelay,
 } from '@frank/wallet/chain'
+import { probeDirectoryRelay } from '@frank/cashweb/relay'
 
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])

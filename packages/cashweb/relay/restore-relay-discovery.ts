@@ -1,24 +1,24 @@
 /**
  * Directory probing utility for discovering an account's configured home relay during account restore.
  *
- * Queries GET /${subject}/head (or /address/${address}) on a bootstrap / default relay, cryptographically
- * verifies that the returned attestation is signed by the expected address / public key, and returns
- * the home relay URL (head.relay.endpoint).
+ * Part of @frank/cashweb/relay. Queries GET /directory/v1/:network/:subject/head (or /address/:address)
+ * on a bootstrap or default relay, cryptographically verifies that the returned attestation is signed
+ * by the expected address / public key, and returns the home relay endpoint URL (head.relay.endpoint).
  */
 import { toHex, verifyPreviewDirectoryEvidence } from "@frank/codec";
-import { directoryAddress } from "@frank/cashweb/relay/open-directory";
-import {
-  getDefaultRelayBaseUrl,
-  loadMonadChainConfigFromEnv,
-} from "./monad-chain";
+import { directoryAddress } from "./open-directory";
 
 const CBOR_MEDIA = "application/vnd.frank.cbor";
 const DEFAULT_PROBE_TIMEOUT_MS = 5000;
 
 export interface ProbeDirectoryOptions {
+  /** Relay URL to probe. Defaults to build/environment relay URL or window.location.origin. */
   relayBaseUrl?: string;
+  /** Frank protocol directory network (e.g. 'monad-testnet' or 'monad-mainnet'). Defaults to 'monad-testnet'. */
   network?: string;
+  /** Request timeout in milliseconds. Defaults to 5000ms. */
   timeoutMs?: number;
+  /** Custom fetch implementation (useful for tests or Node environments). */
   fetch?: (
     url: string,
     init?: {
@@ -89,6 +89,28 @@ export function normalizeProbeTarget(target: ProbeTarget): {
 }
 
 /**
+ * Fallback resolution of default relay URL if none is provided in options.
+ */
+function resolveDefaultProbeRelayUrl(): string {
+  try {
+    if (typeof process !== "undefined" && process.env) {
+      if (process.env.FRANK_RELAY_URL) {
+        return process.env.FRANK_RELAY_URL.replace(/\/+$/, "");
+      }
+      if (process.env.FRANK_DEMO_RELAY_PORT) {
+        return `http://127.0.0.1:${process.env.FRANK_DEMO_RELAY_PORT}`;
+      }
+    }
+    if (typeof window !== "undefined" && window.location?.origin) {
+      return window.location.origin.replace(/\/+$/, "");
+    }
+  } catch {
+    // fallback
+  }
+  return "http://127.0.0.1:8098";
+}
+
+/**
  * Probes the directory entry for a Monad address or compressed public key on the bootstrap relay.
  * If a valid signed entry is found, returns the discovered home relay endpoint URL (`head.relay.endpoint`).
  * If not found, offline, or invalid, returns `undefined`.
@@ -103,23 +125,10 @@ export async function probeDirectoryRelay(
       return undefined;
     }
 
-    const relayBaseUrl = options?.relayBaseUrl ?? getDefaultRelayBaseUrl();
+    const relayBaseUrl = options?.relayBaseUrl ?? resolveDefaultProbeRelayUrl();
     const cleanOrigin = relayBaseUrl.trim().replace(/\/+$/, "");
 
-    let network = options?.network;
-    if (!network) {
-      try {
-        const config = loadMonadChainConfigFromEnv();
-        network =
-          config.networkTag === "MON1"
-            ? "monad-mainnet"
-            : config.networkTag === "MONT"
-            ? "monad-testnet"
-            : config.networkTag ?? "monad-testnet";
-      } catch {
-        network = "monad-testnet";
-      }
-    }
+    const network = options?.network ?? "monad-testnet";
 
     const url = subject
       ? `${cleanOrigin}/directory/v1/${network}/${subject}/head`
@@ -138,7 +147,6 @@ export async function probeDirectoryRelay(
     const fetchFn =
       options?.fetch ?? (typeof fetch !== "undefined" ? fetch : undefined);
     if (!fetchFn) {
-      if (timer) clearTimeout(timer);
       return undefined;
     }
 
@@ -147,93 +155,99 @@ export async function probeDirectoryRelay(
       response = await fetchFn(url, {
         method: "GET",
         headers: {
-          Accept: CBOR_MEDIA,
+          accept: CBOR_MEDIA,
           "ngrok-skip-browser-warning": "1",
         },
         signal: controller?.signal,
       });
+    } catch {
+      // Network error, connection refused, or timeout
+      return undefined;
     } finally {
       if (timer) clearTimeout(timer);
     }
 
     if (!response || response.status !== 200) {
+      // 404 means no entry published for this address
       return undefined;
     }
 
-    let bytes: Uint8Array | undefined;
+    // Read attestation bytes
+    let bodyBytes: Uint8Array;
     if (typeof response.arrayBuffer === "function") {
-      const buf = await response.arrayBuffer();
-      bytes = new Uint8Array(buf);
-    } else if (response.body?.getReader) {
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let length = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          chunks.push(value);
-          length += value.length;
-        }
-      }
-      bytes = new Uint8Array(length);
-      let offset = 0;
-      for (const c of chunks) {
-        bytes.set(c, offset);
-        offset += c.length;
-      }
-    } else if (response.data instanceof Uint8Array) {
-      bytes = response.data;
-    } else if (
-      typeof Buffer !== "undefined" &&
-      Buffer.isBuffer(response.data)
-    ) {
-      bytes = new Uint8Array(response.data);
-    }
-
-    if (!bytes || bytes.length === 0) {
+      const buffer = await response.arrayBuffer();
+      bodyBytes = new Uint8Array(buffer);
+    } else if (response.body) {
+      bodyBytes =
+        response.body instanceof Uint8Array
+          ? response.body
+          : new Uint8Array(response.body);
+    } else {
       return undefined;
     }
 
-    // Verify attestation cryptographically
-    const verified = verifyPreviewDirectoryEvidence(bytes, network);
-    const statement = verified.statement;
+    if (!bodyBytes || bodyBytes.length === 0) {
+      return undefined;
+    }
 
-    // Verify signer matches target subject and/or address
-    const signerSubjectHex = toHex(statement.subject.keyBytes).toLowerCase();
+    // Cryptographically verify directory evidence
+    let evidence: any;
+    try {
+      evidence = verifyPreviewDirectoryEvidence(bodyBytes, network);
+    } catch {
+      // Invalid attestation format or signature
+      return undefined;
+    }
 
-    if (subject && signerSubjectHex !== subject) {
+    if (!evidence || !evidence.statement) {
+      return undefined;
+    }
+
+    const statement = evidence.statement;
+
+    // Verify subject / address match
+    let entrySubject: string | undefined;
+    if (statement.subject) {
+      if (typeof statement.subject === "string") {
+        entrySubject = statement.subject.toLowerCase();
+      } else if (statement.subject instanceof Uint8Array) {
+        entrySubject = toHex(statement.subject).toLowerCase();
+      } else if (statement.subject.keyBytes) {
+        entrySubject = toHex(statement.subject.keyBytes).toLowerCase();
+      }
+    }
+
+    if (subject && (!entrySubject || entrySubject !== subject)) {
       return undefined;
     }
 
     if (address) {
-      const signerAddress = directoryAddress(signerSubjectHex);
-      if (!signerAddress || signerAddress.toLowerCase() !== address) {
+      const entryAddress = entrySubject
+        ? directoryAddress(entrySubject)
+        : undefined;
+      if (!entryAddress || entryAddress.toLowerCase() !== address) {
         return undefined;
       }
     }
 
     // Extract home relay endpoint
-    if (!statement.relays || statement.relays.length === 0) {
+    const relayBinding = statement.relays?.[0] ?? (statement as any).relay;
+    if (!relayBinding?.endpoint) {
       return undefined;
     }
 
-    const endpoint = statement.relays[0].endpoint;
-    if (!endpoint || typeof endpoint !== "string") {
+    const endpoint = String(relayBinding.endpoint).trim().replace(/\/+$/, "");
+    if (!endpoint.startsWith("http://") && !endpoint.startsWith("https://")) {
       return undefined;
     }
 
-    // Validate that endpoint is a valid HTTP/HTTPS URL
-    const parsed = new URL(endpoint);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return undefined;
-    }
-
-    return endpoint.trim().replace(/\/+$/, "");
+    return endpoint;
   } catch {
-    // Offline, invalid signature, network failure, etc. -> graceful fallback
     return undefined;
   }
 }
 
+/**
+ * Alias for probeDirectoryRelay.
+ */
 export const probeDirectoryEntry = probeDirectoryRelay;

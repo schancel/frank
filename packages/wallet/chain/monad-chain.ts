@@ -357,15 +357,6 @@ export function getDefaultRelayBaseUrl(): string {
   return configured ?? "http://127.0.0.1:8098";
 }
 
-export {
-  probeDirectoryRelay,
-  probeDirectoryEntry,
-} from "./restore-relay-discovery";
-export type {
-  ProbeDirectoryOptions,
-  ProbeTarget,
-} from "./restore-relay-discovery";
-
 /** Reads `MonadChainConfig` from the environment (see `readEnv` just above for exactly where
  * from, and why two places), with permissive fallbacks -- see this file's header,
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env

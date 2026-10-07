@@ -18,12 +18,8 @@ export {
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,
   getDefaultRelayBaseUrl,
-  probeDirectoryRelay,
-  probeDirectoryEntry,
 } from "./monad-chain";
 export type {
-  ProbeDirectoryOptions,
-  ProbeTarget,
   EvmChainConfig,
   EvmChainWalletHandle,
   MonadChainConfig,

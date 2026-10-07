@@ -398,9 +398,9 @@ describe('Setup page advanced relay configuration', () => {
 
   test('probes directory during restore and configures discovered relay', async () => {
     const discoveredRelay = 'https://probed-relay.example.com'
-    const chain = await import('@frank/wallet/chain')
+    const cashwebRelay = await import('@frank/cashweb/relay')
     const probeSpy = jest
-      .spyOn(chain, 'probeDirectoryRelay')
+      .spyOn(cashwebRelay, 'probeDirectoryRelay')
       .mockResolvedValueOnce(discoveredRelay)
 
     mockConfirm.mockImplementationOnce(async () => {
@@ -449,9 +449,9 @@ describe('Setup page advanced relay configuration', () => {
 
   test('restoring account via BIP39 discovers and configures existing home relay', async () => {
     const discoveredRelay = 'https://legacy-discovered.example.com'
-    const chain = await import('@frank/wallet/chain')
+    const cashwebRelay = await import('@frank/cashweb/relay')
     const probeSpy = jest
-      .spyOn(chain, 'probeDirectoryRelay')
+      .spyOn(cashwebRelay, 'probeDirectoryRelay')
       .mockResolvedValueOnce(discoveredRelay)
 
     const view = render()

@@ -97,9 +97,7 @@
           aria-haspopup="menu"
           :disable="disable"
         >
-          <span class="chat-stamp-pill-text q-ml-xs"
-            >{{ stampPillText }}</span
-          >
+          <span class="chat-stamp-pill-text q-ml-xs">{{ stampPillText }}</span>
           <q-tooltip>{{ stampLabel }}</q-tooltip>
           <q-menu anchor="top middle" self="bottom middle">
             <div class="q-pa-md" style="min-width: 320px">
@@ -160,7 +158,11 @@
                 class="row items-center justify-between q-mt-sm"
               >
                 <div class="text-caption text-grey-7">
-                  {{ $t('chatInput.suggestedStamp', { amount: `${suggestedStampAmount} ${chainUnit}` }) }}
+                  {{
+                    $t('chatInput.suggestedStamp', {
+                      amount: `${suggestedStampAmount} ${chainUnit}`,
+                    })
+                  }}
                 </div>
                 <q-btn
                   flat
@@ -311,7 +313,9 @@ export default defineComponent({
         let closest = 0
         let minDiff = Infinity
         for (let i = 0; i < DECADE_MULTIPLIERS.length; i++) {
-          const diff = Math.abs(Math.log(mult) - Math.log(DECADE_MULTIPLIERS[i]))
+          const diff = Math.abs(
+            Math.log(mult) - Math.log(DECADE_MULTIPLIERS[i]),
+          )
           if (diff < minDiff) {
             minDiff = diff
             closest = i
@@ -320,7 +324,10 @@ export default defineComponent({
         return closest
       },
       set(index: number) {
-        const i = Math.max(0, Math.min(DECADE_MULTIPLIERS.length - 1, Math.round(index)))
+        const i = Math.max(
+          0,
+          Math.min(DECADE_MULTIPLIERS.length - 1, Math.round(index)),
+        )
         const mult = DECADE_MULTIPLIERS[i]
         const raw = activeChain.defaultStampValue * BigInt(mult)
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
@@ -343,7 +350,8 @@ export default defineComponent({
         } catch {
           return '1'
         }
-        const multiple = Number(selected) / Number(activeChain.defaultStampValue)
+        const multiple =
+          Number(selected) / Number(activeChain.defaultStampValue)
         if (!Number.isFinite(multiple) || multiple <= 1) {
           return '1'
         }

@@ -128,9 +128,9 @@ describe('AccountBadge.vue', () => {
       accountType: 2,
       curated: true,
     })
-    expect(wrapper.find('[data-testid="badge-official-service"]').exists()).toBe(
-      true,
-    )
+    expect(
+      wrapper.find('[data-testid="badge-official-service"]').exists(),
+    ).toBe(true)
     expect(wrapper.text()).toContain('profile.badgeOfficialService')
   })
 

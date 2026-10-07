@@ -542,7 +542,7 @@ export default defineComponent({
     },
     resetStampToSuggested() {
       const target = this.conversation?.id || this.recipientAddress
-      if (target && typeof this.chatStore?.clearStampOverride === "function") {
+      if (target && typeof this.chatStore?.clearStampOverride === 'function') {
         this.chatStore.clearStampOverride(target)
       }
     },
@@ -598,7 +598,10 @@ export default defineComponent({
           onPreparationProgress: this.showStampPreparation,
         })
         const target = this.conversation?.id || recipient
-        if (target && typeof this.chatStore?.clearStampOverride === "function") {
+        if (
+          target &&
+          typeof this.chatStore?.clearStampOverride === 'function'
+        ) {
           this.chatStore.clearStampOverride(target)
         }
       } catch (err) {
@@ -1122,7 +1125,10 @@ export default defineComponent({
     },
     suggestedStampAmount(): string {
       const target = this.conversation?.id || this.recipientAddress
-      if (!target || typeof this.chatStore?.getPeerStampSuggestion !== "function") {
+      if (
+        !target ||
+        typeof this.chatStore?.getPeerStampSuggestion !== 'function'
+      ) {
         return activeChain.toDisplayAmount(activeChain.defaultStampValue)
       }
       try {
@@ -1134,7 +1140,10 @@ export default defineComponent({
     },
     isStampOverridden(): boolean {
       const target = this.conversation?.id || this.recipientAddress
-      if (!target || typeof this.chatStore?.getStampOverrideWei !== "function") {
+      if (
+        !target ||
+        typeof this.chatStore?.getStampOverrideWei !== 'function'
+      ) {
         return false
       }
       return this.chatStore.getStampOverrideWei(target) !== undefined
@@ -1153,7 +1162,10 @@ export default defineComponent({
             : rawAmount
 
         const target = this.conversation?.id || this.recipientAddress
-        if (target && typeof this.chatStore?.getPeerStampSuggestion === "function") {
+        if (
+          target &&
+          typeof this.chatStore?.getPeerStampSuggestion === 'function'
+        ) {
           const suggested = this.chatStore.getPeerStampSuggestion(target)
           if (rawAmount === suggested) {
             this.chatStore.clearStampOverride?.(target)
@@ -1182,7 +1194,7 @@ export default defineComponent({
       get() {
         const target = this.conversation?.id || this.recipientAddress
         const override =
-          target && typeof this.chatStore?.getStampOverrideWei === "function"
+          target && typeof this.chatStore?.getStampOverrideWei === 'function'
             ? this.chatStore.getStampOverrideWei(target)
             : undefined
         if (override !== undefined) {
@@ -1190,7 +1202,7 @@ export default defineComponent({
         }
         if (
           target &&
-          typeof this.chatStore?.getPeerStampSuggestion === "function"
+          typeof this.chatStore?.getPeerStampSuggestion === 'function'
         ) {
           const suggested = this.chatStore.getPeerStampSuggestion(target)
           return activeChain.toDisplayAmount(suggested)

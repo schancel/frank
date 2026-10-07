@@ -1,4 +1,8 @@
-import { createAccountSession, type RuntimeWallet } from './session'
+import {
+  createAccountSession,
+  resetAccountStorage,
+  type RuntimeWallet,
+} from './session'
 import { watch } from 'vue'
 import {
   CustodyError,
@@ -465,3 +469,37 @@ test('reset closes existing wallet and custody, calls deps.reset, and reinitiali
   expect(session.state.account).toBeNull()
   expect(session.state.error).toBeNull()
 })
+
+test('resetAccountStorage deletes all indexedDB databases matching frank- and level-js', async () => {
+  const deleted: string[] = []
+  const originalIndexedDb = global.indexedDB
+
+  const mockIndexedDb = {
+    databases: jest.fn(async () => [
+      { name: 'frank-account-custody-local-account-v1' },
+      { name: 'frank-preview-vault-local-account-v1' },
+      { name: 'frank-monad-wallet-state-evm-0x123' },
+      { name: 'level-js-wallet-manifest' },
+      { name: 'unrelated-app-db' },
+    ]),
+    deleteDatabase: jest.fn((name: string) => {
+      deleted.push(name)
+      const req: any = {}
+      setTimeout(() => req.onsuccess?.({} as any), 0)
+      return req
+    }),
+  }
+
+  try {
+    ;(global as any).indexedDB = mockIndexedDb
+    await resetAccountStorage('local-account-v1')
+    expect(deleted).toContain('frank-account-custody-local-account-v1')
+    expect(deleted).toContain('frank-preview-vault-local-account-v1')
+    expect(deleted).toContain('frank-monad-wallet-state-evm-0x123')
+    expect(deleted).toContain('level-js-wallet-manifest')
+    expect(deleted).not.toContain('unrelated-app-db')
+  } finally {
+    ;(global as any).indexedDB = originalIndexedDb
+  }
+})
+

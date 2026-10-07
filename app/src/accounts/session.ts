@@ -91,7 +91,6 @@ export function createAccountSession(deps: {
   })
   let custody: AccountCustody | undefined
   let wallet: RuntimeWallet | undefined
-  let activeBip39Params: { mnemonic: string; path: string } | undefined
   const chainAddressCache = new Map<'monad' | 'ecash' | 'solana', string>()
   const chainAddressInFlight = new Map<'ecash' | 'solana', Promise<string>>()
   const curveKeyCache = new Map<SupportedCurve, Uint8Array>()
@@ -212,16 +211,11 @@ export function createAccountSession(deps: {
         if (!root) throw new CustodyError('locked')
         return root as DomainRoot<P>
       }
-      candidate = activeBip39Params
-        ? ((await deps.createWallet({
-            mnemonic: activeBip39Params.mnemonic,
-            path: activeBip39Params.path,
-          })) as RuntimeWallet)
-        : await deps.createWallet({
-            evm: find('evm-wallet'),
-            authentication: find('identity-authentication'),
-            messaging: find('messaging-encryption'),
-          })
+      candidate = await deps.createWallet({
+        evm: find('evm-wallet'),
+        authentication: find('identity-authentication'),
+        messaging: find('messaging-encryption'),
+      })
       check(token)
       const latest = await custody.snapshot()
       check(token)
@@ -290,8 +284,8 @@ export function createAccountSession(deps: {
   }
   const session = {
     state: readonly(state),
-    setBip39Params(params: { mnemonic: string; path: string } | undefined) {
-      activeBip39Params = params
+    setBip39Params(_params?: { mnemonic: string; path: string }) {
+      // Deprecated: Wallets are now always instantiated with typed domain roots from custody.
     },
     initialize() {
       if (closed) return Promise.resolve()
@@ -591,7 +585,6 @@ export function createAccountSession(deps: {
         await release()
         custody?.close()
         custody = undefined
-        activeBip39Params = undefined
         if (deps.reset) {
           await deps.reset()
         } else {
@@ -609,10 +602,27 @@ export async function resetAccountStorage(
   namespace = 'local-account-v1',
 ): Promise<void> {
   if (typeof indexedDB === 'undefined') return
-  const names = [
+  const names = new Set<string>([
     `frank-account-custody-${namespace}`,
     `frank-preview-vault-${namespace}`,
-  ]
+  ])
+  try {
+    if (typeof indexedDB.databases === 'function') {
+      const dbs = await indexedDB.databases()
+      for (const db of dbs) {
+        if (
+          db.name &&
+          (db.name.startsWith('frank-') ||
+            db.name.includes('monad-wallet-state') ||
+            db.name.includes('level-js'))
+        ) {
+          names.add(db.name)
+        }
+      }
+    }
+  } catch {
+    // indexedDB.databases may fail in some environments
+  }
   for (const name of names) {
     await new Promise<void>(resolve => {
       try {
@@ -695,12 +705,6 @@ export async function importBip39Wallet(
       address: '',
       privateKey: '',
     }
-
-  // Directly configure the session with BIP39 seed and chosen candidate path
-  accountSession.setBip39Params({
-    mnemonic: cleanPhrase,
-    path,
-  })
 
   // Stage via accountSession.stage(...)
   const { DOMAIN_PURPOSES, deriveDomainRoot } = await import(

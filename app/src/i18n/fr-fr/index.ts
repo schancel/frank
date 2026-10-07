@@ -704,6 +704,7 @@ export default {
     to: 'À',
     cc: 'Cc',
     attachmentsCount: 'Pièces jointes ({count}) :',
+    attachFiles: 'Joindre des fichiers',
     reply: 'Répondre',
     replyAll: 'Répondre à tous',
     replySender: 'Répondre à l’expéditeur',
@@ -831,6 +832,10 @@ export default {
     savedNotification: 'Paramètres enregistrés',
     cancelSettings: 'Annuler',
     languageSelectorCaption: 'Langue',
+    networkSettings: 'Paramètres réseau et passerelle',
+    emailGatewayAddress: 'Adresse de la passerelle e-mail',
+    resetDefault: 'Rétablir par défaut',
+    save: 'Enregistrer',
   },
   profile: {
     name: 'Pseudonyme',

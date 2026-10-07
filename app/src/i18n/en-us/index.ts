@@ -682,6 +682,7 @@ export default {
     to: 'To',
     cc: 'Cc',
     attachmentsCount: 'Attachments ({count}):',
+    attachFiles: 'Attach files',
     reply: 'Reply',
     replyAll: 'Reply All',
     replySender: 'Reply Sender',
@@ -808,6 +809,10 @@ export default {
     savedNotification: 'Settings saved',
     cancelSettings: 'Cancel',
     languageSelectorCaption: 'Language',
+    networkSettings: 'Network & Gateway Settings',
+    emailGatewayAddress: 'Email Gateway Address',
+    resetDefault: 'Reset to default',
+    save: 'Save',
   },
   profile: {
     name: "Character's Public Name",

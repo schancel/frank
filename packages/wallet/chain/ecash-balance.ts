@@ -3,6 +3,11 @@ import { ChronikClient } from "chronik-client";
 import { formatBaseUnit } from "./base-unit";
 import { canonicalEcashNetworkId, EcashNetworkId } from "../ecash-wallet";
 
+export type ChronikUtxoItem = {
+  sats?: bigint | number | string;
+  value?: bigint | number | string;
+};
+
 export interface FetchEcashBalanceOptions {
   /** The eCash cashaddress (e.g. `ectest:q...` or `ecash:q...`). */
   address: string;
@@ -18,9 +23,10 @@ export interface FetchEcashBalanceOptions {
       type: string,
       hash: string
     ) => {
-      utxos: () => Promise<{
-        utxos?: ReadonlyArray<{ sats?: bigint; value?: bigint | number }>;
-      }>;
+      utxos: () => Promise<
+        | { utxos?: ReadonlyArray<ChronikUtxoItem> }
+        | ReadonlyArray<{ utxos?: ReadonlyArray<ChronikUtxoItem> }>
+      >;
     };
   };
 }
@@ -74,22 +80,48 @@ export async function fetchEcashBalance(
     ? "xec-testnet"
     : "xec-mainnet";
 
+  const chronikUrls = getEcashChronikUrls({
+    networkId,
+    relayBaseUrl: options.relayBaseUrl,
+    chronikUrls: options.chronikUrls,
+  });
+
+  const clientCtor = ChronikClient as unknown as new (
+    urls: string[] | string
+  ) => {
+    script(
+      type: string,
+      hash: string
+    ): {
+      utxos(): Promise<
+        | { utxos?: ReadonlyArray<ChronikUtxoItem> }
+        | ReadonlyArray<{ utxos?: ReadonlyArray<ChronikUtxoItem> }>
+      >;
+    };
+  };
+
   const chronik =
     options.client ??
-    new ChronikClient(
-      getEcashChronikUrls({
-        networkId,
-        relayBaseUrl: options.relayBaseUrl,
-        chronikUrls: options.chronikUrls,
-      })
+    new clientCtor(
+      chronikUrls.length > 0 ? chronikUrls : [DEFAULT_CHRONIK_UPSTREAMS[networkId]]
     );
 
   const res = await chronik.script(parsed.type, parsed.hash).utxos();
-  const sats = (res.utxos ?? []).reduce(
-    (acc: bigint, u: { sats?: bigint; value?: bigint | number }) =>
-      acc + (u.sats !== undefined ? BigInt(u.sats) : BigInt(u.value ?? 0)),
-    0n
-  );
+  const utxoList: ReadonlyArray<ChronikUtxoItem> = Array.isArray(res)
+    ? res.flatMap(
+        (group: { utxos?: ReadonlyArray<ChronikUtxoItem> }) => group.utxos ?? []
+      )
+    : ((res as { utxos?: ReadonlyArray<ChronikUtxoItem> }).utxos ?? []);
+
+  const sats = utxoList.reduce((acc: bigint, u: ChronikUtxoItem) => {
+    if (u.sats !== undefined) {
+      return acc + BigInt(u.sats);
+    }
+    if (u.value !== undefined) {
+      return acc + BigInt(u.value);
+    }
+    return acc;
+  }, 0n);
 
   const unit = networkId === "xec-testnet" ? "tXEC" : "XEC";
   const formatted = `${formatBaseUnit(sats, 2)} ${unit}`;

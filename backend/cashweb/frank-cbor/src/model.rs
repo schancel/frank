@@ -429,6 +429,82 @@ pub struct ProfileEntry {
     pub unknown: Vec<(u64, CborValue)>,
 }
 
+/// Account type for a directory statement (ticket #1120).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u64)]
+pub enum AccountType {
+    /// 0 = person (default if omitted).
+    Person = 0,
+    /// 1 = bot (automated agent).
+    Bot = 1,
+    /// 2 = service (system/infrastructure daemon, e.g. faucet, bridge).
+    Service = 2,
+    /// 3 = organization (team, DAO, collective).
+    Organization = 3,
+}
+
+impl AccountType {
+    /// Parse an `AccountType` from a CBOR integer value.
+    pub fn from_u64(v: u64) -> Option<Self> {
+        match v {
+            0 => Some(Self::Person),
+            1 => Some(Self::Bot),
+            2 => Some(Self::Service),
+            3 => Some(Self::Organization),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical wire integer for this account type.
+    pub const fn to_u64(self) -> u64 {
+        self as u64
+    }
+}
+
+/// Specialized bot or service role (ticket #1120).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u64)]
+pub enum BotRole {
+    /// 0 = generic / unclassified bot.
+    Generic = 0,
+    /// 1 = conversational / LLM agent (e.g. Qwen).
+    Assistant = 1,
+    /// 2 = token distribution faucet.
+    Faucet = 2,
+    /// 3 = interactive gaming (e.g. poker, dice, blackjack).
+    Game = 3,
+    /// 4 = cross-protocol gateway (e.g. email bridge).
+    Bridge = 4,
+    /// 5 = store or commerce vendor.
+    Merchant = 5,
+    /// 6 = room or community moderator.
+    Moderator = 6,
+    /// 7 = broadcast or notification announcer.
+    Announcer = 7,
+}
+
+impl BotRole {
+    /// Parse a `BotRole` from a CBOR integer value.
+    pub fn from_u64(v: u64) -> Option<Self> {
+        match v {
+            0 => Some(Self::Generic),
+            1 => Some(Self::Assistant),
+            2 => Some(Self::Faucet),
+            3 => Some(Self::Game),
+            4 => Some(Self::Bridge),
+            5 => Some(Self::Merchant),
+            6 => Some(Self::Moderator),
+            7 => Some(Self::Announcer),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical wire integer for this bot role.
+    pub const fn to_u64(self) -> u64 {
+        self as u64
+    }
+}
+
 /// One key-transition entry after its type-7 frame has been opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyTransition {
@@ -565,6 +641,10 @@ pub enum TypedPayload {
         preview: Option<PreviewDirectoryRoles>,
         /// Field 14: optional canonical username handle (ticket #972).
         canonical_username: Option<String>,
+        /// Field 15: optional account type (ticket #1120).
+        account_type: Option<AccountType>,
+        /// Field 16: optional bot/service role (ticket #1120).
+        bot_role: Option<BotRole>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

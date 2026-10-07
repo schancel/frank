@@ -379,7 +379,7 @@ export default {
     tabBalance: 'Solde & Transfert',
     tabParity: 'Parité thermodynamique',
     avuTooltip:
-      '1 AVU ≡ 1 kWh (3,6 MJ) d’énergie physique. Un étalon thermodynamique infalsifiable de pouvoir d’achat.',
+      '1 AVU ≡ 1 kWh (3,6 MJ) d’énergie physique. Un étalon thermodynamique infalsifiable de pouvoir d’achat réel.',
     avuHashLabel: 'AVU (Réseau PoW)',
     avuSpotLabel: 'AVU (Réseau électrique)',
     tpiLabel: 'Indice de parité thermodynamique (TPI)',

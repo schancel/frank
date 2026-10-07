@@ -40,6 +40,8 @@ directory-statement-v4 = {
   12: uint .le 18446744073709551615, ; stamp_key_generation
   13: null / bstr .size 32, ; predecessor Type 4 T1 hash; null at rev 0
   ? 14: canonical-username, ; optional canonical username handle
+  ? 15: account-type,       ; optional account type (0=person, 1=bot, 2=service, 3=org)
+  ? 16: bot-role,           ; optional bot/service role (0..7)
   * uint => frank-value,
 }
 
@@ -59,4 +61,10 @@ directory-preview-relay = {
 ; Canonical username handle constraint:
 ; Matches ^[a-z0-9][a-z0-9_-]{2,31}$ (3 to 32 chars, lowercase alphanumeric, -, _)
 canonical-username = tstr .size (3..32)
+
+; Account type: 0=person, 1=bot, 2=service, 3=organization
+account-type = uint .le 3
+
+; Bot/service role: 0=generic, 1=assistant, 2=faucet, 3=game, 4=bridge, 5=merchant, 6=moderator, 7=announcer
+bot-role = uint .le 7
 ```

@@ -373,7 +373,7 @@ export default {
     tabBalance: 'Balance & Transfer',
     tabParity: 'Thermodynamic Parity',
     avuTooltip:
-      '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute. An unprintable thermodynamic standard of purchasing power.',
+      '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute. An unforgeable thermodynamic standard of real purchasing power.',
     avuHashLabel: 'AVU (Hash-Derived)',
     avuSpotLabel: 'AVU (Grid Spot)',
     tpiLabel: 'Thermodynamic Parity Index (TPI)',

@@ -81,10 +81,10 @@ pub use limits::{
     MAX_TEXT_STRING_BYTES, TYPE_FORWARDING_DELIVERY,
 };
 pub use model::{
-    AccountRef, ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame,
-    PaymentMember, PaymentValue, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection,
-    RelayBinding, RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TopicPostAuthor,
-    TypedPayload, ValidationResult,
+    AccountRef, AccountType, BotRole, ChildFrame, FrameOnly, JournalFact, KeyTransition,
+    OpaqueSection, ParsedFrame, PaymentMember, PaymentValue, PreviewDirectoryRoles, ProfileEntry,
+    ProfileHeader, Projection, RelayBinding, RetainedFrame, RetentionReason, SignatureEntry,
+    Timestamp, TopicPostAuthor, TypedPayload, ValidationResult,
 };
 pub use model::{BlackjackAction, BlackjackFields, BlackjackMessageItem, BlackjackOutcome};
 pub use model::{BlackjackHandAction, BlackjackHandFields, BlackjackHandMessageItem};

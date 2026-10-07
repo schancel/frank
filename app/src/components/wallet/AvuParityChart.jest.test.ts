@@ -234,17 +234,52 @@ describe('AvuParityChart component', () => {
     expect(tooltip.text()).toContain('Arbitrage Yield: +67.8%')
   })
 
+  test('supports recent 24h fine-grained hourly view with 24 points and zoomed tooltip', async () => {
+    const wrapper = mountChart()
+
+    // Switch to 'recent' view
+    const recentBtn = wrapper.find('button[data-test-option="recent"]')
+    expect(recentBtn.exists()).toBe(true)
+    await recentBtn.trigger('click')
+
+    // Milestones are suppressed in recent 24h view
+    expect(
+      wrapper.findAll('[data-test="hardware-milestone-marker"]').length,
+    ).toBe(0)
+
+    // Exactly 24 hourly data points are rendered
+    const points = wrapper.findAll('[data-test="chart-hover-point"]')
+    expect(points.length).toBe(24)
+
+    // Hover over the final (current hour / "Now") point
+    const nowPoint = points[points.length - 1]
+    await nowPoint.trigger('mouseenter')
+
+    const tooltip = wrapper.find('[data-test="chart-tooltip"]')
+    expect(tooltip.exists()).toBe(true)
+    expect(tooltip.text()).toContain('Now')
+    expect(tooltip.text()).toContain('MON: 41.7 AVU (kWh)')
+    expect(tooltip.text()).toContain('USD: 12.0 kWh/$')
+    expect(tooltip.text()).toContain('Gold: 31,547 AVU/oz')
+    expect(tooltip.text()).toContain('PoW: 11.9 kWh/$')
+
+    // Hover over an intermediate point (e.g. 11 hours ago)
+    const midPoint = points[12]
+    await midPoint.trigger('mouseenter')
+    expect(tooltip.text()).toContain('-11h')
+  })
+
   test('renders methodology & data sources citations card with live feeds references', () => {
     const wrapper = mountChart()
     const sourcesCard = wrapper.find('[data-test="chart-sources"]')
     expect(sourcesCard.exists()).toBe(true)
     expect(sourcesCard.text()).toContain('Methodology & Data Sources')
-    expect(sourcesCard.text()).toContain('Pyth Network Hermes')
-    expect(sourcesCard.text()).toContain('Historical Multi-Year Resolution')
+    expect(sourcesCard.text()).toContain('CoinGecko & Pyth Network')
+    expect(sourcesCard.text()).toContain('Historical & Intraday Resolution')
     expect(sourcesCard.text()).toContain(
       'Energy Information Administration (EIA)',
     )
-    expect(sourcesCard.text()).toContain('PoW Hashrate')
+    expect(sourcesCard.text()).toContain('PoW Baseline')
     expect(sourcesCard.text()).toContain('CBECI')
   })
 

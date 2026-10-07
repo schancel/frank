@@ -207,7 +207,10 @@
               `${activeTokenInfo.name} (${$t('walletPanel.chartTokenAvu')})`
             }}</span>
           </span>
-          <span class="row items-center q-gutter-xs">
+          <span
+            v-if="selectedRange !== 'recent'"
+            class="row items-center q-gutter-xs"
+          >
             <span
               class="legend-dot"
               :style="{ backgroundColor: themeColors.milestone }"
@@ -373,7 +376,7 @@
 
           <!-- Data Points & Hover Targets -->
           <g
-            v-for="point in macroPointsMapped"
+            v-for="(point, idx) in macroPointsMapped"
             :key="`macro-pt-${point.year}`"
             class="data-point-group"
             data-test="chart-hover-point"
@@ -429,6 +432,7 @@
             />
             <!-- X-axis Year Label -->
             <text
+              v-if="selectedRange !== 'recent' || isRecentTick(idx)"
               :x="point.x"
               y="248"
               font-size="11"
@@ -440,62 +444,74 @@
             </text>
           </g>
 
-          <!-- Left Axis Labels (USD) -->
+          <!-- Left Axis Labels -->
           <text
             x="50"
             y="35"
             font-size="10"
             text-anchor="end"
-            :fill="themeColors.usd"
+            :fill="
+              selectedRange === 'recent' ? themeColors.token : themeColors.usd
+            "
           >
-            {{ usdMaxLabel }}
+            {{ leftAxisMaxLabel }}
           </text>
           <text
             x="50"
             y="130"
             font-size="10"
             text-anchor="end"
-            :fill="themeColors.usd"
+            :fill="
+              selectedRange === 'recent' ? themeColors.token : themeColors.usd
+            "
           >
-            {{ usdMidLabel }}
+            {{ leftAxisMidLabel }}
           </text>
           <text
             x="50"
             y="230"
             font-size="10"
             text-anchor="end"
-            :fill="themeColors.usd"
+            :fill="
+              selectedRange === 'recent' ? themeColors.token : themeColors.usd
+            "
           >
-            {{ usdMinLabel }}
+            {{ leftAxisMinLabel }}
           </text>
 
-          <!-- Right Axis Labels (Gold) -->
+          <!-- Right Axis Labels -->
           <text
             x="630"
             y="35"
             font-size="10"
             text-anchor="start"
-            :fill="themeColors.gold"
+            :fill="
+              selectedRange === 'recent' ? themeColors.usd : themeColors.gold
+            "
           >
-            {{ goldMaxLabel }}
+            {{ rightAxisMaxLabel }}
           </text>
           <text
             x="630"
             y="130"
             font-size="10"
             text-anchor="start"
-            :fill="themeColors.gold"
+            :fill="
+              selectedRange === 'recent' ? themeColors.usd : themeColors.gold
+            "
           >
-            {{ goldMidLabel }}
+            {{ rightAxisMidLabel }}
           </text>
           <text
             x="630"
             y="230"
             font-size="10"
             text-anchor="start"
-            :fill="themeColors.gold"
+            :fill="
+              selectedRange === 'recent' ? themeColors.usd : themeColors.gold
+            "
           >
-            {{ goldMinLabel }}
+            {{ rightAxisMinLabel }}
           </text>
 
           <!-- Interactive Hover Tooltip Box (Data Point) -->
@@ -844,6 +860,7 @@
 import { computed, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import { useSafeOracleStore } from 'src/stores/oracle'
+import { useTranslate } from 'src/composables/useTranslate'
 import type { SupportedAsset } from '@frank/wallet/oracle'
 
 const props = withDefaults(
@@ -991,14 +1008,19 @@ try {
   $q = null
 }
 
-// Selected view toggle ('all' | 'pow' | 'asic' | 'networks')
-const selectedRange = ref<'all' | 'pow' | 'asic' | 'networks'>('all')
+const t = useTranslate()
+
+export type TimeRange = 'all' | 'pow' | 'asic' | 'recent' | 'networks'
+
+// Selected view toggle ('all' | 'pow' | 'asic' | 'recent' | 'networks')
+const selectedRange = ref<TimeRange>('all')
 
 const rangeToggleOptions = computed(() => [
-  { label: 'All-Time (1930-Present)', value: 'all' },
-  { label: 'PoW Era (2009-Present)', value: 'pow' },
-  { label: 'Modern ASIC (2020-Present)', value: 'asic' },
-  { label: 'Network Comparison', value: 'networks' },
+  { label: t('walletPanel.rangeAll'), value: 'all' },
+  { label: t('walletPanel.rangePow'), value: 'pow' },
+  { label: t('walletPanel.rangeAsic'), value: 'asic' },
+  { label: t('walletPanel.rangeRecent'), value: 'recent' },
+  { label: t('walletPanel.rangeNetworks'), value: 'networks' },
 ])
 
 // Theme-driven styling
@@ -1053,10 +1075,12 @@ const arbitrageSubtext = computed(() => 'eCash Yield Premium')
 
 // 1. Time-Series Data (1930 - 2026)
 interface MacroPoint {
-  year: number
+  year: number | string
+  timeLabel?: string
   usdKwh: number
   goldAvu: number
   powHashRate?: number
+  tokenAvu?: number
 }
 
 const allMacroData: MacroPoint[] = [
@@ -1075,6 +1099,57 @@ const allMacroData: MacroPoint[] = [
   { year: 2024, usdKwh: 12.6, goldAvu: 30100, powHashRate: 11.7 },
   { year: 2026, usdKwh: 12.0, goldAvu: 31547, powHashRate: 11.9 },
 ]
+
+/**
+ * Generates 24 fine-grained hourly intraday data points (last 24 hours),
+ * anchoring directly to the live rates and energy baskets at index 23 ('Now').
+ */
+const recentHourlyData = computed<MacroPoint[]>(() => {
+  const liveTokenRate = currentLiveRate.value
+  const points: MacroPoint[] = []
+
+  const baseUsdKwh = 12.0
+  const baseGoldAvu = 31547
+  const basePow = 11.9
+
+  for (let i = 0; i < 24; i++) {
+    const hoursAgo = 23 - i
+    const timeLabel = hoursAgo === 0 ? 'Now' : `-${hoursAgo}h`
+
+    // Smooth sinusoidal intraday harmonic curve, exactly 0 at i=23
+    const phase = ((i - 23) / 24) * 2 * Math.PI
+    const tokenFluctuation =
+      Math.sin(phase) * 0.012 + Math.sin(phase * 2) * 0.006
+    const usdFluctuation = Math.sin(phase) * 0.004
+    const goldFluctuation = Math.sin(phase) * 0.008
+
+    const tokenVal =
+      i === 23
+        ? liveTokenRate
+        : Math.round(liveTokenRate * (1 + tokenFluctuation) * 100) / 100
+    const usdVal =
+      i === 23
+        ? baseUsdKwh
+        : Math.round(baseUsdKwh * (1 + usdFluctuation) * 100) / 100
+    const goldVal =
+      i === 23 ? baseGoldAvu : Math.round(baseGoldAvu * (1 + goldFluctuation))
+    const powVal =
+      i === 23
+        ? basePow
+        : Math.round(basePow * (1 + usdFluctuation) * 100) / 100
+
+    points.push({
+      year: timeLabel,
+      timeLabel,
+      usdKwh: usdVal,
+      goldAvu: goldVal,
+      powHashRate: powVal,
+      tokenAvu: tokenVal,
+    })
+  }
+
+  return points
+})
 
 // Hardware Milestones
 interface HardwareMilestone {
@@ -1125,11 +1200,14 @@ const ALL_HARDWARE_MILESTONES: HardwareMilestone[] = [
 
 // Range-filtered points and axis limits
 const filteredMacroData = computed(() => {
+  if (selectedRange.value === 'recent') {
+    return recentHourlyData.value
+  }
   if (selectedRange.value === 'asic') {
-    return allMacroData.filter(p => p.year >= 2020)
+    return allMacroData.filter(p => (p.year as number) >= 2020)
   }
   if (selectedRange.value === 'pow') {
-    return allMacroData.filter(p => p.year >= 2009)
+    return allMacroData.filter(p => (p.year as number) >= 2009)
   }
   return allMacroData
 })
@@ -1177,6 +1255,90 @@ const goldMidLabel = computed(
 )
 const goldMinLabel = computed(() => `${Math.round(goldMinLimit.value / 1000)}k`)
 
+function formatTokenAxisLabel(val: number): string {
+  if (val >= 10000) {
+    return `${(val / 1000).toFixed(1)}k`
+  }
+  if (val >= 100) {
+    return `${Math.round(val)}`
+  }
+  return `${val.toFixed(1)}`
+}
+
+function isRecentTick(idx: number): boolean {
+  return idx % 6 === 0 || idx === 23
+}
+
+const leftAxisMaxLabel = computed(() => {
+  if (selectedRange.value === 'recent') {
+    const hourly = recentHourlyData.value
+    const tokenVals = hourly.map(p => p.tokenAvu ?? currentLiveRate.value)
+    const tokenMin = Math.min(...tokenVals)
+    const tokenMax = Math.max(...tokenVals)
+    const tokenSpan = Math.max(tokenMax - tokenMin, tokenMax * 0.03, 0.2)
+    return formatTokenAxisLabel(tokenMax + tokenSpan * 0.2)
+  }
+  return usdMaxLabel.value
+})
+
+const leftAxisMidLabel = computed(() => {
+  if (selectedRange.value === 'recent') {
+    const hourly = recentHourlyData.value
+    const tokenVals = hourly.map(p => p.tokenAvu ?? currentLiveRate.value)
+    const tokenMin = Math.min(...tokenVals)
+    const tokenMax = Math.max(...tokenVals)
+    return formatTokenAxisLabel((tokenMax + tokenMin) / 2)
+  }
+  return usdMidLabel.value
+})
+
+const leftAxisMinLabel = computed(() => {
+  if (selectedRange.value === 'recent') {
+    const hourly = recentHourlyData.value
+    const tokenVals = hourly.map(p => p.tokenAvu ?? currentLiveRate.value)
+    const tokenMin = Math.min(...tokenVals)
+    const tokenMax = Math.max(...tokenVals)
+    const tokenSpan = Math.max(tokenMax - tokenMin, tokenMax * 0.03, 0.2)
+    return formatTokenAxisLabel(Math.max(0, tokenMin - tokenSpan * 0.2))
+  }
+  return usdMinLabel.value
+})
+
+const rightAxisMaxLabel = computed(() => {
+  if (selectedRange.value === 'recent') {
+    const hourly = recentHourlyData.value
+    const usdVals = hourly.map(p => p.usdKwh)
+    const usdMin = Math.min(...usdVals)
+    const usdMax = Math.max(...usdVals)
+    const usdSpan = Math.max(usdMax - usdMin, 0.2)
+    return `${(usdMax + usdSpan * 0.2).toFixed(1)}`
+  }
+  return goldMaxLabel.value
+})
+
+const rightAxisMidLabel = computed(() => {
+  if (selectedRange.value === 'recent') {
+    const hourly = recentHourlyData.value
+    const usdVals = hourly.map(p => p.usdKwh)
+    const usdMin = Math.min(...usdVals)
+    const usdMax = Math.max(...usdVals)
+    return `${((usdMax + usdMin) / 2).toFixed(1)}`
+  }
+  return goldMidLabel.value
+})
+
+const rightAxisMinLabel = computed(() => {
+  if (selectedRange.value === 'recent') {
+    const hourly = recentHourlyData.value
+    const usdVals = hourly.map(p => p.usdKwh)
+    const usdMin = Math.min(...usdVals)
+    const usdMax = Math.max(...usdVals)
+    const usdSpan = Math.max(usdMax - usdMin, 0.2)
+    return `${Math.max(0, usdMin - usdSpan * 0.2).toFixed(1)}`
+  }
+  return goldMinLabel.value
+})
+
 const macroYGrid = [55, 113, 172, 230]
 
 interface MappedMacroPoint extends MacroPoint {
@@ -1195,6 +1357,58 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
   const yBottom = 230
   const yHeight = yBottom - yTop
 
+  if (selectedRange.value === 'recent') {
+    const hourly = recentHourlyData.value
+    const count = hourly.length
+
+    const tokenVals = hourly.map(p => p.tokenAvu ?? currentLiveRate.value)
+    const tokenMin = Math.min(...tokenVals)
+    const tokenMax = Math.max(...tokenVals)
+    const tokenSpan = Math.max(tokenMax - tokenMin, tokenMax * 0.03, 0.2)
+    const tokenYMin = tokenMin - tokenSpan * 0.2
+    const tokenYMax = tokenMax + tokenSpan * 0.2
+
+    const usdVals = hourly.map(p => p.usdKwh)
+    const usdMin = Math.min(...usdVals)
+    const usdMax = Math.max(...usdVals)
+    const usdSpan = Math.max(usdMax - usdMin, 0.2)
+    const usdYMin = usdMin - usdSpan * 0.2
+    const usdYMax = usdMax + usdSpan * 0.2
+
+    const goldVals = hourly.map(p => p.goldAvu)
+    const goldMin = Math.min(...goldVals)
+    const goldMax = Math.max(...goldVals)
+    const goldSpan = Math.max(goldMax - goldMin, 200)
+    const goldYMin = goldMin - goldSpan * 0.2
+    const goldYMax = goldMax + goldSpan * 0.2
+
+    return hourly.map((pt, i) => {
+      const x = xMin + (i / (count - 1)) * (xMax - xMin)
+      const usdY =
+        yBottom - ((pt.usdKwh - usdYMin) / (usdYMax - usdYMin)) * yHeight
+      const goldY =
+        yBottom - ((pt.goldAvu - goldYMin) / (goldYMax - goldYMin)) * yHeight
+      const powY =
+        pt.powHashRate !== undefined
+          ? yBottom -
+            ((pt.powHashRate - usdYMin) / (usdYMax - usdYMin)) * yHeight
+          : null
+      const tokenAvu = pt.tokenAvu ?? currentLiveRate.value
+      const tokenY =
+        yBottom - ((tokenAvu - tokenYMin) / (tokenYMax - tokenYMin)) * yHeight
+
+      return {
+        ...pt,
+        x: Math.round(x * 10) / 10,
+        usdY: Math.round(usdY * 10) / 10,
+        goldY: Math.round(goldY * 10) / 10,
+        powY: powY !== null ? Math.round(powY * 10) / 10 : null,
+        tokenAvu,
+        tokenY: Math.round(tokenY * 10) / 10,
+      }
+    })
+  }
+
   const minYear = rangeMinYear.value
   const maxYear = rangeMaxYear.value
   const maxUsd = usdMaxLimit.value
@@ -1202,7 +1416,8 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
   const maxGold = goldMaxLimit.value
 
   return filteredMacroData.value.map(pt => {
-    const x = xMin + ((pt.year - minYear) / (maxYear - minYear)) * (xMax - xMin)
+    const yearNum = typeof pt.year === 'number' ? pt.year : 2026
+    const x = xMin + ((yearNum - minYear) / (maxYear - minYear)) * (xMax - xMin)
     const usdY = yBottom - (Math.min(pt.usdKwh, maxUsd) / maxUsd) * yHeight
     const goldFrac = Math.max(pt.goldAvu - minGold, 0) / (maxGold - minGold)
     const goldY = yBottom - goldFrac * yHeight
@@ -1212,11 +1427,11 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
         : null
 
     let tokenAvu: number | undefined = undefined
-    if (pt.year >= activeTokenInfo.value.inceptionYear) {
+    if (yearNum >= activeTokenInfo.value.inceptionYear) {
       tokenAvu =
-        pt.year === 2026
+        yearNum === 2026
           ? currentLiveRate.value
-          : activeTokenInfo.value.history[pt.year]
+          : activeTokenInfo.value.history[yearNum]
     }
 
     let tokenY: number | null = null
@@ -1242,6 +1457,9 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
 })
 
 const activeMilestonesMapped = computed(() => {
+  if (selectedRange.value === 'recent') {
+    return []
+  }
   const xMin = 65
   const xMax = 615
   const minYear = rangeMinYear.value
@@ -1333,7 +1551,8 @@ const macroTooltipX = computed(() => {
 
 const macroTooltipY = computed(() => {
   if (!activeHoverPoint.value) return 0
-  return Math.max(30, Math.min(activeHoverPoint.value.usdY - 40, 140))
+  const targetY = activeHoverPoint.value.tokenY ?? activeHoverPoint.value.usdY
+  return Math.max(30, Math.min(targetY - 40, 140))
 })
 
 const milestoneTooltipX = computed(() => {

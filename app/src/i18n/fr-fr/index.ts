@@ -397,16 +397,17 @@ export default {
     rangeAll: 'Historique global (1930 - Aujourd’hui)',
     rangePow: 'Ère PoW (2009 - Aujourd’hui)',
     rangeAsic: 'ASIC Moderne (2020 - Aujourd’hui)',
+    rangeRecent: '24h récent (Détaillé)',
     rangeNetworks: 'Comparaison des réseaux',
     sourcesTitle: 'Méthodologie et sources de données',
     sourceFeeds:
-      'Flux d’oracles en direct : Flux de prix en temps réel issus de l’oracle décentralisé Pyth Network Hermes (SOL, ETH, XAU/Or, BRENT) et d’ancrages de marché décentralisés (MON, XEC, HYPE, TUSD) avec vérification cryptographique.',
+      'Flux d’oracles en direct : Prix au comptant en temps réel issus des API publiques CoinGecko et Pyth Network pour les cryptomonnaies actives (ETH, SOL, XEC) ; réseaux testnet et émergents (MON, HYPE, TUSD) ancrés aux indices de parité testnet.',
     sourceHistorical:
-      'Résolution historique pluriannuelle : Séries de prix pluriannuelles intégrées à résolution annuelle provenant des archives de marché, CoinGecko et St. Louis FRED.',
+      'Résolution historique et intrajournalière : Points horaires sur 24h pour une analyse récente détaillée, et séries pluriannuelles (1930 à aujourd’hui) issues de St. Louis FRED, CoinGecko et de la genèse blockchain.',
     sourceGrid:
-      'Électricité du réseau : US Energy Information Administration (EIA) Electric Power Monthly et tarifs industriels historiques FRED.',
+      'Énergie de référence : Tableaux tarifaires industriels publiés par l’US Energy Information Administration (EIA) Electric Power Monthly (référence à 0,082 $/kWh).',
     sourceHash:
-      'Hashrate et subvention PoW : Vérifiés directement sur la chaîne à partir des en-têtes de blocs et des calendriers de halving.',
+      'Référence PoW : Dérivée des calendriers de halving et des spécifications CBECI du parc matériel (ancre empirique à 0,084 $/kWh).',
     sourceHardware:
       'Efficacité matérielle : Cambridge Bitcoin Electricity Consumption Index (CBECI) et fiches techniques Bitmain/MicroBT.',
     hardwareMilestones: 'Jalons d’efficacité matérielle',

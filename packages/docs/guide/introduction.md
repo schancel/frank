@@ -6,13 +6,17 @@
 
 ## 1. What is Frank?
 
+Conventional communication networks—including Telegram, Signal, WhatsApp, and Discord—fundamentally compromise user sovereignty by gating access behind **phone numbers, carrier SIM cards, SMS verification codes, email addresses, and centralized account registries**. This forces users into surveillance regimes, telecommunication databases, and SIM-swap vulnerabilities where accounts can be arbitrarily banned, censored, or deanonymized.
+
+**Frank eliminates personal identifying information (PII) entirely.** There is no registration form, no phone number prompt, no email verification, and no central database of accounts. Identities are self-sovereign mathematical keypairs derived locally and offline on your own device.
+
 Frank is an open protocol and decentralized communication system that combines:
 
-1. **Self-Custodial Cryptographic Identity**: Every user is an autonomous cryptographic actor. Handles like `alice@domain.org` map to self-sovereign directory attestations signed by the user's root authority key.
+1. **Zero-PII Sovereign Cryptographic Identity**: Every user is an autonomous cryptographic actor. Handles like `alice@domain.org` map to self-sovereign directory attestations signed by the user's root authority key, with zero central account authorities.
 2. **Dual-Key Stealth Address Protocol (DKSAP)**: Message envelopes and payment transactions leverage stealth address derivation on secp256k1, ensuring mathematical unlinkability between senders and recipients.
 3. **Deterministic CBOR (FRNK v1)**: All wire payloads, directory statements, and topic records are encoded with canonical, deterministic CBOR with strict byte-level invariants and zero ambiguous floating-point or integer encodings.
 4. **Dual-Protocol Routing (SRV + MX)**: A unified identifier (e.g. `alice@domain.com`) resolves to a high-speed Frank relay over DNS SRV and falls back to traditional SMTP email via standard MX records and an automated bidirectional mail gateway.
-5. **Decoupled Clustered Relay Infrastructure**: Relays run either as zero-dependency standalone binaries using embedded RocksDB, or horizontally scaled clusters backed by Apache Kvrocks, Core NATS, and S3-compatible blob stores.
+5. **Censorship-Resistant Federated Relay Mesh**: Relays run either as zero-dependency standalone binaries or horizontally clustered nodes, providing open store-and-forward routing with no centralized gatekeepers.
 6. **Ambient Privacy & Graph Entropy**: Rather than forcing users into conspicuous mixer pools (e.g. Tornado Cash) which attract regulatory blacklisting and negative taint, Frank's automated UTXO/EVM wallet mixing operates through standard peer-to-peer gas transfers. This creates positive privacy externalities ("herd privacy") across the entire blockchain.
 
 ---

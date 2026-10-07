@@ -1,5 +1,5 @@
 export const MAX_AVATAR_DIMENSION = 80
-export const MAX_AVATAR_BYTES = 4096
+export const MAX_AVATAR_BYTES = 65536
 export const DEFAULT_AVATAR_QUALITY = 0.8
 
 export interface AvatarResizeOptions {
@@ -121,8 +121,8 @@ export function canvasToCompressedDataUrl(
     // JPEG export failed
   }
 
-  // 3. Try lower qualities (0.6, 0.4)
-  for (const q of [0.6, 0.4]) {
+  // 3. Try lower qualities (0.6, 0.4, 0.2)
+  for (const q of [0.6, 0.4, 0.2]) {
     try {
       const webp = canvas.toDataURL('image/webp', q)
       if (webp.startsWith('data:image/webp') && webp.length <= maxBytes) {
@@ -153,7 +153,7 @@ export function canvasToCompressedDataUrl(
   // 4. Try PNG fallback if small enough
   try {
     const png = canvas.toDataURL('image/png')
-    if (png.startsWith('data:image/png')) {
+    if (png.startsWith('data:image/png') && png.length <= maxBytes) {
       return png
     }
   } catch {
@@ -165,7 +165,7 @@ export function canvasToCompressedDataUrl(
 
 /**
  * Resizes and compresses an image or canvas so that dimensions are at most `maxDimension`
- * (default 80x80) and data URL is under `maxBytes` (default 4096 bytes).
+ * (default 80x80) and data URL is under `maxBytes` (default 65536 bytes).
  */
 export function resizeAndCompressImage(
   source: HTMLImageElement | HTMLCanvasElement,
@@ -183,7 +183,7 @@ export function resizeAndCompressImage(
   }
 
   // Step down dimensions if still too large
-  const fallbackDims = [64, 48, 32]
+  const fallbackDims = [64, 48, 32, 24, 16]
   for (const dim of fallbackDims) {
     if (dim < maxDim) {
       canvas = resizeImageToCanvas(source, dim)
@@ -197,7 +197,7 @@ export function resizeAndCompressImage(
     }
   }
 
-  return dataUrl
+  return dataUrl && dataUrl.length <= maxBytes ? dataUrl : ''
 }
 
 /**
@@ -245,7 +245,7 @@ export function compressAvatarDataUrl(
         settled = true
         reject(new Error('Avatar image compression timed out'))
       }
-    }, 500)
+    }, 1500)
 
     img.onload = finish
     img.onerror = () => {

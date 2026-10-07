@@ -522,7 +522,7 @@ export const useContactStore = defineStore('contacts', {
         }
         const profileInfo = await fetchContactProfile(chainAddress)
         if (!profileInfo) {
-          console.error(new Error(`No registered profile found for ${address}`))
+          console.debug(`No registered profile found for ${address}`)
           this.updateContact({
             address,
             profile: {

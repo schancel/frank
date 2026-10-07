@@ -152,7 +152,7 @@ describe('Profile.vue', () => {
     })
 
     // Set oversized avatar that cannot be compressed or remains oversized
-    ;(wrapper.vm as any).avatar = 'data:image/png;base64,' + 'X'.repeat(10000)
+    ;(wrapper.vm as any).avatar = 'data:image/png;base64,' + 'X'.repeat(70000)
     await (wrapper.vm as any).updateRelayData()
 
     expect(errorNotify).toHaveBeenCalledWith(
@@ -212,7 +212,7 @@ describe('Profile.vue', () => {
         },
       })
 
-      ;(wrapper.vm as any).avatar = 'data:image/png;base64,' + 'X'.repeat(6000)
+      ;(wrapper.vm as any).avatar = 'data:image/png;base64,' + 'X'.repeat(70000)
       await (wrapper.vm as any).updateRelayData()
 
       expect(mockSetRelayData).toHaveBeenCalledWith({

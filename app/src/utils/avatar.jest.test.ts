@@ -19,7 +19,7 @@ describe('avatar resizing and compression utilities', () => {
       expect(isAvatarTooLarge('')).toBe(false)
     })
 
-    it('returns false for avatars under or equal to MAX_AVATAR_BYTES (4096)', () => {
+    it('returns false for avatars under or equal to MAX_AVATAR_BYTES', () => {
       const underLimit = 'data:image/webp;base64,' + 'A'.repeat(2000)
       expect(isAvatarTooLarge(underLimit)).toBe(false)
       const exactLimit = 'A'.repeat(MAX_AVATAR_BYTES)
@@ -27,7 +27,7 @@ describe('avatar resizing and compression utilities', () => {
     })
 
     it('returns true for avatars exceeding MAX_AVATAR_BYTES', () => {
-      const overLimit = 'data:image/png;base64,' + 'A'.repeat(5000)
+      const overLimit = 'data:image/png;base64,' + 'A'.repeat(MAX_AVATAR_BYTES + 500)
       expect(isAvatarTooLarge(overLimit)).toBe(true)
     })
   })
@@ -131,6 +131,27 @@ describe('avatar resizing and compression utilities', () => {
 
       const result = canvasToCompressedDataUrl(canvas, 4096)
       expect(result).toBe(jpegDataUrl)
+    })
+
+    it('does not return PNG fallback when it exceeds maxBytes', () => {
+      HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+        drawImage: jest.fn(),
+        fillRect: jest.fn(),
+        fillStyle: '',
+      })) as any
+      HTMLCanvasElement.prototype.toDataURL = jest.fn((format: string) => {
+        if (format === 'image/webp') return 'data:image/png;base64,not-webp'
+        if (format === 'image/jpeg')
+          return 'data:image/jpeg;base64,' + 'J'.repeat(10000)
+        return 'data:image/png;base64,' + 'P'.repeat(10000)
+      })
+
+      const canvas = document.createElement('canvas')
+      canvas.width = 80
+      canvas.height = 80
+
+      const result = canvasToCompressedDataUrl(canvas, 4096)
+      expect(result).toBe('')
     })
   })
 

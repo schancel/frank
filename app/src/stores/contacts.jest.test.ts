@@ -469,7 +469,7 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(isBlankName('\u200bA\u200b')).toBe(false)
     })
 
-    it('logs and does not throw when activeChain.fetchProfile finds nothing', async () => {
+    it('logs debug and does not throw when activeChain.fetchProfile finds nothing', async () => {
       const contacts = useContactStore()
       contacts.setUpdateInterval(0)
       contacts.addContact({
@@ -479,12 +479,18 @@ describe('stores/contacts.ts (ticket #42)', () => {
         },
       })
       jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue(undefined)
+      const consoleDebugSpy = jest
+        .spyOn(console, 'debug')
+        .mockImplementation(() => undefined)
       const consoleErrorSpy = jest
         .spyOn(console, 'error')
         .mockImplementation(() => undefined)
 
       await expect(contacts.refresh(ADDRESS)).resolves.toBeUndefined()
-      expect(consoleErrorSpy).toHaveBeenCalled()
+      expect(consoleDebugSpy).toHaveBeenCalledWith(
+        `No registered profile found for ${ADDRESS}`,
+      )
+      expect(consoleErrorSpy).not.toHaveBeenCalled()
     })
   })
 

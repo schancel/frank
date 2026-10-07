@@ -49,6 +49,7 @@ const SAME_IN_FRENCH = new Set([
   'about.appName',
   'about.badgeMonad',
   'forum.editor.code',
+  'docs.title',
 ])
 
 const placeholders = (text: string) =>

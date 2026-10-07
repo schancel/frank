@@ -59,11 +59,13 @@ export default () => {
     }
 
     await accountSession.initialize()
-    // Release notes and legal notices are readable without an account.
+    // Release notes, documentation, and legal notices are readable without an account.
     if (
       to.path === '/setup' ||
       to.path === '/changelog' ||
       to.path === '/about' ||
+      to.path === '/docs' ||
+      to.path.startsWith('/docs/') ||
       to.path === '/' ||
       to.path.startsWith('/forum') ||
       to.path.startsWith('/topic')

@@ -103,7 +103,11 @@
         @closeDrawer="$emit('closeDrawer')"
       />
       <div v-if="!$status.setup" class="drawer-header-item">
-        <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
+        <chat-list-link
+          :title="$t('leftDrawer.loginSignUp')"
+          route="/setup"
+          icon="login"
+        />
       </div>
 
       <chat-list
@@ -458,7 +462,12 @@ export default defineComponent({
           maybeRefreshTopics()
         } else if (path.startsWith('/wallet')) {
           tab.value = 'wallet'
-        } else if (path.startsWith('/settings')) {
+        } else if (
+          path.startsWith('/settings') ||
+          path.startsWith('/docs') ||
+          path.startsWith('/about') ||
+          path.startsWith('/changelog')
+        ) {
           tab.value = 'settings'
         } else if (
           path.startsWith('/add-contact') ||

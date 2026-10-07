@@ -85,8 +85,18 @@
               :requested-amount="item.requestedAmount"
               :status="item.status"
               :outbound="message.outbound"
+              :hash-lock="item.hashLock"
+              :preimage="item.preimage"
+              :leg-a-tx-hash="item.legATxHash"
+              :leg-b-tx-hash="item.legBTxHash"
+              :claim-tx-hash="item.claimTxHash"
+              :origin-instance-id="item.originInstanceId"
+              :recipient-address="address"
               @accept="handleSwapAccept"
               @cancel="handleSwapCancel"
+              @deposit="handleSwapDeposit"
+              @claim="handleSwapClaim"
+              @refund="handleSwapRefund"
             />
             <chat-message-rps
               v-else-if="item.type == 'rps'"
@@ -305,14 +315,67 @@ export default defineComponent({
     },
     handleSwapAccept(swapId: string) {
       this.$emit('sendFollowUp', {
-        type: 'swap-accept',
-        swapId,
+        items: [
+          {
+            type: 'text',
+            text: `/swap accept ${swapId}`,
+          },
+        ],
       })
     },
     handleSwapCancel(swapId: string) {
       this.$emit('sendFollowUp', {
-        type: 'swap-cancel',
-        swapId,
+        items: [
+          {
+            type: 'text',
+            text: `/swap cancel ${swapId}`,
+          },
+        ],
+      })
+    },
+    handleSwapDeposit(payload: {
+      swapId: string
+      chain: string
+      amount: string
+      txHash: string
+      hashLock?: string
+      preimage?: string
+    }) {
+      this.$emit('sendFollowUp', {
+        items: [
+          {
+            type: 'text',
+            text: `/swap deposit ${payload.swapId} ${payload.chain} ${payload.txHash}`,
+          },
+        ],
+      })
+    },
+    handleSwapClaim(payload: {
+      swapId: string
+      chain: string
+      txHash: string
+    }) {
+      this.$emit('sendFollowUp', {
+        items: [
+          {
+            type: 'text',
+            text: `/swap claim ${payload.swapId} ${payload.chain} ${payload.txHash}`,
+          },
+        ],
+      })
+    },
+    handleSwapRefund(payload: {
+      swapId: string
+      chain: string
+      txHash: string
+    }) {
+      this.$emit('sendFollowUp', {
+        items: [
+          {
+            type: 'text',
+            text: `/swap refund ${payload.swapId} ${payload.chain} ${payload.txHash}`,
+          },
+        ],
       })
     },
     /** Manual Retry of a failed message. For a Monad message this never deletes it first: the

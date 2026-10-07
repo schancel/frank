@@ -12,6 +12,7 @@ jest.mock('pinia', () => ({
   defineStore: (_id: string, def: any) => () =>
     typeof def === 'function' ? def() : def,
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
+  getActivePinia: () => undefined,
 }))
 jest.mock('../components/panels/ContactsPanel.vue', () => ({
   template: '<div data-testid="contacts-panel" />',

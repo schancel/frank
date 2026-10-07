@@ -1,6 +1,6 @@
 <template>
-  <div class="row full-width">
-    <q-toolbar class="chat-input-toolbar full-width">
+  <div class="row full-width items-center">
+    <q-toolbar class="chat-input-toolbar full-width items-center">
       <q-btn
         dense
         flat
@@ -276,8 +276,9 @@ export default defineComponent({
 .chat-input-toolbar {
   display: flex;
   align-items: center;
-  min-height: 54px;
+  min-height: 64px;
   padding: 8px 14px;
+  overflow: visible;
 }
 
 .chat-attach-btn {
@@ -345,6 +346,7 @@ export default defineComponent({
 }
 
 .chat-send-btn {
+  align-self: center;
   flex-shrink: 0;
   width: 38px;
   height: 38px;

@@ -69,7 +69,7 @@
         />
       </q-page>
     </q-page-container>
-    <q-footer bordered>
+    <q-footer bordered :height-hint="64" class="chat-footer chat-input-bar">
       <div v-if="!!replyDigest" class="q-px-md q-pt-sm" ref="replyBox">
         <!-- Reply box -->
         <div class="row justify-end">
@@ -1112,5 +1112,30 @@ export default defineComponent({
 }
 .chat-banner-overlay {
   z-index: 1;
+}
+
+.chat-footer,
+.chat-input-bar {
+  min-height: 64px;
+  box-sizing: border-box;
+}
+
+:deep(.chat-input-toolbar) {
+  min-height: 64px;
+  padding: 8px 14px;
+  align-items: center;
+  overflow: visible;
+}
+
+:deep(.chat-send-btn) {
+  align-self: center;
+}
+
+:deep() .q-message-text--sent {
+  border-radius: 18px 18px 4px 18px !important;
+}
+
+:deep() .q-message-text--received {
+  border-radius: 18px 18px 18px 4px !important;
 }
 </style>

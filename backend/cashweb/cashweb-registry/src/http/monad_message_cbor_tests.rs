@@ -1828,13 +1828,21 @@ async fn admitted_input(
     fixture: &NativeDirectoryFixture,
     request: &ExactRequest,
 ) -> Result<crate::monad_outbox::financial::CanonicalPaymentInput> {
-    let (sender, recipient, _) = request_principals(request, "monad-testnet").unwrap();
-    let sender = current(fixture.registry.canonical_dm(), "monad-testnet", &sender)
-        .await
-        .unwrap();
-    let recipient = current(fixture.registry.canonical_dm(), "monad-testnet", &recipient)
-        .await
-        .unwrap();
+    let principals = request_principals(request, "monad-testnet").unwrap();
+    let sender = current(
+        fixture.registry.canonical_dm(),
+        "monad-testnet",
+        &principals.sender,
+    )
+    .await
+    .unwrap();
+    let recipient = current(
+        fixture.registry.canonical_dm(),
+        "monad-testnet",
+        &principals.recipient,
+    )
+    .await
+    .unwrap();
     crate::monad_outbox::financial::validate_canonical_payment_set(
         request.clone(),
         &sender,

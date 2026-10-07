@@ -131,6 +131,14 @@
               <q-btn
                 outline
                 no-caps
+                color="secondary"
+                icon="menu_book"
+                label="Documentation"
+                to="/docs"
+              />
+              <q-btn
+                outline
+                no-caps
                 color="primary"
                 icon="code"
                 :label="$t('about.githubRepo')"

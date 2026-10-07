@@ -42,6 +42,7 @@ export function createRoutes(): RouteRecordRaw[] {
         },
         { path: 'agora', redirect: '/forum' },
         { path: 'changelog', component: () => import('pages/Changelog.vue') },
+        { path: 'docs', component: () => import('pages/DocsView.vue') },
         { path: 'about', component: () => import('pages/About.vue') },
         {
           path: 'chat',

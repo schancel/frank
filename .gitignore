@@ -6,15 +6,15 @@
 node_modules/
 target/
 dist/
+app/public/docs/
 **/.vitepress/cache/
 **/.vitepress/.temp/
 __pycache__/
 *.pyc
 .worktrees/
 scratchpad/
-.blackjack-p2p/
-*.blackjack-p2p/
 .wallets/
 *.wallet.json
 .serena/
 frank-monad-wallet-state-*/
+**/.blackjack-p2p/

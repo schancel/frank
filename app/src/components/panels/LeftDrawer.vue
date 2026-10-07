@@ -153,7 +153,10 @@
           <q-list v-bind="$attrs" class="full-width">
             <q-separator />
             <q-item>
-              <q-item-section class="cursor-pointer" @click="browseForumTopic('')">
+              <q-item-section
+                class="cursor-pointer"
+                @click="browseForumTopic('')"
+              >
                 <q-item-label>{{ $t('leftDrawer.forum') }}</q-item-label>
               </q-item-section>
               <q-space />
@@ -209,9 +212,9 @@
 
       <!-- Keep the legacy-relay reconnect affordance while that runtime mode exists. The Wallet
       panel is the primary balance surface; this compatibility footer is not shown in Monad mode. -->
-      <q-list v-if="$status.setup">
+      <q-list v-if="$status.setup" class="drawer-balance-footer">
         <q-separator />
-        <q-item clickable>
+        <q-item clickable class="drawer-balance-item">
           <q-item-section @click="openReceive">
             <q-item-label>{{ $t('chatList.balance') }}</q-item-label>
             <q-item-label
@@ -666,6 +669,21 @@ export default defineComponent({
   min-height: 50px;
   max-height: 50px;
   box-sizing: border-box;
+}
+
+.drawer-balance-footer {
+  height: 64px;
+  min-height: 64px;
+  max-height: 64px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.drawer-balance-item {
+  min-height: 63px;
+  height: 63px;
 }
 
 .drawer-resize-handle {

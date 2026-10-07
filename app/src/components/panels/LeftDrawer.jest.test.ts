@@ -1,6 +1,8 @@
 /** @jest-environment jsdom */
 
 import { shallowMount } from '@vue/test-utils'
+import fs from 'fs'
+import path from 'path'
 import { defineComponent, nextTick, ref } from 'vue'
 
 const runtime = { legacy: false }
@@ -318,6 +320,24 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       expect(mockRefreshMessages).toHaveBeenCalledWith(
         expect.objectContaining({ topic: '' }),
       )
+    })
+  })
+
+  describe('sidebar balance footer container height alignment (#1043)', () => {
+    it('matches chat input bar standard height (64px) with separator', () => {
+      const sfc = fs.readFileSync(
+        path.join(__dirname, 'LeftDrawer.vue'),
+        'utf8',
+      )
+      expect(sfc).toMatch(/\.drawer-balance-footer\s*\{[^}]*height:\s*64px/)
+      expect(sfc).toMatch(/\.drawer-balance-footer\s*\{[^}]*min-height:\s*64px/)
+      expect(sfc).toMatch(/\.drawer-balance-item\s*\{[^}]*min-height:\s*63px/)
+    })
+
+    it('renders the drawer-balance-footer class when setup is ready', () => {
+      const wrapper = mountDrawer(true)
+      expect(wrapper.find('.drawer-balance-footer').exists()).toBe(true)
+      expect(wrapper.find('.drawer-balance-item').exists()).toBe(true)
     })
   })
 })

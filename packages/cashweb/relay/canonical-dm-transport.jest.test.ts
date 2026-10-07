@@ -373,7 +373,7 @@ describe('canonical acceptance stays uncertain unless exact', () => {
         request: frozen,
         fetch: async () =>
           canonicalTestResponse(
-            'https://other.example/message/monad/cbor',
+            'https://other.example/message',
             202,
             statusBytes(frozen),
           ),
@@ -465,12 +465,14 @@ describe('bounded streamed responses', () => {
 })
 
 describe('Type 1 co-located recipient P and DLEQ proof (#964)', () => {
-  function fixtureWithColocated(options: {
-    corruptDeliveryRecipient?: boolean
-    corruptDeliveryDleq?: boolean
-    corruptContextRecipient?: boolean
-    corruptContextDleq?: boolean
-  } = {}): {
+  function fixtureWithColocated(
+    options: {
+      corruptDeliveryRecipient?: boolean
+      corruptDeliveryDleq?: boolean
+      corruptContextRecipient?: boolean
+      corruptContextDleq?: boolean
+    } = {},
+  ): {
     parts: CanonicalExactParts
     recipient: AccountRef
     dleqProof: Uint8Array
@@ -566,21 +568,29 @@ describe('Type 1 co-located recipient P and DLEQ proof (#964)', () => {
 
   test('rejects when delivery recipient mismatches payload recipient', () => {
     const { parts } = fixtureWithColocated({ corruptDeliveryRecipient: true })
-    expect(() => inspectCanonicalPair(parts)).toThrow(/Delivery\/payload mismatch/)
+    expect(() => inspectCanonicalPair(parts)).toThrow(
+      /Delivery\/payload mismatch/,
+    )
   })
 
   test('rejects when delivery DLEQ proof mismatches payload DLEQ proof', () => {
     const { parts } = fixtureWithColocated({ corruptDeliveryDleq: true })
-    expect(() => inspectCanonicalPair(parts)).toThrow(/Delivery\/payload mismatch/)
+    expect(() => inspectCanonicalPair(parts)).toThrow(
+      /Delivery\/payload mismatch/,
+    )
   })
 
   test('rejects when delivery recipient mismatches context recipient', () => {
     const { parts } = fixtureWithColocated({ corruptContextRecipient: true })
-    expect(() => inspectCanonicalPair(parts)).toThrow(/Delivery\/context mismatch/)
+    expect(() => inspectCanonicalPair(parts)).toThrow(
+      /Delivery\/context mismatch/,
+    )
   })
 
   test('rejects when delivery DLEQ proof mismatches context DLEQ proof', () => {
     const { parts } = fixtureWithColocated({ corruptContextDleq: true })
-    expect(() => inspectCanonicalPair(parts)).toThrow(/Delivery\/context mismatch/)
+    expect(() => inspectCanonicalPair(parts)).toThrow(
+      /Delivery\/context mismatch/,
+    )
   })
 })

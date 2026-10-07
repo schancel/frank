@@ -564,7 +564,6 @@ impl RegistryServer {
                 routing::any(|| async { StatusCode::GONE }),
             )
             .route("/messages", routing::any(|| async { StatusCode::GONE }))
-            .route("/message", routing::any(|| async { StatusCode::GONE }))
             .route(
                 "/message/:payload_hash",
                 routing::any(|| async { StatusCode::GONE }),
@@ -687,7 +686,37 @@ impl RegistryServer {
                 handle_put, handle_recovery,
             };
             router = router
-                .route("/message/monad/cbor", routing::put(handle_put))
+                // Canonical network-agnostic message routes
+                .route(
+                    "/message",
+                    routing::on(
+                        routing::MethodFilter::POST | routing::MethodFilter::PUT,
+                        handle_put,
+                    ),
+                )
+                .route("/message/auth/:recipient", routing::post(handle_challenge))
+                .route("/message/inbox/:recipient", routing::get(handle_inbox))
+                .route("/message/mailbox/:address", routing::get(handle_mailbox))
+                .route(
+                    "/message/mailbox/:address/ws",
+                    routing::get(handle_mailbox_ws),
+                )
+                .route(
+                    "/message/recovery/:recipient",
+                    routing::get(handle_recovery),
+                )
+                .route(
+                    "/message/recovery/:recipient/:payload_hash/:obligation_id/ack",
+                    routing::post(handle_ack),
+                )
+                // Backwards-compatible legacy aliases
+                .route(
+                    "/message/monad/cbor",
+                    routing::on(
+                        routing::MethodFilter::POST | routing::MethodFilter::PUT,
+                        handle_put,
+                    ),
+                )
                 .route(
                     "/message/monad/cbor/auth/:recipient",
                     routing::post(handle_challenge),

@@ -353,6 +353,21 @@ pub struct PaymentMember {
     pub commitment: Vec<u8>,
     /// Optional UTXO output index (vout).
     pub vout: Option<u32>,
+    /// Optional explicit raw signed transaction bytes.
+    pub raw_tx: Option<Vec<u8>>,
+}
+
+impl PaymentMember {
+    /// Return raw signed transaction bytes if available, either from explicit `raw_tx` or if `transaction_id` is raw payload.
+    pub fn raw_transaction(&self) -> Option<&[u8]> {
+        if let Some(ref raw) = self.raw_tx {
+            return Some(raw.as_slice());
+        }
+        if self.transaction_id.len() > 32 {
+            return Some(self.transaction_id.as_slice());
+        }
+        None
+    }
 }
 
 /// One signature entry.

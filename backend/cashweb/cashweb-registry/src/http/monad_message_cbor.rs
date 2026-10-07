@@ -34,7 +34,14 @@ pub(crate) async fn handle_put(
         return Err(CanonicalError::Unavailable);
     }
     let content_type = single_header(&headers, "content-type")?.to_owned();
-    parse_boundary(&content_type, "multipart/form-data")?;
+    if content_type.starts_with("multipart/form-data") {
+        parse_boundary(&content_type, "multipart/form-data")?;
+    } else if !content_type.starts_with("application/vnd.frank.cbor")
+        && !content_type.starts_with("application/cbor")
+        && !content_type.starts_with("application/octet-stream")
+    {
+        return Err(CanonicalError::Invalid);
+    }
     if let Some(length) = headers.get("content-length") {
         let length = length
             .to_str()
@@ -102,10 +109,11 @@ pub(crate) async fn handle_put(
             recipient_t1,
             ..
         } = principals;
-        let historical = if recipient_current.evidence.hash == recipient_t1 {
-            None
-        } else {
-            Some(history(owner, descriptor.cbor_identifier, &recipient, recipient_t1).await?)
+        let historical = match recipient_t1 {
+            Some(t1) if recipient_current.evidence.hash != t1 => {
+                Some(history(owner, descriptor.cbor_identifier, &recipient, t1).await?)
+            }
+            _ => None,
         };
         let input = crate::monad_outbox::financial::validate_canonical_payment_set(
             request,
@@ -206,8 +214,8 @@ async fn history(
 pub(crate) struct Principals {
     pub(crate) sender: Vec<u8>,
     pub(crate) recipient: Vec<u8>,
-    pub(crate) sender_t1: [u8; 32],
-    pub(crate) recipient_t1: [u8; 32],
+    pub(crate) sender_t1: Option<[u8; 32]>,
+    pub(crate) recipient_t1: Option<[u8; 32]>,
     pub(crate) payload_hash: [u8; 32],
 }
 /// The recipient's current entry when its mailbox is on this relay. `None` when this relay can
@@ -274,13 +282,15 @@ fn undeliverable_response(
     let recipient =
         crate::monad_stamp_stealth::recipient_address_from_public_key(&principals.recipient)
             .map_err(|_| CanonicalError::Invalid)?;
+    let sender_t1 = principals.sender_t1.unwrap_or([0; 32]);
+    let recipient_t1 = principals.recipient_t1.unwrap_or([0; 32]);
     let identity = SubmissionEcho::new(
         request,
         network,
         recipient,
         &principals.payload_hash,
-        &principals.sender_t1,
-        &principals.recipient_t1,
+        &sender_t1,
+        &recipient_t1,
     );
     Ok((
         StatusCode::OK,
@@ -313,25 +323,30 @@ fn request_principals(request: &ExactRequest, network: &str) -> Result<Principal
     if actual != network || sender.key_type != 1 || recipient.key_type != 1 {
         return Err(CanonicalError::Invalid);
     }
-    let CborValue::Map(context) =
-        frank_cbor::decode_canonical(request.context()).map_err(|_| CanonicalError::Invalid)?
-    else {
-        return Err(CanonicalError::Invalid);
-    };
-    let hash = |wanted: u64| -> Result<[u8; 32]> {
-        context
-            .iter()
-            .find_map(|(key, value)| match value {
-                CborValue::Bytes(hash) if *key == wanted => hash.as_slice().try_into().ok(),
-                _ => None,
-            })
-            .ok_or(CanonicalError::Invalid)
+    let (sender_t1, recipient_t1) = if !request.context().is_empty() {
+        let CborValue::Map(context) =
+            frank_cbor::decode_canonical(request.context()).map_err(|_| CanonicalError::Invalid)?
+        else {
+            return Err(CanonicalError::Invalid);
+        };
+        let hash = |wanted: u64| -> Result<[u8; 32]> {
+            context
+                .iter()
+                .find_map(|(key, value)| match value {
+                    CborValue::Bytes(hash) if *key == wanted => hash.as_slice().try_into().ok(),
+                    _ => None,
+                })
+                .ok_or(CanonicalError::Invalid)
+        };
+        (Some(hash(4)?), Some(hash(5)?))
+    } else {
+        (None, None)
     };
     Ok(Principals {
         sender: sender.key_bytes.clone(),
         recipient: recipient.key_bytes.clone(),
-        sender_t1: hash(4)?,
-        recipient_t1: hash(5)?,
+        sender_t1,
+        recipient_t1,
         payload_hash: frank_cbor::recipient_payload_digest(network, &payload_frame.frame)
             .map_err(|_| CanonicalError::Invalid)?,
     })
@@ -446,51 +461,87 @@ pub(crate) struct ExactRequest {
     transactions: Vec<Range<usize>>,
     transactions_part: Range<usize>,
     submission_identity: [u8; 32],
+    raw_tx_bytes: Vec<Vec<u8>>,
 }
 impl ExactRequest {
     pub(crate) fn parse(body: Vec<u8>, content_type: String) -> Result<Self> {
         if body.len() > MAX_REQUEST_BYTES {
             return Err(CanonicalError::TooLarge);
         }
-        let boundary = parse_boundary(&content_type, "multipart/form-data")?;
-        let parts = parse_parts(
-            &body,
-            &boundary,
-            "form-data",
-            &[
-                ("delivery", "application/vnd.frank.cbor"),
-                ("context", "application/cbor"),
-                ("transactions", "application/cbor"),
-            ],
-        )?;
-        if parts[0].is_empty() || parts[1].is_empty() || parts[1].len() > MAX_CONTEXT_BYTES {
-            return Err(CanonicalError::TooLarge);
+        if content_type.starts_with("multipart/form-data") {
+            let boundary = parse_boundary(&content_type, "multipart/form-data")?;
+            let parts = parse_parts(
+                &body,
+                &boundary,
+                "form-data",
+                &[
+                    ("delivery", "application/vnd.frank.cbor"),
+                    ("context", "application/cbor"),
+                    ("transactions", "application/cbor"),
+                ],
+            )?;
+            if parts[0].is_empty() || parts[1].is_empty() || parts[1].len() > MAX_CONTEXT_BYTES {
+                return Err(CanonicalError::TooLarge);
+            }
+            let transactions = transaction_ranges(&body[parts[2].clone()], parts[2].start)?;
+            let tuple = CborValue::Array(vec![
+                CborValue::Bytes(body[parts[0].clone()].to_vec()),
+                CborValue::Bytes(body[parts[1].clone()].to_vec()),
+                CborValue::Array(
+                    transactions
+                        .iter()
+                        .map(|r| CborValue::Bytes(body[r.clone()].to_vec()))
+                        .collect(),
+                ),
+            ]);
+            let encoded = encode_canonical(&tuple).map_err(|_| CanonicalError::Invalid)?;
+            let submission_identity = Sha256::digest(encoded.into())
+                .as_slice()
+                .try_into()
+                .expect("SHA256");
+            Ok(Self {
+                body: body.into(),
+                content_type,
+                delivery: parts[0].clone(),
+                context: parts[1].clone(),
+                transactions_part: parts[2].clone(),
+                transactions,
+                submission_identity,
+                raw_tx_bytes: Vec::new(),
+            })
+        } else if content_type.starts_with("application/vnd.frank.cbor")
+            || content_type.starts_with("application/cbor")
+            || content_type.starts_with("application/octet-stream")
+        {
+            use frank_cbor::{relay_context, validate_frame, TypedPayload, ValidationResult};
+            let mut raw_tx_bytes = Vec::new();
+            if let Ok(ValidationResult::Parsed(frame)) = validate_frame(&body, &relay_context()) {
+                if let Some(TypedPayload::DirectMessage { payments, .. }) = frame.typed.as_deref() {
+                    for payment in payments {
+                        if let Some(raw) = payment.raw_transaction() {
+                            raw_tx_bytes.push(raw.to_vec());
+                        }
+                    }
+                }
+            }
+            let submission_identity = Sha256::digest((&body[..]).into())
+                .as_slice()
+                .try_into()
+                .expect("SHA256");
+            let len = body.len();
+            Ok(Self {
+                body: body.into(),
+                content_type,
+                delivery: 0..len,
+                context: 0..0,
+                transactions_part: 0..0,
+                transactions: Vec::new(),
+                submission_identity,
+                raw_tx_bytes,
+            })
+        } else {
+            Err(CanonicalError::Invalid)
         }
-        let transactions = transaction_ranges(&body[parts[2].clone()], parts[2].start)?;
-        let tuple = CborValue::Array(vec![
-            CborValue::Bytes(body[parts[0].clone()].to_vec()),
-            CborValue::Bytes(body[parts[1].clone()].to_vec()),
-            CborValue::Array(
-                transactions
-                    .iter()
-                    .map(|r| CborValue::Bytes(body[r.clone()].to_vec()))
-                    .collect(),
-            ),
-        ]);
-        let encoded = encode_canonical(&tuple).map_err(|_| CanonicalError::Invalid)?;
-        let submission_identity = Sha256::digest(encoded.into())
-            .as_slice()
-            .try_into()
-            .expect("SHA256");
-        Ok(Self {
-            body: body.into(),
-            content_type,
-            delivery: parts[0].clone(),
-            context: parts[1].clone(),
-            transactions_part: parts[2].clone(),
-            transactions,
-            submission_identity,
-        })
     }
     pub(crate) fn body(&self) -> &[u8] {
         &self.body
@@ -504,10 +555,16 @@ impl ExactRequest {
     pub(crate) fn context(&self) -> &[u8] {
         &self.body[self.context.clone()]
     }
-    pub(crate) fn raw_transactions(&self) -> impl Iterator<Item = &[u8]> {
-        self.transactions
-            .iter()
-            .map(|range| &self.body[range.clone()])
+    pub(crate) fn raw_transactions(&self) -> Box<dyn Iterator<Item = &[u8]> + Send + '_> {
+        if !self.raw_tx_bytes.is_empty() {
+            Box::new(self.raw_tx_bytes.iter().map(|v| v.as_slice()))
+        } else {
+            Box::new(
+                self.transactions
+                    .iter()
+                    .map(|range| &self.body[range.clone()]),
+            )
+        }
     }
     pub(crate) fn transactions_part(&self) -> &[u8] {
         &self.body[self.transactions_part.clone()]
@@ -523,7 +580,11 @@ impl ExactRequest {
             && self.raw_transactions().eq(other.raw_transactions())
     }
     pub(crate) fn transaction_count(&self) -> usize {
-        self.transactions.len()
+        if !self.raw_tx_bytes.is_empty() {
+            self.raw_tx_bytes.len()
+        } else {
+            self.transactions.len()
+        }
     }
 }
 

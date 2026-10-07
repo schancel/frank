@@ -58,6 +58,7 @@ fn test_forwarding_envelope_encode_and_validate() {
         address: bytes_of(20, 1),
         commitment: storage_payment_commitment(&digest, 0).to_vec(),
         vout: Some(0),
+        raw_tx: None,
     };
 
     let envelope = ForwardingDeliveryEnvelope {
@@ -129,6 +130,7 @@ fn test_forwarding_envelope_optional_fields_absent() {
         address: bytes_of(20, 2),
         commitment: storage_payment_commitment(&digest, 0).to_vec(),
         vout: None,
+        raw_tx: None,
     };
 
     let envelope = ForwardingDeliveryEnvelope {
@@ -177,6 +179,7 @@ fn test_forwarding_envelope_multiple_ordered_payments() {
         address: bytes_of(20, 1),
         commitment: storage_payment_commitment(&digest, 0).to_vec(),
         vout: Some(0),
+        raw_tx: None,
     };
     let p1 = PaymentMember {
         child_index: 1,
@@ -185,6 +188,7 @@ fn test_forwarding_envelope_multiple_ordered_payments() {
         address: bytes_of(20, 2),
         commitment: storage_payment_commitment(&digest, 1).to_vec(),
         vout: Some(1),
+        raw_tx: None,
     };
 
     let envelope = ForwardingDeliveryEnvelope {
@@ -225,6 +229,7 @@ fn test_forwarding_envelope_rejects_network_mismatch() {
         address: bytes_of(20, 1),
         commitment: vec![0xaa; 32],
         vout: None,
+        raw_tx: None,
     };
 
     let envelope = ForwardingDeliveryEnvelope {
@@ -256,6 +261,7 @@ fn test_forwarding_envelope_rejects_duplicate_child_index() {
         address: bytes_of(20, 1),
         commitment: storage_payment_commitment(&digest, 0).to_vec(),
         vout: None,
+        raw_tx: None,
     };
     let p_dup = PaymentMember {
         child_index: 0, // Duplicate child index 0, but sorted txid
@@ -264,6 +270,7 @@ fn test_forwarding_envelope_rejects_duplicate_child_index() {
         address: bytes_of(20, 2),
         commitment: storage_payment_commitment(&digest, 0).to_vec(),
         vout: None,
+        raw_tx: None,
     };
 
     let envelope = ForwardingDeliveryEnvelope {
@@ -295,6 +302,7 @@ fn test_forwarding_envelope_rejects_non_contiguous_child_index() {
         address: bytes_of(20, 1),
         commitment: storage_payment_commitment(&digest, 0).to_vec(),
         vout: None,
+        raw_tx: None,
     };
     let p_gap = PaymentMember {
         child_index: 2, // Missing 1
@@ -303,6 +311,7 @@ fn test_forwarding_envelope_rejects_non_contiguous_child_index() {
         address: bytes_of(20, 2),
         commitment: storage_payment_commitment(&digest, 2).to_vec(),
         vout: None,
+        raw_tx: None,
     };
 
     let envelope = ForwardingDeliveryEnvelope {
@@ -335,6 +344,7 @@ fn test_forwarding_envelope_rejects_duplicate_txid_without_vout() {
         address: bytes_of(20, 1),
         commitment: storage_payment_commitment(&digest, 0).to_vec(),
         vout: None,
+        raw_tx: None,
     };
     let p1 = PaymentMember {
         child_index: 1,
@@ -343,6 +353,7 @@ fn test_forwarding_envelope_rejects_duplicate_txid_without_vout() {
         address: bytes_of(20, 2),
         commitment: storage_payment_commitment(&digest, 1).to_vec(),
         vout: None,
+        raw_tx: None,
     };
 
     let envelope = ForwardingDeliveryEnvelope {

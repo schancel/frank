@@ -348,8 +348,8 @@ async fn genuine_native_directory_exact_transport_owner_and_sealed_payment_bound
     // What the request says about itself is what admission verified and froze.
     let stated = request_principals(&request, "monad-testnet").unwrap();
     assert_eq!(stated.payload_hash, claim.policy.payload_hash);
-    assert_eq!(stated.sender_t1, claim.policy.sender_t1);
-    assert_eq!(stated.recipient_t1, claim.policy.recipient_t1);
+    assert_eq!(stated.sender_t1, Some(claim.policy.sender_t1));
+    assert_eq!(stated.recipient_t1, Some(claim.policy.recipient_t1));
     // No legacy profile/protobuf writer or synthetic Current was involved.
     fixture.stop().await;
 }

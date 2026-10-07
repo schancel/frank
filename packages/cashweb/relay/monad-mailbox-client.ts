@@ -1031,7 +1031,12 @@ export async function ackMonadMailboxRecovery(
 export interface CanonicalMailboxAuthParams
   extends Omit<MailboxAuthParams, 'http'> {
   /** Installed four-byte authentication tag or network identifier; e.g. 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet'. */
-  expectedNetworkTag: 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet' | string
+  expectedNetworkTag:
+    | 'MONT'
+    | 'MON1'
+    | 'monad-testnet'
+    | 'monad-mainnet'
+    | string
   /** Compressed P locator, never admission authority. */
   subject: string
   /** Must call the caller-owned public DirectoryStore.current with its trusted clock/relay context. */
@@ -1151,10 +1156,7 @@ async function canonicalCurrent(
     current.generations[0] !== stamp.mailboxKeyGeneration ||
     current.generations[1] !== stamp.stampKeyGeneration ||
     checked >= expires ||
-    !statement.relays.some(
-      relay =>
-        matchesRelayOrigin(relay.endpoint, origin),
-    )
+    !statement.relays.some(relay => matchesRelayOrigin(relay.endpoint, origin))
   )
     canonicalProtocol(
       'Directory Current does not match installed canonical P authority',
@@ -1299,7 +1301,7 @@ async function canonicalSignedRequestWithin(
     async () => {
       phase = 'challenge'
       const head = await canonicalCurrent(auth, origin)
-      const challengeURL = `${origin}/message/monad/cbor/auth/${
+      const challengeURL = `${origin}/message/auth/${
         auth.recipient
       }?${canonicalQuery(request)}`
       const response = await canonicalRoundTrip(
@@ -1394,7 +1396,7 @@ async function canonicalSignedRequestWithin(
             : 'multipart/mixed',
       }
       const url =
-        `${origin}/message/monad/cbor/${path}` +
+        `${origin}/message/${path}` +
         (request.resource === 'recovery_ack'
           ? ''
           : `?${canonicalQuery(request, challenge)}`)
@@ -1531,8 +1533,9 @@ export async function fetchCanonicalMailboxPage(
     })
     const directionHeader = outer.headers['x-frank-mailbox-direction']
     const direction: 'in' | 'out' = directionHeader === 'out' ? 'out' : 'in'
-    const expectedNetwork =
-      canonicalNetworkDescriptor(params.expectedNetworkTag).network
+    const expectedNetwork = canonicalNetworkDescriptor(
+      params.expectedNetworkTag,
+    ).network
     if (pair.network !== expectedNetwork || seen.has(pair.payload_hash)) {
       canonicalProtocol('Canonical mailbox network or duplicate mismatch')
     }
@@ -1552,7 +1555,8 @@ export async function fetchCanonicalMailboxPage(
   })
 }
 
-export interface CanonicalMailboxStreamParams extends CanonicalMailboxAuthParams {
+export interface CanonicalMailboxStreamParams
+  extends CanonicalMailboxAuthParams {
   readonly onRecord: (record: CanonicalMailboxRecord) => void
   readonly onError?: (error: Error) => void
   readonly onReady?: () => void
@@ -1568,7 +1572,7 @@ export async function connectCanonicalMailboxStream(
 ): Promise<CanonicalMailboxStreamHandle> {
   const origin = installedCanonicalOrigin(params.relayBaseUrl)
   await canonicalCurrent(params, origin)
-  const challengeURL = `${origin}/message/monad/cbor/auth/${
+  const challengeURL = `${origin}/message/auth/${
     params.recipient
   }?${canonicalQuery({
     resource: 'mailbox_stream',
@@ -1592,24 +1596,21 @@ export async function connectCanonicalMailboxStream(
       `challenge request failed with status ${response.status}`,
     )
   }
-  const raw = canonicalObject(
-    parseCanonicalJSON(bodyBytes(response.data)),
-    [
-      'epoch',
-      'nonce',
-      'expires_at_ms',
-      'token',
-      'signing_domain',
-      'resource',
-      'since',
-      'cursor',
-      'limit',
-      'max_bytes',
-      'network_tag',
-      'recovery_payload_hash',
-      'recovery_obligation_id',
-    ],
-  )
+  const raw = canonicalObject(parseCanonicalJSON(bodyBytes(response.data)), [
+    'epoch',
+    'nonce',
+    'expires_at_ms',
+    'token',
+    'signing_domain',
+    'resource',
+    'since',
+    'cursor',
+    'limit',
+    'max_bytes',
+    'network_tag',
+    'recovery_payload_hash',
+    'recovery_obligation_id',
+  ])
   const challenge = raw as unknown as MailboxChallenge
   const preimage = buildMailboxAuthPreimage(challenge, params.recipient)
   const signature = await params.signDigest(mailboxAuthDigest(preimage))
@@ -1623,7 +1624,7 @@ export async function connectCanonicalMailboxStream(
     signature: bytesToHex(signature),
     subject: params.subject,
   })
-  const wsUrl = `${wsOrigin}/message/monad/cbor/mailbox/${
+  const wsUrl = `${wsOrigin}/message/mailbox/${
     params.recipient
   }/ws?${query.toString()}`
 

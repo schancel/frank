@@ -100,9 +100,9 @@ pub const MONAD_NETWORKS: &[MonadNetworkDescriptor] = &[
 /// Resolve all of the relay identities for `tag`, or `None` when the tag is not a configured
 /// Monad deployment (which startup and `--check-config` refuse).
 pub fn monad_network(tag: &[u8]) -> Option<&'static MonadNetworkDescriptor> {
-    MONAD_NETWORKS
-        .iter()
-        .find(|network| network.network_tag.as_slice() == tag)
+    MONAD_NETWORKS.iter().find(|network| {
+        network.network_tag.as_slice() == tag || network.cbor_identifier.as_bytes() == tag
+    })
 }
 
 /// The Frank-CBOR network identifier for a relay network tag, or `None` for a tag with no mapping

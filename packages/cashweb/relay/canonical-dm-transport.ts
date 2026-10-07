@@ -437,8 +437,7 @@ export function inspectCanonicalPair(
   return Object.freeze({
     payload_hash: toHex(delivery.payloadDigest),
     network: delivery.network,
-    recipient:
-      '0x' + toHex(addressFromCompressedPubkey(recipient.keyBytes)),
+    recipient: '0x' + toHex(addressFromCompressedPubkey(recipient.keyBytes)),
     sender_t1: toHex(context.senderDirectoryHash),
     recipient_t1: toHex(context.recipientDirectoryHash),
     delivery_sha256: toHex(sha256(parts.delivery)),
@@ -938,7 +937,12 @@ export async function readCanonicalResponse(
 export async function submitCanonicalRequest(input: {
   installedRelayOrigin: string
   /** From the installed relay binding, never inferred from a response. */
-  expectedNetworkTag: 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet' | string
+  expectedNetworkTag:
+    | 'MONT'
+    | 'MON1'
+    | 'monad-testnet'
+    | 'monad-mainnet'
+    | string
   request: CanonicalExactRequest
   fetch?: CanonicalFetch
   signal?: AbortSignal
@@ -951,8 +955,7 @@ export async function submitCanonicalRequest(input: {
     canonicalNetworkDescriptor(input.expectedNetworkTag).network
   )
     invalid('Frozen request differs from installed Monad network')
-  const url =
-    installedCanonicalOrigin(input.installedRelayOrigin) + '/message/monad/cbor'
+  const url = installedCanonicalOrigin(input.installedRelayOrigin) + '/message'
   const controller = new AbortController(),
     abort = () => controller.abort()
   input.signal?.addEventListener('abort', abort, { once: true })

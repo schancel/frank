@@ -466,6 +466,7 @@ pub(crate) struct PaymentDraft {
     pub address: Vec<u8>,
     pub commitment: Vec<u8>,
     pub vout: Option<u32>,
+    pub raw_tx: Option<Vec<u8>>,
 }
 
 pub(crate) struct SignatureDraft {
@@ -641,7 +642,7 @@ pub(crate) enum Draft {
 }
 
 fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError> {
-    let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[5], false, false)?;
+    let map = fields(Some(v), path, &[0, 1, 2, 3, 4], &[5, 6], false, false)?;
     let val_item = map
         .get(2)
         .ok_or_else(|| bad(&format!("{path}.2"), "missing value"))?;
@@ -673,6 +674,11 @@ fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError>
     } else {
         None
     };
+    let raw_tx = if map.has(6) {
+        Some(bstr(map.get(6), &format!("{path}.6"), 1, 16384)?)
+    } else {
+        None
+    };
     Ok(PaymentDraft {
         child_index: u32_in(map.get(0), &format!("{path}.0"), 0, 2_147_483_647)?,
         transaction_id: bstr(map.get(1), &format!("{path}.1"), 1, 128)?,
@@ -680,6 +686,7 @@ fn payment_member(v: &CborValue, path: &str) -> Result<PaymentDraft, CodecError>
         address: bstr(map.get(3), &format!("{path}.3"), 1, 128)?,
         commitment: bstr(map.get(4), &format!("{path}.4"), 32, 32)?,
         vout,
+        raw_tx,
     })
 }
 

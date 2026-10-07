@@ -26,6 +26,8 @@ export interface PaymentMember {
   commitment: Uint8Array
   /** Optional UTXO output index (vout). */
   vout?: number
+  /** Optional raw signed transaction bytes. */
+  rawTx?: Uint8Array
 }
 
 export interface StealthMetadata {
@@ -43,6 +45,8 @@ export interface PaymentTransfer {
   token?: Uint8Array
   stealthMetadata?: StealthMetadata
   commitment?: Uint8Array
+  /** Optional raw signed transaction bytes. */
+  rawTx?: Uint8Array
 }
 
 export interface SignatureEntry {

@@ -253,7 +253,10 @@ async function fixture(funded = true) {
   const requests: { body: Uint8Array; contentType: string }[] = []
   let phase: 'delivered' | 'retained' | 'fail' | 'undeliverable' = 'delivered'
   const fetch: CanonicalFetch = async (url, init) => {
-    if (url !== RELAY + '/message/monad/cbor' || init.method !== 'PUT')
+    if (
+      (url !== RELAY + '/message' && url !== RELAY + '/message/monad/cbor') ||
+      (init.method !== 'POST' && init.method !== 'PUT')
+    )
       throw new Error(`unexpected relay request ${init.method} ${url}`)
     if (phase === 'fail') throw new Error('relay unreachable')
     const body = new Uint8Array(init.body!)
@@ -526,7 +529,9 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     const channelId = '11'.repeat(32)
     const alicePriv = fromHex('01'.repeat(32))
     const alicePubHex = toHex(secp256k1.getPublicKey(alicePriv, true))
-    const bobPubHex = toHex(secp256k1.getPublicKey(fromHex('02'.repeat(32)), true))
+    const bobPubHex = toHex(
+      secp256k1.getPublicKey(fromHex('02'.repeat(32)), true),
+    )
 
     const allocations = [
       {

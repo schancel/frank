@@ -16,6 +16,7 @@ export * from './mta/mx-transport';
 export * from './mta/dkim-signer';
 export * from './mta/outbound-worker';
 export * from './relay/mailbox-listener';
+export * from './dns/domain-resolver';
 
 import { BlobStore, createBlobStore } from './storage/blob-store';
 import { CreditLedger } from './ledger/credit-ledger';

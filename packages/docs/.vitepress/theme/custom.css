@@ -2,7 +2,8 @@
   --vp-c-brand-1: #0284c7;
   --vp-c-brand-2: #0ea5e9;
   --vp-c-brand-3: #38bdf8;
-  --vp-font-family-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace;
+  --vp-font-family-mono: "JetBrains Mono", "Fira Code", ui-monospace,
+    SFMono-Regular, monospace;
 }
 
 .dark {
@@ -11,15 +12,50 @@
   --vp-c-brand-3: #0284c7;
 }
 
-/* Ensure Mermaid diagrams have proper spacing and high contrast */
+/* Ensure Mermaid diagrams have proper spacing, high contrast, and click-to-zoom affordance */
 .mermaid {
+  position: relative;
   display: flex;
   justify-content: center;
   margin: 2rem 0;
-  padding: 1.5rem;
+  padding: 2rem 1.5rem 1.5rem 1.5rem;
   background-color: var(--vp-c-bg-soft);
-  border-radius: 8px;
+  border: 1px solid var(--vp-c-border);
+  border-radius: 10px;
   overflow-x: auto;
+  cursor: zoom-in;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.mermaid:hover {
+  border-color: var(--vp-c-brand-2);
+  box-shadow: 0 6px 20px -4px rgba(0, 0, 0, 0.2);
+}
+
+.mermaid::after {
+  content: "🔍 Click to expand";
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: var(--vp-font-family-base);
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-elv);
+  border: 1px solid var(--vp-c-border);
+  border-radius: 6px;
+  opacity: 0.8;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease, color 0.2s ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  z-index: 5;
+}
+
+.mermaid:hover::after {
+  opacity: 1;
+  color: var(--vp-c-brand-2);
+  transform: translateY(-1px);
 }
 
 /* KaTeX formula rendering polish */

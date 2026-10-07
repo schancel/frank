@@ -1,6 +1,7 @@
 # Frank Backend Daemon Topology
 
-> [!IMPORTANT] > [`CASHWEB-PROTOCOL-SPEC.md`](/protocol/cashweb-spec) supersedes this document for human protocol
+> [!IMPORTANT]
+> [`CASHWEB-PROTOCOL-SPEC.md`](/protocol/cashweb-spec) supersedes this document for human protocol
 > semantics and wire allocation. The protobuf, route, record and exact-wire sketches below are
 > historical transition inputs and are non-wire; they MUST NOT be implemented as target formats.
 > The service ownership, storage separation and public/private reachability constraints remain

@@ -353,6 +353,23 @@ export default {
     receiveTsol: 'Recevoir des tSOL',
     sendToContact: 'Envoyer au contact',
     legacySend: 'Envoi hérité',
+    avuDialogTitle: 'Unité de Valeur Arbitraire (AVU)',
+    avuDialogSubtitle: '1 AVU ≡ 1 Kilowattheure (kWh) d’énergie physique',
+    avuDialogDesc:
+      'Frank élimine les monnaies fiduciaires de son interface principale. Les soldes sont mesurés en AVU, où 1 AVU représente 1 kWh de travail physique calculé directement à partir des réseaux de minage en preuve de travail (Proof-of-Work).',
+    avuMemeHeading: 'Refuser le mème du dollar (USD)',
+    avuMemeDesc:
+      'Le dollar américain est un mème social entretenu par les logiciels par défaut et les décrets des banques centrales. Refuser d’afficher l’USD dans les portefeuilles auto-détenus brise ce monopole psychologique et affaiblit ce mème, réancrant la valeur dans les lois invariantes de la thermodynamique.',
+    avuSupplyChainHeading: 'La base de chaque chaîne d’approvisionnement',
+    avuSupplyChainDesc:
+      'Chaque bien physique — nourriture, eau potable, logement, semi-conducteurs et transport — est fondamentalement de l’énergie organisée. En libellant la valeur en énergie physique, le pouvoir d’achat est mesuré par rapport au coût fondamental de la réalité physique.',
+    avuCpiHeading: 'Contourner l’IPC pour révéler la valeur réelle du dollar',
+    avuCpiDesc:
+      'L’indice des prix à la consommation (IPC) gouvernemental masque l’inflation par le biais de biais de substitution et d’ajustements hédoniques. Un billet de 100 $ affiche toujours « 100 $ », dissimulant son érosion. Dans les années 1930, 1 $ achetait environ 143 kWh ; aujourd’hui, il n’en achète qu’environ 12 kWh. Suivre l’AVU au fil du temps expose le taux réel de dépréciation de la monnaie fiduciaire.',
+    avuOracleLessHeading: 'Véritablement « sans oracle »',
+    avuOracleLessDesc:
+      'Contrairement aux oracles DeFi traditionnels qui dépendent de flux tiers de confiance, la difficulté de minage et les calendriers d’émission du Proof-of-Work sont vérifiés directement sur la chaîne par les nœuds complets et ancrés dans la thermodynamique concurrentielle.',
+    avuDialogClose: 'Fermer',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',

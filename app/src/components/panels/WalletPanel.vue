@@ -14,10 +14,12 @@
           <q-item-section side v-if="portfolioTotalAvu">
             <q-item-label
               caption
-              class="text-weight-medium text-primary"
+              class="text-weight-medium text-primary cursor-pointer flex items-center q-gutter-xs"
               data-test="portfolio-total-avu"
+              @click.stop="showAvuDialog = true"
             >
-              {{ portfolioTotalAvu }}
+              <span>{{ portfolioTotalAvu }}</span>
+              <q-icon name="help_outline" size="12px" />
             </q-item-label>
           </q-item-section>
         </q-item>
@@ -129,6 +131,8 @@
       @save="saveWalletName"
       @reset="resetCustomName(renameChain)"
     />
+
+    <avu-explainer-dialog v-model="showAvuDialog" />
   </div>
 </template>
 
@@ -142,6 +146,7 @@ import { useMultichainBalance } from '../../composables/useChainBalance'
 import { useWalletNames } from '../../composables/useWalletNames'
 import { openPage } from '../../utils/routes'
 import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
+import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
 import { formatAvu } from '@frank/wallet/oracle'
 
@@ -332,6 +337,7 @@ onMounted(prewarmChains)
 watch(() => accountStatus?.status, prewarmChains)
 
 const showRenameDialog = ref(false)
+const showAvuDialog = ref(false)
 const renameChain = ref<string>('monad')
 const renameDefaultName = ref('')
 

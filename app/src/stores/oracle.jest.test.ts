@@ -24,10 +24,10 @@ describe('useOracleStore (Pinia Store)', () => {
     store.stopBackgroundWorker()
   })
 
-  it('initializes with default energy basket rates and zero history', () => {
+  it('initializes with default PoW thermodynamic rates and zero history', () => {
     const store = useOracleStore()
-    expect(store.snapshot.epoch).toBe('energy-basket-v1')
-    expect(store.snapshot.rates.monad).toBeCloseTo(2.8, 2)
+    expect(store.snapshot.epoch).toBe('pow-energy-standard-v1')
+    expect(store.snapshot.rates.monad).toBeCloseTo(41.67, 1)
     expect(store.history).toEqual([])
   })
 
@@ -36,10 +36,10 @@ describe('useOracleStore (Pinia Store)', () => {
     const oneMonWei = 1_000_000_000_000_000_000n
 
     const avu = store.getAvu('monad', oneMonWei)
-    expect(avu).toBeCloseTo(2.8, 2)
+    expect(avu).toBeCloseTo(41.67, 1)
 
     const formatted = store.formatAvuAmount('monad', oneMonWei)
-    expect(formatted).toBe('≈ 2.80 AVU')
+    expect(formatted).toBe('≈ 41.67 AVU')
 
     // 0 or null returns empty string for clean UI rendering
     expect(store.formatAvuAmount('monad', 0n)).toBe('')
@@ -49,12 +49,12 @@ describe('useOracleStore (Pinia Store)', () => {
   it('refreshes snapshot and records hourly historical trend points', async () => {
     const mockFetch = oracleSdk.fetchOracleSnapshot as jest.Mock
     mockFetch.mockResolvedValue({
-      epoch: 'energy-basket-v1',
+      epoch: 'pow-energy-standard-v1',
       timestamp: Date.now(),
       basketIndex: 1.05,
       rates: {
         ...oracleSdk.DEFAULT_AVU_RATES,
-        solana: 135.0,
+        solana: 1785.0,
       },
     })
 
@@ -62,14 +62,14 @@ describe('useOracleStore (Pinia Store)', () => {
     await store.refresh()
 
     expect(mockFetch).toHaveBeenCalled()
-    expect(store.snapshot.rates.solana).toBe(135.0)
+    expect(store.snapshot.rates.solana).toBe(1785.0)
     expect(store.history.length).toBe(1)
-    expect(store.history[0].rates.solana).toBe(135.0)
+    expect(store.history[0].rates.solana).toBe(1785.0)
 
     // Verify localStorage persistence
     const saved = localStorage.getItem('frank_oracle_snapshot_v1')
     expect(saved).toBeTruthy()
-    expect(JSON.parse(saved!).rates.solana).toBe(135.0)
+    expect(JSON.parse(saved!).rates.solana).toBe(1785.0)
   })
 
   it('manages background polling worker lifecycle without duplicating intervals', () => {
@@ -84,13 +84,12 @@ describe('useOracleStore (Pinia Store)', () => {
     store.startBackgroundWorker(10000)
     expect(refreshSpy).toHaveBeenCalledTimes(1)
 
-    jest.advanceTimersByTime(25000)
-    expect(refreshSpy).toHaveBeenCalledTimes(3)
+    jest.advanceTimersByTime(10000)
+    expect(refreshSpy).toHaveBeenCalledTimes(2)
 
     store.stopBackgroundWorker()
     jest.advanceTimersByTime(20000)
-    expect(refreshSpy).toHaveBeenCalledTimes(3)
-
+    expect(refreshSpy).toHaveBeenCalledTimes(2)
     jest.useRealTimers()
   })
 })

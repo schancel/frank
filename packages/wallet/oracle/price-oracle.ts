@@ -1,6 +1,8 @@
 import {
   computeEnergyBasketIndex,
   calculateAvuRate,
+  POW_BASELINE_DOLLARS_PER_KWH,
+  AVU_PER_DOLLAR,
   AVU_ENERGY_ANCHOR_NOMINAL,
 } from './energy-basket'
 
@@ -36,16 +38,15 @@ export const DEFAULT_ANCHOR_SPOT_PRICES: Record<SupportedAsset, number> = {
 
 /**
  * Default AVU exchange rates derived from baseline anchor prices:
- * 1 AVU = 10 kWh energy equivalent ≈ $1.25 nominal anchor.
+ * 1 AVU = 1 kWh energy equivalent ≈ $0.084 nominal PoW baseline (11.90476 AVU / $).
  */
 export const DEFAULT_AVU_RATES: Record<SupportedAsset, number> = {
-  monad: DEFAULT_ANCHOR_SPOT_PRICES.monad / AVU_ENERGY_ANCHOR_NOMINAL, // 2.80 AVU
-  ecash: DEFAULT_ANCHOR_SPOT_PRICES.ecash / AVU_ENERGY_ANCHOR_NOMINAL, // 0.000028 AVU
-  solana: DEFAULT_ANCHOR_SPOT_PRICES.solana / AVU_ENERGY_ANCHOR_NOMINAL, // 120.0 AVU
-  tempo: DEFAULT_ANCHOR_SPOT_PRICES.tempo / AVU_ENERGY_ANCHOR_NOMINAL, // 0.80 AVU
-  ethereum: DEFAULT_ANCHOR_SPOT_PRICES.ethereum / AVU_ENERGY_ANCHOR_NOMINAL, // 2,080.0 AVU
-  hyperliquid:
-    DEFAULT_ANCHOR_SPOT_PRICES.hyperliquid / AVU_ENERGY_ANCHOR_NOMINAL, // 32.0 AVU
+  monad: DEFAULT_ANCHOR_SPOT_PRICES.monad * AVU_PER_DOLLAR, // ~41.67 AVU
+  ecash: DEFAULT_ANCHOR_SPOT_PRICES.ecash * AVU_PER_DOLLAR, // ~0.0004167 AVU
+  solana: DEFAULT_ANCHOR_SPOT_PRICES.solana * AVU_PER_DOLLAR, // ~1,785.71 AVU
+  tempo: DEFAULT_ANCHOR_SPOT_PRICES.tempo * AVU_PER_DOLLAR, // ~11.90 AVU
+  ethereum: DEFAULT_ANCHOR_SPOT_PRICES.ethereum * AVU_PER_DOLLAR, // ~30,952.38 AVU
+  hyperliquid: DEFAULT_ANCHOR_SPOT_PRICES.hyperliquid * AVU_PER_DOLLAR, // ~476.19 AVU
 }
 
 export interface OracleSnapshot {
@@ -64,7 +65,7 @@ export interface SwapParityResult {
 
 export function getDefaultOracleSnapshot(): OracleSnapshot {
   return {
-    epoch: 'energy-basket-v1',
+    epoch: 'pow-energy-standard-v1',
     timestamp: Date.now(),
     basketIndex: 1.0,
     rates: { ...DEFAULT_AVU_RATES },
@@ -233,7 +234,7 @@ export async function fetchOracleSnapshot(
     }
 
     return {
-      epoch: 'energy-basket-v1',
+      epoch: 'pow-energy-standard-v1',
       timestamp: Date.now(),
       basketIndex,
       rates,

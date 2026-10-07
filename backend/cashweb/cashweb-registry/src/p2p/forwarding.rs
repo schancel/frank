@@ -418,6 +418,7 @@ mod tests {
             address: vec![0x22; 20],
             commitment: vec![0x33; 32],
             vout: Some(0),
+            raw_tx: None,
         }];
 
         let bundle = ClusteredBundleForwarder::<MemoryBundleClaimStore>::build_type25_bundle(

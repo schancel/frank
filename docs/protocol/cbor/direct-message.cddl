@@ -20,6 +20,7 @@ payment-member = {
   3: bstr .size (1..128), ; derived destination/address bytes
   4: digest-32, ; exact T4 commitment verified in the transaction
   ? 5: uint .le 4294967295, ; UTXO output index (vout)
+  ? 6: bstr .size (1..16384), ; optional explicit raw signed transaction bytes
 }
 
 stealth-metadata = {
@@ -36,6 +37,7 @@ payment-transfer = {
   ? 5: bstr .size (1..128),             ; optional token contract address or token ID
   ? 6: stealth-metadata,                ; optional stealth commitment { 0: ephemeral-pubkey, 1: view-tag }
   ? 7: digest-32,                       ; optional T4 commitment
+  ? 8: bstr .size (1..16384),           ; optional raw signed transaction bytes
 }
 
 ; 33-byte compressed SEC1 secp256k1 point; encoding rules are README T3b.

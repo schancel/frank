@@ -65,6 +65,9 @@ function encodePaymentMember(p: PaymentMember): Map<number | bigint, any> {
   if (p.vout !== undefined) {
     entries.push([5, p.vout])
   }
+  if (p.rawTx !== undefined) {
+    entries.push([6, p.rawTx])
+  }
   return cborMap(entries)
 }
 

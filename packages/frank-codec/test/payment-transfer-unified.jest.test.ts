@@ -209,10 +209,10 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
             [1, sampleTxIdBytes],
             [3, sampleDestBytes],
             [4, 100n],
-            [8, 'unexpected'],
+            [9, 'unexpected'],
           ]),
         ),
-      ).toThrow(/undeclared key 8/)
+      ).toThrow(/undeclared key 9/)
     })
 
     it('rejects invalid field bounds and types', () => {
@@ -263,6 +263,19 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
           ]),
         ),
       ).toThrow(/byte string size outside 1..128/)
+
+      // rawTx too long (>16384)
+      expect(() =>
+        paymentTransfer(
+          mapOf([
+            [0, sampleNetwork],
+            [1, sampleTxIdBytes],
+            [3, sampleDestBytes],
+            [4, 100n],
+            [8, new Uint8Array(16385)],
+          ]),
+        ),
+      ).toThrow(/byte string size outside 1..16384/)
 
       // vout negative or exceeding u32
       expect(() =>
@@ -575,6 +588,41 @@ describe('unified payment transfer schema and codec (Issue #948)', () => {
       expect(() => paymentTransferToStealthItem(transfer)).toThrow(
         /must have stealthMetadata/,
       )
+    })
+
+    it('round-trips PaymentTransfer with rawTx and converts to/from PaymentMember', () => {
+      const sampleRawTx = fromHex(
+        '02f87082279f80843b9aca008502540be40082520894' +
+          'ee'.repeat(20) +
+          '830186a080c0',
+      )
+      const transfer: PaymentTransfer = {
+        networkTag: sampleNetwork,
+        txId: sampleTxIdBytes,
+        destination: sampleDestBytes,
+        value: 50000n,
+        commitment: sampleCommitmentBytes,
+        rawTx: sampleRawTx,
+      }
+
+      const encoded = encodePaymentTransfer(transfer)
+      const decoded = decodePaymentTransfer(encoded)
+      expect(decoded.rawTx).toBeDefined()
+      expect(toHex(decoded.rawTx!)).toBe(toHex(sampleRawTx))
+
+      const member = paymentTransferToMember(transfer, 5)
+      expect(member.childIndex).toBe(5)
+      expect(toHex(member.transactionId)).toBe(sampleTxId)
+      expect(member.rawTx).toBeDefined()
+      expect(toHex(member.rawTx!)).toBe(toHex(sampleRawTx))
+
+      const back = paymentTransferFromMember(member, sampleNetwork)
+      expect(back.rawTx).toBeDefined()
+      expect(toHex(back.rawTx!)).toBe(toHex(sampleRawTx))
+      expect(toHex(back.txId)).toBe(sampleTxId)
+
+      const projected = projectPaymentTransfer(transfer)
+      expect(projected.rawTx).toBe(toHex(sampleRawTx))
     })
   })
 })

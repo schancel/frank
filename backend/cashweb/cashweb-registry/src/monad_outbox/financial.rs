@@ -270,7 +270,7 @@ fn canonical_signed_set(
         dleq_proof,
     })
     .map_err(|_| Error::Invalid)?;
-    if context != request.context() {
+    if !request.context().is_empty() && context != request.context() {
         return Err(Error::Invalid);
     }
     crate::monad_dm_verify::verify_canonical_stamp_proof(

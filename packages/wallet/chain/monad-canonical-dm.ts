@@ -109,9 +109,10 @@ export interface CanonicalDirectory {
   /**
    * Looks up historical directory evidence for a subject by statement hash.
    */
-  peerHistorical?(
-    peer: { subject: string; statementHash: string },
-  ): Promise<HistoricalEvidence | undefined>
+  peerHistorical?(peer: {
+    subject: string
+    statementHash: string
+  }): Promise<HistoricalEvidence | undefined>
   /**
    * Whether this wallet's relay says it delivers to accounts that live on other relays. Absent
    * counts as no: a message for another relay is then refused before anything is funded.
@@ -379,6 +380,7 @@ export function constructStampPaymentTransfers(params: {
         ...(params.vout !== undefined ? { vout: params.vout } : {}),
         destination: fromHex(toHexStr),
         value: tx.value,
+        rawTx: raw,
       },
     ]
   })
@@ -655,8 +657,12 @@ function mailboxAuth(
   owner: CanonicalMessagingOwner,
   directory: CanonicalDirectory,
 ): CanonicalMailboxAuthParams {
-  const dirOrigin = installedCanonicalOrigin(new URL(directory.homeEndpoint).origin)
-  const ownerOrigin = installedCanonicalOrigin(new URL(owner.relayBaseUrl).origin)
+  const dirOrigin = installedCanonicalOrigin(
+    new URL(directory.homeEndpoint).origin,
+  )
+  const ownerOrigin = installedCanonicalOrigin(
+    new URL(owner.relayBaseUrl).origin,
+  )
   const dirIsLoopback =
     new URL(dirOrigin).hostname === '127.0.0.1' ||
     new URL(dirOrigin).hostname === 'localhost'
@@ -679,8 +685,8 @@ function mailboxAuth(
     relayBaseUrl: !dirIsLoopback
       ? directory.homeEndpoint
       : !ownerIsLoopback
-        ? owner.relayBaseUrl
-        : directory.homeEndpoint,
+      ? owner.relayBaseUrl
+      : directory.homeEndpoint,
     recipient: computeAddress('0x' + owner.subject).toLowerCase(),
     expectedNetworkTag: owner.installedNetworkTag,
     subject: owner.subject,
@@ -689,7 +695,6 @@ function mailboxAuth(
     fetch: directory.fetch,
   }
 }
-
 
 async function resolveHistoricalEvidence(
   directory: CanonicalDirectory,
@@ -716,7 +721,9 @@ async function resolveHistoricalEvidence(
           statementHash: ctxSenderHash,
         })
       }
-      if (ctxRecipientHash !== toHex(peer.current.evidence.hash).toLowerCase()) {
+      if (
+        ctxRecipientHash !== toHex(peer.current.evidence.hash).toLowerCase()
+      ) {
         recipientEvidence = await directory.peerHistorical({
           subject: peer.subject,
           statementHash: ctxRecipientHash,
@@ -770,7 +777,15 @@ function indexStealthItemIfRecipient(
       }
     }
   } else if (!isOutbound && projected.keyType === 2) {
-    const solWallet = (wallet as { solanaWallet?: { stealthKeyring?: { registerFromStealthItem: Function }; spendSeed?: Uint8Array } })?.solanaWallet ?? (wallet as any)
+    const solWallet =
+      (
+        wallet as {
+          solanaWallet?: {
+            stealthKeyring?: { registerFromStealthItem: Function }
+            spendSeed?: Uint8Array
+          }
+        }
+      )?.solanaWallet ?? (wallet as any)
     if (solWallet?.stealthKeyring && solWallet?.spendSeed) {
       try {
         void solWallet.stealthKeyring.registerFromStealthItem({
@@ -1114,7 +1129,8 @@ export function canonicalDirectMessages(
                       ? { type: 'text' as const, text: item.typed.text }
                       : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
                       ? projectBlackjackHandV3Item(item).item
-                      : item.kind === 'parsed' && isStealthMessageItemFrame(item)
+                      : item.kind === 'parsed' &&
+                        isStealthMessageItemFrame(item)
                       ? (() => {
                           const projected = projectStealthMessageItem(item)
                           indexStealthItemIfRecipient(
@@ -1147,7 +1163,10 @@ export function canonicalDirectMessages(
                       : BigInt(hexlify(member.value)),
                 }))
                 const paymentTransfers = deliveryTyped.payments.map(member =>
-                  constructPaymentTransferFromMember(member, deliveryTyped.network),
+                  constructPaymentTransferFromMember(
+                    member,
+                    deliveryTyped.network,
+                  ),
                 )
                 const own: ChainAddress = {
                   raw: getAddress(owner.identityAddress),
@@ -1187,7 +1206,9 @@ export function canonicalDirectMessages(
           })
         } catch (err) {
           if (active) {
-            params.onError?.(err instanceof Error ? err : new Error(String(err)))
+            params.onError?.(
+              err instanceof Error ? err : new Error(String(err)),
+            )
           }
         }
       }

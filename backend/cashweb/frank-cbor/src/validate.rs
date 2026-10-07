@@ -869,6 +869,7 @@ fn open_children(
                     address: payment.address,
                     commitment: payment.commitment,
                     vout: payment.vout,
+                    raw_tx: payment.raw_tx,
                 })
                 .collect(),
             endpoint,
@@ -904,6 +905,7 @@ fn open_children(
                     address: payment.address,
                     commitment: payment.commitment,
                     vout: payment.vout,
+                    raw_tx: payment.raw_tx,
                 })
                 .collect(),
             recipient,

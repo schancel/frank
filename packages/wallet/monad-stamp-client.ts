@@ -1399,6 +1399,7 @@ import {
   paymentCommitment,
   verifyPreviewDirectoryEvidence,
   compareBytes,
+  type Encodable,
 } from '@frank/codec'
 import {
   canonicalStampDestination,
@@ -1938,13 +1939,18 @@ export class MonadCanonicalStampClient {
       const payments = intent.members.map((member, i) => {
         const tx = Transaction.from(member.rawTx!)
         const value = getBytes('0x' + tx.value.toString(16).padStart(64, '0'))
-        return cborMap([
+        const rawBytes = member.rawTx ? getBytes(member.rawTx) : undefined
+        const entries: [number, Encodable][] = [
           [0, i],
           [1, getBytes(tx.hash!)],
           [2, value],
           [3, getBytes(tx.to!)],
           [4, paymentCommitment(digest, i)],
-        ])
+        ]
+        if (rawBytes && rawBytes.length > 0) {
+          entries.push([6, rawBytes])
+        }
+        return cborMap(entries)
       })
       const inspected = inspectCanonicalPreparedEnvelope(
         intent.prepared.payload,

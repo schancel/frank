@@ -32,6 +32,7 @@ export interface CanonicalPaymentTransfer {
   token?: string | Uint8Array
   stealthMetadata?: CanonicalStealthMetadata | StealthMetadata
   commitment?: string | Uint8Array
+  rawTx?: string | Uint8Array
 }
 
 export interface CanonicalStealthItem {
@@ -328,6 +329,10 @@ export function encodePaymentTransfer(
     transfer.commitment !== undefined
       ? parseBytes(transfer.commitment, 32, 32, 'commitment')
       : undefined
+  const rawTxBytes =
+    transfer.rawTx !== undefined
+      ? parseBytes(transfer.rawTx, 1, 16384, 'rawTx')
+      : undefined
 
   const entries: Array<[number, any]> = [
     [0, transfer.networkTag],
@@ -346,6 +351,9 @@ export function encodePaymentTransfer(
   }
   if (commitmentBytes !== undefined) {
     entries.push([7, commitmentBytes])
+  }
+  if (rawTxBytes !== undefined) {
+    entries.push([8, rawTxBytes])
   }
 
   const map = cborMap(entries)
@@ -393,6 +401,14 @@ export function projectPaymentTransfer(
     ...(transfer.commitment !== undefined
       ? { commitment: toHex(transfer.commitment) }
       : {}),
+    ...(transfer.rawTx !== undefined
+      ? {
+          rawTx:
+            transfer.rawTx instanceof Uint8Array
+              ? toHex(transfer.rawTx)
+              : transfer.rawTx,
+        }
+      : {}),
   }
 }
 
@@ -414,6 +430,7 @@ export function paymentTransferFromMember(
     destination: member.address,
     value: member.value,
     commitment: member.commitment,
+    ...(member.rawTx !== undefined ? { rawTx: member.rawTx } : {}),
   }
 }
 
@@ -433,6 +450,7 @@ export function paymentTransferToMember(
     address: transfer.destination,
     value: transfer.value,
     commitment: transfer.commitment,
+    ...(transfer.rawTx !== undefined ? { rawTx: transfer.rawTx } : {}),
   }
 }
 

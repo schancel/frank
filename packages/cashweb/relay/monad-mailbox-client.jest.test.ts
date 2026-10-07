@@ -49,10 +49,7 @@ import {
   MockMailboxRelay,
   MockStoredMessage,
 } from './monad-mailbox-mock-relay.testutil'
-import {
-  MonadStampedMessage,
-  MonadStampPayment,
-} from './monad-mailbox-compat'
+import { MonadStampedMessage, MonadStampPayment } from './monad-mailbox-compat'
 
 const BASE = 'https://relay.example.com'
 const RUST = {
@@ -1184,7 +1181,7 @@ describe('canonical private mailbox', () => {
     ).toContain('/message/monad/inbox/')
     expect(
       requests.every(([url]) =>
-        url.startsWith(auth.relayBaseUrl + '/message/monad/cbor/'),
+        url.startsWith(auth.relayBaseUrl + '/message/'),
       ),
     ).toBe(true)
     expect(
@@ -1425,7 +1422,7 @@ describe('canonical private mailbox', () => {
     expect(challenge.limit).toBe(1)
     expect(challenge.since).toBe(0)
     expect(requests[1][0]).toBe(
-      `${auth.relayBaseUrl}/message/monad/cbor/recovery/${auth.recipient}/${payloadHashHex}/${obligationIdHex}/ack`,
+      `${auth.relayBaseUrl}/message/recovery/${auth.recipient}/${payloadHashHex}/${obligationIdHex}/ack`,
     )
     expect(requests[1][1].body).toBeUndefined()
   })

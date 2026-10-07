@@ -64,6 +64,9 @@ fn encode_payment_member(p: &PaymentMember) -> CborValue {
     if let Some(vout) = p.vout {
         entries.push((5, CborValue::Int(i128::from(vout))));
     }
+    if let Some(ref raw) = p.raw_tx {
+        entries.push((6, CborValue::Bytes(raw.clone())));
+    }
     CborValue::Map(entries)
 }
 

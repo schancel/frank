@@ -195,7 +195,10 @@ export async function fixture() {
     bob = (await chain.createWallet(roots(1))) as MonadChainWalletHandle
   // Both players hold spendable money in their own account; stamps are funded from it.
   for (const wallet of [alice, bob])
-    mockBalances.set((await wallet.getReceiveAddress()).raw.toLowerCase(), START_BALANCE)
+    mockBalances.set(
+      (await wallet.getReceiveAddress()).raw.toLowerCase(),
+      START_BALANCE,
+    )
   const tuple = {
     relayId: new Uint8Array(16).fill(1),
     endpoint: RELAY + '/',
@@ -242,7 +245,10 @@ export async function fixture() {
   let clock = 1_000
   let phase: 'delivered' | 'retained' | 'fail' = 'delivered'
   const fetch: CanonicalFetch = async (url, init) => {
-    if (url !== RELAY + '/message/monad/cbor' || init.method !== 'PUT')
+    if (
+      (url !== RELAY + '/message' && url !== RELAY + '/message/monad/cbor') ||
+      (init.method !== 'POST' && init.method !== 'PUT')
+    )
       throw new Error(`unexpected relay request ${init.method} ${url}`)
     if (phase === 'fail') throw new Error('relay unreachable')
     const body = new Uint8Array(init.body!)

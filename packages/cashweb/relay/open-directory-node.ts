@@ -18,7 +18,7 @@ import {
 
 type Storage = Pick<
   OpenDirectoryDeps,
-  'openStore' | 'discardUnenrolled' | 'checkpoints' | 'pins'
+  'openStore' | 'discardUnenrolled' | 'discardStore' | 'checkpoints' | 'pins'
 >
 /** `root` is created if missing. It holds only public directory evidence, no secrets. */
 export function nodeDirectoryStorage(root: string): Storage {
@@ -52,6 +52,12 @@ export function nodeDirectoryStorage(root: string): Storage {
   return {
     openStore: ({ name, anchor, mode }) =>
       openNodeDirectoryStore({ location: location(name), anchor, mode }),
+    async discardStore(name) {
+      const path = location(name)
+      if (existsSync(path)) {
+        rmSync(path, { recursive: true, force: true })
+      }
+    },
     async discardUnenrolled(name) {
       const path = location(name)
       if (!existsSync(path)) return 'absent'

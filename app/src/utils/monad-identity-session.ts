@@ -120,6 +120,9 @@ function productionDeps(): MessagingDeps {
         } as RequestInit)) as DirectoryFetch,
       openStore: options => openBrowserDirectoryStore(options),
       discardUnenrolled: discardUnenrolledDirectoryStore,
+      discardStore: async name => {
+        await discardUnenrolledDirectoryStore(name)
+      },
       checkpoints: {
         load(key) {
           try {
@@ -363,6 +366,23 @@ export async function startMessaging(): Promise<void> {
   } catch (error) {
     console.error('[startMessaging] directory.publish failed:', error)
     failure = reasonOf(error)
+    if (failure === 'entry-refused') {
+      try {
+        const identity = (
+          wallet as unknown as { identity?: { address?: string } }
+        )?.identity
+        if (identity?.address) {
+          const network = networkOf(d.networkTag)
+          void d.directory.pins.save(`${network}:${identity.address}`, '')
+          void d.directory.pins.save(
+            `pending:${network}:${identity.address}`,
+            '',
+          )
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
   if (!failure && directory && wallet && sameAccount()) {
     try {

@@ -150,6 +150,11 @@ export interface OpenDirectoryDeps {
     mode: OpenMode
   }): Promise<DirectoryStore>
   /**
+   * Remove a store completely (used when an own account's store is corrupted or in an
+   * irrecoverable fork against the authoritative chain).
+   */
+  discardStore?(name: string): Promise<void>
+  /**
    * Remove a store that exists but never admitted anything (a first attempt that failed), so it
    * can be tried again. A store holding any admitted record must be reported `retained`.
    */
@@ -874,6 +879,77 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     } catch (error) {
       if (error instanceof OpenDirectoryError && error.code === 'expired')
         return undefined
+      if (
+        error instanceof OpenDirectoryError &&
+        (error.code === 'fork' ||
+          error.code === 'invalid' ||
+          error.code === 'rollback')
+      ) {
+        // Self-healing: Local device holds a stale, orphaned, or conflicting pin/store for our own
+        // account (e.g. from an earlier session, aborted publish, or testnet wipe). Discard the
+        // conflicting store/pin and adopt the server's authoritative entry signed by our own key.
+        console.warn(
+          `[open-directory] Healing conflicting local pin/store for ${selfAddress} (${error.code}) to adopt authoritative entry`,
+        )
+        const oldHandle = handles.get(selfSubject)
+        if (oldHandle) {
+          await drop(oldHandle)
+          try {
+            await deps.checkpoints.save(oldHandle.name, null as any)
+          } catch {
+            // ignore
+          }
+          try {
+            if (deps.discardStore) {
+              await deps.discardStore(oldHandle.name)
+            } else {
+              await deps.discardUnenrolled(oldHandle.name)
+            }
+          } catch {
+            // ignore
+          }
+        }
+        let stalePin: string | null = null
+        try {
+          stalePin = await deps.pins.load(`${network}:${selfAddress}`)
+        } catch {
+          // ignore
+        }
+        if (stalePin && /^[0-9a-f]{64}$/.test(stalePin)) {
+          const staleName = `frank-directory:${network}:${selfSubject}:${stalePin}`
+          try {
+            await deps.checkpoints.save(staleName, null as any)
+          } catch {
+            // ignore
+          }
+          try {
+            if (deps.discardStore) {
+              await deps.discardStore(staleName)
+            } else {
+              await deps.discardUnenrolled(staleName)
+            }
+          } catch {
+            // ignore
+          }
+        }
+        opening.delete(selfSubject)
+        handles.delete(selfSubject)
+        try {
+          await deps.pins.save(`${network}:${selfAddress}`, '')
+        } catch {
+          // ignore
+        }
+        try {
+          return await admit(bytes, selfExpected)
+        } catch (retryError) {
+          if (
+            retryError instanceof OpenDirectoryError &&
+            retryError.code === 'expired'
+          )
+            return undefined
+          throw retryError
+        }
+      }
       throw error
     }
   }

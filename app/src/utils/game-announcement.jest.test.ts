@@ -23,6 +23,43 @@ describe('Game Announcement Parser and Route Resolver', () => {
     transactionIndex: '0',
   }
 
+  describe('parseGameAnnouncement with native CBOR Kind 2 entry', () => {
+    it('parses native Kind 2 game entry accurately', () => {
+      const entry: ForumMessageEntry = {
+        kind: 'game',
+        gameType: 'poker',
+        tableId: 'pokerCBOR42',
+        hostAddress: '0xAlice111111111111111111111111111111111111',
+        buyInAmount: '500 chips',
+        currentPlayers: 3,
+        maxPlayers: 8,
+        botAddress: '0xBotAddress111111111111111111111111111111',
+        title: "🎮 [Texas Hold'em Poker] Table #pokerCBOR42 (3/8 players)",
+        message: 'Join the table now!',
+      }
+
+      const parsed = parseGameAnnouncement(entry, dummyMessage)
+
+      expect(parsed).not.toBeNull()
+      expect(parsed?.gameName).toBe("Texas Hold'em Poker")
+      expect(parsed?.gameType).toBe('poker')
+      expect(parsed?.tableId).toBe('pokerCBOR42')
+      expect(parsed?.hostAddress).toBe(
+        '0xAlice111111111111111111111111111111111111',
+      )
+      expect(parsed?.buyInAmount).toBe('500 chips')
+      expect(parsed?.currentPlayers).toBe(3)
+      expect(parsed?.maxPlayers).toBe(8)
+      expect(parsed?.botAddress).toBe(
+        '0xBotAddress111111111111111111111111111111',
+      )
+      expect(parsed?.actionLink).toBe(
+        '/chat/0xBotAddress111111111111111111111111111111?join=pokerCBOR42',
+      )
+      expect(parsed?.callToAction).toBe('Join Table')
+    })
+  })
+
   describe('parseGameAnnouncement with embedded JSON comment', () => {
     it('parses structured JSON metadata comment accurately', () => {
       const payload = {

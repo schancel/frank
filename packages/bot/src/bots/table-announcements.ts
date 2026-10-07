@@ -86,9 +86,32 @@ export function formatGameAnnouncementMarkdown(details: GameTableDetails): strin
 }
 
 /**
- * Builds a structured ForumMessageEntry suitable for publishing to topic feeds or forum boards.
+ * Builds a structured ForumMessageEntry (kind "game") suitable for publishing to topic feeds or forum boards.
  */
 export function buildGameAnnouncementEntry(
+  details: GameTableDetails
+): ForumMessageEntry {
+  const title = `🎮 [${details.gameName}] Table #${details.tableId} (${details.currentPlayers}/${details.maxPlayers} players)`;
+  const message = formatGameAnnouncementMarkdown(details);
+
+  return {
+    kind: "game",
+    gameType: details.gameType || "game",
+    tableId: details.tableId,
+    hostAddress: details.hostAddress,
+    buyInAmount: details.buyInAmount,
+    currentPlayers: details.currentPlayers,
+    maxPlayers: details.maxPlayers,
+    botAddress: details.botAddress,
+    title,
+    message,
+  };
+}
+
+/**
+ * Builds a legacy text post entry (kind "post") with markdown formatting.
+ */
+export function buildLegacyGameAnnouncementEntry(
   details: GameTableDetails
 ): ForumMessageEntry {
   const botTarget = details.botAddress || "";

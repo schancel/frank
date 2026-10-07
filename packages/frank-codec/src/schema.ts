@@ -943,6 +943,41 @@ export function parseForumContent(
         const p = `${path}.1[${i}]`
         if (!(entry instanceof Map)) throw bad(p, 'expected entry map')
         const kind = uintRange(entry.get(0n), `${p}.0`, 0n, U64_MAX)
+        if (kind === 2n) {
+          const e = fields(
+            entry,
+            p,
+            [0, 1, 2, 3],
+            [4, 5, 6, 7, 8, 9],
+            true,
+            allow,
+          )
+          return {
+            kind: 'game' as const,
+            gameType: tstr(e.get(1), `${p}.1`, 1, 64),
+            tableId: tstr(e.get(2), `${p}.2`, 1, 128),
+            hostAddress: tstr(e.get(3), `${p}.3`, 1, 128),
+            ...(e.has(4)
+              ? { buyInAmount: tstr(e.get(4), `${p}.4`, 0, 64) }
+              : {}),
+            ...(e.has(5)
+              ? { currentPlayers: u32ish(e.get(5), `${p}.5`, 0, 1000) }
+              : {}),
+            ...(e.has(6)
+              ? { maxPlayers: u32ish(e.get(6), `${p}.6`, 0, 1000) }
+              : {}),
+            ...(e.has(7)
+              ? { botAddress: tstr(e.get(7), `${p}.7`, 0, 128) }
+              : {}),
+            ...(e.has(8)
+              ? { title: tstr(e.get(8), `${p}.8`, 0, 512) }
+              : {}),
+            ...(e.has(9)
+              ? { message: tstr(e.get(9), `${p}.9`, 0, MAX_TEXT_STRING_BYTES) }
+              : {}),
+            unknownFields: e.unknown,
+          }
+        }
         if (kind !== 1n) {
           if (!allow) throw bad(p, 'unallocated Forum entry kind')
           return {

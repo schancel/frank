@@ -78,6 +78,23 @@
           :announcement="getAnnouncement(entry)!"
         />
       </div>
+      <div
+        v-else-if="entry.kind === 'game'"
+        class="q-ma-none q-pa-none col-grow q-ml-lg"
+      >
+        <div v-if="entry.title" class="post-title text-weight-bold">
+          {{ entry.title }}
+        </div>
+        <span
+          v-if="entry.message"
+          class="mdstyle"
+          v-html="markedMessage(entry.message)"
+        />
+        <game-announcement-card
+          v-if="getAnnouncement(entry)"
+          :announcement="getAnnouncement(entry)!"
+        />
+      </div>
     </template>
   </div>
 </template>

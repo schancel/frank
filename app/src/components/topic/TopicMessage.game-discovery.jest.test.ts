@@ -204,6 +204,46 @@ describe('TopicMessage.vue Game Table Discovery', () => {
     expect(card.text()).toContain('Players: 2/6')
   })
 
+  it('renders GameAnnouncementCard when topic message contains native CBOR kind "game" entry', () => {
+    const message: ForumMessage = {
+      poster: '0xBotAddress',
+      topic: 'games',
+      voteWeightWei: '1000000',
+      payloadDigest: '0xcbor123',
+      timestamp: new Date(),
+      visibleTimestamp: { seconds: '1', nanoseconds: 0 },
+      epoch: '0',
+      revision: '1',
+      transactionHash: '0xtx',
+      authorBurnTx: '0xburn',
+      blockNumber: '1',
+      transactionIndex: '0',
+      entries: [
+        {
+          kind: 'game',
+          gameType: 'poker',
+          tableId: 'poker99cbor',
+          hostAddress: '0xAlice111111111111111111111111111111111111',
+          buyInAmount: '200 chips',
+          currentPlayers: 4,
+          maxPlayers: 8,
+          botAddress: '0xBotAddress',
+          title: "🎮 Texas Hold'em Poker High Stakes",
+          message: 'Join the high stakes poker table now!',
+        },
+      ],
+    }
+
+    const wrapper = mountComponent(message)
+
+    const card = wrapper.findComponent(GameAnnouncementCard)
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain("Texas Hold'em Poker")
+    expect(card.text()).toContain('#poker99c')
+    expect(card.text()).toContain('Buy-in: 200 chips')
+    expect(card.text()).toContain('Players: 4/8')
+  })
+
   it('does not render GameAnnouncementCard for regular topic messages', () => {
     const message: ForumMessage = {
       poster: '0xUser',

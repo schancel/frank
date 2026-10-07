@@ -24,11 +24,14 @@ import type {
 } from './storage/monad-wallet-bundle'
 import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
 import type { MonadStealthKeyring } from './monad-stealth'
+import type { MonadIdentity } from './monad-identity'
 
 import type { AccountHygieneEngine } from './account-hygiene'
 import type { MonadAddressInventory } from './monad-address-inventory'
 
 export interface MonadWalletHandle {
+  /** Master / author identity for signing messages and topic posts. */
+  identity?: MonadIdentity
   /** Explicit typed-root capability; absent until canonical composition is activated. */
   canonicalRoles?: MonadCanonicalRoleOwner
   /** Keyring tracking discovered stealth accounts and spend keys. */

@@ -12,12 +12,18 @@ import { contentHash, topicVoteCommitment } from './hash'
 import { parseForumCursor } from './schema'
 import { compareBytes } from './semantic'
 import { defaultContext, validateFrame } from './validate'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { addressFromCompressedPubkey } from './registration'
+import { topicPostSignatureDigest } from './hash'
+import { verifyAlgorithm1 } from './verify'
 import type {
+  AccountRef,
   ForumCursor,
   ForumOperationStatus,
   ForumView,
   ParsedFrame,
   Timestamp,
+  TopicPost,
 } from './types'
 
 const fail = (message: string) =>
@@ -39,15 +45,20 @@ export interface ForumPostFields {
   parentHash?: Uint8Array
   authored: Timestamp
   entries: readonly { title?: string; url?: string; message?: string }[]
+  from?: AccountRef | Uint8Array
+  signature?: Uint8Array
 }
 
-/** Explicit schema-2 writer. The historical opaque-body writer remains schema 1. */
-export function encodeForumPost(fields: ForumPostFields): Uint8Array {
+/** Encodes the canonical CBOR body of a schema-2 topic post (authored timestamp + entries). */
+export function encodeForumPostContent(
+  authored: Timestamp,
+  entries: readonly { title?: string; url?: string; message?: string }[],
+): Uint8Array {
   const content = new Map<number, Encodable>([
-    [0, time(fields.authored)],
+    [0, time(authored)],
     [
       1,
-      fields.entries.map(entry => {
+      entries.map(entry => {
         const m = new Map<number, Encodable>([[0, 1]])
         for (const [key, value] of [
           [1, entry.title],
@@ -59,18 +70,87 @@ export function encodeForumPost(fields: ForumPostFields): Uint8Array {
       }),
     ],
   ])
+  return encodeCanonical(content)
+}
+
+/** Explicit schema-2 writer. The historical opaque-body writer remains schema 1. */
+export function encodeForumPost(fields: ForumPostFields): Uint8Array {
+  const body = encodeForumPostContent(fields.authored, fields.entries)
   const payload = new Map<number, Encodable>([
     [0, fields.network],
     [1, fields.topic],
-    [3, encodeCanonical(content)],
+    [3, body],
   ])
   if (fields.parentHash !== undefined) payload.set(2, fields.parentHash)
+  if (fields.from !== undefined) {
+    if (fields.from instanceof Uint8Array) {
+      payload.set(4, fields.from)
+    } else {
+      payload.set(
+        4,
+        new Map<number, Encodable>([
+          [0, fields.from.keyType],
+          [1, fields.from.keyBytes],
+        ]),
+      )
+    }
+  }
+  if (fields.signature !== undefined) payload.set(5, fields.signature)
   const frame = encodeFrame(
     { typeId: 9, schemaVersion: 2, minReaderVersion: 2 },
     payload,
   )
   checked(frame)
   return frame
+}
+
+/** Verifies the cryptographic author signature of a topic post and returns the 20-byte author address. */
+export function verifyTopicPostAuthor(
+  post: TopicPost<any>,
+): Uint8Array | undefined {
+  if (!post.from || !post.signature) return undefined
+  const digest = topicPostSignatureDigest(
+    post.network,
+    post.topic,
+    post.body,
+    post.parentHash,
+  )
+  try {
+    if (
+      typeof post.from === 'object' &&
+      'keyType' in post.from &&
+      post.from.keyType === 1 &&
+      post.from.keyBytes.length === 33
+    ) {
+      if (verifyAlgorithm1(digest, post.signature, post.from.keyBytes)) {
+        return addressFromCompressedPubkey(post.from.keyBytes)
+      }
+      return undefined
+    }
+    if (post.from instanceof Uint8Array && post.from.length === 33) {
+      if (verifyAlgorithm1(digest, post.signature, post.from)) {
+        return addressFromCompressedPubkey(post.from)
+      }
+      return undefined
+    }
+    if (
+      post.from instanceof Uint8Array &&
+      post.from.length === 20 &&
+      (post.signature.length === 64 || post.signature.length === 65)
+    ) {
+      const rec = post.signature.length === 65 ? post.signature[64] % 4 : 0
+      const sig = secp256k1.Signature.fromCompact(
+        post.signature.subarray(0, 64),
+      ).addRecoveryBit(rec)
+      const point = sig.recoverPublicKey(digest)
+      const addr = addressFromCompressedPubkey(point.toRawBytes(true))
+      if (compareBytes(addr, post.from) === 0) return addr
+      return undefined
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
 }
 
 /** Validates complete encoded sizes and required children; does not assert the observations are true. */

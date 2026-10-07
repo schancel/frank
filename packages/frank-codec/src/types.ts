@@ -252,6 +252,10 @@ interface TopicPostCommon {
   parentHash?: Uint8Array
   /** Opaque in version 1. */
   body: Uint8Array
+  /** Optional author identity (account-ref or 20-byte address). */
+  from?: AccountRef | Uint8Array
+  /** Optional author cryptographic signature over the post transcript digest. */
+  signature?: Uint8Array
   unknownFields: UnknownFields
 }
 

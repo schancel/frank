@@ -124,6 +124,31 @@ export function directorySignatureDigest(
   )
 }
 
+/**
+ * The 32-byte SHA-256 digest an author signs over a topic post.
+ * Binds domain 'frank/topic-post-signature/v1', network, topic, parentHash, and post body.
+ */
+export function topicPostSignatureDigest(
+  network: string,
+  topic: string,
+  body: Uint8Array,
+  parentHash?: Uint8Array,
+): Uint8Array {
+  const tBytes = utf8Encode(topic)
+  const pBytes = parentHash ?? new Uint8Array(0)
+  const payload = concat([
+    u16be(tBytes.length),
+    tBytes,
+    u16be(pBytes.length),
+    pBytes,
+    u32be(body.length),
+    body,
+  ])
+  return sha256(
+    commonTranscript('frank/topic-post-signature/v1', network, payload),
+  )
+}
+
 /** T2a: the digest of a key-transition authorization over the complete type-7 frame. */
 export function keyTransitionSignatureDigest(
   network: string,

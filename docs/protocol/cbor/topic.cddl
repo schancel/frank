@@ -18,6 +18,8 @@ topic-post = {
   1: tstr .size (1..512), ; topic name
   ? 2: digest-32, ; T1 hash of the parent type-9 frame; absent for a top-level post
   3: bstr .size (1..524288), ; opaque post body (R6)
+  ? 4: account-ref / forum-address, ; author identity (account-ref with key-type 1 or 20-byte address)
+  ? 5: bstr .size (1..512), ; author cryptographic signature over the post transcript digest
   * uint => frank-value,
 }
 

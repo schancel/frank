@@ -60,8 +60,8 @@ pub use dm::{
 pub use error::{CborPass, CodecError, ContextError, Error, ErrorCategory, ErrorStage, UsageError};
 pub use forum::{
     decode_forum_cursor, encode_forum_cursor, encode_forum_post, encode_forum_read_frame,
-    forum_cursor_from_transport, forum_cursor_to_transport, match_forum_operation,
-    ForumOperationExpectation,
+    encode_signed_forum_post, forum_cursor_from_transport, forum_cursor_to_transport,
+    match_forum_operation, verify_topic_post_author, ForumOperationExpectation,
 };
 pub use forwarding::{
     encode_forwarding_delivery, is_forwarding_delivery_frame, ForwardingDeliveryEnvelope,
@@ -71,7 +71,7 @@ pub use hash::{
     common_transcript, content_hash, content_hash_network, directory_signature_digest,
     forwarding_payload_digest, key_transition_signature_digest, message_content_digest,
     payment_commitment, recipient_payload_digest, storage_payment_commitment,
-    topic_vote_commitment,
+    topic_post_signature_digest, topic_vote_commitment,
 };
 pub use keccak::keccak256;
 pub use limits::{
@@ -83,8 +83,8 @@ pub use limits::{
 pub use model::{
     AccountRef, ChildFrame, FrameOnly, JournalFact, KeyTransition, OpaqueSection, ParsedFrame,
     PaymentMember, PaymentValue, PreviewDirectoryRoles, ProfileEntry, ProfileHeader, Projection,
-    RelayBinding, RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TypedPayload,
-    ValidationResult,
+    RelayBinding, RetainedFrame, RetentionReason, SignatureEntry, Timestamp, TopicPostAuthor,
+    TypedPayload, ValidationResult,
 };
 pub use model::{BlackjackAction, BlackjackFields, BlackjackMessageItem, BlackjackOutcome};
 pub use model::{BlackjackHandAction, BlackjackHandFields, BlackjackHandMessageItem};

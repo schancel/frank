@@ -332,3 +332,90 @@ fn the_pre_topic_corpus_behaves_identically_when_topic_types_are_listed() {
         "only {checked} pre-topic cases were compared"
     );
 }
+
+#[test]
+fn signed_topic_post_encodes_and_verifies_author() {
+    use frank_cbor::{
+        encode_signed_forum_post, verify_topic_post_author, AccountRef, ForumEntry, Timestamp,
+        TopicPostAuthor, TypedPayload,
+    };
+    use secp256k1_abc::{Message, Secp256k1, SecretKey};
+
+    let secp = Secp256k1::new();
+    let secret_key = SecretKey::from_slice(&[7u8; 32]).unwrap();
+    let public_key = secp256k1_abc::PublicKey::from_secret_key(&secp, &secret_key);
+    let pubkey_bytes = public_key.serialize();
+    let expected_address = frank_cbor::address_from_compressed_pubkey(&pubkey_bytes).unwrap();
+
+    let authored = Timestamp {
+        seconds: 1_700_000_000,
+        nanoseconds: 0,
+    };
+    let entries = vec![ForumEntry::Post {
+        title: Some("Signed Post Title".into()),
+        url: None,
+        message: Some("Signed post message content".into()),
+        unknown: vec![],
+    }];
+
+    let parse_with_default = |frame: &[u8]| match frank_cbor::validate_frame(frame, &frank_cbor::default_context()).expect("valid") {
+        ValidationResult::Parsed(parsed) => parsed,
+        _ => panic!("not parsed"),
+    };
+
+    let unsigned_frame =
+        frank_cbor::encode_forum_post("frank", "test.topic", None, &authored, &entries).unwrap();
+    let parsed_unsigned = parse_with_default(&unsigned_frame);
+    let TypedPayload::TopicPost { body, .. } = *parsed_unsigned.typed.unwrap() else {
+        panic!("expected topic post");
+    };
+
+    let digest =
+        frank_cbor::topic_post_signature_digest("frank", "test.topic", &body, None).unwrap();
+    let msg = Message::from_slice(&digest).unwrap();
+    let sig = secp.sign(&msg, &secret_key);
+    let der_sig = sig.serialize_der().to_vec();
+
+    let author = TopicPostAuthor::Account(AccountRef {
+        key_type: 1,
+        key_bytes: pubkey_bytes.to_vec(),
+    });
+
+    let signed_frame = encode_signed_forum_post(
+        "frank",
+        "test.topic",
+        None,
+        &authored,
+        &entries,
+        Some(&author),
+        Some(&der_sig),
+    )
+    .unwrap();
+
+    let parsed_signed = parse_with_default(&signed_frame);
+    let TypedPayload::TopicPost {
+        network,
+        topic,
+        body: parsed_body,
+        from,
+        signature,
+        ..
+    } = *parsed_signed.typed.unwrap()
+    else {
+        panic!("expected topic post");
+    };
+
+    assert_eq!(from, Some(author.clone()));
+    assert_eq!(signature, Some(der_sig.clone()));
+
+    let verified_addr = verify_topic_post_author(
+        &network,
+        &topic,
+        &parsed_body,
+        None,
+        &from.unwrap(),
+        &signature.unwrap(),
+    );
+    assert_eq!(verified_addr, Some(expected_address));
+}
+

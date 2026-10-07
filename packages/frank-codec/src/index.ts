@@ -45,6 +45,7 @@ export {
   forwardingPayloadDigest,
   storagePaymentCommitment,
   toHex,
+  topicPostSignatureDigest,
   topicVoteCommitment,
 } from './hash'
 export {

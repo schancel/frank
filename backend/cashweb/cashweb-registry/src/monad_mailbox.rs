@@ -19,7 +19,7 @@ pub(crate) const CHALLENGE_TTL_MS: i64 = 60_000;
 /// signature-verified recipient can consume one, so raising this does not widen the
 /// unauthenticated surface. It must exceed the app's steady polling rate (about 8.6 authenticated
 /// reads/min at a 7s interval); the per-call expiry cleanup bound (256) still exceeds it.
-pub(crate) const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 120;
+pub(crate) const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 240;
 const CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:mailbox-challenge-mac:v1\0";
 const CURSOR_MAC_DOMAIN: &[u8] = b"frank:mailbox-cursor-mac:v1\0";
 const CURSOR_VERSION: u8 = 1;
@@ -351,11 +351,12 @@ impl MonadMailboxRuntime {
         network_tag: Vec<u8>,
     ) -> Self {
         let max_concurrency = reconcile.max_concurrency.max(1);
+        let read_concurrency = reconcile.private_read_concurrency.max(1);
         Self::Enabled(Arc::new(EnabledMonadMailboxRuntime {
             transport,
             reconcile,
             outbox_permits: MonadOutboxPermitPool::new(max_concurrency),
-            private_read_permits: Arc::new(Semaphore::new(max_concurrency)),
+            private_read_permits: Arc::new(Semaphore::new(read_concurrency)),
             min_value_wei,
             network_tag,
             auth: MailboxAuthState::new(),
@@ -372,11 +373,12 @@ impl MonadMailboxRuntime {
         secret: [u8; 32],
     ) -> Self {
         let max_concurrency = reconcile.max_concurrency.max(1);
+        let read_concurrency = reconcile.private_read_concurrency.max(1);
         Self::Enabled(Arc::new(EnabledMonadMailboxRuntime {
             transport,
             reconcile,
             outbox_permits: MonadOutboxPermitPool::new(max_concurrency),
-            private_read_permits: Arc::new(Semaphore::new(max_concurrency)),
+            private_read_permits: Arc::new(Semaphore::new(read_concurrency)),
             min_value_wei,
             network_tag,
             auth: MailboxAuthState {
@@ -585,6 +587,7 @@ mod tests {
     fn private_reads_share_the_configured_nonqueueing_permit_cap() {
         let mut config = MonadOutboxReconcileConfig::default();
         config.max_concurrency = 2;
+        config.private_read_concurrency = 2;
         let runtime = MonadMailboxRuntime::enabled(
             HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
             Arc::new(config),

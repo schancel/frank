@@ -4362,6 +4362,7 @@ mod tests {
         let mut server = test_server(registry);
         let mut config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
         config.max_concurrency = 1;
+        config.private_read_concurrency = 1;
         server.monad_mailbox = crate::monad_mailbox::MonadMailboxRuntime::enabled(
             HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
             Arc::new(config),
@@ -4982,7 +4983,7 @@ mod tests {
         let server = enabled_test_server(registry);
         let recipient = recipient_address();
         let binding = inbox_binding(recipient);
-        assert_eq!(MAX_USED_CHALLENGES_PER_RECIPIENT, 120);
+        assert_eq!(MAX_USED_CHALLENGES_PER_RECIPIENT, 240);
         let mut replayable = None;
         for _ in 0..MAX_USED_CHALLENGES_PER_RECIPIENT {
             let headers = signed_private_headers(&server, &binding);

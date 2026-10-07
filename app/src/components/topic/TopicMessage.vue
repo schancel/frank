@@ -25,6 +25,8 @@
           icon="arrow_drop_up"
           padding="0"
           :aria-label="$t('a11y.voteUp')"
+          :disable="isVoting"
+          :loading="isVoting && activeVoteDirection === 1"
           @click="addVotes(1)"
           data-test="forum-vote-up"
         />
@@ -40,6 +42,8 @@
           icon="arrow_drop_down"
           padding="0"
           :aria-label="$t('a11y.voteDown')"
+          :disable="isVoting"
+          :loading="isVoting && activeVoteDirection === -1"
           @click="addVotes(-1)"
           data-test="forum-vote-down"
         />
@@ -73,7 +77,7 @@ import moment from 'moment'
 import { accountStatus } from 'src/accounts/session'
 import { activeChain } from '@frank/wallet/chain'
 import { formatCompactAmount, formatRawAmount } from 'src/utils/chain-amount'
-import { computed, defineComponent } from 'vue'
+import { computed, defineComponent, ref } from 'vue'
 import type { PropType } from 'vue'
 
 import { renderMarkdown } from '../../utils/markdown'
@@ -97,6 +101,8 @@ export default defineComponent({
   setup(props) {
     const contactStore = useContactStore()
     const forumStore = useForumStore()
+    const isVoting = ref(false)
+    const activeVoteDirection = ref(0)
     let profileStore:
       | ReturnType<typeof useProfileStore>
       | { profile: Record<string, unknown> }
@@ -113,6 +119,8 @@ export default defineComponent({
       voteTarget: null as string | null,
       voteOwnerRevision: null as number | null,
       voteOwnerStatus: null as string | null,
+      isVoting,
+      activeVoteDirection,
       getContactProfile: contactStore.getContactProfile,
       haveContact: contactStore.haveContact,
       forumStore,
@@ -154,6 +162,8 @@ export default defineComponent({
     this.voteActive = false
     if (this.timeoutId) clearTimeout(this.timeoutId)
     this.voteAmount = 0n
+    this.activeVoteDirection = 0
+    this.isVoting = false
   },
   methods: {
     markedMessage(text?: string) {
@@ -284,6 +294,7 @@ export default defineComponent({
           accountStatus.status !== status
         ) {
           this.voteAmount = 0n
+          this.activeVoteDirection = 0
           return
         }
         void (async () => {
@@ -297,7 +308,9 @@ export default defineComponent({
           // The votes being sent are consumed either way: a failed burn is reported, never
           // silently kept and re-sent on top of the next click (ticket #273).
           const satoshis = this.voteAmount
+          this.activeVoteDirection = satoshis >= 0n ? 1 : -1
           this.voteAmount = 0n
+          this.isVoting = true
           try {
             const wallet = await useActiveWallet()
             if (
@@ -305,8 +318,10 @@ export default defineComponent({
               this.message.payloadDigest !== digest ||
               accountStatus.revision !== revision ||
               accountStatus.status !== status
-            )
+            ) {
+              this.activeVoteDirection = 0
               return
+            }
             await topicStore.addOffering({
               wallet,
               payloadDigest: digest,
@@ -320,6 +335,9 @@ export default defineComponent({
             })
           } catch (err) {
             notifyBurnFailure(err, key => this.$t(key))
+          } finally {
+            this.isVoting = false
+            this.activeVoteDirection = 0
           }
         })()
       }, 1_000)

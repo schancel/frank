@@ -18,6 +18,7 @@
           padding="0"
           :aria-label="$t('a11y.voteUp')"
           :disable="isVoting"
+          :loading="isVoting && activeVoteDirection === 1"
           @click="addVotes(1)"
           data-test="forum-vote-up"
           class="vote-btn upvote-btn"
@@ -37,6 +38,7 @@
           padding="0"
           :aria-label="$t('a11y.voteDown')"
           :disable="isVoting"
+          :loading="isVoting && activeVoteDirection === -1"
           @click="addVotes(-1)"
           data-test="forum-vote-down"
           class="vote-btn downvote-btn"
@@ -279,6 +281,7 @@ export default defineComponent({
       voteAmount: 0n,
       localVoteDelta: 0n,
       isVoting: false,
+      activeVoteDirection: 0,
       votePreparationStatus: null as string | null,
       voteActive: true,
       voteTarget: null as string | null,
@@ -289,6 +292,7 @@ export default defineComponent({
   emits: ['set-topic'],
   unmounted() {
     this.voteActive = false
+    this.activeVoteDirection = 0
     if (this.timeoutId) clearTimeout(this.timeoutId)
     if (this.voteAmount !== 0n && this.voteTarget) {
       this.rollbackOptimisticVote?.({
@@ -459,6 +463,7 @@ export default defineComponent({
           }
           this.voteAmount = 0n
           this.localVoteDelta = 0n
+          this.activeVoteDirection = 0
           this.setStampPreparationStatus?.(null)
           return
         }
@@ -473,6 +478,7 @@ export default defineComponent({
           // The votes being sent are consumed either way: a failed burn is reported, never
           // silently kept and re-sent on top of the next click (ticket #273).
           const satoshis = this.voteAmount
+          this.activeVoteDirection = satoshis >= 0n ? 1 : -1
           this.voteAmount = 0n
           this.isVoting = true
           const initialStatus = this.$t('chat.stampPreparationChecking')
@@ -491,6 +497,7 @@ export default defineComponent({
                 deltaWei: satoshis,
               })
               this.localVoteDelta = 0n
+              this.activeVoteDirection = 0
               this.setStampPreparationStatus?.(null)
               return
             }
@@ -531,6 +538,7 @@ export default defineComponent({
             notifyBurnFailure(err, key => this.$t(key))
           } finally {
             this.isVoting = false
+            this.activeVoteDirection = 0
             this.votePreparationStatus = null
             this.setStampPreparationStatus?.(null)
           }

@@ -328,7 +328,7 @@ describe('AvuParityChart component', () => {
       right: 680,
       x: 0,
       y: 0,
-      toJSON: () => {},
+      toJSON: () => undefined,
     })
 
     // Initially, no drag selection box and no reset button

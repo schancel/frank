@@ -92,7 +92,7 @@ stealth-message-item = {
 ; Type 24 schema 1: Universal state channel update item
 channel-update-item = {
   0: digest-32,              ; unique channel-id
-  1: tstr .size (1..64),     ; app-id ("blackjack", "poker", "swap", "raffle")
+  1: tstr .size (1..64),     ; app-id ("swap", "dice", "game", "poker")
   2: uint .le 4294967295,    ; sequence-number (state turn / nonce)
   3: [1*8 chain-allocation], ; allocations across 1 or more networks
   4: bstr .size (0..65536),  ; app-state (opaque or nested CBOR payload)

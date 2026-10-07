@@ -209,13 +209,10 @@ encryption-suite field, emit proof-only IDs, infer a suite from nonce length, or
 unallocated number. Allocation requires exact KEM, KDF, AEAD, nonce, associated-data,
 deniability/authentication, error, and vector rules.
 
-Type18/schema1/min-reader1 is the accepted closed typed blackjack item allocation
-from #771, promoted by #782 through the existing TS/Rust codec facades. Its exact
-nine shapes and bounds are normative in [the DM schema](protocol/cbor/direct-message.cddl)
-and [the item profile](protocol/cbor/README.md). This is IMPLEMENTED-NOT-WIRED:
-#780 owns the authenticated application adapter, game/wager/fairness/replay/payout
-proof and safe retirement of production legacy writers. A codec pass grants no
-payment or game authority and does not complete #696.
+Type 24 (Universal State Channel Update) is the canonical protocol item for off-chain
+peer-to-peer state execution, atomic cross-chain swaps, and multi-network balance
+allocations across Monad, eCash, and Solana without gas friction.
+
 
 ## 5. FRNK and canonical validation
 

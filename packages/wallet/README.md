@@ -20,8 +20,8 @@ address primitives are `@frank/nakamoto`.
 
 The normal DM path and the default topic/profile writers still use protobuf
 (`application/x-protobuf`); CBOR topic writes and account registration are
-explicit opt-ins. Some key operations still use `bitcore-lib-xpi` while issue
-#257 is open. Relay encryption has not moved to `@frank/crypto-box` (issue
+explicit opt-ins. Multi-chain UTXO serialization and script validation use
+`@frank/nakamoto`. Relay encryption has not moved to `@frank/crypto-box` (issue
 #258).
 
 ## Public entry points
@@ -30,7 +30,7 @@ explicit opt-ins. Some key operations still use `bitcore-lib-xpi` while issue
 - `monad-stamp-client.ts`, `monad-stamp-stealth.ts`
 - `monad-topic-post-client.ts`, `monad-topic-vote-client.ts`, `monad-topic-tally-client.ts`
 - `chain/active-chain.ts`
-- `message-item-plugins/` for blackjack and raffle
+- `message-item-plugins/` for state channels and raffle
 
 `@frank/cashweb` is the relay and registry client underneath these modules.
 The headless demo that drives them is `@frank/bot`.

@@ -123,6 +123,17 @@ describe('Forum.vue outage and degraded states (#533)', () => {
             props: ['name'],
             template: '<i :data-icon="name">{{ name }}</i>',
           },
+          QChip: {
+            name: 'QChip',
+            props: ['removable'],
+            emits: ['remove'],
+            template:
+              '<span class="q-chip"><slot /><button v-if="removable" class="chip-remove" @click="$emit(\'remove\')">x</button></span>',
+          },
+          QSpace: {
+            name: 'QSpace',
+            template: '<span class="q-space" />',
+          },
         },
       },
     })
@@ -345,4 +356,60 @@ describe('Forum.vue outage and degraded states (#533)', () => {
 
     consoleError.mockRestore()
   })
+
+  it('renders active topic filter banner and allows clearing the filter', async () => {
+    const store = useForumStore()
+    mockFetchByTopic.mockResolvedValue([
+      makeMessage({ topic: 'news', payloadDigest: 'news-post-1' }),
+    ])
+
+    await store.refreshMessages({
+      wallet: testWallet as unknown as WalletHandle,
+      topic: '',
+    })
+    store.setSelectedTopic('news')
+
+    const wrapper = mountForum()
+    await flushPromises()
+
+    const banner = wrapper.find('[data-test="forum-active-topic-banner"]')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain('Filtered by topic')
+    expect(banner.text()).toContain('#news')
+
+    const clearBtn = banner.find('[data-test="clear-topic-filter"]')
+    expect(clearBtn.exists()).toBe(true)
+
+    await clearBtn.trigger('click')
+    await flushPromises()
+
+    expect(store.selectedTopic).toBe('')
+    expect(wrapper.find('[data-test="forum-active-topic-banner"]').exists()).toBe(false)
+  })
+
+  it('renders clear topic button in empty state when topic has no posts', async () => {
+    const store = useForumStore()
+    mockFetchByTopic.mockResolvedValue([
+      makeMessage({ topic: 'general', payloadDigest: 'gen-post-1' }),
+    ])
+
+    await store.refreshMessages({
+      wallet: testWallet as unknown as WalletHandle,
+      topic: '',
+    })
+    // Select a topic with zero posts
+    store.setSelectedTopic('empty-topic')
+
+    const wrapper = mountForum()
+    await flushPromises()
+
+    const emptyClearBtn = wrapper.find('[data-test="empty-clear-topic-filter"]')
+    expect(emptyClearBtn.exists()).toBe(true)
+
+    await emptyClearBtn.trigger('click')
+    await flushPromises()
+
+    expect(store.selectedTopic).toBe('')
+  })
 })
+

@@ -8,6 +8,37 @@
     >
       {{ stampPreparationStatus }}
     </div>
+    <div
+      v-if="selectedTopic"
+      class="row items-center q-px-sm q-py-xs q-mb-md active-topic-banner rounded-borders"
+      data-test="forum-active-topic-banner"
+    >
+      <q-icon name="filter_alt" size="18px" class="q-mr-xs text-grey-6" />
+      <span class="text-caption text-grey-7 q-mr-xs">{{ $t('forum.filteredBy') }}:</span>
+      <q-chip
+        dense
+        removable
+        size="sm"
+        color="primary"
+        text-color="white"
+        class="text-weight-bold"
+        data-test="feed-topic-chip"
+        @remove="clearFilter"
+      >
+        #{{ selectedTopic }}
+      </q-chip>
+      <q-space />
+      <q-btn
+        flat
+        dense
+        no-caps
+        size="sm"
+        color="primary"
+        :label="$t('forum.clearTopicFilter')"
+        data-test="clear-topic-filter"
+        @click="clearFilter"
+      />
+    </div>
     <template v-if="sortedPosts && sortedPosts.length > 0">
       <div
         v-if="outageStatus === 'outage'"
@@ -113,13 +144,33 @@
           </template>
         </q-banner>
       </div>
-      <div class="text-center text-grey q-pa-xl">
-        {{ $t('forum.noPosts') }}
+      <div class="column items-center text-center text-grey q-pa-xl">
+        <div class="q-mb-sm">{{ $t('forum.noPosts') }}</div>
+        <q-btn
+          v-if="selectedTopic"
+          flat
+          dense
+          no-caps
+          color="primary"
+          :label="$t('forum.clearTopicFilter')"
+          data-test="empty-clear-topic-filter"
+          @click="clearFilter"
+        />
       </div>
     </template>
     <template v-else>
-      <div class="text-center text-grey q-pa-xl">
-        {{ $t('forum.noPosts') }}
+      <div class="column items-center text-center text-grey q-pa-xl">
+        <div class="q-mb-sm">{{ $t('forum.noPosts') }}</div>
+        <q-btn
+          v-if="selectedTopic"
+          flat
+          dense
+          no-caps
+          color="primary"
+          :label="$t('forum.clearTopicFilter')"
+          data-test="empty-clear-topic-filter"
+          @click="clearFilter"
+        />
       </div>
     </template>
   </div>
@@ -205,7 +256,6 @@ export default defineComponent({
           showMessage(message.topic)
         )
       })
-      console.log(filteredMessages)
       let voteThresholdRaw: bigint
       try {
         voteThresholdRaw = activeChain.fromDisplayAmount(voteThreshold.value)
@@ -216,6 +266,11 @@ export default defineComponent({
         msg => BigInt(msg.voteWeightWei) >= voteThresholdRaw,
       )
     })
+
+    const clearFilter = async () => {
+      forumStore.setSelectedTopic('')
+      await retryRefresh()
+    }
 
     return {
       duration,
@@ -228,6 +283,7 @@ export default defineComponent({
       outageStatus,
       isRefreshing,
       retryRefresh,
+      clearFilter,
       showMessage,
       stampPreparationStatus,
     }
@@ -240,5 +296,17 @@ export default defineComponent({
   max-width: 860px;
   margin: 0 auto;
   padding: 8px 12px 32px;
+}
+
+.active-topic-banner {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+body.body--dark {
+  .active-topic-banner {
+    border-color: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+  }
 }
 </style>

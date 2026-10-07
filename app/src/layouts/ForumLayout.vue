@@ -58,6 +58,35 @@
               $t('forum.thread')
             }}</span>
           </div>
+          <div
+            v-else-if="selectedTopic"
+            class="row items-center no-wrap"
+            data-test="forum-topic-header"
+          >
+            <span
+              class="cursor-pointer"
+              @click="clearTopic"
+              data-test="forum-breadcrumb-root"
+            >{{ $t('leftDrawer.forum') }}</span>
+            <q-icon
+              name="chevron_right"
+              size="18px"
+              class="q-mx-xs text-grey-5"
+            />
+            <q-chip
+              dense
+              removable
+              size="sm"
+              color="white"
+              text-color="primary"
+              class="q-ma-none text-weight-medium cursor-pointer"
+              data-test="forum-active-topic-chip"
+              @remove="clearTopic"
+              @click="clearTopic"
+            >
+              #{{ selectedTopic }}
+            </q-chip>
+          </div>
           <span v-else>{{ $t('leftDrawer.forum') }}</span>
         </q-toolbar-title>
         <q-space />
@@ -179,15 +208,21 @@ export default defineComponent({
     navigateBack() {
       void this.$router.push('/forum')
     },
+    clearTopic() {
+      this.selectedTopic = ''
+      void this.refreshContent()
+    },
   },
   computed: {
     isThreadRoute(): boolean {
       return (
         Boolean(this.$route?.params?.payloadDigest) ||
+        Boolean(this.$route?.params?.parentDigest) ||
         Boolean(
           this.$route?.path?.startsWith('/forum/') &&
             this.$route?.path !== '/forum',
-        )
+        ) ||
+        Boolean(this.$route?.path?.startsWith('/new-post'))
       )
     },
     selectedTopic: {

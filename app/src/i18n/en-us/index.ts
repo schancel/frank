@@ -43,6 +43,9 @@ export default {
     retry: 'Retry',
     loginSignUp: 'Log in / Sign up',
     thread: 'Thread',
+    allTopics: 'All topics',
+    filteredBy: 'Filtered by topic',
+    clearTopicFilter: 'Clear filter',
   },
   chatLayout: {
     info: 'Info',

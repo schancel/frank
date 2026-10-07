@@ -56,12 +56,13 @@ jest.mock('src/stores/topics', () => ({
 }))
 const mockSetSelectedTopic = jest.fn()
 const mockRefreshMessages = jest.fn()
+const mockForumStore = {
+  selectedTopic: '',
+  setSelectedTopic: mockSetSelectedTopic,
+  refreshMessages: mockRefreshMessages,
+}
 jest.mock('src/stores/forum', () => ({
-  useForumStore: () => ({
-    selectedTopic: '',
-    setSelectedTopic: mockSetSelectedTopic,
-    refreshMessages: mockRefreshMessages,
-  }),
+  useForumStore: () => mockForumStore,
 }))
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(() => Promise.resolve({})),
@@ -283,6 +284,40 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
 
       await vm.browseForumTopic('memes')
       expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+    })
+
+    it('toggles off active topic when clicked again', async () => {
+      mockSetSelectedTopic.mockClear()
+      mockForumStore.selectedTopic = 'news'
+      const wrapper = mountDrawer()
+      const vm = wrapper.vm as any
+
+      await vm.browseForumTopic('news')
+      expect(mockSetSelectedTopic).toHaveBeenCalledWith('')
+    })
+
+    it('clears selected topic when selecting all topics', async () => {
+      mockSetSelectedTopic.mockClear()
+      mockForumStore.selectedTopic = 'news'
+      const wrapper = mountDrawer()
+      const vm = wrapper.vm as any
+
+      await vm.browseForumTopic('')
+      expect(mockSetSelectedTopic).toHaveBeenCalledWith('')
+    })
+
+    it('resets selected topic to empty when clicking forum tab', async () => {
+      mockSetSelectedTopic.mockClear()
+      mockForumStore.selectedTopic = 'news'
+      mockRoute.path = '/forum'
+      const wrapper = mountDrawer()
+      const vm = wrapper.vm as any
+
+      await vm.openForumTab()
+      expect(mockSetSelectedTopic).toHaveBeenCalledWith('')
+      expect(mockRefreshMessages).toHaveBeenCalledWith(
+        expect.objectContaining({ topic: '' }),
+      )
     })
   })
 })

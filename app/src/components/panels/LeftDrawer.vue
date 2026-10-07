@@ -153,7 +153,7 @@
           <q-list v-bind="$attrs" class="full-width">
             <q-separator />
             <q-item>
-              <q-item-section>
+              <q-item-section class="cursor-pointer" @click="browseForumTopic('')">
                 <q-item-label>{{ $t('leftDrawer.forum') }}</q-item-label>
               </q-item-section>
               <q-space />
@@ -167,12 +167,28 @@
             </q-item>
             <q-separator />
             <q-item
+              clickable
+              :active="!selectedForumTopic"
+              active-class="active-topic-item active-chat-list-item"
+              class="topic-list-item"
+              data-test="topic-all"
+              @click="browseForumTopic('')"
+            >
+              <q-item-section avatar class="topic-avatar-section">
+                <q-icon name="dynamic_feed" size="18px" />
+              </q-item-section>
+              <q-item-section class="topic-name-section">{{
+                $t('forum.allTopics')
+              }}</q-item-section>
+            </q-item>
+            <q-item
               v-for="name in discoveredTopicNames"
               :key="name"
               clickable
               :active="name === selectedForumTopic"
               active-class="active-topic-item active-chat-list-item"
               class="topic-list-item"
+              :data-test="`topic-${name}`"
               @click="browseForumTopic(name)"
             >
               <q-item-section avatar class="topic-avatar-section">
@@ -297,6 +313,22 @@ export default defineComponent({
     function openForumTab() {
       markRailNavigation()
       maybeRefreshTopics()
+      if (forum.selectedTopic) {
+        forum.setSelectedTopic('')
+        void (async () => {
+          try {
+            let wallet
+            try {
+              wallet = await useActiveWallet()
+            } catch {
+              // Public reading requires no active wallet
+            }
+            await forum.refreshMessages({ wallet, topic: '' })
+          } catch {
+            // Handled: forumStore records outageStatus; no unhandled browser exception
+          }
+        })()
+      }
       return router.push('/forum')
     }
     function openNewPost() {
@@ -343,7 +375,8 @@ export default defineComponent({
     )
     const selectedForumTopic = computed(() => forum.selectedTopic)
     async function browseForumTopic(name: string) {
-      forum.setSelectedTopic(name)
+      const targetTopic = name === forum.selectedTopic ? '' : name
+      forum.setSelectedTopic(targetTopic)
       if (route.path !== '/forum') {
         await router.push('/forum')
       }
@@ -354,7 +387,7 @@ export default defineComponent({
         } catch {
           // Public reading requires no active wallet
         }
-        await forum.refreshMessages({ wallet, topic: name })
+        await forum.refreshMessages({ wallet, topic: targetTopic })
       } catch (error) {
         // Handled: forumStore records outageStatus; no unhandled browser exception
       }

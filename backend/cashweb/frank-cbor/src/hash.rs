@@ -137,6 +137,26 @@ pub fn directory_signature_digest(
     Ok(sha256(&transcript))
 }
 
+/// The 32-byte SHA-256 digest an author signs over a topic post.
+/// Binds domain 'frank/topic-post-signature/v1', network, topic, parent_hash, and post body.
+pub fn topic_post_signature_digest(
+    network: &str,
+    topic: &str,
+    body: &[u8],
+    parent_hash: Option<&[u8]>,
+) -> Result<[u8; 32], UsageError> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&u16_be(topic.len())?);
+    payload.extend_from_slice(topic.as_bytes());
+    let parent = parent_hash.unwrap_or(&[]);
+    payload.extend_from_slice(&u16_be(parent.len())?);
+    payload.extend_from_slice(parent);
+    payload.extend_from_slice(&u32_be(body.len())?);
+    payload.extend_from_slice(body);
+    let transcript = common_transcript("frank/topic-post-signature/v1", network, &payload, &[])?;
+    Ok(sha256(&transcript))
+}
+
 /// T2a: the digest of a key-transition authorization over the complete type-7 frame.
 pub fn key_transition_signature_digest(
     network: &str,

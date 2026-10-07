@@ -5,8 +5,9 @@ import {
   topicVoteCommitment,
   topicBurnCalldata,
   matchForumView,
-  type ParsedFrame,
+  verifyTopicPostAuthor,
 } from '@frank/codec'
+import type { ParsedFrame } from '@frank/codec'
 
 export interface ForumMessageEntry {
   kind: 'post'
@@ -88,8 +89,12 @@ export function projectForumView(
     Number(view.firstVisible.seconds) * 1000 +
       view.firstVisible.nanoseconds / 1e6,
   )
+  const verifiedAuthor = verifyTopicPostAuthor(post)
+  const poster = verifiedAuthor
+    ? getAddress('0x' + toHex(verifiedAuthor))
+    : getAddress(tx.from)
   return {
-    poster: getAddress(tx.from),
+    poster,
     topic: post.topic,
     voteWeightWei: magnitude.toString(),
     entries: post.content.entries

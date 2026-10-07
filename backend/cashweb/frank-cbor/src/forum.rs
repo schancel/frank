@@ -5,7 +5,7 @@ use crate::frame::{encode_frame, EnvelopeFields, FramePayload};
 use crate::limits::MAX_FORUM_CURSOR_BYTES;
 use crate::model::{
     ForumCursor, ForumCursorPosition, ForumEntry, ForumOperationStatus, ParsedFrame, Timestamp,
-    TypedPayload, ValidationResult,
+    TopicPostAuthor, TypedPayload, ValidationResult,
 };
 use crate::schema::parse_forum_cursor;
 use crate::validate::{default_context, validate_frame};
@@ -41,6 +41,19 @@ pub fn encode_forum_post(
     parent_hash: Option<&[u8]>,
     authored: &Timestamp,
     entries: &[ForumEntry],
+) -> Result<Vec<u8>, Error> {
+    encode_signed_forum_post(network, topic, parent_hash, authored, entries, None, None)
+}
+
+/// Explicit schema-2 writer with optional signed author identity.
+pub fn encode_signed_forum_post(
+    network: &str,
+    topic: &str,
+    parent_hash: Option<&[u8]>,
+    authored: &Timestamp,
+    entries: &[ForumEntry],
+    from: Option<&TopicPostAuthor>,
+    signature: Option<&[u8]>,
 ) -> Result<Vec<u8>, Error> {
     let mut encoded = Vec::new();
     for entry in entries {
@@ -79,6 +92,19 @@ pub fn encode_forum_post(
     if let Some(parent) = parent_hash {
         fields.push((2, CborValue::Bytes(parent.to_vec())));
     }
+    if let Some(from) = from {
+        let author_val = match from {
+            TopicPostAuthor::Account(acc) => cbor_map(vec![
+                (0, CborValue::Int(acc.key_type.into())),
+                (1, CborValue::Bytes(acc.key_bytes.clone())),
+            ]),
+            TopicPostAuthor::Bytes(b) => CborValue::Bytes(b.clone()),
+        };
+        fields.push((4, author_val));
+    }
+    if let Some(sig) = signature {
+        fields.push((5, CborValue::Bytes(sig.to_vec())));
+    }
     let frame = encode_frame(
         EnvelopeFields {
             type_id: 9,
@@ -90,6 +116,35 @@ pub fn encode_forum_post(
     .map_err(usage)?;
     checked(&frame)?;
     Ok(frame)
+}
+
+/// Verifies the cryptographic author signature of a topic post and returns the 20-byte author address.
+pub fn verify_topic_post_author(
+    network: &str,
+    topic: &str,
+    body: &[u8],
+    parent_hash: Option<&[u8]>,
+    from: &TopicPostAuthor,
+    signature: &[u8],
+) -> Option<[u8; 20]> {
+    let digest = crate::hash::topic_post_signature_digest(network, topic, body, parent_hash).ok()?;
+    match from {
+        TopicPostAuthor::Account(acc) => {
+            if acc.key_type == 1 && acc.key_bytes.len() == 33 {
+                if crate::crypto::verify_algorithm_1(&digest, signature, &acc.key_bytes) {
+                    return crate::registration::address_from_compressed_pubkey(&acc.key_bytes).ok();
+                }
+            }
+        }
+        TopicPostAuthor::Bytes(b) => {
+            if b.len() == 33 {
+                if crate::crypto::verify_algorithm_1(&digest, signature, b) {
+                    return crate::registration::address_from_compressed_pubkey(b).ok();
+                }
+            }
+        }
+    }
+    None
 }
 /// Constructs and validates a complete read frame without asserting its observations are true.
 pub fn encode_forum_read_frame(type_id: u32, payload: &CborValue) -> Result<Vec<u8>, Error> {

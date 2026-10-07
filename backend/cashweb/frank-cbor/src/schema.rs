@@ -23,7 +23,7 @@ use crate::model::{
     AccountRef, BlackjackAction, BlackjackFields, BlackjackHandAction, BlackjackHandFields,
     BlackjackHandMessageItem, BlackjackHandV3Action, BlackjackHandV3Fields,
     BlackjackHandV3MessageItem, BlackjackHandV3Move, BlackjackMessageItem, BlackjackOutcome,
-    PaymentValue, PreviewDirectoryRoles, Timestamp,
+    PaymentValue, PreviewDirectoryRoles, Timestamp, TopicPostAuthor,
 };
 use crate::model::{
     ForumAggregate, ForumContent, ForumCursor, ForumCursorPosition, ForumDiscoveryEntry,
@@ -605,6 +605,8 @@ pub(crate) enum Draft {
         topic: String,
         parent_hash: Option<Vec<u8>>,
         body: Vec<u8>,
+        from: Option<TopicPostAuthor>,
+        signature: Option<Vec<u8>>,
         structured: bool,
         unknown: Vec<(u64, CborValue)>,
     },
@@ -1361,9 +1363,24 @@ pub(crate) fn parse_draft(
             })
         }
         TYPE_TOPIC_POST => {
-            let map = fields(Some(payload), path, &[0, 1, 3], &[2], true, allow)?;
+            let map = fields(Some(payload), path, &[0, 1, 3], &[2, 4, 5], true, allow)?;
             let parent_hash = if map.has(2) {
                 Some(bstr(map.get(2), &format!("{path}.2"), 32, 32)?)
+            } else {
+                None
+            };
+            let from = if map.has(4) {
+                let val = map.get(4);
+                if matches!(val, Some(CborValue::Map(_))) {
+                    Some(TopicPostAuthor::Account(account(val, &format!("{path}.4"))?))
+                } else {
+                    Some(TopicPostAuthor::Bytes(bstr(val, &format!("{path}.4"), 20, 33)?))
+                }
+            } else {
+                None
+            };
+            let signature = if map.has(5) {
+                Some(bstr(map.get(5), &format!("{path}.5"), 1, 512)?)
             } else {
                 None
             };
@@ -1372,6 +1389,8 @@ pub(crate) fn parse_draft(
                 topic: tstr(map.get(1), &format!("{path}.1"), 1, 512)?,
                 parent_hash,
                 body: bstr(map.get(3), &format!("{path}.3"), 1, MAX_TOPIC_BODY_BYTES)?,
+                from,
+                signature,
                 structured: schema.effective >= 2,
                 unknown: map.unknown,
             })

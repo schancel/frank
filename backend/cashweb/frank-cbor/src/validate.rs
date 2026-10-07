@@ -1121,6 +1121,8 @@ fn open_children(
             topic,
             parent_hash,
             body,
+            from,
+            signature,
             structured,
             unknown,
         } => {
@@ -1145,6 +1147,8 @@ fn open_children(
                 topic,
                 parent_hash,
                 body,
+                from,
+                signature,
                 content,
                 unknown,
             })

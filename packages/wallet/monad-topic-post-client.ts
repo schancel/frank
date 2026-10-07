@@ -2,14 +2,18 @@
 import { hexlify } from 'ethers'
 import {
   encodeForumPost,
+  encodeForumPostContent,
   encodeTopicPostSubmission,
   topicBurnCommitment,
   topicBurnCalldata,
+  topicPostSignatureDigest,
 } from '@frank/codec'
+import type { AccountRef } from '@frank/codec'
 import type { ForumMessageEntry } from '@frank/cashweb/types/forum'
 import type { MonadAccountTxSigner, MonadTxOverrides } from './monad-account-tx'
 import type { AcquireLeaseWhenAvailableOptions } from './monad-account-lease'
 import type { MonadWalletHandle } from './monad-wallet-handle'
+import type { MonadIdentity } from './monad-identity'
 import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import {
   assertForumAmount,
@@ -66,6 +70,7 @@ export interface SubmitTopicPostParams {
   direction: TopicVoteDirection
   burnAddress: string
   voteWeightWei: bigint
+  authorIdentity?: MonadIdentity
   overrides?: MonadTxOverrides
   waitForLease?: AcquireLeaseWhenAvailableOptions
   leaseIndex?: number
@@ -95,17 +100,36 @@ export class MonadTopicPostClient {
     if (!Number.isSafeInteger(ms))
       throw new Error('Invalid Forum authored timestamp')
     const seconds = Math.floor(ms / 1000)
+    const authored = {
+      seconds: BigInt(seconds),
+      nanoseconds: (ms - seconds * 1000) * 1_000_000,
+    }
+    const identity = params.authorIdentity ?? this.wallet.identity
+    let from: AccountRef | Uint8Array | undefined
+    let signature: Uint8Array | undefined
+    if (identity) {
+      const body = encodeForumPostContent(authored, params.entries)
+      const digest = topicPostSignatureDigest(
+        this.wallet.cborNetwork!,
+        params.topic,
+        body,
+        params.parentPostHash,
+      )
+      from = {
+        keyType: 1,
+        keyBytes: new Uint8Array(identity.compressedPubKey),
+      }
+      signature = new Uint8Array(identity.signHash(Buffer.from(digest)))
+    }
     const postFrame = encodeForumPost({
       network: this.wallet.cborNetwork!,
       topic: params.topic,
       ...(params.parentPostHash?.length
         ? { parentHash: params.parentPostHash }
         : {}),
-      authored: {
-        seconds: BigInt(seconds),
-        nanoseconds: (ms - seconds * 1000) * 1_000_000,
-      },
+      authored,
       entries: params.entries,
+      ...(from && signature ? { from, signature } : {}),
     })
     const { hash } = topicBurnCommitment(postFrame)
     const payloadHashHex = hexlify(hash).slice(2)

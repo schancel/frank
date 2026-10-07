@@ -1,15 +1,18 @@
 import { Wallet, getBytes } from 'ethers'
 import {
   encodeForumPost,
+  encodeForumPostContent,
   encodeForumReadFrame,
   contentHash,
+  topicPostSignatureDigest,
   validateFrame,
   defaultContext,
   topicVoteCommitment,
   topicBurnCalldata,
-  type Encodable,
 } from '@frank/codec'
+import type { Encodable } from '@frank/codec'
 import { projectForumView, ForumReadPolicy } from './forum-model'
+import { MonadIdentity } from './monad-identity'
 const time = (seconds: bigint) =>
   new Map<number, Encodable>([
     [0, seconds],
@@ -88,4 +91,69 @@ describe('canonical observation model', () => {
       'policy mismatch',
     )
   })
+
+  it('attributes poster to signed identity instead of tx.from', async () => {
+    const identity = MonadIdentity.generate()
+    const authored = { seconds: 100n, nanoseconds: 0 }
+    const entries = [{ title: 'Signed Post', message: 'Hello from identity' }]
+    const body = encodeForumPostContent(authored, entries)
+    const digest = topicPostSignatureDigest(policy.network, 'general', body)
+    const from = {
+      keyType: 1,
+      keyBytes: new Uint8Array(identity.compressedPubKey),
+    }
+    const signature = new Uint8Array(identity.signHash(Buffer.from(digest)))
+    const post = encodeForumPost({
+      network: policy.network,
+      topic: 'general',
+      authored,
+      entries,
+      from,
+      signature,
+    })
+    const p = validateFrame(post, defaultContext())
+    if (p.kind !== 'parsed') throw Error('post')
+    const burnWallet = new Wallet('0x' + '22'.repeat(32))
+    const hash = contentHash(p)
+    const raw = await burnWallet.signTransaction({
+      type: 2,
+      chainId: policy.chainId,
+      nonce: 0,
+      to: policy.burnAddress,
+      value: 1000000n,
+      gasLimit: 21000,
+      maxFeePerGas: 1,
+      maxPriorityFeePerGas: 1,
+      data: topicBurnCalldata('up', topicVoteCommitment(policy.network, hash)),
+    })
+    const tx = (await import('ethers')).Transaction.from(raw)
+    const bytes = encodeForumReadFrame(
+      12,
+      new Map<number, Encodable>([
+        [0, policy.network],
+        [1, post],
+        [2, getBytes(burnWallet.address)],
+        [3, getBytes(raw)],
+        [4, getBytes(tx.hash!)],
+        [5, time(100n)],
+        [6, 0],
+        [7, 0],
+        [
+          8,
+          new Map<number, Encodable>([
+            [0, false],
+            [1, getBytes('0x' + (1000000n).toString(16).padStart(64, '0'))],
+          ]),
+        ],
+        [9, 1n],
+        [10, new Uint8Array(16).fill(1)],
+      ]),
+    )
+    const viewParsed = validateFrame(bytes, defaultContext())
+    if (viewParsed.kind !== 'parsed') throw Error('view')
+    const model = projectForumView(viewParsed, policy)
+    expect(model.poster).toBe(identity.address.raw)
+    expect(model.poster).not.toBe(burnWallet.address)
+  })
 })
+

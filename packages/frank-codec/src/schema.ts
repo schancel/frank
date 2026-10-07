@@ -1244,7 +1244,7 @@ export function parseDraft(
       }
     }
     case TYPE_TOPIC_POST: {
-      const m = fields(payload, P, [0, 1, 3], [2], true, allow)
+      const m = fields(payload, P, [0, 1, 3], [2, 4, 5], true, allow)
       const body = bstr(m.get(3), `${P}.3`, 1, MAX_TOPIC_BODY_BYTES)
       const post: TopicPost<Uint8Array> = {
         type: 9,
@@ -1257,6 +1257,15 @@ export function parseDraft(
         unknownFields: m.unknown,
       }
       if (m.has(2)) post.parentHash = bstr(m.get(2), `${P}.2`, 32, 32)
+      if (m.has(4)) {
+        const raw = m.get(4)
+        if (raw instanceof Map) {
+          post.from = account(raw, `${P}.4`)
+        } else {
+          post.from = bstr(raw, `${P}.4`, 20, 33)
+        }
+      }
+      if (m.has(5)) post.signature = bstr(m.get(5), `${P}.5`, 1, 512)
       return post
     }
     case TYPE_FORUM_VIEW: {

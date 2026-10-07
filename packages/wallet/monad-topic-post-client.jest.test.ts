@@ -3,15 +3,18 @@ import {
   MonadTopicPostAbandonedError,
 } from './monad-topic-post-client'
 import axios from 'axios'
-import { Wallet, Transaction, getBytes, hexlify } from 'ethers'
+import { Wallet, Transaction, getBytes, hexlify, getAddress } from 'ethers'
 import {
   encodeFrame,
   validateFrame,
   defaultContext,
   topicBurnCommitment,
+  toHex,
+  verifyTopicPostAuthor,
 } from '@frank/codec'
 import { createInMemoryMonadWalletBundle } from './storage/monad-wallet-bundle'
 import { MonadHdKeyring } from './monad-hd-keyring'
+import { MonadIdentity } from './monad-identity'
 import type { MonadWalletHandle } from './monad-wallet-handle'
 
 jest.mock('axios')
@@ -252,3 +255,27 @@ test('pre-sign failure preserves existing unused-lease semantics with no journal
   expect(http).not.toHaveBeenCalled()
   await f.bundle.close()
 })
+
+test('signs post with wallet.identity or params.authorIdentity when present', async () => {
+  const f = await fixture()
+  const identity = MonadIdentity.generate()
+  const walletWithIdentity = {
+    ...f.wallet,
+    identity,
+  }
+  const result = await new MonadTopicPostClient(walletWithIdentity).submitTopicPost(params)
+  const parsed = validateFrame(result.postFrame, defaultContext())
+  expect(parsed.kind).toBe('parsed')
+  const postTyped = parsed.typed as any
+  expect(postTyped.from).toEqual({
+    keyType: 1,
+    keyBytes: new Uint8Array(identity.compressedPubKey),
+  })
+  expect(postTyped.signature).toBeInstanceOf(Uint8Array)
+  expect(postTyped.signature.length).toBeGreaterThan(0)
+  const verifiedAddress = verifyTopicPostAuthor(postTyped)
+  expect(verifiedAddress).toBeDefined()
+  expect(getAddress('0x' + toHex(verifiedAddress!))).toBe(identity.address.raw)
+  await f.bundle.close()
+})
+

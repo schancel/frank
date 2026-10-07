@@ -320,6 +320,15 @@ pub struct AccountRef {
     pub key_bytes: Vec<u8>,
 }
 
+/// Author identity attached to a topic post (field 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopicPostAuthor {
+    /// Account reference with key type (typically key_type 1 for secp256k1 identity).
+    Account(AccountRef),
+    /// Raw address or public key bytes (20-byte address or 33-byte compressed public key).
+    Bytes(Vec<u8>),
+}
+
 /// Timestamp. `seconds` is an i64; `nanoseconds` is `0..=999_999_999`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timestamp {
@@ -628,6 +637,10 @@ pub enum TypedPayload {
         parent_hash: Option<Vec<u8>>,
         /// Field 3, opaque.
         body: Vec<u8>,
+        /// Field 4, optional author identity (AccountRef or 20/33-byte address/pubkey).
+        from: Option<TopicPostAuthor>,
+        /// Field 5, optional cryptographic signature over the post transcript.
+        signature: Option<Vec<u8>>,
         /// Schema-discriminated content; never reconstructed from a historical opaque body.
         content: ForumPostContent,
         /// V6.3 unknown fields.

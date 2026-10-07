@@ -301,7 +301,7 @@ pub struct RegistryConf {
     /// If configured, the relay serves static files and routes unhandled paths to index.html.
     #[serde(default)]
     pub spa_dir: Option<PathBuf>,
-    /// Cluster configuration for high-availability multi-node deployments (ticket #981 / Track C).
+    /// Cluster configuration for high-availability multi-node deployments (ticket #981 / #982 / Track C).
     #[serde(default)]
     pub cluster: Option<ClusterConf>,
     /// Optional explicit username store configuration (defaults to embedded RocksDB).
@@ -343,6 +343,9 @@ pub struct ClusterConf {
     /// Core NATS pub/sub URL (e.g. `nats://nats-cluster:4222`).
     #[serde(default)]
     pub nats_url: Option<String>,
+    /// NATS cluster bus configuration table (`[registry.cluster.nats]`).
+    #[serde(default)]
+    pub nats: Option<ClusterNatsConf>,
     /// Cluster name identifier.
     #[serde(default)]
     pub cluster_name: Option<String>,
@@ -365,10 +368,41 @@ impl Default for ClusterConf {
             driver: default_cluster_driver(),
             kvrocks_url: None,
             nats_url: None,
+            nats: None,
             cluster_name: None,
             cluster_id: None,
             authority_pubkey: None,
         }
+    }
+}
+
+impl ClusterConf {
+    /// Whether Clustered Core NATS notification bus is enabled.
+    pub fn is_nats_enabled(&self) -> bool {
+        if let Some(nats) = &self.nats {
+            nats.enabled && !nats.url.is_empty()
+        } else if self.enabled {
+            self.nats_url.as_ref().map_or(false, |url| !url.is_empty())
+        } else {
+            false
+        }
+    }
+
+    /// Return the configured NATS URL if NATS is enabled.
+    pub fn nats_url(&self) -> Option<&str> {
+        if let Some(nats) = &self.nats {
+            if nats.enabled && !nats.url.is_empty() {
+                return Some(&nats.url);
+            }
+        }
+        if self.enabled {
+            if let Some(url) = &self.nats_url {
+                if !url.is_empty() {
+                    return Some(url.as_str());
+                }
+            }
+        }
+        None
     }
 }
 
@@ -387,6 +421,27 @@ impl RegistryConf {
         }
         UsernameStoreConf::RocksDb
     }
+
+    /// Whether Core NATS notification bus is enabled.
+    pub fn is_nats_enabled(&self) -> bool {
+        self.cluster.as_ref().map_or(false, |c| c.is_nats_enabled())
+    }
+
+    /// Return the configured NATS URL if NATS is enabled.
+    pub fn nats_url(&self) -> Option<&str> {
+        self.cluster.as_ref().and_then(|c| c.nats_url())
+    }
+}
+
+/// Core NATS pub/sub configuration table (`[registry.cluster.nats]`).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+pub struct ClusterNatsConf {
+    /// Whether Core NATS notification bus is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Connection URL for Ephemeral Core NATS (e.g. "nats://127.0.0.1:4222").
+    #[serde(default)]
+    pub url: String,
 }
 
 /// The open directory: accounts publish their own signed entries, the relay only names itself.
@@ -1462,10 +1517,10 @@ mod tests {
 
     use crate::{
         parse_conf, protocol_chain_registry, BitcoinProxyChainConf, BitcoinProxyConf, CashwebdConf,
-        CuratedContactConf, EvmRpcChainConf, EvmRpcConf, EvmRpcConfigError,
-        InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError, MonadMailboxMode,
-        PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf, RegistryConfigError,
-        SolanaProxyChainConf, SolanaProxyConf, SolanaProxyConfigError,
+        ClusterConf, ClusterNatsConf, CuratedContactConf, EvmRpcChainConf, EvmRpcConf,
+        EvmRpcConfigError, InitialMetadataDownloadConf, MonadMailboxConf, MonadMailboxConfigError,
+        MonadMailboxMode, PopConf, ProtocolChainFamily, ProtocolProxyCapability, RegistryConf,
+        RegistryConfigError, SolanaProxyChainConf, SolanaProxyConf, SolanaProxyConfigError,
     };
 
     #[test]
@@ -2265,6 +2320,7 @@ continuity_file = "/var/lib/frank/continuity"
             driver: "kvrocks".to_string(),
             kvrocks_url: Some("redis://kvrocks-cluster:6666".to_string()),
             nats_url: Some("nats://nats-cluster:4222".to_string()),
+            nats: None,
             cluster_name: Some("frank-prod-us".to_string()),
             cluster_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
             authority_pubkey: Some("02abcd".to_string()),
@@ -2301,5 +2357,56 @@ continuity_file = "/var/lib/frank/continuity"
             parsed.kvrocks_url.as_deref(),
             Some("redis://kvrocks-cluster:6666")
         );
+    }
+
+    #[test]
+    fn test_cluster_nats_configuration_default() {
+        let conf = ClusterConf::default();
+        assert!(!conf.is_nats_enabled());
+        assert_eq!(conf.nats_url(), None);
+    }
+
+    #[test]
+    fn test_cluster_nats_configuration_table() {
+        let toml_str = r#"
+            enabled = true
+            [nats]
+            enabled = true
+            url = "nats://127.0.0.1:4222"
+        "#;
+        let conf: ClusterConf = toml::from_str(toml_str).unwrap();
+        assert!(conf.is_nats_enabled());
+        assert_eq!(conf.nats_url(), Some("nats://127.0.0.1:4222"));
+        assert_eq!(
+            conf.nats,
+            Some(ClusterNatsConf {
+                enabled: true,
+                url: "nats://127.0.0.1:4222".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_cluster_nats_configuration_disabled() {
+        let toml_str = r#"
+            enabled = false
+            [nats]
+            enabled = false
+            url = "nats://127.0.0.1:4222"
+        "#;
+        let conf: ClusterConf = toml::from_str(toml_str).unwrap();
+        assert!(!conf.is_nats_enabled());
+        assert_eq!(conf.nats_url(), None);
+    }
+
+    #[test]
+    fn test_cluster_nats_url_shorthand() {
+        let toml_str = r#"
+            enabled = true
+            nats_url = "nats://nats-cluster:4222"
+        "#;
+        let conf: ClusterConf = toml::from_str(toml_str).unwrap();
+        assert!(conf.is_nats_enabled());
+        assert_eq!(conf.nats_url(), Some("nats://nats-cluster:4222"));
     }
 }

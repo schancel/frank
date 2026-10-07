@@ -118,6 +118,7 @@ secp256k1-abc = { git = "https://github.com/raipay/secp256k1-abc" }
 # as a direct dependency even though axum already pulls it in; same version `cashweb-http-utils`
 # depends on.
 hyper = "0.14"
+async-nats = "0.38"
 
 [build-dependencies]
 # Build Protobuf structs

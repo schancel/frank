@@ -487,6 +487,7 @@ fn server(fixture: &NativeDirectoryFixture, rpc: &str) -> super::super::server::
         bitcoin_proxy: None,
         solana_proxy: None,
         spa_dir: None,
+        event_bus: fixture.registry.event_bus().clone(),
     }
 }
 pub(crate) async fn public_p_signature(
@@ -1700,6 +1701,7 @@ async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_
         bitcoin_proxy: None,
         solana_proxy: None,
         spa_dir: None,
+        event_bus: fixture.registry.event_bus().clone(),
     };
     let account = &fixture.accounts[1];
     let recipient_hex = crate::monad_stamp_stealth::recipient_address_from_public_key(

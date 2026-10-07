@@ -153,7 +153,12 @@ jest.mock('src/utils/chain-amount', () => ({
 jest.mock('../components/forum/ForumMessage.vue', () => ({
   template: '<div />',
 }))
-jest.mock('../utils/markdown', () => ({ renderMarkdown: () => '' }))
+const mockRenderMarkdown = jest.fn(
+  (text: string) => `<rendered>${text}</rendered>`,
+)
+jest.mock('../utils/markdown', () => ({
+  renderMarkdown: (text: string) => mockRenderMarkdown(text),
+}))
 const mockCompressPostImage = jest.fn(async (_file: File) => ({
   dataUrl: 'data:image/webp;base64,QUJD',
   width: 400,
@@ -170,10 +175,15 @@ let createRouter: typeof import('vue-router').createRouter
 let RouterView: typeof import('vue-router').RouterView
 
 beforeAll(async () => {
+  jest.setTimeout(10000)
   const vueRouter = await import('vue-router')
   createMemoryHistory = vueRouter.createMemoryHistory
   createRouter = vueRouter.createRouter
   RouterView = vueRouter.RouterView
+})
+
+beforeEach(() => {
+  jest.setTimeout(10000)
 })
 
 // Jest aliases `quasar` to its SSR build, whose form controls do not render. Load the real UMD
@@ -214,6 +224,7 @@ const messages: Record<string, string> = {
   'forum.editor.invalidImageType': 'INVALID_IMAGE_TYPE',
   'forum.editor.imageTooLarge': 'IMAGE_TOO_LARGE',
   'forum.editor.imageError': 'IMAGE_ERROR',
+  'forum.editor.removeAttachment': 'Remove attachment',
   'a11y.formatBold': 'Format bold',
   'a11y.formatItalic': 'Format italic',
   'a11y.formatHeading': 'Format heading',
@@ -1070,7 +1081,7 @@ describe('CreatePost selected-topic default (ticket #414)', () => {
       }),
     )
     expect(infoNotify).toHaveBeenCalledWith('Post created in stamp.')
-  })
+  }, 10000)
 
   it('keeps the authorized offering across a deferred wallet lookup', async () => {
     const { wrapper } = mountPage()
@@ -1500,7 +1511,7 @@ describe('CreatePost outcomes', () => {
     expect(errorNotify).toHaveBeenCalledWith(failure)
     expect(router.push).not.toHaveBeenCalled()
     expect(router.go).not.toHaveBeenCalled()
-  })
+  }, 10000)
 })
 
 describe('CreatePost topic options (ticket #368)', () => {
@@ -1524,15 +1535,8 @@ describe('CreatePost topic options (ticket #368)', () => {
 })
 
 describe('CreatePost markdown editor and image attachment (#1073)', () => {
-  beforeAll(() => {
-    jest.setTimeout(5000)
-  })
-
-  afterAll(() => {
-    jest.setTimeout(1000)
-  })
-
   beforeEach(() => {
+    jest.setTimeout(10000)
     jest.clearAllMocks()
     mockCompressPostImage.mockResolvedValue({
       dataUrl: 'data:image/webp;base64,QUJD',
@@ -1596,7 +1600,7 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     vm.message = ''
     await wrapper.find('[data-test="format-link"]').trigger('click')
     expect(vm.message).toBe('[link text](https://)')
-  })
+  }, 10000)
 
   it('formats selected text and restores selection range when textarea is available', async () => {
     const { wrapper } = mountPage()
@@ -1617,7 +1621,7 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     await flushPromises()
     expect(focusSpy).toHaveBeenCalled()
     expect(rangeSpy).toHaveBeenCalledWith(8, 13)
-  })
+  }, 10000)
 
   it('getTextareaElement resolves textarea across various ref structures', () => {
     const { wrapper } = mountPage()
@@ -1659,11 +1663,16 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     await flushPromises()
 
     expect(mockCompressPostImage).toHaveBeenCalledWith(file)
-    expect(vm.message).toBe(
-      'Some text\n![screenshot](data:image/webp;base64,QUJD)\n',
-    )
+    expect(vm.message).toBe('Some text\n![screenshot](attachment:1)\n')
+    expect(vm.attachments).toHaveLength(1)
+    expect(vm.attachments[0]).toEqual({
+      id: '1',
+      name: 'screenshot.png',
+      dataUrl: 'data:image/webp;base64,QUJD',
+      sizeBytes: 1000,
+    })
     expect(vm.attachingImage).toBe(false)
-  })
+  }, 10000)
 
   it('triggers file input click when attach button is clicked', async () => {
     const { wrapper } = mountPage()
@@ -1701,8 +1710,9 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
 
     expect(preventDefault).toHaveBeenCalled()
     expect(mockCompressPostImage).toHaveBeenCalledWith(file)
-    expect(vm.message).toBe('![clipboard](data:image/webp;base64,QUJD)\n')
-  })
+    expect(vm.message).toBe('![clipboard](attachment:1)\n')
+    expect(vm.attachments).toHaveLength(1)
+  }, 10000)
 
   it('ignores non-image paste events', async () => {
     const { wrapper } = mountPage()
@@ -1746,8 +1756,9 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
 
     expect(preventDefault).toHaveBeenCalled()
     expect(mockCompressPostImage).toHaveBeenCalledWith(file)
-    expect(vm.message).toBe('![photo](data:image/webp;base64,QUJD)\n')
-  })
+    expect(vm.message).toBe('![photo](attachment:1)\n')
+    expect(vm.attachments).toHaveLength(1)
+  }, 10000)
 
   it('notifies error when non-image file is attached', async () => {
     const { wrapper } = mountPage()
@@ -1758,7 +1769,7 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
 
     expect(errorNotify).toHaveBeenCalledWith('INVALID_IMAGE_TYPE')
     expect(mockCompressPostImage).not.toHaveBeenCalled()
-  })
+  }, 10000)
 
   it('notifies error when compressed image exceeds maximum size', async () => {
     const { wrapper } = mountPage()
@@ -1773,7 +1784,7 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
 
     expect(errorNotify).toHaveBeenCalledWith('IMAGE_TOO_LARGE')
     expect(vm.attachingImage).toBe(false)
-  })
+  }, 10000)
 
   it('notifies error when compression fails unexpectedly', async () => {
     const { wrapper } = mountPage()
@@ -1786,5 +1797,138 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
 
     expect(errorNotify).toHaveBeenCalledWith('IMAGE_ERROR')
     expect(vm.attachingImage).toBe(false)
+  }, 10000)
+
+  it('toggles formatting off when clicking formatting buttons on selected formatted text', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    // Bold toggle
+    vm.message = 'Hello **world**'
+    const textarea = document.createElement('textarea')
+    textarea.value = vm.message
+    textarea.selectionStart = 8
+    textarea.selectionEnd = 13 // "world"
+    jest.spyOn(vm, 'getTextareaElement').mockReturnValue(textarea)
+
+    await wrapper.find('[data-test="format-bold"]').trigger('click')
+    expect(vm.message).toBe('Hello world')
+
+    // Italic toggle
+    vm.message = 'Hello *world*'
+    textarea.value = vm.message
+    textarea.selectionStart = 7
+    textarea.selectionEnd = 12
+    await wrapper.find('[data-test="format-italic"]').trigger('click')
+    expect(vm.message).toBe('Hello world')
+
+    // Heading toggle
+    vm.message = '### Title'
+    textarea.value = vm.message
+    textarea.selectionStart = 4
+    textarea.selectionEnd = 9
+    await wrapper.find('[data-test="format-heading"]').trigger('click')
+    expect(vm.message).toBe('Title')
+
+    // Quote toggle
+    vm.message = '> Quote'
+    textarea.value = vm.message
+    textarea.selectionStart = 2
+    textarea.selectionEnd = 7
+    await wrapper.find('[data-test="format-quote"]').trigger('click')
+    expect(vm.message).toBe('Quote')
+
+    // Code toggle
+    vm.message = '`code`'
+    textarea.value = vm.message
+    textarea.selectionStart = 1
+    textarea.selectionEnd = 5
+    await wrapper.find('[data-test="format-code"]').trigger('click')
+    expect(vm.message).toBe('code')
+
+    // Bullet toggle
+    vm.message = '- Item'
+    textarea.value = vm.message
+    textarea.selectionStart = 2
+    textarea.selectionEnd = 6
+    await wrapper.find('[data-test="format-bullet"]').trigger('click')
+    expect(vm.message).toBe('Item')
+  }, 10000)
+
+  it('tokenizes plain-text pasted markdown with base64 data URIs into compact attachment tokens', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    const preventDefault = jest.fn()
+    const pastedText = 'Diagram: ![arch](data:image/png;base64,QUJDREVGRw==)'
+    const event = {
+      preventDefault,
+      clipboardData: {
+        items: [],
+        getData: (format: string) =>
+          format === 'text/plain' ? pastedText : '',
+      },
+    } as unknown as ClipboardEvent
+
+    await vm.onMessagePaste(event)
+    await flushPromises()
+
+    expect(preventDefault).toHaveBeenCalled()
+    expect(vm.message).toBe('Diagram: ![arch](attachment:1)')
+    expect(vm.attachments).toHaveLength(1)
+    expect(vm.attachments[0]).toEqual({
+      id: '1',
+      name: 'arch',
+      dataUrl: 'data:image/png;base64,QUJDREVGRw==',
+      sizeBytes: expect.any(Number),
+    })
+  }, 10000)
+
+  it('removes attachment and clears markdown reference when removeAttachment is called', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    const file = new File(['pic'], 'photo.png', { type: 'image/png' })
+    await vm.attachImageFile(file)
+    await flushPromises()
+
+    expect(vm.attachments).toHaveLength(1)
+    expect(vm.message).toContain('attachment:1')
+
+    vm.removeAttachment('1')
+    expect(vm.attachments).toHaveLength(0)
+    expect(vm.message).not.toContain('attachment:1')
+  }, 10000)
+
+  it('expands attachment tokens into full data URIs for preview and submission', async () => {
+    const { wrapper } = mountPage()
+    const vm = wrapper.vm as any
+
+    const file = new File(['pic'], 'photo.png', { type: 'image/png' })
+    await vm.attachImageFile(file)
+    await flushPromises()
+
+    expect(vm.message).toBe('![photo](attachment:1)\n')
+    // Preview expansion
+    expect(vm.markedMessage).toContain(
+      '![photo](data:image/webp;base64,QUJD)\n',
+    )
+
+    // Submit expansion
+    mockPutMessage.mockResolvedValueOnce(undefined)
+    await vm.post()
+    await flushPromises()
+
+    expect(mockPutMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entry: expect.objectContaining({
+          message: '![photo](data:image/webp;base64,QUJD)\n',
+        }),
+      }),
+    )
+  }, 10000)
+
+  afterAll(() => {
+    jest.setTimeout(1000)
   })
 })

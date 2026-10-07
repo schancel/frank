@@ -63,6 +63,7 @@ export default {
       imageError: 'Failed to process image attachment',
       invalidImageType:
         'Please select a valid image file (PNG, JPEG, WebP, GIF)',
+      removeAttachment: 'Remove attachment',
     },
   },
   chatLayout: {

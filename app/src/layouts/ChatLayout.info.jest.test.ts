@@ -181,7 +181,10 @@ describe('ChatLayout info mode with ?info=true query', () => {
     expect(wrapper.find('[data-testid="chat-info-view"]').exists()).toBe(false)
 
     // Simulate route query watcher firing on navigation
-    await (wrapper.vm as any).$options.watch['$route.query.info'].call(wrapper.vm, 'true')
+    await (wrapper.vm as any).$options.watch['$route.query.info'].call(
+      wrapper.vm,
+      'true',
+    )
     await wrapper.vm.$nextTick()
     await flushPromises()
 
@@ -189,4 +192,3 @@ describe('ChatLayout info mode with ?info=true query', () => {
     expect(wrapper.find('[data-testid="chat-view"]').exists()).toBe(false)
   })
 })
-

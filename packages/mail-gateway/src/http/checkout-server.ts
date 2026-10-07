@@ -12,6 +12,9 @@ export interface CheckoutServerOptions {
   readonly stripeWebhookSecret?: string;
   readonly paypalWebhookId?: string;
   readonly outboundDelivery?: OutboundEmailDelivery;
+  readonly stripePaymentLinkTier1?: string;
+  readonly stripePaymentLinkTier2?: string;
+  readonly stripePaymentLinkTier3?: string;
 }
 
 export class CheckoutServer {
@@ -19,6 +22,9 @@ export class CheckoutServer {
   private readonly ledger: CreditLedger;
   private readonly stampProvider: GatewayStampProvider;
   private readonly outboundDelivery?: OutboundEmailDelivery;
+  private readonly stripePaymentLinkTier1?: string;
+  private readonly stripePaymentLinkTier2?: string;
+  private readonly stripePaymentLinkTier3?: string;
   private server?: Server;
 
   constructor(options: CheckoutServerOptions) {
@@ -26,6 +32,9 @@ export class CheckoutServer {
     this.ledger = options.ledger;
     this.stampProvider = options.stampProvider;
     this.outboundDelivery = options.outboundDelivery;
+    this.stripePaymentLinkTier1 = options.stripePaymentLinkTier1;
+    this.stripePaymentLinkTier2 = options.stripePaymentLinkTier2;
+    this.stripePaymentLinkTier3 = options.stripePaymentLinkTier3;
   }
 
   start(host: string = '127.0.0.1'): Promise<void> {
@@ -63,7 +72,7 @@ export class CheckoutServer {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
     if (req.method === 'GET' && url.pathname.startsWith('/pay/')) {
-      return this.renderPaymentPage(url.pathname.slice('/pay/'.length), res);
+      return this.renderPaymentPage(url.pathname.slice('/pay/'.length), url, res);
     }
 
     if (req.method === 'POST' && url.pathname === '/api/webhooks/stripe') {
@@ -84,6 +93,34 @@ export class CheckoutServer {
       };
       res.writeHead(health.ok ? 200 : 503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ health, balance: serializedBalance }));
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/metrics') {
+      const health = await this.stampProvider.checkHealth();
+      const balance = await this.stampProvider.getBalance();
+      const asset = this.stampProvider.assetUnit || 'MON';
+      const heldCount = this.ledger.getHeldMessageCount();
+      const pendingSpool = this.ledger.getPendingSpoolCount();
+      const lines = [
+        '# HELP gateway_up Health check status of the mail gateway (1 = up, 0 = down)',
+        '# TYPE gateway_up gauge',
+        `gateway_up ${health.ok ? 1 : 0}`,
+        '# HELP gateway_wallet_balance_wei Hot wallet balance in wei',
+        '# TYPE gateway_wallet_balance_wei gauge',
+        `gateway_wallet_balance_wei{asset="${asset}"} ${balance.raw.toString()}`,
+        '# HELP gateway_wallet_low_balance Flag indicating if wallet balance is low (1 = low, 0 = ok)',
+        '# TYPE gateway_wallet_low_balance gauge',
+        `gateway_wallet_low_balance ${balance.isLowBalance ? 1 : 0}`,
+        '# HELP gateway_held_messages_count Number of inbound emails currently held waiting for payment',
+        '# TYPE gateway_held_messages_count gauge',
+        `gateway_held_messages_count ${heldCount}`,
+        '# HELP gateway_outbound_spool_pending Number of outbound emails in delivery spool',
+        '# TYPE gateway_outbound_spool_pending gauge',
+        `gateway_outbound_spool_pending ${pendingSpool}`,
+      ];
+      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
+      res.end(lines.join('\n') + '\n');
       return;
     }
 
@@ -138,7 +175,7 @@ export class CheckoutServer {
     });
   }
 
-  private renderPaymentPage(tokenOrId: string, res: ServerResponse): void {
+  private renderPaymentPage(tokenOrId: string, url: URL, res: ServerResponse): void {
     const held = this.ledger.getHeldMessage(tokenOrId);
     if (!held) {
       res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -155,7 +192,87 @@ export class CheckoutServer {
       return;
     }
 
+    if (held.status === 'released' || url.searchParams.get('success') === 'true') {
+      const remainingBalance = this.ledger.getBalance(held.senderEmail);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Payment Confirmed — Frank Gateway</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.5; color: #1a1a1a; background: #f8fafc; padding: 2rem 1rem; margin: 0; }
+    .card { background: #ffffff; max-width: 600px; margin: 0 auto; padding: 2.5rem 2rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); text-align: center; }
+    .badge-success { display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; border-radius: 50%; background: #dcfce7; color: #16a34a; font-size: 2rem; font-weight: bold; margin-bottom: 1.25rem; }
+    h1 { color: #0f172a; margin: 0 0 0.5rem 0; font-size: 1.5rem; }
+    p { color: #475569; font-size: 0.95rem; margin: 0.5rem 0; }
+    .credit-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 1.25rem; margin: 1.5rem 0; text-align: left; }
+    .credit-box-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .credit-box-title { font-weight: 600; color: #1e40af; font-size: 0.95rem; }
+    .credit-badge { background: #2563eb; color: #ffffff; padding: 0.2rem 0.6rem; border-radius: 9999px; font-weight: 700; font-size: 0.8rem; }
+    .credit-text { color: #1e3a8a; font-size: 0.88rem; margin: 0.35rem 0; line-height: 1.4; }
+    .details { background: #f1f5f9; padding: 1.25rem; border-radius: 8px; margin: 1.5rem 0; text-align: left; font-size: 0.9rem; }
+    .details p { margin: 0.35rem 0; color: #334155; }
+    .details strong { color: #0f172a; }
+    .footer { font-size: 0.85rem; color: #64748b; margin-top: 2rem; }
+    .footer a { color: #2563eb; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge-success">✓</div>
+    <h1>Payment Confirmed</h1>
+    <p>Your email has been cryptographically stamped and delivered to <strong>${escapeHtml(held.recipientAddress)}</strong>.</p>
+    
+    <div class="credit-box">
+      <div class="credit-box-header">
+        <span class="credit-box-title">Credit Account Balance</span>
+        <span class="credit-badge">${remainingBalance} Credit${remainingBalance === 1 ? '' : 's'} Remaining</span>
+      </div>
+      <p class="credit-text">&bull; <strong>1 credit</strong> was used for this email delivery.</p>
+      <p class="credit-text">&bull; Leftover credits (${remainingBalance}) remain tied to <code>${escapeHtml(held.senderEmail)}</code>. Any future emails you send to Frank users will be delivered automatically without having to pay again.</p>
+    </div>
+
+    <div class="details">
+      <p><strong>From:</strong> ${escapeHtml(held.senderEmail)}</p>
+      <p><strong>Subject:</strong> ${escapeHtml(held.subject)}</p>
+      <p><strong>Delivery Status:</strong> Delivered to Frank Relay</p>
+    </div>
+    <p style="font-size: 0.9rem; color: #16a34a; font-weight: 500;">
+      A reply allowance has been activated. When the recipient replies, subsequent emails in this thread will be delivered automatically for free.
+    </p>
+    <div class="footer">
+      Powered by Frank Gateway &bull; <a href="https://frank.org" target="_blank">About Frank</a>
+    </div>
+  </div>
+</body>
+</html>`);
+      return;
+    }
+
+    if (held.status === 'expired' || Date.now() > held.expiresAtMs) {
+      res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Message Expired — Frank Gateway</title><style>body{font-family:system-ui,sans-serif;padding:2rem;max-width:600px;margin:auto;color:#222;}</style></head>
+        <body>
+          <h1>Message Expired</h1>
+          <p>This message held duration exceeded its 72-hour TTL and was discarded.</p>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     const hoursRemaining = Math.max(0, Math.round((held.expiresAtMs - Date.now()) / (1000 * 60 * 60)));
+    const tier1Base = this.stripePaymentLinkTier1 || 'https://buy.stripe.com/mock_tier1';
+    const tier2Base = this.stripePaymentLinkTier2 || 'https://buy.stripe.com/mock_tier2';
+    const tier3Base = this.stripePaymentLinkTier3 || 'https://buy.stripe.com/mock_tier3';
+    const tier1Url = `${tier1Base}?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
+    const tier2Url = `${tier2Base}?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
+    const tier3Url = `${tier3Base}?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
 
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -171,6 +288,8 @@ export class CheckoutServer {
     .details { background: #f1f5f9; padding: 1rem; border-radius: 8px; margin: 1.5rem 0; font-size: 0.9rem; }
     .details p { margin: 0.25rem 0; }
     .explainer { border-left: 4px solid #3b82f6; padding-left: 1rem; margin: 1.5rem 0; font-size: 0.95rem; color: #334155; }
+    .credit-info { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 1rem; margin: 1.5rem 0; font-size: 0.9rem; color: #1e40af; }
+    .credit-info strong { color: #1e3a8a; }
     .tier-list { display: grid; gap: 1rem; margin: 1.5rem 0; }
     .tier { border: 1px solid #cbd5e1; border-radius: 8px; padding: 1rem; display: flex; justify-content: space-between; align-items: center; }
     .tier-title { font-weight: 600; color: #0f172a; }
@@ -201,30 +320,42 @@ export class CheckoutServer {
       <p><strong>Subject:</strong> ${escapeHtml(held.subject)}</p>
     </div>
 
-    <p style="font-size:0.9rem; color:#475569;">
-      Choose a credit tier below to stamp and deliver this message. When the recipient replies to your email, subsequent messages in this thread are credited automatically.
-    </p>
+    <div class="credit-info">
+      <strong>How credits work:</strong><br>
+      Delivering this message will use <strong>1 credit</strong>. Any leftover credits are tied to your email (<code>${escapeHtml(held.senderEmail)}</code>) and can be used to send future emails to any Frank user without having to pay each time. Furthermore, once the recipient replies, subsequent emails in that conversation thread are completely free.
+    </div>
 
     <div class="tier-list">
       <div class="tier">
         <div>
-          <div class="tier-title">Single Delivery</div>
+          <div class="tier-title">Single Delivery (1 Credit)</div>
           <div style="font-size:0.8rem; color:#64748b;">Delivers this held message immediately</div>
         </div>
         <div style="text-align:right;">
           <div class="tier-price">$1.00</div>
-          <a class="btn" href="https://buy.stripe.com/mock_tier1?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}">Pay with Card</a>
+          <a class="btn" href="${tier1Url}">Pay with Card</a>
         </div>
       </div>
 
       <div class="tier">
         <div>
           <div class="tier-title">Conversation Pack (5 Credits)</div>
-          <div style="font-size:0.8rem; color:#64748b;">Delivers this message + 4 future messages</div>
+          <div style="font-size:0.8rem; color:#64748b;">1 credit delivers this message &bull; 4 leftover credits for future emails</div>
         </div>
         <div style="text-align:right;">
           <div class="tier-price">$3.00</div>
-          <a class="btn" href="https://buy.stripe.com/mock_tier2?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}">Pay with Card</a>
+          <a class="btn" href="${tier2Url}">Pay with Card</a>
+        </div>
+      </div>
+
+      <div class="tier">
+        <div>
+          <div class="tier-title">Volume Top-Up (20 Credits)</div>
+          <div style="font-size:0.8rem; color:#64748b;">1 credit delivers this message &bull; 19 leftover credits ($0.50/msg)</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="tier-price">$10.00</div>
+          <a class="btn" href="${tier3Url}">Pay with Card</a>
         </div>
       </div>
     </div>
@@ -315,17 +446,18 @@ export class CheckoutServer {
     credits: number;
     heldMessageId: string;
   }): Promise<void> {
-    // 1. Add purchased credits to ledger
-    this.ledger.addCredits(params.email, params.credits, params.providerTxId, params.provider);
+    const held = this.ledger.getHeldMessage(params.heldMessageId);
+    const targetEmail = held && held.senderEmail ? held.senderEmail : params.email;
 
-    // 2. Release held message
-    const held = this.ledger.releaseHeldMessage(params.heldMessageId);
-    if (!held) return;
+    // 1. Add purchased credits to ledger (idempotent duplicate check handled in addCredits)
+    this.ledger.addCredits(targetEmail, params.credits, params.providerTxId, params.provider);
 
-    // 3. Deduct credit for this release
-    this.ledger.consumeCredit(held.senderEmail, held.recipientAddress);
+    // If message does not exist or is not held (e.g. already released or expired), stop here
+    if (!held || held.status !== 'held') {
+      return;
+    }
 
-    // 4. Thread resolution for held message
+    // 2. Thread resolution for held message
     const resolvedPayload = await this.ledger.resolvePayload(held.rawRfc822);
     const parsed = parseRawRfc822(
       Buffer.from(resolvedPayload, 'utf-8'),
@@ -358,7 +490,10 @@ export class CheckoutServer {
       conversationId = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
     }
 
-    // 5. Dispatch stamped direct message to Frank relay
+    // 3. Dispatch stamped direct message to Frank relay.
+    // NOTE: We do NOT mark the message as released or deduct credit until relay dispatch
+    // has successfully resolved. If dispatch fails, the message remains 'held' and
+    // unconsumed credits remain on the sender's account to allow safe retries.
     const emailText = resolvedPayload;
     const sendResult = await this.stampProvider.stampAndSendDirectMessage({
       recipientAddress: held.recipientAddress,
@@ -366,6 +501,12 @@ export class CheckoutServer {
       conversationId,
       inReplyToFrankMessageId,
     });
+
+    // 4. Mark held message as released now that delivery is confirmed
+    this.ledger.releaseHeldMessage(held.id);
+
+    // 5. Deduct 1 credit for delivering the held email
+    this.ledger.consumeCredit(held.senderEmail, held.recipientAddress);
 
     // 6. Record thread mapping
     const frankMsgId =

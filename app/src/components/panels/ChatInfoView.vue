@@ -1,8 +1,16 @@
 <template>
   <q-page-container>
     <q-page class="chat-page-background">
-      <div class="column items-center q-py-lg q-px-md" data-test="contact-profile-card">
-        <q-avatar size="96px" rounded :style="contactColorStyle" data-test="info-contact-avatar">
+      <div
+        class="column items-center q-py-lg q-px-md"
+        data-test="contact-profile-card"
+      >
+        <q-avatar
+          size="96px"
+          rounded
+          :style="contactColorStyle"
+          data-test="info-contact-avatar"
+        >
           <img :src="profileAvatar(contact?.profile?.avatar, address)" />
         </q-avatar>
         <div

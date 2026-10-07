@@ -184,15 +184,19 @@ import { activeChain } from '@frank/wallet/chain'
 import { formatRawAmount } from 'src/utils/chain-amount'
 import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 import {
+  isKnownOwnAddress,
   sameCanonicalAddress,
   useReactiveOwnCanonicalAddress,
+  useReactiveOwnAddresses,
 } from 'src/utils/own-address'
 
 export default defineComponent({
   setup() {
     const forumStore = useForumStore()
     const contactStore = useContactStore()
-    let profileStore: ReturnType<typeof useProfileStore> | { profile: Record<string, unknown> }
+    let profileStore:
+      | ReturnType<typeof useProfileStore>
+      | { profile: Record<string, unknown> }
     try {
       profileStore = useProfileStore()
     } catch {
@@ -203,7 +207,11 @@ export default defineComponent({
     return {
       storeMessages: messages,
       getMessage: forumStore.getMessage,
-      isOwnPost: forumStore.isOwnPost,
+      forumStore,
+      isOwnPost: (digest?: string) =>
+        typeof (forumStore as any)?.isOwnPost === 'function'
+          ? (forumStore as any).isOwnPost(digest)
+          : false,
       topics,
       getContactProfile: contactStore.getContactProfile,
       haveContact: contactStore.haveContact,
@@ -215,6 +223,7 @@ export default defineComponent({
       myProfile: profileStore,
       profileStore,
       ownAddress: useReactiveOwnCanonicalAddress(),
+      ownAddresses: useReactiveOwnAddresses(),
     }
   },
   props: {
@@ -301,18 +310,21 @@ export default defineComponent({
     isAuthorMe(message?: MessageWithReplies): boolean {
       const msg = message ?? this.message
       if (!msg) return false
-      if (
-        (msg as any).isOwn ||
-        (msg as any).isLocal ||
-        (msg as any).own
-      ) {
+      if ((msg as any).isOwn || (msg as any).isLocal || (msg as any).own) {
         return true
       }
-      if (msg.payloadDigest && this.isOwnPost?.(msg.payloadDigest)) {
+      if (
+        msg.payloadDigest &&
+        (this.isOwnPost?.(msg.payloadDigest) ||
+          this.forumStore?.isOwnPost?.(msg.payloadDigest))
+      ) {
         return true
       }
       const poster = msg.poster
       if (poster) {
+        if (isKnownOwnAddress(poster, this.ownAddresses)) {
+          return true
+        }
         const own =
           typeof this.ownAddress === 'object' &&
           this.ownAddress !== null &&

@@ -93,6 +93,7 @@ impl RegistryTestInstance {
             bitcoin_proxy: None,
             solana_proxy: None,
             spa_dir: None,
+            event_bus: registry.event_bus().clone(),
         };
 
         let router = server.into_router();

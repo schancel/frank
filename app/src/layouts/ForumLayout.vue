@@ -67,7 +67,8 @@
               class="cursor-pointer"
               @click="clearTopic"
               data-test="forum-breadcrumb-root"
-            >{{ $t('leftDrawer.forum') }}</span>
+              >{{ $t('leftDrawer.forum') }}</span
+            >
             <q-icon
               name="chevron_right"
               size="18px"

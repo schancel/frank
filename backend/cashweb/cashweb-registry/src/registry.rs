@@ -90,6 +90,8 @@ pub struct Registry {
     net: Net,
     /// Optional clustered or custom username uniqueness store (ticket #981 / Track C).
     username_store: Option<Arc<dyn crate::store::directory_usernames::UsernameStore>>,
+    /// Notification event bus for real-time relay message fan-out (ticket #982 / track C).
+    event_bus: Arc<dyn crate::events::RelayEventBus>,
 }
 
 /// Result of putting metadata into the registry.
@@ -216,9 +218,25 @@ pub enum RegistryError {
 use self::RegistryError::*;
 
 impl Registry {
-    /// Construct new [`Registry`] with default embedded RocksDB username store.
+    /// Construct new [`Registry`] with default in-process event bus and embedded RocksDB username store.
     pub fn new(db: Db, chain_adapter: Arc<dyn ChainAdapter>, net: Net) -> Self {
-        Self::new_with_username_store(db, chain_adapter, net, None)
+        Self::new_with_options(
+            db,
+            chain_adapter,
+            net,
+            Arc::new(crate::events::StandaloneEventBus::new()),
+            None,
+        )
+    }
+
+    /// Construct new [`Registry`] with a custom notification event bus.
+    pub fn new_with_event_bus(
+        db: Db,
+        chain_adapter: Arc<dyn ChainAdapter>,
+        net: Net,
+        event_bus: Arc<dyn crate::events::RelayEventBus>,
+    ) -> Self {
+        Self::new_with_options(db, chain_adapter, net, event_bus, None)
     }
 
     /// Construct new [`Registry`] with an optional custom or clustered [`crate::store::directory_usernames::UsernameStore`].
@@ -226,6 +244,23 @@ impl Registry {
         db: Db,
         chain_adapter: Arc<dyn ChainAdapter>,
         net: Net,
+        username_store: Option<Arc<dyn crate::store::directory_usernames::UsernameStore>>,
+    ) -> Self {
+        Self::new_with_options(
+            db,
+            chain_adapter,
+            net,
+            Arc::new(crate::events::StandaloneEventBus::new()),
+            username_store,
+        )
+    }
+
+    /// Construct new [`Registry`] with custom event bus and username store options.
+    pub fn new_with_options(
+        db: Db,
+        chain_adapter: Arc<dyn ChainAdapter>,
+        net: Net,
+        event_bus: Arc<dyn crate::events::RelayEventBus>,
         username_store: Option<Arc<dyn crate::store::directory_usernames::UsernameStore>>,
     ) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
@@ -239,7 +274,13 @@ impl Registry {
             chain_adapter,
             net,
             username_store,
+            event_bus,
         }
+    }
+
+    /// Access the notification event bus.
+    pub fn event_bus(&self) -> &Arc<dyn crate::events::RelayEventBus> {
+        &self.event_bus
     }
 
     /// Open the public admission facade without exposing the registry database.
@@ -1609,16 +1650,11 @@ mod tests {
         instance.wait_for_ready()?;
         let bitcoind = instance.rpc_client();
 
-        let registry = Registry {
-            forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
-            canonical_dm: crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
-            financial_admission: Default::default(),
+        let registry = Registry::new(
             db,
-            ecc: EccSecp256k1::default(),
-            chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
-            net: Net::Regtest,
-            username_store: None,
-        };
+            Arc::new(LotusAdapter::new(bitcoind.clone())),
+            Net::Regtest,
+        );
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
         let pubkey = registry.ecc.derive_pubkey(&seckey);
@@ -2008,16 +2044,11 @@ mod tests {
         instance.wait_for_ready()?;
         let bitcoind = instance.rpc_client();
 
-        let registry = Registry {
-            forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
-            canonical_dm: crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
-            financial_admission: Default::default(),
+        let registry = Registry::new(
             db,
-            ecc: EccSecp256k1::default(),
-            chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
-            net: Net::Regtest,
-            username_store: None,
-        };
+            Arc::new(LotusAdapter::new(bitcoind.clone())),
+            Net::Regtest,
+        );
 
         // Generate a few anyone can spend coins
         let anyone_script = Script::from_slice(&[0x51]);
@@ -2167,16 +2198,11 @@ mod tests {
         instance.wait_for_ready()?;
         let bitcoind = instance.rpc_client();
 
-        let registry = Registry {
-            forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
-            canonical_dm: crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
-            financial_admission: Default::default(),
+        let registry = Registry::new(
             db,
-            ecc: EccSecp256k1::default(),
-            chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
-            net: Net::Regtest,
-            username_store: None,
-        };
+            Arc::new(LotusAdapter::new(bitcoind.clone())),
+            Net::Regtest,
+        );
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
         let pubkey = registry.ecc.derive_pubkey(&seckey);
@@ -2495,16 +2521,7 @@ mod tests {
     fn test_monad_profile_registry(name: &str) -> (tempdir::TempDir, Registry) {
         let tempdir = tempdir::TempDir::new(name).unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
-        let registry = Registry {
-            forum: crate::forum::Owner::new(db.owned_path().to_path_buf()),
-            canonical_dm: crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf()),
-            financial_admission: Default::default(),
-            db,
-            ecc: EccSecp256k1::default(),
-            chain_adapter: Arc::new(NeverCalledChainAdapter),
-            net: Net::Regtest,
-            username_store: None,
-        };
+        let registry = Registry::new(db, Arc::new(NeverCalledChainAdapter), Net::Regtest);
         (tempdir, registry)
     }
 

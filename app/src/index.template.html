@@ -1,12 +1,24 @@
 <!DOCTYPE html>
 <html>
   <head>
-    <title><%= typeof productName !== 'undefined' && productName ? productName : 'Signet' %></title>
+    <title>
+      <%= typeof productName !== 'undefined' && productName ? productName :
+      'Signet' %>
+    </title>
 
     <meta charset="utf-8" />
-    <meta name="description" content="<%= typeof productDescription !== 'undefined' && productDescription ? productDescription : 'A Monad powered internet cryptomessenger' %>" />
-    <meta property="og:title" content="<%= typeof productName !== 'undefined' && productName ? productName : 'Signet' %>" />
-    <meta property="og:description" content="<%= typeof productDescription !== 'undefined' && productDescription ? productDescription : 'A Monad powered internet cryptomessenger' %>" />
+    <meta
+      name="description"
+      content="<%= typeof productDescription !== 'undefined' && productDescription ? productDescription : 'A Monad powered internet cryptomessenger' %>"
+    />
+    <meta
+      property="og:title"
+      content="<%= typeof productName !== 'undefined' && productName ? productName : 'Signet' %>"
+    />
+    <meta
+      property="og:description"
+      content="<%= typeof productDescription !== 'undefined' && productDescription ? productDescription : 'A Monad powered internet cryptomessenger' %>"
+    />
     <meta property="og:site_name" content="Signet" />
     <meta name="application-name" content="Signet" />
     <meta name="apple-mobile-web-app-title" content="Signet" />

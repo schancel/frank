@@ -575,6 +575,32 @@ export class CreditLedger {
     return this.mapHeldMessageRow(row);
   }
 
+  getHeldMessageCount(status: string = 'held'): number {
+    try {
+      if (this.rawDb) {
+        const stmt = this.rawDb.prepare('SELECT COUNT(*) as count FROM held_messages WHERE status = ?');
+        const row = stmt.get(status) as any;
+        return Number(row?.count ?? 0);
+      }
+      return 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  getPendingSpoolCount(): number {
+    try {
+      if (this.rawDb) {
+        const stmt = this.rawDb.prepare('SELECT COUNT(*) as count FROM outbound_spool WHERE status = ?');
+        const row = stmt.get('pending') as any;
+        return Number(row?.count ?? 0);
+      }
+      return 0;
+    } catch {
+      return 0;
+    }
+  }
+
   async findLatestHeldMessageAsync(
     senderEmail: string,
     recipientAddress?: string

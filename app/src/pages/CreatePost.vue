@@ -86,11 +86,134 @@
         card's own width -- so it went side-by-side even when the card itself was narrow, squeezing
         both halves uncomfortably. Stacked vertically instead, always, regardless of viewport. -->
         <q-card-section class="col-12 q-pa-none">
+          <div
+            class="post-editor-toolbar row items-center q-gutter-xs q-pt-sm q-pb-xs"
+            role="toolbar"
+            :aria-label="$t('forum.editor.toolbar')"
+          >
+            <q-btn
+              flat
+              dense
+              round
+              size="sm"
+              icon="format_bold"
+              :aria-label="$t('a11y.formatBold')"
+              data-test="format-bold"
+              @mousedown.prevent
+              @click="applyFormat('bold')"
+            >
+              <q-tooltip>{{ $t('forum.editor.bold') }}</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              size="sm"
+              icon="format_italic"
+              :aria-label="$t('a11y.formatItalic')"
+              data-test="format-italic"
+              @mousedown.prevent
+              @click="applyFormat('italic')"
+            >
+              <q-tooltip>{{ $t('forum.editor.italic') }}</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              size="sm"
+              icon="title"
+              :aria-label="$t('a11y.formatHeading')"
+              data-test="format-heading"
+              @mousedown.prevent
+              @click="applyFormat('heading')"
+            >
+              <q-tooltip>{{ $t('forum.editor.heading') }}</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              size="sm"
+              icon="format_quote"
+              :aria-label="$t('a11y.formatQuote')"
+              data-test="format-quote"
+              @mousedown.prevent
+              @click="applyFormat('quote')"
+            >
+              <q-tooltip>{{ $t('forum.editor.quote') }}</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              size="sm"
+              icon="code"
+              :aria-label="$t('a11y.formatCode')"
+              data-test="format-code"
+              @mousedown.prevent
+              @click="applyFormat('code')"
+            >
+              <q-tooltip>{{ $t('forum.editor.code') }}</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              size="sm"
+              icon="format_list_bulleted"
+              :aria-label="$t('a11y.formatBullet')"
+              data-test="format-bullet"
+              @mousedown.prevent
+              @click="applyFormat('bullet')"
+            >
+              <q-tooltip>{{ $t('forum.editor.bullet') }}</q-tooltip>
+            </q-btn>
+            <q-btn
+              flat
+              dense
+              round
+              size="sm"
+              icon="link"
+              :aria-label="$t('a11y.formatLink')"
+              data-test="format-link"
+              @mousedown.prevent
+              @click="applyFormat('link')"
+            >
+              <q-tooltip>{{ $t('forum.editor.link') }}</q-tooltip>
+            </q-btn>
+            <q-separator vertical inset class="q-mx-xs" />
+            <q-btn
+              flat
+              dense
+              round
+              size="sm"
+              icon="image"
+              :aria-label="$t('a11y.attachPostImage')"
+              :loading="attachingImage"
+              data-test="attach-post-image"
+              @mousedown.prevent
+              @click="triggerImageUpload"
+            >
+              <q-tooltip>{{ $t('forum.editor.attachImage') }}</q-tooltip>
+            </q-btn>
+            <input
+              ref="imageFileInput"
+              type="file"
+              accept="image/*"
+              class="hidden"
+              data-test="post-image-input"
+              @change="onImageFileSelected"
+            />
+          </div>
           <q-input
+            ref="messageInput"
             label="Message"
             v-model="message"
             data-test="post-message"
             type="textarea"
+            @paste="onMessagePaste"
+            @drop.prevent="onMessageDrop"
           />
         </q-card-section>
 
@@ -161,6 +284,12 @@ import { defineComponent, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 
 import { renderMarkdown } from '../utils/markdown'
+import {
+  applyMarkdownFormat,
+  compressPostImage,
+  insertImageMarkdown,
+  type MarkdownFormatAction,
+} from 'src/utils/post-editor'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { activeChain } from '@frank/wallet/chain'
@@ -226,6 +355,7 @@ export default defineComponent({
       parentDigest,
       chainUnit: activeChain.unit,
       posting: false,
+      attachingImage: false,
       outcomeUnknown: false,
       refreshingStatus: false,
       preparationStatus: null as string | null,
@@ -731,6 +861,123 @@ export default defineComponent({
           this.activeSubmissionId = null
           this.syncCurrentReservationUi()
         }
+      }
+    },
+    getTextareaElement(): HTMLTextAreaElement | HTMLInputElement | null {
+      const comp = this.$refs.messageInput as
+        | {
+            $el?: HTMLElement
+            nativeEl?: HTMLTextAreaElement | HTMLInputElement
+          }
+        | HTMLTextAreaElement
+        | HTMLInputElement
+        | undefined
+      if (!comp) return null
+      if (
+        comp instanceof HTMLTextAreaElement ||
+        comp instanceof HTMLInputElement
+      ) {
+        return comp
+      }
+      if (comp.nativeEl) return comp.nativeEl
+      if (comp.$el && typeof comp.$el.querySelector === 'function') {
+        return comp.$el.querySelector('textarea, input')
+      }
+      return null
+    },
+    applyFormat(action: MarkdownFormatAction) {
+      const textarea = this.getTextareaElement()
+      const start = textarea?.selectionStart ?? this.message.length
+      const end = textarea?.selectionEnd ?? this.message.length
+      const res = applyMarkdownFormat(this.message, start, end, action)
+      this.message = res.text
+      this.$nextTick(() => {
+        if (textarea && typeof textarea.focus === 'function') {
+          textarea.focus()
+          if (typeof textarea.setSelectionRange === 'function') {
+            textarea.setSelectionRange(res.selectionStart, res.selectionEnd)
+          }
+        }
+      })
+    },
+    triggerImageUpload() {
+      const input = this.$refs.imageFileInput as HTMLInputElement | undefined
+      if (input) {
+        input.value = ''
+        input.click()
+      }
+    },
+    async onImageFileSelected(event: Event) {
+      const target = event.target as HTMLInputElement
+      const file = target?.files?.[0]
+      if (file) {
+        await this.attachImageFile(file)
+      }
+    },
+    async onMessagePaste(event: ClipboardEvent) {
+      const items = event.clipboardData?.items
+      if (!items) return
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i]
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile()
+          if (file) {
+            event.preventDefault()
+            await this.attachImageFile(file)
+            return
+          }
+        }
+      }
+    },
+    async onMessageDrop(event: DragEvent) {
+      const files = event.dataTransfer?.files
+      if (!files || files.length === 0) return
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        if (file.type.startsWith('image/')) {
+          event.preventDefault()
+          await this.attachImageFile(file)
+          return
+        }
+      }
+    },
+    async attachImageFile(file: File) {
+      if (!file.type.startsWith('image/')) {
+        errorNotify(this.$t('forum.editor.invalidImageType'))
+        return
+      }
+      this.attachingImage = true
+      try {
+        const compressed = await compressPostImage(file)
+        const textarea = this.getTextareaElement()
+        const start = textarea?.selectionStart ?? this.message.length
+        const end = textarea?.selectionEnd ?? this.message.length
+        const alt = file.name ? file.name.replace(/\.[^/.]+$/, '') : 'image'
+        const res = insertImageMarkdown(
+          this.message,
+          start,
+          end,
+          alt,
+          compressed.dataUrl,
+        )
+        this.message = res.text
+        this.$nextTick(() => {
+          if (textarea && typeof textarea.focus === 'function') {
+            textarea.focus()
+            if (typeof textarea.setSelectionRange === 'function') {
+              textarea.setSelectionRange(res.selectionStart, res.selectionEnd)
+            }
+          }
+        })
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg.includes('exceeds')) {
+          errorNotify(this.$t('forum.editor.imageTooLarge'))
+        } else {
+          errorNotify(this.$t('forum.editor.imageError'))
+        }
+      } finally {
+        this.attachingImage = false
       }
     },
     back() {

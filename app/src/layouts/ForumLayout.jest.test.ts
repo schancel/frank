@@ -274,4 +274,3 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     expect(mockRouterPush).toHaveBeenCalledWith('/forum')
   })
 })
-

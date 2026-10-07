@@ -47,6 +47,23 @@ export default {
     allTopics: 'All topics',
     filteredBy: 'Filtered by topic',
     clearTopicFilter: 'Clear filter',
+    editor: {
+      toolbar: 'Formatting tools',
+      bold: 'Bold',
+      italic: 'Italic',
+      heading: 'Heading',
+      quote: 'Quote',
+      code: 'Code',
+      bullet: 'Bullet list',
+      link: 'Link',
+      attachImage: 'Attach Image',
+      imageProcessing: 'Processing image…',
+      imageTooLarge:
+        'Image is too large for post (must be under 120 KB after compression)',
+      imageError: 'Failed to process image attachment',
+      invalidImageType:
+        'Please select a valid image file (PNG, JPEG, WebP, GIF)',
+    },
   },
   chatLayout: {
     info: 'Info',
@@ -246,6 +263,14 @@ export default {
     openInExplorer: 'Open transaction in block explorer',
     copyTxHash: 'Copy transaction hash',
     backToForum: 'Back to forum',
+    formatBold: 'Format bold',
+    formatItalic: 'Format italic',
+    formatHeading: 'Format heading',
+    formatQuote: 'Format quote',
+    formatCode: 'Format code',
+    formatBullet: 'Format bullet list',
+    formatLink: 'Insert link',
+    attachPostImage: 'Attach image to post',
   },
   leftDrawer: {
     noForums: 'No forums discovered yet.',

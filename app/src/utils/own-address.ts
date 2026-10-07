@@ -103,3 +103,191 @@ export async function isOwnAddress(address: string): Promise<boolean> {
   const own = await getOwnCanonicalAddress()
   return sameCanonicalAddress(address.trim(), own)
 }
+
+/**
+ * Resolves all addresses known to belong to the active wallet session:
+ * - Identity address (canonical formatted and raw)
+ * - Receive address
+ * - Sub-account pool records (used for topic post burns and dm stamps)
+ * - Change pool records
+ * - Registered stealth addresses
+ */
+export async function resolveOwnAddresses(): Promise<string[]> {
+  try {
+    const { useActiveWallet } = await import('src/composables/useActiveWallet')
+    let wallet: any
+    try {
+      wallet = await useActiveWallet()
+    } catch {
+      return []
+    }
+    const set = new Set<string>()
+
+    const addAddress = (addr: unknown) => {
+      if (!addr) return
+      if (typeof addr === 'string') {
+        const trimmed = addr.trim()
+        if (trimmed) {
+          set.add(trimmed)
+          try {
+            const parsed = activeChain.parseAddress(trimmed)
+            if (parsed) {
+              set.add(activeChain.formatAddress(parsed))
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } else if (typeof addr === 'object' && addr !== null) {
+        if ('raw' in addr && typeof (addr as any).raw === 'string') {
+          addAddress((addr as any).raw)
+        }
+        try {
+          const formatted = activeChain.formatAddress(addr as any)
+          if (formatted) set.add(formatted)
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (wallet?.identity?.address) {
+      addAddress(wallet.identity.address)
+    }
+
+    if (typeof wallet?.getReceiveAddress === 'function') {
+      try {
+        const recv = await wallet.getReceiveAddress()
+        addAddress(recv)
+      } catch {
+        // ignore
+      }
+    }
+
+    if (wallet?.pool && typeof wallet.pool.records === 'function') {
+      try {
+        const records = wallet.pool.records()
+        if (Array.isArray(records)) {
+          for (const rec of records) {
+            if (rec?.address) addAddress(rec.address)
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (wallet?.changePool && typeof wallet.changePool.records === 'function') {
+      try {
+        const records = wallet.changePool.records()
+        if (Array.isArray(records)) {
+          for (const rec of records) {
+            if (rec?.address) addAddress(rec.address)
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (
+      wallet?.stealthKeyring &&
+      typeof wallet.stealthKeyring.getAccounts === 'function'
+    ) {
+      try {
+        const accounts = wallet.stealthKeyring.getAccounts()
+        if (Array.isArray(accounts)) {
+          for (const acc of accounts) {
+            if (acc?.address) addAddress(acc.address)
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return Array.from(set)
+  } catch (error) {
+    console.error('Could not determine own addresses:', error)
+    return []
+  }
+}
+
+const ownAddressesRevision = ref(0)
+
+/** Notifies components that the wallet's pool or derived addresses have expanded. */
+export function notifyOwnAddressesChanged(): void {
+  ownAddressesRevision.value += 1
+}
+
+/** Reactive list of all addresses belonging to the active wallet, including sub-account pool. */
+export function useReactiveOwnAddresses(): DeepReadonly<Ref<string[]>> {
+  const addresses = ref<string[]>([])
+  let request = 0
+  const scope = effectScope()
+  let disposed = false
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      disposed = true
+      scope.stop()
+    })
+  }
+  void import('../accounts/session').then(({ accountStatus }) => {
+    if (disposed) return
+    scope.run(() =>
+      watch(
+        () => [
+          accountStatus.revision,
+          accountStatus.status,
+          ownAddressesRevision.value,
+        ],
+        async () => {
+          const currentRequest = ++request
+          addresses.value = []
+          const resolved = await resolveOwnAddresses()
+          if (currentRequest === request) addresses.value = resolved
+        },
+        { immediate: true, flush: 'sync' },
+      ),
+    )
+  })
+  return readonly(addresses)
+}
+
+/** Tests whether a candidate address belongs to the provided list or ref of own addresses. */
+export function isKnownOwnAddress(
+  candidate: string | null | undefined,
+  ownAddresses:
+    | string[]
+    | readonly string[]
+    | Ref<string[]>
+    | DeepReadonly<Ref<string[]>>
+    | null
+    | undefined,
+): boolean {
+  if (!candidate || typeof candidate !== 'string') return false
+  const trimmed = candidate.trim()
+  if (!trimmed) return false
+
+  const list =
+    typeof ownAddresses === 'object' &&
+    ownAddresses !== null &&
+    'value' in ownAddresses
+      ? (ownAddresses as any).value
+      : ownAddresses
+
+  if (!Array.isArray(list)) return false
+  const candidateLower = trimmed.toLowerCase()
+
+  for (const addr of list) {
+    if (!addr || typeof addr !== 'string') continue
+    const addrTrimmed = addr.trim()
+    if (
+      candidateLower === addrTrimmed.toLowerCase() ||
+      sameCanonicalAddress(trimmed, addrTrimmed)
+    ) {
+      return true
+    }
+  }
+  return false
+}

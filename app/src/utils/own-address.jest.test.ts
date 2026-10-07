@@ -4,8 +4,12 @@ import {
   getOwnCanonicalAddress,
   isOwnAddress,
   resolveOwnAddress,
+  resolveOwnAddresses,
   sameCanonicalAddress,
   useReactiveOwnCanonicalAddress,
+  useReactiveOwnAddresses,
+  notifyOwnAddressesChanged,
+  isKnownOwnAddress,
 } from './own-address'
 
 // Only the wallet handle is faked; the lazy import, parse and format are the real ones.
@@ -115,6 +119,81 @@ describe('utils/own-address.ts', () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(address.value).toBe(replacement)
+    scope.stop()
+  })
+
+  it('resolves all addresses including sub-account pool, change pool, and stealth keyring (#1071)', async () => {
+    const SUB1 = '0xeddad90000000000000000000000000093b169'
+    const SUB2 = '0x1e6fb5000000000000000000000000003df7bd'
+    const CHANGE1 = '0x2222222222222222222222222222222222222222'
+    const STEALTH1 = '0x3333333333333333333333333333333333333333'
+    const RECV = '0x4444444444444444444444444444444444444444'
+
+    mockUseActiveWallet.mockResolvedValue({
+      identity: { address: { raw: OWN } },
+      getReceiveAddress: async () => ({ raw: RECV }),
+      pool: {
+        records: () => [
+          { index: 0, address: SUB1, status: 'spent' },
+          { index: 1, address: SUB2, status: 'spent' },
+        ],
+      },
+      changePool: {
+        records: () => [{ index: 0, address: CHANGE1 }],
+      },
+      stealthKeyring: {
+        getAccounts: () => [{ address: STEALTH1 }],
+      },
+    })
+
+    const addresses = await resolveOwnAddresses()
+    expect(isKnownOwnAddress(OWN, addresses)).toBe(true)
+    expect(isKnownOwnAddress(SUB1, addresses)).toBe(true)
+    expect(isKnownOwnAddress(SUB2, addresses)).toBe(true)
+    expect(isKnownOwnAddress(CHANGE1, addresses)).toBe(true)
+    expect(isKnownOwnAddress(STEALTH1, addresses)).toBe(true)
+    expect(isKnownOwnAddress(RECV, addresses)).toBe(true)
+    expect(isKnownOwnAddress(OTHER, addresses)).toBe(false)
+  })
+
+  it('isKnownOwnAddress handles case differences and whitespace', () => {
+    const list = ['0xeddad90000000000000000000000000093b169']
+    expect(
+      isKnownOwnAddress('0xEDDAD90000000000000000000000000093B169', list),
+    ).toBe(true)
+    expect(
+      isKnownOwnAddress('  0xeddad90000000000000000000000000093b169  ', list),
+    ).toBe(true)
+    expect(isKnownOwnAddress(null, list)).toBe(false)
+    expect(isKnownOwnAddress('', list)).toBe(false)
+    expect(isKnownOwnAddress('0xother', list)).toBe(false)
+  })
+
+  it('updates reactive own addresses when notifyOwnAddressesChanged is called', async () => {
+    const SUB = '0xeddad90000000000000000000000000093b169'
+    let currentSubAccounts: {
+      index: number
+      address: string
+      status: string
+    }[] = []
+    mockUseActiveWallet.mockImplementation(async () => ({
+      identity: { address: { raw: OWN } },
+      pool: { records: () => currentSubAccounts },
+    }))
+
+    const scope = effectScope()
+    const addressesRef = scope.run(() => useReactiveOwnAddresses())!
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(isKnownOwnAddress(SUB, addressesRef)).toBe(false)
+
+    // A sub-account is now leased and recorded
+    currentSubAccounts = [{ index: 0, address: SUB, status: 'spent' }]
+    notifyOwnAddressesChanged()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(isKnownOwnAddress(SUB, addressesRef)).toBe(true)
     scope.stop()
   })
 })

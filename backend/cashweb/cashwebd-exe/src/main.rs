@@ -242,6 +242,23 @@ async fn main() -> Result<()> {
         }
     };
 
+    let event_bus: Arc<dyn cashweb_registry::events::RelayEventBus> =
+        if conf.registry.is_nats_enabled() {
+            let nats_url = conf.registry.nats_url().unwrap_or("nats://127.0.0.1:4222");
+            tracing::info!(
+                nats_url = %nats_url,
+                "Connecting to Clustered Core NATS notification bus"
+            );
+            Arc::new(
+                cashweb_registry::events::CoreNatsEventBus::connect(nats_url)
+                    .await
+                    .wrap_err("Failed to connect to Ephemeral Core NATS")?,
+            )
+        } else {
+            tracing::info!("Using standalone in-process notification bus (default)");
+            Arc::new(cashweb_registry::events::StandaloneEventBus::new())
+        };
+
     let username_store: Option<
         Arc<dyn cashweb_registry::store::directory_usernames::UsernameStore>,
     > = match conf.registry.effective_username_store_conf() {
@@ -257,10 +274,11 @@ async fn main() -> Result<()> {
         }
     };
 
-    let registry = Arc::new(Registry::new_with_username_store(
+    let registry = Arc::new(Registry::new_with_options(
         db,
         chain_adapter,
         conf.registry.net,
+        Arc::clone(&event_bus),
         username_store,
     ));
     let evm_rpc_conf = conf.registry.evm_rpc.clone();
@@ -407,6 +425,7 @@ async fn main() -> Result<()> {
         bitcoin_proxy,
         solana_proxy,
         spa_dir,
+        event_bus: Arc::clone(&event_bus),
     };
 
     let directory = if let Some(config) = conf.registry.directory.clone() {

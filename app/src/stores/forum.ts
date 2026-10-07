@@ -13,6 +13,7 @@ import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
 import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 import { accountStatus } from 'src/accounts/session'
 import { SortMode } from 'src/utils/sorting'
+import { notifyOwnAddressesChanged } from 'src/utils/own-address'
 
 export type MessageWithReplies = ForumMessage & {
   replies: MessageWithReplies[]
@@ -236,13 +237,26 @@ export const useForumStore = defineStore('forum', {
       if (!this.ownPostDigests) {
         this.ownPostDigests = []
       }
-      if (!this.ownPostDigests.includes(payloadDigest)) {
+      const normalized = payloadDigest.toLowerCase().replace(/^0x/, '')
+      if (
+        !this.ownPostDigests.some(
+          d =>
+            typeof d === 'string' &&
+            d.toLowerCase().replace(/^0x/, '') === normalized,
+        )
+      ) {
         this.ownPostDigests.push(payloadDigest)
       }
     },
     isOwnPost(payloadDigest?: string): boolean {
-      if (!payloadDigest || !this.ownPostDigests) return false
-      return this.ownPostDigests.includes(payloadDigest)
+      if (!payloadDigest) return false
+      const normalized = payloadDigest.toLowerCase().replace(/^0x/, '')
+      const digests = this.ownPostDigests || []
+      return digests.some(
+        d =>
+          typeof d === 'string' &&
+          d.toLowerCase().replace(/^0x/, '') === normalized,
+      )
     },
 
     setEntries(messages: ForumMessage[]) {
@@ -405,6 +419,7 @@ export const useForumStore = defineStore('forum', {
         onPreparationProgress,
       })
       this.recordOwnPost(payloadDigest)
+      notifyOwnAddressesChanged()
       await refreshAfterBurn('post', () => this.fetchMessage({ payloadDigest }))
     },
     async fetchMessage({

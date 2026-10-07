@@ -24,6 +24,7 @@
         />
         <div
           class="vote-weight-pill text-caption text-weight-bold text-center q-my-xs"
+          :title="formatExactVoteWeight(displayedVoteWeight)"
         >
           {{ formatVoteWeight(displayedVoteWeight) }}
         </div>
@@ -195,7 +196,7 @@ import {
   BurnRefreshError,
 } from 'src/utils/burn-refresh-error'
 import { activeChain } from '@frank/wallet/chain'
-import { formatRawAmount } from 'src/utils/chain-amount'
+import { formatCompactAmount, formatRawAmount } from 'src/utils/chain-amount'
 import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
 import {
   isKnownOwnAddress,
@@ -303,6 +304,9 @@ export default defineComponent({
   },
   methods: {
     formatVoteWeight(value: string) {
+      return formatCompactAmount(activeChain, value)
+    },
+    formatExactVoteWeight(value: string) {
       return formatRawAmount(activeChain, value)
     },
     markedMessage(text?: string) {

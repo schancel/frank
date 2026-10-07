@@ -28,6 +28,7 @@ export type SessionStatus =
   | 'locked'
   | 'unavailable'
   | 'ready'
+  | 'standby'
 export interface AccountSessionState {
   status: SessionStatus
   revision: number
@@ -258,6 +259,7 @@ export function createAccountSession(deps: {
     }
   }
   function revalidate() {
+    if (state.status === 'standby') return Promise.resolve()
     if (initialized) return initialized
     initialized = exclusive(runRefresh).finally(() => {
       initialized = undefined
@@ -265,7 +267,7 @@ export function createAccountSession(deps: {
     return initialized
   }
   function invalidate() {
-    if (closed) return
+    if (closed || state.status === 'standby') return
     ++generation
     // close() revokes the native handle synchronously, before its teardown awaits.
     const releasing = release()
@@ -294,7 +296,27 @@ export function createAccountSession(deps: {
       })
       return revalidate()
     },
+    setStandby() {
+      if (closed) return
+      state.status = 'standby'
+      state.error = null
+    },
+    async yieldCustody(): Promise<void> {
+      if (closed) return
+      ++generation
+      state.status = 'standby'
+      state.error = null
+      await exclusive(async () => {
+        try {
+          await release()
+        } finally {
+          custody?.close()
+          custody = undefined
+        }
+      })
+    },
     retry() {
+      state.status = 'loading'
       return exclusive(runRefresh)
     },
     async getWallet(): Promise<RuntimeWallet> {

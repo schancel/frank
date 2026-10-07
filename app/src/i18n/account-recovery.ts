@@ -118,6 +118,12 @@ export const en = {
   invalid_relay_url: 'Please enter a valid HTTP or HTTPS URL',
   relay_discovered:
     'Discovered existing home relay: {url}. Automatically configured.',
+  frank_is_open_in_another_tab: 'Frank is open in another tab',
+  multi_tab_notice:
+    'To protect your wallet and prevent conflicting transactions, only one tab can access your account at a time.',
+  use_frank_here: 'Use Frank here',
+  switch_to_open_tab: 'Switch to open tab',
+  tab_yielded_notice: 'Frank is active in another tab or window.',
 }
 
 export const fr = {
@@ -244,4 +250,11 @@ export const fr = {
   invalid_relay_url: 'Veuillez saisir une URL HTTP ou HTTPS valide',
   relay_discovered:
     'Serveur relais principal existant découvert : {url}. Configuré automatiquement.',
+  frank_is_open_in_another_tab: 'Frank est ouvert dans un autre onglet',
+  multi_tab_notice:
+    'Pour protéger votre portefeuille et éviter les transactions contradictoires, un seul onglet peut accéder à votre compte à la fois.',
+  use_frank_here: 'Utiliser Frank ici',
+  switch_to_open_tab: 'Basculer vers l’onglet ouvert',
+  tab_yielded_notice:
+    'Frank est actif dans un autre onglet ou une autre fenêtre.',
 }

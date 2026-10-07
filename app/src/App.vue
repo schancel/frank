@@ -8,6 +8,36 @@
     <contact-book-dialog :contact-click="contactClicked" />
   </q-dialog>
 
+  <!-- Yielded Standby Overlay -->
+  <q-dialog :model-value="tabCoordinator.isYielded" persistent>
+    <q-card style="min-width: 320px; max-width: 480px" class="q-pa-md">
+      <q-card-section class="row items-center q-pb-none">
+        <q-avatar icon="tab" color="primary" text-color="white" />
+        <div class="text-h6 q-ml-md">
+          {{ $t('accountRecovery.frank_is_open_in_another_tab') }}
+        </div>
+      </q-card-section>
+      <q-card-section class="q-pt-md">
+        <p class="text-body2 text-grey-8">
+          {{ $t('accountRecovery.tab_yielded_notice') }}
+        </p>
+        <p class="text-body2 text-grey-8">
+          {{ $t('accountRecovery.multi_tab_notice') }}
+        </p>
+      </q-card-section>
+      <q-card-actions align="right">
+        <q-btn
+          color="primary"
+          no-caps
+          :loading="tabCoordinator.isTakingOver"
+          :label="$t('accountRecovery.use_frank_here')"
+          data-test="overlay-use-frank-here"
+          @click="takeoverHere"
+        />
+      </q-card-actions>
+    </q-card>
+  </q-dialog>
+
   <router-view @setupCompleted="setupConnections" />
 </template>
 
@@ -30,6 +60,7 @@ import { applyTheme } from 'src/utils/theme'
 import { openChat } from 'src/utils/routes'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
+import { useTabCoordinatorStore } from 'src/stores/tab-coordinator'
 import { accountStatus } from './accounts/session'
 
 export default defineComponent({
@@ -44,6 +75,11 @@ export default defineComponent({
     const appearanceStore = useAppearanceStore()
     const { darkMode, locale, theme } = storeToRefs(appearanceStore)
     const myProfile = useProfileStore()
+    const tabCoordinator = useTabCoordinatorStore()
+
+    const takeoverHere = async () => {
+      await tabCoordinator.requestTakeover()
+    }
 
     const {
       getLastReceived: lastReceived,
@@ -90,6 +126,8 @@ export default defineComponent({
       lastReceived,
       totalUnread,
       getRelayData: myProfile,
+      tabCoordinator,
+      takeoverHere,
       buttonNotification: ref<QBtn | null>(null),
       shortcutKeyListener(e: KeyboardEvent) {
         if ((e.metaKey || e.ctrlKey) && e.key === 'k') {

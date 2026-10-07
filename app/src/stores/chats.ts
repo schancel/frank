@@ -2846,7 +2846,7 @@ export const useChatStore = defineStore('chats', {
                       applyWalletSyncItem(w, item as WalletSyncItem)
                     }
                   })
-                  .catch(() => {})
+                  .catch(() => undefined)
               } catch {
                 // ignore
               }

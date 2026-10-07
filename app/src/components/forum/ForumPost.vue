@@ -208,7 +208,10 @@ export default defineComponent({
       storeMessages: messages,
       getMessage: forumStore.getMessage,
       forumStore,
-      isOwnPost: (digest?: string) => forumStore.isOwnPost(digest),
+      isOwnPost: (digest?: string) =>
+        typeof (forumStore as any)?.isOwnPost === 'function'
+          ? (forumStore as any).isOwnPost(digest)
+          : false,
       topics,
       getContactProfile: contactStore.getContactProfile,
       haveContact: contactStore.haveContact,

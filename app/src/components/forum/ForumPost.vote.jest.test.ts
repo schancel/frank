@@ -439,15 +439,22 @@ describe('ForumPost author resolution and display (#1046)', () => {
     const wrapper = mountCard({ poster: longAddress })
     expect(wrapper.find('.author-btn').text()).toBe('0x123456...345678')
     expect(wrapper.find('.author-btn .font-mono').exists()).toBe(true)
-    expect(wrapper.find('.author-btn').attributes('to')).toBe(`/chat/${longAddress}`)
+    expect(wrapper.find('.author-btn').attributes('to')).toBe(
+      `/chat/${longAddress}`,
+    )
   })
 
   it('resolves author to profile name when poster is a sub-account address in ownAddresses (#1071)', () => {
     mockOwnAddress.value = '0xidentityaddress'
-    mockOwnAddresses.value = ['0xidentityaddress', '0xeddad90000000000000000000000000093b169']
+    mockOwnAddresses.value = [
+      '0xidentityaddress',
+      '0xeddad90000000000000000000000000093b169',
+    ]
     mockProfile.profile.name = 'Shammah'
 
-    const wrapper = mountCard({ poster: '0xeddad90000000000000000000000000093b169' })
+    const wrapper = mountCard({
+      poster: '0xeddad90000000000000000000000000093b169',
+    })
     expect(wrapper.find('.author-btn').text()).toBe('Shammah')
     expect(wrapper.find('.author-btn').attributes('to')).toBe('/profile')
     expect(wrapper.find('.author-btn .font-mono').exists()).toBe(false)
@@ -476,4 +483,3 @@ describe('ForumPost author resolution and display (#1046)', () => {
     mockOwnPostDigests.length = 0
   })
 })
-

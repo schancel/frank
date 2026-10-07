@@ -33,7 +33,9 @@ jest.mock('src/stores/contacts', () => ({
         username: 'alice_w',
         bio: 'Hello world',
         avatar: 'alice.png',
-        links: [{ type: 'website', url: 'https://alice.dev', label: 'Portfolio' }],
+        links: [
+          { type: 'website', url: 'https://alice.dev', label: 'Portfolio' },
+        ],
       },
     }),
     setNotify: jest.fn(),
@@ -60,9 +62,15 @@ jest.mock('src/utils/own-address', () => ({
     Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
 }))
 
-jest.mock('../components/dialogs/ClearHistoryDialog.vue', () => ({ template: '<div />' }))
-jest.mock('../components/dialogs/DeleteChatDialog.vue', () => ({ template: '<div />' }))
-jest.mock('../components/dialogs/SendFileDialog.vue', () => ({ template: '<div />' }))
+jest.mock('../components/dialogs/ClearHistoryDialog.vue', () => ({
+  template: '<div />',
+}))
+jest.mock('../components/dialogs/DeleteChatDialog.vue', () => ({
+  template: '<div />',
+}))
+jest.mock('../components/dialogs/SendFileDialog.vue', () => ({
+  template: '<div />',
+}))
 
 const passthrough = defineComponent({
   setup(_props, { slots }) {
@@ -159,7 +167,11 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
             pubKey: null,
             links: [
               { type: 'website', url: 'https://alice.dev', label: 'Portfolio' },
-              { type: 'github', url: 'https://github.com/alice', label: 'GitHub' },
+              {
+                type: 'github',
+                url: 'https://github.com/alice',
+                label: 'GitHub',
+              },
             ],
           },
         },
@@ -193,12 +205,24 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
     })
 
     await flushPromises()
-    expect(wrapper.find('[data-test="contact-profile-card"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="info-contact-avatar"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="info-contact-name"]').text()).toBe('Alice Wonderland')
-    expect(wrapper.find('[data-test="info-contact-username"]').text()).toBe('@alice_w')
-    expect(wrapper.find('[data-test="info-contact-bio"]').text()).toBe('Cypherpunk & dev')
-    expect(wrapper.find('[data-test="info-contact-address"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="contact-profile-card"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-test="info-contact-avatar"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-test="info-contact-name"]').text()).toBe(
+      'Alice Wonderland',
+    )
+    expect(wrapper.find('[data-test="info-contact-username"]').text()).toBe(
+      '@alice_w',
+    )
+    expect(wrapper.find('[data-test="info-contact-bio"]').text()).toBe(
+      'Cypherpunk & dev',
+    )
+    expect(wrapper.find('[data-test="info-contact-address"]').exists()).toBe(
+      true,
+    )
     expect(wrapper.find('[data-test="info-contact-links"]').exists()).toBe(true)
 
     // Action button triggers transition
@@ -234,7 +258,9 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
           QIcon: passthrough,
           QSeparator: passthrough,
           QDialog: true,
-          RouterView: { template: '<div data-testid="chat-conversation-view" />' },
+          RouterView: {
+            template: '<div data-testid="chat-conversation-view" />',
+          },
           ChatInfoView: defineComponent({
             emits: ['chat'],
             template:
@@ -249,13 +275,17 @@ describe('Contact profile view navigation and profile details (#1044)', () => {
 
     await flushPromises()
     expect(wrapper.find('[data-testid="send-msg-btn"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="chat-conversation-view"]').exists()).toBe(false)
+    expect(
+      wrapper.find('[data-testid="chat-conversation-view"]').exists(),
+    ).toBe(false)
 
     // Click Send Message / transition to conversation
     await wrapper.find('[data-testid="send-msg-btn"]').trigger('click')
     await flushPromises()
 
     expect(mockReplace).toHaveBeenCalledWith({ query: {} })
-    expect(wrapper.find('[data-testid="chat-conversation-view"]').exists()).toBe(true)
+    expect(
+      wrapper.find('[data-testid="chat-conversation-view"]').exists(),
+    ).toBe(true)
   })
 })

@@ -78,6 +78,7 @@ jest.mock('src/stores/forum', () => ({
       getMessage: jest.fn(),
       setSelectedTopic: jest.fn(),
       refreshMessages: jest.fn(),
+      isOwnPost: jest.fn(() => false),
     }),
 }))
 jest.mock('src/composables/useActiveWallet', () => ({

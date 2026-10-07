@@ -209,7 +209,6 @@ describe('Settings Signet Theme Live Preview and Persistence (#1041)', () => {
 
     ;(wrapper.vm as any).selectTheme('bloodstone')
     expect(mockApplyTheme).toHaveBeenCalledWith('bloodstone', false)
-
     ;(wrapper.vm as unknown as SettingsVm).cancel()
 
     expect(mockApplyTheme).toHaveBeenLastCalledWith('carnelian', false)
@@ -235,7 +234,6 @@ describe('Settings Signet Theme Live Preview and Persistence (#1041)', () => {
 
     ;(wrapper.vm as any).selectTheme('sardonyx')
     ;(wrapper.vm as any).darkMode = true
-
     ;(wrapper.vm as unknown as SettingsVm).save()
 
     expect(mockSetTheme).toHaveBeenCalledWith('sardonyx')

@@ -123,21 +123,40 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref } from 'vue'
+import { computed, defineComponent, inject, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
+import { useQuasar } from 'quasar'
 
 import { useContactStore, ContactState } from 'src/stores/contacts'
 import { profileAvatar } from 'src/utils/avatar'
 import { activeChain } from '@frank/wallet/chain'
 import { openChat, openContactProfile, openPage } from 'src/utils/routes'
+import { isNarrowWidth } from 'src/utils/layout'
 
 export default defineComponent({
-  setup() {
+  emits: ['closeDrawer'],
+  setup(props, { emit }) {
     const router = useRouter()
     const contactStore = useContactStore()
     const { getContacts } = storeToRefs(contactStore)
     const search = ref('')
+
+    const qInject = inject<{ screen?: { width?: number } } | null>('_q_', null)
+    let qHook: { screen?: { width?: number } } | null = null
+    try {
+      qHook = useQuasar()
+    } catch {
+      // ignore
+    }
+    const q = qHook ?? qInject
+
+    function isNarrow(): boolean {
+      const width =
+        q?.screen?.width ??
+        (typeof window !== 'undefined' ? window.innerWidth : 1024)
+      return isNarrowWidth(width)
+    }
 
     const contactEntries = computed(() => {
       const contacts = getContacts.value ?? {}
@@ -176,10 +195,16 @@ export default defineComponent({
 
     function openProfile(address: string) {
       openContactProfile(router, address)
+      if (isNarrow()) {
+        emit('closeDrawer')
+      }
     }
 
     function startChat(address: string) {
       openChat(router, address)
+      if (isNarrow()) {
+        emit('closeDrawer')
+      }
     }
 
     function openAddContact() {

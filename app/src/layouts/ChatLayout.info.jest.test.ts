@@ -141,4 +141,52 @@ describe('ChatLayout info mode with ?info=true query', () => {
     expect(wrapper.find('[data-testid="chat-view"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="chat-info-view"]').exists()).toBe(false)
   })
+
+  it('reactively switches to ChatInfoView when $route.query.info changes to true', async () => {
+    const route = {
+      params: { address: '0x1111111111111111111111111111111111111111' },
+      query: {} as Record<string, string>,
+    }
+    const wrapper = mount(ChatLayout, {
+      global: {
+        mocks: {
+          $route: route,
+          $router: { push: jest.fn(), replace: jest.fn() },
+          $t: (key: string) => key,
+        },
+        stubs: {
+          QHeader: passthrough,
+          QToolbar: passthrough,
+          QToolbarTitle: passthrough,
+          QAvatar: passthrough,
+          QBtn: passthrough,
+          QSpace: passthrough,
+          QMenu: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QIcon: passthrough,
+          QSeparator: passthrough,
+          QDialog: true,
+          RouterView: { template: '<div data-testid="chat-view" />' },
+          ClearHistoryDialog: true,
+          DeleteChatDialog: true,
+          SendFileDialog: true,
+        },
+      },
+    })
+
+    await flushPromises()
+    expect(wrapper.find('[data-testid="chat-view"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="chat-info-view"]').exists()).toBe(false)
+
+    // Simulate route query watcher firing on navigation
+    await (wrapper.vm as any).$options.watch['$route.query.info'].call(wrapper.vm, 'true')
+    await wrapper.vm.$nextTick()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="chat-info-view"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="chat-view"]').exists()).toBe(false)
+  })
 })
+

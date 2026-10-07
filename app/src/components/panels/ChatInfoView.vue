@@ -1,17 +1,29 @@
 <template>
   <q-page-container>
     <q-page class="chat-page-background">
-      <div class="column items-center q-py-lg q-px-md">
-        <q-avatar size="96px" rounded :style="contactColorStyle">
+      <div class="column items-center q-py-lg q-px-md" data-test="contact-profile-card">
+        <q-avatar size="96px" rounded :style="contactColorStyle" data-test="info-contact-avatar">
           <img :src="profileAvatar(contact?.profile?.avatar, address)" />
         </q-avatar>
-        <div class="text-h6 q-mt-md" :style="contactNameColorStyle">
+        <div
+          class="text-h6 q-mt-md"
+          :style="contactNameColorStyle"
+          data-test="info-contact-name"
+        >
           {{ contact?.profile?.name || $t('chatRightDrawer.unknownContact') }}
+        </div>
+        <div
+          v-if="contact?.profile?.username"
+          class="text-subtitle2 text-grey-7 q-mt-xs"
+          data-test="info-contact-username"
+        >
+          @{{ formattedUsername }}
         </div>
         <div
           v-if="contact?.profile?.bio"
           class="text-body2 text-grey-7 q-mt-xs text-center"
           style="max-width: 400px"
+          data-test="info-contact-bio"
         >
           {{ contact.profile.bio }}
         </div>
@@ -22,15 +34,39 @@
           icon="file_copy"
           :label="displayAddress"
           class="text-caption q-mt-xs"
+          data-test="info-contact-address"
+          :aria-label="$t('a11y.copyAddress')"
           @click="copyAddress()"
         />
+        <div
+          v-if="contactLinks.length > 0"
+          class="q-mt-sm row q-gutter-xs justify-center items-center"
+          data-test="info-contact-links"
+        >
+          <q-btn
+            v-for="(link, index) in contactLinks"
+            :key="index"
+            flat
+            dense
+            no-caps
+            size="sm"
+            color="primary"
+            :icon="getLinkIcon(link.type)"
+            :label="link.label || link.url"
+            :href="formatLinkUrl(link.url)"
+            target="_blank"
+            type="a"
+            class="text-caption"
+            data-test="info-contact-link-item"
+          />
+        </div>
         <div class="q-mt-md">
           <q-btn
             color="primary"
             rounded
             no-caps
             icon="chat"
-            :label="$t('chatList.directMessages')"
+            :label="$t('chat.sendMessage') || $t('chatList.directMessages')"
             data-test="info-start-chat"
             @click="$emit('chat')"
           />
@@ -77,12 +113,15 @@
       </q-list>
 
       <q-dialog v-model="confirmClearOpen">
-        <clear-history-dialog :address="address" :name="contact.profile.name" />
+        <clear-history-dialog
+          :address="address"
+          :name="contact?.profile?.name ?? ''"
+        />
       </q-dialog>
       <q-dialog v-model="confirmDeleteOpen">
         <delete-chat-dialog
           :address="address"
-          :name="contact.profile.name"
+          :name="contact?.profile?.name ?? ''"
           @deleted="$emit('deleted')"
         />
       </q-dialog>
@@ -155,15 +194,24 @@ export default defineComponent({
       const parsed = activeChain.parseAddress(this.address)
       return parsed ? activeChain.formatAddress(parsed) : this.address
     },
+    formattedUsername(): string {
+      const u = this.contact?.profile?.username
+      if (!u) return ''
+      return u.startsWith('@') ? u.slice(1) : u
+    },
+    contactLinks(): Array<{ type: string; url: string; label?: string }> {
+      const links = this.contact?.profile?.links
+      return Array.isArray(links) ? links.filter(l => Boolean(l && l.url)) : []
+    },
     // Same spoofing/impersonation cue as ChatLayout.vue's own header -- see that file's header
     // comment on `contactColorStyle` for the full "why."
     contactColorStyle() {
-      const pubKey = this.contact.profile?.pubKey
+      const pubKey = this.contact?.profile?.pubKey
       if (!pubKey) return {}
       return { boxShadow: `0 0 0 3px ${pubKeyToColor(pubKey.toBuffer())}` }
     },
     contactNameColorStyle() {
-      const pubKey = this.contact.profile?.pubKey
+      const pubKey = this.contact?.profile?.pubKey
       if (!pubKey) return {}
       return { color: pubKeyToColor(pubKey.toBuffer()) }
     },
@@ -175,6 +223,27 @@ export default defineComponent({
         .catch(() => {
           // fail
         })
+    },
+    getLinkIcon(type: string): string {
+      switch (type) {
+        case 'website':
+          return 'language'
+        case 'github':
+          return 'code'
+        case 'x':
+          return 'tag'
+        case 'telegram':
+          return 'send'
+        case 'discord':
+          return 'chat'
+        default:
+          return 'link'
+      }
+    },
+    formatLinkUrl(url: string): string {
+      if (!url) return '#'
+      if (/^https?:\/\//i.test(url)) return url
+      return `https://${url}`
     },
   },
 })

@@ -11,7 +11,6 @@
   },
   "dependencies": {
     "katex": "^0.16.11",
-    "markdown-it-katex": "^2.0.3",
     "mermaid": "^11.2.0",
     "vitepress": "^1.5.0",
     "vitepress-plugin-mermaid": "^2.0.16",

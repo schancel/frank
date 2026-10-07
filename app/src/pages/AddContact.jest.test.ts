@@ -11,10 +11,27 @@ import { openChat } from 'src/utils/routes'
 import AddContact from './AddContact.vue'
 
 const mockAddContactToStore = jest.fn()
+const mockCreateOrOpenEmailConversation = jest.fn(
+  (opts: { recipientEmail: string; gatewayAddress?: string }) => ({
+    id: 'conv-email-' + opts.recipientEmail,
+    kind: 'email',
+    name: opts.recipientEmail,
+    emailRecipient: opts.recipientEmail,
+  }),
+)
+const mockSetActiveConversation = jest.fn()
 import { setDirectoryLookup } from 'src/utils/directory-peer'
 jest.mock('src/stores/contacts', () => ({
   defaultRelayData: { profile: { name: '', bio: '', avatar: '' } },
   useContactStore: () => ({ addContact: mockAddContactToStore }),
+}))
+jest.mock('src/stores/chats', () => ({
+  useChatStore: () => ({
+    createOrOpenEmailConversation: mockCreateOrOpenEmailConversation,
+    setActiveConversation: mockSetActiveConversation,
+    activeChatAddr: null,
+    getSortedChatOrder: [],
+  }),
 }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -183,6 +200,8 @@ describe('AddContact latest lookup', () => {
     mockRouter.go.mockReset()
     mockRouter.push.mockReset()
     mockRouter.back.mockReset()
+    mockCreateOrOpenEmailConversation.mockReset()
+    mockSetActiveConversation.mockReset()
     chain.parseAddress.mockReset()
     chain.formatAddress.mockReset()
     chain.fetchProfile.mockReset()
@@ -190,6 +209,14 @@ describe('AddContact latest lookup', () => {
     mockOwnAddress.mockResolvedValue(ADDRESS_OWN)
     chain.parseAddress.mockImplementation(input => parsedAddresses[input])
     chain.formatAddress.mockImplementation(address => address.raw)
+    mockCreateOrOpenEmailConversation.mockImplementation(
+      (opts: { recipientEmail: string; gatewayAddress?: string }) => ({
+        id: 'conv-email-' + opts.recipientEmail,
+        kind: 'email',
+        name: opts.recipientEmail,
+        emailRecipient: opts.recipientEmail,
+      }),
+    )
     wrapper = mountPage()
   })
 
@@ -750,4 +777,85 @@ describe('AddContact latest lookup', () => {
       expect((wrapper.vm as any).showMyQrDialog).toBe(true)
     })
   })
+
+  describe('email recipient recognition', () => {
+    it('recognizes email address matching regex and shows affordance card without chain lookup', async () => {
+      await type(wrapper, 'alice@example.com')
+      jest.advanceTimersByTime(DEBOUNCE_MS)
+      await settle()
+
+      expect(chain.parseAddress).not.toHaveBeenCalled()
+      expect(chain.fetchProfile).not.toHaveBeenCalled()
+      expect(notFoundCard(wrapper).exists()).toBe(false)
+
+      const section = wrapper.find('[data-test="email-recipient-section"]')
+      expect(section.exists()).toBe(true)
+
+      const affordanceLabel = wrapper.find(
+        '[data-test="email-affordance-label"]',
+      )
+      expect(affordanceLabel.text()).toBe(
+        'Start Email Thread to alice@example.com (via Frank Email Gateway)',
+      )
+
+      const startBtn = wrapper.find('[data-test="start-email-thread-btn"]')
+      expect(startBtn.exists()).toBe(true)
+      expect(startBtn.text()).toBe(
+        'Start Email Thread to alice@example.com (via Frank Email Gateway)',
+      )
+    })
+
+    it('starts email thread and navigates to conversation on button click', async () => {
+      await type(wrapper, 'alice@example.com')
+      await settle()
+
+      const startBtn = wrapper.find('[data-test="start-email-thread-btn"]')
+      await startBtn.trigger('click')
+
+      expect(mockCreateOrOpenEmailConversation).toHaveBeenCalledWith({
+        recipientEmail: 'alice@example.com',
+        gatewayAddress: expect.any(String),
+      })
+      expect(mockSetActiveConversation).toHaveBeenCalledWith(
+        'conv-email-alice@example.com',
+      )
+      expect(mockOpenChat).toHaveBeenCalledWith(
+        mockRouter,
+        'conv-email-alice@example.com',
+      )
+    })
+
+    it('starts email thread on Enter key when input is an email address', async () => {
+      await type(wrapper, 'bob@example.com')
+      await settle()
+
+      await wrapper.find('input').trigger('keydown.enter')
+
+      expect(mockCreateOrOpenEmailConversation).toHaveBeenCalledWith({
+        recipientEmail: 'bob@example.com',
+        gatewayAddress: expect.any(String),
+      })
+      expect(mockSetActiveConversation).toHaveBeenCalledWith(
+        'conv-email-bob@example.com',
+      )
+      expect(mockOpenChat).toHaveBeenCalledWith(
+        mockRouter,
+        'conv-email-bob@example.com',
+      )
+    })
+
+    it('customizes page title and placeholder when query parameter compose=email is provided', () => {
+      wrapper.unmount()
+      wrapper = mountPage({ query: { compose: 'email' } })
+
+      const title = wrapper.find('.text-h6')
+      expect(title.text()).toBe(translate('newContactDialog.composeEmail'))
+
+      const input = wrapper.find('input')
+      expect(input.attributes('placeholder')).toBe(
+        translate('newContactDialog.enterAddressOrEmail'),
+      )
+    })
+  })
 })
+

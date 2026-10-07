@@ -3,7 +3,9 @@
     <q-page class="q-ma-none q-pa-sm">
       <q-card>
         <q-card-section>
-          <div class="text-h6">{{ $t('newContactDialog.newContact') }}</div>
+          <div class="text-h6">
+            {{ isComposeMode ? $t('newContactDialog.composeEmail') : $t('newContactDialog.newContact') }}
+          </div>
         </q-card-section>
         <q-card-section>
           <q-input
@@ -11,10 +13,11 @@
             v-model="address"
             filled
             dense
-            :placeholder="$t('newContactDialog.enterBitcoinCashAddress')"
+            :placeholder="inputPlaceholder"
             :aria-busy="lookupPending"
             ref="address"
-            @keydown.enter.prevent="addContact()"
+            data-test="address-input"
+            @keydown.enter.prevent="onEnter()"
           />
         </q-card-section>
         <div class="q-sr-only" role="status" aria-live="polite">
@@ -26,6 +29,9 @@
             $t('newContactDialog.found', {
               name: contact.profile?.name ?? '',
             })
+          }}</span>
+          <span v-else-if="isEmailRecipient">{{
+            emailAffordanceLabel
           }}</span>
         </div>
         <q-slide-transition>
@@ -80,6 +86,36 @@
               </q-item-section>
             </q-item>
           </q-card-section>
+          <q-card-section
+            v-else-if="isEmailRecipient"
+            class="q-py-none"
+            data-test="email-recipient-section"
+          >
+            <q-item
+              clickable
+              @click="startEmailThread"
+              class="rounded-borders bg-primary-1 text-primary q-my-sm cursor-pointer"
+              data-test="email-affordance-item"
+            >
+              <q-item-section avatar>
+                <q-avatar color="primary" text-color="white" icon="mail" />
+              </q-item-section>
+              <q-item-section>
+                <q-item-label
+                  class="text-weight-bold"
+                  data-test="email-affordance-label"
+                >
+                  {{ emailAffordanceLabel }}
+                </q-item-label>
+                <q-item-label caption>
+                  {{ $t('newContactDialog.sendEmailViaGateway') }}
+                </q-item-label>
+              </q-item-section>
+              <q-item-section side>
+                <q-icon name="arrow_forward" color="primary" />
+              </q-item-section>
+            </q-item>
+          </q-card-section>
         </q-slide-transition>
         <q-card-actions align="between">
           <q-btn
@@ -100,6 +136,15 @@
               @click="cancel"
             />
             <q-btn
+              v-if="isEmailRecipient"
+              color="primary"
+              icon="mail"
+              :label="emailAffordanceLabel"
+              data-test="start-email-thread-btn"
+              @click="startEmailThread"
+            />
+            <q-btn
+              v-else
               :disable="!canAdd"
               label="Add"
               color="primary"
@@ -126,6 +171,9 @@ import { useChatStore } from 'src/stores/chats'
 import { activeChain } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
+import { defaultEmailGatewayAddress } from 'src/utils/constants'
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 // Pastes (the usual way a complete address arrives) look up immediately; edits made while a
 // lookup is scheduled, in flight, or just fired wait this long so a burst yields one fetch.
@@ -151,7 +199,7 @@ export default defineComponent({
   },
   data() {
     return {
-      address: '',
+      address: (this.$route?.query?.to as string) || '',
       acceptedLookup: null as AcceptedLookup | null,
       showMyQrDialog: false,
       // Bumped on every address change; a lookup may only publish a result while its own
@@ -176,6 +224,24 @@ export default defineComponent({
     }
   },
   computed: {
+    isComposeMode(): boolean {
+      return this.$route?.query?.compose === 'email'
+    },
+    isEmailRecipient(): boolean {
+      return EMAIL_REGEX.test(this.address.trim())
+    },
+    emailAddress(): string {
+      return this.address.trim()
+    },
+    emailAffordanceLabel(): string {
+      return `Start Email Thread to ${this.emailAddress} (via Frank Email Gateway)`
+    },
+    inputPlaceholder(): string {
+      if (this.isComposeMode) {
+        return this.$t('newContactDialog.enterAddressOrEmail')
+      }
+      return this.$t('newContactDialog.enterBitcoinCashAddress')
+    },
     canAdd(): boolean {
       return this.acceptedLookup !== null
     },
@@ -186,6 +252,7 @@ export default defineComponent({
       return (
         !this.lookupPending &&
         this.contact === null &&
+        !this.isEmailRecipient &&
         this.address.trim() !== ''
       )
     },
@@ -201,6 +268,9 @@ export default defineComponent({
       this.lookupPending = false
       this.lookupFailure = null
       if (newAddress.trim() === '') {
+        return
+      }
+      if (EMAIL_REGEX.test(newAddress.trim())) {
         return
       }
       const normalizedAddress = this.canonicalizeAddress(newAddress)
@@ -292,6 +362,50 @@ export default defineComponent({
           this.lookupPending = false
         }
       }
+    },
+    onEnter() {
+      if (this.isEmailRecipient) {
+        this.startEmailThread()
+      } else {
+        this.addContact()
+      }
+    },
+    startEmailThread() {
+      if (!this.isEmailRecipient) {
+        return
+      }
+      const email = this.emailAddress
+      let targetId = email
+      try {
+        const chatStore = useChatStore()
+        let conv: any
+        if (
+          typeof (chatStore as any).createOrOpenEmailConversation === 'function'
+        ) {
+          conv = (chatStore as any).createOrOpenEmailConversation({
+            recipientEmail: email,
+            gatewayAddress: defaultEmailGatewayAddress,
+          })
+        } else if (typeof chatStore.createConversation === 'function') {
+          conv = chatStore.createConversation({
+            kind: 'email',
+            topic: email,
+            name: email,
+            emailRecipient: email,
+            address: defaultEmailGatewayAddress,
+            participants: [defaultEmailGatewayAddress],
+          })
+        }
+        if (conv?.id) {
+          targetId = conv.id
+        }
+        if (typeof chatStore.setActiveConversation === 'function') {
+          chatStore.setActiveConversation(targetId)
+        }
+      } catch {
+        // Pinia not active in test environment
+      }
+      openChat(this.$router, targetId)
     },
     addContact() {
       if (!this.canAdd) {

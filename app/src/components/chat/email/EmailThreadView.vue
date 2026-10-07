@@ -18,7 +18,7 @@
             data-testid="email-gateway-badge"
           >
             <q-icon name="verified" size="14px" class="q-mr-xs text-primary" />
-            {{ $t('emailThread.gatewayBadge', '✉️ Email Bridge (via Frank Gateway)') }}
+            {{ $t('emailThread.gatewayBadge') }}
           </q-badge>
           <q-badge
             v-else
@@ -31,15 +31,16 @@
             {{ $t('emailThread.unverifiedBadge', '⚠️ Direct P2P Email (Unverified)') }}
           </q-badge>
           <q-btn
+            v-if="!isDraft"
             flat
             dense
             round
             size="sm"
             :icon="allExpanded ? 'unfold_less' : 'unfold_more'"
-            :aria-label="allExpanded ? 'Collapse all' : 'Expand all'"
+            :aria-label="allExpanded ? $t('emailThread.collapseAll') : $t('emailThread.expandAll')"
             @click="toggleAllExpanded"
           >
-            <q-tooltip>{{ allExpanded ? 'Collapse All' : 'Expand All' }}</q-tooltip>
+            <q-tooltip>{{ allExpanded ? $t('emailThread.collapseAll') : $t('emailThread.expandAll') }}</q-tooltip>
           </q-btn>
         </div>
       </div>
@@ -61,10 +62,10 @@
 
       <!-- Participants summary -->
       <div class="row items-center text-caption text-grey-7 q-gutter-x-sm ellipsis" v-if="allParticipants.length > 0">
-        <span class="text-weight-medium">{{ $t('emailThread.participants', 'Participants') }}:</span>
+        <span class="text-weight-medium">{{ $t('emailThread.participants') }}:</span>
         <span class="ellipsis">{{ allParticipants.join(', ') }}</span>
         <q-badge color="grey-5" text-color="black" class="text-caption">
-          {{ parsedEmails.length }} {{ parsedEmails.length === 1 ? 'message' : 'messages' }}
+          {{ parsedEmails.length }} {{ parsedEmails.length === 1 ? $t('emailThread.messageSingle') : $t('emailThread.messagePlural') }}
         </q-badge>
       </div>
     </div>
@@ -77,6 +78,21 @@
         :content-style="{ padding: '16px 24px 180px 24px' }"
       >
         <div class="email-cards-container">
+          <!-- Draft placeholder when there are 0 messages -->
+          <div
+            v-if="isDraft"
+            class="column items-center justify-center q-pa-xl text-grey-6 empty-draft-container"
+            data-testid="email-draft-placeholder"
+          >
+            <q-icon name="drafts" size="48px" class="q-mb-sm text-grey-5" />
+            <div class="text-subtitle1 text-weight-medium">
+              {{ $t('emailThread.newDraftTitle') }}
+            </div>
+            <div class="text-caption text-center" style="max-width: 420px">
+              {{ $t('emailThread.newDraftSubtitle') }}
+            </div>
+          </div>
+
           <template v-for="(card, index) in parsedEmails" :key="card.id">
             <q-card
               flat
@@ -140,10 +156,10 @@
                   <!-- Expanded Recipient Details -->
                   <div class="text-caption text-grey-6" v-else>
                     <div>
-                      <span class="text-weight-medium">To:</span> {{ formatParties(card.to) }}
+                      <span class="text-weight-medium">{{ $t('emailThread.to') }}:</span> {{ formatParties(card.to) }}
                     </div>
                     <div v-if="card.cc && card.cc.length > 0">
-                      <span class="text-weight-medium">Cc:</span> {{ formatParties(card.cc) }}
+                      <span class="text-weight-medium">{{ $t('emailThread.cc') }}:</span> {{ formatParties(card.cc) }}
                     </div>
                   </div>
                 </q-item-section>
@@ -167,7 +183,7 @@
                     <div v-if="card.attachments && card.attachments.length > 0" class="q-mt-md">
                       <q-separator class="q-mb-sm" />
                       <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">
-                        Attachments ({{ card.attachments.length }}):
+                        {{ $t('emailThread.attachmentsCount', { count: card.attachments.length }) }}
                       </div>
                       <div class="row q-gutter-sm items-center">
                         <q-chip
@@ -194,7 +210,7 @@
                       dense
                       size="sm"
                       icon="reply"
-                      label="Reply"
+                      :label="$t('emailThread.reply')"
                       @click.stop="prepareReply(card, 'reply')"
                     />
                     <q-btn
@@ -202,7 +218,7 @@
                       dense
                       size="sm"
                       icon="reply_all"
-                      label="Reply All"
+                      :label="$t('emailThread.replyAll')"
                       v-if="canReplyAll(card)"
                       @click.stop="prepareReply(card, 'reply_all')"
                     />
@@ -264,25 +280,27 @@
       <!-- Composer Controls Header -->
       <div class="row items-center justify-between q-mb-sm">
         <div class="row items-center q-gutter-x-sm">
-          <q-btn-toggle
-            v-model="replyMode"
-            dense
-            rounded
-            toggle-color="primary"
-            color="grey-4"
-            text-color="grey-8"
-            size="sm"
-            :options="[
-              { label: 'Reply All', value: 'reply_all' },
-              { label: 'Reply Sender', value: 'reply' },
-            ]"
-            @update:model-value="onReplyModeChanged"
-          />
+          <template v-if="!isDraft">
+            <q-btn-toggle
+              v-model="replyMode"
+              dense
+              rounded
+              toggle-color="primary"
+              color="grey-4"
+              text-color="grey-8"
+              size="sm"
+              :options="replyOptions"
+              @update:model-value="onReplyModeChanged"
+            />
+          </template>
+          <span v-else class="text-weight-medium text-caption text-primary">
+            {{ $t('emailThread.newEmail') }}
+          </span>
           <q-btn
             flat
             dense
             size="sm"
-            :label="showCc ? '- Cc' : '+ Cc'"
+            :label="showCc ? $t('emailThread.hideCc') : $t('emailThread.showCc')"
             color="primary"
             @click="showCc = !showCc"
           />
@@ -294,7 +312,7 @@
 
       <!-- Recipient To Field -->
       <div class="row items-center q-mb-xs">
-        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">To:</span>
+        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">{{ $t('emailThread.to') }}:</span>
         <div class="col row items-center q-gutter-xs">
           <q-chip
             v-for="(addr, idx) in toList"
@@ -309,10 +327,11 @@
             {{ addr }}
           </q-chip>
           <q-input
+            ref="toInputRef"
             v-model="newToInput"
             dense
             borderless
-            placeholder="Add recipient..."
+            :placeholder="$t('emailThread.addRecipient')"
             class="col text-caption input-inline"
             @keydown.enter.prevent="addToRecipient"
             @keydown="handleRecipientKeydown($event, 'to')"
@@ -322,7 +341,7 @@
 
       <!-- Recipient Cc Field -->
       <div class="row items-center q-mb-xs" v-if="showCc || ccList.length > 0">
-        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">Cc:</span>
+        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">{{ $t('emailThread.cc') }}:</span>
         <div class="col row items-center q-gutter-xs">
           <q-chip
             v-for="(addr, idx) in ccList"
@@ -337,10 +356,11 @@
             {{ addr }}
           </q-chip>
           <q-input
+            ref="ccInputRef"
             v-model="newCcInput"
             dense
             borderless
-            placeholder="Add Cc recipient..."
+            :placeholder="$t('emailThread.addCcRecipient')"
             class="col text-caption input-inline"
             @keydown.enter.prevent="addCcRecipient"
             @keydown="handleRecipientKeydown($event, 'cc')"
@@ -350,12 +370,13 @@
 
       <!-- Subject Field -->
       <div class="row items-center q-mb-sm">
-        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">Sub:</span>
+        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">{{ $t('emailThread.subjectLabel') }}</span>
         <q-input
+          ref="subjectInputRef"
           v-model="subject"
           dense
           outlined
-          placeholder="Subject"
+          :placeholder="$t('emailThread.subjectPlaceholder')"
           class="col text-caption"
         />
       </div>
@@ -364,13 +385,14 @@
       <div class="row items-end q-col-gutter-sm">
         <div class="col">
           <q-input
+            ref="bodyInputRef"
             v-model="replyText"
             type="textarea"
             autogrow
-            :rows="3"
+            :rows="isDraft ? 5 : 3"
             outlined
             dense
-            placeholder="Write your email reply..."
+            :placeholder="isDraft ? $t('emailThread.writeMessagePlaceholder') : $t('emailThread.writeReplyPlaceholder')"
             class="email-textarea"
             :disable="sending"
             @keydown.ctrl.enter="handleSend"
@@ -553,7 +575,19 @@ export default defineComponent({
       cards.sort((a, b) => a.timestamp - b.timestamp)
       return cards
     },
+    isDraft(): boolean {
+      return this.parsedEmails.length === 0
+    },
+    replyOptions(): Array<{ label: string; value: 'reply' | 'reply_all' }> {
+      return [
+        { label: this.$t('emailThread.replyAll'), value: 'reply_all' },
+        { label: this.$t('emailThread.replySender'), value: 'reply' },
+      ]
+    },
     threadSubject(): string {
+      if (this.subject && this.isDraft) {
+        return this.subject
+      }
       if (this.conversation?.name) {
         return this.conversation.name
       }
@@ -561,7 +595,10 @@ export default defineComponent({
         const sub = this.parsedEmails[i].subject
         if (sub && sub !== 'No Subject') return sub
       }
-      return 'Email Thread'
+      if (this.toList.length > 0) {
+        return `Draft to ${this.toList[0]}`
+      }
+      return this.$t('emailThread.newDraftTitle', 'New Email Thread')
     },
     allParticipants(): string[] {
       const set = new Set<string>()
@@ -572,10 +609,18 @@ export default defineComponent({
           set.add(email.fromAddress)
         }
       }
+      if (this.isDraft && this.toList.length > 0) {
+        for (const t of this.toList) {
+          set.add(t)
+        }
+      }
       return Array.from(set)
     },
     canSend(): boolean {
-      return this.replyText.trim().length > 0 && this.toList.length > 0
+      return (
+        this.replyText.trim().length > 0 &&
+        (this.toList.length > 0 || this.newToInput.trim().length > 0)
+      )
     },
     latestEmail(): ParsedEmailCard | undefined {
       return this.parsedEmails[this.parsedEmails.length - 1]
@@ -595,11 +640,72 @@ export default defineComponent({
           if (this.toList.length === 0 && !this.replyText) {
             this.setupComposerDefaults(cards[cards.length - 1])
           }
+        } else {
+          this.setupNewDraftDefaults()
+        }
+      },
+    },
+    conversation: {
+      immediate: true,
+      handler() {
+        if (this.isDraft) {
+          this.setupNewDraftDefaults()
         }
       },
     },
   },
+  mounted() {
+    if (this.isDraft) {
+      this.setupNewDraftDefaults()
+    }
+  },
   methods: {
+    setupNewDraftDefaults() {
+      const recipient =
+        this.conversation?.emailRecipient ||
+        (this.conversation?.topic?.includes('@')
+          ? this.conversation.topic
+          : undefined) ||
+        (this.conversation?.name?.includes('@')
+          ? this.conversation.name
+          : undefined)
+
+      if (recipient && !this.toList.includes(recipient)) {
+        this.toList = [recipient]
+      }
+
+      this.replyMode = 'reply'
+
+      if (
+        this.conversation?.name &&
+        !this.conversation.name.includes('@') &&
+        !this.subject
+      ) {
+        this.subject = this.conversation.name
+      }
+
+      this.$nextTick(() => {
+        this.focusDraftCursor()
+      })
+    },
+    focusDraftCursor() {
+      if (this.toList.length === 0) {
+        this.focusInput(this.$refs.toInputRef)
+      } else if (!this.subject) {
+        this.focusInput(this.$refs.subjectInputRef)
+      } else {
+        this.focusInput(this.$refs.bodyInputRef)
+      }
+    },
+    focusInput(inputComp: any) {
+      if (!inputComp) return
+      if (typeof inputComp.focus === 'function') {
+        inputComp.focus()
+      } else if (inputComp.$el) {
+        const el = inputComp.$el.querySelector('input, textarea')
+        el?.focus?.()
+      }
+    },
     isExpanded(id: string): boolean {
       return !!this.expandedMap[id]
     },
@@ -747,13 +853,14 @@ export default defineComponent({
       const toParties: EmailParty[] = this.toList.map(addr => ({ address: addr }))
       const ccParties: EmailParty[] = this.ccList.map(addr => ({ address: addr }))
 
+      const emailSubject = this.subject || (this.isDraft ? 'No Subject' : this.threadSubject)
       const emailItem: EmailItem = {
         type: 'email',
         messageId: `<frank_${Date.now()}_${Math.random().toString(36).slice(2, 9)}@frank.org>`,
         from: { address: 'me' },
         to: toParties,
         cc: ccParties.length > 0 ? ccParties : undefined,
-        subject: this.subject || this.threadSubject,
+        subject: emailSubject,
         textBody: this.replyText,
         inReplyTo: this.activeInReplyTo,
         references: this.activeReferences,
@@ -767,8 +874,8 @@ export default defineComponent({
           : undefined
 
       const fallbackText = isGatewayRoute
-        ? `[Email to ${this.toList.join(', ')}]\nSubject: ${this.subject}\n\n${this.replyText}`
-        : `[Direct P2P Email to ${this.peerFrankAddress} (external email recipients not notified)]\nSubject: ${this.subject}\n\n${this.replyText}`
+        ? `[Email to ${this.toList.join(', ')}]\nSubject: ${emailSubject}\n\n${this.replyText}`
+        : `[Direct P2P Email to ${this.peerFrankAddress} (external email recipients not notified)]\nSubject: ${emailSubject}\n\n${this.replyText}`
 
       const items: MessageItem[] = [
         emailItem,

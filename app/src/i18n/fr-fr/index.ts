@@ -240,6 +240,7 @@ export default {
   a11y: {
     openNavigation: 'Ouvrir le menu de navigation',
     addContact: 'Ajouter un contact',
+    composeEmail: 'Rédiger un e-mail',
     addTopic: 'Ajouter un sujet',
     deleteTopic: 'Supprimer le sujet {topic}',
     deleteContact: 'Supprimer le contact {name}',
@@ -378,6 +379,7 @@ export default {
     balance: 'Solde',
     balanceStale: '(dernière valeur connue)',
     directMessages: 'Messages privés',
+    composeEmail: 'Rédiger un e-mail',
     selectChatOrAddContact:
       'Sélectionnez une conversation ou ajoutez un contact pour commencer à échanger.',
   },
@@ -675,13 +677,50 @@ export default {
         'Votre propre compte est encore en cours de publication. Les contacts pourront être ajoutés une fois la messagerie activée.',
     },
     newContact: 'Nouveau contact',
+    composeEmail: 'Rédiger un e-mail',
     enterBitcoinCashAddress: 'Entrez une adresse Lotus...',
+    enterAddressOrEmail: 'Entrez une adresse ou un e-mail (nom@exemple.com)',
     loading: 'Recherche du contact',
     notFound: 'Non trouvé',
     found: 'Contact trouvé : {name}',
     ownAddress:
       "Il s'agit de votre propre adresse. Vous ne pouvez pas vous ajouter comme contact.",
     showMyQr: 'Afficher mon code QR',
+    startEmailThread:
+      'Démarrer un fil e-mail vers {email} (via Passerelle Frank)',
+    startEmailThreadAffordance:
+      'Démarrer un fil e-mail vers {email} (via Passerelle Frank)',
+    sendEmailViaGateway:
+      'Rédiger et envoyer un e-mail sortant via la passerelle Frank',
+  },
+  emailThread: {
+    gatewayBadge: '✉️ Passerelle e-mail (via Passerelle Frank)',
+    unverifiedBadge: '⚠️ E-mail P2P direct (non vérifié)',
+    collapseAll: 'Tout réduire',
+    expandAll: 'Tout développer',
+    participants: 'Participants',
+    messageSingle: 'message',
+    messagePlural: 'messages',
+    to: 'À',
+    cc: 'Cc',
+    attachmentsCount: 'Pièces jointes ({count}) :',
+    reply: 'Répondre',
+    replyAll: 'Répondre à tous',
+    replySender: 'Répondre à l’expéditeur',
+    hideCc: '- Cc',
+    showCc: '+ Cc',
+    addRecipient: 'Ajouter un destinataire...',
+    addCcRecipient: 'Ajouter un destinataire en copie...',
+    subjectLabel: 'Objet :',
+    subjectPlaceholder: 'Objet',
+    writeMessagePlaceholder: 'Rédigez votre e-mail...',
+    writeReplyPlaceholder: 'Rédigez votre réponse par e-mail...',
+    send: 'Envoyer',
+    sendTooltip: 'Envoyer via la passerelle e-mail Frank (Ctrl+Entrée)',
+    newDraftTitle: 'Nouveau fil de discussion e-mail',
+    newDraftSubtitle:
+      'Rédigez votre message ci-dessous. Frank l’acheminera via la passerelle e-mail Frank vers le destinataire par e-mail standard.',
+    newEmail: 'Nouvel e-mail sortant',
   },
   newTopicDialog: {
     newTopic: 'Créer un nouveau topic',
@@ -960,11 +999,6 @@ export default {
     licenseHeading: 'Licence de la bibliothèque DKLs23',
     licenseIntro:
       'Le texte intégral de la licence, avec ses conditions et son avertissement, tel que publié par Silence Laboratories (en anglais uniquement) :',
-  },
-  emailThread: {
-    gatewayBadge: '✉️ Passerelle e-mail (via passerelle Frank)',
-    unverifiedBadge: '⚠️ E-mail P2P direct (non vérifié)',
-    participants: 'Participants à la discussion',
   },
   close: 'Fermer',
 }

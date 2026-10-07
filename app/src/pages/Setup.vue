@@ -297,6 +297,46 @@
               :options="policies"
               data-test="backup-policy"
             />
+            <q-expansion-item
+              class="q-mt-md"
+              icon="tune"
+              :label="$t('accountRecovery.advanced_options')"
+              :caption="$t('accountRecovery.relay_server')"
+              header-class="text-weight-medium text-grey-8"
+              data-test="advanced-relay-expansion"
+            >
+              <q-card class="bg-transparent q-pa-none">
+                <q-card-section class="q-px-none q-pt-sm">
+                  <q-input
+                    v-model="customRelayUrl"
+                    outlined
+                    dense
+                    :label="$t('accountRecovery.relay_server_url')"
+                    :hint="$t('accountRecovery.relay_server_url_hint')"
+                    :placeholder="defaultRelayUrl"
+                    data-test="custom-relay-input"
+                    :rules="[validateRelayUrl]"
+                  >
+                    <template
+                      v-if="
+                        customRelayUrl && customRelayUrl !== defaultRelayUrl
+                      "
+                      #append
+                    >
+                      <q-btn
+                        flat
+                        dense
+                        round
+                        icon="restart_alt"
+                        :title="$t('accountRecovery.reset_to_default_relay')"
+                        data-test="reset-default-relay"
+                        @click="customRelayUrl = defaultRelayUrl"
+                      />
+                    </template>
+                  </q-input>
+                </q-card-section>
+              </q-card>
+            </q-expansion-item>
             <div class="row q-gutter-sm q-mt-md items-center">
               <q-btn
                 type="submit"
@@ -456,6 +496,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useTranslate } from '../composables/useTranslate'
 import {
   accountSession,
   accountStatus as account,
@@ -471,10 +512,33 @@ import {
   retryLegacyInspection,
 } from '../accounts/legacy'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
+import {
+  getDefaultRelayBaseUrl,
+  getCustomRelayBaseUrl,
+  setCustomRelayBaseUrl,
+} from '@frank/wallet/chain'
+
 defineProps<{ myDrawerOpen?: boolean }>()
 const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
 const router = useRouter()
+const t = useTranslate()
 const ceremony = createAccountCeremony()
+
+const defaultRelayUrl = getDefaultRelayBaseUrl()
+const customRelayUrl = ref(getCustomRelayBaseUrl() ?? defaultRelayUrl)
+
+function validateRelayUrl(val: string): boolean | string {
+  if (!val || val.trim().length === 0) return true
+  try {
+    const parsed = new URL(val.trim())
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return true
+    }
+  } catch {
+    // invalid url
+  }
+  return t('accountRecovery.invalid_relay_url')
+}
 type Mode =
   | 'choice'
   | 'legacy'
@@ -552,6 +616,7 @@ function cancel() {
   descriptorSaved.value = false
   policy.value = null
   legacyAddress.value = ''
+  customRelayUrl.value = getCustomRelayBaseUrl() ?? defaultRelayUrl
   changeMode('choice')
 }
 watch(
@@ -582,6 +647,12 @@ async function run(work: () => Promise<void>) {
 function beginNew() {
   return run(async () => {
     if (!mayBegin.value || !policy.value) return
+    const cleanedRelay = customRelayUrl.value?.trim()
+    if (cleanedRelay && cleanedRelay !== defaultRelayUrl) {
+      setCustomRelayBaseUrl(cleanedRelay)
+    } else {
+      setCustomRelayBaseUrl(undefined)
+    }
     threshold.value = policy.value === '2-3' ? 2 : 3
     shareCount.value = policy.value === '2-3' ? 3 : 5
     descriptor.value = await ceremony.beginNew(

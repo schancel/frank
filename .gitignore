@@ -8,6 +8,7 @@ target/
 dist/
 **/.vitepress/cache/
 **/.vitepress/.temp/
+app/public/docs/
 __pycache__/
 *.pyc
 .worktrees/

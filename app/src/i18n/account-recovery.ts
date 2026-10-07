@@ -109,6 +109,13 @@ export const en = {
   share: 'Share',
   copy_share: 'Copy',
   advanced_details: 'Advanced details',
+  advanced_options: 'Advanced options',
+  relay_server: 'Relay server',
+  relay_server_url: 'Relay Server URL',
+  relay_server_url_hint:
+    'Home relay server for your encrypted mailbox and profile',
+  reset_to_default_relay: 'Reset to default relay',
+  invalid_relay_url: 'Please enter a valid HTTP or HTTPS URL',
 }
 
 export const fr = {
@@ -226,4 +233,11 @@ export const fr = {
   share: 'Part',
   copy_share: 'Copier',
   advanced_details: 'Détails avancés',
+  advanced_options: 'Options avancées',
+  relay_server: 'Serveur relais',
+  relay_server_url: 'URL du serveur relais',
+  relay_server_url_hint:
+    'Serveur relais principal pour votre boîte aux lettres chiffrée et profil',
+  reset_to_default_relay: 'Réinitialiser au relais par défaut',
+  invalid_relay_url: 'Veuillez saisir une URL HTTP ou HTTPS valide',
 }

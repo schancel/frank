@@ -246,6 +246,108 @@ function readEnv(key: string): string | undefined {
   return readViteEnv(`QCLI_${key}`) ?? process.env[key];
 }
 
+export const CUSTOM_RELAY_STORAGE_KEY = "frank.relay.serverUrl";
+
+let memoryCustomRelayUrl: string | undefined = undefined;
+
+function getLocalStorage(): Storage | null {
+  try {
+    if (typeof window !== "undefined" && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch {
+    // ignore access restriction
+  }
+  return null;
+}
+
+/**
+ * Returns the custom relay server URL persisted in localStorage, if one was configured by the user.
+ */
+export function getCustomRelayBaseUrl(): string | undefined {
+  const storage = getLocalStorage();
+  if (storage) {
+    try {
+      const stored = storage.getItem(CUSTOM_RELAY_STORAGE_KEY)?.trim();
+      if (stored) {
+        const parsed = new URL(stored);
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+          return stored.replace(/\/+$/, "");
+        }
+      }
+    } catch {
+      // ignore invalid URL or storage error
+    }
+    return memoryCustomRelayUrl;
+  }
+  return memoryCustomRelayUrl;
+}
+
+/**
+ * Persists or clears a custom relay server URL in localStorage.
+ */
+export function setCustomRelayBaseUrl(url: string | undefined): void {
+  const cleaned =
+    url && url.trim().length > 0 ? url.trim().replace(/\/+$/, "") : undefined;
+  const storage = getLocalStorage();
+  if (storage) {
+    try {
+      if (cleaned) {
+        storage.setItem(CUSTOM_RELAY_STORAGE_KEY, cleaned);
+      } else {
+        storage.removeItem(CUSTOM_RELAY_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage error
+    }
+  }
+  memoryCustomRelayUrl = cleaned;
+}
+
+/**
+ * Resolves the default build-injected relay base URL.
+ */
+export function getDefaultRelayBaseUrl(): string {
+  const configured =
+    readEnv("MONAD_RELAY_BASE_URL") ?? readEnv("E2E_DEMO_RELAY_URL");
+  if (
+    typeof window !== "undefined" &&
+    window.location &&
+    window.location.origin
+  ) {
+    const isLoopback =
+      window.location.hostname === "127.0.0.1" ||
+      window.location.hostname === "localhost";
+    if (isLoopback) {
+      if (configured) {
+        try {
+          const parsed = new URL(configured);
+          if (
+            parsed.hostname === "127.0.0.1" ||
+            parsed.hostname === "localhost"
+          ) {
+            return configured;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      const port = readEnv("FRANK_DEMO_RELAY_PORT") ?? "8098";
+      return `http://127.0.0.1:${port}`;
+    }
+    if (!configured) return window.location.origin;
+    try {
+      const parsed = new URL(configured);
+      if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
+        return window.location.origin;
+      }
+    } catch {
+      // keep configured
+    }
+  }
+  return configured ?? "http://127.0.0.1:8098";
+}
+
 /** Reads `MonadChainConfig` from the environment (see `readEnv` just above for exactly where
  * from, and why two places), with permissive fallbacks -- see this file's header,
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
@@ -275,40 +377,9 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
       fakeDemoEnabled && rawChainId !== undefined
         ? chainId ?? -1n
         : protocolIdentity?.chainId ?? chainId ?? DEFAULT_MONAD_CHAIN_ID,
-    relayBaseUrl: (() => {
-      const configured =
-        readEnv("MONAD_RELAY_BASE_URL") ??
-        readEnv("E2E_DEMO_RELAY_URL");
-      if (typeof window !== "undefined" && window.location && window.location.origin) {
-        const isLoopback =
-          window.location.hostname === "127.0.0.1" ||
-          window.location.hostname === "localhost";
-        if (isLoopback) {
-          if (configured) {
-            try {
-              const parsed = new URL(configured);
-              if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
-                return configured;
-              }
-            } catch {
-              // ignore
-            }
-          }
-          const port = readEnv("FRANK_DEMO_RELAY_PORT") ?? "8098";
-          return `http://127.0.0.1:${port}`;
-        }
-        if (!configured) return window.location.origin;
-        try {
-          const parsed = new URL(configured);
-          if (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") {
-            return window.location.origin;
-          }
-        } catch {
-          // keep configured
-        }
-      }
-      return configured ?? "http://127.0.0.1:8098";
-    })(),
+    get relayBaseUrl() {
+      return getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl();
+    },
     networkTag:
       (fakeDemoEnabled ? readEnv("FRANK_NETWORK_TAG") : undefined) ??
       protocolIdentity?.networkTag ??

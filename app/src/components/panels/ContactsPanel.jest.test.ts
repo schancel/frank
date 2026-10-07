@@ -60,9 +60,12 @@ describe('ContactsPanel navigation', () => {
     jest.clearAllMocks()
   })
 
-  function mountPanel() {
+  function mountPanel(width = 1024) {
     return mount(ContactsPanel, {
       global: {
+        provide: {
+          _q_: { screen: { width } },
+        },
         components: {
           QScrollArea: passthrough,
           QList: passthrough,
@@ -111,6 +114,26 @@ describe('ContactsPanel navigation', () => {
     expect(mockPush).toHaveBeenCalledWith(
       '/chat/0x1111111111111111111111111111111111111111?info=true',
     )
+  })
+
+  it('emits closeDrawer when clicking a contact on a narrow viewport', async () => {
+    const wrapper = mountPanel(500)
+    await flushPromises()
+
+    const rows = wrapper.findAll('[data-test="contact-list-row"]')
+    await rows[0].trigger('click')
+
+    expect(wrapper.emitted('closeDrawer')).toBeTruthy()
+  })
+
+  it('does not emit closeDrawer when clicking a contact on a desktop viewport', async () => {
+    const wrapper = mountPanel(1024)
+    await flushPromises()
+
+    const rows = wrapper.findAll('[data-test="contact-list-row"]')
+    await rows[0].trigger('click')
+
+    expect(wrapper.emitted('closeDrawer')).toBeFalsy()
   })
 
   it('clicking the chat icon button opens chat directly', async () => {

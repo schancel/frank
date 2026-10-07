@@ -85,8 +85,11 @@ type Profile = {
   /** Name carried by the last signed profile lookup. Kept separate from `name`, which may be a
    * relay-curated, address, or user-facing fallback label. */
   signedName?: string | null
+  username?: string | null
   bio: string | null
   avatar: string | null
+  location?: string | null
+  links?: Array<{ type: string; url: string; label?: string }>
   pubKey: ProfilePubKey | null
   /** The signed profile carried the self-declared bot marker (#311). `undefined` = not looked up
    * yet; only an explicit `true` counts. A copied name plus this flag is still not a verified
@@ -404,8 +407,11 @@ export const useContactStore = defineStore('contacts', {
                 ? shortAddressLabel(displayAddress)
                 : (profileInfo.name as string),
               signedName: profileInfo.name ?? null,
+              username: profileInfo.username ?? null,
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
+              location: profileInfo.location ?? null,
+              links: profileInfo.links ?? [],
               isBot: profileInfo.bot === true,
               pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
             },
@@ -541,8 +547,13 @@ export const useContactStore = defineStore('contacts', {
               ? oldContactInfo.profile.name
               : shortAddressLabel(toChainDisplayAddress(address)),
             signedName: profileInfo.name ?? null,
+            username:
+              profileInfo.username ?? oldContactInfo.profile.username ?? null,
             bio: profileInfo.bio ?? oldContactInfo.profile.bio,
             avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
+            location:
+              profileInfo.location ?? oldContactInfo.profile.location ?? null,
+            links: profileInfo.links ?? oldContactInfo.profile.links ?? [],
             isBot: profileInfo.bot === true,
             pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
           },

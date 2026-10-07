@@ -240,6 +240,14 @@ export default defineComponent({
       image: null as unknown | null,
     }
   },
+  watch: {
+    '$route.query.info'(val: string | undefined) {
+      this.infoOpen = val === 'true'
+    },
+    '$route.params.address'(val: string | undefined) {
+      this.address = val || ''
+    },
+  },
   beforeRouteUpdate(
     to: RouteLocationNormalized,
     from: RouteLocationNormalized,

@@ -117,6 +117,7 @@
         v-if="$status.setup"
         v-show="tab == 'contacts'"
         v-bind="panelAttrs('contacts')"
+        @closeDrawer="$emit('closeDrawer')"
       />
 
       <wallet-panel

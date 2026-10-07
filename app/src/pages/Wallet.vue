@@ -48,7 +48,7 @@
           </div>
         </q-card-section>
         <q-separator />
-        <q-card-section>
+        <q-card-section class="q-py-sm">
           <div
             class="text-bold text-subtitle1 text-center"
             role="status"
@@ -106,7 +106,7 @@
               v-model="displayAddress"
               readonly
             >
-              <template #after>
+              <template #append>
                 <q-btn
                   dense
                   color="primary"
@@ -120,39 +120,39 @@
               </template>
             </q-input>
           </div>
+          <q-card-actions align="right" class="q-px-none q-pt-md bg-transparent">
+            <q-btn
+              no-caps
+              outline
+              color="primary"
+              :label="$t('walletPanel.sendToContact')"
+              :disable="selectedWallet !== 'monad'"
+              data-testid="wallet-contact-send-action"
+              @click="openSendContact"
+            />
+            <q-btn
+              no-caps
+              :label="
+                selectedWallet === 'ecash'
+                  ? isTestnet
+                    ? $t('walletPanel.sendTxec')
+                    : $t('walletPanel.sendXec')
+                  : selectedWallet === 'solana'
+                  ? isTestnet
+                    ? $t('walletPanel.sendTsol')
+                    : $t('walletPanel.sendSol')
+                  : isTestnet
+                  ? $t('walletPanel.sendMont')
+                  : $t('walletPanel.send')
+              "
+              color="primary"
+              :disable="selectedWallet !== 'monad'"
+              data-testid="wallet-send-action"
+              data-test="wallet-legacy-send-action"
+              @click="openSend"
+            />
+          </q-card-actions>
         </q-card-section>
-        <q-card-actions align="right" class="q-pa-md bg-transparent">
-          <q-btn
-            no-caps
-            outline
-            color="primary"
-            :label="$t('walletPanel.sendToContact')"
-            :disable="selectedWallet !== 'monad'"
-            data-testid="wallet-contact-send-action"
-            @click="openSendContact"
-          />
-          <q-btn
-            no-caps
-            :label="
-              selectedWallet === 'ecash'
-                ? isTestnet
-                  ? $t('walletPanel.sendTxec')
-                  : $t('walletPanel.sendXec')
-                : selectedWallet === 'solana'
-                ? isTestnet
-                  ? $t('walletPanel.sendTsol')
-                  : $t('walletPanel.sendSol')
-                : isTestnet
-                ? $t('walletPanel.sendMont')
-                : $t('walletPanel.send')
-            "
-            color="primary"
-            :disable="selectedWallet !== 'monad'"
-            data-testid="wallet-send-action"
-            data-test="wallet-legacy-send-action"
-            @click="openSend"
-          />
-        </q-card-actions>
       </q-card>
     </q-page>
   </q-page-container>

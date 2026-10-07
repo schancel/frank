@@ -118,10 +118,18 @@ describe('TopicMessage vote handler and loading state', () => {
     const wrapper = mountTopicMessage()
     const vm = wrapper.vm as any
 
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('disable')).toBe('false')
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('loading')).toBe('false')
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('disable')).toBe('false')
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('loading')).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('disable'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('disable'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
+    ).toBe('false')
 
     vm.addVotes(1)
 
@@ -139,10 +147,18 @@ describe('TopicMessage vote handler and loading state', () => {
     expect(vm.isVoting).toBe(true)
     expect(vm.activeVoteDirection).toBe(1)
     expect(mockAddOffering).toHaveBeenCalledTimes(1)
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('disable')).toBe('true')
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('disable')).toBe('true')
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('loading')).toBe('true')
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('loading')).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('disable'),
+    ).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('disable'),
+    ).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
+    ).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
+    ).toBe('false')
 
     // Resolve in-flight operation
     resolveOffering()
@@ -151,10 +167,18 @@ describe('TopicMessage vote handler and loading state', () => {
 
     expect(vm.isVoting).toBe(false)
     expect(vm.activeVoteDirection).toBe(0)
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('loading')).toBe('false')
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('disable')).toBe('false')
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('disable')).toBe('false')
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('loading')).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('disable'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('disable'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
+    ).toBe('false')
 
     wrapper.unmount()
   })
@@ -183,10 +207,18 @@ describe('TopicMessage vote handler and loading state', () => {
 
     expect(vm.isVoting).toBe(true)
     expect(vm.activeVoteDirection).toBe(-1)
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('loading')).toBe('true')
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('loading')).toBe('false')
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('disable')).toBe('true')
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('disable')).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
+    ).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('disable'),
+    ).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('disable'),
+    ).toBe('true')
 
     resolveOffering()
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -194,8 +226,12 @@ describe('TopicMessage vote handler and loading state', () => {
 
     expect(vm.isVoting).toBe(false)
     expect(vm.activeVoteDirection).toBe(0)
-    expect(wrapper.find('[data-test="forum-vote-down"]').attributes('loading')).toBe('false')
-    expect(wrapper.find('[data-test="forum-vote-up"]').attributes('loading')).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
+    ).toBe('false')
 
     wrapper.unmount()
   })

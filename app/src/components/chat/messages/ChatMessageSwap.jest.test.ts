@@ -104,4 +104,64 @@ describe('ChatMessageSwap', () => {
       wrapperCancelled.find('[data-testid="swap-cancel-btn"]').exists(),
     ).toBe(false)
   })
+
+  it('shows Lock button for outbound pending swap offer and calls depositLegA', async () => {
+    const wrapper = mountComponent({ outbound: true, status: 'pending' })
+    const lockBtn = wrapper.find('[data-testid="swap-lock-btn"]')
+    expect(lockBtn.exists()).toBe(true)
+
+    await lockBtn.trigger('click')
+    expect(wrapper.emitted('deposit')).toHaveLength(1)
+  })
+
+  it('shows Claim button when ready to claim', async () => {
+    // Maker claiming Leg B
+    const wrapperMaker = mountComponent({
+      outbound: true,
+      status: 'locked',
+      legBTxHash: '0x' + 'bb'.repeat(32),
+    })
+    const claimBtnMaker = wrapperMaker.find('[data-testid="swap-claim-btn"]')
+    expect(claimBtnMaker.exists()).toBe(true)
+    await claimBtnMaker.trigger('click')
+    expect(wrapperMaker.emitted('claim')).toHaveLength(1)
+
+    // Taker claiming Leg A when preimage revealed
+    const wrapperTaker = mountComponent({
+      outbound: false,
+      status: 'locked',
+      preimage: '0x' + 'aa'.repeat(32),
+    })
+    const claimBtnTaker = wrapperTaker.find('[data-testid="swap-claim-btn"]')
+    expect(claimBtnTaker.exists()).toBe(true)
+    await claimBtnTaker.trigger('click')
+    expect(wrapperTaker.emitted('claim')).toHaveLength(1)
+  })
+
+  it('shows Refund button when swap is expired', async () => {
+    const wrapper = mountComponent({ status: 'expired' })
+    const refundBtn = wrapper.find('[data-testid="swap-refund-btn"]')
+    expect(refundBtn.exists()).toBe(true)
+
+    await refundBtn.trigger('click')
+    expect(wrapper.emitted('refund')).toHaveLength(1)
+  })
+
+  it('renders explorer links when transaction hashes are provided', () => {
+    const wrapper = mountComponent({
+      legATxHash: '0x' + '11'.repeat(32),
+      legBTxHash: 'sigsolana5abc',
+      claimTxHash: '0x' + '22'.repeat(32),
+    })
+
+    expect(wrapper.find('[data-testid="swap-leg-a-tx-link"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="swap-leg-b-tx-link"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="swap-claim-tx-link"]').exists()).toBe(
+      true,
+    )
+  })
 })

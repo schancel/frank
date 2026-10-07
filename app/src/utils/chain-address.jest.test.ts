@@ -68,6 +68,8 @@ describe('safeToChainDisplayAddress', () => {
     expect(safeToChainDisplayAddress(null)).toBeNull()
     expect(safeToChainDisplayAddress(undefined)).toBeNull()
     expect(safeToChainDisplayAddress('')).toBeNull()
-    expect(safeToChainDisplayAddress('ba3c18c2-a80d-5e5b-bd9d-fd52f5106351')).toBeNull()
+    expect(
+      safeToChainDisplayAddress('ba3c18c2-a80d-5e5b-bd9d-fd52f5106351'),
+    ).toBeNull()
   })
 })

@@ -173,8 +173,12 @@ export const useOracleStore = defineStore('oracle', {
 })
 
 export function useSafeOracleStore() {
-  if (getActivePinia()) {
-    return useOracleStore()
+  try {
+    if (typeof getActivePinia === 'function' && getActivePinia()) {
+      return useOracleStore()
+    }
+  } catch {
+    // Pinia not active or uninitialized
   }
   return {
     snapshot: getDefaultOracleSnapshot(),

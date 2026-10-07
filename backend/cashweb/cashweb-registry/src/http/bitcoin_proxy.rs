@@ -1780,6 +1780,7 @@ mod tests {
             Arc::new(DisabledChainAdapter),
             Net::Regtest,
         );
+        let event_bus = registry.event_bus().clone();
         let server = RegistryServer {
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
@@ -1790,6 +1791,7 @@ mod tests {
             bitcoin_proxy: Some(runtime),
             solana_proxy: None,
             spa_dir: None,
+            event_bus,
         };
         let router = server.into_router();
         let rpc_body = br#"{"jsonrpc":"1.0","id":1,"method":"getblockhash","params":[1]}"#;

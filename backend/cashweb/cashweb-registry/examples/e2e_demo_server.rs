@@ -178,6 +178,7 @@ async fn main() -> Result<()> {
         Err(_) => vec![],
     };
 
+    let event_bus = registry.event_bus().clone();
     let server = RegistryServer {
         registry,
         peers,
@@ -188,6 +189,7 @@ async fn main() -> Result<()> {
         bitcoin_proxy: None,
         solana_proxy: None,
         spa_dir: None,
+        event_bus,
     };
     let router = server.into_router();
 

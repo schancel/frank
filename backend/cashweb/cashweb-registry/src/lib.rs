@@ -12,6 +12,7 @@ pub mod directory_admission;
 pub mod directory_federation;
 pub mod directory_runtime;
 pub mod disabled_chain_adapter;
+pub mod events;
 pub(crate) mod forum;
 pub mod http;
 pub mod lotus_adapter;

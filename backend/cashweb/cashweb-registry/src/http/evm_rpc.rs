@@ -2678,6 +2678,7 @@ mod tests {
         let registry = Registry::new(db, Arc::new(UnusedChainAdapter), Net::Regtest);
         register_legacy_profile(&registry);
         let pop_gate = PopGate::from_conf_if_enabled(&placeholder_pop_conf());
+        let event_bus = registry.event_bus().clone();
         (
             tempdir,
             RegistryServer {
@@ -2690,6 +2691,7 @@ mod tests {
                 bitcoin_proxy: None,
                 solana_proxy: None,
                 spa_dir: None,
+                event_bus,
             },
         )
     }
@@ -3808,6 +3810,7 @@ mod tests {
                 bitcoin_proxy: None,
                 solana_proxy: None,
                 spa_dir: None,
+                event_bus: fixture.registry.event_bus().clone(),
             }
         }
 

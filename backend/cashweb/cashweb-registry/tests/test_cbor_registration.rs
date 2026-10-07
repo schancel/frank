@@ -85,6 +85,7 @@ fn open_registry(path: &std::path::Path, net: Net) -> Registry {
 
 fn make_server(registry: Registry) -> RegistryServer {
     let pop_gate = PopGate::from_conf_if_enabled(&placeholder_pop_conf());
+    let event_bus = registry.event_bus().clone();
     RegistryServer {
         registry: Arc::new(registry),
         peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
@@ -95,6 +96,7 @@ fn make_server(registry: Registry) -> RegistryServer {
         bitcoin_proxy: None,
         solana_proxy: None,
         spa_dir: None,
+        event_bus,
     }
 }
 

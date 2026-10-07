@@ -298,6 +298,8 @@ pub struct RegistryServer {
     pub solana_proxy: Option<Arc<SolanaProxyRuntime>>,
     /// Optional directory to serve Single Page Application (SPA) static files from.
     pub spa_dir: Option<PathBuf>,
+    /// Notification event bus for real-time relay message fan-out (ticket #982 / track C).
+    pub event_bus: Arc<dyn crate::events::RelayEventBus>,
 }
 
 /// Relevant parts of an HTTP request to put new address metadata.
@@ -482,6 +484,11 @@ mod request_log_tests {
 }
 
 impl RegistryServer {
+    /// Notification event bus used for real-time relay message fan-out.
+    pub fn event_bus(&self) -> &Arc<dyn crate::events::RelayEventBus> {
+        &self.event_bus
+    }
+
     /// Turn this registry server into a [`Router`].
     pub fn into_router(self) -> Router {
         self.into_router_with_directory(None)
@@ -1220,6 +1227,7 @@ mod spa_tests {
         let tempdir = TempDir::new("cashweb-registry--spa-test").unwrap();
         let db = Db::open(tempdir.path().join("db.rocksdb")).unwrap();
         let registry = Registry::new(db, Arc::new(DisabledChainAdapter), Net::Regtest);
+        let event_bus = registry.event_bus().clone();
         let server = RegistryServer {
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
@@ -1230,6 +1238,7 @@ mod spa_tests {
             bitcoin_proxy: None,
             solana_proxy: None,
             spa_dir,
+            event_bus,
         };
         (tempdir, server)
     }

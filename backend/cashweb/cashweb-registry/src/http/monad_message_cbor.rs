@@ -134,6 +134,12 @@ pub(crate) async fn handle_put(
         Ok(claim) => claim,
         Err(_) => owner.get(&hash)?.ok_or(CanonicalError::Unavailable)?,
     };
+    if let Ok(recipient) = claim.policy.recipient() {
+        let _ = server
+            .event_bus
+            .publish_message_arrival(&recipient.to_hex(), &claim.policy.payload_hash)
+            .await;
+    }
     accepted_response(&claim)
 }
 
@@ -1376,7 +1382,14 @@ pub(crate) async fn handle_mailbox_ws(
     authenticate(&server, &headers, &binding).await?;
 
     let mut rx = server.registry.canonical_dm().subscribe_finalized();
+    let mut event_rx = server
+        .event_bus
+        .subscribe(&address.to_hex())
+        .await
+        .map_err(|_| CanonicalError::Unavailable)?;
+
     Ok(ws.on_upgrade(move |mut socket| async move {
+        let mut seen_payloads = std::collections::HashSet::new();
         loop {
             tokio::select! {
                 msg = socket.recv() => {
@@ -1391,10 +1404,55 @@ pub(crate) async fn handle_mailbox_ws(
                         _ => {}
                     }
                 }
+                notif = event_rx.recv() => {
+                    match notif {
+                        Some(notification) => {
+                            if seen_payloads.contains(&notification.payload_hash) {
+                                continue;
+                            }
+                            seen_payloads.insert(notification.payload_hash);
+                            let (sub_id, ts, delivery, context) = if let Ok(Some(claim)) = server.registry.canonical_dm().get(&notification.payload_hash) {
+                                (
+                                    hex::encode(claim.request.submission_identity()),
+                                    claim.updated,
+                                    hex::encode(claim.request.delivery()),
+                                    hex::encode(claim.request.context()),
+                                )
+                            } else {
+                                (
+                                    String::new(),
+                                    now_ms(),
+                                    String::new(),
+                                    String::new(),
+                                )
+                            };
+                            let push = MailboxWsPush {
+                                direction: "in",
+                                submission_identity: sub_id,
+                                payload_hash: hex::encode(notification.payload_hash),
+                                timestamp_ms: ts,
+                                delivery,
+                                context,
+                            };
+                            let json = match serde_json::to_string(&push) {
+                                Ok(j) => j,
+                                Err(_) => continue,
+                            };
+                            if socket.send(axum::extract::ws::Message::Text(json)).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
                 res = rx.recv() => {
                     match res {
                         Ok(envelope) => {
                             if envelope.recipient == address {
+                                if seen_payloads.contains(&envelope.payload_hash) {
+                                    continue;
+                                }
+                                seen_payloads.insert(envelope.payload_hash);
                                 let push = MailboxWsPush {
                                     direction: "in",
                                     submission_identity: hex::encode(envelope.submission_identity),

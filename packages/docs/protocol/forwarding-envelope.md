@@ -71,9 +71,9 @@ Frank achieves defense-in-depth through concentric deterministic CBOR frames:
 │ │ │ │ │ ┌────────────────────────────────────────────────────────────────────┐ │ │ │ │ │
 │ │ │ │ │ │ 6. SEMANTIC ITEMS:                                                 │ │ │ │ │ │
 │ │ │ │ │ │    • Type 17: UTF-8 Text Item                                      │ │ │ │ │ │
-│ │ │ │ │ │    • Type 18: Blackjack Move / P2P Hand                            │ │ │ │ │ │
 │ │ │ │ │ │    • Type 19: Stealth Payment Item                                 │ │ │ │ │ │
 │ │ │ │ │ │    • Type 24: Universal State Channel Update                       │ │ │ │ │ │
+│ │ │ │ │ │               (Blackjack, Poker, Dice, Swaps, Multi-Chain Wagers)  │ │ │ │ │ │
 │ │ │ │ │ └────────────────────────────────────────────────────────────────────┘ │ │ │ │ │
 │ │ │ │ └────────────────────────────────────────────────────────────────────────┘ │ │ │ │
 │ │ │ └────────────────────────────────────────────────────────────────────────────┘ │ │ │

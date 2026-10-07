@@ -26,11 +26,7 @@
 
     <q-page-container>
       <q-page class="no-padding full-width docs-container">
-        <iframe
-          src="/docs/"
-          class="docs-iframe"
-          title="Frank Documentation"
-        />
+        <iframe src="/docs/" class="docs-iframe" title="Frank Documentation" />
       </q-page>
     </q-page-container>
   </div>

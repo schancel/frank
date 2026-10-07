@@ -10,8 +10,12 @@ import {
   nativeImage,
 } from 'electron'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import fs from 'fs'
 import Badge from 'electron-windows-badge'
+
+const currentDir = fileURLToPath(new URL('.', import.meta.url))
+const __dirname = currentDir
 
 // Enable single instance lock
 const isSingleInstance = app.requestSingleInstanceLock()
@@ -34,12 +38,21 @@ try {
  * The reason we are setting it here is that the path needs to be evaluated at runtime
  */
 if (process.env.PROD) {
-  global.__statics = __dirname
+  global.__statics = currentDir
 }
 
 function getIconPNGPath() {
-  // NOTE: This use to be platform specific, and may need to be again in the future.
-  return path.join(__dirname, '../icons/linux-512x512.png')
+  const candidates = [
+    path.join(currentDir, 'electron-assets/icons/linux-512x512.png'),
+    path.join(currentDir, 'icons/icon-512x512.png'),
+    path.join(currentDir, 'icons/linux-512x512.png'),
+    path.join(currentDir, '../icons/linux-512x512.png'),
+    path.join(currentDir, '../electron-assets/icons/linux-512x512.png'),
+  ]
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return path.join(currentDir, 'icons/icon-512x512.png')
 }
 
 let mainWindow
@@ -93,8 +106,6 @@ function createWindow() {
       forceQuit = true
     })
   }
-
-  mainWindow.loadURL(process.env.APP_URL)
 
   mainWindow.on('close', function (event) {
     if (forceQuit) {

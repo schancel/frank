@@ -4,6 +4,7 @@
 /node_modules
 /src/assets/
 /src-capacitor
+/public/docs/
 
 # ignore yaml
 *.yml

@@ -121,102 +121,6 @@ text-message-item = {
   * uint => frank-value,
 }
 
-; Active type18 / schema1 / min-reader1; accepted #771 closed item allocation.
-; No wildcard: these nine maps are closed, including compatible-future projection.
-; All text is well-formed UTF-8; .size on text counts UTF-8 bytes.
-;
-; Additional mandatory stage8.2 schema predicates:
-; - reveal key8 is exactly 64 lowercase ASCII hex characters, NOT decoded seed bytes;
-; - welcome key13 is <=400 UTF-16 units, astral scalars counting two;
-;   this implies <=1200 UTF-8 bytes, so the explicit byte cap is redundant.
-; Stage9 semantic predicates:
-; - action6 iff gameId is exactly "welcome"; other game IDs are not normalized;
-; - cards are unique within each hand; deal up-card is not a player card;
-; - welcome 1<=min<=max<=10^40-1, optional fee 0<=fee<=10^40-1,
-;   read from fixed-width unsigned big-endian 32-byte quantities.
-; Type18 complete-frame cap4096 is stage8.1 resource; existing cumulative
-; item/container/depth budgets apply, not independent per-child budgets.
-; Request/response direction and cross-message fairness/ownership require the
-; existing authenticated runtime context: syntax proves no payment or authority.
-; Application writers validate BEFORE conversion: wager/double strings are
-; lowercase-prefix 0x + exactly64 ASCII mixed-case hex digits; commitment is
-; bare exactly64 lowercase hex; decimal hints are exactly1..40 ASCII digits.
-; Full-string consumption, no trimming/coercion/partial hex parsing.
-; See README.md for all normative semantics, projection rules and ownership.
-
-blackjack-message-item = bj-bet / bj-deal / bj-hit-request / bj-hit-response /
-                         bj-stand / bj-double-request / bj-double-response /
-                         bj-reveal / bj-welcome
-game-id = tstr .size (1..128)
-hash32 = bstr .size 32
-evm-quantity = bstr .size 32
-card = 0..51
-bj-bet = {0: game-id, 1: 0, 2: hash32}
-bj-deal = {0: game-id, 1: 1, 4: hash32, 5: [2*2 card], 6: card}
-bj-hit-request = {0: game-id, 1: 2}
-bj-hit-response = {0: game-id, 1: 2, 5: [3*52 card]}
-bj-stand = {0: game-id, 1: 3}
-bj-double-request = {0: game-id, 1: 4, 3: hash32}
-bj-double-response = {0: game-id, 1: 4, 5: [3*3 card]}
-bj-reveal = {0: game-id, 1: 5, 7: [2*52 card],
-             8: tstr .size 64, 9: 0..3}
-bj-welcome = {0: game-id, 1: 6, 10: evm-quantity, 11: evm-quantity,
-              ? 12: evm-quantity, ? 13: tstr .size (0..1200)}
-
-; Active type18 / schema2 / min-reader2: one peer-to-peer hand (../blackjack-p2p.md).
-; Schema 2 ADDS these ten closed maps to the nine above. Action codes 16..25 are
-; disjoint from schema 1's 0..6, so the code alone selects the map. A hand map is
-; read only when the reader supports type18 schema 2 AND the frame requires reader 2
-; (writers emit schema2/min-reader2); in any other frame, and for any reader without
-; schema-2 support, codes 16..25 are out of range (stage8.2 schema).
-; No map carries an amount of money: a wager, payout or refund is the stamp of the
-; message that carries the item.
-; Stage8.2: reveal key8 is exactly 64 lowercase ASCII hex characters;
-;   hand-id is exactly 32 lowercase ASCII hex characters.
-; Stage9: cards unique within a hand; deal up-card is not a player card;
-;   1 <= max bet <= 10^40-1.
-; Writers: commitment/ref are bare exactly64 lowercase hex; max bet 1..40 ASCII digits.
-hand-id = tstr .size 32
-blackjack-hand-item = bh-challenge-dealer / bh-challenge-player / bh-accept /
-                      bh-bet / bh-deal / bh-hit / bh-stand / bh-double /
-                      bh-card / bh-reveal / bh-refund
-bh-challenge-dealer = {0: hand-id, 1: 16, 2: 0, 3: evm-quantity, 4: hash32}
-bh-challenge-player = {0: hand-id, 1: 16, 2: 1, 3: evm-quantity}
-bh-accept = {0: hand-id, 1: 17, 3: evm-quantity, 4: hash32}
-bh-bet = {0: hand-id, 1: 18}
-bh-deal = {0: hand-id, 1: 19, 5: [2*2 card], 6: card}
-bh-hit = {0: hand-id, 1: 20}
-bh-stand = {0: hand-id, 1: 21}
-bh-double = {0: hand-id, 1: 22}
-bh-card = {0: hand-id, 1: 23, 5: [3*52 card]}
-bh-reveal = {0: hand-id, 1: 24, 7: [2*52 card], 8: tstr .size 64, 9: 0..3}
-bh-refund = {0: hand-id, 1: 25, 10: hash32}
-
-; Active type18 / schema3 / min-reader2: the same hand with entropy from both sides.
-; Schema 3 ADDS these closed maps (ten actions) to the ones above. Action codes 32..41 are
-; disjoint from schema 1's 0..6 and schema 2's 16..25. A schema-3 map is read only
-; when the reader supports type18 schema 3 AND the frame requires reader 2 (writers
-; emit schema3/min-reader2); in a schema-1 or schema-2 frame, and for any reader
-; without schema-3 support, codes 32..41 are out of range (stage8.2 schema).
-; No map states a card, an outcome or an amount of money: both sides compute the
-; cards from the links opened so far.
-; Key 11 seq counts the hand's messages before this one; key 12 prev is the payload
-; digest of the previous one. A challenge is message 0 and has no prev.
-; Stage8.2: hand-id is exactly 32 lowercase ASCII hex characters.
-; Stage9: 1 <= max bet <= 10^40-1 (challenge, accept).
-; Writers: commitment/ref/prev/link are bare exactly64 lowercase hex; max bet 1..40
-;   ASCII digits.
-hand-seq = 1..255
-blackjack-hand-v3-item = bh3-challenge-dealer / bh3-challenge-player / bh3-accept /
-                         bh3-bet / bh3-move / bh3-refund
-bh3-challenge-dealer = {0: hand-id, 1: 32, 2: 0, 3: evm-quantity, 4: hash32, 11: 0}
-bh3-challenge-player = {0: hand-id, 1: 32, 2: 1, 3: evm-quantity, 11: 0}
-bh3-accept = {0: hand-id, 1: 33, 3: evm-quantity, 4: hash32, 11: hand-seq, 12: hash32}
-bh3-bet = {0: hand-id, 1: 34, 4: hash32, 11: hand-seq, 12: hash32}
-; 35 deal, 36 hit, 37 stand, 38 double, 39 card, 40 reveal; key 13 is the entropy link.
-bh3-move = {0: hand-id, 1: 35..40, 11: hand-seq, 12: hash32, 13: hash32}
-bh3-refund = {0: hand-id, 1: 41, 10: hash32, 11: hand-seq, 12: hash32}
-
 ; Active type 19 / schema 1 / min-reader 1: stealth payment item.
 stealth-message-item = {
   0: network-tag,
@@ -230,7 +134,7 @@ stealth-message-item = {
 ; Active type 24 / schema 1 / min-reader 1: universal state channel update item.
 channel-update-item = {
   0: digest-32,                      ; unique channel-id
-  1: tstr .size (1..64),             ; app-id ("blackjack", "poker", "liars-dice", "swap", "raffle")
+  1: tstr .size (1..64),             ; app-id ("poker", "liars-dice", "swap", "raffle")
   2: uint .le 4294967295,            ; sequence-number (state turn / nonce)
   3: [1*8 chain-allocation],         ; allocations across 1 or more networks
   4: bstr .size (0..65536),          ; app-state (opaque or nested CBOR payload)

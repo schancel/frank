@@ -43,8 +43,8 @@ This document defines the non-negotiable core invariants of the Frank messaging 
 
 ## 5. Application State is a Pure Deterministic Fold
 
-**Invariant:** Application protocols (e.g. Blackjack) derive their entire state by folding the authenticated, ordered stream of mailbox messages.
-- **Message Chaining:** Every application item commits to `gameId`, an incrementing sequence number `seq`, and the previous accepted message hash `prev`.
+**Invariant:** Interactive state channel applications (Type 24) derive their entire state by folding the authenticated, ordered stream of mailbox messages.
+- **Message Chaining:** Every application item commits to `channelId`, an incrementing sequence number `seq`, and the previous accepted message hash `prev`.
 - **Pure Function:** `fold(events) -> State` is a pure function. Given the same sequence of mailbox events, every client and frontend arrives at the exact same state.
 - **Fork and Concurrency Resolution:**
   - If two frontends attached to the same wallet send concurrent actions at the same `seq`, both are written to the mailbox.

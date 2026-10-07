@@ -67,7 +67,6 @@ To ensure byte-for-byte deterministic hashing across all languages (TypeScript, 
 | **15** | `0x000f` | Forum Operation Status | `forum-operation-status` | Execution status for forum operations |
 | **16** | `0x0010` | Container Message Item | `container-message-item` | Recursive grouping container for message items |
 | **17** | `0x0011` | Text Message Item | `text-message-item` | UTF-8 direct chat text message |
-| **18** | `0x0012` | Legacy Blackjack Game Item | `blackjack-message-item` | Legacy ad-hoc card moves (superceded by Type 24) |
 | **19** | `0x0013` | Stealth Payment Item | `stealth-message-item` | Single-use ephemeral DKSAP on-chain transfer notification |
 | **24** | `0x0018` | Universal State Channel Update | `channel-update-item` | Interactive turns, atomic swaps, and multi-network balance updates |
 | **25** | `0x0019` | Forwarding Delivery Envelope | `forwarding-delivery-envelope` | Store-and-forward relay hop delivery envelope (up to 32 MiB) |

@@ -203,7 +203,6 @@ E5. Type identifiers are never reused. Version 1 reserves:
 |         15 | Forum operation status                      | [topic.cddl](topic.cddl)                   |
 |         16 | Container message item                      | [direct-message.cddl](direct-message.cddl) |
 |         17 | UTF-8 text message item                     | [direct-message.cddl](direct-message.cddl) |
-|         18 | Closed typed blackjack message item         | [direct-message.cddl](direct-message.cddl) |
 |         19 | Stealth payment item                        | [direct-message.cddl](direct-message.cddl) |
 |         24 | Universal state channel update item         | [direct-message.cddl](direct-message.cddl) |
 |         25 | Relay forwarding delivery envelope          | [direct-message.cddl](direct-message.cddl) |
@@ -218,10 +217,7 @@ profile of section 11, is `directory-statement-v3`); 5
 `key-transition-statement`; 8 `message-content-revision`; 9 `topic-post`; 10 `topic-post-submission`; 11
 `topic-vote-submission`; 12 `forum-single-view`; 13 `forum-topic-page`;
 14 `forum-discovery-page`; 15 `forum-operation-status`; 16 `container-message-item`;
-17 `text-message-item`; 18 `blackjack-message-item` (schema1/min-reader1) and `blackjack-hand-item` (schema2/min-reader2, the peer-to-peer
-hand of [../blackjack-p2p.md](../blackjack-p2p.md); vectors in `vectors/blackjack-hand.json`) and `blackjack-hand-v3-item` (schema3/min-reader2, the same
-hand with entropy links and a message chain in place of cards and outcome; action codes 32..41, the default supported schema of type 18;
-vectors in `vectors/blackjack-hand-v3.json`); 24 `channel-update-item`; 25 `forwarding-delivery-envelope`.
+17 `text-message-item`; 19 `stealth-message-item`; 24 `channel-update-item`; 25 `forwarding-delivery-envelope`.
 Type 9 schema 2/min-reader 2 opens field 3 as
 `forum-content`; schema 1 remains the explicitly historical opaque-body schema.
 
@@ -761,38 +757,16 @@ Each recipient may therefore have different encrypted bytes and a different
 payload digest for the same logical message.
 
 A type-16 container message item holds complete child frames as byte strings;
-type 17 is a text item and type 18 is the closed blackjack item. Unknown item types remain exact child-frame bytes. A
+type 17 is a text item, type 19 is a stealth payment item, and type 24 is a universal state channel update item. Unknown item types remain exact child-frame bytes. A
 type-5 ciphertext is never opened before stage 10.1, so at `typed` a type-1 root
 reaches no message item: its item graph exists only in `full`, and `typed`
 vectors reach a message-item graph through a type 6, 8, or 16 root. The
 proof fixture MUST contain at least two levels and the permanently reserved
 proof-only unknown type `0xffff0001`.
 
-Type 18 uses the nine closed maps in [direct-message.cddl](direct-message.cddl):
-bet, deal, hit request/response, stand request, double request/response, reveal,
-and welcome. Compatible-future projection remains closed. Every complete type-18
-frame has a 4096-byte stage8.1 limit at both root and nested positions, before
-shape checks. The existing total256 opened-item, cumulative CBOR item/container
-and depth budgets span type8/type16 and authenticated-content continuation.
+Type 19 (`stealth-message-item`) delivers stealth payment announcements and ephemeral keys directly to the recipient over the secure channel.
 
-Game IDs are 1–128 exact UTF-8 bytes, with no normalization; `welcome` is reserved
-iff action6. Card values are 0–51 and unique within each hand; a deal up-card is
-distinct from its two player cards. Wager/double/commitment fields are32 bytes.
-Reveal seed is exactly64 lowercase ASCII hex characters as text; outcome is0–3.
-Welcome quantities are32-byte unsigned big-endian: 1≤min≤max≤10^40−1 and optional
-0≤fee≤10^40−1. Optional absent rules differ from present empty rules; rules are
-at most400 UTF-16 units and1200 UTF-8 bytes. UTF-8 must be well formed.
-
-Pure application writers validate complete presentation grammar before conversion:
-wager/double hashes have literal lowercase `0x` plus64 ASCII hex digits (digits
-may be mixed-case, projected lowercase); commitment is64 bare lowercase hex digits.
-Wei strings have1–40 ASCII decimal digits, then apply quantity bounds; no trimming,
-coercion, floating-point conversion, or partial parsing. Seed remains text.
-Type18 participates in the existing exact type8/T1a and DM transcripts; no new
-standalone item identity/hash domain is allocated. Public projections retain and
-forward the original frame bytes. Syntax grants no hand, wager, fairness, payout,
-or sender authority. #780 owns authenticated runtime adoption and economic proof;
-unsupported structured kinds never become JSON/text17 fallbacks.
+Type 24 (`channel-update-item`) provides universal peer-to-peer state execution for interactive turns, atomic swaps, and multi-network balance allocations across Monad, eCash, and Solana without gas friction. State updates are signed over the state digest and folded client-side.
 
 Direct-message stamps are payments to recipient-derived addresses. They are not
 burns. A payment member commits to this recipient-specific encrypted-payload
@@ -1364,8 +1338,8 @@ category, and an implementation MUST NOT continue to report a later failure.
         required-type child (type 5, 6, 8, or 9) never does. The first child over
         256 fails `resource` before that child's stage 2. The rule applies to any
         root and is labelled stage 8.4.
-      - In an open field (a message item), a child of an assigned type other than
-        16, 17 or 18 (assigned non-item types 1 through 15) is `semantic`, checked after its stage 6
+      - In an open field (a message item), a child of an assigned non-item type
+        (types 1 through 15) is `semantic`, checked after its stage 6
         like a required-type mismatch. Otherwise the child runs stages 2
         through 9 with V6 applied to it. Children open depth-first in array
         order, and the first failure wins. An unknown type, an unknown frame version, or a

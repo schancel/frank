@@ -44,16 +44,14 @@ The Frank repository currently contains 80+ documentation, CDDL, and specificati
 - `docs/protocol/INVARIANTS.md`: Immutable security invariants, fail-closed validation rules, and zero-trust assumptions.
 - `docs/protocol/message-stamp-derivation.md`: Mathematical derivation of DKSAP message stamps ($P'$, $E$, $X$, Chaum-Pedersen DLEQ proofs $c \parallel s$, child key derivation $t_i \cdot d'$).
 - `docs/protocol/cbor/common.cddl`: Envelope structure (`type_id`, `schema_version`, `min_reader_version`, `payload`), `frank-envelope`, `account-ref`, `timestamp`, `digest-32`, `uuid-16`.
-- `docs/protocol/cbor/direct-message.cddl`: Type 1 (`direct-message-delivery`), Type 5 (`recipient-encrypted-payload-v1` and `v2`), Type 6 (`encrypted-message-content`), Type 8 (`message-content-revision`), Type 16 (`container-message-item`), Type 17 (`text-message-item`), Type 18 (`blackjack-message-item`, `blackjack-hand-item`, `blackjack-hand-v3-item`), Type 19 (`stealth-message-item`), Type 24 (`channel-update-item` with game/swap/raffle payloads), and Type 25 (`forwarding-delivery-envelope`).
+- `docs/protocol/cbor/direct-message.cddl`: Type 1 (`direct-message-delivery`), Type 5 (`recipient-encrypted-payload-v1` and `v2`), Type 6 (`encrypted-message-content`), Type 8 (`message-content-revision`), Type 16 (`container-message-item`), Type 17 (`text-message-item`), Type 19 (`stealth-message-item`), Type 24 (`channel-update-item` with game/swap/raffle payloads), and Type 25 (`forwarding-delivery-envelope`).
 - `docs/protocol/cbor/directory.cddl`: Type 2 (`directory-attestation`), Type 4 (`directory-statement`), Type 7 (`key-transition-statement`).
 - `docs/protocol/cbor/checkpoint.cddl`: Type 3 (`mailbox-checkpoint`), journal facts, opaque checkpoint sections.
 - `docs/protocol/cbor/topic.cddl`: Type 9 (`topic-post`), Type 10 (`topic-post-submission`), Type 11 (`topic-vote-submission`), Type 12–15 forum items.
 - `docs/protocol/cbor/topic-http-coexistence.md`: HTTP wire mapping for Monad topic write transport.
 - `docs/protocol/chains/README.md` & `chains/v1.json`: Multi-chain network tag registry.
-- `docs/protocol/blackjack-p2p.md`: P2P two-player zero-trust blackjack protocol.
-- `docs/protocol/blackjack-escrow.md`: Escrow smart contract and state channels for blackjack.
 - `docs/protocol/forum-runtime-storage.md`: Forum storage, indices, and runtime queries.
-- `docs/protocol/proposals/*/`: Active protocol proposals (Directory Preview v4, Forum Content Read, Blackjack Items, Message Stamp Derivation).
+- `docs/protocol/proposals/*/`: Active protocol proposals (Directory Preview v4, Forum Content Read, Message Stamp Derivation).
 - `docs/protocol/cbor/vectors/*.json`: 15+ canonical test vector suites for cross-language validation.
 
 ### 2.3 Client Libraries & Packages (`packages/`)

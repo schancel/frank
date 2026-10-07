@@ -25,7 +25,6 @@ Every test vector in `docs/protocol/cbor/vectors/*.json` adheres to `vectors.sch
 | `dm-runtime.json`           | Decryption & Content Revision    | Inner Type 6/8 container nesting, message ID integrity, and multi-item arrays.                           |
 | `account-registration.json` | Handle Registration              | Canonical username handle validation and account registration statement hashing.                         |
 | `topic-commitments.json`    | Public Forum Topics              | Monad-native topic posts, burn transactions, and vote commitments.                                       |
-| `blackjack-hand-v3.json`    | State Machine Moves              | Multi-turn peer-to-peer state channel commitments and entropy links.                                     |
 
 ---
 

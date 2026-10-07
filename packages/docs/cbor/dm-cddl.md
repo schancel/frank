@@ -13,6 +13,10 @@
 - Type 5: **Recipient Encrypted Payload** (`recipient-encrypted-payload-v2`)
 - Type 6: **Encrypted Message Content** (`encrypted-message-content`)
 - Type 8: **Message Content Revision** (`message-content-revision`)
+- Type 16: **Container Message Item** (`container-message-item`)
+- Type 17: **Text Message Item** (`text-message-item`)
+- Type 19: **Stealth Payment Item** (`stealth-message-item`)
+- Type 24: **Universal State Channel Update** (`channel-update-item`)
 - Type 25: **Forwarding Delivery Envelope** (`forwarding-delivery-envelope`)
 
 ---
@@ -74,6 +78,11 @@ message-content-revision = {
   * uint => frank-value,
 }
 
+container-message-item = {
+  0: [1*256 framed-object], ; child frames
+  * uint => frank-value,
+}
+
 text-message-item = {
   0: tstr .size (0..262144), ; UTF-8 chat text (up to 256 KiB)
   * uint => frank-value,
@@ -92,7 +101,7 @@ stealth-message-item = {
 ; Type 24 schema 1: Universal state channel update item
 channel-update-item = {
   0: digest-32,              ; unique channel-id
-  1: tstr .size (1..64),     ; app-id ("swap", "dice", "game", "poker")
+  1: tstr .size (1..64),     ; app-id ("swap", "dice", "poker", "raffle")
   2: uint .le 4294967295,    ; sequence-number (state turn / nonce)
   3: [1*8 chain-allocation], ; allocations across 1 or more networks
   4: bstr .size (0..65536),  ; app-state (opaque or nested CBOR payload)

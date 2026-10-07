@@ -887,7 +887,7 @@ content` placeholder, bounded by the same 64-entry/resource limits. Required
 unknown semantics reject before display. Timestamp and aggregate maps stay
 closed, even inside a compatible future schema.
 
-Types 12–15 use schema 1/min-reader 1 and [topic.cddl](topic.cddl):
+Types 12–15 use schema 1/min-reader 1 and [topic.cddl](topic.cddl) (note: "page" in types 13 and 14 designates a cursor-paginated query result batch of up to 128 rows with feed continuation cursors, not an HTML web page):
 
 | Type | Fields                                                                                                                                                                                                                    |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

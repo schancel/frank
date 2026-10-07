@@ -101,6 +101,15 @@
         />
         <q-btn
           flat
+          icon="menu_book"
+          class="q-mx-none q-pa-sm"
+          to="/docs"
+          :aria-label="$t('docs.header')"
+        >
+          <q-tooltip>{{ $t('docs.header') }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
           icon="post_add"
           class="q-mx-none q-pa-sm"
           to="/new-post"

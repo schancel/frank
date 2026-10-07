@@ -46,6 +46,16 @@ describe('useOracleStore (Pinia Store)', () => {
     expect(store.formatAvuAmount('monad', null)).toBe('')
   })
 
+  it('formats unit rates for all supported assets correctly', () => {
+    const store = useOracleStore()
+    expect(store.formatUnitRate('monad')).toBe('1 MON ≈ 41.67 AVU')
+    expect(store.formatUnitRate('solana')).toBe('1 SOL ≈ 1,785.71 AVU')
+    expect(store.formatUnitRate('ethereum')).toBe('1 ETH ≈ 30,952.38 AVU')
+    expect(store.formatUnitRate('hyperliquid')).toBe('1 HYPE ≈ 476.19 AVU')
+    expect(store.formatUnitRate('tempo')).toBe('1 TUSD ≈ 11.90 AVU')
+    expect(store.formatUnitRate('ecash')).toBe('1M XEC ≈ 416.67 AVU')
+  })
+
   it('refreshes snapshot and records hourly historical trend points', async () => {
     const mockFetch = oracleSdk.fetchOracleSnapshot as jest.Mock
     mockFetch.mockResolvedValue({

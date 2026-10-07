@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
 import Panel from './WalletPanel.vue'
 import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
+import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useWalletNames } from '../../composables/useWalletNames'
 import en from '../../i18n/en-us'
 
@@ -44,6 +45,15 @@ jest.mock('../../stores/oracle', () => ({
   useSafeOracleStore: () => ({
     getAvu: () => 0,
     formatAvuAmount: () => '',
+    formatUnitRate: (asset: string) => {
+      if (asset === 'monad') return '1 MON ≈ 41.67 AVU'
+      if (asset === 'ecash') return '1M XEC ≈ 416.67 AVU'
+      if (asset === 'solana') return '1 SOL ≈ 1,785.71 AVU'
+      if (asset === 'tempo') return '1 TUSD ≈ 11.90 AVU'
+      if (asset === 'ethereum') return '1 ETH ≈ 30,952.38 AVU'
+      if (asset === 'hyperliquid') return '1 HYPE ≈ 476.19 AVU'
+      return ''
+    },
     snapshot: { totalConstituents: 0, constituents: [] },
     startBackgroundWorker: jest.fn(),
   }),
@@ -263,4 +273,35 @@ test('opens rename dialog on edit icon click and handles save and reset', async 
   await renameDialog.vm.$emit('reset')
   await flushPromises()
   expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('eCash')
+})
+
+test('displays unit rate in each wallet row and allows clicking drawer header link to open AvuExplainerDialog', async () => {
+  const view = render()
+
+  // Dynamic unit rate captions in each wallet row
+  expect(view.find('[data-test="monad-wallet-unit-rate"]').text()).toBe(
+    '1 MON ≈ 41.67 AVU',
+  )
+  expect(view.find('[data-test="ecash-wallet-unit-rate"]').text()).toBe(
+    '1M XEC ≈ 416.67 AVU',
+  )
+  expect(view.find('[data-test="solana-wallet-unit-rate"]').text()).toBe(
+    '1 SOL ≈ 1,785.71 AVU',
+  )
+  expect(view.find('[data-test="tempo-wallet-unit-rate"]').text()).toBe(
+    '1 TUSD ≈ 11.90 AVU',
+  )
+  expect(view.find('[data-test="ethereum-wallet-unit-rate"]').text()).toBe(
+    '1 ETH ≈ 30,952.38 AVU',
+  )
+  expect(view.find('[data-test="hyperliquid-wallet-unit-rate"]').text()).toBe(
+    '1 HYPE ≈ 476.19 AVU',
+  )
+
+  // Drawer header link 1 AVU ≡ 1 kWh (?) is clickable
+  const headerLink = view.find('[data-test="drawer-avu-explainer-link"]')
+  expect(headerLink.exists()).toBe(true)
+  expect(headerLink.text()).toContain('1 AVU ≡ 1 kWh (?)')
+  await headerLink.trigger('click')
+  expect(view.findComponent(AvuExplainerDialog).props('modelValue')).toBe(true)
 })

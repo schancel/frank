@@ -11,16 +11,26 @@
           <q-item-section>
             <q-item-label>{{ $t('walletPanel.title') }}</q-item-label>
           </q-item-section>
-          <q-item-section side v-if="portfolioTotalAvu">
-            <q-item-label
-              caption
-              class="text-weight-medium text-primary cursor-pointer flex items-center q-gutter-xs"
-              data-test="portfolio-total-avu"
-              @click.stop="showAvuDialog = true"
-            >
-              <span>{{ portfolioTotalAvu }}</span>
-              <q-icon name="help_outline" size="12px" />
-            </q-item-label>
+          <q-item-section side>
+            <div class="row items-center q-gutter-xs">
+              <q-item-label
+                v-if="portfolioTotalAvu"
+                caption
+                class="text-weight-medium text-grey-8 q-mr-xs"
+                data-test="portfolio-total-avu"
+              >
+                {{ portfolioTotalAvu }}
+              </q-item-label>
+              <q-item-label
+                caption
+                class="text-weight-medium text-primary cursor-pointer flex items-center q-gutter-xs"
+                data-test="drawer-avu-explainer-link"
+                @click.stop="showAvuDialog = true"
+              >
+                <span>{{ $t('walletPanel.avuDrawerHeader') }}</span>
+                <q-icon name="help_outline" size="12px" />
+              </q-item-label>
+            </div>
           </q-item-section>
         </q-item>
         <q-separator />
@@ -94,6 +104,14 @@
                 :data-test="`${wallet.id}-wallet-avu`"
               >
                 {{ getWalletAvu(wallet) }}
+              </q-item-label>
+              <q-item-label
+                v-if="getWalletUnitRate(wallet)"
+                caption
+                class="text-grey-6"
+                :data-test="`${wallet.id}-wallet-unit-rate`"
+              >
+                {{ getWalletUnitRate(wallet) }}
               </q-item-label>
             </q-item-section>
           </q-item>
@@ -390,6 +408,10 @@ function getWalletAvu(wallet: WalletItemConfig): string {
   const raw = getRawBalance?.(wallet.id)
   if (!raw) return ''
   return oracle.formatAvuAmount(wallet.id as any, raw)
+}
+
+function getWalletUnitRate(wallet: WalletItemConfig): string {
+  return oracle.formatUnitRate ? oracle.formatUnitRate(wallet.id as any) : ''
 }
 
 const portfolioTotalAvu = computed(() => {

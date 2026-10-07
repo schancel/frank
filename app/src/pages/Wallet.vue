@@ -98,6 +98,14 @@
             }}
           </div>
           <div
+            class="text-caption text-primary cursor-pointer flex items-center justify-center q-gutter-xs q-mt-xs"
+            data-testid="wallet-unit-rate-avu"
+            @click="showAvuDialog = true"
+          >
+            <span>{{ currentUnitRateAvu }}</span>
+            <q-icon name="help_outline" size="14px" />
+          </div>
+          <div
             v-if="currentWalletAvu"
             class="text-caption text-grey-7 text-center q-mt-xs cursor-pointer flex items-center justify-center q-gutter-xs"
             data-testid="wallet-balance-avu"
@@ -283,6 +291,11 @@ export default defineComponent({
         : chainHasError.value
     })
 
+    const currentUnitRateAvu = computed(() => {
+      const asset = selectedWallet.value as any
+      return oracle.formatUnitRate ? oracle.formatUnitRate(asset) : ''
+    })
+
     const currentWalletAvu = computed(() => {
       if (selectedWallet.value === 'monad') {
         if (!loaded.value || !monadBalance?.value) return ''
@@ -384,6 +397,7 @@ export default defineComponent({
       chainLoaded,
       currentWalletHasError,
       currentWalletAvu,
+      currentUnitRateAvu,
       hasError,
       getCustomName,
       showAvuDialog,

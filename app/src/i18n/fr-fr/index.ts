@@ -371,6 +371,11 @@ export default {
     avuOracleLessDesc:
       'Contrairement aux oracles DeFi traditionnels qui dépendent de flux tiers de confiance, la difficulté de minage et les calendriers d’émission du Proof-of-Work sont vérifiés directement sur la chaîne par les nœuds complets et ancrés dans la thermodynamique concurrentielle.',
     avuDialogClose: 'Fermer',
+    avuDrawerHeader: '1 AVU ≡ 1 kWh (?)',
+    avuRatesTitle: 'Équivalences de calcul physique en direct',
+    avuRatesAsset: 'Actif',
+    avuRatesRate: 'Calcul physique (AVU / kWh)',
+    avuRatesRefUsd: 'Référence USD',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',

@@ -24,6 +24,11 @@ import {
   type LiarsDiceGameState,
 } from "@frank/wallet/message-item-plugins/liars-dice";
 import { generateAvatarPng } from "../../bot-directory";
+import {
+  announceTableToTopic,
+  type GameTableDetails,
+  DEFAULT_GAMES_TOPIC,
+} from "./table-announcements";
 
 export interface LiarsDiceTableEscrowRecord {
   preimage: string;
@@ -109,6 +114,14 @@ export class LiarsDiceBot implements FrankBotDefinition {
     } catch (err) {
       console.warn(`[liars-dice] Failed to welcome ${user.address}:`, err);
     }
+  }
+
+  async announceTableToTopic(
+    ctx: BotContext,
+    topic: string = DEFAULT_GAMES_TOPIC,
+    details: GameTableDetails
+  ): Promise<{ payloadDigest?: string; entry: any }> {
+    return announceTableToTopic(ctx, topic, details);
   }
 
   private clearTableTimer(tableId: string) {
@@ -284,6 +297,18 @@ export class LiarsDiceBot implements FrankBotDefinition {
         this.tables.set(tableId, game);
         this.conversationTables.set(conversationId, tableId);
         this.latestTableId = tableId;
+
+        // Announce table to public discovery topic
+        await this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
+          gameName: "Liar's Dice",
+          gameType: "liars-dice",
+          tableId,
+          hostAddress: sender,
+          buyInAmount: `${formatMon(buyInWei)} MON`,
+          currentPlayers: game.players.length,
+          maxPlayers: game.maxPlayers,
+          botAddress: ctx.address,
+        });
 
         const item = this.buildLiarsDiceItem(game, "create", sender);
         await msgCtx.reply([

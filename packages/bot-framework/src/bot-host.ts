@@ -438,6 +438,16 @@ export class FrankBotHost {
         }
         return this.provider.getBalance(botAddress)
       },
+
+      publishTopicMessage: async ({ topic, entries, voteWeightWei }) => {
+        return this.chain.topics.post({
+          wallet,
+          topic,
+          entries,
+          direction: 'up',
+          voteWeightWei: voteWeightWei ?? this.options.stampValueWei,
+        })
+      },
     }
 
     const instance: ActiveBotInstance = {

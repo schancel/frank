@@ -5,8 +5,9 @@ import {
 } from "ethers";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import type { DirectMessageSendResult } from "@frank/wallet/chain";
+import type { ForumMessageEntry } from "@frank/wallet/forum-model";
 
-export type { MessageItem, DirectMessageSendResult };
+export type { MessageItem, DirectMessageSendResult, ForumMessageEntry };
 
 export function toChainAddress(raw: string): { raw: string } {
   return { raw: getAddress(raw) };
@@ -125,6 +126,13 @@ export interface BotContext {
     timeoutMs?: number
   ): Promise<TransactionReceipt | null>;
   getBalance(address?: string): Promise<bigint>;
+
+  // --- Topic & Forum Broadcasting ---
+  publishTopicMessage?(params: {
+    topic: string;
+    entries: ForumMessageEntry[];
+    voteWeightWei?: bigint;
+  }): Promise<{ payloadDigest: string }>;
 }
 
 export interface FrankBotDefinition {

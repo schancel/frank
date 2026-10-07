@@ -298,6 +298,16 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       expect(mockSetSelectedTopic).toHaveBeenCalledWith('')
     })
 
+    it('supports selectTopic alias for toggling topics', async () => {
+      mockSetSelectedTopic.mockClear()
+      mockForumStore.selectedTopic = 'news'
+      const wrapper = mountDrawer()
+      const vm = wrapper.vm as any
+
+      await vm.selectTopic('news')
+      expect(mockSetSelectedTopic).toHaveBeenCalledWith('')
+    })
+
     it('clears selected topic when selecting all topics', async () => {
       mockSetSelectedTopic.mockClear()
       mockForumStore.selectedTopic = 'news'

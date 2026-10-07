@@ -384,7 +384,9 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     await flushPromises()
 
     expect(store.selectedTopic).toBe('')
-    expect(wrapper.find('[data-test="forum-active-topic-banner"]').exists()).toBe(false)
+    expect(
+      wrapper.find('[data-test="forum-active-topic-banner"]').exists(),
+    ).toBe(false)
   })
 
   it('renders clear topic button in empty state when topic has no posts', async () => {
@@ -412,4 +414,3 @@ describe('Forum.vue outage and degraded states (#533)', () => {
     expect(store.selectedTopic).toBe('')
   })
 })
-

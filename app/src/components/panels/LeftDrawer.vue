@@ -317,8 +317,9 @@ export default defineComponent({
     function openForumTab() {
       markRailNavigation()
       maybeRefreshTopics()
-      if (forum.selectedTopic) {
-        forum.setSelectedTopic('')
+      const wasFiltered = Boolean(forum.selectedTopic)
+      forum.setSelectedTopic('')
+      if (wasFiltered) {
         void (async () => {
           try {
             let wallet
@@ -481,6 +482,7 @@ export default defineComponent({
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,
+      selectTopic: browseForumTopic,
       totalUnread: totalUnread,
       balanceText,
       balanceStale,

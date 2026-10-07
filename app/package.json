@@ -13,7 +13,7 @@
     "dev": "quasar dev -m electron -- --no-sandbox --disable-setuid-sandbox",
     "dev:browser": "quasar dev -- --no-sandbox --disable-setuid-sandbox",
     "build": "quasar build -m electron -b builder",
-    "test": "echo \"See package.json => scripts for available tests.\" && exit 0",
+    "test": "jest --config test/jest/accounts.config.cjs",
     "generate:protobuffers": "/bin/sh ./generate_protobufs.sh",
     "clean:protobuffers": "git clean -di && git pull",
     "dev-ios": "quasar dev -m capacitor -T ios",

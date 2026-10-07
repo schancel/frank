@@ -52,15 +52,44 @@ flowchart TD
 
 ---
 
-## 3. The Three Independent Wallet Roles
+## 3. Cryptographic Roles & Multichain Key Derivation
 
-To guarantee that compromising an active messaging session or viewing public transaction records never compromises the root identity, Frank wallets derive three strictly separated cryptographic roles:
+To guarantee that compromising an active messaging session, a change address, or viewing public on-chain transactions never compromises the root identity, Frank wallets implement a two-tier derivation architecture: **HKDF Domain Root Isolation** (`frank-domain-roots-v1`) followed by role-specific and chain-specific BIP-44 path derivations.
+
+### Protocol Identity & Messaging Roles
+
+The three core protocol roles govern identity assertions, end-to-end encrypted messaging, and canonical direct-message stamp payments:
 
 |   Role   |          Name          | Purpose                                                                                                                                            | Derivation Path        |
 | :------: | :--------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------- |
 | **$P$**  | **Identity Authority** | Signs public directory assertions, key transitions, and account credentials. **Never** used for ECDH, message encryption, or funding transactions. | `m/44'/60'/1'/0/0`     |
 | **$M$**  |  **Mailbox & DM Key**  | Performs Diffie-Hellman key exchange for direct-message encryption and authenticates inbox access.                                                 | `m/44'/60'/4'/0'/{g}'` |
-| **$P'$** | **Stamp Receipt Key**  | Serves as the public base point for recipient-controlled stealth payment addresses.                                                                | `m/44'/60'/2'/0'/{g}'` |
+| **$P'$** | **Stamp Receipt Key**  | Serves as the public base point for recipient-controlled stealth payment addresses on the canonical EVM/Monad rail.                               | `m/44'/60'/2'/0'/{g}'` |
+
+> [!NOTE]
+> The protocol roles use coin type `60'` because Frank's identity directory attestations and canonical anti-spam stamp settlement rail run natively on EVM (Monad).
+
+### Multichain Spending & Change Derivations
+
+For actual on-chain asset transfers, balances, and autonomous wallet hygiene, Frank derives chain-specific accounts from independent domain roots using their respective BIP-44 coin types:
+
+| Chain Family | Coin Type | Sub-Account (Spend) Path | Internal Change Path | Curve / Algorithm |
+| :--- | :--- | :--- | :--- | :--- |
+| **Monad / EVM** | `60'` | `m/44'/60'/0'/0/{i}` | `m/44'/60'/0'/1/{k}` | `secp256k1` |
+| **eCash / BCH** | `1899'` | `m/44'/1899'/0'/0/{i}` | `m/44'/1899'/0'/1/{k}` | `secp256k1` |
+| **Solana** | `501'` | `m/44'/501'/0'/0'/{i}'` | `m/44'/501'/0'/1'/{k}'` | `ed25519` (hardened) |
+
+### Domain Root Isolation (`frank-domain-roots-v1`)
+
+Before any BIP-44 path derivation occurs, the master account root secret (backed by a Codex32 recovery phrase) is cryptographically partitioned via HKDF-SHA256 (`RFC 5869`) into independent 32-byte domain roots:
+
+1. `identity-authentication` → Authority key $P$
+2. `messaging-encryption` → Mailbox and direct-message keys $M$
+3. `evm-wallet` → Monad spend pool and stamp receipt base $P'$
+4. `ecash-bch-wallet` → eCash and BCH UTXO spend and change pools
+5. `solana-wallet` → Solana Ed25519 signing and change pools
+
+Because domain roots are non-invertible, mathematical compromises or leaked signatures on an external chain (e.g. Solana or eCash) have zero theoretical leakage into the messaging key or root identity.
 
 ---
 

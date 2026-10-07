@@ -20,6 +20,8 @@ export interface GatewayConfig {
   readonly lowBalanceThresholdWei: bigint;
   readonly stripeSecretKey?: string;
   readonly stripeWebhookSecret?: string;
+  readonly stripePaymentLinkTier1?: string;
+  readonly stripePaymentLinkTier2?: string;
   readonly paypalClientId?: string;
   readonly paypalWebhookId?: string;
 

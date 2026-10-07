@@ -12,6 +12,8 @@ export interface CheckoutServerOptions {
   readonly stripeWebhookSecret?: string;
   readonly paypalWebhookId?: string;
   readonly outboundDelivery?: OutboundEmailDelivery;
+  readonly stripePaymentLinkTier1?: string;
+  readonly stripePaymentLinkTier2?: string;
 }
 
 export class CheckoutServer {
@@ -19,6 +21,8 @@ export class CheckoutServer {
   private readonly ledger: CreditLedger;
   private readonly stampProvider: GatewayStampProvider;
   private readonly outboundDelivery?: OutboundEmailDelivery;
+  private readonly stripePaymentLinkTier1?: string;
+  private readonly stripePaymentLinkTier2?: string;
   private server?: Server;
 
   constructor(options: CheckoutServerOptions) {
@@ -26,6 +30,8 @@ export class CheckoutServer {
     this.ledger = options.ledger;
     this.stampProvider = options.stampProvider;
     this.outboundDelivery = options.outboundDelivery;
+    this.stripePaymentLinkTier1 = options.stripePaymentLinkTier1;
+    this.stripePaymentLinkTier2 = options.stripePaymentLinkTier2;
   }
 
   start(host: string = '127.0.0.1'): Promise<void> {

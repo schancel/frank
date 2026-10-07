@@ -59,6 +59,8 @@ export class EmailGatewayDaemon {
       stripeWebhookSecret: config.stripeWebhookSecret,
       paypalWebhookId: config.paypalWebhookId,
       outboundDelivery: this.outboundDelivery,
+      stripePaymentLinkTier1: config.stripePaymentLinkTier1,
+      stripePaymentLinkTier2: config.stripePaymentLinkTier2,
     });
     this.inboundHandler = new InboundEmailHandler({
       gatewayDomain: config.gatewayDomain,

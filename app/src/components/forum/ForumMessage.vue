@@ -105,14 +105,15 @@
               flat
               dense
               size="sm"
-              :to="`/chat/${message.poster}`"
+              :to="authorRoute(message)"
+              :disable="!authorRoute(message)"
               class="author-btn q-px-xs"
             >
-              <div v-if="haveContact(message.poster)" class="text-weight-bold">
-                {{ getContactProfile(message.poster).name }}
-              </div>
-              <div v-else class="text-weight-bold font-mono">
-                {{ formatAddress(message.poster) }}
+              <div
+                class="text-weight-bold"
+                :class="{ 'font-mono': isAuthorAddress(message) }"
+              >
+                {{ authorName(message) }}
               </div>
             </q-btn>
           </div>
@@ -187,6 +188,7 @@ import AMessageReplies from './ForumMessageReplies.vue'
 
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
 import { useContactStore } from 'src/stores/contacts'
+import { useProfileStore } from 'src/stores/my-profile'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import {
   notifyBurnFailure,
@@ -195,16 +197,27 @@ import {
 import { activeChain } from '@frank/wallet/chain'
 import { formatRawAmount } from 'src/utils/chain-amount'
 import { stampPreparationStatus } from 'src/utils/stamp-preparation-status'
+import {
+  sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
+} from 'src/utils/own-address'
 
 export default defineComponent({
   setup() {
     const forumStore = useForumStore()
     const contactStore = useContactStore()
+    let profileStore: ReturnType<typeof useProfileStore> | { profile: Record<string, unknown> }
+    try {
+      profileStore = useProfileStore()
+    } catch {
+      profileStore = { profile: {} }
+    }
     const { messages, topics, selectedTopic } = storeToRefs(forumStore)
 
     return {
       storeMessages: messages,
       getMessage: forumStore.getMessage,
+      isOwnPost: forumStore.isOwnPost,
       topics,
       getContactProfile: contactStore.getContactProfile,
       haveContact: contactStore.haveContact,
@@ -213,6 +226,9 @@ export default defineComponent({
       applyOptimisticVote: forumStore.applyOptimisticVote,
       rollbackOptimisticVote: forumStore.rollbackOptimisticVote,
       setStampPreparationStatus: forumStore.setStampPreparationStatus,
+      myProfile: profileStore,
+      profileStore,
+      ownAddress: useReactiveOwnCanonicalAddress(),
     }
   },
   props: {
@@ -283,12 +299,98 @@ export default defineComponent({
     markedMessage(text?: string) {
       return renderMarkdown(text ?? '', this.$q.dark.isActive)
     },
-    formatAddress(address: string) {
-      return (
-        address.substring(6, 12) +
-        '...' +
-        address.substring(address.length - 6, address.length)
-      )
+    formatAddress(address?: string): string {
+      if (!address || typeof address !== 'string') {
+        return 'Anonymous'
+      }
+      const trimmed = address.trim()
+      if (!trimmed) {
+        return 'Anonymous'
+      }
+      if (trimmed.length <= 14) {
+        return trimmed
+      }
+      return `${trimmed.slice(0, 8)}...${trimmed.slice(-6)}`
+    },
+    isAuthorMe(message?: MessageWithReplies): boolean {
+      const msg = message ?? this.message
+      if (!msg) return false
+      if (
+        (msg as any).isOwn ||
+        (msg as any).isLocal ||
+        (msg as any).own
+      ) {
+        return true
+      }
+      if (msg.payloadDigest && this.isOwnPost?.(msg.payloadDigest)) {
+        return true
+      }
+      const poster = msg.poster
+      if (poster) {
+        const own =
+          typeof this.ownAddress === 'object' &&
+          this.ownAddress !== null &&
+          'value' in this.ownAddress
+            ? (this.ownAddress as any).value
+            : this.ownAddress
+        if (
+          own &&
+          (sameCanonicalAddress(poster, own) ||
+            poster.toLowerCase() === String(own).toLowerCase())
+        ) {
+          return true
+        }
+        const profileAddr = (this.myProfile?.profile as any)?.address
+        if (
+          profileAddr &&
+          (sameCanonicalAddress(poster, profileAddr) ||
+            poster.toLowerCase() === String(profileAddr).toLowerCase())
+        ) {
+          return true
+        }
+      }
+      return false
+    },
+    authorName(message?: MessageWithReplies): string {
+      const msg = message ?? this.message
+      if (!msg) return 'Anonymous'
+      if (this.isAuthorMe(msg)) {
+        const profile = this.myProfile?.profile
+        return profile?.name || profile?.username || 'You'
+      }
+      if (msg.poster && this.haveContact(msg.poster)) {
+        const contactProfile = this.getContactProfile(msg.poster)
+        if (contactProfile?.name) {
+          return contactProfile.name
+        }
+      }
+      if (msg.poster) {
+        return this.formatAddress(msg.poster)
+      }
+      return 'Anonymous'
+    },
+    authorRoute(message?: MessageWithReplies): string | undefined {
+      const msg = message ?? this.message
+      if (!msg) return undefined
+      if (this.isAuthorMe(msg)) {
+        return '/profile'
+      }
+      if (msg.poster) {
+        return `/chat/${msg.poster}`
+      }
+      return undefined
+    },
+    isAuthorAddress(message?: MessageWithReplies): boolean {
+      const msg = message ?? this.message
+      if (!msg || this.isAuthorMe(msg)) return false
+      if (
+        msg.poster &&
+        this.haveContact(msg.poster) &&
+        this.getContactProfile(msg.poster)?.name
+      ) {
+        return false
+      }
+      return Boolean(msg.poster)
     },
     addVotes(direction: number) {
       if (

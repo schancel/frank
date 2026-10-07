@@ -21,7 +21,20 @@ jest.mock('src/accounts/session', () => ({
     .reactive({ revision: 1, status: 'ready' }),
 }))
 jest.mock('pinia', () => ({
+  ...jest.requireActual('pinia'),
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
+}))
+const mockProfile = jest.requireActual('vue').reactive({
+  profile: { name: 'Alice Local' } as { name?: string; username?: string },
+})
+jest.mock('src/stores/my-profile', () => ({
+  useProfileStore: () => mockProfile,
+}))
+const mockOwnAddress = jest.requireActual('vue').ref<string | null>(null)
+jest.mock('src/utils/own-address', () => ({
+  useReactiveOwnCanonicalAddress: () => mockOwnAddress,
+  sameCanonicalAddress: (first: string | null, second: string | null) =>
+    Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
 }))
 jest.mock('src/stores/forum', () => ({
   useForumStore: () =>
@@ -97,6 +110,8 @@ function mountCard(
     payloadDigest?: string
     voteWeightWei?: string
     notInStore?: boolean
+    poster?: string
+    isOwn?: boolean
   } = {},
 ) {
   const digest = overrides.payloadDigest ?? 'ab'.repeat(32)
@@ -110,7 +125,8 @@ function mountCard(
   return shallowMount(ForumPost, {
     props: {
       message: {
-        poster: '0x1',
+        poster: 'poster' in overrides ? overrides.poster : '0x1',
+        isOwn: overrides.isOwn,
         voteWeightWei: initialWeight,
         visibleTimestamp: { seconds: '1', nanoseconds: 0 },
         epoch: '00'.repeat(16),
@@ -353,3 +369,62 @@ describe('ForumPost vote handler', () => {
     expect(mockAddOffering).not.toHaveBeenCalled()
   })
 })
+
+describe('ForumPost author resolution and display (#1046)', () => {
+  it('displays the local user profile name on own posts and routes to /profile', () => {
+    mockOwnAddress.value = '0xmyaddress'
+    mockProfile.profile.name = 'Alice Local'
+
+    // Case A: poster matches own address
+    const wrapperAddr = mountCard({ poster: '0xmyaddress' })
+    expect(wrapperAddr.find('.author-btn').text()).toBe('Alice Local')
+    expect(wrapperAddr.find('.author-btn').attributes('to')).toBe('/profile')
+
+    // Case B: post tracked as own post via isOwn flag
+    const wrapperOwn = mountCard({ poster: '0xburnaddress', isOwn: true })
+    expect(wrapperOwn.find('.author-btn').text()).toBe('Alice Local')
+    expect(wrapperOwn.find('.author-btn').attributes('to')).toBe('/profile')
+  })
+
+  it('falls back to username or "You" if own profile name is not set', () => {
+    mockOwnAddress.value = '0xmyaddress'
+    mockProfile.profile.name = undefined
+    mockProfile.profile.username = 'alice_user'
+
+    const wrapperUser = mountCard({ poster: '0xmyaddress' })
+    expect(wrapperUser.find('.author-btn').text()).toBe('alice_user')
+    expect(wrapperUser.find('.author-btn').attributes('to')).toBe('/profile')
+
+    mockProfile.profile.username = undefined
+    const wrapperYou = mountCard({ poster: '0xmyaddress' })
+    expect(wrapperYou.find('.author-btn').text()).toBe('You')
+    expect(wrapperYou.find('.author-btn').attributes('to')).toBe('/profile')
+
+    // restore
+    mockProfile.profile.name = 'Alice Local'
+    mockOwnAddress.value = null
+  })
+
+  it('displays fallback "Anonymous" rather than blank when poster is undefined or empty', () => {
+    mockOwnAddress.value = null
+
+    const wrapperUndef = mountCard({ poster: undefined })
+    expect(wrapperUndef.find('.author-btn').text()).toBe('Anonymous')
+    expect(wrapperUndef.find('.author-btn').attributes('to')).toBeUndefined()
+    expect(wrapperUndef.find('.author-btn').attributes('disable')).toBe('true')
+
+    const wrapperEmpty = mountCard({ poster: '' })
+    expect(wrapperEmpty.find('.author-btn').text()).toBe('Anonymous')
+    expect(wrapperEmpty.find('.author-btn').attributes('to')).toBeUndefined()
+  })
+
+  it('displays formatted address with font-mono when author is an unknown address', () => {
+    mockOwnAddress.value = null
+    const longAddress = '0x1234567890abcdef1234567890abcdef12345678'
+    const wrapper = mountCard({ poster: longAddress })
+    expect(wrapper.find('.author-btn').text()).toBe('0x123456...345678')
+    expect(wrapper.find('.author-btn .font-mono').exists()).toBe(true)
+    expect(wrapper.find('.author-btn').attributes('to')).toBe(`/chat/${longAddress}`)
+  })
+})
+

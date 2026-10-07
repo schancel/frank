@@ -26,3 +26,16 @@ export function toChainDisplayAddress(address: string): string {
   }
   return activeChain.formatAddress(parsed)
 }
+
+/** Safely canonicalizes `address` to `activeChain`'s own canonical string form.
+ * Returns null if `address` is falsy or does not parse as a valid address on the active chain,
+ * allowing UI getters, routes, and stores to handle non-chain identifiers (e.g. UUID thread IDs)
+ * gracefully without throwing unhandled exceptions. */
+export function safeToChainDisplayAddress(
+  address?: string | null,
+): string | null {
+  if (!address) return null
+  const parsed = activeChain.parseAddress(address)
+  if (!parsed) return null
+  return activeChain.formatAddress(parsed)
+}

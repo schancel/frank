@@ -86,9 +86,27 @@ export async function fetchEcashBalance(
     chronikUrls: options.chronikUrls,
   })
 
+  const clientCtor = ChronikClient as unknown as new (
+    urls: string[] | string,
+  ) => {
+    script(
+      type: string,
+      hash: string,
+    ): {
+      utxos(): Promise<
+        | { utxos?: ReadonlyArray<ChronikUtxoItem> }
+        | ReadonlyArray<{ utxos?: ReadonlyArray<ChronikUtxoItem> }>
+      >
+    }
+  }
+
   const chronik =
     options.client ??
-    new ChronikClient(chronikUrls[0] ?? DEFAULT_CHRONIK_UPSTREAMS[networkId])
+    new clientCtor(
+      chronikUrls.length > 0
+        ? chronikUrls
+        : [DEFAULT_CHRONIK_UPSTREAMS[networkId]],
+    )
 
   const res = await chronik.script(parsed.type, parsed.hash).utxos()
   const utxoList: ReadonlyArray<ChronikUtxoItem> = Array.isArray(res)

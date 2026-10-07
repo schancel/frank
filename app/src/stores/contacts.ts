@@ -11,7 +11,10 @@ import {
 } from '../utils/constants'
 import { activeChain } from '@frank/wallet/chain'
 import moment from 'moment'
-import { toChainDisplayAddress } from '../utils/chain-address'
+import {
+  toChainDisplayAddress,
+  safeToChainDisplayAddress,
+} from '../utils/chain-address'
 import { isOwnAddress } from '../utils/own-address'
 import {
   isProfilePubKey,
@@ -214,21 +217,24 @@ export const useContactStore = defineStore('contacts', {
   state: (): State => freshContactsState(),
   getters: {
     getNotify: state => (address: string) => {
-      const apiAddress = toChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address)
+      if (!apiAddress) return false
 
       return state.contacts[apiAddress]
         ? state.contacts[apiAddress]?.notify
         : false
     },
     getRelayURL: state => (address: string) => {
-      const apiAddress = toChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address)
+      if (!apiAddress) return defaultRelayUrl
 
       return state.contacts[apiAddress]
         ? state.contacts[apiAddress]?.relayURL
         : defaultRelayUrl
     },
     isContact: state => (address: string) => {
-      const apiAddress = toChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address)
+      if (!apiAddress) return false
 
       return apiAddress in state.contacts
     },
@@ -242,7 +248,7 @@ export const useContactStore = defineStore('contacts', {
             profile: { ...pendingRelayData.profile, pubKey: null },
           }
         }
-        const apiAddress = toChainDisplayAddress(address)
+        const apiAddress = safeToChainDisplayAddress(address) ?? address
 
         return (
           state.contacts[apiAddress] ?? {
@@ -256,21 +262,23 @@ export const useContactStore = defineStore('contacts', {
       return state.contacts
     },
     haveContact: state => (address: string) => {
-      const apiAddress = toChainDisplayAddress(address)
-      return !!state.contacts[apiAddress]
+      const apiAddress = safeToChainDisplayAddress(address)
+      return apiAddress
+        ? !!state.contacts[apiAddress]
+        : !!state.contacts[address]
     },
     getContactProfile: state => (address: string) => {
       if (!address) {
         return { ...pendingRelayData.profile }
       }
-      const apiAddress = toChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
 
       return state.contacts[apiAddress]
         ? state.contacts[apiAddress]?.profile
         : { ...pendingRelayData.profile }
     },
     getAcceptancePrice: state => (address: string) => {
-      const apiAddress = toChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
 
       const price = state.contacts[apiAddress]?.inbox.acceptancePrice
       return typeof price === 'number' && Number.isFinite(price)
@@ -278,7 +286,7 @@ export const useContactStore = defineStore('contacts', {
         : defaultAcceptancePrice
     },
     getPubKey: state => (address: string) => {
-      const apiAddress = toChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
       const contact = state.contacts[apiAddress]
       if (!contact || !contact?.profile) {
         return undefined
@@ -545,7 +553,9 @@ export const useContactStore = defineStore('contacts', {
               : !isBlankName(oldContactInfo.profile.name) &&
                 oldContactInfo.profile.name !== pendingRelayData.profile.name
               ? oldContactInfo.profile.name
-              : shortAddressLabel(toChainDisplayAddress(address)),
+              : shortAddressLabel(
+                  safeToChainDisplayAddress(address) ?? address,
+                ),
             signedName: profileInfo.name ?? null,
             username:
               profileInfo.username ?? oldContactInfo.profile.username ?? null,

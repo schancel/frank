@@ -2842,7 +2842,7 @@ export const useChatStore = defineStore('chats', {
                   .then(w => {
                     ;(w as any)?.processSyncTransaction?.(item)
                   })
-                  .catch(() => {})
+                  .catch(() => undefined)
               } catch {
                 // ignore
               }

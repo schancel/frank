@@ -1,0 +1,29 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'frank-mail-gateway'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['mail-gateway:8082']
+
+  - job_name: 'frank-backend-relay'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['backend:8080']
+
+  - job_name: 'minio'
+    metrics_path: '/minio/v2/metrics/cluster'
+    static_configs:
+      - targets: ['minio:9000']
+
+  - job_name: 'nats'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['nats-exporter:7777']
+
+  - job_name: 'kvrocks'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['kvrocks-exporter:9121']

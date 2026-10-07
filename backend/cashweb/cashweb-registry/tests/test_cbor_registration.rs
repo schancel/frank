@@ -361,13 +361,40 @@ async fn test_create_persist_restart_read_verify_lookup() {
             .body(Body::empty())
             .unwrap();
 
-        let resp = router.oneshot(req).await.unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
         let search = proto::ListMonadProfilesResponse::decode(body).unwrap();
         assert_eq!(search.entries.len(), 1);
         assert_eq!(search.entries[0].address, address.to_hex());
         assert_eq!(search.entries[0].signed_payload, cbor_bytes);
+
+        // 6. Canonical network-agnostic routes: /profiles/search and /profiles
+        let req = Request::builder()
+            .method("GET")
+            .uri("/profiles/search?prefix=ali")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
+        let search = proto::ListMonadProfilesResponse::decode(body).unwrap();
+        assert_eq!(search.entries.len(), 1);
+        assert_eq!(search.entries[0].address, address.to_hex());
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/profiles?since=0")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = hyper::body::to_bytes(resp.into_body()).await.unwrap();
+        let list = proto::ListMonadProfilesResponse::decode(body).unwrap();
+        assert_eq!(list.entries.len(), 1);
+        assert_eq!(list.entries[0].address, address.to_hex());
     }
 }
 

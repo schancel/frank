@@ -41,6 +41,10 @@ import { validateProfileDisplayName } from './profile-display-name'
 jest.mock('axios')
 const mockedAxios = axios as jest.Mocked<typeof axios>
 
+beforeEach(() => {
+  mockedAxios.mockClear()
+})
+
 const RELAY_BASE_URL = 'http://relay.test'
 const SEED = {
   mnemonic: 'test test test test test test test test test test test junk',
@@ -457,7 +461,7 @@ describe('bot profile marker (#311)', () => {
 })
 
 describe('fetchMonadProfilesSince', () => {
-  it('GETs /metadata/monad?since=<sinceMs> and decodes each entry, including its SignedPayload', async () => {
+  it('GETs /profiles?since=<sinceMs> (and falls back to /metadata/monad on 404)', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const signedPayload = new SignedPayload()
     signedPayload.setPublicKey(identity.compressedPubKey)
@@ -486,7 +490,7 @@ describe('fetchMonadProfilesSince', () => {
     expect(mockedAxios).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: `${RELAY_BASE_URL}/metadata/monad`,
+        url: `${RELAY_BASE_URL}/profiles`,
         params: { since: sinceMs },
       }),
     )
@@ -498,6 +502,44 @@ describe('fetchMonadProfilesSince', () => {
     expect(profiles[0].signedPayload.getScheme()).toBe(
       SignedPayload.SignatureScheme.ECDSA,
     )
+  })
+
+  it('falls back to /metadata/monad when /profiles returns 404', async () => {
+    mockedAxios.mockRejectedValueOnce(
+      Object.assign(new Error('not found'), {
+        isAxiosError: true,
+        response: { status: 404 },
+      }),
+    )
+    const emptyResponse = new ListMonadProfilesResponse()
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(emptyResponse.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const profiles = await fetchMonadProfilesSince({
+      relayBaseUrl: RELAY_BASE_URL,
+      sinceMs: 0,
+    })
+
+    expect(mockedAxios).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/profiles`,
+      }),
+    )
+    expect(mockedAxios).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/metadata/monad`,
+      }),
+    )
+    expect(profiles).toEqual([])
   })
 
   it('returns [] on an empty ListMonadProfilesResponse', async () => {
@@ -520,7 +562,7 @@ describe('fetchMonadProfilesSince', () => {
 })
 
 describe('searchMonadProfiles', () => {
-  it('GETs /metadata/monad/search?prefix=&limit= and decodes each entry, including its SignedPayload', async () => {
+  it('GETs /profiles/search?prefix=&limit= and decodes each entry, including its SignedPayload', async () => {
     const identity = MonadIdentity.fromSeed(SEED)
     const signedPayload = new SignedPayload()
     signedPayload.setPublicKey(identity.compressedPubKey)
@@ -549,7 +591,7 @@ describe('searchMonadProfiles', () => {
     expect(mockedAxios).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: `${RELAY_BASE_URL}/metadata/monad/search`,
+        url: `${RELAY_BASE_URL}/profiles/search`,
         params: { prefix: 'ali', limit: 5 },
       }),
     )
@@ -561,6 +603,44 @@ describe('searchMonadProfiles', () => {
     expect(profiles[0].signedPayload.getScheme()).toBe(
       SignedPayload.SignatureScheme.ECDSA,
     )
+  })
+
+  it('falls back to /metadata/monad/search when /profiles/search returns 404', async () => {
+    mockedAxios.mockRejectedValueOnce(
+      Object.assign(new Error('not found'), {
+        isAxiosError: true,
+        response: { status: 404 },
+      }),
+    )
+    const emptyResponse = new ListMonadProfilesResponse()
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(emptyResponse.serializeBinary()),
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const profiles = await searchMonadProfiles({
+      relayBaseUrl: RELAY_BASE_URL,
+      prefix: 'bob',
+    })
+
+    expect(mockedAxios).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/profiles/search`,
+      }),
+    )
+    expect(mockedAxios).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/metadata/monad/search`,
+      }),
+    )
+    expect(profiles).toEqual([])
   })
 
   it('omits `limit` from the query when not provided', async () => {
@@ -578,7 +658,7 @@ describe('searchMonadProfiles', () => {
     expect(mockedAxios).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: `${RELAY_BASE_URL}/metadata/monad/search`,
+        url: `${RELAY_BASE_URL}/profiles/search`,
         params: { prefix: 'bob' },
       }),
     )
@@ -612,7 +692,7 @@ describe('searchMonadProfiles', () => {
 })
 
 describe('fetchCuratedDefaultContacts', () => {
-  it('GETs /metadata/monad/curated-defaults and returns the configured entries', async () => {
+  it('GETs /profiles/curated-defaults and returns the configured entries', async () => {
     const entries = [
       { address: '0x' + '11'.repeat(20), name: 'Welcome Bot' },
       { address: '0x' + '22'.repeat(20), name: 'Support' },
@@ -633,6 +713,43 @@ describe('fetchCuratedDefaultContacts', () => {
     expect(mockedAxios).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
+        url: `${RELAY_BASE_URL}/profiles/curated-defaults`,
+      }),
+    )
+  })
+
+  it('falls back to /metadata/monad/curated-defaults when /profiles/curated-defaults returns 404', async () => {
+    mockedAxios.mockRejectedValueOnce(
+      Object.assign(new Error('not found'), {
+        isAxiosError: true,
+        response: { status: 404 },
+      }),
+    )
+    const entries = [{ address: '0x' + '33'.repeat(20), name: 'Fallback Bot' }]
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: { entries },
+      statusText: 'OK',
+      headers: {},
+      config: {},
+    })
+
+    const contacts = await fetchCuratedDefaultContacts({
+      relayBaseUrl: RELAY_BASE_URL,
+    })
+
+    expect(contacts).toEqual(entries)
+    expect(mockedAxios).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'get',
+        url: `${RELAY_BASE_URL}/profiles/curated-defaults`,
+      }),
+    )
+    expect(mockedAxios).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
         url: `${RELAY_BASE_URL}/metadata/monad/curated-defaults`,
       }),
     )
@@ -641,6 +758,12 @@ describe('fetchCuratedDefaultContacts', () => {
   it('returns [] and does not throw on a 404/network error', async () => {
     mockedAxios.mockRejectedValueOnce(
       Object.assign(new Error('not found'), {
+        isAxiosError: true,
+        response: { status: 404 },
+      }),
+    )
+    mockedAxios.mockRejectedValueOnce(
+      Object.assign(new Error('not found legacy'), {
         isAxiosError: true,
         response: { status: 404 },
       }),

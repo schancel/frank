@@ -57,6 +57,13 @@
 
         <!-- Contacts list -->
         <template v-if="filteredContacts.length > 0">
+          <q-item-label
+            header
+            class="text-caption text-uppercase q-py-xs q-px-sm text-grey-7"
+            v-if="search && (networkResults.length > 0 || isSearchingNetwork)"
+          >
+            {{ $t('contactBookDialog.contacts') }}
+          </q-item-label>
           <q-item
             v-for="item in filteredContacts"
             :key="item.address"
@@ -116,7 +123,87 @@
             </q-item-section>
           </q-item>
         </template>
-        <q-item v-else>
+
+        <!-- Directory Search Loading -->
+        <q-item v-if="isSearchingNetwork" class="q-py-xs full-width">
+          <q-item-section avatar style="min-width: 44px; padding-right: 8px">
+            <q-spinner size="24px" color="primary" />
+          </q-item-section>
+          <q-item-section>
+            <q-item-label caption>{{ $t('newContactDialog.loading') }}</q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <!-- Directory Search Results -->
+        <template v-if="networkResults.length > 0">
+          <q-separator v-if="filteredContacts.length > 0" class="q-my-xs" />
+          <q-item-label
+            header
+            class="text-caption text-uppercase q-py-xs q-px-sm text-grey-7"
+          >
+            Directory
+          </q-item-label>
+          <q-item
+            v-for="res in networkResults"
+            :key="res.address"
+            clickable
+            v-ripple
+            class="q-py-sm full-width"
+            data-test="directory-search-result"
+            @click="addAndStartChat(res)"
+          >
+            <q-item-section avatar style="min-width: 44px; padding-right: 8px">
+              <q-avatar rounded size="40px">
+                <img :src="profileAvatar(res.avatar, res.address)" />
+              </q-avatar>
+            </q-item-section>
+            <q-item-section class="col" style="min-width: 0">
+              <div class="row items-center no-wrap">
+                <q-item-label lines="1" class="text-weight-medium ellipsis">
+                  {{ res.name || (res.username ? `@${res.username}` : formatAddrCompact(res.address)) }}
+                </q-item-label>
+                <q-badge
+                  v-if="res.bot"
+                  color="purple"
+                  text-color="white"
+                  label="BOT"
+                  class="q-ml-xs text-bold"
+                  style="font-size: 10px; padding: 2px 4px"
+                />
+              </div>
+              <q-item-label caption lines="1" class="ellipsis">
+                <span v-if="res.username">@{{ res.username }} • </span>{{ formatAddrCompact(res.address) }}
+              </q-item-label>
+            </q-item-section>
+            <q-item-section side style="padding-left: 4px">
+              <div class="row items-center no-wrap">
+                <q-btn
+                  flat
+                  round
+                  dense
+                  size="sm"
+                  icon="person_add"
+                  color="primary"
+                  :aria-label="$t('a11y.addContact')"
+                  @click.stop="addNetworkContact(res)"
+                />
+                <q-btn
+                  flat
+                  round
+                  dense
+                  size="sm"
+                  icon="chat"
+                  color="primary"
+                  class="q-ml-xs"
+                  :aria-label="$t('chatList.directMessages')"
+                  @click.stop="addAndStartChat(res)"
+                />
+              </div>
+            </q-item-section>
+          </q-item>
+        </template>
+
+        <q-item v-if="filteredContacts.length === 0 && networkResults.length === 0 && !isSearchingNetwork">
           <q-item-section class="text-grey text-center q-pa-md">
             {{
               search
@@ -132,17 +219,30 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, inject, ref } from 'vue'
+import { computed, defineComponent, inject, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useQuasar } from 'quasar'
 
-import { useContactStore, ContactState } from 'src/stores/contacts'
+import { useContactStore, ContactState, pendingRelayData } from 'src/stores/contacts'
 import { profileAvatar } from 'src/utils/avatar'
 import { activeChain } from '@frank/wallet/chain'
 import { openChat, openContactProfile, openPage } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
 import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
+import { isOwnAddress } from 'src/utils/own-address'
+import { searchMonadProfiles, decodeProfileBytes } from '@frank/wallet/monad-identity'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import axios from 'axios'
+
+interface NetworkSearchResult {
+  address: string
+  name: string
+  username?: string
+  avatar?: string
+  bio?: string
+  bot?: boolean
+}
 
 export default defineComponent({
   components: {
@@ -155,6 +255,9 @@ export default defineComponent({
     const { getContacts } = storeToRefs(contactStore)
     const search = ref('')
     const showMyQrDialog = ref(false)
+    const networkResults = ref<NetworkSearchResult[]>([])
+    const isSearchingNetwork = ref(false)
+    let searchTimer: ReturnType<typeof setTimeout> | null = null
 
     const qInject = inject<{ screen?: { width?: number } } | null>('_q_', null)
     let qHook: { screen?: { width?: number } } | null = null
@@ -207,6 +310,143 @@ export default defineComponent({
         : address
     }
 
+    function isContact(addr: string): boolean {
+      if (typeof contactStore.isContact === 'function') {
+        return contactStore.isContact(addr)
+      }
+      const contacts = getContacts.value ?? {}
+      return Boolean(contacts[addr] || contacts[addr.toLowerCase()])
+    }
+
+    watch(search, (newVal: string) => {
+      if (searchTimer) {
+        clearTimeout(searchTimer)
+        searchTimer = null
+      }
+      const rawQ = (newVal ?? '').trim()
+      const cleanQ = rawQ.startsWith('@') ? rawQ.slice(1) : rawQ
+      if (cleanQ.length < 2) {
+        networkResults.value = []
+        isSearchingNetwork.value = false
+        return
+      }
+      isSearchingNetwork.value = true
+      searchTimer = setTimeout(async () => {
+        try {
+          let relayBaseUrl: string | undefined
+          try {
+            relayBaseUrl = loadMonadChainConfigFromEnv()?.relayBaseUrl
+          } catch {
+            // fallback
+          }
+          if (!relayBaseUrl) return
+
+          const searchPromises: Promise<any>[] = [
+            searchMonadProfiles({
+              relayBaseUrl,
+              prefix: cleanQ,
+              limit: 10,
+            }).catch(() => []),
+          ]
+
+          if (/^[a-z0-9][a-z0-9_-]{2,31}$/i.test(cleanQ)) {
+            const userUrl = `${relayBaseUrl.replace(/\/+$/, '')}/directory/user/${cleanQ.toLowerCase()}`
+            searchPromises.push(
+              axios
+                .get(userUrl)
+                .then(r => r.data)
+                .catch(() => null),
+            )
+          }
+
+          const [entries, userLookup] = await Promise.all(searchPromises)
+          const allEntries: any[] = [...(entries || [])]
+
+          if (userLookup && userLookup.status === 'active' && userLookup.address) {
+            const userAddr = userLookup.address
+            const alreadyHas = allEntries.some(
+              (e: any) => e.address.toLowerCase() === userAddr.toLowerCase(),
+            )
+            if (!alreadyHas) {
+              let rawBytes: Uint8Array = new Uint8Array()
+              if (userLookup.entry?.raw_hex) {
+                try {
+                  rawBytes = Uint8Array.from(Buffer.from(userLookup.entry.raw_hex, 'hex'))
+                } catch {
+                  // Ignore
+                }
+              }
+              allEntries.unshift({
+                address: userAddr,
+                rawBytes,
+                signedPayload: null,
+                username: userLookup.username,
+              })
+            }
+          }
+
+          const results: NetworkSearchResult[] = []
+          for (const entry of allEntries) {
+            let name = formatAddrCompact(entry.address)
+            let username = (entry as any).username
+            let avatar: string | undefined
+            let bio: string | undefined
+            let bot = false
+            if (entry.rawBytes && entry.rawBytes.length > 0) {
+              try {
+                const decoded = decodeProfileBytes(entry.rawBytes, {
+                  expectedAddress: entry.address,
+                })
+                if (decoded.name) name = decoded.name
+                if (decoded.username) username = decoded.username
+                avatar = decoded.avatar
+                bio = decoded.bio
+                bot = Boolean(decoded.bot)
+              } catch {
+                // Ignore profile decode errors
+              }
+            }
+            const isLocal = isContact(entry.address)
+            let isSelf = false
+            try {
+              isSelf = await isOwnAddress(entry.address)
+            } catch {
+              // Ignore
+            }
+            if (!isLocal && !isSelf) {
+              results.push({
+                address: entry.address,
+                name,
+                username,
+                avatar,
+                bio,
+                bot,
+              })
+            }
+          }
+          if (search.value.trim() === rawQ) {
+            networkResults.value = results
+          }
+        } catch (err) {
+          console.warn('Network contact search error', err)
+          if (search.value.trim() === rawQ) {
+            networkResults.value = []
+          }
+        } finally {
+          if (search.value.trim() === rawQ) {
+            isSearchingNetwork.value = false
+          }
+        }
+      }, 300)
+    })
+
+    onBeforeUnmount(() => {
+      if (searchTimer) {
+        clearTimeout(searchTimer)
+        searchTimer = null
+      }
+    })
+
     function openProfile(address: string) {
       openContactProfile(router, address)
       if (isNarrow()) {
@@ -216,6 +456,40 @@ export default defineComponent({
 
     function startChat(address: string) {
       openChat(router, address)
+      if (isNarrow()) {
+        emit('closeDrawer')
+      }
+    }
+
+    function addNetworkContact(item: NetworkSearchResult) {
+      if (typeof contactStore.addContact === 'function') {
+        contactStore.addContact({
+          address: item.address,
+          contact: {
+            ...pendingRelayData,
+            profile: {
+              ...(pendingRelayData?.profile ?? {}),
+              name: item.name,
+              username: item.username,
+              bio: item.bio ?? '',
+              avatar: item.avatar ?? null,
+              pubKey: null,
+              isBot: item.bot ?? false,
+            },
+          },
+        })
+      }
+      if (typeof contactStore.refresh === 'function') {
+        void contactStore.refresh(item.address)
+      }
+      networkResults.value = networkResults.value.filter(
+        r => r.address.toLowerCase() !== item.address.toLowerCase(),
+      )
+    }
+
+    function addAndStartChat(item: NetworkSearchResult) {
+      addNetworkContact(item)
+      openChat(router, item.address)
       if (isNarrow()) {
         emit('closeDrawer')
       }
@@ -232,11 +506,15 @@ export default defineComponent({
     return {
       search,
       filteredContacts,
+      networkResults,
+      isSearchingNetwork,
       profileAvatar,
       formatAddr,
       formatAddrCompact,
       openProfile,
       startChat,
+      addNetworkContact,
+      addAndStartChat,
       openAddContact,
       deleteContact,
       showMyQrDialog,

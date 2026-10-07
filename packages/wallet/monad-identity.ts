@@ -1168,16 +1168,37 @@ export interface MonadProfileListingEntry {
  * that message for why (wire-identical to the backend's embedded-message field either way) -- so
  * it's decoded here via `SignedPayload.deserializeBinary` rather than a nested-message getter.
  * Transparently supports both CBOR and legacy protobuf representations. */
+function isNotFoundError(err: unknown): boolean {
+  if (!err) return false
+  const anyErr = err as any
+  return anyErr.response?.status === 404 || anyErr.status === 404
+}
+
 export async function fetchMonadProfilesSince(params: {
   relayBaseUrl: string
   sinceMs: number
 }): Promise<MonadProfileListingEntry[]> {
-  const response = await axios({
-    method: 'get',
-    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/monad`,
-    params: { since: params.sinceMs },
-    responseType: 'arraybuffer',
-  })
+  const baseUrl = params.relayBaseUrl.replace(/\/+$/, '')
+  let response: any
+  try {
+    response = await axios({
+      method: 'get',
+      url: `${baseUrl}/profiles`,
+      params: { since: params.sinceMs },
+      responseType: 'arraybuffer',
+    })
+  } catch (err) {
+    if (isNotFoundError(err)) {
+      response = await axios({
+        method: 'get',
+        url: `${baseUrl}/metadata/monad`,
+        params: { since: params.sinceMs },
+        responseType: 'arraybuffer',
+      })
+    } else {
+      throw err
+    }
+  }
   const decoded = ListMonadProfilesResponse.deserializeBinary(
     new Uint8Array(response.data),
   )
@@ -1200,36 +1221,41 @@ export async function fetchMonadProfilesSince(params: {
  * reference for callers deciding what to ask for. */
 export const MONAD_PROFILE_SEARCH_MAX_RESULTS = 100
 
-/** `GET /metadata/monad/search?prefix=<text>&limit=<n>` (ticket #48): prefix-search registered
- * Monad profiles by their normalized (lowercased) `display_name`, matching case-insensitively.
+/** `GET /profiles/search?prefix=<text>&limit=<n>` (canonical) / `/metadata/monad/search`:
+ * prefix-search registered profiles by their normalized (lowercased) `display_name`, matching case-insensitively.
  * `limit` defaults to the relay's own default (currently 20) when omitted, and is clamped to
  * `MONAD_PROFILE_SEARCH_MAX_RESULTS` server-side regardless of what's requested.
- *
- * Reuses `ListMonadProfilesResponse`/`MonadProfileListingEntry` -- the exact same wire shape
- * `fetchMonadProfilesSince` already decodes -- since a search result is just a differently
- * filtered list of the same `{address, signedPayload}` pairs; only the query differs, so this
- * mirrors that function's decode step closely rather than inventing a new shape.
- *
- * Unlike `fetchCuratedDefaultContacts`, this does *not* fail soft: mirrors
- * `fetchMonadProfilesSince`'s own convention of letting a network/decode error propagate to the
- * caller, since (like that function) there's no natural "empty" fallback that wouldn't silently
- * mask a broken relay from a caller that actually needs search results (e.g. a UI search box
- * should be able to distinguish "no matches" from "the request failed").
  * Transparently supports both CBOR and legacy protobuf representations. */
 export async function searchMonadProfiles(params: {
   relayBaseUrl: string
   prefix: string
   limit?: number
 }): Promise<MonadProfileListingEntry[]> {
-  const response = await axios({
-    method: 'get',
-    url: `${params.relayBaseUrl.replace(/\/+$/, '')}/metadata/monad/search`,
-    params: {
-      prefix: params.prefix,
-      ...(params.limit === undefined ? {} : { limit: params.limit }),
-    },
-    responseType: 'arraybuffer',
-  })
+  const baseUrl = params.relayBaseUrl.replace(/\/+$/, '')
+  const queryParams = {
+    prefix: params.prefix,
+    ...(params.limit === undefined ? {} : { limit: params.limit }),
+  }
+  let response: any
+  try {
+    response = await axios({
+      method: 'get',
+      url: `${baseUrl}/profiles/search`,
+      params: queryParams,
+      responseType: 'arraybuffer',
+    })
+  } catch (err) {
+    if (isNotFoundError(err)) {
+      response = await axios({
+        method: 'get',
+        url: `${baseUrl}/metadata/monad/search`,
+        params: queryParams,
+        responseType: 'arraybuffer',
+      })
+    } else {
+      throw err
+    }
+  }
   const decoded = ListMonadProfilesResponse.deserializeBinary(
     new Uint8Array(response.data),
   )
@@ -1246,6 +1272,12 @@ export async function searchMonadProfiles(params: {
   })
 }
 
+/** Canonical chain-agnostic alias for `searchMonadProfiles`. */
+export const searchProfiles = searchMonadProfiles
+
+/** Canonical chain-agnostic alias for `fetchMonadProfilesSince`. */
+export const fetchProfilesSince = fetchMonadProfilesSince
+
 /** One entry in the relay's operator-curated default-contacts list -- see
  * `fetchCuratedDefaultContacts`. Shape matches `stores/contacts.ts`'s `addDefaultContact` param
  * exactly (`{address, name}`), so callers can pass an entry straight through. */
@@ -1254,22 +1286,41 @@ export interface CuratedDefaultContact {
   name: string
 }
 
-/** `GET /metadata/monad/curated-defaults` (ticket #49): fetches the relay's operator-curated
- * list of default contacts, shown to a fresh user before they've added anyone themselves.
+/** `GET /profiles/curated-defaults` (canonical) / `/metadata/monad/curated-defaults`:
+ * fetches the relay's operator-curated list of default contacts, shown to a fresh user
+ * before they've added anyone themselves.
  * Fails soft (empty array) on any error -- this is a nice-to-have UX seed, not something that
  * should ever block app startup if a relay is slow/down/misconfigured. */
 export async function fetchCuratedDefaultContacts(params: {
   relayBaseUrl: string
 }): Promise<CuratedDefaultContact[]> {
+  const baseUrl = params.relayBaseUrl.replace(/\/+$/, '')
   try {
-    const response = await axios({
-      method: 'get',
-      url: `${params.relayBaseUrl.replace(
-        /\/+$/,
-        '',
-      )}/metadata/monad/curated-defaults`,
-    })
-    return response.data?.entries ?? []
+    let data: any
+    try {
+      const response = await axios({
+        method: 'get',
+        url: `${baseUrl}/profiles/curated-defaults`,
+      })
+      data = response.data
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        const response = await axios({
+          method: 'get',
+          url: `${baseUrl}/metadata/monad/curated-defaults`,
+        })
+        data = response.data
+      } else {
+        throw err
+      }
+    }
+    if (Array.isArray(data?.entries)) {
+      return data.entries
+    }
+    if (Array.isArray(data)) {
+      return data
+    }
+    return []
   } catch (err) {
     console.error('failed to fetch curated default contacts', err)
     return []

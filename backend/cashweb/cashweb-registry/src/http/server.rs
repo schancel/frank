@@ -569,6 +569,16 @@ impl RegistryServer {
                 "/metadata/monad/search",
                 routing::get(handle_search_monad_profiles),
             )
+            // Canonical network-agnostic profile endpoints (docs/backend-topology.md)
+            .route(
+                "/profiles/curated-defaults",
+                routing::get(handle_get_curated_default_contacts),
+            )
+            .route(
+                "/profiles/search",
+                routing::get(handle_search_monad_profiles),
+            )
+            .route("/profiles", routing::get(handle_list_monad_profiles))
             // Protobuf topic endpoints are deprecated and dead; canonical CBOR topic
             // endpoints (/message/monad/topics) are the only active routes.
             .route(

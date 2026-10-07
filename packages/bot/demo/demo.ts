@@ -552,7 +552,9 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       '',
     ].join('\n')
     const curatedPath = join(config.stateDir, 'relay-curated.toml')
-    writeFileSync(curatedPath, directoryToml, { mode: 0o600 })
+    const curatedToml = renderCuratedDefaultsToml(curated.entries)
+    const combinedToml = [directoryToml, curatedToml].filter(Boolean).join('\n')
+    writeFileSync(curatedPath, combinedToml, { mode: 0o600 })
     abortIfStopping()
 
     const prebuiltBin = join(REPO_ROOT, 'backend', 'cashweb', 'target', 'debug', 'cashwebd-exe')

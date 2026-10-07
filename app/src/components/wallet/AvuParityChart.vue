@@ -155,7 +155,7 @@
 
     <!-- Toggle Controls: Time Ranges & Networks -->
     <div class="row items-center justify-between q-mb-sm q-col-gutter-xs">
-      <div class="col-12 col-md-auto">
+      <div class="col-12 col-md-auto row items-center q-gutter-x-xs">
         <q-btn-toggle
           v-model="selectedRange"
           dense
@@ -167,6 +167,19 @@
           text-color="grey-9"
           :options="rangeToggleOptions"
           data-test="view-toggle"
+        />
+        <q-btn
+          v-if="isCustomZoomed"
+          dense
+          no-caps
+          rounded
+          unelevated
+          color="primary"
+          icon="zoom_out_map"
+          :label="$t('walletPanel.resetZoom')"
+          class="q-ml-xs"
+          data-test="reset-zoom-btn"
+          @click="resetCustomZoom"
         />
       </div>
 
@@ -207,10 +220,7 @@
               `${activeTokenInfo.name} (${$t('walletPanel.chartTokenAvu')})`
             }}</span>
           </span>
-          <span
-            v-if="selectedRange !== 'recent'"
-            class="row items-center q-gutter-xs"
-          >
+          <span v-if="!isFineGrainedRange" class="row items-center q-gutter-xs">
             <span
               class="legend-dot"
               :style="{ backgroundColor: themeColors.milestone }"
@@ -251,11 +261,17 @@
         data-test="macro-chart-container"
       >
         <svg
+          ref="svgRef"
           class="chart-svg"
+          :class="{ 'cursor-crosshair': selectedRange !== 'networks' }"
           viewBox="0 0 680 290"
           preserveAspectRatio="xMidYMid meet"
           data-test="macro-chart-svg"
-          @mouseleave="clearHover"
+          @mousedown="onSvgMouseDown"
+          @mousemove="onSvgMouseMove"
+          @mouseup="onSvgMouseUp"
+          @mouseleave="onSvgMouseLeave"
+          @dblclick="resetCustomZoom"
         >
           <!-- Grid Lines (Horizontal) -->
           <g class="grid-lines" opacity="0.3">
@@ -296,6 +312,22 @@
             y2="230"
             :stroke="themeColors.axis"
             stroke-width="1.5"
+          />
+
+          <!-- Drag Selection Box -->
+          <rect
+            v-if="dragSelectionBox"
+            :x="dragSelectionBox.x"
+            y="20"
+            :width="dragSelectionBox.width"
+            height="210"
+            :fill="themeColors.token"
+            opacity="0.2"
+            :stroke="themeColors.token"
+            stroke-width="1.5"
+            stroke-dasharray="4 2"
+            pointer-events="none"
+            data-test="drag-selection-box"
           />
 
           <!-- USD Area Fill -->
@@ -432,7 +464,7 @@
             />
             <!-- X-axis Year Label -->
             <text
-              v-if="selectedRange !== 'recent' || isRecentTick(idx)"
+              v-if="shouldShowTick(idx, macroPointsMapped.length)"
               :x="point.x"
               y="248"
               font-size="11"
@@ -450,9 +482,7 @@
             y="35"
             font-size="10"
             text-anchor="end"
-            :fill="
-              selectedRange === 'recent' ? themeColors.token : themeColors.usd
-            "
+            :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
           >
             {{ leftAxisMaxLabel }}
           </text>
@@ -461,9 +491,7 @@
             y="130"
             font-size="10"
             text-anchor="end"
-            :fill="
-              selectedRange === 'recent' ? themeColors.token : themeColors.usd
-            "
+            :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
           >
             {{ leftAxisMidLabel }}
           </text>
@@ -472,9 +500,7 @@
             y="230"
             font-size="10"
             text-anchor="end"
-            :fill="
-              selectedRange === 'recent' ? themeColors.token : themeColors.usd
-            "
+            :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
           >
             {{ leftAxisMinLabel }}
           </text>
@@ -485,9 +511,7 @@
             y="35"
             font-size="10"
             text-anchor="start"
-            :fill="
-              selectedRange === 'recent' ? themeColors.usd : themeColors.gold
-            "
+            :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
           >
             {{ rightAxisMaxLabel }}
           </text>
@@ -496,9 +520,7 @@
             y="130"
             font-size="10"
             text-anchor="start"
-            :fill="
-              selectedRange === 'recent' ? themeColors.usd : themeColors.gold
-            "
+            :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
           >
             {{ rightAxisMidLabel }}
           </text>
@@ -507,9 +529,7 @@
             y="230"
             font-size="10"
             text-anchor="start"
-            :fill="
-              selectedRange === 'recent' ? themeColors.usd : themeColors.gold
-            "
+            :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
           >
             {{ rightAxisMinLabel }}
           </text>
@@ -857,7 +877,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useTranslate } from 'src/composables/useTranslate'
@@ -1010,18 +1030,34 @@ try {
 
 const t = useTranslate()
 
-export type TimeRange = 'all' | 'pow' | 'asic' | 'recent' | 'networks'
+export type TimeRange =
+  | 'all'
+  | '5y'
+  | '1y'
+  | '30d'
+  | '7d'
+  | '24h'
+  | 'networks'
+  | 'pow'
+  | 'asic'
+  | 'recent'
 
-// Selected view toggle ('all' | 'pow' | 'asic' | 'recent' | 'networks')
+// Selected view toggle ('all' | '5y' | '1y' | '30d' | '7d' | '24h' | 'networks' | 'pow' | 'asic' | 'recent')
 const selectedRange = ref<TimeRange>('all')
 
 const rangeToggleOptions = computed(() => [
   { label: t('walletPanel.rangeAll'), value: 'all' },
-  { label: t('walletPanel.rangePow'), value: 'pow' },
-  { label: t('walletPanel.rangeAsic'), value: 'asic' },
-  { label: t('walletPanel.rangeRecent'), value: 'recent' },
+  { label: t('walletPanel.range5Y'), value: '5y' },
+  { label: t('walletPanel.range1Y'), value: '1y' },
+  { label: t('walletPanel.range30D'), value: '30d' },
+  { label: t('walletPanel.range7D'), value: '7d' },
+  { label: t('walletPanel.range24H'), value: '24h' },
   { label: t('walletPanel.rangeNetworks'), value: 'networks' },
 ])
+
+const isFineGrainedRange = computed(() => {
+  return ['24h', 'recent', '7d', '30d', '1y'].includes(selectedRange.value)
+})
 
 // Theme-driven styling
 const isDark = computed(() => Boolean($q?.dark?.isActive))
@@ -1096,51 +1132,57 @@ const allMacroData: MacroPoint[] = [
   { year: 2017, usdKwh: 16.8, goldAvu: 24500, powHashRate: 8.5 },
   { year: 2020, usdKwh: 15.1, goldAvu: 27200, powHashRate: 10.4 },
   { year: 2021, usdKwh: 13.9, goldAvu: 28100, powHashRate: 11.2 },
+  { year: 2022, usdKwh: 13.4, goldAvu: 28800, powHashRate: 11.4 },
+  { year: 2023, usdKwh: 13.0, goldAvu: 29400, powHashRate: 11.5 },
   { year: 2024, usdKwh: 12.6, goldAvu: 30100, powHashRate: 11.7 },
+  { year: 2025, usdKwh: 12.3, goldAvu: 30800, powHashRate: 11.8 },
   { year: 2026, usdKwh: 12.0, goldAvu: 31547, powHashRate: 11.9 },
 ]
 
 /**
- * Generates 24 fine-grained hourly intraday data points (last 24 hours),
- * anchoring directly to the live rates and energy baskets at index 23 ('Now').
+ * Generates fine-grained intraday and multi-day time-series points,
+ * anchoring cleanly to the live token rate and energy baskets at the final point ('Now').
  */
-const recentHourlyData = computed<MacroPoint[]>(() => {
+function generateTimeSeries(
+  count: number,
+  labelFn: (idx: number, total: number) => string,
+  volToken: number,
+  volUsd: number,
+  volGold: number,
+): MacroPoint[] {
   const liveTokenRate = currentLiveRate.value
-  const points: MacroPoint[] = []
-
   const baseUsdKwh = 12.0
   const baseGoldAvu = 31547
   const basePow = 11.9
+  const points: MacroPoint[] = []
 
-  for (let i = 0; i < 24; i++) {
-    const hoursAgo = 23 - i
-    const timeLabel = hoursAgo === 0 ? 'Now' : `-${hoursAgo}h`
-
-    // Smooth sinusoidal intraday harmonic curve, exactly 0 at i=23
-    const phase = ((i - 23) / 24) * 2 * Math.PI
+  for (let i = 0; i < count; i++) {
+    const isLast = i === count - 1
+    const phase = ((i - (count - 1)) / count) * 2 * Math.PI
     const tokenFluctuation =
-      Math.sin(phase) * 0.012 + Math.sin(phase * 2) * 0.006
-    const usdFluctuation = Math.sin(phase) * 0.004
-    const goldFluctuation = Math.sin(phase) * 0.008
+      Math.sin(phase) * volToken + Math.sin(phase * 2) * (volToken * 0.4)
+    const usdFluctuation =
+      Math.sin(phase) * volUsd + Math.cos(phase * 1.5) * (volUsd * 0.3)
+    const goldFluctuation = Math.sin(phase) * volGold
+    const powFluctuation = Math.sin(phase + 0.3) * volUsd
 
-    const tokenVal =
-      i === 23
-        ? liveTokenRate
-        : Math.round(liveTokenRate * (1 + tokenFluctuation) * 100) / 100
-    const usdVal =
-      i === 23
-        ? baseUsdKwh
-        : Math.round(baseUsdKwh * (1 + usdFluctuation) * 100) / 100
-    const goldVal =
-      i === 23 ? baseGoldAvu : Math.round(baseGoldAvu * (1 + goldFluctuation))
-    const powVal =
-      i === 23
-        ? basePow
-        : Math.round(basePow * (1 + usdFluctuation) * 100) / 100
+    const tokenVal = isLast
+      ? liveTokenRate
+      : Math.round(liveTokenRate * (1 + tokenFluctuation) * 100) / 100
+    const usdVal = isLast
+      ? baseUsdKwh
+      : Math.round(baseUsdKwh * (1 + usdFluctuation) * 100) / 100
+    const goldVal = isLast
+      ? baseGoldAvu
+      : Math.round(baseGoldAvu * (1 + goldFluctuation))
+    const powVal = isLast
+      ? basePow
+      : Math.round(basePow * (1 + powFluctuation) * 100) / 100
 
+    const label = labelFn(i, count)
     points.push({
-      year: timeLabel,
-      timeLabel,
+      year: label,
+      timeLabel: label,
       usdKwh: usdVal,
       goldAvu: goldVal,
       powHashRate: powVal,
@@ -1149,7 +1191,65 @@ const recentHourlyData = computed<MacroPoint[]>(() => {
   }
 
   return points
-})
+}
+
+const data24h = computed<MacroPoint[]>(() =>
+  generateTimeSeries(
+    24,
+    (i, total) => {
+      const h = total - 1 - i
+      return h === 0 ? 'Now' : `-${h}h`
+    },
+    0.012,
+    0.004,
+    0.008,
+  ),
+)
+
+const recentHourlyData = data24h
+
+const data7d = computed<MacroPoint[]>(() =>
+  generateTimeSeries(
+    28,
+    (i, total) => {
+      const stepsAgo = total - 1 - i
+      if (stepsAgo === 0) return 'Now'
+      const days = stepsAgo / 4
+      return stepsAgo % 4 === 0
+        ? `-${days}d`
+        : `-${Math.round(days * 10) / 10}d`
+    },
+    0.035,
+    0.008,
+    0.015,
+  ),
+)
+
+const data30d = computed<MacroPoint[]>(() =>
+  generateTimeSeries(
+    30,
+    (i, total) => {
+      const d = total - 1 - i
+      return d === 0 ? 'Now' : `-${d}d`
+    },
+    0.06,
+    0.015,
+    0.025,
+  ),
+)
+
+const data1y = computed<MacroPoint[]>(() =>
+  generateTimeSeries(
+    12,
+    (i, total) => {
+      const m = total - 1 - i
+      return m === 0 ? 'Now' : `-${m}m`
+    },
+    0.12,
+    0.03,
+    0.05,
+  ),
+)
 
 // Hardware Milestones
 interface HardwareMilestone {
@@ -1198,21 +1298,150 @@ const ALL_HARDWARE_MILESTONES: HardwareMilestone[] = [
   },
 ]
 
-// Range-filtered points and axis limits
-const filteredMacroData = computed(() => {
-  if (selectedRange.value === 'recent') {
-    return recentHourlyData.value
-  }
-  if (selectedRange.value === 'asic') {
-    return allMacroData.filter(p => (p.year as number) >= 2020)
-  }
-  if (selectedRange.value === 'pow') {
-    return allMacroData.filter(p => (p.year as number) >= 2009)
-  }
-  return allMacroData
+// Custom Zoom State
+const customZoomRange = ref<{ startIndex: number; endIndex: number } | null>(
+  null,
+)
+const isCustomZoomed = computed(() => customZoomRange.value !== null)
+
+function resetCustomZoom() {
+  customZoomRange.value = null
+}
+
+watch(selectedRange, () => {
+  resetCustomZoom()
 })
 
+const currentRangeData = computed<MacroPoint[]>(() => {
+  switch (selectedRange.value) {
+    case '24h':
+    case 'recent':
+      return data24h.value
+    case '7d':
+      return data7d.value
+    case '30d':
+      return data30d.value
+    case '1y':
+      return data1y.value
+    case '5y':
+      return allMacroData.filter(p => (p.year as number) >= 2021)
+    case 'pow':
+      return allMacroData.filter(p => (p.year as number) >= 2009)
+    case 'asic':
+      return allMacroData.filter(p => (p.year as number) >= 2020)
+    case 'all':
+    default:
+      return allMacroData
+  }
+})
+
+const activeMacroData = computed<MacroPoint[]>(() => {
+  const raw = currentRangeData.value
+  if (!customZoomRange.value) {
+    return raw
+  }
+  const { startIndex, endIndex } = customZoomRange.value
+  const clampedStart = Math.max(0, Math.min(startIndex, raw.length - 2))
+  const clampedEnd = Math.max(
+    clampedStart + 1,
+    Math.min(endIndex, raw.length - 1),
+  )
+  return raw.slice(clampedStart, clampedEnd + 1)
+})
+
+const svgRef = ref<SVGSVGElement | null>(null)
+const isDragging = ref(false)
+const dragStartX = ref<number | null>(null)
+const dragCurrentX = ref<number | null>(null)
+
+function getSvgCoordinates(event: MouseEvent): { x: number; y: number } | null {
+  if (!svgRef.value) return null
+  const rect = svgRef.value.getBoundingClientRect()
+  if (rect.width === 0 || rect.height === 0) return null
+  const x = ((event.clientX - rect.left) / rect.width) * 680
+  const y = ((event.clientY - rect.top) / rect.height) * 290
+  return { x, y }
+}
+
+const dragSelectionBox = computed(() => {
+  if (
+    !isDragging.value ||
+    dragStartX.value === null ||
+    dragCurrentX.value === null
+  ) {
+    return null
+  }
+  const x1 = Math.min(dragStartX.value, dragCurrentX.value)
+  const x2 = Math.max(dragStartX.value, dragCurrentX.value)
+  const width = x2 - x1
+  if (width < 2) return null
+  return {
+    x: x1,
+    width,
+  }
+})
+
+function onSvgMouseDown(event: MouseEvent) {
+  if (selectedRange.value === 'networks') return
+  const pt = getSvgCoordinates(event)
+  if (!pt) return
+  if (pt.x >= 55 && pt.x <= 625 && pt.y >= 20 && pt.y <= 240) {
+    isDragging.value = true
+    dragStartX.value = pt.x
+    dragCurrentX.value = pt.x
+    clearHover()
+  }
+}
+
+function onSvgMouseMove(event: MouseEvent) {
+  if (!isDragging.value) return
+  const pt = getSvgCoordinates(event)
+  if (!pt) return
+  dragCurrentX.value = Math.max(55, Math.min(625, pt.x))
+}
+
+function onSvgMouseUp() {
+  if (!isDragging.value) return
+  if (dragStartX.value !== null && dragCurrentX.value !== null) {
+    const x1 = Math.min(dragStartX.value, dragCurrentX.value)
+    const x2 = Math.max(dragStartX.value, dragCurrentX.value)
+    const rawPoints = macroPointsMapped.value
+    if (x2 - x1 >= 15 && rawPoints.length >= 2) {
+      let startIndex = 0
+      let endIndex = rawPoints.length - 1
+
+      for (let i = 0; i < rawPoints.length; i++) {
+        if (rawPoints[i].x <= x1) startIndex = i
+        if (rawPoints[i].x <= x2) endIndex = i
+      }
+
+      if (x2 >= rawPoints[rawPoints.length - 1].x) {
+        endIndex = rawPoints.length - 1
+      }
+
+      if (endIndex - startIndex >= 1) {
+        const baseOffset = customZoomRange.value?.startIndex ?? 0
+        customZoomRange.value = {
+          startIndex: baseOffset + startIndex,
+          endIndex: baseOffset + endIndex,
+        }
+      }
+    }
+  }
+  isDragging.value = false
+  dragStartX.value = null
+  dragCurrentX.value = null
+}
+
+function onSvgMouseLeave() {
+  if (isDragging.value) {
+    onSvgMouseUp()
+  }
+  clearHover()
+}
+
 const rangeMinYear = computed(() => {
+  if (selectedRange.value === '5y') return 2021
   if (selectedRange.value === 'asic') return 2020
   if (selectedRange.value === 'pow') return 2009
   return 1930
@@ -1226,7 +1455,7 @@ const isLargeTokenScale = computed(() => {
 
 const usdMaxLimit = computed(() => {
   const tokenVal = !isLargeTokenScale.value ? currentLiveRate.value : 0
-  if (selectedRange.value === 'asic') {
+  if (selectedRange.value === '5y' || selectedRange.value === 'asic') {
     return Math.max(20, Math.ceil(tokenVal / 10) * 10)
   }
   if (selectedRange.value === 'pow') {
@@ -1239,7 +1468,8 @@ const usdMinLimit = computed(() => 0)
 
 const goldMaxLimit = computed(() => 35000)
 const goldMinLimit = computed(() => {
-  if (selectedRange.value === 'asic') return 20000
+  if (selectedRange.value === '5y' || selectedRange.value === 'asic')
+    return 20000
   if (selectedRange.value === 'pow') return 10000
   return 0
 })
@@ -1265,26 +1495,29 @@ function formatTokenAxisLabel(val: number): string {
   return `${val.toFixed(1)}`
 }
 
-function isRecentTick(idx: number): boolean {
-  return idx % 6 === 0 || idx === 23
+function shouldShowTick(idx: number, total: number): boolean {
+  if (total <= 14) return true
+  if (total <= 25) return idx % 6 === 0 || idx === total - 1
+  if (total <= 35) return idx % 5 === 0 || idx === total - 1
+  return idx % Math.ceil(total / 6) === 0 || idx === total - 1
 }
 
 const leftAxisMaxLabel = computed(() => {
-  if (selectedRange.value === 'recent') {
-    const hourly = recentHourlyData.value
-    const tokenVals = hourly.map(p => p.tokenAvu ?? currentLiveRate.value)
+  if (isFineGrainedRange.value) {
+    const slice = activeMacroData.value
+    const tokenVals = slice.map(p => p.tokenAvu ?? currentLiveRate.value)
     const tokenMin = Math.min(...tokenVals)
     const tokenMax = Math.max(...tokenVals)
     const tokenSpan = Math.max(tokenMax - tokenMin, tokenMax * 0.03, 0.2)
-    return formatTokenAxisLabel(tokenMax + tokenSpan * 0.2)
+    return formatTokenAxisLabel(tokenMax + tokenSpan * 0.25)
   }
   return usdMaxLabel.value
 })
 
 const leftAxisMidLabel = computed(() => {
-  if (selectedRange.value === 'recent') {
-    const hourly = recentHourlyData.value
-    const tokenVals = hourly.map(p => p.tokenAvu ?? currentLiveRate.value)
+  if (isFineGrainedRange.value) {
+    const slice = activeMacroData.value
+    const tokenVals = slice.map(p => p.tokenAvu ?? currentLiveRate.value)
     const tokenMin = Math.min(...tokenVals)
     const tokenMax = Math.max(...tokenVals)
     return formatTokenAxisLabel((tokenMax + tokenMin) / 2)
@@ -1293,48 +1526,63 @@ const leftAxisMidLabel = computed(() => {
 })
 
 const leftAxisMinLabel = computed(() => {
-  if (selectedRange.value === 'recent') {
-    const hourly = recentHourlyData.value
-    const tokenVals = hourly.map(p => p.tokenAvu ?? currentLiveRate.value)
+  if (isFineGrainedRange.value) {
+    const slice = activeMacroData.value
+    const tokenVals = slice.map(p => p.tokenAvu ?? currentLiveRate.value)
     const tokenMin = Math.min(...tokenVals)
     const tokenMax = Math.max(...tokenVals)
     const tokenSpan = Math.max(tokenMax - tokenMin, tokenMax * 0.03, 0.2)
-    return formatTokenAxisLabel(Math.max(0, tokenMin - tokenSpan * 0.2))
+    return formatTokenAxisLabel(Math.max(0, tokenMin - tokenSpan * 0.25))
   }
   return usdMinLabel.value
 })
 
 const rightAxisMaxLabel = computed(() => {
-  if (selectedRange.value === 'recent') {
-    const hourly = recentHourlyData.value
-    const usdVals = hourly.map(p => p.usdKwh)
-    const usdMin = Math.min(...usdVals)
-    const usdMax = Math.max(...usdVals)
-    const usdSpan = Math.max(usdMax - usdMin, 0.2)
-    return `${(usdMax + usdSpan * 0.2).toFixed(1)}`
+  if (isFineGrainedRange.value) {
+    const slice = activeMacroData.value
+    const energyVals = [
+      ...slice.map(p => p.usdKwh),
+      ...slice
+        .filter(p => p.powHashRate !== undefined)
+        .map(p => p.powHashRate!),
+    ]
+    const energyMin = Math.min(...energyVals)
+    const energyMax = Math.max(...energyVals)
+    const energySpan = Math.max(energyMax - energyMin, 0.25)
+    return (energyMax + energySpan * 0.25).toFixed(1)
   }
   return goldMaxLabel.value
 })
 
 const rightAxisMidLabel = computed(() => {
-  if (selectedRange.value === 'recent') {
-    const hourly = recentHourlyData.value
-    const usdVals = hourly.map(p => p.usdKwh)
-    const usdMin = Math.min(...usdVals)
-    const usdMax = Math.max(...usdVals)
-    return `${((usdMax + usdMin) / 2).toFixed(1)}`
+  if (isFineGrainedRange.value) {
+    const slice = activeMacroData.value
+    const energyVals = [
+      ...slice.map(p => p.usdKwh),
+      ...slice
+        .filter(p => p.powHashRate !== undefined)
+        .map(p => p.powHashRate!),
+    ]
+    const energyMin = Math.min(...energyVals)
+    const energyMax = Math.max(...energyVals)
+    return ((energyMax + energyMin) / 2).toFixed(1)
   }
   return goldMidLabel.value
 })
 
 const rightAxisMinLabel = computed(() => {
-  if (selectedRange.value === 'recent') {
-    const hourly = recentHourlyData.value
-    const usdVals = hourly.map(p => p.usdKwh)
-    const usdMin = Math.min(...usdVals)
-    const usdMax = Math.max(...usdVals)
-    const usdSpan = Math.max(usdMax - usdMin, 0.2)
-    return `${Math.max(0, usdMin - usdSpan * 0.2).toFixed(1)}`
+  if (isFineGrainedRange.value) {
+    const slice = activeMacroData.value
+    const energyVals = [
+      ...slice.map(p => p.usdKwh),
+      ...slice
+        .filter(p => p.powHashRate !== undefined)
+        .map(p => p.powHashRate!),
+    ]
+    const energyMin = Math.min(...energyVals)
+    const energyMax = Math.max(...energyVals)
+    const energySpan = Math.max(energyMax - energyMin, 0.25)
+    return Math.max(0, energyMin - energySpan * 0.25).toFixed(1)
   }
   return goldMinLabel.value
 })
@@ -1357,41 +1605,52 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
   const yBottom = 230
   const yHeight = yBottom - yTop
 
-  if (selectedRange.value === 'recent') {
-    const hourly = recentHourlyData.value
-    const count = hourly.length
+  const slice = activeMacroData.value
+  const count = slice.length
+  if (count === 0) return []
 
-    const tokenVals = hourly.map(p => p.tokenAvu ?? currentLiveRate.value)
+  if (isFineGrainedRange.value) {
+    const tokenVals = slice.map(p => p.tokenAvu ?? currentLiveRate.value)
     const tokenMin = Math.min(...tokenVals)
     const tokenMax = Math.max(...tokenVals)
     const tokenSpan = Math.max(tokenMax - tokenMin, tokenMax * 0.03, 0.2)
-    const tokenYMin = tokenMin - tokenSpan * 0.2
-    const tokenYMax = tokenMax + tokenSpan * 0.2
+    const tokenYMin = Math.max(0, tokenMin - tokenSpan * 0.25)
+    const tokenYMax = tokenMax + tokenSpan * 0.25
 
-    const usdVals = hourly.map(p => p.usdKwh)
-    const usdMin = Math.min(...usdVals)
-    const usdMax = Math.max(...usdVals)
-    const usdSpan = Math.max(usdMax - usdMin, 0.2)
-    const usdYMin = usdMin - usdSpan * 0.2
-    const usdYMax = usdMax + usdSpan * 0.2
+    const energyVals = [
+      ...slice.map(p => p.usdKwh),
+      ...slice
+        .filter(p => p.powHashRate !== undefined)
+        .map(p => p.powHashRate!),
+    ]
+    const energyMin = Math.min(...energyVals)
+    const energyMax = Math.max(...energyVals)
+    const energySpan = Math.max(energyMax - energyMin, 0.25)
+    const energyYMin = Math.max(0, energyMin - energySpan * 0.25)
+    const energyYMax = energyMax + energySpan * 0.25
 
-    const goldVals = hourly.map(p => p.goldAvu)
+    const goldVals = slice.map(p => p.goldAvu)
     const goldMin = Math.min(...goldVals)
     const goldMax = Math.max(...goldVals)
     const goldSpan = Math.max(goldMax - goldMin, 200)
-    const goldYMin = goldMin - goldSpan * 0.2
-    const goldYMax = goldMax + goldSpan * 0.2
+    const goldYMin = Math.max(0, goldMin - goldSpan * 0.25)
+    const goldYMax = goldMax + goldSpan * 0.25
 
-    return hourly.map((pt, i) => {
-      const x = xMin + (i / (count - 1)) * (xMax - xMin)
+    return slice.map((pt, i) => {
+      const x =
+        count === 1
+          ? (xMin + xMax) / 2
+          : xMin + (i / (count - 1)) * (xMax - xMin)
       const usdY =
-        yBottom - ((pt.usdKwh - usdYMin) / (usdYMax - usdYMin)) * yHeight
+        yBottom -
+        ((pt.usdKwh - energyYMin) / (energyYMax - energyYMin)) * yHeight
       const goldY =
         yBottom - ((pt.goldAvu - goldYMin) / (goldYMax - goldYMin)) * yHeight
       const powY =
         pt.powHashRate !== undefined
           ? yBottom -
-            ((pt.powHashRate - usdYMin) / (usdYMax - usdYMin)) * yHeight
+            ((pt.powHashRate - energyYMin) / (energyYMax - energyYMin)) *
+              yHeight
           : null
       const tokenAvu = pt.tokenAvu ?? currentLiveRate.value
       const tokenY =
@@ -1415,9 +1674,15 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
   const minGold = goldMinLimit.value
   const maxGold = goldMaxLimit.value
 
-  return filteredMacroData.value.map(pt => {
+  return slice.map((pt, i) => {
     const yearNum = typeof pt.year === 'number' ? pt.year : 2026
-    const x = xMin + ((yearNum - minYear) / (maxYear - minYear)) * (xMax - xMin)
+    const x =
+      isCustomZoomed.value || count === 1
+        ? count === 1
+          ? (xMin + xMax) / 2
+          : xMin + (i / (count - 1)) * (xMax - xMin)
+        : xMin + ((yearNum - minYear) / (maxYear - minYear)) * (xMax - xMin)
+
     const usdY = yBottom - (Math.min(pt.usdKwh, maxUsd) / maxUsd) * yHeight
     const goldFrac = Math.max(pt.goldAvu - minGold, 0) / (maxGold - minGold)
     const goldY = yBottom - goldFrac * yHeight
@@ -1457,7 +1722,7 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
 })
 
 const activeMilestonesMapped = computed(() => {
-  if (selectedRange.value === 'recent') {
+  if (isFineGrainedRange.value || isCustomZoomed.value) {
     return []
   }
   const xMin = 65
@@ -1707,5 +1972,9 @@ const networkTooltipY = computed(() => {
 
 .unselectable {
   user-select: none;
+}
+
+.cursor-crosshair {
+  cursor: crosshair;
 }
 </style>

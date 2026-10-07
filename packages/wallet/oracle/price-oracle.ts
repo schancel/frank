@@ -164,9 +164,17 @@ export const COINGECKO_PRICE_URL =
  * Asynchronously fetches public price feeds from Pyth Hermes and computes
  * an updated OracleSnapshot. Returns a default snapshot on error or timeout.
  */
+import { PriceFeedsClient } from '@frank/price-feeds'
+
+/**
+ * Asynchronously fetches public price feeds across multi-provider consensus (Chainlink,
+ * Pyth, Coinbase, Kraken, CoinGecko, Binance) and computes an updated OracleSnapshot.
+ * Returns a default snapshot on error or timeout.
+ */
 export async function fetchOracleSnapshot(
   fetchFn: typeof fetch = globalThis.fetch,
   timeoutMs = 4000,
+  client?: PriceFeedsClient,
 ): Promise<OracleSnapshot> {
   const defaultSnapshot = getDefaultOracleSnapshot()
   if (typeof fetchFn !== 'function') {
@@ -174,84 +182,27 @@ export async function fetchOracleSnapshot(
   }
 
   try {
-    const ids = Object.values(PYTH_FEED_IDS)
-    const url = `https://hermes.pyth.network/v2/updates/price/latest?${ids
-      .map(id => `ids[]=${id}`)
-      .join('&')}`
+    const feedsClient =
+      client ||
+      new PriceFeedsClient({
+        fetchFn,
+        timeoutMs,
+        defaultStrategy: 'median',
+      })
 
-    const controller =
-      typeof AbortController !== 'undefined' ? new AbortController() : null
-    const timer = controller
-      ? setTimeout(() => controller.abort(), timeoutMs)
-      : null
+    const snapshot = await feedsClient.getSnapshot([
+      'ETH',
+      'SOL',
+      'XEC',
+      'GOLD',
+      'BRENT',
+    ])
 
-    const response = await fetchFn(url, {
-      signal: controller?.signal,
-      headers: { Accept: 'application/json' },
-    })
-
-    if (timer) clearTimeout(timer)
-    if (!response.ok) {
-      return defaultSnapshot
-    }
-
-    const data = await response.json()
-    const parsed = data?.parsed
-    if (!Array.isArray(parsed)) {
-      return defaultSnapshot
-    }
-
-    const feedMap = new Map<string, number>()
-    for (const item of parsed) {
-      const id = item?.id
-        ? `0x${item.id.toLowerCase().replace(/^0x/, '')}`
-        : null
-      const rawPrice = item?.price?.price
-      const expo = item?.price?.expo
-      if (id && rawPrice && typeof expo === 'number') {
-        const price = Number(rawPrice) * Math.pow(10, expo)
-        if (price > 0) feedMap.set(id, price)
-      }
-    }
-
-    let goldSpot = feedMap.get(PYTH_FEED_IDS.gold.toLowerCase()) ?? 2650.0
-    let brentSpot = feedMap.get(PYTH_FEED_IDS.brent.toLowerCase()) ?? 75.0
-    let solSpot = feedMap.get(PYTH_FEED_IDS.solana.toLowerCase()) ?? 150.0
-    let ethSpot = feedMap.get(PYTH_FEED_IDS.ethereum.toLowerCase()) ?? 2600.0
-    let ecashSpot = DEFAULT_ANCHOR_SPOT_PRICES.ecash
-
-    // If Pyth provided no crypto prices, augment with CoinGecko live market prices
-    if (
-      !feedMap.has(PYTH_FEED_IDS.solana.toLowerCase()) ||
-      !feedMap.has(PYTH_FEED_IDS.ethereum.toLowerCase())
-    ) {
-      try {
-        const cgRes = await fetchFn(COINGECKO_PRICE_URL, {
-          signal: controller?.signal,
-          headers: { Accept: 'application/json' },
-        })
-        if (cgRes?.ok) {
-          const cgData = await cgRes.json()
-          if (
-            typeof cgData?.solana?.usd === 'number' &&
-            cgData.solana.usd > 0
-          ) {
-            solSpot = cgData.solana.usd
-          }
-          if (
-            typeof cgData?.ethereum?.usd === 'number' &&
-            cgData.ethereum.usd > 0
-          ) {
-            ethSpot = cgData.ethereum.usd
-          }
-          if (typeof cgData?.ecash?.usd === 'number' && cgData.ecash.usd > 0) {
-            ecashSpot = cgData.ecash.usd
-          }
-        }
-      } catch {
-        // Fall back gracefully to existing spots
-      }
-    }
+    const goldSpot = snapshot.GOLD?.price || 2650.0
+    const brentSpot = snapshot.BRENT?.price || 75.0
+    const solSpot = snapshot.SOL?.price || 150.0
+    const ethSpot = snapshot.ETH?.price || 2600.0
+    const ecashSpot = snapshot.XEC?.price || DEFAULT_ANCHOR_SPOT_PRICES.ecash
 
     const basketIndex = computeEnergyBasketIndex({
       gold: goldSpot,

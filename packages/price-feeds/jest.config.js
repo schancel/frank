@@ -1,0 +1,15 @@
+/* eslint-env node */
+module.exports = {
+  testTimeout: 20000,
+  testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
+  moduleFileExtensions: ['js', 'json', 'ts'],
+  transform: {
+    '^.+\\.(ts|js)$': [
+      'ts-jest',
+      {
+        tsconfig: '<rootDir>/tsconfig.json',
+      },
+    ],
+  },
+  testPathIgnorePatterns: ['/node_modules/'],
+}

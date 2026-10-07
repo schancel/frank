@@ -78,10 +78,10 @@
                   />
                 </div>
                 <div class="q-pa-md">
-                  <div
-                    class="text-subtitle2 text-weight-medium q-mb-sm row items-center justify-between"
-                  >
-                    <span>{{ $t('profile.links') }}</span>
+                  <div class="row items-center justify-between q-mb-sm">
+                    <span class="text-subtitle2 text-weight-medium">{{
+                      $t('profile.links')
+                    }}</span>
                     <q-btn
                       outline
                       dense
@@ -327,14 +327,19 @@ export default defineComponent({
       return true
     },
     addLink() {
-      this.internalLinks.push({
-        type: 'website',
-        url: '',
-        label: '',
-      })
+      this.internalLinks = [
+        ...this.internalLinks,
+        {
+          type: 'website',
+          url: '',
+          label: '',
+        },
+      ]
+      this.$emit('update:links', this.internalLinks)
     },
     removeLink(index: number) {
-      this.internalLinks.splice(index, 1)
+      this.internalLinks = this.internalLinks.filter((_, i) => i !== index)
+      this.$emit('update:links', this.internalLinks)
     },
     cycleAvatarRight() {
       this.defaultAvatarIndex =
@@ -385,7 +390,9 @@ export default defineComponent({
     },
     links: {
       handler(val: ProfileLinkItem[] | undefined) {
-        this.internalLinks = val ? JSON.parse(JSON.stringify(val)) : []
+        if (JSON.stringify(val ?? []) !== JSON.stringify(this.internalLinks)) {
+          this.internalLinks = val ? JSON.parse(JSON.stringify(val)) : []
+        }
       },
       deep: true,
     },

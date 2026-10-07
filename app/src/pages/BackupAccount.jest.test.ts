@@ -107,9 +107,15 @@ describe('BackupAccount page', () => {
     const wrapper = mountPage()
     await flushPromises()
 
-    expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(false)
-    await wrapper.find('[data-test="codex32-custom-scheme-btn"]').trigger('click')
-    expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(
+      false,
+    )
+    await wrapper
+      .find('[data-test="codex32-custom-scheme-btn"]')
+      .trigger('click')
+    expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(
+      true,
+    )
 
     const thresholdInput = wrapper.find('[data-test="input-threshold"]')
     const countInput = wrapper.find('[data-test="input-count"]')
@@ -122,7 +128,9 @@ describe('BackupAccount page', () => {
     await flushPromises()
 
     expect(mockBackupCodex32).toHaveBeenCalledWith(4, 7)
-    expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="custom-scheme-section"]').exists()).toBe(
+      false,
+    )
   })
 
   it('copies share to clipboard when copy button clicked', async () => {

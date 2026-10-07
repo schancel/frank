@@ -9,119 +9,119 @@
       {{ stampPreparationStatus }}
     </div>
     <template v-if="sortedPosts && sortedPosts.length > 0">
-    <div
-      v-if="outageStatus === 'outage'"
-      class="q-pa-sm"
-      data-test="forum-outage-banner"
-    >
-      <q-banner rounded class="bg-negative text-white" role="alert">
-        <template #avatar>
-          <q-icon name="cloud_off" color="white" />
-        </template>
-        <div class="text-weight-bold">{{ $t('forum.outageTitle') }}</div>
-        <div>{{ $t('forum.outageBanner') }}</div>
-        <template #action>
-          <q-btn
-            flat
-            color="white"
-            :label="$t('forum.retry')"
-            :loading="isRefreshing"
-            data-test="forum-retry-button"
-            @click="retryRefresh"
-          />
-        </template>
-      </q-banner>
-    </div>
-    <div
-      v-else-if="outageStatus === 'degraded'"
-      class="q-pa-sm"
-      data-test="forum-degraded-banner"
-    >
-      <q-banner rounded class="bg-warning text-dark" role="alert">
-        <template #avatar>
-          <q-icon name="sync_problem" color="dark" />
-        </template>
-        <div class="text-weight-bold">{{ $t('forum.degradedTitle') }}</div>
-        <div>{{ $t('forum.degradedBanner') }}</div>
-        <template #action>
-          <q-btn
-            flat
-            color="dark"
-            :label="$t('forum.retry')"
-            :loading="isRefreshing"
-            data-test="forum-retry-button"
-            @click="retryRefresh"
-          />
-        </template>
-      </q-banner>
-    </div>
-    <template v-for="message in sortedPosts" :key="message.payloadDigest">
-      <forum-post
-        v-show="showMessage(message.topic)"
-        @set-topic="(...args) => $emit('set-topic', ...args)"
-        :message="message"
-        :show-parent="true"
-        :show-replies="false"
-      />
-    </template>
-  </template>
-  <!-- Ticket #61: hasFetchedOnce distinguishes "still loading" from "loaded, really no posts" -->
-  <template v-else-if="!hasFetchedOnce">
-    <div>
-      <q-spinner-puff class="absolute-center" color="purple" size="20rem" />
-    </div>
-  </template>
-  <!-- Ticket #533: when initial refresh experiences an outage, exit loading and render clear alert with retry -->
-  <template v-else-if="outageStatus === 'outage'">
-    <div
-      class="column items-center justify-center q-pa-xl text-center"
-      data-test="forum-outage-state"
-      role="alert"
-    >
-      <q-icon name="cloud_off" size="4rem" color="negative" class="q-mb-md" />
-      <div class="text-h6 q-mb-sm">{{ $t('forum.outageTitle') }}</div>
-      <div class="text-body2 text-grey-7 q-mb-md">
-        {{ $t('forum.outageDescription') }}
+      <div
+        v-if="outageStatus === 'outage'"
+        class="q-pa-sm"
+        data-test="forum-outage-banner"
+      >
+        <q-banner rounded class="bg-negative text-white" role="alert">
+          <template #avatar>
+            <q-icon name="cloud_off" color="white" />
+          </template>
+          <div class="text-weight-bold">{{ $t('forum.outageTitle') }}</div>
+          <div>{{ $t('forum.outageBanner') }}</div>
+          <template #action>
+            <q-btn
+              flat
+              color="white"
+              :label="$t('forum.retry')"
+              :loading="isRefreshing"
+              data-test="forum-retry-button"
+              @click="retryRefresh"
+            />
+          </template>
+        </q-banner>
       </div>
-      <q-btn
-        color="primary"
-        :label="$t('forum.retry')"
-        :loading="isRefreshing"
-        data-test="forum-retry-button"
-        @click="retryRefresh"
-      />
-    </div>
-  </template>
-  <!-- Ticket #533: partial topic failure with no posts rendered reports degraded state with retry -->
-  <template v-else-if="outageStatus === 'degraded'">
-    <div class="q-pa-sm" data-test="forum-degraded-banner">
-      <q-banner rounded class="bg-warning text-dark q-mb-md" role="alert">
-        <template #avatar>
-          <q-icon name="sync_problem" color="dark" />
-        </template>
-        <div class="text-weight-bold">{{ $t('forum.degradedTitle') }}</div>
-        <div>{{ $t('forum.degradedBanner') }}</div>
-        <template #action>
-          <q-btn
-            flat
-            color="dark"
-            :label="$t('forum.retry')"
-            :loading="isRefreshing"
-            data-test="forum-retry-button"
-            @click="retryRefresh"
-          />
-        </template>
-      </q-banner>
-    </div>
-    <div class="text-center text-grey q-pa-xl">
-      {{ $t('forum.noPosts') }}
-    </div>
-  </template>
-  <template v-else>
-    <div class="text-center text-grey q-pa-xl">
-      {{ $t('forum.noPosts') }}
-    </div>
-  </template>
+      <div
+        v-else-if="outageStatus === 'degraded'"
+        class="q-pa-sm"
+        data-test="forum-degraded-banner"
+      >
+        <q-banner rounded class="bg-warning text-dark" role="alert">
+          <template #avatar>
+            <q-icon name="sync_problem" color="dark" />
+          </template>
+          <div class="text-weight-bold">{{ $t('forum.degradedTitle') }}</div>
+          <div>{{ $t('forum.degradedBanner') }}</div>
+          <template #action>
+            <q-btn
+              flat
+              color="dark"
+              :label="$t('forum.retry')"
+              :loading="isRefreshing"
+              data-test="forum-retry-button"
+              @click="retryRefresh"
+            />
+          </template>
+        </q-banner>
+      </div>
+      <template v-for="message in sortedPosts" :key="message.payloadDigest">
+        <forum-post
+          v-show="showMessage(message.topic)"
+          @set-topic="(...args) => $emit('set-topic', ...args)"
+          :message="message"
+          :show-parent="true"
+          :show-replies="false"
+        />
+      </template>
+    </template>
+    <!-- Ticket #61: hasFetchedOnce distinguishes "still loading" from "loaded, really no posts" -->
+    <template v-else-if="!hasFetchedOnce">
+      <div>
+        <q-spinner-puff class="absolute-center" color="purple" size="20rem" />
+      </div>
+    </template>
+    <!-- Ticket #533: when initial refresh experiences an outage, exit loading and render clear alert with retry -->
+    <template v-else-if="outageStatus === 'outage'">
+      <div
+        class="column items-center justify-center q-pa-xl text-center"
+        data-test="forum-outage-state"
+        role="alert"
+      >
+        <q-icon name="cloud_off" size="4rem" color="negative" class="q-mb-md" />
+        <div class="text-h6 q-mb-sm">{{ $t('forum.outageTitle') }}</div>
+        <div class="text-body2 text-grey-7 q-mb-md">
+          {{ $t('forum.outageDescription') }}
+        </div>
+        <q-btn
+          color="primary"
+          :label="$t('forum.retry')"
+          :loading="isRefreshing"
+          data-test="forum-retry-button"
+          @click="retryRefresh"
+        />
+      </div>
+    </template>
+    <!-- Ticket #533: partial topic failure with no posts rendered reports degraded state with retry -->
+    <template v-else-if="outageStatus === 'degraded'">
+      <div class="q-pa-sm" data-test="forum-degraded-banner">
+        <q-banner rounded class="bg-warning text-dark q-mb-md" role="alert">
+          <template #avatar>
+            <q-icon name="sync_problem" color="dark" />
+          </template>
+          <div class="text-weight-bold">{{ $t('forum.degradedTitle') }}</div>
+          <div>{{ $t('forum.degradedBanner') }}</div>
+          <template #action>
+            <q-btn
+              flat
+              color="dark"
+              :label="$t('forum.retry')"
+              :loading="isRefreshing"
+              data-test="forum-retry-button"
+              @click="retryRefresh"
+            />
+          </template>
+        </q-banner>
+      </div>
+      <div class="text-center text-grey q-pa-xl">
+        {{ $t('forum.noPosts') }}
+      </div>
+    </template>
+    <template v-else>
+      <div class="text-center text-grey q-pa-xl">
+        {{ $t('forum.noPosts') }}
+      </div>
+    </template>
   </div>
 </template>
 

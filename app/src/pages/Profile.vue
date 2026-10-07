@@ -122,8 +122,8 @@ export default defineComponent({
     },
     relayData(): RelayData {
       const validLinks = (this.links ?? [])
-        .filter((l) => l.url && l.url.trim().length > 0)
-        .map((l) => ({
+        .filter(l => l.url && l.url.trim().length > 0)
+        .map(l => ({
           type: l.type.trim(),
           url: l.url.trim(),
           ...(l.label && l.label.trim() ? { label: l.label.trim() } : {}),
@@ -148,7 +148,7 @@ export default defineComponent({
       const currentInbox = this.storedRelayData.inbox
       const currentLinksJson = JSON.stringify(currentProfile.links ?? [])
       const newLinksJson = JSON.stringify(
-        (this.links ?? []).filter((l) => l.url && l.url.trim().length > 0),
+        (this.links ?? []).filter(l => l.url && l.url.trim().length > 0),
       )
       return (
         (currentProfile.name ?? '') === (this.name ?? '') &&

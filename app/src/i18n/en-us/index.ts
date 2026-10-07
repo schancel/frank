@@ -241,7 +241,6 @@ export default {
     chooseFile: 'Choose a file',
     openInExplorer: 'Open transaction in block explorer',
     copyTxHash: 'Copy transaction hash',
-    back: 'Back',
     backToForum: 'Back to forum',
   },
   leftDrawer: {
@@ -836,4 +835,3 @@ export default {
   },
   close: 'Close',
 }
-

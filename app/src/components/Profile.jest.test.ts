@@ -186,8 +186,12 @@ describe('Profile.vue component avatar handling', () => {
     // Username rule check
     expect((wrapper.vm as any).usernameRule('valid_user1')).toBe(true)
     expect((wrapper.vm as any).usernameRule('@valid_user1')).toBe(true)
-    expect((wrapper.vm as any).usernameRule('ab')).toBe('profile.invalidUsername')
-    expect((wrapper.vm as any).usernameRule('invalid user')).toBe('profile.invalidUsername')
+    expect((wrapper.vm as any).usernameRule('ab')).toBe(
+      'profile.invalidUsername',
+    )
+    expect((wrapper.vm as any).usernameRule('invalid user')).toBe(
+      'profile.invalidUsername',
+    )
 
     // Normalization and emit
     ;(wrapper.vm as any).internalUsername = '@Alice_99'

@@ -100,6 +100,10 @@ pub(crate) const CF_MONAD_PROFILES_BY_TIME: &str = "monad_profiles_by_time";
 /// `CF_MONAD_PROFILES_BY_TIME`'s `timestamp ++ address` key. See
 /// `crate::store::monad_profiles`'s module docs for how this is maintained/queried.
 pub(crate) const CF_MONAD_PROFILES_BY_NAME: &str = "monad_profiles_by_name";
+/// Ticket 1.1 / Track C: stores unique routable username records and tombstones (`cf_usernames`).
+pub const CF_USERNAMES: &str = "directory_usernames";
+/// Backward-compatible alias for [`CF_USERNAMES`].
+pub const CF_DIRECTORY_USERNAMES: &str = CF_USERNAMES;
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 
@@ -243,6 +247,11 @@ impl Db {
     /// Returns `DbDirectoryUsernames`, allowing access to unique routable username store.
     pub fn directory_usernames(&self) -> DbDirectoryUsernames<'_> {
         DbDirectoryUsernames::new(self)
+    }
+
+    /// Returns the column family handle for `cf_usernames` / `directory_usernames`.
+    pub fn cf_usernames(&self) -> Result<&CF> {
+        self.cf(CF_USERNAMES)
     }
 
     pub(crate) fn open_with_cfs(

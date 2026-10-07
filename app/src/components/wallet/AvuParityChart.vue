@@ -427,39 +427,63 @@
             <circle
               :cx="point.x"
               :cy="point.usdY"
-              :r="activeHoverPoint?.year === point.year ? 6 : 4"
+              :r="
+                activeHoverPoint?.year === point.year
+                  ? 6
+                  : macroPointsMapped.length > 40
+                  ? 2
+                  : 4
+              "
               :fill="themeColors.usd"
               :stroke="cardBgHex"
-              stroke-width="2"
+              :stroke-width="macroPointsMapped.length > 40 ? 1 : 2"
             />
             <!-- Gold circle -->
             <circle
               :cx="point.x"
               :cy="point.goldY"
-              :r="activeHoverPoint?.year === point.year ? 6 : 4"
+              :r="
+                activeHoverPoint?.year === point.year
+                  ? 6
+                  : macroPointsMapped.length > 40
+                  ? 2
+                  : 4
+              "
               :fill="themeColors.gold"
               :stroke="cardBgHex"
-              stroke-width="2"
+              :stroke-width="macroPointsMapped.length > 40 ? 1 : 2"
             />
             <!-- PoW marker if available -->
             <circle
               v-if="point.powY !== null"
               :cx="point.x"
               :cy="point.powY"
-              :r="activeHoverPoint?.year === point.year ? 6 : 4"
+              :r="
+                activeHoverPoint?.year === point.year
+                  ? 6
+                  : macroPointsMapped.length > 40
+                  ? 2
+                  : 4
+              "
               :fill="themeColors.pow"
               :stroke="cardBgHex"
-              stroke-width="2"
+              :stroke-width="macroPointsMapped.length > 40 ? 1 : 2"
             />
             <!-- Active Token circle if available -->
             <circle
               v-if="point.tokenY !== null"
               :cx="point.x"
               :cy="point.tokenY"
-              :r="activeHoverPoint?.year === point.year ? 6 : 4"
+              :r="
+                activeHoverPoint?.year === point.year
+                  ? 6
+                  : macroPointsMapped.length > 40
+                  ? 2
+                  : 4
+              "
               :fill="themeColors.token"
               :stroke="cardBgHex"
-              stroke-width="2"
+              :stroke-width="macroPointsMapped.length > 40 ? 1 : 2"
               data-test="macro-token-point"
             />
             <!-- X-axis Year Label -->
@@ -881,7 +905,12 @@ import { computed, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useTranslate } from 'src/composables/useTranslate'
-import type { SupportedAsset } from '@frank/wallet/oracle'
+import {
+  COMBINED_MACRO_ARCHIVE_1930_PRESENT,
+  getTimestepConversionContext,
+  convertAssetHistoryToAvu,
+  type SupportedAsset,
+} from '@frank/wallet/oracle'
 
 const props = withDefaults(
   defineProps<{
@@ -1117,27 +1146,13 @@ interface MacroPoint {
   goldAvu: number
   powHashRate?: number
   tokenAvu?: number
+  centsPerKwh?: number
+  goldUsd?: number
+  cpiIndex?: number
+  notes?: string
 }
 
-const allMacroData: MacroPoint[] = [
-  { year: 1930, usdKwh: 143.0, goldAvu: 2953 },
-  { year: 1950, usdKwh: 102.5, goldAvu: 3420 },
-  { year: 1971, usdKwh: 68.2, goldAvu: 5100 },
-  { year: 1990, usdKwh: 34.0, goldAvu: 9800 },
-  { year: 2000, usdKwh: 28.5, goldAvu: 13400 },
-  { year: 2009, usdKwh: 22.4, goldAvu: 18200, powHashRate: 1.0 },
-  { year: 2010, usdKwh: 21.6, goldAvu: 19500, powHashRate: 2.2 },
-  { year: 2013, usdKwh: 19.8, goldAvu: 21400, powHashRate: 4.8 },
-  { year: 2016, usdKwh: 17.5, goldAvu: 23800, powHashRate: 7.6 },
-  { year: 2017, usdKwh: 16.8, goldAvu: 24500, powHashRate: 8.5 },
-  { year: 2020, usdKwh: 15.1, goldAvu: 27200, powHashRate: 10.4 },
-  { year: 2021, usdKwh: 13.9, goldAvu: 28100, powHashRate: 11.2 },
-  { year: 2022, usdKwh: 13.4, goldAvu: 28800, powHashRate: 11.4 },
-  { year: 2023, usdKwh: 13.0, goldAvu: 29400, powHashRate: 11.5 },
-  { year: 2024, usdKwh: 12.6, goldAvu: 30100, powHashRate: 11.7 },
-  { year: 2025, usdKwh: 12.3, goldAvu: 30800, powHashRate: 11.8 },
-  { year: 2026, usdKwh: 12.0, goldAvu: 31547, powHashRate: 11.9 },
-]
+const allMacroData: MacroPoint[] = [...COMBINED_MACRO_ARCHIVE_1930_PRESENT]
 
 /**
  * Generates fine-grained intraday and multi-day time-series points,
@@ -1150,10 +1165,11 @@ function generateTimeSeries(
   volUsd: number,
   volGold: number,
 ): MacroPoint[] {
+  const modernCtx = getTimestepConversionContext(2026)
   const liveTokenRate = currentLiveRate.value
-  const baseUsdKwh = 12.0
-  const baseGoldAvu = 31547
-  const basePow = 11.9
+  const baseUsdKwh = modernCtx.usdKwh
+  const baseGoldAvu = modernCtx.goldAvu ?? 31547
+  const basePow = modernCtx.powHashRate ?? 11.9
   const points: MacroPoint[] = []
 
   for (let i = 0; i < count; i++) {
@@ -1497,6 +1513,10 @@ function formatTokenAxisLabel(val: number): string {
 
 function shouldShowTick(idx: number, total: number): boolean {
   if (total <= 14) return true
+  const pt = activeMacroData.value[idx]
+  if (pt && typeof pt.year === 'number' && total > 50) {
+    return (pt.year - 1930) % 20 === 0 || idx === total - 1
+  }
   if (total <= 25) return idx % 6 === 0 || idx === total - 1
   if (total <= 35) return idx % 5 === 0 || idx === total - 1
   return idx % Math.ceil(total / 6) === 0 || idx === total - 1

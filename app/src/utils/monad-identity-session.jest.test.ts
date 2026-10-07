@@ -409,3 +409,28 @@ test('wiping local storage while IndexedDB holds records triggers automated rebu
   expect(messagingState.status).toBe('ready')
   expect(messagingState.reason).toBeNull()
 })
+
+test('wiping IndexedDB while local storage retains checkpoint triggers automated rebuilding without error', async () => {
+  const alice = await wallet(0, 'alice')
+  const d = device(alice)
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(() => messagingState.status === 'ready', 'initial messaging ready')
+
+  // Stop messaging
+  mockStatus.status = 'loading'
+  await stopMessaging()
+
+  // Wipe IndexedDB while leaving localStorage (checkpoints and pins) intact
+  globalThis.indexedDB = new IDBFactory()
+
+  // Restart messaging - must detect reopen failure, discard dead checkpoint, and rebuild to ready
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(() => messagingState.status === 'ready', 'rebuilt messaging ready')
+  expect(messagingState.status).toBe('ready')
+  expect(messagingState.reason).toBeNull()
+})
+
+

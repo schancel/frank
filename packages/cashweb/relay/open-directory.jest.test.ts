@@ -52,12 +52,13 @@ function device(
   on: FakeRelay = relay,
 ) {
   const signed: bigint[] = []
+  const storage = nodeDirectoryStorage(join(root, name))
   const directory = openDirectory({
     network: NETWORK,
     relayBaseUrl: on.endpoint,
     nowNs: () => clock,
     fetch: on.fetch,
-    ...nodeDirectoryStorage(join(root, name)),
+    ...storage,
     self: {
       subject: account.subject,
       signRevisionZero(input) {
@@ -76,7 +77,7 @@ function device(
     },
   })
   opened.push(directory)
-  return { directory, signed }
+  return { directory, signed, storage }
 }
 const code = async (work: Promise<unknown>) => {
   try {
@@ -148,6 +149,23 @@ describe('own entry', () => {
     const alice = testAccount(1)
     await device(alice, 'phone').directory.publish()
     const laptop = device(alice, 'laptop')
+    const adopted = await laptop.directory.publish()
+    expect(laptop.signed).toEqual([])
+    expect(puts()).toBe(1)
+    expect(relay.chain(alice.subject)).toHaveLength(1)
+    expect(toHex(adopted.current.evidence.attestation)).toBe(
+      toHex(relay.chain(alice.subject)[0]),
+    )
+  })
+
+  it('adopts relay revision zero even when local device holds a conflicting pin from an earlier session', async () => {
+    const alice = testAccount(1)
+    await device(alice, 'phone').directory.publish()
+    const laptop = device(alice, 'laptop')
+    const conflictingPin =
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    await laptop.storage.pins.save(`${NETWORK}:${alice.address}`, conflictingPin)
+
     const adopted = await laptop.directory.publish()
     expect(laptop.signed).toEqual([])
     expect(puts()).toBe(1)

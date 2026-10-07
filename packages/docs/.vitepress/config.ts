@@ -206,6 +206,18 @@ export default withMermaid(
                 text: "@frank/bot-framework (Autonomous Bot SDK)",
                 link: "/sdks/bot-framework",
               },
+              {
+                text: "@frank/threshold-ecdsa (2-Party Threshold ECDSA)",
+                link: "/sdks/threshold-ecdsa",
+              },
+              {
+                text: "@frank/adaptor-signatures (ECDSA Adaptor Signatures)",
+                link: "/sdks/adaptor-signatures",
+              },
+              {
+                text: "@frank/joint-signer (Pluggable 2-Party Signer)",
+                link: "/sdks/joint-signer",
+              },
             ],
           },
         ],

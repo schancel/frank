@@ -22,6 +22,7 @@ export interface GatewayConfig {
   readonly stripeWebhookSecret?: string;
   readonly stripePaymentLinkTier1?: string;
   readonly stripePaymentLinkTier2?: string;
+  readonly stripePaymentLinkTier3?: string;
   readonly paypalClientId?: string;
   readonly paypalWebhookId?: string;
 

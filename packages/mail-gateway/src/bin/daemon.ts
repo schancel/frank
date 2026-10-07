@@ -55,6 +55,7 @@ async function main(): Promise<void> {
     stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || 'whsec_demo',
     stripePaymentLinkTier1: process.env.STRIPE_PAYMENT_LINK_TIER1,
     stripePaymentLinkTier2: process.env.STRIPE_PAYMENT_LINK_TIER2,
+    stripePaymentLinkTier3: process.env.STRIPE_PAYMENT_LINK_TIER3,
     paypalClientId: process.env.PAYPAL_CLIENT_ID,
     paypalWebhookId: process.env.PAYPAL_WEBHOOK_ID,
     blobStorage: {

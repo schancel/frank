@@ -47,6 +47,8 @@ export default {
     allTopics: 'All topics',
     filteredBy: 'Filtered by topic',
     clearTopicFilter: 'Clear filter',
+    percentileFilter: 'Percentile Filter',
+    allPosts: 'All posts',
     editor: {
       toolbar: 'Formatting tools',
       bold: 'Bold',

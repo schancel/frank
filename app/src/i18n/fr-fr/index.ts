@@ -21,6 +21,8 @@ export default {
     allTopics: 'Tous les sujets',
     filteredBy: 'Filtré par sujet',
     clearTopicFilter: 'Effacer le filtre',
+    percentileFilter: 'Filtre par percentile',
+    allPosts: 'Tous les messages',
     editor: {
       toolbar: 'Outils de mise en forme',
       bold: 'Gras',

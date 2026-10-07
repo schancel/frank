@@ -13,8 +13,8 @@
 ### Key Capabilities
 
 - **Strict Canonical CBOR**: Enforces minimal integer sizes, unsigned integer map keys in ascending numerical order, and rejection of floating point or indefinite lengths.
-- **FRNK Framing**: Validates 16-byte magic headers (`FRNK`), lengths, type IDs, and schema floors.
-- **Resource Limiter**: Enforces strict memory budgets, max recursion depth (16 levels), container limits (256 items), and aggregate byte caps to defend against decompression bombs.
+- **FRNK Framing**: Validates 9-byte magic headers (`FRNK`, version byte, 4-byte body length), payload types, schema versions, and minimum reader floors.
+- **Resource Limiter**: Enforces strict memory budgets, max recursion depth (32 levels), container limits (16,384 containers), map limits (256 entries), and aggregate byte caps to defend against decompression bombs.
 - **Type 25 Forwarding Envelope Support**: Encodes and decodes multi-hop relay envelopes up to 32 MiB (`33_554_432` bytes).
 
 ---

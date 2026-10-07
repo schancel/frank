@@ -1,7 +1,7 @@
 # Content-Addressed Encrypted Blob Storage & Attachments
 
 - **Status**: Standard (Track C, Issue #983, Commit `e38d9cf6`)
-- **Scope**: Large payload (> 16 KB) offloading to S3-compatible object storage, Apache Kvrocks metadata indexing, ephemeral Core NATS fan-out, and end-to-end client decryption.
+- **Scope**: Large payload (> 64 KB) offloading to S3-compatible object storage, Apache Kvrocks metadata indexing, ephemeral Core NATS fan-out, and end-to-end client decryption.
 
 ---
 
@@ -11,8 +11,8 @@ In high-throughput federated messaging, embedding large files (images, audio not
 
 Frank decouples control plane metadata from data plane payloads:
 
-- **Control Plane**: Envelopes $\le 16\text{ KB}$ (metadata, DKSAP stamps, Chaum-Pedersen DLEQ proofs, expiration timestamps) are stored in **Apache Kvrocks** (or RocksDB in standalone mode).
-- **Data Plane**: Encrypted file attachments and payloads $> 16\text{ KB}$ are streamed directly to **S3-compatible Object Storage** (MinIO, Cloudflare R2, AWS S3) addressed purely by cryptographic hash.
+- **Control Plane**: Envelopes $\le 64\text{ KB}$ (metadata, DKSAP stamps, Chaum-Pedersen DLEQ proofs, expiration timestamps) are stored in **Apache Kvrocks** (or RocksDB in standalone mode).
+- **Data Plane**: Encrypted file attachments and payloads $> 64\text{ KB}$ are streamed directly to **S3-compatible Object Storage** (MinIO, Cloudflare R2, AWS S3) addressed purely by cryptographic hash.
 - **Event Plane**: Ephemeral **Core NATS** notifies connected nodes without storing persistent message copies.
 
 ---
@@ -43,7 +43,7 @@ flowchart TD
     subgraph MessagingPlane ["Encrypted Control & Messaging Plane"]
         ComposeDM["Compose Type 8 Message Item<br/>Attachment Reference:<br/>• blob_digest: BlobDigest<br/>• key: K_blob (Encrypted)<br/>• size: ByteCount, mime: 'application/pdf'"]
         WrapDM["Wrap in Type 5 / Type 1 / Type 25 Envelope<br/>(Signed by Alice, Stamped for Bob)"]
-        PushDM["PUT /mailbox/delivery<br/>(Lightweight Envelope &lt; 16 KB)"]
+        PushDM["PUT /mailbox/delivery<br/>(Lightweight Envelope &lt; 64 KB)"]
 
         GenKey -.->|Key encrypted to Bob's M| ComposeDM
         HashBlob --> ComposeDM

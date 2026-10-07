@@ -645,20 +645,30 @@ export async function resetAccountStorage(
   } catch {
     // indexedDB.databases may fail in some environments
   }
-  for (const name of names) {
-    await new Promise<void>(resolve => {
-      try {
-        const req = indexedDB.deleteDatabase(name)
-        req.onsuccess = () => resolve()
-        req.onerror = () => resolve()
-        req.onblocked = () => {
-          setTimeout(resolve, 300)
-        }
-      } catch {
-        resolve()
-      }
-    })
-  }
+  await Promise.allSettled(
+    Array.from(names).map(
+      name =>
+        new Promise<void>(resolve => {
+          let timer: ReturnType<typeof setTimeout> | undefined
+          const done = () => {
+            if (timer !== undefined) {
+              clearTimeout(timer)
+              timer = undefined
+            }
+            resolve()
+          }
+          timer = setTimeout(done, 500)
+          try {
+            const req = indexedDB.deleteDatabase(name)
+            req.onsuccess = done
+            req.onerror = done
+            req.onblocked = done
+          } catch {
+            done()
+          }
+        }),
+    ),
+  )
 }
 
 let accountChannel: BroadcastChannel | undefined

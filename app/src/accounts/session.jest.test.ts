@@ -503,6 +503,81 @@ test('resetAccountStorage deletes all indexedDB databases matching frank- and le
   }
 })
 
+test('resetAccountStorage resolves within timeout even if deleteDatabase never fires callbacks', async () => {
+  const originalIndexedDb = global.indexedDB
+  jest.useFakeTimers({
+    doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+  })
+
+  try {
+    const deleted: string[] = []
+    const mockIndexedDb = {
+      databases: jest.fn(async () => [
+        { name: 'frank-account-custody-local-account-v1' },
+        { name: 'frank-preview-vault-local-account-v1' },
+      ]),
+      deleteDatabase: jest.fn((name: string) => {
+        deleted.push(name)
+        return {} as any
+      }),
+    }
+    ;(global as any).indexedDB = mockIndexedDb
+
+    let settled = false
+    const promise = resetAccountStorage('local-account-v1').then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(deleted).toContain('frank-account-custody-local-account-v1')
+    expect(deleted).toContain('frank-preview-vault-local-account-v1')
+
+    await jest.advanceTimersByTimeAsync(500)
+    await promise
+    expect(settled).toBe(true)
+  } finally {
+    jest.useRealTimers()
+    ;(global as any).indexedDB = originalIndexedDb
+  }
+})
+
+test('resetAccountStorage clears timeout on onsuccess, onerror, or onblocked', async () => {
+  const originalIndexedDb = global.indexedDB
+  jest.useFakeTimers({
+    doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+  })
+
+  try {
+    const mockIndexedDb = {
+      databases: jest.fn(async () => [
+        { name: 'frank-account-custody-local-account-v1' },
+        { name: 'frank-preview-vault-local-account-v1' },
+        { name: 'frank-error-db' },
+        { name: 'frank-blocked-db' },
+      ]),
+      deleteDatabase: jest.fn((name: string) => {
+        const req: any = {}
+        setTimeout(() => {
+          if (name.includes('error')) req.onerror?.({} as any)
+          else if (name.includes('blocked')) req.onblocked?.({} as any)
+          else req.onsuccess?.({} as any)
+        }, 10)
+        return req
+      }),
+    }
+    ;(global as any).indexedDB = mockIndexedDb
+
+    const promise = resetAccountStorage('local-account-v1')
+    await jest.advanceTimersByTimeAsync(15)
+    await promise
+    expect(jest.getTimerCount()).toBe(0)
+  } finally {
+    jest.useRealTimers()
+    ;(global as any).indexedDB = originalIndexedDb
+  }
+})
+
 test('yieldCustody sets status to standby, releases wallet and custody, and retry restores ready status', async () => {
   const f = fixture()
   await f.session.initialize()

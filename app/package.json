@@ -2,7 +2,7 @@
   "name": "frank",
   "version": "0.0.1",
   "description": "A Monad powered internet cryptomessenger",
-  "productName": "Signet",
+  "productName": "Frank",
   "author": "shammah@cryptonumismatics.org",
   "private": true,
   "scripts": {

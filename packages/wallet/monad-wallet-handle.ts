@@ -28,6 +28,7 @@ import type { MonadIdentity } from './monad-identity'
 
 import type { AccountHygieneEngine } from './account-hygiene'
 import type { MonadAddressInventory } from './monad-address-inventory'
+import type { MessageItem, WalletSyncItem } from '@frank/cashweb/types/messages'
 
 export interface MonadWalletHandle {
   /** Master / author identity for signing messages and topic posts. */
@@ -42,6 +43,10 @@ export interface MonadWalletHandle {
   hygieneEngine?: AccountHygieneEngine<string>
   /** Unified HD address inventory tracking spend and change branches (Ticket #924). */
   inventory?: MonadAddressInventory
+  /** Ingests a generic transaction sync item to update sub-account states/nonces (Ticket #1115). */
+  processSyncTransaction?(item: WalletSyncItem): { affectedIndices?: number[]; affectedAccounts?: string[] } | void
+  /** Dispatches an internal/self message to this wallet's own identity address (Ticket #1115). */
+  sendSelfDirectMessage?(items: MessageItem[]): Promise<unknown>
   pool: MonadSubAccountPool
   leaseManager: SubAccountLeaseManager
   provider: Provider

@@ -22,6 +22,7 @@ import {
   DeviceClaimItem,
   SwapOfferItem,
   TextItem,
+  WalletSyncItem,
 } from "@frank/cashweb/types/messages";
 
 import { registerMessageItemPlugin } from "./index";
@@ -164,4 +165,30 @@ registerMessageItemPlugin<ChannelUpdateItem, ChannelUpdateItem>({
   hydrate: (raw) => raw,
   previewText: (raw) =>
     `State channel update: ${raw.appId} (seq ${raw.sequenceNumber})`,
+});
+
+registerMessageItemPlugin<WalletSyncItem, WalletSyncItem>({
+  type: "wallet-sync",
+  hydrate: (raw) => raw,
+  previewText: (raw) =>
+    `Wallet sync: ${raw.direction === "out" ? "Sent" : "Received"} tx ${raw.txHash.slice(0, 10)}... on ${raw.chainId}`,
+  tallyValue: (raw) => {
+    if (raw.createdOutputs && raw.direction === "in") {
+      return raw.createdOutputs.reduce((acc, out) => acc + Number(out.valueWei || 0), 0);
+    }
+    return 0;
+  },
+});
+
+registerMessageItemPlugin<WalletSyncItem, WalletSyncItem>({
+  type: "payment-transfer",
+  hydrate: (raw) => raw,
+  previewText: (raw) =>
+    `Payment transfer: ${raw.direction === "out" ? "Sent" : "Received"} tx ${raw.txHash.slice(0, 10)}... on ${raw.chainId}`,
+  tallyValue: (raw) => {
+    if (raw.createdOutputs && raw.direction === "in") {
+      return raw.createdOutputs.reduce((acc, out) => acc + Number(out.valueWei || 0), 0);
+    }
+    return 0;
+  },
 });

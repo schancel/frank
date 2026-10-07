@@ -810,6 +810,40 @@ export class RelayClient extends ReadOnlyRelayClient {
 
         continue
       }
+
+      if (kind === 'wallet-sync' || kind === 'payment-transfer' || kind === 'text') {
+        try {
+          const entryData = entry.getBody()
+          const rawText =
+            typeof entryData === 'string'
+              ? entryData
+              : Buffer.from(entryData).toString('utf8')
+          if (rawText.startsWith('{') || rawText.startsWith('[')) {
+            const parsed = JSON.parse(rawText)
+            const syncItems = Array.isArray(parsed) ? parsed : [parsed]
+            for (const item of syncItems) {
+              if (
+                item &&
+                (item.type === 'wallet-sync' || item.type === 'payment-transfer')
+              ) {
+                if (typeof (this.wallet as any).processSyncTransaction === 'function') {
+                  (this.wallet as any).processSyncTransaction(item)
+                }
+                if (item.direction === 'out' && item.spentInputs) {
+                  for (const input of item.spentInputs) {
+                    if (input.outpoint && typeof this.wallet.deleteUtxo === 'function') {
+                      this.wallet.deleteUtxo(input.outpoint)
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch {
+          // ignore non-json
+        }
+        continue
+      }
     }
   }
 

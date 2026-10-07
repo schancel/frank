@@ -299,6 +299,93 @@ export class HdAddressInventory<TAccount = unknown> {
   }
 
   /**
+   * Ingests a generic transaction sync item (Ticket #1115), immediately updating local
+   * account nonces, clean/spent flags, and balances across devices without waiting for RPC scans.
+   */
+  processSyncTransaction(item: {
+    direction: 'in' | 'out'
+    txHash?: string
+    spentInputs?: ReadonlyArray<{
+      address: string
+      nonce?: number
+      valueWei?: string | bigint
+    }>
+    createdOutputs?: ReadonlyArray<{
+      address: string
+      valueWei?: string | bigint
+      branch?: HDAddressBranch | string
+      index?: number
+    }>
+    transfer?: {
+      destination: string
+      value: string | bigint
+    }
+    timestamp?: number
+  }): { affectedAccounts: string[] } {
+    const affected: string[] = []
+    const now = item.timestamp ?? Date.now()
+
+    if (item.direction === 'out') {
+      if (item.spentInputs) {
+        for (const input of item.spentInputs) {
+          const record = this.getAccount(input.address)
+          if (record) {
+            if (input.nonce !== undefined) {
+              record.nonce = Math.max(record.nonce, input.nonce + 1)
+            } else {
+              record.nonce += 1
+            }
+            record.isClean = false
+            record.isSpent = true
+            if (input.valueWei !== undefined) {
+              const val = BigInt(input.valueWei)
+              if (record.balanceWei >= val) {
+                record.balanceWei -= val
+              } else {
+                record.balanceWei = 0n
+              }
+            }
+            record.lastUpdatedMs = now
+            affected.push(record.address)
+          }
+        }
+      }
+
+      if (item.createdOutputs) {
+        for (const output of item.createdOutputs) {
+          const record = this.getAccount(output.address)
+          if (record && output.valueWei !== undefined) {
+            record.balanceWei += BigInt(output.valueWei)
+            record.lastUpdatedMs = now
+            affected.push(record.address)
+          }
+        }
+      }
+    } else if (item.direction === 'in') {
+      if (item.createdOutputs) {
+        for (const output of item.createdOutputs) {
+          const record = this.getAccount(output.address)
+          if (record && output.valueWei !== undefined) {
+            record.balanceWei += BigInt(output.valueWei)
+            record.lastUpdatedMs = now
+            affected.push(record.address)
+          }
+        }
+      }
+      if (item.transfer) {
+        const record = this.getAccount(item.transfer.destination)
+        if (record && item.transfer.value !== undefined) {
+          record.balanceWei += BigInt(item.transfer.value)
+          record.lastUpdatedMs = now
+          affected.push(record.address)
+        }
+      }
+    }
+
+    return { affectedAccounts: affected }
+  }
+
+  /**
    * Dynamic Account Selection:
    * Selects clean accounts (nonce === 0) covering the target amount + fee reserve.
    */

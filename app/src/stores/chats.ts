@@ -58,6 +58,7 @@ import {
   type RelayReceiptIdentity,
 } from '@frank/cashweb/relay/storage/storage'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import { accountSession } from '../accounts/session'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { useBalance } from '../composables/useBalance'
@@ -2827,6 +2828,26 @@ export const useChatStore = defineStore('chats', {
           revisionDigest: (newMsg as any).revisionDigest || index,
           deliveryDigest: index,
           ...newMsg,
+        }
+
+        if (newMsg.items && Array.isArray(newMsg.items)) {
+          for (const item of newMsg.items) {
+            if (
+              item &&
+              (item.type === 'wallet-sync' || item.type === 'payment-transfer')
+            ) {
+              try {
+                void accountSession
+                  ?.getWallet?.()
+                  .then(w => {
+                    ;(w as any)?.processSyncTransaction?.(item)
+                  })
+                  .catch(() => {})
+              } catch {
+                // ignore
+              }
+            }
+          }
         }
 
         if (index in this.messages) {

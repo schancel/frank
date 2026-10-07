@@ -248,6 +248,69 @@ describe("EvmLegacyConsolidator", () => {
       expect(stages).toContain("draining");
       expect(stages).toContain("confirmed");
     });
+
+    it("dispatches generic WalletSyncItem callbacks for Phase 1 and Phase 2 (Ticket #1115)", async () => {
+      const funderBalance = 1_000_000_000_000_000n;
+      const targetValue = 500_000_000_000_000n;
+      const mockProvider = createMockProvider({
+        [wallet1.address]: funderBalance,
+      });
+
+      const journal = new InMemoryLegacySendJournalStore();
+      const originalSetPendingIntent = journal.setPendingIntent.bind(journal);
+      journal.setPendingIntent = async (intent: LegacySendIntent) => {
+        await originalSetPendingIntent(intent);
+        if (intent.stagingAddress) {
+          mockProvider._setBalance(
+            intent.stagingAddress,
+            targetValue + singleTransferFee
+          );
+        }
+      };
+
+      const syncItems: any[] = [];
+      const consolidator = new EvmLegacyConsolidator({
+        provider: mockProvider,
+        journal,
+        getFundingAccounts: async () => [
+          {
+            address: wallet1.address,
+            balanceWei: funderBalance,
+            privateKey: wallet1.privateKey,
+          },
+        ],
+        standardGasLimit,
+        chainId: 10143,
+        onSyncTransaction: async (item) => {
+          syncItems.push(item);
+        },
+      });
+
+      const result = await consolidator.sendLegacy({
+        recipient: { raw: recipientAddress },
+        value: targetValue,
+      });
+
+      expect(result.txHash).toBeDefined();
+      // Should have 2 sync items: 1 consolidation, 1 drain
+      expect(syncItems.length).toBe(2);
+
+      // Phase 1 Consolidation sync item
+      const phase1 = syncItems[0];
+      expect(phase1.type).toBe("wallet-sync");
+      expect(phase1.direction).toBe("out");
+      expect(phase1.chainId).toBe("10143");
+      expect(phase1.spentInputs[0].address).toBe(wallet1.address);
+      expect(phase1.createdOutputs[0].branch).toBe("staging");
+
+      // Phase 2 Drain sync item
+      const phase2 = syncItems[1];
+      expect(phase2.type).toBe("wallet-sync");
+      expect(phase2.direction).toBe("out");
+      expect(phase2.chainId).toBe("10143");
+      expect(phase2.txHash).toBe(result.txHash);
+      expect(phase2.createdOutputs[0].address).toBe(recipientAddress);
+    });
   });
 
   describe("resumeLegacySend", () => {

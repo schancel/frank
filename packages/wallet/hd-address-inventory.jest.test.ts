@@ -173,4 +173,85 @@ describe('HdAddressInventory (Ticket #955)', () => {
       )
     })
   })
+
+  describe('Generic Wallet Sync Transaction Ingestion (Ticket #1115)', () => {
+    it('prunes spent inputs and updates balances for outbound transactions', () => {
+      const inventory = EvmAddressInventory.fromMnemonic(TEST_MNEMONIC, '', 5)
+      const spend0 = inventory.getByIndex('spend', 0)!
+      const change0 = inventory.getByIndex('change', 0)!
+
+      inventory.updateBalance(spend0.address, 1_000_000_000n)
+      inventory.updateBalance(change0.address, 200_000_000n)
+
+      expect(spend0.isClean).toBe(true)
+      expect(spend0.nonce).toBe(0)
+
+      const result = inventory.processSyncTransaction({
+        direction: 'out',
+        txHash: '0x1234567890abcdef',
+        spentInputs: [
+          {
+            address: spend0.address,
+            valueWei: '400000000',
+            nonce: 0,
+          },
+        ],
+        createdOutputs: [
+          {
+            address: change0.address,
+            valueWei: '100000000',
+            branch: 'change',
+          },
+        ],
+      })
+
+      expect(result.affectedAccounts).toContain(spend0.address)
+      expect(result.affectedAccounts).toContain(change0.address)
+
+      expect(spend0.isClean).toBe(false)
+      expect(spend0.isSpent).toBe(true)
+      expect(spend0.nonce).toBe(1)
+      expect(spend0.balanceWei).toBe(600_000_000n)
+
+      expect(change0.balanceWei).toBe(300_000_000n)
+    })
+
+    it('credits destination accounts for inbound transactions', () => {
+      const inventory = EvmAddressInventory.fromMnemonic(TEST_MNEMONIC, '', 5)
+      const spend1 = inventory.getByIndex('spend', 1)!
+
+      inventory.updateBalance(spend1.address, 50_000_000n)
+
+      inventory.processSyncTransaction({
+        direction: 'in',
+        txHash: '0xabcdef',
+        createdOutputs: [
+          {
+            address: spend1.address,
+            valueWei: '25000000',
+          },
+        ],
+      })
+
+      expect(spend1.balanceWei).toBe(75_000_000n)
+    })
+
+    it('handles embedded transfer payload in sync item', () => {
+      const inventory = EvmAddressInventory.fromMnemonic(TEST_MNEMONIC, '', 5)
+      const spend2 = inventory.getByIndex('spend', 2)!
+
+      inventory.updateBalance(spend2.address, 10_000_000n)
+
+      inventory.processSyncTransaction({
+        direction: 'in',
+        txHash: '0x999',
+        transfer: {
+          destination: spend2.address,
+          value: '5000000',
+        },
+      })
+
+      expect(spend2.balanceWei).toBe(15_000_000n)
+    })
+  })
 })

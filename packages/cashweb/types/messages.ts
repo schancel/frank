@@ -383,6 +383,46 @@ export interface PokerItem {
   stealthAddress?: string;
 }
 
+export type WalletSyncDirection = "in" | "out";
+
+export interface WalletSyncSpentInput {
+  address: string;
+  nonce?: number;
+  outpoint?: string;
+  valueWei?: string;
+}
+
+export interface WalletSyncCreatedOutput {
+  address: string;
+  valueWei?: string;
+  branch?: "spend" | "change" | "staging";
+  index?: number;
+  outpoint?: string;
+}
+
+export interface WalletSyncItem {
+  type: "wallet-sync" | "payment-transfer";
+  direction: WalletSyncDirection;
+  chainId: string;
+  txHash: string;
+  rawTx?: string;
+  spentInputs?: WalletSyncSpentInput[];
+  createdOutputs?: WalletSyncCreatedOutput[];
+  transfer?: {
+    networkTag: string;
+    txId: string;
+    vout?: number;
+    destination: string;
+    value: string;
+    token?: string;
+    rawTx?: string;
+  };
+  memo?: string;
+  timestamp?: number;
+}
+
+export type PaymentTransferItem = WalletSyncItem;
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -399,7 +439,8 @@ export type MessageItem =
   | SatoshiDiceItem
   | LiarsDiceItem
   | PokerItem
-  | ChannelUpdateItem;
+  | ChannelUpdateItem
+  | WalletSyncItem;
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

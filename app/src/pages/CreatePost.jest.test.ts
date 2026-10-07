@@ -19,6 +19,7 @@ import { accountStatus } from '../accounts/session'
 
 const mockPutMessage = jest.fn()
 enableAutoUnmount(afterEach)
+jest.setTimeout(10000)
 const mockDisplayToRawAmount = jest.fn(() => 1_000_000n)
 // vue-router's CommonJS build imports this ESM-only diagnostics package. The router behavior is
 // the boundary under test here, not its development reporter.

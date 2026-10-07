@@ -70,6 +70,10 @@ function render() {
           template: '<button :disabled="disable">{{ label }}</button>',
         },
         QCheckbox: true,
+        QOptionGroup: true,
+        QExpansionItem: true,
+        QCard: true,
+        QCardSection: true,
         QForm: {
           template: '<form @submit.prevent="$emit(\'submit\')"><slot /></form>',
         },

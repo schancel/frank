@@ -49,6 +49,9 @@ import {
   deserializeMessageItems,
   loadMonadChainConfigFromEnv,
   serializeMessageItems,
+  getCustomRelayBaseUrl,
+  setCustomRelayBaseUrl,
+  getDefaultRelayBaseUrl,
 } from "./monad-chain";
 import { TopicPostOutcomeUnknownError, WalletHandle } from "./active-chain";
 import { deriveMonadStampChildPublic } from "../monad-stamp-stealth";
@@ -306,6 +309,36 @@ describe("loadMonadChainConfigFromEnv", () => {
       chainId: 143n,
       networkTag: "MON1",
     });
+  });
+});
+
+describe("custom relay configuration", () => {
+  beforeEach(() => {
+    setCustomRelayBaseUrl(undefined);
+  });
+
+  afterEach(() => {
+    setCustomRelayBaseUrl(undefined);
+  });
+
+  it("stores and retrieves custom relay url", () => {
+    expect(getCustomRelayBaseUrl()).toBeUndefined();
+    setCustomRelayBaseUrl("https://relay.custom.org");
+    expect(getCustomRelayBaseUrl()).toBe("https://relay.custom.org");
+    setCustomRelayBaseUrl(undefined);
+    expect(getCustomRelayBaseUrl()).toBeUndefined();
+  });
+
+  it("loadMonadChainConfigFromEnv dynamically reflects custom relay base URL", () => {
+    const config = loadMonadChainConfigFromEnv();
+    const defaultRelay = getDefaultRelayBaseUrl();
+    expect(config.relayBaseUrl).toBe(defaultRelay);
+
+    setCustomRelayBaseUrl("https://override.relay.org");
+    expect(config.relayBaseUrl).toBe("https://override.relay.org");
+
+    setCustomRelayBaseUrl(undefined);
+    expect(config.relayBaseUrl).toBe(defaultRelay);
   });
 });
 
@@ -1072,25 +1105,55 @@ describe("canonical topic owner production composition", () => {
   });
 });
 
-
 it("public revision-zero bridge rejects a valid foreign network descriptor without financial/network effects", async () => {
   const roots: MonadRootBundle = {
-    evm: { registry: "frank-domain-roots-v1", purpose: "evm-wallet", bytes: new Uint8Array(32).fill(51) },
-    authentication: { registry: "frank-domain-roots-v1", purpose: "identity-authentication", bytes: new Uint8Array(32).fill(52) },
-    messaging: { registry: "frank-domain-roots-v1", purpose: "messaging-encryption", bytes: new Uint8Array(32).fill(53) },
+    evm: {
+      registry: "frank-domain-roots-v1",
+      purpose: "evm-wallet",
+      bytes: new Uint8Array(32).fill(51),
+    },
+    authentication: {
+      registry: "frank-domain-roots-v1",
+      purpose: "identity-authentication",
+      bytes: new Uint8Array(32).fill(52),
+    },
+    messaging: {
+      registry: "frank-domain-roots-v1",
+      purpose: "messaging-encryption",
+      bytes: new Uint8Array(32).fill(53),
+    },
   };
-  const chain = createMonadChain(TEST_CONFIG), wallet = await chain.createWallet(roots) as MonadChainWalletHandle;
+  const chain = createMonadChain(TEST_CONFIG),
+    wallet = (await chain.createWallet(roots)) as MonadChainWalletHandle;
   const operator = createMonadWalletMaterial(roots);
   const point = operator.canonicalRoles!.publicGenerationZeroPoints().auth;
-  const relay = { relayId: new Uint8Array(16).fill(1), endpoint: "https://a.example", identity: { keyType: 1, keyBytes: point },
-    expiry: { seconds: 3700n, nanoseconds: 0 }, unknownFields: new Map() };
-  const input = { networkTag: "MONT" as const, network: "monad-testnet", chainId: 10143n,
-    issuedAt: { seconds: 100n, nanoseconds: 0 }, expiresAt: { seconds: 3700n, nanoseconds: 0 }, now: { seconds: 100n, nanoseconds: 0 },
-    relay };
+  const relay = {
+    relayId: new Uint8Array(16).fill(1),
+    endpoint: "https://a.example",
+    identity: { keyType: 1, keyBytes: point },
+    expiry: { seconds: 3700n, nanoseconds: 0 },
+    unknownFields: new Map(),
+  };
+  const input = {
+    networkTag: "MONT" as const,
+    network: "monad-testnet",
+    chainId: 10143n,
+    issuedAt: { seconds: 100n, nanoseconds: 0 },
+    expiresAt: { seconds: 3700n, nanoseconds: 0 },
+    now: { seconds: 100n, nanoseconds: 0 },
+    relay,
+  };
   const statuses = wallet.pool.records();
   jest.clearAllMocks();
   try {
-    expect(() => prepareMonadRevisionZeroExport(wallet, { ...input, networkTag: "MON1", network: "monad-mainnet", chainId: 143n })).toThrow("actual installed wallet descriptor");
+    expect(() =>
+      prepareMonadRevisionZeroExport(wallet, {
+        ...input,
+        networkTag: "MON1",
+        network: "monad-mainnet",
+        chainId: 143n,
+      })
+    ).toThrow("actual installed wallet descriptor");
     expect(MonadAccountTxSigner).not.toHaveBeenCalled();
     expect(MonadStampClient).not.toHaveBeenCalled();
     expect(MonadTopicPostClient).not.toHaveBeenCalled();
@@ -1100,6 +1163,11 @@ it("public revision-zero bridge rejects a valid foreign network descriptor witho
     expect(output.network).toBe("monad-testnet");
     expect(wallet.pool.records()).toEqual(statuses);
     await wallet.close();
-    expect(() => prepareMonadRevisionZeroExport(wallet, input)).toThrow("live typed wallet custody");
-  } finally { await wallet.close(); operator.dispose(); }
+    expect(() => prepareMonadRevisionZeroExport(wallet, input)).toThrow(
+      "live typed wallet custody"
+    );
+  } finally {
+    await wallet.close();
+    operator.dispose();
+  }
 });

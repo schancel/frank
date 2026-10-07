@@ -11,7 +11,14 @@ import { ActiveChain } from "./active-chain";
 export { createChain } from "./chain-factory";
 export type { ChainFactoryConfig } from "./chain-factory";
 export type { EcashChainConfig } from "./ecash-chain";
-export { createEvmChain, createMonadChain } from "./monad-chain";
+export {
+  createEvmChain,
+  createMonadChain,
+  CUSTOM_RELAY_STORAGE_KEY,
+  getCustomRelayBaseUrl,
+  setCustomRelayBaseUrl,
+  getDefaultRelayBaseUrl,
+} from "./monad-chain";
 export type {
   EvmChainConfig,
   EvmChainWalletHandle,
@@ -142,4 +149,3 @@ export type {
   BuildSolanaStealthPaymentParams,
   SolanaStealthPaymentResult,
 } from "../solana-stealth";
-

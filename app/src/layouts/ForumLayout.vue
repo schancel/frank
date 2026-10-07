@@ -183,9 +183,11 @@ export default defineComponent({
   computed: {
     isThreadRoute(): boolean {
       return (
-        Boolean(this.$route.params?.payloadDigest) ||
-        (this.$route.path.startsWith('/forum/') &&
-          this.$route.path !== '/forum')
+        Boolean(this.$route?.params?.payloadDigest) ||
+        Boolean(
+          this.$route?.path?.startsWith('/forum/') &&
+            this.$route?.path !== '/forum',
+        )
       )
     },
     selectedTopic: {

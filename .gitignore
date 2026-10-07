@@ -6,6 +6,8 @@
 node_modules/
 target/
 dist/
+**/.vitepress/cache/
+**/.vitepress/.temp/
 __pycache__/
 *.pyc
 .worktrees/

@@ -565,6 +565,7 @@ pub(crate) enum Draft {
         stamp_key: Option<AccountRef>,
         profile_entries: Option<Vec<ProfileEntryDraft>>,
         preview: Option<PreviewDirectoryRoles>,
+        canonical_username: Option<String>,
         unknown: Vec<(u64, CborValue)>,
     },
     Recipient {
@@ -1140,12 +1141,12 @@ pub(crate) fn parse_draft(
             // reader reads the statement through V6.3 and retains it. `effective` is the exact
             // version, or the reader's highest supported schema when the frame is newer (V6.3).
             let optional: &[u64] = if schema.effective >= 3 {
-                &[5, 6, 7, 9]
+                &[5, 6, 7, 9, 14]
             } else {
-                &[5, 6, 7]
+                &[5, 6, 7, 14]
             };
             let preview = schema.effective >= 4;
-            let optional = if preview { &[][..] } else { optional };
+            let optional = if preview { &[14][..] } else { optional };
             let required: &[u64] = if preview {
                 &[0, 1, 2, 3, 4, 6, 8, 10, 11, 12, 13]
             } else if schema.effective >= 2 {
@@ -1254,6 +1255,11 @@ pub(crate) fn parse_draft(
                         parsed.push(profile_entry(item, &format!("{path}.9[{i}]"), allow)?);
                     }
                     Some(parsed)
+                } else {
+                    None
+                },
+                canonical_username: if map.has(14) {
+                    Some(tstr(map.get(14), &format!("{path}.14"), 3, 32)?)
                 } else {
                     None
                 },

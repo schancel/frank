@@ -4,7 +4,9 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { keccak_256 } from '@noble/hashes/sha3'
 
-import type { Timestamp } from './types'
+import type { AccountRef, ProfileEntry, RelayBinding, Timestamp } from './types'
+import { cborMap, type Encodable } from './cbor'
+import { encodeFrame } from './frame'
 
 const MS = 1000n
 const NANOS_PER_MS = 1_000_000n
@@ -110,4 +112,150 @@ export function addressFromCompressedPubkey(
   compressed: Uint8Array,
 ): Uint8Array {
   return addressFromUncompressedPubkey(uncompressedPubkeyXy(compressed))
+}
+
+/** Canonical username regex: lowercase ASCII alphanumeric with hyphen or underscore, starting with alphanumeric. */
+export const CANONICAL_USERNAME_REGEX = /^[a-z0-9][a-z0-9_-]{2,31}$/
+
+/**
+ * Validates whether a handle conforms to the canonical username specification (ticket #972):
+ * - Length between 3 and 32 characters
+ * - Lowercase ASCII alphanumeric, hyphen, or underscore
+ * - Starts with an alphanumeric character
+ */
+export function isValidCanonicalUsername(handle: unknown): handle is string {
+  return (
+    typeof handle === 'string' &&
+    handle.length >= 3 &&
+    handle.length <= 32 &&
+    CANONICAL_USERNAME_REGEX.test(handle)
+  )
+}
+
+export interface DirectoryStatementBuilderParams {
+  network: string
+  subject: AccountRef | Uint8Array
+  revision: bigint | number
+  timestamp: Timestamp
+  relays: RelayBinding[]
+  stampKey?: AccountRef | Uint8Array
+  expiry?: Timestamp
+  recoveryAuthorities?: AccountRef[]
+  profileEntries?: ProfileEntry[]
+  canonicalUsername?: string
+  spendKeys?: AccountRef[]
+}
+
+/**
+ * Encodes the Type 4 directory statement CBOR map entries, including optional field 14.
+ */
+export function buildDirectoryStatementMap(
+  params: DirectoryStatementBuilderParams,
+): Map<number | bigint, Encodable> {
+  const encAccount = (acc: AccountRef | Uint8Array): Encodable => {
+    if (acc instanceof Uint8Array) {
+      return cborMap([
+        [0, 1],
+        [1, acc],
+      ])
+    }
+    return cborMap([
+      [0, acc.keyType],
+      [1, acc.keyBytes],
+    ])
+  }
+
+  const entries: Array<[number | bigint, Encodable]> = [
+    [0, params.network],
+    [1, encAccount(params.subject)],
+    [2, BigInt(params.revision)],
+    [
+      3,
+      cborMap([
+        [0, params.timestamp.seconds],
+        [1, params.timestamp.nanoseconds],
+      ]),
+    ],
+    [
+      4,
+      params.relays.map(r =>
+        cborMap([
+          [0, r.relayId],
+          [1, r.endpoint],
+          [2, encAccount(r.identity)],
+          [
+            3,
+            cborMap([
+              [0, r.expiry.seconds],
+              [1, r.expiry.nanoseconds],
+            ]),
+          ],
+        ]),
+      ),
+    ],
+  ]
+
+  if (params.expiry !== undefined) {
+    entries.push([
+      6,
+      cborMap([
+        [0, params.expiry.seconds],
+        [1, params.expiry.nanoseconds],
+      ]),
+    ])
+  }
+
+  if (
+    params.recoveryAuthorities !== undefined &&
+    params.recoveryAuthorities.length > 0
+  ) {
+    entries.push([7, params.recoveryAuthorities.map(encAccount)])
+  }
+
+  if (params.stampKey !== undefined) {
+    entries.push([8, encAccount(params.stampKey)])
+  }
+
+  if (params.profileEntries !== undefined && params.profileEntries.length > 0) {
+    entries.push([
+      9,
+      params.profileEntries.map(e =>
+        cborMap([
+          [0, e.kind],
+          [
+            1,
+            e.headers.map(h =>
+              cborMap([
+                [0, h.name],
+                [1, h.value],
+              ]),
+            ),
+          ],
+          [2, e.body],
+        ]),
+      ),
+    ])
+  }
+
+  if (params.canonicalUsername !== undefined) {
+    entries.push([14, params.canonicalUsername])
+  } else if (params.spendKeys !== undefined && params.spendKeys.length > 0) {
+    entries.push([14, params.spendKeys.map(encAccount)])
+  }
+
+  return cborMap(entries)
+}
+
+/**
+ * Encodes a complete Type 4 directory statement frame.
+ */
+export function encodeDirectoryStatement(
+  params: DirectoryStatementBuilderParams,
+  schemaVersion = 3,
+  minReaderVersion = 2,
+): Uint8Array {
+  return encodeFrame(
+    { typeId: 4, schemaVersion, minReaderVersion },
+    buildDirectoryStatementMap(params),
+  )
 }

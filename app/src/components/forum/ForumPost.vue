@@ -1,7 +1,9 @@
 <template>
   <q-card class="forum-post-card q-ma-sm" flat bordered>
     <q-card-section class="row no-wrap q-pa-none" horizontal>
-      <div class="vote-column column items-center justify-start q-py-sm q-px-xs">
+      <div
+        class="vote-column column items-center justify-start q-py-sm q-px-xs"
+      >
         <q-btn
           flat
           dense
@@ -15,7 +17,9 @@
           data-test="forum-vote-up"
           class="vote-btn upvote-btn"
         />
-        <div class="vote-weight-pill text-caption text-weight-bold text-center q-my-xs">
+        <div
+          class="vote-weight-pill text-caption text-weight-bold text-center q-my-xs"
+        >
           {{ formatVoteWeight(displayedVoteWeight) }}
         </div>
         <q-btn
@@ -40,7 +44,9 @@
           )"
           :key="index"
         >
-          <div class="row items-center no-wrap justify-between q-px-md q-pt-sm q-pb-xs">
+          <div
+            class="row items-center no-wrap justify-between q-px-md q-pt-sm q-pb-xs"
+          >
             <div class="col-grow post-title-wrap">
               <a
                 :href="entry.url"
@@ -74,14 +80,21 @@
             class="q-px-md q-pt-xs q-pb-sm col-grow post-body"
             v-if="renderBody"
           >
-            <div class="mdstyle text-body2" v-html="markedMessage(entry.message)" />
+            <div
+              class="mdstyle text-body2"
+              v-html="markedMessage(entry.message)"
+            />
           </div>
         </template>
 
         <q-separator class="q-my-none" style="opacity: 0.15" />
 
-        <q-card-actions class="post-footer q-px-md q-py-xs row items-center no-wrap">
-          <div class="row items-center q-gutter-x-xs text-caption text-grey-7 author-pill">
+        <q-card-actions
+          class="post-footer q-px-md q-py-xs row items-center no-wrap"
+        >
+          <div
+            class="row items-center q-gutter-x-xs text-caption text-grey-7 author-pill"
+          >
             <q-icon name="person" size="14px" color="primary" />
             <span>by</span>
             <q-btn
@@ -454,7 +467,8 @@ export default defineComponent({
   border: 1px solid var(--q-color-border, rgba(0, 0, 0, 0.08));
   background: var(--q-card-bg, #ffffff);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+  transition: transform 0.15s ease, box-shadow 0.15s ease,
+    border-color 0.15s ease;
   overflow: hidden;
 
   &:hover {

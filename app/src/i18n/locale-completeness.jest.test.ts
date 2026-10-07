@@ -41,6 +41,13 @@ const SAME_IN_FRENCH = new Set([
   'chatRightDrawer.notifications',
   'transactionDialog.txType',
   'sendStealthDialog.amountPlaceholder',
+  'profile.linkTypeX',
+  'profile.linkTypeGithub',
+  'profile.linkTypeNostr',
+  'profile.linkTypeTelegram',
+  'profile.linkTypeDiscord',
+  'about.appName',
+  'about.badgeMonad',
 ])
 
 const placeholders = (text: string) =>

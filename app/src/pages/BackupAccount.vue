@@ -27,7 +27,11 @@
     </q-header>
     <q-page-container>
       <q-page class="q-ma-none q-pa-md" data-test="backup-account-page">
-        <q-card flat class="bg-transparent" style="max-width: 680px; margin: 0 auto">
+        <q-card
+          flat
+          class="bg-transparent"
+          style="max-width: 680px; margin: 0 auto"
+        >
           <q-card-section>
             <div class="row items-center justify-between no-wrap">
               <div class="text-h6">
@@ -148,7 +152,9 @@
                 <div class="row items-center justify-between q-mb-xs">
                   <div class="text-weight-bold text-caption">
                     {{
-                      `${$t('accountRecovery.share')} ${index + 1} / ${backupShares.length}`
+                      `${$t('accountRecovery.share')} ${index + 1} / ${
+                        backupShares.length
+                      }`
                     }}
                   </div>
                   <q-btn
@@ -165,7 +171,11 @@
                 </div>
                 <div
                   class="text-caption text-mono"
-                  style="word-break: break-all; font-family: monospace; user-select: all"
+                  style="
+                    word-break: break-all;
+                    font-family: monospace;
+                    user-select: all;
+                  "
                   data-test="codex32-share"
                 >
                   {{ share }}

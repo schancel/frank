@@ -150,7 +150,9 @@ describe('About: Frank & Stamp protocol overview', () => {
     expect(links.text()).toContain('Links & Source Code')
     const buttons = links.findAll('button')
     expect(buttons.length).toBe(2)
-    expect(buttons[0].attributes('href')).toBe('https://github.com/schancel/frank')
+    expect(buttons[0].attributes('href')).toBe(
+      'https://github.com/schancel/frank',
+    )
     expect(buttons[1].attributes('href')).toBe(
       'https://github.com/stampchat/stamp',
     )
@@ -168,4 +170,3 @@ describe('About: Frank & Stamp protocol overview', () => {
     expect(text(fr, 'about-links')).toContain('Liens et code source')
   })
 })
-

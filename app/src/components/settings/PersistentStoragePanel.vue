@@ -1,9 +1,13 @@
 <template>
   <section class="q-gutter-y-md" data-test="persistent-storage">
-    <h2 class="text-subtitle1 q-mb-xs">{{ $t('accountRecovery.browser_storage') }}</h2>
+    <h2 class="text-subtitle1 q-mb-xs">
+      {{ $t('accountRecovery.browser_storage') }}
+    </h2>
 
     <div class="row items-center q-gutter-x-sm">
-      <span class="text-weight-medium">{{ $t('persistentStorage.heading') }}:</span>
+      <span class="text-weight-medium"
+        >{{ $t('persistentStorage.heading') }}:</span
+      >
       <q-chip
         dense
         :color="statusChipColor"
@@ -14,7 +18,13 @@
         {{ statusLabel }}
       </q-chip>
       <!-- Preserve exact status token in DOM for screen readers and test assertions -->
-      <span role="status" aria-live="polite" class="sr-only" data-test="status-raw">{{ status }}</span>
+      <span
+        role="status"
+        aria-live="polite"
+        class="sr-only"
+        data-test="status-raw"
+        >{{ status }}</span
+      >
     </div>
 
     <p class="text-body2 text-grey-8">
@@ -22,8 +32,10 @@
         status === 'granted'
           ? $t('persistentStorage.explainGranted')
           : status === 'unsupported'
-            ? $t('persistentStorage.explainUnsupported')
-            : $t('accountRecovery.browser_persistence_reduces_automatic_eviction_it_is')
+          ? $t('persistentStorage.explainUnsupported')
+          : $t(
+              'accountRecovery.browser_persistence_reduces_automatic_eviction_it_is',
+            )
       }}
     </p>
 

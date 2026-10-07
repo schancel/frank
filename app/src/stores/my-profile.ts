@@ -20,7 +20,11 @@ export interface State {
 }
 
 export const useProfileStore = defineStore('myProfile', {
-  state: (): State => ({ profile: {}, inbox: {}, emailBridgeGatewayAddress: undefined }),
+  state: (): State => ({
+    profile: {},
+    inbox: {},
+    emailBridgeGatewayAddress: undefined,
+  }),
   actions: {
     setRelayData(relayData: State) {
       this.profile = relayData.profile

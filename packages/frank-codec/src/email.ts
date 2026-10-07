@@ -27,6 +27,41 @@ import {
 const bad = (msg: string, location = 'email-message-item') =>
   new FrankCodecError('schema', '8.2', msg, location)
 
+function decodeBase64ToBytes(b64: string): Uint8Array {
+  const g = typeof globalThis !== 'undefined' ? (globalThis as any) : undefined
+  if (g && typeof g.atob === 'function') {
+    const bin: string = g.atob(b64)
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) {
+      bytes[i] = bin.charCodeAt(i)
+    }
+    return bytes
+  }
+  const chars =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const lookup = new Uint8Array(256)
+  for (let i = 0; i < chars.length; i++) lookup[chars.charCodeAt(i)] = i
+  let len = b64.length
+  if (b64.endsWith('==')) len -= 2
+  else if (b64.endsWith('=')) len -= 1
+  const bytes = new Uint8Array((len * 3) >> 2)
+  let a = 0,
+    b = 0,
+    c = 0,
+    d = 0,
+    p = 0
+  for (let i = 0; i < b64.length; i += 4) {
+    a = lookup[b64.charCodeAt(i)]
+    b = lookup[b64.charCodeAt(i + 1)]
+    c = lookup[b64.charCodeAt(i + 2)]
+    d = lookup[b64.charCodeAt(i + 3)]
+    bytes[p++] = (a << 2) | (b >> 4)
+    if (p < bytes.length) bytes[p++] = ((b & 15) << 4) | (c >> 2)
+    if (p < bytes.length) bytes[p++] = ((c & 3) << 6) | (d & 63)
+  }
+  return bytes
+}
+
 export interface CanonicalEmailMessageItem {
   messageId: string
   from: EmailParty
@@ -91,18 +126,7 @@ export function encodeEmailAttachment(
     const clean = att.dataBase64
       .replace(/^data:[^;]+;base64,/, '')
       .replace(/\s+/g, '')
-    const g =
-      typeof globalThis !== 'undefined' ? (globalThis as any) : undefined
-    if (g && g.Buffer) {
-      content = new Uint8Array(g.Buffer.from(clean, 'base64'))
-    } else if (g && typeof g.atob === 'function') {
-      const bin: string = g.atob(clean)
-      const bytes = new Uint8Array(bin.length)
-      for (let i = 0; i < bin.length; i++) {
-        bytes[i] = bin.charCodeAt(i)
-      }
-      content = bytes
-    }
+    content = decodeBase64ToBytes(clean)
   }
   if (!content) {
     content = new Uint8Array(0)

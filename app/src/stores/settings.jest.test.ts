@@ -1,11 +1,7 @@
 /** @jest-environment jsdom */
 
 import { setActivePinia, createPinia } from 'pinia'
-import {
-  useSettingsStore,
-  saveSettings,
-  restoreSettings,
-} from './settings'
+import { useSettingsStore, saveSettings, restoreSettings } from './settings'
 import { defaultEmailGatewayAddress } from '../utils/constants'
 
 describe('settings store', () => {
@@ -30,8 +26,8 @@ describe('settings store', () => {
     expect(() => store.setEmailGatewayAddress('not-an-address')).toThrow(
       /Invalid Ethereum address/,
     )
-    expect(() =>
-      store.setEmailGatewayAddress('0x123'), // too short
+    expect(
+      () => store.setEmailGatewayAddress('0x123'), // too short
     ).toThrow(/Invalid Ethereum address/)
     expect(() =>
       store.setEmailGatewayAddress(

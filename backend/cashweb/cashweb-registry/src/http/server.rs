@@ -247,11 +247,13 @@ async fn handle_get_directory_user(
             account_address: addr_hex,
             status: status_str,
             updated_at_ms: record.updated_at_ms.max(record.updated_at),
-            tombstone_expires_at_ms: record.tombstone_expires_at_ms.or(if record.tombstone_expires_at > 0 {
-                Some(record.tombstone_expires_at)
-            } else {
-                None
-            }),
+            tombstone_expires_at_ms: record.tombstone_expires_at_ms.or(
+                if record.tombstone_expires_at > 0 {
+                    Some(record.tombstone_expires_at)
+                } else {
+                    None
+                },
+            ),
             redirect_to: record.redirect_to,
             entry,
         }),
@@ -1412,10 +1414,7 @@ mod spa_tests {
         let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(val["username"], "alice");
         assert_eq!(val["status"], "active");
-        assert_eq!(
-            val["address"],
-            format!("0x{}", hex::encode(alice_addr))
-        );
+        assert_eq!(val["address"], format!("0x{}", hex::encode(alice_addr)));
         assert_eq!(
             val["account_address"],
             format!("0x{}", hex::encode(alice_addr))

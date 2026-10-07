@@ -4,7 +4,11 @@
       <q-card>
         <q-card-section>
           <div class="text-h6">
-            {{ isComposeMode ? $t('newContactDialog.composeEmail') : $t('newContactDialog.newContact') }}
+            {{
+              isComposeMode
+                ? $t('newContactDialog.composeEmail')
+                : $t('newContactDialog.newContact')
+            }}
           </div>
         </q-card-section>
         <q-card-section>
@@ -30,9 +34,7 @@
               name: contact.profile?.name ?? '',
             })
           }}</span>
-          <span v-else-if="isEmailRecipient">{{
-            emailAffordanceLabel
-          }}</span>
+          <span v-else-if="isEmailRecipient">{{ emailAffordanceLabel }}</span>
         </div>
         <q-slide-transition>
           <q-card-section class="q-py-none" v-if="lookupPending">

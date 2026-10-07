@@ -1372,9 +1372,17 @@ pub(crate) fn parse_draft(
             let from = if map.has(4) {
                 let val = map.get(4);
                 if matches!(val, Some(CborValue::Map(_))) {
-                    Some(TopicPostAuthor::Account(account(val, &format!("{path}.4"))?))
+                    Some(TopicPostAuthor::Account(account(
+                        val,
+                        &format!("{path}.4"),
+                    )?))
                 } else {
-                    Some(TopicPostAuthor::Bytes(bstr(val, &format!("{path}.4"), 20, 33)?))
+                    Some(TopicPostAuthor::Bytes(bstr(
+                        val,
+                        &format!("{path}.4"),
+                        20,
+                        33,
+                    )?))
                 }
             } else {
                 None

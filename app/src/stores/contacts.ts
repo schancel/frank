@@ -11,6 +11,7 @@ import {
 } from '../utils/constants'
 import { activeChain } from '@frank/wallet/chain'
 import moment from 'moment'
+import {
   isChainAddress,
   safeChainDisplayAddress,
   safeToChainDisplayAddress,

@@ -60,7 +60,11 @@
         <q-separator />
 
         <!-- Network / Advanced Settings -->
-        <div class="q-px-md q-py-sm" data-test="network-settings-section" data-testid="network-settings-section">
+        <div
+          class="q-px-md q-py-sm"
+          data-test="network-settings-section"
+          data-testid="network-settings-section"
+        >
           <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">
             {{ $t('settings.networkSettings', 'Network & Gateway Settings') }}
           </div>
@@ -303,7 +307,8 @@ export default defineComponent({
         settingsStore.setEmailGatewayAddress(emailGatewayInput.value.trim())
         emailGatewayInput.value = settingsStore.emailGatewayAddress
       } catch (err: any) {
-        emailGatewayError.value = err?.message || 'Invalid Ethereum address format'
+        emailGatewayError.value =
+          err?.message || 'Invalid Ethereum address format'
       }
     }
 

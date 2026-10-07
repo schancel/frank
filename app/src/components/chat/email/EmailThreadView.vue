@@ -1,5 +1,8 @@
 <template>
-  <q-page class="email-thread-page column no-wrap full-height relative-position" data-testid="email-thread-view">
+  <q-page
+    class="email-thread-page column no-wrap full-height relative-position"
+    data-testid="email-thread-view"
+  >
     <!-- Thread Header Banner -->
     <div class="email-thread-header q-px-lg q-py-md shadow-1">
       <div class="row items-center justify-between no-wrap q-mb-xs">
@@ -28,7 +31,12 @@
             data-testid="unverified-p2p-badge"
           >
             <q-icon name="warning" size="14px" class="q-mr-xs text-warning" />
-            {{ $t('emailThread.unverifiedBadge', '⚠️ Direct P2P Email (Unverified)') }}
+            {{
+              $t(
+                'emailThread.unverifiedBadge',
+                '⚠️ Direct P2P Email (Unverified)',
+              )
+            }}
           </q-badge>
           <q-btn
             v-if="!isDraft"
@@ -37,10 +45,18 @@
             round
             size="sm"
             :icon="allExpanded ? 'unfold_less' : 'unfold_more'"
-            :aria-label="allExpanded ? $t('emailThread.collapseAll') : $t('emailThread.expandAll')"
+            :aria-label="
+              allExpanded
+                ? $t('emailThread.collapseAll')
+                : $t('emailThread.expandAll')
+            "
             @click="toggleAllExpanded"
           >
-            <q-tooltip>{{ allExpanded ? $t('emailThread.collapseAll') : $t('emailThread.expandAll') }}</q-tooltip>
+            <q-tooltip>{{
+              allExpanded
+                ? $t('emailThread.collapseAll')
+                : $t('emailThread.expandAll')
+            }}</q-tooltip>
           </q-btn>
         </div>
       </div>
@@ -52,20 +68,32 @@
         class="bg-amber-1 text-amber-10 q-px-md q-py-xs text-caption rounded-borders q-my-sm unverified-email-banner"
         data-testid="unverified-peer-warning-banner"
       >
-        <template v-slot:avatar>
+        <template #avatar>
           <q-icon name="warning" color="warning" size="18px" />
         </template>
         <span>
-          ⚠️ Direct Peer Email Frame: This message was sent directly by Frank user {{ peerFrankAddress }} (not an Email Gateway). External email recipients will not receive replies.
+          ⚠️ Direct Peer Email Frame: This message was sent directly by Frank
+          user {{ peerFrankAddress }} (not an Email Gateway). External email
+          recipients will not receive replies.
         </span>
       </q-banner>
 
       <!-- Participants summary -->
-      <div class="row items-center text-caption text-grey-7 q-gutter-x-sm ellipsis" v-if="allParticipants.length > 0">
-        <span class="text-weight-medium">{{ $t('emailThread.participants') }}:</span>
+      <div
+        class="row items-center text-caption text-grey-7 q-gutter-x-sm ellipsis"
+        v-if="allParticipants.length > 0"
+      >
+        <span class="text-weight-medium"
+          >{{ $t('emailThread.participants') }}:</span
+        >
         <span class="ellipsis">{{ allParticipants.join(', ') }}</span>
         <q-badge color="grey-5" text-color="black" class="text-caption">
-          {{ parsedEmails.length }} {{ parsedEmails.length === 1 ? $t('emailThread.messageSingle') : $t('emailThread.messagePlural') }}
+          {{ parsedEmails.length }}
+          {{
+            parsedEmails.length === 1
+              ? $t('emailThread.messageSingle')
+              : $t('emailThread.messagePlural')
+          }}
         </q-badge>
       </div>
     </div>
@@ -109,21 +137,31 @@
                 clickable
                 @click="toggleExpand(card.id)"
                 class="q-py-sm email-card-header"
-                :class="{ 'bg-grey-1': !isExpanded(card.id) && !$q.dark.isActive, 'bg-grey-9': !isExpanded(card.id) && $q.dark.isActive }"
+                :class="{
+                  'bg-grey-1': !isExpanded(card.id) && !$q.dark.isActive,
+                  'bg-grey-9': !isExpanded(card.id) && $q.dark.isActive,
+                }"
               >
                 <q-item-section avatar top>
                   <q-avatar size="36px" color="primary" text-color="white">
-                    <span class="text-weight-bold">{{ getInitials(card.fromName || card.fromAddress) }}</span>
+                    <span class="text-weight-bold">{{
+                      getInitials(card.fromName || card.fromAddress)
+                    }}</span>
                   </q-avatar>
                 </q-item-section>
 
                 <q-item-section>
                   <div class="row items-center justify-between no-wrap">
                     <div class="row items-center no-wrap ellipsis col">
-                      <span class="text-weight-bold text-body2 q-mr-xs ellipsis">
+                      <span
+                        class="text-weight-bold text-body2 q-mr-xs ellipsis"
+                      >
                         {{ card.fromName || card.fromAddress }}
                       </span>
-                      <span class="text-caption text-grey-6 ellipsis q-mr-xs" v-if="card.fromName">
+                      <span
+                        class="text-caption text-grey-6 ellipsis q-mr-xs"
+                        v-if="card.fromName"
+                      >
                         &lt;{{ card.fromAddress }}&gt;
                       </span>
                       <q-badge
@@ -133,7 +171,11 @@
                         class="text-caption q-px-xs q-ml-xs"
                         data-testid="dkim-badge"
                       >
-                        <q-icon name="verified_user" size="12px" class="q-mr-xs text-positive" />
+                        <q-icon
+                          name="verified_user"
+                          size="12px"
+                          class="q-mr-xs text-positive"
+                        />
                         DKIM
                       </q-badge>
                     </div>
@@ -143,11 +185,17 @@
                   </div>
 
                   <!-- Collapsed summary preview -->
-                  <div class="row items-center justify-between text-caption text-grey-7 no-wrap" v-if="!isExpanded(card.id)">
+                  <div
+                    class="row items-center justify-between text-caption text-grey-7 no-wrap"
+                    v-if="!isExpanded(card.id)"
+                  >
                     <span class="ellipsis col text-grey-8">
                       {{ card.snippet }}
                     </span>
-                    <span class="col-auto q-ml-sm" v-if="card.attachments && card.attachments.length > 0">
+                    <span
+                      class="col-auto q-ml-sm"
+                      v-if="card.attachments && card.attachments.length > 0"
+                    >
                       <q-icon name="attach_file" size="14px" />
                       {{ card.attachments.length }}
                     </span>
@@ -156,16 +204,24 @@
                   <!-- Expanded Recipient Details -->
                   <div class="text-caption text-grey-6" v-else>
                     <div>
-                      <span class="text-weight-medium">{{ $t('emailThread.to') }}:</span> {{ formatParties(card.to) }}
+                      <span class="text-weight-medium"
+                        >{{ $t('emailThread.to') }}:</span
+                      >
+                      {{ formatParties(card.to) }}
                     </div>
                     <div v-if="card.cc && card.cc.length > 0">
-                      <span class="text-weight-medium">{{ $t('emailThread.cc') }}:</span> {{ formatParties(card.cc) }}
+                      <span class="text-weight-medium"
+                        >{{ $t('emailThread.cc') }}:</span
+                      >
+                      {{ formatParties(card.cc) }}
                     </div>
                   </div>
                 </q-item-section>
 
                 <q-item-section side>
-                  <q-icon :name="isExpanded(card.id) ? 'expand_less' : 'expand_more'" />
+                  <q-icon
+                    :name="isExpanded(card.id) ? 'expand_less' : 'expand_more'"
+                  />
                 </q-item-section>
               </q-item>
 
@@ -184,7 +240,9 @@
                         dense
                         size="sm"
                         color="primary"
-                        :label="isHtmlView(card.id) ? 'Show Plain Text' : 'Show HTML'"
+                        :label="
+                          isHtmlView(card.id) ? 'Show Plain Text' : 'Show HTML'
+                        "
                         :icon="isHtmlView(card.id) ? 'text_fields' : 'html'"
                         data-testid="toggle-html-view"
                         @click="toggleHtmlView(card.id)"
@@ -203,10 +261,19 @@
                     </div>
 
                     <!-- Attachments -->
-                    <div v-if="card.attachments && card.attachments.length > 0" class="q-mt-md">
+                    <div
+                      v-if="card.attachments && card.attachments.length > 0"
+                      class="q-mt-md"
+                    >
                       <q-separator class="q-mb-sm" />
-                      <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">
-                        {{ $t('emailThread.attachmentsCount', { count: card.attachments.length }) }}
+                      <div
+                        class="text-caption text-weight-bold text-grey-7 q-mb-xs"
+                      >
+                        {{
+                          $t('emailThread.attachmentsCount', {
+                            count: card.attachments.length,
+                          })
+                        }}
                       </div>
                       <div class="row q-gutter-sm items-center">
                         <q-chip
@@ -218,8 +285,12 @@
                           clickable
                           class="q-ma-none text-caption"
                         >
-                          <span class="text-weight-medium q-mr-xs">{{ att.filename }}</span>
-                          <span class="text-grey-6">({{ formatBytes(att.sizeBytes) }})</span>
+                          <span class="text-weight-medium q-mr-xs">{{
+                            att.filename
+                          }}</span>
+                          <span class="text-grey-6"
+                            >({{ formatBytes(att.sizeBytes) }})</span
+                          >
                         </q-chip>
                       </div>
                     </div>
@@ -227,7 +298,11 @@
 
                   <!-- Card Action Footer -->
                   <q-separator />
-                  <q-card-actions align="right" class="q-px-md q-py-xs bg-grey-1" :class="{ 'bg-grey-10': $q.dark.isActive }">
+                  <q-card-actions
+                    align="right"
+                    class="q-px-md q-py-xs bg-grey-1"
+                    :class="{ 'bg-grey-10': $q.dark.isActive }"
+                  >
                     <q-btn
                       flat
                       dense
@@ -262,9 +337,15 @@
         class="composer-warning-banner q-mb-sm q-px-sm q-py-xs bg-amber-1 text-amber-10 rounded-borders text-caption row items-center no-wrap"
         data-testid="composer-unverified-warning"
       >
-        <q-icon name="warning" size="16px" class="q-mr-xs text-warning col-auto" />
+        <q-icon
+          name="warning"
+          size="16px"
+          class="q-mr-xs text-warning col-auto"
+        />
         <span class="col">
-          <b>P2P Direct Reply:</b> Replies in this thread are delivered directly to Frank peer <code>{{ peerFrankAddress }}</code> only. External email recipients in To/Cc will not receive replies via MX.
+          <b>P2P Direct Reply:</b> Replies in this thread are delivered directly
+          to Frank peer <code>{{ peerFrankAddress }}</code> only. External email
+          recipients in To/Cc will not receive replies via MX.
         </span>
       </div>
 
@@ -323,7 +404,9 @@
             flat
             dense
             size="sm"
-            :label="showCc ? $t('emailThread.hideCc') : $t('emailThread.showCc')"
+            :label="
+              showCc ? $t('emailThread.hideCc') : $t('emailThread.showCc')
+            "
             color="primary"
             @click="showCc = !showCc"
           />
@@ -335,7 +418,11 @@
 
       <!-- Recipient To Field -->
       <div class="row items-center q-mb-xs">
-        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">{{ $t('emailThread.to') }}:</span>
+        <span
+          class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm"
+          style="width: 32px"
+          >{{ $t('emailThread.to') }}:</span
+        >
         <div class="col row items-center q-gutter-xs">
           <q-chip
             v-for="(addr, idx) in toList"
@@ -364,7 +451,11 @@
 
       <!-- Recipient Cc Field -->
       <div class="row items-center q-mb-xs" v-if="showCc || ccList.length > 0">
-        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">{{ $t('emailThread.cc') }}:</span>
+        <span
+          class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm"
+          style="width: 32px"
+          >{{ $t('emailThread.cc') }}:</span
+        >
         <div class="col row items-center q-gutter-xs">
           <q-chip
             v-for="(addr, idx) in ccList"
@@ -393,7 +484,11 @@
 
       <!-- Subject Field -->
       <div class="row items-center q-mb-sm">
-        <span class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm" style="width: 32px">{{ $t('emailThread.subjectLabel') }}</span>
+        <span
+          class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm"
+          style="width: 32px"
+          >{{ $t('emailThread.subjectLabel') }}</span
+        >
         <q-input
           ref="subjectInputRef"
           v-model="subject"
@@ -420,7 +515,9 @@
           class="q-ma-none text-caption staged-attachment-chip"
         >
           <span class="text-weight-medium q-mr-xs">{{ file.name }}</span>
-          <span class="text-grey-6 q-mr-xs">({{ formatBytes(file.size) }})</span>
+          <span class="text-grey-6 q-mr-xs"
+            >({{ formatBytes(file.size) }})</span
+          >
           <q-btn
             flat
             round
@@ -445,7 +542,11 @@
             :rows="isDraft ? 5 : 3"
             outlined
             dense
-            :placeholder="isDraft ? $t('emailThread.writeMessagePlaceholder') : $t('emailThread.writeReplyPlaceholder')"
+            :placeholder="
+              isDraft
+                ? $t('emailThread.writeMessagePlaceholder')
+                : $t('emailThread.writeReplyPlaceholder')
+            "
             class="email-textarea"
             :disable="sending"
             @keydown.ctrl.enter="handleSend"
@@ -473,10 +574,18 @@
             @click="triggerFileInput"
             data-testid="attach-file-btn"
           >
-            <q-tooltip>{{ $t('emailThread.attachFiles', 'Attach files') }}</q-tooltip>
+            <q-tooltip>{{
+              $t('emailThread.attachFiles', 'Attach files')
+            }}</q-tooltip>
           </q-btn>
           <q-btn
-            :color="isVerifiedGateway ? 'primary' : replyRouting === 'gateway' ? 'secondary' : 'warning'"
+            :color="
+              isVerifiedGateway
+                ? 'primary'
+                : replyRouting === 'gateway'
+                ? 'secondary'
+                : 'warning'
+            "
             icon="send"
             :label="sendButtonLabel"
             :loading="sending"
@@ -496,7 +605,12 @@
 <script lang="ts">
 import { defineComponent, type PropType, ref } from 'vue'
 import type { Conversation, ChatMessage } from 'src/stores/chats'
-import type { EmailItem, EmailParty, EmailAttachment, MessageItem } from '@frank/cashweb/types/messages'
+import type {
+  EmailItem,
+  EmailParty,
+  EmailAttachment,
+  MessageItem,
+} from '@frank/cashweb/types/messages'
 import { formatConversationTimestamp } from 'src/utils/formatting'
 import { defaultEmailGatewayAddress } from 'src/utils/constants'
 import { purify } from 'src/utils/markdown'
@@ -607,7 +721,9 @@ export default defineComponent({
     parsedEmails(): ParsedEmailCard[] {
       const cards: ParsedEmailCard[] = []
       for (const msg of this.messages) {
-        const emailItem = msg.items?.find(it => it.type === 'email') as EmailItem | undefined
+        const emailItem = msg.items?.find(it => it.type === 'email') as
+          | EmailItem
+          | undefined
         const timestamp = msg.serverTime || msg.receivedTime || Date.now()
         const formattedDate = formatConversationTimestamp(timestamp)
 
@@ -637,7 +753,9 @@ export default defineComponent({
           })
         } else {
           // Plain message fallback card
-          const textItem = msg.items?.find(it => it.type === 'text') as { text?: string } | undefined
+          const textItem = msg.items?.find(it => it.type === 'text') as
+            | { text?: string }
+            | undefined
           const text = textItem?.text || ''
           const snippet = text.replace(/\s+/g, ' ').slice(0, 100)
 
@@ -845,7 +963,10 @@ export default defineComponent({
         ? [card.rawEmail.messageId]
         : undefined
     },
-    populateRecipientsForCard(card: ParsedEmailCard, mode: 'reply' | 'reply_all') {
+    populateRecipientsForCard(
+      card: ParsedEmailCard,
+      mode: 'reply' | 'reply_all',
+    ) {
       const fromAddr = card.fromAddress
 
       if (mode === 'reply') {
@@ -859,7 +980,10 @@ export default defineComponent({
         // Add remaining 'To' recipients (excluding sender)
         if (card.to) {
           for (const t of card.to) {
-            if (t.address && t.address.toLowerCase() !== fromAddr.toLowerCase()) {
+            if (
+              t.address &&
+              t.address.toLowerCase() !== fromAddr.toLowerCase()
+            ) {
               if (!ccs.includes(t.address)) ccs.push(t.address)
             }
           }
@@ -867,7 +991,10 @@ export default defineComponent({
         // Add 'Cc' recipients
         if (card.cc) {
           for (const c of card.cc) {
-            if (c.address && c.address.toLowerCase() !== fromAddr.toLowerCase()) {
+            if (
+              c.address &&
+              c.address.toLowerCase() !== fromAddr.toLowerCase()
+            ) {
               if (!ccs.includes(c.address)) ccs.push(c.address)
             }
           }
@@ -971,7 +1098,9 @@ export default defineComponent({
                 binary += String.fromCharCode(bytes[i])
               }
               resolve(
-                `data:${file.type || 'application/octet-stream'};base64,${btoa(binary)}`,
+                `data:${file.type || 'application/octet-stream'};base64,${btoa(
+                  binary,
+                )}`,
               )
             })
             .catch(reject)
@@ -987,8 +1116,12 @@ export default defineComponent({
       if (this.newToInput.trim()) this.addToRecipient()
       if (this.newCcInput.trim()) this.addCcRecipient()
 
-      const toParties: EmailParty[] = this.toList.map(addr => ({ address: addr }))
-      const ccParties: EmailParty[] = this.ccList.map(addr => ({ address: addr }))
+      const toParties: EmailParty[] = this.toList.map(addr => ({
+        address: addr,
+      }))
+      const ccParties: EmailParty[] = this.ccList.map(addr => ({
+        address: addr,
+      }))
 
       let attachments: EmailAttachment[] | undefined
       if (this.stagedFiles.length > 0) {
@@ -1006,10 +1139,13 @@ export default defineComponent({
         )
       }
 
-      const emailSubject = this.subject || (this.isDraft ? 'No Subject' : this.threadSubject)
+      const emailSubject =
+        this.subject || (this.isDraft ? 'No Subject' : this.threadSubject)
       const emailItem: EmailItem = {
         type: 'email',
-        messageId: `<frank_${Date.now()}_${Math.random().toString(36).slice(2, 9)}@frank.org>`,
+        messageId: `<frank_${Date.now()}_${Math.random()
+          .toString(36)
+          .slice(2, 9)}@frank.org>`,
         from: { address: 'me' },
         to: toParties,
         cc: ccParties.length > 0 ? ccParties : undefined,
@@ -1028,7 +1164,9 @@ export default defineComponent({
           : undefined
 
       const fallbackText = isGatewayRoute
-        ? `[Email to ${this.toList.join(', ')}]\nSubject: ${emailSubject}\n\n${this.replyText}`
+        ? `[Email to ${this.toList.join(', ')}]\nSubject: ${emailSubject}\n\n${
+            this.replyText
+          }`
         : `[Direct P2P Email to ${this.peerFrankAddress} (external email recipients not notified)]\nSubject: ${emailSubject}\n\n${this.replyText}`
 
       const items: MessageItem[] = [

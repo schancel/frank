@@ -157,4 +157,3 @@ describe('ChatList compose email action', () => {
     expect(mockPush).toHaveBeenCalledWith('/add-contact?compose=email')
   })
 })
-

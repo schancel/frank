@@ -96,19 +96,34 @@ describe('EmailThreadView', () => {
         },
         stubs: {
           'q-page': { template: '<div class="q-page"><slot /></div>' },
-          'q-scroll-area': { template: '<div class="q-scroll-area"><slot /></div>' },
-          'q-banner': { template: '<div class="q-banner"><slot name="avatar" /><slot /></div>' },
+          'q-scroll-area': {
+            template: '<div class="q-scroll-area"><slot /></div>',
+          },
+          'q-banner': {
+            template:
+              '<div class="q-banner"><slot name="avatar" /><slot /></div>',
+          },
           'q-card': { template: '<div class="q-card"><slot /></div>' },
-          'q-card-section': { template: '<div class="q-card-section"><slot /></div>' },
-          'q-card-actions': { template: '<div class="q-card-actions"><slot /></div>' },
-          'q-item': { template: '<div class="q-item" @click="$emit(\'click\')"><slot /></div>' },
-          'q-item-section': { template: '<div class="q-item-section"><slot /></div>' },
+          'q-card-section': {
+            template: '<div class="q-card-section"><slot /></div>',
+          },
+          'q-card-actions': {
+            template: '<div class="q-card-actions"><slot /></div>',
+          },
+          'q-item': {
+            template:
+              '<div class="q-item" @click="$emit(\'click\')"><slot /></div>',
+          },
+          'q-item-section': {
+            template: '<div class="q-item-section"><slot /></div>',
+          },
           'q-avatar': { template: '<div class="q-avatar"><slot /></div>' },
           'q-badge': { template: '<span class="q-badge"><slot /></span>' },
           'q-btn': {
             props: ['label'],
             emits: ['click'],
-            template: '<button class="q-btn" @click="$emit(\'click\', $event)"><slot>{{ label }}</slot></button>',
+            template:
+              '<button class="q-btn" @click="$emit(\'click\', $event)"><slot>{{ label }}</slot></button>',
           },
           'q-btn-toggle': { template: '<div class="q-btn-toggle" />' },
           'q-chip': { template: '<div class="q-chip"><slot /></div>' },
@@ -116,7 +131,9 @@ describe('EmailThreadView', () => {
           'q-separator': { template: '<hr />' },
           'q-icon': { template: '<i class="q-icon" />' },
           'q-tooltip': { template: '<span class="q-tooltip"><slot /></span>' },
-          'q-slide-transition': { template: '<div class="q-slide-transition"><slot /></div>' },
+          'q-slide-transition': {
+            template: '<div class="q-slide-transition"><slot /></div>',
+          },
         },
       },
     })
@@ -151,7 +168,11 @@ describe('EmailThreadView', () => {
     // msg2 has from: bob, to: [me, alice], cc: [carol] -> multi-party
     expect(vm.replyMode).toBe('reply_all')
     expect(vm.toList).toEqual(['bob@example.com'])
-    expect(vm.ccList).toEqual(['me@frank.org', 'alice@example.com', 'carol@example.com'])
+    expect(vm.ccList).toEqual([
+      'me@frank.org',
+      'alice@example.com',
+      'carol@example.com',
+    ])
     expect(vm.subject).toBe('Re: Project Kickoff')
   })
 
@@ -242,10 +263,18 @@ describe('EmailThreadView', () => {
       const vm = wrapper.vm as any
 
       expect(vm.isVerifiedGateway).toBe(true)
-      expect(wrapper.find('[data-testid="email-gateway-badge"]').exists()).toBe(true)
-      expect(wrapper.find('[data-testid="unverified-p2p-badge"]').exists()).toBe(false)
-      expect(wrapper.find('[data-testid="unverified-peer-warning-banner"]').exists()).toBe(false)
-      expect(wrapper.find('[data-testid="composer-unverified-warning"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="email-gateway-badge"]').exists()).toBe(
+        true,
+      )
+      expect(
+        wrapper.find('[data-testid="unverified-p2p-badge"]').exists(),
+      ).toBe(false)
+      expect(
+        wrapper.find('[data-testid="unverified-peer-warning-banner"]').exists(),
+      ).toBe(false)
+      expect(
+        wrapper.find('[data-testid="composer-unverified-warning"]').exists(),
+      ).toBe(false)
       expect(vm.sendButtonLabel).toBe('Send')
     })
 
@@ -259,14 +288,22 @@ describe('EmailThreadView', () => {
 
       expect(vm.isVerifiedGateway).toBe(false)
       // Gateway badge must be suppressed
-      expect(wrapper.find('[data-testid="email-gateway-badge"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="email-gateway-badge"]').exists()).toBe(
+        false,
+      )
       // Unverified badge must be shown
-      const unverifiedBadge = wrapper.find('[data-testid="unverified-p2p-badge"]')
+      const unverifiedBadge = wrapper.find(
+        '[data-testid="unverified-p2p-badge"]',
+      )
       expect(unverifiedBadge.exists()).toBe(true)
-      expect(unverifiedBadge.text()).toContain('⚠️ Direct P2P Email (Unverified)')
+      expect(unverifiedBadge.text()).toContain(
+        '⚠️ Direct P2P Email (Unverified)',
+      )
 
       // Warning banner must be prominently shown with the exact required wording
-      const banner = wrapper.find('[data-testid="unverified-peer-warning-banner"]')
+      const banner = wrapper.find(
+        '[data-testid="unverified-peer-warning-banner"]',
+      )
       expect(banner.exists()).toBe(true)
       expect(banner.text()).toContain(
         `⚠️ Direct Peer Email Frame: This message was sent directly by Frank user ${peerAddress} (not an Email Gateway). External email recipients will not receive replies.`,
@@ -291,7 +328,9 @@ describe('EmailThreadView', () => {
       const vm = wrapper.vm as any
 
       // Composer notice is visible
-      const composerWarning = wrapper.find('[data-testid="composer-unverified-warning"]')
+      const composerWarning = wrapper.find(
+        '[data-testid="composer-unverified-warning"]',
+      )
       expect(composerWarning.exists()).toBe(true)
       expect(composerWarning.text()).toContain('P2P Direct Reply')
       expect(composerWarning.text()).toContain(peerAddress)
@@ -316,8 +355,12 @@ describe('EmailThreadView', () => {
         fallbackText: string
         targetAddress?: string
       }
-      expect(emitted.fallbackText).toContain('[Direct P2P Email to ' + peerAddress)
-      expect(emitted.fallbackText).toContain('(external email recipients not notified)')
+      expect(emitted.fallbackText).toContain(
+        '[Direct P2P Email to ' + peerAddress,
+      )
+      expect(emitted.fallbackText).toContain(
+        '(external email recipients not notified)',
+      )
       expect(emitted.targetAddress).toBeUndefined()
     })
 
@@ -332,7 +375,9 @@ describe('EmailThreadView', () => {
       // Switch routing to gateway
       vm.replyRouting = 'gateway'
       expect(vm.sendButtonLabel).toBe('Bridge via Gateway')
-      expect(vm.sendButtonTooltip).toContain('Route through Frank Email Gateway')
+      expect(vm.sendButtonTooltip).toContain(
+        'Route through Frank Email Gateway',
+      )
 
       vm.replyText = 'Sending via gateway instead.'
       vm.handleSend()
@@ -343,7 +388,9 @@ describe('EmailThreadView', () => {
         targetAddress?: string
       }
       expect(emitted.fallbackText).toContain('[Email to ')
-      expect(emitted.targetAddress).toBe('0x1111111111111111111111111111111111111111')
+      expect(emitted.targetAddress).toBe(
+        '0x1111111111111111111111111111111111111111',
+      )
     })
 
     it('initializes in draft mode with prefilled recipient when messages are empty (0-message state)', () => {
@@ -361,7 +408,9 @@ describe('EmailThreadView', () => {
       const vm = wrapper.vm as any
 
       expect(vm.isDraft).toBe(true)
-      expect(wrapper.find('[data-testid="email-draft-placeholder"]').exists()).toBe(true)
+      expect(
+        wrapper.find('[data-testid="email-draft-placeholder"]').exists(),
+      ).toBe(true)
       expect(vm.toList).toEqual(['charlie@example.com'])
       expect(vm.replyMode).toBe('reply')
     })
@@ -391,20 +440,27 @@ describe('EmailThreadView', () => {
       const emittedCalls = wrapper.emitted('sendReply')!
       expect(emittedCalls.length).toBe(1)
 
-      const payload = emittedCalls[0][0] as { items: any[]; fallbackText: string }
+      const payload = emittedCalls[0][0] as {
+        items: any[]
+        fallbackText: string
+      }
       expect(payload.items.length).toBe(2)
 
       const emailItem = payload.items.find(i => i.type === 'email')
       expect(emailItem).toBeDefined()
       expect(emailItem.to).toEqual([{ address: 'charlie@example.com' }])
       expect(emailItem.subject).toBe('Meeting Tomorrow')
-      expect(emailItem.textBody).toBe('Hi Charlie, let us meet tomorrow at 10am.')
+      expect(emailItem.textBody).toBe(
+        'Hi Charlie, let us meet tomorrow at 10am.',
+      )
       expect(emailItem.inReplyTo).toBeUndefined()
 
       const textItem = payload.items.find(i => i.type === 'text')
       expect(textItem).toBeDefined()
       expect(textItem.text).toContain('Meeting Tomorrow')
-      expect(textItem.text).toContain('Hi Charlie, let us meet tomorrow at 10am.')
+      expect(textItem.text).toContain(
+        'Hi Charlie, let us meet tomorrow at 10am.',
+      )
     })
 
     describe('Outbound Attachments in Composer', () => {
@@ -423,7 +479,9 @@ describe('EmailThreadView', () => {
         const vm = wrapper.vm as any
 
         // Initially no staged files
-        expect(wrapper.find('[data-testid="staged-attachments-container"]').exists()).toBe(false)
+        expect(
+          wrapper.find('[data-testid="staged-attachments-container"]').exists(),
+        ).toBe(false)
 
         // Simulate file selection
         const fakeFile1 = new File(['file contents 1'], 'test-document.pdf', {
@@ -442,7 +500,9 @@ describe('EmailThreadView', () => {
         await wrapper.vm.$nextTick()
 
         expect(vm.stagedFiles.length).toBe(2)
-        const container = wrapper.find('[data-testid="staged-attachments-container"]')
+        const container = wrapper.find(
+          '[data-testid="staged-attachments-container"]',
+        )
         expect(container.exists()).toBe(true)
 
         const chips = wrapper.findAll('.staged-attachment-chip')
@@ -453,7 +513,9 @@ describe('EmailThreadView', () => {
         expect(chips[1].text()).toContain('1 MB')
 
         // Remove the first attachment via remove button
-        const removeButtons = wrapper.findAll('[data-testid="remove-attachment-btn"]')
+        const removeButtons = wrapper.findAll(
+          '[data-testid="remove-attachment-btn"]',
+        )
         expect(removeButtons.length).toBe(2)
         await removeButtons[0].trigger('click')
 
@@ -474,7 +536,9 @@ describe('EmailThreadView', () => {
         vm.stagedFiles = [fakeFile]
         vm.replyText = 'Please see the attached notes.'
 
-        jest.spyOn(vm, 'readFileAsBase64').mockResolvedValue('data:text/plain;base64,SGVsbG8=')
+        jest
+          .spyOn(vm, 'readFileAsBase64')
+          .mockResolvedValue('data:text/plain;base64,SGVsbG8=')
 
         await vm.handleSend()
 
@@ -510,7 +574,8 @@ describe('EmailThreadView', () => {
           to: [{ address: 'me@frank.org' }],
           subject: 'Weekly Digest',
           textBody: 'Plain text version of weekly digest.',
-          htmlBody: '<h1>Weekly Digest</h1><p>Welcome to <b>Frank</b>!</p><script>alert("evil")</script>',
+          htmlBody:
+            '<h1>Weekly Digest</h1><p>Welcome to <b>Frank</b>!</p><script>alert("evil")</script>',
         }
 
         const msgWithHtml: ChatMessage = {
@@ -538,7 +603,9 @@ describe('EmailThreadView', () => {
 
         // Plain text should be displayed initially, no iframe
         expect(wrapper.find('iframe.email-html-frame').exists()).toBe(false)
-        expect(wrapper.find('.email-body-text').text()).toContain('Plain text version of weekly digest.')
+        expect(wrapper.find('.email-body-text').text()).toContain(
+          'Plain text version of weekly digest.',
+        )
 
         // Click toggle to switch to HTML view
         await toggleBtn.trigger('click')

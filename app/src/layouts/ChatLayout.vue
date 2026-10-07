@@ -65,7 +65,9 @@
             :aria-expanded="myDrawerOpen"
           />
           <q-avatar rounded :style="contactColorStyle">
-            <img :src="profileAvatar(presentedAvatar, effectiveAddress || address)" />
+            <img
+              :src="profileAvatar(presentedAvatar, effectiveAddress || address)"
+            />
           </q-avatar>
           <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
             contactName
@@ -290,7 +292,10 @@ export default defineComponent({
       if (!this.address) return null
       try {
         const chatStore = useChatStore()
-        if (chatStore.conversations && this.address in chatStore.conversations) {
+        if (
+          chatStore.conversations &&
+          this.address in chatStore.conversations
+        ) {
           return chatStore.conversations[this.address] ?? null
         }
         if (chatStore.chats && this.address in chatStore.chats) {
@@ -304,12 +309,15 @@ export default defineComponent({
     effectiveAddress(): string {
       const conv = this.activeConversation
       if (conv?.address) return conv.address
-      if (conv?.participants && conv.participants.length > 0) return conv.participants[0]
+      if (conv?.participants && conv.participants.length > 0)
+        return conv.participants[0]
       return this.address
     },
     contactProfile() {
       const addr = this.effectiveAddress
-      return addr && isChainAddress(addr) ? this.getContact(addr)?.profile : undefined
+      return addr && isChainAddress(addr)
+        ? this.getContact(addr)?.profile
+        : undefined
     },
     contactName(): string {
       if (!this.address) {

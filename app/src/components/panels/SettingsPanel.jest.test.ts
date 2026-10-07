@@ -57,7 +57,10 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     }
     const wrapper = shallowMount(SettingsPanel, {
       global: {
-        mocks: { $t: (key: string, fallback?: string) => fallback || key, $router: router },
+        mocks: {
+          $t: (key: string, fallback?: string) => fallback || key,
+          $router: router,
+        },
         stubs: {
           QDialog: true,
           Codex32BackupDialog: true,
@@ -71,12 +74,14 @@ describe('SettingsPanel wallet-action split (#399)', () => {
           QInput: {
             props: ['modelValue', 'error', 'errorMessage'],
             emits: ['update:modelValue'],
-            template: '<input v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+            template:
+              '<input v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
           },
           QBtn: {
             props: ['label'],
             emits: ['click'],
-            template: '<button v-bind="$attrs" @click="$emit(\'click\', $event)"><slot>{{ label }}</slot></button>',
+            template:
+              '<button v-bind="$attrs" @click="$emit(\'click\', $event)"><slot>{{ label }}</slot></button>',
           },
         },
         directives: { ripple: {} },
@@ -178,7 +183,9 @@ describe('SettingsPanel wallet-action split (#399)', () => {
       const { wrapper } = mountPanel()
       const input = wrapper.find('[data-test="email-gateway-input"]')
       expect(input.exists()).toBe(true)
-      expect((input.element as HTMLInputElement).value).toBe(defaultEmailGatewayAddress)
+      expect((input.element as HTMLInputElement).value).toBe(
+        defaultEmailGatewayAddress,
+      )
       wrapper.unmount()
     })
 
@@ -212,7 +219,9 @@ describe('SettingsPanel wallet-action split (#399)', () => {
 
       expect(settingsStore.emailGatewayAddress).toBe(originalAddress)
       expect((wrapper.vm as any).emailGatewayError).toBeTruthy()
-      expect(wrapper.find('[data-test="email-gateway-error"]').text()).toContain('Invalid Ethereum address')
+      expect(
+        wrapper.find('[data-test="email-gateway-error"]').text(),
+      ).toContain('Invalid Ethereum address')
       wrapper.unmount()
     })
 
@@ -224,7 +233,9 @@ describe('SettingsPanel wallet-action split (#399)', () => {
 
       const input = wrapper.find('[data-test="email-gateway-input"]')
       await input.setValue(customAddr)
-      await wrapper.find('[data-test="save-email-gateway-btn"]').trigger('click')
+      await wrapper
+        .find('[data-test="save-email-gateway-btn"]')
+        .trigger('click')
       expect(settingsStore.emailGatewayAddress).toBe(customAddr)
 
       const resetBtn = wrapper.find('[data-test="reset-email-gateway-btn"]')
@@ -232,7 +243,9 @@ describe('SettingsPanel wallet-action split (#399)', () => {
       await resetBtn.trigger('click')
 
       expect(settingsStore.emailGatewayAddress).toBe(defaultEmailGatewayAddress)
-      expect((input.element as HTMLInputElement).value).toBe(defaultEmailGatewayAddress)
+      expect((input.element as HTMLInputElement).value).toBe(
+        defaultEmailGatewayAddress,
+      )
       wrapper.unmount()
     })
   })

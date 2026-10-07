@@ -2408,4 +2408,3 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 })
-

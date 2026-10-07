@@ -130,7 +130,9 @@
             <q-spinner size="24px" color="primary" />
           </q-item-section>
           <q-item-section>
-            <q-item-label caption>{{ $t('newContactDialog.loading') }}</q-item-label>
+            <q-item-label caption>{{
+              $t('newContactDialog.loading')
+            }}</q-item-label>
           </q-item-section>
         </q-item>
 
@@ -160,7 +162,12 @@
             <q-item-section class="col" style="min-width: 0">
               <div class="row items-center no-wrap">
                 <q-item-label lines="1" class="text-weight-medium ellipsis">
-                  {{ res.name || (res.username ? `@${res.username}` : formatAddrCompact(res.address)) }}
+                  {{
+                    res.name ||
+                    (res.username
+                      ? `@${res.username}`
+                      : formatAddrCompact(res.address))
+                  }}
                 </q-item-label>
                 <q-badge
                   v-if="res.bot"
@@ -172,7 +179,8 @@
                 />
               </div>
               <q-item-label caption lines="1" class="ellipsis">
-                <span v-if="res.username">@{{ res.username }} • </span>{{ formatAddrCompact(res.address) }}
+                <span v-if="res.username">@{{ res.username }} • </span
+                >{{ formatAddrCompact(res.address) }}
               </q-item-label>
             </q-item-section>
             <q-item-section side style="padding-left: 4px">
@@ -203,7 +211,13 @@
           </q-item>
         </template>
 
-        <q-item v-if="filteredContacts.length === 0 && networkResults.length === 0 && !isSearchingNetwork">
+        <q-item
+          v-if="
+            filteredContacts.length === 0 &&
+            networkResults.length === 0 &&
+            !isSearchingNetwork
+          "
+        >
           <q-item-section class="text-grey text-center q-pa-md">
             {{
               search
@@ -219,20 +233,35 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, inject, onBeforeUnmount, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  inject,
+  onBeforeUnmount,
+  ref,
+  watch,
+} from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useQuasar } from 'quasar'
 
-import { useContactStore, ContactState, pendingRelayData } from 'src/stores/contacts'
+import {
+  useContactStore,
+  ContactState,
+  pendingRelayData,
+} from 'src/stores/contacts'
 import { profileAvatar } from 'src/utils/avatar'
 import { activeChain } from '@frank/wallet/chain'
 import { openChat, openContactProfile, openPage } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
 import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
 import { isOwnAddress } from 'src/utils/own-address'
-import { searchMonadProfiles, decodeProfileBytes } from '@frank/wallet/monad-identity'
+import {
+  searchMonadProfiles,
+  decodeProfileBytes,
+} from '@frank/wallet/monad-identity'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
+import { fromHex } from '@frank/codec'
 import axios from 'axios'
 
 interface NetworkSearchResult {
@@ -350,7 +379,10 @@ export default defineComponent({
           ]
 
           if (/^[a-z0-9][a-z0-9_-]{2,31}$/i.test(cleanQ)) {
-            const userUrl = `${relayBaseUrl.replace(/\/+$/, '')}/directory/user/${cleanQ.toLowerCase()}`
+            const userUrl = `${relayBaseUrl.replace(
+              /\/+$/,
+              '',
+            )}/directory/user/${cleanQ.toLowerCase()}`
             searchPromises.push(
               axios
                 .get(userUrl)
@@ -362,7 +394,11 @@ export default defineComponent({
           const [entries, userLookup] = await Promise.all(searchPromises)
           const allEntries: any[] = [...(entries || [])]
 
-          if (userLookup && userLookup.status === 'active' && userLookup.address) {
+          if (
+            userLookup &&
+            userLookup.status === 'active' &&
+            userLookup.address
+          ) {
             const userAddr = userLookup.address
             const alreadyHas = allEntries.some(
               (e: any) => e.address.toLowerCase() === userAddr.toLowerCase(),
@@ -371,7 +407,7 @@ export default defineComponent({
               let rawBytes: Uint8Array = new Uint8Array()
               if (userLookup.entry?.raw_hex) {
                 try {
-                  rawBytes = Uint8Array.from(Buffer.from(userLookup.entry.raw_hex, 'hex'))
+                  rawBytes = fromHex(userLookup.entry.raw_hex)
                 } catch {
                   // Ignore
                 }

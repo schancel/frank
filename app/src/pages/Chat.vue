@@ -78,7 +78,12 @@
         />
       </q-page>
     </q-page-container>
-    <q-footer v-if="!isEmailThread" bordered :height-hint="64" class="chat-footer chat-input-bar">
+    <q-footer
+      v-if="!isEmailThread"
+      bordered
+      :height-hint="64"
+      class="chat-footer chat-input-bar"
+    >
       <div v-if="!!replyDigest" class="q-px-md q-pt-sm" ref="replyBox">
         <!-- Reply box -->
         <div class="row justify-end">
@@ -196,7 +201,7 @@ import {
   activeChain,
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
-import { MessageItem } from '@frank/cashweb/types/messages'
+import type { MessageItem, EmailItem } from '@frank/cashweb/types/messages'
 
 import { debounce, QScrollArea } from 'quasar'
 
@@ -617,9 +622,9 @@ export default defineComponent({
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })
-        const emailItem = payload.items.find(
-          it => it.type === 'email',
-        ) as EmailItem | undefined
+        const emailItem = payload.items.find(it => it.type === 'email') as
+          | EmailItem
+          | undefined
         if (
           this.conversation &&
           emailItem?.subject &&
@@ -998,9 +1003,7 @@ export default defineComponent({
       if (this.conversation?.kind === 'email') {
         return true
       }
-      return this.messages.some(m =>
-        m.items?.some(i => i.type === 'email'),
-      )
+      return this.messages.some(m => m.items?.some(i => i.type === 'email'))
     },
     bannerClearanceStyle(): { paddingTop: string } | undefined {
       return this.bannerClearance > 0

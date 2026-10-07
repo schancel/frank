@@ -140,7 +140,10 @@ function productionDeps(): MessagingDeps {
               serializeCheckpoint(checkpoint),
             )
           } catch (e) {
-            console.warn('[monad-identity-session] Failed to save checkpoint:', e)
+            console.warn(
+              '[monad-identity-session] Failed to save checkpoint:',
+              e,
+            )
           }
         },
       },

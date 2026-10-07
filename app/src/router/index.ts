@@ -31,9 +31,11 @@ async function ensureChatState(address?: string) {
     }
     if (isChainAddress(address)) {
       const contactsStore = useContactStore()
-      void contactsStore.fetchAndAddContact({ address, contact: {} }).catch(err => {
-        console.debug('fetchAndAddContact suppressed error:', err)
-      })
+      void contactsStore
+        .fetchAndAddContact({ address, contact: {} })
+        .catch(err => {
+          console.debug('fetchAndAddContact suppressed error:', err)
+        })
     }
     if (typeof chatStore.setActiveConversation === 'function') {
       chatStore.setActiveConversation(address)

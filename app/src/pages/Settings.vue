@@ -23,131 +23,131 @@
         />
       </q-toolbar>
     </q-header>
-  <q-page-container>
-    <q-page class="q-ma-none q-pa-none column full-height">
-      <q-card flat class="col column full-width full-height bg-transparent">
-        <q-splitter
-          :model-value="120"
-          unit="px"
-          disable
-          class="col full-height"
-        >
-          <template #before>
-            <q-tabs v-model="tab" vertical class="text-primary">
-              <q-tab
-                name="networking"
-                icon="cloud"
-                :label="$t('settings.networking')"
-              />
-              <q-tab
-                name="appearance"
-                icon="color_lens"
-                :label="$t('settings.appearance')"
-              />
-              <q-tab
-                name="storage"
-                icon="save"
-                :label="$t('persistentStorage.tab')"
-              />
-            </q-tabs>
-          </template>
-          <template #after>
-            <q-tab-panels
-              v-model="tab"
-              animated
-              swipeable
-              vertical
-              transition-prev="jump-up"
-              transition-next="jump-up"
-            >
-              <q-tab-panel name="networking">
-                <div class="row">
-                  <q-input
-                    outlined
-                    v-model="updateInterval"
-                    :label="$t('settings.contactRefreshInterval')"
-                    type="number"
-                    :hint="$t('settings.contactRefreshIntervalHint')"
-                    style="width: 100%"
-                    ref="contactRefreshInterval"
-                  />
-                </div>
-              </q-tab-panel>
-              <q-tab-panel name="appearance">
-                <div class="row items-center q-mb-md">
-                  <q-toggle
-                    :label="$t('settings.darkMode')"
-                    v-model="darkMode"
-                  />
-                </div>
-                <div class="q-mb-lg">
-                  <div class="text-subtitle2 q-mb-sm">
-                    {{ $t('settings.themeTitle') }}
+    <q-page-container>
+      <q-page class="q-ma-none q-pa-none column full-height">
+        <q-card flat class="col column full-width full-height bg-transparent">
+          <q-splitter
+            :model-value="120"
+            unit="px"
+            disable
+            class="col full-height"
+          >
+            <template #before>
+              <q-tabs v-model="tab" vertical class="text-primary">
+                <q-tab
+                  name="networking"
+                  icon="cloud"
+                  :label="$t('settings.networking')"
+                />
+                <q-tab
+                  name="appearance"
+                  icon="color_lens"
+                  :label="$t('settings.appearance')"
+                />
+                <q-tab
+                  name="storage"
+                  icon="save"
+                  :label="$t('persistentStorage.tab')"
+                />
+              </q-tabs>
+            </template>
+            <template #after>
+              <q-tab-panels
+                v-model="tab"
+                animated
+                swipeable
+                vertical
+                transition-prev="jump-up"
+                transition-next="jump-up"
+              >
+                <q-tab-panel name="networking">
+                  <div class="row">
+                    <q-input
+                      outlined
+                      v-model="updateInterval"
+                      :label="$t('settings.contactRefreshInterval')"
+                      type="number"
+                      :hint="$t('settings.contactRefreshIntervalHint')"
+                      style="width: 100%"
+                      ref="contactRefreshInterval"
+                    />
                   </div>
-                  <div class="row q-gutter-sm">
-                    <q-chip
-                      v-for="stone in themeOptions"
-                      :key="stone.id"
-                      clickable
-                      :selected="theme === stone.id"
-                      @click="selectTheme(stone.id)"
-                      outline
-                      :color="theme === stone.id ? 'primary' : ''"
-                      class="cursor-pointer"
-                    >
-                      <q-avatar
-                        :style="{ backgroundColor: stone.stoneColor }"
-                        size="18px"
-                        class="q-mr-xs"
-                      />
-                      <span>{{ stone.label }}</span>
-                    </q-chip>
+                </q-tab-panel>
+                <q-tab-panel name="appearance">
+                  <div class="row items-center q-mb-md">
+                    <q-toggle
+                      :label="$t('settings.darkMode')"
+                      v-model="darkMode"
+                    />
                   </div>
-                  <div class="text-caption text-grey q-mt-xs">
-                    {{ selectedThemeDescription }}
+                  <div class="q-mb-lg">
+                    <div class="text-subtitle2 q-mb-sm">
+                      {{ $t('settings.themeTitle') }}
+                    </div>
+                    <div class="row q-gutter-sm">
+                      <q-chip
+                        v-for="stone in themeOptions"
+                        :key="stone.id"
+                        clickable
+                        :selected="theme === stone.id"
+                        @click="selectTheme(stone.id)"
+                        outline
+                        :color="theme === stone.id ? 'primary' : ''"
+                        class="cursor-pointer"
+                      >
+                        <q-avatar
+                          :style="{ backgroundColor: stone.stoneColor }"
+                          size="18px"
+                          class="q-mr-xs"
+                        />
+                        <span>{{ stone.label }}</span>
+                      </q-chip>
+                    </div>
+                    <div class="text-caption text-grey q-mt-xs">
+                      {{ selectedThemeDescription }}
+                    </div>
                   </div>
-                </div>
-                <div class="row">
-                  <q-select
-                    v-model="locale"
-                    :options="localeOptions"
-                    :label="$t('settings.languageSelectorCaption')"
-                    dense
-                    borderless
-                    emit-value
-                    map-options
-                    options-dense
-                    style="min-width: 150px"
-                  />
-                </div>
-              </q-tab-panel>
-              <q-tab-panel name="storage">
-                <persistent-storage-panel />
-              </q-tab-panel>
-            </q-tab-panels>
-          </template>
-        </q-splitter>
-        <q-separator />
-        <q-card-actions align="right" class="q-pa-md bg-transparent">
-          <q-btn
-            @click="cancel"
-            :label="$t('settings.cancelSettings')"
-            color="negative"
-            flat
-            no-caps
-            class="q-mr-sm"
-          />
-          <q-btn
-            @click="save"
-            :label="$t('settings.saveSettings')"
-            color="primary"
-            unelevated
-            no-caps
-          />
-        </q-card-actions>
-      </q-card>
-    </q-page>
-  </q-page-container>
+                  <div class="row">
+                    <q-select
+                      v-model="locale"
+                      :options="localeOptions"
+                      :label="$t('settings.languageSelectorCaption')"
+                      dense
+                      borderless
+                      emit-value
+                      map-options
+                      options-dense
+                      style="min-width: 150px"
+                    />
+                  </div>
+                </q-tab-panel>
+                <q-tab-panel name="storage">
+                  <persistent-storage-panel />
+                </q-tab-panel>
+              </q-tab-panels>
+            </template>
+          </q-splitter>
+          <q-separator />
+          <q-card-actions align="right" class="q-pa-md bg-transparent">
+            <q-btn
+              @click="cancel"
+              :label="$t('settings.cancelSettings')"
+              color="negative"
+              flat
+              no-caps
+              class="q-mr-sm"
+            />
+            <q-btn
+              @click="save"
+              :label="$t('settings.saveSettings')"
+              color="primary"
+              unelevated
+              no-caps
+            />
+          </q-card-actions>
+        </q-card>
+      </q-page>
+    </q-page-container>
   </div>
 </template>
 

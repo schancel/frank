@@ -318,7 +318,8 @@ impl Registry {
         address: [u8; 20],
         now: i64,
     ) -> std::result::Result<(), crate::store::directory_usernames::UsernameError> {
-        self.directory_usernames().register_username(username, address, now)
+        self.directory_usernames()
+            .register_username(username, address, now)
     }
 
     /// Tombstone a username with cooldown duration.

@@ -391,7 +391,10 @@ test('wiping local storage while IndexedDB holds records triggers automated rebu
   await configureMessagingForTest(d.deps)
   mockStatus.status = 'ready'
   await initializeMonadIdentity()
-  await until(() => messagingState.status === 'ready', 'initial messaging ready')
+  await until(
+    () => messagingState.status === 'ready',
+    'initial messaging ready',
+  )
 
   // Stop messaging
   mockStatus.status = 'loading'
@@ -403,7 +406,10 @@ test('wiping local storage while IndexedDB holds records triggers automated rebu
   // Restart messaging - must automatically rebuild without getting stuck in storage error
   mockStatus.status = 'ready'
   await initializeMonadIdentity()
-  await until(() => messagingState.status === 'ready', 'rebuilt messaging ready')
+  await until(
+    () => messagingState.status === 'ready',
+    'rebuilt messaging ready',
+  )
   expect(messagingState.status).toBe('ready')
   expect(messagingState.reason).toBeNull()
 })
@@ -414,7 +420,10 @@ test('wiping IndexedDB while local storage retains checkpoint triggers automated
   await configureMessagingForTest(d.deps)
   mockStatus.status = 'ready'
   await initializeMonadIdentity()
-  await until(() => messagingState.status === 'ready', 'initial messaging ready')
+  await until(
+    () => messagingState.status === 'ready',
+    'initial messaging ready',
+  )
 
   // Stop messaging
   mockStatus.status = 'loading'
@@ -426,9 +435,10 @@ test('wiping IndexedDB while local storage retains checkpoint triggers automated
   // Restart messaging - must detect reopen failure, discard dead checkpoint, and rebuild to ready
   mockStatus.status = 'ready'
   await initializeMonadIdentity()
-  await until(() => messagingState.status === 'ready', 'rebuilt messaging ready')
+  await until(
+    () => messagingState.status === 'ready',
+    'rebuilt messaging ready',
+  )
   expect(messagingState.status).toBe('ready')
   expect(messagingState.reason).toBeNull()
 })
-
-

@@ -109,7 +109,8 @@ describe('ContactsPanel navigation', () => {
               return () =>
                 h('input', {
                   value: props.modelValue,
-                  onInput: (e: any) => emit('update:modelValue', e.target.value),
+                  onInput: (e: any) =>
+                    emit('update:modelValue', e.target.value),
                 })
             },
           }),
@@ -141,7 +142,7 @@ describe('ContactsPanel navigation', () => {
           }),
         },
         directives: {
-          ripple: () => {},
+          ripple: () => undefined,
         },
         mocks: {
           $t: (k: string) => k,
@@ -300,7 +301,9 @@ describe('ContactsPanel navigation', () => {
           }),
         }),
       )
-      expect(mockPush).toHaveBeenCalledWith('/chat/0x3333333333333333333333333333333333333333')
+      expect(mockPush).toHaveBeenCalledWith(
+        '/chat/0x3333333333333333333333333333333333333333',
+      )
     })
 
     it('searches by exact username handle and displays handle alongside name', async () => {
@@ -322,7 +325,9 @@ describe('ContactsPanel navigation', () => {
       jest.advanceTimersByTime(350)
       await flushPromises()
 
-      expect(mockAxiosGet).toHaveBeenCalledWith('http://relay.test/directory/user/charlie')
+      expect(mockAxiosGet).toHaveBeenCalledWith(
+        'http://relay.test/directory/user/charlie',
+      )
 
       const results = wrapper.findAll('[data-test="directory-search-result"]')
       expect(results.length).toBe(1)

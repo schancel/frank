@@ -944,7 +944,9 @@ mod tests {
         // 1. Valid vs Invalid username normalization and registration
         assert!(store.register_username("alice", alice_addr, 1000).is_ok());
         assert!(store.register_username("bob-123", bob_addr, 1000).is_ok());
-        assert!(store.register_username("charlie_dev", charlie_addr, 1000).is_ok());
+        assert!(store
+            .register_username("charlie_dev", charlie_addr, 1000)
+            .is_ok());
 
         // Reject invalid usernames:
         // Too short (< 3)
@@ -986,7 +988,9 @@ mod tests {
 
         // Name clash with different address -> returns Conflict ("Handle taken")
         let clash_res = store.register_username("alice", mallory_addr, 1060);
-        assert!(matches!(clash_res, Err(UsernameError::Conflict(ref msg)) if msg.contains("taken")));
+        assert!(
+            matches!(clash_res, Err(UsernameError::Conflict(ref msg)) if msg.contains("taken"))
+        );
 
         // 3. Tombstone prevents re-registration before expiry
         // Alice tombstones "alice" with 300s cooldown at now = 1100 (expires 1400)
@@ -999,7 +1003,9 @@ mod tests {
 
         // Mallory attempts to register "alice" at now = 1200 (now < tombstone_expires_at) -> Conflict ("Handle tombstoned")
         let blocked = store.register_username("alice", mallory_addr, 1200);
-        assert!(matches!(blocked, Err(UsernameError::Conflict(ref msg)) if msg.contains("tombstoned")));
+        assert!(
+            matches!(blocked, Err(UsernameError::Conflict(ref msg)) if msg.contains("tombstoned"))
+        );
 
         // 4. Re-registration succeeds after expiry (now >= tombstone_expires_at)
         // Mallory reclaims at now = 1400 (exact expiry) -> succeeds!

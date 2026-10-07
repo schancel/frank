@@ -858,4 +858,3 @@ describe('AddContact latest lookup', () => {
     })
   })
 })
-

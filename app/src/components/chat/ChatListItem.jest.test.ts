@@ -287,12 +287,12 @@ describe('ChatListItem email thread indicator (ticket-unverified-peer-email-fram
     const vm = wrapper.vm as any
     expect(vm.isEmail).toBe(true)
     expect(vm.isVerifiedGateway).toBe(true)
-    expect(
-      wrapper.find('[data-testid="verified-email-icon"]').exists(),
-    ).toBe(true)
-    expect(
-      wrapper.find('[data-testid="unverified-email-icon"]').exists(),
-    ).toBe(false)
+    expect(wrapper.find('[data-testid="verified-email-icon"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="unverified-email-icon"]').exists()).toBe(
+      false,
+    )
     expect(
       wrapper.find('[data-testid="unverified-email-badge"]').exists(),
     ).toBe(false)
@@ -324,12 +324,12 @@ describe('ChatListItem email thread indicator (ticket-unverified-peer-email-fram
     const vm = wrapper.vm as any
     expect(vm.isEmail).toBe(true)
     expect(vm.isVerifiedGateway).toBe(false)
-    expect(
-      wrapper.find('[data-testid="verified-email-icon"]').exists(),
-    ).toBe(false)
-    expect(
-      wrapper.find('[data-testid="unverified-email-icon"]').exists(),
-    ).toBe(true)
+    expect(wrapper.find('[data-testid="verified-email-icon"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="unverified-email-icon"]').exists()).toBe(
+      true,
+    )
     expect(
       wrapper.find('[data-testid="unverified-email-badge"]').exists(),
     ).toBe(true)

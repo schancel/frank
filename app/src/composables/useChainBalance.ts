@@ -246,6 +246,15 @@ export function useMultichainBalance() {
       }
       return undefined
     },
+    getRawBalance(chain: string): bigint | null {
+      if (chain === 'monad') {
+        return monad.loaded.value ? monad.balance.value : null
+      }
+      if (chain === 'ecash') {
+        return ecashState.value.loaded ? ecashState.value.balance : null
+      }
+      return null
+    },
     isChainLoaded(chain: string): boolean {
       if (chain === 'monad') return monad.loaded.value
       if (chain === 'ecash') return ecashState.value.loaded

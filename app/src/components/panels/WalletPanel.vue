@@ -11,6 +11,15 @@
           <q-item-section>
             <q-item-label>{{ $t('walletPanel.title') }}</q-item-label>
           </q-item-section>
+          <q-item-section side v-if="portfolioTotalAvu">
+            <q-item-label
+              caption
+              class="text-weight-medium text-primary"
+              data-test="portfolio-total-avu"
+            >
+              {{ portfolioTotalAvu }}
+            </q-item-label>
+          </q-item-section>
         </q-item>
         <q-separator />
 
@@ -76,6 +85,14 @@
               >
                 {{ getWalletBalance(wallet) }}
               </q-item-label>
+              <q-item-label
+                v-if="getWalletAvu(wallet)"
+                caption
+                class="text-grey-7"
+                :data-test="`${wallet.id}-wallet-avu`"
+              >
+                {{ getWalletAvu(wallet) }}
+              </q-item-label>
             </q-item-section>
           </q-item>
           <p
@@ -125,6 +142,8 @@ import { useMultichainBalance } from '../../composables/useChainBalance'
 import { useWalletNames } from '../../composables/useWalletNames'
 import { openPage } from '../../utils/routes'
 import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
+import { useSafeOracleStore } from '../../stores/oracle'
+import { formatAvu } from '@frank/wallet/oracle'
 
 interface WalletItemConfig {
   id: string
@@ -349,8 +368,39 @@ function selectWallet(wallet: string) {
   }
 }
 
-const { loaded, hasError, formattedBalance } = useBalance()
-const { getFormattedBalance } = useMultichainBalance()
+const { loaded, hasError, formattedBalance, balance } = useBalance()
+const { getFormattedBalance, getRawBalance } = useMultichainBalance()
+
+const oracle = useSafeOracleStore()
+onMounted(() => {
+  oracle.startBackgroundWorker?.()
+})
+
+function getWalletAvu(wallet: WalletItemConfig): string {
+  if (wallet.isMain) {
+    if (!loaded.value || !balance?.value) return ''
+    return oracle.formatAvuAmount('monad', balance.value)
+  }
+  const raw = getRawBalance?.(wallet.id)
+  if (!raw) return ''
+  return oracle.formatAvuAmount(wallet.id as any, raw)
+}
+
+const portfolioTotalAvu = computed(() => {
+  let total = 0
+  if (loaded.value && balance?.value) {
+    total += oracle.getAvu('monad', balance.value)
+  }
+  for (const w of WALLET_CONFIGS) {
+    if (!w.isMain) {
+      const raw = getRawBalance?.(w.id)
+      if (raw) {
+        total += oracle.getAvu(w.id as any, raw)
+      }
+    }
+  }
+  return total > 0 ? `≈ ${formatAvu(total)}` : ''
+})
 
 function getRouter() {
   return (

@@ -42,6 +42,8 @@ pub struct PeerState {
     pub last_status: Option<StatusCode>,
     /// Bytes of the last HTTP response.
     pub last_http_response: Option<Vec<u8>>,
+    /// Optional signed cluster authority attestation presented by this peer.
+    pub cluster_attestation: Option<crate::p2p::cluster::NodeClusterAttestation>,
 }
 
 /// What action has been taken for an individual peer when relaying metadata (for testing)
@@ -94,6 +96,27 @@ impl Peer {
                 last_error: None,
                 last_status: None,
                 last_http_response: None,
+                cluster_attestation: None,
+            }),
+        }
+    }
+
+    /// Make new peer with the given URL and cluster attestation.
+    pub fn with_cluster_attestation(
+        url: url::Url,
+        attestation: crate::p2p::cluster::NodeClusterAttestation,
+    ) -> Self {
+        Peer {
+            url,
+            state: tokio::sync::Mutex::new(PeerState {
+                filters: Vec::new(),
+                cur_num_items: 0,
+                max_filter_items: 10_000,
+                max_filters: 8,
+                last_error: None,
+                last_status: None,
+                last_http_response: None,
+                cluster_attestation: Some(attestation),
             }),
         }
     }
@@ -170,10 +193,7 @@ impl Peer {
                 .for_each(|tx_id| state.add_known_payload(&tx_id));
             return RelayAction::SkippedOrigin;
         }
-        if tx_ids
-            .into_iter()
-            .all(|tx_id| (state.knows_payload(&tx_id)))
-        {
+        if tx_ids.into_iter().all(|tx_id| state.knows_payload(&tx_id)) {
             return RelayAction::KnowsPayload;
         }
         let response = client
@@ -372,6 +392,7 @@ mod tests {
             last_error: None,
             last_status: None,
             last_http_response: None,
+            cluster_attestation: None,
         };
         state.add_known_payload(&[1; 32]);
         assert_eq!(state.filters.len(), 1);

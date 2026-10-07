@@ -4,7 +4,7 @@ layout: home
 hero:
   name: "Frank & Cashweb"
   text: "High-Assurance Protocol Documentation"
-  tagline: "Self-Custodial Encrypted Messaging, DKSAP Ambient Privacy, Deterministic CBOR, and Clustered Relays"
+  tagline: "Uncensorable, Zero-PII Encrypted Communications & Ambient Private Payments"
   actions:
     - theme: brand
       text: Architecture Guide
@@ -13,26 +13,26 @@ hero:
       text: Protocol Specifications
       link: /protocol/stamp-derivation
     - theme: alt
-      text: CBOR & CDDL Reference
-      link: /cbor/spec
+      text: State Channels & Swaps
+      link: /protocol/atomic-swaps
 
 features:
+  - title: Uncensorable & Zero PII Required
+    details: No phone numbers, email addresses, KYC, or centralized registries. Accounts are self-sovereign cryptographic keypairs generated entirely on-device, making account seizure or de-platforming mathematically impossible.
+    link: /guide/introduction
   - title: DKSAP Stealth & Ambient Privacy
-    details: Dual-Key Stealth Address Protocol with Chaum-Pedersen DLEQ proofs. Every payment uses fresh, unlinkable addresses with zero calldata markers to defeat graph surveillance.
+    details: Dual-Key Stealth Address Protocol with Chaum-Pedersen DLEQ proofs. Every payment generates fresh, unlinkable recipient stealth addresses with zero calldata identifiers to defeat public ledger graph surveillance.
     link: /protocol/ambient-privacy
   - title: End-to-End Encrypted Messaging
-    details: Cryptographic Crypto-Box v2 (XChaCha20-Poly1305 + ECDH) with strict three-role separation (P identity authority, M messaging key, P' stamp receipt key).
+    details: Direct messaging via Crypto-Box v2 (XChaCha20-Poly1305 + ECDH) with strict three-role separation (Identity P, Messaging M, and Stamp Receipt P'), guaranteeing messaging activity never compromises root assets.
     link: /guide/introduction
-  - title: Deterministic CBOR v1 (FRNK)
-    details: Formal CDDL-verified canonical binary frames with strict integer boundaries, cryptographic payload digests, and zero-copy Rust and TypeScript codecs.
-    link: /cbor/spec
-  - title: Universal State Channels
-    details: Instant peer-to-peer state execution (Type 24) for interactive turns, cross-chain atomic swaps, and multi-network balance allocations across Monad, eCash, and Solana.
-    link: /protocol/atomic-swaps
-  - title: Clustered Federated Relays
-    details: High-throughput relay mesh featuring Kvrocks CAS username uniqueness, S3/MinIO encrypted blob offloading, Ephemeral Core NATS notification fanout, and anti-self-peering.
+  - title: Censorship-Resistant Federated Relays
+    details: An open, permissionless network of interoperable relays providing store-and-forward routing and end-to-end encrypted envelope transport without centralized choke points or single points of failure.
     link: /architecture/clustered-relay
+  - title: Universal State Channels
+    details: Instant peer-to-peer state execution (Type 24) for interactive turns, cross-chain atomic swaps, and multi-network balance allocations across Monad, eCash, and Solana with zero gas friction.
+    link: /protocol/atomic-swaps
   - title: Self-Sovereign Codex32 Custody
-    details: Error-correcting checksummed master recovery with HKDF domain root isolation (frank-domain-roots-v1), ensuring multi-chain activity never compromises root identity.
+    details: Error-correcting checksummed master recovery with HKDF domain root isolation (frank-domain-roots-v1), ensuring multi-chain asset activity never leaks your root identity or messaging keys.
     link: /protocol/codex32-backup
 ---

@@ -11,7 +11,7 @@ export default withMermaid(
     title: "Frank & Cashweb",
     description:
       "Protocol Specifications, High-Assurance Architecture, and Developer Documentation",
-    base: "/docs/",
+    base: process.env.DOCS_BASE || "/docs/",
     outDir: path.resolve(__dirname, "../../../app/public/docs"),
     cleanUrls: true,
     lastUpdated: true,

@@ -32,10 +32,20 @@ jest.mock('../../composables/useChainBalance', () => ({
   useMultichainBalance: () => ({
     getFormattedBalance: (chain: string) =>
       chain === 'ecash' ? mockEcashBalance.value : undefined,
+    getRawBalance: () => null,
     isChainLoaded: (chain: string) =>
       chain === 'ecash' ? Boolean(mockEcashBalance.value) : false,
     hasChainError: () => false,
     refreshAll: jest.fn(),
+  }),
+}))
+
+jest.mock('../../stores/oracle', () => ({
+  useSafeOracleStore: () => ({
+    getAvu: () => 0,
+    formatAvuAmount: () => '',
+    snapshot: { totalConstituents: 0, constituents: [] },
+    startBackgroundWorker: jest.fn(),
   }),
 }))
 

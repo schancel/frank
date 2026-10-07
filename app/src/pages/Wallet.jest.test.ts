@@ -60,6 +60,14 @@ jest.mock('src/composables/useChainBalance', () => ({
     return mockChainBalance
   },
 }))
+jest.mock('src/stores/oracle', () => ({
+  useSafeOracleStore: () => ({
+    getAvu: () => 0,
+    formatAvuAmount: () => '',
+    snapshot: { totalConstituents: 0, constituents: [] },
+    startBackgroundWorker: jest.fn(),
+  }),
+}))
 // The real vue-router CJS entry pulls in the ESM-only `nostics` package, which Jest's CommonJS
 // setup cannot parse (see router/index.jest.test.ts's own boundary comment); Wallet.vue only
 // needs the composable to exist.

@@ -98,6 +98,13 @@
             }}
           </div>
           <div
+            v-if="currentWalletAvu"
+            class="text-caption text-grey-7 text-center q-mt-xs"
+            data-testid="wallet-balance-avu"
+          >
+            {{ currentWalletAvu }}
+          </div>
+          <div
             v-if="currentWalletHasError"
             class="text-negative text-caption text-center"
             data-testid="wallet-balance-error"
@@ -217,6 +224,7 @@ import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountSession, accountStatus } from '../accounts/session'
 import { activeChain } from '@frank/wallet/chain'
+import { useSafeOracleStore } from 'src/stores/oracle'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -230,6 +238,7 @@ export default defineComponent({
     const router = useRouter()
     const isTestnet = computed(() => activeChain.isTestnet ?? false)
     const { getCustomName } = useWalletNames()
+    const oracle = useSafeOracleStore()
 
     const selectedWallet = computed<string>(() => {
       const parts = (route?.path || '').toLowerCase().split('/').filter(Boolean)
@@ -248,9 +257,15 @@ export default defineComponent({
     })
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
-    const { formattedBalance, loaded, hasError } = useBalance()
+    const {
+      formattedBalance,
+      balance: monadBalance,
+      loaded,
+      hasError,
+    } = useBalance()
     const {
       formattedBalance: chainFormattedBalance,
+      balance: chainBalance,
       loaded: chainLoaded,
       hasError: chainHasError,
     } = useChainBalance(selectedWallet)
@@ -259,6 +274,18 @@ export default defineComponent({
       return selectedWallet.value === 'monad'
         ? hasError.value
         : chainHasError.value
+    })
+
+    const currentWalletAvu = computed(() => {
+      if (selectedWallet.value === 'monad') {
+        if (!loaded.value || !monadBalance?.value) return ''
+        return oracle.formatAvuAmount('monad', monadBalance.value)
+      }
+      if (!chainLoaded.value || !chainBalance?.value) return ''
+      return oracle.formatAvuAmount(
+        selectedWallet.value as any,
+        chainBalance.value,
+      )
     })
 
     // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
@@ -349,6 +376,7 @@ export default defineComponent({
       chainFormattedBalance,
       chainLoaded,
       currentWalletHasError,
+      currentWalletAvu,
       hasError,
       getCustomName,
       async copyAddress() {

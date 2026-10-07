@@ -6,9 +6,12 @@ export interface OutboundDirectMessage {
   readonly frankMessageId: string;
   readonly senderFrankAddress: string;
   readonly recipientEmail: string;
+  readonly ccRecipients?: string[];
   readonly bodyText: string;
+  readonly htmlBody?: string;
   readonly subject?: string;
   readonly inReplyToFrankMessageId?: string;
+  readonly senderHomeRelay?: string;
 }
 
 export interface OutboundDeliveryResult {
@@ -62,6 +65,10 @@ export class OutboundEmailDelivery {
       rfc822MessageId,
       inReplyToRfc822,
       subject,
+      senderAddress: dm.senderFrankAddress,
+      toRecipientsJson: JSON.stringify([{ address: canonicalRecipient }]),
+      ccRecipientsJson: dm.ccRecipients ? JSON.stringify(dm.ccRecipients.map((c) => ({ address: c }))) : undefined,
+      senderHomeRelay: dm.senderHomeRelay,
       createdAtMs: now,
     };
     this.ledger.recordThreadMapping(mapping);
@@ -69,6 +76,8 @@ export class OutboundEmailDelivery {
     // 4. Construct RFC 5322 Email
     const fromHeader = `From: ${dm.senderFrankAddress} <${dm.senderFrankAddress}@${this.gatewayDomain}>`;
     const toHeader = `To: ${canonicalRecipient}`;
+    const ccHeader =
+      dm.ccRecipients && dm.ccRecipients.length > 0 ? `Cc: ${dm.ccRecipients.join(', ')}` : '';
     const subjectHeader = `Subject: ${subject}`;
     const dateHeader = `Date: ${new Date(now).toUTCString()}`;
     const messageIdHeader = `Message-ID: ${rfc822MessageId}`;
@@ -80,6 +89,7 @@ export class OutboundEmailDelivery {
     const headers = [
       fromHeader,
       toHeader,
+      ccHeader,
       subjectHeader,
       dateHeader,
       messageIdHeader,

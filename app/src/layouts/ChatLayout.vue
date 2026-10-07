@@ -65,7 +65,9 @@
             :aria-expanded="myDrawerOpen"
           />
           <q-avatar rounded :style="contactColorStyle">
-            <img :src="profileAvatar(presentedAvatar, address)" />
+            <img
+              :src="profileAvatar(presentedAvatar, effectiveAddress || address)"
+            />
           </q-avatar>
           <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
             contactName
@@ -149,12 +151,12 @@
     </q-header>
 
     <q-dialog v-model="confirmClearOpen">
-      <clear-history-dialog :address="address" :name="contactProfile.name" />
+      <clear-history-dialog :address="address" :name="contactName" />
     </q-dialog>
     <q-dialog v-model="confirmDeleteOpen">
       <delete-chat-dialog
         :address="address"
-        :name="contactProfile.name"
+        :name="contactName"
         @deleted="onChatDeleted"
       />
     </q-dialog>
@@ -166,8 +168,8 @@
     <router-view v-if="!infoOpen" @sendFileClicked="toSendFileDialog" />
     <chat-info-view
       v-else
-      :address="address"
-      :contact="getContact(address)"
+      :address="effectiveAddress || address"
+      :contact="getContact(effectiveAddress || address)"
       @deleted="onChatDeleted"
       @chat="closeInfo"
     />
@@ -184,8 +186,10 @@ import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
+import { useChatStore } from 'src/stores/chats'
 import { useProfileStore } from 'src/stores/my-profile'
 import { pubKeyToColor } from 'src/utils/formatting'
+import { isChainAddress } from 'src/utils/chain-address'
 import { profileAvatar } from 'src/utils/avatar'
 import {
   sameCanonicalAddress,
@@ -248,16 +252,11 @@ export default defineComponent({
       this.address = val || ''
     },
   },
-  beforeRouteUpdate(
-    to: RouteLocationNormalized,
-    from: RouteLocationNormalized,
-    next: () => void,
-  ) {
-    this.address = (to.params.address as string) || ''
+  beforeRouteUpdate(to: RouteLocationNormalized) {
+    this.address = (to?.params?.address as string) || ''
     // If navigating with ?info=true, show the info page; otherwise reset to plain chat view
-    this.infoOpen = to.query?.info === 'true'
+    this.infoOpen = to?.query?.info === 'true'
     this.selectMode = false
-    next()
   },
   methods: {
     openInfo() {
@@ -289,32 +288,73 @@ export default defineComponent({
     },
   },
   computed: {
+    activeConversation(): any {
+      if (!this.address) return null
+      try {
+        const chatStore = useChatStore()
+        if (
+          chatStore.conversations &&
+          this.address in chatStore.conversations
+        ) {
+          return chatStore.conversations[this.address] ?? null
+        }
+        if (chatStore.chats && this.address in chatStore.chats) {
+          return chatStore.chats[this.address] ?? null
+        }
+      } catch {
+        //
+      }
+      return null
+    },
+    effectiveAddress(): string {
+      const conv = this.activeConversation
+      if (conv?.address) return conv.address
+      if (conv?.participants && conv.participants.length > 0)
+        return conv.participants[0]
+      return this.address
+    },
     contactProfile() {
-      return this.address ? this.getContact(this.address)?.profile : undefined
+      const addr = this.effectiveAddress
+      return addr && isChainAddress(addr)
+        ? this.getContact(addr)?.profile
+        : undefined
     },
     contactName(): string {
       if (!this.address) {
         return ''
       }
-      return sameCanonicalAddress(this.address, this.ownAddress)
+      const conv = this.activeConversation
+      if (conv?.kind === 'email') {
+        return (
+          conv.name ||
+          conv.emailRecipient ||
+          conv.topic ||
+          this.contactProfile?.name ||
+          this.effectiveAddress ||
+          this.address
+        )
+      }
+      return sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
         ? this.$t('selfChat.you')
-        : this.contactProfile?.name ?? this.address
+        : this.contactProfile?.name ?? (this.effectiveAddress || this.address)
     },
     presentedAvatar(): string | undefined {
-      if (!this.address) {
+      if (!this.effectiveAddress) {
         return undefined
       }
-      return sameCanonicalAddress(this.address, this.ownAddress)
+      return sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
         ? this.myProfile.profile.avatar || this.contactProfile?.avatar
         : this.contactProfile?.avatar
     },
     notifications: {
       get(): boolean {
-        return this.address ? this.getNotify(this.address) ?? false : false
+        return this.effectiveAddress && isChainAddress(this.effectiveAddress)
+          ? this.getNotify(this.effectiveAddress) ?? false
+          : false
       },
       set(value: boolean) {
-        if (this.address) {
-          this.setNotify({ address: this.address, value })
+        if (this.effectiveAddress && isChainAddress(this.effectiveAddress)) {
+          this.setNotify({ address: this.effectiveAddress, value })
         }
       },
     },

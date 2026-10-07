@@ -59,6 +59,61 @@
         </q-item>
         <q-separator />
 
+        <!-- Network / Advanced Settings -->
+        <div
+          class="q-px-md q-py-sm"
+          data-test="network-settings-section"
+          data-testid="network-settings-section"
+        >
+          <div class="text-caption text-weight-bold text-grey-7 q-mb-xs">
+            {{ $t('settings.networkSettings', 'Network & Gateway Settings') }}
+          </div>
+          <q-input
+            v-model="emailGatewayInput"
+            :label="$t('settings.emailGatewayAddress', 'Email Gateway Address')"
+            dense
+            outlined
+            :error="!!emailGatewayError"
+            :error-message="emailGatewayError"
+            hint="0x-prefixed 40-character hex address"
+            data-test="email-gateway-input"
+            data-testid="email-gateway-input"
+            class="full-width q-mb-xs text-caption"
+          />
+          <div
+            v-if="emailGatewayError"
+            class="text-negative text-caption q-mb-xs error-msg"
+            data-test="email-gateway-error"
+          >
+            {{ emailGatewayError }}
+          </div>
+          <div class="row items-center justify-end q-gutter-x-sm q-mt-xs">
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="grey-7"
+              :label="$t('settings.resetDefault', 'Reset to Default')"
+              data-test="reset-email-gateway-btn"
+              data-testid="reset-email-gateway-btn"
+              @click="resetEmailGateway"
+            />
+            <q-btn
+              unelevated
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              :label="$t('settings.save', 'Save')"
+              data-test="save-email-gateway-btn"
+              data-testid="save-email-gateway-btn"
+              @click="saveEmailGateway"
+            />
+          </div>
+        </div>
+        <q-separator />
+
         <q-item
           v-if="legacyLotusMode"
           clickable
@@ -116,6 +171,7 @@ import {
   getCurrentInstance,
   onMounted,
   ref,
+  watch,
 } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
@@ -123,6 +179,7 @@ import { useQuasar } from 'quasar'
 import ContactCard from './ContactCard.vue'
 import { openPage } from '../../utils/routes'
 import { useProfileStore } from 'src/stores/my-profile'
+import { useSettingsStore } from 'src/stores/settings'
 import { storeToRefs } from 'pinia'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
@@ -233,6 +290,34 @@ export default defineComponent({
       set: (value: boolean) => emit('update:drawerOpen', value),
     })
 
+    const settingsStore = useSettingsStore()
+    const emailGatewayInput = ref(settingsStore.emailGatewayAddress)
+    const emailGatewayError = ref('')
+
+    watch(
+      () => settingsStore.emailGatewayAddress,
+      newVal => {
+        emailGatewayInput.value = newVal
+      },
+    )
+
+    function saveEmailGateway() {
+      emailGatewayError.value = ''
+      try {
+        settingsStore.setEmailGatewayAddress(emailGatewayInput.value.trim())
+        emailGatewayInput.value = settingsStore.emailGatewayAddress
+      } catch (err: any) {
+        emailGatewayError.value =
+          err?.message || 'Invalid Ethereum address format'
+      }
+    }
+
+    function resetEmailGateway() {
+      emailGatewayError.value = ''
+      settingsStore.resetEmailGatewayAddress()
+      emailGatewayInput.value = settingsStore.emailGatewayAddress
+    }
+
     return {
       legacyLotusMode: legacyLotusModeEnabled(),
       profile,
@@ -246,6 +331,10 @@ export default defineComponent({
       openChangelog,
       openDocs,
       drawerOpenModel,
+      emailGatewayInput,
+      emailGatewayError,
+      saveEmailGateway,
+      resetEmailGateway,
     }
   },
 })

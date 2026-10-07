@@ -127,12 +127,14 @@ pub fn verify_topic_post_author(
     from: &TopicPostAuthor,
     signature: &[u8],
 ) -> Option<[u8; 20]> {
-    let digest = crate::hash::topic_post_signature_digest(network, topic, body, parent_hash).ok()?;
+    let digest =
+        crate::hash::topic_post_signature_digest(network, topic, body, parent_hash).ok()?;
     match from {
         TopicPostAuthor::Account(acc) => {
             if acc.key_type == 1 && acc.key_bytes.len() == 33 {
                 if crate::crypto::verify_algorithm_1(&digest, signature, &acc.key_bytes) {
-                    return crate::registration::address_from_compressed_pubkey(&acc.key_bytes).ok();
+                    return crate::registration::address_from_compressed_pubkey(&acc.key_bytes)
+                        .ok();
                 }
             }
         }

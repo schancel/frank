@@ -10,7 +10,10 @@ use thiserror::Error;
 
 use super::db::{Db, CF};
 
-pub(crate) const CF_DIRECTORY_USERNAMES: &str = "directory_usernames";
+/// Backward-compatible RocksDB column family name for routable username records.
+pub const CF_DIRECTORY_USERNAMES: &str = "directory_usernames";
+/// Ticket 1.1 Column Family constant alias for username records (`cf_usernames`).
+pub const CF_USERNAMES: &str = CF_DIRECTORY_USERNAMES;
 
 /// Errors specifically related to username registration and uniqueness.
 #[derive(Debug, Error, ErrorMeta, PartialEq, Eq)]
@@ -29,6 +32,11 @@ pub enum UsernameError {
     #[invalid_client_input()]
     #[error("Username '{0}' has been deactivated and is tombstoned until {1}")]
     Tombstoned(String, i64),
+
+    /// Conflict error when a handle is already taken or tombstoned.
+    #[invalid_client_input()]
+    #[error("Conflict: {0}")]
+    Conflict(String),
 
     /// Remote RESP / Redis store error or connection failure.
     #[critical()]
@@ -77,6 +85,32 @@ pub trait UsernameStore: std::fmt::Debug + Send + Sync {
         cooldown_duration_ms: i64,
         now_ms: i64,
     ) -> Result<()>;
+
+    /// Register a username for an account address with tombstone protection.
+    ///
+    /// - If name does not exist -> insert as Active, return Ok(()).
+    /// - If name exists with same address -> update updated_at, return Ok(()).
+    /// - If name exists with different address and status is Active -> return Conflict (Handle taken).
+    /// - If name exists and status is Tombstoned:
+    ///   - If now < tombstone_expires_at -> return Conflict (Handle tombstoned).
+    ///   - If now >= tombstone_expires_at -> reclaim name: overwrite with new address, status Active, return Ok(()).
+    fn register_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+    ) -> std::result::Result<(), UsernameError>;
+
+    /// Tombstone a username with cooldown protection.
+    ///
+    /// If name owned by address -> set status to Tombstoned, tombstone_expires_at = now + cooldown_seconds.
+    fn tombstone_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+        cooldown_seconds: i64,
+    ) -> std::result::Result<bool, UsernameError>;
 }
 
 use self::UsernameError::*;
@@ -92,24 +126,68 @@ pub enum UsernameStatus {
     Moved,
 }
 
+impl Default for UsernameStatus {
+    fn default() -> Self {
+        UsernameStatus::Active
+    }
+}
+
 /// Durable record for a username.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UsernameRecord {
     /// Canonical lowercase username handle.
+    #[serde(default)]
     pub username: String,
     /// 20-byte raw account address.
     pub account_address: [u8; 20],
     /// Optional stamp public key.
+    #[serde(default)]
     pub stamp_key: Option<Vec<u8>>,
     /// Active, tombstoned, or moved state.
     pub status: UsernameStatus,
+    /// Timestamp of last modification in seconds / milliseconds.
+    #[serde(default)]
+    pub updated_at: i64,
+    /// Expiration timestamp in seconds / milliseconds for tombstone cooldown.
+    #[serde(default)]
+    pub tombstone_expires_at: i64,
     /// Timestamp of last modification in milliseconds.
+    #[serde(default)]
     pub updated_at_ms: i64,
     /// Expiration timestamp in milliseconds for tombstone cooldown.
+    #[serde(default)]
     pub tombstone_expires_at_ms: Option<i64>,
     /// Optional redirect pointer to new username when status is Moved.
     #[serde(default)]
     pub redirect_to: Option<String>,
+}
+
+impl UsernameRecord {
+    /// Construct a new username record with account address and status.
+    pub fn new(
+        username: impl Into<String>,
+        account_address: [u8; 20],
+        status: UsernameStatus,
+        updated_at: i64,
+        tombstone_expires_at: i64,
+    ) -> Self {
+        let name = username.into();
+        Self {
+            username: name,
+            account_address,
+            stamp_key: None,
+            status,
+            updated_at,
+            tombstone_expires_at,
+            updated_at_ms: updated_at,
+            tombstone_expires_at_ms: if tombstone_expires_at > 0 {
+                Some(tombstone_expires_at)
+            } else {
+                None
+            },
+            redirect_to: None,
+        }
+    }
 }
 
 /// Result of attempting to claim a username.
@@ -190,8 +268,22 @@ impl<'a> DbDirectoryUsernames<'a> {
             None => return Ok(None),
         };
 
-        let record: UsernameRecord =
+        let mut record: UsernameRecord =
             serde_json::from_slice(&slice).wrap_err(crate::store::db::DbError::RocksDb)?;
+        if record.updated_at == 0 && record.updated_at_ms != 0 {
+            record.updated_at = record.updated_at_ms;
+        }
+        if record.updated_at_ms == 0 && record.updated_at != 0 {
+            record.updated_at_ms = record.updated_at;
+        }
+        if record.tombstone_expires_at == 0 {
+            if let Some(exp) = record.tombstone_expires_at_ms {
+                record.tombstone_expires_at = exp;
+            }
+        }
+        if record.tombstone_expires_at_ms.is_none() && record.tombstone_expires_at > 0 {
+            record.tombstone_expires_at_ms = Some(record.tombstone_expires_at);
+        }
         Ok(Some(record))
     }
 
@@ -221,6 +313,8 @@ impl<'a> DbDirectoryUsernames<'a> {
                         account_address: *account_address,
                         stamp_key,
                         status: UsernameStatus::Active,
+                        updated_at: now_ms,
+                        tombstone_expires_at: 0,
                         updated_at_ms: now_ms,
                         tombstone_expires_at_ms: None,
                         redirect_to: None,
@@ -229,10 +323,11 @@ impl<'a> DbDirectoryUsernames<'a> {
                     return Ok(UsernameClaimResult::AlreadyOwned);
                 }
                 UsernameStatus::Tombstoned | UsernameStatus::Moved => {
-                    if let Some(expires_at) = existing.tombstone_expires_at_ms {
-                        if now_ms < expires_at {
-                            return Err(Tombstoned(normalized, expires_at).into());
-                        }
+                    let expires_at = existing
+                        .tombstone_expires_at
+                        .max(existing.tombstone_expires_at_ms.unwrap_or(0));
+                    if now_ms < expires_at {
+                        return Err(Tombstoned(normalized, expires_at).into());
                     }
                     // Cooldown expired, allow fresh claim
                 }
@@ -244,6 +339,8 @@ impl<'a> DbDirectoryUsernames<'a> {
             account_address: *account_address,
             stamp_key,
             status: UsernameStatus::Active,
+            updated_at: now_ms,
+            tombstone_expires_at: 0,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: None,
             redirect_to: None,
@@ -276,6 +373,8 @@ impl<'a> DbDirectoryUsernames<'a> {
             account_address: *account_address,
             stamp_key: existing.stamp_key,
             status: UsernameStatus::Tombstoned,
+            updated_at: now_ms,
+            tombstone_expires_at: now_ms + cooldown_duration_ms,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: Some(now_ms + cooldown_duration_ms),
             redirect_to: None,
@@ -333,6 +432,8 @@ impl<'a> DbDirectoryUsernames<'a> {
             account_address: *account_address,
             stamp_key: existing_old.stamp_key,
             status: UsernameStatus::Moved,
+            updated_at: now_ms,
+            tombstone_expires_at: now_ms + cooldown_duration_ms,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: Some(now_ms + cooldown_duration_ms),
             redirect_to: Some(new_norm),
@@ -342,10 +443,141 @@ impl<'a> DbDirectoryUsernames<'a> {
         Ok(())
     }
 
+    /// Attempt to register a username with first-come, first-served uniqueness and tombstone protection.
+    ///
+    /// - If name does not exist -> insert as Active, return Ok(()).
+    /// - If name exists with same address -> update updated_at, return Ok(()).
+    /// - If name exists with different address and status is Active -> return Conflict (Handle taken).
+    /// - If name exists and status is Tombstoned:
+    ///   - If now < tombstone_expires_at -> return Conflict (Handle tombstoned).
+    ///   - If now >= tombstone_expires_at -> reclaim name: overwrite with new address, status Active, return Ok(()).
+    pub fn register_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+    ) -> std::result::Result<(), UsernameError> {
+        let normalized = Self::validate_and_normalize(username)?;
+
+        if let Ok(Some(existing)) = self.get(&normalized) {
+            match existing.status {
+                UsernameStatus::Active => {
+                    if existing.account_address != address {
+                        return Err(UsernameError::Conflict("Handle taken".to_string()));
+                    }
+                    let updated = UsernameRecord {
+                        username: normalized.clone(),
+                        account_address: address,
+                        stamp_key: existing.stamp_key,
+                        status: UsernameStatus::Active,
+                        updated_at: now,
+                        tombstone_expires_at: 0,
+                        updated_at_ms: now,
+                        tombstone_expires_at_ms: None,
+                        redirect_to: None,
+                    };
+                    self.put_record(&updated)
+                        .map_err(|e| UsernameError::Conflict(e.to_string()))?;
+                    return Ok(());
+                }
+                UsernameStatus::Tombstoned | UsernameStatus::Moved => {
+                    let expires_at = existing
+                        .tombstone_expires_at
+                        .max(existing.tombstone_expires_at_ms.unwrap_or(0));
+                    if now < expires_at {
+                        return Err(UsernameError::Conflict("Handle tombstoned".to_string()));
+                    }
+                    let reclaimed = UsernameRecord {
+                        username: normalized.clone(),
+                        account_address: address,
+                        stamp_key: None,
+                        status: UsernameStatus::Active,
+                        updated_at: now,
+                        tombstone_expires_at: 0,
+                        updated_at_ms: now,
+                        tombstone_expires_at_ms: None,
+                        redirect_to: None,
+                    };
+                    self.put_record(&reclaimed)
+                        .map_err(|e| UsernameError::Conflict(e.to_string()))?;
+                    return Ok(());
+                }
+            }
+        }
+
+        let record = UsernameRecord {
+            username: normalized,
+            account_address: address,
+            stamp_key: None,
+            status: UsernameStatus::Active,
+            updated_at: now,
+            tombstone_expires_at: 0,
+            updated_at_ms: now,
+            tombstone_expires_at_ms: None,
+            redirect_to: None,
+        };
+        self.put_record(&record)
+            .map_err(|e| UsernameError::Conflict(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Mark a username as tombstoned with cooldown expiration.
+    ///
+    /// If name owned by address -> set status to Tombstoned, tombstone_expires_at = now + cooldown_seconds.
+    pub fn tombstone_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+        cooldown_seconds: i64,
+    ) -> std::result::Result<bool, UsernameError> {
+        let normalized = Self::validate_and_normalize(username)?;
+        let existing = match self.get(&normalized) {
+            Ok(Some(e)) => e,
+            Ok(None) => return Ok(false),
+            Err(e) => return Err(UsernameError::Conflict(e.to_string())),
+        };
+
+        if existing.account_address != address {
+            return Ok(false);
+        }
+
+        let expires = now + cooldown_seconds;
+        let tombstone_record = UsernameRecord {
+            username: normalized,
+            account_address: address,
+            stamp_key: existing.stamp_key,
+            status: UsernameStatus::Tombstoned,
+            updated_at: now,
+            tombstone_expires_at: expires,
+            updated_at_ms: now,
+            tombstone_expires_at_ms: Some(expires),
+            redirect_to: None,
+        };
+        self.put_record(&tombstone_record)
+            .map_err(|e| UsernameError::Conflict(e.to_string()))?;
+        Ok(true)
+    }
+
     fn put_record(&self, record: &UsernameRecord) -> Result<()> {
-        let serialized = serde_json::to_vec(record).wrap_err(crate::store::db::DbError::RocksDb)?;
+        let mut rec = record.clone();
+        if rec.updated_at == 0 && rec.updated_at_ms != 0 {
+            rec.updated_at = rec.updated_at_ms;
+        }
+        if rec.updated_at_ms == 0 && rec.updated_at != 0 {
+            rec.updated_at_ms = rec.updated_at;
+        }
+        if rec.tombstone_expires_at == 0 {
+            if let Some(exp) = rec.tombstone_expires_at_ms {
+                rec.tombstone_expires_at = exp;
+            }
+        }
+        if rec.tombstone_expires_at_ms.is_none() && rec.tombstone_expires_at > 0 {
+            rec.tombstone_expires_at_ms = Some(rec.tombstone_expires_at);
+        }
+        let serialized = serde_json::to_vec(&rec).wrap_err(crate::store::db::DbError::RocksDb)?;
         let mut batch = WriteBatch::default();
-        batch.put_cf(self.cf, record.username.as_bytes(), serialized);
+        batch.put_cf(self.cf, rec.username.as_bytes(), serialized);
         let mut write_options = WriteOptions::default();
         write_options.set_sync(false);
         self.db
@@ -407,6 +639,25 @@ impl UsernameStore for DbDirectoryUsernames<'_> {
             now_ms,
         )
     }
+
+    fn register_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+    ) -> std::result::Result<(), UsernameError> {
+        self.register_username(username, address, now)
+    }
+
+    fn tombstone_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+        cooldown_seconds: i64,
+    ) -> std::result::Result<bool, UsernameError> {
+        self.tombstone_username(username, address, now, cooldown_seconds)
+    }
 }
 
 impl<T: ?Sized + UsernameStore> UsernameStore for Box<T> {
@@ -450,6 +701,25 @@ impl<T: ?Sized + UsernameStore> UsernameStore for Box<T> {
             now_ms,
         )
     }
+
+    fn register_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+    ) -> std::result::Result<(), UsernameError> {
+        (**self).register_username(username, address, now)
+    }
+
+    fn tombstone_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+        cooldown_seconds: i64,
+    ) -> std::result::Result<bool, UsernameError> {
+        (**self).tombstone_username(username, address, now, cooldown_seconds)
+    }
 }
 
 impl<T: ?Sized + UsernameStore> UsernameStore for std::sync::Arc<T> {
@@ -492,6 +762,25 @@ impl<T: ?Sized + UsernameStore> UsernameStore for std::sync::Arc<T> {
             cooldown_duration_ms,
             now_ms,
         )
+    }
+
+    fn register_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+    ) -> std::result::Result<(), UsernameError> {
+        (**self).register_username(username, address, now)
+    }
+
+    fn tombstone_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+        cooldown_seconds: i64,
+    ) -> std::result::Result<bool, UsernameError> {
+        (**self).tombstone_username(username, address, now, cooldown_seconds)
     }
 }
 
@@ -624,6 +913,129 @@ mod tests {
         assert!(store
             .claim("alice_old", &bob_addr, None, now + 100)
             .is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cf_usernames_column_family() -> Result<()> {
+        let tempdir = TempDir::new("test-cf-usernames")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let cf = db.cf_usernames()?;
+        assert!(db.cf(CF_USERNAMES).is_ok());
+        assert!(db.cf("directory_usernames").is_ok());
+        db.put(cf, b"test_key", b"test_val")?;
+        let val = db.get(cf, b"test_key")?;
+        assert_eq!(val.as_deref(), Some(b"test_val".as_slice()));
+        Ok(())
+    }
+
+    #[test]
+    fn test_register_username_state_machine_and_tombstones() -> Result<()> {
+        let tempdir = TempDir::new("test-username-state-machine")?;
+        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
+        let store = db.directory_usernames();
+
+        let alice_addr = [1u8; 20];
+        let mallory_addr = [2u8; 20];
+        let bob_addr = [3u8; 20];
+        let charlie_addr = [4u8; 20];
+
+        // 1. Valid vs Invalid username normalization and registration
+        assert!(store.register_username("alice", alice_addr, 1000).is_ok());
+        assert!(store.register_username("bob-123", bob_addr, 1000).is_ok());
+        assert!(store
+            .register_username("charlie_dev", charlie_addr, 1000)
+            .is_ok());
+
+        // Reject invalid usernames:
+        // Too short (< 3)
+        assert!(matches!(
+            store.register_username("al", alice_addr, 1000),
+            Err(UsernameError::InvalidFormat(_))
+        ));
+        // Too long (> 32)
+        let too_long = "a".repeat(33);
+        assert!(matches!(
+            store.register_username(&too_long, alice_addr, 1000),
+            Err(UsernameError::InvalidFormat(_))
+        ));
+        // Non-alphanumeric start
+        assert!(matches!(
+            store.register_username("-alice", alice_addr, 1000),
+            Err(UsernameError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            store.register_username("_alice", alice_addr, 1000),
+            Err(UsernameError::InvalidFormat(_))
+        ));
+        // Disallowed characters
+        assert!(matches!(
+            store.register_username("alice@domain.com", alice_addr, 1000),
+            Err(UsernameError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            store.register_username("alice.smith", alice_addr, 1000),
+            Err(UsernameError::InvalidFormat(_))
+        ));
+
+        // 2. Same address re-registering -> succeeds and updates updated_at
+        assert!(store.register_username("alice", alice_addr, 1050).is_ok());
+        let rec = store.get("alice")?.expect("record should exist");
+        assert_eq!(rec.account_address, alice_addr);
+        assert_eq!(rec.status, UsernameStatus::Active);
+        assert_eq!(rec.updated_at, 1050);
+
+        // Name clash with different address -> returns Conflict ("Handle taken")
+        let clash_res = store.register_username("alice", mallory_addr, 1060);
+        assert!(
+            matches!(clash_res, Err(UsernameError::Conflict(ref msg)) if msg.contains("taken"))
+        );
+
+        // 3. Tombstone prevents re-registration before expiry
+        // Alice tombstones "alice" with 300s cooldown at now = 1100 (expires 1400)
+        let tombstoned = store.tombstone_username("alice", alice_addr, 1100, 300)?;
+        assert!(tombstoned);
+
+        let tomb_rec = store.get("alice")?.expect("record should exist");
+        assert_eq!(tomb_rec.status, UsernameStatus::Tombstoned);
+        assert_eq!(tomb_rec.tombstone_expires_at, 1400);
+
+        // Mallory attempts to register "alice" at now = 1200 (now < tombstone_expires_at) -> Conflict ("Handle tombstoned")
+        let blocked = store.register_username("alice", mallory_addr, 1200);
+        assert!(
+            matches!(blocked, Err(UsernameError::Conflict(ref msg)) if msg.contains("tombstoned"))
+        );
+
+        // 4. Re-registration succeeds after expiry (now >= tombstone_expires_at)
+        // Mallory reclaims at now = 1400 (exact expiry) -> succeeds!
+        assert!(store.register_username("alice", mallory_addr, 1400).is_ok());
+        let reclaimed_rec = store.get("alice")?.expect("record should exist");
+        assert_eq!(reclaimed_rec.account_address, mallory_addr);
+        assert_eq!(reclaimed_rec.status, UsernameStatus::Active);
+        assert_eq!(reclaimed_rec.updated_at, 1400);
+
+        // 5. Ownership transition
+        // Mallory owns "alice". Mallory tombstones it at now = 1500 with 100s cooldown (expires 1600).
+        assert!(store.tombstone_username("alice", mallory_addr, 1500, 100)?);
+
+        // Charlie cannot claim before expiry
+        assert!(matches!(
+            store.register_username("alice", charlie_addr, 1550),
+            Err(UsernameError::Conflict(_))
+        ));
+
+        // Charlie claims at now = 1605 (after expiry) -> succeeds!
+        assert!(store.register_username("alice", charlie_addr, 1605).is_ok());
+        let charlie_rec = store.get("alice")?.expect("record should exist");
+        assert_eq!(charlie_rec.account_address, charlie_addr);
+        assert_eq!(charlie_rec.status, UsernameStatus::Active);
+        assert_eq!(charlie_rec.updated_at, 1605);
+
+        // Charlie re-registers at now = 1700 -> succeeds and updates updated_at
+        assert!(store.register_username("alice", charlie_addr, 1700).is_ok());
+        let updated_charlie = store.get("alice")?.expect("record should exist");
+        assert_eq!(updated_charlie.updated_at, 1700);
 
         Ok(())
     }

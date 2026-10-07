@@ -122,20 +122,50 @@ function productionDeps(): MessagingDeps {
       discardUnenrolled: discardUnenrolledDirectoryStore,
       checkpoints: {
         load(key) {
-          const saved = window.localStorage.getItem(CHECKPOINT_PREFIX + key)
-          return saved === null ? null : parseCheckpoint(saved)
+          try {
+            const saved = window.localStorage.getItem(CHECKPOINT_PREFIX + key)
+            return saved === null ? null : parseCheckpoint(saved)
+          } catch {
+            return null
+          }
         },
         save(key, checkpoint) {
-          window.localStorage.setItem(
-            CHECKPOINT_PREFIX + key,
-            serializeCheckpoint(checkpoint),
-          )
+          try {
+            if (!checkpoint) {
+              window.localStorage.removeItem(CHECKPOINT_PREFIX + key)
+              return
+            }
+            window.localStorage.setItem(
+              CHECKPOINT_PREFIX + key,
+              serializeCheckpoint(checkpoint),
+            )
+          } catch (e) {
+            console.warn(
+              '[monad-identity-session] Failed to save checkpoint:',
+              e,
+            )
+          }
         },
       },
       pins: {
-        load: key => window.localStorage.getItem(PIN_PREFIX + key),
-        save: (key, value) =>
-          window.localStorage.setItem(PIN_PREFIX + key, value),
+        load: key => {
+          try {
+            return window.localStorage.getItem(PIN_PREFIX + key)
+          } catch {
+            return null
+          }
+        },
+        save: (key, value) => {
+          try {
+            if (!value) {
+              window.localStorage.removeItem(PIN_PREFIX + key)
+              return
+            }
+            window.localStorage.setItem(PIN_PREFIX + key, value)
+          } catch (e) {
+            console.warn('[monad-identity-session] Failed to save pin:', e)
+          }
+        },
       },
     },
     install: installCanonicalDirectory,

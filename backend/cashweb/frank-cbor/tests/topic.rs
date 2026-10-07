@@ -358,10 +358,13 @@ fn signed_topic_post_encodes_and_verifies_author() {
         unknown: vec![],
     }];
 
-    let parse_with_default = |frame: &[u8]| match frank_cbor::validate_frame(frame, &frank_cbor::default_context()).expect("valid") {
-        ValidationResult::Parsed(parsed) => parsed,
-        _ => panic!("not parsed"),
-    };
+    let parse_with_default =
+        |frame: &[u8]| match frank_cbor::validate_frame(frame, &frank_cbor::default_context())
+            .expect("valid")
+        {
+            ValidationResult::Parsed(parsed) => parsed,
+            _ => panic!("not parsed"),
+        };
 
     let unsigned_frame =
         frank_cbor::encode_forum_post("frank", "test.topic", None, &authored, &entries).unwrap();
@@ -418,4 +421,3 @@ fn signed_topic_post_encodes_and_verifies_author() {
     );
     assert_eq!(verified_addr, Some(expected_address));
 }
-

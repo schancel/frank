@@ -8,6 +8,7 @@ import type { RouteLocationNormalized } from 'vue-router'
 import { createRoutes } from './routes'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
+import { isChainAddress } from 'src/utils/chain-address'
 import { accountSession, accountStatus } from '../accounts/session'
 
 async function ensureChatState(address?: string) {
@@ -28,8 +29,14 @@ async function ensureChatState(address?: string) {
         return
       }
     }
-    const contactsStore = useContactStore()
-    contactsStore.fetchAndAddContact({ address, contact: {} })
+    if (isChainAddress(address)) {
+      const contactsStore = useContactStore()
+      void contactsStore
+        .fetchAndAddContact({ address, contact: {} })
+        .catch(err => {
+          console.debug('fetchAndAddContact suppressed error:', err)
+        })
+    }
     if (typeof chatStore.setActiveConversation === 'function') {
       chatStore.setActiveConversation(address)
     } else {

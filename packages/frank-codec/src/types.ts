@@ -515,6 +515,40 @@ export interface RafflePayload {
   unknownFields?: UnknownFields
 }
 
+export interface EmailParty {
+  address: string
+  name?: string
+  frankAccount?: AccountRef
+  unknownFields?: UnknownFields
+}
+
+export interface EmailAttachment {
+  filename: string
+  contentType: string
+  content?: Uint8Array
+  contentId?: string
+  size?: number
+  sizeBytes?: number
+  dataBase64?: string
+  unknownFields?: UnknownFields
+}
+
+export interface EmailMessageItem {
+  type: 26
+  messageId: string
+  from: EmailParty
+  to: EmailParty[]
+  cc?: EmailParty[]
+  subject: string
+  textBody: string
+  htmlBody?: string
+  inReplyTo?: string
+  references?: string[]
+  attachments?: EmailAttachment[]
+  replyTo?: EmailParty
+  unknownFields: UnknownFields
+}
+
 /** The nine closed blackjack shapes. H and Q distinguish wire bytes from presentation text. */
 export type BlackjackFields<H, Q> = { gameId: string } & (
   | { action: 'bet'; wagerTxHash: H }
@@ -645,6 +679,7 @@ export type TypedPayload<F, C, P = ForumContent, K = ForumCursor> =
   | StealthMessageItem
   | ChannelUpdateItem
   | ForwardingDeliveryEnvelope<F>
+  | EmailMessageItem
 
 /** Why a frame was kept only as opaque bytes. */
 export type RetentionReason =

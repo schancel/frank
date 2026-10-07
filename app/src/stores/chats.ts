@@ -1,12 +1,20 @@
 import assert from 'assert'
 import { defineStore } from 'pinia'
 
-import { defaultStampAmount, displayNetwork } from '../utils/constants'
+import {
+  defaultEmailGatewayAddress,
+  defaultStampAmount,
+  displayNetwork,
+} from '../utils/constants'
 import { sha1 } from '@noble/hashes/sha1'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
-import { toChainDisplayAddress } from '../utils/chain-address'
+import {
+  isChainAddress,
+  safeChainDisplayAddress,
+  toChainDisplayAddress,
+} from '../utils/chain-address'
 import { formatBalance } from '../utils/formatting'
 import { acquireOutgoingLock, withOutgoingLock } from '../utils/outgoing-lock'
 import { activeChain } from '@frank/wallet/chain'
@@ -53,6 +61,7 @@ import type {
   ImageItem,
   StealthItem,
   WalletSyncItem,
+  EmailItem,
 } from '@frank/cashweb/types/messages'
 import {
   isSafeRelayTimestamp,
@@ -62,6 +71,7 @@ import {
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { accountSession } from '../accounts/session'
 import { useProfileStore } from './my-profile'
+import { useSettingsStore } from './settings'
 import { useContactStore } from './contacts'
 import { useBalance } from '../composables/useBalance'
 import { mapObjIndexed, pathOr } from 'ramda'
@@ -157,7 +167,7 @@ export type ChatMessage = {
  *    - `timestamp`: Timestamp of delivery receipt/send.
  */
 
-export type ConversationKind = 'direct' | 'group'
+export type ConversationKind = 'direct' | 'group' | 'email'
 export type ConversationRole = 'owner' | 'admin' | 'member'
 
 export interface ConversationMember {
@@ -202,6 +212,7 @@ export interface Conversation {
   kind: ConversationKind
   name?: string
   topic?: string
+  emailRecipient?: string
   participants: string[]
   members?: Record<string, ConversationMember>
   epoch?: ConversationEpoch
@@ -216,9 +227,30 @@ export interface Conversation {
   createdAt?: number
   updatedAt?: number
   deletedAt?: number
+  verifiedGateway?: boolean
 }
 
 export type ChatState = Conversation
+
+export function getTrustedEmailGatewayAddress(): string {
+  try {
+    const profile = useProfileStore()
+    if (profile.emailBridgeGatewayAddress) {
+      return profile.emailBridgeGatewayAddress
+    }
+  } catch {
+    //
+  }
+  try {
+    const settings = useSettingsStore()
+    if (settings.emailGatewayAddress) {
+      return settings.emailGatewayAddress
+    }
+  } catch {
+    //
+  }
+  return defaultEmailGatewayAddress
+}
 
 export function makeParticipantsKey(participants: string[]): string {
   const normalized = Array.from(
@@ -677,6 +709,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         kind: rawConv.kind || 'direct',
         name: rawConv.name,
         topic: rawConv.topic,
+        emailRecipient: rawConv.emailRecipient,
         participants: rawConv.participants || [],
         members: rawConv.members || {},
         epoch: rawConv.epoch,
@@ -691,9 +724,10 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         createdAt: rawConv.createdAt,
         updatedAt: rawConv.updatedAt,
         deletedAt: rawConv.deletedAt,
+        verifiedGateway: rawConv.verifiedGateway,
       }
       conversations[id] = conv
-      if (conv.kind === 'direct' && conv.address) {
+      if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
         try {
           const displayAddress = toChainDisplayAddress(conv.address)
           chats[displayAddress] = conv
@@ -801,7 +835,8 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     assert(newMsg.senderAddress !== undefined, 'senderAddress is not defined')
 
     const message: ChatMessage = { payloadDigest: index, ...newMsg }
-    const displayAddress = toChainDisplayAddress(copartyAddress)
+    const displayAddress =
+      safeChainDisplayAddress(copartyAddress) || copartyAddress
     const rawConvId =
       (newMsg as any).conversationId || (messageWrapper as any).conversationId
     const participants = ownAddress
@@ -836,6 +871,21 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     message.conversationId = conv.id
     messages[index] = message
     conv.messages.push(message)
+    const emailItem = message.items?.find(it => it.type === 'email') as
+      | EmailItem
+      | undefined
+    if (emailItem) {
+      conv.kind = 'email'
+      if (!conv.name && emailItem.subject) {
+        conv.name = emailItem.subject
+      }
+      const trustedGateway = getTrustedEmailGatewayAddress()
+      const isGateway = message.outbound
+        ? sameCanonicalAddress(conv.address, trustedGateway) ||
+          sameCanonicalAddress(copartyAddress, trustedGateway)
+        : sameCanonicalAddress(message.senderAddress, trustedGateway)
+      conv.verifiedGateway = isGateway
+    }
     recordLogicalMessage(logicalMessages, message, conv.id)
 
     conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
@@ -1361,11 +1411,17 @@ export const useChatStore = defineStore('chats', {
           // This was a self send, we don't want to update any particular chats.
           return
         }
+        const emailItem = items?.find(it => it.type === 'email') as
+          | EmailItem
+          | undefined
+        const trustedGateway = getTrustedEmailGatewayAddress()
+        const isGateway = sameCanonicalAddress(displayAddress, trustedGateway)
         conv = this.createConversation({
-          kind: 'direct',
+          kind: emailItem ? 'email' : 'direct',
           participants: [senderAddress, displayAddress],
           conversationId,
           address: displayAddress,
+          verifiedGateway: emailItem ? isGateway : undefined,
         })
       }
 
@@ -1386,6 +1442,19 @@ export const useChatStore = defineStore('chats', {
 
       this.messages[payloadDigest] = message
       conv.messages.push(message)
+      const emailItem = message.items?.find(it => it.type === 'email') as
+        | EmailItem
+        | undefined
+      if (emailItem) {
+        conv.kind = 'email'
+        if (!conv.name && emailItem.subject) {
+          conv.name = emailItem.subject
+        }
+        const trustedGateway = getTrustedEmailGatewayAddress()
+        conv.verifiedGateway =
+          sameCanonicalAddress(displayAddress, trustedGateway) ||
+          sameCanonicalAddress(conv.address, trustedGateway)
+      }
       conv.lastRead = Date.now()
       conv.lastReceived = Math.max(conv.lastReceived, timestamp)
       recomputeChatAccounting(conv, this.activeChatAddr)
@@ -1709,7 +1778,8 @@ export const useChatStore = defineStore('chats', {
         previousHash: id,
         timestamp: serverTime,
       })
-      const chat = this.chats[toChainDisplayAddress(address)]
+      const chatKey = safeChainDisplayAddress(address) || address
+      const chat = this.chats[chatKey] || this.conversations[address]
       if (chat) recomputeChatAccounting(chat, this.activeChatAddr)
       const messageStore = await store
       await messageStore.saveMessage(
@@ -1768,7 +1838,8 @@ export const useChatStore = defineStore('chats', {
         const stored = row?.message
         if (!stored || stored.status === 'confirmed') {
           delete this.messages[id]
-          const chat = this.chats[toChainDisplayAddress(address)]
+          const chatKey = safeChainDisplayAddress(address) || address
+          const chat = this.chats[chatKey] || this.conversations[address]
           if (chat) {
             chat.messages = chat.messages.filter(m => m.payloadDigest !== id)
             recomputeChatAccounting(chat, this.activeChatAddr)
@@ -2283,20 +2354,24 @@ export const useChatStore = defineStore('chats', {
       kind = 'direct',
       name,
       topic,
+      emailRecipient,
       participants,
       conversationId,
       initialRole = 'member',
       stampAmount = defaultStampAmount,
       address,
+      verifiedGateway,
     }: {
       kind?: ConversationKind
       name?: string
       topic?: string
+      emailRecipient?: string
       participants: string[]
       conversationId?: string
       initialRole?: ConversationRole
       stampAmount?: number
       address?: string
+      verifiedGateway?: boolean
     }): Conversation {
       const normalizedParticipants = Array.from(
         new Set(
@@ -2316,9 +2391,12 @@ export const useChatStore = defineStore('chats', {
       if (conv) {
         if (name !== undefined) conv.name = name
         if (topic !== undefined) conv.topic = topic
+        if (verifiedGateway !== undefined)
+          conv.verifiedGateway = verifiedGateway
+        if (emailRecipient !== undefined) conv.emailRecipient = emailRecipient
         conv.deletedAt = undefined
         conv.updatedAt = Date.now()
-        if (kind === 'direct' && conv.address) {
+        if ((kind === 'direct' || kind === 'email') && conv.address) {
           this.chats[conv.address] = conv
         }
         return conv
@@ -2330,7 +2408,10 @@ export const useChatStore = defineStore('chats', {
       }
 
       const displayAddress =
-        address || (kind === 'direct' ? normalizedParticipants[0] || id : id)
+        address ||
+        (kind === 'direct' || kind === 'email'
+          ? normalizedParticipants[0] || id
+          : id)
 
       conv = {
         ...defaultContactObject,
@@ -2338,6 +2419,7 @@ export const useChatStore = defineStore('chats', {
         kind,
         name,
         topic,
+        emailRecipient,
         participants: normalizedParticipants,
         members,
         address: displayAddress,
@@ -2345,10 +2427,11 @@ export const useChatStore = defineStore('chats', {
         stampAmount,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        verifiedGateway,
       }
 
       this.conversations[id] = conv
-      if (kind === 'direct' && displayAddress) {
+      if ((kind === 'direct' || kind === 'email') && displayAddress) {
         try {
           const canonical = toChainDisplayAddress(displayAddress)
           this.chats[canonical] = conv
@@ -2357,6 +2440,66 @@ export const useChatStore = defineStore('chats', {
         }
       }
       return conv
+    },
+    createOrOpenEmailConversation({
+      recipientEmail,
+      subject,
+      gatewayAddress = defaultEmailGatewayAddress,
+    }: {
+      recipientEmail: string
+      subject?: string
+      gatewayAddress?: string
+    }): Conversation {
+      const normalizedEmail = recipientEmail.toLowerCase().trim()
+      let canonicalGateway = gatewayAddress
+      try {
+        canonicalGateway = toChainDisplayAddress(gatewayAddress)
+      } catch {
+        // keep gatewayAddress as is
+      }
+
+      // Check if an existing email conversation to this recipient already exists
+      const existing = Object.values(this.conversations).find(
+        c =>
+          c &&
+          !c.deletedAt &&
+          c.kind === 'email' &&
+          (c.emailRecipient?.toLowerCase().trim() === normalizedEmail ||
+            c.topic?.toLowerCase().trim() === normalizedEmail ||
+            (c.messages.length === 0 &&
+              c.name?.toLowerCase().trim() === normalizedEmail)),
+      )
+
+      if (existing) {
+        if (subject && (!existing.name || existing.name === normalizedEmail)) {
+          existing.name = subject
+        }
+        if (!existing.emailRecipient) {
+          existing.emailRecipient = recipientEmail.trim()
+        }
+        if (existing.verifiedGateway === undefined) {
+          existing.verifiedGateway = true
+        }
+        return existing
+      }
+
+      const convId = uuidv5(
+        NULL_CONVERSATION_NAMESPACE,
+        `email:${normalizedEmail}:${Date.now()}:${Math.random()
+          .toString(36)
+          .slice(2)}`,
+      )
+
+      return this.createConversation({
+        kind: 'email',
+        conversationId: convId,
+        name: subject || recipientEmail.trim(),
+        topic: recipientEmail.trim(),
+        emailRecipient: recipientEmail.trim(),
+        address: canonicalGateway,
+        participants: [canonicalGateway],
+        verifiedGateway: true,
+      })
     },
     async deleteChat(address: string, deletedAt = Date.now()) {
       let displayAddress = address
@@ -2422,14 +2565,30 @@ export const useChatStore = defineStore('chats', {
         return
       }
 
+      // If address is already a conversation ID in this.conversations:
+      if (this.conversations && address in this.conversations) {
+        this.activeConversationId = address
+        const conv = this.conversations[address]
+        this.activeChatAddr = conv?.address || null
+        this.readAll(address)
+        return
+      }
+
       // make sure address is defined, e.g. Forum is undefined
       if (address) {
-        const contacts = useContactStore()
-        contacts.refresh(address)
+        if (isChainAddress(address)) {
+          const contacts = useContactStore()
+          contacts.refresh(address)
+        }
         this.readAll(address)
       }
 
-      const displayAddress = toChainDisplayAddress(address)
+      let displayAddress: string
+      try {
+        displayAddress = toChainDisplayAddress(address)
+      } catch {
+        displayAddress = address
+      }
       let conv = this.chats[displayAddress]
       if (!conv) {
         conv = this.createConversation({
@@ -2471,7 +2630,7 @@ export const useChatStore = defineStore('chats', {
         return
       }
       this.activeConversationId = conv.id
-      if (conv.kind === 'direct' && conv.address) {
+      if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
         this.activeChatAddr = conv.address
         const contacts = useContactStore()
         contacts.refresh(conv.address)
@@ -2769,8 +2928,12 @@ export const useChatStore = defineStore('chats', {
         if (!toNotify.has(index) && !(index in this.messages)) {
           continue
         }
-        const displayAddress = toChainDisplayAddress(copartyAddress)
+        const displayAddress =
+          safeChainDisplayAddress(copartyAddress) || copartyAddress
 
+        const emailItem = newMsg.items?.find(
+          (it: any) => it.type === 'email',
+        ) as EmailItem | undefined
         const rawConvId =
           (newMsg as any).conversationId ||
           (wrapper as any).conversationId ||
@@ -2778,6 +2941,7 @@ export const useChatStore = defineStore('chats', {
         const convName =
           (newMsg as any).conversationName ||
           (newMsg as any).subject ||
+          emailItem?.subject ||
           (newMsg as any).name
         const participants = ownAddress
           ? Array.from(new Set([ownAddress, displayAddress])).sort()
@@ -2785,6 +2949,12 @@ export const useChatStore = defineStore('chats', {
         const convId = rawConvId
           ? makeConversationId(participants, rawConvId)
           : makeConversationId(participants)
+
+        const trustedGateway = getTrustedEmailGatewayAddress()
+        const isVerifiedGateway = newMsg.outbound
+          ? sameCanonicalAddress(copartyAddress, trustedGateway) ||
+            sameCanonicalAddress(displayAddress, trustedGateway)
+          : sameCanonicalAddress(newMsg.senderAddress, trustedGateway)
 
         let conv = this.conversations[convId]
         if (!conv) {
@@ -2794,11 +2964,12 @@ export const useChatStore = defineStore('chats', {
             this.conversations[convId] = conv
           } else {
             conv = this.createConversation({
-              kind: 'direct',
+              kind: emailItem ? 'email' : 'direct',
               participants,
               conversationId: convId,
               name: convName,
               address: displayAddress,
+              verifiedGateway: emailItem ? isVerifiedGateway : undefined,
             })
           }
         }
@@ -2865,6 +3036,13 @@ export const useChatStore = defineStore('chats', {
             outbound: wasOutbound,
             senderAddress,
           })
+          if (emailItem) {
+            conv.kind = 'email'
+            if (!conv.name && emailItem.subject) {
+              conv.name = emailItem.subject
+            }
+            conv.verifiedGateway = isVerifiedGateway
+          }
           if (wasOutbound) {
             conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
             this.lastReceived = Math.max(
@@ -2881,6 +3059,13 @@ export const useChatStore = defineStore('chats', {
         this.messages[index] = message
         this.chats[displayAddress] = conv
         conv.messages.push(message)
+        if (emailItem) {
+          conv.kind = 'email'
+          if (!conv.name && emailItem.subject) {
+            conv.name = emailItem.subject
+          }
+          conv.verifiedGateway = isVerifiedGateway
+        }
         conv.lastReceived = message.serverTime
         recordLogicalMessage(this.logicalMessages, message, conv.id)
 

@@ -140,6 +140,8 @@ pub struct DirectoryUserResponse {
     /// Canonical lowercase username handle.
     pub username: String,
     /// 0x-prefixed hexadecimal Monad account address.
+    pub address: String,
+    /// 0x-prefixed hexadecimal Monad account address (backward-compatible alias).
     pub account_address: String,
     /// Active, tombstoned, or moved state.
     pub status: &'static str,
@@ -182,6 +184,10 @@ async fn handle_get_directory_user(
                 StatusCode::NOT_FOUND,
                 [(header::CONTENT_TYPE, "application/json")],
                 Json(serde_json::json!({
+                    "username": normalized,
+                    "address": "",
+                    "account_address": "",
+                    "status": "not_found",
                     "error": format!("User '{}' not found", normalized)
                 })),
             )
@@ -228,6 +234,7 @@ async fn handle_get_directory_user(
         None
     };
 
+    let addr_hex = format!("0x{}", hex::encode(record.account_address));
     (
         StatusCode::OK,
         [
@@ -236,10 +243,17 @@ async fn handle_get_directory_user(
         ],
         Json(DirectoryUserResponse {
             username: record.username,
-            account_address: format!("0x{}", hex::encode(record.account_address)),
+            address: addr_hex.clone(),
+            account_address: addr_hex,
             status: status_str,
-            updated_at_ms: record.updated_at_ms,
-            tombstone_expires_at_ms: record.tombstone_expires_at_ms,
+            updated_at_ms: record.updated_at_ms.max(record.updated_at),
+            tombstone_expires_at_ms: record.tombstone_expires_at_ms.or(
+                if record.tombstone_expires_at > 0 {
+                    Some(record.tombstone_expires_at)
+                } else {
+                    None
+                },
+            ),
             redirect_to: record.redirect_to,
             entry,
         }),
@@ -557,6 +571,16 @@ impl RegistryServer {
                 "/metadata/monad/search",
                 routing::get(handle_search_monad_profiles),
             )
+            // Canonical network-agnostic profile endpoints (docs/backend-topology.md)
+            .route(
+                "/profiles/curated-defaults",
+                routing::get(handle_get_curated_default_contacts),
+            )
+            .route(
+                "/profiles/search",
+                routing::get(handle_search_monad_profiles),
+            )
+            .route("/profiles", routing::get(handle_list_monad_profiles))
             // Protobuf topic endpoints are deprecated and dead; canonical CBOR topic
             // endpoints (/message/monad/topics) are the only active routes.
             .route(
@@ -1390,12 +1414,13 @@ mod spa_tests {
         let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(val["username"], "alice");
         assert_eq!(val["status"], "active");
+        assert_eq!(val["address"], format!("0x{}", hex::encode(alice_addr)));
         assert_eq!(
             val["account_address"],
             format!("0x{}", hex::encode(alice_addr))
         );
 
-        // 2. Unknown user -> 404
+        // 2. Unknown user -> 404 with status: not_found
         let res_404 = router
             .clone()
             .oneshot(
@@ -1406,6 +1431,10 @@ mod spa_tests {
             .await
             .unwrap();
         assert_eq!(res_404.status(), StatusCode::NOT_FOUND);
+        let not_found_body = response_bytes(res_404).await;
+        let not_found_val: serde_json::Value = serde_json::from_slice(&not_found_body).unwrap();
+        assert_eq!(not_found_val["username"], "unknown_user");
+        assert_eq!(not_found_val["status"], "not_found");
 
         // 3. Invalid handle format -> 400
         let res_400 = router

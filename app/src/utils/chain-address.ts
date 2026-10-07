@@ -13,6 +13,29 @@
  */
 import { activeChain } from '@frank/wallet/chain'
 
+/** Checks whether an address string is valid for the active chain without throwing. */
+export function isChainAddress(address: string | null | undefined): boolean {
+  if (!address || typeof address !== 'string') return false
+  try {
+    return !!activeChain.parseAddress(address.trim())
+  } catch {
+    return false
+  }
+}
+
+/** Formats an address string to its canonical chain form, or returns null if invalid/unparseable. */
+export function safeChainDisplayAddress(
+  address: string | null | undefined,
+): string | null {
+  if (!address || typeof address !== 'string') return null
+  try {
+    const parsed = activeChain.parseAddress(address.trim())
+    return parsed ? activeChain.formatAddress(parsed) : null
+  } catch {
+    return null
+  }
+}
+
 /** Canonicalizes `address` to `activeChain`'s own canonical string form -- the same value used as
  * the key in `state.chats`/`state.contacts`. Throws if `address` doesn't parse as a valid address
  * for the active chain, matching `toDisplayAddress`'s old fail-fast behavior on a malformed

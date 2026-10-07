@@ -35,14 +35,18 @@ import {
   makeConversationId,
   uuidv5,
   NULL_CONVERSATION_NAMESPACE,
+  getTrustedEmailGatewayAddress,
 } from './chats'
+import { defaultEmailGatewayAddress } from '../utils/constants'
+import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
 import { activeChain } from '@frank/wallet/chain'
 import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
-import type { MessageWrapper } from '@frank/cashweb/types/messages'
+import type { MessageWrapper, EmailItem } from '@frank/cashweb/types/messages'
 import { desktopNotify } from '../utils/notifications'
+import { defaultEmailGatewayAddress } from '../utils/constants'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -2157,6 +2161,250 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.activeConversation?.participants).toContain(
         RECIPIENT_ADDRESS,
       )
+    })
+
+    it('creates or reuses email conversations with createOrOpenEmailConversation', () => {
+      const chats = useChatStore()
+      const conv1 = chats.createOrOpenEmailConversation({
+        recipientEmail: 'Alice@Example.com',
+        subject: 'First Discussion',
+      })
+
+      expect(conv1.kind).toBe('email')
+      expect(conv1.emailRecipient).toBe('Alice@Example.com')
+      expect(conv1.name).toBe('First Discussion')
+      expect(conv1.topic).toBe('Alice@Example.com')
+      expect(conv1.address).toBe(defaultEmailGatewayAddress)
+      expect(conv1.participants).toContain(defaultEmailGatewayAddress)
+      expect(conv1.messages).toEqual([])
+
+      // Calling again with same email returns existing conversation
+      const conv2 = chats.createOrOpenEmailConversation({
+        recipientEmail: 'alice@example.com',
+      })
+      expect(conv2.id).toBe(conv1.id)
+
+      // Calling with new subject updates conversation name if it was empty/fallback
+      const convNoSubject = chats.createOrOpenEmailConversation({
+        recipientEmail: 'bob@example.com',
+      })
+      expect(convNoSubject.name).toBe('bob@example.com')
+
+      const convUpdatedSubject = chats.createOrOpenEmailConversation({
+        recipientEmail: 'bob@example.com',
+        subject: 'Updated Subject',
+      })
+      expect(convUpdatedSubject.id).toBe(convNoSubject.id)
+      expect(convUpdatedSubject.name).toBe('Updated Subject')
+    })
+  })
+
+  describe('unverified peer email frames defense (ticket-unverified-peer-email-frames)', () => {
+    const UNTRUSTED_PEER = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
+    const GATEWAY_ADDRESS = defaultEmailGatewayAddress
+    const CUSTOM_GATEWAY = '0x3333333333333333333333333333333333333333'
+
+    const emailPayload: EmailItem = {
+      type: 'email',
+      messageId: '<spoofed@example.com>',
+      from: { address: 'spoofed@google.com', name: 'Google Accounts' },
+      to: [{ address: 'me@frank.org' }],
+      subject: 'Security Notice',
+      textBody: 'Please update your security password immediately.',
+    }
+
+    it('classifies incoming email item from verified gateway as verifiedGateway: true', async () => {
+      const chats = useChatStore()
+      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
+
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: GATEWAY_ADDRESS,
+          copartyAddress: GATEWAY_ADDRESS,
+          copartyPubKey: {} as any,
+          index: 'gateway-email-msg-1',
+          stampValue: 10,
+          message: {
+            conversationId: 'email-thread-gw-1',
+            outbound: false,
+            status: 'confirmed',
+            items: [emailPayload],
+            serverTime: 200,
+            receivedTime: 200,
+            outpoints: [],
+            senderAddress: GATEWAY_ADDRESS,
+          } as any,
+        },
+      ])
+
+      const conv = Object.values(chats.conversations).find(c =>
+        c.messages.some(m => m.payloadDigest === 'gateway-email-msg-1'),
+      )
+      expect(conv).toBeDefined()
+      expect(conv?.kind).toBe('email')
+      expect(conv?.verifiedGateway).toBe(true)
+    })
+
+    it('classifies incoming email item from untrusted peer as verifiedGateway: false', async () => {
+      const chats = useChatStore()
+      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
+
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: UNTRUSTED_PEER,
+          copartyAddress: UNTRUSTED_PEER,
+          copartyPubKey: {} as any,
+          index: 'peer-email-msg-1',
+          stampValue: 10,
+          message: {
+            conversationId: 'email-thread-peer-1',
+            outbound: false,
+            status: 'confirmed',
+            items: [emailPayload],
+            serverTime: 250,
+            receivedTime: 250,
+            outpoints: [],
+            senderAddress: UNTRUSTED_PEER,
+          } as any,
+        },
+      ])
+
+      const conv = Object.values(chats.conversations).find(c =>
+        c.messages.some(m => m.payloadDigest === 'peer-email-msg-1'),
+      )
+      expect(conv).toBeDefined()
+      expect(conv?.kind).toBe('email')
+      expect(conv?.verifiedGateway).toBe(false)
+    })
+
+    it('respects configured custom email gateway in profile store', async () => {
+      const chats = useChatStore()
+      const profile = useProfileStore()
+      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
+
+      profile.emailBridgeGatewayAddress = CUSTOM_GATEWAY
+      expect(getTrustedEmailGatewayAddress()).toBe(CUSTOM_GATEWAY)
+
+      // Message from custom gateway should now be verified
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: CUSTOM_GATEWAY,
+          copartyAddress: CUSTOM_GATEWAY,
+          copartyPubKey: {} as any,
+          index: 'custom-gw-email-1',
+          stampValue: 10,
+          message: {
+            conversationId: 'email-custom-gw-1',
+            outbound: false,
+            status: 'confirmed',
+            items: [emailPayload],
+            serverTime: 300,
+            receivedTime: 300,
+            outpoints: [],
+            senderAddress: CUSTOM_GATEWAY,
+          } as any,
+        },
+      ])
+
+      const customConv = Object.values(chats.conversations).find(c =>
+        c.messages.some(m => m.payloadDigest === 'custom-gw-email-1'),
+      )
+      expect(customConv).toBeDefined()
+      expect(customConv?.verifiedGateway).toBe(true)
+
+      // Message from default gateway is now unverified against custom gateway
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: GATEWAY_ADDRESS,
+          copartyAddress: GATEWAY_ADDRESS,
+          copartyPubKey: {} as any,
+          index: 'old-default-email-1',
+          stampValue: 10,
+          message: {
+            conversationId: 'email-old-default-1',
+            outbound: false,
+            status: 'confirmed',
+            items: [emailPayload],
+            serverTime: 350,
+            receivedTime: 350,
+            outpoints: [],
+            senderAddress: GATEWAY_ADDRESS,
+          } as any,
+        },
+      ])
+
+      const oldGwConv = Object.values(chats.conversations).find(c =>
+        c.messages.some(m => m.payloadDigest === 'old-default-email-1'),
+      )
+      expect(oldGwConv).toBeDefined()
+      expect(oldGwConv?.verifiedGateway).toBe(false)
+
+      // Reset
+      profile.emailBridgeGatewayAddress = undefined
+    })
+
+    it('transitions existing direct chat to email and sets verifiedGateway: false on peer email item', async () => {
+      const chats = useChatStore()
+      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
+
+      // Initial direct text message
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: UNTRUSTED_PEER,
+          copartyAddress: UNTRUSTED_PEER,
+          copartyPubKey: {} as any,
+          index: 'plain-direct-1',
+          stampValue: 10,
+          message: {
+            conversationId: 'plain-direct-conv',
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'Hey there' }],
+            serverTime: 400,
+            receivedTime: 400,
+            outpoints: [],
+            senderAddress: UNTRUSTED_PEER,
+          } as any,
+        },
+      ])
+
+      let conv = Object.values(chats.conversations).find(c =>
+        c.messages.some(m => m.payloadDigest === 'plain-direct-1'),
+      )
+      expect(conv?.kind).toBe('direct')
+
+      // Now peer crafts and sends Type 26 email item
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: UNTRUSTED_PEER,
+          copartyAddress: UNTRUSTED_PEER,
+          copartyPubKey: {} as any,
+          index: 'peer-email-in-direct-2',
+          stampValue: 10,
+          message: {
+            conversationId: 'plain-direct-conv',
+            outbound: false,
+            status: 'confirmed',
+            items: [emailPayload],
+            serverTime: 450,
+            receivedTime: 450,
+            outpoints: [],
+            senderAddress: UNTRUSTED_PEER,
+          } as any,
+        },
+      ])
+
+      conv = Object.values(chats.conversations).find(c =>
+        c.messages.some(m => m.payloadDigest === 'plain-direct-1'),
+      )
+      expect(conv?.kind).toBe('email')
+      expect(conv?.verifiedGateway).toBe(false)
     })
   })
 })

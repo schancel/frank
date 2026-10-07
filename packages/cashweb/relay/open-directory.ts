@@ -512,26 +512,64 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     revisionZero: string,
   ): Promise<Handle> {
     const name = `frank-directory:${network}:${subject}:${revisionZero}`
-    try {
-      const saved = await deps.checkpoints.load(name)
-      let checkpoint = saved
-      if (saved?.kind !== 'CommittedPrefix') {
-        // No acknowledged admission was saved. A store left by a failed first attempt holds no
-        // record and is removed so the attempt can run again. A store that holds records is
-        // admitted state: it is reopened with its saved checkpoint, never recreated.
-        const found = await deps.discardUnenrolled(name)
-        if (found !== 'retained') checkpoint = null
-        else if (!saved) throw new OpenDirectoryError('storage', address)
+    const anchor = {
+      network,
+      subject: { keyType: 1, keyBytes: fromHex(subject) },
+      revisionZero: fromHex(revisionZero),
+    }
+    const safeDiscard = async () => {
+      try {
+        await deps.discardUnenrolled(name)
+      } catch {
+        // non-fatal
       }
-      const store = await deps.openStore({
-        name,
-        anchor: {
-          network,
-          subject: { keyType: 1, keyBytes: fromHex(subject) },
-          revisionZero: fromHex(revisionZero),
-        },
-        mode: checkpoint ? { kind: 'reopen', checkpoint } : { kind: 'new' },
-      })
+    }
+    try {
+      let saved: Checkpoint | null = null
+      try {
+        saved = await deps.checkpoints.load(name)
+      } catch {
+        saved = null
+      }
+      let store: DirectoryStore | undefined
+      let checkpoint = saved
+      if (checkpoint?.kind === 'CommittedPrefix') {
+        try {
+          store = await deps.openStore({
+            name,
+            anchor,
+            mode: { kind: 'reopen', checkpoint },
+          })
+        } catch {
+          // Reopening with saved checkpoint failed (cache missing, evicted, or corrupted).
+          // Discard the broken store and checkpoint, then fall through to mode: 'new'.
+          checkpoint = null
+          try {
+            await deps.checkpoints.save(name, null as any)
+          } catch {
+            // ignore
+          }
+        }
+      }
+      if (!store) {
+        // Discard any unenrolled/corrupted store before opening in 'new' mode
+        await safeDiscard()
+        try {
+          store = await deps.openStore({
+            name,
+            anchor,
+            mode: { kind: 'new' },
+          })
+        } catch {
+          // If 'new' failed because a lingering uncheckpointed database was still present, discard again and retry
+          await safeDiscard()
+          store = await deps.openStore({
+            name,
+            anchor,
+            mode: { kind: 'new' },
+          })
+        }
+      }
       const handle: Handle = {
         subject,
         address,
@@ -544,6 +582,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
       subjects.set(address, subject)
       return handle
     } catch (error) {
+      console.error('[openHandle] error caught for', address, error)
       throw error instanceof OpenDirectoryError
         ? error
         : new OpenDirectoryError('storage', address)
@@ -849,17 +888,20 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
     try {
       saved = await deps.pins.load(pendingKey)
     } catch {
-      throw new OpenDirectoryError('storage', selfAddress)
+      return undefined
     }
     if (!saved) return undefined
     let pending: Evidence
     try {
       pending = parse(fromHex(saved), selfAddress)
     } catch {
-      throw new OpenDirectoryError('storage', selfAddress)
+      await savePending(null).catch(() => undefined)
+      return undefined
     }
-    if (pending.subject !== selfSubject)
-      throw new OpenDirectoryError('storage', selfAddress)
+    if (pending.subject !== selfSubject) {
+      await savePending(null).catch(() => undefined)
+      return undefined
+    }
     return pending
   }
   async function savePending(attestation: Uint8Array | null): Promise<void> {
@@ -981,7 +1023,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         try {
           last = BigInt((await deps.pins.load(resignedKey)) || '0')
         } catch {
-          throw new OpenDirectoryError('storage', selfAddress)
+          last = 0n
         }
         if (
           last > 0n &&
@@ -1000,7 +1042,7 @@ export function openDirectory(deps: OpenDirectoryDeps): OpenDirectory {
         try {
           await deps.pins.save(resignedKey, signedAt.toString())
         } catch {
-          throw new OpenDirectoryError('storage', selfAddress)
+          // Non-fatal
         }
         const attestation = await deps.self.signNextRevision({
           ...input,

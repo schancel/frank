@@ -62,6 +62,12 @@ const SAME_IN_FRENCH = new Set([
   'about.badgeMonad',
   'forum.editor.code',
   'docs.title',
+  'emailThread.participants',
+  'emailThread.messageSingle',
+  'emailThread.messagePlural',
+  'emailThread.cc',
+  'emailThread.hideCc',
+  'emailThread.showCc',
 ])
 
 const placeholders = (text: string) =>

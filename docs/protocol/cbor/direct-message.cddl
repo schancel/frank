@@ -207,5 +207,37 @@ forwarding-delivery-envelope = {
   * uint => frank-value,                ; additive extensible fields
 }
 
+; Active type 26 / schema 1 / min-reader 1: email bridge message item.
+email-message-item = {
+  0: tstr .size (1..256),               ; message_id (RFC 5322 Message-ID, e.g. "<...@domain>")
+  1: email-party,                       ; from
+  2: [1*64 email-party],                ; to (at least 1 recipient)
+  ? 3: [*64 email-party],               ; cc (optional, up to 64 recipients)
+  4: tstr .size (0..1024),              ; subject (UTF-8, e.g. "Re: ...")
+  5: tstr .size (0..262144),            ; text_body (plain text representation)
+  ? 6: tstr .size (0..524288),          ; html_body (optional HTML representation)
+  ? 7: tstr .size (1..256),             ; in_reply_to (RFC 5322 In-Reply-To header)
+  ? 8: [*64 tstr .size (1..256)],       ; references (RFC 5322 References header)
+  ? 9: [*16 email-attachment],          ; attachments (optional metadata and bytes/CID)
+  ? 10: email-party,                    ; reply_to (optional RFC 5322 Reply-To header)
+  * uint => frank-value,                ; forward-compatible extensible fields
+}
+
+email-party = {
+  0: tstr .size (3..320),               ; email address (e.g. "alice@example.com")
+  ? 1: tstr .size (1..256),             ; display_name (e.g. "Alice Smith")
+  ? 2: account-ref,                     ; frank_account (if mapped/known)
+  * uint => frank-value,
+}
+
+email-attachment = {
+  0: tstr .size (1..256),               ; filename
+  1: tstr .size (1..128),               ; content_type (MIME type, e.g. "application/pdf")
+  2: bstr .size (0..8388608),           ; content (raw bytes or hash/CID pointer)
+  ? 3: tstr .size (1..128),             ; content_id (CID for inline images)
+  * uint => frank-value,
+}
+
+
 
 

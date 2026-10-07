@@ -72,6 +72,26 @@ impl Peers {
         Ok(())
     }
 
+    /// Validate candidate peer credentials and endpoint URL.
+    pub async fn validate_peer_candidate(
+        &self,
+        candidate_url: Option<&Url>,
+        candidate_authority: Option<&[u8; 33]>,
+        candidate_cluster_id: Option<&uuid::Uuid>,
+        candidate_node_pubkey: Option<&[u8; 33]>,
+    ) -> Result<(), crate::p2p::cluster::ClusterError> {
+        if let Some(coord) = &self.cluster_coordinator {
+            let lock = coord.lock().await;
+            lock.validate_peer_candidate(
+                candidate_url,
+                candidate_authority,
+                candidate_cluster_id,
+                candidate_node_pubkey,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Record a peer connected under its cluster attestation.
     pub async fn record_peer_connected(
         &self,
@@ -100,19 +120,41 @@ impl Peers {
             .flatten()
             .filter_map(public_http_origin)
             .collect::<Vec<_>>();
+        if let Some(coord) = &self.cluster_coordinator {
+            if let Ok(lock) = coord.try_lock() {
+                if let Some(desc) = lock.my_descriptor() {
+                    for ep in &desc.public_endpoints {
+                        if let Some(origin) = public_http_origin(ep.clone()) {
+                            origins.push(origin);
+                        }
+                    }
+                }
+            }
+        }
         origins.sort();
         origins.dedup();
         origins
     }
 
     /// Relay the metadata to all the peers.
-    /// It will not forward to peers that (probably) already know the payload.
+    /// It will not forward to peers that (probably) already know the payload,
+    /// or across intra-cluster nodes sharing the same cluster authority.
     pub async fn relay_metadata(
         &self,
         relay_info: &RelayInfo,
         request: &PutMetadataRequest,
         signed_metadata: &SignedPayload<proto::AddressMetadata>,
     ) {
+        if let Some(coord) = &self.cluster_coordinator {
+            let lock = coord.lock().await;
+            if relay_info.is_same_cluster(
+                lock.cluster_authority_pubkey().as_ref(),
+                lock.cluster_id().as_ref(),
+            ) {
+                // Intra-cluster self-peering suppression: do not re-broadcast over public P2P
+                return;
+            }
+        }
         futures::future::join_all(self.peers.iter().map(|peer| {
             peer.relay_metadata_to(
                 relay_info,
@@ -125,9 +167,20 @@ impl Peers {
         .await;
     }
 
-    /// Relay the metadata to all the peers.
-    /// It will not forward to peers that (probably) already know the payload.
+    /// Relay the message to all the peers.
+    /// It will not forward to peers that (probably) already know the payload,
+    /// or across intra-cluster nodes sharing the same cluster authority.
     pub async fn relay_message(&self, relay_info: &RelayInfo, request: &PutMessageRequest) {
+        if let Some(coord) = &self.cluster_coordinator {
+            let lock = coord.lock().await;
+            if relay_info.is_same_cluster(
+                lock.cluster_authority_pubkey().as_ref(),
+                lock.cluster_id().as_ref(),
+            ) {
+                // Intra-cluster self-peering suppression: do not re-broadcast over public P2P
+                return;
+            }
+        }
         futures::future::join_all(self.peers.iter().map(|peer| {
             peer.relay_message_to(relay_info, request, &self.own_origin, &self.client)
         }))
@@ -276,6 +329,140 @@ mod public_origin_tests {
             .validate_peer_cluster(&b2_attestation, now)
             .await
             .is_ok());
+
+        // Test validate_peer_candidate anti-self-peering checks
+        let loopback_url = "http://127.0.0.1:8080".parse::<Url>().unwrap();
+        let private_url = "https://10.0.1.5:8443".parse::<Url>().unwrap();
+        let public_url = "https://public.relay-b.org".parse::<Url>().unwrap();
+
+        // In clustered mode, loopback/private candidate URLs are rejected
+        assert_eq!(
+            peers
+                .validate_peer_candidate(
+                    Some(&loopback_url),
+                    Some(&b_auth_pub),
+                    Some(&b_cluster_id),
+                    Some(&b2_pub)
+                )
+                .await,
+            Err(ClusterError::PrivateIpRejected(loopback_url.to_string()))
+        );
+        assert_eq!(
+            peers
+                .validate_peer_candidate(
+                    Some(&private_url),
+                    Some(&b_auth_pub),
+                    Some(&b_cluster_id),
+                    Some(&b2_pub)
+                )
+                .await,
+            Err(ClusterError::PrivateIpRejected(private_url.to_string()))
+        );
+
+        // Candidate presenting our own cluster authority: rejected
+        assert_eq!(
+            peers
+                .validate_peer_candidate(
+                    Some(&public_url),
+                    Some(&my_auth_pub),
+                    Some(&b_cluster_id),
+                    Some(&b2_pub)
+                )
+                .await,
+            Err(ClusterError::SelfPeeringRejected)
+        );
+
+        // Candidate presenting our own cluster ID: rejected
+        assert_eq!(
+            peers
+                .validate_peer_candidate(
+                    Some(&public_url),
+                    Some(&b_auth_pub),
+                    Some(&my_cluster_id),
+                    Some(&b2_pub)
+                )
+                .await,
+            Err(ClusterError::SelfPeeringRejected)
+        );
+
+        // Candidate presenting our known node pubkey: rejected
+        assert_eq!(
+            peers
+                .validate_peer_candidate(
+                    Some(&public_url),
+                    Some(&b_auth_pub),
+                    Some(&b_cluster_id),
+                    Some(&my_node_pub)
+                )
+                .await,
+            Err(ClusterError::SelfPeeringRejected)
+        );
+
+        // Valid foreign public candidate: accepted
+        assert!(peers
+            .validate_peer_candidate(
+                Some(&public_url),
+                Some(&b_auth_pub),
+                Some(&b_cluster_id),
+                Some(&b2_pub)
+            )
+            .await
+            .is_ok());
+
+        // Test cluster descriptor exposes public ingress endpoints in public_origins()
+        let cluster_endpoints = vec![
+            Url::parse("https://cluster-ingress-1.frank.org").unwrap(),
+            Url::parse("https://cluster-ingress-2.frank.org").unwrap(),
+        ];
+        let descriptor = crate::p2p::descriptor::ClusterRelayDescriptor::sign(
+            &my_auth_sec,
+            my_auth_pub,
+            my_cluster_id,
+            "cluster-a.frank.org".to_string(),
+            cluster_endpoints.clone(),
+            now + 86400,
+        );
+
+        let mut clustered_coord = ClusterPeeringCoordinator::new_clustered(descriptor, None, 1);
+        clustered_coord.add_known_node_pubkey(my_node_pub);
+        peers.set_cluster_coordinator(clustered_coord);
+
+        let public_origins = peers.public_origins();
+        assert!(public_origins.contains(&"https://cluster-ingress-1.frank.org".to_string()));
+        assert!(public_origins.contains(&"https://cluster-ingress-2.frank.org".to_string()));
+
+        // Test pick_sample_peers suppresses sibling cluster nodes and private/loopback URLs
+        let sibling_peer = Peer::with_cluster_attestation(
+            "https://sibling-node.frank.org".parse().unwrap(),
+            sibling_attestation,
+        );
+        let loopback_peer = Peer::new("http://127.0.0.1:8080".parse().unwrap());
+        let foreign_peer = Peer::with_cluster_attestation(
+            "https://remote-valid.org".parse().unwrap(),
+            b1_attestation,
+        );
+
+        let mut crawl_peers = Peers::new(
+            "https://local.frank.org".to_string(),
+            vec![sibling_peer, loopback_peer, foreign_peer],
+        );
+        crawl_peers.set_cluster_coordinator(ClusterPeeringCoordinator::new_clustered(
+            crate::p2p::descriptor::ClusterRelayDescriptor::sign(
+                &my_auth_sec,
+                my_auth_pub,
+                my_cluster_id,
+                "cluster-a.frank.org".to_string(),
+                vec![Url::parse("https://ingress.frank.org").unwrap()],
+                now + 86400,
+            ),
+            None,
+            2,
+        ));
+
+        let sampled = crawl_peers.pick_sample_peers(&mut rng, 10);
+        // Only the foreign public peer should be sampled; sibling and loopback must be suppressed
+        assert_eq!(sampled.len(), 1);
+        assert_eq!(sampled[0].url().as_str(), "https://remote-valid.org/");
     }
 }
 
@@ -368,6 +555,27 @@ impl Peers {
 
     fn pick_sample_peers(&self, rng: &mut impl Rng, num_sampled_peers: usize) -> Vec<&Peer> {
         let mut available_peers = self.peers.iter().collect::<Vec<_>>();
+        if let Some(coord) = &self.cluster_coordinator {
+            if let Ok(lock) = coord.try_lock() {
+                available_peers.retain(|peer| {
+                    if lock.validate_peer_url(peer.url()).is_err() {
+                        return false;
+                    }
+                    if let Ok(state) = peer.state.try_lock() {
+                        if let Some(att) = &state.cluster_attestation {
+                            if lock.is_self_peering(
+                                Some(&att.cluster_authority_pubkey),
+                                Some(&att.cluster_id),
+                                Some(&att.node_pubkey),
+                            ) {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                });
+            }
+        }
         let mut sample_peers = Vec::with_capacity(num_sampled_peers);
         for _ in 0..num_sampled_peers {
             if available_peers.is_empty() {

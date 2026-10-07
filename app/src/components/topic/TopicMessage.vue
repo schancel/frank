@@ -56,17 +56,27 @@
 
     <template v-for="(entry, index) in message.entries" :key="index">
       <div
-        :v-if="entry.kind === 'post'"
+        v-if="entry.kind === 'post'"
         class="q-ma-none q-pa-none col-grow q-ml-lg"
       >
         <a
           :href="entry.url"
           target="_blank"
-          v-if="entry.url"
+          v-if="entry.url && !getAnnouncement(entry)"
           class="post-title"
           >{{ entry.title || 'untitled' }}</a
         >
+        <div
+          v-if="entry.url && getAnnouncement(entry)"
+          class="post-title text-weight-bold"
+        >
+          {{ entry.title || getAnnouncement(entry)?.gameName }}
+        </div>
         <span class="mdstyle" v-html="markedMessage(entry.message)" />
+        <game-announcement-card
+          v-if="getAnnouncement(entry)"
+          :announcement="getAnnouncement(entry)!"
+        />
       </div>
     </template>
   </div>
@@ -96,8 +106,13 @@ import {
   useReactiveOwnCanonicalAddress,
   useReactiveOwnAddresses,
 } from 'src/utils/own-address'
+import GameAnnouncementCard from './GameAnnouncementCard.vue'
+import { parseGameAnnouncement } from 'src/utils/game-announcement'
 
 export default defineComponent({
+  components: {
+    GameAnnouncementCard,
+  },
   setup(props) {
     const contactStore = useContactStore()
     const forumStore = useForumStore()
@@ -166,8 +181,15 @@ export default defineComponent({
     this.isVoting = false
   },
   methods: {
+    getAnnouncement(entry?: any) {
+      return parseGameAnnouncement(entry, this.message)
+    },
     markedMessage(text?: string) {
-      return renderMarkdown(text ?? '', this.$q.dark.isActive)
+      const cleaned = (text ?? '').replace(
+        /<!--\s*GAME_ANNOUNCEMENT:.*?-->/gs,
+        '',
+      )
+      return renderMarkdown(cleaned, this.$q.dark.isActive)
     },
     formatAddress(address?: string): string {
       if (!address || typeof address !== 'string') {

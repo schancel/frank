@@ -21,6 +21,11 @@ import {
   type PokerPlayer,
 } from "@frank/wallet/message-item-plugins/poker";
 import { generateAvatarPng } from "../../bot-directory";
+import {
+  announceTableToTopic,
+  type GameTableDetails,
+  DEFAULT_GAMES_TOPIC,
+} from "./table-announcements";
 
 export const POKER_DEFAULT_BUY_IN_WEI = 100_000_000_000_000_000n; // 0.1 MON
 export const POKER_TURN_TIMEOUT_SECONDS = 45;
@@ -110,6 +115,14 @@ export class PokerBot implements FrankBotDefinition {
     } catch (err) {
       console.warn(`[poker] Failed to welcome ${user.address}:`, err);
     }
+  }
+
+  async announceTableToTopic(
+    ctx: BotContext,
+    topic: string = DEFAULT_GAMES_TOPIC,
+    details: GameTableDetails
+  ): Promise<{ payloadDigest?: string; entry: any }> {
+    return announceTableToTopic(ctx, topic, details);
   }
 
   private clearTableTimer(tableId: string) {
@@ -272,6 +285,18 @@ export class PokerBot implements FrankBotDefinition {
         this.tables.set(tableId, table);
         this.conversationTables.set(conversationId, tableId);
         this.latestTableId = tableId;
+
+        // Announce table to public discovery topic
+        await this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
+          gameName: "Texas Hold'em Poker",
+          gameType: "poker",
+          tableId,
+          hostAddress: sender,
+          buyInAmount: "1000 chips (Blinds: 10/20)",
+          currentPlayers: table.players.length,
+          maxPlayers: table.maxPlayers,
+          botAddress: ctx.address,
+        });
 
         const item = this.buildPokerItem(table, sender);
         await msgCtx.reply([

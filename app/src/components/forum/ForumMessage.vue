@@ -92,6 +92,10 @@
               class="mdstyle text-body2"
               v-html="markedMessage(entry.message)"
             />
+            <game-announcement-card
+              v-if="getAnnouncement(entry)"
+              :announcement="getAnnouncement(entry)!"
+            />
           </div>
         </template>
         <q-separator class="q-my-none" style="opacity: 0.15" />
@@ -188,6 +192,8 @@ import { storeToRefs } from 'pinia'
 import { renderMarkdown } from '../../utils/markdown'
 
 import AMessageReplies from './ForumMessageReplies.vue'
+import GameAnnouncementCard from 'components/topic/GameAnnouncementCard.vue'
+import { parseGameAnnouncement } from 'src/utils/game-announcement'
 
 import { MessageWithReplies, useForumStore } from 'src/stores/forum'
 import { useContactStore } from 'src/stores/contacts'
@@ -274,6 +280,7 @@ export default defineComponent({
   },
   components: {
     AMessageReplies,
+    GameAnnouncementCard,
   },
   data() {
     return {
@@ -313,8 +320,15 @@ export default defineComponent({
     formatExactVoteWeight(value: string) {
       return formatRawAmount(activeChain, value)
     },
+    getAnnouncement(entry?: any) {
+      return parseGameAnnouncement(entry, this.message)
+    },
     markedMessage(text?: string) {
-      return renderMarkdown(text ?? '', this.$q.dark.isActive)
+      const cleaned = (text ?? '').replace(
+        /<!--\s*GAME_ANNOUNCEMENT:.*?-->/gs,
+        '',
+      )
+      return renderMarkdown(cleaned, this.$q.dark.isActive)
     },
     formatAddress(address?: string): string {
       if (!address || typeof address !== 'string') {

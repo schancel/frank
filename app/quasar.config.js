@@ -535,17 +535,24 @@ export default configure(ctx => {
     electron: {
       bundler: 'builder', // 'packager' or 'builder'
 
+      extendElectronPackageJson(pkg) {
+        pkg.type = 'module'
+        return pkg
+      },
+
       builder: {
         // https://www.electron.build/configuration/configuration
 
         appId: 'org.cashweb.stamp',
-        extraFiles: [{ from: 'src-electron/icons', to: 'resources/icons' }],
+        extraFiles: [
+          { from: 'src-electron/electron-assets/icons', to: 'resources/icons' },
+        ],
         publish: [],
 
         linux: {
           category: 'Utility',
           target: 'AppImage',
-          icon: 'src-electron/icons/linux-512x512.png',
+          icon: 'src-electron/electron-assets/icons/linux-512x512.png',
         },
       },
     },

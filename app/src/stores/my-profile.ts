@@ -16,14 +16,21 @@ export interface State {
   inbox: {
     acceptancePrice?: number
   }
+  emailBridgeGatewayAddress?: string
 }
 
 export const useProfileStore = defineStore('myProfile', {
-  state: (): State => ({ profile: {}, inbox: {} }),
+  state: (): State => ({ profile: {}, inbox: {}, emailBridgeGatewayAddress: undefined }),
   actions: {
     setRelayData(relayData: State) {
       this.profile = relayData.profile
       this.inbox = relayData.inbox
+      if (relayData.emailBridgeGatewayAddress !== undefined) {
+        this.emailBridgeGatewayAddress = relayData.emailBridgeGatewayAddress
+      }
+    },
+    setEmailBridgeGatewayAddress(address?: string) {
+      this.emailBridgeGatewayAddress = address
     },
   },
   storage: {

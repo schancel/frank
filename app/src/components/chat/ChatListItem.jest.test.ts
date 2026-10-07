@@ -255,3 +255,83 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
     expect(vm.isActive).toBe(true)
   })
 })
+
+describe('ChatListItem email thread indicator (ticket-unverified-peer-email-frames)', () => {
+  beforeEach(() => {
+    mockOwnAddress.value = OWN_ADDRESS
+  })
+
+  it('renders blue mail icon and no warning badge for verified gateway email thread', () => {
+    const wrapper = shallowMount(ChatListItem, {
+      props: {
+        conversation: {
+          id: 'conv-verified-email',
+          kind: 'email',
+          topic: 'Verified Newsletter',
+          participants: [
+            OWN_ADDRESS,
+            '0x1111111111111111111111111111111111111111',
+          ],
+          verifiedGateway: true,
+        },
+        compact: false,
+      },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
+    const vm = wrapper.vm as any
+    expect(vm.isEmail).toBe(true)
+    expect(vm.isVerifiedGateway).toBe(true)
+    expect(
+      wrapper.find('[data-testid="verified-email-icon"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.find('[data-testid="unverified-email-icon"]').exists(),
+    ).toBe(false)
+    expect(
+      wrapper.find('[data-testid="unverified-email-badge"]').exists(),
+    ).toBe(false)
+  })
+
+  it('renders warning icon and P2P badge for unverified peer email thread', () => {
+    const wrapper = shallowMount(ChatListItem, {
+      props: {
+        conversation: {
+          id: 'conv-unverified-email',
+          kind: 'email',
+          topic: 'Peer Author Email',
+          participants: [
+            OWN_ADDRESS,
+            '0x9999999999999999999999999999999999999999',
+          ],
+          verifiedGateway: false,
+        },
+        compact: false,
+      },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
+    const vm = wrapper.vm as any
+    expect(vm.isEmail).toBe(true)
+    expect(vm.isVerifiedGateway).toBe(false)
+    expect(
+      wrapper.find('[data-testid="verified-email-icon"]').exists(),
+    ).toBe(false)
+    expect(
+      wrapper.find('[data-testid="unverified-email-icon"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.find('[data-testid="unverified-email-badge"]').exists(),
+    ).toBe(true)
+  })
+})

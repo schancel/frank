@@ -11,6 +11,7 @@
         </div>
         <div class="row items-center q-gutter-xs col-auto">
           <q-badge
+            v-if="isVerifiedGateway"
             color="primary"
             outline
             class="q-px-sm q-py-xs text-caption"
@@ -18,6 +19,16 @@
           >
             <q-icon name="verified" size="14px" class="q-mr-xs text-primary" />
             {{ $t('emailThread.gatewayBadge', '✉️ Email Bridge (via Frank Gateway)') }}
+          </q-badge>
+          <q-badge
+            v-else
+            color="warning"
+            outline
+            class="q-px-sm q-py-xs text-caption text-weight-medium bg-amber-1 text-amber-10"
+            data-testid="unverified-p2p-badge"
+          >
+            <q-icon name="warning" size="14px" class="q-mr-xs text-warning" />
+            {{ $t('emailThread.unverifiedBadge', '⚠️ Direct P2P Email (Unverified)') }}
           </q-badge>
           <q-btn
             flat
@@ -32,6 +43,21 @@
           </q-btn>
         </div>
       </div>
+
+      <!-- Security Warning Banner for Unverified Peer Email Frames -->
+      <q-banner
+        v-if="!isVerifiedGateway"
+        dense
+        class="bg-amber-1 text-amber-10 q-px-md q-py-xs text-caption rounded-borders q-my-sm unverified-email-banner"
+        data-testid="unverified-peer-warning-banner"
+      >
+        <template v-slot:avatar>
+          <q-icon name="warning" color="warning" size="18px" />
+        </template>
+        <span>
+          ⚠️ Direct Peer Email Frame: This message was sent directly by Frank user {{ peerFrankAddress }} (not an Email Gateway). External email recipients will not receive replies.
+        </span>
+      </q-banner>
 
       <!-- Participants summary -->
       <div class="row items-center text-caption text-grey-7 q-gutter-x-sm ellipsis" v-if="allParticipants.length > 0">
@@ -81,9 +107,19 @@
                       <span class="text-weight-bold text-body2 q-mr-xs ellipsis">
                         {{ card.fromName || card.fromAddress }}
                       </span>
-                      <span class="text-caption text-grey-6 ellipsis" v-if="card.fromName">
+                      <span class="text-caption text-grey-6 ellipsis q-mr-xs" v-if="card.fromName">
                         &lt;{{ card.fromAddress }}&gt;
                       </span>
+                      <q-badge
+                        v-if="isVerifiedGateway && card.isDkimVerified"
+                        color="positive"
+                        outline
+                        class="text-caption q-px-xs q-ml-xs"
+                        data-testid="dkim-badge"
+                      >
+                        <q-icon name="verified_user" size="12px" class="q-mr-xs text-positive" />
+                        DKIM
+                      </q-badge>
                     </div>
                     <div class="text-caption text-grey-6 text-no-wrap q-ml-sm">
                       {{ card.formattedDate }}
@@ -181,6 +217,50 @@
 
     <!-- Docked Email Composer -->
     <div class="email-composer-dock shadow-4 q-px-lg q-py-md">
+      <!-- Unverified Peer Composer Warning Notice -->
+      <div
+        v-if="!isVerifiedGateway"
+        class="composer-warning-banner q-mb-sm q-px-sm q-py-xs bg-amber-1 text-amber-10 rounded-borders text-caption row items-center no-wrap"
+        data-testid="composer-unverified-warning"
+      >
+        <q-icon name="warning" size="16px" class="q-mr-xs text-warning col-auto" />
+        <span class="col">
+          <b>P2P Direct Reply:</b> Replies in this thread are delivered directly to Frank peer <code>{{ peerFrankAddress }}</code> only. External email recipients in To/Cc will not receive replies via MX.
+        </span>
+      </div>
+
+      <!-- Routing Mode Toggle when peer is unverified -->
+      <div
+        v-if="!isVerifiedGateway"
+        class="row items-center justify-between q-mb-xs q-gutter-x-sm text-caption"
+        data-testid="composer-routing-control"
+      >
+        <div class="row items-center q-gutter-x-xs">
+          <span class="text-weight-bold text-grey-7">Route:</span>
+          <q-btn-toggle
+            v-model="replyRouting"
+            dense
+            rounded
+            toggle-color="warning"
+            color="grey-3"
+            text-color="grey-8"
+            size="xs"
+            :options="[
+              { label: 'Direct P2P', value: 'peer' },
+              { label: 'Bridge via Gateway', value: 'gateway' },
+            ]"
+            data-testid="composer-routing-toggle"
+          />
+        </div>
+        <div class="text-caption text-grey-7 ellipsis col text-right">
+          {{
+            replyRouting === 'peer'
+              ? 'Delivered to Frank peer only (no external MX dispatch)'
+              : 'Routed via Frank Email Gateway to external email addresses'
+          }}
+        </div>
+      </div>
+
       <!-- Composer Controls Header -->
       <div class="row items-center justify-between q-mb-sm">
         <div class="row items-center q-gutter-x-sm">
@@ -299,16 +379,16 @@
         </div>
         <div class="col-auto">
           <q-btn
-            color="primary"
+            :color="isVerifiedGateway ? 'primary' : replyRouting === 'gateway' ? 'secondary' : 'warning'"
             icon="send"
-            label="Send"
+            :label="sendButtonLabel"
             :loading="sending"
             :disable="sending || !canSend"
             @click="handleSend"
             class="q-px-md"
             data-testid="send-email-btn"
           >
-            <q-tooltip>Send via Frank Email Gateway (Ctrl+Enter)</q-tooltip>
+            <q-tooltip>{{ sendButtonTooltip }}</q-tooltip>
           </q-btn>
         </div>
       </div>
@@ -321,6 +401,7 @@ import { defineComponent, type PropType, ref } from 'vue'
 import type { Conversation, ChatMessage } from 'src/stores/chats'
 import type { EmailItem, EmailParty, EmailAttachment, MessageItem } from '@frank/cashweb/types/messages'
 import { formatConversationTimestamp } from 'src/utils/formatting'
+import { defaultEmailGatewayAddress } from 'src/utils/constants'
 
 interface ParsedEmailCard {
   id: string
@@ -336,6 +417,7 @@ interface ParsedEmailCard {
   isOutbound: boolean
   attachments?: EmailAttachment[]
   rawEmail?: EmailItem
+  isDkimVerified?: boolean
 }
 
 export default defineComponent({
@@ -365,6 +447,7 @@ export default defineComponent({
   emits: ['sendReply'],
   data() {
     return {
+      replyRouting: 'peer' as 'peer' | 'gateway',
       expandedMap: {} as Record<string, boolean>,
       allExpanded: false,
       replyMode: 'reply_all' as 'reply' | 'reply_all',
@@ -380,6 +463,41 @@ export default defineComponent({
     }
   },
   computed: {
+    isVerifiedGateway(): boolean {
+      return this.conversation?.verifiedGateway === true
+    },
+    peerFrankAddress(): string {
+      if (this.recipientAddress) return this.recipientAddress
+      if (this.conversation?.address) return this.conversation.address
+      const inbound = this.messages.find(m => !m.outbound)
+      if (inbound?.senderAddress) return inbound.senderAddress
+      if (
+        this.conversation?.participants &&
+        this.conversation.participants.length > 0
+      ) {
+        return this.conversation.participants[0]
+      }
+      return ''
+    },
+    sendButtonLabel(): string {
+      if (this.isVerifiedGateway) {
+        return 'Send'
+      }
+      return this.replyRouting === 'gateway'
+        ? 'Bridge via Gateway'
+        : 'Send to Peer (P2P)'
+    },
+    sendButtonTooltip(): string {
+      if (this.isVerifiedGateway) {
+        return 'Send via Frank Email Gateway (Ctrl+Enter)'
+      }
+      return this.replyRouting === 'gateway'
+        ? 'Route through Frank Email Gateway to dispatch to external recipients (Ctrl+Enter)'
+        : 'Reply will only be delivered as a Frank direct message to the peer, not dispatched to external email addresses via MX (Ctrl+Enter)'
+    },
+    emailGatewayAddress(): string {
+      return defaultEmailGatewayAddress
+    },
     parsedEmails(): ParsedEmailCard[] {
       const cards: ParsedEmailCard[] = []
       for (const msg of this.messages) {
@@ -407,6 +525,9 @@ export default defineComponent({
             isOutbound: msg.outbound,
             attachments: emailItem.attachments,
             rawEmail: emailItem,
+            isDkimVerified: Boolean(
+              (emailItem as any).dkim || (emailItem as any).dkimVerified,
+            ),
           })
         } else {
           // Plain message fallback card
@@ -638,7 +759,16 @@ export default defineComponent({
         references: this.activeReferences,
       }
 
-      const fallbackText = `[Email to ${this.toList.join(', ')}]\nSubject: ${this.subject}\n\n${this.replyText}`
+      const isGatewayRoute =
+        this.isVerifiedGateway || this.replyRouting === 'gateway'
+      const targetAddress =
+        !this.isVerifiedGateway && this.replyRouting === 'gateway'
+          ? this.emailGatewayAddress
+          : undefined
+
+      const fallbackText = isGatewayRoute
+        ? `[Email to ${this.toList.join(', ')}]\nSubject: ${this.subject}\n\n${this.replyText}`
+        : `[Direct P2P Email to ${this.peerFrankAddress} (external email recipients not notified)]\nSubject: ${this.subject}\n\n${this.replyText}`
 
       const items: MessageItem[] = [
         emailItem,
@@ -651,6 +781,7 @@ export default defineComponent({
       this.$emit('sendReply', {
         items,
         fallbackText,
+        targetAddress,
       })
 
       // Clear text

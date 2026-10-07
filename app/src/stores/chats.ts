@@ -1,7 +1,11 @@
 import assert from 'assert'
 import { defineStore } from 'pinia'
 
-import { defaultStampAmount, displayNetwork } from '../utils/constants'
+import {
+  defaultEmailGatewayAddress,
+  defaultStampAmount,
+  displayNetwork,
+} from '../utils/constants'
 import { sha1 } from '@noble/hashes/sha1'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
@@ -214,9 +218,19 @@ export interface Conversation {
   createdAt?: number
   updatedAt?: number
   deletedAt?: number
+  verifiedGateway?: boolean
 }
 
 export type ChatState = Conversation
+
+export function getTrustedEmailGatewayAddress(): string {
+  try {
+    const profile = useProfileStore()
+    return profile.emailBridgeGatewayAddress || defaultEmailGatewayAddress
+  } catch {
+    return defaultEmailGatewayAddress
+  }
+}
 
 export function makeParticipantsKey(participants: string[]): string {
   const normalized = Array.from(
@@ -689,6 +703,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         createdAt: rawConv.createdAt,
         updatedAt: rawConv.updatedAt,
         deletedAt: rawConv.deletedAt,
+        verifiedGateway: rawConv.verifiedGateway,
       }
       conversations[id] = conv
       if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
@@ -840,6 +855,11 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
       if (!conv.name && emailItem.subject) {
         conv.name = emailItem.subject
       }
+      const trustedGateway = getTrustedEmailGatewayAddress()
+      const isGateway = message.outbound
+        ? (sameCanonicalAddress(conv.address, trustedGateway) || sameCanonicalAddress(copartyAddress, trustedGateway))
+        : sameCanonicalAddress(message.senderAddress, trustedGateway)
+      conv.verifiedGateway = isGateway
     }
     recordLogicalMessage(logicalMessages, message, conv.id)
 
@@ -1366,11 +1386,15 @@ export const useChatStore = defineStore('chats', {
           // This was a self send, we don't want to update any particular chats.
           return
         }
+        const emailItem = items?.find(it => it.type === 'email') as EmailItem | undefined
+        const trustedGateway = getTrustedEmailGatewayAddress()
+        const isGateway = sameCanonicalAddress(displayAddress, trustedGateway)
         conv = this.createConversation({
-          kind: 'direct',
+          kind: emailItem ? 'email' : 'direct',
           participants: [senderAddress, displayAddress],
           conversationId,
           address: displayAddress,
+          verifiedGateway: emailItem ? isGateway : undefined,
         })
       }
 
@@ -1397,6 +1421,10 @@ export const useChatStore = defineStore('chats', {
         if (!conv.name && emailItem.subject) {
           conv.name = emailItem.subject
         }
+        const trustedGateway = getTrustedEmailGatewayAddress()
+        conv.verifiedGateway =
+          sameCanonicalAddress(displayAddress, trustedGateway) ||
+          sameCanonicalAddress(conv.address, trustedGateway)
       }
       conv.lastRead = Date.now()
       conv.lastReceived = Math.max(conv.lastReceived, timestamp)
@@ -2300,6 +2328,7 @@ export const useChatStore = defineStore('chats', {
       initialRole = 'member',
       stampAmount = defaultStampAmount,
       address,
+      verifiedGateway,
     }: {
       kind?: ConversationKind
       name?: string
@@ -2309,6 +2338,7 @@ export const useChatStore = defineStore('chats', {
       initialRole?: ConversationRole
       stampAmount?: number
       address?: string
+      verifiedGateway?: boolean
     }): Conversation {
       const normalizedParticipants = Array.from(
         new Set(
@@ -2328,6 +2358,7 @@ export const useChatStore = defineStore('chats', {
       if (conv) {
         if (name !== undefined) conv.name = name
         if (topic !== undefined) conv.topic = topic
+        if (verifiedGateway !== undefined) conv.verifiedGateway = verifiedGateway
         conv.deletedAt = undefined
         conv.updatedAt = Date.now()
         if ((kind === 'direct' || kind === 'email') && conv.address) {
@@ -2357,6 +2388,7 @@ export const useChatStore = defineStore('chats', {
         stampAmount,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        verifiedGateway,
       }
 
       this.conversations[id] = conv
@@ -2800,6 +2832,11 @@ export const useChatStore = defineStore('chats', {
           ? makeConversationId(participants, rawConvId)
           : makeConversationId(participants)
 
+        const trustedGateway = getTrustedEmailGatewayAddress()
+        const isVerifiedGateway = newMsg.outbound
+          ? (sameCanonicalAddress(copartyAddress, trustedGateway) || sameCanonicalAddress(displayAddress, trustedGateway))
+          : sameCanonicalAddress(newMsg.senderAddress, trustedGateway)
+
         let conv = this.conversations[convId]
         if (!conv) {
           const existingChat = this.chats[displayAddress]
@@ -2813,6 +2850,7 @@ export const useChatStore = defineStore('chats', {
               conversationId: convId,
               name: convName,
               address: displayAddress,
+              verifiedGateway: emailItem ? isVerifiedGateway : undefined,
             })
           }
         }
@@ -2862,6 +2900,7 @@ export const useChatStore = defineStore('chats', {
             if (!conv.name && emailItem.subject) {
               conv.name = emailItem.subject
             }
+            conv.verifiedGateway = isVerifiedGateway
           }
           if (wasOutbound) {
             conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
@@ -2884,6 +2923,7 @@ export const useChatStore = defineStore('chats', {
           if (!conv.name && emailItem.subject) {
             conv.name = emailItem.subject
           }
+          conv.verifiedGateway = isVerifiedGateway
         }
         conv.lastReceived = message.serverTime
         recordLogicalMessage(this.logicalMessages, message, conv.id)

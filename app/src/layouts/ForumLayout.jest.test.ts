@@ -93,7 +93,13 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
           QPage: { template: '<div><slot /></div>' },
           QScrollArea: { template: '<div><slot /></div>' },
           QIcon: { template: '<i />' },
-          QChip: { template: '<span><slot /></span>' },
+          QChip: {
+            name: 'QChip',
+            props: ['removable'],
+            emits: ['remove'],
+            template:
+              '<span class="q-chip"><slot /><button v-if="removable" class="chip-remove" @click="$emit(\'remove\')">x</button></span>',
+          },
           QBtn: {
             name: 'QBtn',
             props: ['icon', 'ariaLabel', 'loading'],
@@ -230,4 +236,42 @@ describe('ForumLayout.vue refresh and rejection handling (#533)', () => {
     const store = useForumStore()
     expect(store.selectedTopic).toBe('memes')
   })
+
+  it('renders active topic chip and breadcrumb on /forum when selectedTopic is active, and clearTopic resets it', async () => {
+    const store = useForumStore()
+    store.setSelectedTopic('news')
+
+    const wrapper = mountLayout({
+      route: { path: '/forum', params: {} },
+    })
+    await flushPromises()
+
+    const chip = wrapper.find('[data-test="forum-active-topic-chip"]')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toContain('#news')
+
+    const breadcrumb = wrapper.find('[data-test="forum-breadcrumb-root"]')
+    expect(breadcrumb.exists()).toBe(true)
+
+    const vm = wrapper.vm as any
+    await vm.clearTopic()
+    await flushPromises()
+
+    expect(store.selectedTopic).toBe('')
+  })
+
+  it('renders back button on /new-post route', async () => {
+    const mockRouterPush = jest.fn()
+    const wrapper = mountLayout({
+      route: { path: '/new-post', params: {} },
+      router: { push: mockRouterPush },
+    })
+
+    const backBtn = wrapper.find('[data-test="forum-back"]')
+    expect(backBtn.exists()).toBe(true)
+
+    await backBtn.trigger('click')
+    expect(mockRouterPush).toHaveBeenCalledWith('/forum')
+  })
 })
+

@@ -18,6 +18,9 @@ export default {
     retry: 'Réessayer',
     loginSignUp: 'Connexion / Inscription',
     thread: 'Fil de discussion',
+    allTopics: 'Tous les sujets',
+    filteredBy: 'Filtré par sujet',
+    clearTopicFilter: 'Effacer le filtre',
   },
   agree: "D'accord",
   chat: {

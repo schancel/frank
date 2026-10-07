@@ -754,6 +754,7 @@ export default {
     unableContactRelay: 'Unable to contact relay server.',
     pushingProfile: 'Pushing new Profile...',
     profile: 'Profile',
+    savedNotification: 'Profile updated',
   },
   wipeWallet: {
     warning: 'Delete all relay messages?',

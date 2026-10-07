@@ -781,6 +781,7 @@ export default {
     unableContactRelay: 'Impossible de contacter le serveur-relai.',
     pushingProfile: 'Envoi du nouveau profil..',
     profile: 'Profil',
+    savedNotification: 'Profil mis à jour',
   },
   wipeWallet: {
     warning: 'Supprimer tous les messages du relais ?',

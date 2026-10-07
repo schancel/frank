@@ -89,7 +89,7 @@
                       :key="stone.id"
                       clickable
                       :selected="theme === stone.id"
-                      @click="theme = stone.id"
+                      @click="selectTheme(stone.id)"
                       outline
                       :color="theme === stone.id ? 'primary' : ''"
                       class="cursor-pointer"
@@ -160,7 +160,7 @@ import {
   applyTheme,
 } from 'src/utils/theme'
 
-import { defineComponent, ref } from 'vue'
+import { defineComponent, onUnmounted, ref } from 'vue'
 import { QInput } from 'quasar'
 
 import { useAppearanceStore } from 'src/stores/appearance'
@@ -182,12 +182,27 @@ export default defineComponent({
       theme: storeTheme,
     } = storeToRefs(appearanceStore)
 
+    const isSaved = ref(false)
     const theme = ref<SignetStone>(
       (storeTheme && storeTheme.value) || DEFAULT_SIGNET_THEME,
     )
     const themeOptions = Object.values(SIGNET_THEMES)
 
+    onUnmounted(() => {
+      if (!isSaved.value) {
+        const revertTheme =
+          (storeTheme && storeTheme.value) || DEFAULT_SIGNET_THEME
+        const revertDark =
+          storeDarkMode && storeDarkMode.value !== undefined
+            ? storeDarkMode.value
+            : false
+        applyTheme(revertTheme, revertDark)
+      }
+    })
+
     return {
+      appearanceStore,
+      isSaved,
       darkMode: ref(storeDarkMode.value),
       theme,
       themeOptions,
@@ -214,11 +229,35 @@ export default defineComponent({
       return selected ? selected.tagline : ''
     },
   },
+  beforeRouteLeave(_to, _from, next) {
+    if (!this.isSaved) {
+      applyTheme(
+        this.storeTheme || DEFAULT_SIGNET_THEME,
+        this.storeDarkMode || false,
+      )
+    }
+    next()
+  },
   methods: {
+    selectTheme(stoneId: SignetStone) {
+      this.theme = stoneId
+      this.isSaved = false
+      applyTheme(stoneId, this.darkMode)
+    },
+    onSelectTheme(stoneId: SignetStone) {
+      this.selectTheme(stoneId)
+    },
     save() {
-      this.storeDarkMode = this.darkMode
+      this.isSaved = true
+      if (typeof this.appearanceStore?.setDarkMode === 'function') {
+        this.appearanceStore.setDarkMode(this.darkMode)
+      } else {
+        this.storeDarkMode = this.darkMode
+      }
       this.$q.dark.set(this.darkMode)
-      if (this.storeTheme !== undefined) {
+      if (typeof this.appearanceStore?.setTheme === 'function') {
+        this.appearanceStore.setTheme(this.theme)
+      } else if (this.storeTheme !== undefined) {
         this.storeTheme = this.theme
       }
       applyTheme(this.theme, this.darkMode)
@@ -240,11 +279,16 @@ export default defineComponent({
       }
     },
     cancel() {
-      // Discard the draft -- it was never applied anywhere, so there's nothing else to undo.
+      // Discard the draft -- reset theme back to store values
       this.locale = this.storeLocale
       if (this.storeTheme !== undefined) {
         this.theme = this.storeTheme
       }
+      applyTheme(
+        this.storeTheme || DEFAULT_SIGNET_THEME,
+        this.storeDarkMode || false,
+      )
+      this.isSaved = true
       navigateBack(this.$router)
     },
   },

@@ -31,6 +31,7 @@ const session = accountStatus as { status: string; revision: number }
 
 const balance = {
   formattedBalance: ref('1 MON'),
+  balance: ref(1_000_000_000_000_000_000n),
   loaded: ref(true),
   hasError: ref(false),
 }
@@ -63,7 +64,12 @@ jest.mock('src/composables/useChainBalance', () => ({
 jest.mock('src/stores/oracle', () => ({
   useSafeOracleStore: () => ({
     getAvu: () => 0,
-    formatAvuAmount: () => '',
+    formatAvuAmount: (asset: string) => `≈ 100.00 AVU`,
+    formatUnitRate: (asset: string) => {
+      if (asset === 'monad') return '1 MON ≈ 41.67 AVU'
+      if (asset === 'solana') return '1 SOL ≈ 1,785.71 AVU'
+      return `1 ${asset.toUpperCase()} ≈ 100.00 AVU`
+    },
     snapshot: { totalConstituents: 0, constituents: [] },
     startBackgroundWorker: jest.fn(),
   }),
@@ -465,6 +471,32 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.find('[data-testid="wallet-qr"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
       'ecash:cached_immediate_address_123',
+    )
+    wrapper.unmount()
+  })
+
+  it('always displays the 1-unit physical compute AVU rate badge and keeps it clickable', async () => {
+    mockRoute.value = {
+      query: { chain: 'monad' },
+      path: '/wallet',
+    }
+    balance.loaded.value = false
+    const wrapper = mountWallet()
+
+    // Unit rate badge is visible even when balance is not loaded
+    const unitRateBadge = wrapper.find('[data-testid="wallet-unit-rate-avu"]')
+    expect(unitRateBadge.exists()).toBe(true)
+    expect(unitRateBadge.text()).toContain('1 MON ≈ 41.67 AVU')
+
+    // Click opens AvuExplainerDialog
+    await unitRateBadge.trigger('click')
+    expect(wrapper.vm.showAvuDialog).toBe(true)
+
+    // AVU balance line becomes visible when balance is loaded
+    balance.loaded.value = true
+    await nextTick()
+    expect(wrapper.find('[data-testid="wallet-balance-avu"]').exists()).toBe(
+      true,
     )
     wrapper.unmount()
   })

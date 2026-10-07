@@ -26,6 +26,7 @@ function mountDialog(props = {}) {
         QAvatar: { template: '<div class="avatar-stub"><slot /></div>' },
         QIcon: { template: '<i class="icon-stub" />' },
         QSpace: { template: '<span />' },
+        QMarkupTable: { template: '<table><slot /></table>' },
         QBtn: {
           props: ['label', 'disable'],
           template:
@@ -46,6 +47,32 @@ describe('AvuExplainerDialog component', () => {
     expect(wrapper.text()).toContain('The Root of Every Supply Chain')
     expect(wrapper.text()).toContain('Bypassing the CPI')
     expect(wrapper.text()).toContain('Truly "Oracle-Less"')
+  })
+
+  test('renders live 1-unit physical compute equivalencies across 6 chains and USD', () => {
+    const wrapper = mountDialog()
+    expect(wrapper.find('[data-test="avu-rates-table"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="avu-rate-row-monad"]').text()).toContain(
+      '1 MON ≈ 41.67 AVU',
+    )
+    expect(wrapper.find('[data-test="avu-rate-row-solana"]').text()).toContain(
+      '1 SOL ≈ 1,785.71 AVU',
+    )
+    expect(
+      wrapper.find('[data-test="avu-rate-row-ethereum"]').text(),
+    ).toContain('1 ETH ≈ 30,952.38 AVU')
+    expect(
+      wrapper.find('[data-test="avu-rate-row-hyperliquid"]').text(),
+    ).toContain('1 HYPE ≈ 476.19 AVU')
+    expect(wrapper.find('[data-test="avu-rate-row-tempo"]').text()).toContain(
+      '1 TUSD ≈ 11.90 AVU',
+    )
+    expect(wrapper.find('[data-test="avu-rate-row-ecash"]').text()).toContain(
+      '1M XEC ≈ 416.67 AVU',
+    )
+    expect(wrapper.find('[data-test="avu-rate-row-usd"]').text()).toContain(
+      '1 USD ≈ 11.90 AVU',
+    )
   })
 
   test('does not render when modelValue is false', () => {

@@ -365,6 +365,11 @@ export default {
     avuOracleLessDesc:
       'Unlike traditional DeFi oracles that rely on trusted third-party feeds, Proof-of-Work difficulty and emission schedules are verified directly on-chain by full nodes and anchored by competitive thermodynamics.',
     avuDialogClose: 'Close',
+    avuDrawerHeader: '1 AVU ≡ 1 kWh (?)',
+    avuRatesTitle: 'Live Physical Compute Equivalencies',
+    avuRatesAsset: 'Asset',
+    avuRatesRate: 'Physical Compute (AVU / kWh)',
+    avuRatesRefUsd: 'USD Reference',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',

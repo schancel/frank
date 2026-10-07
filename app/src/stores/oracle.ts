@@ -59,6 +59,39 @@ function loadStoredHistory(): PriceHistoryPoint[] {
   return []
 }
 
+export const UNIT_RATE_ASSET_METRICS: Record<
+  SupportedAsset,
+  { symbol: string; multiplier: number }
+> = {
+  monad: { symbol: '1 MON', multiplier: 1 },
+  solana: { symbol: '1 SOL', multiplier: 1 },
+  ethereum: { symbol: '1 ETH', multiplier: 1 },
+  hyperliquid: { symbol: '1 HYPE', multiplier: 1 },
+  tempo: { symbol: '1 TUSD', multiplier: 1 },
+  ecash: { symbol: '1M XEC', multiplier: 1_000_000 },
+}
+
+/**
+ * Returns formatted 1-unit physical compute AVU equivalent string for an asset,
+ * e.g. "1 MON ≈ 41.67 AVU" or "1M XEC ≈ 416.67 AVU".
+ */
+export function formatUnitRate(
+  asset: SupportedAsset,
+  customRate?: number,
+): string {
+  const metric = UNIT_RATE_ASSET_METRICS[asset] ?? {
+    symbol: `1 ${asset.toUpperCase()}`,
+    multiplier: 1,
+  }
+  const rate = customRate ?? DEFAULT_AVU_RATES[asset] ?? 0
+  const avu = rate * metric.multiplier
+  const formatted = avu.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+  return `${metric.symbol} ≈ ${formatted} AVU`
+}
+
 let workerIntervalId: ReturnType<typeof setInterval> | null = null
 
 export const useOracleStore = defineStore('oracle', {
@@ -95,6 +128,12 @@ export const useOracleStore = defineStore('oracle', {
         )
         if (avu <= 0) return ''
         return `≈ ${formatAvu(avu)}`
+      }
+    },
+
+    formatUnitRate(state) {
+      return (asset: SupportedAsset): string => {
+        return formatUnitRate(asset, state.snapshot.rates[asset])
       }
     },
 
@@ -195,6 +234,7 @@ export function useSafeOracleStore() {
       const avu = convertRawToAvu(rawAmount, asset)
       return avu > 0 ? `≈ ${formatAvu(avu)}` : ''
     },
+    formatUnitRate: (asset: SupportedAsset) => formatUnitRate(asset),
     historicalTrend: [],
     refresh: async () => {
       // no-op in safe fallback

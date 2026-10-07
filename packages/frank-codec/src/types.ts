@@ -525,8 +525,11 @@ export interface EmailParty {
 export interface EmailAttachment {
   filename: string
   contentType: string
-  content: Uint8Array
+  content?: Uint8Array
   contentId?: string
+  size?: number
+  sizeBytes?: number
+  dataBase64?: string
   unknownFields?: UnknownFields
 }
 

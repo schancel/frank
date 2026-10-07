@@ -174,8 +174,31 @@
                 <div v-show="isExpanded(card.id)">
                   <q-separator />
                   <q-card-section class="q-py-md email-card-body">
-                    <!-- Text Body -->
-                    <div class="email-body-text text-body1">
+                    <!-- HTML / Plain Text Toggle if htmlBody is present -->
+                    <div
+                      v-if="card.rawEmail?.htmlBody"
+                      class="row items-center justify-end q-mb-sm html-toggle-row"
+                    >
+                      <q-btn
+                        flat
+                        dense
+                        size="sm"
+                        color="primary"
+                        :label="isHtmlView(card.id) ? 'Show Plain Text' : 'Show HTML'"
+                        :icon="isHtmlView(card.id) ? 'text_fields' : 'html'"
+                        data-testid="toggle-html-view"
+                        @click="toggleHtmlView(card.id)"
+                      />
+                    </div>
+
+                    <!-- Render Sandboxed HTML iframe or Plain Text -->
+                    <iframe
+                      v-if="card.rawEmail?.htmlBody && isHtmlView(card.id)"
+                      :srcdoc="sanitizedHtml(card.rawEmail.htmlBody)"
+                      sandbox="allow-same-origin"
+                      class="email-html-frame"
+                    />
+                    <div v-else class="email-body-text text-body1">
                       {{ card.textBody }}
                     </div>
 
@@ -381,6 +404,36 @@
         />
       </div>
 
+      <!-- Staged Attachments List -->
+      <div
+        v-if="stagedFiles.length > 0"
+        class="row items-center q-gutter-xs q-mb-sm staged-attachments-list"
+        data-testid="staged-attachments-container"
+      >
+        <q-chip
+          v-for="(file, sIdx) in stagedFiles"
+          :key="sIdx"
+          dense
+          outline
+          color="primary"
+          icon="attach_file"
+          class="q-ma-none text-caption staged-attachment-chip"
+        >
+          <span class="text-weight-medium q-mr-xs">{{ file.name }}</span>
+          <span class="text-grey-6 q-mr-xs">({{ formatBytes(file.size) }})</span>
+          <q-btn
+            flat
+            round
+            dense
+            size="xs"
+            icon="close"
+            data-testid="remove-attachment-btn"
+            class="q-ml-xs cursor-pointer"
+            @click="removeStagedFile(sIdx)"
+          />
+        </q-chip>
+      </div>
+
       <!-- Message Textarea & Send Bar -->
       <div class="row items-end q-col-gutter-sm">
         <div class="col">
@@ -399,7 +452,29 @@
             @keydown.meta.enter="handleSend"
           />
         </div>
-        <div class="col-auto">
+        <div class="col-auto row items-center q-gutter-x-xs">
+          <!-- Hidden file input -->
+          <input
+            type="file"
+            ref="fileInput"
+            multiple
+            @change="handleFilesSelected"
+            class="hidden"
+            style="display: none"
+          />
+          <!-- Attachment button -->
+          <q-btn
+            flat
+            round
+            dense
+            color="primary"
+            icon="attach_file"
+            :disable="sending"
+            @click="triggerFileInput"
+            data-testid="attach-file-btn"
+          >
+            <q-tooltip>{{ $t('emailThread.attachFiles', 'Attach files') }}</q-tooltip>
+          </q-btn>
           <q-btn
             :color="isVerifiedGateway ? 'primary' : replyRouting === 'gateway' ? 'secondary' : 'warning'"
             icon="send"
@@ -424,6 +499,8 @@ import type { Conversation, ChatMessage } from 'src/stores/chats'
 import type { EmailItem, EmailParty, EmailAttachment, MessageItem } from '@frank/cashweb/types/messages'
 import { formatConversationTimestamp } from 'src/utils/formatting'
 import { defaultEmailGatewayAddress } from 'src/utils/constants'
+import { purify } from 'src/utils/markdown'
+import { useSettingsStore } from 'src/stores/settings'
 
 interface ParsedEmailCard {
   id: string
@@ -482,6 +559,8 @@ export default defineComponent({
       replyText: '',
       activeInReplyTo: undefined as string | undefined,
       activeReferences: undefined as string[] | undefined,
+      htmlViewMap: {} as Record<string, boolean>,
+      stagedFiles: [] as File[],
     }
   },
   computed: {
@@ -518,7 +597,12 @@ export default defineComponent({
         : 'Reply will only be delivered as a Frank direct message to the peer, not dispatched to external email addresses via MX (Ctrl+Enter)'
     },
     emailGatewayAddress(): string {
-      return defaultEmailGatewayAddress
+      try {
+        const settingsStore = useSettingsStore()
+        return settingsStore.emailGatewayAddress || defaultEmailGatewayAddress
+      } catch {
+        return defaultEmailGatewayAddress
+      }
     },
     parsedEmails(): ParsedEmailCard[] {
       const cards: ParsedEmailCard[] = []
@@ -618,7 +702,7 @@ export default defineComponent({
     },
     canSend(): boolean {
       return (
-        this.replyText.trim().length > 0 &&
+        (this.replyText.trim().length > 0 || this.stagedFiles.length > 0) &&
         (this.toList.length > 0 || this.newToInput.trim().length > 0)
       )
     },
@@ -843,7 +927,60 @@ export default defineComponent({
         else this.addCcRecipient()
       }
     },
-    handleSend() {
+    isHtmlView(id: string): boolean {
+      return !!this.htmlViewMap[id]
+    },
+    toggleHtmlView(id: string) {
+      this.htmlViewMap[id] = !this.htmlViewMap[id]
+    },
+    sanitizedHtml(html?: string): string {
+      if (!html) return ''
+      return purify(html)
+    },
+    triggerFileInput() {
+      const input = this.$refs.fileInput as HTMLInputElement | undefined
+      input?.click?.()
+    },
+    handleFilesSelected(event: Event) {
+      const target = event.target as HTMLInputElement
+      if (target?.files && target.files.length > 0) {
+        const files = Array.from(target.files)
+        this.stagedFiles.push(...files)
+        target.value = ''
+      }
+    },
+    removeStagedFile(index: number) {
+      this.stagedFiles.splice(index, 1)
+    },
+    async readFileAsBase64(file: File): Promise<string> {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          resolve(typeof reader.result === 'string' ? reader.result : '')
+        }
+        reader.onerror = err => reject(err)
+        if (typeof reader.readAsDataURL === 'function') {
+          reader.readAsDataURL(file)
+        } else if (typeof (file as any).arrayBuffer === 'function') {
+          ;(file as any)
+            .arrayBuffer()
+            .then((buf: ArrayBuffer) => {
+              let binary = ''
+              const bytes = new Uint8Array(buf)
+              for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i])
+              }
+              resolve(
+                `data:${file.type || 'application/octet-stream'};base64,${btoa(binary)}`,
+              )
+            })
+            .catch(reject)
+        } else {
+          resolve('')
+        }
+      })
+    },
+    async handleSend() {
       if (!this.canSend || this.sending) return
 
       // Flush any pending text in input fields
@@ -852,6 +989,22 @@ export default defineComponent({
 
       const toParties: EmailParty[] = this.toList.map(addr => ({ address: addr }))
       const ccParties: EmailParty[] = this.ccList.map(addr => ({ address: addr }))
+
+      let attachments: EmailAttachment[] | undefined
+      if (this.stagedFiles.length > 0) {
+        attachments = await Promise.all(
+          this.stagedFiles.map(async file => {
+            const dataBase64 = await this.readFileAsBase64(file)
+            return {
+              filename: file.name,
+              contentType: file.type || 'application/octet-stream',
+              size: file.size,
+              sizeBytes: file.size,
+              dataBase64,
+            }
+          }),
+        )
+      }
 
       const emailSubject = this.subject || (this.isDraft ? 'No Subject' : this.threadSubject)
       const emailItem: EmailItem = {
@@ -864,6 +1017,7 @@ export default defineComponent({
         textBody: this.replyText,
         inReplyTo: this.activeInReplyTo,
         references: this.activeReferences,
+        attachments,
       }
 
       const isGatewayRoute =
@@ -891,8 +1045,9 @@ export default defineComponent({
         targetAddress,
       })
 
-      // Clear text
+      // Clear text and staged files
       this.replyText = ''
+      this.stagedFiles = []
     },
   },
 })
@@ -943,5 +1098,13 @@ export default defineComponent({
 
 .input-inline {
   min-width: 120px;
+}
+
+.email-html-frame {
+  width: 100%;
+  min-height: 240px;
+  border: none;
+  background-color: transparent;
+  display: block;
 }
 </style>

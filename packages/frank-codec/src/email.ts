@@ -86,13 +86,34 @@ export function encodeEmailAttachment(
   ) {
     throw bad('attachment contentType must be 1..128 characters')
   }
-  if (att.content.length > 8_388_608) {
+  let content = att.content
+  if (!content && att.dataBase64) {
+    const clean = att.dataBase64
+      .replace(/^data:[^;]+;base64,/, '')
+      .replace(/\s+/g, '')
+    const g =
+      typeof globalThis !== 'undefined' ? (globalThis as any) : undefined
+    if (g && g.Buffer) {
+      content = new Uint8Array(g.Buffer.from(clean, 'base64'))
+    } else if (g && typeof g.atob === 'function') {
+      const bin: string = g.atob(clean)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i)
+      }
+      content = bytes
+    }
+  }
+  if (!content) {
+    content = new Uint8Array(0)
+  }
+  if (content.length > 8_388_608) {
     throw bad('attachment content exceeds 8388608 bytes')
   }
   const entries: Array<[number, any]> = [
     [0, att.filename],
     [1, att.contentType],
-    [2, att.content],
+    [2, content],
   ]
   if (att.contentId !== undefined) {
     if (att.contentId.length < 1 || att.contentId.length > 128) {

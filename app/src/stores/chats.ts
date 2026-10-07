@@ -67,6 +67,7 @@ import {
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import { accountSession } from '../accounts/session'
 import { useProfileStore } from './my-profile'
+import { useSettingsStore } from './settings'
 import { useContactStore } from './contacts'
 import { useBalance } from '../composables/useBalance'
 import { mapObjIndexed, pathOr } from 'ramda'
@@ -230,10 +231,21 @@ export type ChatState = Conversation
 export function getTrustedEmailGatewayAddress(): string {
   try {
     const profile = useProfileStore()
-    return profile.emailBridgeGatewayAddress || defaultEmailGatewayAddress
+    if (profile.emailBridgeGatewayAddress) {
+      return profile.emailBridgeGatewayAddress
+    }
   } catch {
-    return defaultEmailGatewayAddress
+    //
   }
+  try {
+    const settings = useSettingsStore()
+    if (settings.emailGatewayAddress) {
+      return settings.emailGatewayAddress
+    }
+  } catch {
+    //
+  }
+  return defaultEmailGatewayAddress
 }
 
 export function makeParticipantsKey(participants: string[]): string {

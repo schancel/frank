@@ -173,6 +173,7 @@ import {
   defaultEmailGatewayAddress,
   defaultStampAmount,
 } from '../utils/constants'
+import { useSettingsStore } from '../stores/settings'
 import {
   automaticDealerSteps,
   handItemStillNext,
@@ -1052,7 +1053,12 @@ export default defineComponent({
         return this.conversation.participants[0]
       }
       if (this.isEmailThread) {
-        return defaultEmailGatewayAddress
+        try {
+          const settingsStore = useSettingsStore()
+          return settingsStore.emailGatewayAddress || defaultEmailGatewayAddress
+        } catch {
+          return defaultEmailGatewayAddress
+        }
       }
       return this.address
     },

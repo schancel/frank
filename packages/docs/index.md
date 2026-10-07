@@ -4,7 +4,7 @@ layout: home
 hero:
   name: "Frank & Cashweb"
   text: "High-Assurance Protocol Documentation"
-  tagline: "Uncensorable, Zero-PII Encrypted Communications & Ambient Private Payments"
+  tagline: "No Phone Numbers. No Email. Zero PII. Uncensorable Sovereign Communications & Ambient Privacy."
   actions:
     - theme: brand
       text: Architecture Guide
@@ -17,8 +17,8 @@ hero:
       link: /protocol/atomic-swaps
 
 features:
-  - title: Uncensorable & Zero PII Required
-    details: No phone numbers, email addresses, KYC, or centralized registries. Accounts are self-sovereign cryptographic keypairs generated entirely on-device, making account seizure or de-platforming mathematically impossible.
+  - title: Zero PII & Uncensorable Identity
+    details: Conventional messengers gate communication behind phone numbers, SMS codes, and personal identity. Frank requires zero PII. Identities are sovereign cryptographic keypairs derived entirely offline on your device—making surveillance, account bans, and de-platforming mathematically impossible.
     link: /guide/introduction
   - title: DKSAP Stealth & Ambient Privacy
     details: Dual-Key Stealth Address Protocol with Chaum-Pedersen DLEQ proofs. Every payment generates fresh, unlinkable recipient stealth addresses with zero calldata identifiers to defeat public ledger graph surveillance.

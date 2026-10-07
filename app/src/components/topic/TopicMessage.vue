@@ -32,7 +32,8 @@
       <q-card-section
         class="q-pa-none q-mt-xs text-center"
         :title="exactAmount"
-      >{{ formttedAmount }}</q-card-section>
+        >{{ formttedAmount }}</q-card-section
+      >
       <q-card-section class="q-pa-none q-mt-xs text-center">
         <q-btn
           flat

@@ -48,4 +48,3 @@ export function applyLocale(params: {
     params.$q.lang.set(quasarLangPackForLocale(params.locale))
   }
 }
-

@@ -502,4 +502,3 @@ test('resetAccountStorage deletes all indexedDB databases matching frank- and le
     ;(global as any).indexedDB = originalIndexedDb
   }
 })
-

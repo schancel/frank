@@ -740,5 +740,14 @@ describe('AddContact latest lookup', () => {
         })
       }
     })
+
+    it('clicking Show My QR Code button opens IdentityQrDialog', async () => {
+      const qrBtn = wrapper.find('[data-test="add-contact-show-my-qr"]')
+      expect(qrBtn.exists()).toBe(true)
+
+      expect((wrapper.vm as any).showMyQrDialog).toBe(false)
+      await qrBtn.trigger('click')
+      expect((wrapper.vm as any).showMyQrDialog).toBe(true)
+    })
   })
 })

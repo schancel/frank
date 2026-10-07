@@ -649,6 +649,7 @@ export default {
     found: 'Contact trouvé : {name}',
     ownAddress:
       "Il s'agit de votre propre adresse. Vous ne pouvez pas vous ajouter comme contact.",
+    showMyQr: 'Afficher mon code QR',
   },
   newTopicDialog: {
     newTopic: 'Créer un nouveau topic',
@@ -736,6 +737,7 @@ export default {
     close: 'Fermer',
     contacts: 'Contacts',
     search: 'Recherche...',
+    myQrCode: 'Mon code QR d’identité',
   },
   contactItem: {
     address: 'Adresse',
@@ -796,6 +798,7 @@ export default {
     linkTypeTelegram: 'Telegram',
     linkTypeDiscord: 'Discord',
     linkTypeOther: 'Autre',
+    unnamed: 'Sans nom',
   },
   clearHistoryDialog: {
     cancel: 'Annuler',
@@ -828,6 +831,21 @@ export default {
     pushingProfile: 'Envoi du nouveau profil..',
     profile: 'Profil',
     savedNotification: 'Profil mis à jour',
+    identityQr: 'Identité et QR',
+    viewIdentityQr: 'Partager / QR ami',
+    identityHeading: 'Votre identité Frank',
+    identitySubheading:
+      'Partagez ce code QR ou cette adresse avec vos amis pour qu’ils vous ajoutent à leurs contacts et vous envoient des messages chiffrés.',
+    identityAddressLabel: 'Adresse d’identité (messagerie et contacts)',
+    identityExplanation:
+      'Cette adresse canonique est publiée sur le serveur relais. Vos amis ajoutent cette adresse pour démarrer une conversation chiffrée de bout en bout avec vous.',
+    receiveVsIdentityTitle: 'Adresse d’identité vs adresse de réception',
+    receiveVsIdentityBody:
+      'Votre adresse d’identité est utilisée pour les contacts, la messagerie et l’affichage du profil. Pour recevoir des fonds ou des jetons, utilisez votre adresse de réception.',
+    receiveAddressHint:
+      'Besoin de recevoir des pièces ou jetons ? Votre adresse de réception est gérée dans votre portefeuille.',
+    goToWallet: 'Aller au portefeuille',
+    scanPrompt: 'Scannez pour ajouter comme contact sur Frank',
   },
   wipeWallet: {
     warning: 'Supprimer tous les messages du relais ?',

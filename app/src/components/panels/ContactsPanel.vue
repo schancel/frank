@@ -19,6 +19,14 @@
           <q-btn
             dense
             flat
+            icon="qr_code"
+            :aria-label="$t('contactBookDialog.myQrCode')"
+            data-test="panel-my-qr"
+            @click="showMyQrDialog = true"
+          />
+          <q-btn
+            dense
+            flat
             icon="add"
             :aria-label="$t('a11y.addContact')"
             data-test="panel-add-contact"
@@ -119,6 +127,7 @@
         </q-item>
       </q-list>
     </q-scroll-area>
+    <identity-qr-dialog v-model="showMyQrDialog" />
   </div>
 </template>
 
@@ -133,14 +142,19 @@ import { profileAvatar } from 'src/utils/avatar'
 import { activeChain } from '@frank/wallet/chain'
 import { openChat, openContactProfile, openPage } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
+import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
 
 export default defineComponent({
+  components: {
+    IdentityQrDialog,
+  },
   emits: ['closeDrawer'],
   setup(props, { emit }) {
     const router = useRouter()
     const contactStore = useContactStore()
     const { getContacts } = storeToRefs(contactStore)
     const search = ref('')
+    const showMyQrDialog = ref(false)
 
     const qInject = inject<{ screen?: { width?: number } } | null>('_q_', null)
     let qHook: { screen?: { width?: number } } | null = null
@@ -225,6 +239,7 @@ export default defineComponent({
       startChat,
       openAddContact,
       deleteContact,
+      showMyQrDialog,
     }
   },
 })

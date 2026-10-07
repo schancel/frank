@@ -12,6 +12,13 @@
             name="profile"
             icon="person"
             :label="$t('profileDialog.profile')"
+            data-test="profile-tab-edit"
+          />
+          <q-tab
+            name="identity"
+            icon="qr_code_2"
+            :label="$t('profileDialog.identityQr')"
+            data-test="profile-tab-identity"
           />
         </q-tabs>
       </template>
@@ -187,7 +194,116 @@
                       @click="cycleAvatarRight"
                     />
                   </div>
+                  <div class="q-mt-sm text-center">
+                    <q-btn
+                      outline
+                      color="primary"
+                      icon="qr_code_2"
+                      :label="$t('profileDialog.viewIdentityQr')"
+                      class="full-width"
+                      data-test="profile-quick-qr-btn"
+                      @click="tab = 'identity'"
+                    />
+                  </div>
                 </div>
+              </div>
+            </div>
+          </q-tab-panel>
+
+          <q-tab-panel
+            name="identity"
+            class="q-pa-md"
+            data-test="profile-panel-identity"
+          >
+            <div class="row q-col-gutter-lg items-center">
+              <div class="col-12 col-md-5 text-center">
+                <div
+                  class="q-pa-md bg-white rounded-borders shadow-2 inline-block"
+                  data-test="profile-identity-qr-container"
+                >
+                  <qrcode-vue
+                    v-if="resolvedIdentityAddress"
+                    :value="resolvedIdentityAddress"
+                    :size="240"
+                    level="H"
+                    data-test="profile-identity-qr"
+                  />
+                  <q-skeleton v-else size="240px" square />
+                </div>
+                <div class="text-caption text-grey-7 q-mt-sm">
+                  {{ $t('profileDialog.scanPrompt') }}
+                </div>
+              </div>
+              <div class="col-12 col-md-7">
+                <div class="text-h5 text-weight-bold text-primary q-mb-xs">
+                  {{ internalName || $t('profile.unnamed') }}
+                </div>
+                <div
+                  v-if="internalUsername"
+                  class="text-subtitle1 text-grey-7 q-mb-md"
+                >
+                  @{{ internalUsername }}
+                </div>
+
+                <div class="q-mb-md">
+                  <div class="text-subtitle2 text-weight-medium q-mb-xs">
+                    {{ $t('profileDialog.identityAddressLabel') }}
+                  </div>
+                  <q-input
+                    outlined
+                    readonly
+                    v-model="resolvedIdentityAddress"
+                    data-test="profile-identity-address-input"
+                  >
+                    <template #append>
+                      <q-btn
+                        flat
+                        round
+                        dense
+                        icon="content_copy"
+                        color="primary"
+                        :aria-label="$t('a11y.copyAddress')"
+                        :disable="!resolvedIdentityAddress"
+                        data-test="profile-copy-identity-btn"
+                        @click="copyIdentityAddress"
+                      />
+                    </template>
+                  </q-input>
+                  <div class="text-caption text-grey-8 q-mt-xs">
+                    {{ $t('profileDialog.identityExplanation') }}
+                  </div>
+                </div>
+
+                <q-card flat bordered class="q-pa-sm bg-grey-1">
+                  <div class="row items-center no-wrap">
+                    <q-icon
+                      name="account_balance_wallet"
+                      color="primary"
+                      size="md"
+                      class="q-mr-sm"
+                    />
+                    <div>
+                      <div class="text-caption text-weight-bold">
+                        {{ $t('profileDialog.receiveVsIdentityTitle') }}
+                      </div>
+                      <div class="text-caption text-grey-8">
+                        {{ $t('profileDialog.receiveVsIdentityBody') }}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="row justify-end q-mt-xs">
+                    <q-btn
+                      flat
+                      dense
+                      no-caps
+                      color="primary"
+                      icon-right="arrow_forward"
+                      :label="$t('profileDialog.goToWallet')"
+                      data-test="profile-goto-wallet"
+                      @click="navigateToWallet"
+                    />
+                  </div>
+                </q-card>
               </div>
             </div>
           </q-tab-panel>
@@ -199,11 +315,15 @@
 
 <script lang="ts">
 import { defineComponent, type PropType } from 'vue'
+import QrcodeVue from 'qrcode.vue'
+import { copyToClipboard } from 'quasar'
 
 import { normalizedProfileName, profileNameRule } from '../utils/profile-name'
 import { defaultAvatars } from '../utils/constants'
 import { resizeAndCompressImage, compressAvatarFile } from '../utils/avatar'
 import { validateProfileUsername } from '@frank/wallet/monad-identity'
+import { getOwnCanonicalAddress } from '../utils/own-address'
+import { addressCopiedNotify, errorNotify } from '../utils/notifications'
 
 export type ProfileLinkItem = {
   type: string
@@ -212,6 +332,9 @@ export type ProfileLinkItem = {
 }
 
 export default defineComponent({
+  components: {
+    QrcodeVue,
+  },
   setup() {
     return {}
   },
@@ -244,6 +367,10 @@ export default defineComponent({
       type: Array as PropType<ProfileLinkItem[]>,
       default: () => [],
     },
+    identityAddress: {
+      type: String,
+      default: '',
+    },
   },
   emits: [
     'update:name',
@@ -266,12 +393,16 @@ export default defineComponent({
         ? JSON.parse(JSON.stringify(this.links))
         : []) as ProfileLinkItem[],
       internalAcceptancePrice: this.acceptancePrice,
+      internalIdentityAddress: this.identityAddress,
       avatarPath: null,
       tab: 'profile',
       defaultAvatarIndex: Math.floor(Math.random() * defaultAvatars.length),
     }
   },
   computed: {
+    resolvedIdentityAddress(): string {
+      return this.identityAddress || this.internalIdentityAddress
+    },
     linkTypeOptions(): Array<{ label: string; value: string }> {
       return [
         { value: 'website', label: this.$t('profile.linkTypeWebsite') },
@@ -355,6 +486,22 @@ export default defineComponent({
         (this.defaultAvatarIndex + 1) % defaultAvatars.length
       this.selectLocalAvatar(defaultAvatars[this.defaultAvatarIndex])
     },
+    async copyIdentityAddress() {
+      if (!this.resolvedIdentityAddress) return
+      try {
+        await copyToClipboard(this.resolvedIdentityAddress)
+        addressCopiedNotify()
+      } catch (err) {
+        errorNotify(err, {
+          fallbackKey: 'receiveBitcoinDialog.unableCopyAddress',
+        })
+      }
+    },
+    navigateToWallet() {
+      if (this.$router) {
+        void this.$router.push('/wallet')
+      }
+    },
   },
   watch: {
     internalName(value: string) {
@@ -422,6 +569,13 @@ export default defineComponent({
   created() {
     if (!this.avatar) {
       this.selectLocalAvatar(defaultAvatars[this.defaultAvatarIndex])
+    }
+    if (!this.internalIdentityAddress) {
+      void getOwnCanonicalAddress().then(addr => {
+        if (addr) {
+          this.internalIdentityAddress = addr
+        }
+      })
     }
   },
 })

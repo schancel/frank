@@ -218,8 +218,8 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     const tabs = tabsOf(document.body)
     expect(tabs.map(t => t.getAttribute('aria-label'))).toEqual([
       'Direct Messages, 3 unread messages',
-      'Contacts',
       'Forum',
+      'Contacts',
       'Wallet',
       'Settings',
     ])
@@ -288,15 +288,15 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
 
   it('selecting the Forum tab navigates, moves aria-selected and swaps the panel', async () => {
     const { wrapper, router } = await mountReal(1024)
-    const [, , forum] = tabsOf(document.body)
+    const [, forum] = tabsOf(document.body)
     forum.click()
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/forum')
     const tabs = tabsOf(document.body)
     expect(tabs.map(t => t.getAttribute('aria-selected'))).toEqual([
       'false',
-      'false',
       'true',
+      'false',
       'false',
       'false',
     ])
@@ -315,7 +315,7 @@ describe('LeftDrawer rail with real Quasar QDrawer/QTabs/QTab', () => {
     ;(wrapper.vm as any).toggleMyDrawerOpen()
     await flushPromises()
     expect(drawerIsOverlayOpen()).toBe(true)
-    tabsOf(document.body)[2].click()
+    tabsOf(document.body)[1].click()
     await flushPromises()
     expect(drawerIsOverlayOpen()).toBe(true)
     wrapper.unmount()

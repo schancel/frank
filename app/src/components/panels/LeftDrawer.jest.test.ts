@@ -149,12 +149,12 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       'settings-pin-content',
     )
     expect(html.indexOf('rail-tab-chats')).toBeLessThan(
-      html.indexOf('rail-tab-contacts'),
-    )
-    expect(html.indexOf('rail-tab-contacts')).toBeLessThan(
       html.indexOf('rail-tab-forum'),
     )
     expect(html.indexOf('rail-tab-forum')).toBeLessThan(
+      html.indexOf('rail-tab-contacts'),
+    )
+    expect(html.indexOf('rail-tab-contacts')).toBeLessThan(
       html.indexOf('rail-tab-wallet'),
     )
     expect(html.indexOf('rail-tab-wallet')).toBeLessThan(

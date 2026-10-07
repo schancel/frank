@@ -50,8 +50,8 @@ describe("chains-registry", () => {
       contracts: CANONICAL_EVM_CONTRACTS,
     });
 
-    expect(PROTOCOL_CHAINS["ecash-testnet"]).toEqual({
-      id: "ecash-testnet",
+    expect(PROTOCOL_CHAINS["xec-testnet"]).toEqual({
+      id: "xec-testnet",
       kind: "ecash",
       family: "bitcoin",
       curve: "secp256k1",
@@ -64,8 +64,8 @@ describe("chains-registry", () => {
       networkTag: "XECT",
     });
 
-    expect(PROTOCOL_CHAINS["ecash-mainnet"]).toEqual({
-      id: "ecash-mainnet",
+    expect(PROTOCOL_CHAINS["xec-mainnet"]).toEqual({
+      id: "xec-mainnet",
       kind: "ecash",
       family: "bitcoin",
       curve: "secp256k1",
@@ -261,8 +261,12 @@ describe("chains-registry", () => {
     expect(getChainRegistryByNetworkTag("SOLD")?.id).toBe("solana-devnet");
     expect(getChainRegistryByNetworkTag("SOL1")?.id).toBe("solana-mainnet");
     expect(getChainRegistryByNetworkTag("SEPO")?.id).toBe("ethereum-sepolia");
-    expect(getChainRegistryByNetworkTag("HYPE")?.id).toBe("hyperliquid-mainnet");
-    expect(getChainRegistryByNetworkTag("HYPT")?.id).toBe("hyperliquid-testnet");
+    expect(getChainRegistryByNetworkTag("HYPE")?.id).toBe(
+      "hyperliquid-mainnet"
+    );
+    expect(getChainRegistryByNetworkTag("HYPT")?.id).toBe(
+      "hyperliquid-testnet"
+    );
     expect(getChainRegistryByNetworkTag("TMPO")?.id).toBe("tempo-mainnet");
     expect(getChainRegistryByNetworkTag("TMPT")?.id).toBe("tempo-testnet");
     expect(getChainRegistryByNetworkTag("UNKNOWN")).toBeUndefined();
@@ -271,22 +275,28 @@ describe("chains-registry", () => {
   it("resolves entries by CAIP-2", () => {
     expect(getChainRegistryByCaip2("eip155:10143")?.id).toBe("monad-testnet");
     expect(getChainRegistryByCaip2("eip155:1")?.id).toBe("ethereum-mainnet");
-    expect(getChainRegistryByCaip2("eip155:999")?.id).toBe("hyperliquid-mainnet");
-    expect(getChainRegistryByCaip2("eip155:4217")?.id).toBe("tempo-mainnet");
-    expect(getChainRegistryByCaip2("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")?.id).toBe(
-      "solana-mainnet"
+    expect(getChainRegistryByCaip2("eip155:999")?.id).toBe(
+      "hyperliquid-mainnet"
     );
+    expect(getChainRegistryByCaip2("eip155:4217")?.id).toBe("tempo-mainnet");
+    expect(
+      getChainRegistryByCaip2("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")?.id
+    ).toBe("solana-mainnet");
     expect(getChainRegistryByCaip2("invalid:caip2")).toBeUndefined();
   });
 
   it("groups chains by curve family", () => {
     const secp256k1Chains = getChainsByCurve("secp256k1");
-    expect(secp256k1Chains.every((c) => c.curve === "secp256k1" && c.keyType === 1)).toBe(true);
+    expect(
+      secp256k1Chains.every((c) => c.curve === "secp256k1" && c.keyType === 1)
+    ).toBe(true);
     expect(secp256k1Chains.map((c) => c.id)).toContain("monad-testnet");
     expect(secp256k1Chains.map((c) => c.id)).toContain("ethereum-mainnet");
 
     const ed25519Chains = getChainsByCurve("ed25519");
-    expect(ed25519Chains.every((c) => c.curve === "ed25519" && c.keyType === 2)).toBe(true);
+    expect(
+      ed25519Chains.every((c) => c.curve === "ed25519" && c.keyType === 2)
+    ).toBe(true);
     expect(ed25519Chains.map((c) => c.id)).toContain("solana-mainnet");
     expect(ed25519Chains.map((c) => c.id)).toContain("solana-devnet");
   });
@@ -297,9 +307,13 @@ describe("chains-registry", () => {
     expect(resolveChainIdentifier("eip155:10143")?.id).toBe("monad-testnet");
     expect(resolveChainIdentifier("solana-devnet")?.id).toBe("solana-devnet");
     expect(resolveChainIdentifier("SOLD")?.id).toBe("solana-devnet");
-    expect(resolveChainIdentifier("ethereum-sepolia")?.id).toBe("ethereum-sepolia");
+    expect(resolveChainIdentifier("ethereum-sepolia")?.id).toBe(
+      "ethereum-sepolia"
+    );
     expect(resolveChainIdentifier("SEPO")?.id).toBe("ethereum-sepolia");
-    expect(resolveChainIdentifier("eip155:11155111")?.id).toBe("ethereum-sepolia");
+    expect(resolveChainIdentifier("eip155:11155111")?.id).toBe(
+      "ethereum-sepolia"
+    );
     expect(resolveChainIdentifier("nonexistent")).toBeUndefined();
   });
 
@@ -317,16 +331,25 @@ describe("chains-registry", () => {
       "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5"
     );
 
-    expect(PROTOCOL_CHAINS["monad-testnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);
-    expect(PROTOCOL_CHAINS["monad-mainnet"].contracts).toBe(CANONICAL_EVM_CONTRACTS);
-    expect(PROTOCOL_CHAINS["solana-mainnet"].contracts).toBe(CANONICAL_SOLANA_CONTRACTS);
-    expect(PROTOCOL_CHAINS["ecash-mainnet"].contracts).toBeUndefined();
+    expect(PROTOCOL_CHAINS["monad-testnet"].contracts).toBe(
+      CANONICAL_EVM_CONTRACTS
+    );
+    expect(PROTOCOL_CHAINS["monad-mainnet"].contracts).toBe(
+      CANONICAL_EVM_CONTRACTS
+    );
+    expect(PROTOCOL_CHAINS["solana-mainnet"].contracts).toBe(
+      CANONICAL_SOLANA_CONTRACTS
+    );
+    expect(PROTOCOL_CHAINS["xec-mainnet"].contracts).toBeUndefined();
   });
 
   describe("multi-testnet and family queries", () => {
     it("returns all testnets for a chain kind supporting multiple concurrent testnets", () => {
       const ethTestnets = getAllChainsByKind("ethereum", { isTestnet: true });
-      expect(ethTestnets.map((c) => c.id)).toEqual(["ethereum-sepolia", "ethereum-holesky"]);
+      expect(ethTestnets.map((c) => c.id)).toEqual([
+        "ethereum-sepolia",
+        "ethereum-holesky",
+      ]);
 
       const ethMainnets = getAllChainsByKind("ethereum", { isTestnet: false });
       expect(ethMainnets.map((c) => c.id)).toEqual(["ethereum-mainnet"]);
@@ -339,7 +362,10 @@ describe("chains-registry", () => {
       ]);
 
       const solTestnets = getAllChainsByKind("solana", { isTestnet: true });
-      expect(solTestnets.map((c) => c.id)).toEqual(["solana-devnet", "solana-testnet"]);
+      expect(solTestnets.map((c) => c.id)).toEqual([
+        "solana-devnet",
+        "solana-testnet",
+      ]);
     });
 
     it("returns chains filtered by cryptographic/VM family", () => {
@@ -350,7 +376,9 @@ describe("chains-registry", () => {
       expect(evmTestnetIds).toContain("ethereum-holesky");
       expect(evmTestnetIds).toContain("hyperliquid-testnet");
       expect(evmTestnetIds).toContain("tempo-testnet");
-      expect(evmTestnets.every((c) => c.family === "evm" && c.isTestnet)).toBe(true);
+      expect(evmTestnets.every((c) => c.family === "evm" && c.isTestnet)).toBe(
+        true
+      );
 
       const solanaChains = getChainsByFamily("solana");
       expect(solanaChains.map((c) => c.id)).toEqual([
@@ -391,10 +419,16 @@ describe("chains-registry", () => {
       expect(entry?.unit).toBe("EPH");
 
       // Resolvable via networkTag, CAIP-2, and resolveChainIdentifier
-      expect(getChainRegistryByNetworkTag("EPHT")?.id).toBe("ethereum-ephemeral-1");
-      expect(getChainRegistryByCaip2("eip155:999999")?.id).toBe("ethereum-ephemeral-1");
+      expect(getChainRegistryByNetworkTag("EPHT")?.id).toBe(
+        "ethereum-ephemeral-1"
+      );
+      expect(getChainRegistryByCaip2("eip155:999999")?.id).toBe(
+        "ethereum-ephemeral-1"
+      );
       expect(resolveChainIdentifier("EPHT")?.id).toBe("ethereum-ephemeral-1");
-      expect(resolveChainIdentifier("eip155:999999")?.id).toBe("ethereum-ephemeral-1");
+      expect(resolveChainIdentifier("eip155:999999")?.id).toBe(
+        "ethereum-ephemeral-1"
+      );
 
       // Included in multi-testnet queries
       const ethTestnets = getAllChainsByKind("ethereum", { isTestnet: true });
@@ -408,7 +442,9 @@ describe("chains-registry", () => {
       // clearDynamicChains resets state cleanly
       clearDynamicChains();
       expect(getChainRegistryEntry("ethereum-ephemeral-1")).toBeUndefined();
-      expect(getAllChainsByKind("ethereum", { isTestnet: true }).length).toBe(2);
+      expect(getAllChainsByKind("ethereum", { isTestnet: true }).length).toBe(
+        2
+      );
     });
   });
 
@@ -455,7 +491,9 @@ describe("chains-registry", () => {
         }
         expect(entry.network).toBe(protocolChain.network);
         if (protocolChain.native_chain_id != null) {
-          expect(String(entry.nativeChainId)).toBe(protocolChain.native_chain_id);
+          expect(String(entry.nativeChainId)).toBe(
+            protocolChain.native_chain_id
+          );
         } else {
           expect(entry.nativeChainId).toBeUndefined();
         }
@@ -473,4 +511,3 @@ describe("chains-registry", () => {
     });
   });
 });
-

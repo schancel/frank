@@ -12,8 +12,27 @@ export { createChain } from "./chain-factory";
 export type { ChainFactoryConfig } from "./chain-factory";
 export type { EcashChainConfig } from "./ecash-chain";
 export {
+  fetchEcashBalance,
+  getEcashChronikUrls,
+  DEFAULT_CHRONIK_UPSTREAMS,
+} from "./ecash-balance";
+export type {
+  FetchEcashBalanceOptions,
+  EcashBalanceResult,
+} from "./ecash-balance";
+export {
+  canonicalEcashNetworkId,
+  ECASH_CHECKPOINTS,
+  ECASH_MAINNET_CHECKPOINT_HEIGHT,
+  ECASH_MAINNET_CHECKPOINT_HASH,
+  ECASH_TESTNET_CHECKPOINT_HEIGHT,
+  ECASH_TESTNET_CHECKPOINT_HASH,
+} from "../ecash-wallet";
+export type { EcashNetworkId, EcashAddressPrefix } from "../ecash-wallet";
+export {
   createEvmChain,
   createMonadChain,
+  loadMonadChainConfigFromEnv,
   CUSTOM_RELAY_STORAGE_KEY,
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,

@@ -159,8 +159,10 @@ export function hasMultiChainExplorer(
     tag === 'solana-mainnet' ||
     tag === 'solana' ||
     tag === 'xect' ||
+    tag === 'xec-testnet' ||
     tag === 'ecash-testnet' ||
     tag === 'xec1' ||
+    tag === 'xec-mainnet' ||
     tag === 'ecash-mainnet' ||
     tag === 'ecash'
   ) {
@@ -212,12 +214,17 @@ export function multiChainExplorerUrl(
   }
 
   // eCash
-  if (tag === 'xect' || tag === 'ecash-testnet') {
+  if (tag === 'xect' || tag === 'xec-testnet' || tag === 'ecash-testnet') {
     return `https://testnet.blockchair.com/ecash/transaction/${encodeURIComponent(
       txId,
     )}`
   }
-  if (tag === 'xec1' || tag === 'ecash-mainnet' || tag === 'ecash') {
+  if (
+    tag === 'xec1' ||
+    tag === 'xec-mainnet' ||
+    tag === 'ecash-mainnet' ||
+    tag === 'ecash'
+  ) {
     return `https://blockchair.com/ecash/transaction/${encodeURIComponent(
       txId,
     )}`

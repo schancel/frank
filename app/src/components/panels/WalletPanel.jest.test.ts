@@ -17,12 +17,25 @@ jest.mock('vue-router', () => ({
   useRoute: () => mockRoute.value,
 }))
 
+const mockEcashBalance = ref<string | undefined>(undefined)
+
 jest.mock('../../composables/useBalance', () => ({
   useBalance: () => ({
     loaded: mockLoaded,
     hasError: mockError,
     formattedBalance: mockFormattedBalance,
     refresh: jest.fn(),
+  }),
+}))
+
+jest.mock('../../composables/useChainBalance', () => ({
+  useMultichainBalance: () => ({
+    getFormattedBalance: (chain: string) =>
+      chain === 'ecash' ? mockEcashBalance.value : undefined,
+    isChainLoaded: (chain: string) =>
+      chain === 'ecash' ? Boolean(mockEcashBalance.value) : false,
+    hasChainError: () => false,
+    refreshAll: jest.fn(),
   }),
 }))
 
@@ -68,6 +81,7 @@ afterEach(() => {
   mockLoaded.value = true
   mockError.value = false
   mockFormattedBalance.value = '0 MON'
+  mockEcashBalance.value = undefined
   const { clearAllCustomNames } = useWalletNames()
   clearAllCustomNames()
 })
@@ -112,6 +126,14 @@ test('displays formatted live balance and handles loading and stale states', asy
   mockError.value = false
   await flushPromises()
   expect(view.get('[data-test="wallet-balance"]').text()).toContain('Loading')
+})
+
+test('displays fetched non-zero eCash balance when loaded', async () => {
+  mockEcashBalance.value = '10000 tXEC'
+  const view = render()
+  expect(view.get('[data-test="ecash-wallet-balance"]').text()).toBe(
+    '10000 tXEC',
+  )
 })
 
 test('clicking wallet rows navigates to the respective chain', async () => {

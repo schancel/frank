@@ -1,8 +1,9 @@
 import { toRaw } from 'vue'
 import assert from 'assert'
-import { forumSnapshot, stageForumQuery } from './forum'
+import { forumSnapshot, stageForumQuery, useForumStore } from './forum'
 import { accountStatus } from 'src/accounts/session'
 import { refreshAfterBurn } from 'src/utils/burn-refresh-error'
+import { notifyOwnAddressesChanged } from 'src/utils/own-address'
 import { defineStore } from 'pinia'
 import { DEFAULT_TOPIC_NAMES } from 'src/stores/default-topics'
 
@@ -221,6 +222,8 @@ export const useTopicStore = defineStore('topics', {
         voteWeightWei: satoshis < 0n ? -satoshis : satoshis,
         parentDigest,
       })
+      useForumStore().recordOwnPost(payloadDigest)
+      notifyOwnAddressesChanged()
       await refreshAfterBurn('post', () =>
         this.fetchMessage({ topic, payloadDigest }),
       )

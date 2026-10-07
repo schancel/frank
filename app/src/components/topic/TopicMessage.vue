@@ -6,13 +6,16 @@
         no-caps
         flat
         padding="0"
-        :to="`/chat/${message.poster}`"
-        class="q-pa-none q-mt-xs text-center"
+        :to="authorRoute(message)"
+        :disable="!authorRoute(message)"
+        class="q-pa-none q-mt-xs text-center author-btn"
       >
-        <div v-if="haveContact(message.poster)">
-          {{ getContactProfile(message.poster)?.name }}
+        <div
+          class="text-weight-bold"
+          :class="{ 'font-mono': isAuthorAddress(message) }"
+        >
+          {{ authorName(message) }}
         </div>
-        <div v-else>{{ formatAddress(message.poster) }}</div>
       </q-btn>
       <q-space />
       <span class="q-pa-none q-mt-xs text-center">{{ message.topic }}</span>
@@ -79,9 +82,27 @@ import { useTopicStore } from 'src/stores/topics'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { notifyBurnFailure } from 'src/utils/burn-refresh-error'
 
+import { useProfileStore } from 'src/stores/my-profile'
+import { useForumStore } from 'src/stores/forum'
+import {
+  isKnownOwnAddress,
+  sameCanonicalAddress,
+  useReactiveOwnCanonicalAddress,
+  useReactiveOwnAddresses,
+} from 'src/utils/own-address'
+
 export default defineComponent({
   setup(props) {
     const contactStore = useContactStore()
+    const forumStore = useForumStore()
+    let profileStore:
+      | ReturnType<typeof useProfileStore>
+      | { profile: Record<string, unknown> }
+    try {
+      profileStore = useProfileStore()
+    } catch {
+      profileStore = { profile: {} }
+    }
 
     return {
       timeoutId: null as ReturnType<typeof setTimeout> | null,
@@ -92,6 +113,15 @@ export default defineComponent({
       voteOwnerStatus: null as string | null,
       getContactProfile: contactStore.getContactProfile,
       haveContact: contactStore.haveContact,
+      forumStore,
+      isOwnPost: (digest?: string) =>
+        typeof (forumStore as any)?.isOwnPost === 'function'
+          ? (forumStore as any).isOwnPost(digest)
+          : false,
+      myProfile: profileStore,
+      profileStore,
+      ownAddress: useReactiveOwnCanonicalAddress(),
+      ownAddresses: useReactiveOwnAddresses(),
       formttedAmount: computed(() => {
         return formatRawAmount(activeChain, props.message.voteWeightWei)
       }),
@@ -124,8 +154,101 @@ export default defineComponent({
     markedMessage(text?: string) {
       return renderMarkdown(text ?? '', this.$q.dark.isActive)
     },
-    formatAddress(address: string) {
-      return '...' + address.substring(address.length - 10, address.length)
+    formatAddress(address?: string): string {
+      if (!address || typeof address !== 'string') {
+        return 'Anonymous'
+      }
+      const trimmed = address.trim()
+      if (!trimmed) {
+        return 'Anonymous'
+      }
+      if (trimmed.length <= 14) {
+        return trimmed
+      }
+      return `${trimmed.slice(0, 8)}...${trimmed.slice(-6)}`
+    },
+    isAuthorMe(message?: ForumMessage): boolean {
+      const msg = message ?? this.message
+      if (!msg) return false
+      if ((msg as any).isOwn || (msg as any).isLocal || (msg as any).own) {
+        return true
+      }
+      if (
+        msg.payloadDigest &&
+        (this.isOwnPost?.(msg.payloadDigest) ||
+          this.forumStore?.isOwnPost?.(msg.payloadDigest))
+      ) {
+        return true
+      }
+      const poster = msg.poster
+      if (poster) {
+        if (isKnownOwnAddress(poster, this.ownAddresses)) {
+          return true
+        }
+        const own =
+          typeof this.ownAddress === 'object' &&
+          this.ownAddress !== null &&
+          'value' in this.ownAddress
+            ? (this.ownAddress as any).value
+            : this.ownAddress
+        if (
+          own &&
+          (sameCanonicalAddress(poster, own) ||
+            poster.toLowerCase() === String(own).toLowerCase())
+        ) {
+          return true
+        }
+        const profileAddr = (this.myProfile?.profile as any)?.address
+        if (
+          profileAddr &&
+          (sameCanonicalAddress(poster, profileAddr) ||
+            poster.toLowerCase() === String(profileAddr).toLowerCase())
+        ) {
+          return true
+        }
+      }
+      return false
+    },
+    authorName(message?: ForumMessage): string {
+      const msg = message ?? this.message
+      if (!msg) return 'Anonymous'
+      if (this.isAuthorMe(msg)) {
+        const profile = this.myProfile?.profile
+        return profile?.name || profile?.username || 'You'
+      }
+      if (msg.poster && this.haveContact(msg.poster)) {
+        const contactProfile = this.getContactProfile(msg.poster)
+        if (contactProfile?.name) {
+          return contactProfile.name
+        }
+      }
+      if (msg.poster) {
+        return this.formatAddress(msg.poster)
+      }
+      return 'Anonymous'
+    },
+    authorRoute(message?: ForumMessage): string | undefined {
+      const msg = message ?? this.message
+      if (!msg) return undefined
+      if (this.isAuthorMe(msg)) {
+        return '/profile'
+      }
+      if (msg.poster) {
+        return `/chat/${msg.poster}`
+      }
+      return undefined
+    },
+    isAuthorAddress(message?: ForumMessage): boolean {
+      const msg = message ?? this.message
+      if (!msg || this.isAuthorMe(msg)) return false
+      if (
+        msg.poster &&
+        this.haveContact(msg.poster) &&
+        this.getContactProfile(msg.poster)?.name
+      ) {
+        return false
+      }
+      return Boolean(msg.poster)
     },
     addVotes(votes: number) {
       if (

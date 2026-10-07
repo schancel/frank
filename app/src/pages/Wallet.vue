@@ -120,7 +120,10 @@
               </template>
             </q-input>
           </div>
-          <q-card-actions align="right" class="q-px-none q-pt-md bg-transparent">
+          <q-card-actions
+            align="right"
+            class="q-px-none q-pt-md bg-transparent"
+          >
             <q-btn
               no-caps
               outline

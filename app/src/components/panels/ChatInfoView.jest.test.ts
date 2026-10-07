@@ -125,12 +125,16 @@ describe('ChatInfoView contact profile display and actions', () => {
     await flushPromises()
 
     // Profile card container
-    expect(wrapper.find('[data-test="contact-profile-card"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="contact-profile-card"]').exists()).toBe(
+      true,
+    )
 
     // Avatar
     const avatar = wrapper.find('[data-test="info-contact-avatar"]')
     expect(avatar.exists()).toBe(true)
-    expect(avatar.find('img').attributes('src')).toBe('https://example.com/alice.png')
+    expect(avatar.find('img').attributes('src')).toBe(
+      'https://example.com/alice.png',
+    )
 
     // Name
     const nameEl = wrapper.find('[data-test="info-contact-name"]')
@@ -144,7 +148,9 @@ describe('ChatInfoView contact profile display and actions', () => {
     // Bio
     const bioEl = wrapper.find('[data-test="info-contact-bio"]')
     expect(bioEl.exists()).toBe(true)
-    expect(bioEl.text()).toBe('Decentralized systems builder and Frank enthusiast.')
+    expect(bioEl.text()).toBe(
+      'Decentralized systems builder and Frank enthusiast.',
+    )
 
     // Address button
     const addressEl = wrapper.find('[data-test="info-contact-address"]')
@@ -159,7 +165,9 @@ describe('ChatInfoView contact profile display and actions', () => {
     const linkItems = wrapper.findAll('[data-test="info-contact-link-item"]')
     expect(linkItems.length).toBe(3)
     expect(linkItems[0].attributes('data-label')).toBe('Website')
-    expect(linkItems[0].attributes('data-href')).toBe('https://alice.example.com')
+    expect(linkItems[0].attributes('data-href')).toBe(
+      'https://alice.example.com',
+    )
     expect(linkItems[1].attributes('data-label')).toBe('GitHub')
     expect(linkItems[2].attributes('data-label')).toBe('Twitter')
   })
@@ -203,8 +211,12 @@ describe('ChatInfoView contact profile display and actions', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-test="info-contact-name"]').text()).toBe('Bob')
-    expect(wrapper.find('[data-test="info-contact-username"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="info-contact-username"]').exists()).toBe(
+      false,
+    )
     expect(wrapper.find('[data-test="info-contact-bio"]').exists()).toBe(false)
-    expect(wrapper.find('[data-test="info-contact-links"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="info-contact-links"]').exists()).toBe(
+      false,
+    )
   })
 })

@@ -14,7 +14,9 @@
       data-test="forum-active-topic-banner"
     >
       <q-icon name="filter_alt" size="18px" class="q-mr-xs text-grey-6" />
-      <span class="text-caption text-grey-7 q-mr-xs">{{ $t('forum.filteredBy') }}:</span>
+      <span class="text-caption text-grey-7 q-mr-xs"
+        >{{ $t('forum.filteredBy') }}:</span
+      >
       <q-chip
         dense
         removable

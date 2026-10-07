@@ -7,7 +7,9 @@ import type { DomainRoot } from "../../domain-roots/src";
 import { formatBaseUnit, parseBaseUnit } from "./base-unit";
 import { NativeTransactionAttemptStore } from "./chain-wallet";
 import {
+  canonicalEcashNetworkId,
   EcashAddressPrefix,
+  EcashNetworkId,
   EcashWallet,
   EcashWalletFactory,
 } from "../ecash-wallet";
@@ -17,7 +19,7 @@ export interface EcashChainConfig {
   /** Optional chain identifier override; defaults to networkId. */
   readonly chainIdentifier?: string;
   /** eCash network identity. Additional networks require a reviewed genesis/prefix profile. */
-  networkId: "ecash-mainnet" | "ecash-testnet" | "xec-mainnet" | "xec-testnet";
+  networkId: EcashNetworkId;
   /** Initialized SDK-compatible Chronik client; callers own endpoint selection and lifecycle. */
   chronik: ChronikClient;
   /** Test/embedding seam; production uses ecash-wallet's HD wallet implementation. */
@@ -57,8 +59,10 @@ function parseEcashAddress(
   try {
     const parsed = Address.fromCashAddress(input.toLowerCase());
     const isTestnet =
-      config.networkId === "ecash-testnet" || config.networkId === "xec-testnet";
-    const expectedPrefix = isTestnet ? ECASH_TESTNET_PREFIX : ECASH_MAINNET_PREFIX;
+      canonicalEcashNetworkId(config.networkId) === "xec-testnet";
+    const expectedPrefix = isTestnet
+      ? ECASH_TESTNET_PREFIX
+      : ECASH_MAINNET_PREFIX;
     if (parsed.prefix !== expectedPrefix) return undefined;
     return { raw: parsed.toString().toLowerCase() };
   } catch {
@@ -66,17 +70,16 @@ function parseEcashAddress(
   }
 }
 
-export interface EcashChain
-  extends Omit<NativeAssetChain, "createWallet"> {
+export interface EcashChain extends Omit<NativeAssetChain, "createWallet"> {
   createWallet(
     domainRoot: DomainRoot<"ecash-bch-wallet">
   ): Promise<EcashWallet>;
 }
 
 export function createEcashChain(config: EcashChainConfig): EcashChain {
-  const isTestnet =
-    config.networkId === "ecash-testnet" || config.networkId === "xec-testnet";
-  const chainIdentifier = config.chainIdentifier ?? config.networkId;
+  const canonicalNetwork = canonicalEcashNetworkId(config.networkId);
+  const isTestnet = canonicalNetwork === "xec-testnet";
+  const chainIdentifier = config.chainIdentifier ?? canonicalNetwork;
   const name = isTestnet ? "eCash Testnet" : "eCash";
   const unit = isTestnet ? "tXEC" : "XEC";
   const network = isTestnet ? "testnet" : "mainnet";
@@ -86,7 +89,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
     chainIdentifier,
     name,
     unit,
-    networkId: config.networkId,
+    networkId: canonicalNetwork,
     network,
     isTestnet,
     capabilities: {
@@ -108,7 +111,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
       return EcashWallet.fromDomainRoot({
         domainRoot,
         chronik: config.chronik,
-        networkId: config.networkId,
+        networkId: canonicalNetwork,
         walletFactory: config.walletFactory,
         nativeAttemptStore: config.nativeAttemptStore,
         getTransactionStatus: (transaction) =>
@@ -118,22 +121,32 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
     nativeTransfers: {
       async getBalance({ wallet }) {
         if (wallet.family !== "bitcoin") {
-          throw new Error(`Expected a Bitcoin/eCash wallet, got ${wallet.family}`);
-        }
-        if (wallet.networkId !== config.networkId) {
           throw new Error(
-            `Expected eCash network ${config.networkId}, got ${wallet.networkId}`
+            `Expected a Bitcoin/eCash wallet, got ${wallet.family}`
+          );
+        }
+        if (
+          canonicalEcashNetworkId(wallet.networkId as EcashNetworkId) !==
+          canonicalNetwork
+        ) {
+          throw new Error(
+            `Expected eCash network ${canonicalNetwork}, got ${wallet.networkId}`
           );
         }
         return wallet.getBalance();
       },
       async send({ wallet, recipient, value, onSigned }) {
         if (wallet.family !== "bitcoin") {
-          throw new Error(`Expected a Bitcoin/eCash wallet, got ${wallet.family}`);
-        }
-        if (wallet.networkId !== config.networkId) {
           throw new Error(
-            `Expected eCash network ${config.networkId}, got ${wallet.networkId}`
+            `Expected a Bitcoin/eCash wallet, got ${wallet.family}`
+          );
+        }
+        if (
+          canonicalEcashNetworkId(wallet.networkId as EcashNetworkId) !==
+          canonicalNetwork
+        ) {
+          throw new Error(
+            `Expected eCash network ${canonicalNetwork}, got ${wallet.networkId}`
           );
         }
         const canonicalRecipient = parseEcashAddress(config, recipient.raw);
@@ -148,18 +161,25 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
       },
       async getTransactionStatus({ wallet, transaction }) {
         if (wallet.family !== "bitcoin") {
-          throw new Error(`Expected a Bitcoin/eCash wallet, got ${wallet.family}`);
-        }
-        if (wallet.networkId !== config.networkId) {
           throw new Error(
-            `Expected eCash network ${config.networkId}, got ${wallet.networkId}`
+            `Expected a Bitcoin/eCash wallet, got ${wallet.family}`
+          );
+        }
+        if (
+          canonicalEcashNetworkId(wallet.networkId as EcashNetworkId) !==
+          canonicalNetwork
+        ) {
+          throw new Error(
+            `Expected eCash network ${canonicalNetwork}, got ${wallet.networkId}`
           );
         }
         return getEcashTransactionStatus(config, transaction);
       },
       async sendLegacy({ wallet, recipient, value, onProgress, onSigned }) {
         if (wallet.family !== "bitcoin") {
-          throw new Error(`Expected a Bitcoin/eCash wallet, got ${wallet.family}`);
+          throw new Error(
+            `Expected a Bitcoin/eCash wallet, got ${wallet.family}`
+          );
         }
         onProgress?.({ status: { stage: "broadcasting" } });
         const canonicalRecipient = parseEcashAddress(config, recipient.raw);

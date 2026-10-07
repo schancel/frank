@@ -23,12 +23,13 @@ export const CANONICAL_EVM_CONTRACTS: Readonly<ChainContracts> = Object.freeze({
   tablePotVault: "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5",
 });
 
-export const CANONICAL_SOLANA_CONTRACTS: Readonly<ChainContracts> = Object.freeze({
-  stateChannel: "CHAN111111111111111111111111111111111111111",
-  htlc: "HTLC111111111111111111111111111111111111111",
-  channelVault: "CHAN111111111111111111111111111111111111111",
-  tablePotVault: "HTLC111111111111111111111111111111111111111",
-});
+export const CANONICAL_SOLANA_CONTRACTS: Readonly<ChainContracts> =
+  Object.freeze({
+    stateChannel: "CHAN111111111111111111111111111111111111111",
+    htlc: "HTLC111111111111111111111111111111111111111",
+    channelVault: "CHAN111111111111111111111111111111111111111",
+    tablePotVault: "HTLC111111111111111111111111111111111111111",
+  });
 
 export interface ChainRegistryEntry {
   readonly id: string;
@@ -49,237 +50,212 @@ export interface ChainRegistryEntry {
   readonly contracts?: ChainContracts;
 }
 
-export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> = Object.freeze({
-  "monad-testnet": Object.freeze({
-    id: "monad-testnet",
-    kind: "monad",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "testnet",
-    isTestnet: true,
-    name: "Monad Testnet",
-    unit: "MONT",
-    caip2: "eip155:10143",
-    nativeChainId: 10143,
-    networkTag: "MONT",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-  "monad-mainnet": Object.freeze({
-    id: "monad-mainnet",
-    kind: "monad",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "mainnet",
-    isTestnet: false,
-    name: "Monad",
-    unit: "MON",
-    caip2: "eip155:143",
-    nativeChainId: 143,
-    networkTag: "MON1",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-  "ecash-testnet": Object.freeze({
-    id: "ecash-testnet",
-    kind: "ecash",
-    family: "bitcoin",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "testnet",
-    isTestnet: true,
-    name: "eCash Testnet",
-    unit: "tXEC",
-    addressPrefix: "ectest",
-    networkTag: "XECT",
-  }),
-  "xec-testnet": Object.freeze({
-    id: "xec-testnet",
-    kind: "ecash",
-    family: "bitcoin",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "testnet",
-    isTestnet: true,
-    name: "eCash Testnet",
-    unit: "tXEC",
-    addressPrefix: "ectest",
-    networkTag: "XECT",
-  }),
-  "ecash-mainnet": Object.freeze({
-    id: "ecash-mainnet",
-    kind: "ecash",
-    family: "bitcoin",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "mainnet",
-    isTestnet: false,
-    name: "eCash",
-    unit: "XEC",
-    addressPrefix: "ecash",
-    networkTag: "XEC1",
-  }),
-  "xec-mainnet": Object.freeze({
-    id: "xec-mainnet",
-    kind: "ecash",
-    family: "bitcoin",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "mainnet",
-    isTestnet: false,
-    name: "eCash",
-    unit: "XEC",
-    addressPrefix: "ecash",
-    networkTag: "XEC1",
-  }),
-  "solana-devnet": Object.freeze({
-    id: "solana-devnet",
-    kind: "solana",
-    family: "solana",
-    curve: "ed25519",
-    keyType: 2,
-    network: "testnet",
-    isTestnet: true,
-    name: "Solana Devnet",
-    unit: "dSOL",
-    caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
-    networkTag: "SOLD",
-    contracts: CANONICAL_SOLANA_CONTRACTS,
-  }),
-  "solana-testnet": Object.freeze({
-    id: "solana-testnet",
-    kind: "solana",
-    family: "solana",
-    curve: "ed25519",
-    keyType: 2,
-    network: "testnet",
-    isTestnet: true,
-    name: "Solana Testnet",
-    unit: "tSOL",
-    caip2: "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
-    networkTag: "SOLT",
-    contracts: CANONICAL_SOLANA_CONTRACTS,
-  }),
-  "solana-mainnet": Object.freeze({
-    id: "solana-mainnet",
-    kind: "solana",
-    family: "solana",
-    curve: "ed25519",
-    keyType: 2,
-    network: "mainnet",
-    isTestnet: false,
-    name: "Solana",
-    unit: "SOL",
-    caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
-    networkTag: "SOL1",
-    contracts: CANONICAL_SOLANA_CONTRACTS,
-  }),
-  "ethereum-sepolia": Object.freeze({
-    id: "ethereum-sepolia",
-    kind: "ethereum",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "testnet",
-    isTestnet: true,
-    name: "Sepolia",
-    unit: "SEP",
-    caip2: "eip155:11155111",
-    nativeChainId: 11155111,
-    networkTag: "SEPO",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-  "ethereum-holesky": Object.freeze({
-    id: "ethereum-holesky",
-    kind: "ethereum",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "testnet",
-    isTestnet: true,
-    name: "Holesky",
-    unit: "HOL",
-    caip2: "eip155:17000",
-    nativeChainId: 17000,
-    networkTag: "HOLE",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-  "ethereum-mainnet": Object.freeze({
-    id: "ethereum-mainnet",
-    kind: "ethereum",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "mainnet",
-    isTestnet: false,
-    name: "Ethereum",
-    unit: "ETH",
-    caip2: "eip155:1",
-    nativeChainId: 1,
-    networkTag: "ETH1",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-  "hyperliquid-mainnet": Object.freeze({
-    id: "hyperliquid-mainnet",
-    kind: "hyperliquid",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "mainnet",
-    isTestnet: false,
-    name: "Hyperliquid",
-    unit: "HYPE",
-    caip2: "eip155:999",
-    nativeChainId: 999,
-    networkTag: "HYPE",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-  "hyperliquid-testnet": Object.freeze({
-    id: "hyperliquid-testnet",
-    kind: "hyperliquid",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "testnet",
-    isTestnet: true,
-    name: "Hyperliquid Testnet",
-    unit: "tHYPE",
-    caip2: "eip155:998",
-    nativeChainId: 998,
-    networkTag: "HYPT",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-  "tempo-mainnet": Object.freeze({
-    id: "tempo-mainnet",
-    kind: "tempo",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "mainnet",
-    isTestnet: false,
-    name: "Tempo",
-    unit: "USD",
-    caip2: "eip155:4217",
-    nativeChainId: 4217,
-    networkTag: "TMPO",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-  "tempo-testnet": Object.freeze({
-    id: "tempo-testnet",
-    kind: "tempo",
-    family: "evm",
-    curve: "secp256k1",
-    keyType: 1,
-    network: "testnet",
-    isTestnet: true,
-    name: "Tempo Moderato",
-    unit: "tUSD",
-    caip2: "eip155:42431",
-    nativeChainId: 42431,
-    networkTag: "TMPT",
-    contracts: CANONICAL_EVM_CONTRACTS,
-  }),
-});
+export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> =
+  Object.freeze({
+    "monad-testnet": Object.freeze({
+      id: "monad-testnet",
+      kind: "monad",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "testnet",
+      isTestnet: true,
+      name: "Monad Testnet",
+      unit: "MONT",
+      caip2: "eip155:10143",
+      nativeChainId: 10143,
+      networkTag: "MONT",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+    "monad-mainnet": Object.freeze({
+      id: "monad-mainnet",
+      kind: "monad",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "mainnet",
+      isTestnet: false,
+      name: "Monad",
+      unit: "MON",
+      caip2: "eip155:143",
+      nativeChainId: 143,
+      networkTag: "MON1",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+    "xec-testnet": Object.freeze({
+      id: "xec-testnet",
+      kind: "ecash",
+      family: "bitcoin",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "testnet",
+      isTestnet: true,
+      name: "eCash Testnet",
+      unit: "tXEC",
+      addressPrefix: "ectest",
+      networkTag: "XECT",
+    }),
+    "xec-mainnet": Object.freeze({
+      id: "xec-mainnet",
+      kind: "ecash",
+      family: "bitcoin",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "mainnet",
+      isTestnet: false,
+      name: "eCash",
+      unit: "XEC",
+      addressPrefix: "ecash",
+      networkTag: "XEC1",
+    }),
+    "solana-devnet": Object.freeze({
+      id: "solana-devnet",
+      kind: "solana",
+      family: "solana",
+      curve: "ed25519",
+      keyType: 2,
+      network: "testnet",
+      isTestnet: true,
+      name: "Solana Devnet",
+      unit: "dSOL",
+      caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+      networkTag: "SOLD",
+      contracts: CANONICAL_SOLANA_CONTRACTS,
+    }),
+    "solana-testnet": Object.freeze({
+      id: "solana-testnet",
+      kind: "solana",
+      family: "solana",
+      curve: "ed25519",
+      keyType: 2,
+      network: "testnet",
+      isTestnet: true,
+      name: "Solana Testnet",
+      unit: "tSOL",
+      caip2: "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
+      networkTag: "SOLT",
+      contracts: CANONICAL_SOLANA_CONTRACTS,
+    }),
+    "solana-mainnet": Object.freeze({
+      id: "solana-mainnet",
+      kind: "solana",
+      family: "solana",
+      curve: "ed25519",
+      keyType: 2,
+      network: "mainnet",
+      isTestnet: false,
+      name: "Solana",
+      unit: "SOL",
+      caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      networkTag: "SOL1",
+      contracts: CANONICAL_SOLANA_CONTRACTS,
+    }),
+    "ethereum-sepolia": Object.freeze({
+      id: "ethereum-sepolia",
+      kind: "ethereum",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "testnet",
+      isTestnet: true,
+      name: "Sepolia",
+      unit: "SEP",
+      caip2: "eip155:11155111",
+      nativeChainId: 11155111,
+      networkTag: "SEPO",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+    "ethereum-holesky": Object.freeze({
+      id: "ethereum-holesky",
+      kind: "ethereum",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "testnet",
+      isTestnet: true,
+      name: "Holesky",
+      unit: "HOL",
+      caip2: "eip155:17000",
+      nativeChainId: 17000,
+      networkTag: "HOLE",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+    "ethereum-mainnet": Object.freeze({
+      id: "ethereum-mainnet",
+      kind: "ethereum",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "mainnet",
+      isTestnet: false,
+      name: "Ethereum",
+      unit: "ETH",
+      caip2: "eip155:1",
+      nativeChainId: 1,
+      networkTag: "ETH1",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+    "hyperliquid-mainnet": Object.freeze({
+      id: "hyperliquid-mainnet",
+      kind: "hyperliquid",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "mainnet",
+      isTestnet: false,
+      name: "Hyperliquid",
+      unit: "HYPE",
+      caip2: "eip155:999",
+      nativeChainId: 999,
+      networkTag: "HYPE",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+    "hyperliquid-testnet": Object.freeze({
+      id: "hyperliquid-testnet",
+      kind: "hyperliquid",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "testnet",
+      isTestnet: true,
+      name: "Hyperliquid Testnet",
+      unit: "tHYPE",
+      caip2: "eip155:998",
+      nativeChainId: 998,
+      networkTag: "HYPT",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+    "tempo-mainnet": Object.freeze({
+      id: "tempo-mainnet",
+      kind: "tempo",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "mainnet",
+      isTestnet: false,
+      name: "Tempo",
+      unit: "USD",
+      caip2: "eip155:4217",
+      nativeChainId: 4217,
+      networkTag: "TMPO",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+    "tempo-testnet": Object.freeze({
+      id: "tempo-testnet",
+      kind: "tempo",
+      family: "evm",
+      curve: "secp256k1",
+      keyType: 1,
+      network: "testnet",
+      isTestnet: true,
+      name: "Tempo Moderato",
+      unit: "tUSD",
+      caip2: "eip155:42431",
+      nativeChainId: 42431,
+      networkTag: "TMPT",
+      contracts: CANONICAL_EVM_CONTRACTS,
+    }),
+  });
 
 const DYNAMIC_CHAINS: Map<string, ChainRegistryEntry> = new Map();
 
@@ -298,7 +274,11 @@ export function clearDynamicChains(): void {
   DYNAMIC_CHAINS.clear();
 }
 
-export function getChainRegistryEntry(id: string): ChainRegistryEntry | undefined {
+export function getChainRegistryEntry(
+  id: string
+): ChainRegistryEntry | undefined {
+  if (id === "ecash-testnet") return PROTOCOL_CHAINS["xec-testnet"];
+  if (id === "ecash-mainnet") return PROTOCOL_CHAINS["xec-mainnet"];
   return PROTOCOL_CHAINS[id] ?? DYNAMIC_CHAINS.get(id);
 }
 
@@ -308,11 +288,11 @@ export function getChainRegistryByKind(
 ): ChainRegistryEntry {
   const targetNetwork = isTestnet ? "testnet" : "mainnet";
   const all = [...Object.values(PROTOCOL_CHAINS), ...DYNAMIC_CHAINS.values()];
-  const entry = all.find(
-    (c) => c.kind === kind && c.network === targetNetwork
-  );
+  const entry = all.find((c) => c.kind === kind && c.network === targetNetwork);
   if (!entry) {
-    throw new Error(`No chain registry entry found for ${kind} (${targetNetwork})`);
+    throw new Error(
+      `No chain registry entry found for ${kind} (${targetNetwork})`
+    );
   }
   return entry;
 }
@@ -329,7 +309,8 @@ export function getAllChainsByKind(
   const all = [...Object.values(PROTOCOL_CHAINS), ...DYNAMIC_CHAINS.values()];
   return all.filter((c) => {
     if (c.kind !== kind) return false;
-    if (filter?.isTestnet !== undefined && c.isTestnet !== filter.isTestnet) return false;
+    if (filter?.isTestnet !== undefined && c.isTestnet !== filter.isTestnet)
+      return false;
     return true;
   });
 }
@@ -345,7 +326,8 @@ export function getChainsByFamily(
   const all = [...Object.values(PROTOCOL_CHAINS), ...DYNAMIC_CHAINS.values()];
   return all.filter((c) => {
     if (c.family !== family) return false;
-    if (filter?.isTestnet !== undefined && c.isTestnet !== filter.isTestnet) return false;
+    if (filter?.isTestnet !== undefined && c.isTestnet !== filter.isTestnet)
+      return false;
     return true;
   });
 }
@@ -368,9 +350,7 @@ export function getChainRegistryByCaip2(
   );
 }
 
-export function getChainsByCurve(
-  curve: SupportedCurve
-): ChainRegistryEntry[] {
+export function getChainsByCurve(curve: SupportedCurve): ChainRegistryEntry[] {
   const all = [...Object.values(PROTOCOL_CHAINS), ...DYNAMIC_CHAINS.values()];
   return all.filter((c) => c.curve === curve);
 }

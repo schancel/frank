@@ -70,7 +70,11 @@
             data-testid="wallet-balance"
           >
             {{
-              selectedWallet === 'ecash'
+              selectedWallet === 'monad'
+                ? balanceText
+                : chainLoaded && chainFormattedBalance
+                ? chainFormattedBalance
+                : selectedWallet === 'ecash'
                 ? isTestnet
                   ? $t('walletPanel.zeroTxec')
                   : $t('walletPanel.zeroXec')
@@ -94,7 +98,7 @@
             }}
           </div>
           <div
-            v-if="selectedWallet === 'monad' && hasError"
+            v-if="currentWalletHasError"
             class="text-negative text-caption text-center"
             data-testid="wallet-balance-error"
           >
@@ -207,6 +211,7 @@ import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
+import { useChainBalance } from 'src/composables/useChainBalance'
 import { useWalletNames } from 'src/composables/useWalletNames'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
@@ -244,6 +249,18 @@ export default defineComponent({
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
     const { formattedBalance, loaded, hasError } = useBalance()
+    const {
+      formattedBalance: chainFormattedBalance,
+      loaded: chainLoaded,
+      hasError: chainHasError,
+    } = useChainBalance(selectedWallet)
+
+    const currentWalletHasError = computed(() => {
+      return selectedWallet.value === 'monad'
+        ? hasError.value
+        : chainHasError.value
+    })
+
     // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
     // not look like a real zero.
     const balanceText = computed(() =>
@@ -329,6 +346,9 @@ export default defineComponent({
       isTestnet,
       displayAddress,
       balanceText,
+      chainFormattedBalance,
+      chainLoaded,
+      currentWalletHasError,
       hasError,
       getCustomName,
       async copyAddress() {

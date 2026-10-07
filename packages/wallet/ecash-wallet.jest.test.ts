@@ -1,5 +1,7 @@
 import {
   ECASH_MAINNET_CHECKPOINT_HASH,
+  ECASH_TESTNET_CHECKPOINT_HEIGHT,
+  ECASH_TESTNET_CHECKPOINT_HASH,
   EcashBroadcastResult,
   EcashWallet,
   EcashWalletBackend,
@@ -33,7 +35,8 @@ function makeBackend(
   result: EcashBroadcastResult = {
     success: true,
     broadcasted: ["first", "requested"],
-  }
+  },
+  receiveAddress: string = ADDRESS
 ): EcashWalletBackend & {
   sync: jest.Mock;
   syncAndDiscoverAddresses: jest.Mock;
@@ -54,7 +57,7 @@ function makeBackend(
     receiveIndex: 3,
     sync: jest.fn().mockResolvedValue(undefined),
     syncAndDiscoverAddresses: jest.fn().mockResolvedValue(undefined),
-    getReceiveAddress: jest.fn(() => ADDRESS),
+    getReceiveAddress: jest.fn(() => receiveAddress),
     action,
     broadcast,
   };
@@ -219,7 +222,7 @@ describe("EcashWallet", () => {
     expect(backend.action).not.toHaveBeenCalled();
   });
 
-  it("rejects a Chronik endpoint that lacks the eCash checkpoint", async () => {
+  it("rejects a Chronik endpoint that lacks the eCash mainnet checkpoint", async () => {
     const chronik = makeChronik();
     jest.spyOn(chronik, "block").mockResolvedValueOnce({
       blockInfo: { hash: "a-bch-block-at-the-same-height" },
@@ -229,11 +232,47 @@ describe("EcashWallet", () => {
       EcashWallet.fromDomainRoot({
         domainRoot: ROOT,
         chronik,
-        networkId: "ecash-mainnet",
+        networkId: "xec-mainnet",
         nativeAttemptStore,
         walletFactory: () => makeBackend(),
       })
     ).rejects.toThrow("eCash Chronik checkpoint mismatch");
+  });
+
+  it("verifies and rejects a testnet Chronik endpoint based on ECASH_TESTNET_CHECKPOINT", async () => {
+    const chronik = makeChronik();
+    const blockSpy = jest.spyOn(chronik, "block").mockResolvedValueOnce({
+      blockInfo: { hash: "wrong-testnet-hash" },
+    } as Awaited<ReturnType<ChronikClient["block"]>>);
+
+    await expect(
+      EcashWallet.fromDomainRoot({
+        domainRoot: ROOT,
+        chronik,
+        networkId: "xec-testnet",
+        nativeAttemptStore,
+        walletFactory: () => makeBackend(),
+      })
+    ).rejects.toThrow("eCash Chronik checkpoint mismatch");
+    expect(blockSpy).toHaveBeenCalledWith(ECASH_TESTNET_CHECKPOINT_HEIGHT);
+
+    // Now with valid testnet checkpoint hash
+    blockSpy.mockResolvedValueOnce({
+      blockInfo: { hash: ECASH_TESTNET_CHECKPOINT_HASH },
+    } as Awaited<ReturnType<ChronikClient["block"]>>);
+
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
+      chronik,
+      networkId: "xec-testnet",
+      nativeAttemptStore,
+      walletFactory: () =>
+        makeBackend(
+          undefined,
+          "ectest:qq86jv6h0y97q8l63ndynvk3fn9aq8fqruhjcef2tw"
+        ),
+    });
+    expect(wallet.networkId).toBe("xec-testnet");
   });
 
   it("rejects an unverified fallback in a multi-endpoint Chronik client", async () => {

@@ -214,7 +214,7 @@ export default defineComponent({
           label:
             ecashCustom || (this.isTestnet ? 'eCash Testnet' : 'eCash Wallet'),
           chain: 'ecash',
-          networkTag: this.isTestnet ? 'ecash-testnet' : 'ecash-mainnet',
+          networkTag: this.isTestnet ? 'xec-testnet' : 'xec-mainnet',
           curve: 'secp256k1',
           keyType: 1,
           unit: this.isTestnet ? 'tXEC' : 'XEC',

@@ -121,6 +121,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { activeChain } from '@frank/wallet/chain'
 import { accountSession, accountStatus } from '../../accounts/session'
 import { useBalance } from '../../composables/useBalance'
+import { useMultichainBalance } from '../../composables/useChainBalance'
 import { useWalletNames } from '../../composables/useWalletNames'
 import { openPage } from '../../utils/routes'
 import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
@@ -285,6 +286,10 @@ function getWalletBalance(wallet: WalletItemConfig): string {
             : 'walletPanel.balanceLoading',
         )
   }
+  const chainBalance = getFormattedBalance(wallet.id)
+  if (chainBalance) {
+    return chainBalance
+  }
   if (isTestnet.value && wallet.testnetBalanceZeroKey) {
     return getTranslation(wallet.testnetBalanceZeroKey)
   }
@@ -345,6 +350,7 @@ function selectWallet(wallet: string) {
 }
 
 const { loaded, hasError, formattedBalance } = useBalance()
+const { getFormattedBalance } = useMultichainBalance()
 
 function getRouter() {
   return (

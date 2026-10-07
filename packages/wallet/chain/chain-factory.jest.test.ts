@@ -40,7 +40,7 @@ describe("createChain", () => {
     const chain = await createChain({
       family: "bitcoin",
       config: {
-        networkId: "ecash-mainnet",
+        networkId: "xec-mainnet",
         chronik: { block } as unknown as import("chronik-client").ChronikClient,
         walletFactory,
       },
@@ -310,7 +310,7 @@ describe("createChain", () => {
     const chain = await createChain({
       family: "bitcoin",
       config: {
-        networkId: "ecash-mainnet",
+        networkId: "xec-mainnet",
         nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
         chronik: {
           block: async () => ({ blockInfo: { hash: ECASH_CHECKPOINT } }),
@@ -371,7 +371,7 @@ describe("createChain", () => {
     const wrongCheckpoint = await createChain({
       family: "bitcoin",
       config: {
-        networkId: "ecash-mainnet",
+        networkId: "xec-mainnet",
         chronik: {
           block: async () => ({ blockInfo: { hash: "different-genesis" } }),
           tx: async () => {
@@ -390,7 +390,7 @@ describe("createChain", () => {
     const chain = await createChain({
       family: "bitcoin",
       config: {
-        networkId: "ecash-mainnet",
+        networkId: "xec-mainnet",
         chronik: {
           block: async () => ({ blockInfo: { hash: ECASH_CHECKPOINT } }),
           tx: async () => ({ block: { height: 1 } }),

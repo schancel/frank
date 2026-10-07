@@ -2,6 +2,11 @@
 
 import { enableAutoUnmount, shallowMount } from '@vue/test-utils'
 enableAutoUnmount(afterEach)
+afterEach(() => {
+  mockChainBalance.formattedBalance.value = ''
+  mockChainBalance.loaded.value = false
+  mockChainBalance.hasError.value = false
+})
 import { nextTick, ref } from 'vue'
 const mockGetChainAddress = jest.fn(async (chain: string) => {
   if (chain === 'ecash')
@@ -37,8 +42,23 @@ const mockRoute = ref<{ query: Record<string, string>; path: string }>({
   path: '/wallet',
 })
 
+const mockChainBalance = {
+  formattedBalance: ref(''),
+  loaded: ref(false),
+  hasError: ref(false),
+  refresh: jest.fn(),
+}
+
 jest.mock('src/composables/useBalance', () => ({
   useBalance: () => balance,
+}))
+
+jest.mock('src/composables/useChainBalance', () => ({
+  useChainBalance: (chain: any) => {
+    const val = typeof chain === 'string' ? chain : chain.value
+    if (val === 'monad') return balance
+    return mockChainBalance
+  },
 }))
 // The real vue-router CJS entry pulls in the ESM-only `nostics` package, which Jest's CommonJS
 // setup cannot parse (see router/index.jest.test.ts's own boundary comment); Wallet.vue only
@@ -315,6 +335,19 @@ describe('Wallet detail page (#570)', () => {
     expect(sendBtn.text()).toBe('walletPanel.sendTxec')
     expect(sendBtn.attributes('disabled')).toBeDefined()
 
+    wrapper.unmount()
+  })
+
+  it('renders fetched non-zero eCash balance when loaded', async () => {
+    mockChainBalance.loaded.value = true
+    mockChainBalance.formattedBalance.value = '10000 tXEC'
+    mockRoute.value = { query: { chain: 'ecash' }, path: '/wallet' }
+    const wrapper = mountWallet()
+    await flush()
+
+    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
+      '10000 tXEC',
+    )
     wrapper.unmount()
   })
 

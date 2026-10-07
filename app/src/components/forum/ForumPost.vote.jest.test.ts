@@ -109,6 +109,7 @@ jest.mock('@frank/wallet/chain', () => ({
 }))
 jest.mock('src/utils/chain-amount', () => ({
   formatRawAmount: (_chain: unknown, value: string) => `${value} MON`,
+  formatCompactAmount: (_chain: unknown, value: string) => `${value} MON`,
 }))
 jest.mock('./ForumMessageReplies.vue', () => ({ template: '<div />' }))
 jest.mock('../../utils/markdown', () => ({ renderMarkdown: () => '' }))

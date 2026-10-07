@@ -29,9 +29,10 @@
           data-test="forum-vote-up"
         />
       </q-card-section>
-      <q-card-section class="q-pa-none q-mt-xs text-center">{{
-        formttedAmount
-      }}</q-card-section>
+      <q-card-section
+        class="q-pa-none q-mt-xs text-center"
+        :title="exactAmount"
+      >{{ formttedAmount }}</q-card-section>
       <q-card-section class="q-pa-none q-mt-xs text-center">
         <q-btn
           flat
@@ -70,7 +71,7 @@
 import moment from 'moment'
 import { accountStatus } from 'src/accounts/session'
 import { activeChain } from '@frank/wallet/chain'
-import { formatRawAmount } from 'src/utils/chain-amount'
+import { formatCompactAmount, formatRawAmount } from 'src/utils/chain-amount'
 import { computed, defineComponent } from 'vue'
 import type { PropType } from 'vue'
 
@@ -123,6 +124,9 @@ export default defineComponent({
       ownAddress: useReactiveOwnCanonicalAddress(),
       ownAddresses: useReactiveOwnAddresses(),
       formttedAmount: computed(() => {
+        return formatCompactAmount(activeChain, props.message.voteWeightWei)
+      }),
+      exactAmount: computed(() => {
         return formatRawAmount(activeChain, props.message.voteWeightWei)
       }),
     }

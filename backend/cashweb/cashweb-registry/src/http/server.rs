@@ -157,19 +157,22 @@ async fn handle_get_directory_user(
     Path(username): Path<String>,
     Extension(server): Extension<RegistryServer>,
 ) -> Response {
-    let normalized = match crate::store::directory_usernames::DbDirectoryUsernames::validate_and_normalize(&username) {
-        Ok(n) => n,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                [(header::CONTENT_TYPE, "application/json")],
-                Json(serde_json::json!({
-                    "error": err.to_string()
-                })),
-            )
-                .into_response();
-        }
-    };
+    let normalized =
+        match crate::store::directory_usernames::DbDirectoryUsernames::validate_and_normalize(
+            &username,
+        ) {
+            Ok(n) => n,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    Json(serde_json::json!({
+                        "error": err.to_string()
+                    })),
+                )
+                    .into_response();
+            }
+        };
 
     let store = server.registry.directory_usernames();
     let record = match store.get(&normalized) {
@@ -1337,7 +1340,11 @@ mod spa_tests {
         // 1. Existing active user -> 200 OK with JSON
         let response = router
             .clone()
-            .oneshot(Request::get("/directory/user/alice").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/directory/user/alice")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1345,12 +1352,19 @@ mod spa_tests {
         let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(val["username"], "alice");
         assert_eq!(val["status"], "active");
-        assert_eq!(val["account_address"], format!("0x{}", hex::encode(alice_addr)));
+        assert_eq!(
+            val["account_address"],
+            format!("0x{}", hex::encode(alice_addr))
+        );
 
         // 2. Unknown user -> 404
         let res_404 = router
             .clone()
-            .oneshot(Request::get("/directory/user/unknown_user").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/directory/user/unknown_user")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res_404.status(), StatusCode::NOT_FOUND);
@@ -1358,7 +1372,11 @@ mod spa_tests {
         // 3. Invalid handle format -> 400
         let res_400 = router
             .clone()
-            .oneshot(Request::get("/directory/user/a").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/directory/user/a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res_400.status(), StatusCode::BAD_REQUEST);
@@ -1371,7 +1389,11 @@ mod spa_tests {
             .unwrap();
         let res_tomb = router
             .clone()
-            .oneshot(Request::get("/directory/user/alice").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/directory/user/alice")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res_tomb.status(), StatusCode::OK);
@@ -1393,7 +1415,11 @@ mod spa_tests {
             .unwrap();
 
         let res_moved = router
-            .oneshot(Request::get("/directory/user/bob_v1").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::get("/directory/user/bob_v1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res_moved.status(), StatusCode::OK);

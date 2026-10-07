@@ -25,6 +25,9 @@ pub struct Peers {
     public_relay_urls: Vec<Url>,
     /// List of [`Peer`] instances connected to the registry server.
     pub peers: Vec<Peer>,
+    /// Optional coordinator enforcing anti-self-peering and foreign cluster anti-swarm deduplication.
+    pub cluster_coordinator:
+        Option<std::sync::Arc<tokio::sync::Mutex<crate::p2p::cluster::ClusterPeeringCoordinator>>>,
 }
 
 impl Peers {
@@ -44,6 +47,49 @@ impl Peers {
             own_origin,
             public_relay_urls,
             peers,
+            cluster_coordinator: None,
+        }
+    }
+
+    /// Configure the cluster peering coordinator.
+    pub fn set_cluster_coordinator(
+        &mut self,
+        coordinator: crate::p2p::cluster::ClusterPeeringCoordinator,
+    ) {
+        self.cluster_coordinator = Some(std::sync::Arc::new(tokio::sync::Mutex::new(coordinator)));
+    }
+
+    /// Validate whether a candidate peer attestation is permitted under cluster rules.
+    pub async fn validate_peer_cluster(
+        &self,
+        attestation: &crate::p2p::cluster::NodeClusterAttestation,
+        now_seconds: u64,
+    ) -> Result<(), crate::p2p::cluster::ClusterError> {
+        if let Some(coord) = &self.cluster_coordinator {
+            let lock = coord.lock().await;
+            lock.validate_peer_attestation(attestation, now_seconds)?;
+        }
+        Ok(())
+    }
+
+    /// Record a peer connected under its cluster attestation.
+    pub async fn record_peer_connected(
+        &self,
+        attestation: &crate::p2p::cluster::NodeClusterAttestation,
+        now_seconds: u64,
+    ) -> Result<(), crate::p2p::cluster::ClusterError> {
+        if let Some(coord) = &self.cluster_coordinator {
+            let mut lock = coord.lock().await;
+            lock.record_peer_connected(attestation, now_seconds)?;
+        }
+        Ok(())
+    }
+
+    /// Record a peer disconnected, decrementing active count for its cluster authority.
+    pub async fn record_peer_disconnected(&self, cluster_authority_pubkey: &[u8; 33]) {
+        if let Some(coord) = &self.cluster_coordinator {
+            let mut lock = coord.lock().await;
+            lock.record_peer_disconnected(cluster_authority_pubkey);
         }
     }
 
@@ -132,6 +178,104 @@ mod public_origin_tests {
             .public_origins()
             .iter()
             .any(|origin| origin.contains("internal.service.local")));
+    }
+
+    #[tokio::test]
+    async fn test_peers_cluster_peering_coordination() {
+        use crate::p2p::cluster::{
+            ClusterError, ClusterPeeringCoordinator, NodeClusterAttestation,
+        };
+        use bitcoinsuite_core::ecc::Ecc;
+        use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+        use rand::RngCore;
+        use uuid::Uuid;
+
+        let ecc = EccSecp256k1::default();
+        let mut rng = rand::thread_rng();
+
+        let mut gen_key = || {
+            let mut b = [0u8; 32];
+            rng.fill_bytes(&mut b);
+            let sec = ecc.seckey_from_array(b).unwrap();
+            let pubk = ecc.derive_pubkey(&sec);
+            (sec, pubk.array())
+        };
+
+        let (my_auth_sec, my_auth_pub) = gen_key();
+        let (_my_node_sec, my_node_pub) = gen_key();
+        let my_cluster_id = Uuid::new_v4();
+        let now = 1700000000;
+
+        let my_attestation = NodeClusterAttestation::sign(
+            &my_auth_sec,
+            my_auth_pub,
+            my_cluster_id,
+            "cluster-a.frank.org".to_string(),
+            my_node_pub,
+            now + 3600,
+        );
+
+        let mut peers = Peers::new("https://relay-1.frank.org".to_string(), vec![]);
+        peers.set_cluster_coordinator(ClusterPeeringCoordinator::new(Some(my_attestation), 1));
+
+        // Sibling node from same cluster: rejected
+        let (_sib_sec, sib_pub) = gen_key();
+        let sibling_attestation = NodeClusterAttestation::sign(
+            &my_auth_sec,
+            my_auth_pub,
+            my_cluster_id,
+            "cluster-a.frank.org".to_string(),
+            sib_pub,
+            now + 3600,
+        );
+        assert_eq!(
+            peers.validate_peer_cluster(&sibling_attestation, now).await,
+            Err(ClusterError::SelfPeeringRejected)
+        );
+
+        // Foreign cluster B: node 1 connects
+        let (b_auth_sec, b_auth_pub) = gen_key();
+        let b_cluster_id = Uuid::new_v4();
+        let (_b1_sec, b1_pub) = gen_key();
+        let b1_attestation = NodeClusterAttestation::sign(
+            &b_auth_sec,
+            b_auth_pub,
+            b_cluster_id,
+            "cluster-b.remote.org".to_string(),
+            b1_pub,
+            now + 3600,
+        );
+
+        assert!(peers
+            .validate_peer_cluster(&b1_attestation, now)
+            .await
+            .is_ok());
+        peers
+            .record_peer_connected(&b1_attestation, now)
+            .await
+            .unwrap();
+
+        // Foreign cluster B: node 2 rejected due to anti-swarm limit (max 1)
+        let (_b2_sec, b2_pub) = gen_key();
+        let b2_attestation = NodeClusterAttestation::sign(
+            &b_auth_sec,
+            b_auth_pub,
+            b_cluster_id,
+            "cluster-b.remote.org".to_string(),
+            b2_pub,
+            now + 3600,
+        );
+        assert_eq!(
+            peers.validate_peer_cluster(&b2_attestation, now).await,
+            Err(ClusterError::ClusterAlreadyConnected)
+        );
+
+        // Disconnect node 1 -> node 2 can now connect
+        peers.record_peer_disconnected(&b_auth_pub).await;
+        assert!(peers
+            .validate_peer_cluster(&b2_attestation, now)
+            .await
+            .is_ok());
     }
 }
 

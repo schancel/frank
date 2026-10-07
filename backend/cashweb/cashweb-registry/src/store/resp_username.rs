@@ -352,8 +352,22 @@ impl UsernameStore for RespUsernameStore {
 
         match raw_opt {
             Some(raw) => {
-                let record: UsernameRecord = serde_json::from_str(&raw)
+                let mut record: UsernameRecord = serde_json::from_str(&raw)
                     .map_err(|e| UsernameError::RespError(e.to_string()))?;
+                if record.updated_at == 0 && record.updated_at_ms != 0 {
+                    record.updated_at = record.updated_at_ms;
+                }
+                if record.updated_at_ms == 0 && record.updated_at != 0 {
+                    record.updated_at_ms = record.updated_at;
+                }
+                if record.tombstone_expires_at == 0 {
+                    if let Some(exp) = record.tombstone_expires_at_ms {
+                        record.tombstone_expires_at = exp;
+                    }
+                }
+                if record.tombstone_expires_at_ms.is_none() && record.tombstone_expires_at > 0 {
+                    record.tombstone_expires_at_ms = Some(record.tombstone_expires_at);
+                }
                 Ok(Some(record))
             }
             None => Ok(None),
@@ -375,6 +389,8 @@ impl UsernameStore for RespUsernameStore {
             account_address: *account_address,
             stamp_key: stamp_key.clone(),
             status: UsernameStatus::Active,
+            updated_at: now_ms,
+            tombstone_expires_at: 0,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: None,
             redirect_to: None,
@@ -385,6 +401,8 @@ impl UsernameStore for RespUsernameStore {
             account_address: *account_address,
             stamp_key,
             status: UsernameStatus::Active,
+            updated_at: now_ms,
+            tombstone_expires_at: 0,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: None,
             redirect_to: None,
@@ -435,6 +453,8 @@ impl UsernameStore for RespUsernameStore {
             account_address: *account_address,
             stamp_key: existing.stamp_key,
             status: UsernameStatus::Tombstoned,
+            updated_at: now_ms,
+            tombstone_expires_at: now_ms + cooldown_duration_ms,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: Some(now_ms + cooldown_duration_ms),
             redirect_to: None,
@@ -499,6 +519,8 @@ impl UsernameStore for RespUsernameStore {
             account_address: *account_address,
             stamp_key: existing_old.stamp_key.clone(),
             status: UsernameStatus::Active,
+            updated_at: now_ms,
+            tombstone_expires_at: 0,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: None,
             redirect_to: None,
@@ -509,6 +531,8 @@ impl UsernameStore for RespUsernameStore {
             account_address: *account_address,
             stamp_key: existing_old.stamp_key,
             status: UsernameStatus::Moved,
+            updated_at: now_ms,
+            tombstone_expires_at: now_ms + cooldown_duration_ms,
             updated_at_ms: now_ms,
             tombstone_expires_at_ms: Some(now_ms + cooldown_duration_ms),
             redirect_to: Some(new_norm.clone()),
@@ -536,6 +560,55 @@ impl UsernameStore for RespUsernameStore {
 
         parse_rename_response(&res, &old_norm, &new_norm)
     }
+
+    fn register_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+    ) -> std::result::Result<(), UsernameError> {
+        let normalized = DbDirectoryUsernames::validate_and_normalize(username)?;
+        let existing = self
+            .get(&normalized)
+            .map_err(|e| UsernameError::RespError(e.to_string()))?;
+        if let Some(rec) = existing {
+            match rec.status {
+                UsernameStatus::Active => {
+                    if rec.account_address != address {
+                        return Err(UsernameError::Conflict("Handle taken".to_string()));
+                    }
+                    self.claim(&normalized, &address, rec.stamp_key, now)
+                        .map_err(|e| UsernameError::RespError(e.to_string()))?;
+                    return Ok(());
+                }
+                UsernameStatus::Tombstoned | UsernameStatus::Moved => {
+                    let expires = rec
+                        .tombstone_expires_at
+                        .max(rec.tombstone_expires_at_ms.unwrap_or(0));
+                    if now < expires {
+                        return Err(UsernameError::Conflict("Handle tombstoned".to_string()));
+                    }
+                    self.claim(&normalized, &address, None, now)
+                        .map_err(|e| UsernameError::RespError(e.to_string()))?;
+                    return Ok(());
+                }
+            }
+        }
+        self.claim(&normalized, &address, None, now)
+            .map_err(|e| UsernameError::RespError(e.to_string()))?;
+        Ok(())
+    }
+
+    fn tombstone_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+        cooldown_seconds: i64,
+    ) -> std::result::Result<bool, UsernameError> {
+        self.tombstone(username, &address, cooldown_seconds, now)
+            .map_err(|e| UsernameError::RespError(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -559,6 +632,8 @@ mod tests {
             account_address: addr,
             stamp_key: Some(vec![1, 2, 3, 4]),
             status: UsernameStatus::Active,
+            updated_at: 1700000000,
+            tombstone_expires_at: 0,
             updated_at_ms: 1700000000,
             tombstone_expires_at_ms: None,
             redirect_to: None,
@@ -574,6 +649,8 @@ mod tests {
             account_address: [8u8; 20],
             stamp_key: None,
             status: UsernameStatus::Tombstoned,
+            updated_at: 1700000100,
+            tombstone_expires_at: 1700000100 + 60000,
             updated_at_ms: 1700000100,
             tombstone_expires_at_ms: Some(1700000100 + 60000),
             redirect_to: None,
@@ -588,6 +665,8 @@ mod tests {
             account_address: [8u8; 20],
             stamp_key: None,
             status: UsernameStatus::Moved,
+            updated_at: 1700000200,
+            tombstone_expires_at: 1700000200 + 60000,
             updated_at_ms: 1700000200,
             tombstone_expires_at_ms: Some(1700000200 + 60000),
             redirect_to: Some("bob_new".to_string()),

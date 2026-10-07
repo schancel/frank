@@ -311,6 +311,28 @@ impl Registry {
         }
     }
 
+    /// Register a username with tombstone protection.
+    pub fn register_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+    ) -> std::result::Result<(), crate::store::directory_usernames::UsernameError> {
+        self.directory_usernames().register_username(username, address, now)
+    }
+
+    /// Tombstone a username with cooldown duration.
+    pub fn tombstone_username(
+        &self,
+        username: &str,
+        address: [u8; 20],
+        now: i64,
+        cooldown_seconds: i64,
+    ) -> std::result::Result<bool, crate::store::directory_usernames::UsernameError> {
+        self.directory_usernames()
+            .tombstone_username(username, address, now, cooldown_seconds)
+    }
+
     pub(crate) fn forum(&self) -> &crate::forum::Owner {
         &self.forum
     }

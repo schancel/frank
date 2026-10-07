@@ -44,13 +44,17 @@ describe('applyLocale', () => {
 
   it('safely handles setI18nLocale throwing (e.g. this.$i18n is undefined)', () => {
     const setLang = jest.fn()
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    const warnSpy = jest
+      .spyOn(console, 'warn')
+      .mockImplementation(() => undefined)
 
     expect(() => {
       applyLocale({
         $q: { lang: { set: setLang } },
         setI18nLocale: () => {
-          throw new TypeError("undefined is not an object (evaluating 'this.$i18n.locale = value')")
+          throw new TypeError(
+            "undefined is not an object (evaluating 'this.$i18n.locale = value')",
+          )
         },
         locale: 'fr-fr',
       })
@@ -75,4 +79,3 @@ describe('applyLocale', () => {
     expect(setLang.mock.calls[0][0]).toMatchObject({ isoName: 'en-US' })
   })
 })
-

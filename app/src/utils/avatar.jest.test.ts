@@ -27,7 +27,8 @@ describe('avatar resizing and compression utilities', () => {
     })
 
     it('returns true for avatars exceeding MAX_AVATAR_BYTES', () => {
-      const overLimit = 'data:image/png;base64,' + 'A'.repeat(MAX_AVATAR_BYTES + 500)
+      const overLimit =
+        'data:image/png;base64,' + 'A'.repeat(MAX_AVATAR_BYTES + 500)
       expect(isAvatarTooLarge(overLimit)).toBe(true)
     })
   })

@@ -116,6 +116,8 @@ export const en = {
     'Home relay server for your encrypted mailbox and profile',
   reset_to_default_relay: 'Reset to default relay',
   invalid_relay_url: 'Please enter a valid HTTP or HTTPS URL',
+  relay_discovered:
+    'Discovered existing home relay: {url}. Automatically configured.',
 }
 
 export const fr = {
@@ -240,4 +242,6 @@ export const fr = {
     'Serveur relais principal pour votre boîte aux lettres chiffrée et profil',
   reset_to_default_relay: 'Réinitialiser au relais par défaut',
   invalid_relay_url: 'Veuillez saisir une URL HTTP ou HTTPS valide',
+  relay_discovered:
+    'Serveur relais principal existant découvert : {url}. Configuré automatiquement.',
 }

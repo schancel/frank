@@ -10,6 +10,10 @@ import {
 } from '@frank/account-recovery'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
+import { toHex } from '@frank/codec'
+import { setCustomRelayBaseUrl } from '@frank/wallet/chain'
+import { probeDirectoryRelay } from '@frank/cashweb/relay'
 import { accountSession } from './session'
 import { assertLegacyUnchanged, legacyStatus } from './legacy'
 import type { ExpectedActive } from './custody'
@@ -103,10 +107,33 @@ export function createAccountCeremony() {
       const token = epoch
       let recovered: RecoveredCodex32Account | undefined
       try {
+        const isRestore = !signup && Boolean(restore)
         recovered = signup
           ? signup.confirmWithMetadata(shares)
           : restore?.recover(shares)
         if (!recovered) throw new Error('Start an account ceremony first')
+        let discoveredRelayUrl: string | undefined
+        let identityDetails: { subject: string; address: string } | undefined
+        if (isRestore) {
+          try {
+            const authRoot = recovered.roots['identity-authentication']
+            if (authRoot) {
+              const identity = MonadIdentity.fromDomainRoot(authRoot)
+              const subject = toHex(identity.compressedPubKey)
+              const address = identity.displayAddress
+              identityDetails = { subject, address }
+              discoveredRelayUrl = await probeDirectoryRelay({
+                subject,
+                address,
+              })
+              if (discoveredRelayUrl) {
+                setCustomRelayBaseUrl(discoveredRelayUrl)
+              }
+            }
+          } catch {
+            // probe failure should never block account recovery
+          }
+        }
         signup = undefined
         restore = undefined
         await assertLegacyUnchanged(captured.legacyRevision)
@@ -121,6 +148,12 @@ export function createAccountCeremony() {
         })
         if (token !== epoch)
           await accountSession.cancelPending(captured.attemptId)
+        return {
+          isRestore,
+          subject: identityDetails?.subject,
+          address: identityDetails?.address,
+          discoveredRelayUrl,
+        }
       } catch (error) {
         // A mismatch/failure consumes this presentation ceremony; retry starts explicitly.
         cancel()

@@ -27,6 +27,13 @@ import { stampParentSecret } from './stamp-parent'
 import { readStampTransaction } from './stamp-tx'
 import { relayChangeAddressPublicKey } from './change-address-pubkey'
 export { relayChangeAddressPublicKey }
+export {
+  probeDirectoryRelay,
+  probeDirectoryEntry,
+  normalizeProbeTarget,
+  type ProbeDirectoryOptions,
+  type ProbeTarget,
+} from './restore-relay-discovery'
 import { arrayBufferToBase64 } from './images'
 
 import { PayloadConstructor } from './crypto'

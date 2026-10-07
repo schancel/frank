@@ -1,4 +1,4 @@
-import { colors } from 'quasar'
+import { setCssVar } from 'quasar'
 
 export type SignetStone =
   | 'carnelian'
@@ -217,16 +217,24 @@ export function applyTheme(
   const def = SIGNET_THEMES[themeName] || SIGNET_THEMES[DEFAULT_SIGNET_THEME]
   if (typeof document === 'undefined') return
 
-  if (colors && typeof colors.setCssVar === 'function') {
-    colors.setCssVar('primary', def.primary)
-    colors.setCssVar('secondary', def.secondary)
-    colors.setCssVar('accent', def.accent)
+  if (typeof setCssVar === 'function') {
+    try {
+      setCssVar('primary', def.primary)
+      setCssVar('secondary', def.secondary)
+      setCssVar('accent', def.accent)
+    } catch {
+      // safe fallback if element check fails
+    }
   }
 
   const mode = isDark ? def.dark : def.light
   const body = document.body
+  const root = document.documentElement
   if (body) {
     body.setAttribute('data-signet-theme', def.id)
+    body.style.setProperty('--q-primary', def.primary)
+    body.style.setProperty('--q-secondary', def.secondary)
+    body.style.setProperty('--q-accent', def.accent)
     body.style.setProperty('--q-color-background', mode.background)
     body.style.setProperty('--q-color-text', mode.text)
     body.style.setProperty('--q-color-bg-active', mode.bgActive)
@@ -237,5 +245,10 @@ export function applyTheme(
       '--q-chat-background',
       `radial-gradient(ellipse 900px 700px at 12% -10%, ${mode.chatBg1}, transparent 60%), radial-gradient(ellipse 900px 700px at 100% 115%, ${mode.chatBg2}, transparent 60%), ${mode.background}`,
     )
+  }
+  if (root) {
+    root.style.setProperty('--q-primary', def.primary)
+    root.style.setProperty('--q-secondary', def.secondary)
+    root.style.setProperty('--q-accent', def.accent)
   }
 }

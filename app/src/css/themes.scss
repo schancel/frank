@@ -3,6 +3,10 @@
 
 // 1. Carnelian (Warm Roman seal wax & terracotta amber)
 body[data-signet-theme='carnelian'] {
+  --q-primary: #c8431e;
+  --q-secondary: #9c2e14;
+  --q-accent: #d97706;
+
   &.body--dark {
     --q-color-background: #130f0e;
     --q-color-text: #f4ede8;
@@ -46,6 +50,10 @@ body[data-signet-theme='carnelian'] {
 
 // 2. Lapis Lazuli (Deep celestial ultramarine & golden pyrite)
 body[data-signet-theme='lapis'] {
+  --q-primary: #2563eb;
+  --q-secondary: #1d4ed8;
+  --q-accent: #eab308;
+
   &.body--dark {
     --q-color-background: #0b1120;
     --q-color-text: #e2e8f0;
@@ -89,6 +97,10 @@ body[data-signet-theme='lapis'] {
 
 // 3. Bloodstone (Jasper dark green & iron-oxide crimson)
 body[data-signet-theme='bloodstone'] {
+  --q-primary: #15803d;
+  --q-secondary: #166534;
+  --q-accent: #b91c1c;
+
   &.body--dark {
     --q-color-background: #09140c;
     --q-color-text: #e2ece4;
@@ -132,6 +144,10 @@ body[data-signet-theme='bloodstone'] {
 
 // 4. Onyx (High-contrast pitch black & polished silver)
 body[data-signet-theme='onyx'] {
+  --q-primary: #475569;
+  --q-secondary: #334155;
+  --q-accent: #94a3b8;
+
   &.body--dark {
     --q-color-background: #0a0a0c;
     --q-color-text: #f1f5f9;
@@ -175,6 +191,10 @@ body[data-signet-theme='onyx'] {
 
 // 5. Sardonyx (Banded cameo layers: mahogany & desert cream)
 body[data-signet-theme='sardonyx'] {
+  --q-primary: #b45309;
+  --q-secondary: #78350f;
+  --q-accent: #d97706;
+
   &.body--dark {
     --q-color-background: #130f0a;
     --q-color-text: #fef3c7;
@@ -218,6 +238,10 @@ body[data-signet-theme='sardonyx'] {
 
 // 6. Classic (Original Orchid Violet & Mint)
 body[data-signet-theme='classic'] {
+  --q-primary: #9d5cff;
+  --q-secondary: #7c3aed;
+  --q-accent: #00d9a3;
+
   &.body--dark {
     --q-color-background: #121218;
     --q-color-text: #ececf2;

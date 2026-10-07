@@ -11,9 +11,10 @@ import {
 } from '../utils/constants'
 import { activeChain } from '@frank/wallet/chain'
 import moment from 'moment'
-import {
-  toChainDisplayAddress,
+  isChainAddress,
+  safeChainDisplayAddress,
   safeToChainDisplayAddress,
+  toChainDisplayAddress,
 } from '../utils/chain-address'
 import { isOwnAddress } from '../utils/own-address'
 import {
@@ -217,7 +218,7 @@ export const useContactStore = defineStore('contacts', {
   state: (): State => freshContactsState(),
   getters: {
     getNotify: state => (address: string) => {
-      const apiAddress = safeToChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
       if (!apiAddress) return false
 
       return state.contacts[apiAddress]
@@ -225,7 +226,7 @@ export const useContactStore = defineStore('contacts', {
         : false
     },
     getRelayURL: state => (address: string) => {
-      const apiAddress = safeToChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
       if (!apiAddress) return defaultRelayUrl
 
       return state.contacts[apiAddress]
@@ -233,7 +234,7 @@ export const useContactStore = defineStore('contacts', {
         : defaultRelayUrl
     },
     isContact: state => (address: string) => {
-      const apiAddress = safeToChainDisplayAddress(address)
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
       if (!apiAddress) return false
 
       return apiAddress in state.contacts
@@ -262,10 +263,9 @@ export const useContactStore = defineStore('contacts', {
       return state.contacts
     },
     haveContact: state => (address: string) => {
-      const apiAddress = safeToChainDisplayAddress(address)
-      return apiAddress
-        ? !!state.contacts[apiAddress]
-        : !!state.contacts[address]
+      const apiAddress = safeToChainDisplayAddress(address) ?? address
+      if (!apiAddress) return false
+      return !!state.contacts[apiAddress]
     },
     getContactProfile: state => (address: string) => {
       if (!address) {
@@ -279,6 +279,7 @@ export const useContactStore = defineStore('contacts', {
     },
     getAcceptancePrice: state => (address: string) => {
       const apiAddress = safeToChainDisplayAddress(address) ?? address
+      if (!apiAddress) return defaultAcceptancePrice
 
       const price = state.contacts[apiAddress]?.inbox.acceptancePrice
       return typeof price === 'number' && Number.isFinite(price)
@@ -287,6 +288,7 @@ export const useContactStore = defineStore('contacts', {
     },
     getPubKey: state => (address: string) => {
       const apiAddress = safeToChainDisplayAddress(address) ?? address
+      if (!apiAddress) return undefined
       const contact = state.contacts[apiAddress]
       if (!contact || !contact?.profile) {
         return undefined
@@ -353,7 +355,8 @@ export const useContactStore = defineStore('contacts', {
       contact.inbox = inbox || contact.inbox
     },
     setNotify({ address, value }: { address: string; value: boolean }) {
-      const apiAddress = toChainDisplayAddress(address)
+      const apiAddress = safeChainDisplayAddress(address)
+      if (!apiAddress) return
       const contact = this.contacts[apiAddress]
       if (!contact) {
         return
@@ -375,11 +378,13 @@ export const useContactStore = defineStore('contacts', {
     },
     async deleteContact(address: string) {
       const chats = useChatStore()
-      const apiAddress = toChainDisplayAddress(address)
+      const apiAddress = safeChainDisplayAddress(address)
 
       await chats.deleteChat(address)
-      delete this.contacts[apiAddress]
-      if (!this.dismissedDefaults.includes(apiAddress)) {
+      if (apiAddress && apiAddress in this.contacts) {
+        delete this.contacts[apiAddress]
+      }
+      if (apiAddress && !this.dismissedDefaults.includes(apiAddress)) {
         this.dismissedDefaults.push(apiAddress)
       }
     },
@@ -391,6 +396,9 @@ export const useContactStore = defineStore('contacts', {
       address: string
       contact: Partial<ContactState>
     }) {
+      if (!isChainAddress(address)) {
+        return
+      }
       if (this.isContact(address)) {
         return
       }
@@ -500,6 +508,9 @@ export const useContactStore = defineStore('contacts', {
       }
     },
     async refresh(address: string) {
+      if (!isChainAddress(address)) {
+        return
+      }
       const oldContactInfo = this.getContact(address)
       const updateInterval = this.updateInterval
       const now = moment()

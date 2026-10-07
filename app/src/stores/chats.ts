@@ -10,7 +10,11 @@ import { sha1 } from '@noble/hashes/sha1'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
-import { toChainDisplayAddress } from '../utils/chain-address'
+import {
+  isChainAddress,
+  safeChainDisplayAddress,
+  toChainDisplayAddress,
+} from '../utils/chain-address'
 import { formatBalance } from '../utils/formatting'
 import { acquireOutgoingLock, withOutgoingLock } from '../utils/outgoing-lock'
 import { activeChain } from '@frank/wallet/chain'
@@ -831,7 +835,8 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     assert(newMsg.senderAddress !== undefined, 'senderAddress is not defined')
 
     const message: ChatMessage = { payloadDigest: index, ...newMsg }
-    const displayAddress = toChainDisplayAddress(copartyAddress)
+    const displayAddress =
+      safeChainDisplayAddress(copartyAddress) || copartyAddress
     const rawConvId =
       (newMsg as any).conversationId || (messageWrapper as any).conversationId
     const participants = ownAddress
@@ -1766,7 +1771,8 @@ export const useChatStore = defineStore('chats', {
         previousHash: id,
         timestamp: serverTime,
       })
-      const chat = this.chats[toChainDisplayAddress(address)]
+      const chatKey = safeChainDisplayAddress(address) || address
+      const chat = this.chats[chatKey] || this.conversations[address]
       if (chat) recomputeChatAccounting(chat, this.activeChatAddr)
       const messageStore = await store
       await messageStore.saveMessage(
@@ -1825,7 +1831,8 @@ export const useChatStore = defineStore('chats', {
         const stored = row?.message
         if (!stored || stored.status === 'confirmed') {
           delete this.messages[id]
-          const chat = this.chats[toChainDisplayAddress(address)]
+          const chatKey = safeChainDisplayAddress(address) || address
+          const chat = this.chats[chatKey] || this.conversations[address]
           if (chat) {
             chat.messages = chat.messages.filter(m => m.payloadDigest !== id)
             recomputeChatAccounting(chat, this.activeChatAddr)
@@ -2545,14 +2552,30 @@ export const useChatStore = defineStore('chats', {
         return
       }
 
+      // If address is already a conversation ID in this.conversations:
+      if (this.conversations && address in this.conversations) {
+        this.activeConversationId = address
+        const conv = this.conversations[address]
+        this.activeChatAddr = conv?.address || null
+        this.readAll(address)
+        return
+      }
+
       // make sure address is defined, e.g. Forum is undefined
       if (address) {
-        const contacts = useContactStore()
-        contacts.refresh(address)
+        if (isChainAddress(address)) {
+          const contacts = useContactStore()
+          contacts.refresh(address)
+        }
         this.readAll(address)
       }
 
-      const displayAddress = toChainDisplayAddress(address)
+      let displayAddress: string
+      try {
+        displayAddress = toChainDisplayAddress(address)
+      } catch {
+        displayAddress = address
+      }
       let conv = this.chats[displayAddress]
       if (!conv) {
         conv = this.createConversation({
@@ -2892,7 +2915,8 @@ export const useChatStore = defineStore('chats', {
         if (!toNotify.has(index) && !(index in this.messages)) {
           continue
         }
-        const displayAddress = toChainDisplayAddress(copartyAddress)
+        const displayAddress =
+          safeChainDisplayAddress(copartyAddress) || copartyAddress
 
         const emailItem = newMsg.items?.find((it: any) => it.type === 'email') as EmailItem | undefined
         const rawConvId =

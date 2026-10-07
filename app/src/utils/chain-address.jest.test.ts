@@ -5,9 +5,10 @@
  * Monad chain, since this function's own contract is "delegate to activeChain.parseAddress/
  * formatAddress, throw if parsing fails" -- not Monad-specific behavior.
  */
-import {
-  toChainDisplayAddress,
+  isChainAddress,
+  safeChainDisplayAddress,
   safeToChainDisplayAddress,
+  toChainDisplayAddress,
 } from './chain-address'
 
 jest.mock('@frank/wallet/chain', () => ({
@@ -71,5 +72,36 @@ describe('safeToChainDisplayAddress', () => {
     expect(
       safeToChainDisplayAddress('ba3c18c2-a80d-5e5b-bd9d-fd52f5106351'),
     ).toBeNull()
+  })
+})
+
+describe('isChainAddress', () => {
+  it('returns true when parseAddress succeeds', () => {
+    mockedParseAddress.mockReturnValue({ raw: '0x123' })
+    expect(isChainAddress('0x123')).toBe(true)
+  })
+
+  it('returns false when parseAddress returns undefined or input is invalid', () => {
+    mockedParseAddress.mockReturnValue(undefined)
+    expect(isChainAddress('not-an-address')).toBe(false)
+    expect(isChainAddress('')).toBe(false)
+    expect(isChainAddress(null)).toBe(false)
+    expect(isChainAddress(undefined)).toBe(false)
+  })
+})
+
+describe('safeChainDisplayAddress', () => {
+  it('returns formatted address on valid input', () => {
+    const parsed = { raw: '0x123' }
+    mockedParseAddress.mockReturnValue(parsed)
+    mockedFormatAddress.mockReturnValue('0x123Formatted')
+    expect(safeChainDisplayAddress('0x123')).toBe('0x123Formatted')
+  })
+
+  it('returns null on invalid input or undefined', () => {
+    mockedParseAddress.mockReturnValue(undefined)
+    expect(safeChainDisplayAddress('bad-input')).toBeNull()
+    expect(safeChainDisplayAddress('')).toBeNull()
+    expect(safeChainDisplayAddress(null)).toBeNull()
   })
 })

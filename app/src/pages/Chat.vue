@@ -221,12 +221,8 @@ export default defineComponent({
     ForwardMessageDialog,
     ChatBannerStack,
   },
-  beforeRouteUpdate(
-    to: RouteLocationNormalized,
-    from: RouteLocationNormalized,
-    next: () => void,
-  ) {
-    this.address = to.params.address as string
+  beforeRouteUpdate(to: RouteLocationNormalized) {
+    this.address = (to?.params?.address as string) || ''
     this.messagesToShow = 30
     if (
       this.address &&
@@ -234,7 +230,6 @@ export default defineComponent({
     ) {
       this.chatStore.setActiveConversation(this.address)
     }
-    next()
   },
   beforeUnmount() {
     window.removeEventListener('resize', this.resizeHandler)

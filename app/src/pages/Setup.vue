@@ -1,21 +1,22 @@
 <template>
-  <q-header
-    ><q-toolbar>
-      <q-btn
-        flat
-        dense
-        no-caps
-        icon="menu"
-        :aria-label="$t('accountRecovery.open_navigation')"
-        @click="$emit('toggleMyDrawerOpen')"
-      />
-      <q-toolbar-title>
-        {{ $t('accountRecovery.frank_account') }}
-      </q-toolbar-title>
-    </q-toolbar></q-header
-  >
-  <q-page-container
-    ><q-page class="q-pa-md">
+  <div>
+    <q-header
+      ><q-toolbar>
+        <q-btn
+          flat
+          dense
+          no-caps
+          icon="menu"
+          :aria-label="$t('accountRecovery.open_navigation')"
+          @click="$emit('toggleMyDrawerOpen')"
+        />
+        <q-toolbar-title>
+          {{ $t('accountRecovery.frank_account') }}
+        </q-toolbar-title>
+      </q-toolbar></q-header
+    >
+    <q-page-container
+      ><q-page class="q-pa-md">
       <section
         class="account-setup q-mx-auto"
         aria-labelledby="account-heading"
@@ -684,7 +685,8 @@
         </p>
       </section>
     </q-page></q-page-container
-  >
+    >
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -715,7 +717,12 @@ import {
 import { probeDirectoryRelay } from '@frank/cashweb/relay'
 
 defineProps<{ myDrawerOpen?: boolean }>()
-const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
+const emit = defineEmits([
+  'toggleMyDrawerOpen',
+  'setupCompleted',
+  'toggleContactDrawerOpen',
+  'setupNavigationLocked',
+])
 const router = useRouter()
 const t = useTranslate()
 const ceremony = createAccountCeremony()

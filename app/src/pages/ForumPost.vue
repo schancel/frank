@@ -21,6 +21,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { storeToRefs } from 'pinia'
+import type { RouteLocationNormalized } from 'vue-router'
 
 import { useForumStore, MessageWithReplies } from 'src/stores/forum'
 
@@ -58,16 +59,14 @@ export default defineComponent({
       this.message = message
     }
   },
-  async beforeRouteUpdate(to, from, next) {
-    this.payloadDigest = to.params.payloadDigest as string
+  async beforeRouteUpdate(to: RouteLocationNormalized) {
+    this.payloadDigest = (to?.params?.payloadDigest as string) || ''
     const message = await this.fetchMessage({
       payloadDigest: this.payloadDigest,
     })
     if (message) {
       this.message = message
     }
-    console.log('returned msg', this.message)
-    next()
   },
 })
 </script>

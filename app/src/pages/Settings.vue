@@ -1,27 +1,28 @@
 <template>
-  <q-header>
-    <q-toolbar class="q-pl-sm">
-      <q-btn
-        flat
-        dense
-        class="q-px-sm"
-        icon="arrow_back"
-        :aria-label="$t('settings.back')"
-        data-test="settings-back"
-        @click="cancel"
-      />
-      <q-toolbar-title class="h6">{{ $t('settings.title') }}</q-toolbar-title>
-      <q-btn
-        flat
-        dense
-        class="q-px-sm"
-        icon="menu"
-        :aria-label="$t('settings.openMenu')"
-        data-test="settings-menu"
-        @click="$emit('toggleMyDrawerOpen')"
-      />
-    </q-toolbar>
-  </q-header>
+  <div>
+    <q-header>
+      <q-toolbar class="q-pl-sm">
+        <q-btn
+          flat
+          dense
+          class="q-px-sm"
+          icon="arrow_back"
+          :aria-label="$t('settings.back')"
+          data-test="settings-back"
+          @click="cancel"
+        />
+        <q-toolbar-title class="h6">{{ $t('settings.title') }}</q-toolbar-title>
+        <q-btn
+          flat
+          dense
+          class="q-px-sm"
+          icon="menu"
+          :aria-label="$t('settings.openMenu')"
+          data-test="settings-menu"
+          @click="$emit('toggleMyDrawerOpen')"
+        />
+      </q-toolbar>
+    </q-header>
   <q-page-container>
     <q-page class="q-ma-none q-pa-none column full-height">
       <q-card flat class="col column full-width full-height bg-transparent">
@@ -147,6 +148,7 @@
       </q-card>
     </q-page>
   </q-page-container>
+  </div>
 </template>
 
 <script lang="ts">
@@ -171,7 +173,12 @@ const msToMinutes = 60000
 
 export default defineComponent({
   components: { PersistentStoragePanel },
-  emits: ['toggleMyDrawerOpen'],
+  emits: [
+    'toggleMyDrawerOpen',
+    'toggleContactDrawerOpen',
+    'setupNavigationLocked',
+    'setupCompleted',
+  ],
   setup() {
     const appearanceStore = useAppearanceStore()
     const contactStore = useContactStore()
@@ -229,14 +236,13 @@ export default defineComponent({
       return selected ? selected.tagline : ''
     },
   },
-  beforeRouteLeave(_to, _from, next) {
+  beforeRouteLeave() {
     if (!this.isSaved) {
       applyTheme(
         this.storeTheme || DEFAULT_SIGNET_THEME,
         this.storeDarkMode || false,
       )
     }
-    next()
   },
   methods: {
     selectTheme(stoneId: SignetStone) {

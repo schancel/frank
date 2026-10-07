@@ -1,29 +1,30 @@
 <template>
-  <q-header>
-    <q-toolbar class="q-pl-sm">
-      <q-btn
-        flat
-        dense
-        class="q-px-sm"
-        icon="arrow_back"
-        :aria-label="$t('settings.back')"
-        data-test="backup-back"
-        @click="cancel"
-      />
-      <q-toolbar-title class="h6">
-        {{ $t('accountRecovery.backup_account_codex32') }}
-      </q-toolbar-title>
-      <q-btn
-        flat
-        dense
-        class="q-px-sm"
-        icon="menu"
-        :aria-label="$t('settings.openMenu')"
-        data-test="backup-menu"
-        @click="$emit('toggleMyDrawerOpen')"
-      />
-    </q-toolbar>
-  </q-header>
+  <div>
+    <q-header>
+      <q-toolbar class="q-pl-sm">
+        <q-btn
+          flat
+          dense
+          class="q-px-sm"
+          icon="arrow_back"
+          :aria-label="$t('settings.back')"
+          data-test="backup-back"
+          @click="cancel"
+        />
+        <q-toolbar-title class="h6">
+          {{ $t('accountRecovery.backup_account_codex32') }}
+        </q-toolbar-title>
+        <q-btn
+          flat
+          dense
+          class="q-px-sm"
+          icon="menu"
+          :aria-label="$t('settings.openMenu')"
+          data-test="backup-menu"
+          @click="$emit('toggleMyDrawerOpen')"
+        />
+      </q-toolbar>
+    </q-header>
   <q-page-container>
     <q-page class="q-ma-none q-pa-md" data-test="backup-account-page">
       <q-card
@@ -204,6 +205,7 @@
       </q-card>
     </q-page>
   </q-page-container>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -214,6 +216,9 @@ import { navigateBack } from '../utils/navigate-back'
 
 defineEmits<{
   (e: 'toggleMyDrawerOpen'): void
+  (e: 'toggleContactDrawerOpen'): void
+  (e: 'setupNavigationLocked'): void
+  (e: 'setupCompleted'): void
 }>()
 
 const router = useRouter()

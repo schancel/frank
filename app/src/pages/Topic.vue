@@ -153,15 +153,10 @@ export default defineComponent({
       },
     }
   },
-  beforeRouteUpdate(
-    to: RouteLocationNormalized,
-    from: RouteLocationNormalized,
-    next: () => void,
-  ) {
+  beforeRouteUpdate(to: RouteLocationNormalized) {
     useTopicStore().invalidateRefresh()
-    this.topic = to.params.topic as string
+    this.topic = (to?.params?.topic as string) || ''
     this.refreshContent()
-    next()
   },
   mounted() {
     const timedRefresh = () => {

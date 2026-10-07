@@ -100,14 +100,8 @@ export default defineComponent({
     }
   },
   emits: ['toggleMyDrawerOpen'],
-  beforeRouteUpdate(
-    to: RouteLocationNormalized,
-    from: RouteLocationNormalized,
-    next: () => void,
-  ) {
-    console.log('moving')
-    this.topic = to.params.topic as string
-    next()
+  beforeRouteUpdate(to: RouteLocationNormalized) {
+    this.topic = (to?.params?.topic as string) || ''
   },
   methods: {
     async sendMessage(message: string) {

@@ -1,18 +1,23 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
 import { withMermaid } from "vitepress-plugin-mermaid";
 import markdownItKatex from "markdown-it-katex";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default withMermaid(
   defineConfig({
     title: "Frank & Cashweb",
     description:
       "Protocol Specifications, High-Assurance Architecture, and Developer Documentation",
-    base: "/",
+    base: "/docs/",
+    outDir: path.resolve(__dirname, "../../../app/public/docs"),
     cleanUrls: true,
     lastUpdated: true,
 
     head: [
-      ["link", { rel: "icon", type: "image/svg+xml", href: "/frank-logo.svg" }],
+      ["link", { rel: "icon", type: "image/svg+xml", href: "/docs/frank-logo.svg" }],
       [
         "link",
         {

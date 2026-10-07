@@ -7,6 +7,8 @@
  * `export default`, per its own `get-app-paths.js`; `quasar.conf.js` is invisible to it). See each
  * section below for the webpack-to-Vite translation of each hook that needed one.
  */
+import fs from 'node:fs'
+import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -95,6 +97,94 @@ export default module.exports
 `,
         map: null,
       }
+    },
+  }
+}
+
+let isDocsDevRunningCache = null
+let lastDocsDevCheckTime = 0
+
+function checkDocsDevServer(port, timeout = 100) {
+  const now = Date.now()
+  if (now - lastDocsDevCheckTime < 2000 && isDocsDevRunningCache !== null) {
+    return Promise.resolve(isDocsDevRunningCache)
+  }
+  return new Promise(resolve => {
+    const s = net.createConnection({ port, host: '127.0.0.1', timeout })
+    const onDone = success => {
+      s.destroy()
+      isDocsDevRunningCache = success
+      lastDocsDevCheckTime = Date.now()
+      resolve(success)
+    }
+    s.on('connect', () => onDone(true))
+    s.on('error', () => onDone(false))
+    s.on('timeout', () => onDone(false))
+  })
+}
+
+// Serves static VitePress documentation from `app/public/docs` during `quasar dev` when the
+// standalone docs dev server (`yarn docs:dev`, default port 5173) is not running. Resolves directory
+// requests (`/docs/` -> `/docs/index.html`), VitePress cleanUrls (`/docs/guide/introduction` ->
+// `/docs/guide/introduction.html`), and redirects `/docs` to `/docs/` so Vite's SPA
+// `htmlFallbackMiddleware` does not mistakenly intercept docs routes and recursively serve the
+// Frank SPA index template inside the iframe.
+function serveDocsPlugin() {
+  const docsDir = path.resolve(__dirname, 'public/docs')
+  const docsDevPort = Number(
+    process.env.FRANK_DOCS_DEV_PORT || process.env.FRANK_DOCS_PORT || 5173,
+  )
+  return {
+    name: 'frank:serve-docs',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const rawUrl = req.url || ''
+        const [pathname, search] = rawUrl.split('?')
+        if (!pathname.startsWith('/docs')) return next()
+
+        // When VitePress dev server is active on docsDevPort, proxy handles it untouched
+        const devRunning = await checkDocsDevServer(docsDevPort)
+        if (devRunning) {
+          return next()
+        }
+
+        // Exact /docs redirect to /docs/
+        if (pathname === '/docs') {
+          res.writeHead(301, {
+            Location: '/docs/' + (search ? '?' + search : ''),
+          })
+          return res.end()
+        }
+
+        const subPath = pathname.slice('/docs/'.length)
+        const candidate = path.join(docsDir, subPath)
+
+        // Exact static file (e.g. /docs/assets/style.css, /docs/frank-logo.svg)
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+          return next()
+        }
+
+        // Directory index.html (e.g. /docs/ -> /docs/index.html)
+        if (fs.existsSync(path.join(candidate, 'index.html'))) {
+          const suffix = pathname.endsWith('/') ? 'index.html' : '/index.html'
+          req.url = pathname + suffix + (search ? '?' + search : '')
+          return next()
+        }
+
+        // VitePress cleanUrls (e.g. /docs/guide/introduction -> /docs/guide/introduction.html)
+        if (fs.existsSync(candidate + '.html')) {
+          req.url = pathname + '.html' + (search ? '?' + search : '')
+          return next()
+        }
+
+        // Docs 404 fallback instead of Frank SPA index.html
+        if (fs.existsSync(path.join(docsDir, '404.html'))) {
+          req.url = '/docs/404.html' + (search ? '?' + search : '')
+          return next()
+        }
+
+        next()
+      })
     },
   }
 }
@@ -216,7 +306,12 @@ export default configure(ctx => {
       // "does not provide an export named 'default'" even though a standalone `esbuild.
       // transformSync` proved the underlying CJS->ESM conversion works fine in isolation -- the
       // plugin just never ran in the live dev server because of this wrapping mistake.
-      vitePlugins: [globalPolyfills, globalInject, protobufCjsInterop()],
+      vitePlugins: [
+        globalPolyfills,
+        globalInject,
+        protobufCjsInterop(),
+        serveDocsPlugin(),
+      ],
 
       // Vite equivalent of webpack's `extendWebpack`'s `cfg.resolve.modules` directory-prepend
       // hack (ticket #51): that forced *every* `require('bn.js')`/`require('bitcore-lib-xpi')`
@@ -379,6 +474,27 @@ export default configure(ctx => {
             process.env.FRANK_DEMO_RELAY_PORT || 8098
           }`,
           changeOrigin: true,
+        },
+        '/docs': {
+          target: `http://127.0.0.1:${
+            process.env.FRANK_DOCS_DEV_PORT ||
+            process.env.FRANK_DOCS_PORT ||
+            5173
+          }`,
+          changeOrigin: true,
+          ws: true,
+          async bypass(req) {
+            const docsDevPort = Number(
+              process.env.FRANK_DOCS_DEV_PORT ||
+                process.env.FRANK_DOCS_PORT ||
+                5173,
+            )
+            const devRunning = await checkDocsDevServer(docsDevPort)
+            if (!devRunning) {
+              return req.url
+            }
+            return null
+          },
         },
       },
     },

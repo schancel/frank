@@ -111,6 +111,55 @@
           </p>
           <p>{{ account.pending.account.displayName }}</p>
           <p class="recovery-text">{{ account.pending.account.descriptor }}</p>
+          <p
+            v-if="discoveredRelay"
+            role="status"
+            aria-live="polite"
+            class="text-positive q-mt-sm"
+            data-test="relay-discovered-status"
+          >
+            {{
+              $t('accountRecovery.relay_discovered', { url: discoveredRelay })
+            }}
+          </p>
+          <q-expansion-item
+            class="q-mt-md"
+            icon="tune"
+            :label="$t('accountRecovery.advanced_options')"
+            :caption="$t('accountRecovery.relay_server')"
+            header-class="text-weight-medium text-grey-8"
+            data-test="advanced-relay-expansion"
+          >
+            <q-card class="bg-transparent q-pa-none">
+              <q-card-section class="q-px-none q-pt-sm">
+                <q-input
+                  v-model="customRelayUrl"
+                  outlined
+                  dense
+                  :label="$t('accountRecovery.relay_server_url')"
+                  :hint="$t('accountRecovery.relay_server_url_hint')"
+                  :placeholder="defaultRelayUrl"
+                  data-test="custom-relay-input"
+                  :rules="[validateRelayUrl]"
+                >
+                  <template
+                    v-if="customRelayUrl && customRelayUrl !== defaultRelayUrl"
+                    #append
+                  >
+                    <q-btn
+                      flat
+                      dense
+                      round
+                      icon="restart_alt"
+                      :title="$t('accountRecovery.reset_to_default_relay')"
+                      data-test="reset-default-relay"
+                      @click="customRelayUrl = defaultRelayUrl"
+                    />
+                  </template>
+                </q-input>
+              </q-card-section>
+            </q-card>
+          </q-expansion-item>
           <div
             v-if="account.pendingReady"
             class="row q-gutter-sm q-mt-md items-center"
@@ -262,6 +311,57 @@
             >
               {{ detectedAccount }}
             </p>
+            <p
+              v-if="discoveredRelay"
+              role="status"
+              aria-live="polite"
+              class="q-mt-sm text-positive"
+              data-test="relay-discovered-status"
+            >
+              {{
+                $t('accountRecovery.relay_discovered', { url: discoveredRelay })
+              }}
+            </p>
+            <q-expansion-item
+              class="q-mt-md"
+              icon="tune"
+              :label="$t('accountRecovery.advanced_options')"
+              :caption="$t('accountRecovery.relay_server')"
+              header-class="text-weight-medium text-grey-8"
+              data-test="advanced-relay-expansion"
+            >
+              <q-card class="bg-transparent q-pa-none">
+                <q-card-section class="q-px-none q-pt-sm">
+                  <q-input
+                    v-model="customRelayUrl"
+                    outlined
+                    dense
+                    :label="$t('accountRecovery.relay_server_url')"
+                    :hint="$t('accountRecovery.relay_server_url_hint')"
+                    :placeholder="defaultRelayUrl"
+                    data-test="custom-relay-input"
+                    :rules="[validateRelayUrl]"
+                  >
+                    <template
+                      v-if="
+                        customRelayUrl && customRelayUrl !== defaultRelayUrl
+                      "
+                      #append
+                    >
+                      <q-btn
+                        flat
+                        dense
+                        round
+                        icon="restart_alt"
+                        :title="$t('accountRecovery.reset_to_default_relay')"
+                        data-test="reset-default-relay"
+                        @click="customRelayUrl = defaultRelayUrl"
+                      />
+                    </template>
+                  </q-input>
+                </q-card-section>
+              </q-card>
+            </q-expansion-item>
             <div class="row q-gutter-sm q-mt-md items-center">
               <q-btn
                 type="submit"
@@ -459,6 +559,57 @@
               autocomplete="off"
               data-test="display-name"
             />
+            <p
+              v-if="discoveredRelay"
+              role="status"
+              aria-live="polite"
+              class="text-positive q-mt-sm"
+              data-test="relay-discovered-status"
+            >
+              {{
+                $t('accountRecovery.relay_discovered', { url: discoveredRelay })
+              }}
+            </p>
+            <q-expansion-item
+              class="q-mt-md"
+              icon="tune"
+              :label="$t('accountRecovery.advanced_options')"
+              :caption="$t('accountRecovery.relay_server')"
+              header-class="text-weight-medium text-grey-8"
+              data-test="advanced-relay-expansion"
+            >
+              <q-card class="bg-transparent q-pa-none">
+                <q-card-section class="q-px-none q-pt-sm">
+                  <q-input
+                    v-model="customRelayUrl"
+                    outlined
+                    dense
+                    :label="$t('accountRecovery.relay_server_url')"
+                    :hint="$t('accountRecovery.relay_server_url_hint')"
+                    :placeholder="defaultRelayUrl"
+                    data-test="custom-relay-input"
+                    :rules="[validateRelayUrl]"
+                  >
+                    <template
+                      v-if="
+                        customRelayUrl && customRelayUrl !== defaultRelayUrl
+                      "
+                      #append
+                    >
+                      <q-btn
+                        flat
+                        dense
+                        round
+                        icon="restart_alt"
+                        :title="$t('accountRecovery.reset_to_default_relay')"
+                        data-test="reset-default-relay"
+                        @click="customRelayUrl = defaultRelayUrl"
+                      />
+                    </template>
+                  </q-input>
+                </q-card-section>
+              </q-card>
+            </q-expansion-item>
             <div class="row q-gutter-sm q-mt-md items-center">
               <q-btn
                 type="submit"
@@ -516,6 +667,7 @@ import {
   getDefaultRelayBaseUrl,
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,
+  probeDirectoryRelay,
 } from '@frank/wallet/chain'
 
 defineProps<{ myDrawerOpen?: boolean }>()
@@ -526,6 +678,7 @@ const ceremony = createAccountCeremony()
 
 const defaultRelayUrl = getDefaultRelayBaseUrl()
 const customRelayUrl = ref(getCustomRelayBaseUrl() ?? defaultRelayUrl)
+const discoveredRelay = ref<string | null>(null)
 
 function validateRelayUrl(val: string): boolean | string {
   if (!val || val.trim().length === 0) return true
@@ -617,6 +770,7 @@ function cancel() {
   policy.value = null
   legacyAddress.value = ''
   customRelayUrl.value = getCustomRelayBaseUrl() ?? defaultRelayUrl
+  discoveredRelay.value = null
   changeMode('choice')
 }
 watch(
@@ -698,7 +852,27 @@ function confirm() {
     shareInput.value = ''
     shownShare.value = ''
     try {
-      await ceremony.confirm(shares, displayName.value)
+      const outcome = (await ceremony.confirm(shares, displayName.value)) as any
+      let discovered = outcome?.discoveredRelayUrl
+      if (
+        outcome?.isRestore &&
+        !discovered &&
+        (outcome.subject || outcome.address)
+      ) {
+        try {
+          discovered = await probeDirectoryRelay({
+            subject: outcome.subject,
+            address: outcome.address,
+          })
+        } catch {
+          // ignore probe error
+        }
+      }
+      if (discovered) {
+        setCustomRelayBaseUrl(discovered)
+        customRelayUrl.value = discovered
+        discoveredRelay.value = discovered
+      }
     } finally {
       shares = []
     }
@@ -725,6 +899,17 @@ function submitLegacyPhrase() {
       const detectedInfo = `${scanned.address} (${scanned.label})`
       detectedAccount.value = detectedInfo
 
+      try {
+        const discovered = await probeDirectoryRelay(scanned.address)
+        if (discovered) {
+          setCustomRelayBaseUrl(discovered)
+          customRelayUrl.value = discovered
+          discoveredRelay.value = discovered
+        }
+      } catch {
+        // probe failed or offline; gracefully keep default relay
+      }
+
       await importBip39Wallet(phrase, scanned.path)
       void usePersistentStorageStore().afterActivation()
       emit('setupCompleted')
@@ -740,6 +925,12 @@ function activate() {
   return run(async () => {
     const pending = account.pending
     if (!pending) return
+    const cleanedRelay = customRelayUrl.value?.trim()
+    if (cleanedRelay && cleanedRelay !== defaultRelayUrl) {
+      setCustomRelayBaseUrl(cleanedRelay)
+    } else if (!cleanedRelay || cleanedRelay === defaultRelayUrl) {
+      setCustomRelayBaseUrl(undefined)
+    }
     await accountSession.activatePending(
       pending.account.receipt.operationId,
       pending.expectedActive,

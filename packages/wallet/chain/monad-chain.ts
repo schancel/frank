@@ -1,7 +1,15 @@
-import type { MonadWalletOperationAdmission } from '../storage/monad-wallet-bundle';
-import type { PublicRevisionZeroInput, PublicRevisionZeroExport, PublicNextRevisionInput, PublicNextRevisionExport } from '../monad-wallet-handle';
-import { MonadStealthKeyring, buildEvmStealthPayment } from '../monad-stealth';
-import { EvmLegacyConsolidator, FundingAccount } from './evm-legacy-consolidator';
+import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
+import type {
+  PublicRevisionZeroInput,
+  PublicRevisionZeroExport,
+  PublicNextRevisionInput,
+  PublicNextRevisionExport,
+} from "../monad-wallet-handle";
+import { MonadStealthKeyring, buildEvmStealthPayment } from "../monad-stealth";
+import {
+  EvmLegacyConsolidator,
+  FundingAccount,
+} from "./evm-legacy-consolidator";
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,
@@ -93,7 +101,10 @@ import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
 
-import { createMonadWalletMaterial, canonicalWalletPublicBinding } from "../monad-wallet-material";
+import {
+  createMonadWalletMaterial,
+  canonicalWalletPublicBinding,
+} from "../monad-wallet-material";
 import type {
   MonadRootBundle,
   MonadWalletMaterial,
@@ -134,9 +145,7 @@ import {
   recoverMonadStampPayments,
 } from "../monad-stamp-client";
 import { fetchMonadMessagesSince } from "@frank/cashweb/relay/monad-message-feed";
-import {
-  MailboxAuthParams,
-} from "@frank/cashweb/relay/monad-mailbox-client";
+import { MailboxAuthParams } from "@frank/cashweb/relay/monad-mailbox-client";
 import {
   decryptEnvelope,
   parseEnvelope,
@@ -348,6 +357,15 @@ export function getDefaultRelayBaseUrl(): string {
   return configured ?? "http://127.0.0.1:8098";
 }
 
+export {
+  probeDirectoryRelay,
+  probeDirectoryEntry,
+} from "./restore-relay-discovery";
+export type {
+  ProbeDirectoryOptions,
+  ProbeTarget,
+} from "./restore-relay-discovery";
+
 /** Reads `MonadChainConfig` from the environment (see `readEnv` just above for exactly where
  * from, and why two places), with permissive fallbacks -- see this file's header,
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
@@ -442,81 +460,165 @@ const privateTopicWallets = new WeakMap<
   MonadChainWalletHandle,
   MonadWalletHandle
 >();
-const installedCanonicalWalletDescriptors = new WeakMap<object, { networkTag: "MONT" | "MON1"; network: string; chainId: bigint }>();
+const installedCanonicalWalletDescriptors = new WeakMap<
+  object,
+  { networkTag: "MONT" | "MON1"; network: string; chainId: bigint }
+>();
 /** Public local evidence only. No Current, enrollment, provider or financial effects. */
-export function prepareMonadRevisionZeroExport(wallet: NativeWalletHandle, input: PublicRevisionZeroInput): PublicRevisionZeroExport {
+export function prepareMonadRevisionZeroExport(
+  wallet: NativeWalletHandle,
+  input: PublicRevisionZeroInput
+): PublicRevisionZeroExport {
   const live = wallet as MonadChainWalletHandle;
   const material = walletMaterial.get(live);
-  if (!material?.canonicalRoles || !typedWallets.has(live) || closedWallets.has(live)) throw new Error("Revision-zero export requires live typed wallet custody");
+  if (
+    !material?.canonicalRoles ||
+    !typedWallets.has(live) ||
+    closedWallets.has(live)
+  )
+    throw new Error("Revision-zero export requires live typed wallet custody");
   const unavailable = canonicalUnavailableWallets.get(wallet);
   if (unavailable) throw unavailable;
   const installed = installedCanonicalWalletDescriptors.get(wallet);
-  if (!installed || installed.networkTag !== input.networkTag || installed.network !== input.network || installed.chainId !== input.chainId)
-    throw new Error("Revision-zero export differs from actual installed wallet descriptor");
+  if (
+    !installed ||
+    installed.networkTag !== input.networkTag ||
+    installed.network !== input.network ||
+    installed.chainId !== input.chainId
+  )
+    throw new Error(
+      "Revision-zero export differs from actual installed wallet descriptor"
+    );
   return material.canonicalRoles.prepareRevisionZero(input);
 }
 /** The next revision of this account's own entry: a renewal or a move to another relay. Public
  * local evidence only, signed by the same live typed wallet; no Current, provider or financial effects. */
-export function prepareMonadNextRevisionExport(wallet: NativeWalletHandle, input: PublicNextRevisionInput): PublicNextRevisionExport {
+export function prepareMonadNextRevisionExport(
+  wallet: NativeWalletHandle,
+  input: PublicNextRevisionInput
+): PublicNextRevisionExport {
   const live = wallet as MonadChainWalletHandle;
   const material = walletMaterial.get(live);
-  if (!material?.canonicalRoles || !typedWallets.has(live) || closedWallets.has(live)) throw new Error("Directory entry renewal requires live typed wallet custody");
+  if (
+    !material?.canonicalRoles ||
+    !typedWallets.has(live) ||
+    closedWallets.has(live)
+  )
+    throw new Error(
+      "Directory entry renewal requires live typed wallet custody"
+    );
   const unavailable = canonicalUnavailableWallets.get(wallet);
   if (unavailable) throw unavailable;
   const installed = installedCanonicalWalletDescriptors.get(wallet);
-  if (!installed || installed.networkTag !== input.networkTag || installed.network !== input.network || installed.chainId !== input.chainId)
-    throw new Error("Directory entry renewal differs from actual installed wallet descriptor");
+  if (
+    !installed ||
+    installed.networkTag !== input.networkTag ||
+    installed.network !== input.network ||
+    installed.chainId !== input.chainId
+  )
+    throw new Error(
+      "Directory entry renewal differs from actual installed wallet descriptor"
+    );
   return material.canonicalRoles.prepareNextRevision(input);
 }
-const canonicalClientFactories = new WeakMap<object, () => MonadCanonicalStampClient>();
+const canonicalClientFactories = new WeakMap<
+  object,
+  () => MonadCanonicalStampClient
+>();
 // Live handles whose storage holds a canonical journal bound to a different identity tuple.
-const canonicalUnavailableWallets = new WeakMap<object, CanonicalWalletBindingMismatchError>();
+const canonicalUnavailableWallets = new WeakMap<
+  object,
+  CanonicalWalletBindingMismatchError
+>();
 /** Opt-in bridge verifies the actual registered live typed wallet; no caller-supplied owner. */
-export function canonicalMonadStampClient(wallet: NativeWalletHandle): MonadCanonicalStampClient {
+export function canonicalMonadStampClient(
+  wallet: NativeWalletHandle
+): MonadCanonicalStampClient {
   const unavailable = canonicalUnavailableWallets.get(wallet);
   if (unavailable) throw unavailable;
   const create = canonicalClientFactories.get(wallet);
-  if (!create) throw new Error("Canonical wallet requires live typed persistent custody");
+  if (!create)
+    throw new Error("Canonical wallet requires live typed persistent custody");
   return create();
 }
 // Canonical direct messages (#778). The caller installs the open directory once this account's own
 // entry is published; it is never inferred from a wallet.
 const canonicalDirectories = new WeakMap<object, CanonicalDirectory>();
-const canonicalMessaging = new WeakMap<object, ReturnType<typeof canonicalDirectMessages>>();
+const canonicalMessaging = new WeakMap<
+  object,
+  ReturnType<typeof canonicalDirectMessages>
+>();
 /** Install the caller's verified public directory for one live typed wallet. Returns its removal. */
-export function installCanonicalDirectory(wallet: NativeWalletHandle, directory: CanonicalDirectory): () => void {
+export function installCanonicalDirectory(
+  wallet: NativeWalletHandle,
+  directory: CanonicalDirectory
+): () => void {
   const installed = installedCanonicalWalletDescriptors.get(wallet);
-  if (!installed || !canonicalMessaging.has(wallet) || closedWallets.has(wallet as MonadChainWalletHandle))
-    throw new Error("Canonical directory requires live typed persistent custody");
-  if (installed.network !== directory.network) throw new Error("Canonical directory differs from actual installed wallet network");
+  if (
+    !installed ||
+    !canonicalMessaging.has(wallet) ||
+    closedWallets.has(wallet as MonadChainWalletHandle)
+  )
+    throw new Error(
+      "Canonical directory requires live typed persistent custody"
+    );
+  if (installed.network !== directory.network)
+    throw new Error(
+      "Canonical directory differs from actual installed wallet network"
+    );
   canonicalDirectories.set(wallet, directory);
-  return () => { if (canonicalDirectories.get(wallet) === directory) canonicalDirectories.delete(wallet); };
+  return () => {
+    if (canonicalDirectories.get(wallet) === directory)
+      canonicalDirectories.delete(wallet);
+  };
 }
 type CanonicalInventoryFunder = (input: {
   stampValueWei: bigint;
   recipientStampKey: Uint8Array;
   onProgress?: (progress: DirectMessagePreparationProgress) => void;
 }) => Promise<string[]>;
-const canonicalInventoryFunders = new WeakMap<object, CanonicalInventoryFunder>();
+const canonicalInventoryFunders = new WeakMap<
+  object,
+  CanonicalInventoryFunder
+>();
 /**
  * Funds receipt-confirmed single-use sender accounts for one canonical stamp of `stampValueWei`,
  * from the wallet's own EVM main account, through the same pool machinery and owner admission as
  * every other inventory preparation. Call it before `prepareIntent`, which selects only funded
  * accounts. Returns the funding transaction hashes (empty when inventory already sufficed).
  */
-export function prepareCanonicalStampInventory(wallet: NativeWalletHandle, input: Parameters<CanonicalInventoryFunder>[0]): Promise<string[]> {
+export function prepareCanonicalStampInventory(
+  wallet: NativeWalletHandle,
+  input: Parameters<CanonicalInventoryFunder>[0]
+): Promise<string[]> {
   const fund = canonicalInventoryFunders.get(wallet);
-  if (!fund || closedWallets.has(wallet as MonadChainWalletHandle)) throw new Error("Canonical inventory requires live typed persistent custody");
-  return fund({ ...input, recipientStampKey: new Uint8Array(input.recipientStampKey) });
+  if (!fund || closedWallets.has(wallet as MonadChainWalletHandle))
+    throw new Error(
+      "Canonical inventory requires live typed persistent custody"
+    );
+  return fund({
+    ...input,
+    recipientStampKey: new Uint8Array(input.recipientStampKey),
+  });
 }
 /**
  * Scoped canonical message roles of the live typed wallet for one admitted Current of its own
  * subject. The caller disposes the result. No second copy of the wallet roots is needed.
  */
-export function createCanonicalMessageRoles(wallet: NativeWalletHandle, current: import("../../directory-admission/src").Current) {
+export function createCanonicalMessageRoles(
+  wallet: NativeWalletHandle,
+  current: import("../../directory-admission/src").Current
+) {
   const live = wallet as MonadChainWalletHandle;
-  const material = walletMaterial.get(live), installed = installedCanonicalWalletDescriptors.get(wallet);
-  if (!material?.canonicalRoles || !installed || !typedWallets.has(live) || closedWallets.has(live)) throw new Error("Canonical roles require live typed wallet custody");
+  const material = walletMaterial.get(live),
+    installed = installedCanonicalWalletDescriptors.get(wallet);
+  if (
+    !material?.canonicalRoles ||
+    !installed ||
+    !typedWallets.has(live) ||
+    closedWallets.has(live)
+  )
+    throw new Error("Canonical roles require live typed wallet custody");
   return material.canonicalRoles.create(installed.network, current);
 }
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
@@ -524,7 +626,10 @@ function canonicalMessagingFor(wallet: MonadChainWalletHandle) {
   requireOpenWallet(wallet);
   if (!typedWallets.has(wallet)) return undefined;
   const canonical = canonicalMessaging.get(wallet);
-  if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet storage on a Monad network.");
+  if (!canonical)
+    throw new CanonicalMessagingPendingError(
+      "Canonical direct messages require persistent typed wallet storage on a Monad network."
+    );
   return canonical;
 }
 const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
@@ -686,7 +791,6 @@ async function boundedSync(sync: Promise<void>): Promise<void> {
 /** @deprecated Recovery endpoint is retired; stamp discovery is unified through mailbox. */
 export const MAILBOX_RECOVERY_SYNC_INTERVAL_MS = 60_000;
 
-
 /** JSON-serializes `items` for use as a direct message's plaintext.
  * Throws only on `'p2pkh'` items, which are legacy Lotus-only script items.
  * Stealth items are supported across chains (Monad, Solana, eCash). */
@@ -780,16 +884,35 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     canonical = false
   ): Promise<T> => {
     requireOpenWallet(wallet);
-    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(async () => {
-      const owner = privateTopicWallets.get(wallet)?.walletState;
-      if (!canonical && owner?.canonicalRetained?.getIntents().some(intent => intent.members.some(m => wallet.pool.getRecord(m.reservation.index)?.status === "available")))
-        throw new Error("Canonical pre-sign intent requires explicit correlation before ordinary pool operations");
-      if (!owner) return task();
-      enclosingTopicAdmissions.add(wallet);
-      try {
-        return await (canonical ? owner.runCanonicalOperation(task) : owner.runOperation(task));
-      } finally { enclosingTopicAdmissions.delete(wallet); }
-    });
+    const run = (walletSendQueues.get(wallet) ?? Promise.resolve()).then(
+      async () => {
+        const owner = privateTopicWallets.get(wallet)?.walletState;
+        if (
+          !canonical &&
+          owner?.canonicalRetained
+            ?.getIntents()
+            .some((intent) =>
+              intent.members.some(
+                (m) =>
+                  wallet.pool.getRecord(m.reservation.index)?.status ===
+                  "available"
+              )
+            )
+        )
+          throw new Error(
+            "Canonical pre-sign intent requires explicit correlation before ordinary pool operations"
+          );
+        if (!owner) return task();
+        enclosingTopicAdmissions.add(wallet);
+        try {
+          return await (canonical
+            ? owner.runCanonicalOperation(task)
+            : owner.runOperation(task));
+        } finally {
+          enclosingTopicAdmissions.delete(wallet);
+        }
+      }
+    );
     walletSendQueues.set(
       wallet,
       run.then(
@@ -877,28 +1000,40 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
+      if (!canonical)
+        throw new CanonicalMessagingPendingError(
+          "Canonical direct messages require persistent typed wallet custody on a Monad network."
+        );
       return canonical.send(params);
     },
 
     async unattributedAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
+      if (!canonical)
+        throw new CanonicalMessagingPendingError(
+          "Canonical direct messages require persistent typed wallet custody on a Monad network."
+        );
       return canonical.unattributedAttempts(params);
     },
 
     async resolveUnattributedAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
+      if (!canonical)
+        throw new CanonicalMessagingPendingError(
+          "Canonical direct messages require persistent typed wallet custody on a Monad network."
+        );
       await canonical.resolveUnattributedAttempts(params);
     },
 
     async reconcileAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
-      if (!canonical) throw new CanonicalMessagingPendingError("Canonical direct messages require persistent typed wallet custody on a Monad network.");
+      if (!canonical)
+        throw new CanonicalMessagingPendingError(
+          "Canonical direct messages require persistent typed wallet custody on a Monad network."
+        );
       return canonical.reconcileAttempts(params);
     },
 
@@ -1034,8 +1169,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     const accounts: FundingAccount[] = [];
     const material = walletMaterial.get(monadWallet);
 
-    const mainKey = material?.mainAccount.privateKey ?? mainPrivateKey(monadWallet);
-    const mainAddress = material?.mainAccount.address ?? monadWallet.identity.address.raw;
+    const mainKey =
+      material?.mainAccount.privateKey ?? mainPrivateKey(monadWallet);
+    const mainAddress =
+      material?.mainAccount.address ?? monadWallet.identity.address.raw;
     try {
       const mainBal = await monadWallet.provider.getBalance(mainAddress);
       if (mainBal > 0n) {
@@ -1118,7 +1255,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         chainId: config.chainId,
         transactionBuilder,
       });
-      return consolidator.sendLegacy({ recipient, value, onProgress, onSigned });
+      return consolidator.sendLegacy({
+        recipient,
+        value,
+        onProgress,
+        onSigned,
+      });
     },
 
     async estimateLegacyFee({ wallet, recipient, value }) {
@@ -1180,7 +1322,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     wallet: MonadChainWalletHandle,
     task: (topicWallet: MonadWalletHandle) => Promise<T>
   ): Promise<T> =>
-    runWalletExclusive(wallet, async admission => {
+    runWalletExclusive(wallet, async (admission) => {
       enclosingTopicAdmissions.add(wallet);
       try {
         const topicWallet = privateTopicWallets.get(wallet) ?? wallet;
@@ -1188,7 +1330,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           throw new Error(
             "Canonical topics require coherent wallet persistence"
           );
-        return await task(admission === undefined ? topicWallet : { ...topicWallet, walletState: topicWallet.walletState.delegateAdmission(admission), walletOperationAdmission: admission });
+        return await task(
+          admission === undefined
+            ? topicWallet
+            : {
+                ...topicWallet,
+                walletState:
+                  topicWallet.walletState.delegateAdmission(admission),
+                walletOperationAdmission: admission,
+              }
+        );
       } finally {
         enclosingTopicAdmissions.delete(wallet);
       }
@@ -1488,14 +1639,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         try {
           topicOwner = await openExistingPoolMonadTopicOwner({
             location: storageLocation,
-            encloseFinancialOperation: operation => {
-              if (topicOwnerWallet === undefined) throw new Error("Financial wallet admission is not yet open");
-              return runWalletExclusive(topicOwnerWallet, admission => {
-                if (admission === undefined) throw new Error("Financial admission token is unavailable");
+            encloseFinancialOperation: (operation) => {
+              if (topicOwnerWallet === undefined)
+                throw new Error("Financial wallet admission is not yet open");
+              return runWalletExclusive(topicOwnerWallet, (admission) => {
+                if (admission === undefined)
+                  throw new Error("Financial admission token is unavailable");
                 return operation(admission);
               });
             },
-            canonicalBinding: material.canonicalRoles === undefined ? undefined : canonicalWalletPublicBinding(material, forumPolicy.network, BigInt(config.chainId)),
+            canonicalBinding:
+              material.canonicalRoles === undefined
+                ? undefined
+                : canonicalWalletPublicBinding(
+                    material,
+                    forumPolicy.network,
+                    BigInt(config.chainId)
+                  ),
             pool,
             changePool,
             leaseManager,
@@ -1556,8 +1716,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           pool.ensureUnfundedSize(config.subAccountPoolSize);
           // Classification is deliberately irrelevant here: every old obligation pins its lease.
           const pendingLeaseIndices = new Set([
-            ...(topicOwner.canonicalRetained?.getIntents().flatMap(intent => intent.members.map(m => m.reservation.index)) ?? []),
-            ...(topicOwner.canonicalRetained?.getAll().filter(attempt => !attempt.cleanupComplete).flatMap(attempt => attempt.reservations.map(r => r.index)) ?? []),
+            ...(topicOwner.canonicalRetained
+              ?.getIntents()
+              .flatMap((intent) =>
+                intent.members.map((m) => m.reservation.index)
+              ) ?? []),
+            ...(topicOwner.canonicalRetained
+              ?.getAll()
+              .filter((attempt) => !attempt.cleanupComplete)
+              .flatMap((attempt) => attempt.reservations.map((r) => r.index)) ??
+              []),
             ...stampAttemptJournal
               .getAll()
               .flatMap((attempt) => attempt.leaseIndices),
@@ -1666,7 +1834,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
               const stealthBalance = await stealthKeyring.getTotalBalance(
                 provider,
-                config.networkTag,
+                config.networkTag
               );
               return mainBalance + stealthBalance;
             },
@@ -1761,13 +1929,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   }
                   let spendingPrivateKey = mainAccount.privateKey;
                   try {
-                    const mainBalance = await provider.getBalance(mainAccount.address);
+                    const mainBalance = await provider.getBalance(
+                      mainAccount.address
+                    );
                     if (mainBalance < value) {
-                      const selected = await stealthKeyring.selectAccountForSpend(
-                        value,
-                        provider,
-                        config.networkTag,
-                      );
+                      const selected =
+                        await stealthKeyring.selectAccountForSpend(
+                          value,
+                          provider,
+                          config.networkTag
+                        );
                       if (selected) {
                         spendingPrivateKey = selected.privateKey;
                       }
@@ -1805,15 +1976,26 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     }),
                   };
                   const data = txRequest.data ? String(txRequest.data) : "0x";
-                  const to = txRequest.to ? String(txRequest.to) : recipient.raw;
+                  const to = txRequest.to
+                    ? String(txRequest.to)
+                    : recipient.raw;
                   const txValue =
                     txRequest.value != null
                       ? BigInt(txRequest.value.toString())
                       : value;
                   const signed =
                     data !== "0x" && data !== ""
-                      ? await signer.buildAndSignCall(to, txValue, data, overrides)
-                      : await signer.buildAndSignTransfer(to, txValue, overrides);
+                      ? await signer.buildAndSignCall(
+                          to,
+                          txValue,
+                          data,
+                          overrides
+                        )
+                      : await signer.buildAndSignTransfer(
+                          to,
+                          txValue,
+                          overrides
+                        );
                   return submitNative(signed, onSigned);
                 })
               );
@@ -1892,49 +2074,90 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             topicOperationJournal: topicOwner.topicOperationJournal,
           });
           if (topicOwner.canonicalUnavailable !== undefined)
-            canonicalUnavailableWallets.set(wallet, topicOwner.canonicalUnavailable);
-          else if (material.canonicalRoles !== undefined && (config.networkTag === "MONT" || config.networkTag === "MON1"))
-            installedCanonicalWalletDescriptors.set(wallet, { networkTag: config.networkTag, network: forumPolicy.network, chainId: BigInt(config.chainId) });
-          if (material.canonicalRoles !== undefined && topicOwner.canonicalJournal !== undefined &&
-              (config.networkTag === "MONT" || config.networkTag === "MON1")) {
+            canonicalUnavailableWallets.set(
+              wallet,
+              topicOwner.canonicalUnavailable
+            );
+          else if (
+            material.canonicalRoles !== undefined &&
+            (config.networkTag === "MONT" || config.networkTag === "MON1")
+          )
+            installedCanonicalWalletDescriptors.set(wallet, {
+              networkTag: config.networkTag,
+              network: forumPolicy.network,
+              chainId: BigInt(config.chainId),
+            });
+          if (
+            material.canonicalRoles !== undefined &&
+            topicOwner.canonicalJournal !== undefined &&
+            (config.networkTag === "MONT" || config.networkTag === "MON1")
+          ) {
             const canonicalRoles = material.canonicalRoles;
             const installedNetworkTag = config.networkTag;
             canonicalClientFactories.set(wallet, () => {
               requireOpenWallet(wallet);
-              return new MonadCanonicalStampClient({ ...wallet, walletState: topicOwner!, canonicalRoles, installedNetworkTag,
-                runCanonicalExclusive: task => runWalletExclusive(wallet, () => task(), true) });
+              return new MonadCanonicalStampClient({
+                ...wallet,
+                walletState: topicOwner!,
+                canonicalRoles,
+                installedNetworkTag,
+                runCanonicalExclusive: (task) =>
+                  runWalletExclusive(wallet, () => task(), true),
+              });
             });
             // Same ordinary owner path as legacy inventory: wallet queue, then main account.
-            const prepareInventory: CanonicalInventoryFunder = ({ stampValueWei, recipientStampKey, onProgress }) =>
+            const prepareInventory: CanonicalInventoryFunder = ({
+              stampValueWei,
+              recipientStampKey,
+              onProgress,
+            }) =>
               runWalletExclusive(wallet, async () => {
-                const mainAccountSigner = new MonadAccountTxSigner({ privateKey: mainAccount.privateKey, provider, httpClient });
-                const preparation = await runMainAccountExclusive(wallet, async () =>
-                  pool.prepareStampInventory({
-                    mainAccountSigner,
-                    provider,
-                    stampValueWei,
-                    gasReserveWei: await quoteMonadStampPaymentGasReserve({ signer: mainAccountSigner, recipientPublicKey: recipientStampKey }),
-                    onProgress,
-                  }));
+                const mainAccountSigner = new MonadAccountTxSigner({
+                  privateKey: mainAccount.privateKey,
+                  provider,
+                  httpClient,
+                });
+                const preparation = await runMainAccountExclusive(
+                  wallet,
+                  async () =>
+                    pool.prepareStampInventory({
+                      mainAccountSigner,
+                      provider,
+                      stampValueWei,
+                      gasReserveWei: await quoteMonadStampPaymentGasReserve({
+                        signer: mainAccountSigner,
+                        recipientPublicKey: recipientStampKey,
+                      }),
+                      onProgress,
+                    })
+                );
                 return preparation.fundingTxHashes;
               });
             canonicalInventoryFunders.set(wallet, prepareInventory);
-            const links = storageLocation !== undefined
-              ? await LevelCanonicalLinkStore.open(storageLocation)
-              : new MemoryCanonicalLinkStore();
+            const links =
+              storageLocation !== undefined
+                ? await LevelCanonicalLinkStore.open(storageLocation)
+                : new MemoryCanonicalLinkStore();
             canonicalLinks = links;
-            canonicalMessaging.set(wallet, canonicalDirectMessages({
-              installedNetworkTag,
-              relayBaseUrl: config.relayBaseUrl,
-              identityAddress: identity.address.raw,
-              subject: bareHex(identity.compressedPubKey),
-              roles: canonicalRoles,
-              links,
-              client: () => canonicalMonadStampClient(wallet),
-              signDigest: digest => new Uint8Array(identity.signHash(Buffer.from(digest))),
-              directory: () => canonicalDirectories.get(wallet),
-              prepareInventory,
-            }, config.defaultStampValueWei));
+            canonicalMessaging.set(
+              wallet,
+              canonicalDirectMessages(
+                {
+                  installedNetworkTag,
+                  relayBaseUrl: config.relayBaseUrl,
+                  identityAddress: identity.address.raw,
+                  subject: bareHex(identity.compressedPubKey),
+                  roles: canonicalRoles,
+                  links,
+                  client: () => canonicalMonadStampClient(wallet),
+                  signDigest: (digest) =>
+                    new Uint8Array(identity.signHash(Buffer.from(digest))),
+                  directory: () => canonicalDirectories.get(wallet),
+                  prepareInventory,
+                },
+                config.defaultStampValueWei
+              )
+            );
           }
           walletMaterial.set(wallet, material);
           mainAccountAdmissions.set(wallet, admission);
@@ -1991,10 +2214,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const entry = config.networkTag
         ? resolveChainIdentifier(config.networkTag)
         : PROTOCOL_CHAINS[isTestnet ? "monad-testnet" : "monad-mainnet"];
-      const addr = entry?.contracts?.stateChannel || entry?.contracts?.channelVault;
+      const addr =
+        entry?.contracts?.stateChannel || entry?.contracts?.channelVault;
       if (!addr) {
         throw new Error(
-          `StateChannel contract is not configured for network ${config.networkTag || "unknown"}`
+          `StateChannel contract is not configured for network ${
+            config.networkTag || "unknown"
+          }`
         );
       }
       return addr;
@@ -2007,7 +2233,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const addr = entry?.contracts?.htlc;
       if (!addr) {
         throw new Error(
-          `GenericHTLC contract is not configured for network ${config.networkTag || "unknown"}`
+          `GenericHTLC contract is not configured for network ${
+            config.networkTag || "unknown"
+          }`
         );
       }
       return addr;

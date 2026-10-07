@@ -36,12 +36,21 @@ jest.mock('../accounts/session', () => ({
 const mockBeginNew = jest.fn(async () => 'synth-descriptor')
 const mockShare = jest.fn(() => 'synth-share')
 const mockCancelCeremony = jest.fn()
+const mockBeginRestore = jest.fn(async (text?: string) => text ?? '')
+const mockConfirm = jest.fn(
+  async (_shares: readonly string[], _name: string) => ({
+    isRestore: false,
+    discoveredRelayUrl: undefined,
+  }),
+)
 
 jest.mock('../accounts/ceremony', () => ({
   createAccountCeremony: () => ({
     cancel: mockCancelCeremony,
     beginNew: mockBeginNew,
     share: mockShare,
+    beginRestore: mockBeginRestore,
+    confirm: mockConfirm,
   }),
   recoveryErrorMessage: (err: unknown) =>
     (err as Error)?.message ?? 'Account operation failed',
@@ -52,13 +61,20 @@ jest.mock('vue-router', () => ({ useRouter: () => ({ push: mockPush }) }))
 
 const { accountStatus: mockAccount } = jest.requireMock('../accounts/session')
 
-const t = (key: string) =>
-  key
+const t = (key: string, params?: Record<string, unknown>) => {
+  let str = key
     .split('.')
     .reduce<unknown>(
       (value, part) => (value as Record<string, unknown>)?.[part] ?? key,
       en,
     ) as string
+  if (params && typeof str === 'string') {
+    for (const [paramKey, paramVal] of Object.entries(params)) {
+      str = str.replaceAll(`{${paramKey}}`, String(paramVal))
+    }
+  }
+  return str
+}
 
 function render() {
   return mount(Setup, {
@@ -104,7 +120,7 @@ function render() {
         QInput: {
           props: ['modelValue', 'placeholder', 'label', 'hint'],
           template: `
-            <div class="q-input-stub">
+            <div class="q-input-stub" :data-test="$attrs['data-test']">
               <input
                 data-test="custom-relay-input-inner"
                 :value="modelValue"
@@ -140,6 +156,9 @@ describe('Setup page advanced relay configuration', () => {
     })
     mockPush.mockClear()
     mockBeginNew.mockClear()
+    mockBeginRestore.mockClear()
+    mockConfirm.mockClear()
+    jest.restoreAllMocks()
   })
 
   afterEach(() => {
@@ -228,6 +247,230 @@ describe('Setup page advanced relay configuration', () => {
     // Should NOT have custom relay saved
     expect(getCustomRelayBaseUrl()).toBeUndefined()
 
+    view.unmount()
+  })
+
+  test('restores account with existing directory entry: sets custom relay and reflects in UI', async () => {
+    const discoveredRelay = 'https://home-relay-discovered.example.com'
+    mockConfirm.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, {
+        status: 'fresh',
+        pending: {
+          status: 'staging',
+          account: { displayName: 'Restored User', descriptor: 'PUBLIC-DESC' },
+          expectedActive: { revision: 0, accountId: null },
+        },
+        pendingReady: true,
+      })
+      return {
+        isRestore: true,
+        subject: '02' + 'aa'.repeat(32),
+        address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        discoveredRelayUrl: discoveredRelay,
+      }
+    })
+
+    const view = render()
+    // Click Restore Frank Account
+    await view.get('[data-test="restore-account"]').trigger('click')
+    await flushPromises()
+
+    // Mode is now restore-shares
+    await view
+      .get('[data-test="confirm-shares"] input')
+      .setValue('share1\nshare2')
+    await view.get('[data-test="display-name"] input').setValue('Restored User')
+    await flushPromises()
+
+    // Submit restore form
+    await view.get('form').trigger('submit')
+    await flushPromises()
+
+    // setCustomRelayBaseUrl should be called and custom relay persisted
+    expect(getCustomRelayBaseUrl()).toBe(discoveredRelay)
+
+    // UI should reflect discovered relay
+    const statusNotice = view.find('[data-test="relay-discovered-status"]')
+    expect(statusNotice.exists()).toBe(true)
+    expect(statusNotice.text()).toContain(discoveredRelay)
+
+    // Advanced options relay input should be populated with discovered relay
+    const relayInput = view.get('[data-test="custom-relay-input"] input')
+    expect((relayInput.element as HTMLInputElement).value).toBe(discoveredRelay)
+
+    view.unmount()
+  })
+
+  test('restores account with no directory entry: preserves default relay', async () => {
+    mockConfirm.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, {
+        status: 'fresh',
+        pending: {
+          status: 'staging',
+          account: {
+            displayName: 'Offline Account',
+            descriptor: 'PUBLIC-DESC',
+          },
+          expectedActive: { revision: 0, accountId: null },
+        },
+        pendingReady: true,
+      })
+      return {
+        isRestore: true,
+        subject: '02' + 'bb'.repeat(32),
+        address: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        discoveredRelayUrl: undefined,
+      }
+    })
+
+    const view = render()
+    await view.get('[data-test="restore-account"]').trigger('click')
+    await flushPromises()
+
+    await view
+      .get('[data-test="confirm-shares"] input')
+      .setValue('share1\nshare2')
+    await view
+      .get('[data-test="display-name"] input')
+      .setValue('Offline Account')
+    await flushPromises()
+
+    await view.get('form').trigger('submit')
+    await flushPromises()
+
+    // Default relay preserved, custom relay is undefined
+    expect(getCustomRelayBaseUrl()).toBeUndefined()
+
+    // No discovered status notice shown
+    expect(view.find('[data-test="relay-discovered-status"]').exists()).toBe(
+      false,
+    )
+
+    // Advanced relay input reflects default relay
+    const defaultRelay = getDefaultRelayBaseUrl()
+    const relayInput = view.get('[data-test="custom-relay-input"] input')
+    expect((relayInput.element as HTMLInputElement).value).toBe(defaultRelay)
+
+    view.unmount()
+  })
+
+  test('handles probe error/offline during restore gracefully and preserves default relay', async () => {
+    mockConfirm.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, {
+        status: 'fresh',
+        pending: {
+          status: 'staging',
+          account: { displayName: 'Error Account', descriptor: 'PUBLIC-DESC' },
+          expectedActive: { revision: 0, accountId: null },
+        },
+        pendingReady: true,
+      })
+      return {
+        isRestore: true,
+        subject: '02' + 'cc'.repeat(32),
+        address: '0xcccccccccccccccccccccccccccccccccccccccc',
+        discoveredRelayUrl: undefined,
+      }
+    })
+
+    const view = render()
+    await view.get('[data-test="restore-account"]').trigger('click')
+    await flushPromises()
+
+    await view
+      .get('[data-test="confirm-shares"] input')
+      .setValue('share1\nshare2')
+    await view.get('[data-test="display-name"] input').setValue('Error Account')
+    await flushPromises()
+
+    await view.get('form').trigger('submit')
+    await flushPromises()
+
+    // Account recovery is not blocked, default relay preserved
+    expect(getCustomRelayBaseUrl()).toBeUndefined()
+    expect(view.find('[data-test="relay-discovered-status"]').exists()).toBe(
+      false,
+    )
+    expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
+
+    view.unmount()
+  })
+
+  test('probes directory during restore and configures discovered relay', async () => {
+    const discoveredRelay = 'https://probed-relay.example.com'
+    const chain = await import('@frank/wallet/chain')
+    const probeSpy = jest
+      .spyOn(chain, 'probeDirectoryRelay')
+      .mockResolvedValueOnce(discoveredRelay)
+
+    mockConfirm.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, {
+        status: 'fresh',
+        pending: {
+          status: 'staging',
+          account: { displayName: 'Probe Test', descriptor: 'PUBLIC-DESC' },
+          expectedActive: { revision: 0, accountId: null },
+        },
+        pendingReady: true,
+      })
+      return {
+        isRestore: true,
+        subject: '02' + 'dd'.repeat(32),
+        address: '0xdddddddddddddddddddddddddddddddddddddddd',
+        discoveredRelayUrl: undefined,
+      }
+    })
+
+    const view = render()
+    await view.get('[data-test="restore-account"]').trigger('click')
+    await flushPromises()
+
+    await view
+      .get('[data-test="confirm-shares"] input')
+      .setValue('share1\nshare2')
+    await view.get('[data-test="display-name"] input').setValue('Probe Test')
+    await flushPromises()
+
+    await view.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(probeSpy).toHaveBeenCalledWith({
+      subject: '02' + 'dd'.repeat(32),
+      address: '0xdddddddddddddddddddddddddddddddddddddddd',
+    })
+    expect(getCustomRelayBaseUrl()).toBe(discoveredRelay)
+    expect(view.find('[data-test="relay-discovered-status"]').text()).toContain(
+      discoveredRelay,
+    )
+
+    probeSpy.mockRestore()
+    view.unmount()
+  })
+
+  test('restoring account via BIP39 discovers and configures existing home relay', async () => {
+    const discoveredRelay = 'https://legacy-discovered.example.com'
+    const chain = await import('@frank/wallet/chain')
+    const probeSpy = jest
+      .spyOn(chain, 'probeDirectoryRelay')
+      .mockResolvedValueOnce(discoveredRelay)
+
+    const view = render()
+    await view.get('[data-test="legacy-recovery"]').trigger('click')
+    await flushPromises()
+
+    const input = view.get('[data-test="legacy-phrase"] input')
+    await input.setValue(
+      'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+    )
+    await flushPromises()
+
+    await view.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(probeSpy).toHaveBeenCalled()
+    expect(getCustomRelayBaseUrl()).toBe(discoveredRelay)
+
+    probeSpy.mockRestore()
     view.unmount()
   })
 })

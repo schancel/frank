@@ -60,6 +60,7 @@ import { MessageStore } from './storage/storage'
 import { Wallet, type WalletTransaction } from '../legacy-wallet'
 import { Utxo, utxoPrivateKeyFromSecret, type UtxoPrivateKey } from '../types/utxo'
 import { pAll } from './pAll'
+import { applyWalletSyncItem } from '../sync-dispatcher'
 
 // Ticket #53 (package split): was `import { defaultAcceptancePrice } from 'src/utils/constants'`,
 // reaching into the app's own config -- a standalone package can't depend on its consumer. This is
@@ -826,16 +827,7 @@ export class RelayClient extends ReadOnlyRelayClient {
                 item &&
                 (item.type === 'wallet-sync' || item.type === 'payment-transfer')
               ) {
-                if (typeof (this.wallet as any).processSyncTransaction === 'function') {
-                  (this.wallet as any).processSyncTransaction(item)
-                }
-                if (item.direction === 'out' && item.spentInputs) {
-                  for (const input of item.spentInputs) {
-                    if (input.outpoint && typeof this.wallet.deleteUtxo === 'function') {
-                      this.wallet.deleteUtxo(input.outpoint)
-                    }
-                  }
-                }
+                applyWalletSyncItem(this.wallet, item)
               }
             }
           }

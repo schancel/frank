@@ -17,7 +17,8 @@
     "types": ["node", "jest"],
     "paths": {
       "@frank/codec": ["../frank-codec/src/index.ts"],
-      "@frank/cashweb/*": ["../cashweb/*"]
+      "@frank/cashweb/*": ["../cashweb/*"],
+      "@frank/wallet/*": ["./*"]
     }
   },
   "include": [

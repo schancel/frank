@@ -55,7 +55,9 @@ export interface EvmLegacyConsolidatorConfig {
   provider: Provider;
   inventory?: EvmAddressInventory;
   getFundingAccounts?: () => Promise<FundingAccount[]>;
-  chainId?: number | bigint;
+  chainIdentifier?: string;
+  /** @deprecated Use chainIdentifier instead. */
+  chainId?: number | bigint | string;
   transactionBuilder?: EvmTransactionBuilder;
   journal?: LegacySendJournalStore;
   standardGasLimit?: bigint;
@@ -68,7 +70,7 @@ export class EvmLegacyConsolidator {
   private readonly provider: Provider;
   private readonly inventory?: EvmAddressInventory;
   private readonly getFundingAccounts?: () => Promise<FundingAccount[]>;
-  private readonly chainId?: number | bigint;
+  private readonly chainIdentifier: string;
   private readonly journal: LegacySendJournalStore;
   private readonly standardGasLimit: bigint;
   private readonly onSyncTransaction?: (item: WalletSyncItem) => Promise<void>;
@@ -77,7 +79,9 @@ export class EvmLegacyConsolidator {
     this.provider = config.provider;
     this.inventory = config.inventory;
     this.getFundingAccounts = config.getFundingAccounts;
-    this.chainId = config.chainId;
+    this.chainIdentifier =
+      config.chainIdentifier ??
+      (config.chainId !== undefined ? String(config.chainId) : "monad-testnet");
     this.journal = config.journal ?? new InMemoryLegacySendJournalStore();
     this.standardGasLimit = config.standardGasLimit ?? DEFAULT_STANDARD_TRANSFER_GAS;
     this.onSyncTransaction = config.onSyncTransaction;
@@ -273,7 +277,7 @@ export class EvmLegacyConsolidator {
       const syncItem: WalletSyncItem = {
         type: "wallet-sync",
         direction: "out",
-        chainId: String(this.chainId ?? "monad"),
+        chainIdentifier: this.chainIdentifier,
         txHash: txResponse.hash,
         spentInputs: [
           {
@@ -371,7 +375,7 @@ export class EvmLegacyConsolidator {
     const drainSyncItem: WalletSyncItem = {
       type: "wallet-sync",
       direction: "out",
-      chainId: String(this.chainId ?? "monad"),
+      chainIdentifier: this.chainIdentifier,
       txHash: drainTxHash,
       spentInputs: [
         {
@@ -482,7 +486,7 @@ export class EvmLegacyConsolidator {
     const drainSyncItem: WalletSyncItem = {
       type: "wallet-sync",
       direction: "out",
-      chainId: String(this.chainId ?? "monad"),
+      chainIdentifier: this.chainIdentifier,
       txHash: drainResponse.hash,
       spentInputs: [
         {

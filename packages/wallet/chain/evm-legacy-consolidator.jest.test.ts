@@ -280,7 +280,7 @@ describe("EvmLegacyConsolidator", () => {
           },
         ],
         standardGasLimit,
-        chainId: 10143,
+        chainIdentifier: "monad-testnet",
         onSyncTransaction: async (item) => {
           syncItems.push(item);
         },
@@ -299,7 +299,7 @@ describe("EvmLegacyConsolidator", () => {
       const phase1 = syncItems[0];
       expect(phase1.type).toBe("wallet-sync");
       expect(phase1.direction).toBe("out");
-      expect(phase1.chainId).toBe("10143");
+      expect(phase1.chainIdentifier).toBe("monad-testnet");
       expect(phase1.spentInputs[0].address).toBe(wallet1.address);
       expect(phase1.createdOutputs[0].branch).toBe("staging");
 
@@ -307,7 +307,7 @@ describe("EvmLegacyConsolidator", () => {
       const phase2 = syncItems[1];
       expect(phase2.type).toBe("wallet-sync");
       expect(phase2.direction).toBe("out");
-      expect(phase2.chainId).toBe("10143");
+      expect(phase2.chainIdentifier).toBe("monad-testnet");
       expect(phase2.txHash).toBe(result.txHash);
       expect(phase2.createdOutputs[0].address).toBe(recipientAddress);
     });
@@ -378,16 +378,24 @@ describe("EvmLegacyConsolidator", () => {
         updatedAtMs: Date.now(),
       });
 
+      const resumedSyncItems: any[] = [];
       const consolidator = new EvmLegacyConsolidator({
         provider: mockProvider,
         journal,
         standardGasLimit,
+        chainIdentifier: "monad-testnet",
+        onSyncTransaction: async (item) => {
+          resumedSyncItems.push(item);
+        },
       });
 
       const result = await consolidator.resumeLegacySend();
       expect(result.txHash).toBeDefined();
       expect(result.totalValueSent).toBe(targetValue);
       expect(journal.getPendingIntent()).toBeUndefined();
+      expect(resumedSyncItems.length).toBe(1);
+      expect(resumedSyncItems[0].chainIdentifier).toBe("monad-testnet");
+      expect(resumedSyncItems[0].type).toBe("wallet-sync");
     });
   });
 });

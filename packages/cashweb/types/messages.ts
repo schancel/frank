@@ -403,7 +403,9 @@ export interface WalletSyncCreatedOutput {
 export interface WalletSyncItem {
   type: "wallet-sync" | "payment-transfer";
   direction: WalletSyncDirection;
-  chainId: string;
+  chainIdentifier: string;
+  /** @deprecated Use chainIdentifier instead. */
+  chainId?: string;
   txHash: string;
   rawTx?: string;
   spentInputs?: WalletSyncSpentInput[];

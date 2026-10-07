@@ -7,6 +7,10 @@ import {
   canvasToDataUrl,
   compressImageElement,
   compressPostImage,
+  expandAttachmentTokens,
+  tokenizeAttachmentDataUrls,
+  formatAttachmentSize,
+  type PostAttachment,
 } from './post-editor'
 
 describe('post-editor utilities', () => {
@@ -87,6 +91,85 @@ describe('post-editor utilities', () => {
         url: 'https://example.com/pic.png',
       })
       expect(result.text).toBe('![screenshot](https://example.com/pic.png)\n')
+    })
+
+    describe('formatting toggles (unbold, unitalic, etc.)', () => {
+      it('unbolds when clicking bold on selected text surrounded by **', () => {
+        // user selected "world" in "Hello **world**"
+        const result = applyMarkdownFormat('Hello **world**', 8, 13, 'bold')
+        expect(result.text).toBe('Hello world')
+        expect(result.selectionStart).toBe(6)
+        expect(result.selectionEnd).toBe(11)
+      })
+
+      it('unbolds when the selection includes the asterisks', () => {
+        // user selected "**world**"
+        const result = applyMarkdownFormat('Hello **world**', 6, 15, 'bold')
+        expect(result.text).toBe('Hello world')
+        expect(result.selectionStart).toBe(6)
+        expect(result.selectionEnd).toBe(11)
+      })
+
+      it('unbolds when cursor is collapsed inside bold text', () => {
+        // cursor is inside "**wo|rld**"
+        const result = applyMarkdownFormat('Hello **world**', 10, 10, 'bold')
+        expect(result.text).toBe('Hello world')
+        expect(result.selectionStart).toBe(8)
+        expect(result.selectionEnd).toBe(8)
+      })
+
+      it('toggles bold twice back to unbolded text', () => {
+        // 1st click
+        const first = applyMarkdownFormat('', 0, 0, 'bold')
+        expect(first.text).toBe('**bold text**')
+        // 2nd click on the resulting selection
+        const second = applyMarkdownFormat(
+          first.text,
+          first.selectionStart,
+          first.selectionEnd,
+          'bold',
+        )
+        expect(second.text).toBe('bold text')
+      })
+
+      it('unitalics when clicking italic on selected text surrounded by *', () => {
+        const result = applyMarkdownFormat('Hello *world*', 7, 12, 'italic')
+        expect(result.text).toBe('Hello world')
+        expect(result.selectionStart).toBe(6)
+        expect(result.selectionEnd).toBe(11)
+      })
+
+      it('does not confuse bold with italic when checking *', () => {
+        // Clicking italic on bold text should wrap it in *, not unwrap bold
+        const result = applyMarkdownFormat('**bold**', 2, 6, 'italic')
+        expect(result.text).toBe('***bold***')
+      })
+
+      it('uncodes inline code when already wrapped in backticks', () => {
+        const result = applyMarkdownFormat('`code`', 1, 5, 'code')
+        expect(result.text).toBe('code')
+      })
+
+      it('uncodes multi-line fenced code block when selected', () => {
+        const fenced = '```\nline 1\nline 2\n```'
+        const result = applyMarkdownFormat(fenced, 0, fenced.length, 'code')
+        expect(result.text).toBe('line 1\nline 2')
+      })
+
+      it('toggles off heading prefix when line already starts with ###', () => {
+        const result = applyMarkdownFormat('### Title', 0, 9, 'heading')
+        expect(result.text).toBe('Title')
+      })
+
+      it('toggles off quote prefix when line already starts with >', () => {
+        const result = applyMarkdownFormat('> Quote line', 0, 12, 'quote')
+        expect(result.text).toBe('Quote line')
+      })
+
+      it('toggles off bullet list prefix when line already starts with -', () => {
+        const result = applyMarkdownFormat('- List item', 0, 11, 'bullet')
+        expect(result.text).toBe('List item')
+      })
     })
   })
 
@@ -223,6 +306,109 @@ describe('post-editor utilities', () => {
       const result = await compressPostImage(smallPng, { maxBytes: 100_000 })
       expect(result.name).toBe('small.png')
       expect(result.dataUrl).toContain('data:image/png;')
+    })
+  })
+
+  describe('formatAttachmentSize', () => {
+    it('formats bytes under 1 KB', () => {
+      expect(formatAttachmentSize(500)).toBe('500 B')
+    })
+
+    it('formats bytes in kilobytes', () => {
+      expect(formatAttachmentSize(45 * 1024)).toBe('45.0 KB')
+      expect(formatAttachmentSize(45.5 * 1024)).toBe('45.5 KB')
+    })
+
+    it('formats bytes in megabytes', () => {
+      expect(formatAttachmentSize(2.5 * 1024 * 1024)).toBe('2.5 MB')
+    })
+  })
+
+  describe('expandAttachmentTokens', () => {
+    it('returns text unchanged if no attachments or empty text', () => {
+      expect(expandAttachmentTokens('', [])).toBe('')
+      expect(expandAttachmentTokens('Hello world', [])).toBe('Hello world')
+    })
+
+    it('expands attachment tokens to full data URIs', () => {
+      const attachments: PostAttachment[] = [
+        {
+          id: '1',
+          name: 'photo.jpg',
+          dataUrl: 'data:image/jpeg;base64,PHOTO_DATA',
+          sizeBytes: 100,
+        },
+        {
+          id: '2',
+          name: 'diagram.png',
+          dataUrl: 'data:image/png;base64,DIAGRAM_DATA',
+          sizeBytes: 200,
+        },
+      ]
+      const text =
+        'Here is ![photo](attachment:1) and ![diagram](attachment:2).'
+      const expanded = expandAttachmentTokens(text, attachments)
+      expect(expanded).toBe(
+        'Here is ![photo](data:image/jpeg;base64,PHOTO_DATA) and ![diagram](data:image/png;base64,DIAGRAM_DATA).',
+      )
+    })
+
+    it('leaves unmatched attachment tokens intact', () => {
+      const attachments: PostAttachment[] = [
+        {
+          id: '1',
+          name: 'photo.jpg',
+          dataUrl: 'data:image/jpeg;base64,PHOTO_DATA',
+          sizeBytes: 100,
+        },
+      ]
+      const text = 'Unknown ![missing](attachment:999)'
+      expect(expandAttachmentTokens(text, attachments)).toBe(text)
+    })
+  })
+
+  describe('tokenizeAttachmentDataUrls', () => {
+    it('replaces data:image markdown with attachment tokens and returns attachments list', () => {
+      const input =
+        'Look at this: ![cat](data:image/png;base64,QUJD) and ![dog](data:image/jpeg;base64,REVGRw==)'
+      const result = tokenizeAttachmentDataUrls(input)
+
+      expect(result.text).toBe(
+        'Look at this: ![cat](attachment:1) and ![dog](attachment:2)',
+      )
+      expect(result.attachments).toHaveLength(2)
+      expect(result.attachments[0]).toEqual({
+        id: '1',
+        name: 'cat',
+        dataUrl: 'data:image/png;base64,QUJD',
+        sizeBytes: expect.any(Number),
+      })
+      expect(result.attachments[1]).toEqual({
+        id: '2',
+        name: 'dog',
+        dataUrl: 'data:image/jpeg;base64,REVGRw==',
+        sizeBytes: expect.any(Number),
+      })
+    })
+
+    it('deduplicates existing attachments and increments ID from existing maximum', () => {
+      const existing: PostAttachment[] = [
+        {
+          id: '3',
+          name: 'existing.png',
+          dataUrl: 'data:image/png;base64,EXISTING',
+          sizeBytes: 50,
+        },
+      ]
+      const input =
+        'Existing: ![existing.png](data:image/png;base64,EXISTING) New: ![new](data:image/jpeg;base64,NEWDATA)'
+      const result = tokenizeAttachmentDataUrls(input, existing)
+
+      expect(result.text).toBe(
+        'Existing: ![existing.png](attachment:3) New: ![new](attachment:4)',
+      )
+      expect(result.attachments).toHaveLength(2)
+      expect(result.attachments[1].id).toBe('4')
     })
   })
 })

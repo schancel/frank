@@ -37,6 +37,7 @@ export default {
       imageError: 'Échec du traitement de la pièce jointe',
       invalidImageType:
         'Veuillez sélectionner un fichier image valide (PNG, JPEG, WebP, GIF)',
+      removeAttachment: 'Supprimer la pièce jointe',
     },
   },
   agree: "D'accord",

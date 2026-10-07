@@ -206,6 +206,34 @@
               @change="onImageFileSelected"
             />
           </div>
+          <div
+            v-if="attachments.length > 0"
+            class="attachment-chips-bar row items-center q-gutter-xs q-py-xs"
+            data-test="attachment-chips-bar"
+          >
+            <q-chip
+              v-for="att in attachments"
+              :key="att.id"
+              removable
+              dense
+              outline
+              color="primary"
+              data-test="attachment-chip"
+              :data-attachment-id="att.id"
+              @remove="removeAttachment(att.id)"
+            >
+              <q-avatar size="18px" square class="q-mr-xs">
+                <img :src="att.dataUrl" alt="" />
+              </q-avatar>
+              <span class="ellipsis" style="max-width: 140px">{{
+                att.name
+              }}</span>
+              <span class="text-caption text-grey q-ml-xs"
+                >({{ formatAttachmentSize(att.sizeBytes) }})</span
+              >
+              <q-tooltip>{{ $t('forum.editor.removeAttachment') }}</q-tooltip>
+            </q-chip>
+          </div>
           <q-input
             ref="messageInput"
             label="Message"
@@ -288,7 +316,11 @@ import {
   applyMarkdownFormat,
   compressPostImage,
   insertImageMarkdown,
+  expandAttachmentTokens,
+  tokenizeAttachmentDataUrls,
+  formatAttachmentSize,
   type MarkdownFormatAction,
+  type PostAttachment,
 } from 'src/utils/post-editor'
 import { useForumStore } from 'src/stores/forum'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
@@ -369,6 +401,7 @@ export default defineComponent({
       nextParentFocusHandoffId: 0,
       parentFocusHandoffId: null as number | null,
       activeWallet: null as WalletHandle | null,
+      attachments: [] as PostAttachment[],
     }
   },
   mounted() {
@@ -400,7 +433,10 @@ export default defineComponent({
       return [...this.availableTopics, ...this.topicStore.getTopics]
     },
     markedMessage() {
-      const text: string = this.message
+      const text: string = expandAttachmentTokens(
+        this.message,
+        this.attachments,
+      )
       return renderMarkdown(text, this.$q.dark.isActive)
     },
     parentMessage() {
@@ -743,7 +779,7 @@ export default defineComponent({
         kind: 'post' as const,
         title: this.title,
         url: this.url ? this.url : undefined,
-        message: this.message,
+        message: expandAttachmentTokens(this.message, this.attachments),
       }
       let walletPromise: ReturnType<typeof useActiveWallet>
       let wallet: WalletHandle
@@ -916,16 +952,44 @@ export default defineComponent({
     },
     async onMessagePaste(event: ClipboardEvent) {
       const items = event.clipboardData?.items
-      if (!items) return
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i]
-        if (item.type.startsWith('image/')) {
-          const file = item.getAsFile()
-          if (file) {
-            event.preventDefault()
-            await this.attachImageFile(file)
-            return
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i]
+          if (item.type.startsWith('image/')) {
+            const file = item.getAsFile()
+            if (file) {
+              event.preventDefault()
+              await this.attachImageFile(file)
+              return
+            }
           }
+        }
+      }
+
+      const text =
+        typeof event.clipboardData?.getData === 'function'
+          ? event.clipboardData.getData('text/plain')
+          : undefined
+      if (text && text.includes('data:image/')) {
+        const tokenized = tokenizeAttachmentDataUrls(text, this.attachments)
+        if (tokenized.attachments.length > this.attachments.length) {
+          event.preventDefault()
+          this.attachments = tokenized.attachments
+          const textarea = this.getTextareaElement()
+          const start = textarea?.selectionStart ?? this.message.length
+          const end = textarea?.selectionEnd ?? this.message.length
+          const before = this.message.slice(0, start)
+          const after = this.message.slice(end)
+          this.message = before + tokenized.text + after
+          const newPos = start + tokenized.text.length
+          this.$nextTick(() => {
+            if (textarea && typeof textarea.focus === 'function') {
+              textarea.focus()
+              if (typeof textarea.setSelectionRange === 'function') {
+                textarea.setSelectionRange(newPos, newPos)
+              }
+            }
+          })
         }
       }
     },
@@ -953,12 +1017,31 @@ export default defineComponent({
         const start = textarea?.selectionStart ?? this.message.length
         const end = textarea?.selectionEnd ?? this.message.length
         const alt = file.name ? file.name.replace(/\.[^/.]+$/, '') : 'image'
+
+        let maxId = 0
+        for (const att of this.attachments) {
+          const n = parseInt(att.id, 10)
+          if (!isNaN(n) && n > maxId) maxId = n
+        }
+        const nextId = String(maxId + 1)
+        const attachment: PostAttachment = {
+          id: nextId,
+          name: file.name || `image-${nextId}`,
+          dataUrl: compressed.dataUrl,
+          sizeBytes:
+            compressed.bytes ??
+            Math.round(
+              ((compressed.dataUrl.split(',')[1] || '').length * 3) / 4,
+            ),
+        }
+        this.attachments.push(attachment)
+
         const res = insertImageMarkdown(
           this.message,
           start,
           end,
           alt,
-          compressed.dataUrl,
+          `attachment:${nextId}`,
         )
         this.message = res.text
         this.$nextTick(() => {
@@ -979,6 +1062,23 @@ export default defineComponent({
       } finally {
         this.attachingImage = false
       }
+    },
+    removeAttachment(id: string) {
+      this.attachments = this.attachments.filter(a => a.id !== id)
+      const lineRegex = new RegExp(
+        `(?:^|\\n)!?\\[[^\\]]*\\]\\(attachment:${id}\\)(?=\\n|$)`,
+        'g',
+      )
+      let cleaned = this.message.replace(lineRegex, '')
+      const inlineRegex = new RegExp(
+        `!?\\[[^\\]]*\\]\\(attachment:${id}\\)`,
+        'g',
+      )
+      cleaned = cleaned.replace(inlineRegex, '')
+      this.message = cleaned
+    },
+    formatAttachmentSize(bytes: number) {
+      return formatAttachmentSize(bytes)
     },
     back() {
       navigateBack(this.$router)

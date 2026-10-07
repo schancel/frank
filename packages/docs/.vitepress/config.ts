@@ -61,6 +61,30 @@ export default withMermaid(
       ],
 
       sidebar: {
+        "/guide/": [
+          {
+            text: "Frank & Cashweb Guide",
+            collapsed: false,
+            items: [
+              {
+                text: "Introduction & Architecture Overview",
+                link: "/guide/introduction",
+              },
+              {
+                text: "Dual-Protocol DNS Routing (SRV + MX)",
+                link: "/protocol/dns-routing",
+              },
+              {
+                text: "Forwarding Envelope (Type 25)",
+                link: "/protocol/forwarding-envelope",
+              },
+              {
+                text: "Encrypted Blob Offloading",
+                link: "/protocol/blob-storage",
+              },
+            ],
+          },
+        ],
         "/protocol/": [
           {
             text: "Core Protocol Specifications",
@@ -179,7 +203,7 @@ export default withMermaid(
       },
 
       socialLinks: [
-        { icon: "github", link: "https://github.com/frank-im/frank" },
+        { icon: "github", link: "https://github.com/schancel/frank" },
       ],
 
       footer: {

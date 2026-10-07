@@ -12,6 +12,7 @@
     "@frank/codec": "*",
     "@frank/contracts": "*",
     "@frank/nakamoto": "*",
+    "@frank/price-feeds": "*",
     "@noble/curves": "1.9.1",
     "@noble/hashes": "1.8.0",
     "@solana/codecs-strings": "8.4.0",

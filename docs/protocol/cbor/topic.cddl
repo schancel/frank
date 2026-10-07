@@ -52,6 +52,8 @@ forum-aggregate = { 0: bool, 1: bstr .size 32 } ; closed; big endian; no negativ
 forum-cursor-bytes = bstr .size (1..2048)
 
 ; Types 12–15 are schema 1/min-reader 1. All observations are relay claims.
+; Note: "page" in types 13 and 14 refers to cursor-paginated database query result
+; batches (holding up to 128 verified post observation frames), not HTML web pages.
 forum-single-view = { ; complete frame <=2MiB
   0: network-tag, 1: framed-object, 2: forum-address, 3: forum-raw-burn,
   4: digest-32, 5: timestamp, 6: forum-u64, 7: forum-u64, 8: forum-aggregate,

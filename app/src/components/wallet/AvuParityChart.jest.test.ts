@@ -6,12 +6,25 @@ import en from '../../i18n/en-us'
 const t = (key: string) =>
   key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
 
-function mountChart(options: { isDark?: boolean } = {}) {
+function mountChart(
+  options: { isDark?: boolean; selectedWallet?: string } = {},
+) {
   const isDarkVal = options.isDark ?? false
   return mount(AvuParityChart, {
+    props: {
+      selectedWallet: options.selectedWallet ?? 'monad',
+    },
     global: {
       mocks: {
-        $t: t,
+        $t: (key: string, params?: Record<string, string>) => {
+          let str = t(key)
+          if (params) {
+            for (const [k, v] of Object.entries(params)) {
+              str = str.replace(`{${k}}`, v)
+            }
+          }
+          return str
+        },
         $q: {
           dark: { isActive: isDarkVal },
         },
@@ -62,6 +75,16 @@ describe('AvuParityChart component', () => {
     const wrapper = mountChart()
     expect(wrapper.find('[data-test="avu-parity-chart"]').exists()).toBe(true)
 
+    // 0. Active Token Rate (default Monad)
+    const tokenCard = wrapper.find('[data-test="metric-card-token-rate"]')
+    expect(tokenCard.exists()).toBe(true)
+    expect(tokenCard.text()).toContain('Monad (MON) Parity')
+    expect(tokenCard.text()).toContain('41.67 AVU')
+    expect(tokenCard.text()).toContain('1 MON ≈ 41.67 kWh')
+    expect(tokenCard.find('.q-tooltip-stub').text()).toContain(
+      '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute',
+    )
+
     // 1. AVU Hash
     const avuHashCard = wrapper.find('[data-test="metric-card-avu-hash"]')
     expect(avuHashCard.exists()).toBe(true)
@@ -97,6 +120,17 @@ describe('AvuParityChart component', () => {
     expect(arbCard.text()).toContain('eCash Yield Premium')
   })
 
+  test('specializes active token card and legend when selectedWallet prop changes', () => {
+    const ethWrapper = mountChart({ selectedWallet: 'ethereum' })
+    const tokenCard = ethWrapper.find('[data-test="metric-card-token-rate"]')
+    expect(tokenCard.text()).toContain('Ethereum (ETH) Parity')
+    expect(tokenCard.text()).toContain('30,952.38 AVU')
+    expect(tokenCard.text()).toContain('1 ETH ≈ 30952.38 kWh')
+
+    const legend = ethWrapper.find('[data-test="chart-legend-token"]')
+    expect(legend.text()).toContain('Ethereum (AVU / kWh)')
+  })
+
   test('defaults to all-time view and renders time-series SVG with interactive points', async () => {
     const wrapper = mountChart()
     expect(wrapper.find('[data-test="macro-chart-container"]').exists()).toBe(
@@ -106,6 +140,7 @@ describe('AvuParityChart component', () => {
     expect(
       wrapper.find('[data-test="networks-chart-container"]').exists(),
     ).toBe(false)
+    expect(wrapper.find('[data-test="macro-token-line"]').exists()).toBe(true)
 
     // Verify macro data points rendered
     const points = wrapper.findAll('[data-test="chart-hover-point"]')
@@ -124,6 +159,7 @@ describe('AvuParityChart component', () => {
     expect(tooltip.text()).toContain('USD: 12.0 kWh/$')
     expect(tooltip.text()).toContain('Gold: 31,547 AVU/oz')
     expect(tooltip.text()).toContain('PoW: 11.9 kWh/$')
+    expect(tooltip.text()).toContain('MON: 41.7 AVU (kWh)')
   })
 
   test('supports PoW Era and Modern ASIC time range selections with milestone markers', async () => {
@@ -198,11 +234,13 @@ describe('AvuParityChart component', () => {
     expect(tooltip.text()).toContain('Arbitrage Yield: +67.8%')
   })
 
-  test('renders methodology & data sources citations card', () => {
+  test('renders methodology & data sources citations card with live feeds references', () => {
     const wrapper = mountChart()
     const sourcesCard = wrapper.find('[data-test="chart-sources"]')
     expect(sourcesCard.exists()).toBe(true)
     expect(sourcesCard.text()).toContain('Methodology & Data Sources')
+    expect(sourcesCard.text()).toContain('Pyth Network Hermes')
+    expect(sourcesCard.text()).toContain('Historical Multi-Year Resolution')
     expect(sourcesCard.text()).toContain(
       'Energy Information Administration (EIA)',
     )

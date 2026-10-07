@@ -252,7 +252,7 @@
           </q-tab-panel>
 
           <q-tab-panel name="parity" class="q-pa-none">
-            <avu-parity-chart />
+            <avu-parity-chart :selected-wallet="selectedWallet" />
           </q-tab-panel>
         </q-tab-panels>
       </q-card>

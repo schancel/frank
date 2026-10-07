@@ -399,6 +399,10 @@ export default {
     rangeAsic: 'ASIC Moderne (2020 - Aujourd’hui)',
     rangeNetworks: 'Comparaison des réseaux',
     sourcesTitle: 'Méthodologie et sources de données',
+    sourceFeeds:
+      'Flux d’oracles en direct : Flux de prix en temps réel issus de l’oracle décentralisé Pyth Network Hermes (SOL, ETH, XAU/Or, BRENT) et d’ancrages de marché décentralisés (MON, XEC, HYPE, TUSD) avec vérification cryptographique.',
+    sourceHistorical:
+      'Résolution historique pluriannuelle : Séries de prix pluriannuelles intégrées à résolution annuelle provenant des archives de marché, CoinGecko et St. Louis FRED.',
     sourceGrid:
       'Électricité du réseau : US Energy Information Administration (EIA) Electric Power Monthly et tarifs industriels historiques FRED.',
     sourceHash:
@@ -406,6 +410,8 @@ export default {
     sourceHardware:
       'Efficacité matérielle : Cambridge Bitcoin Electricity Consumption Index (CBECI) et fiches techniques Bitmain/MicroBT.',
     hardwareMilestones: 'Jalons d’efficacité matérielle',
+    chartTokenAvu: 'AVU / kWh',
+    activeTokenCardTitle: 'Parité {name} ({symbol})',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',

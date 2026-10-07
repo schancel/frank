@@ -194,8 +194,12 @@ export default withMermaid(
                 link: "/sdks/crypto-box",
               },
               {
-                text: "bitcore-lib-xpi (Lotus Cryptography)",
-                link: "/sdks/bitcore-lib",
+                text: "@frank/nakamoto (Typed UTXO Engine)",
+                link: "/sdks/nakamoto",
+              },
+              {
+                text: "@frank/bot-framework (Autonomous Bot SDK)",
+                link: "/sdks/bot-framework",
               },
             ],
           },

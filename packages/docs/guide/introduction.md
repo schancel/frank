@@ -64,11 +64,11 @@ To guarantee that compromising an active messaging session, a change address, or
 
 The three core protocol roles govern identity assertions, end-to-end encrypted messaging, and canonical direct-message stamp payments:
 
-|   Role   |          Name          | Purpose                                                                                                                                            | Derivation Path        |
-| :------: | :--------------------: | :------------------------------------------------------------------------------------------------------------------------------------------------- | :--------------------- |
-| **$P$**  | **Identity Authority** | Signs public directory assertions, key transitions, and account credentials. **Never** used for ECDH, message encryption, or funding transactions. | `m/44'/60'/1'/0/0`     |
-| **$M$**  |  **Mailbox & DM Key**  | Performs Diffie-Hellman key exchange for direct-message encryption and authenticates inbox access.                                                 | `m/44'/60'/4'/0'/{g}'` |
-| **$P'$** | **Stamp Receipt Key**  | Serves as the public base point for recipient-controlled stealth payment addresses on the canonical EVM/Monad rail.                               | `m/44'/60'/2'/0'/{g}'` |
+| Role | Name | Purpose | HKDF Domain Root | Derivation Path |
+| :---: | :---: | :--- | :--- | :--- |
+| **$P$** | **Identity Authority** | Signs public directory assertions, key transitions, and account credentials. **Never** used for ECDH, message encryption, or funding transactions. | Purpose 5: `identity-authentication` | `m/44'/60'/1'/0/0` |
+| **$M$** | **Mailbox & DM Key** | Performs Diffie-Hellman key exchange for direct-message encryption and authenticates inbox access. | Purpose 4: `messaging-encryption` | `m/44'/60'/4'/0'/{g}'` |
+| **$P'$** | **Stamp Receipt Key** | Serves as the public base point for recipient-controlled stealth payment addresses on the canonical EVM/Monad rail. | Purpose 2: `evm-wallet` | `m/44'/60'/2'/0'/{g}'` |
 
 > [!NOTE]
 > The protocol roles use coin type `60'` because Frank's identity directory attestations and canonical anti-spam stamp settlement rail run natively on EVM (Monad).

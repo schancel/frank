@@ -79,6 +79,28 @@ text-message-item = {
   * uint => frank-value,
 }
 
+; Type 19 schema 1: Stealth payment item
+stealth-message-item = {
+  0: network-tag,
+  1: account-ref,            ; ephemeral pubkey (key type 1 or 2)
+  2: [1*16 bstr .size (1..16384)], ; raw transaction payloads or hashes
+  3: uint,                   ; transferred value
+  ? 4: tstr .size (0..1024), ; optional memo
+  * uint => frank-value,
+}
+
+; Type 24 schema 1: Universal state channel update item
+channel-update-item = {
+  0: digest-32,              ; unique channel-id
+  1: tstr .size (1..64),     ; app-id ("blackjack", "poker", "swap", "raffle")
+  2: uint .le 4294967295,    ; sequence-number (state turn / nonce)
+  3: [1*8 chain-allocation], ; allocations across 1 or more networks
+  4: bstr .size (0..65536),  ; app-state (opaque or nested CBOR payload)
+  5: [1*4 signature-entry],  ; participant signatures over state digest
+  ? 6: bstr .size (1..128),  ; optional on-chain settlement contract or script reference
+  * uint => frank-value,
+}
+
 ; Type 25 schema 1: Store-and-forward relay forwarding delivery envelope
 forwarding-delivery-envelope = {
   0: network-tag,          ; destination relay network

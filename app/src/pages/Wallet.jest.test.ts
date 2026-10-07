@@ -64,7 +64,7 @@ jest.mock('src/composables/useChainBalance', () => ({
 jest.mock('src/stores/oracle', () => ({
   useSafeOracleStore: () => ({
     getAvu: () => 0,
-    formatAvuAmount: (asset: string) => `≈ 100.00 AVU`,
+    formatAvuAmount: (_asset: string) => '≈ 100.00 AVU',
     formatUnitRate: (asset: string) => {
       if (asset === 'monad') return '1 MON ≈ 41.67 AVU'
       if (asset === 'solana') return '1 SOL ≈ 1,785.71 AVU'
@@ -124,6 +124,9 @@ function mountWallet() {
         },
         ...Object.fromEntries(
           [
+            'q-header',
+            'q-toolbar',
+            'q-toolbar-title',
             'q-page-container',
             'q-page',
             'q-card',
@@ -540,6 +543,20 @@ describe('Wallet detail page (#570)', () => {
     wrapper.vm.activeTab = 'parity'
     await nextTick()
     expect(wrapper.vm.activeTab).toBe('parity')
+
+    wrapper.unmount()
+  })
+
+  test('renders top header with title and emits toggleMyDrawerOpen on menu click', async () => {
+    const wrapper = mountWallet()
+    await flush()
+
+    const menuBtn = wrapper.find('[data-test="wallet-menu-btn"]')
+    expect(menuBtn.exists()).toBe(true)
+
+    await menuBtn.trigger('click')
+    expect(wrapper.emitted('toggleMyDrawerOpen')).toBeTruthy()
+    expect(wrapper.emitted('toggleMyDrawerOpen')?.length).toBe(1)
 
     wrapper.unmount()
   })

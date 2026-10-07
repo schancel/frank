@@ -52,6 +52,6 @@ export default defineComponent({
 <style lang="scss" scoped>
 .active-chat-list-item {
   background: var(--q-color-bg-active);
-  color: #f0409b;
+  color: var(--q-primary);
 }
 </style>

@@ -267,7 +267,7 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
   it('stays open when switching rail tabs (forum, chats) on a narrow screen', async () => {
     const { wrapper, router } = await mountLayout(390)
     await openDrawer(wrapper)
-    await tabs(wrapper)[2].trigger('click')
+    await wrapper.get('#rail-tab-forum').trigger('click')
     await flushPromises()
     expect(router.push).toHaveBeenCalledWith('/forum')
     expect(open(wrapper)).toBe('true')
@@ -349,15 +349,15 @@ describe('LeftDrawer icon rail accessible names', () => {
     const labels = tabs(wrapper).map(t => t.attributes('aria-label'))
     expect(labels).toEqual([
       'Direct Messages, 3 unread messages',
-      'Contacts',
       'Forum',
+      'Contacts',
       'Wallet',
       'Settings',
     ])
     for (const [i, name] of [
       'Direct Messages',
-      'Contacts',
       'Forum',
+      'Contacts',
       'Wallet',
       'Settings',
     ].entries()) {

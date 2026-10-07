@@ -49,16 +49,6 @@
         </q-tab>
 
         <q-tab
-          name="contacts"
-          id="rail-tab-contacts"
-          aria-controls="rail-panel-contacts"
-          icon="contacts"
-          :aria-label="$t('leftDrawer.contacts')"
-        >
-          <q-tooltip>{{ $t('leftDrawer.contacts') }}</q-tooltip>
-        </q-tab>
-
-        <q-tab
           name="forum"
           id="rail-tab-forum"
           aria-controls="rail-panel-forum"
@@ -67,6 +57,16 @@
           @click="openForumTab"
         >
           <q-tooltip>{{ $t('leftDrawer.forum') }}</q-tooltip>
+        </q-tab>
+
+        <q-tab
+          name="contacts"
+          id="rail-tab-contacts"
+          aria-controls="rail-panel-contacts"
+          icon="contacts"
+          :aria-label="$t('leftDrawer.contacts')"
+        >
+          <q-tooltip>{{ $t('leftDrawer.contacts') }}</q-tooltip>
         </q-tab>
 
         <q-tab

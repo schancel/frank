@@ -91,6 +91,8 @@ export class CheckoutServer {
       const health = await this.stampProvider.checkHealth();
       const balance = await this.stampProvider.getBalance();
       const asset = this.stampProvider.assetUnit || 'MON';
+      const heldCount = this.ledger.getHeldMessageCount();
+      const pendingSpool = this.ledger.getPendingSpoolCount();
       const lines = [
         '# HELP gateway_up Health check status of the mail gateway (1 = up, 0 = down)',
         '# TYPE gateway_up gauge',
@@ -101,6 +103,12 @@ export class CheckoutServer {
         '# HELP gateway_wallet_low_balance Flag indicating if wallet balance is low (1 = low, 0 = ok)',
         '# TYPE gateway_wallet_low_balance gauge',
         `gateway_wallet_low_balance ${balance.isLowBalance ? 1 : 0}`,
+        '# HELP gateway_held_messages_count Number of inbound emails currently held waiting for payment',
+        '# TYPE gateway_held_messages_count gauge',
+        `gateway_held_messages_count ${heldCount}`,
+        '# HELP gateway_outbound_spool_pending Number of outbound emails in delivery spool',
+        '# TYPE gateway_outbound_spool_pending gauge',
+        `gateway_outbound_spool_pending ${pendingSpool}`,
       ];
       res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
       res.end(lines.join('\n') + '\n');

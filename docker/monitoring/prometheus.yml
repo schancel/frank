@@ -21,4 +21,9 @@ scrape_configs:
   - job_name: 'nats'
     metrics_path: '/metrics'
     static_configs:
-      - targets: ['nats:8222']
+      - targets: ['nats-exporter:7777']
+
+  - job_name: 'kvrocks'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['kvrocks-exporter:9121']

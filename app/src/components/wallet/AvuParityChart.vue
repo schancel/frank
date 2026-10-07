@@ -2,8 +2,42 @@
   <div class="avu-parity-chart q-pa-sm" data-test="avu-parity-chart">
     <!-- Top Metrics Cards -->
     <div class="row q-col-gutter-sm q-mb-md">
+      <!-- 0. Active Token Rate -->
+      <div class="col-12 col-sm-6 col-md">
+        <q-card
+          bordered
+          flat
+          class="metric-card"
+          :class="cardBgClass"
+          data-test="metric-card-token-rate"
+        >
+          <q-card-section class="q-pa-sm">
+            <div class="row items-center justify-between no-wrap">
+              <span
+                class="text-caption text-weight-medium text-grey-7 ellipsis"
+              >
+                {{
+                  $t('walletPanel.activeTokenCardTitle', {
+                    name: activeTokenInfo.name,
+                    symbol: activeTokenInfo.symbol,
+                  })
+                }}
+              </span>
+              <q-icon name="bolt" color="purple-6" size="18px" />
+            </div>
+            <div class="text-h6 text-weight-bolder text-purple-7 q-mt-xs">
+              {{ activeTokenUnitDisplay }}
+            </div>
+            <div class="text-caption text-grey-6 text-weight-regular ellipsis">
+              {{ activeTokenUnitSubtext }}
+            </div>
+            <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+          </q-card-section>
+        </q-card>
+      </div>
+
       <!-- 1. AVU Hash -->
-      <div class="col-12 col-sm-6 col-md-3">
+      <div class="col-12 col-sm-6 col-md">
         <q-card
           bordered
           flat
@@ -32,7 +66,7 @@
       </div>
 
       <!-- 2. AVU Spot -->
-      <div class="col-12 col-sm-6 col-md-3">
+      <div class="col-12 col-sm-6 col-md">
         <q-card
           bordered
           flat
@@ -61,7 +95,7 @@
       </div>
 
       <!-- 3. TPI -->
-      <div class="col-12 col-sm-6 col-md-3">
+      <div class="col-12 col-sm-6 col-md">
         <q-card
           bordered
           flat
@@ -90,7 +124,7 @@
       </div>
 
       <!-- 4. Arbitrage Margin -->
-      <div class="col-12 col-sm-6 col-md-3">
+      <div class="col-12 col-sm-6 col-md">
         <q-card
           bordered
           flat
@@ -160,6 +194,18 @@
               :style="{ backgroundColor: themeColors.pow }"
             />
             <span>{{ $t('walletPanel.chartPowEmergence') }}</span>
+          </span>
+          <span
+            class="row items-center q-gutter-xs"
+            data-test="chart-legend-token"
+          >
+            <span
+              class="legend-dot"
+              :style="{ backgroundColor: themeColors.token }"
+            />
+            <span>{{
+              `${activeTokenInfo.name} (${$t('walletPanel.chartTokenAvu')})`
+            }}</span>
           </span>
           <span class="row items-center q-gutter-xs">
             <span
@@ -284,6 +330,18 @@
             stroke-linejoin="round"
           />
 
+          <!-- Active Token Parity Line -->
+          <path
+            v-if="macroTokenLinePath"
+            :d="macroTokenLinePath"
+            fill="none"
+            :stroke="themeColors.token"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            data-test="macro-token-line"
+          />
+
           <!-- Hardware Milestone Indicator Lines -->
           <g
             v-for="m in activeMilestonesMapped"
@@ -357,6 +415,17 @@
               :fill="themeColors.pow"
               :stroke="cardBgHex"
               stroke-width="2"
+            />
+            <!-- Active Token circle if available -->
+            <circle
+              v-if="point.tokenY !== null"
+              :cx="point.x"
+              :cy="point.tokenY"
+              :r="activeHoverPoint?.year === point.year ? 6 : 4"
+              :fill="themeColors.token"
+              :stroke="cardBgHex"
+              stroke-width="2"
+              data-test="macro-token-point"
             />
             <!-- X-axis Year Label -->
             <text
@@ -438,8 +507,8 @@
             <rect
               :x="macroTooltipX"
               :y="macroTooltipY"
-              width="210"
-              height="85"
+              width="220"
+              :height="activeHoverPoint.tokenAvu !== undefined ? 104 : 85"
               rx="6"
               :fill="themeColors.tooltipBg"
               :stroke="themeColors.tooltipBorder"
@@ -483,6 +552,20 @@
               :fill="themeColors.pow"
             >
               {{ `PoW: ${activeHoverPoint.powHashRate} kWh/$` }}
+            </text>
+            <text
+              v-if="activeHoverPoint.tokenAvu !== undefined"
+              :x="macroTooltipX + 12"
+              :y="macroTooltipY + (activeHoverPoint.powHashRate ? 86 : 70)"
+              font-size="11"
+              :fill="themeColors.token"
+              data-test="chart-tooltip-token"
+            >
+              {{
+                `${activeTokenInfo.symbol}: ${formatTokenAvuHover(
+                  activeHoverPoint.tokenAvu,
+                )}`
+              }}
             </text>
           </g>
 
@@ -747,6 +830,8 @@
         <span>{{ $t('walletPanel.sourcesTitle') }}</span>
       </div>
       <div class="text-caption text-grey-7 q-gutter-y-xs">
+        <div>• {{ $t('walletPanel.sourceFeeds') }}</div>
+        <div>• {{ $t('walletPanel.sourceHistorical') }}</div>
         <div>• {{ $t('walletPanel.sourceGrid') }}</div>
         <div>• {{ $t('walletPanel.sourceHash') }}</div>
         <div>• {{ $t('walletPanel.sourceHardware') }}</div>
@@ -758,6 +843,146 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useQuasar } from 'quasar'
+import { useSafeOracleStore } from 'src/stores/oracle'
+import type { SupportedAsset } from '@frank/wallet/oracle'
+
+const props = withDefaults(
+  defineProps<{
+    selectedWallet?: string
+  }>(),
+  {
+    selectedWallet: 'monad',
+  },
+)
+
+const oracle = useSafeOracleStore()
+
+interface TokenParityInfo {
+  symbol: string
+  name: string
+  inceptionYear: number
+  /** Historical yearly AVU equivalent: year -> AVU */
+  history: Record<number, number>
+}
+
+const TOKEN_CONFIGS: Record<string, TokenParityInfo> = {
+  monad: {
+    symbol: 'MON',
+    name: 'Monad',
+    inceptionYear: 2024,
+    history: {
+      2024: 15.1,
+      2026: 41.67,
+    },
+  },
+  solana: {
+    symbol: 'SOL',
+    name: 'Solana',
+    inceptionYear: 2020,
+    history: {
+      2020: 11.6,
+      2021: 2224.0,
+      2022: 264.0,
+      2023: 896.0,
+      2024: 1764.0,
+      2026: 1785.71,
+    },
+  },
+  ethereum: {
+    symbol: 'ETH',
+    name: 'Ethereum',
+    inceptionYear: 2015,
+    history: {
+      2015: 18.0,
+      2016: 175.0,
+      2017: 12600.0,
+      2018: 2080.0,
+      2019: 2325.0,
+      2020: 11325.0,
+      2021: 52820.0,
+      2022: 15840.0,
+      2023: 25600.0,
+      2024: 40320.0,
+      2026: 30952.38,
+    },
+  },
+  hyperliquid: {
+    symbol: 'HYPE',
+    name: 'Hyperliquid',
+    inceptionYear: 2024,
+    history: {
+      2024: 252.0,
+      2026: 476.19,
+    },
+  },
+  tempo: {
+    symbol: 'TUSD',
+    name: 'Tempo USD',
+    inceptionYear: 2024,
+    history: {
+      2024: 12.6,
+      2026: 11.9,
+    },
+  },
+  ecash: {
+    symbol: '1M XEC',
+    name: 'eCash',
+    inceptionYear: 2009,
+    history: {
+      2009: 0.01,
+      2010: 0.05,
+      2013: 200.0,
+      2016: 1500.0,
+      2017: 25000.0,
+      2020: 350.0,
+      2021: 1800.0,
+      2024: 350.0,
+      2026: 416.67,
+    },
+  },
+}
+
+const activeTokenInfo = computed(() => {
+  const key = (props.selectedWallet || 'monad').toLowerCase()
+  return (
+    TOKEN_CONFIGS[key] ?? {
+      symbol: key.toUpperCase(),
+      name: key.toUpperCase(),
+      inceptionYear: 2024,
+      history: { 2024: 10.0, 2026: 11.9 },
+    }
+  )
+})
+
+const currentLiveRate = computed(() => {
+  const asset = (
+    props.selectedWallet || 'monad'
+  ).toLowerCase() as SupportedAsset
+  const rate = oracle.rates?.[asset]
+  if (typeof rate === 'number' && rate > 0) {
+    if (asset === 'ecash') {
+      return rate * 1_000_000
+    }
+    return rate
+  }
+  return activeTokenInfo.value.history[2026] ?? 41.67
+})
+
+const activeTokenUnitDisplay = computed(() => {
+  const val = currentLiveRate.value
+  if (val >= 1000) {
+    return `${val.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })} AVU`
+  }
+  return `${val.toFixed(2)} AVU`
+})
+
+const activeTokenUnitSubtext = computed(() => {
+  const val = currentLiveRate.value
+  return `1 ${activeTokenInfo.value.symbol} ≈ ${val.toFixed(2)} kWh`
+})
 
 let $q: any = null
 try {
@@ -787,7 +1012,8 @@ const themeColors = computed(() => {
       usd: '#38bdf8',
       gold: '#f59e0b',
       pow: '#10b981',
-      milestone: '#a855f7',
+      token: '#c084fc',
+      milestone: '#94a3b8',
       grid: '#334155',
       axis: '#64748b',
       text: '#94a3b8',
@@ -802,7 +1028,8 @@ const themeColors = computed(() => {
     usd: '#0284c7',
     gold: '#d97706',
     pow: '#059669',
-    milestone: '#7e22ce',
+    token: '#7c3aed',
+    milestone: '#64748b',
     grid: '#e2e8f0',
     axis: '#94a3b8',
     text: '#64748b',
@@ -915,10 +1142,19 @@ const rangeMinYear = computed(() => {
 
 const rangeMaxYear = computed(() => 2026)
 
+const isLargeTokenScale = computed(() => {
+  return currentLiveRate.value > 200
+})
+
 const usdMaxLimit = computed(() => {
-  if (selectedRange.value === 'asic') return 20
-  if (selectedRange.value === 'pow') return 30
-  return 150
+  const tokenVal = !isLargeTokenScale.value ? currentLiveRate.value : 0
+  if (selectedRange.value === 'asic') {
+    return Math.max(20, Math.ceil(tokenVal / 10) * 10)
+  }
+  if (selectedRange.value === 'pow') {
+    return Math.max(30, Math.ceil(tokenVal / 10) * 10)
+  }
+  return Math.max(150, Math.ceil(tokenVal / 10) * 10)
 })
 
 const usdMinLimit = computed(() => 0)
@@ -948,6 +1184,8 @@ interface MappedMacroPoint extends MacroPoint {
   usdY: number
   goldY: number
   powY: number | null
+  tokenAvu?: number
+  tokenY: number | null
 }
 
 const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
@@ -973,12 +1211,32 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
         ? yBottom - (Math.min(pt.powHashRate, maxUsd) / maxUsd) * yHeight
         : null
 
+    let tokenAvu: number | undefined = undefined
+    if (pt.year >= activeTokenInfo.value.inceptionYear) {
+      tokenAvu =
+        pt.year === 2026
+          ? currentLiveRate.value
+          : activeTokenInfo.value.history[pt.year]
+    }
+
+    let tokenY: number | null = null
+    if (tokenAvu !== undefined) {
+      if (!isLargeTokenScale.value) {
+        tokenY = yBottom - (Math.min(tokenAvu, maxUsd) / maxUsd) * yHeight
+      } else {
+        const goldFrac = Math.max(tokenAvu - minGold, 0) / (maxGold - minGold)
+        tokenY = yBottom - Math.min(goldFrac, 1.0) * yHeight
+      }
+    }
+
     return {
       ...pt,
       x: Math.round(x * 10) / 10,
       usdY: Math.round(usdY * 10) / 10,
       goldY: Math.round(goldY * 10) / 10,
       powY: powY !== null ? Math.round(powY * 10) / 10 : null,
+      tokenAvu,
+      tokenY: tokenY !== null ? Math.round(tokenY * 10) / 10 : null,
     }
   })
 })
@@ -1033,6 +1291,31 @@ const macroPowLinePath = computed(() => {
     '',
   )
 })
+
+const macroTokenPoints = computed(() => {
+  return macroPointsMapped.value.filter(
+    (p): p is MappedMacroPoint & { tokenY: number; tokenAvu: number } =>
+      p.tokenY !== null && p.tokenAvu !== undefined,
+  )
+})
+
+const macroTokenLinePath = computed(() => {
+  const pts = macroTokenPoints.value
+  if (pts.length < 2) return ''
+  return pts.reduce(
+    (acc, pt, i) => `${acc} ${i === 0 ? 'M' : 'L'} ${pt.x},${pt.tokenY}`,
+    '',
+  )
+})
+
+function formatTokenAvuHover(avu: number): string {
+  if (avu >= 1000) {
+    return `${avu.toLocaleString('en-US', {
+      maximumFractionDigits: 1,
+    })} AVU (kWh)`
+  }
+  return `${avu.toFixed(1)} AVU (kWh)`
+}
 
 const activeHoverPoint = ref<MappedMacroPoint | null>(null)
 const activeHoverMilestone = ref<HardwareMilestone | null>(null)

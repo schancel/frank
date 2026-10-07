@@ -1669,5 +1669,110 @@ async fn actual_http_recipient_128_owner_boundary_publication_and_terminal_ack_t
     }
 }
 
+#[tokio::test]
+async fn cbor_challenge_succeeds_and_read_returns_unavailable_when_read_permits_exhausted() {
+    let fixture = NativeDirectoryFixture::new().await;
+    let _ = fixture
+        .registry
+        .canonical_dm()
+        .attach_directory(fixture.directory.clone());
+    let mut config = crate::monad_outbox::MonadOutboxReconcileConfig::default();
+    config.expected_chain_id = 10143;
+    config.private_read_concurrency = 1;
+    let runtime = crate::monad_mailbox::MonadMailboxRuntime::enabled(
+        crate::monad_http::HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
+        Arc::new(config),
+        10143,
+        b"MONT".to_vec(),
+    );
+    let server = super::super::server::RegistryServer {
+        registry: fixture.registry.clone(),
+        peers: Arc::new(crate::p2p::peers::Peers::new(
+            "http://127.0.0.1:1".into(),
+            vec![],
+        )),
+        pop_gate: Arc::new(crate::http::pop_protection::PopGate::from_conf_if_enabled(
+            &crate::test_instance::placeholder_pop_conf(),
+        )),
+        curated_defaults: Arc::new(vec![]),
+        monad_mailbox: runtime.clone(),
+        evm_rpc: None,
+        bitcoin_proxy: None,
+        solana_proxy: None,
+        spa_dir: None,
+    };
+    let account = &fixture.accounts[1];
+    let recipient_hex = crate::monad_stamp_stealth::recipient_address_from_public_key(
+        &hex::decode(&account.subject).unwrap(),
+    )
+    .unwrap()
+    .to_hex();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "x-frank-mailbox-subject",
+        axum::http::HeaderValue::from_str(&account.subject).unwrap(),
+    );
+
+    let held_permit = runtime
+        .as_enabled()
+        .unwrap()
+        .try_acquire_private_read()
+        .unwrap();
+
+    let query = PrivateQuery {
+        resource: Some("mailbox".into()),
+        since: Some(0),
+        cursor: None,
+        limit: Some(10),
+        max_bytes: Some(1024),
+        recovery_payload_hash: None,
+        recovery_obligation_id: None,
+    };
+    let response = handle_challenge(
+        axum::extract::Path(recipient_hex.clone()),
+        axum::extract::Query(query.clone()),
+        Extension(server.clone()),
+        headers.clone(),
+    )
+    .await;
+    assert!(
+        response.is_ok(),
+        "handle_challenge should not be blocked by private read permits: {:?}",
+        response.err()
+    );
+
+    let mut mailbox_query = query;
+    mailbox_query.resource = None;
+    let read_err = handle_mailbox(
+        axum::extract::Path(recipient_hex),
+        axum::extract::Query(mailbox_query),
+        Extension(server),
+        headers,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(read_err, CanonicalError::Unavailable),
+        "permit exhaustion should return Unavailable (503), got {:?}",
+        read_err
+    );
+    let resp = read_err.into_response();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    drop(held_permit);
+    fixture.stop().await;
+}
+
+#[test]
+fn cbor_capacity_error_includes_retry_after_header() {
+    let err = CanonicalError::Capacity;
+    let resp = err.into_response();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        resp.headers().get(axum::http::header::RETRY_AFTER).unwrap(),
+        "60"
+    );
+}
+
 #[path = "monad_message_cbor_joined_tests.rs"]
 mod joined;

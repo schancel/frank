@@ -28,9 +28,6 @@ pub(crate) async fn handle_put(
         .monad_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unavailable)?;
-    let _cpu = runtime
-        .try_acquire_private_read()
-        .ok_or(CanonicalError::Capacity)?;
     let descriptor = crate::network_tag::monad_network(runtime.network_tag())
         .ok_or(CanonicalError::Unavailable)?;
     if descriptor.evm_chain_id != runtime.expected_chain_id() {
@@ -398,6 +395,17 @@ pub(crate) enum CanonicalError {
 pub(crate) type Result<T> = std::result::Result<T, CanonicalError>;
 impl IntoResponse for CanonicalError {
     fn into_response(self) -> Response {
+        if matches!(self, Self::Capacity) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(
+                    axum::http::header::RETRY_AFTER,
+                    (crate::monad_mailbox::CHALLENGE_TTL_MS / 1000).to_string(),
+                )],
+                Json(serde_json::json!({"version":1,"error":"mailbox_challenge_capacity"})),
+            )
+                .into_response();
+        }
         let (status, error) = match self {
             Self::Invalid => (StatusCode::BAD_REQUEST, "invalid_canonical_submission"),
             Self::TooLarge => (
@@ -413,7 +421,7 @@ impl IntoResponse for CanonicalError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "canonical_mailbox_unavailable",
             ),
-            Self::Capacity => (StatusCode::TOO_MANY_REQUESTS, "mailbox_challenge_capacity"),
+            Self::Capacity => unreachable!(),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "mailbox_auth_failed"),
             Self::ActiveObligation => (StatusCode::CONFLICT, "recovery_obligation_is_active"),
             Self::Retired => (StatusCode::GONE, "recovery_endpoint_retired"),
@@ -672,7 +680,7 @@ impl SubmissionEcho {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrivateQuery {
     resource: Option<String>,
@@ -942,9 +950,6 @@ pub(crate) async fn handle_challenge(
         .monad_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unauthorized)?;
-    let _cpu = runtime
-        .try_acquire_private_read()
-        .ok_or(CanonicalError::Capacity)?;
     let resource = match query.resource.as_deref() {
         Some("inbox") => MailboxResource::Inbox,
         Some("recovery") | Some("recovery_ack") => return Err(CanonicalError::Retired),
@@ -1095,7 +1100,7 @@ async fn page(
         .ok_or(CanonicalError::Unauthorized)?;
     let _cpu = runtime
         .try_acquire_private_read()
-        .ok_or(CanonicalError::Capacity)?;
+        .ok_or(CanonicalError::Unavailable)?;
     let binding = private_binding(runtime, recipient, resource, query)?;
     authenticate(server, headers, &binding).await?;
     let owner = server.registry.canonical_dm();
@@ -1311,13 +1316,10 @@ pub(crate) async fn handle_mailbox_ws(
     use crate::monad_mailbox::{MailboxRequestBinding, MailboxResource};
 
     let address = Address::from_hex(&address).map_err(|_| CanonicalError::Unauthorized)?;
-    let runtime = server
+    let _runtime = server
         .monad_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unauthorized)?;
-    let _cpu = runtime
-        .try_acquire_private_read()
-        .ok_or(CanonicalError::Capacity)?;
 
     let binding = MailboxRequestBinding {
         resource: MailboxResource::MailboxStream,

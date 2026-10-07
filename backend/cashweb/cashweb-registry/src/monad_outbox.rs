@@ -308,6 +308,8 @@ pub struct MonadOutboxReconcileConfig {
     pub receipt_poll_attempts: u32,
     /// Maximum claims reconciled concurrently.
     pub max_concurrency: usize,
+    /// Maximum concurrent private mailbox reads allowed across the relay HTTP endpoints.
+    pub private_read_concurrency: usize,
     /// Maximum active claims loaded in one page. This is deliberately independent from the
     /// admission ceiling because an existing database can contain more claims than a later
     /// process configuration permits admitting.
@@ -332,6 +334,7 @@ impl Default for MonadOutboxReconcileConfig {
             poll_interval: Duration::from_millis(500),
             receipt_poll_attempts: 20,
             max_concurrency: 8,
+            private_read_concurrency: 256,
             active_scan_page_size: 128,
             scan_interval: Duration::from_secs(30),
             rpc_timeout: Duration::from_secs(10),

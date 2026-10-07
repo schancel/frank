@@ -14,4 +14,5 @@ pub mod monad_outbox;
 pub mod monad_profiles;
 pub mod monad_topics;
 pub mod pubkeyhash;
+pub mod resp_username;
 pub mod topics;

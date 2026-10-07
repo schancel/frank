@@ -88,6 +88,8 @@ pub struct Registry {
     chain_adapter: Arc<dyn ChainAdapter>,
     /// Whether server is running on a mainnet or regtest network.
     net: Net,
+    /// Optional clustered or custom username uniqueness store (ticket #981 / Track C).
+    username_store: Option<Arc<dyn crate::store::directory_usernames::UsernameStore>>,
 }
 
 /// Result of putting metadata into the registry.
@@ -214,8 +216,18 @@ pub enum RegistryError {
 use self::RegistryError::*;
 
 impl Registry {
-    /// Construct new [`Registry`]
+    /// Construct new [`Registry`] with default embedded RocksDB username store.
     pub fn new(db: Db, chain_adapter: Arc<dyn ChainAdapter>, net: Net) -> Self {
+        Self::new_with_username_store(db, chain_adapter, net, None)
+    }
+
+    /// Construct new [`Registry`] with an optional custom or clustered [`crate::store::directory_usernames::UsernameStore`].
+    pub fn new_with_username_store(
+        db: Db,
+        chain_adapter: Arc<dyn ChainAdapter>,
+        net: Net,
+        username_store: Option<Arc<dyn crate::store::directory_usernames::UsernameStore>>,
+    ) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
         let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf());
         Registry {
@@ -226,6 +238,7 @@ impl Registry {
             ecc: EccSecp256k1::default(),
             chain_adapter,
             net,
+            username_store,
         }
     }
 
@@ -248,8 +261,13 @@ impl Registry {
     }
 
     /// Access the unique username and tombstone store.
-    pub fn directory_usernames(&self) -> crate::store::directory_usernames::DbDirectoryUsernames<'_> {
-        self.db.directory_usernames()
+    pub fn directory_usernames(
+        &self,
+    ) -> Box<dyn crate::store::directory_usernames::UsernameStore + '_> {
+        match &self.username_store {
+            Some(custom) => Box::new(Arc::clone(custom)),
+            None => Box::new(self.db.directory_usernames()),
+        }
     }
 
     pub(crate) fn forum(&self) -> &crate::forum::Owner {
@@ -1599,6 +1617,7 @@ mod tests {
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
+            username_store: None,
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -1997,6 +2016,7 @@ mod tests {
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
+            username_store: None,
         };
 
         // Generate a few anyone can spend coins
@@ -2155,6 +2175,7 @@ mod tests {
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(LotusAdapter::new(bitcoind.clone())),
             net: Net::Regtest,
+            username_store: None,
         };
 
         let seckey = registry.ecc.seckey_from_array([4; 32])?;
@@ -2482,6 +2503,7 @@ mod tests {
             ecc: EccSecp256k1::default(),
             chain_adapter: Arc::new(NeverCalledChainAdapter),
             net: Net::Regtest,
+            username_store: None,
         };
         (tempdir, registry)
     }

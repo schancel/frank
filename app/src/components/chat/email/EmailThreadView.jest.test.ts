@@ -72,6 +72,7 @@ describe('EmailThreadView', () => {
     lastReceived: 2000,
     lastRead: 2000,
     stampAmount: 100,
+    verifiedGateway: true,
   }
 
   function mountView(customProps = {}) {
@@ -91,6 +92,7 @@ describe('EmailThreadView', () => {
         stubs: {
           'q-page': { template: '<div class="q-page"><slot /></div>' },
           'q-scroll-area': { template: '<div class="q-scroll-area"><slot /></div>' },
+          'q-banner': { template: '<div class="q-banner"><slot name="avatar" /><slot /></div>' },
           'q-card': { template: '<div class="q-card"><slot /></div>' },
           'q-card-section': { template: '<div class="q-card-section"><slot /></div>' },
           'q-card-actions': { template: '<div class="q-card-actions"><slot /></div>' },
@@ -183,5 +185,156 @@ describe('EmailThreadView', () => {
 
     // After send, reply text is cleared
     expect(vm.replyText).toBe('')
+  })
+
+  describe('Peer Email Frame Defense & Trust Classification (ticket-unverified-peer-email-frames)', () => {
+    const peerAddress = '0x2222222222222222222222222222222222222222'
+    const peerEmailWithDkim: EmailItem = {
+      type: 'email',
+      messageId: '<spoofed@example.com>',
+      from: { address: 'security@google.com', name: 'Google Security' },
+      to: [{ address: 'me@frank.org' }],
+      subject: 'Urgent Security Alert',
+      textBody: 'Please send funds immediately',
+      dkim: { verified: true } as any,
+    }
+
+    const peerMessage: ChatMessage = {
+      outbound: false,
+      status: 'confirmed',
+      receivedTime: 3000,
+      serverTime: 3000,
+      items: [peerEmailWithDkim],
+      outpoints: [],
+      senderAddress: peerAddress,
+      payloadDigest: 'digest-peer-email',
+    }
+
+    const unverifiedPeerConversation: Conversation = {
+      id: 'conv-peer-email',
+      kind: 'email',
+      name: 'Urgent Security Alert',
+      address: peerAddress,
+      participants: [peerAddress, '0xMe'],
+      messages: [peerMessage],
+      totalUnreadMessages: 0,
+      totalUnreadValue: 0,
+      totalValue: 0,
+      lastReceived: 3000,
+      lastRead: 3000,
+      stampAmount: 100,
+      verifiedGateway: false,
+    }
+
+    it('renders gateway badge and no warnings for verified gateway conversation', () => {
+      const wrapper = mountView({
+        conversation: { ...conversation, verifiedGateway: true },
+      })
+      const vm = wrapper.vm as any
+
+      expect(vm.isVerifiedGateway).toBe(true)
+      expect(wrapper.find('[data-testid="email-gateway-badge"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="unverified-p2p-badge"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="unverified-peer-warning-banner"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="composer-unverified-warning"]').exists()).toBe(false)
+      expect(vm.sendButtonLabel).toBe('Send')
+    })
+
+    it('displays prominent warning banner and unverified badge for peer-authored email frames', () => {
+      const wrapper = mountView({
+        conversation: unverifiedPeerConversation,
+        messages: [peerMessage],
+        recipientAddress: peerAddress,
+      })
+      const vm = wrapper.vm as any
+
+      expect(vm.isVerifiedGateway).toBe(false)
+      // Gateway badge must be suppressed
+      expect(wrapper.find('[data-testid="email-gateway-badge"]').exists()).toBe(false)
+      // Unverified badge must be shown
+      const unverifiedBadge = wrapper.find('[data-testid="unverified-p2p-badge"]')
+      expect(unverifiedBadge.exists()).toBe(true)
+      expect(unverifiedBadge.text()).toContain('⚠️ Direct P2P Email (Unverified)')
+
+      // Warning banner must be prominently shown with the exact required wording
+      const banner = wrapper.find('[data-testid="unverified-peer-warning-banner"]')
+      expect(banner.exists()).toBe(true)
+      expect(banner.text()).toContain(
+        `⚠️ Direct Peer Email Frame: This message was sent directly by Frank user ${peerAddress} (not an Email Gateway). External email recipients will not receive replies.`,
+      )
+    })
+
+    it('suppresses DKIM verified badge on peer-authored cards even if payload asserts DKIM', () => {
+      const wrapper = mountView({
+        conversation: unverifiedPeerConversation,
+        messages: [peerMessage],
+        recipientAddress: peerAddress,
+      })
+      expect(wrapper.find('[data-testid="dkim-badge"]').exists()).toBe(false)
+    })
+
+    it('guards composer replies: warns user and defaults to Frank P2P direct delivery', () => {
+      const wrapper = mountView({
+        conversation: unverifiedPeerConversation,
+        messages: [peerMessage],
+        recipientAddress: peerAddress,
+      })
+      const vm = wrapper.vm as any
+
+      // Composer notice is visible
+      const composerWarning = wrapper.find('[data-testid="composer-unverified-warning"]')
+      expect(composerWarning.exists()).toBe(true)
+      expect(composerWarning.text()).toContain('P2P Direct Reply')
+      expect(composerWarning.text()).toContain(peerAddress)
+      expect(composerWarning.text()).toContain(
+        'External email recipients in To/Cc will not receive replies via MX.',
+      )
+
+      // Send button reflects P2P mode
+      expect(vm.replyRouting).toBe('peer')
+      expect(vm.sendButtonLabel).toBe('Send to Peer (P2P)')
+      expect(vm.sendButtonTooltip).toContain(
+        'Reply will only be delivered as a Frank direct message to the peer, not dispatched to external email addresses via MX',
+      )
+
+      // Sending in P2P mode
+      vm.replyText = 'Thanks for your direct message.'
+      vm.handleSend()
+
+      expect(wrapper.emitted('sendReply')).toBeTruthy()
+      const emitted = wrapper.emitted('sendReply')![0][0] as {
+        items: any[]
+        fallbackText: string
+        targetAddress?: string
+      }
+      expect(emitted.fallbackText).toContain('[Direct P2P Email to ' + peerAddress)
+      expect(emitted.fallbackText).toContain('(external email recipients not notified)')
+      expect(emitted.targetAddress).toBeUndefined()
+    })
+
+    it('allows routing through gateway if user chooses to bridge via gateway', () => {
+      const wrapper = mountView({
+        conversation: unverifiedPeerConversation,
+        messages: [peerMessage],
+        recipientAddress: peerAddress,
+      })
+      const vm = wrapper.vm as any
+
+      // Switch routing to gateway
+      vm.replyRouting = 'gateway'
+      expect(vm.sendButtonLabel).toBe('Bridge via Gateway')
+      expect(vm.sendButtonTooltip).toContain('Route through Frank Email Gateway')
+
+      vm.replyText = 'Sending via gateway instead.'
+      vm.handleSend()
+
+      const emitted = wrapper.emitted('sendReply')![0][0] as {
+        items: any[]
+        fallbackText: string
+        targetAddress?: string
+      }
+      expect(emitted.fallbackText).toContain('[Email to ')
+      expect(emitted.targetAddress).toBe('0x1111111111111111111111111111111111111111')
+    })
   })
 })

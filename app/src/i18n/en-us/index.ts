@@ -932,5 +932,10 @@ export default {
     licenseIntro:
       'The full licence text, including its conditions and disclaimer, as published by Silence Laboratories (English only):',
   },
+  emailThread: {
+    gatewayBadge: '✉️ Email Bridge (via Frank Gateway)',
+    unverifiedBadge: '⚠️ Direct P2P Email (Unverified)',
+    participants: 'Participants',
+  },
   close: 'Close',
 }

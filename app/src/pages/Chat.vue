@@ -598,11 +598,13 @@ export default defineComponent({
     async sendEmailReply(payload: {
       items: MessageItem[]
       fallbackText: string
+      targetAddress?: string
     }) {
       if (this.sendingMessage) {
         return
       }
-      const recipient = this.recipientAddress || this.address
+      const recipient =
+        payload.targetAddress || this.recipientAddress || this.address
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       try {

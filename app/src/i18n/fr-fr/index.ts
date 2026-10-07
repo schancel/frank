@@ -961,5 +961,10 @@ export default {
     licenseIntro:
       'Le texte intégral de la licence, avec ses conditions et son avertissement, tel que publié par Silence Laboratories (en anglais uniquement) :',
   },
+  emailThread: {
+    gatewayBadge: '✉️ Passerelle e-mail (via passerelle Frank)',
+    unverifiedBadge: '⚠️ E-mail P2P direct (non vérifié)',
+    participants: 'Participants à la discussion',
+  },
   close: 'Fermer',
 }

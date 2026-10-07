@@ -144,17 +144,14 @@ describe('About: Frank & Stamp protocol overview', () => {
     expect(stamp).toContain('End-to-End Encryption')
   })
 
-  it('renders links to GitHub and Stamp upstream', () => {
+  it('renders link to GitHub repository', () => {
     const en = mountAbout(enUS)
     const links = en.find('[data-test="about-links"]')
     expect(links.text()).toContain('Links & Source Code')
     const buttons = links.findAll('button')
-    expect(buttons.length).toBe(2)
+    expect(buttons.length).toBe(1)
     expect(buttons[0].attributes('href')).toBe(
       'https://github.com/schancel/frank',
-    )
-    expect(buttons[1].attributes('href')).toBe(
-      'https://github.com/stampchat/stamp',
     )
   })
 

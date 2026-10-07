@@ -374,7 +374,10 @@ export async function startMessaging(): Promise<void> {
         if (identity?.address) {
           const network = networkOf(d.networkTag)
           void d.directory.pins.save(`${network}:${identity.address}`, '')
-          void d.directory.pins.save(`pending:${network}:${identity.address}`, '')
+          void d.directory.pins.save(
+            `pending:${network}:${identity.address}`,
+            '',
+          )
         }
       } catch {
         // ignore

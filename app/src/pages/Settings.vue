@@ -49,6 +49,12 @@
                   icon="save"
                   :label="$t('persistentStorage.tab')"
                 />
+                <q-tab
+                  name="gateways"
+                  icon="alt_route"
+                  :label="$t('settings.gateways')"
+                  data-test="settings-tab-gateways"
+                />
               </q-tabs>
             </template>
             <template #after>
@@ -124,6 +130,56 @@
                 <q-tab-panel name="storage">
                   <persistent-storage-panel />
                 </q-tab-panel>
+                <q-tab-panel name="gateways">
+                  <div class="text-subtitle2 q-mb-sm">
+                    {{ $t('settings.networkSettings') }}
+                  </div>
+                  <q-input
+                    v-model="emailGatewayInput"
+                    :label="$t('settings.emailGatewayAddress')"
+                    dense
+                    outlined
+                    :error="!!emailGatewayError"
+                    :error-message="emailGatewayError"
+                    hint="0x-prefixed 40-character hex address"
+                    data-test="email-gateway-input"
+                    data-testid="email-gateway-input"
+                    class="full-width q-mb-xs"
+                  />
+                  <div
+                    v-if="emailGatewayError"
+                    class="text-negative text-caption q-mb-xs error-msg"
+                    data-test="email-gateway-error"
+                  >
+                    {{ emailGatewayError }}
+                  </div>
+                  <div
+                    class="row items-center justify-end q-gutter-x-sm q-mt-xs"
+                  >
+                    <q-btn
+                      flat
+                      dense
+                      no-caps
+                      size="sm"
+                      color="grey-7"
+                      :label="$t('settings.resetDefault')"
+                      data-test="reset-email-gateway-btn"
+                      data-testid="reset-email-gateway-btn"
+                      @click="resetEmailGateway"
+                    />
+                    <q-btn
+                      unelevated
+                      dense
+                      no-caps
+                      size="sm"
+                      color="primary"
+                      :label="$t('settings.save')"
+                      data-test="save-email-gateway-btn"
+                      data-testid="save-email-gateway-btn"
+                      @click="saveEmailGateway"
+                    />
+                  </div>
+                </q-tab-panel>
               </q-tab-panels>
             </template>
           </q-splitter>
@@ -162,11 +218,12 @@ import {
   applyTheme,
 } from 'src/utils/theme'
 
-import { defineComponent, onUnmounted, ref } from 'vue'
+import { defineComponent, onUnmounted, ref, watch } from 'vue'
 import { QInput } from 'quasar'
 
 import { useAppearanceStore } from 'src/stores/appearance'
 import { useContactStore } from 'src/stores/contacts'
+import { useSettingsStore } from 'src/stores/settings'
 import { storeToRefs } from 'pinia'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
 const msToMinutes = 60000
@@ -207,6 +264,34 @@ export default defineComponent({
       }
     })
 
+    const settingsStore = useSettingsStore()
+    const emailGatewayInput = ref(settingsStore.emailGatewayAddress)
+    const emailGatewayError = ref('')
+
+    watch(
+      () => settingsStore.emailGatewayAddress,
+      newVal => {
+        emailGatewayInput.value = newVal
+      },
+    )
+
+    function saveEmailGateway() {
+      emailGatewayError.value = ''
+      try {
+        settingsStore.setEmailGatewayAddress(emailGatewayInput.value.trim())
+        emailGatewayInput.value = settingsStore.emailGatewayAddress
+      } catch (err: any) {
+        emailGatewayError.value =
+          err?.message || 'Invalid Ethereum address format'
+      }
+    }
+
+    function resetEmailGateway() {
+      emailGatewayError.value = ''
+      settingsStore.resetEmailGatewayAddress()
+      emailGatewayInput.value = settingsStore.emailGatewayAddress
+    }
+
     return {
       appearanceStore,
       isSaved,
@@ -223,6 +308,10 @@ export default defineComponent({
       storeUpdateInterval,
       storeLocale,
       localeOptions,
+      emailGatewayInput,
+      emailGatewayError,
+      saveEmailGateway,
+      resetEmailGateway,
     }
   },
   data() {

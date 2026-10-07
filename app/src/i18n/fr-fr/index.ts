@@ -836,6 +836,7 @@ export default {
     emailGatewayAddress: 'Adresse de la passerelle e-mail',
     resetDefault: 'Rétablir par défaut',
     save: 'Enregistrer',
+    gateways: 'Passerelles',
   },
   profile: {
     name: 'Pseudonyme',

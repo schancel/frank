@@ -20,7 +20,7 @@ jest.mock('src/accounts/session', () => ({
   accountSession: mockAccountSession,
 }))
 
-import SettingsPage from './Settings.vue'
+import { defaultEmailGatewayAddress } from 'src/utils/constants'
 
 // See navigate-back.jest.test.ts: vue-router 5's ESM-only dev-only dependencies.
 // The panel's own behaviour is covered by its test; Settings only mounts it.
@@ -70,12 +70,33 @@ jest.mock('src/stores/contacts', () => ({
   useContactStore: () =>
     jest.requireActual('vue').reactive({ updateInterval: 60_000 }),
 }))
+const mockSetEmailGatewayAddress = jest.fn((address: string) => {
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+    throw new Error(
+      `Invalid Ethereum address: "${address}". Expected format: 0x followed by 40 hex characters.`,
+    )
+  }
+  mockSettingsStore.emailGatewayAddress = address
+})
+const mockResetEmailGatewayAddress = jest.fn(() => {
+  mockSettingsStore.emailGatewayAddress = defaultEmailGatewayAddress
+})
+const mockSettingsStore = jest.requireActual('vue').reactive({
+  emailGatewayAddress: defaultEmailGatewayAddress,
+  setEmailGatewayAddress: mockSetEmailGatewayAddress,
+  resetEmailGatewayAddress: mockResetEmailGatewayAddress,
+})
+jest.mock('src/stores/settings', () => ({
+  useSettingsStore: () => mockSettingsStore,
+}))
 jest.mock('src/components/settings/PersistentStoragePanel.vue', () => ({
   template: '<div />',
 }))
 jest.mock('src/utils/apply-locale', () => ({
   applyLocale: jest.fn(() => Promise.resolve()),
 }))
+
+import SettingsPage from './Settings.vue'
 
 const Blank = { render: () => null }
 
@@ -109,6 +130,19 @@ function mountSettings(router: Router, qMocks: Record<string, any> = {}) {
       stubs: {
         QSplitter: {
           template: '<div><slot name="before" /><slot name="after" /></div>',
+        },
+        QInput: {
+          props: ['modelValue', 'error', 'errorMessage'],
+          emits: ['update:modelValue'],
+          methods: { focus: jest.fn() },
+          template:
+            '<input v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+        },
+        QBtn: {
+          props: ['label'],
+          emits: ['click'],
+          template:
+            '<button v-bind="$attrs" @click="$emit(\'click\', $event)"><slot>{{ label }}</slot></button>',
         },
       },
       mocks: {
@@ -297,4 +331,105 @@ it('does not contain account recovery tab, backup button, or descriptor', async 
     false,
   )
   expect(wrapper.text()).not.toContain('accountRecovery.frank_account_recovery')
+})
+
+describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => {
+  beforeEach(() => {
+    mockSetEmailGatewayAddress.mockClear()
+    mockResetEmailGatewayAddress.mockClear()
+    mockSettingsStore.emailGatewayAddress = defaultEmailGatewayAddress
+  })
+
+  it('renders the gateways tab with proper icon and data-test attribute', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const tab = wrapper.find('[data-test="settings-tab-gateways"]')
+    expect(tab.exists()).toBe(true)
+    expect(tab.attributes('icon')).toBe('alt_route')
+    expect(tab.attributes('name')).toBe('gateways')
+    wrapper.unmount()
+  })
+
+  it('initializes input with defaultEmailGatewayAddress from settings store', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const input = wrapper.find('[data-test="email-gateway-input"]')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe(
+      defaultEmailGatewayAddress,
+    )
+    wrapper.unmount()
+  })
+
+  it('saves a valid new Ethereum hex gateway address to settings store', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const validAddress = '0x1234567890123456789012345678901234567890'
+
+    const input = wrapper.find('[data-test="email-gateway-input"]')
+    await input.setValue(validAddress)
+
+    const saveBtn = wrapper.find('[data-test="save-email-gateway-btn"]')
+    expect(saveBtn.exists()).toBe(true)
+    await saveBtn.trigger('click')
+
+    expect(mockSetEmailGatewayAddress).toHaveBeenCalledWith(validAddress)
+    expect(mockSettingsStore.emailGatewayAddress).toBe(validAddress)
+    expect((wrapper.vm as any).emailGatewayError).toBe('')
+    wrapper.unmount()
+  })
+
+  it('displays error message and does not update store when address is invalid', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const originalAddress = mockSettingsStore.emailGatewayAddress
+
+    const input = wrapper.find('[data-test="email-gateway-input"]')
+    await input.setValue('0xinvalid')
+
+    const saveBtn = wrapper.find('[data-test="save-email-gateway-btn"]')
+    await saveBtn.trigger('click')
+
+    expect(mockSettingsStore.emailGatewayAddress).toBe(originalAddress)
+    expect((wrapper.vm as any).emailGatewayError).toBeTruthy()
+    expect(wrapper.find('[data-test="email-gateway-error"]').text()).toContain(
+      'Invalid Ethereum address',
+    )
+    wrapper.unmount()
+  })
+
+  it('resets email gateway address to default when reset button is clicked', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const customAddr = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    mockSettingsStore.emailGatewayAddress = customAddr
+    ;(wrapper.vm as any).emailGatewayInput = customAddr
+    await wrapper.vm.$nextTick()
+
+    const resetBtn = wrapper.find('[data-test="reset-email-gateway-btn"]')
+    expect(resetBtn.exists()).toBe(true)
+    await resetBtn.trigger('click')
+
+    expect(mockResetEmailGatewayAddress).toHaveBeenCalled()
+    expect(mockSettingsStore.emailGatewayAddress).toBe(
+      defaultEmailGatewayAddress,
+    )
+    expect((wrapper.vm as any).emailGatewayInput).toBe(
+      defaultEmailGatewayAddress,
+    )
+    wrapper.unmount()
+  })
+
+  it('updates input value when store address changes', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+    const newAddress = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    mockSettingsStore.emailGatewayAddress = newAddress
+    await wrapper.vm.$nextTick()
+
+    expect((wrapper.vm as any).emailGatewayInput).toBe(newAddress)
+    const input = wrapper.find('[data-test="email-gateway-input"]')
+    expect((input.element as HTMLInputElement).value).toBe(newAddress)
+    wrapper.unmount()
+  })
 })

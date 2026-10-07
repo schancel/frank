@@ -36,8 +36,6 @@ jest.mock('quasar', () => ({
 }))
 
 import SettingsPanel from './SettingsPanel.vue'
-import { useSettingsStore } from 'src/stores/settings'
-import { defaultEmailGatewayAddress } from 'src/utils/constants'
 
 describe('SettingsPanel wallet-action split (#399)', () => {
   beforeEach(() => {
@@ -178,75 +176,14 @@ describe('SettingsPanel wallet-action split (#399)', () => {
     wrapper.unmount()
   })
 
-  describe('User-Configurable Email Gateway Address', () => {
-    it('initializes input with defaultEmailGatewayAddress from settings store', () => {
-      const { wrapper } = mountPanel()
-      const input = wrapper.find('[data-test="email-gateway-input"]')
-      expect(input.exists()).toBe(true)
-      expect((input.element as HTMLInputElement).value).toBe(
-        defaultEmailGatewayAddress,
-      )
-      wrapper.unmount()
-    })
-
-    it('saves a valid new Ethereum hex gateway address to settings store', async () => {
-      const { wrapper } = mountPanel()
-      const settingsStore = useSettingsStore()
-      const validAddress = '0x1234567890123456789012345678901234567890'
-
-      const input = wrapper.find('[data-test="email-gateway-input"]')
-      await input.setValue(validAddress)
-
-      const saveBtn = wrapper.find('[data-test="save-email-gateway-btn"]')
-      expect(saveBtn.exists()).toBe(true)
-      await saveBtn.trigger('click')
-
-      expect(settingsStore.emailGatewayAddress).toBe(validAddress)
-      expect((wrapper.vm as any).emailGatewayError).toBe('')
-      wrapper.unmount()
-    })
-
-    it('displays error message and does not update store when address is invalid', async () => {
-      const { wrapper } = mountPanel()
-      const settingsStore = useSettingsStore()
-      const originalAddress = settingsStore.emailGatewayAddress
-
-      const input = wrapper.find('[data-test="email-gateway-input"]')
-      await input.setValue('0xinvalid')
-
-      const saveBtn = wrapper.find('[data-test="save-email-gateway-btn"]')
-      await saveBtn.trigger('click')
-
-      expect(settingsStore.emailGatewayAddress).toBe(originalAddress)
-      expect((wrapper.vm as any).emailGatewayError).toBeTruthy()
-      expect(
-        wrapper.find('[data-test="email-gateway-error"]').text(),
-      ).toContain('Invalid Ethereum address')
-      wrapper.unmount()
-    })
-
-    it('resets email gateway address to default when reset button is clicked', async () => {
-      const { wrapper } = mountPanel()
-      const settingsStore = useSettingsStore()
-      const customAddr = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-      settingsStore.setEmailGatewayAddress(customAddr)
-
-      const input = wrapper.find('[data-test="email-gateway-input"]')
-      await input.setValue(customAddr)
-      await wrapper
-        .find('[data-test="save-email-gateway-btn"]')
-        .trigger('click')
-      expect(settingsStore.emailGatewayAddress).toBe(customAddr)
-
-      const resetBtn = wrapper.find('[data-test="reset-email-gateway-btn"]')
-      expect(resetBtn.exists()).toBe(true)
-      await resetBtn.trigger('click')
-
-      expect(settingsStore.emailGatewayAddress).toBe(defaultEmailGatewayAddress)
-      expect((input.element as HTMLInputElement).value).toBe(
-        defaultEmailGatewayAddress,
-      )
-      wrapper.unmount()
-    })
+  it('does not render email gateway configuration in settings drawer', () => {
+    const { wrapper } = mountPanel()
+    expect(wrapper.find('[data-test="email-gateway-input"]').exists()).toBe(
+      false,
+    )
+    expect(
+      wrapper.find('[data-test="network-settings-section"]').exists(),
+    ).toBe(false)
+    wrapper.unmount()
   })
 })

@@ -237,23 +237,11 @@
             class="full-width"
             :label="$t('accountRecovery.backup_account_codex32')"
             data-test="backup-codex32-button"
-            @click="openBackupDialog"
+            @click="openBackup"
           />
         </div>
       </q-list>
     </q-scroll-area>
-
-    <codex32-backup-dialog
-      v-model="showBackupDialog"
-      :loading="backupLoading"
-      :error="backupError"
-      :shares="backupShares"
-      :threshold="threshold"
-      :count="count"
-      @cycle-scheme="cycleScheme"
-      @change-scheme="setScheme"
-      @close="closeBackupDialog"
-    />
 
     <rename-wallet-dialog
       v-model="showRenameDialog"
@@ -267,14 +255,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, getCurrentInstance, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { activeChain } from '@frank/wallet/chain'
 import { accountSession, accountStatus } from '../../accounts/session'
 import { useBalance } from '../../composables/useBalance'
-import { useCodex32Backup } from '../../composables/useCodex32Backup'
 import { useWalletNames } from '../../composables/useWalletNames'
-import Codex32BackupDialog from '../wallet/Codex32BackupDialog.vue'
+import { openPage } from '../../utils/routes'
 import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
 
 const isTestnet = computed(() => activeChain.isTestnet ?? false)
@@ -340,18 +327,22 @@ function selectWallet(wallet: 'monad' | 'ecash' | 'solana') {
 }
 
 const { loaded, hasError, formattedBalance } = useBalance()
-const {
-  showBackupDialog,
-  backupLoading,
-  backupError,
-  backupShares,
-  threshold,
-  count,
-  openBackupDialog,
-  closeBackupDialog,
-  cycleScheme,
-  setScheme,
-} = useCodex32Backup()
+
+const instance = getCurrentInstance()
+
+function getRouter() {
+  return (
+    (router && router.push ? router : null) || (instance?.proxy as any)?.$router
+  )
+}
+
+function openBackup() {
+  const r = getRouter()
+  if (r) {
+    return openPage(r, '/backup')
+  }
+}
+const openBackupDialog = openBackup
 </script>
 
 <style lang="scss" scoped>

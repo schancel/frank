@@ -6,10 +6,11 @@ export const settingsRoutes = [
   '/receive',
   '/send',
   '/add-contact',
+  '/backup',
 ]
 
 export function openPage(router: Router, route: string) {
-  const currentRoute = router.currentRoute.value.path
+  const currentRoute = router.currentRoute?.value?.path ?? ''
   for (const settingsRoute of settingsRoutes) {
     if (currentRoute.startsWith(settingsRoute)) {
       return router.replace(route)

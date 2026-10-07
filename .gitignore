@@ -6,7 +6,6 @@
 node_modules/
 target/
 dist/
-app/public/docs/
 **/.vitepress/cache/
 **/.vitepress/.temp/
 app/public/docs/

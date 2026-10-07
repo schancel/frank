@@ -113,8 +113,11 @@ frank/
 │   ├── cashweb/              # Client SDK for relays and direct messaging
 │   ├── wallet/               # Unified EVM + UTXO wallet and DKSAP engine
 │   ├── crypto-box/           # AEAD encryption, ECDH, and key encapsulation
+│   ├── nakamoto/             # Typed UTXO chain primitives (BTC, BCH, XEC, XPI)
+│   ├── bot-framework/        # Headless bot framework, directory renewal & sequencing
+│   ├── bot/                  # Autonomous bots (Qwen AI, Blackjack, Raffle, Faucet)
 │   ├── mail-gateway/         # SMTP/MIME to Frank bidirectional bridge
-│   ├── bitcore-lib-xpi/      # Lotus and UTXO cryptographic primitives
+│   ├── codex32/              # Checksummed BIP-93 secret sharing & master recovery
 │   └── docs/                 # VitePress documentation portal
 └── docs/                     # Formal protocol specifications and CDDL schemas
 ```

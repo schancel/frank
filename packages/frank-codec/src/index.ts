@@ -48,15 +48,20 @@ export {
   topicVoteCommitment,
 } from './hash'
 export {
+  CANONICAL_USERNAME_REGEX,
   addressFromCompressedPubkey,
   addressFromUncompressedPubkey,
+  buildDirectoryStatementMap,
+  encodeDirectoryStatement,
   expiryTimestamp,
+  isValidCanonicalUsername,
   joinMs,
   splitMs,
   splitTimestampMs,
   uncompressedPubkey,
   uncompressedPubkeyXy,
 } from './registration'
+export type { DirectoryStatementBuilderParams } from './registration'
 export { hasLowS, parseStrictDer, verifyAlgorithm1 } from './verify'
 export { compareAccounts, compareBytes } from './semantic'
 export {

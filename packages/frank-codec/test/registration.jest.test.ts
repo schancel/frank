@@ -861,26 +861,62 @@ describe('directory statement spendKeys (field 14)', () => {
       { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
-        [1, M([[0, 1], [1, secpKey]])],
+        [
+          1,
+          M([
+            [0, 1],
+            [1, secpKey],
+          ]),
+        ],
         [2, 1000n],
-        [3, M([[0, 100n], [1, 0]])],
+        [
+          3,
+          M([
+            [0, 100n],
+            [1, 0],
+          ]),
+        ],
         [
           4,
           [
             M([
               [0, new Uint8Array(16)],
               [1, 'https://relay1.frank.example'],
-              [2, M([[0, 1], [1, secpKey]])],
-              [3, M([[0, 2000n], [1, 0]])],
+              [
+                2,
+                M([
+                  [0, 1],
+                  [1, secpKey],
+                ]),
+              ],
+              [
+                3,
+                M([
+                  [0, 2000n],
+                  [1, 0],
+                ]),
+              ],
             ]),
           ],
         ],
-        [8, M([[0, 1], [1, secpKey]])],
+        [
+          8,
+          M([
+            [0, 1],
+            [1, secpKey],
+          ]),
+        ],
         [
           14,
           [
-            M([[0, 1], [1, secpKey]]),
-            M([[0, 2], [1, edKey]]),
+            M([
+              [0, 1],
+              [1, secpKey],
+            ]),
+            M([
+              [0, 2],
+              [1, edKey],
+            ]),
           ],
         ],
       ]),
@@ -915,26 +951,62 @@ describe('directory statement spendKeys (field 14)', () => {
       { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
-        [1, M([[0, 1], [1, secpKey]])],
+        [
+          1,
+          M([
+            [0, 1],
+            [1, secpKey],
+          ]),
+        ],
         [2, 1000n],
-        [3, M([[0, 100n], [1, 0]])],
+        [
+          3,
+          M([
+            [0, 100n],
+            [1, 0],
+          ]),
+        ],
         [
           4,
           [
             M([
               [0, new Uint8Array(16)],
               [1, 'https://relay1.frank.example'],
-              [2, M([[0, 1], [1, secpKey]])],
-              [3, M([[0, 2000n], [1, 0]])],
+              [
+                2,
+                M([
+                  [0, 1],
+                  [1, secpKey],
+                ]),
+              ],
+              [
+                3,
+                M([
+                  [0, 2000n],
+                  [1, 0],
+                ]),
+              ],
             ]),
           ],
         ],
-        [8, M([[0, 1], [1, secpKey]])],
+        [
+          8,
+          M([
+            [0, 1],
+            [1, secpKey],
+          ]),
+        ],
         [
           14,
           [
-            M([[0, 2], [1, edKey]]),
-            M([[0, 1], [1, secpKey]]),
+            M([
+              [0, 2],
+              [1, edKey],
+            ]),
+            M([
+              [0, 1],
+              [1, secpKey],
+            ]),
           ],
         ],
       ]),
@@ -962,25 +1034,58 @@ describe('directory statement spendKeys (field 14)', () => {
       { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
       M([
         [0, 'monad-testnet'],
-        [1, M([[0, 1], [1, secpKey]])],
+        [
+          1,
+          M([
+            [0, 1],
+            [1, secpKey],
+          ]),
+        ],
         [2, 1000n],
-        [3, M([[0, 100n], [1, 0]])],
+        [
+          3,
+          M([
+            [0, 100n],
+            [1, 0],
+          ]),
+        ],
         [
           4,
           [
             M([
               [0, new Uint8Array(16)],
               [1, 'https://relay1.frank.example'],
-              [2, M([[0, 1], [1, secpKey]])],
-              [3, M([[0, 2000n], [1, 0]])],
+              [
+                2,
+                M([
+                  [0, 1],
+                  [1, secpKey],
+                ]),
+              ],
+              [
+                3,
+                M([
+                  [0, 2000n],
+                  [1, 0],
+                ]),
+              ],
             ]),
           ],
         ],
-        [8, M([[0, 1], [1, secpKey]])],
+        [
+          8,
+          M([
+            [0, 1],
+            [1, secpKey],
+          ]),
+        ],
         [
           14,
           [
-            M([[0, 2], [1, badEdKey]]),
+            M([
+              [0, 2],
+              [1, badEdKey],
+            ]),
           ],
         ],
       ]),
@@ -993,6 +1098,305 @@ describe('directory statement spendKeys (field 14)', () => {
     } catch (e: any) {
       expect(e.category).toBe('schema')
       expect(e.stage).toBe('8.2')
+    }
+  })
+})
+
+describe('directory statement canonicalUsername (field 14, ticket #972)', () => {
+  const secpKey = new Uint8Array(33)
+  secpKey[0] = 0x02
+  secpKey.fill(0x11, 1)
+
+  const makeStatement = (handle: any) =>
+    encodeFrame(
+      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      M([
+        [0, 'monad-testnet'],
+        [
+          1,
+          M([
+            [0, 1],
+            [1, secpKey],
+          ]),
+        ],
+        [2, 1000n],
+        [
+          3,
+          M([
+            [0, 100n],
+            [1, 0],
+          ]),
+        ],
+        [
+          4,
+          [
+            M([
+              [0, new Uint8Array(16)],
+              [1, 'https://relay1.frank.example'],
+              [
+                2,
+                M([
+                  [0, 1],
+                  [1, secpKey],
+                ]),
+              ],
+              [
+                3,
+                M([
+                  [0, 2000n],
+                  [1, 0],
+                ]),
+              ],
+            ]),
+          ],
+        ],
+        [
+          8,
+          M([
+            [0, 1],
+            [1, secpKey],
+          ]),
+        ],
+        [14, handle],
+      ]),
+    )
+
+  it('parses valid handles across min/max bounds and allowed character sets', () => {
+    const validHandles = [
+      'abc',
+      'a_1',
+      'z-9',
+      '007',
+      'alice',
+      'bob-smith',
+      'charlie_123',
+      'a' + 'b'.repeat(30) + 'c', // 32 characters
+      '0'.repeat(32),
+    ]
+
+    for (const handle of validHandles) {
+      const statement = makeStatement(handle)
+      const res = validateFrame(
+        statement,
+        defaultContext({ operation: 'typed' }),
+      )
+      expect(res.kind).toBe('parsed')
+      if (res.kind !== 'parsed') throw new Error('not parsed')
+      expect(res.typed?.type).toBe(4)
+      if (res.typed?.type === 4) {
+        expect(res.typed.canonicalUsername).toBe(handle)
+      }
+    }
+  })
+
+  it('rejects handles violating the semantic regex constraint at stage 9', () => {
+    const invalidHandles = [
+      '-abc', // starts with hyphen
+      '_abc', // starts with underscore
+      'Alice', // uppercase
+      'ALICE', // uppercase
+      'aliCe', // uppercase
+      'alice@frank', // disallowed char
+      'alice.smith', // dot not allowed
+      'alice smith', // space not allowed
+      'alice!123', // punctuation
+    ]
+
+    for (const handle of invalidHandles) {
+      const statement = makeStatement(handle)
+      const ctx = defaultContext({ operation: 'typed' })
+      expect(() => validateFrame(statement, ctx)).toThrow(FrankCodecError)
+      try {
+        validateFrame(statement, ctx)
+      } catch (e: any) {
+        expect(e.category).toBe('semantic')
+        expect(e.stage).toBe('9')
+        expect(e.location).toBe('root/payload.14')
+      }
+    }
+  })
+
+  it('rejects length bounds and non-string types at stage 8.2 schema', () => {
+    const schemaFailures = [
+      '', // length 0
+      'a', // length 1
+      'ab', // length 2
+      'a'.repeat(33), // length 33
+      12345, // integer
+      true, // boolean
+    ]
+
+    for (const handle of schemaFailures) {
+      const statement = makeStatement(handle)
+      const ctx = defaultContext({ operation: 'typed' })
+      expect(() => validateFrame(statement, ctx)).toThrow(FrankCodecError)
+      try {
+        validateFrame(statement, ctx)
+      } catch (e: any) {
+        expect(e.category).toBe('schema')
+        expect(e.stage).toBe('8.2')
+      }
+    }
+  })
+
+  it('round-trips through statement builder', () => {
+    const relays = [
+      {
+        relayId: new Uint8Array(16).fill(1),
+        endpoint: 'https://relay1.frank.example',
+        identity: { keyType: 1, keyBytes: secpKey },
+        expiry: { seconds: 2000n, nanoseconds: 0 },
+        unknownFields: new Map(),
+      },
+    ]
+
+    const encodedWithHandle = codec.encodeDirectoryStatement({
+      network: 'monad-testnet',
+      subject: { keyType: 1, keyBytes: secpKey },
+      revision: 1000n,
+      timestamp: { seconds: 100n, nanoseconds: 0 },
+      relays,
+      stampKey: { keyType: 1, keyBytes: secpKey },
+      canonicalUsername: 'alice-01',
+    })
+
+    const parsedWith = validateFrame(
+      encodedWithHandle,
+      defaultContext({ operation: 'typed' }),
+    )
+    if (parsedWith.kind !== 'parsed' || parsedWith.typed?.type !== 4) {
+      throw new Error('expected parsed type 4')
+    }
+    expect(parsedWith.typed.canonicalUsername).toBe('alice-01')
+
+    const encodedWithoutHandle = codec.encodeDirectoryStatement({
+      network: 'monad-testnet',
+      subject: { keyType: 1, keyBytes: secpKey },
+      revision: 1000n,
+      timestamp: { seconds: 100n, nanoseconds: 0 },
+      relays,
+      stampKey: { keyType: 1, keyBytes: secpKey },
+    })
+
+    const parsedWithout = validateFrame(
+      encodedWithoutHandle,
+      defaultContext({ operation: 'typed' }),
+    )
+    if (parsedWithout.kind !== 'parsed' || parsedWithout.typed?.type !== 4) {
+      throw new Error('expected parsed type 4')
+    }
+    expect(parsedWithout.typed.canonicalUsername).toBeUndefined()
+  })
+
+  it('verifies signature on Type 2 DirectoryAttestation carrying canonicalUsername (stage 10.6)', () => {
+    const secret = new Uint8Array(32).fill(7)
+    const pubKey = secp256k1.getPublicKey(secret, true)
+    const NETWORK = 'monad-testnet'
+
+    const relays = [
+      {
+        relayId: new Uint8Array(16).fill(2),
+        endpoint: 'https://relay1.frank.example',
+        identity: { keyType: 1, keyBytes: pubKey },
+        expiry: { seconds: 2000n, nanoseconds: 0 },
+        unknownFields: new Map(),
+      },
+    ]
+
+    const type4Statement = codec.encodeDirectoryStatement({
+      network: NETWORK,
+      subject: { keyType: 1, keyBytes: pubKey },
+      revision: 500n,
+      timestamp: { seconds: 100n, nanoseconds: 0 },
+      relays,
+      stampKey: { keyType: 1, keyBytes: pubKey },
+      canonicalUsername: 'valid-agent_42',
+    })
+
+    const digest = directorySignatureDigest(NETWORK, type4Statement)
+    const sig = new Uint8Array(secp256k1.sign(digest, secret).toDERRawBytes())
+
+    const attestation = encodeFrame(
+      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      M([
+        [0, type4Statement],
+        [
+          1,
+          [
+            M([
+              [0, 1], // alg 1
+              [
+                1,
+                M([
+                  [0, 1],
+                  [1, pubKey],
+                ]),
+              ],
+              [2, sig],
+            ]),
+          ],
+        ],
+      ]),
+    )
+
+    const res = validateFrame(
+      attestation,
+      defaultContext({ operation: 'full' }),
+    )
+    expect(res.kind).toBe('parsed')
+    if (res.kind !== 'parsed') throw new Error('not parsed')
+    expect(res.typed?.type).toBe(2)
+    if (res.typed?.type === 2) {
+      const st = res.typed.statementFrame.typed
+      if (st?.type === 4) {
+        expect(st.canonicalUsername).toBe('valid-agent_42')
+      } else {
+        throw new Error('inner statement not typed')
+      }
+    }
+
+    // Tampered username breaks the signature
+    const tamperedStatement = codec.encodeDirectoryStatement({
+      network: NETWORK,
+      subject: { keyType: 1, keyBytes: pubKey },
+      revision: 500n,
+      timestamp: { seconds: 100n, nanoseconds: 0 },
+      relays,
+      stampKey: { keyType: 1, keyBytes: pubKey },
+      canonicalUsername: 'other-agent_42',
+    })
+
+    const badAttestation = encodeFrame(
+      { typeId: 2, schemaVersion: 1, minReaderVersion: 1 },
+      M([
+        [0, tamperedStatement],
+        [
+          1,
+          [
+            M([
+              [0, 1],
+              [
+                1,
+                M([
+                  [0, 1],
+                  [1, pubKey],
+                ]),
+              ],
+              [2, sig],
+            ]),
+          ],
+        ],
+      ]),
+    )
+
+    expect(() =>
+      validateFrame(badAttestation, defaultContext({ operation: 'full' })),
+    ).toThrow(FrankCodecError)
+    try {
+      validateFrame(badAttestation, defaultContext({ operation: 'full' }))
+    } catch (e: any) {
+      expect(e.category).toBe('cryptographic')
+      expect(e.stage).toBe('10.6')
     }
   })
 })

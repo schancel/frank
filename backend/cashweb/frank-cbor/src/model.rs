@@ -539,6 +539,8 @@ pub enum TypedPayload {
         profile_entries: Option<Vec<ProfileEntry>>,
         /// Provisional schema-4 role fields, absent in schemas 1–3.
         preview: Option<PreviewDirectoryRoles>,
+        /// Field 14: optional canonical username handle (ticket #972).
+        canonical_username: Option<String>,
         /// V6.3 unknown fields.
         unknown: Vec<(u64, CborValue)>,
     },

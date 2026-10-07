@@ -637,6 +637,7 @@ pub(crate) fn check_semantics(
             recovery,
             stamp_key,
             profile_entries,
+            canonical_username,
             ..
         } => {
             crate::directory_preview::check_statement(typed)?;
@@ -711,6 +712,14 @@ pub(crate) fn check_semantics(
                         &format!("{path}.9[{i}].1"),
                         true,
                     )?;
+                }
+            }
+            if let Some(username) = canonical_username {
+                if !crate::registration::is_valid_canonical_username(username) {
+                    return Err(semantic(
+                        "canonical username must match ^[a-z0-9][a-z0-9_-]{2,31}$",
+                        &format!("{path}.14"),
+                    ));
                 }
             }
             Ok(())

@@ -4,9 +4,11 @@
 
 use secp256k1_abc::PublicKey;
 
+use crate::cbor::CborValue;
 use crate::error::UsageError;
+use crate::frame::{encode_frame, EnvelopeFields, FramePayload};
 use crate::keccak::keccak256;
-use crate::model::Timestamp;
+use crate::model::{AccountRef, ProfileEntry, RelayBinding, Timestamp};
 
 const MS: i128 = 1000;
 const NANOS_PER_MS: i128 = 1_000_000;
@@ -101,4 +103,171 @@ pub fn address_from_uncompressed_pubkey(uncompressed: &[u8]) -> Result<[u8; 20],
 pub fn address_from_compressed_pubkey(compressed: &[u8]) -> Result<[u8; 20], UsageError> {
     let xy = uncompressed_pubkey_xy(compressed)?;
     address_from_uncompressed_pubkey(&xy)
+}
+
+/// Canonical username regex pattern: `^[a-z0-9][a-z0-9_-]{2,31}$`
+pub const CANONICAL_USERNAME_PATTERN: &str = "^[a-z0-9][a-z0-9_-]{2,31}$";
+
+/// Validates whether a handle conforms to the canonical username specification (ticket #972):
+/// - Length between 3 and 32 characters
+/// - Lowercase ASCII alphanumeric with hyphen or underscore
+/// - Starts with an alphanumeric character
+pub fn is_valid_canonical_username(handle: &str) -> bool {
+    let bytes = handle.as_bytes();
+    if bytes.len() < 3 || bytes.len() > 32 {
+        return false;
+    }
+    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// Parameters for encoding a directory statement (Type 4).
+#[derive(Debug, Clone)]
+pub struct DirectoryStatementParams<'a> {
+    /// Field 0: network tag.
+    pub network: &'a str,
+    /// Field 1: directory subject public key.
+    pub subject: &'a AccountRef,
+    /// Field 2: monotonic revision.
+    pub revision: u64,
+    /// Field 3: authored timestamp.
+    pub timestamp: &'a Timestamp,
+    /// Field 4: relay bindings.
+    pub relays: &'a [RelayBinding],
+    /// Field 6: optional expiry timestamp.
+    pub expiry: Option<&'a Timestamp>,
+    /// Field 7: optional offline recovery authorities.
+    pub recovery: Option<&'a [AccountRef]>,
+    /// Field 8: optional stamp key.
+    pub stamp_key: Option<&'a AccountRef>,
+    /// Field 9: optional profile entries.
+    pub profile_entries: Option<&'a [ProfileEntry]>,
+    /// Field 14: optional canonical username handle.
+    pub canonical_username: Option<&'a str>,
+}
+
+fn encode_account(acc: &AccountRef) -> CborValue {
+    CborValue::Map(vec![
+        (0, CborValue::Int(i128::from(acc.key_type))),
+        (1, CborValue::Bytes(acc.key_bytes.clone())),
+    ])
+}
+
+fn encode_timestamp(ts: &Timestamp) -> CborValue {
+    CborValue::Map(vec![
+        (0, CborValue::Int(i128::from(ts.seconds))),
+        (1, CborValue::Int(i128::from(ts.nanoseconds))),
+    ])
+}
+
+/// Encodes a canonical Type 4 directory statement CBOR payload map.
+pub fn encode_directory_statement_payload(
+    params: &DirectoryStatementParams<'_>,
+) -> Result<CborValue, UsageError> {
+    if params.network.is_empty() || params.network.len() > 64 {
+        return Err(usage("network must be 1..64 characters"));
+    }
+    if params.relays.is_empty() {
+        return Err(usage("relays must contain at least 1 relay binding"));
+    }
+    if let Some(username) = params.canonical_username {
+        if !is_valid_canonical_username(username) {
+            return Err(usage(
+                "canonical username must match ^[a-z0-9][a-z0-9_-]{2,31}$",
+            ));
+        }
+    }
+
+    let encoded_relays = params
+        .relays
+        .iter()
+        .map(|r| {
+            CborValue::Map(vec![
+                (0, CborValue::Bytes(r.relay_id.clone())),
+                (1, CborValue::Text(r.endpoint.clone())),
+                (2, encode_account(&r.identity)),
+                (3, encode_timestamp(&r.expiry)),
+            ])
+        })
+        .collect();
+
+    let mut entries = vec![
+        (0, CborValue::Text(params.network.to_string())),
+        (1, encode_account(params.subject)),
+        (2, CborValue::Int(i128::from(params.revision))),
+        (3, encode_timestamp(params.timestamp)),
+        (4, CborValue::Array(encoded_relays)),
+    ];
+
+    if let Some(exp) = params.expiry {
+        entries.push((6, encode_timestamp(exp)));
+    }
+
+    if let Some(recovery) = params.recovery {
+        if !recovery.is_empty() {
+            entries.push((
+                7,
+                CborValue::Array(recovery.iter().map(encode_account).collect()),
+            ));
+        }
+    }
+
+    if let Some(stamp) = params.stamp_key {
+        entries.push((8, encode_account(stamp)));
+    }
+
+    if let Some(profiles) = params.profile_entries {
+        if !profiles.is_empty() {
+            let encoded_profiles = profiles
+                .iter()
+                .map(|p| {
+                    let encoded_headers = p
+                        .headers
+                        .iter()
+                        .map(|h| {
+                            CborValue::Map(vec![
+                                (0, CborValue::Text(h.name.clone())),
+                                (1, CborValue::Text(h.value.clone())),
+                            ])
+                        })
+                        .collect();
+                    CborValue::Map(vec![
+                        (0, CborValue::Text(p.kind.clone())),
+                        (1, CborValue::Array(encoded_headers)),
+                        (2, CborValue::Bytes(p.body.clone())),
+                    ])
+                })
+                .collect();
+            entries.push((9, CborValue::Array(encoded_profiles)));
+        }
+    }
+
+    if let Some(username) = params.canonical_username {
+        entries.push((14, CborValue::Text(username.to_string())));
+    }
+
+    entries.sort_by_key(|(k, _)| *k);
+
+    Ok(CborValue::Map(entries))
+}
+
+/// Encodes a complete Type 4 directory statement frame.
+pub fn encode_directory_statement(
+    schema_version: u32,
+    min_reader_version: u32,
+    params: &DirectoryStatementParams<'_>,
+) -> Result<Vec<u8>, UsageError> {
+    let payload = encode_directory_statement_payload(params)?;
+    encode_frame(
+        EnvelopeFields {
+            type_id: 4,
+            schema_version,
+            min_reader_version,
+        },
+        FramePayload::Value(&payload),
+    )
 }

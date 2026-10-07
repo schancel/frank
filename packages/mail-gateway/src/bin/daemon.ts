@@ -19,7 +19,6 @@ class DemoGatewayStampProvider implements GatewayStampProvider {
       txHash: `0xdemo_tx_${Date.now()}`,
       payloadDigest: `0xdemo_digest_${Date.now()}`,
       recipientAddress: params.recipientAddress,
-      feePaidWei: 1000n,
     };
   }
 

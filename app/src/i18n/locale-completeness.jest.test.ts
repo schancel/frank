@@ -48,6 +48,12 @@ const SAME_IN_FRENCH = new Set([
   'profile.linkTypeDiscord',
   'about.appName',
   'about.badgeMonad',
+  'emailThread.participants',
+  'emailThread.messageSingle',
+  'emailThread.messagePlural',
+  'emailThread.cc',
+  'emailThread.hideCc',
+  'emailThread.showCc',
 ])
 
 const placeholders = (text: string) =>

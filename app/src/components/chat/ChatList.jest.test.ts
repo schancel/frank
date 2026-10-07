@@ -10,7 +10,7 @@ jest.mock('vue-router', () => ({
   useRouter: () => ({
     push: mockPush,
     replace: mockPush,
-    currentRoute: { value: { path: '/' } },
+    currentRoute: { value: { path: '/', fullPath: '/' } },
   }),
 }))
 jest.mock('pinia', () => ({
@@ -127,3 +127,34 @@ describe('ChatList conversation selection (#943)', () => {
     expect(mockPush).toHaveBeenCalledWith('/chat/conv-uuid-943')
   })
 })
+
+describe('ChatList compose email action', () => {
+  beforeEach(() => {
+    mockPush.mockClear()
+  })
+
+  it('renders compose email button and navigates to /add-contact?compose=email when clicked', async () => {
+    mockWidth = 1024
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: {
+        components: {
+          QScrollArea: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QItemLabel: passthrough,
+          QSeparator: passthrough,
+          QSpace: passthrough,
+          QBtn: passthrough,
+        },
+        mocks: { $status: { setup: true }, $t: (k: string) => k },
+      },
+    })
+    const composeBtn = wrapper.find('[data-testid="compose-email-btn"]')
+    expect(composeBtn.exists()).toBe(true)
+    await composeBtn.trigger('click')
+    expect(mockPush).toHaveBeenCalledWith('/add-contact?compose=email')
+  })
+})
+

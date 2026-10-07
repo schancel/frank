@@ -87,4 +87,3 @@ export function formatCompactAmount(
 
   return `${sign}${whole}.${fracStr} ${chosen.prefix}${chain.unit}`
 }
-

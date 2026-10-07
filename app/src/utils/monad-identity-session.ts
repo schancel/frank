@@ -175,9 +175,14 @@ function productionDeps(): MessagingDeps {
           // If check fails, fall through to attempt registration
         }
         let identityProfile = profile
-        if (identityProfile?.avatar && isAvatarTooLarge(identityProfile.avatar)) {
+        if (
+          identityProfile?.avatar &&
+          isAvatarTooLarge(identityProfile.avatar)
+        ) {
           try {
-            const compressed = await compressAvatarDataUrl(identityProfile.avatar)
+            const compressed = await compressAvatarDataUrl(
+              identityProfile.avatar,
+            )
             if (compressed && !isAvatarTooLarge(compressed)) {
               identityProfile = { ...identityProfile, avatar: compressed }
             } else {

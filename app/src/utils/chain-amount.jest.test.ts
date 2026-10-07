@@ -44,13 +44,21 @@ describe('formatCompactAmount with dynamic SI prefixes', () => {
 
   it('formats base amounts (1 MON / 10^18 wei) as MON', () => {
     expect(formatCompactAmount(monad, parseEther('1').toString())).toBe('1 MON')
-    expect(formatCompactAmount(monad, parseEther('5.5').toString())).toBe('5.5 MON')
+    expect(formatCompactAmount(monad, parseEther('5.5').toString())).toBe(
+      '5.5 MON',
+    )
   })
 
   it('formats kilo and mega amounts as kMON and MMON', () => {
-    expect(formatCompactAmount(monad, (parseEther('1000')).toString())).toBe('1 kMON')
-    expect(formatCompactAmount(monad, (parseEther('1200')).toString())).toBe('1.2 kMON')
-    expect(formatCompactAmount(monad, (parseEther('2500000')).toString())).toBe('2.5 MMON')
+    expect(formatCompactAmount(monad, parseEther('1000').toString())).toBe(
+      '1 kMON',
+    )
+    expect(formatCompactAmount(monad, parseEther('1200').toString())).toBe(
+      '1.2 kMON',
+    )
+    expect(formatCompactAmount(monad, parseEther('2500000').toString())).toBe(
+      '2.5 MMON',
+    )
   })
 
   it('formats nano and pico amounts below micro scale', () => {
@@ -60,4 +68,3 @@ describe('formatCompactAmount with dynamic SI prefixes', () => {
     expect(formatCompactAmount(monad, '5')).toBe('5 aMON')
   })
 })
-

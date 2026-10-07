@@ -10,10 +10,12 @@ import {
   MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES,
   MAX_EMAIL_RECIPIENTS,
   MAX_EMAIL_ATTACHMENTS,
-  type CanonicalEmailMessageItem,
-  type EmailParty,
-  type EmailAttachment,
-  type AccountRef,
+} from '../src'
+import type {
+  CanonicalEmailMessageItem,
+  EmailParty,
+  EmailAttachment,
+  AccountRef,
 } from '../src'
 import { bytesOf } from '../fixtures/builders'
 

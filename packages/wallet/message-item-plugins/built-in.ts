@@ -165,6 +165,7 @@ registerMessageItemPlugin<ChannelUpdateItem, ChannelUpdateItem>({
   type: "channel-update",
   hydrate: (raw) => raw,
   previewText: (raw) =>
+    `State channel update: ${raw.appId} (seq ${raw.sequenceNumber})`,
 });
 
 registerMessageItemPlugin<EmailItem, EmailItem>({

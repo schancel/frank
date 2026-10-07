@@ -460,6 +460,7 @@ export type MessageItem =
   | SatoshiDiceItem
   | LiarsDiceItem
   | PokerItem
+  | ChannelUpdateItem
   | WalletSyncItem
   | EmailItem;
 

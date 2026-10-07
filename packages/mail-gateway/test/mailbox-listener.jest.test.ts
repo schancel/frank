@@ -2,7 +2,8 @@ import { RelayMailboxListener } from '../src/relay/mailbox-listener';
 import { CreditLedger } from '../src/ledger/credit-ledger';
 import { OutboundEmailDelivery } from '../src/mta/outbound-delivery';
 import { DkimSigner, generateDkimKeyPair } from '../src/mta/dkim-signer';
-import { MxDirectTransport, MxDeliveryResult } from '../src/mta/mx-transport';
+import { MxDirectTransport } from '../src/mta/mx-transport';
+import type { MxDeliveryResult } from '../src/mta/mx-transport';
 import { OutboundMtaWorker } from '../src/mta/outbound-worker';
 import type { ActiveChain, DirectMessageReceived, WalletHandle } from '@frank/wallet/chain/active-chain';
 

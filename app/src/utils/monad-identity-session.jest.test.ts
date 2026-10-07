@@ -14,10 +14,8 @@ import { getBytes } from 'ethers'
 import { toHex } from '@frank/codec'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import * as monadChain from '@frank/wallet/chain/monad-chain'
-import {
-  createMonadChain,
-  type MonadChainWalletHandle,
-} from '@frank/wallet/chain/monad-chain'
+import { createMonadChain } from '@frank/wallet/chain/monad-chain'
+import type { MonadChainWalletHandle } from '@frank/wallet/chain/monad-chain'
 import { activeChain } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
 import {
@@ -27,8 +25,8 @@ import {
 import {
   createFakeRelay,
   testAccount,
-  type FakeRelay,
 } from '@frank/cashweb/relay/open-directory-fake-relay.testutil'
+import type { FakeRelay } from '@frank/cashweb/relay/open-directory-fake-relay.testutil'
 import rootsVector from '../../../packages/domain-roots/vectors/domain-roots-v1.json'
 import { discardUnenrolledDirectoryStore } from './directory-store-reset'
 import { contactLookupFailure, fetchContactProfile } from './directory-peer'

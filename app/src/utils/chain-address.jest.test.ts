@@ -5,6 +5,7 @@
  * Monad chain, since this function's own contract is "delegate to activeChain.parseAddress/
  * formatAddress, throw if parsing fails" -- not Monad-specific behavior.
  */
+import {
   isChainAddress,
   safeChainDisplayAddress,
   safeToChainDisplayAddress,

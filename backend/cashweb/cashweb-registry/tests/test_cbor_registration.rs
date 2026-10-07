@@ -942,8 +942,8 @@ async fn test_oversized_payload_rejection_sec1() {
     let server = make_server(registry);
     let router = server.into_router();
 
-    // Send payload of 262_145 bytes (1 byte over the 256 KiB limit)
-    let oversized = vec![0u8; 262_145];
+    // Send payload of 1_048_577 bytes (1 byte over the 1 MiB limit)
+    let oversized = vec![0u8; 1_048_577];
     let req = Request::builder()
         .method("PUT")
         .uri(format!("/metadata/{}", address.to_hex()))

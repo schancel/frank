@@ -51,6 +51,7 @@ import type {
   TextItem,
   ImageItem,
   StealthItem,
+  EmailItem,
 } from '@frank/cashweb/types/messages'
 import {
   isSafeRelayTimestamp,
@@ -154,7 +155,7 @@ export type ChatMessage = {
  *    - `timestamp`: Timestamp of delivery receipt/send.
  */
 
-export type ConversationKind = 'direct' | 'group'
+export type ConversationKind = 'direct' | 'group' | 'email'
 export type ConversationRole = 'owner' | 'admin' | 'member'
 
 export interface ConversationMember {
@@ -690,7 +691,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         deletedAt: rawConv.deletedAt,
       }
       conversations[id] = conv
-      if (conv.kind === 'direct' && conv.address) {
+      if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
         try {
           const displayAddress = toChainDisplayAddress(conv.address)
           chats[displayAddress] = conv
@@ -833,6 +834,13 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     message.conversationId = conv.id
     messages[index] = message
     conv.messages.push(message)
+    const emailItem = message.items?.find(it => it.type === 'email') as EmailItem | undefined
+    if (emailItem) {
+      conv.kind = 'email'
+      if (!conv.name && emailItem.subject) {
+        conv.name = emailItem.subject
+      }
+    }
     recordLogicalMessage(logicalMessages, message, conv.id)
 
     conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
@@ -1383,6 +1391,13 @@ export const useChatStore = defineStore('chats', {
 
       this.messages[payloadDigest] = message
       conv.messages.push(message)
+      const emailItem = message.items?.find(it => it.type === 'email') as EmailItem | undefined
+      if (emailItem) {
+        conv.kind = 'email'
+        if (!conv.name && emailItem.subject) {
+          conv.name = emailItem.subject
+        }
+      }
       conv.lastRead = Date.now()
       conv.lastReceived = Math.max(conv.lastReceived, timestamp)
       recomputeChatAccounting(conv, this.activeChatAddr)
@@ -2315,7 +2330,7 @@ export const useChatStore = defineStore('chats', {
         if (topic !== undefined) conv.topic = topic
         conv.deletedAt = undefined
         conv.updatedAt = Date.now()
-        if (kind === 'direct' && conv.address) {
+        if ((kind === 'direct' || kind === 'email') && conv.address) {
           this.chats[conv.address] = conv
         }
         return conv
@@ -2327,7 +2342,7 @@ export const useChatStore = defineStore('chats', {
       }
 
       const displayAddress =
-        address || (kind === 'direct' ? normalizedParticipants[0] || id : id)
+        address || (kind === 'direct' || kind === 'email' ? normalizedParticipants[0] || id : id)
 
       conv = {
         ...defaultContactObject,
@@ -2345,7 +2360,7 @@ export const useChatStore = defineStore('chats', {
       }
 
       this.conversations[id] = conv
-      if (kind === 'direct' && displayAddress) {
+      if ((kind === 'direct' || kind === 'email') && displayAddress) {
         try {
           const canonical = toChainDisplayAddress(displayAddress)
           this.chats[canonical] = conv
@@ -2468,7 +2483,7 @@ export const useChatStore = defineStore('chats', {
         return
       }
       this.activeConversationId = conv.id
-      if (conv.kind === 'direct' && conv.address) {
+      if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
         this.activeChatAddr = conv.address
         const contacts = useContactStore()
         contacts.refresh(conv.address)
@@ -2768,6 +2783,7 @@ export const useChatStore = defineStore('chats', {
         }
         const displayAddress = toChainDisplayAddress(copartyAddress)
 
+        const emailItem = newMsg.items?.find((it: any) => it.type === 'email') as EmailItem | undefined
         const rawConvId =
           (newMsg as any).conversationId ||
           (wrapper as any).conversationId ||
@@ -2775,6 +2791,7 @@ export const useChatStore = defineStore('chats', {
         const convName =
           (newMsg as any).conversationName ||
           (newMsg as any).subject ||
+          emailItem?.subject ||
           (newMsg as any).name
         const participants = ownAddress
           ? Array.from(new Set([ownAddress, displayAddress])).sort()
@@ -2791,7 +2808,7 @@ export const useChatStore = defineStore('chats', {
             this.conversations[convId] = conv
           } else {
             conv = this.createConversation({
-              kind: 'direct',
+              kind: emailItem ? 'email' : 'direct',
               participants,
               conversationId: convId,
               name: convName,
@@ -2840,6 +2857,12 @@ export const useChatStore = defineStore('chats', {
             outbound: wasOutbound,
             senderAddress,
           })
+          if (emailItem) {
+            conv.kind = 'email'
+            if (!conv.name && emailItem.subject) {
+              conv.name = emailItem.subject
+            }
+          }
           if (wasOutbound) {
             conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
             this.lastReceived = Math.max(
@@ -2856,6 +2879,12 @@ export const useChatStore = defineStore('chats', {
         this.messages[index] = message
         this.chats[displayAddress] = conv
         conv.messages.push(message)
+        if (emailItem) {
+          conv.kind = 'email'
+          if (!conv.name && emailItem.subject) {
+            conv.name = emailItem.subject
+          }
+        }
         conv.lastReceived = message.serverTime
         recordLogicalMessage(this.logicalMessages, message, conv.id)
 

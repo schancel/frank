@@ -164,6 +164,8 @@ export interface DirectMessageReceived {
   /** True for outbound/sent messages retrieved from the both-directions mailbox. */
   outbound?: boolean;
   items: MessageItem[];
+  conversationId?: string;
+  messageId?: string;
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
   payloadDigest: string;
   /** Wei actually paid across the message's stamp transactions (read back from the signed raw

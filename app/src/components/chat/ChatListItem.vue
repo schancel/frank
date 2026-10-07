@@ -15,9 +15,18 @@
     </q-item-section>
     <q-item-section v-show="!compact">
       <div class="row items-center no-wrap justify-between">
-        <q-item-label lines="1" class="text-weight-medium text-body2">{{
-          subjectOrName
-        }}</q-item-label>
+        <div class="row items-center no-wrap ellipsis">
+          <q-icon
+            v-if="isEmail"
+            name="mail"
+            size="15px"
+            color="primary"
+            class="q-mr-xs"
+          />
+          <q-item-label lines="1" class="text-weight-medium text-body2">{{
+            subjectOrName
+          }}</q-item-label>
+        </div>
         <q-item-label
           caption
           v-if="formattedTimestamp"
@@ -119,6 +128,9 @@ export default defineComponent({
     },
   },
   computed: {
+    isEmail(): boolean {
+      return this.conversation?.kind === 'email'
+    },
     effectiveAddress(): string {
       return (
         this.conversation?.address ||

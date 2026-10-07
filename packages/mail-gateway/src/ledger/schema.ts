@@ -35,6 +35,10 @@ export interface ThreadMappingsTable {
   rfc822_message_id: string;
   in_reply_to_rfc822: string | null;
   subject: string | null;
+  sender_address: ColumnType<string | null, string | null | undefined, string | null>;
+  to_recipients_json: ColumnType<string | null, string | null | undefined, string | null>;
+  cc_recipients_json: ColumnType<string | null, string | null | undefined, string | null>;
+  sender_home_relay: ColumnType<string | null, string | null | undefined, string | null>;
   created_at: ColumnType<number, number | bigint, number | bigint>;
 }
 

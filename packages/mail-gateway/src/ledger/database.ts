@@ -99,6 +99,10 @@ export const initialMigration: Migration = {
       .addColumn('rfc822_message_id', 'text', (col) => col.notNull())
       .addColumn('in_reply_to_rfc822', 'text')
       .addColumn('subject', 'text')
+      .addColumn('sender_address', 'text')
+      .addColumn('to_recipients_json', 'text')
+      .addColumn('cc_recipients_json', 'text')
+      .addColumn('sender_home_relay', 'text')
       .addColumn('created_at', 'bigint', (col) => col.notNull())
       .addPrimaryKeyConstraint('pk_thread_mappings', ['conversation_id', 'frank_message_id'])
       .execute();
@@ -152,6 +156,13 @@ export const initialMigration: Migration = {
       .execute();
 
     await db.schema
+      .createIndex('idx_thread_conv')
+      .ifNotExists()
+      .on('thread_mappings')
+      .column('conversation_id')
+      .execute();
+
+    await db.schema
       .createIndex('idx_outbound_spool_pending')
       .ifNotExists()
       .on('outbound_spool')
@@ -161,6 +172,7 @@ export const initialMigration: Migration = {
 
   async down(db: Kysely<unknown>): Promise<void> {
     await db.schema.dropIndex('idx_outbound_spool_pending').ifExists().execute();
+    await db.schema.dropIndex('idx_thread_conv').ifExists().execute();
     await db.schema.dropIndex('idx_thread_rfc822').ifExists().execute();
     await db.schema.dropIndex('idx_held_sender').ifExists().execute();
 
@@ -274,6 +286,10 @@ export function ensureLedgerSchemaSync(rawDb: DatabaseSync): void {
       rfc822_message_id TEXT NOT NULL,
       in_reply_to_rfc822 TEXT,
       subject TEXT,
+      sender_address TEXT,
+      to_recipients_json TEXT,
+      cc_recipients_json TEXT,
+      sender_home_relay TEXT,
       created_at INTEGER NOT NULL,
       PRIMARY KEY (conversation_id, frank_message_id)
     );
@@ -292,6 +308,7 @@ export function ensureLedgerSchemaSync(rawDb: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_held_sender ON held_messages(sender_email, status);
     CREATE INDEX IF NOT EXISTS idx_thread_rfc822 ON thread_mappings(rfc822_message_id);
+    CREATE INDEX IF NOT EXISTS idx_thread_conv ON thread_mappings(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_outbound_spool_pending ON outbound_spool(status, next_attempt_at);
   `);
 }

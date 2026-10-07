@@ -39,6 +39,10 @@ import {
   TYPE_CHANNEL_UPDATE,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
   MAX_FORWARDING_DELIVERY_FRAME_BYTES,
+  TYPE_EMAIL_MESSAGE_ITEM,
+  MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES,
+  MAX_EMAIL_RECIPIENTS,
+  MAX_EMAIL_ATTACHMENTS,
   MAX_BLACKJACK_FRAME_BYTES,
   MAX_CHANNEL_UPDATE_FRAME_BYTES,
   MAX_CHANNEL_ALLOCATIONS,
@@ -84,6 +88,9 @@ import type {
   ChainAllocation,
   ChannelUpdateItem,
   ParticipantBalance,
+  EmailParty,
+  EmailAttachment,
+  EmailMessageItem,
 } from './types'
 
 function fail(
@@ -315,6 +322,8 @@ export function checkRootFrameLimit(
     return frameLength <= MAX_CHANNEL_UPDATE_FRAME_BYTES
   if (typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE)
     return frameLength <= MAX_FORWARDING_DELIVERY_FRAME_BYTES
+  if (typeId === TYPE_EMAIL_MESSAGE_ITEM)
+    return frameLength <= MAX_EMAIL_MESSAGE_ITEM_FRAME_BYTES
   if (typeId === TYPE_DIRECTORY_STATEMENT && schemaVersion >= 4)
     return frameLength <= 262_144
   if (typeId === TYPE_DIRECT_MESSAGE_DELIVERY) return frameLength <= 1_048_576
@@ -704,6 +713,12 @@ export function checkTypeLimits(
       if (tooMany(f(5), MAX_CHANNEL_SIGNATURES)) over('channel signatures')
       break
     }
+    case TYPE_EMAIL_MESSAGE_ITEM: {
+      if (tooMany(f(2), MAX_EMAIL_RECIPIENTS)) over('to recipients')
+      if (tooMany(f(3), MAX_EMAIL_RECIPIENTS)) over('cc recipients')
+      if (tooMany(f(9), MAX_EMAIL_ATTACHMENTS)) over('attachments')
+      break
+    }
     default:
   }
 }
@@ -1014,6 +1029,43 @@ export function parseForumCursor(
       hash: bstr(last.get(1), `${path}.4.1`, 32, 32),
     },
   }
+}
+
+function emailParty(
+  v: FrankValue | undefined,
+  path: string,
+  allow: boolean,
+): EmailParty {
+  const m = fields(v, path, [0], [1, 2], true, allow)
+  const res: EmailParty = {
+    address: tstr(m.get(0), `${path}.0`, 3, 320),
+    unknownFields: m.unknown,
+  }
+  if (m.has(1)) {
+    res.name = tstr(m.get(1), `${path}.1`, 1, 256)
+  }
+  if (m.has(2)) {
+    res.frankAccount = account(m.get(2), `${path}.2`)
+  }
+  return res
+}
+
+function emailAttachment(
+  v: FrankValue | undefined,
+  path: string,
+  allow: boolean,
+): EmailAttachment {
+  const m = fields(v, path, [0, 1, 2], [3], true, allow)
+  const res: EmailAttachment = {
+    filename: tstr(m.get(0), `${path}.0`, 1, 256),
+    contentType: tstr(m.get(1), `${path}.1`, 1, 128),
+    content: bstr(m.get(2), `${path}.2`, 0, 8_388_608),
+    unknownFields: m.unknown,
+  }
+  if (m.has(3)) {
+    res.contentId = tstr(m.get(3), `${path}.3`, 1, 128)
+  }
+  return res
 }
 
 export function parseDraft(
@@ -1494,6 +1546,55 @@ export function parseDraft(
       }
       return res
     }
+    case TYPE_EMAIL_MESSAGE_ITEM: {
+      const m = fields(
+        payload,
+        P,
+        [0, 1, 2, 4, 5],
+        [3, 6, 7, 8, 9, 10],
+        true,
+        allow,
+      )
+      const res: EmailMessageItem = {
+        type: 26,
+        messageId: tstr(m.get(0), `${P}.0`, 1, 256),
+        from: emailParty(m.get(1), `${P}.1`, allow),
+        to: asList(m.get(2), `${P}.2`, 1, MAX_EMAIL_RECIPIENTS).map((e, i) =>
+          emailParty(e, `${P}.2[${i}]`, allow),
+        ),
+        subject: tstr(m.get(4), `${P}.4`, 0, 1024),
+        textBody: tstr(m.get(5), `${P}.5`, 0, 262144),
+        unknownFields: m.unknown,
+      }
+      if (m.has(3)) {
+        res.cc = asList(m.get(3), `${P}.3`, 0, MAX_EMAIL_RECIPIENTS).map(
+          (e, i) => emailParty(e, `${P}.3[${i}]`, allow),
+        )
+      }
+      if (m.has(6)) {
+        res.htmlBody = tstr(m.get(6), `${P}.6`, 0, 524288)
+      }
+      if (m.has(7)) {
+        res.inReplyTo = tstr(m.get(7), `${P}.7`, 1, 256)
+      }
+      if (m.has(8)) {
+        res.references = asList(m.get(8), `${P}.8`, 0, 64).map((e, i) =>
+          tstr(e, `${P}.8[${i}]`, 1, 256),
+        )
+      }
+      if (m.has(9)) {
+        res.attachments = asList(
+          m.get(9),
+          `${P}.9`,
+          0,
+          MAX_EMAIL_ATTACHMENTS,
+        ).map((e, i) => emailAttachment(e, `${P}.9[${i}]`, allow))
+      }
+      if (m.has(10)) {
+        res.replyTo = emailParty(m.get(10), `${P}.10`, allow)
+      }
+      return res
+    }
     default:
       throw new Error(`parseDraft: type ${typeId} has no schema`)
   }
@@ -1616,6 +1717,17 @@ export function checkAllocated(d: DraftPayload): void {
       break
     case 25:
       checkKeyType(d.destination, `${P}.1`)
+      break
+    case 26:
+      if (d.from.frankAccount) checkKeyType(d.from.frankAccount, `${P}.1.2`)
+      d.to.forEach((p, i) => {
+        if (p.frankAccount) checkKeyType(p.frankAccount, `${P}.2[${i}].2`)
+      })
+      d.cc?.forEach((p, i) => {
+        if (p.frankAccount) checkKeyType(p.frankAccount, `${P}.3[${i}].2`)
+      })
+      if (d.replyTo?.frankAccount)
+        checkKeyType(d.replyTo.frankAccount, `${P}.10.2`)
       break
     default:
   }

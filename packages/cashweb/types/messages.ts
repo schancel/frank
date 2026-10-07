@@ -2,6 +2,9 @@ import type {
   BlackjackHandV3Item,
   BlackjackItem,
   CanonicalChannelUpdateItem,
+  EmailParty,
+  EmailAttachment,
+  EmailMessageItem,
 } from '@frank/codec'
 
 import { Utxo } from './utxo'
@@ -63,6 +66,22 @@ export type CanonicalBlackjackMoveItem = BlackjackItem
 
 /** Universal state channel update item (Type 24, #949/#950/#965). */
 export type ChannelUpdateItem = CanonicalChannelUpdateItem
+
+/** Email bridge message item (Type 26). */
+export interface EmailItem {
+  type: 'email'
+  messageId: string
+  from: EmailParty
+  to: EmailParty[]
+  cc?: EmailParty[]
+  subject: string
+  textBody: string
+  htmlBody?: string
+  inReplyTo?: string
+  references?: string[]
+  attachments?: EmailAttachment[]
+  replyTo?: EmailParty
+}
 
 /**
  * One move in a provably-fair blackjack hand against a bot dealer (see `@frank/wallet/message-item-plugins/blackjack`
@@ -366,6 +385,7 @@ export type MessageItem =
   | LiarsDiceItem
   | PokerItem
   | ChannelUpdateItem
+  | EmailItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */
@@ -427,6 +447,8 @@ export interface Message {
    * (sending), `'payment-pending'` (payment not yet confirmed; retried automatically with the same
    * bytes) or `'error'` (failed; the user may Retry or Discard). */
   delivery?: OutgoingDelivery
+  conversationId?: string
+  logicalMessageId?: string
 }
 
 export interface MessageWrapper {

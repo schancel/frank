@@ -15,6 +15,17 @@ export function extractEmailAddress(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
+/** Extracts display name and email address from RFC 822 header */
+export function extractEmailParty(raw: string): { address: string; name?: string } {
+  const match = raw.match(/^(?:["']?([^"']+)["']?\s*)?<([^>]+)>/);
+  if (match) {
+    const name = match[1]?.trim();
+    const address = match[2].trim().toLowerCase();
+    return { address, name: name && name.length > 0 ? name : undefined };
+  }
+  return { address: raw.trim().toLowerCase() };
+}
+
 /** Parses raw RFC 822 message bytes into structured InboundEmail fields. */
 export function parseRawRfc822(
   rawRfc822: Uint8Array,
@@ -42,12 +53,26 @@ export function parseRawRfc822(
   }
 
   const rawFrom = headers.get('from') || fallbackFrom || 'unknown@example.com';
-  const fromAddress = extractEmailAddress(rawFrom);
+  const fromParty = extractEmailParty(rawFrom);
+  const fromAddress = fromParty.address;
+  const fromName = fromParty.name;
   const fromDomain = fromAddress.split('@')[1] || '';
 
   const rawTo = headers.get('to') || fallbackTo || 'unknown@gateway.local';
-  const toAddress = extractEmailAddress(rawTo);
+  const toParties = rawTo
+    .split(',')
+    .map(s => extractEmailParty(s.trim()))
+    .filter(p => p.address.length > 0);
+  const toAddress = toParties[0]?.address || extractEmailAddress(rawTo);
   const localPart = toAddress.split('@')[0] || '';
+
+  const rawCc = headers.get('cc');
+  const ccParties = rawCc
+    ? rawCc
+        .split(',')
+        .map(s => extractEmailParty(s.trim()))
+        .filter(p => p.address.length > 0)
+    : undefined;
 
   const subject = headers.get('subject') || '(No Subject)';
   const messageId = headers.get('message-id') || `<msg_${Date.now()}_${Math.random().toString(36).slice(2)}@${fromDomain}>`;
@@ -72,8 +97,11 @@ export function parseRawRfc822(
   return {
     messageId,
     fromAddress,
+    fromName,
     fromDomain,
     toAddress,
+    toAddresses: toParties.length > 0 ? toParties : undefined,
+    ccAddresses: ccParties && ccParties.length > 0 ? ccParties : undefined,
     localPart,
     subject,
     textBody: bodySection,

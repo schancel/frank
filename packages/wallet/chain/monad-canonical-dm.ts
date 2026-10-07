@@ -20,10 +20,12 @@ import {
   decodeDirectMessageCryptoContext,
   encodeBlackjackHandV3Item,
   encodeChannelUpdateItem,
+  encodeEmailMessageItem,
   encodeStealthMessageItem,
   fromHex,
   isBlackjackHandV3Frame,
   isChannelUpdateItemFrame,
+  isEmailMessageItemFrame,
   isStealthMessageItemFrame,
   parseFrame,
   paymentTransferFromMember,
@@ -32,11 +34,13 @@ import {
   paymentTransferToStealthItem,
   projectBlackjackHandV3Item,
   projectChannelUpdateItem,
+  projectEmailMessageItem,
   projectStealthMessageItem,
   recipientPayloadDigest,
   toHex,
   type CanonicalChannelUpdateItem,
   type CanonicalStealthItem,
+  type EmailMessageItem,
   type PaymentMember,
   type PaymentTransfer,
 } from '@frank/codec'
@@ -62,6 +66,7 @@ import {
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type {
   ChannelUpdateItem,
+  EmailItem,
   MessageItem,
   StealthItem,
 } from '@frank/cashweb/types/messages'
@@ -309,12 +314,32 @@ function requireDirectory(owner: CanonicalMessagingOwner): CanonicalDirectory {
   return directory
 }
 
+function formatUuid(bytes: Uint8Array): string {
+  const hex = toHex(bytes)
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
+}
+
 function textItems(items: readonly MessageItem[]): Uint8Array[] {
   if (items.length === 0) throw new Error('A direct message needs content')
   return items.map(item => {
     if (item.type === 'blackjack-hand') return encodeBlackjackHandV3Item(item)
     if (item.type === 'channel-update') {
       return encodeChannelUpdateItem(item as ChannelUpdateItem)
+    }
+    if (item.type === 'email') {
+      return encodeEmailMessageItem({
+        messageId: item.messageId,
+        from: item.from,
+        to: item.to,
+        cc: item.cc,
+        subject: item.subject,
+        textBody: item.textBody,
+        htmlBody: item.htmlBody,
+        inReplyTo: item.inReplyTo,
+        references: item.references,
+        attachments: item.attachments,
+        replyTo: item.replyTo,
+      })
     }
     if (item.type === 'stealth') {
       const networkTag = item.networkTag ?? item.chainId
@@ -897,6 +922,8 @@ async function fetchSince(
         )
       const roles = owner.roles.create(directory.network, self)
       let items: MessageItem[]
+      let conversationIdStr: string | undefined
+      let messageIdStr: string | undefined
       try {
         const opened = isOutbound
           ? openOwnDirectMessage({
@@ -921,6 +948,12 @@ async function fetchSince(
               recipientCurrent: self,
               recipientEvidence,
             })
+        if (opened.conversationId) {
+          conversationIdStr = formatUuid(opened.conversationId)
+        }
+        if (opened.messageId) {
+          messageIdStr = formatUuid(opened.messageId)
+        }
         items = opened.items.map(item =>
           item.kind === 'parsed' && item.typed?.type === 17
             ? { type: 'text' as const, text: item.typed.text }
@@ -942,6 +975,11 @@ async function fetchSince(
               })()
             : item.kind === 'parsed' && isChannelUpdateItemFrame(item)
             ? projectChannelUpdateItem(item)
+            : item.kind === 'parsed' && isEmailMessageItemFrame(item)
+            ? {
+                ...projectEmailMessageItem(item),
+                type: 'email' as const,
+              }
             : {
                 type: 'text' as const,
                 text: '[This message item is not supported yet]',
@@ -978,6 +1016,8 @@ async function fetchSince(
           ? fromHex(peer.subject)
           : fromHex(owner.subject),
         items,
+        conversationId: conversationIdStr,
+        messageId: messageIdStr,
         payloadDigest: digest,
         stampValueWei: stampPayments.reduce((sum, p) => sum + p.valueWei, 0n),
         stampPayments,
@@ -1085,6 +1125,8 @@ export function canonicalDirectMessages(
                   )
                 const roles = owner.roles.create(directory.network, self)
                 let items: MessageItem[]
+                let conversationIdStr: string | undefined
+                let messageIdStr: string | undefined
                 try {
                   const opened = isOutbound
                     ? openOwnDirectMessage({
@@ -1109,6 +1151,12 @@ export function canonicalDirectMessages(
                         recipientCurrent: self,
                         recipientEvidence,
                       })
+                  if (opened.conversationId) {
+                    conversationIdStr = formatUuid(opened.conversationId)
+                  }
+                  if (opened.messageId) {
+                    messageIdStr = formatUuid(opened.messageId)
+                  }
                   items = opened.items.map(item =>
                     item.kind === 'parsed' && item.typed?.type === 17
                       ? { type: 'text' as const, text: item.typed.text }
@@ -1130,6 +1178,11 @@ export function canonicalDirectMessages(
                         })()
                       : item.kind === 'parsed' && isChannelUpdateItemFrame(item)
                       ? projectChannelUpdateItem(item)
+                      : item.kind === 'parsed' && isEmailMessageItemFrame(item)
+                      ? {
+                          ...projectEmailMessageItem(item),
+                          type: 'email' as const,
+                        }
                       : {
                           type: 'text' as const,
                           text: '[This message item is not supported yet]',
@@ -1166,6 +1219,8 @@ export function canonicalDirectMessages(
                     ? fromHex(peer.subject)
                     : fromHex(owner.subject),
                   items,
+                  conversationId: conversationIdStr,
+                  messageId: messageIdStr,
                   payloadDigest: digest,
                   stampValueWei: stampPayments.reduce(
                     (sum, p) => sum + p.valueWei,

@@ -17,7 +17,10 @@
     // pulled in transitively by unrelated devDependencies elsewhere in the workspace (e.g.
     // `@types/minimatch`, a stub with no real .d.ts entry, via electron-builder's own chain).
     // Scoping to just what this package actually needs avoids that.
-    "types": ["node", "jest"]
+    "types": ["node", "jest"],
+    "paths": {
+      "@frank/codec": ["../frank-codec/src/index.ts"]
+    }
   },
   "include": [
     "**/*",

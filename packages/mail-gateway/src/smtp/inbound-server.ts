@@ -3,6 +3,7 @@ import { CreditLedger } from '../ledger/credit-ledger';
 import { GatewayStampProvider } from '../stamps/stamp-provider.interface';
 import { InboundEmail } from '../types';
 import { BlobStore } from '../storage/blob-store';
+import type { MessageItem } from '@frank/cashweb/types/messages';
 
 export interface InboundRecipientResolution {
   readonly accountAddress: string;
@@ -244,9 +245,38 @@ export class InboundEmailHandler {
     if (hasCredit) {
       // Funded sender -> deliver immediately as stamped direct message
       const textContent = email.textBody || '[Empty message body]';
+
+      const emailItem: MessageItem = {
+        type: 'email',
+        messageId: email.messageId,
+        from: {
+          address: email.fromAddress,
+          name: email.fromName,
+        },
+        to:
+          email.toAddresses && email.toAddresses.length > 0
+            ? email.toAddresses.map((t) => ({ address: t.address, name: t.name }))
+            : [{ address: email.toAddress }],
+        cc: email.ccAddresses?.map((c) => ({ address: c.address, name: c.name })),
+        subject: email.subject,
+        textBody: textContent,
+        htmlBody: email.htmlBody,
+        inReplyTo: email.inReplyTo,
+        references: email.references,
+      };
+
+      const fallbackText = `[Email from ${email.fromAddress}]\nSubject: ${email.subject}\n\n${textContent}`;
+
       const sendResult = await this.stampProvider.stampAndSendDirectMessage({
         recipientAddress: frankRecipientAddress,
-        text: `[Email from ${email.fromAddress}]\nSubject: ${email.subject}\n\n${textContent}`,
+        items: [
+          emailItem,
+          {
+            type: 'text',
+            text: fallbackText,
+          },
+        ],
+        text: fallbackText,
         conversationId,
         inReplyToFrankMessageId,
       });
@@ -261,6 +291,13 @@ export class InboundEmailHandler {
         rfc822MessageId: email.messageId,
         inReplyToRfc822: email.inReplyTo,
         subject: email.subject,
+        senderAddress: email.fromAddress,
+        toRecipientsJson: JSON.stringify(
+          email.toAddresses && email.toAddresses.length > 0
+            ? email.toAddresses
+            : [{ address: email.toAddress }]
+        ),
+        ccRecipientsJson: email.ccAddresses ? JSON.stringify(email.ccAddresses) : undefined,
         createdAtMs: Date.now(),
       });
 

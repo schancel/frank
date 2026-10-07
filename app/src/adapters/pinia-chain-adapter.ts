@@ -111,6 +111,7 @@ export async function toReceivedMessageWrapper(
     ) as ReceivedMessageWrapper['copartyPubKey'],
     index: record.payloadDigest,
     stampValue,
+    conversationId: record.conversationId,
     message: {
       outbound: isOutbound,
       status: 'confirmed',
@@ -122,6 +123,8 @@ export async function toReceivedMessageWrapper(
       stampPayments: record.stampPayments,
       senderAddress,
       destinationAddress,
+      conversationId: record.conversationId,
+      logicalMessageId: record.messageId,
     },
   }
 }

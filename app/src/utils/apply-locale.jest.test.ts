@@ -41,4 +41,38 @@ describe('applyLocale', () => {
     expect(setLang).toHaveBeenCalledTimes(1)
     expect(setLang.mock.calls[0][0]).toMatchObject({ isoName: 'en-US' })
   })
+
+  it('safely handles setI18nLocale throwing (e.g. this.$i18n is undefined)', () => {
+    const setLang = jest.fn()
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {})
+
+    expect(() => {
+      applyLocale({
+        $q: { lang: { set: setLang } },
+        setI18nLocale: () => {
+          throw new TypeError("undefined is not an object (evaluating 'this.$i18n.locale = value')")
+        },
+        locale: 'fr-fr',
+      })
+    }).not.toThrow()
+
+    expect(setLang).toHaveBeenCalledTimes(1)
+    expect(setLang.mock.calls[0][0]).toMatchObject({ isoName: 'fr' })
+    warnSpy.mockRestore()
+  })
+
+  it('works when setI18nLocale is omitted', () => {
+    const setLang = jest.fn()
+
+    expect(() => {
+      applyLocale({
+        $q: { lang: { set: setLang } },
+        locale: 'en-us',
+      })
+    }).not.toThrow()
+
+    expect(setLang).toHaveBeenCalledTimes(1)
+    expect(setLang.mock.calls[0][0]).toMatchObject({ isoName: 'en-US' })
+  })
 })
+

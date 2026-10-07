@@ -158,7 +158,9 @@ export default defineComponent({
     void applyLocale({
       $q: this.$q,
       setI18nLocale: value => {
-        this.$i18n.locale = value
+        if (this.$i18n) {
+          this.$i18n.locale = value
+        }
       },
       locale: this.locale,
     })

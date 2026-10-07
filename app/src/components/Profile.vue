@@ -301,11 +301,20 @@ export default defineComponent({
           this.internalAvatar = dataURL
         }
       }
+      img.onerror = () => {
+        console.warn('Failed to load local avatar image', name)
+      }
       // Ticket #51's Vite migration missed this: webpack's dynamic `require()` for a resolved
       // asset URL has no equivalent under Vite (no global `require` exists in dev at all) --
       // `new URL(..., import.meta.url)` is Vite's native replacement, statically analyzable
       // for a bounded-directory template literal like this one.
       img.src = new URL(`../assets/avatars/${name}`, import.meta.url).href
+      if (img.complete && (img.naturalWidth !== 0 || img.width !== 0)) {
+        const dataURL = resizeAndCompressImage(img)
+        if (dataURL) {
+          this.internalAvatar = dataURL
+        }
+      }
     },
     cycleAvatarLeft() {
       this.defaultAvatarIndex =

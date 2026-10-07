@@ -49,6 +49,7 @@ import {
   registerMonadIdentityCbor,
   type MonadIdentity,
 } from '@frank/wallet/monad-identity'
+import { isAvatarTooLarge, compressAvatarDataUrl } from './avatar-resize'
 
 type Stoppable = { stop: () => void }
 interface Live {
@@ -173,10 +174,23 @@ function productionDeps(): MessagingDeps {
         } catch {
           // If check fails, fall through to attempt registration
         }
+        let identityProfile = profile
+        if (identityProfile?.avatar && isAvatarTooLarge(identityProfile.avatar)) {
+          try {
+            const compressed = await compressAvatarDataUrl(identityProfile.avatar)
+            if (compressed && !isAvatarTooLarge(compressed)) {
+              identityProfile = { ...identityProfile, avatar: compressed }
+            } else {
+              identityProfile = { ...identityProfile, avatar: undefined }
+            }
+          } catch {
+            identityProfile = { ...identityProfile, avatar: undefined }
+          }
+        }
         await registerMonadIdentityCbor({
           relayBaseUrl,
           identity,
-          profile,
+          profile: identityProfile,
         })
       } catch (err) {
         console.warn('[startMessaging] registerMonadIdentityCbor failed:', err)

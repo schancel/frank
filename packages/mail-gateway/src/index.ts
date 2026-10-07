@@ -15,6 +15,7 @@ export * from './mta/outbound-delivery';
 export * from './mta/mx-transport';
 export * from './mta/dkim-signer';
 export * from './mta/outbound-worker';
+export * from './relay/mailbox-listener';
 
 import { BlobStore, createBlobStore } from './storage/blob-store';
 import { CreditLedger } from './ledger/credit-ledger';
@@ -25,8 +26,10 @@ import { OutboundEmailDelivery } from './mta/outbound-delivery';
 import { MxDirectTransport } from './mta/mx-transport';
 import { DkimSigner } from './mta/dkim-signer';
 import { OutboundMtaWorker } from './mta/outbound-worker';
+import { RelayMailboxListener } from './relay/mailbox-listener';
 import { GatewayStampProvider } from './stamps/stamp-provider.interface';
 import { GatewayConfig } from './types';
+import type { ActiveChain, WalletHandle } from '@frank/wallet/chain/active-chain';
 
 export class EmailGatewayDaemon {
   readonly config: GatewayConfig;
@@ -39,11 +42,17 @@ export class EmailGatewayDaemon {
   readonly mxTransport: MxDirectTransport;
   readonly dkimSigner: DkimSigner;
   readonly outboundWorker: OutboundMtaWorker;
+  readonly mailboxListener?: RelayMailboxListener;
 
   constructor(
     config: GatewayConfig,
     stampProvider: GatewayStampProvider,
-    options?: { dbPath?: string; blobStore?: BlobStore }
+    options?: {
+      dbPath?: string;
+      blobStore?: BlobStore;
+      activeChain?: ActiveChain;
+      wallet?: WalletHandle;
+    }
   ) {
     this.config = config;
     this.blobStore = options?.blobStore ?? createBlobStore(config);
@@ -90,6 +99,17 @@ export class EmailGatewayDaemon {
       mxTransport: this.mxTransport,
       blobStore: this.blobStore,
     });
+
+    if (options?.activeChain && options?.wallet) {
+      this.mailboxListener = new RelayMailboxListener({
+        gatewayDomain: config.gatewayDomain,
+        activeChain: options.activeChain,
+        wallet: options.wallet,
+        ledger: this.ledger,
+        outboundWorker: this.outboundWorker,
+        relayUrl: config.gatewayRelayUrl,
+      });
+    }
   }
 
   async start(): Promise<void> {
@@ -99,9 +119,16 @@ export class EmailGatewayDaemon {
     await this.smtpListener.start(this.config.smtpPort);
     console.log(`[mail-gateway] Inbound SMTP server listening on port ${this.config.smtpPort}`);
     this.outboundWorker.startSpoolProcessor();
+    if (this.mailboxListener) {
+      await this.mailboxListener.start();
+      console.log(`[mail-gateway] Relay Mailbox Listener started for ${this.config.gatewayRelayUrl}`);
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.mailboxListener) {
+      await this.mailboxListener.stop();
+    }
     this.outboundWorker.stopSpoolProcessor();
     await this.smtpListener.stop();
     await this.checkoutServer.stop();

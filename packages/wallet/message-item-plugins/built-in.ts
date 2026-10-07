@@ -11,6 +11,7 @@
  */
 import {
   ChannelUpdateItem,
+  EmailItem,
   ImageItem,
   P2PKHSendItem,
   LiarsDiceItem,
@@ -164,7 +165,13 @@ registerMessageItemPlugin<ChannelUpdateItem, ChannelUpdateItem>({
   type: "channel-update",
   hydrate: (raw) => raw,
   previewText: (raw) =>
-    `State channel update: ${raw.appId} (seq ${raw.sequenceNumber})`,
+});
+
+registerMessageItemPlugin<EmailItem, EmailItem>({
+  type: "email",
+  hydrate: (raw) => raw,
+  previewText: (raw) =>
+    `✉️ ${raw.subject || "(No Subject)"}: ${(raw.textBody || "").slice(0, 60)}`,
 });
 
 registerMessageItemPlugin<WalletSyncItem, WalletSyncItem>({

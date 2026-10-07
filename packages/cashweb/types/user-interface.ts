@@ -40,6 +40,8 @@ export type ReceivedMessage = {
     destinationAddress: string
     valueWei: bigint
   }>
+  conversationId?: string
+  logicalMessageId?: string
 }
 
 export type ReceivedMessageWrapper = {
@@ -50,4 +52,5 @@ export type ReceivedMessageWrapper = {
   index: string
   stampValue: number
   message: Readonly<ReceivedMessage>
+  conversationId?: string
 }

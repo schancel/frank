@@ -1,7 +1,16 @@
 <template>
   <div>
     <q-page-container>
-      <q-page class="chat-page-background column no-wrap">
+      <email-thread-view
+        v-if="isEmailThread"
+        :conversation="conversation"
+        :messages="messages"
+        :sending="sendingMessage"
+        :stamp-status="stampPreparationStatus"
+        :recipient-address="recipientAddress"
+        @sendReply="sendEmailReply"
+      />
+      <q-page v-else class="chat-page-background column no-wrap">
         <div class="col relative-position">
           <q-scroll-area
             ref="chatScroll"
@@ -69,7 +78,7 @@
         />
       </q-page>
     </q-page-container>
-    <q-footer bordered :height-hint="64" class="chat-footer chat-input-bar">
+    <q-footer v-if="!isEmailThread" bordered :height-hint="64" class="chat-footer chat-input-bar">
       <div v-if="!!replyDigest" class="q-px-md q-pt-sm" ref="replyBox">
         <!-- Reply box -->
         <div class="row justify-end">
@@ -148,6 +157,7 @@
 import { defineComponent, ref } from 'vue'
 
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
+import EmailThreadView from '../components/chat/email/EmailThreadView.vue'
 import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
@@ -197,6 +207,7 @@ const scrollDuration = 0
 export default defineComponent({
   components: {
     ChatMessageComponent,
+    EmailThreadView,
     ChatMessageReply,
     ChatInput,
     BlackjackChallengeForm,
@@ -584,6 +595,33 @@ export default defineComponent({
         this.$nextTick(this.buttonScrollBottom)
       }
     },
+    async sendEmailReply(payload: {
+      items: MessageItem[]
+      fallbackText: string
+    }) {
+      if (this.sendingMessage) {
+        return
+      }
+      const recipient = this.recipientAddress || this.address
+      const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
+      this.sendingMessage = true
+      try {
+        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
+        await this.sendDirectMessage({
+          wallet: useMonadWallet(),
+          address: recipient,
+          conversationId: this.conversation?.id,
+          items: payload.items,
+          stampValue,
+          onPreparationProgress: this.showStampPreparation,
+        })
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
+      } finally {
+        this.stampPreparationStatus = null
+        this.sendingMessage = false
+      }
+    },
     async sendStealthPayment({
       chainId,
       amount,
@@ -941,6 +979,14 @@ export default defineComponent({
     },
   },
   computed: {
+    isEmailThread(): boolean {
+      if (this.conversation?.kind === 'email') {
+        return true
+      }
+      return this.messages.some(m =>
+        m.items?.some(i => i.type === 'email'),
+      )
+    },
     bannerClearanceStyle(): { paddingTop: string } | undefined {
       return this.bannerClearance > 0
         ? { paddingTop: `${this.bannerClearance}px` }

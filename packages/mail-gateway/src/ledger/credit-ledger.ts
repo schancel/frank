@@ -117,6 +117,10 @@ export class CreditLedger {
       rfc822MessageId: row.rfc822_message_id,
       inReplyToRfc822: row.in_reply_to_rfc822 ?? undefined,
       subject: row.subject ?? undefined,
+      senderAddress: row.sender_address ?? undefined,
+      toRecipientsJson: row.to_recipients_json ?? undefined,
+      ccRecipientsJson: row.cc_recipients_json ?? undefined,
+      senderHomeRelay: row.sender_home_relay ?? undefined,
       createdAtMs: Number(row.created_at),
     };
   }
@@ -677,6 +681,10 @@ export class CreditLedger {
         rfc822_message_id: mapping.rfc822MessageId,
         in_reply_to_rfc822: mapping.inReplyToRfc822 ?? null,
         subject: mapping.subject ?? null,
+        sender_address: mapping.senderAddress ?? null,
+        to_recipients_json: mapping.toRecipientsJson ?? null,
+        cc_recipients_json: mapping.ccRecipientsJson ?? null,
+        sender_home_relay: mapping.senderHomeRelay ?? null,
         created_at: mapping.createdAtMs,
       })
       .onConflict((oc) =>
@@ -684,6 +692,10 @@ export class CreditLedger {
           rfc822_message_id: eb.ref('excluded.rfc822_message_id'),
           in_reply_to_rfc822: eb.ref('excluded.in_reply_to_rfc822'),
           subject: eb.ref('excluded.subject'),
+          sender_address: eb.ref('excluded.sender_address'),
+          to_recipients_json: eb.ref('excluded.to_recipients_json'),
+          cc_recipients_json: eb.ref('excluded.cc_recipients_json'),
+          sender_home_relay: eb.ref('excluded.sender_home_relay'),
           created_at: eb.ref('excluded.created_at'),
         }))
       )
@@ -700,6 +712,10 @@ export class CreditLedger {
         rfc822_message_id: mapping.rfc822MessageId,
         in_reply_to_rfc822: mapping.inReplyToRfc822 ?? null,
         subject: mapping.subject ?? null,
+        sender_address: mapping.senderAddress ?? null,
+        to_recipients_json: mapping.toRecipientsJson ?? null,
+        cc_recipients_json: mapping.ccRecipientsJson ?? null,
+        sender_home_relay: mapping.senderHomeRelay ?? null,
         created_at: mapping.createdAtMs,
       })
       .onConflict((oc) =>
@@ -707,6 +723,10 @@ export class CreditLedger {
           rfc822_message_id: eb.ref('excluded.rfc822_message_id'),
           in_reply_to_rfc822: eb.ref('excluded.in_reply_to_rfc822'),
           subject: eb.ref('excluded.subject'),
+          sender_address: eb.ref('excluded.sender_address'),
+          to_recipients_json: eb.ref('excluded.to_recipients_json'),
+          cc_recipients_json: eb.ref('excluded.cc_recipients_json'),
+          sender_home_relay: eb.ref('excluded.sender_home_relay'),
           created_at: eb.ref('excluded.created_at'),
         }))
       )
@@ -763,6 +783,58 @@ export class CreditLedger {
       .executeTakeFirst();
     if (!row) return undefined;
     return this.mapThreadMappingRow(row);
+  }
+
+  getLatestThreadMappingByConversationId(
+    conversationId: string
+  ): ThreadMappingRecord | undefined {
+    const compiled = this.db
+      .selectFrom('thread_mappings')
+      .selectAll()
+      .where('conversation_id', '=', conversationId)
+      .orderBy('created_at', 'desc')
+      .limit(1)
+      .compile();
+    const row = this.executeGet<any>(compiled);
+    if (!row) return undefined;
+    return this.mapThreadMappingRow(row);
+  }
+
+  async getLatestThreadMappingByConversationIdAsync(
+    conversationId: string
+  ): Promise<ThreadMappingRecord | undefined> {
+    const row = await this.db
+      .selectFrom('thread_mappings')
+      .selectAll()
+      .where('conversation_id', '=', conversationId)
+      .orderBy('created_at', 'desc')
+      .limit(1)
+      .executeTakeFirst();
+    if (!row) return undefined;
+    return this.mapThreadMappingRow(row);
+  }
+
+  countInitiatedThreadsInPast24Hours(frankSenderAddress: string): number {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const compiled = this.db
+      .selectFrom('thread_mappings')
+      .select((eb) => eb.fn.countAll().as('total'))
+      .where('sender_address', '=', frankSenderAddress)
+      .where('created_at', '>=', cutoff)
+      .compile();
+    const row = this.executeGet<{ total: number | bigint }>(compiled);
+    return Number(row?.total ?? 0);
+  }
+
+  async countInitiatedThreadsInPast24HoursAsync(frankSenderAddress: string): Promise<number> {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const row = await this.db
+      .selectFrom('thread_mappings')
+      .select((eb) => eb.fn.countAll().as('total'))
+      .where('sender_address', '=', frankSenderAddress)
+      .where('created_at', '>=', cutoff)
+      .executeTakeFirst();
+    return Number(row?.total ?? 0);
   }
 
   async enqueueOutboundSpool(params: {

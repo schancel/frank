@@ -40,8 +40,11 @@ export interface GatewayConfig {
 export interface InboundEmail {
   readonly messageId: string;
   readonly fromAddress: string;
+  readonly fromName?: string;
   readonly fromDomain: string;
   readonly toAddress: string;
+  readonly toAddresses?: Array<{ address: string; name?: string }>;
+  readonly ccAddresses?: Array<{ address: string; name?: string }>;
   readonly localPart: string;
   readonly subject: string;
   readonly textBody: string;
@@ -71,6 +74,10 @@ export interface ThreadMappingRecord {
   readonly rfc822MessageId: string;
   readonly inReplyToRfc822?: string;
   readonly subject?: string;
+  readonly senderAddress?: string;
+  readonly toRecipientsJson?: string;
+  readonly ccRecipientsJson?: string;
+  readonly senderHomeRelay?: string;
   readonly createdAtMs: number;
 }
 

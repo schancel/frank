@@ -23,6 +23,7 @@ import {
   TYPE_STEALTH_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_EMAIL_MESSAGE_ITEM,
   TYPE_TOPIC_POST,
   TYPE_TOPIC_POST_SUBMISSION,
   TYPE_TOPIC_VOTE_SUBMISSION,
@@ -113,6 +114,7 @@ export const KNOWN_TYPES: readonly number[] = [
   TYPE_STEALTH_MESSAGE_ITEM,
   TYPE_CHANNEL_UPDATE,
   TYPE_FORWARDING_DELIVERY_ENVELOPE,
+  TYPE_EMAIL_MESSAGE_ITEM,
 ]
 
 export function defaultContext(
@@ -416,7 +418,8 @@ function processFrame(
       (env.typeId === TYPE_DIRECTORY_STATEMENT && effectiveSchema >= 4) ||
       env.typeId === TYPE_BLACKJACK_MESSAGE_ITEM ||
       env.typeId === TYPE_CHANNEL_UPDATE ||
-      env.typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE) &&
+      env.typeId === TYPE_FORWARDING_DELIVERY_ENVELOPE ||
+      env.typeId === TYPE_EMAIL_MESSAGE_ITEM) &&
     !checkRootFrameLimit(env.typeId, f.length, effectiveSchema)
   ) {
     throw fail(

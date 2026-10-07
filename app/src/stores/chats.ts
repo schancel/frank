@@ -1,7 +1,11 @@
 import assert from 'assert'
 import { defineStore } from 'pinia'
 
-import { defaultStampAmount, displayNetwork } from '../utils/constants'
+import {
+  defaultEmailGatewayAddress,
+  defaultStampAmount,
+  displayNetwork,
+} from '../utils/constants'
 import { sha1 } from '@noble/hashes/sha1'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
@@ -200,6 +204,7 @@ export interface Conversation {
   kind: ConversationKind
   name?: string
   topic?: string
+  emailRecipient?: string
   participants: string[]
   members?: Record<string, ConversationMember>
   epoch?: ConversationEpoch
@@ -675,6 +680,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         kind: rawConv.kind || 'direct',
         name: rawConv.name,
         topic: rawConv.topic,
+        emailRecipient: rawConv.emailRecipient,
         participants: rawConv.participants || [],
         members: rawConv.members || {},
         epoch: rawConv.epoch,
@@ -2295,6 +2301,7 @@ export const useChatStore = defineStore('chats', {
       kind = 'direct',
       name,
       topic,
+      emailRecipient,
       participants,
       conversationId,
       initialRole = 'member',
@@ -2304,6 +2311,7 @@ export const useChatStore = defineStore('chats', {
       kind?: ConversationKind
       name?: string
       topic?: string
+      emailRecipient?: string
       participants: string[]
       conversationId?: string
       initialRole?: ConversationRole
@@ -2328,6 +2336,7 @@ export const useChatStore = defineStore('chats', {
       if (conv) {
         if (name !== undefined) conv.name = name
         if (topic !== undefined) conv.topic = topic
+        if (emailRecipient !== undefined) conv.emailRecipient = emailRecipient
         conv.deletedAt = undefined
         conv.updatedAt = Date.now()
         if ((kind === 'direct' || kind === 'email') && conv.address) {
@@ -2350,6 +2359,7 @@ export const useChatStore = defineStore('chats', {
         kind,
         name,
         topic,
+        emailRecipient,
         participants: normalizedParticipants,
         members,
         address: displayAddress,
@@ -2369,6 +2379,60 @@ export const useChatStore = defineStore('chats', {
         }
       }
       return conv
+    },
+    createOrOpenEmailConversation({
+      recipientEmail,
+      subject,
+      gatewayAddress = defaultEmailGatewayAddress,
+    }: {
+      recipientEmail: string
+      subject?: string
+      gatewayAddress?: string
+    }): Conversation {
+      const normalizedEmail = recipientEmail.toLowerCase().trim()
+      let canonicalGateway = gatewayAddress
+      try {
+        canonicalGateway = toChainDisplayAddress(gatewayAddress)
+      } catch {
+        // keep gatewayAddress as is
+      }
+
+      // Check if an existing email conversation to this recipient already exists
+      const existing = Object.values(this.conversations).find(
+        c =>
+          c &&
+          !c.deletedAt &&
+          c.kind === 'email' &&
+          (c.emailRecipient?.toLowerCase().trim() === normalizedEmail ||
+            c.topic?.toLowerCase().trim() === normalizedEmail ||
+            (c.messages.length === 0 &&
+              c.name?.toLowerCase().trim() === normalizedEmail)),
+      )
+
+      if (existing) {
+        if (subject && (!existing.name || existing.name === normalizedEmail)) {
+          existing.name = subject
+        }
+        if (!existing.emailRecipient) {
+          existing.emailRecipient = recipientEmail.trim()
+        }
+        return existing
+      }
+
+      const convId = uuidv5(
+        NULL_CONVERSATION_NAMESPACE,
+        `email:${normalizedEmail}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+      )
+
+      return this.createConversation({
+        kind: 'email',
+        conversationId: convId,
+        name: subject || recipientEmail.trim(),
+        topic: recipientEmail.trim(),
+        emailRecipient: recipientEmail.trim(),
+        address: canonicalGateway,
+        participants: [canonicalGateway],
+      })
     },
     async deleteChat(address: string, deletedAt = Date.now()) {
       let displayAddress = address

@@ -184,4 +184,65 @@ describe('EmailThreadView', () => {
     // After send, reply text is cleared
     expect(vm.replyText).toBe('')
   })
+
+  it('initializes in draft mode with prefilled recipient when messages are empty (0-message state)', () => {
+    const draftConversation: Conversation = {
+      ...conversation,
+      name: 'charlie@example.com',
+      topic: 'charlie@example.com',
+      emailRecipient: 'charlie@example.com',
+      messages: [],
+    }
+    const wrapper = mountView({
+      conversation: draftConversation,
+      messages: [],
+    })
+    const vm = wrapper.vm as any
+
+    expect(vm.isDraft).toBe(true)
+    expect(wrapper.find('[data-testid="email-draft-placeholder"]').exists()).toBe(true)
+    expect(vm.toList).toEqual(['charlie@example.com'])
+    expect(vm.replyMode).toBe('reply')
+  })
+
+  it('sends newly composed email draft without inReplyTo', async () => {
+    const draftConversation: Conversation = {
+      ...conversation,
+      name: 'charlie@example.com',
+      topic: 'charlie@example.com',
+      emailRecipient: 'charlie@example.com',
+      messages: [],
+    }
+    const wrapper = mountView({
+      conversation: draftConversation,
+      messages: [],
+    })
+    const vm = wrapper.vm as any
+
+    expect(vm.isDraft).toBe(true)
+    vm.subject = 'Meeting Tomorrow'
+    vm.replyText = 'Hi Charlie, let us meet tomorrow at 10am.'
+    expect(vm.canSend).toBe(true)
+
+    vm.handleSend()
+
+    expect(wrapper.emitted('sendReply')).toBeTruthy()
+    const emittedCalls = wrapper.emitted('sendReply')!
+    expect(emittedCalls.length).toBe(1)
+
+    const payload = emittedCalls[0][0] as { items: any[]; fallbackText: string }
+    expect(payload.items.length).toBe(2)
+
+    const emailItem = payload.items.find(i => i.type === 'email')
+    expect(emailItem).toBeDefined()
+    expect(emailItem.to).toEqual([{ address: 'charlie@example.com' }])
+    expect(emailItem.subject).toBe('Meeting Tomorrow')
+    expect(emailItem.textBody).toBe('Hi Charlie, let us meet tomorrow at 10am.')
+    expect(emailItem.inReplyTo).toBeUndefined()
+
+    const textItem = payload.items.find(i => i.type === 'text')
+    expect(textItem).toBeDefined()
+    expect(textItem.text).toContain('Meeting Tomorrow')
+    expect(textItem.text).toContain('Hi Charlie, let us meet tomorrow at 10am.')
+  })
 })

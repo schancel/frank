@@ -43,6 +43,7 @@ import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
 import { desktopNotify } from '../utils/notifications'
+import { defaultEmailGatewayAddress } from '../utils/constants'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -2158,5 +2159,41 @@ describe('stores/chats.ts (ticket #42)', () => {
         RECIPIENT_ADDRESS,
       )
     })
+
+    it('creates or reuses email conversations with createOrOpenEmailConversation', () => {
+      const chats = useChatStore()
+      const conv1 = chats.createOrOpenEmailConversation({
+        recipientEmail: 'Alice@Example.com',
+        subject: 'First Discussion',
+      })
+
+      expect(conv1.kind).toBe('email')
+      expect(conv1.emailRecipient).toBe('Alice@Example.com')
+      expect(conv1.name).toBe('First Discussion')
+      expect(conv1.topic).toBe('Alice@Example.com')
+      expect(conv1.address).toBe(defaultEmailGatewayAddress)
+      expect(conv1.participants).toContain(defaultEmailGatewayAddress)
+      expect(conv1.messages).toEqual([])
+
+      // Calling again with same email returns existing conversation
+      const conv2 = chats.createOrOpenEmailConversation({
+        recipientEmail: 'alice@example.com',
+      })
+      expect(conv2.id).toBe(conv1.id)
+
+      // Calling with new subject updates conversation name if it was empty/fallback
+      const convNoSubject = chats.createOrOpenEmailConversation({
+        recipientEmail: 'bob@example.com',
+      })
+      expect(convNoSubject.name).toBe('bob@example.com')
+
+      const convUpdatedSubject = chats.createOrOpenEmailConversation({
+        recipientEmail: 'bob@example.com',
+        subject: 'Updated Subject',
+      })
+      expect(convUpdatedSubject.id).toBe(convNoSubject.id)
+      expect(convUpdatedSubject.name).toBe('Updated Subject')
+    })
   })
 })
+

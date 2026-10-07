@@ -168,7 +168,11 @@ import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 import { openChat } from '../utils/routes'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
-import { defaultAcceptancePrice, defaultStampAmount } from '../utils/constants'
+import {
+  defaultAcceptancePrice,
+  defaultEmailGatewayAddress,
+  defaultStampAmount,
+} from '../utils/constants'
 import {
   automaticDealerSteps,
   handItemStillNext,
@@ -615,6 +619,19 @@ export default defineComponent({
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })
+        const emailItem = payload.items.find(
+          it => it.type === 'email',
+        ) as EmailItem | undefined
+        if (
+          this.conversation &&
+          emailItem?.subject &&
+          (!this.conversation.name ||
+            this.conversation.name.includes('@') ||
+            this.conversation.name === 'New Email' ||
+            this.conversation.name.startsWith('Draft to'))
+        ) {
+          this.conversation.name = emailItem.subject
+        }
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))
       } finally {
@@ -1031,6 +1048,9 @@ export default defineComponent({
         this.conversation.participants.length > 0
       ) {
         return this.conversation.participants[0]
+      }
+      if (this.isEmailThread) {
+        return defaultEmailGatewayAddress
       }
       return this.address
     },

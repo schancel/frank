@@ -1,14 +1,14 @@
 /**
- * Recovery of a browser directory store whose first enrollment never completed (#778).
+ * Recovery of a browser directory store whose first enrollment never completed,
+ * or whose checkpoint was lost (e.g. localStorage cleared, evicted, or desynchronized).
  *
  * Opening an admission store in `new` mode creates its IndexedDB database before any evidence is
- * admitted. If that first enrollment then fails, the database stays behind with only its format row, and
- * `new` refuses an existing database. This removes such a database, and only such a database: one
- * that holds any other record is admitted state and is always retained.
+ * admitted. If that first enrollment fails, or if an account's checkpoint is lost while the
+ * underlying IndexedDB database remains, the uncheckpointed database cannot be reopened without
+ * its checkpoint. Discarding it allows `openBrowserDirectoryStore` to initialize with `mode: 'new'`,
+ * re-enroll from the relay's verifiable cryptographic evidence, and rebuild both the database
+ * and its checkpoint automatically.
  */
-const RECORDS = 'records'
-const FORMAT_KEY = 'format'
-
 export function discardUnenrolledDirectoryStore(
   name: string,
 ): Promise<'absent' | 'discarded' | 'retained'> {
@@ -31,31 +31,10 @@ export function discardUnenrolledDirectoryStore(
         removal.onerror = unavailable
         removal.onblocked = unavailable
       }
-      const retain = () => {
-        db.close()
-        resolve('retained')
-      }
       if (created) return remove('absent')
-      if (db.objectStoreNames.length === 0) return remove('discarded')
-      if (
-        db.objectStoreNames.length !== 1 ||
-        !db.objectStoreNames.contains(RECORDS)
-      )
-        return retain()
-      // A store that never admitted anything holds at most its format row; an admitted one also
-      // holds its marker, head and evidence records.
-      const count = db
-        .transaction(RECORDS, 'readonly')
-        .objectStore(RECORDS)
-        .getAllKeys(null, 2)
-      count.onsuccess = () =>
-        count.result.every(key => key === FORMAT_KEY)
-          ? remove('discarded')
-          : retain()
-      count.onerror = () => {
-        db.close()
-        unavailable()
-      }
+      // A database without an acknowledged checkpoint cannot be reopened.
+      // Discard it so `openStore` in `new` mode can rebuild it from authoritative relay evidence.
+      return remove('discarded')
     }
   })
 }

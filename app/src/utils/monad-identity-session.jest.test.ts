@@ -386,3 +386,26 @@ test('an attempt overtaken by a stop installs nothing', async () => {
   expect(messagingWallet()).toBeUndefined()
   expect(messagingState.status).toBe('pending')
 })
+
+test('wiping local storage while IndexedDB holds records triggers automated rebuilding without error', async () => {
+  const alice = await wallet(0, 'alice')
+  const d = device(alice)
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(() => messagingState.status === 'ready', 'initial messaging ready')
+
+  // Stop messaging
+  mockStatus.status = 'loading'
+  await stopMessaging()
+
+  // Simulate wiping localStorage (clear checkpoints and pins) while leaving indexedDB intact
+  d.saved.clear()
+
+  // Restart messaging - must automatically rebuild without getting stuck in storage error
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(() => messagingState.status === 'ready', 'rebuilt messaging ready')
+  expect(messagingState.status).toBe('ready')
+  expect(messagingState.reason).toBeNull()
+})

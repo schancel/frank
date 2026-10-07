@@ -79,8 +79,11 @@ function mountWallet() {
           params?.balance ? `${key}:${params.balance}` : key,
       },
       stubs: {
-        // The copy button lives in q-input's named #after slot; a generic stub drops it.
-        QInput: { template: '<div><slot /><slot name="after" /></div>' },
+        // The copy button lives in q-input's named #append slot; a generic stub drops it.
+        QInput: {
+          template:
+            '<div><slot /><slot name="append" /><slot name="after" /></div>',
+        },
         QBtn: {
           props: ['disable', 'label'],
           template: '<button :disabled="disable">{{ label }}<slot /></button>',

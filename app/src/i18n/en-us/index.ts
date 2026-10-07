@@ -7,6 +7,7 @@ export default {
   accountRecovery,
   agree: 'Agree',
   chat: {
+    sendMessage: 'Send message',
     stampPreparationChecking: 'Checking private stamp accounts…',
     stampPreparationFunding:
       'Preparing private stamp accounts ({completed}/{total} on-chain transactions; up to {feeReserve} {unit} fee reserve each)…',
@@ -822,7 +823,6 @@ export default {
     badgePermissionless: 'Permissionless Identity',
     linksTitle: 'Links & Source Code',
     githubRepo: 'Frank GitHub Repository',
-    stampUpstream: 'Stamp Protocol Upstream',
     thirdPartyTitle: 'Third-party software',
     dklsName: 'DKLs23 two-party signing library (Silence Laboratories)',
     dklsModified:

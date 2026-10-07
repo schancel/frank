@@ -138,16 +138,6 @@
                 target="_blank"
                 rel="noopener noreferrer"
               />
-              <q-btn
-                outline
-                no-caps
-                color="secondary"
-                icon="open_in_new"
-                :label="$t('about.stampUpstream')"
-                href="https://github.com/stampchat/stamp"
-                target="_blank"
-                rel="noopener noreferrer"
-              />
             </div>
           </q-card-section>
         </q-card>

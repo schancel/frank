@@ -24,6 +24,7 @@ export default {
   },
   agree: "D'accord",
   chat: {
+    sendMessage: 'Envoyer le message',
     stampPreparationChecking: 'Vérification des comptes de timbre privés…',
     stampPreparationFunding:
       'Préparation des comptes de timbre privés ({completed}/{total} transactions on-chain ; jusqu’à {feeReserve} {unit} de réserve de frais chacune)…',
@@ -850,7 +851,6 @@ export default {
     badgePermissionless: 'Identité sans permission',
     linksTitle: 'Liens et code source',
     githubRepo: 'Dépôt GitHub de Frank',
-    stampUpstream: 'Protocole Stamp d’origine',
     thirdPartyTitle: 'Logiciels tiers',
     dklsName:
       'Bibliothèque de signature à deux parties DKLs23 (Silence Laboratories)',

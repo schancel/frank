@@ -10,7 +10,7 @@
 
 ## Install from Binary
 
-1. Download the appropriate binary for your machine from the [latest releases](https://github.com/stampchat/stamp/releases).
+1. Download the appropriate binary for your machine from the [latest releases](https://github.com/schancel/frank/releases).
 2. Unzip your package.
 3. Run it.
 

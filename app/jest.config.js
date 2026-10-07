@@ -59,6 +59,8 @@ module.exports = {
     '^@frank/codex32$': '<rootDir>/../packages/codex32/src/index.ts',
     '^@frank/cashweb/(.*)$': '<rootDir>/../packages/cashweb/$1',
     '^@frank/wallet/(.*)$': '<rootDir>/../packages/wallet/$1',
+    '^@frank/price-feeds$': '<rootDir>/../packages/price-feeds/src/index.ts',
+    '^@frank/price-feeds/(.*)$': '<rootDir>/../packages/price-feeds/src/$1',
     // Same source map cashweb's jest uses. The package export points at dist,
     // which this suite does not build. Nakamoto's own imports end in .js.
     '^@frank/crypto-box$': '<rootDir>/../packages/crypto-box/src/index.ts',

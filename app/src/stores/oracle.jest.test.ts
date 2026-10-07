@@ -1,0 +1,96 @@
+/** @jest-environment jsdom */
+
+import { setActivePinia, createPinia } from 'pinia'
+import { useOracleStore } from './oracle'
+import * as oracleSdk from '@frank/wallet/oracle'
+
+jest.mock('@frank/wallet/oracle', () => {
+  const actual = jest.requireActual('@frank/wallet/oracle')
+  return {
+    ...actual,
+    fetchOracleSnapshot: jest.fn(),
+  }
+})
+
+describe('useOracleStore (Pinia Store)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    localStorage.clear()
+    jest.clearAllMocks()
+  })
+
+  afterEach(() => {
+    const store = useOracleStore()
+    store.stopBackgroundWorker()
+  })
+
+  it('initializes with default energy basket rates and zero history', () => {
+    const store = useOracleStore()
+    expect(store.snapshot.epoch).toBe('energy-basket-v1')
+    expect(store.snapshot.rates.monad).toBeCloseTo(2.8, 2)
+    expect(store.history).toEqual([])
+  })
+
+  it('computes AVU equivalents and formats amounts correctly', () => {
+    const store = useOracleStore()
+    const oneMonWei = 1_000_000_000_000_000_000n
+
+    const avu = store.getAvu('monad', oneMonWei)
+    expect(avu).toBeCloseTo(2.8, 2)
+
+    const formatted = store.formatAvuAmount('monad', oneMonWei)
+    expect(formatted).toBe('≈ 2.80 AVU')
+
+    // 0 or null returns empty string for clean UI rendering
+    expect(store.formatAvuAmount('monad', 0n)).toBe('')
+    expect(store.formatAvuAmount('monad', null)).toBe('')
+  })
+
+  it('refreshes snapshot and records hourly historical trend points', async () => {
+    const mockFetch = oracleSdk.fetchOracleSnapshot as jest.Mock
+    mockFetch.mockResolvedValue({
+      epoch: 'energy-basket-v1',
+      timestamp: Date.now(),
+      basketIndex: 1.05,
+      rates: {
+        ...oracleSdk.DEFAULT_AVU_RATES,
+        solana: 135.0,
+      },
+    })
+
+    const store = useOracleStore()
+    await store.refresh()
+
+    expect(mockFetch).toHaveBeenCalled()
+    expect(store.snapshot.rates.solana).toBe(135.0)
+    expect(store.history.length).toBe(1)
+    expect(store.history[0].rates.solana).toBe(135.0)
+
+    // Verify localStorage persistence
+    const saved = localStorage.getItem('frank_oracle_snapshot_v1')
+    expect(saved).toBeTruthy()
+    expect(JSON.parse(saved!).rates.solana).toBe(135.0)
+  })
+
+  it('manages background polling worker lifecycle without duplicating intervals', () => {
+    jest.useFakeTimers()
+    const store = useOracleStore()
+    const refreshSpy = jest.spyOn(store, 'refresh').mockResolvedValue()
+
+    store.startBackgroundWorker(10000)
+    expect(refreshSpy).toHaveBeenCalledTimes(1)
+
+    // Starting again should be a no-op
+    store.startBackgroundWorker(10000)
+    expect(refreshSpy).toHaveBeenCalledTimes(1)
+
+    jest.advanceTimersByTime(25000)
+    expect(refreshSpy).toHaveBeenCalledTimes(3)
+
+    store.stopBackgroundWorker()
+    jest.advanceTimersByTime(20000)
+    expect(refreshSpy).toHaveBeenCalledTimes(3)
+
+    jest.useRealTimers()
+  })
+})

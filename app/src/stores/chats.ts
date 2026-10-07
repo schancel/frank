@@ -50,7 +50,8 @@ import {
   MonadStampTerminalError,
 } from '@frank/wallet/monad-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
-import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
+import { routeWalletSyncItem } from '@frank/wallet/sync-router'
+import { appMultiChainResolver } from '../accounts/sync-router'
 import type {
   Message,
   MessageWrapper,
@@ -3010,14 +3011,11 @@ export const useChatStore = defineStore('chats', {
               (item.type === 'wallet-sync' || item.type === 'payment-transfer')
             ) {
               try {
-                void accountSession
-                  ?.getWallet?.()
-                  .then(w => {
-                    if (w) {
-                      applyWalletSyncItem(w, item as WalletSyncItem)
-                    }
-                  })
-                  .catch(() => undefined)
+                void routeWalletSyncItem(item as WalletSyncItem, {
+                  resolver: appMultiChainResolver,
+                }).catch(err => {
+                  console.warn('[chats] failed to route wallet sync item:', err)
+                })
               } catch {
                 // ignore
               }

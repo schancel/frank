@@ -60,7 +60,10 @@ import { MessageStore } from './storage/storage'
 import { Wallet, type WalletTransaction } from '../legacy-wallet'
 import { Utxo, utxoPrivateKeyFromSecret, type UtxoPrivateKey } from '../types/utxo'
 import { pAll } from './pAll'
-import { applyWalletSyncItem } from '../sync-dispatcher'
+import {
+  routeWalletSyncItem,
+  type MultiChainWalletResolver,
+} from '../sync-router'
 
 // Ticket #53 (package split): was `import { defaultAcceptancePrice } from 'src/utils/constants'`,
 // reaching into the app's own config -- a standalone package can't depend on its consumer. This is
@@ -172,6 +175,7 @@ export class RelayClient extends ReadOnlyRelayClient {
   url: string
   events: EventEmitter
   wallet?: Wallet
+  walletResolver?: MultiChainWalletResolver
   getPubKey: (address: string) => { toBuffer(): Uint8Array } | null
   messageStore: MessageStore
   relayReconnectInterval: number
@@ -187,11 +191,13 @@ export class RelayClient extends ReadOnlyRelayClient {
       relayReconnectInterval = 10_000,
       getPubKey,
       messageStore,
+      walletResolver,
     }: {
       relayReconnectInterval?: number
       networkName?: string
       messageStore: MessageStore
       getPubKey: (address: string) => { toBuffer(): Uint8Array } | null
+      walletResolver?: MultiChainWalletResolver
     },
   ) {
     super(url, networkName, 'livenet')
@@ -203,6 +209,7 @@ export class RelayClient extends ReadOnlyRelayClient {
     this.url = url
     this.events = new EventEmitter()
     this.wallet = wallet
+    this.walletResolver = walletResolver
     this.getPubKey = getPubKey
     this.messageStore = messageStore
     this.relayReconnectInterval = relayReconnectInterval
@@ -217,6 +224,10 @@ export class RelayClient extends ReadOnlyRelayClient {
 
   setWallet(wallet: Wallet) {
     this.wallet = wallet
+  }
+
+  setWalletResolver(resolver: MultiChainWalletResolver) {
+    this.walletResolver = resolver
   }
 
   async profilePaymentRequest(address: string) {
@@ -786,8 +797,11 @@ export class RelayClient extends ReadOnlyRelayClient {
     })
   }
 
-  receiveSelfSend({ payload }: { payload: PayloadMsg }) {
-    assert(this.wallet, 'wallet unset while handing receiveSelfSend')
+  async receiveSelfSend({ payload }: { payload: PayloadMsg }) {
+    assert(
+      this.wallet || this.walletResolver,
+      'wallet or walletResolver unset while handing receiveSelfSend',
+    )
     // Decode entries
     const entriesList = payload.getEntriesList()
 
@@ -806,7 +820,9 @@ export class RelayClient extends ReadOnlyRelayClient {
           Uint8Array.from(Buffer.from(transactionRaw)),
         )) {
           // Don't add these outputs to our wallet. They're the other persons
-          this.wallet.deleteUtxo(calcUtxoId(spent))
+          if (this.wallet) {
+            this.wallet.deleteUtxo(calcUtxoId(spent))
+          }
         }
 
         continue
@@ -827,7 +843,13 @@ export class RelayClient extends ReadOnlyRelayClient {
                 item &&
                 (item.type === 'wallet-sync' || item.type === 'payment-transfer')
               ) {
-                applyWalletSyncItem(this.wallet, item)
+                const resolver = this.walletResolver ?? {
+                  getWalletForChain: () => this.wallet,
+                }
+                await routeWalletSyncItem(item, {
+                  resolver,
+                  fallbackWallet: this.wallet,
+                })
               }
             }
           }
@@ -1003,7 +1025,7 @@ export class RelayClient extends ReadOnlyRelayClient {
       : parsedMessage.open(identityPrivateKey)
     const payload = Payload.deserializeBinary(rawPayload)
     if (outbound && myAddress === destinationAddress) {
-      this.receiveSelfSend({ payload })
+      await this.receiveSelfSend({ payload })
       return null
     }
 

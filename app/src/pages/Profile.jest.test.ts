@@ -44,7 +44,28 @@ jest.mock('src/utils/navigate-back', () => ({
 import { navigateBack } from 'src/utils/navigate-back'
 
 const defaultStubs = {
-  'Profile': { template: '<div data-test="profile-component"></div>' },
+  'Profile': {
+    name: 'Profile',
+    template: '<div data-test="profile-component"></div>',
+    props: [
+      'name',
+      'username',
+      'location',
+      'bio',
+      'avatar',
+      'links',
+      'acceptancePrice',
+    ],
+    emits: [
+      'update:name',
+      'update:username',
+      'update:location',
+      'update:bio',
+      'update:avatar',
+      'update:links',
+      'update:acceptancePrice',
+    ],
+  },
   'q-page-container': { template: '<div><slot /></div>' },
   'q-page': { template: '<div><slot /></div>' },
   'q-card': { template: '<div><slot /></div>' },
@@ -333,7 +354,6 @@ describe('Profile.vue', () => {
     expect(mockSetRelayData).not.toHaveBeenCalled()
     expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
   })
-
   it('updateRelayData saves profile, stays on profile page without navigating back, and shows notify (#1041)', async () => {
     const mockWallet = {
       identity: {
@@ -384,5 +404,51 @@ describe('Profile.vue', () => {
     ;(wrapper.vm as any).cancel()
 
     expect(navigateBack).toHaveBeenCalledWith(expect.anything())
+  })
+
+  it('updates links via v-model:links and persists via updateRelayData', async () => {
+    const mockWallet = {
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    }
+    ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
+
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+
+    const profileComp = wrapper.findComponent({ name: 'Profile' })
+    expect(profileComp.exists()).toBe(true)
+
+    // Emit update:links from child
+    profileComp.vm.$emit('update:links', [
+      { type: 'website', url: 'https://mysite.com', label: 'My Site' },
+    ])
+    await wrapper.vm.$nextTick()
+
+    expect((wrapper.vm as any).links).toEqual([
+      { type: 'website', url: 'https://mysite.com', label: 'My Site' },
+    ])
+
+    await (wrapper.vm as any).updateRelayData()
+
+    expect(mockSetRelayData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({
+          links: [
+            { type: 'website', url: 'https://mysite.com', label: 'My Site' },
+          ],
+        }),
+      }),
+    )
   })
 })

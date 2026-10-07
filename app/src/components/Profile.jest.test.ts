@@ -2,6 +2,24 @@
 import { mount } from '@vue/test-utils'
 import ProfileComponent from './Profile.vue'
 
+const defaultStubs = {
+  'q-splitter': {
+    template: '<div><slot name="before" /><slot name="after" /></div>',
+  },
+  'q-tabs': { template: '<div><slot /></div>' },
+  'q-tab': { template: '<div />' },
+  'q-tab-panels': { template: '<div><slot /></div>' },
+  'q-tab-panel': { template: '<div><slot /></div>' },
+  'q-input': { template: '<input />' },
+  'q-toolbar': { template: '<div><slot /></div>' },
+  'q-toolbar-title': { template: '<div><slot /></div>' },
+  'q-file': { template: '<input type="file" />' },
+  'q-btn': { template: '<button><slot /></button>' },
+  'q-img': { template: '<img />' },
+  'q-select': { template: '<div><slot /></div>' },
+  'q-icon': { template: '<i />' },
+}
+
 describe('Profile.vue component avatar handling', () => {
   let mockDrawImage: jest.Mock
   let originalImage: any
@@ -54,21 +72,7 @@ describe('Profile.vue component avatar handling', () => {
         mocks: {
           $t: (key: string) => key,
         },
-        stubs: {
-          'q-splitter': {
-            template: '<div><slot name="before" /><slot name="after" /></div>',
-          },
-          'q-tabs': { template: '<div><slot /></div>' },
-          'q-tab': { template: '<div />' },
-          'q-tab-panels': { template: '<div><slot /></div>' },
-          'q-tab-panel': { template: '<div><slot /></div>' },
-          'q-input': { template: '<input />' },
-          'q-toolbar': { template: '<div><slot /></div>' },
-          'q-toolbar-title': { template: '<div><slot /></div>' },
-          'q-file': { template: '<input type="file" />' },
-          'q-btn': { template: '<button><slot /></button>' },
-          'q-img': { template: '<img />' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -87,21 +91,7 @@ describe('Profile.vue component avatar handling', () => {
         mocks: {
           $t: (key: string) => key,
         },
-        stubs: {
-          'q-splitter': {
-            template: '<div><slot name="before" /><slot name="after" /></div>',
-          },
-          'q-tabs': { template: '<div><slot /></div>' },
-          'q-tab': { template: '<div />' },
-          'q-tab-panels': { template: '<div><slot /></div>' },
-          'q-tab-panel': { template: '<div><slot /></div>' },
-          'q-input': { template: '<input />' },
-          'q-toolbar': { template: '<div><slot /></div>' },
-          'q-toolbar-title': { template: '<div><slot /></div>' },
-          'q-file': { template: '<input type="file" />' },
-          'q-btn': { template: '<button><slot /></button>' },
-          'q-img': { template: '<img />' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -122,23 +112,7 @@ describe('Profile.vue component avatar handling', () => {
         mocks: {
           $t: (key: string) => key,
         },
-        stubs: {
-          'q-splitter': {
-            template: '<div><slot name="before" /><slot name="after" /></div>',
-          },
-          'q-tabs': { template: '<div><slot /></div>' },
-          'q-tab': { template: '<div />' },
-          'q-tab-panels': { template: '<div><slot /></div>' },
-          'q-tab-panel': { template: '<div><slot /></div>' },
-          'q-input': { template: '<input />' },
-          'q-toolbar': { template: '<div><slot /></div>' },
-          'q-toolbar-title': { template: '<div><slot /></div>' },
-          'q-file': { template: '<input type="file" />' },
-          'q-btn': { template: '<button><slot /></button>' },
-          'q-img': { template: '<img />' },
-          'q-select': { template: '<div><slot /></div>' },
-          'q-icon': { template: '<i />' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -163,23 +137,7 @@ describe('Profile.vue component avatar handling', () => {
         mocks: {
           $t: (key: string) => key,
         },
-        stubs: {
-          'q-splitter': {
-            template: '<div><slot name="before" /><slot name="after" /></div>',
-          },
-          'q-tabs': { template: '<div><slot /></div>' },
-          'q-tab': { template: '<div />' },
-          'q-tab-panels': { template: '<div><slot /></div>' },
-          'q-tab-panel': { template: '<div><slot /></div>' },
-          'q-input': { template: '<input />' },
-          'q-toolbar': { template: '<div><slot /></div>' },
-          'q-toolbar-title': { template: '<div><slot /></div>' },
-          'q-file': { template: '<input type="file" />' },
-          'q-btn': { template: '<button><slot /></button>' },
-          'q-img': { template: '<img />' },
-          'q-select': { template: '<div><slot /></div>' },
-          'q-icon': { template: '<i />' },
-        },
+        stubs: defaultStubs,
       },
     })
 
@@ -210,37 +168,31 @@ describe('Profile.vue component avatar handling', () => {
         mocks: {
           $t: (key: string) => key,
         },
-        stubs: {
-          'q-splitter': {
-            template: '<div><slot name="before" /><slot name="after" /></div>',
-          },
-          'q-tabs': { template: '<div><slot /></div>' },
-          'q-tab': { template: '<div />' },
-          'q-tab-panels': { template: '<div><slot /></div>' },
-          'q-tab-panel': { template: '<div><slot /></div>' },
-          'q-input': { template: '<input />' },
-          'q-toolbar': { template: '<div><slot /></div>' },
-          'q-toolbar-title': { template: '<div><slot /></div>' },
-          'q-file': { template: '<input type="file" />' },
-          'q-btn': { template: '<button><slot /></button>' },
-          'q-img': { template: '<img />' },
-          'q-select': { template: '<div><slot /></div>' },
-          'q-icon': { template: '<i />' },
-        },
+        stubs: defaultStubs,
       },
     })
 
+    expect(wrapper.findAll('[data-test="profile-link-row"]').length).toBe(1)
     expect((wrapper.vm as any).internalLinks.length).toBe(1)
 
-    // Add new link
-    ;(wrapper.vm as any).addLink()
+    // Click Add Link button adds row and emits update:links
+    await wrapper.find('[data-test="profile-add-link"]').trigger('click')
     await wrapper.vm.$nextTick()
+
+    expect(wrapper.findAll('[data-test="profile-link-row"]').length).toBe(2)
     expect((wrapper.vm as any).internalLinks.length).toBe(2)
     expect((wrapper.vm as any).internalLinks[1]).toEqual({
       type: 'website',
       url: '',
       label: '',
     })
+    expect(wrapper.emitted('update:links')).toBeTruthy()
+    expect(wrapper.emitted('update:links')?.[0]).toEqual([
+      [
+        { type: 'website', url: 'https://example.com', label: 'My Site' },
+        { type: 'website', url: '', label: '' },
+      ],
+    ])
 
     // Modify link
     ;(wrapper.vm as any).internalLinks[1].type = 'github'
@@ -248,9 +200,13 @@ describe('Profile.vue component avatar handling', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.emitted('update:links')).toBeTruthy()
 
-    // Remove first link
-    ;(wrapper.vm as any).removeLink(0)
+    // Click remove link button on first link
+    await wrapper
+      .findAll('[data-test="profile-remove-link"]')[0]
+      .trigger('click')
     await wrapper.vm.$nextTick()
+
+    expect(wrapper.findAll('[data-test="profile-link-row"]').length).toBe(1)
     expect((wrapper.vm as any).internalLinks.length).toBe(1)
     expect((wrapper.vm as any).internalLinks[0].type).toBe('github')
   })

@@ -617,6 +617,7 @@ export default {
   },
   emailThread: {
     gatewayBadge: '✉️ Passerelle e-mail (via Passerelle Frank)',
+    unverifiedBadge: '⚠️ E-mail P2P direct (non vérifié)',
     collapseAll: 'Tout réduire',
     expandAll: 'Tout développer',
     participants: 'Participants',
@@ -903,11 +904,6 @@ export default {
     licenseHeading: 'Licence de la bibliothèque DKLs23',
     licenseIntro:
       'Le texte intégral de la licence, avec ses conditions et son avertissement, tel que publié par Silence Laboratories (en anglais uniquement) :',
-  },
-  emailThread: {
-    gatewayBadge: '✉️ Passerelle e-mail (via passerelle Frank)',
-    unverifiedBadge: '⚠️ E-mail P2P direct (non vérifié)',
-    participants: 'Participants à la discussion',
   },
   close: 'Fermer',
 }

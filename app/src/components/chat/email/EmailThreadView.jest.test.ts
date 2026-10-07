@@ -187,7 +187,6 @@ describe('EmailThreadView', () => {
     expect(vm.replyText).toBe('')
   })
 
-<<<<<<< HEAD
   describe('Peer Email Frame Defense & Trust Classification (ticket-unverified-peer-email-frames)', () => {
     const peerAddress = '0x2222222222222222222222222222222222222222'
     const peerEmailWithDkim: EmailItem = {

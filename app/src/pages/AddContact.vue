@@ -154,6 +154,7 @@ import { activeChain } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
 import { defaultEmailGatewayAddress } from 'src/utils/constants'
+import { useSettingsStore } from 'src/stores/settings'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -352,6 +353,16 @@ export default defineComponent({
       }
       const email = this.emailAddress
       let targetId = email
+      let gatewayAddress = defaultEmailGatewayAddress
+      try {
+        const settingsStore = useSettingsStore()
+        if (settingsStore.emailGatewayAddress) {
+          gatewayAddress = settingsStore.emailGatewayAddress
+        }
+      } catch {
+        // Pinia not active in test environment
+      }
+
       try {
         const chatStore = useChatStore()
         let conv: any
@@ -360,7 +371,7 @@ export default defineComponent({
         ) {
           conv = (chatStore as any).createOrOpenEmailConversation({
             recipientEmail: email,
-            gatewayAddress: defaultEmailGatewayAddress,
+            gatewayAddress,
           })
         } else if (typeof chatStore.createConversation === 'function') {
           conv = chatStore.createConversation({
@@ -368,8 +379,8 @@ export default defineComponent({
             topic: email,
             name: email,
             emailRecipient: email,
-            address: defaultEmailGatewayAddress,
-            participants: [defaultEmailGatewayAddress],
+            address: gatewayAddress,
+            participants: [gatewayAddress],
           })
         }
         if (conv?.id) {

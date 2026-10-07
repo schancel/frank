@@ -1,11 +1,16 @@
 /** @jest-environment jsdom */
 
 import { shallowMount } from '@vue/test-utils'
+import { setActivePinia, createPinia } from 'pinia'
 import EmailThreadView from './EmailThreadView.vue'
 import type { ChatMessage, Conversation } from 'src/stores/chats'
 import type { EmailItem } from '@frank/cashweb/types/messages'
+import { useSettingsStore } from 'src/stores/settings'
 
 describe('EmailThreadView', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
   const sampleEmail1: EmailItem = {
     type: 'email',
     messageId: '<msg1@example.com>',
@@ -100,7 +105,11 @@ describe('EmailThreadView', () => {
           'q-item-section': { template: '<div class="q-item-section"><slot /></div>' },
           'q-avatar': { template: '<div class="q-avatar"><slot /></div>' },
           'q-badge': { template: '<span class="q-badge"><slot /></span>' },
-          'q-btn': { template: '<button class="q-btn" @click="$emit(\'click\')"><slot /></button>' },
+          'q-btn': {
+            props: ['label'],
+            emits: ['click'],
+            template: '<button class="q-btn" @click="$emit(\'click\', $event)"><slot>{{ label }}</slot></button>',
+          },
           'q-btn-toggle': { template: '<div class="q-btn-toggle" />' },
           'q-chip': { template: '<div class="q-chip"><slot /></div>' },
           'q-input': { template: '<input class="q-input" />' },
@@ -396,6 +405,190 @@ describe('EmailThreadView', () => {
       expect(textItem).toBeDefined()
       expect(textItem.text).toContain('Meeting Tomorrow')
       expect(textItem.text).toContain('Hi Charlie, let us meet tomorrow at 10am.')
+    })
+
+    describe('Outbound Attachments in Composer', () => {
+      it('renders attach file button and hidden file input', () => {
+        const wrapper = mountView()
+        const attachBtn = wrapper.find('[data-testid="attach-file-btn"]')
+        expect(attachBtn.exists()).toBe(true)
+
+        const fileInput = wrapper.find('input[type="file"]')
+        expect(fileInput.exists()).toBe(true)
+        expect(fileInput.attributes('style')).toContain('display: none')
+      })
+
+      it('stages selected files and displays chip with formatted file size and remove button', async () => {
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+
+        // Initially no staged files
+        expect(wrapper.find('[data-testid="staged-attachments-container"]').exists()).toBe(false)
+
+        // Simulate file selection
+        const fakeFile1 = new File(['file contents 1'], 'test-document.pdf', {
+          type: 'application/pdf',
+        })
+        Object.defineProperty(fakeFile1, 'size', { value: 24576 }) // 24 KB
+
+        const fakeFile2 = new File(['image data'], 'avatar.png', {
+          type: 'image/png',
+        })
+        Object.defineProperty(fakeFile2, 'size', { value: 1048576 }) // 1 MB
+
+        vm.handleFilesSelected({
+          target: { files: [fakeFile1, fakeFile2], value: 'fake-path' },
+        })
+        await wrapper.vm.$nextTick()
+
+        expect(vm.stagedFiles.length).toBe(2)
+        const container = wrapper.find('[data-testid="staged-attachments-container"]')
+        expect(container.exists()).toBe(true)
+
+        const chips = wrapper.findAll('.staged-attachment-chip')
+        expect(chips.length).toBe(2)
+        expect(chips[0].text()).toContain('test-document.pdf')
+        expect(chips[0].text()).toContain('24 KB')
+        expect(chips[1].text()).toContain('avatar.png')
+        expect(chips[1].text()).toContain('1 MB')
+
+        // Remove the first attachment via remove button
+        const removeButtons = wrapper.findAll('[data-testid="remove-attachment-btn"]')
+        expect(removeButtons.length).toBe(2)
+        await removeButtons[0].trigger('click')
+
+        expect(vm.stagedFiles.length).toBe(1)
+        expect(vm.stagedFiles[0].name).toBe('avatar.png')
+      })
+
+      it('encodes staged files into attachments on emitted EmailItem and clears staged files after send', async () => {
+        const wrapper = mountView()
+        const vm = wrapper.vm as any
+
+        const fileContent = 'Hello Frank email attachments'
+        const fakeFile = new File([fileContent], 'notes.txt', {
+          type: 'text/plain',
+        })
+        Object.defineProperty(fakeFile, 'size', { value: fileContent.length })
+
+        vm.stagedFiles = [fakeFile]
+        vm.replyText = 'Please see the attached notes.'
+
+        jest.spyOn(vm, 'readFileAsBase64').mockResolvedValue('data:text/plain;base64,SGVsbG8=')
+
+        await vm.handleSend()
+
+        expect(wrapper.emitted('sendReply')).toBeTruthy()
+        const emitted = wrapper.emitted('sendReply')![0][0] as {
+          items: any[]
+          fallbackText: string
+        }
+        const emailItem = emitted.items.find(i => i.type === 'email')
+        expect(emailItem).toBeDefined()
+        expect(emailItem.attachments).toBeDefined()
+        expect(emailItem.attachments.length).toBe(1)
+        expect(emailItem.attachments[0]).toEqual({
+          filename: 'notes.txt',
+          contentType: 'text/plain',
+          size: fileContent.length,
+          sizeBytes: fileContent.length,
+          dataBase64: 'data:text/plain;base64,SGVsbG8=',
+        })
+
+        // Staged files should be cleared after send
+        expect(vm.stagedFiles.length).toBe(0)
+        expect(vm.replyText).toBe('')
+      })
+    })
+
+    describe('Sandboxed HTML Email Rendering', () => {
+      it('shows toggle button when email has htmlBody and toggles between plain text and sandboxed iframe', async () => {
+        const emailWithHtml: EmailItem = {
+          type: 'email',
+          messageId: '<html-msg@example.com>',
+          from: { address: 'newsletter@example.com', name: 'Newsletter' },
+          to: [{ address: 'me@frank.org' }],
+          subject: 'Weekly Digest',
+          textBody: 'Plain text version of weekly digest.',
+          htmlBody: '<h1>Weekly Digest</h1><p>Welcome to <b>Frank</b>!</p><script>alert("evil")</script>',
+        }
+
+        const msgWithHtml: ChatMessage = {
+          outbound: false,
+          status: 'confirmed',
+          receivedTime: 5000,
+          serverTime: 5000,
+          items: [emailWithHtml],
+          outpoints: [],
+          senderAddress: '0xGateway',
+          payloadDigest: 'digest-html-msg',
+        }
+
+        const wrapper = mountView({
+          messages: [msgWithHtml],
+        })
+        const vm = wrapper.vm as any
+
+        expect(vm.isExpanded('<html-msg@example.com>')).toBe(true)
+
+        // Toggle button should be visible with "Show HTML"
+        const toggleBtn = wrapper.find('[data-testid="toggle-html-view"]')
+        expect(toggleBtn.exists()).toBe(true)
+        expect(toggleBtn.text()).toContain('Show HTML')
+
+        // Plain text should be displayed initially, no iframe
+        expect(wrapper.find('iframe.email-html-frame').exists()).toBe(false)
+        expect(wrapper.find('.email-body-text').text()).toContain('Plain text version of weekly digest.')
+
+        // Click toggle to switch to HTML view
+        await toggleBtn.trigger('click')
+        expect(toggleBtn.text()).toContain('Show Plain Text')
+
+        // Sandboxed iframe should now be rendered
+        const iframe = wrapper.find('iframe.email-html-frame')
+        expect(iframe.exists()).toBe(true)
+        expect(iframe.attributes('sandbox')).toBe('allow-same-origin')
+
+        // srcdoc should contain sanitized HTML (script tag stripped by DOMPurify)
+        const srcdoc = iframe.attributes('srcdoc')
+        expect(srcdoc).toContain('<h1>Weekly Digest</h1>')
+        expect(srcdoc).toContain('<b>Frank</b>')
+        expect(srcdoc).not.toContain('<script>')
+        expect(srcdoc).not.toContain('alert("evil")')
+
+        // Click toggle again to switch back to plain text
+        await toggleBtn.trigger('click')
+        expect(toggleBtn.text()).toContain('Show HTML')
+        expect(wrapper.find('iframe.email-html-frame').exists()).toBe(false)
+        expect(wrapper.find('.email-body-text').exists()).toBe(true)
+      })
+    })
+
+    describe('Configurable Email Gateway Integration', () => {
+      it('reads emailGatewayAddress from settingsStore and uses it when bridging via gateway', async () => {
+        const settingsStore = useSettingsStore()
+        const customGateway = '0x8888888888888888888888888888888888888888'
+        settingsStore.setEmailGatewayAddress(customGateway)
+
+        const wrapper = mountView({
+          conversation: unverifiedPeerConversation,
+          messages: [peerMessage],
+          recipientAddress: peerAddress,
+        })
+        const vm = wrapper.vm as any
+
+        expect(vm.emailGatewayAddress).toBe(customGateway)
+
+        // Route through gateway
+        vm.replyRouting = 'gateway'
+        vm.replyText = 'Routing to custom gateway'
+        await vm.handleSend()
+
+        const emitted = wrapper.emitted('sendReply')![0][0] as {
+          targetAddress?: string
+        }
+        expect(emitted.targetAddress).toBe(customGateway)
+      })
     })
   })
 })

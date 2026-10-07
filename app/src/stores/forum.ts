@@ -35,6 +35,7 @@ export interface State {
   outageStatus: ForumOutageStatus
   isRefreshing: boolean
   stampPreparationStatus: string | null
+  ownPostDigests: string[]
 }
 
 export type ForumPostReservationStatus = 'in-flight' | 'outcome-unknown'
@@ -126,6 +127,7 @@ export const useForumStore = defineStore('forum', {
     outageStatus: 'ok',
     isRefreshing: false,
     stampPreparationStatus: null,
+    ownPostDigests: [],
   }),
   getters: {
     getMessage(state) {
@@ -229,6 +231,18 @@ export const useForumStore = defineStore('forum', {
     },
     setVoteThreshold(voteThreshold: string) {
       this.voteThreshold = String(voteThreshold)
+    },
+    recordOwnPost(payloadDigest: string) {
+      if (!this.ownPostDigests) {
+        this.ownPostDigests = []
+      }
+      if (!this.ownPostDigests.includes(payloadDigest)) {
+        this.ownPostDigests.push(payloadDigest)
+      }
+    },
+    isOwnPost(payloadDigest?: string): boolean {
+      if (!payloadDigest || !this.ownPostDigests) return false
+      return this.ownPostDigests.includes(payloadDigest)
     },
 
     setEntries(messages: ForumMessage[]) {
@@ -390,6 +404,7 @@ export const useForumStore = defineStore('forum', {
         parentDigest,
         onPreparationProgress,
       })
+      this.recordOwnPost(payloadDigest)
       await refreshAfterBurn('post', () => this.fetchMessage({ payloadDigest }))
     },
     async fetchMessage({
@@ -529,6 +544,9 @@ export const useForumStore = defineStore('forum', {
         outageStatus: 'ok',
         isRefreshing: false,
         stampPreparationStatus: null,
+        ownPostDigests: Array.isArray(deserializedForum.ownPostDigests)
+          ? deserializedForum.ownPostDigests
+          : [],
       }
     },
   },

@@ -91,19 +91,31 @@
         >
           <q-tooltip>{{ $t('leftDrawer.settings') }}</q-tooltip>
         </q-tab>
+
+        <q-tab
+          name="docs"
+          id="rail-tab-docs"
+          icon="menu_book"
+          class="docs-rail-tab"
+          aria-label="Documentation"
+          @click="openDocsTab"
+        >
+          <q-tooltip>Documentation & Protocol</q-tooltip>
+        </q-tab>
       </q-tabs>
     </div>
 
-    <!-- List column: whatever the active rail icon selects (settings, chats, contacts, wallet or forum) -->
+    <!-- List column: whatever the active rail icon selects (settings, chats, contacts, wallet, docs or forum) -->
     <div class="column full-height col list-column">
       <settings-panel
         v-if="$status.setup"
-        v-show="tab == 'settings'"
+        v-show="tab == 'settings' || tab == 'docs'"
         v-bind="{ ...$attrs, ...panelAttrs('settings') }"
         @closeDrawer="$emit('closeDrawer')"
       />
       <div v-if="!$status.setup" class="drawer-header-item">
         <chat-list-link title="Login/Sign Up" route="/setup" icon="login" />
+        <chat-list-link title="Documentation" route="/docs" icon="menu_book" />
       </div>
 
       <chat-list
@@ -342,6 +354,10 @@ export default defineComponent({
       markRailNavigation()
       return router.push('/settings')
     }
+    function openDocsTab() {
+      markRailNavigation()
+      return router.push('/docs')
+    }
     function openActiveOrRecentChat() {
       const target =
         chats.activeConversationId ??
@@ -467,6 +483,8 @@ export default defineComponent({
           tab.value = 'contacts'
         } else if (path.startsWith('/chat')) {
           tab.value = 'chats'
+        } else if (path.startsWith('/docs')) {
+          tab.value = 'docs'
         }
       },
       { immediate: true },
@@ -478,6 +496,7 @@ export default defineComponent({
       openForumTab,
       openNewPost,
       openSettingsTab,
+      openDocsTab,
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,

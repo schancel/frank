@@ -100,6 +100,15 @@
         />
         <q-btn
           flat
+          icon="menu_book"
+          class="q-mx-none q-pa-sm"
+          to="/docs"
+          aria-label="Documentation"
+        >
+          <q-tooltip>Documentation & Protocol</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
           icon="post_add"
           class="q-mx-none q-pa-sm"
           to="/new-post"

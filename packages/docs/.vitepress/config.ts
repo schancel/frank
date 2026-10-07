@@ -7,7 +7,7 @@ export default withMermaid(
     title: "Frank & Cashweb",
     description:
       "Protocol Specifications, High-Assurance Architecture, and Developer Documentation",
-    base: "/",
+    base: process.env.DOCS_BASE || "/",
     cleanUrls: true,
     lastUpdated: true,
 

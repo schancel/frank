@@ -4,7 +4,14 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { keccak_256 } from '@noble/hashes/sha3'
 
-import type { AccountRef, ProfileEntry, RelayBinding, Timestamp } from './types'
+import type {
+  AccountRef,
+  AccountType,
+  BotRole,
+  ProfileEntry,
+  RelayBinding,
+  Timestamp,
+} from './types'
 import { cborMap, type Encodable } from './cbor'
 import { encodeFrame } from './frame'
 
@@ -143,6 +150,8 @@ export interface DirectoryStatementBuilderParams {
   recoveryAuthorities?: AccountRef[]
   profileEntries?: ProfileEntry[]
   canonicalUsername?: string
+  accountType?: AccountType
+  botRole?: BotRole
   spendKeys?: AccountRef[]
 }
 
@@ -241,6 +250,14 @@ export function buildDirectoryStatementMap(
     entries.push([14, params.canonicalUsername])
   } else if (params.spendKeys !== undefined && params.spendKeys.length > 0) {
     entries.push([14, params.spendKeys.map(encAccount)])
+  }
+
+  if (params.accountType !== undefined) {
+    entries.push([15, BigInt(params.accountType)])
+  }
+
+  if (params.botRole !== undefined) {
+    entries.push([16, BigInt(params.botRole)])
   }
 
   return cborMap(entries)

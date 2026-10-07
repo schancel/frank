@@ -5,16 +5,18 @@ import { isCompressedPoint } from './point'
 import { contentHash } from './hash'
 import { MAX_DIRECTORY_VALIDITY_NS } from './constants'
 import { CANONICAL_USERNAME_REGEX } from './registration'
-import type {
-  AccountRef,
-  DirectoryStatement,
-  FinalPayload,
-  KeyTransitionStatement,
-  ParsedFrame,
-  Timestamp,
-  ForumCursor,
-  ForumTopicPage,
-  ForumDiscoveryPage,
+import {
+  ACCOUNT_TYPE_BOT,
+  ACCOUNT_TYPE_SERVICE,
+  type AccountRef,
+  type DirectoryStatement,
+  type FinalPayload,
+  type KeyTransitionStatement,
+  type ParsedFrame,
+  type Timestamp,
+  type ForumCursor,
+  type ForumTopicPage,
+  type ForumDiscoveryPage,
 } from './types'
 
 const semantic = (message: string, location = 'root'): FrankCodecError =>
@@ -569,6 +571,16 @@ export function checkSemantics(
           'spend keys',
           `${P}.14`,
           true,
+        )
+      }
+      if (
+        typed.botRole !== undefined &&
+        typed.accountType !== ACCOUNT_TYPE_BOT &&
+        typed.accountType !== ACCOUNT_TYPE_SERVICE
+      ) {
+        throw semantic(
+          'bot-role requires account-type to be bot (1) or service (2)',
+          `${P}.16`,
         )
       }
       return

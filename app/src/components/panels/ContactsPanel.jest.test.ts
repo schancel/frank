@@ -263,7 +263,7 @@ describe('ContactsPanel navigation', () => {
       const results = wrapper.findAll('[data-test="directory-search-result"]')
       expect(results.length).toBe(1)
       expect(results[0].text()).toContain('Qwen Bot')
-      expect(results[0].text()).toContain('BOT')
+      expect(results[0].text()).toContain('profile.badgeBot')
     })
 
     it('clicking a directory search result adds the contact and navigates to chat', async () => {

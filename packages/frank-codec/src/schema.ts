@@ -63,6 +63,8 @@ import { ErrorCategory, ErrorStage, FrankCodecError } from './errors'
 import { isCompressedPoint, isProofEncoding } from './point'
 import type {
   AccountRef,
+  AccountType,
+  BotRole,
   DirectMessageDelivery,
   ForwardingDeliveryEnvelope,
   DraftPayload,
@@ -1185,10 +1187,10 @@ export function parseDraft(
       // reader's highest supported schema when a newer frame is read through V6.3.
       const preview = schema.effective >= 4
       const optional = preview
-        ? [14]
+        ? [14, 15, 16]
         : schema.effective >= 3
-        ? [5, 6, 7, 9, 14]
-        : [5, 6, 7, 14]
+        ? [5, 6, 7, 9, 14, 15, 16]
+        : [5, 6, 7, 14, 15, 16]
       const m = fields(
         payload,
         P,
@@ -1250,6 +1252,16 @@ export function parseDraft(
         } else {
           st.canonicalUsername = tstr(val14, `${P}.14`, 3, 32)
         }
+      }
+      if (m.has(15)) {
+        st.accountType = Number(
+          uintRange(m.get(15), `${P}.15`, 0n, 3n),
+        ) as AccountType
+      }
+      if (m.has(16)) {
+        st.botRole = Number(
+          uintRange(m.get(16), `${P}.16`, 0n, 7n),
+        ) as BotRole
       }
       if (m.has(5)) {
         st.keyTransitions = asList(m.get(5), `${P}.5`, 1, 16).map((e, i) =>

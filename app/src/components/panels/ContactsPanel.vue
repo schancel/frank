@@ -83,11 +83,20 @@
               </q-avatar>
             </q-item-section>
             <q-item-section class="col" style="min-width: 0">
-              <q-item-label lines="1" class="text-weight-medium ellipsis">
-                {{
-                  item.contact?.profile?.name || formatAddrCompact(item.address)
-                }}
-              </q-item-label>
+              <div class="row items-center no-wrap">
+                <q-item-label lines="1" class="text-weight-medium ellipsis">
+                  {{
+                    item.contact?.profile?.name ||
+                    formatAddrCompact(item.address)
+                  }}
+                </q-item-label>
+                <account-badge
+                  :address="item.address"
+                  :account-type="item.contact?.profile?.accountType"
+                  :bot-role="item.contact?.profile?.botRole"
+                  :is-bot="item.contact?.profile?.isBot"
+                />
+              </div>
               <q-item-label caption lines="1" class="ellipsis">
                 {{ formatAddrCompact(item.address) }}
               </q-item-label>
@@ -169,13 +178,11 @@
                       : formatAddrCompact(res.address))
                   }}
                 </q-item-label>
-                <q-badge
-                  v-if="res.bot"
-                  color="purple"
-                  text-color="white"
-                  label="BOT"
-                  class="q-ml-xs text-bold"
-                  style="font-size: 10px; padding: 2px 4px"
+                <account-badge
+                  :address="res.address"
+                  :account-type="res.accountType"
+                  :bot-role="res.botRole"
+                  :is-bot="res.bot"
                 />
               </div>
               <q-item-label caption lines="1" class="ellipsis">
@@ -263,6 +270,7 @@ import {
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
 import { fromHex } from '@frank/codec'
 import axios from 'axios'
+import AccountBadge from 'src/components/contacts/AccountBadge.vue'
 
 interface NetworkSearchResult {
   address: string
@@ -271,11 +279,14 @@ interface NetworkSearchResult {
   avatar?: string
   bio?: string
   bot?: boolean
+  accountType?: number
+  botRole?: number
 }
 
 export default defineComponent({
   components: {
     IdentityQrDialog,
+    AccountBadge,
   },
   emits: ['closeDrawer'],
   setup(props, { emit }) {
@@ -428,6 +439,8 @@ export default defineComponent({
             let avatar: string | undefined
             let bio: string | undefined
             let bot = false
+            let accountType: number | undefined
+            let botRole: number | undefined
             if (entry.rawBytes && entry.rawBytes.length > 0) {
               try {
                 const decoded = decodeProfileBytes(entry.rawBytes, {
@@ -438,6 +451,8 @@ export default defineComponent({
                 avatar = decoded.avatar
                 bio = decoded.bio
                 bot = Boolean(decoded.bot)
+                accountType = decoded.accountType
+                botRole = decoded.botRole
               } catch {
                 // Ignore profile decode errors
               }
@@ -457,6 +472,8 @@ export default defineComponent({
                 avatar,
                 bio,
                 bot,
+                accountType,
+                botRole,
               })
             }
           }
@@ -511,6 +528,8 @@ export default defineComponent({
               avatar: item.avatar ?? null,
               pubKey: null,
               isBot: item.bot ?? false,
+              accountType: item.accountType,
+              botRole: item.botRole,
             },
           },
         })

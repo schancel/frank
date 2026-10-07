@@ -567,6 +567,8 @@ pub(crate) enum Draft {
         profile_entries: Option<Vec<ProfileEntryDraft>>,
         preview: Option<PreviewDirectoryRoles>,
         canonical_username: Option<String>,
+        account_type: Option<crate::model::AccountType>,
+        bot_role: Option<crate::model::BotRole>,
         unknown: Vec<(u64, CborValue)>,
     },
     Recipient {
@@ -1150,12 +1152,12 @@ pub(crate) fn parse_draft(
             // reader reads the statement through V6.3 and retains it. `effective` is the exact
             // version, or the reader's highest supported schema when the frame is newer (V6.3).
             let optional: &[u64] = if schema.effective >= 3 {
-                &[5, 6, 7, 9, 14]
+                &[5, 6, 7, 9, 14, 15, 16]
             } else {
-                &[5, 6, 7, 14]
+                &[5, 6, 7, 14, 15, 16]
             };
             let preview = schema.effective >= 4;
-            let optional = if preview { &[14][..] } else { optional };
+            let optional = if preview { &[14, 15, 16][..] } else { optional };
             let required: &[u64] = if preview {
                 &[0, 1, 2, 3, 4, 6, 8, 10, 11, 12, 13]
             } else if schema.effective >= 2 {
@@ -1269,6 +1271,18 @@ pub(crate) fn parse_draft(
                 },
                 canonical_username: if map.has(14) {
                     Some(tstr(map.get(14), &format!("{path}.14"), 3, 32)?)
+                } else {
+                    None
+                },
+                account_type: if map.has(15) {
+                    let v = u64_in(map.get(15), &format!("{path}.15"), 0, 3)?;
+                    Some(crate::model::AccountType::from_u64(v).expect("validated 0..=3"))
+                } else {
+                    None
+                },
+                bot_role: if map.has(16) {
+                    let v = u64_in(map.get(16), &format!("{path}.16"), 0, 7)?;
+                    Some(crate::model::BotRole::from_u64(v).expect("validated 0..=7"))
                 } else {
                     None
                 },

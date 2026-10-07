@@ -45,6 +45,13 @@
           <q-item-label lines="1" class="text-weight-medium text-body2">{{
             subjectOrName
           }}</q-item-label>
+          <account-badge
+            v-if="effectiveAddress && !conversation?.topic"
+            :address="effectiveAddress"
+            :account-type="targetProfile?.accountType"
+            :bot-role="targetProfile?.botRole"
+            :is-bot="targetProfile?.isBot"
+          />
         </div>
         <q-item-label
           caption
@@ -106,8 +113,12 @@ import {
 } from 'src/utils/own-address'
 import { formatConversationTimestamp } from 'src/utils/formatting'
 import { toChainDisplayAddress } from 'src/utils/chain-address'
+import AccountBadge from 'src/components/contacts/AccountBadge.vue'
 
 export default defineComponent({
+  components: {
+    AccountBadge,
+  },
   setup() {
     const contacts = useContactStore()
     const chats = useChatStore()
@@ -256,6 +267,15 @@ export default defineComponent({
       return this.effectiveAddress
         ? this.getContactProfile(this.effectiveAddress)
         : { name: '', avatar: undefined }
+    },
+    targetProfile() {
+      if (
+        this.effectiveAddress &&
+        sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
+      ) {
+        return this.myProfile.profile
+      }
+      return this.contact
     },
     contactName(): string {
       if (

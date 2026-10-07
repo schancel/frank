@@ -7,6 +7,7 @@ import type { MessageItem } from "@frank/cashweb/types/messages";
 import type { DirectMessageSendResult } from "@frank/wallet/chain";
 import type { ForumMessageEntry } from "@frank/wallet/forum-model";
 
+import type { AccountType, BotRole } from "@frank/codec";
 export type { MessageItem, DirectMessageSendResult, ForumMessageEntry };
 
 export function toChainAddress(raw: string): { raw: string } {
@@ -19,6 +20,8 @@ export interface BotProfile {
   avatar?: string | Uint8Array;
   avatarPng?: Uint8Array;
   bot?: boolean; // defaults to true
+  accountType?: AccountType;
+  botRole?: BotRole;
 }
 
 export interface DirectoryPeerInfo {

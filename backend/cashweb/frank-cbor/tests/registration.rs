@@ -1188,3 +1188,169 @@ fn directory_statement_canonical_username_signed_attestation() {
         other => panic!("expected cryptographic error, got {other:?}"),
     }
 }
+
+#[test]
+fn directory_statement_account_type_and_bot_role_round_trip() {
+    let ctx = default_context();
+    let pub_key_bytes = vec![2u8; 33];
+    let subj = frank_cbor::AccountRef {
+        key_type: 1,
+        key_bytes: pub_key_bytes.clone(),
+    };
+    let relay = frank_cbor::RelayBinding {
+        relay_id: vec![3u8; 16],
+        endpoint: "https://relay.example/r".to_string(),
+        identity: subj.clone(),
+        expiry: frank_cbor::Timestamp {
+            seconds: 2000,
+            nanoseconds: 0,
+        },
+        unknown: vec![],
+    };
+
+    // Test Bot with Faucet role
+    let ts = frank_cbor::Timestamp {
+        seconds: 50,
+        nanoseconds: 0,
+    };
+    let bytes = frank_cbor::encode_directory_statement(
+        3,
+        2,
+        &frank_cbor::DirectoryStatementParams {
+            network: NET,
+            subject: &subj,
+            revision: 100,
+            timestamp: &ts,
+            relays: &[relay.clone()],
+            expiry: None,
+            recovery: None,
+            stamp_key: Some(&subj),
+            profile_entries: None,
+            canonical_username: None,
+            account_type: Some(frank_cbor::AccountType::Service),
+            bot_role: Some(frank_cbor::BotRole::Faucet),
+        },
+    )
+    .expect("encode succeeds");
+
+    let res = validate_frame(&bytes, &ctx).expect("validates");
+    let ValidationResult::Parsed(parsed) = res else {
+        panic!("expected parsed");
+    };
+    let Some(TypedPayload::DirectoryStatement {
+        account_type,
+        bot_role,
+        ..
+    }) = parsed.typed.as_deref()
+    else {
+        panic!("expected directory statement");
+    };
+    assert_eq!(account_type, &Some(frank_cbor::AccountType::Service));
+    assert_eq!(bot_role, &Some(frank_cbor::BotRole::Faucet));
+}
+
+#[test]
+fn directory_statement_account_type_and_bot_role_rejections() {
+    let ctx = default_context();
+    let pub_key_bytes = vec![2u8; 33];
+    let account = |key: &[u8]| common::stamp_account(&hex::encode(key));
+
+    // Out of bounds account_type (> 3) -> Schema error
+    let invalid_type_cbor = common::fr(
+        4,
+        &frank_cbor::cbor_map(vec![
+            (0, frank_cbor::CborValue::Text(NET.to_string())),
+            (1, account(&pub_key_bytes)),
+            (2, frank_cbor::CborValue::Int(1)),
+            (3, common::ts(100, 0)),
+            (
+                4,
+                frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
+                    (
+                        1,
+                        frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
+                    ),
+                    (2, account(&pub_key_bytes)),
+                    (3, common::ts(2000, 0)),
+                ])]),
+            ),
+            (8, account(&pub_key_bytes)),
+            (15, frank_cbor::CborValue::Int(4)), // Invalid: > 3
+        ]),
+    );
+    let err = validate_frame(&invalid_type_cbor, &ctx).expect_err("account_type > 3 must reject");
+    match err {
+        Error::Codec(codec) => {
+            assert_eq!(codec.category, ErrorCategory::Schema);
+        }
+        other => panic!("expected Schema error, got {other:?}"),
+    }
+
+    // Out of bounds bot_role (> 7) -> Schema error
+    let invalid_role_cbor = common::fr(
+        4,
+        &frank_cbor::cbor_map(vec![
+            (0, frank_cbor::CborValue::Text(NET.to_string())),
+            (1, account(&pub_key_bytes)),
+            (2, frank_cbor::CborValue::Int(1)),
+            (3, common::ts(100, 0)),
+            (
+                4,
+                frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
+                    (
+                        1,
+                        frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
+                    ),
+                    (2, account(&pub_key_bytes)),
+                    (3, common::ts(2000, 0)),
+                ])]),
+            ),
+            (8, account(&pub_key_bytes)),
+            (15, frank_cbor::CborValue::Int(1)), // Bot
+            (16, frank_cbor::CborValue::Int(8)), // Invalid: > 7
+        ]),
+    );
+    let err = validate_frame(&invalid_role_cbor, &ctx).expect_err("bot_role > 7 must reject");
+    match err {
+        Error::Codec(codec) => {
+            assert_eq!(codec.category, ErrorCategory::Schema);
+        }
+        other => panic!("expected Schema error, got {other:?}"),
+    }
+
+    // bot_role on Person (account_type 0) -> Semantic error
+    let semantic_err_cbor = common::fr(
+        4,
+        &frank_cbor::cbor_map(vec![
+            (0, frank_cbor::CborValue::Text(NET.to_string())),
+            (1, account(&pub_key_bytes)),
+            (2, frank_cbor::CborValue::Int(1)),
+            (3, common::ts(100, 0)),
+            (
+                4,
+                frank_cbor::CborValue::Array(vec![frank_cbor::cbor_map(vec![
+                    (0, frank_cbor::CborValue::Bytes(vec![2; 16])),
+                    (
+                        1,
+                        frank_cbor::CborValue::Text("https://relay.example/r".to_string()),
+                    ),
+                    (2, account(&pub_key_bytes)),
+                    (3, common::ts(2000, 0)),
+                ])]),
+            ),
+            (8, account(&pub_key_bytes)),
+            (15, frank_cbor::CborValue::Int(0)), // Person
+            (16, frank_cbor::CborValue::Int(1)), // Role on a person!
+        ]),
+    );
+    let err = validate_frame(&semantic_err_cbor, &ctx)
+        .expect_err("bot_role on person must reject semantically");
+    match err {
+        Error::Codec(codec) => {
+            assert_eq!(codec.category, ErrorCategory::Semantic);
+        }
+        other => panic!("expected Semantic error, got {other:?}"),
+    }
+}

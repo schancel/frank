@@ -97,6 +97,13 @@ import type { MailboxAuthParams } from '@frank/cashweb/relay/monad-mailbox-clien
 import { relayOriginHeader } from '@frank/cashweb/relay/origin-header'
 
 import {
+  AccountType,
+  BotRole,
+  ACCOUNT_TYPE_PERSON,
+  ACCOUNT_TYPE_BOT,
+  ACCOUNT_TYPE_SERVICE,
+  ACCOUNT_TYPE_ORGANIZATION,
+  BOT_ROLE_GENERIC,
   Encodable,
   cborMap,
   compareAccounts,
@@ -280,16 +287,29 @@ export interface MonadProfileFields {
   location?: string
   links?: MonadProfileLink[]
   avatar?: string
-  /** Marks the profile as an automated account (#311). Signed as an ordinary profile `Entry`
-   * with kind {@link MONAD_PROFILE_BOT_KIND} -- `Entry.kind` is an open string and the registry
-   * ignores kinds it does not know, so this needs no proto or backend change. It is
-   * self-asserted, which is enough for cooperating bots (see `packages/bot/bot-loop-guard.ts`,
-   * which also supports an operator address denylist for bots that do not set it). */
+  /** Marks the profile as an automated account (#311). */
   bot?: boolean
+  /** Account type (ticket #1120). 0=person, 1=bot, 2=service, 3=org. Defaults to person (0). */
+  accountType?: AccountType
+  /** Specialized bot or service role (ticket #1120). 0..7. */
+  botRole?: BotRole
 }
 
 /** `Entry.kind` of the self-declared "this account is a bot" profile marker (#311). */
 export const MONAD_PROFILE_BOT_KIND = 'bot'
+
+/** Whether a profile represents an automated account (bot or service) (ticket #1120). */
+export function isBotAccount(profile?: {
+  accountType?: AccountType
+  bot?: boolean
+}): boolean {
+  if (!profile) return false
+  return (
+    profile.accountType === ACCOUNT_TYPE_BOT ||
+    profile.accountType === ACCOUNT_TYPE_SERVICE ||
+    profile.bot === true
+  )
+}
 
 /** Whether a decoded profile `SignedPayload` carries the {@link MONAD_PROFILE_BOT_KIND} marker.
  * Unparseable payloads are not bots (callers that must fail closed handle lookup errors
@@ -679,6 +699,19 @@ export function buildSignedDirectoryStatement(
     ])
   }
 
+  const accountType =
+    options.profile?.accountType !== undefined
+      ? options.profile.accountType
+      : options.profile?.bot
+      ? ACCOUNT_TYPE_BOT
+      : undefined
+  if (accountType !== undefined) {
+    type4MapEntries.push([15, BigInt(accountType)])
+  }
+  if (options.profile?.botRole !== undefined) {
+    type4MapEntries.push([16, BigInt(options.profile.botRole)])
+  }
+
   const type4Frame = encodeFrame(
     { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
     cborMap(type4MapEntries),
@@ -784,6 +817,8 @@ export interface DecodedProfile {
   location?: string
   links?: MonadProfileLink[]
   bot?: boolean
+  accountType?: AccountType
+  botRole?: BotRole
   avatar?: string
   signedPayload: InstanceType<typeof SignedPayload>
   spendKeys?: Array<{ keyType: number; keyBytes: Uint8Array }>
@@ -951,6 +986,18 @@ export function decodeProfileBytes(
       signedPayload.setSignature(validated.typed.signatures[0].signature)
     }
 
+    const accountType =
+      stmt.accountType !== undefined
+        ? stmt.accountType
+        : bot
+        ? ACCOUNT_TYPE_BOT
+        : ACCOUNT_TYPE_PERSON
+    const botRole = stmt.botRole
+    const isBot =
+      accountType === ACCOUNT_TYPE_BOT ||
+      accountType === ACCOUNT_TYPE_SERVICE ||
+      bot === true
+
     return {
       pubKey,
       timestampMs,
@@ -961,7 +1008,9 @@ export function decodeProfileBytes(
       bio,
       location,
       links: links.length > 0 ? links : undefined,
-      bot,
+      bot: isBot ? true : undefined,
+      accountType,
+      botRole,
       avatar,
       signedPayload,
       spendKeys,
@@ -1059,6 +1108,8 @@ export function decodeProfileBytes(
   }
   spendKeys.sort(compareAccounts)
 
+  const isBot = bot === true
+  const accountType = isBot ? ACCOUNT_TYPE_BOT : ACCOUNT_TYPE_PERSON
   return {
     pubKey,
     timestampMs: metadata.getTimestamp(),
@@ -1068,7 +1119,8 @@ export function decodeProfileBytes(
     bio,
     location,
     links: links.length > 0 ? links : undefined,
-    bot,
+    bot: isBot ? true : undefined,
+    accountType,
     avatar,
     signedPayload,
     spendKeys,
@@ -1137,6 +1189,8 @@ export async function fetchMonadProfile(params: {
     if (decoded.links !== undefined) result.links = decoded.links
     if (decoded.bot !== undefined) result.bot = decoded.bot
     if (decoded.avatar !== undefined) result.avatar = decoded.avatar
+    if (decoded.accountType !== undefined) result.accountType = decoded.accountType
+    if (decoded.botRole !== undefined) result.botRole = decoded.botRole
     if (decoded.spendKeys !== undefined) result.spendKeys = decoded.spendKeys
     if (decoded.curveKeys !== undefined) result.curveKeys = decoded.curveKeys
     return result

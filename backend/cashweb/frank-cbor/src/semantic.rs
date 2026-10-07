@@ -638,6 +638,8 @@ pub(crate) fn check_semantics(
             stamp_key,
             profile_entries,
             canonical_username,
+            account_type,
+            bot_role,
             ..
         } => {
             crate::directory_preview::check_statement(typed)?;
@@ -721,6 +723,15 @@ pub(crate) fn check_semantics(
                         &format!("{path}.14"),
                     ));
                 }
+            }
+            if bot_role.is_some()
+                && *account_type != Some(crate::model::AccountType::Bot)
+                && *account_type != Some(crate::model::AccountType::Service)
+            {
+                return Err(semantic(
+                    "bot-role requires account-type to be bot (1) or service (2)",
+                    &format!("{path}.16"),
+                ));
             }
             Ok(())
         }

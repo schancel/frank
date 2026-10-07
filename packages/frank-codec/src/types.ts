@@ -175,10 +175,48 @@ export interface DirectoryStatement<F> {
   preview?: PreviewDirectoryRoles
   /** Field 14: optional canonical username handle (ticket #972). */
   canonicalUsername?: string
+  /** Field 15: optional account type (ticket #1120). */
+  accountType?: AccountType
+  /** Field 16: optional bot/service role (ticket #1120). */
+  botRole?: BotRole
   /** Advertised curve spend keys (field 14). */
   spendKeys?: AccountRef[]
   unknownFields: UnknownFields
 }
+
+/**
+ * Account type for a directory statement (ticket #1120).
+ * 0 = person (default if omitted)
+ * 1 = bot (automated agent)
+ * 2 = service (system/infrastructure daemon, e.g. faucet, bridge)
+ * 3 = organization (team, DAO, collective)
+ */
+export type AccountType = 0 | 1 | 2 | 3
+export const ACCOUNT_TYPE_PERSON = 0
+export const ACCOUNT_TYPE_BOT = 1
+export const ACCOUNT_TYPE_SERVICE = 2
+export const ACCOUNT_TYPE_ORGANIZATION = 3
+
+/**
+ * Specialized bot or service role (ticket #1120).
+ * 0 = generic / unclassified bot
+ * 1 = conversational / LLM agent (e.g. Qwen)
+ * 2 = token distribution faucet
+ * 3 = interactive gaming (e.g. poker, dice, blackjack)
+ * 4 = cross-protocol gateway (e.g. email bridge)
+ * 5 = store or commerce vendor
+ * 6 = room or community moderator
+ * 7 = broadcast or notification announcer
+ */
+export type BotRole = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7
+export const BOT_ROLE_GENERIC = 0
+export const BOT_ROLE_ASSISTANT = 1
+export const BOT_ROLE_FAUCET = 2
+export const BOT_ROLE_GAME = 3
+export const BOT_ROLE_BRIDGE = 4
+export const BOT_ROLE_MERCHANT = 5
+export const BOT_ROLE_MODERATOR = 6
+export const BOT_ROLE_ANNOUNCER = 7
 
 /** Required schema-4 fields, never inferred from the subject or a profile. */
 export interface PreviewDirectoryRoles {

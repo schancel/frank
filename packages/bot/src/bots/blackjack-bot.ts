@@ -27,6 +27,7 @@ import {
 import { CANONICAL_EVM_CONTRACTS } from "@frank/wallet/chain/chains-registry";
 import { encodeStateChannelCloseCall } from "@frank/wallet/game-escrow";
 import { generateAvatarPng } from "../../bot-directory";
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { welcomeItems } from "../../blackjack-greeter";
 
 export interface ActiveGameRecord {
@@ -152,6 +153,8 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       bio: "Automated blackjack dealer. Send a wager to start a provably fair hand.",
       avatarPng: generateAvatarPng("blackjack", [200, 60, 60]),
       bot: true,
+      accountType: ACCOUNT_TYPE_BOT,
+      botRole: BOT_ROLE_GAME,
     };
   }
 

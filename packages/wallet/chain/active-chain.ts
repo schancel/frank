@@ -62,8 +62,8 @@ export type {
   WalletSyncItem,
   PaymentTransferItem,
 } from "@frank/cashweb/types/messages";
-import type { PaymentTransfer } from "@frank/codec";
-export type { PaymentTransfer } from "@frank/codec";
+import type { AccountType, BotRole, PaymentTransfer } from "@frank/codec";
+export type { AccountType, BotRole, PaymentTransfer } from "@frank/codec";
 import type { MonadRootBundle } from "../monad-wallet-material";
 export type { MonadRootBundle } from "../monad-wallet-material";
 import {
@@ -134,6 +134,10 @@ export interface ProfileInfo {
   avatar?: string;
   /** Self-declared automated account (#311); see `MonadProfileFields.bot`. */
   bot?: boolean;
+  /** Account type (ticket #1120). 0=person, 1=bot, 2=service, 3=org. */
+  accountType?: AccountType;
+  /** Specialized bot or service role (ticket #1120). */
+  botRole?: BotRole;
   spendKeys?: Array<{ keyType: number; keyBytes: Uint8Array }>;
   curveKeys?: {
     secp256k1?: Uint8Array;

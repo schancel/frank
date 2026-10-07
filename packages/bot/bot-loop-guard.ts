@@ -26,6 +26,7 @@
 import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/monad-message-envelope'
 import {
   fetchMonadProfile,
+  isBotAccount,
   isBotProfileSignedPayload,
 } from '@frank/wallet/monad-identity'
 import __pb_signed_payload_payload_pb from '@frank/cashweb/signed_payload/payload_pb'
@@ -78,13 +79,13 @@ export class BotLoopGuard {
     this.now = options.now ?? Date.now
     this.lookupIsBot =
       options.lookupIsBot ??
-      (async address =>
-        (
-          await fetchMonadProfile({
-            relayBaseUrl: options.relayBaseUrl,
-            address: { raw: address },
-          })
-        )?.bot === true)
+      (async address => {
+        const profile = await fetchMonadProfile({
+          relayBaseUrl: options.relayBaseUrl,
+          address: { raw: address },
+        })
+        return isBotAccount(profile)
+      })
   }
 
   /** Synchronous checks that need no network: ourselves and the operator denylist. Also what the

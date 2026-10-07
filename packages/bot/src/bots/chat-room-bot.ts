@@ -6,6 +6,7 @@ import type {
   NewUserEvent,
 } from "@frank/bot-framework";
 import type { MessageItem } from "@frank/cashweb/types/messages";
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_MODERATOR } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
 
 export class ChatRoomBot implements FrankBotDefinition {
@@ -20,6 +21,8 @@ export class ChatRoomBot implements FrankBotDefinition {
       bio: "Community group chat rooms. Send /join to enter #general, /rooms to list rooms, /help for commands.",
       avatarPng: generateAvatarPng("lobby", [30, 140, 220]),
       bot: true,
+      accountType: ACCOUNT_TYPE_BOT,
+      botRole: BOT_ROLE_MODERATOR,
     };
   }
 

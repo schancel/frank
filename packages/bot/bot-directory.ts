@@ -7,6 +7,17 @@
  */
 import { deflateSync } from 'zlib'
 
+import {
+  ACCOUNT_TYPE_BOT,
+  ACCOUNT_TYPE_SERVICE,
+  BOT_ROLE_ASSISTANT,
+  BOT_ROLE_FAUCET,
+  BOT_ROLE_GAME,
+  BOT_ROLE_MERCHANT,
+  BOT_ROLE_MODERATOR,
+  type AccountType,
+  type BotRole,
+} from '@frank/codec'
 import { MonadProfileFields } from '@frank/wallet/monad-identity'
 
 export type BotKey =
@@ -30,6 +41,8 @@ export interface BotProfileSpec {
   identityDefaultPath: string
   /** Avatar accent colour (RGB). */
   accent: [number, number, number]
+  accountType?: AccountType
+  botRole?: BotRole
 }
 
 /** Order is the order they appear in the printed curated defaults. */
@@ -41,6 +54,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'BLACKJACK_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/blackjack-bot-identity.json',
     accent: [200, 60, 60],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_GAME,
   },
   {
     key: 'raffle',
@@ -49,6 +64,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'RAFFLE_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/raffle-bot-identity.json',
     accent: [230, 160, 40],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_GAME,
   },
   {
     key: 'vendor',
@@ -57,6 +74,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'VENDOR_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/vendor-bot-identity.json',
     accent: [60, 150, 90],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_MERCHANT,
   },
   {
     key: 'qwen',
@@ -65,6 +84,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'QWEN_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/qwen-bot-identity.json',
     accent: [110, 90, 220],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_ASSISTANT,
   },
   {
     key: 'faucet',
@@ -73,6 +94,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'FAUCET_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/faucet-bot-identity.json',
     accent: [40, 160, 220],
+    accountType: ACCOUNT_TYPE_SERVICE,
+    botRole: BOT_ROLE_FAUCET,
   },
   {
     key: 'lobby',
@@ -81,6 +104,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'LOBBY_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/lobby-bot-identity.json',
     accent: [30, 140, 220],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_MODERATOR,
   },
   {
     key: 'rps',
@@ -89,6 +114,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'RPS_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/rps-bot-identity.json',
     accent: [220, 100, 30],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_GAME,
   },
   {
     key: 'dice',
@@ -97,6 +124,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'DICE_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/dice-bot-identity.json',
     accent: [180, 50, 180],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_GAME,
   },
   {
     key: 'liars-dice',
@@ -105,6 +134,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'LIARS_DICE_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/liars-dice-bot-identity.json',
     accent: [40, 180, 120],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_GAME,
   },
   {
     key: 'poker',
@@ -113,6 +144,8 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'POKER_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/poker-bot-identity.json',
     accent: [180, 40, 40],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_GAME,
   },
 ]
 
@@ -201,5 +234,7 @@ export function botProfileFields(key: BotKey): MonadProfileFields {
       spec.accent,
     ).toString('base64')}`,
     bot: true,
+    accountType: spec.accountType ?? ACCOUNT_TYPE_BOT,
+    botRole: spec.botRole,
   }
 }

@@ -199,6 +199,8 @@ function productionDeps(): MessagingDeps {
             (existing.location ?? '') === (profile?.location ?? '') &&
             (existing.bio ?? '') === (profile?.bio ?? '') &&
             (existing.avatar ?? '') === (profile?.avatar ?? '') &&
+            (existing.accountType ?? 0) === (profile?.accountType ?? 0) &&
+            existing.botRole === profile?.botRole &&
             JSON.stringify(existing.links ?? []) ===
               JSON.stringify(profile?.links ?? [])
           ) {

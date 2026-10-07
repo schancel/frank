@@ -8,6 +8,7 @@ import type {
 } from "@frank/bot-framework";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import { formatMon, parseMon } from "@frank/wallet/monad-amount";
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
 
 export type RpsMove = "rock" | "paper" | "scissors";
@@ -68,6 +69,8 @@ export class RpsBot implements FrankBotDefinition {
       bio: "Provably-fair Rock-Paper-Scissors! Play against the bot or challenge other players.",
       avatarPng: generateAvatarPng("rps", [220, 80, 50]),
       bot: true,
+      accountType: ACCOUNT_TYPE_BOT,
+      botRole: BOT_ROLE_GAME,
     };
   }
 

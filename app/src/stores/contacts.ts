@@ -100,6 +100,8 @@ type Profile = {
    * yet; only an explicit `true` counts. A copied name plus this flag is still not a verified
    * key (#217). */
   isBot?: boolean
+  accountType?: number
+  botRole?: number
 }
 
 export type ContactState = {
@@ -165,6 +167,8 @@ type RestorableContactState = {
     avatar: string | null
     pubKey: Uint8Array | null
     isBot?: boolean
+    accountType?: number
+    botRole?: number
   }
   inbox: {
     acceptancePrice?: number
@@ -503,6 +507,14 @@ export const useContactStore = defineStore('contacts', {
     clearCuratedDefaults() {
       this.curatedDefaults = []
     },
+    isCurated(address: string): boolean {
+      try {
+        const canonical = toChainDisplayAddress(address)
+        return this.curatedDefaults.some(d => d.address === canonical)
+      } catch {
+        return false
+      }
+    },
     async refreshContacts() {
       for (const address of Object.keys(this.contacts)) {
         await this.refresh(address)
@@ -549,6 +561,8 @@ export const useContactStore = defineStore('contacts', {
               ...oldContactInfo.profile,
               signedName: oldContactInfo.profile.signedName ?? null,
               isBot: oldContactInfo.profile.isBot ?? false,
+              accountType: oldContactInfo.profile.accountType ?? 0,
+              botRole: oldContactInfo.profile.botRole,
             },
             inbox: oldContactInfo.inbox,
           })
@@ -577,6 +591,8 @@ export const useContactStore = defineStore('contacts', {
               profileInfo.location ?? oldContactInfo.profile.location ?? null,
             links: profileInfo.links ?? oldContactInfo.profile.links ?? [],
             isBot: profileInfo.bot === true,
+            accountType: profileInfo.accountType,
+            botRole: profileInfo.botRole,
             pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
           },
           inbox: oldContactInfo.inbox,

@@ -148,6 +148,10 @@ pub struct DirectoryStatementParams<'a> {
     pub profile_entries: Option<&'a [ProfileEntry]>,
     /// Field 14: optional canonical username handle.
     pub canonical_username: Option<&'a str>,
+    /// Field 15: optional account type (ticket #1120).
+    pub account_type: Option<crate::model::AccountType>,
+    /// Field 16: optional bot/service role (ticket #1120).
+    pub bot_role: Option<crate::model::BotRole>,
 }
 
 fn encode_account(acc: &AccountRef) -> CborValue {
@@ -248,6 +252,23 @@ pub fn encode_directory_statement_payload(
 
     if let Some(username) = params.canonical_username {
         entries.push((14, CborValue::Text(username.to_string())));
+    }
+
+    if params.bot_role.is_some()
+        && params.account_type != Some(crate::model::AccountType::Bot)
+        && params.account_type != Some(crate::model::AccountType::Service)
+    {
+        return Err(usage(
+            "bot_role requires account_type to be Bot (1) or Service (2)",
+        ));
+    }
+
+    if let Some(account_type) = params.account_type {
+        entries.push((15, CborValue::Int(i128::from(account_type.to_u64()))));
+    }
+
+    if let Some(bot_role) = params.bot_role {
+        entries.push((16, CborValue::Int(i128::from(bot_role.to_u64()))));
     }
 
     entries.sort_by_key(|(k, _)| *k);

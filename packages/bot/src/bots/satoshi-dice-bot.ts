@@ -28,6 +28,8 @@ import {
   type CanonicalParticipantBalance,
   type CanonicalSignatureEntry,
   type DiceGamePayload,
+  ACCOUNT_TYPE_BOT,
+  BOT_ROLE_GAME,
 } from "@frank/codec";
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { sha256 } from "@noble/hashes/sha256";
@@ -170,6 +172,8 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       bio: "The original crypto dice game. Provably fair 16-bit rolls, 1.9% house edge, multipliers up to 981x! Send /roll to play.",
       avatarPng: generateAvatarPng("dice", [240, 100, 20]),
       bot: true,
+      accountType: ACCOUNT_TYPE_BOT,
+      botRole: BOT_ROLE_GAME,
     };
   }
 

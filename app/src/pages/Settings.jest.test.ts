@@ -39,14 +39,32 @@ jest.mock('nostics', () => ({
   createConsoleReporter: () => ({}),
   defineDiagnostics: () => new Proxy({}, { get: () => () => undefined }),
 }))
+const mockApplyTheme = jest.fn()
+jest.mock('src/utils/theme', () => {
+  const actual = jest.requireActual('src/utils/theme')
+  return {
+    ...actual,
+    applyTheme: (...args: any[]) => mockApplyTheme(...args),
+  }
+})
 jest.mock('pinia', () => ({
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
+const mockSetTheme = jest.fn((theme: string) => {
+  mockAppearanceStore.theme = theme
+})
+const mockSetDarkMode = jest.fn((darkMode: boolean) => {
+  mockAppearanceStore.darkMode = darkMode
+})
+const mockAppearanceStore = jest.requireActual('vue').reactive({
+  darkMode: false,
+  locale: 'en-us',
+  theme: 'carnelian',
+  setDarkMode: mockSetDarkMode,
+  setTheme: mockSetTheme,
+})
 jest.mock('src/stores/appearance', () => ({
-  useAppearanceStore: () =>
-    jest
-      .requireActual('vue')
-      .reactive({ darkMode: false, locale: 'en-us', theme: 'carnelian' }),
+  useAppearanceStore: () => mockAppearanceStore,
 }))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () =>
@@ -106,6 +124,15 @@ function mountSettings(router: Router, qMocks: Record<string, any> = {}) {
 type SettingsVm = { save: () => void; cancel: () => void }
 
 describe('Settings Save/Cancel navigation (ticket #275 / #1001)', () => {
+  beforeEach(() => {
+    mockApplyTheme.mockClear()
+    mockSetTheme.mockClear()
+    mockSetDarkMode.mockClear()
+    mockAppearanceStore.darkMode = false
+    mockAppearanceStore.locale = 'en-us'
+    mockAppearanceStore.theme = 'carnelian'
+  })
+
   it('cancel stays inside the app when Settings was opened directly', async () => {
     const router = await openDirectly('#/settings')
     const wrapper = mountSettings(router)
@@ -142,6 +169,90 @@ describe('Settings Save/Cancel navigation (ticket #275 / #1001)', () => {
         message: 'settings.savedNotification',
       }),
     )
+  })
+})
+
+describe('Settings Signet Theme Live Preview and Persistence (#1041)', () => {
+  beforeEach(() => {
+    mockApplyTheme.mockClear()
+    mockSetTheme.mockClear()
+    mockSetDarkMode.mockClear()
+    mockAppearanceStore.darkMode = false
+    mockAppearanceStore.locale = 'en-us'
+    mockAppearanceStore.theme = 'carnelian'
+  })
+
+  it('selecting a theme stone applies live preview immediately', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+
+    ;(wrapper.vm as any).selectTheme('lapis')
+
+    expect((wrapper.vm as any).theme).toBe('lapis')
+    expect(mockApplyTheme).toHaveBeenCalledWith('lapis', false)
+  })
+
+  it('onSelectTheme also updates theme and applies live preview', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+
+    ;(wrapper.vm as any).onSelectTheme('bloodstone')
+
+    expect((wrapper.vm as any).theme).toBe('bloodstone')
+    expect(mockApplyTheme).toHaveBeenCalledWith('bloodstone', false)
+  })
+
+  it('cancel reverts the previewed theme to the store theme and navigates back', async () => {
+    const router = await openDirectly('#/forum')
+    await router.push('/settings')
+    const wrapper = mountSettings(router)
+
+    ;(wrapper.vm as any).selectTheme('bloodstone')
+    expect(mockApplyTheme).toHaveBeenCalledWith('bloodstone', false)
+
+    ;(wrapper.vm as unknown as SettingsVm).cancel()
+
+    expect(mockApplyTheme).toHaveBeenLastCalledWith('carnelian', false)
+    expect(await waitForPath(router, '/forum')).toBe('/forum')
+  })
+
+  it('unmounting without saving reverts the previewed theme to the store theme', async () => {
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router)
+
+    ;(wrapper.vm as any).selectTheme('onyx')
+    expect(mockApplyTheme).toHaveBeenCalledWith('onyx', false)
+
+    wrapper.unmount()
+
+    expect(mockApplyTheme).toHaveBeenLastCalledWith('carnelian', false)
+  })
+
+  it('save calls appearanceStore.setTheme and appearanceStore.setDarkMode, applies theme, and stays on settings', async () => {
+    const notifyMock = jest.fn()
+    const router = await openDirectly('#/settings')
+    const wrapper = mountSettings(router, { notify: notifyMock })
+
+    ;(wrapper.vm as any).selectTheme('sardonyx')
+    ;(wrapper.vm as any).darkMode = true
+
+    ;(wrapper.vm as unknown as SettingsVm).save()
+
+    expect(mockSetTheme).toHaveBeenCalledWith('sardonyx')
+    expect(mockSetDarkMode).toHaveBeenCalledWith(true)
+    expect(mockApplyTheme).toHaveBeenCalledWith('sardonyx', true)
+    expect(router.currentRoute.value.path).toBe('/settings')
+    expect(notifyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'positive',
+        message: 'settings.savedNotification',
+      }),
+    )
+
+    // Unmounting after save must not revert to old carnelian theme
+    mockApplyTheme.mockClear()
+    wrapper.unmount()
+    expect(mockApplyTheme).not.toHaveBeenCalled()
   })
 })
 

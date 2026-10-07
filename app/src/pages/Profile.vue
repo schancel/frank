@@ -241,7 +241,13 @@ export default defineComponent({
       } finally {
         this.$q.loading.hide()
       }
-      navigateBack(this.$router)
+      if (typeof this.$q.notify === 'function') {
+        this.$q.notify({
+          type: 'positive',
+          message: this.$t('profileDialog.savedNotification'),
+          timeout: 2000,
+        })
+      }
     },
     cancel() {
       navigateBack(this.$router)

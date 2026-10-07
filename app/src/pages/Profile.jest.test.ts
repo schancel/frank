@@ -41,6 +41,7 @@ jest.mock('src/utils/notifications', () => ({
 jest.mock('src/utils/navigate-back', () => ({
   navigateBack: jest.fn(),
 }))
+import { navigateBack } from 'src/utils/navigate-back'
 
 const defaultStubs = {
   'Profile': { template: '<div data-test="profile-component"></div>' },
@@ -331,5 +332,57 @@ describe('Profile.vue', () => {
     )
     expect(mockSetRelayData).not.toHaveBeenCalled()
     expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+  })
+
+  it('updateRelayData saves profile, stays on profile page without navigating back, and shows notify (#1041)', async () => {
+    const mockWallet = {
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    }
+    ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
+    const mockNotify = jest.fn()
+
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: {
+            loading: { show: jest.fn(), hide: jest.fn() },
+            notify: mockNotify,
+          },
+        },
+        stubs: defaultStubs,
+      },
+    })
+
+    await (wrapper.vm as any).updateRelayData()
+
+    expect(navigateBack).not.toHaveBeenCalled()
+    expect(mockNotify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'positive',
+        message: 'profileDialog.savedNotification',
+      }),
+    )
+  })
+
+  it('cancel navigates back to previous route', () => {
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+
+    ;(wrapper.vm as any).cancel()
+
+    expect(navigateBack).toHaveBeenCalledWith(expect.anything())
   })
 })

@@ -5,6 +5,7 @@ import { toRaw, reactive } from 'vue'
 import { Wallet } from '@frank/cashweb/legacy-wallet'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
+import { appMultiChainResolver } from '../accounts/sync-router'
 
 export async function getRelayClient({
   wallet,
@@ -24,6 +25,7 @@ export async function getRelayClient({
     },
     networkName,
     messageStore: await levelDbStore,
+    walletResolver: appMultiChainResolver,
   })
   client.events.on('disconnected', () => {
     observables.connected = false

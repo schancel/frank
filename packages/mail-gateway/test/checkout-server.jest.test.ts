@@ -36,17 +36,18 @@ describe('CheckoutServer', () => {
   let ledger: CreditLedger;
   let stampProvider: MockStampProvider;
   let server: CheckoutServer;
-  const testPort = 19876;
+  let testPort: number;
 
   beforeEach(async () => {
     ledger = new CreditLedger(':memory:');
     stampProvider = new MockStampProvider();
     server = new CheckoutServer({
-      port: testPort,
+      port: 0,
       ledger,
       stampProvider,
     });
     await server.start();
+    testPort = server.getPort();
   });
 
   afterEach(async () => {
@@ -127,5 +128,48 @@ describe('CheckoutServer', () => {
     expect(stampProvider.sentMessages[0].recipientAddress).toBe('0xengineer');
     expect(stampProvider.sentMessages[0].text).toContain('Senior Rust Role');
     expect(stampProvider.sentMessages[0].text).toContain('We love your GitHub work!');
+
+    // 4. Visiting payment URL after fulfillment shows confirmed delivery page
+    const payRes = await fetch(`http://127.0.0.1:${testPort}/pay/held_999`);
+    expect(payRes.status).toBe(200);
+    const confirmedHtml = await payRes.text();
+    expect(confirmedHtml).toContain('Payment Confirmed');
+    expect(confirmedHtml).toContain('Delivered to Frank Relay');
+  });
+
+  it('renders payment confirmed page when ?success=true query param is passed', async () => {
+    await ledger.holdMessage({
+      id: 'held_redirect',
+      senderEmail: 'payer@external.com',
+      recipientAddress: '0xrecipient',
+      dkimDomain: 'external.com',
+      subject: 'Hello',
+      rawRfc822: new TextEncoder().encode('Body'),
+      createdAtMs: Date.now(),
+      expiresAtMs: Date.now() + 3600000 * 72,
+    });
+
+    const res = await fetch(`http://127.0.0.1:${testPort}/pay/held_redirect?success=true`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('Payment Confirmed');
+  });
+
+  it('returns 410 Gone when held message has expired', async () => {
+    await ledger.holdMessage({
+      id: 'held_expired',
+      senderEmail: 'old@external.com',
+      recipientAddress: '0xrecipient',
+      dkimDomain: 'external.com',
+      subject: 'Old message',
+      rawRfc822: new TextEncoder().encode('Old body'),
+      createdAtMs: Date.now() - 3600000 * 73,
+      expiresAtMs: Date.now() - 1000,
+    });
+
+    const res = await fetch(`http://127.0.0.1:${testPort}/pay/held_expired`);
+    expect(res.status).toBe(410);
+    const html = await res.text();
+    expect(html).toContain('Message Expired');
   });
 });

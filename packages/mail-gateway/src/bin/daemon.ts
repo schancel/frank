@@ -53,6 +53,8 @@ async function main(): Promise<void> {
     dkimPrivateKey: process.env.DKIM_PRIVATE_KEY || 'mock-dkim-key',
     lowBalanceThresholdWei: 1000n,
     stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || 'whsec_demo',
+    stripePaymentLinkTier1: process.env.STRIPE_PAYMENT_LINK_TIER1,
+    stripePaymentLinkTier2: process.env.STRIPE_PAYMENT_LINK_TIER2,
     paypalClientId: process.env.PAYPAL_CLIENT_ID,
     paypalWebhookId: process.env.PAYPAL_WEBHOOK_ID,
     blobStorage: {

@@ -69,7 +69,7 @@ export class CheckoutServer {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
     if (req.method === 'GET' && url.pathname.startsWith('/pay/')) {
-      return this.renderPaymentPage(url.pathname.slice('/pay/'.length), res);
+      return this.renderPaymentPage(url.pathname.slice('/pay/'.length), url, res);
     }
 
     if (req.method === 'POST' && url.pathname === '/api/webhooks/stripe') {
@@ -172,7 +172,7 @@ export class CheckoutServer {
     });
   }
 
-  private renderPaymentPage(tokenOrId: string, res: ServerResponse): void {
+  private renderPaymentPage(tokenOrId: string, url: URL, res: ServerResponse): void {
     const held = this.ledger.getHeldMessage(tokenOrId);
     if (!held) {
       res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -189,7 +189,69 @@ export class CheckoutServer {
       return;
     }
 
+    if (held.status === 'released' || url.searchParams.get('success') === 'true') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Payment Confirmed — Frank Gateway</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.5; color: #1a1a1a; background: #f8fafc; padding: 2rem 1rem; margin: 0; }
+    .card { background: #ffffff; max-width: 600px; margin: 0 auto; padding: 2.5rem 2rem; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); text-align: center; }
+    .badge-success { display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; border-radius: 50%; background: #dcfce7; color: #16a34a; font-size: 2rem; font-weight: bold; margin-bottom: 1.25rem; }
+    h1 { color: #0f172a; margin: 0 0 0.5rem 0; font-size: 1.5rem; }
+    p { color: #475569; font-size: 0.95rem; margin: 0.5rem 0; }
+    .details { background: #f1f5f9; padding: 1.25rem; border-radius: 8px; margin: 1.5rem 0; text-align: left; font-size: 0.9rem; }
+    .details p { margin: 0.35rem 0; color: #334155; }
+    .details strong { color: #0f172a; }
+    .footer { font-size: 0.85rem; color: #64748b; margin-top: 2rem; }
+    .footer a { color: #2563eb; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge-success">✓</div>
+    <h1>Payment Confirmed</h1>
+    <p>Your email has been cryptographically stamped and delivered to <strong>${escapeHtml(held.recipientAddress)}</strong>.</p>
+    <div class="details">
+      <p><strong>From:</strong> ${escapeHtml(held.senderEmail)}</p>
+      <p><strong>Subject:</strong> ${escapeHtml(held.subject)}</p>
+      <p><strong>Delivery Status:</strong> Delivered to Frank Relay</p>
+    </div>
+    <p style="font-size: 0.9rem; color: #16a34a; font-weight: 500;">
+      A reply allowance has been activated. When the recipient replies, subsequent emails in this thread will be delivered automatically.
+    </p>
+    <div class="footer">
+      Powered by Frank Gateway &bull; <a href="https://frank.org" target="_blank">About Frank</a>
+    </div>
+  </div>
+</body>
+</html>`);
+      return;
+    }
+
+    if (held.status === 'expired' || Date.now() > held.expiresAtMs) {
+      res.writeHead(410, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Message Expired — Frank Gateway</title><style>body{font-family:system-ui,sans-serif;padding:2rem;max-width:600px;margin:auto;color:#222;}</style></head>
+        <body>
+          <h1>Message Expired</h1>
+          <p>This message held duration exceeded its 72-hour TTL and was discarded.</p>
+        </body>
+        </html>
+      `);
+      return;
+    }
+
     const hoursRemaining = Math.max(0, Math.round((held.expiresAtMs - Date.now()) / (1000 * 60 * 60)));
+    const tier1Base = this.stripePaymentLinkTier1 || 'https://buy.stripe.com/mock_tier1';
+    const tier2Base = this.stripePaymentLinkTier2 || 'https://buy.stripe.com/mock_tier2';
+    const tier1Url = `${tier1Base}?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
+    const tier2Url = `${tier2Base}?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}`;
 
     const html = `<!DOCTYPE html>
 <html lang="en">
@@ -247,7 +309,7 @@ export class CheckoutServer {
         </div>
         <div style="text-align:right;">
           <div class="tier-price">$1.00</div>
-          <a class="btn" href="https://buy.stripe.com/mock_tier1?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}">Pay with Card</a>
+          <a class="btn" href="${tier1Url}">Pay with Card</a>
         </div>
       </div>
 
@@ -258,7 +320,7 @@ export class CheckoutServer {
         </div>
         <div style="text-align:right;">
           <div class="tier-price">$3.00</div>
-          <a class="btn" href="https://buy.stripe.com/mock_tier2?client_reference_id=${encodeURIComponent(held.id)}&prefilled_email=${encodeURIComponent(held.senderEmail)}">Pay with Card</a>
+          <a class="btn" href="${tier2Url}">Pay with Card</a>
         </div>
       </div>
     </div>

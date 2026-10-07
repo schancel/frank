@@ -1,13 +1,17 @@
-# Local demo/dev stack: the cashwebd registry/relay talking to real Alchemy-hosted Monad RPC, and
-# the Quasar frontend built to talk to both. Compose auto-loads a `.env` file from this same
-# directory for `${VAR}` substitution below -- the repo's existing gitignored `frank/.env`
-# (see `.env.example`) already has everything this needs.
+# Local demo/dev stack: the cashwebd registry/relay talking to real Alchemy-hosted Monad RPC,
+# the Quasar frontend built to talk to both, Apache Kvrocks for RESP CAS, Core NATS for pubsub,
+# MinIO for S3 blob storage testing, and the Frank Mail Gateway.
+# Compose auto-loads a `.env` file from this same directory for `${VAR}` substitution below --
+# the repo's existing gitignored `frank/.env` (see `.env.example`) already has everything this needs.
 #
 # `MONAD_RELAY_BASE_URL` deliberately defaults to `http://localhost:${BACKEND_PORT}`, not the
 # internal compose service name (`http://backend:8080`): the frontend is a static SPA that runs
 # client-side in the user's browser, not inside the compose network, so it needs a
 # host-machine-reachable URL for the relay it talks to over HTTP.
 services:
+  # ---------------------------------------------------------------------------
+  # 1. Frank Backend Relay (cashwebd Rust daemon)
+  # ---------------------------------------------------------------------------
   backend:
     build:
       context: .
@@ -24,10 +28,19 @@ services:
       XEC_TESTNET_CHRONIK_URL: ${XEC_TESTNET_CHRONIK_URL:-}
       SOLANA_DEVNET_HTTP_RPC_URL: ${SOLANA_DEVNET_HTTP_RPC_URL:-}
       SOLANA_MAINNET_HTTP_RPC_URL: ${SOLANA_MAINNET_HTTP_RPC_URL:-}
+      # Clustered cache & event bus configuration:
+      RESP_URL: ${RESP_URL:-redis://kvrocks:6666}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
     volumes:
       - registry-data:/data
+    depends_on:
+      - kvrocks
+      - nats
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # 2. Frontend (Quasar SPA)
+  # ---------------------------------------------------------------------------
   frontend:
     build:
       # Ticket #53 (package split): context is the repo root now, not ./app -- app/ is a yarn
@@ -54,5 +67,86 @@ services:
       - backend
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # 3. Apache Kvrocks (1 instance - RocksDB backed RESP CAS store)
+  # ---------------------------------------------------------------------------
+  kvrocks:
+    image: apache/kvrocks:2.8.0
+    ports:
+      - '${KVROCKS_PORT:-6666}:6666'
+    volumes:
+      - kvrocks-data:/var/lib/kvrocks/data
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 4. Core NATS Event Bus (Lightweight real-time pubsub)
+  # ---------------------------------------------------------------------------
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - '${NATS_PORT:-4222}:4222'
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 5. S3 Compatible Object Store (MinIO for testing real S3 API surface)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - '${S3_PORT:-9000}:9000'
+      - '${S3_CONSOLE_PORT:-9001}:9001'
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+
+  # One-shot bucket creator to ensure the S3 bucket exists on first boot
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 ${S3_ACCESS_KEY_ID:-minioadmin} ${S3_SECRET_ACCESS_KEY:-minioadmin};
+      /usr/bin/mc mb --ignore-existing local/${S3_BUCKET:-frank-gateway-blobs};
+      exit 0;
+      "
+
+  # ---------------------------------------------------------------------------
+  # 6. Email Gateway (MIME/SMTP ↔ Frank Encrypted DMs)
+  # ---------------------------------------------------------------------------
+  mail-gateway:
+    build:
+      context: .
+      dockerfile: packages/mail-gateway/Dockerfile
+    ports:
+      - '${GATEWAY_SMTP_PORT:-2525}:2525'
+      - '${GATEWAY_HTTP_PORT:-8082}:8082'
+    environment:
+      GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:-frank.org}
+      GATEWAY_RELAY_URL: http://backend:8080
+      GATEWAY_HTTP_PORT: '8082'
+      GATEWAY_SMTP_PORT: '2525'
+      GATEWAY_DB_PATH: /data/gateway.sqlite3
+      BLOB_STORAGE_PROVIDER: ${BLOB_STORAGE_PROVIDER:-s3}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET:-frank-gateway-blobs}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+      S3_FORCE_PATH_STYLE: 'true'
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-whsec_demo}
+    volumes:
+      - gateway-data:/data
+    depends_on:
+      - backend
+      - minio-init
+    restart: unless-stopped
+
 volumes:
   registry-data:
+  kvrocks-data:
+  minio-data:
+  gateway-data:

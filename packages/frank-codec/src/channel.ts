@@ -915,6 +915,8 @@ export function decodeAppPayload(
 ): ModularAppPayload | Uint8Array {
   switch (appId.toLowerCase()) {
     case 'dice':
+    case 'dice-v1':
+    case 'satoshi-dice-v1':
     case 'liars-dice':
       return decodeDiceGamePayload(bytes)
     case 'poker':
@@ -931,6 +933,8 @@ export function decodeAppPayload(
 export function validateAppState(appId: string, bytes: Uint8Array): void {
   switch (appId.toLowerCase()) {
     case 'dice':
+    case 'dice-v1':
+    case 'satoshi-dice-v1':
     case 'liars-dice': {
       const decoded = decodeDiceGamePayload(bytes)
       validateDiceGamePayload(decoded)

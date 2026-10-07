@@ -328,19 +328,22 @@ export function createAccountSession(deps: {
     async getActiveWalletRoot(): Promise<Uint8Array> {
       return this.getActiveDomainRoot('evm-wallet')
     },
-    getCachedChainAddress(
-      chain: 'monad' | 'ecash' | 'solana',
-    ): string | undefined {
+    getCachedChainAddress(chain: string): string | undefined {
       if (chain === 'monad') {
         return (
           chainAddressCache.get('monad') ?? wallet?.identity?.displayAddress
         )
       }
-      return chainAddressCache.get(chain)
+      return (
+        chainAddressCache.get(chain) ??
+        (chain !== 'ecash' &&
+        chain !== 'solana' &&
+        wallet?.identity?.displayAddress
+          ? wallet.identity.displayAddress
+          : undefined)
+      )
     },
-    async getChainAddress(
-      chain: 'monad' | 'ecash' | 'solana',
-    ): Promise<string> {
+    async getChainAddress(chain: string): Promise<string> {
       if (chain === 'monad') {
         const wallet = await session.getWallet()
         let address: unknown
@@ -363,7 +366,12 @@ export function createAccountSession(deps: {
       const inFlight = chainAddressInFlight.get(chain)
       if (inFlight) return inFlight
       const promise = (async () => {
-        const purpose = chain === 'ecash' ? 'ecash-bch-wallet' : 'solana-wallet'
+        const purpose =
+          chain === 'ecash'
+            ? 'ecash-bch-wallet'
+            : chain === 'solana'
+            ? 'solana-wallet'
+            : 'evm-wallet'
         const root = await this.getActiveDomainRoot(purpose)
         try {
           if (chain === 'ecash') {
@@ -384,11 +392,18 @@ export function createAccountSession(deps: {
             const addr = encodeCashAddress(prefix, 'p2pkh', hash160)
             chainAddressCache.set('ecash', addr)
             return addr
-          } else {
+          } else if (chain === 'solana') {
             const { Keypair } = await import('@solana/web3.js')
             const kp = await Keypair.fromSeed(root)
             const addr = kp.publicKey.toBase58()
             chainAddressCache.set('solana', addr)
+            return addr
+          } else {
+            const { HDNodeWallet } = await import('ethers')
+            const hdNode =
+              HDNodeWallet.fromSeed(root).derivePath("m/44'/60'/0'/0/0")
+            const addr = hdNode.address
+            chainAddressCache.set(chain, addr)
             return addr
           }
         } finally {

@@ -19,6 +19,18 @@
                   ? isTestnet
                     ? $t('walletPanel.solanaTestnet')
                     : $t('walletPanel.solana')
+                  : selectedWallet === 'tempo'
+                  ? isTestnet
+                    ? $t('walletPanel.tempoTestnet')
+                    : $t('walletPanel.tempo')
+                  : selectedWallet === 'ethereum'
+                  ? isTestnet
+                    ? $t('walletPanel.ethereumTestnet')
+                    : $t('walletPanel.ethereum')
+                  : selectedWallet === 'hyperliquid'
+                  ? isTestnet
+                    ? $t('walletPanel.hyperliquidTestnet')
+                    : $t('walletPanel.hyperliquid')
                   : $t('walletPanel.mainWallet'))
               }}
             </span>
@@ -41,6 +53,18 @@
                 ? isTestnet
                   ? $t('walletPanel.solanaTestnet')
                   : $t('walletPanel.solana')
+                : selectedWallet === 'tempo'
+                ? isTestnet
+                  ? $t('walletPanel.tempoTestnet')
+                  : $t('walletPanel.tempo')
+                : selectedWallet === 'ethereum'
+                ? isTestnet
+                  ? $t('walletPanel.ethereumTestnet')
+                  : $t('walletPanel.ethereum')
+                : selectedWallet === 'hyperliquid'
+                ? isTestnet
+                  ? $t('walletPanel.hyperliquidTestnet')
+                  : $t('walletPanel.hyperliquid')
                 : isTestnet
                 ? $t('walletPanel.monadTestnet')
                 : $t('walletPanel.monad')
@@ -64,6 +88,18 @@
                 ? isTestnet
                   ? $t('walletPanel.zeroTsol')
                   : $t('walletPanel.zeroSol')
+                : selectedWallet === 'tempo'
+                ? isTestnet
+                  ? $t('walletPanel.zeroTusd')
+                  : $t('walletPanel.zeroUsd')
+                : selectedWallet === 'ethereum'
+                ? isTestnet
+                  ? $t('walletPanel.zeroSep')
+                  : $t('walletPanel.zeroEth')
+                : selectedWallet === 'hyperliquid'
+                ? isTestnet
+                  ? $t('walletPanel.zeroThype')
+                  : $t('walletPanel.zeroHype')
                 : balanceText
             }}
           </div>
@@ -144,6 +180,18 @@
                   ? isTestnet
                     ? $t('walletPanel.sendTsol')
                     : $t('walletPanel.sendSol')
+                  : selectedWallet === 'tempo'
+                  ? isTestnet
+                    ? 'Send tUSD'
+                    : 'Send USD'
+                  : selectedWallet === 'ethereum'
+                  ? isTestnet
+                    ? 'Send SEP'
+                    : 'Send ETH'
+                  : selectedWallet === 'hyperliquid'
+                  ? isTestnet
+                    ? 'Send tHYPE'
+                    : 'Send HYPE'
                   : isTestnet
                   ? $t('walletPanel.sendMont')
                   : $t('walletPanel.send')
@@ -188,18 +236,15 @@ export default defineComponent({
     const isTestnet = computed(() => activeChain.isTestnet ?? false)
     const { getCustomName } = useWalletNames()
 
-    const selectedWallet = computed<'monad' | 'ecash' | 'solana'>(() => {
+    const selectedWallet = computed<string>(() => {
       const walletParam = (route?.params?.wallet as string)?.toLowerCase()
-      if (walletParam === 'ecash' || walletParam === 'solana')
-        return walletParam
-      if (walletParam === 'monad') return 'monad'
+      if (walletParam) return walletParam
       const chainParam = (route?.params?.chain as string)?.toLowerCase()
-      if (chainParam === 'ecash' || chainParam === 'solana') return chainParam
-      if (chainParam === 'monad') return 'monad'
+      if (chainParam) return chainParam
       const query = (
         (route?.query?.chain || route?.query?.wallet) as string
       )?.toLowerCase()
-      if (query === 'ecash' || query === 'solana') return query
+      if (query) return query
       return 'monad'
     })
 
@@ -214,13 +259,18 @@ export default defineComponent({
       accountSession.getCachedChainAddress?.(selectedWallet.value) ?? '',
     )
 
-    const prewarmChains = (active: 'monad' | 'ecash' | 'solana') => {
+    const prewarmChains = (active: string) => {
       if (accountStatus.status === 'ready') {
-        if (active !== 'ecash') {
-          accountSession?.getChainAddress?.('ecash')?.catch(() => undefined)
-        }
-        if (active !== 'solana') {
-          accountSession?.getChainAddress?.('solana')?.catch(() => undefined)
+        for (const chain of [
+          'ecash',
+          'solana',
+          'tempo',
+          'ethereum',
+          'hyperliquid',
+        ]) {
+          if (active !== chain) {
+            accountSession?.getChainAddress?.(chain)?.catch(() => undefined)
+          }
         }
       }
     }

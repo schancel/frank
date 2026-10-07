@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@frank/bot-framework": "*",
+    "@frank/codec": "*",
     "@frank/directory-admission": "*",
     "@frank/cashweb": "*",
     "@frank/wallet": "*",

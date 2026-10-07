@@ -12,6 +12,7 @@ describe('Signet Stone Themes', () => {
   beforeEach(() => {
     document.body.removeAttribute('data-signet-theme')
     document.body.removeAttribute('style')
+    document.documentElement.removeAttribute('style')
   })
 
   it('defaults to carnelian', () => {
@@ -36,9 +37,27 @@ describe('Signet Stone Themes', () => {
     }
   })
 
-  it('applies theme attributes and custom properties to document.body', () => {
+  it('applies theme attributes and custom properties to document.body and documentElement', () => {
     applyTheme('lapis', true)
     expect(document.body.getAttribute('data-signet-theme')).toBe('lapis')
+    expect(document.body.style.getPropertyValue('--q-primary')).toBe(
+      SIGNET_THEMES.lapis.primary,
+    )
+    expect(document.body.style.getPropertyValue('--q-secondary')).toBe(
+      SIGNET_THEMES.lapis.secondary,
+    )
+    expect(document.body.style.getPropertyValue('--q-accent')).toBe(
+      SIGNET_THEMES.lapis.accent,
+    )
+    expect(document.documentElement.style.getPropertyValue('--q-primary')).toBe(
+      SIGNET_THEMES.lapis.primary,
+    )
+    expect(
+      document.documentElement.style.getPropertyValue('--q-secondary'),
+    ).toBe(SIGNET_THEMES.lapis.secondary)
+    expect(document.documentElement.style.getPropertyValue('--q-accent')).toBe(
+      SIGNET_THEMES.lapis.accent,
+    )
     expect(document.body.style.getPropertyValue('--q-color-background')).toBe(
       SIGNET_THEMES.lapis.dark.background,
     )
@@ -47,8 +66,26 @@ describe('Signet Stone Themes', () => {
     )
   })
 
+  it('updates primary and secondary variables when changing stones', () => {
+    applyTheme('bloodstone', false)
+    expect(document.body.style.getPropertyValue('--q-primary')).toBe(
+      SIGNET_THEMES.bloodstone.primary,
+    )
+    expect(document.body.style.getPropertyValue('--q-secondary')).toBe(
+      SIGNET_THEMES.bloodstone.secondary,
+    )
+
+    applyTheme('onyx', false)
+    expect(document.body.style.getPropertyValue('--q-primary')).toBe(
+      SIGNET_THEMES.onyx.primary,
+    )
+    expect(document.body.style.getPropertyValue('--q-secondary')).toBe(
+      SIGNET_THEMES.onyx.secondary,
+    )
+  })
+
   it('falls back to default carnelian on unknown theme name', () => {
-    applyTheme('unknown-stone' as any, false)
+    applyTheme('unknown-stone' as unknown as SignetStone, false)
     expect(document.body.getAttribute('data-signet-theme')).toBe('carnelian')
     expect(document.body.style.getPropertyValue('--q-color-background')).toBe(
       SIGNET_THEMES.carnelian.light.background,

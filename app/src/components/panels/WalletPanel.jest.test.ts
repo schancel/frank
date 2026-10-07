@@ -78,6 +78,7 @@ function render() {
         QItemLabel: { template: '<span><slot /></span>' },
         QSeparator: { template: '<hr />' },
         QIcon: true,
+        QTooltip: { template: '<div class="q-tooltip-stub"><slot /></div>' },
         QBtn: {
           props: ['label', 'disable'],
           template: '<button :disabled="disable">{{ label }}<slot /></button>',
@@ -304,4 +305,15 @@ test('displays unit rate in each wallet row and allows clicking drawer header li
   expect(headerLink.text()).toContain('1 AVU ≡ 1 kWh (?)')
   await headerLink.trigger('click')
   expect(view.findComponent(AvuExplainerDialog).props('modelValue')).toBe(true)
+})
+
+test('renders universal AVU tooltips on portfolio total and drawer header', () => {
+  const view = render()
+  const tooltips = view.findAll('.q-tooltip-stub')
+  expect(tooltips.length).toBeGreaterThan(0)
+  expect(
+    tooltips.some(tt =>
+      tt.text().includes('1 AVU ≡ 1 kWh (3.6 MJ) of physical compute'),
+    ),
+  ).toBe(true)
 })

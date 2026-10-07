@@ -29,6 +29,54 @@ pub enum UsernameError {
     #[invalid_client_input()]
     #[error("Username '{0}' has been deactivated and is tombstoned until {1}")]
     Tombstoned(String, i64),
+
+    /// Remote RESP / Redis store error or connection failure.
+    #[critical()]
+    #[error("RESP store error: {0}")]
+    RespError(String),
+}
+
+/// Abstract store for unique routable usernames, claim verification, and tombstone lifecycle.
+///
+/// Implemented by [`DbDirectoryUsernames`] for standalone embedded RocksDB, and by
+/// [`crate::store::resp_username::RespUsernameStore`] for clustered Apache Kvrocks / Redis-XC deployments.
+pub trait UsernameStore: std::fmt::Debug + Send + Sync {
+    /// Fetch a username record by canonical name.
+    fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>>;
+
+    /// Attempt to claim or re-bind a username for an account address.
+    ///
+    /// Fails with [`UsernameError::NameCollision`] if owned by another account.
+    /// Fails with [`UsernameError::Tombstoned`] if tombstone cooldown is still active.
+    fn claim(
+        &self,
+        raw_username: &str,
+        account_address: &[u8; 20],
+        stamp_key: Option<Vec<u8>>,
+        now_ms: i64,
+    ) -> Result<UsernameClaimResult>;
+
+    /// Mark a username as tombstoned when released or deactivated.
+    fn tombstone(
+        &self,
+        raw_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<bool>;
+
+    /// Rename an active username to a new handle for the same account.
+    ///
+    /// Claims the `new_username` for `account_address`, and transitions `old_username`
+    /// into a `Moved` state with a redirect pointer to `new_username` and a tombstone cooldown.
+    fn rename(
+        &self,
+        old_username: &str,
+        new_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<()>;
 }
 
 use self::UsernameError::*;
@@ -311,6 +359,139 @@ impl<'a> DbDirectoryUsernames<'a> {
 impl std::fmt::Debug for DbDirectoryUsernames<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "DbDirectoryUsernames {{ .. }}")
+    }
+}
+
+// RocksDB column family handles are immutable and thread-safe for concurrent reads and writes.
+unsafe impl Send for DbDirectoryUsernames<'_> {}
+unsafe impl Sync for DbDirectoryUsernames<'_> {}
+
+impl UsernameStore for DbDirectoryUsernames<'_> {
+    fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>> {
+        self.get(raw_username)
+    }
+
+    fn claim(
+        &self,
+        raw_username: &str,
+        account_address: &[u8; 20],
+        stamp_key: Option<Vec<u8>>,
+        now_ms: i64,
+    ) -> Result<UsernameClaimResult> {
+        self.claim(raw_username, account_address, stamp_key, now_ms)
+    }
+
+    fn tombstone(
+        &self,
+        raw_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<bool> {
+        self.tombstone(raw_username, account_address, cooldown_duration_ms, now_ms)
+    }
+
+    fn rename(
+        &self,
+        old_username: &str,
+        new_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<()> {
+        self.rename(
+            old_username,
+            new_username,
+            account_address,
+            cooldown_duration_ms,
+            now_ms,
+        )
+    }
+}
+
+impl<T: ?Sized + UsernameStore> UsernameStore for Box<T> {
+    fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>> {
+        (**self).get(raw_username)
+    }
+
+    fn claim(
+        &self,
+        raw_username: &str,
+        account_address: &[u8; 20],
+        stamp_key: Option<Vec<u8>>,
+        now_ms: i64,
+    ) -> Result<UsernameClaimResult> {
+        (**self).claim(raw_username, account_address, stamp_key, now_ms)
+    }
+
+    fn tombstone(
+        &self,
+        raw_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<bool> {
+        (**self).tombstone(raw_username, account_address, cooldown_duration_ms, now_ms)
+    }
+
+    fn rename(
+        &self,
+        old_username: &str,
+        new_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<()> {
+        (**self).rename(
+            old_username,
+            new_username,
+            account_address,
+            cooldown_duration_ms,
+            now_ms,
+        )
+    }
+}
+
+impl<T: ?Sized + UsernameStore> UsernameStore for std::sync::Arc<T> {
+    fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>> {
+        (**self).get(raw_username)
+    }
+
+    fn claim(
+        &self,
+        raw_username: &str,
+        account_address: &[u8; 20],
+        stamp_key: Option<Vec<u8>>,
+        now_ms: i64,
+    ) -> Result<UsernameClaimResult> {
+        (**self).claim(raw_username, account_address, stamp_key, now_ms)
+    }
+
+    fn tombstone(
+        &self,
+        raw_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<bool> {
+        (**self).tombstone(raw_username, account_address, cooldown_duration_ms, now_ms)
+    }
+
+    fn rename(
+        &self,
+        old_username: &str,
+        new_username: &str,
+        account_address: &[u8; 20],
+        cooldown_duration_ms: i64,
+        now_ms: i64,
+    ) -> Result<()> {
+        (**self).rename(
+            old_username,
+            new_username,
+            account_address,
+            cooldown_duration_ms,
+            now_ms,
+        )
     }
 }
 

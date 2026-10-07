@@ -242,7 +242,27 @@ async fn main() -> Result<()> {
         }
     };
 
-    let registry = Arc::new(Registry::new(db, chain_adapter, conf.registry.net));
+    let username_store: Option<
+        Arc<dyn cashweb_registry::store::directory_usernames::UsernameStore>,
+    > = match conf.registry.effective_username_store_conf() {
+        cashweb_config::UsernameStoreConf::RocksDb => None,
+        cashweb_config::UsernameStoreConf::Resp { url } => {
+            tracing::event!(
+                tracing::Level::INFO,
+                "Connecting to clustered RESP username store at {}",
+                url
+            );
+            let resp_store = cashweb_registry::store::resp_username::RespUsernameStore::open(&url)?;
+            Some(Arc::new(resp_store))
+        }
+    };
+
+    let registry = Arc::new(Registry::new_with_username_store(
+        db,
+        chain_adapter,
+        conf.registry.net,
+        username_store,
+    ));
     let evm_rpc_conf = conf.registry.evm_rpc.clone();
     let bitcoin_proxy_conf = conf.registry.bitcoin_proxy.clone();
     let solana_proxy_conf = conf.registry.solana_proxy.clone();

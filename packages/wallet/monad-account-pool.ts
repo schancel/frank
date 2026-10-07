@@ -327,6 +327,63 @@ export class MonadSubAccountPool {
     })
   }
 
+  /**
+   * Ingests a generic transaction sync item (Ticket #1115), recording spends and retiring
+   * spent pool sub-accounts immediately to avoid multi-device desync.
+   */
+  processSyncTransaction(item: {
+    direction: 'in' | 'out'
+    txHash?: string
+    rawTx?: string
+    spentInputs?: ReadonlyArray<{
+      address: string
+      nonce?: number
+      valueWei?: string | bigint
+    }>
+    timestamp?: number
+  }): { affectedIndices: number[] } {
+    const affectedIndices: number[] = []
+    if (
+      item.direction !== 'out' ||
+      !item.spentInputs ||
+      item.spentInputs.length === 0
+    ) {
+      return { affectedIndices }
+    }
+
+    const spentMap = new Map<string, { valueWei?: string | bigint }>()
+    for (const input of item.spentInputs) {
+      spentMap.set(input.address.toLowerCase(), input)
+    }
+
+    for (const record of this.store.getAll()) {
+      const input = spentMap.get(record.address.toLowerCase())
+      if (input !== undefined) {
+        let changed = false
+        if (!record.lifecycle?.spend && item.txHash) {
+          const valueStr =
+            input.valueWei !== undefined ? input.valueWei.toString() : '0'
+          this.recordSpendTransaction(record.index, {
+            rawTx: item.rawTx ?? '',
+            txHash: item.txHash,
+            valueWei: valueStr,
+          })
+          changed = true
+        }
+        const currentRecord = this.store.getByIndex(record.index) ?? record
+        if (currentRecord.status !== 'spent' && currentRecord.status !== 'retired') {
+          this.setStatus(record.index, 'spent')
+          changed = true
+        }
+        if (changed) {
+          affectedIndices.push(record.index)
+        }
+      }
+    }
+
+    return { affectedIndices }
+  }
+
   recordRecoveryDisposition(
     index: number,
     recovery: SubAccountRecoveryDisposition,

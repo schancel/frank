@@ -7,6 +7,7 @@ import type {
 } from "./active-chain";
 import type { EvmAddressInventory, InventoryAccountRecord } from "../hd-address-inventory";
 import type { EvmTransactionBuilder } from "./evm-transaction-builder";
+import type { WalletSyncItem } from "@frank/cashweb/types/messages";
 
 export interface LegacySendIntent {
   readonly id: string;
@@ -58,6 +59,7 @@ export interface EvmLegacyConsolidatorConfig {
   transactionBuilder?: EvmTransactionBuilder;
   journal?: LegacySendJournalStore;
   standardGasLimit?: bigint;
+  onSyncTransaction?: (item: WalletSyncItem) => Promise<void>;
 }
 
 const DEFAULT_STANDARD_TRANSFER_GAS = 21_000n;
@@ -66,15 +68,19 @@ export class EvmLegacyConsolidator {
   private readonly provider: Provider;
   private readonly inventory?: EvmAddressInventory;
   private readonly getFundingAccounts?: () => Promise<FundingAccount[]>;
+  private readonly chainId?: number | bigint;
   private readonly journal: LegacySendJournalStore;
   private readonly standardGasLimit: bigint;
+  private readonly onSyncTransaction?: (item: WalletSyncItem) => Promise<void>;
 
   constructor(config: EvmLegacyConsolidatorConfig) {
     this.provider = config.provider;
     this.inventory = config.inventory;
     this.getFundingAccounts = config.getFundingAccounts;
+    this.chainId = config.chainId;
     this.journal = config.journal ?? new InMemoryLegacySendJournalStore();
     this.standardGasLimit = config.standardGasLimit ?? DEFAULT_STANDARD_TRANSFER_GAS;
+    this.onSyncTransaction = config.onSyncTransaction;
   }
 
   private async getGasPrice(): Promise<bigint> {
@@ -264,12 +270,38 @@ export class EvmLegacyConsolidator {
       await this.journal.setPendingIntent(intent);
       totalConsolidationFeePaid += singleTransferFee;
 
+      const syncItem: WalletSyncItem = {
+        type: "wallet-sync",
+        direction: "out",
+        chainId: String(this.chainId ?? "monad"),
+        txHash: txResponse.hash,
+        spentInputs: [
+          {
+            address: funder.address,
+            valueWei: (transferAmount + singleTransferFee).toString(),
+          },
+        ],
+        createdOutputs: [
+          {
+            address: stagingWallet.address,
+            valueWei: transferAmount.toString(),
+            branch: "staging",
+          },
+        ],
+        timestamp: Date.now(),
+      };
+
       // Update inventory record if inventory is present
       if (this.inventory) {
-        this.inventory.recordSpend(funder.address, {
-          txHash: txResponse.hash,
-          valueWei: transferAmount + singleTransferFee,
-        });
+        this.inventory.processSyncTransaction(syncItem);
+      }
+
+      if (this.onSyncTransaction) {
+        try {
+          await this.onSyncTransaction(syncItem);
+        } catch (err) {
+          console.warn("Could not dispatch consolidation sync item:", err);
+        }
       }
 
       onProgress?.({
@@ -335,6 +367,38 @@ export class EvmLegacyConsolidator {
 
     const drainResponse = await this.provider.broadcastTransaction(signedRaw);
     await drainResponse.wait?.();
+
+    const drainSyncItem: WalletSyncItem = {
+      type: "wallet-sync",
+      direction: "out",
+      chainId: String(this.chainId ?? "monad"),
+      txHash: drainTxHash,
+      spentInputs: [
+        {
+          address: stagingWallet.address,
+          valueWei: actualDrainValue.toString(),
+        },
+      ],
+      createdOutputs: [
+        {
+          address: recipient.raw,
+          valueWei: actualDrainValue.toString(),
+        },
+      ],
+      timestamp: Date.now(),
+    };
+
+    if (this.inventory) {
+      this.inventory.processSyncTransaction(drainSyncItem);
+    }
+
+    if (this.onSyncTransaction) {
+      try {
+        await this.onSyncTransaction(drainSyncItem);
+      } catch (err) {
+        console.warn("Could not dispatch drain sync item:", err);
+      }
+    }
 
     intent.phase = "confirmed";
     intent.updatedAtMs = Date.now();
@@ -414,6 +478,39 @@ export class EvmLegacyConsolidator {
     });
 
     await drainResponse.wait?.();
+
+    const drainSyncItem: WalletSyncItem = {
+      type: "wallet-sync",
+      direction: "out",
+      chainId: String(this.chainId ?? "monad"),
+      txHash: drainResponse.hash,
+      spentInputs: [
+        {
+          address: stagingWallet.address,
+          valueWei: drainValue.toString(),
+        },
+      ],
+      createdOutputs: [
+        {
+          address: pending.recipientAddress,
+          valueWei: drainValue.toString(),
+        },
+      ],
+      timestamp: Date.now(),
+    };
+
+    if (this.inventory) {
+      this.inventory.processSyncTransaction(drainSyncItem);
+    }
+
+    if (this.onSyncTransaction) {
+      try {
+        await this.onSyncTransaction(drainSyncItem);
+      } catch (err) {
+        console.warn("Could not dispatch resumed drain sync item:", err);
+      }
+    }
+
     await this.journal.clearPendingIntent();
 
     return {

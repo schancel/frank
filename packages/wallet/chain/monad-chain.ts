@@ -96,7 +96,7 @@ import {
   NativeWalletHandle,
   WalletHandle,
 } from "./active-chain";
-import { MessageItem } from "@frank/cashweb/types/messages";
+import { MessageItem, WalletSyncItem } from "@frank/cashweb/types/messages";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
@@ -1098,6 +1098,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           continue;
         }
 
+        for (const item of items) {
+          if (item.type === "wallet-sync" || item.type === "payment-transfer") {
+            try {
+              wallet.processSyncTransaction?.(item as WalletSyncItem);
+            } catch (err) {
+              console.warn("Failed to process received wallet-sync item:", err);
+            }
+          }
+        }
+
         const stampValueWei = record.message.stampPayments.reduce(
           (sum, payment) =>
             sum + Transaction.from(hexlify(payment.rawTx)).value,
@@ -1245,6 +1255,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         getFundingAccounts: () => collectWalletFundingAccounts(monadWallet),
         chainId: config.chainId,
         transactionBuilder,
+        onSyncTransaction: async (syncItem: WalletSyncItem) => {
+          monadWallet.processSyncTransaction?.(syncItem);
+          try {
+            await monadWallet.sendSelfDirectMessage?.([syncItem]);
+          } catch (err) {
+            console.warn("sendLegacy: could not broadcast self-send sync item:", err);
+          }
+        },
       });
       return consolidator.sendLegacy({
         recipient,
@@ -2010,6 +2028,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 getFundingAccounts: () => collectWalletFundingAccounts(wallet),
                 chainId: config.chainId,
                 transactionBuilder,
+                onSyncTransaction: async (syncItem: WalletSyncItem) => {
+                  wallet.processSyncTransaction?.(syncItem);
+                  try {
+                    await wallet.sendSelfDirectMessage?.([syncItem]);
+                  } catch (err) {
+                    console.warn("resumeLegacySend: could not broadcast self-send sync item:", err);
+                  }
+                },
               });
               return consolidator.resumeLegacySend();
             },
@@ -2024,6 +2050,24 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             forumBurnAddress: config.stampBurnAddress,
             forumChainId: BigInt(config.chainId),
             cborNetwork: forumPolicy.network,
+            processSyncTransaction(item: WalletSyncItem) {
+              const poolRes = pool.processSyncTransaction(item);
+              const invRes = (wallet as any).inventory?.processSyncTransaction(item);
+              return {
+                affectedIndices: poolRes?.affectedIndices,
+                affectedAccounts: invRes?.affectedAccounts,
+              };
+            },
+            async sendSelfDirectMessage(items: MessageItem[]) {
+              if (directMessages.send) {
+                return directMessages.send({
+                  wallet,
+                  recipient: toChainAddress(wallet.identity.address.raw),
+                  items,
+                  stampValue: 0n,
+                });
+              }
+            },
             close() {
               if (closing !== undefined) return closing;
               closedWallets.add(wallet);

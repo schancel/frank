@@ -1182,4 +1182,37 @@ describe('InMemorySubAccountPoolStore / LevelSubAccountPoolStore', () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  describe('MonadSubAccountPool.processSyncTransaction (Ticket #1115)', () => {
+    it('records spend checkpoint and marks status spent when matching spent input address', () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const pool = new MonadSubAccountPool({ keyring })
+      pool.ensureSize(3)
+
+      const addr0 = keyring.deriveSubAccount(0).address
+      const addr1 = keyring.deriveSubAccount(1).address
+
+      expect(pool.getRecord(0)?.status).toBe('available')
+      expect(pool.getRecord(0)?.lifecycle?.spend).toBeUndefined()
+
+      const res = pool.processSyncTransaction({
+        direction: 'out',
+        txHash: '0xdeadbeef',
+        spentInputs: [
+          {
+            address: addr0.toLowerCase(),
+            valueWei: '5000000000000',
+          },
+        ],
+      })
+
+      expect(res.affectedIndices).toEqual([0])
+      expect(pool.getRecord(0)?.status).toBe('spent')
+      expect(pool.getRecord(0)?.lifecycle?.spend?.txHash).toBe('0xdeadbeef')
+
+      // Record 1 should remain untouched
+      expect(pool.getRecord(1)?.status).toBe('available')
+      expect(pool.getRecord(1)?.lifecycle?.spend).toBeUndefined()
+    })
+  })
 })

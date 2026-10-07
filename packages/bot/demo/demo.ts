@@ -984,7 +984,7 @@ export async function startDirectoryRouteTransport(options: {
       }
       response.writeHead(reply.statusCode ?? 503, headers)
       let count = 0
-      reply.on('data', (chunk: Buffer) => { count += chunk.length; if (count > 262144) { reply.destroy(); response.destroy() } })
+      reply.on('data', (chunk: Buffer) => { count += chunk.length; if (count > 1048576) { reply.destroy(); response.destroy() } })
       reply.on('error', () => response.destroy())
       reply.pipe(response)
     })
@@ -994,7 +994,7 @@ export async function startDirectoryRouteTransport(options: {
     upstream.on('error', () => { if (!response.headersSent) { response.writeHead(503); response.end('unavailable/outcome-unknown') } else response.destroy() })
     const bodyTimer = setTimeout(() => { upstream.destroy(); if (!response.headersSent) { response.writeHead(503); response.end('unavailable/not-started') } }, 5000)
     let length = 0
-    request.on('data', (chunk: Buffer) => { length += chunk.length; if (length > 262144) upstream.destroy() })
+    request.on('data', (chunk: Buffer) => { length += chunk.length; if (length > 1048576) upstream.destroy() })
     request.once('end', () => clearTimeout(bodyTimer))
     request.once('error', () => { clearTimeout(bodyTimer); upstream.destroy() })
     request.once('aborted', () => { clearTimeout(bodyTimer); upstream.destroy() })

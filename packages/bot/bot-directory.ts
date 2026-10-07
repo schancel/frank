@@ -9,7 +9,7 @@ import { deflateSync } from 'zlib'
 
 import { MonadProfileFields } from '@frank/wallet/monad-identity'
 
-export type BotKey = 'blackjack' | 'raffle' | 'vendor' | 'qwen'
+export type BotKey = 'blackjack' | 'raffle' | 'vendor' | 'qwen' | 'faucet'
 
 export interface BotProfileSpec {
   key: BotKey
@@ -55,6 +55,14 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'QWEN_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/qwen-bot-identity.json',
     accent: [110, 90, 220],
+  },
+  {
+    key: 'faucet',
+    name: 'Monad Faucet',
+    bio: 'Automated testnet faucet. Grants starter testnet MON to newly registered accounts.',
+    identityEnv: 'FAUCET_BOT_IDENTITY_JSON',
+    identityDefaultPath: '/tmp/faucet-bot-identity.json',
+    accent: [40, 160, 220],
   },
 ]
 

@@ -73,9 +73,9 @@ use crate::{
     registry::Registry,
 };
 
-/// Maximum accepted payload size for Monad profile registration (256 KiB),
+/// Maximum accepted payload size for Monad profile registration (1 MiB),
 /// matching the CBOR validation route byte limit.
-pub const MAX_PROFILE_PAYLOAD_BYTES: usize = 262_144;
+pub const MAX_PROFILE_PAYLOAD_BYTES: usize = 1_048_576;
 
 /// A raw request body bounded to [`MAX_PROFILE_PAYLOAD_BYTES`] before reading into memory,
 /// protecting against unauthenticated OOM without requiring a Content-Length header.
@@ -100,7 +100,7 @@ impl axum::extract::FromRequest<axum::body::Body> for BoundedProfileBody {
             if body_bytes.len().saturating_add(chunk.len()) > MAX_PROFILE_PAYLOAD_BYTES {
                 return Err((
                     StatusCode::PAYLOAD_TOO_LARGE,
-                    "profile payload exceeds 256 KiB limit",
+                    "profile payload exceeds 1 MiB limit",
                 ));
             }
             body_bytes.extend_from_slice(&chunk);

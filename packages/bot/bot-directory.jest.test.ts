@@ -46,6 +46,7 @@ describe('bot profiles (#317)', () => {
       'Raffle',
       'Picture Shop',
       'Qwen',
+      'Monad Faucet',
     ])
     for (const spec of BOT_PROFILES) {
       expect(validateProfileDisplayName(spec.name).normalized).toBe(spec.name)
@@ -75,7 +76,7 @@ describe('bot profiles (#317)', () => {
       )
       expect(png.subarray(-8, -4).toString()).toBe('IEND')
     }
-    expect(new Set(avatars.map(png => png.toString('hex'))).size).toBe(4)
+    expect(new Set(avatars.map(png => png.toString('hex'))).size).toBe(5)
     expect(generateAvatarPng('qwen', BOT_PROFILES[3].accent)).toEqual(
       avatars[3],
     )
@@ -167,12 +168,14 @@ describe('curated defaults for the relay config (#317)', () => {
       'Raffle',
       'Picture Shop',
       'Qwen',
+      'Monad Faucet',
     ])
     expect(paths.map(([label]) => label)).toEqual([
       'blackjack',
       'raffle',
       'vendor',
       'qwen',
+      'faucet',
     ])
     expect(paths[0][1]).toBe('/tmp/blackjack-bot-identity.json')
     expect(paths[1][1]).toBe('/custom/raffle.json')
@@ -205,6 +208,7 @@ describe('curated defaults are read-only (#317)', () => {
     RAFFLE_BOT_IDENTITY_JSON: join(dir, 'raffle.json'),
     VENDOR_BOT_IDENTITY_JSON: join(dir, 'vendor.json'),
     QWEN_BOT_IDENTITY_JSON: join(dir, 'qwen.json'),
+    FAUCET_BOT_IDENTITY_JSON: join(dir, 'faucet.json'),
   })
 
   it('reports every missing identity at once and creates no file', () => {
@@ -213,7 +217,7 @@ describe('curated defaults are read-only (#317)', () => {
       loadExistingIdentity,
     )
     expect(entries).toEqual([])
-    expect(errors).toHaveLength(4)
+    expect(errors).toHaveLength(5)
     expect(errors[0]).toContain('no identity file')
     expect(errors[0]).toContain('start that bot once')
     expect(readdirSync(dir)).toEqual([])
@@ -228,10 +232,10 @@ describe('curated defaults are read-only (#317)', () => {
     expect(existsSync(join(dir, 'bj.json'))).toBe(true)
     const partial = collectCuratedEntries(env(), loadExistingIdentity)
     expect(partial.entries.map(e => e.name)).toEqual(['Blackjack Dealer'])
-    expect(partial.errors).toHaveLength(3)
+    expect(partial.errors).toHaveLength(4)
     const created = collectCuratedEntries(env(), loadOrCreateIdentity)
     expect(created.errors).toEqual([])
-    expect(created.entries).toHaveLength(4)
+    expect(created.entries).toHaveLength(5)
     const again = collectCuratedEntries(env(), loadExistingIdentity)
     expect(again.entries).toEqual(created.entries)
   })

@@ -9,6 +9,7 @@
  * from Options-API's `this.$i18n.locale` property (`v => (this.$i18n.locale = v)`).
  */
 import { quasarLangPackForLocale } from 'src/i18n'
+import { i18n } from 'src/boot/i18n'
 
 export interface QuasarLangTarget {
   lang: { set: (pack: unknown) => void }
@@ -16,9 +17,35 @@ export interface QuasarLangTarget {
 
 export function applyLocale(params: {
   $q: QuasarLangTarget
-  setI18nLocale: (locale: string) => void
+  setI18nLocale?: (locale: string) => void
   locale: string
 }): void {
-  params.setI18nLocale(params.locale)
-  params.$q.lang.set(quasarLangPackForLocale(params.locale))
+  try {
+    if (params.setI18nLocale) {
+      params.setI18nLocale(params.locale)
+    }
+  } catch (error) {
+    console.warn('[applyLocale] setI18nLocale callback failed:', error)
+  }
+
+  try {
+    if (i18n?.global) {
+      if (
+        typeof (i18n.global.locale as unknown) === 'object' &&
+        i18n.global.locale !== null &&
+        'value' in i18n.global.locale
+      ) {
+        ;(i18n.global.locale as { value: string }).value = params.locale
+      } else {
+        ;(i18n.global as unknown as { locale: string }).locale = params.locale
+      }
+    }
+  } catch (error) {
+    console.warn('[applyLocale] i18n.global.locale sync failed:', error)
+  }
+
+  if (params.$q?.lang?.set) {
+    params.$q.lang.set(quasarLangPackForLocale(params.locale))
+  }
 }
+

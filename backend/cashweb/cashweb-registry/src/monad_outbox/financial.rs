@@ -315,10 +315,9 @@ fn canonical_signed_set(
             || signed.destination != Some(Address(address))
             || member.address.as_slice() != address
             || member.commitment.as_slice() != commitment
-            || parse_commitment_calldata(BROADCAST_MESSAGE_LOKAD_ID, &signed.input)
-                .map_err(|_| Error::Invalid)?
-                .as_slice()
-                != commitment
+            // A direct-message stamp is a plain value transfer. Any calldata, including the
+            // retired `POND` commitment, would make the payment identifiable on chain.
+            || !signed.input.is_empty()
         {
             return Err(Error::Invalid);
         }
@@ -438,24 +437,16 @@ pub(super) async fn validate_canonical_admitted_history(
 /// Reuse the existing exact receipt/replay primitive with canonical signed-member expectations.
 pub(super) fn canonical_expected_payments(
     claim: &crate::store::monad_dm_cbor::Claim,
-) -> crate::http::monad_message_cbor::Result<
-    Vec<(DecodedSignedTransaction, ExpectedStampTransaction)>,
-> {
+) -> crate::http::monad_message_cbor::Result<Vec<(DecodedSignedTransaction, ExpectedPayment)>> {
     canonical_signed_set(&claim.request, &claim.policy)?
         .into_iter()
-        .enumerate()
-        .map(|(index, signed)| {
-            let commitment =
-                frank_cbor::payment_commitment(&claim.policy.payload_hash, index as u32);
+        .map(|signed| {
             let destination_address = signed
                 .destination
                 .ok_or(crate::http::monad_message_cbor::CanonicalError::Invalid)?;
             Ok((
                 signed,
-                ExpectedStampTransaction {
-                    commitment_id: BROADCAST_MESSAGE_LOKAD_ID,
-                    commitment: Sha256::from_slice(&commitment)
-                        .expect("32-byte canonical commitment"),
+                ExpectedPayment::PlainTransfer {
                     destination_address,
                     min_value_wei: 1,
                 },
@@ -962,11 +953,65 @@ where
     Ok(total)
 }
 
+/// What one exact signed payment member must look like before any chain lookup.
+pub(super) enum ExpectedPayment {
+    /// Legacy protobuf path: value transfer carrying the `POND` version-2 commitment calldata.
+    Commitment(ExpectedStampTransaction),
+    /// Canonical path: a plain value transfer to the per-message child address, empty input.
+    PlainTransfer {
+        destination_address: Address,
+        min_value_wei: u128,
+    },
+}
+
+impl ExpectedPayment {
+    /// CPU-only check of the signed member against the frozen expectation.
+    fn check_signed(
+        &self,
+        canonical: &DecodedSignedTransaction,
+    ) -> std::result::Result<(), String> {
+        let (destination_address, min_value_wei) = match self {
+            Self::Commitment(expected) => (expected.destination_address, expected.min_value_wei),
+            Self::PlainTransfer {
+                destination_address,
+                min_value_wei,
+            } => (*destination_address, *min_value_wei),
+        };
+        if canonical.destination != Some(destination_address) || canonical.value_wei < min_value_wei
+        {
+            return Err(
+                "canonical signed transaction violates the frozen payment policy".to_string(),
+            );
+        }
+        match self {
+            Self::Commitment(expected) => {
+                let commitment =
+                    parse_commitment_calldata(expected.commitment_id, &canonical.input)
+                        .map_err(|err| err.to_string())?;
+                if commitment != expected.commitment {
+                    return Err(format!(
+                        "canonical signed transaction commitment {} does not match {}",
+                        commitment, expected.commitment
+                    ));
+                }
+            }
+            Self::PlainTransfer { .. } => {
+                if !canonical.input.is_empty() {
+                    return Err(
+                        "canonical direct-message payment must carry empty calldata".to_string()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn expected_payment(
     record: &crate::store::monad_outbox::MonadOutboxRecord,
     child_index: u32,
     payload_hash: &[u8],
-) -> Result<ExpectedStampTransaction> {
+) -> Result<ExpectedPayment> {
     let payload_hash: [u8; 32] = payload_hash.try_into().map_err(|_| {
         crate::store::monad_outbox::DbMonadOutboxError::InvalidPayloadHashLength(payload_hash.len())
     })?;
@@ -978,12 +1023,12 @@ pub(super) fn expected_payment(
     let derived =
         derive_monad_stamp_child_public(payload_hash, &policy.recipient_pubkey, child_index)
             .wrap_err("deriving frozen recipient child")?;
-    Ok(ExpectedStampTransaction {
+    Ok(ExpectedPayment::Commitment(ExpectedStampTransaction {
         commitment_id: BROADCAST_MESSAGE_LOKAD_ID,
         commitment: payment_commitment(&payload_hash, child_index),
         destination_address: crate::monad_http::Address(derived.address),
         min_value_wei: 1,
-    })
+    }))
 }
 
 pub(crate) fn payment_commitment(payload_hash: &[u8; 32], child_index: u32) -> Sha256 {
@@ -1019,24 +1064,10 @@ pub(super) async fn check_exact<T: JsonRpcTransport + Clone>(
     transport: &T,
     tx_hash: Hash32,
     canonical: &DecodedSignedTransaction,
-    expected: &ExpectedStampTransaction,
+    expected: &ExpectedPayment,
 ) -> ExactCheck {
-    if canonical.destination != Some(expected.destination_address)
-        || canonical.value_wei < expected.min_value_wei
-    {
-        return ExactCheck::Invalid(
-            "canonical signed transaction violates the frozen payment policy".to_string(),
-        );
-    }
-    let commitment = match parse_commitment_calldata(expected.commitment_id, &canonical.input) {
-        Ok(commitment) => commitment,
-        Err(err) => return ExactCheck::Invalid(err.to_string()),
-    };
-    if commitment != expected.commitment {
-        return ExactCheck::Invalid(format!(
-            "canonical signed transaction commitment {} does not match {}",
-            commitment, expected.commitment
-        ));
+    if let Err(detail) = expected.check_signed(canonical) {
+        return ExactCheck::Invalid(detail);
     }
     let client = MonadHttpClient::with_transport(transport.clone());
     let receipt = match client.get_transaction_receipt(tx_hash).await {
@@ -1107,7 +1138,7 @@ pub(super) async fn check_exact_bounded<T: JsonRpcTransport + Clone>(
     transport: &T,
     tx_hash: Hash32,
     canonical: &DecodedSignedTransaction,
-    expected: &ExpectedStampTransaction,
+    expected: &ExpectedPayment,
     config: &MonadOutboxReconcileConfig,
 ) -> ExactCheck {
     match tokio::time::timeout(
@@ -1125,7 +1156,7 @@ async fn poll_exact<T: JsonRpcTransport + Clone>(
     transport: &T,
     tx_hash: Hash32,
     canonical: &DecodedSignedTransaction,
-    expected: &ExpectedStampTransaction,
+    expected: &ExpectedPayment,
     config: &MonadOutboxReconcileConfig,
 ) -> ExactCheck {
     let attempts = config.receipt_poll_attempts.max(1);
@@ -1144,7 +1175,7 @@ pub(super) async fn replay_member<T: JsonRpcTransport + Clone>(
     tx_hash: Hash32,
     raw_tx: &[u8],
     canonical: &DecodedSignedTransaction,
-    expected: &ExpectedStampTransaction,
+    expected: &ExpectedPayment,
     config: &MonadOutboxReconcileConfig,
 ) -> MemberOutcome {
     let client = MonadHttpClient::with_transport(transport.clone());
@@ -1205,7 +1236,7 @@ pub(super) async fn prove_stale_nonce<T: JsonRpcTransport + Clone>(
     transport: &T,
     tx_hash: Hash32,
     decoded: &DecodedSignedTransaction,
-    expected: &ExpectedStampTransaction,
+    expected: &ExpectedPayment,
     config: &MonadOutboxReconcileConfig,
 ) -> MemberOutcome {
     let nonce_result = tokio::time::timeout(

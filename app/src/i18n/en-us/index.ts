@@ -391,16 +391,17 @@ export default {
     rangeAll: 'All-Time (1930-Present)',
     rangePow: 'PoW Era (2009-Present)',
     rangeAsic: 'Modern ASIC (2020-Present)',
+    rangeRecent: 'Recent (24h / Finer)',
     rangeNetworks: 'Network Comparison',
     sourcesTitle: 'Methodology & Data Sources',
     sourceFeeds:
-      'Live Oracle Feeds: Real-time price feeds sourced from Pyth Network Hermes decentralized oracle (SOL, ETH, XAU/Gold, BRENT) and decentralized exchange spot anchors (MON, XEC, HYPE, TUSD) with cryptographic verification.',
+      'Live Oracle Feeds: Real-time market spot prices streamed from CoinGecko & Pyth Network public APIs for active cryptocurrencies (ETH, SOL, XEC); testnet and emerging networks (MON, HYPE, TUSD) anchored to protocol testnet parity indices.',
     sourceHistorical:
-      'Historical Multi-Year Resolution: Pre-bundled multi-year token and commodity price series at yearly resolution from exchange historical spot archives, CoinGecko, and St. Louis FRED.',
+      'Historical & Intraday Resolution: Intraday 24h hourly points for fine-grained recent analysis, plus multi-year bundled archives (1930–present) from St. Louis FRED, CoinGecko, and blockchain genesis records.',
     sourceGrid:
-      'Grid Power: US Energy Information Administration (EIA) Electric Power Monthly & FRED historical industrial tariffs.',
+      'Grid Benchmark: US Energy Information Administration (EIA) Electric Power Monthly published industrial tariff tables ($0.082/kWh benchmark).',
     sourceHash:
-      'PoW Hashrate & Subsidy: Verified directly on-chain from full node block headers & halving schedules.',
+      'PoW Baseline: Derived from consensus halving schedules and CBECI hardware fleet specifications ($0.084/kWh empirical anchor).',
     sourceHardware:
       'Hardware Efficiency: Cambridge Bitcoin Electricity Consumption Index (CBECI) & Bitmain/MicroBT hardware spec sheets.',
     hardwareMilestones: 'Hardware Efficiency Milestones',

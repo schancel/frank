@@ -157,6 +157,9 @@ export const PYTH_FEED_IDS = {
     '0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
 }
 
+export const COINGECKO_PRICE_URL =
+  'https://api.coingecko.com/api/v3/simple/price?ids=ethereum,solana,ecash&vs_currencies=usd'
+
 /**
  * Asynchronously fetches public price feeds from Pyth Hermes and computes
  * an updated OracleSnapshot. Returns a default snapshot on error or timeout.
@@ -211,10 +214,44 @@ export async function fetchOracleSnapshot(
       }
     }
 
-    const goldSpot = feedMap.get(PYTH_FEED_IDS.gold.toLowerCase()) ?? 2650.0
-    const brentSpot = feedMap.get(PYTH_FEED_IDS.brent.toLowerCase()) ?? 75.0
-    const solSpot = feedMap.get(PYTH_FEED_IDS.solana.toLowerCase()) ?? 150.0
-    const ethSpot = feedMap.get(PYTH_FEED_IDS.ethereum.toLowerCase()) ?? 2600.0
+    let goldSpot = feedMap.get(PYTH_FEED_IDS.gold.toLowerCase()) ?? 2650.0
+    let brentSpot = feedMap.get(PYTH_FEED_IDS.brent.toLowerCase()) ?? 75.0
+    let solSpot = feedMap.get(PYTH_FEED_IDS.solana.toLowerCase()) ?? 150.0
+    let ethSpot = feedMap.get(PYTH_FEED_IDS.ethereum.toLowerCase()) ?? 2600.0
+    let ecashSpot = DEFAULT_ANCHOR_SPOT_PRICES.ecash
+
+    // If Pyth provided no crypto prices, augment with CoinGecko live market prices
+    if (
+      !feedMap.has(PYTH_FEED_IDS.solana.toLowerCase()) ||
+      !feedMap.has(PYTH_FEED_IDS.ethereum.toLowerCase())
+    ) {
+      try {
+        const cgRes = await fetchFn(COINGECKO_PRICE_URL, {
+          signal: controller?.signal,
+          headers: { Accept: 'application/json' },
+        })
+        if (cgRes?.ok) {
+          const cgData = await cgRes.json()
+          if (
+            typeof cgData?.solana?.usd === 'number' &&
+            cgData.solana.usd > 0
+          ) {
+            solSpot = cgData.solana.usd
+          }
+          if (
+            typeof cgData?.ethereum?.usd === 'number' &&
+            cgData.ethereum.usd > 0
+          ) {
+            ethSpot = cgData.ethereum.usd
+          }
+          if (typeof cgData?.ecash?.usd === 'number' && cgData.ecash.usd > 0) {
+            ecashSpot = cgData.ecash.usd
+          }
+        }
+      } catch {
+        // Fall back gracefully to existing spots
+      }
+    }
 
     const basketIndex = computeEnergyBasketIndex({
       gold: goldSpot,
@@ -223,7 +260,7 @@ export async function fetchOracleSnapshot(
 
     const rates: Record<SupportedAsset, number> = {
       monad: calculateAvuRate(DEFAULT_ANCHOR_SPOT_PRICES.monad, basketIndex),
-      ecash: calculateAvuRate(DEFAULT_ANCHOR_SPOT_PRICES.ecash, basketIndex),
+      ecash: calculateAvuRate(ecashSpot, basketIndex),
       solana: calculateAvuRate(solSpot, basketIndex),
       tempo: calculateAvuRate(1.0, basketIndex),
       ethereum: calculateAvuRate(ethSpot, basketIndex),

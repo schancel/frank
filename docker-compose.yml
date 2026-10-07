@@ -83,8 +83,10 @@ services:
   # ---------------------------------------------------------------------------
   nats:
     image: nats:2.10-alpine
+    command: ["-m", "8222"]
     ports:
       - '${NATS_PORT:-4222}:4222'
+      - '${NATS_MONITOR_PORT:-8222}:8222'
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -145,8 +147,39 @@ services:
       - minio-init
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # 7. Optional Observability Stack: docker compose --profile monitoring up -d
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    profiles: ["monitoring"]
+    ports:
+      - '${PROMETHEUS_PORT:-9095}:9090'
+    volumes:
+      - ./docker/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    profiles: ["monitoring"]
+    ports:
+      - '${GRAFANA_PORT:-3000}:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - ./docker/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   registry-data:
   kvrocks-data:
   minio-data:
   gateway-data:
+  prometheus-data:
+  grafana-data:

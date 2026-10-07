@@ -87,6 +87,26 @@ export class CheckoutServer {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/metrics') {
+      const health = await this.stampProvider.checkHealth();
+      const balance = await this.stampProvider.getBalance();
+      const asset = this.stampProvider.assetUnit || 'MON';
+      const lines = [
+        '# HELP gateway_up Health check status of the mail gateway (1 = up, 0 = down)',
+        '# TYPE gateway_up gauge',
+        `gateway_up ${health.ok ? 1 : 0}`,
+        '# HELP gateway_wallet_balance_wei Hot wallet balance in wei',
+        '# TYPE gateway_wallet_balance_wei gauge',
+        `gateway_wallet_balance_wei{asset="${asset}"} ${balance.raw.toString()}`,
+        '# HELP gateway_wallet_low_balance Flag indicating if wallet balance is low (1 = low, 0 = ok)',
+        '# TYPE gateway_wallet_low_balance gauge',
+        `gateway_wallet_low_balance ${balance.isLowBalance ? 1 : 0}`,
+      ];
+      res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4; charset=utf-8' });
+      res.end(lines.join('\n') + '\n');
+      return;
+    }
+
     if (req.method === 'POST' && (url.pathname === '/api/mail/send' || url.pathname === '/api/v1/outbound')) {
       return this.handleOutboundMailSend(req, res);
     }

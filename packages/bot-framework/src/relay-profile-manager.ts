@@ -28,6 +28,8 @@ export class RelayProfileManager {
       bio: params.profile.bio,
       avatar: avatarStr,
       bot: params.profile.bot ?? true,
+      accountType: params.profile.accountType,
+      botRole: params.profile.botRole,
     }
 
     if (!params.force) {
@@ -40,7 +42,9 @@ export class RelayProfileManager {
           existing &&
           (existing.name ?? '') === (wanted.name ?? '') &&
           (existing.bio ?? '') === (wanted.bio ?? '') &&
-          (existing.bot ?? false) === (wanted.bot ?? false)
+          (existing.bot ?? false) === (wanted.bot ?? false) &&
+          existing.accountType === wanted.accountType &&
+          existing.botRole === wanted.botRole
         ) {
           console.log(
             `[${params.label}] profile on relay already current (${params.identity.displayAddress})`,

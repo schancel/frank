@@ -7,6 +7,7 @@ import type {
   NewUserEvent,
 } from "@frank/bot-framework";
 import type { DigitalGoodsItem, MessageItem } from "@frank/cashweb/types/messages";
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_MERCHANT } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
 import {
   buildFulfillItems,
@@ -44,6 +45,8 @@ export class VendorBot implements FrankBotDefinition {
       bio: "Automated store selling demo pictures. Send any message to see the catalog.",
       avatarPng: generateAvatarPng("vendor", [60, 150, 90]),
       bot: true,
+      accountType: ACCOUNT_TYPE_BOT,
+      botRole: BOT_ROLE_MERCHANT,
     };
   }
 

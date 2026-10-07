@@ -69,9 +69,19 @@
               :src="profileAvatar(presentedAvatar, effectiveAddress || address)"
             />
           </q-avatar>
-          <q-toolbar-title class="h6" :style="contactNameColorStyle">{{
-            contactName
-          }}</q-toolbar-title>
+          <q-toolbar-title
+            class="h6 row items-center no-wrap"
+            :style="contactNameColorStyle"
+          >
+            <span>{{ contactName }}</span>
+            <account-badge
+              v-if="effectiveAddress && !activeConversation?.topic"
+              :address="effectiveAddress"
+              :account-type="targetProfile?.accountType"
+              :bot-role="targetProfile?.botRole"
+              :is-bot="targetProfile?.isBot"
+            />
+          </q-toolbar-title>
           <q-space />
           <q-btn
             class="q-px-sm"
@@ -184,6 +194,7 @@ import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
 import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
 import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
+import AccountBadge from '../components/contacts/AccountBadge.vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
@@ -203,6 +214,7 @@ export default defineComponent({
     ClearHistoryDialog,
     DeleteChatDialog,
     SendFileDialog,
+    AccountBadge,
   },
   // `chatSelectMode`: read by ChatMessageSuffixButtons.vue (several component layers below,
   // reached through `<router-view>`'s Chat.vue/ChatMessage.vue/ChatMessageSuffix.vue -- provide/
@@ -318,6 +330,15 @@ export default defineComponent({
       return addr && isChainAddress(addr)
         ? this.getContact(addr)?.profile
         : undefined
+    },
+    targetProfile() {
+      if (
+        this.effectiveAddress &&
+        sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
+      ) {
+        return this.myProfile.profile
+      }
+      return this.contactProfile
     },
     contactName(): string {
       if (!this.address) {

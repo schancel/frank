@@ -16,9 +16,7 @@
           class="q-mr-xs"
         />
         <div class="column justify-center">
-          <div
-            class="row items-center no-wrap text-weight-bold text-subtitle2"
-          >
+          <div class="row items-center no-wrap text-weight-bold text-subtitle2">
             <span>{{ announcement.gameName }}</span>
             <q-badge
               v-if="announcement.tableId"
@@ -124,7 +122,7 @@ export default defineComponent({
         try {
           const res = router.push(route)
           if (res && typeof (res as any).catch === 'function') {
-            ;(res as any).catch(() => {})
+            ;(res as any).catch(() => undefined)
           }
         } catch {
           // ignore navigation error

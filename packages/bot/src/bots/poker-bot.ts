@@ -21,6 +21,7 @@ import {
   type PokerPlayer,
 } from "@frank/wallet/message-item-plugins/poker";
 import { generateAvatarPng } from "../../bot-directory";
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
   announceTableToTopic,
   type GameTableDetails,
@@ -101,6 +102,8 @@ export class PokerBot implements FrankBotDefinition {
       bio: "Provably-fair No-Limit Texas Hold'em table referee for 2 to 6 players.",
       avatarPng: generateAvatarPng("poker", [30, 160, 80]),
       bot: true,
+      accountType: ACCOUNT_TYPE_BOT,
+      botRole: BOT_ROLE_GAME,
     };
   }
 

@@ -1399,6 +1399,184 @@ describe('directory statement canonicalUsername (field 14, ticket #972)', () => 
       expect(e.stage).toBe('10.6')
     }
   })
+
+  it('encodes and validates accountType and botRole in directory statement', () => {
+    const pubKey = fromHex('02'.repeat(33))
+    const relays = [
+      {
+        relayId: fromHex('03'.repeat(16)),
+        endpoint: 'https://relay.example/r',
+        identity: { keyType: 1, keyBytes: pubKey },
+        expiry: { seconds: 2000n, nanoseconds: 0 },
+      },
+    ]
+
+    const encoded = codec.encodeDirectoryStatement({
+      network: 'monad-testnet',
+      subject: { keyType: 1, keyBytes: pubKey },
+      revision: 100n,
+      timestamp: { seconds: 50n, nanoseconds: 0 },
+      relays,
+      stampKey: { keyType: 1, keyBytes: pubKey },
+      accountType: codec.ACCOUNT_TYPE_SERVICE,
+      botRole: codec.BOT_ROLE_FAUCET,
+    })
+
+    const res = validateFrame(encoded, defaultContext())
+    expect(res.kind).toBe('parsed')
+    if (res.kind === 'parsed' && res.typed?.type === 4) {
+      expect(res.typed.accountType).toBe(codec.ACCOUNT_TYPE_SERVICE)
+      expect(res.typed.botRole).toBe(codec.BOT_ROLE_FAUCET)
+    } else {
+      throw new Error('expected typed statement')
+    }
+  })
+
+  it('rejects out of bounds accountType and botRole at schema level', () => {
+    const pubKey = fromHex('02'.repeat(33))
+    const relays = [
+      M([
+        [0, fromHex('02'.repeat(16))],
+        [1, 'https://relay.example/r'],
+        [
+          2,
+          M([
+            [0, 1],
+            [1, pubKey],
+          ]),
+        ],
+        [
+          3,
+          M([
+            [0, 2000],
+            [1, 0],
+          ]),
+        ],
+      ]),
+    ]
+
+    // Invalid accountType 4 (> 3)
+    const badTypeStatement = encodeFrame(
+      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      M([
+        [0, 'monad-testnet'],
+        [
+          1,
+          M([
+            [0, 1],
+            [1, pubKey],
+          ]),
+        ],
+        [2, 1],
+        [
+          3,
+          M([
+            [0, 100],
+            [1, 0],
+          ]),
+        ],
+        [4, relays],
+        [
+          8,
+          M([
+            [0, 1],
+            [1, pubKey],
+          ]),
+        ],
+        [15, 4], // > 3
+      ]),
+    )
+    expect(() => validateFrame(badTypeStatement, defaultContext())).toThrow(
+      FrankCodecError,
+    )
+    try {
+      validateFrame(badTypeStatement, defaultContext())
+    } catch (e: any) {
+      expect(e.category).toBe('schema')
+    }
+
+    // Invalid botRole 8 (> 7)
+    const badRoleStatement = encodeFrame(
+      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      M([
+        [0, 'monad-testnet'],
+        [
+          1,
+          M([
+            [0, 1],
+            [1, pubKey],
+          ]),
+        ],
+        [2, 1],
+        [
+          3,
+          M([
+            [0, 100],
+            [1, 0],
+          ]),
+        ],
+        [4, relays],
+        [
+          8,
+          M([
+            [0, 1],
+            [1, pubKey],
+          ]),
+        ],
+        [15, 1], // Bot
+        [16, 8], // > 7
+      ]),
+    )
+    expect(() => validateFrame(badRoleStatement, defaultContext())).toThrow(
+      FrankCodecError,
+    )
+    try {
+      validateFrame(badRoleStatement, defaultContext())
+    } catch (e: any) {
+      expect(e.category).toBe('schema')
+    }
+
+    // Semantic rejection: botRole on Person (accountType 0)
+    const roleOnPerson = encodeFrame(
+      { typeId: 4, schemaVersion: 3, minReaderVersion: 2 },
+      M([
+        [0, 'monad-testnet'],
+        [
+          1,
+          M([
+            [0, 1],
+            [1, pubKey],
+          ]),
+        ],
+        [2, 1],
+        [
+          3,
+          M([
+            [0, 100],
+            [1, 0],
+          ]),
+        ],
+        [4, relays],
+        [
+          8,
+          M([
+            [0, 1],
+            [1, pubKey],
+          ]),
+        ],
+        [15, 0], // Person
+        [16, 1], // Role on person!
+      ]),
+    )
+    expect(() => validateFrame(roleOnPerson, defaultContext())).toThrow(
+      FrankCodecError,
+    )
+    try {
+      validateFrame(roleOnPerson, defaultContext())
+    } catch (e: any) {
+      expect(e.category).toBe('semantic')
+    }
+  })
 })
 
 /** Minimal envelope reader for the raw fixture frames used by these tests. */

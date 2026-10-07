@@ -6,6 +6,7 @@ import type {
   NewUserEvent,
 } from "@frank/bot-framework";
 import type { MessageItem } from "@frank/cashweb/types/messages";
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_ASSISTANT } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
 import {
   createQwenReplyGenerator,
@@ -70,6 +71,8 @@ export class QwenBot implements FrankBotDefinition {
       bio: "Automated Qwen-powered assistant. Ask it anything or send /subscribe for daily updates.",
       avatarPng: generateAvatarPng("qwen", [110, 90, 220]),
       bot: true,
+      accountType: ACCOUNT_TYPE_BOT,
+      botRole: BOT_ROLE_ASSISTANT,
     };
   }
 

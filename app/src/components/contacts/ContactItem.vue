@@ -29,7 +29,15 @@
         </q-avatar>
       </q-item-section>
       <q-item-section @click="contactClick(address, contact)">
-        <q-item-label lines="1">{{ contact.profile.name }}</q-item-label>
+        <div class="row items-center no-wrap">
+          <q-item-label lines="1">{{ contact.profile.name }}</q-item-label>
+          <account-badge
+            :address="address"
+            :account-type="contact.profile.accountType"
+            :bot-role="contact.profile.botRole"
+            :is-bot="contact.profile.isBot"
+          />
+        </div>
         <q-item-label lines="1" caption>
           <span class="text-weight-bold">{{ $t('contactItem.address') }}:</span>
           {{ address }}
@@ -62,8 +70,12 @@ import { defineComponent } from 'vue'
 import type { ProfilePubKey } from 'src/utils/profile-pubkey'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
+import AccountBadge from './AccountBadge.vue'
 
 export default defineComponent({
+  components: {
+    AccountBadge,
+  },
   props: {
     address: {
       type: String,

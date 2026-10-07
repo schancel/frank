@@ -983,6 +983,8 @@ fn open_children(
             profile_entries,
             preview,
             canonical_username,
+            account_type,
+            bot_role,
             unknown,
         } => {
             let key_transitions = match key_transitions {
@@ -1048,6 +1050,8 @@ fn open_children(
                         .collect()
                 }),
                 canonical_username,
+                account_type,
+                bot_role,
                 unknown,
             })
         }

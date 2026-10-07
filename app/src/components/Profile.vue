@@ -84,6 +84,36 @@
                     data-test="profile-input-bio"
                   />
                 </div>
+                <div class="row q-pa-md">
+                  <q-select
+                    outlined
+                    v-model="internalAccountType"
+                    :options="accountTypeOptions"
+                    emit-value
+                    map-options
+                    :label="$t('profile.accountType')"
+                    :hint="$t('profile.accountTypeHint')"
+                    style="width: 100%"
+                    data-test="profile-select-account-type"
+                  />
+                </div>
+                <div
+                  v-if="internalAccountType === 1 || internalAccountType === 2"
+                  class="row q-pa-md"
+                >
+                  <q-select
+                    outlined
+                    v-model="internalBotRole"
+                    :options="botRoleOptions"
+                    emit-value
+                    map-options
+                    clearable
+                    :label="$t('profile.botRole')"
+                    :hint="$t('profile.botRoleHint')"
+                    style="width: 100%"
+                    data-test="profile-select-bot-role"
+                  />
+                </div>
                 <div class="q-pa-md">
                   <div class="row items-center justify-between q-mb-sm">
                     <span class="text-subtitle2 text-weight-medium">{{
@@ -372,6 +402,14 @@ export default defineComponent({
       type: String,
       default: '',
     },
+    accountType: {
+      type: Number,
+      default: 0,
+    },
+    botRole: {
+      type: Number,
+      default: undefined,
+    },
   },
   emits: [
     'update:name',
@@ -381,6 +419,8 @@ export default defineComponent({
     'update:avatar',
     'update:acceptancePrice',
     'update:links',
+    'update:accountType',
+    'update:botRole',
   ],
   data() {
     return {
@@ -395,6 +435,8 @@ export default defineComponent({
         : []) as ProfileLinkItem[],
       internalAcceptancePrice: this.acceptancePrice,
       internalIdentityAddress: this.identityAddress,
+      internalAccountType: this.accountType ?? 0,
+      internalBotRole: this.botRole,
       avatarPath: null,
       tab: 'profile',
       defaultAvatarIndex: Math.floor(Math.random() * defaultAvatars.length),
@@ -403,6 +445,26 @@ export default defineComponent({
   computed: {
     resolvedIdentityAddress(): string {
       return this.identityAddress || this.internalIdentityAddress
+    },
+    accountTypeOptions(): Array<{ label: string; value: number }> {
+      return [
+        { value: 0, label: this.$t('profile.accountTypePerson') },
+        { value: 1, label: this.$t('profile.accountTypeBot') },
+        { value: 2, label: this.$t('profile.accountTypeService') },
+        { value: 3, label: this.$t('profile.accountTypeOrganization') },
+      ]
+    },
+    botRoleOptions(): Array<{ label: string; value: number }> {
+      return [
+        { value: 0, label: this.$t('profile.botRoleGeneric') },
+        { value: 1, label: this.$t('profile.botRoleAssistant') },
+        { value: 2, label: this.$t('profile.botRoleFaucet') },
+        { value: 3, label: this.$t('profile.botRoleGame') },
+        { value: 4, label: this.$t('profile.botRoleBridge') },
+        { value: 5, label: this.$t('profile.botRoleMerchant') },
+        { value: 6, label: this.$t('profile.botRoleModerator') },
+        { value: 7, label: this.$t('profile.botRoleAnnouncer') },
+      ]
     },
     linkTypeOptions(): Array<{ label: string; value: string }> {
       return [
@@ -552,6 +614,26 @@ export default defineComponent({
         }
       },
       deep: true,
+    },
+    internalAccountType(newVal: number) {
+      this.$emit('update:accountType', newVal)
+      if (newVal !== 1 && newVal !== 2) {
+        this.internalBotRole = undefined
+        this.$emit('update:botRole', undefined)
+      }
+    },
+    internalBotRole(newVal: number | undefined) {
+      this.$emit('update:botRole', newVal)
+    },
+    accountType(newVal: number) {
+      if (newVal !== this.internalAccountType) {
+        this.internalAccountType = newVal ?? 0
+      }
+    },
+    botRole(newVal: number | undefined) {
+      if (newVal !== this.internalBotRole) {
+        this.internalBotRole = newVal
+      }
     },
     async avatarPath(val: File | null) {
       if (val == null) {

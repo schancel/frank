@@ -48,7 +48,7 @@ const BASELINE: Record<string, number> = {
   'pages/Topic.vue': 1,
   'components/topic/GameAnnouncementCard.vue': 4,
   'components/chat/email/EmailThreadView.vue': 7,
-  'components/panels/ContactsPanel.vue': 2,
+  'components/panels/ContactsPanel.vue': 1,
 }
 
 const VISIBLE_ATTRS = new Set([

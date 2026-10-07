@@ -34,7 +34,9 @@ describe('AppMultiChainWalletResolver', () => {
     ;(useMonadWallet as jest.Mock).mockImplementation(() => {
       throw new Error('Messaging is not available yet')
     })
-    ;(accountSession.getWallet as jest.Mock).mockResolvedValue(mockSessionWallet)
+    ;(accountSession.getWallet as jest.Mock).mockResolvedValue(
+      mockSessionWallet,
+    )
 
     const resolver = new AppMultiChainWalletResolver()
     const wallet = await resolver.getWalletForChain('monad-mainnet')
@@ -68,7 +70,9 @@ describe('AppMultiChainWalletResolver', () => {
 
   it('resolves solanaWallet when set', async () => {
     const mockSolanaWallet = { id: 'solana-wallet-handle' }
-    const resolver = new AppMultiChainWalletResolver({ solanaWallet: mockSolanaWallet })
+    const resolver = new AppMultiChainWalletResolver({
+      solanaWallet: mockSolanaWallet,
+    })
 
     const wallet = await resolver.getWalletForChain('solana-mainnet')
     expect(wallet).toBe(mockSolanaWallet)

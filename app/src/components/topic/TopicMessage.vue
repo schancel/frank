@@ -17,6 +17,13 @@
           {{ authorName(message) }}
         </div>
       </q-btn>
+      <account-badge
+        v-if="authorAddress(message)"
+        :address="authorAddress(message)"
+        :account-type="authorProfile(message)?.accountType"
+        :bot-role="authorProfile(message)?.botRole"
+        :is-bot="authorProfile(message)?.isBot"
+      />
       <q-space />
       <span class="q-pa-none q-mt-xs text-center">{{ message.topic }}</span>
       <q-card-section class="q-pa-none q-mt-xs text-center">
@@ -125,10 +132,12 @@ import {
 } from 'src/utils/own-address'
 import GameAnnouncementCard from './GameAnnouncementCard.vue'
 import { parseGameAnnouncement } from 'src/utils/game-announcement'
+import AccountBadge from 'src/components/contacts/AccountBadge.vue'
 
 export default defineComponent({
   components: {
     GameAnnouncementCard,
+    AccountBadge,
   },
   setup(props) {
     const contactStore = useContactStore()
@@ -303,6 +312,31 @@ export default defineComponent({
         return false
       }
       return Boolean(msg.poster)
+    },
+    authorAddress(message?: ForumMessage): string {
+      const msg = message ?? this.message
+      if (this.isAuthorMe(msg)) {
+        const profileAddr = (this.myProfile?.profile as any)?.address
+        if (profileAddr) return profileAddr
+        const own =
+          typeof this.ownAddress === 'object' &&
+          this.ownAddress !== null &&
+          'value' in this.ownAddress
+            ? (this.ownAddress as any).value
+            : this.ownAddress
+        return own || msg?.poster || ''
+      }
+      return msg?.poster || ''
+    },
+    authorProfile(message?: ForumMessage) {
+      const msg = message ?? this.message
+      if (this.isAuthorMe(msg)) {
+        return this.myProfile?.profile
+      }
+      if (msg?.poster && this.haveContact(msg.poster)) {
+        return this.getContactProfile(msg.poster)
+      }
+      return undefined
     },
     addVotes(votes: number) {
       if (

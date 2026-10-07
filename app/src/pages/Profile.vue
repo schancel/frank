@@ -15,6 +15,8 @@
           v-model:avatar="avatar"
           v-model:links="links"
           v-model:acceptancePrice="acceptancePrice"
+          v-model:accountType="accountType"
+          v-model:botRole="botRole"
           class="col full-height"
         />
         <q-separator />
@@ -73,6 +75,8 @@ type ProfileData = {
   bio?: string
   avatar?: string
   links?: ProfileLinkItem[]
+  accountType?: number
+  botRole?: number
 }
 
 type RelayData = {
@@ -108,6 +112,8 @@ export default defineComponent({
           ) as ProfileLinkItem[])
         : [],
       acceptancePrice: myProfile.inbox.acceptancePrice,
+      accountType: myProfile.profile.accountType ?? 0,
+      botRole: myProfile.profile.botRole,
     }
   },
   computed: {
@@ -119,6 +125,8 @@ export default defineComponent({
         bio: this.bio,
         avatar: this.avatar,
         links: this.links,
+        accountType: this.accountType,
+        botRole: this.botRole,
       }
     },
     relayData(): RelayData {
@@ -137,6 +145,10 @@ export default defineComponent({
           location: this.location || undefined,
           bio: this.bio,
           avatar: this.avatar,
+          accountType:
+            this.accountType !== undefined ? Number(this.accountType) : 0,
+          botRole:
+            this.botRole !== undefined ? Number(this.botRole) : undefined,
           ...(validLinks.length > 0 ? { links: validLinks } : {}),
         },
         inbox: {
@@ -157,6 +169,8 @@ export default defineComponent({
         (currentProfile.location ?? '') === (this.location ?? '') &&
         (currentProfile.bio ?? '') === (this.bio ?? '') &&
         (currentProfile.avatar ?? '') === (this.avatar ?? '') &&
+        (currentProfile.accountType ?? 0) === (this.accountType ?? 0) &&
+        (currentProfile.botRole ?? undefined) === (this.botRole ?? undefined) &&
         currentLinksJson === newLinksJson &&
         (currentInbox.acceptancePrice ?? 0) === (this.acceptancePrice ?? 0)
       )

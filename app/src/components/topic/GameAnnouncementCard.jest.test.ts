@@ -81,7 +81,8 @@ describe('GameAnnouncementCard.vue', () => {
           'q-avatar': { template: '<div><slot /></div>' },
           'q-badge': { template: '<span><slot /></span>' },
           'q-btn': {
-            template: '<button @click="$emit(\'click\')">{{ $attrs.label }}</button>',
+            template:
+              '<button @click="$emit(\'click\')">{{ $attrs.label }}</button>',
           },
         },
       },
@@ -110,7 +111,8 @@ describe('GameAnnouncementCard.vue', () => {
           'q-avatar': { template: '<div><slot /></div>' },
           'q-badge': { template: '<span><slot /></span>' },
           'q-btn': {
-            template: '<button @click="$emit(\'click\')">{{ $attrs.label }}</button>',
+            template:
+              '<button @click="$emit(\'click\')">{{ $attrs.label }}</button>',
           },
         },
       },

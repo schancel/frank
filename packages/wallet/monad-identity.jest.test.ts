@@ -28,13 +28,19 @@ import {
   fetchMonadIdentityPubKey,
   fetchMonadProfile,
   fetchMonadProfilesSince,
+  isBotAccount,
   isBotProfileSignedPayload,
   isCborFrame,
   registerMonadIdentity,
   registerMonadIdentityCbor,
   searchMonadProfiles,
 } from './monad-identity'
-import { defaultContext, validateFrame } from '@frank/codec'
+import {
+  ACCOUNT_TYPE_SERVICE,
+  BOT_ROLE_FAUCET,
+  defaultContext,
+  validateFrame,
+} from '@frank/codec'
 import { publicFromPrivate } from '@frank/nakamoto'
 import { validateProfileDisplayName } from './profile-display-name'
 
@@ -905,6 +911,51 @@ describe('registerMonadIdentityCbor & dual-format CBOR/protobuf handling', () =>
     expect(profile?.avatar).toBe('data:image/jpeg;base64,MTIzNA==')
     expect(profile?.bot).toBeUndefined()
     expect(Buffer.from(profile!.pubKey)).toEqual(identity.compressedPubKey)
+  })
+
+  it('encodes and decodes accountType and botRole in directory statements', async () => {
+    const identity = MonadIdentity.fromSeed(SEED)
+    const cborFrame = buildSignedDirectoryStatement(identity, {
+      network: 'monad-testnet',
+      profile: {
+        name: 'FaucetBot',
+        accountType: ACCOUNT_TYPE_SERVICE,
+        botRole: BOT_ROLE_FAUCET,
+      },
+    })
+
+    const validated = validateFrame(
+      cborFrame,
+      defaultContext({ operation: 'full' }),
+    )
+    expect(validated.kind).toBe('parsed')
+    if (validated.kind === 'parsed' && validated.typed?.type === 2) {
+      const stmtFrame = validated.typed.statementFrame
+      expect(stmtFrame.kind).toBe('parsed')
+      if (stmtFrame.kind === 'parsed' && stmtFrame.typed?.type === 4) {
+        expect(stmtFrame.typed.accountType).toBe(ACCOUNT_TYPE_SERVICE)
+        expect(stmtFrame.typed.botRole).toBe(BOT_ROLE_FAUCET)
+      }
+    }
+
+    mockedAxios.mockResolvedValueOnce({
+      status: 200,
+      data: Buffer.from(cborFrame),
+      statusText: 'OK',
+      headers: { 'content-type': 'application/cbor' },
+      config: {},
+    })
+
+    const profile = await fetchMonadProfile({
+      relayBaseUrl: RELAY_BASE_URL,
+      address: identity.address,
+    })
+    expect(profile).toBeDefined()
+    expect(profile?.name).toBe('FaucetBot')
+    expect(profile?.accountType).toBe(ACCOUNT_TYPE_SERVICE)
+    expect(profile?.botRole).toBe(BOT_ROLE_FAUCET)
+    expect(profile?.bot).toBe(true)
+    expect(isBotAccount(profile)).toBe(true)
   })
 
   it('fetchMonadProfilesSince and searchMonadProfiles handle CBOR frames and populate rawBytes', async () => {

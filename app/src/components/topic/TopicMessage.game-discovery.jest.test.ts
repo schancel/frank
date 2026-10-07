@@ -100,9 +100,9 @@ describe('TopicMessage.vue Game Table Discovery', () => {
           url: `/chat/${options.bot}?join=${options.tableId}`,
           message: `🎮 **${options.gameName} Table Created!**\n• Table ID: \`${
             options.tableId
-          }\`\n• Host: \`${options.host}\`\n\n<!-- GAME_ANNOUNCEMENT:${JSON.stringify(
-            payload,
-          )} -->`,
+          }\`\n• Host: \`${
+            options.host
+          }\`\n\n<!-- GAME_ANNOUNCEMENT:${JSON.stringify(payload)} -->`,
         },
       ],
     }

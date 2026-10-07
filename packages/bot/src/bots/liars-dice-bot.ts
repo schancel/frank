@@ -24,6 +24,7 @@ import {
   type LiarsDiceGameState,
 } from "@frank/wallet/message-item-plugins/liars-dice";
 import { generateAvatarPng } from "../../bot-directory";
+import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
   announceTableToTopic,
   type GameTableDetails,
@@ -100,6 +101,8 @@ export class LiarsDiceBot implements FrankBotDefinition {
       bio: "Provably-fair Liar's Dice (Perudo) table referee with mental dice commitments.",
       avatarPng: generateAvatarPng("liars-dice", [240, 180, 50]),
       bot: true,
+      accountType: ACCOUNT_TYPE_BOT,
+      botRole: BOT_ROLE_GAME,
     };
   }
 

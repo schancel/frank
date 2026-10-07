@@ -12,6 +12,8 @@ export interface State {
       url: string
       label?: string
     }>
+    accountType?: number
+    botRole?: number
   }
   inbox: {
     acceptancePrice?: number

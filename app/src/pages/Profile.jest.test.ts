@@ -55,6 +55,8 @@ const defaultStubs = {
       'avatar',
       'links',
       'acceptancePrice',
+      'accountType',
+      'botRole',
     ],
     emits: [
       'update:name',
@@ -64,6 +66,8 @@ const defaultStubs = {
       'update:avatar',
       'update:links',
       'update:acceptancePrice',
+      'update:accountType',
+      'update:botRole',
     ],
   },
   'q-page-container': { template: '<div><slot /></div>' },
@@ -447,6 +451,58 @@ describe('Profile.vue', () => {
           links: [
             { type: 'website', url: 'https://mysite.com', label: 'My Site' },
           ],
+        }),
+      }),
+    )
+  })
+
+  it('updates accountType and botRole via v-model and publishes to relay', async () => {
+    const mockWallet = {
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    }
+    ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
+
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+
+    const profileComp = wrapper.findComponent({ name: 'Profile' })
+    expect(profileComp.exists()).toBe(true)
+
+    // Emit update:accountType and update:botRole from child
+    profileComp.vm.$emit('update:accountType', 1) // Bot
+    profileComp.vm.$emit('update:botRole', 2) // Faucet
+    await wrapper.vm.$nextTick()
+
+    expect((wrapper.vm as any).accountType).toBe(1)
+    expect((wrapper.vm as any).botRole).toBe(2)
+
+    await (wrapper.vm as any).updateRelayData()
+
+    expect(mockSetRelayData).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({
+          accountType: 1,
+          botRole: 2,
+        }),
+      }),
+    )
+
+    expect(registerMonadIdentityCbor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({
+          accountType: 1,
+          botRole: 2,
         }),
       }),
     )

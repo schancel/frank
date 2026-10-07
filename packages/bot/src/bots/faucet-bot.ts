@@ -6,6 +6,7 @@ import type {
   NewUserEvent,
 } from "@frank/bot-framework";
 import { formatMon } from "@frank/wallet/monad-amount";
+import { ACCOUNT_TYPE_SERVICE, BOT_ROLE_FAUCET } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
 
 export const FAUCET_DEFAULT_AMOUNT_WEI = 50_000_000_000_000_000n; // 0.05 MON
@@ -61,6 +62,8 @@ export class FaucetBot implements FrankBotDefinition {
       bio: "Automated testnet faucet. Grants starter testnet MON to newly registered accounts.",
       avatarPng: generateAvatarPng("faucet", [40, 160, 220]),
       bot: true,
+      accountType: ACCOUNT_TYPE_SERVICE,
+      botRole: BOT_ROLE_FAUCET,
     };
   }
 

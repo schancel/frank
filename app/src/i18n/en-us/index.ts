@@ -285,6 +285,13 @@ export default {
     chatsUnreadOther: 'Direct Messages, {count} unread messages',
     contactsUnreadOne: 'Contacts, {count} unread message',
     contactsUnreadOther: 'Contacts, {count} unread messages',
+    loginSignUp: 'Log in / Sign up',
+  },
+  docs: {
+    title: 'Documentation',
+    header: 'Documentation & Protocol',
+    openInTab: 'Open in Tab',
+    iframeTitle: 'Frank Documentation',
   },
   walletPanel: {
     title: 'Wallets',

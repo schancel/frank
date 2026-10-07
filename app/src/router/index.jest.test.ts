@@ -43,3 +43,16 @@ test('only a ready custody session unlocks normal wallet/forum routes', async ()
     await mockGuard({ path: '/forum', fullPath: '/forum', params: {} }, {}),
   ).toBeUndefined()
 })
+
+test('documentation is readable without an account', async () => {
+  mockStatus.status = 'fresh'
+  expect(
+    await mockGuard({ path: '/docs', fullPath: '/docs', params: {} }, {}),
+  ).toBeUndefined()
+  expect(
+    await mockGuard(
+      { path: '/docs/guide', fullPath: '/docs/guide', params: {} },
+      {},
+    ),
+  ).toBeUndefined()
+})

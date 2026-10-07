@@ -291,6 +291,13 @@ export default {
     chatsUnreadOther: 'Messages directs, {count} messages non lus',
     contactsUnreadOne: 'Contacts, {count} message non lu',
     contactsUnreadOther: 'Contacts, {count} messages non lus',
+    loginSignUp: 'Connexion / Inscription',
+  },
+  docs: {
+    title: 'Documentation',
+    header: 'Documentation et protocole',
+    openInTab: 'Ouvrir dans un onglet',
+    iframeTitle: 'Documentation de Frank',
   },
   walletPanel: {
     title: 'Portefeuilles',

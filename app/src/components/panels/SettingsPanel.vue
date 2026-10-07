@@ -80,6 +80,14 @@
           <q-item-section>{{ $t('SettingPanel.changeLog') }}</q-item-section>
         </q-item>
 
+        <q-item clickable v-ripple data-test="open-docs" @click="openDocs">
+          <q-item-section avatar>
+            <q-icon name="menu_book" />
+          </q-item-section>
+
+          <q-item-section>{{ $t('docs.title') }}</q-item-section>
+        </q-item>
+
         <q-item
           clickable
           v-ripple
@@ -202,6 +210,16 @@ export default defineComponent({
       }
     }
 
+    function openDocs() {
+      const r = getRouter()
+      maybeCloseDrawer('/docs')
+      if (r) {
+        return r.push('/docs').catch(() => {
+          // Don't care. Probably duplicate route
+        })
+      }
+    }
+
     onMounted(async () => {
       try {
         myAddress.value = (await useActiveWallet()).identity.displayAddress
@@ -226,6 +244,7 @@ export default defineComponent({
       openProfile,
       deleteForever,
       openChangelog,
+      openDocs,
       drawerOpenModel,
     }
   },

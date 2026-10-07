@@ -1,7 +1,7 @@
 {
-  "name": "Signet",
-  "short_name": "Signet",
-  "description": "A Monad powered internet cryptomessenger",
+  "name": "Frank",
+  "short_name": "Frank",
+  "description": " A Lotus powered internet cryptomessenger",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#f7f7f2",

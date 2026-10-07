@@ -61,6 +61,7 @@ import {
 import { validateProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { profileNameError } from '../utils/profile-name'
 import { isAvatarTooLarge, compressAvatarDataUrl } from '../utils/avatar'
+import { downscaleImage } from '../utils/image-resize'
 import Profile, { type ProfileLinkItem } from '../components/Profile.vue'
 import { errorNotify } from '../utils/notifications'
 import { navigateBack } from '../utils/navigate-back'
@@ -188,7 +189,14 @@ export default defineComponent({
         this.username = usernameResult.normalized
       }
 
-      // Avatar validation and compression before submitting
+      // Avatar downscaling and compression before submitting
+      if (this.avatar) {
+        try {
+          this.avatar = await downscaleImage(this.avatar)
+        } catch {
+          // ignore downscaling errors and proceed to size validation
+        }
+      }
       if (this.avatar && isAvatarTooLarge(this.avatar)) {
         try {
           this.avatar = await compressAvatarDataUrl(this.avatar)

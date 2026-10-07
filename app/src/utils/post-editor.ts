@@ -3,6 +3,8 @@
  * and client-side image compression for forum posts.
  */
 
+import { downscaleImage, getImageByteSize } from './image-resize'
+
 export type MarkdownFormatAction =
   | 'bold'
   | 'italic'
@@ -614,73 +616,25 @@ export function compressImageElement(
 /**
  * Compresses a File or Blob image for inclusion in a post.
  */
-export function compressPostImage(
+export async function compressPostImage(
   file: File | Blob,
   options?: PostImageOptions,
-): Promise<{ dataUrl: string; name: string }> {
+): Promise<{ dataUrl: string; name: string; bytes?: number }> {
   const fileName = 'name' in file ? file.name : 'image.png'
-  return new Promise((resolve, reject) => {
-    if (!file.type.startsWith('image/')) {
-      reject(new Error('File is not a valid image'))
-      return
-    }
+  if (!file.type.startsWith('image/')) {
+    throw new Error('File is not a valid image')
+  }
 
-    const reader = new FileReader()
-    reader.onload = evt => {
-      const rawUrl = evt.target?.result as string
-      if (!rawUrl) {
-        reject(new Error('Failed to read image file'))
-        return
-      }
+  const maxBytes = options?.maxBytes ?? MAX_POST_IMAGE_BYTES
+  const maxDim = options?.maxDimension ?? MAX_POST_IMAGE_DIMENSION
+  const quality = options?.quality ?? 0.82
 
-      // If already small enough (e.g. tiny PNG/GIF/JPEG <= 40KB), use as is
-      const maxBytes = options?.maxBytes ?? MAX_POST_IMAGE_BYTES
-      if (rawUrl.length <= Math.min(maxBytes, 40 * 1024)) {
-        resolve({ dataUrl: rawUrl, name: fileName })
-        return
-      }
-
-      const img = new Image()
-      let settled = false
-
-      const finish = () => {
-        if (settled) return
-        settled = true
-        clearTimeout(timer)
-        try {
-          const compressed = compressImageElement(img, options)
-          resolve({ dataUrl: compressed, name: fileName })
-        } catch (err) {
-          reject(err)
-        }
-      }
-
-      const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true
-          reject(new Error('Image processing timed out'))
-        }
-      }, 3000)
-
-      img.onload = finish
-      img.onerror = () => {
-        if (!settled) {
-          settled = true
-          clearTimeout(timer)
-          reject(new Error('Failed to decode image'))
-        }
-      }
-
-      img.src = rawUrl
-      if (img.complete && (img.naturalWidth !== 0 || img.width !== 0)) {
-        finish()
-      }
-    }
-
-    reader.onerror = () => {
-      reject(new Error('Failed to read image file'))
-    }
-
-    reader.readAsDataURL(file)
+  const dataUrl = await downscaleImage(file, {
+    maxDimension: maxDim,
+    maxBytes,
+    quality,
   })
+
+  const bytes = getImageByteSize(dataUrl)
+  return { dataUrl, name: fileName, bytes }
 }

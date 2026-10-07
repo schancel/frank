@@ -320,7 +320,8 @@ import { copyToClipboard } from 'quasar'
 
 import { normalizedProfileName, profileNameRule } from '../utils/profile-name'
 import { defaultAvatars } from '../utils/constants'
-import { resizeAndCompressImage, compressAvatarFile } from '../utils/avatar'
+import { resizeAndCompressImage, compressAvatarDataUrl } from '../utils/avatar'
+import { downscaleImage } from '../utils/image-resize'
 import { validateProfileUsername } from '@frank/wallet/monad-identity'
 import { getOwnCanonicalAddress } from '../utils/own-address'
 import { addressCopiedNotify, errorNotify } from '../utils/notifications'
@@ -557,9 +558,14 @@ export default defineComponent({
         return
       }
       try {
-        const compressed = await compressAvatarFile(val)
-        if (compressed) {
-          this.internalAvatar = compressed
+        const downscaled = await downscaleImage(val)
+        if (downscaled) {
+          try {
+            const compressed = await compressAvatarDataUrl(downscaled)
+            this.internalAvatar = compressed || downscaled
+          } catch {
+            this.internalAvatar = downscaled
+          }
         }
       } catch (err) {
         console.error('Failed to process avatar file upload', err)

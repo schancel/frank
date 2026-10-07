@@ -104,7 +104,18 @@ describe('resolveDemoConfig', () => {
     expect(c.wsRpcUrl).toBeUndefined()
     expect(c.stateDir).toBe(join(HOME, '.frank-demo'))
     expect(c.mainWalletJson).toBe(join(HOME, '.frank-demo', 'fake-chain-wallet.json'))
-    expect(c.bots.map(b => b.name)).toEqual(['blackjack', 'raffle', 'vendor', 'qwen', 'faucet'])
+    expect(c.bots.map(b => b.name)).toEqual([
+      'blackjack',
+      'raffle',
+      'vendor',
+      'qwen',
+      'faucet',
+      'lobby',
+      'rps',
+      'dice',
+      'liars-dice',
+      'poker',
+    ])
     for (const bot of c.bots) {
       for (const [k, v] of Object.entries(bot.env)) {
         if (/(IDENTITY_JSON|STATE_DIR|HANDOFF_JSON)$/.test(k)) {
@@ -289,7 +300,17 @@ describe('resolveDemoConfig', () => {
         home: HOME,
         cwd: '/work',
       })
-      expect(opted.bots.map(b => b.name)).toEqual(['blackjack', 'raffle', 'vendor', 'qwen'])
+      expect(opted.bots.map(b => b.name)).toEqual([
+        'blackjack',
+        'raffle',
+        'vendor',
+        'qwen',
+        'lobby',
+        'rps',
+        'dice',
+        'liars-dice',
+        'poker',
+      ])
     })
 
     it('the stamp wallet goes only to the bots that pay from it; the faucet gets its own and never it', () => {
@@ -298,7 +319,17 @@ describe('resolveDemoConfig', () => {
       const faucet = c.bots.find(b => b.name === 'faucet')!
       expect(faucet.env.E2E_DEMO_MAIN_WALLET_JSON).toBe('/work/faucet.json')
       expect(Object.values(faucet.env)).not.toContain(main)
-      for (const name of ['blackjack', 'raffle', 'vendor', 'qwen']) {
+      for (const name of [
+        'blackjack',
+        'raffle',
+        'vendor',
+        'qwen',
+        'lobby',
+        'rps',
+        'dice',
+        'liars-dice',
+        'poker',
+      ]) {
         expect(c.bots.find(b => b.name === name)!.env.E2E_DEMO_MAIN_WALLET_JSON).toBe(main)
       }
     })

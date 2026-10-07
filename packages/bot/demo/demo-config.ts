@@ -404,7 +404,17 @@ export const NEVER_IDLE_MS = String(30 * 24 * 60 * 60 * 1000)
 
 const INBOX_POLLING = /Polling .*(inbox|\/message\/monad\/inbox)/
 
-export type BotName = 'blackjack' | 'raffle' | 'vendor' | 'qwen' | 'faucet'
+export type BotName =
+  | 'blackjack'
+  | 'raffle'
+  | 'vendor'
+  | 'qwen'
+  | 'faucet'
+  | 'lobby'
+  | 'rps'
+  | 'dice'
+  | 'liars-dice'
+  | 'poker'
 
 export interface DemoBot {
   name: BotName
@@ -849,6 +859,71 @@ export function resolveDemoConfig(params: {
             },
           },
         ]),
+    {
+      name: 'lobby',
+      script: 'targets/lobby.ts',
+      identityJson: idPath('lobby'),
+      readyLine: /\[lobby-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
+      env: {
+        ...common,
+        ...stampWallet,
+        LOBBY_BOT_IDENTITY_JSON: idPath('lobby'),
+        LOBBY_BOT_STATE_DIR: stateOf('lobby'),
+        BOT_STATE_DIR: stateOf('lobby'),
+      },
+    },
+    {
+      name: 'rps',
+      script: 'targets/rps.ts',
+      identityJson: idPath('rps'),
+      readyLine: /\[rps-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
+      env: {
+        ...common,
+        ...stampWallet,
+        RPS_BOT_IDENTITY_JSON: idPath('rps'),
+        RPS_BOT_STATE_DIR: stateOf('rps'),
+        BOT_STATE_DIR: stateOf('rps'),
+      },
+    },
+    {
+      name: 'dice',
+      script: 'targets/dice.ts',
+      identityJson: idPath('dice'),
+      readyLine: /\[dice-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
+      env: {
+        ...common,
+        ...stampWallet,
+        DICE_BOT_IDENTITY_JSON: idPath('dice'),
+        DICE_BOT_STATE_DIR: stateOf('dice'),
+        BOT_STATE_DIR: stateOf('dice'),
+      },
+    },
+    {
+      name: 'liars-dice',
+      script: 'targets/liars-dice.ts',
+      identityJson: idPath('liars-dice'),
+      readyLine: /\[liars-dice-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
+      env: {
+        ...common,
+        ...stampWallet,
+        LIARS_DICE_BOT_IDENTITY_JSON: idPath('liars-dice'),
+        LIARS_DICE_BOT_STATE_DIR: stateOf('liars-dice'),
+        BOT_STATE_DIR: stateOf('liars-dice'),
+      },
+    },
+    {
+      name: 'poker',
+      script: 'targets/poker.ts',
+      identityJson: idPath('poker'),
+      readyLine: /\[poker-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
+      env: {
+        ...common,
+        ...stampWallet,
+        POKER_BOT_IDENTITY_JSON: idPath('poker'),
+        POKER_BOT_STATE_DIR: stateOf('poker'),
+        BOT_STATE_DIR: stateOf('poker'),
+      },
+    },
   ]
 
   const secrets = [

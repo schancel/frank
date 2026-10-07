@@ -47,6 +47,11 @@ describe('bot profiles (#317)', () => {
       'Picture Shop',
       'Qwen',
       'Monad Faucet',
+      'Lobby',
+      'Rock Paper Scissors',
+      'Satoshi Dice',
+      "Liar's Dice (Perudo)",
+      "Texas Hold'em Poker",
     ])
     for (const spec of BOT_PROFILES) {
       expect(validateProfileDisplayName(spec.name).normalized).toBe(spec.name)
@@ -76,7 +81,7 @@ describe('bot profiles (#317)', () => {
       )
       expect(png.subarray(-8, -4).toString()).toBe('IEND')
     }
-    expect(new Set(avatars.map(png => png.toString('hex'))).size).toBe(5)
+    expect(new Set(avatars.map(png => png.toString('hex'))).size).toBe(10)
     expect(generateAvatarPng('qwen', BOT_PROFILES[3].accent)).toEqual(
       avatars[3],
     )
@@ -169,6 +174,11 @@ describe('curated defaults for the relay config (#317)', () => {
       'Picture Shop',
       'Qwen',
       'Monad Faucet',
+      'Lobby',
+      'Rock Paper Scissors',
+      'Satoshi Dice',
+      "Liar's Dice (Perudo)",
+      "Texas Hold'em Poker",
     ])
     expect(paths.map(([label]) => label)).toEqual([
       'blackjack',
@@ -176,6 +186,11 @@ describe('curated defaults for the relay config (#317)', () => {
       'vendor',
       'qwen',
       'faucet',
+      'lobby',
+      'rps',
+      'dice',
+      'liars-dice',
+      'poker',
     ])
     expect(paths[0][1]).toBe('/tmp/blackjack-bot-identity.json')
     expect(paths[1][1]).toBe('/custom/raffle.json')
@@ -209,6 +224,11 @@ describe('curated defaults are read-only (#317)', () => {
     VENDOR_BOT_IDENTITY_JSON: join(dir, 'vendor.json'),
     QWEN_BOT_IDENTITY_JSON: join(dir, 'qwen.json'),
     FAUCET_BOT_IDENTITY_JSON: join(dir, 'faucet.json'),
+    LOBBY_BOT_IDENTITY_JSON: join(dir, 'lobby.json'),
+    RPS_BOT_IDENTITY_JSON: join(dir, 'rps.json'),
+    DICE_BOT_IDENTITY_JSON: join(dir, 'dice.json'),
+    LIARS_DICE_BOT_IDENTITY_JSON: join(dir, 'liars-dice.json'),
+    POKER_BOT_IDENTITY_JSON: join(dir, 'poker.json'),
   })
 
   it('reports every missing identity at once and creates no file', () => {
@@ -217,7 +237,7 @@ describe('curated defaults are read-only (#317)', () => {
       loadExistingIdentity,
     )
     expect(entries).toEqual([])
-    expect(errors).toHaveLength(5)
+    expect(errors).toHaveLength(10)
     expect(errors[0]).toContain('no identity file')
     expect(errors[0]).toContain('start that bot once')
     expect(readdirSync(dir)).toEqual([])
@@ -232,10 +252,10 @@ describe('curated defaults are read-only (#317)', () => {
     expect(existsSync(join(dir, 'bj.json'))).toBe(true)
     const partial = collectCuratedEntries(env(), loadExistingIdentity)
     expect(partial.entries.map(e => e.name)).toEqual(['Blackjack Dealer'])
-    expect(partial.errors).toHaveLength(4)
+    expect(partial.errors).toHaveLength(9)
     const created = collectCuratedEntries(env(), loadOrCreateIdentity)
     expect(created.errors).toEqual([])
-    expect(created.entries).toHaveLength(5)
+    expect(created.entries).toHaveLength(10)
     const again = collectCuratedEntries(env(), loadExistingIdentity)
     expect(again.entries).toEqual(created.entries)
   })

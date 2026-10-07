@@ -347,6 +347,23 @@ export default {
     receiveTsol: 'Receive tSOL',
     sendToContact: 'Send to Contact',
     legacySend: 'Legacy Send',
+    avuDialogTitle: 'Arbitrary Value Unit (AVU)',
+    avuDialogSubtitle: '1 AVU ≡ 1 Kilowatt-Hour (kWh) of Physical Compute',
+    avuDialogDesc:
+      'Frank eliminates fiat currencies from the core interface. Balances are measured in AVUs, where 1 AVU represents 1 kWh of physical work derived directly from global Proof-of-Work mining networks.',
+    avuMemeHeading: 'Refusing the USD Meme',
+    avuMemeDesc:
+      'The US Dollar is a social meme sustained by software defaults and central bank decree. Refusing to display USD in self-custodial wallets breaks that psychological monopoly and weakens the meme, re-anchoring wealth in the invariant laws of thermodynamics.',
+    avuSupplyChainHeading: 'The Root of Every Supply Chain',
+    avuSupplyChainDesc:
+      'Every physical good—food, clean water, housing, semiconductors, and transportation—is fundamentally organized energy. By denominating value in physical energy, purchasing power is measured against the root cost of physical reality.',
+    avuCpiHeading: 'Bypassing the CPI to Reveal the Real Worth of the Dollar',
+    avuCpiDesc:
+      'Government Consumer Price Index (CPI) metrics obscure inflation through substitution bias and hedonic tweaks. A $100 bill still says "$100", masking its decay. In the 1930s, $1 bought ~143 kWh; today it buys only ~12 kWh. Tracking AVU over time exposes the true, unvarnished rate of fiat currency debasement.',
+    avuOracleLessHeading: 'Truly "Oracle-Less"',
+    avuOracleLessDesc:
+      'Unlike traditional DeFi oracles that rely on trusted third-party feeds, Proof-of-Work difficulty and emission schedules are verified directly on-chain by full nodes and anchored by competitive thermodynamics.',
+    avuDialogClose: 'Close',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',

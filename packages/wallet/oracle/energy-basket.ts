@@ -1,14 +1,16 @@
 /**
- * Thermodynamic Energy Basket for Frank's Arbitrary Value Unit (AVU).
+ * Thermodynamic Proof-of-Work Energy Standard for Frank's Arbitrary Value Unit (AVU).
  *
- * Physical Baseline: 1 AVU = 10 Kilowatt-Hours (kWh) / 36 Megajoules (MJ)
- * of global multi-carrier energy equivalent.
+ * Physical Baseline: 1 AVU = 1 Kilowatt-Hour (kWh) / 3.6 Megajoules (MJ)
+ * of physical computation.
  *
- * Components & Target Weights:
- * - Brent Crude Oil: 35% (Transport & liquid fuels)
- * - Natural Gas (Henry Hub): 25% (Thermal & electric generation)
- * - Nuclear / Clean Base (Uranium U3O8): 15% (Clean base-load generation)
- * - Gold (XAU): 25% (Thermodynamic capital store & volatility dampener)
+ * Empirical Benchmark:
+ * Derived from the global Proof-of-Work mining fleet (Bitcoin, Bitcoin Cash, eCash,
+ * Merged Scrypt, Kaspa). The empirical cost of physical electricity converges to:
+ * 0.084 USD per kWh (matching the US EIA National Industrial Average of $0.082/kWh).
+ *
+ * Inverting this rate yields:
+ * 1 USD ≈ 11.90 AVU (11.90 kWh of digital hashing energy per dollar).
  */
 
 export interface EnergyBasketConstituent {
@@ -21,6 +23,9 @@ export interface EnergyBasketConstituent {
   energyKwhPerUnit: number
 }
 
+/**
+ * Macro commodity multi-carrier basket (used for macro volatility dampening).
+ */
 export const ENERGY_BASKET_CONSTITUENTS: Record<
   string,
   EnergyBasketConstituent
@@ -56,11 +61,135 @@ export const ENERGY_BASKET_CONSTITUENTS: Record<
 }
 
 /**
- * Epoch Genesis Anchor Factor:
- * Represents the cost in nominal base currency of 10 kWh of global multi-carrier energy.
- * Baseline: 1 AVU = 10 kWh energy equivalent ≈ $1.25 at epoch t0.
+ * Physical Baseline Definition:
+ * 1 AVU = 1 Kilowatt-Hour (kWh) = 3.6 Megajoules (MJ).
  */
-export const AVU_ENERGY_ANCHOR_NOMINAL = 1.25
+export const AVU_KWH_PER_UNIT = 1.0
+
+/**
+ * PoW Mining Energy Baseline:
+ * Represents the empirical cost of 1 kWh of physical computation in the decentralized mining fleet.
+ * Default baseline: $0.084 / kWh (~8.40 cents/kWh).
+ */
+export const POW_BASELINE_DOLLARS_PER_KWH = 0.084
+
+/**
+ * Legacy alias for backwards compatibility.
+ * Represents the cost in nominal base currency (USD) of 1 AVU (1 kWh).
+ */
+export const AVU_ENERGY_ANCHOR_NOMINAL = POW_BASELINE_DOLLARS_PER_KWH
+
+/**
+ * Conversion Multiplier:
+ * Inverted cost of energy, representing how many AVU (kWh) $1 USD commands in the mining economy.
+ * 1 / $0.084 ≈ 11.90476 AVU / $.
+ */
+export const AVU_PER_DOLLAR = 1 / POW_BASELINE_DOLLARS_PER_KWH
+
+export interface PoWNetworkConfig {
+  id: string
+  name: string
+  algo: string
+  joulesPerHash: number
+  blockSubsidy: number
+  blockTimeSec: number
+}
+
+export const POW_NETWORKS: Record<string, PoWNetworkConfig> = {
+  bitcoin: {
+    id: 'bitcoin',
+    name: 'Bitcoin (BTC)',
+    algo: 'SHA-256',
+    joulesPerHash: 17.5e-12, // 17.5 J/TH (Antminer S21 tier)
+    blockSubsidy: 3.125,
+    blockTimeSec: 600,
+  },
+  bitcoinCash: {
+    id: 'bitcoinCash',
+    name: 'Bitcoin Cash (BCH)',
+    algo: 'SHA-256',
+    joulesPerHash: 17.5e-12,
+    blockSubsidy: 3.125,
+    blockTimeSec: 600,
+  },
+  ecash: {
+    id: 'ecash',
+    name: 'eCash (XEC)',
+    algo: 'SHA-256',
+    joulesPerHash: 17.5e-12,
+    blockSubsidy: 2125000, // net miner block reward (after 32% fund split)
+    blockTimeSec: 600,
+  },
+  scrypt: {
+    id: 'scrypt',
+    name: 'Merged Scrypt (LTC + DOGE)',
+    algo: 'Scrypt',
+    joulesPerHash: 0.59e-6, // 0.59 J/MH (Antminer L9 tier)
+    blockSubsidy: 6.25, // LTC base
+    blockTimeSec: 150,
+  },
+  kaspa: {
+    id: 'kaspa',
+    name: 'Kaspa (KAS)',
+    algo: 'kHeavyHash',
+    joulesPerHash: 140e-12, // 140 J/TH (KS5 tier)
+    blockSubsidy: 2.06,
+    blockTimeSec: 0.1, // 10 blocks/sec
+  },
+}
+
+/**
+ * Calculates physical energy cost (Dollars per kWh) and AVU multiplier
+ * for a mining network given live stats.
+ *
+ * Formula:
+ * Revenue/sec = (Spot Price * Block Reward) / BlockTimeSec
+ * Power Watts = Hashrate * JoulesPerHash
+ * DollarsPerJoule = Revenue/sec / Power Watts
+ * DollarsPerKwh = DollarsPerJoule * 3,600,000
+ * AvuPerDollar = 1 / DollarsPerKwh
+ */
+export function calculatePoWEnergyCost(params: {
+  spotPriceUsd: number
+  rewardPerBlock: number
+  blockTimeSec: number
+  hashrateHps: number
+  joulesPerHash: number
+}): {
+  revenuePerSec: number
+  powerWatts: number
+  dollarsPerKwh: number
+  avuPerDollar: number
+} {
+  if (
+    params.spotPriceUsd <= 0 ||
+    params.rewardPerBlock <= 0 ||
+    params.blockTimeSec <= 0 ||
+    params.hashrateHps <= 0 ||
+    params.joulesPerHash <= 0
+  ) {
+    return {
+      revenuePerSec: 0,
+      powerWatts: 0,
+      dollarsPerKwh: POW_BASELINE_DOLLARS_PER_KWH,
+      avuPerDollar: AVU_PER_DOLLAR,
+    }
+  }
+
+  const revenuePerSec =
+    (params.spotPriceUsd * params.rewardPerBlock) / params.blockTimeSec
+  const powerWatts = params.hashrateHps * params.joulesPerHash
+  const dollarsPerJoule = revenuePerSec / powerWatts
+  const dollarsPerKwh = dollarsPerJoule * 3.6e6
+  const avuPerDollar = dollarsPerKwh > 0 ? 1 / dollarsPerKwh : 0
+
+  return {
+    revenuePerSec,
+    powerWatts,
+    dollarsPerKwh,
+    avuPerDollar,
+  }
+}
 
 /**
  * Computes the normalized geometric mean index from spot constituent prices.
@@ -88,16 +217,17 @@ export function computeEnergyBasketIndex(
 }
 
 /**
- * Given the current basket index and an asset's spot price,
- * calculates the asset's exchange rate in AVU (1 Asset = X AVU).
+ * Given an asset's spot price in USD, calculates the asset's exchange rate in AVU
+ * (where 1 AVU = 1 kWh of physical work).
  *
- * (Asset / Base) / (Basket / Base) = Asset / Basket = AVU.
+ * Formula: AVU = SpotPrice / (DollarsPerKwh * basketIndex) = SpotPrice * (AVU_PER_DOLLAR / basketIndex)
  */
 export function calculateAvuRate(
   assetSpotPrice: number,
-  basketIndex: number,
+  basketIndex = 1.0,
+  dollarsPerKwh = POW_BASELINE_DOLLARS_PER_KWH,
 ): number {
-  if (assetSpotPrice <= 0 || basketIndex <= 0) return 0
-  const basketNominalCost = AVU_ENERGY_ANCHOR_NOMINAL * basketIndex
-  return assetSpotPrice / basketNominalCost
+  if (assetSpotPrice <= 0 || basketIndex <= 0 || dollarsPerKwh <= 0) return 0
+  const effectiveCostPerKwh = dollarsPerKwh * basketIndex
+  return assetSpotPrice / effectiveCostPerKwh
 }

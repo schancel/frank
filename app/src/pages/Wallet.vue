@@ -99,10 +99,12 @@
           </div>
           <div
             v-if="currentWalletAvu"
-            class="text-caption text-grey-7 text-center q-mt-xs"
+            class="text-caption text-grey-7 text-center q-mt-xs cursor-pointer flex items-center justify-center q-gutter-xs"
             data-testid="wallet-balance-avu"
+            @click="showAvuDialog = true"
           >
-            {{ currentWalletAvu }}
+            <span>{{ currentWalletAvu }}</span>
+            <q-icon name="help_outline" size="14px" />
           </div>
           <div
             v-if="currentWalletHasError"
@@ -207,6 +209,8 @@
         </q-card-section>
       </q-card>
     </q-page>
+
+    <avu-explainer-dialog v-model="showAvuDialog" />
   </q-page-container>
 </template>
 
@@ -215,6 +219,7 @@ import { computed, defineComponent, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
+import AvuExplainerDialog from 'src/components/wallet/AvuExplainerDialog.vue'
 import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
@@ -232,6 +237,7 @@ import { useSafeOracleStore } from 'src/stores/oracle'
 export default defineComponent({
   components: {
     QrcodeVue,
+    AvuExplainerDialog,
   },
   setup() {
     const route = useRoute()
@@ -239,6 +245,7 @@ export default defineComponent({
     const isTestnet = computed(() => activeChain.isTestnet ?? false)
     const { getCustomName } = useWalletNames()
     const oracle = useSafeOracleStore()
+    const showAvuDialog = ref(false)
 
     const selectedWallet = computed<string>(() => {
       const parts = (route?.path || '').toLowerCase().split('/').filter(Boolean)
@@ -379,6 +386,7 @@ export default defineComponent({
       currentWalletAvu,
       hasError,
       getCustomName,
+      showAvuDialog,
       async copyAddress() {
         if (!displayAddress.value) return
         try {

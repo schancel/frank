@@ -455,3 +455,40 @@ it('keeps only latest same-view authority across distinct action proxies', async
   expect(mockedFetchOne).toHaveBeenCalledTimes(2)
   expect(store.getMessage('deadbeef')?.poster).toBe('new proxy')
 })
+
+describe('useTopicStore: setEntries snapshot diffing', () => {
+  it('skips $patch when entries are identical to avoid DOM re-renders', () => {
+    const store = useTopicStore()
+    const msg = makeMessage({ payloadDigest: 'digest-1', voteWeightWei: '100' })
+    store.setEntries('stamp', [msg], 1000)
+
+    const patchSpy = jest.spyOn(store, '$patch')
+    // Set identical entries with new timestamp
+    store.setEntries('stamp', [msg], 2000)
+    expect(patchSpy).not.toHaveBeenCalled()
+    expect(store.topics['stamp'].lastUpdate).toBe(2000)
+
+    patchSpy.mockRestore()
+  })
+
+  it('triggers $patch when message content or voteWeightWei changes', () => {
+    const store = useTopicStore()
+    const msg1 = makeMessage({
+      payloadDigest: 'digest-1',
+      voteWeightWei: '100',
+    })
+    store.setEntries('stamp', [msg1], 1000)
+
+    const patchSpy = jest.spyOn(store, '$patch')
+    const msg2 = makeMessage({
+      payloadDigest: 'digest-1',
+      voteWeightWei: '200',
+    })
+    store.setEntries('stamp', [msg2], 2000)
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    expect(store.topics['stamp'].messages[0].voteWeightWei).toBe('200')
+    expect(store.topics['stamp'].lastUpdate).toBe(2000)
+
+    patchSpy.mockRestore()
+  })
+})

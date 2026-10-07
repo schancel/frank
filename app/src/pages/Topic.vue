@@ -40,6 +40,8 @@ import TopicMessage from 'src/components/topic/TopicMessage.vue'
 
 const scrollDuration = 0
 
+export const TOPIC_POLL_INTERVAL_MS = 10_000
+
 export default defineComponent({
   props: {},
   components: {
@@ -151,27 +153,80 @@ export default defineComponent({
             details.verticalContainerSize <=
           10
       },
+      onVisibilityChange: undefined as (() => void) | undefined,
+      isDestroyed: false,
     }
   },
   beforeRouteUpdate(to: RouteLocationNormalized) {
     useTopicStore().invalidateRefresh()
     this.topic = (to?.params?.topic as string) || ''
-    this.refreshContent()
+    if (this.timeoutId !== undefined) {
+      clearTimeout(this.timeoutId as ReturnType<typeof setTimeout>)
+      this.timeoutId = undefined
+    }
+    void this.refreshContent()
+    this.scheduleNext()
   },
   mounted() {
-    const timedRefresh = () => {
-      this.refreshContent()
-      this.timeoutId = setTimeout(timedRefresh, 1000)
+    const handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        if (this.timeoutId !== undefined) {
+          clearTimeout(this.timeoutId as ReturnType<typeof setTimeout>)
+          this.timeoutId = undefined
+        }
+      } else {
+        if (this.timeoutId !== undefined) {
+          clearTimeout(this.timeoutId as ReturnType<typeof setTimeout>)
+          this.timeoutId = undefined
+        }
+        void this.refreshContent()
+        this.scheduleNext()
+      }
     }
-    timedRefresh()
+
+    this.onVisibilityChange = handleVisibilityChange
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange)
+    }
+
+    void this.refreshContent()
+    this.scheduleNext()
     this.scrollBottom()
   },
   unmounted() {
+    this.isDestroyed = true
     useTopicStore().invalidateRefresh()
-    clearTimeout(this.timeoutId as ReturnType<typeof setTimeout>)
+    if (this.timeoutId !== undefined) {
+      clearTimeout(this.timeoutId as ReturnType<typeof setTimeout>)
+      this.timeoutId = undefined
+    }
+    if (this.onVisibilityChange && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.onVisibilityChange)
+      this.onVisibilityChange = undefined
+    }
   },
   methods: {
+    scheduleNext() {
+      if (
+        this.isDestroyed ||
+        (typeof document !== 'undefined' && document.hidden)
+      ) {
+        return
+      }
+      if (this.timeoutId !== undefined) {
+        clearTimeout(this.timeoutId as ReturnType<typeof setTimeout>)
+      }
+      this.timeoutId = setTimeout(() => {
+        this.timeoutId = undefined
+        void this.refreshContent().finally(() => {
+          if (!this.isDestroyed) {
+            this.scheduleNext()
+          }
+        })
+      }, TOPIC_POLL_INTERVAL_MS)
+    },
     async refreshContent() {
+      if (typeof document !== 'undefined' && document.hidden) return
       try {
         let wallet
         try {

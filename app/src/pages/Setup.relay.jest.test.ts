@@ -114,6 +114,8 @@ function render() {
         },
         QCard: { template: '<div><slot /></div>' },
         QCardSection: { template: '<div><slot /></div>' },
+        QCardActions: { template: '<div><slot /></div>' },
+        QAvatar: { template: '<span><slot /></span>' },
         QForm: {
           template: '<form @submit.prevent="$emit(\'submit\')"><slot /></form>',
         },

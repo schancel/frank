@@ -75,6 +75,8 @@ function render() {
         QExpansionItem: true,
         QCard: true,
         QCardSection: true,
+        QCardActions: true,
+        QAvatar: true,
         QForm: {
           template: '<form @submit.prevent="$emit(\'submit\')"><slot /></form>',
         },

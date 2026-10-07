@@ -7,6 +7,7 @@ import { useAppearanceStore } from '../stores/appearance'
 import { useForumStore } from '../stores/forum'
 import { useTopicStore } from '../stores/topics'
 import { useChatStore } from '../stores/chats'
+import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import { accountSession, accountStatus } from '../accounts/session'
 
 export default boot(async ({ app }) => {
@@ -30,5 +31,14 @@ export default boot(async ({ app }) => {
     },
     { immediate: true },
   )
+  try {
+    const tabCoordinator = useTabCoordinatorStore()
+    await tabCoordinator.init()
+    if (tabCoordinator.otherTabActive) {
+      accountSession.setStandby?.()
+    }
+  } catch {
+    // tab coordinator optional in headless/test environments
+  }
   await accountSession.initialize()
 })

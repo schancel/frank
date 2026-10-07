@@ -22,7 +22,9 @@
       >
         <h1 id="account-heading" ref="heading" tabindex="-1" class="text-h5">
           {{
-            mode === 'legacy'
+            tabCoordinator.otherTabActive || account.status === 'standby'
+              ? $t('accountRecovery.frank_is_open_in_another_tab')
+              : mode === 'legacy'
               ? $t('accountRecovery.import_bip39_seed')
               : $t('accountRecovery.frank_account')
           }}
@@ -31,7 +33,11 @@
           {{ statusText }}
         </p>
         <p
-          v-if="error"
+          v-if="
+            error &&
+            !tabCoordinator.otherTabActive &&
+            account.status !== 'standby'
+          "
           role="alert"
           class="text-negative"
           data-test="account-error"
@@ -39,7 +45,44 @@
           {{ error }}
         </p>
         <template
-          v-if="
+          v-if="tabCoordinator.otherTabActive || account.status === 'standby'"
+        >
+          <div class="q-my-md" data-test="multi-tab-locked-container">
+            <q-card flat bordered class="q-pa-md">
+              <q-card-section class="row items-center q-pb-none">
+                <q-avatar icon="tab" color="primary" text-color="white" />
+                <div class="text-h6 q-ml-md">
+                  {{ $t('accountRecovery.frank_is_open_in_another_tab') }}
+                </div>
+              </q-card-section>
+              <q-card-section>
+                <p class="text-body1 text-grey-8">
+                  {{ $t('accountRecovery.multi_tab_notice') }}
+                </p>
+              </q-card-section>
+              <q-card-actions class="q-pt-none">
+                <q-btn
+                  color="primary"
+                  no-caps
+                  :loading="tabCoordinator.isTakingOver"
+                  :label="$t('accountRecovery.use_frank_here')"
+                  data-test="use-frank-here-btn"
+                  @click="takeoverHere"
+                />
+                <q-btn
+                  outline
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.switch_to_open_tab')"
+                  data-test="switch-tab-btn"
+                  @click="switchToOpenTab"
+                />
+              </q-card-actions>
+            </q-card>
+          </div>
+        </template>
+        <template
+          v-else-if="
             (account.status === 'locked' ||
               account.status === 'unavailable' ||
               legacy.unavailable) &&
@@ -663,6 +706,7 @@ import {
   retryLegacyInspection,
 } from '../accounts/legacy'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
+import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import {
   getDefaultRelayBaseUrl,
   getCustomRelayBaseUrl,
@@ -675,10 +719,36 @@ const emit = defineEmits(['toggleMyDrawerOpen', 'setupCompleted'])
 const router = useRouter()
 const t = useTranslate()
 const ceremony = createAccountCeremony()
+const tabCoordinator = useTabCoordinatorStore()
 
 const defaultRelayUrl = getDefaultRelayBaseUrl()
 const customRelayUrl = ref(getCustomRelayBaseUrl() ?? defaultRelayUrl)
 const discoveredRelay = ref<string | null>(null)
+
+async function takeoverHere() {
+  await tabCoordinator.requestTakeover()
+  if (account.status === 'ready') {
+    emit('setupCompleted')
+    router.push('/wallet')
+  }
+}
+
+function switchToOpenTab() {
+  tabCoordinator.requestTabFocus()
+}
+
+watch(
+  () => account.status,
+  status => {
+    if (status === 'ready' && !tabCoordinator.otherTabActive) {
+      if (tabCoordinator.wasAutoReleased) {
+        tabCoordinator.wasAutoReleased = false
+        emit('setupCompleted')
+        router.push('/wallet')
+      }
+    }
+  },
+)
 
 function validateRelayUrl(val: string): boolean | string {
   if (!val || val.trim().length === 0) return true
@@ -732,6 +802,8 @@ const mayBegin = computed(
 const statusText = computed(() =>
   busy.value
     ? 'Account operation in progress.'
+    : tabCoordinator.otherTabActive || account.status === 'standby'
+    ? t('accountRecovery.frank_is_open_in_another_tab')
     : account.status === 'ready'
     ? 'Local account ready.'
     : account.status === 'fresh'

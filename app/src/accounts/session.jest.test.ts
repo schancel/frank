@@ -502,3 +502,36 @@ test('resetAccountStorage deletes all indexedDB databases matching frank- and le
     ;(global as any).indexedDB = originalIndexedDb
   }
 })
+
+test('yieldCustody sets status to standby, releases wallet and custody, and retry restores ready status', async () => {
+  const f = fixture()
+  await f.session.initialize()
+  expect(f.session.state.status).toBe('ready')
+  expect(await f.session.getWallet()).toBe(f.wallet)
+
+  await f.session.yieldCustody()
+  expect(f.session.state.status).toBe('standby')
+  expect(f.wallet.close).toHaveBeenCalledTimes(1)
+  expect(f.custody.close).toHaveBeenCalledTimes(1)
+
+  // In standby, initialize() and invalidate() do not re-open custody
+  await f.session.initialize()
+  expect(f.session.state.status).toBe('standby')
+  f.invalidate()
+  expect(f.session.state.status).toBe('standby')
+
+  // retry() explicitly reacquires custody and wallet
+  await f.session.retry()
+  expect(f.session.state.status).toBe('ready')
+  expect(await f.session.getWallet()).toBeDefined()
+})
+
+test('setStandby suppresses background revalidate and custody acquisition', async () => {
+  const f = fixture()
+  f.session.setStandby()
+  expect(f.session.state.status).toBe('standby')
+
+  await f.session.initialize()
+  expect(f.session.state.status).toBe('standby')
+  expect(f.custody.openActive).not.toHaveBeenCalled()
+})

@@ -22,6 +22,7 @@
           </div>
           <div class="text-caption text-grey-7">
             {{ $t('walletPanel.avuDialogSubtitle') }}
+            <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
           </div>
         </div>
         <q-space />
@@ -120,6 +121,7 @@
                 <td class="text-weight-medium">{{ row.label }}</td>
                 <td class="text-primary text-weight-bold">
                   {{ row.rateFormatted }}
+                  <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
                 </td>
                 <td class="text-right text-grey-7">{{ row.usdFormatted }}</td>
               </tr>

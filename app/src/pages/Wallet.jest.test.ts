@@ -132,6 +132,12 @@ function mountWallet() {
             'q-separator',
             'q-badge',
             'q-skeleton',
+            'q-tabs',
+            'q-tab',
+            'q-tab-panels',
+            'q-tab-panel',
+            'q-tooltip',
+            'q-icon',
           ].map(n => [n, { template: '<div><slot /></div>' }]),
         ),
       },
@@ -498,6 +504,43 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.find('[data-testid="wallet-balance-avu"]').exists()).toBe(
       true,
     )
+    wrapper.unmount()
+  })
+
+  it('renders tabbed wallet view with balance and parity tabs and embeds AvuParityChart', async () => {
+    mockRoute.value = {
+      query: { chain: 'monad' },
+      path: '/wallet',
+    }
+    const wrapper = mountWallet()
+
+    // Tabs container exists
+    const tabs = wrapper.find('[data-testid="wallet-tabs"]')
+    expect(tabs.exists()).toBe(true)
+
+    // Tab buttons exist
+    const balanceTab = wrapper.find('[data-testid="wallet-tab-balance"]')
+    expect(balanceTab.exists()).toBe(true)
+    const parityTab = wrapper.find('[data-testid="wallet-tab-parity"]')
+    expect(parityTab.exists()).toBe(true)
+
+    // activeTab defaults to balance
+    expect(wrapper.vm.activeTab).toBe('balance')
+
+    // Tab panels container exists
+    const panels = wrapper.find('[data-testid="wallet-tab-panels"]')
+    expect(panels.exists()).toBe(true)
+
+    // AvuParityChart component is registered and embedded
+    expect(wrapper.findComponent({ name: 'AvuParityChart' }).exists()).toBe(
+      true,
+    )
+
+    // Switching activeTab
+    wrapper.vm.activeTab = 'parity'
+    await nextTick()
+    expect(wrapper.vm.activeTab).toBe('parity')
+
     wrapper.unmount()
   })
 })

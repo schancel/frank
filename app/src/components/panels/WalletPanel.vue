@@ -16,10 +16,12 @@
               <q-item-label
                 v-if="portfolioTotalAvu"
                 caption
-                class="text-weight-medium text-grey-8 q-mr-xs"
-                data-test="portfolio-total-avu"
+                class="text-weight-medium text-grey-8 q-mr-xs cursor-pointer"
               >
-                {{ portfolioTotalAvu }}
+                <span data-test="portfolio-total-avu">{{
+                  portfolioTotalAvu
+                }}</span>
+                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
               </q-item-label>
               <q-item-label
                 caption
@@ -29,6 +31,7 @@
               >
                 <span>{{ $t('walletPanel.avuDrawerHeader') }}</span>
                 <q-icon name="help_outline" size="12px" />
+                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
               </q-item-label>
             </div>
           </q-item-section>
@@ -101,17 +104,21 @@
                 v-if="getWalletAvu(wallet)"
                 caption
                 class="text-grey-7"
-                :data-test="`${wallet.id}-wallet-avu`"
               >
-                {{ getWalletAvu(wallet) }}
+                <span :data-test="`${wallet.id}-wallet-avu`">{{
+                  getWalletAvu(wallet)
+                }}</span>
+                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
               </q-item-label>
               <q-item-label
                 v-if="getWalletUnitRate(wallet)"
                 caption
                 class="text-grey-6"
-                :data-test="`${wallet.id}-wallet-unit-rate`"
               >
-                {{ getWalletUnitRate(wallet) }}
+                <span :data-test="`${wallet.id}-wallet-unit-rate`">{{
+                  getWalletUnitRate(wallet)
+                }}</span>
+                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
               </q-item-label>
             </q-item-section>
           </q-item>

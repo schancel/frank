@@ -283,6 +283,12 @@ describe('ForumPost vote handler', () => {
     expect(
       wrapper.find('[data-test="forum-vote-down"]').attributes('disable'),
     ).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
+    ).toBe('true')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
+    ).toBe('false')
 
     // Simulate progress updates
     capturedProgress?.({ stage: 'ready' })
@@ -296,6 +302,12 @@ describe('ForumPost vote handler', () => {
     await wrapper.vm.$nextTick()
 
     expect(vm.isVoting).toBe(false)
+    expect(
+      wrapper.find('[data-test="forum-vote-up"]').attributes('loading'),
+    ).toBe('false')
+    expect(
+      wrapper.find('[data-test="forum-vote-down"]').attributes('loading'),
+    ).toBe('false')
     expect(vm.voteStatus).toBeNull()
     expect(mockSetStampPreparationStatus).toHaveBeenLastCalledWith(null)
 

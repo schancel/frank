@@ -255,11 +255,12 @@
       <q-card-actions align="right">
         <div
           v-if="preparationStatus"
-          class="text-caption q-mr-sm"
+          class="text-caption q-mr-sm row items-center"
           role="status"
           data-test="post-status"
         >
-          {{ preparationStatus }}
+          <q-spinner-dots size="1.2em" color="primary" class="q-mr-xs" />
+          <span>{{ preparationStatus }}</span>
         </div>
         <div
           v-if="outcomeUnknown"
@@ -283,6 +284,7 @@
           label="back"
           color="negative"
           class="q-ma-sm"
+          :disable="posting"
           data-test="compose-focus-target"
         />
         <q-btn

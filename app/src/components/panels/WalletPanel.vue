@@ -229,6 +229,258 @@
 
         <q-separator class="q-my-sm" />
 
+        <!-- Tempo Wallet -->
+        <q-item
+          clickable
+          v-ripple
+          data-test="tempo-wallet-row"
+          :active="selectedChain === 'tempo'"
+          active-class="active-chat-list-item"
+          @click="selectWallet('tempo')"
+        >
+          <q-item-section avatar>
+            <q-icon name="speed" />
+          </q-item-section>
+          <q-item-section>
+            <q-item-label
+              data-test="tempo-wallet-name"
+              class="row items-center no-wrap"
+            >
+              <span
+                class="ellipsis cursor-pointer"
+                data-test="tempo-wallet-name-text"
+                @dblclick.stop="
+                  openRenameDialog(
+                    'tempo',
+                    isTestnet
+                      ? $t('walletPanel.tempoTestnet')
+                      : $t('walletPanel.tempo'),
+                  )
+                "
+              >
+                {{
+                  getCustomName('tempo') ||
+                  (isTestnet
+                    ? $t('walletPanel.tempoTestnet')
+                    : $t('walletPanel.tempo'))
+                }}
+              </span>
+              <q-badge
+                v-if="isTestnet"
+                outline
+                color="amber-9"
+                class="q-ml-xs text-bold no-shrink"
+                data-test="tempo-testnet-badge"
+              >
+                {{ $t('walletPanel.testnet') }}
+              </q-badge>
+              <q-btn
+                flat
+                round
+                dense
+                size="xs"
+                icon="edit"
+                class="q-ml-xs rename-wallet-btn no-shrink"
+                :title="$t('walletPanel.renameWallet')"
+                :aria-label="$t('walletPanel.renameWallet')"
+                data-test="rename-tempo-btn"
+                @click.stop="
+                  openRenameDialog(
+                    'tempo',
+                    isTestnet
+                      ? $t('walletPanel.tempoTestnet')
+                      : $t('walletPanel.tempo'),
+                  )
+                "
+              />
+            </q-item-label>
+            <q-item-label caption data-test="tempo-wallet-chain">
+              {{
+                isTestnet
+                  ? $t('walletPanel.tempoTestnet')
+                  : $t('walletPanel.tempo')
+              }}
+            </q-item-label>
+            <q-item-label caption data-test="tempo-wallet-balance">
+              {{
+                isTestnet
+                  ? $t('walletPanel.zeroTusd')
+                  : $t('walletPanel.zeroUsd')
+              }}
+            </q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <q-separator class="q-my-sm" />
+
+        <!-- Ethereum Wallet -->
+        <q-item
+          clickable
+          v-ripple
+          data-test="ethereum-wallet-row"
+          :active="selectedChain === 'ethereum'"
+          active-class="active-chat-list-item"
+          @click="selectWallet('ethereum')"
+        >
+          <q-item-section avatar>
+            <q-icon name="diamond" />
+          </q-item-section>
+          <q-item-section>
+            <q-item-label
+              data-test="ethereum-wallet-name"
+              class="row items-center no-wrap"
+            >
+              <span
+                class="ellipsis cursor-pointer"
+                data-test="ethereum-wallet-name-text"
+                @dblclick.stop="
+                  openRenameDialog(
+                    'ethereum',
+                    isTestnet
+                      ? $t('walletPanel.ethereumTestnet')
+                      : $t('walletPanel.ethereum'),
+                  )
+                "
+              >
+                {{
+                  getCustomName('ethereum') ||
+                  (isTestnet
+                    ? $t('walletPanel.ethereumTestnet')
+                    : $t('walletPanel.ethereum'))
+                }}
+              </span>
+              <q-badge
+                v-if="isTestnet"
+                outline
+                color="amber-9"
+                class="q-ml-xs text-bold no-shrink"
+                data-test="ethereum-testnet-badge"
+              >
+                {{ $t('walletPanel.testnet') }}
+              </q-badge>
+              <q-btn
+                flat
+                round
+                dense
+                size="xs"
+                icon="edit"
+                class="q-ml-xs rename-wallet-btn no-shrink"
+                :title="$t('walletPanel.renameWallet')"
+                :aria-label="$t('walletPanel.renameWallet')"
+                data-test="rename-ethereum-btn"
+                @click.stop="
+                  openRenameDialog(
+                    'ethereum',
+                    isTestnet
+                      ? $t('walletPanel.ethereumTestnet')
+                      : $t('walletPanel.ethereum'),
+                  )
+                "
+              />
+            </q-item-label>
+            <q-item-label caption data-test="ethereum-wallet-chain">
+              {{
+                isTestnet
+                  ? $t('walletPanel.ethereumTestnet')
+                  : $t('walletPanel.ethereum')
+              }}
+            </q-item-label>
+            <q-item-label caption data-test="ethereum-wallet-balance">
+              {{
+                isTestnet
+                  ? $t('walletPanel.zeroSep')
+                  : $t('walletPanel.zeroEth')
+              }}
+            </q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <q-separator class="q-my-sm" />
+
+        <!-- Hyperliquid Wallet -->
+        <q-item
+          clickable
+          v-ripple
+          data-test="hyperliquid-wallet-row"
+          :active="selectedChain === 'hyperliquid'"
+          active-class="active-chat-list-item"
+          @click="selectWallet('hyperliquid')"
+        >
+          <q-item-section avatar>
+            <q-icon name="waves" />
+          </q-item-section>
+          <q-item-section>
+            <q-item-label
+              data-test="hyperliquid-wallet-name"
+              class="row items-center no-wrap"
+            >
+              <span
+                class="ellipsis cursor-pointer"
+                data-test="hyperliquid-wallet-name-text"
+                @dblclick.stop="
+                  openRenameDialog(
+                    'hyperliquid',
+                    isTestnet
+                      ? $t('walletPanel.hyperliquidTestnet')
+                      : $t('walletPanel.hyperliquid'),
+                  )
+                "
+              >
+                {{
+                  getCustomName('hyperliquid') ||
+                  (isTestnet
+                    ? $t('walletPanel.hyperliquidTestnet')
+                    : $t('walletPanel.hyperliquid'))
+                }}
+              </span>
+              <q-badge
+                v-if="isTestnet"
+                outline
+                color="amber-9"
+                class="q-ml-xs text-bold no-shrink"
+                data-test="hyperliquid-testnet-badge"
+              >
+                {{ $t('walletPanel.testnet') }}
+              </q-badge>
+              <q-btn
+                flat
+                round
+                dense
+                size="xs"
+                icon="edit"
+                class="q-ml-xs rename-wallet-btn no-shrink"
+                :title="$t('walletPanel.renameWallet')"
+                :aria-label="$t('walletPanel.renameWallet')"
+                data-test="rename-hyperliquid-btn"
+                @click.stop="
+                  openRenameDialog(
+                    'hyperliquid',
+                    isTestnet
+                      ? $t('walletPanel.hyperliquidTestnet')
+                      : $t('walletPanel.hyperliquid'),
+                  )
+                "
+              />
+            </q-item-label>
+            <q-item-label caption data-test="hyperliquid-wallet-chain">
+              {{
+                isTestnet
+                  ? $t('walletPanel.hyperliquidTestnet')
+                  : $t('walletPanel.hyperliquid')
+              }}
+            </q-item-label>
+            <q-item-label caption data-test="hyperliquid-wallet-balance">
+              {{
+                isTestnet
+                  ? $t('walletPanel.zeroThype')
+                  : $t('walletPanel.zeroHype')
+              }}
+            </q-item-label>
+          </q-item-section>
+        </q-item>
+
+        <q-separator class="q-my-sm" />
+
         <div class="q-pa-sm">
           <q-btn
             outline
@@ -273,21 +525,25 @@ const { getCustomName, setCustomName, resetCustomName } = useWalletNames()
 
 const prewarmChains = () => {
   if (accountStatus?.status === 'ready') {
-    accountSession?.getChainAddress?.('ecash')?.catch(() => undefined)
-    accountSession?.getChainAddress?.('solana')?.catch(() => undefined)
+    for (const chain of [
+      'ecash',
+      'solana',
+      'tempo',
+      'ethereum',
+      'hyperliquid',
+    ]) {
+      accountSession?.getChainAddress?.(chain)?.catch(() => undefined)
+    }
   }
 }
 onMounted(prewarmChains)
 watch(() => accountStatus?.status, prewarmChains)
 
 const showRenameDialog = ref(false)
-const renameChain = ref<'monad' | 'ecash' | 'solana'>('monad')
+const renameChain = ref<string>('monad')
 const renameDefaultName = ref('')
 
-function openRenameDialog(
-  chain: 'monad' | 'ecash' | 'solana',
-  defaultName: string,
-) {
+function openRenameDialog(chain: string, defaultName: string) {
   renameChain.value = chain
   renameDefaultName.value = defaultName
   showRenameDialog.value = true
@@ -300,23 +556,12 @@ function saveWalletName(name: string) {
 const selectedChain = computed(() => {
   const currentPath = route?.path ?? ''
   if (currentPath && currentPath.startsWith('/wallet')) {
-    const walletParam = (route?.params?.wallet as string)?.toLowerCase()
-    if (walletParam === 'ecash' || walletParam === 'solana') return walletParam
-    if (walletParam === 'monad') return 'monad'
-    const parts = currentPath.split('/').filter(Boolean)
-    const pathWallet = parts[1]?.toLowerCase()
-    if (pathWallet === 'ecash' || pathWallet === 'solana') return pathWallet
-    if (pathWallet === 'monad') return 'monad'
-    const query = (
-      (route?.query?.chain || route?.query?.wallet) as string
-    )?.toLowerCase()
-    if (query === 'ecash' || query === 'solana') return query
-    return 'monad'
+    return (route?.params?.wallet as string)?.toLowerCase() || 'monad'
   }
   return null
 })
 
-function selectWallet(wallet: 'monad' | 'ecash' | 'solana') {
+function selectWallet(wallet: string) {
   if (router) {
     if (wallet === 'monad') {
       router.push('/wallet')

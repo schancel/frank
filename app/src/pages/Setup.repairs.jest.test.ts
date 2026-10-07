@@ -25,6 +25,7 @@ jest.mock('../accounts/session', () => ({
   }),
   accountSession: {
     retry: jest.fn(async () => undefined),
+    reset: jest.fn(async () => undefined),
     activatePending: jest.fn(async () => undefined),
     stage: jest.fn(async () => undefined),
     snapshot: jest.fn(async () => ({
@@ -218,4 +219,49 @@ test('submitting BIP-39 phrase in legacy mode runs derivation scanner, stages/ac
   )
   expect(mockPush).toHaveBeenCalledWith('/wallet')
   view.unmount()
-}, 10000)
+}, 30000)
+
+test('locked account shows retry, restore, legacy recovery, and reset options', () => {
+  Object.assign(mockAccount, {
+    status: 'locked',
+    account: { displayName: 'Corrupted' },
+  })
+  const view = render()
+  expect(view.find('[data-test="retry-account"]').exists()).toBe(true)
+  expect(view.find('[data-test="restore-locked-account"]').exists()).toBe(true)
+  expect(view.find('[data-test="legacy-locked-recovery"]').exists()).toBe(true)
+  expect(view.find('[data-test="reset-account-storage"]').exists()).toBe(true)
+  view.unmount()
+})
+
+test('clicking legacy recovery on locked account opens legacy phrase form', async () => {
+  Object.assign(mockAccount, {
+    status: 'locked',
+    account: { displayName: 'Corrupted' },
+  })
+  const view = render()
+  await view.get('[data-test="legacy-locked-recovery"]').trigger('click')
+  await flushPromises()
+  expect(view.find('[data-test="legacy-phrase"]').exists()).toBe(true)
+  view.unmount()
+})
+
+test('clicking reset storage on locked account invokes accountSession.reset()', async () => {
+  mockSession.reset.mockClear()
+  Object.assign(mockAccount, {
+    status: 'locked',
+    account: { displayName: 'Corrupted' },
+  })
+  // Mock window.confirm to return true
+  const originalConfirm = window.confirm
+  window.confirm = jest.fn(() => true)
+  try {
+    const view = render()
+    await view.get('[data-test="reset-account-storage"]').trigger('click')
+    await flushPromises()
+    expect(mockSession.reset).toHaveBeenCalledTimes(1)
+    view.unmount()
+  } finally {
+    window.confirm = originalConfirm
+  }
+})

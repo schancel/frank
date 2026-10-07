@@ -78,6 +78,7 @@ export function createAccountSession(deps: {
   createWallet: (roots: MonadRootBundle | any) => Promise<RuntimeWallet>
   listen?: (invalidate: () => void, foreground: () => void) => () => void
   notify?: () => void
+  reset?: () => Promise<void>
 }) {
   const state = reactive<AccountSessionState>({
     status: 'loading',
@@ -577,8 +578,55 @@ export function createAccountSession(deps: {
         }
       })
     },
+    async reset() {
+      return exclusive(async () => {
+        closed = false
+        ++generation
+        state.status = 'loading'
+        state.error = null
+        state.account = null
+        state.pending = null
+        state.pendingReady = false
+        state.pendingError = null
+        await release()
+        custody?.close()
+        custody = undefined
+        activeBip39Params = undefined
+        if (deps.reset) {
+          await deps.reset()
+        } else {
+          await resetAccountStorage()
+        }
+        deps.notify?.()
+        await runRefresh()
+      })
+    },
   }
   return session
+}
+
+export async function resetAccountStorage(
+  namespace = 'local-account-v1',
+): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  const names = [
+    `frank-account-custody-${namespace}`,
+    `frank-preview-vault-${namespace}`,
+  ]
+  for (const name of names) {
+    await new Promise<void>(resolve => {
+      try {
+        const req = indexedDB.deleteDatabase(name)
+        req.onsuccess = () => resolve()
+        req.onerror = () => resolve()
+        req.onblocked = () => {
+          setTimeout(resolve, 300)
+        }
+      } catch {
+        resolve()
+      }
+    })
+  }
 }
 
 let accountChannel: BroadcastChannel | undefined

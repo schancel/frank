@@ -40,23 +40,53 @@
         </p>
         <template
           v-if="
-            account.status === 'locked' ||
-            account.status === 'unavailable' ||
-            legacy.unavailable
+            (account.status === 'locked' ||
+              account.status === 'unavailable' ||
+              legacy.unavailable) &&
+            mode === 'choice'
           "
         >
           <p>
             {{ $t('accountRecovery.saved_account_data_could_not_be_opened') }}
           </p>
-          <q-btn
-            outline
-            color="primary"
-            no-caps
-            :label="$t('accountRecovery.retry_opening_account')"
-            :loading="busy"
-            data-test="retry-account"
-            @click="retry"
-          />
+          <div class="row q-gutter-sm items-center q-my-md">
+            <q-btn
+              color="primary"
+              no-caps
+              :label="$t('accountRecovery.retry_opening_account')"
+              :loading="busy"
+              data-test="retry-account"
+              @click="retry"
+            />
+            <q-btn
+              outline
+              color="primary"
+              no-caps
+              :label="$t('accountRecovery.restore_account')"
+              data-test="restore-locked-account"
+              :disable="busy"
+              @click="startRestoreLocked"
+            />
+            <q-btn
+              outline
+              color="primary"
+              no-caps
+              :label="$t('accountRecovery.import_bip39_seed')"
+              data-test="legacy-locked-recovery"
+              :disable="busy"
+              @click="startLegacyLocked"
+            />
+            <q-btn
+              flat
+              color="negative"
+              no-caps
+              :label="$t('accountRecovery.reset_account_storage')"
+              data-test="reset-account-storage"
+              :loading="busy"
+              :disable="busy"
+              @click="resetStorage"
+            />
+          </div>
         </template>
         <template v-else-if="account.pending">
           <p
@@ -661,6 +691,29 @@ function retry() {
   return run(async () => {
     await retryLegacyInspection()
     await accountSession.retry()
+  })
+}
+function startRestoreLocked() {
+  replaceAccepted.value = true
+  return startRestore()
+}
+function startLegacyLocked() {
+  replaceAccepted.value = true
+  changeMode('legacy')
+}
+function resetStorage() {
+  const confirmMsg =
+    (window as any)?.$t?.('accountRecovery.reset_account_storage_confirm') ||
+    'Resetting damaged storage will clear the unopenable local account data. You can then restore your account from backup shares or import a seed. Proceed?'
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    if (!window.confirm(confirmMsg)) return
+  }
+  return run(async () => {
+    cancel()
+    await accountSession.reset()
+    await retryLegacyInspection()
+    replaceAccepted.value = false
+    changeMode('choice')
   })
 }
 async function copy(text: string) {

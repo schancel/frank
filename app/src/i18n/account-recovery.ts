@@ -12,6 +12,9 @@ export const en = {
   saved_account_data_could_not_be_opened:
     'Saved account data could not be opened. It has not been replaced. This preview requires encrypted browser storage; native apps are not supported.',
   retry_opening_account: 'Retry',
+  reset_account_storage: 'Reset storage',
+  reset_account_storage_confirm:
+    'Resetting damaged storage will clear the unopenable local account data. You can then restore your account from backup shares or import a seed. Proceed?',
   a_saved_account_attempt_is_pending_it:
     'A saved account attempt is pending. It is not active until you choose Activate account.',
   activate_account: 'Activate',
@@ -122,6 +125,9 @@ export const fr = {
   saved_account_data_could_not_be_opened:
     'Impossible d’ouvrir les données enregistrées du compte. Elles n’ont pas été remplacées. Cet aperçu nécessite le stockage chiffré du navigateur ; les applications natives ne sont pas prises en charge.',
   retry_opening_account: 'Réessayer',
+  reset_account_storage: 'Réinitialiser le stockage',
+  reset_account_storage_confirm:
+    'La réinitialisation effacera les données de compte local illisibles. Vous pourrez ensuite restaurer votre compte depuis vos clés de secours ou importer une phrase de récupération. Continuer ?',
   a_saved_account_attempt_is_pending_it:
     'Une tentative de création enregistrée est en attente. Le compte ne sera actif qu’après avoir choisi Activer le compte.',
   activate_account: 'Activer',

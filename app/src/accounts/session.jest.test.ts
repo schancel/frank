@@ -431,3 +431,37 @@ test('getCurvePublicKey and getCachedCurvePublicKey derive and cache public keys
   expect(cachedEd).toEqual(edKey)
   expect(f.capability.takeRoots).toHaveBeenCalledTimes(initialTakeRootsCalls)
 })
+
+test('reset closes existing wallet and custody, calls deps.reset, and reinitializes session to fresh', async () => {
+  const f = fixture()
+  await f.session.initialize()
+  expect(f.session.state.status).toBe('ready')
+
+  const resetMock = jest.fn(async () => {
+    f.set({
+      schema: 1,
+      revision: 0,
+      active: null,
+      pending: null,
+    })
+  })
+
+  const notifyMock = jest.fn()
+  // Create session with custom reset dependency
+  const session = createAccountSession({
+    open: async () => f.custody,
+    createWallet: f.createWallet,
+    notify: notifyMock,
+    reset: resetMock,
+  })
+
+  await session.initialize()
+  expect(session.state.status).toBe('ready')
+
+  await session.reset()
+  expect(resetMock).toHaveBeenCalledTimes(1)
+  expect(notifyMock).toHaveBeenCalled()
+  expect(session.state.status).toBe('fresh')
+  expect(session.state.account).toBeNull()
+  expect(session.state.error).toBeNull()
+})

@@ -65,163 +65,141 @@ export default withMermaid(
         { text: "Client SDKs", link: "/sdks/frank-codec" },
       ],
 
-      sidebar: {
-        "/guide/": [
-          {
-            text: "Frank & Cashweb Guide",
-            collapsed: false,
-            items: [
-              {
-                text: "Introduction & Architecture Overview",
-                link: "/guide/introduction",
-              },
-              {
-                text: "Dual-Protocol DNS Routing (SRV + MX)",
-                link: "/protocol/dns-routing",
-              },
-              {
-                text: "Forwarding Envelope (Type 25)",
-                link: "/protocol/forwarding-envelope",
-              },
-              {
-                text: "Encrypted Blob Offloading",
-                link: "/protocol/blob-storage",
-              },
-            ],
-          },
-        ],
-        "/protocol/": [
-          {
-            text: "Core Protocol Specifications",
-            collapsed: false,
-            items: [
-              {
-                text: "Dual-Protocol DNS Routing (SRV + MX)",
-                link: "/protocol/dns-routing",
-              },
-              {
-                text: "Forwarding Envelope (Type 25)",
-                link: "/protocol/forwarding-envelope",
-              },
-              {
-                text: "Encrypted Blob Storage & Attachments",
-                link: "/protocol/blob-storage",
-              },
-              {
-                text: "Cashweb Protocol Overview",
-                link: "/protocol/cashweb-spec",
-              },
-              {
-                text: "DKSAP Stamp Derivation & DLEQ",
-                link: "/protocol/stamp-derivation",
-              },
-              {
-                text: "Cross-Chain Atomic Swaps",
-                link: "/protocol/atomic-swaps",
-              },
-              {
-                text: "Codex32 Paper Backup & Recovery",
-                link: "/protocol/codex32-backup",
-              },
-              {
-                text: "Ambient Privacy & Graph Entropy",
-                link: "/protocol/ambient-privacy",
-              },
-            ],
-          },
-        ],
-        "/cbor/": [
-          {
-            text: "Deterministic CBOR v1 (FRNK)",
-            collapsed: false,
-            items: [
-              { text: "Specification Overview", link: "/cbor/spec" },
-              {
-                text: "Common Schema (`common.cddl`)",
-                link: "/cbor/common-cddl",
-              },
-              {
-                text: "Direct Message Schema (`direct-message.cddl`)",
-                link: "/cbor/dm-cddl",
-              },
-              {
-                text: "Directory Schema (`directory.cddl`)",
-                link: "/cbor/directory-cddl",
-              },
-              { text: "Test Vectors & Conformance", link: "/cbor/vectors" },
-            ],
-          },
-        ],
-        "/architecture/": [
-          {
-            text: "Relay & Backend Infrastructure",
-            collapsed: false,
-            items: [
-              {
-                text: "Clustered Relay Architecture",
-                link: "/architecture/clustered-relay",
-              },
-              {
-                text: "Backend Daemon Topology",
-                link: "/architecture/backend-topology",
-              },
-              {
-                text: "Inbound/Outbound Email Gateway",
-                link: "/architecture/email-gateway",
-              },
-              {
-                text: "Prometheus Metrics & Health",
-                link: "/architecture/metrics",
-              },
-            ],
-          },
-        ],
-        "/sdks/": [
-          {
-            text: "Client & Backend SDKs",
-            collapsed: false,
-            items: [
-              {
-                text: "@frank/codec (TS CBOR Reference)",
-                link: "/sdks/frank-codec",
-              },
-              {
-                text: "frank-cbor (Rust Zero-Copy Parser)",
-                link: "/sdks/rust-cbor",
-              },
-              { text: "@frank/cashweb (Client SDK)", link: "/sdks/cashweb" },
-              {
-                text: "@frank/wallet (EVM + UTXO Engine)",
-                link: "/sdks/wallet",
-              },
-              {
-                text: "@frank/crypto-box (AEAD & KEM)",
-                link: "/sdks/crypto-box",
-              },
-              {
-                text: "@frank/nakamoto (Typed UTXO Engine)",
-                link: "/sdks/nakamoto",
-              },
-              {
-                text: "@frank/bot-framework (Autonomous Bot SDK)",
-                link: "/sdks/bot-framework",
-              },
-              {
-                text: "@frank/threshold-ecdsa (2-Party Threshold ECDSA)",
-                link: "/sdks/threshold-ecdsa",
-              },
-              {
-                text: "@frank/adaptor-signatures (ECDSA Adaptor Signatures)",
-                link: "/sdks/adaptor-signatures",
-              },
-              {
-                text: "@frank/joint-signer (Pluggable 2-Party Signer)",
-                link: "/sdks/joint-signer",
-              },
-            ],
-          },
-        ],
-      },
+      sidebar: [
+        {
+          text: "Frank & Cashweb Guide",
+          collapsed: false,
+          items: [
+            {
+              text: "Introduction & Architecture Overview",
+              link: "/guide/introduction",
+            },
+          ],
+        },
+        {
+          text: "Core Protocol Specifications",
+          collapsed: false,
+          items: [
+            {
+              text: "Dual-Protocol DNS Routing (SRV + MX)",
+              link: "/protocol/dns-routing",
+            },
+            {
+              text: "Forwarding Envelope (Type 25)",
+              link: "/protocol/forwarding-envelope",
+            },
+            {
+              text: "Encrypted Blob Storage & Attachments",
+              link: "/protocol/blob-storage",
+            },
+            {
+              text: "Cashweb Protocol Overview",
+              link: "/protocol/cashweb-spec",
+            },
+            {
+              text: "DKSAP Stamp Derivation & DLEQ",
+              link: "/protocol/stamp-derivation",
+            },
+            {
+              text: "Cross-Chain Atomic Swaps",
+              link: "/protocol/atomic-swaps",
+            },
+            {
+              text: "Codex32 Paper Backup & Recovery",
+              link: "/protocol/codex32-backup",
+            },
+            {
+              text: "Ambient Privacy & Graph Entropy",
+              link: "/protocol/ambient-privacy",
+            },
+          ],
+        },
+        {
+          text: "Deterministic CBOR v1 (FRNK)",
+          collapsed: false,
+          items: [
+            { text: "Specification Overview", link: "/cbor/spec" },
+            {
+              text: "Common Schema (common.cddl)",
+              link: "/cbor/common-cddl",
+            },
+            {
+              text: "Direct Message Schema (direct-message.cddl)",
+              link: "/cbor/dm-cddl",
+            },
+            {
+              text: "Directory Schema (directory.cddl)",
+              link: "/cbor/directory-cddl",
+            },
+            { text: "Test Vectors & Conformance", link: "/cbor/vectors" },
+          ],
+        },
+        {
+          text: "Relay & Backend Infrastructure",
+          collapsed: false,
+          items: [
+            {
+              text: "Clustered Relay Architecture",
+              link: "/architecture/clustered-relay",
+            },
+            {
+              text: "Backend Daemon Topology",
+              link: "/architecture/backend-topology",
+            },
+            {
+              text: "Inbound/Outbound Email Gateway",
+              link: "/architecture/email-gateway",
+            },
+            {
+              text: "Prometheus Metrics & Health",
+              link: "/architecture/metrics",
+            },
+          ],
+        },
+        {
+          text: "Client & Backend SDKs",
+          collapsed: false,
+          items: [
+            {
+              text: "@frank/codec (TS CBOR Reference)",
+              link: "/sdks/frank-codec",
+            },
+            {
+              text: "frank-cbor (Rust Zero-Copy Parser)",
+              link: "/sdks/rust-cbor",
+            },
+            { text: "@frank/cashweb (Client SDK)", link: "/sdks/cashweb" },
+            {
+              text: "@frank/wallet (EVM + UTXO Engine)",
+              link: "/sdks/wallet",
+            },
+            {
+              text: "@frank/crypto-box (AEAD & KEM)",
+              link: "/sdks/crypto-box",
+            },
+            {
+              text: "@frank/nakamoto (Typed UTXO Engine)",
+              link: "/sdks/nakamoto",
+            },
+            {
+              text: "@frank/bot-framework (Autonomous Bot SDK)",
+              link: "/sdks/bot-framework",
+            },
+            {
+              text: "@frank/threshold-ecdsa (2-Party Threshold ECDSA)",
+              link: "/sdks/threshold-ecdsa",
+            },
+            {
+              text: "@frank/adaptor-signatures (ECDSA Adaptor Signatures)",
+              link: "/sdks/adaptor-signatures",
+            },
+            {
+              text: "@frank/joint-signer (Pluggable 2-Party Signer)",
+              link: "/sdks/joint-signer",
+            },
+          ],
+        },
+      ],
 
       socialLinks: [
         { icon: "github", link: "https://github.com/schancel/frank" },

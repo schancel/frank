@@ -18,6 +18,7 @@ import {
 import {
   activeChain,
   fetchEcashBalance,
+  fetchSolanaBalance,
   loadMonadChainConfigFromEnv,
 } from '@frank/wallet/chain'
 import { accountSession, accountStatus } from '../accounts/session'
@@ -38,31 +39,42 @@ const ecashState = ref<ChainBalanceState>({
   hasError: false,
 })
 
-let ecashConsumers = 0
-let ecashTimer: ReturnType<typeof setTimeout> | undefined
+const solanaState = ref<ChainBalanceState>({
+  balance: null,
+  formattedBalance: '',
+  loaded: false,
+  hasError: false,
+})
+
+let multichainConsumers = 0
+let multichainTimer: ReturnType<typeof setTimeout> | undefined
 let ecashPending = false
-let ecashBackgrounded = false
+let solanaPending = false
+let multichainBackgrounded = false
 let stopStatusWatch: (() => void) | undefined
 
-function clearEcashTimer() {
-  if (ecashTimer !== undefined) clearTimeout(ecashTimer)
-  ecashTimer = undefined
+function clearPollingTimer() {
+  if (multichainTimer !== undefined) clearTimeout(multichainTimer)
+  multichainTimer = undefined
 }
 
-function scheduleEcash() {
-  clearEcashTimer()
+function schedulePolling() {
+  clearPollingTimer()
   if (
-    ecashConsumers === 0 ||
+    multichainConsumers === 0 ||
     typeof document === 'undefined' ||
     !document ||
     document.hidden ||
-    ecashBackgrounded
+    multichainBackgrounded
   )
     return
-  ecashTimer = setTimeout(() => {
-    ecashTimer = undefined
-    if (ecashPending) scheduleEcash()
-    else void fetchChainBalance('ecash', true)
+  multichainTimer = setTimeout(() => {
+    multichainTimer = undefined
+    if (ecashPending || solanaPending) schedulePolling()
+    else {
+      void fetchChainBalance('ecash', true)
+      void fetchChainBalance('solana', true)
+    }
   }, BALANCE_POLL_MS)
 }
 
@@ -74,7 +86,7 @@ export async function fetchChainBalance(
   if (chain === 'ecash') {
     if (ecashPending && !force) return
     ecashPending = true
-    scheduleEcash()
+    schedulePolling()
     try {
       if (accountStatus.status !== 'ready') {
         ecashState.value = {
@@ -113,17 +125,62 @@ export async function fetchChainBalance(
       }
     } finally {
       ecashPending = false
-      scheduleEcash()
+      schedulePolling()
+    }
+  } else if (chain === 'solana') {
+    if (solanaPending && !force) return
+    solanaPending = true
+    schedulePolling()
+    try {
+      if (accountStatus.status !== 'ready') {
+        solanaState.value = {
+          balance: null,
+          formattedBalance: '',
+          loaded: false,
+          hasError: false,
+        }
+        return
+      }
+      let address = accountSession.getCachedChainAddress?.('solana')
+      if (!address) {
+        address = await accountSession.getChainAddress?.('solana')
+      }
+      if (!address) {
+        return
+      }
+      const networkId = activeChain.isTestnet
+        ? 'solana-devnet'
+        : 'solana-mainnet'
+      const result = await fetchSolanaBalance({
+        address,
+        networkId,
+      })
+      solanaState.value = {
+        balance: result.lamports,
+        formattedBalance: result.formatted,
+        loaded: true,
+        hasError: false,
+      }
+    } catch (err) {
+      console.error('Failed to fetch Solana balance', err)
+      solanaState.value = {
+        ...solanaState.value,
+        hasError: true,
+      }
+    } finally {
+      solanaPending = false
+      schedulePolling()
     }
   }
 }
 
 function onVisibilityChange() {
   if (document.hidden) {
-    clearEcashTimer()
+    clearPollingTimer()
   } else {
-    ecashBackgrounded = false
+    multichainBackgrounded = false
     void fetchChainBalance('ecash', true)
+    void fetchChainBalance('solana', true)
   }
 }
 
@@ -131,21 +188,23 @@ function onAppState(event: Event) {
   const isActive = (event as CustomEvent<{ isActive: boolean }>).detail
     ?.isActive
   if (isActive) {
-    ecashBackgrounded = false
+    multichainBackgrounded = false
     void fetchChainBalance('ecash', true)
+    void fetchChainBalance('solana', true)
   } else {
-    ecashBackgrounded = true
-    clearEcashTimer()
+    multichainBackgrounded = true
+    clearPollingTimer()
   }
 }
 
-function acquireEcash() {
-  ecashConsumers++
-  if (ecashConsumers === 1) {
+function acquireMultichain() {
+  multichainConsumers++
+  if (multichainConsumers === 1) {
     stopStatusWatch = watch(
       () => [accountStatus.status, accountStatus.revision],
       () => {
         void fetchChainBalance('ecash', true)
+        void fetchChainBalance('solana', true)
       },
       { flush: 'sync' },
     )
@@ -155,30 +214,31 @@ function acquireEcash() {
     }
   }
   void fetchChainBalance('ecash', false)
+  void fetchChainBalance('solana', false)
 }
 
-function releaseEcash() {
-  ecashConsumers = Math.max(0, ecashConsumers - 1)
-  if (ecashConsumers > 0) return
-  clearEcashTimer()
+function releaseMultichain() {
+  multichainConsumers = Math.max(0, multichainConsumers - 1)
+  if (multichainConsumers > 0) return
+  clearPollingTimer()
   stopStatusWatch?.()
   stopStatusWatch = undefined
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', onVisibilityChange)
     window.removeEventListener(APP_STATE_EVENT, onAppState)
   }
-  ecashBackgrounded = false
+  multichainBackgrounded = false
 }
 
 /**
- * Accesses balance state for any chain ('monad', 'ecash', etc.).
+ * Accesses balance state for any chain ('monad', 'ecash', 'solana', etc.).
  */
 export function useChainBalance(chainRef: Ref<string> | string) {
   const monad = useBalance()
 
   if (getCurrentInstance()) {
-    onMounted(acquireEcash)
-    onUnmounted(releaseEcash)
+    onMounted(acquireMultichain)
+    onUnmounted(releaseMultichain)
   }
 
   const chain = computed(() =>
@@ -188,24 +248,28 @@ export function useChainBalance(chainRef: Ref<string> | string) {
   const balance = computed<bigint | null>(() => {
     if (chain.value === 'monad') return monad.balance.value
     if (chain.value === 'ecash') return ecashState.value.balance
+    if (chain.value === 'solana') return solanaState.value.balance
     return null
   })
 
   const formattedBalance = computed<string>(() => {
     if (chain.value === 'monad') return monad.formattedBalance.value
     if (chain.value === 'ecash') return ecashState.value.formattedBalance
+    if (chain.value === 'solana') return solanaState.value.formattedBalance
     return ''
   })
 
   const loaded = computed<boolean>(() => {
     if (chain.value === 'monad') return monad.loaded.value
     if (chain.value === 'ecash') return ecashState.value.loaded
+    if (chain.value === 'solana') return solanaState.value.loaded
     return false
   })
 
   const hasError = computed<boolean>(() => {
     if (chain.value === 'monad') return monad.hasError.value
     if (chain.value === 'ecash') return ecashState.value.hasError
+    if (chain.value === 'solana') return solanaState.value.hasError
     return false
   })
 
@@ -228,13 +292,14 @@ export function useMultichainBalance() {
   const monad = useBalance()
 
   if (getCurrentInstance()) {
-    onMounted(acquireEcash)
-    onUnmounted(releaseEcash)
+    onMounted(acquireMultichain)
+    onUnmounted(releaseMultichain)
   }
 
   return {
     monad,
     ecash: readonly(ecashState),
+    solana: readonly(solanaState),
     getFormattedBalance(chain: string): string | undefined {
       if (chain === 'monad') {
         return monad.loaded.value ? monad.formattedBalance.value : undefined
@@ -242,6 +307,11 @@ export function useMultichainBalance() {
       if (chain === 'ecash') {
         return ecashState.value.loaded
           ? ecashState.value.formattedBalance
+          : undefined
+      }
+      if (chain === 'solana') {
+        return solanaState.value.loaded
+          ? solanaState.value.formattedBalance
           : undefined
       }
       return undefined
@@ -253,20 +323,29 @@ export function useMultichainBalance() {
       if (chain === 'ecash') {
         return ecashState.value.loaded ? ecashState.value.balance : null
       }
+      if (chain === 'solana') {
+        return solanaState.value.loaded ? solanaState.value.balance : null
+      }
       return null
     },
     isChainLoaded(chain: string): boolean {
       if (chain === 'monad') return monad.loaded.value
       if (chain === 'ecash') return ecashState.value.loaded
+      if (chain === 'solana') return solanaState.value.loaded
       return false
     },
     hasChainError(chain: string): boolean {
       if (chain === 'monad') return monad.hasError.value
       if (chain === 'ecash') return ecashState.value.hasError
+      if (chain === 'solana') return solanaState.value.hasError
       return false
     },
     refreshAll: async () => {
-      await Promise.all([monad.refresh(), fetchChainBalance('ecash', true)])
+      await Promise.all([
+        monad.refresh(),
+        fetchChainBalance('ecash', true),
+        fetchChainBalance('solana', true),
+      ])
     },
   }
 }

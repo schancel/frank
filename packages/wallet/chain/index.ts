@@ -57,6 +57,11 @@ export type {
   EvmBurnParams,
 } from "./evm-transaction-builder";
 export type { SolanaChainConfig } from "./solana-chain";
+export { fetchSolanaBalance, DEFAULT_SOLANA_RPC_URLS } from "./solana-balance";
+export type {
+  FetchSolanaBalanceOptions,
+  SolanaBalanceResult,
+} from "./solana-balance";
 export {
   EvmLegacyConsolidator,
   InMemoryLegacySendJournalStore,

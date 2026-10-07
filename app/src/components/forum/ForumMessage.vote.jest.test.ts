@@ -33,17 +33,32 @@ jest.mock('src/stores/my-profile', () => ({
   useProfileStore: () => mockProfile,
 }))
 const mockOwnAddress = jest.requireActual('vue').ref<string | null>(null)
-jest.mock('src/utils/own-address', () => ({
-  useReactiveOwnCanonicalAddress: () => mockOwnAddress,
-  sameCanonicalAddress: (first: string | null, second: string | null) =>
-    Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
-}))
+const mockOwnAddresses = jest.requireActual('vue').ref<string[]>([])
+const mockOwnPostDigests: string[] = []
+jest.mock('src/utils/own-address', () => {
+  const actual = jest.requireActual('src/utils/own-address')
+  return {
+    ...actual,
+    useReactiveOwnCanonicalAddress: () => mockOwnAddress,
+    useReactiveOwnAddresses: () => mockOwnAddresses,
+    sameCanonicalAddress: (first: string | null, second: string | null) =>
+      Boolean(first && second && first.toLowerCase() === second.toLowerCase()),
+  }
+})
 jest.mock('src/stores/forum', () => ({
   useForumStore: () =>
     jest.requireActual('vue').reactive({
       messages: [],
       topics: [],
       selectedTopic: '',
+      ownPostDigests: mockOwnPostDigests,
+      isOwnPost: (digest?: string) => {
+        if (!digest) return false
+        const norm = digest.toLowerCase().replace(/^0x/, '')
+        return mockOwnPostDigests.some(
+          d => d.toLowerCase().replace(/^0x/, '') === norm,
+        )
+      },
       getMessage: (digest: string) => mockIndexedMessages[digest],
       addOffering: (...args: unknown[]) => mockAddOffering(...args),
       applyOptimisticVote: (args: {
@@ -437,6 +452,40 @@ describe('ForumMessage author resolution and display (#1046)', () => {
     expect(wrapper.find('.author-btn').text()).toBe('0x123456...345678')
     expect(wrapper.find('.author-btn .font-mono').exists()).toBe(true)
     expect(wrapper.find('.author-btn').attributes('to')).toBe(`/chat/${longAddress}`)
+  })
+
+  it('resolves author to profile name when poster is a sub-account address in ownAddresses (#1071)', () => {
+    mockOwnAddress.value = '0xidentityaddress'
+    mockOwnAddresses.value = ['0xidentityaddress', '0x1e6fb5000000000000000000000000003df7bd']
+    mockProfile.profile.name = 'Shammah'
+
+    const wrapper = mountCard({ poster: '0x1e6fb5000000000000000000000000003df7bd' })
+    expect(wrapper.find('.author-btn').text()).toBe('Shammah')
+    expect(wrapper.find('.author-btn').attributes('to')).toBe('/profile')
+    expect(wrapper.find('.author-btn .font-mono').exists()).toBe(false)
+
+    // restore
+    mockProfile.profile.name = 'Alice Local'
+    mockOwnAddress.value = null
+    mockOwnAddresses.value = []
+  })
+
+  it('resolves author to profile name when payloadDigest matches isOwnPost (#1071)', () => {
+    mockOwnAddress.value = null
+    mockOwnAddresses.value = []
+    mockProfile.profile.name = 'Shammah'
+    mockOwnPostDigests.push('a1b2c3d4e5f60718')
+
+    const wrapper = mountCard({
+      poster: '0xunknownburnsubaccount',
+      payloadDigest: 'a1b2c3d4e5f60718',
+    })
+    expect(wrapper.find('.author-btn').text()).toBe('Shammah')
+    expect(wrapper.find('.author-btn').attributes('to')).toBe('/profile')
+
+    // restore
+    mockProfile.profile.name = 'Alice Local'
+    mockOwnPostDigests.length = 0
   })
 })
 

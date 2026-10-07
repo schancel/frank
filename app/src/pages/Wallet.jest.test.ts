@@ -293,7 +293,7 @@ describe('Wallet detail page (#570)', () => {
     await flush()
 
     expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
-      'walletPanel.ecashTestnet',
+      'walletPanel.ecash',
     )
     expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
       true,
@@ -324,7 +324,7 @@ describe('Wallet detail page (#570)', () => {
     await flush()
 
     expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
-      'walletPanel.solanaTestnet',
+      'walletPanel.solana',
     )
     expect(wrapper.find('[data-testid="wallet-testnet-badge"]').exists()).toBe(
       true,
@@ -360,7 +360,7 @@ describe('Wallet detail page (#570)', () => {
     await flush()
 
     expect(wrapper.get('[data-testid="wallet-name"]').text()).toContain(
-      'walletPanel.solanaTestnet',
+      'walletPanel.solana',
     )
     expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
       'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9',

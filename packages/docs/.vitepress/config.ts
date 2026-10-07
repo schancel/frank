@@ -35,6 +35,12 @@ export default withMermaid(
       securityLevel: "loose",
     },
 
+    vite: {
+      optimizeDeps: {
+        include: ["fastdom", "mermaid"],
+      },
+    },
+
     themeConfig: {
       logo: "/frank-logo.svg",
       siteTitle: "Frank Docs",

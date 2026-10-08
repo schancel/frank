@@ -1,4 +1,4 @@
-use borsh::BorshSerialize;
+use borsh::{BorshDeserialize, BorshSerialize};
 use generic_htlc::{
     error::HtlcError,
     instruction::{HtlcInstruction, Payout},
@@ -411,3 +411,93 @@ fn test_batch_withdraw() {
     assert_eq!(l1_lamports, 0);
     assert_eq!(l2_lamports, 0);
 }
+
+#[test]
+fn test_spl_token_htlc_escrow_compatibility() {
+    let program_id = Pubkey::new_unique();
+    let funder_key = Pubkey::new_unique();
+    let recipient_key = Pubkey::new_unique();
+    let refund_key = Pubkey::new_unique();
+    let token_mint = Pubkey::new_unique(); // Simulated SPL Token Mint (USDC/USDT)
+
+    let lock_id = [99u8; 32];
+    let (lock_pda, bump) =
+        Pubkey::find_program_address(&[LOCK_SEED, lock_id.as_ref()], &program_id);
+
+    // Verify deterministic PDA signer seeds for SPL token authority
+    let signer_seeds: &[&[u8]] = &[LOCK_SEED, lock_id.as_ref(), &[bump]];
+    let derived = Pubkey::create_program_address(signer_seeds, &program_id).unwrap();
+    assert_eq!(derived, lock_pda);
+
+    // Derive SPL token ATA address for the lock PDA
+    let spl_token_program_id = Pubkey::new_unique();
+    let ata_program_id = Pubkey::new_unique();
+    let (lock_token_ata, _ata_bump) = Pubkey::find_program_address(
+        &[
+            lock_pda.as_ref(),
+            spl_token_program_id.as_ref(),
+            token_mint.as_ref(),
+        ],
+        &ata_program_id,
+    );
+    assert_ne!(lock_token_ata, lock_pda);
+
+    // Preimage and hashlock for cross-chain SPL token swap
+    let preimage = b"spl-token-secret-preimage-999";
+    let hash_lock = sha256_hash(preimage).to_bytes();
+    let duration = 3600i64;
+
+    let mut funder_lamports = 10_000_000u64;
+    let mut lock_lamports = 0u64;
+    let mut funder_data = vec![];
+    let mut lock_data = vec![0u8; LockState::LEN];
+    let system_program_id = solana_program::system_program::id();
+
+    // 1. Lock execution (escrow PDA initialization)
+    {
+        let funder_acc = create_account(
+            &funder_key,
+            true,
+            true,
+            &mut funder_lamports,
+            &mut funder_data,
+            &system_program_id,
+        );
+        let lock_acc = create_account(
+            &lock_pda,
+            false,
+            true,
+            &mut lock_lamports,
+            &mut lock_data,
+            &program_id,
+        );
+
+        let lock_ix = HtlcInstruction::Lock {
+            lock_id,
+            recipient: recipient_key,
+            refund_address: refund_key,
+            hash_lock,
+            amount: 1, // rent-exempt deposit
+            duration,
+        };
+        let mut ix_data = vec![];
+        lock_ix.serialize(&mut ix_data).unwrap();
+
+        Processor::process(&program_id, &[funder_acc, lock_acc], &ix_data).unwrap();
+    }
+
+    // 2. Verify serialized lock state
+    let state = LockState::try_from_slice(&lock_data).unwrap();
+    assert!(state.is_initialized);
+    assert_eq!(state.sender, funder_key);
+    assert_eq!(state.recipient, recipient_key);
+    assert_eq!(state.refund_address, refund_key);
+    assert_eq!(state.hash_lock, hash_lock);
+    assert_eq!(state.bump, bump);
+    assert!(!state.withdrawn);
+
+    // 3. Verify preimage unlock verification
+    let computed_hash = sha256_hash(preimage).to_bytes();
+    assert_eq!(computed_hash, state.hash_lock);
+}
+

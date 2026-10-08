@@ -485,4 +485,80 @@ describe('AvuParityChart component', () => {
     // With token toggled off, max scales to 20!
     expect((wrapper.vm as any).usdMaxLimit).toBe(20)
   })
+
+  test('provides dense sub-annual monthly resolution when zooming into recent years (2024-2026) for Solana, USD, Gold, and PoW', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    const vm = wrapper.vm as any
+
+    // Verify 2025 historical rate is defined for Solana
+    expect(vm.activeTokenInfo.history[2025]).toBe(1950.0)
+
+    // Trigger custom drag-zoom into recent years (2024 to 2026)
+    vm.customZoomRange = {
+      startIndex: 94,
+      endIndex: 96,
+      startYear: 2024,
+      endYear: 2026,
+    }
+    await wrapper.vm.$nextTick()
+
+    // Sub-annual monthly resolution produces 28 monthly data points instead of 3 coarse 1-year points
+    const points = wrapper.findAll('[data-test="chart-hover-point"]')
+    expect(points.length).toBe(28)
+
+    // Check November 2024 data point (index 10)
+    const nov2024Point = points[10]
+    await nov2024Point.trigger('mouseenter')
+
+    const tooltip = wrapper.find('[data-test="chart-tooltip"]')
+    expect(tooltip.exists()).toBe(true)
+    expect(tooltip.text()).toContain('Nov 2024')
+    expect(tooltip.text()).toContain('SOL: 3,000 AVU (kWh)')
+    expect(tooltip.text()).toContain('USD: 12.6 kWh/$')
+    expect(tooltip.text()).toContain('Gold: 33,500 AVU/oz')
+    expect(tooltip.text()).toContain('PoW: 11.7 kWh/$')
+
+    // Check January 2025 point (index 12)
+    const jan2025Point = points[12]
+    await jan2025Point.trigger('mouseenter')
+    expect(tooltip.text()).toContain('Jan 2025')
+    expect(tooltip.text()).toContain('SOL: 2,770 AVU (kWh)')
+
+    // Check latest point (index 27)
+    const apr2026Point = points[27]
+    await apr2026Point.trigger('mouseenter')
+    expect(tooltip.text()).toContain('Apr 2026')
+    expect(tooltip.text()).toContain('SOL: 1,785.7 AVU (kWh)')
+    expect(tooltip.text()).toContain('USD: 12.0 kWh/$')
+    expect(tooltip.text()).toContain('Gold: 31,547 AVU/oz')
+    expect(tooltip.text()).toContain('PoW: 11.9 kWh/$')
+  })
+
+  test('dynamically recalibrates right axis scale for Solana when Gold is toggled off', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    const vm = wrapper.vm as any
+
+    // Zoom into 2024-2026
+    vm.customZoomRange = {
+      startIndex: 94,
+      endIndex: 96,
+      startYear: 2024,
+      endYear: 2026,
+    }
+    await wrapper.vm.$nextTick()
+
+    // Initially with Gold ON, right axis limit is Gold ceiling (35,000)
+    expect(vm.showGold).toBe(true)
+    expect(vm.goldMaxLimit).toBe(35000)
+
+    // Toggle Gold OFF: scale recalibrates down to Solana's actual range (~3,500)
+    const goldToggle = wrapper.find('[data-test="toggle-metric-gold"]')
+    await goldToggle.trigger('click')
+
+    expect(vm.showGold).toBe(false)
+    expect(vm.hasRightAxis).toBe(true) // right axis stays visible for Solana
+    expect(vm.goldMaxLimit).toBeLessThanOrEqual(4000)
+    expect(vm.goldMaxLimit).toBeGreaterThanOrEqual(3000)
+    expect(vm.goldMaxLabel).toContain('3.') // e.g. 3.5k
+  })
 })

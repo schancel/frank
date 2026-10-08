@@ -561,7 +561,7 @@
           <!-- Data Points & Hover Targets -->
           <g
             v-for="(point, idx) in macroPointsMapped"
-            :key="`macro-pt-${point.year}`"
+            :key="`macro-pt-${point.year}-${point.timeLabel || idx}`"
             class="data-point-group"
             data-test="chart-hover-point"
             @mouseenter="activeHoverPoint = point"
@@ -658,7 +658,7 @@
               :fill="themeColors.text"
               class="unselectable"
             >
-              {{ point.year }}
+              {{ formatTickLabel(point) }}
             </text>
           </g>
 
@@ -748,7 +748,7 @@
               font-weight="bold"
               :fill="themeColors.textPrimary"
             >
-              {{ activeHoverPoint.year }}
+              {{ activeHoverPoint.timeLabel || activeHoverPoint.year }}
             </text>
             <text
               v-for="(entry, eIdx) in activeTooltipEntries"
@@ -1043,6 +1043,7 @@ import {
   COMBINED_MACRO_ARCHIVE_1930_PRESENT,
   getTimestepConversionContext,
   convertAssetHistoryToAvu,
+  interpolateMacroPoint,
   type SupportedAsset,
 } from '@frank/wallet/oracle'
 
@@ -1063,6 +1064,8 @@ interface TokenParityInfo {
   inceptionYear: number
   /** Historical yearly AVU equivalent: year -> AVU */
   history: Record<number, number>
+  /** Sub-annual monthly historical AVU rates (YYYY-MM -> AVU) */
+  monthlyHistory?: Record<string, number>
 }
 
 const TOKEN_CONFIGS: Record<string, TokenParityInfo> = {
@@ -1072,7 +1075,38 @@ const TOKEN_CONFIGS: Record<string, TokenParityInfo> = {
     inceptionYear: 2024,
     history: {
       2024: 15.1,
+      2025: 28.5,
       2026: 41.67,
+    },
+    monthlyHistory: {
+      '2024-01': 15.1,
+      '2024-02': 16.0,
+      '2024-03': 17.2,
+      '2024-04': 18.0,
+      '2024-05': 19.5,
+      '2024-06': 21.0,
+      '2024-07': 22.5,
+      '2024-08': 23.5,
+      '2024-09': 24.5,
+      '2024-10': 25.5,
+      '2024-11': 27.0,
+      '2024-12': 28.0,
+      '2025-01': 28.5,
+      '2025-02': 29.0,
+      '2025-03': 29.5,
+      '2025-04': 30.0,
+      '2025-05': 31.0,
+      '2025-06': 32.0,
+      '2025-07': 33.0,
+      '2025-08': 34.0,
+      '2025-09': 35.0,
+      '2025-10': 36.0,
+      '2025-11': 37.0,
+      '2025-12': 38.0,
+      '2026-01': 39.0,
+      '2026-02': 40.0,
+      '2026-03': 41.0,
+      '2026-04': 41.67,
     },
   },
   solana: {
@@ -1085,7 +1119,50 @@ const TOKEN_CONFIGS: Record<string, TokenParityInfo> = {
       2022: 264.0,
       2023: 896.0,
       2024: 1764.0,
+      2025: 1950.0,
       2026: 1785.71,
+    },
+    monthlyHistory: {
+      '2023-01': 286.0,
+      '2023-02': 300.0,
+      '2023-03': 260.0,
+      '2023-04': 280.0,
+      '2023-05': 260.0,
+      '2023-06': 234.0,
+      '2023-07': 310.0,
+      '2023-08': 270.0,
+      '2023-09': 250.0,
+      '2023-10': 416.0,
+      '2023-11': 750.0,
+      '2023-12': 1300.0,
+      '2024-01': 1250.0,
+      '2024-02': 1390.0,
+      '2024-03': 2330.0,
+      '2024-04': 1840.0,
+      '2024-05': 2080.0,
+      '2024-06': 1760.0,
+      '2024-07': 2190.0,
+      '2024-08': 1690.0,
+      '2024-09': 1890.0,
+      '2024-10': 2140.0,
+      '2024-11': 3000.0,
+      '2024-12': 2690.0,
+      '2025-01': 2770.0,
+      '2025-02': 2400.0,
+      '2025-03': 1970.0,
+      '2025-04': 1780.0,
+      '2025-05': 2090.0,
+      '2025-06': 1900.0,
+      '2025-07': 2210.0,
+      '2025-08': 2150.0,
+      '2025-09': 1845.0,
+      '2025-10': 2030.0,
+      '2025-11': 1900.0,
+      '2025-12': 1805.0,
+      '2026-01': 1718.0,
+      '2026-02': 1740.0,
+      '2026-03': 1765.0,
+      '2026-04': 1785.71,
     },
   },
   ethereum: {
@@ -1103,7 +1180,38 @@ const TOKEN_CONFIGS: Record<string, TokenParityInfo> = {
       2022: 15840.0,
       2023: 25600.0,
       2024: 40320.0,
+      2025: 35400.0,
       2026: 30952.38,
+    },
+    monthlyHistory: {
+      '2024-01': 33000.0,
+      '2024-02': 36000.0,
+      '2024-03': 44000.0,
+      '2024-04': 39000.0,
+      '2024-05': 43000.0,
+      '2024-06': 41000.0,
+      '2024-07': 42000.0,
+      '2024-08': 34000.0,
+      '2024-09': 32500.0,
+      '2024-10': 31500.0,
+      '2024-11': 39500.0,
+      '2024-12': 41000.0,
+      '2025-01': 39000.0,
+      '2025-02': 37500.0,
+      '2025-03': 35000.0,
+      '2025-04': 33500.0,
+      '2025-05': 36000.0,
+      '2025-06': 34500.0,
+      '2025-07': 36500.0,
+      '2025-08': 35500.0,
+      '2025-09': 33000.0,
+      '2025-10': 34000.0,
+      '2025-11': 33500.0,
+      '2025-12': 32500.0,
+      '2026-01': 31800.0,
+      '2026-02': 31400.0,
+      '2026-03': 31100.0,
+      '2026-04': 30952.38,
     },
   },
   hyperliquid: {
@@ -1112,7 +1220,19 @@ const TOKEN_CONFIGS: Record<string, TokenParityInfo> = {
     inceptionYear: 2024,
     history: {
       2024: 252.0,
+      2025: 380.0,
       2026: 476.19,
+    },
+    monthlyHistory: {
+      '2024-01': 252.0,
+      '2024-06': 325.0,
+      '2024-11': 375.0,
+      '2024-12': 380.0,
+      '2025-01': 380.0,
+      '2025-06': 430.0,
+      '2025-12': 465.0,
+      '2026-01': 470.0,
+      '2026-04': 476.19,
     },
   },
   tempo: {
@@ -1121,7 +1241,18 @@ const TOKEN_CONFIGS: Record<string, TokenParityInfo> = {
     inceptionYear: 2024,
     history: {
       2024: 12.6,
+      2025: 12.3,
       2026: 11.9,
+    },
+    monthlyHistory: {
+      '2024-01': 12.8,
+      '2024-06': 12.5,
+      '2024-12': 12.5,
+      '2025-01': 12.4,
+      '2025-06': 12.3,
+      '2025-12': 12.2,
+      '2026-01': 12.1,
+      '2026-04': 11.9,
     },
   },
   ecash: {
@@ -1137,7 +1268,18 @@ const TOKEN_CONFIGS: Record<string, TokenParityInfo> = {
       2020: 350.0,
       2021: 1800.0,
       2024: 350.0,
+      2025: 385.0,
       2026: 416.67,
+    },
+    monthlyHistory: {
+      '2024-01': 350.0,
+      '2024-06': 355.0,
+      '2024-12': 370.0,
+      '2025-01': 375.0,
+      '2025-06': 385.0,
+      '2025-12': 400.0,
+      '2026-01': 405.0,
+      '2026-04': 416.67,
     },
   },
 }
@@ -1414,18 +1556,764 @@ const data30d = computed<MacroPoint[]>(() =>
   ),
 )
 
-const data1y = computed<MacroPoint[]>(() =>
-  generateTimeSeries(
-    12,
-    (i, total) => {
-      const m = total - 1 - i
-      return m === 0 ? 'Now' : `-${m}m`
+interface MonthlyMacroAnchor {
+  monthKey: string
+  label: string
+  yearNum: number
+  usdKwh: number
+  goldAvu: number
+  powHashRate: number
+  tokenRates: Record<string, number>
+}
+
+const RECENT_MONTHLY_ANCHORS: MonthlyMacroAnchor[] = [
+  // 2023
+  {
+    monthKey: '2023-01',
+    label: 'Jan 2023',
+    yearNum: 2023.0,
+    usdKwh: 13.0,
+    goldAvu: 29200,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 286.0,
+      monad: 12.0,
+      ethereum: 21000.0,
+      hyperliquid: 200.0,
+      tempo: 13.0,
+      ecash: 320.0,
     },
-    0.12,
-    0.03,
-    0.05,
-  ),
-)
+  },
+  {
+    monthKey: '2023-02',
+    label: 'Feb 2023',
+    yearNum: 2023.083,
+    usdKwh: 13.0,
+    goldAvu: 29100,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 300.0,
+      monad: 12.2,
+      ethereum: 21500.0,
+      hyperliquid: 205.0,
+      tempo: 13.0,
+      ecash: 325.0,
+    },
+  },
+  {
+    monthKey: '2023-03',
+    label: 'Mar 2023',
+    yearNum: 2023.167,
+    usdKwh: 13.0,
+    goldAvu: 29400,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 260.0,
+      monad: 12.5,
+      ethereum: 23000.0,
+      hyperliquid: 210.0,
+      tempo: 13.0,
+      ecash: 330.0,
+    },
+  },
+  {
+    monthKey: '2023-04',
+    label: 'Apr 2023',
+    yearNum: 2023.25,
+    usdKwh: 13.0,
+    goldAvu: 29500,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 280.0,
+      monad: 12.8,
+      ethereum: 24500.0,
+      hyperliquid: 215.0,
+      tempo: 13.0,
+      ecash: 335.0,
+    },
+  },
+  {
+    monthKey: '2023-05',
+    label: 'May 2023',
+    yearNum: 2023.333,
+    usdKwh: 13.0,
+    goldAvu: 29300,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 260.0,
+      monad: 13.0,
+      ethereum: 24000.0,
+      hyperliquid: 220.0,
+      tempo: 13.0,
+      ecash: 335.0,
+    },
+  },
+  {
+    monthKey: '2023-06',
+    label: 'Jun 2023',
+    yearNum: 2023.417,
+    usdKwh: 12.9,
+    goldAvu: 29000,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 234.0,
+      monad: 13.2,
+      ethereum: 24800.0,
+      hyperliquid: 225.0,
+      tempo: 12.9,
+      ecash: 340.0,
+    },
+  },
+  {
+    monthKey: '2023-07',
+    label: 'Jul 2023',
+    yearNum: 2023.5,
+    usdKwh: 12.9,
+    goldAvu: 29200,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 310.0,
+      monad: 13.5,
+      ethereum: 24200.0,
+      hyperliquid: 230.0,
+      tempo: 12.9,
+      ecash: 345.0,
+    },
+  },
+  {
+    monthKey: '2023-08',
+    label: 'Aug 2023',
+    yearNum: 2023.583,
+    usdKwh: 12.9,
+    goldAvu: 29100,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 270.0,
+      monad: 13.8,
+      ethereum: 21500.0,
+      hyperliquid: 235.0,
+      tempo: 12.9,
+      ecash: 340.0,
+    },
+  },
+  {
+    monthKey: '2023-09',
+    label: 'Sep 2023',
+    yearNum: 2023.667,
+    usdKwh: 13.0,
+    goldAvu: 29000,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 250.0,
+      monad: 14.0,
+      ethereum: 21700.0,
+      hyperliquid: 240.0,
+      tempo: 13.0,
+      ecash: 340.0,
+    },
+  },
+  {
+    monthKey: '2023-10',
+    label: 'Oct 2023',
+    yearNum: 2023.75,
+    usdKwh: 13.0,
+    goldAvu: 29400,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 416.0,
+      monad: 14.2,
+      ethereum: 23500.0,
+      hyperliquid: 245.0,
+      tempo: 13.0,
+      ecash: 345.0,
+    },
+  },
+  {
+    monthKey: '2023-11',
+    label: 'Nov 2023',
+    yearNum: 2023.833,
+    usdKwh: 12.9,
+    goldAvu: 29600,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 750.0,
+      monad: 14.5,
+      ethereum: 26500.0,
+      hyperliquid: 248.0,
+      tempo: 12.9,
+      ecash: 350.0,
+    },
+  },
+  {
+    monthKey: '2023-12',
+    label: 'Dec 2023',
+    yearNum: 2023.917,
+    usdKwh: 12.9,
+    goldAvu: 29800,
+    powHashRate: 11.5,
+    tokenRates: {
+      solana: 1300.0,
+      monad: 15.0,
+      ethereum: 29500.0,
+      hyperliquid: 250.0,
+      tempo: 12.9,
+      ecash: 350.0,
+    },
+  },
+
+  // 2024
+  {
+    monthKey: '2024-01',
+    label: 'Jan 2024',
+    yearNum: 2024.0,
+    usdKwh: 12.8,
+    goldAvu: 26240,
+    powHashRate: 11.6,
+    tokenRates: {
+      solana: 1250.0,
+      monad: 15.1,
+      ethereum: 33000.0,
+      hyperliquid: 252.0,
+      tempo: 12.8,
+      ecash: 350.0,
+    },
+  },
+  {
+    monthKey: '2024-02',
+    label: 'Feb 2024',
+    yearNum: 2024.083,
+    usdKwh: 12.8,
+    goldAvu: 26800,
+    powHashRate: 11.6,
+    tokenRates: {
+      solana: 1390.0,
+      monad: 16.0,
+      ethereum: 36000.0,
+      hyperliquid: 265.0,
+      tempo: 12.8,
+      ecash: 355.0,
+    },
+  },
+  {
+    monthKey: '2024-03',
+    label: 'Mar 2024',
+    yearNum: 2024.167,
+    usdKwh: 12.7,
+    goldAvu: 27500,
+    powHashRate: 11.6,
+    tokenRates: {
+      solana: 2330.0,
+      monad: 17.2,
+      ethereum: 44000.0,
+      hyperliquid: 280.0,
+      tempo: 12.7,
+      ecash: 370.0,
+    },
+  },
+  {
+    monthKey: '2024-04',
+    label: 'Apr 2024',
+    yearNum: 2024.25,
+    usdKwh: 12.7,
+    goldAvu: 29600,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 1840.0,
+      monad: 18.0,
+      ethereum: 39000.0,
+      hyperliquid: 295.0,
+      tempo: 12.7,
+      ecash: 360.0,
+    },
+  },
+  {
+    monthKey: '2024-05',
+    label: 'May 2024',
+    yearNum: 2024.333,
+    usdKwh: 12.6,
+    goldAvu: 29800,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 2080.0,
+      monad: 19.5,
+      ethereum: 43000.0,
+      hyperliquid: 310.0,
+      tempo: 12.6,
+      ecash: 365.0,
+    },
+  },
+  {
+    monthKey: '2024-06',
+    label: 'Jun 2024',
+    yearNum: 2024.417,
+    usdKwh: 12.5,
+    goldAvu: 29500,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 1760.0,
+      monad: 21.0,
+      ethereum: 41000.0,
+      hyperliquid: 325.0,
+      tempo: 12.5,
+      ecash: 355.0,
+    },
+  },
+  {
+    monthKey: '2024-07',
+    label: 'Jul 2024',
+    yearNum: 2024.5,
+    usdKwh: 12.5,
+    goldAvu: 30125,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 2190.0,
+      monad: 22.5,
+      ethereum: 42000.0,
+      hyperliquid: 340.0,
+      tempo: 12.5,
+      ecash: 360.0,
+    },
+  },
+  {
+    monthKey: '2024-08',
+    label: 'Aug 2024',
+    yearNum: 2024.583,
+    usdKwh: 12.5,
+    goldAvu: 31200,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 1690.0,
+      monad: 23.5,
+      ethereum: 34000.0,
+      hyperliquid: 350.0,
+      tempo: 12.5,
+      ecash: 350.0,
+    },
+  },
+  {
+    monthKey: '2024-09',
+    label: 'Sep 2024',
+    yearNum: 2024.667,
+    usdKwh: 12.6,
+    goldAvu: 33000,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 1890.0,
+      monad: 24.5,
+      ethereum: 32500.0,
+      hyperliquid: 360.0,
+      tempo: 12.6,
+      ecash: 355.0,
+    },
+  },
+  {
+    monthKey: '2024-10',
+    label: 'Oct 2024',
+    yearNum: 2024.75,
+    usdKwh: 12.6,
+    goldAvu: 34400,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 2140.0,
+      monad: 25.5,
+      ethereum: 31500.0,
+      hyperliquid: 370.0,
+      tempo: 12.6,
+      ecash: 360.0,
+    },
+  },
+  {
+    monthKey: '2024-11',
+    label: 'Nov 2024',
+    yearNum: 2024.833,
+    usdKwh: 12.6,
+    goldAvu: 33500,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 3000.0,
+      monad: 27.0,
+      ethereum: 39500.0,
+      hyperliquid: 375.0,
+      tempo: 12.6,
+      ecash: 375.0,
+    },
+  },
+  {
+    monthKey: '2024-12',
+    label: 'Dec 2024',
+    yearNum: 2024.917,
+    usdKwh: 12.5,
+    goldAvu: 33125,
+    powHashRate: 11.7,
+    tokenRates: {
+      solana: 2690.0,
+      monad: 28.0,
+      ethereum: 41000.0,
+      hyperliquid: 380.0,
+      tempo: 12.5,
+      ecash: 370.0,
+    },
+  },
+
+  // 2025
+  {
+    monthKey: '2025-01',
+    label: 'Jan 2025',
+    yearNum: 2025.0,
+    usdKwh: 12.4,
+    goldAvu: 33230,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 2770.0,
+      monad: 28.5,
+      ethereum: 39000.0,
+      hyperliquid: 380.0,
+      tempo: 12.4,
+      ecash: 375.0,
+    },
+  },
+  {
+    monthKey: '2025-02',
+    label: 'Feb 2025',
+    yearNum: 2025.083,
+    usdKwh: 12.4,
+    goldAvu: 32800,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 2400.0,
+      monad: 29.0,
+      ethereum: 37500.0,
+      hyperliquid: 390.0,
+      tempo: 12.4,
+      ecash: 378.0,
+    },
+  },
+  {
+    monthKey: '2025-03',
+    label: 'Mar 2025',
+    yearNum: 2025.167,
+    usdKwh: 12.4,
+    goldAvu: 32500,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 1970.0,
+      monad: 29.5,
+      ethereum: 35000.0,
+      hyperliquid: 400.0,
+      tempo: 12.4,
+      ecash: 380.0,
+    },
+  },
+  {
+    monthKey: '2025-04',
+    label: 'Apr 2025',
+    yearNum: 2025.25,
+    usdKwh: 12.3,
+    goldAvu: 32100,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 1780.0,
+      monad: 30.0,
+      ethereum: 33500.0,
+      hyperliquid: 410.0,
+      tempo: 12.3,
+      ecash: 382.0,
+    },
+  },
+  {
+    monthKey: '2025-05',
+    label: 'May 2025',
+    yearNum: 2025.333,
+    usdKwh: 12.3,
+    goldAvu: 31365,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 2090.0,
+      monad: 31.0,
+      ethereum: 36000.0,
+      hyperliquid: 420.0,
+      tempo: 12.3,
+      ecash: 385.0,
+    },
+  },
+  {
+    monthKey: '2025-06',
+    label: 'Jun 2025',
+    yearNum: 2025.417,
+    usdKwh: 12.3,
+    goldAvu: 31100,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 1900.0,
+      monad: 32.0,
+      ethereum: 34500.0,
+      hyperliquid: 430.0,
+      tempo: 12.3,
+      ecash: 385.0,
+    },
+  },
+  {
+    monthKey: '2025-07',
+    label: 'Jul 2025',
+    yearNum: 2025.5,
+    usdKwh: 12.2,
+    goldAvu: 30900,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 2210.0,
+      monad: 33.0,
+      ethereum: 36500.0,
+      hyperliquid: 440.0,
+      tempo: 12.2,
+      ecash: 388.0,
+    },
+  },
+  {
+    monthKey: '2025-08',
+    label: 'Aug 2025',
+    yearNum: 2025.583,
+    usdKwh: 12.2,
+    goldAvu: 30750,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 2150.0,
+      monad: 34.0,
+      ethereum: 35500.0,
+      hyperliquid: 445.0,
+      tempo: 12.2,
+      ecash: 388.0,
+    },
+  },
+  {
+    monthKey: '2025-09',
+    label: 'Sep 2025',
+    yearNum: 2025.667,
+    usdKwh: 12.3,
+    goldAvu: 31000,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 1845.0,
+      monad: 35.0,
+      ethereum: 33000.0,
+      hyperliquid: 450.0,
+      tempo: 12.3,
+      ecash: 390.0,
+    },
+  },
+  {
+    monthKey: '2025-10',
+    label: 'Oct 2025',
+    yearNum: 2025.75,
+    usdKwh: 12.3,
+    goldAvu: 31200,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 2030.0,
+      monad: 36.0,
+      ethereum: 34000.0,
+      hyperliquid: 455.0,
+      tempo: 12.3,
+      ecash: 392.0,
+    },
+  },
+  {
+    monthKey: '2025-11',
+    label: 'Nov 2025',
+    yearNum: 2025.833,
+    usdKwh: 12.3,
+    goldAvu: 31350,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 1900.0,
+      monad: 37.0,
+      ethereum: 33500.0,
+      hyperliquid: 460.0,
+      tempo: 12.3,
+      ecash: 395.0,
+    },
+  },
+  {
+    monthKey: '2025-12',
+    label: 'Dec 2025',
+    yearNum: 2025.917,
+    usdKwh: 12.2,
+    goldAvu: 31476,
+    powHashRate: 11.8,
+    tokenRates: {
+      solana: 1805.0,
+      monad: 38.0,
+      ethereum: 32500.0,
+      hyperliquid: 465.0,
+      tempo: 12.2,
+      ecash: 400.0,
+    },
+  },
+
+  // 2026
+  {
+    monthKey: '2026-01',
+    label: 'Jan 2026',
+    yearNum: 2026.0,
+    usdKwh: 12.1,
+    goldAvu: 31460,
+    powHashRate: 11.9,
+    tokenRates: {
+      solana: 1718.0,
+      monad: 39.0,
+      ethereum: 31800.0,
+      hyperliquid: 470.0,
+      tempo: 12.1,
+      ecash: 405.0,
+    },
+  },
+  {
+    monthKey: '2026-02',
+    label: 'Feb 2026',
+    yearNum: 2026.083,
+    usdKwh: 12.1,
+    goldAvu: 31500,
+    powHashRate: 11.9,
+    tokenRates: {
+      solana: 1740.0,
+      monad: 40.0,
+      ethereum: 31400.0,
+      hyperliquid: 472.0,
+      tempo: 12.1,
+      ecash: 410.0,
+    },
+  },
+  {
+    monthKey: '2026-03',
+    label: 'Mar 2026',
+    yearNum: 2026.167,
+    usdKwh: 12.0,
+    goldAvu: 31520,
+    powHashRate: 11.9,
+    tokenRates: {
+      solana: 1765.0,
+      monad: 41.0,
+      ethereum: 31100.0,
+      hyperliquid: 475.0,
+      tempo: 12.0,
+      ecash: 414.0,
+    },
+  },
+  {
+    monthKey: '2026-04',
+    label: 'Apr 2026',
+    yearNum: 2026.25,
+    usdKwh: 12.0,
+    goldAvu: 31547,
+    powHashRate: 11.9,
+    tokenRates: {
+      solana: 1785.71,
+      monad: 41.67,
+      ethereum: 30952.38,
+      hyperliquid: 476.19,
+      tempo: 11.9,
+      ecash: 416.67,
+    },
+  },
+]
+
+function getSubAnnualMacroSlice(
+  startYear: number,
+  endYear: number,
+): MacroPoint[] {
+  if (endYear >= 2023) {
+    const maxBound = endYear >= 2026 ? 2026.5 : endYear + 0.05
+    const filtered = RECENT_MONTHLY_ANCHORS.filter(
+      m => m.yearNum >= startYear - 0.05 && m.yearNum <= maxBound,
+    )
+
+    if (filtered.length >= 2) {
+      const tokenKey = (props.selectedWallet || 'monad').toLowerCase()
+      const tokenConf = activeTokenInfo.value
+
+      return filtered.map((anchor, idx) => {
+        const isLast = idx === filtered.length - 1
+        let tokenAvu: number | undefined = undefined
+
+        if (anchor.yearNum >= tokenConf.inceptionYear) {
+          if (isLast && anchor.monthKey === '2026-04') {
+            tokenAvu = currentLiveRate.value
+          } else {
+            tokenAvu =
+              tokenConf.monthlyHistory?.[anchor.monthKey] ??
+              anchor.tokenRates[tokenKey] ??
+              tokenConf.history[Math.floor(anchor.yearNum)]
+          }
+        }
+
+        return {
+          year: anchor.yearNum,
+          timeLabel: anchor.label,
+          usdKwh: anchor.usdKwh,
+          goldAvu: anchor.goldAvu,
+          powHashRate: anchor.powHashRate,
+          tokenAvu,
+        }
+      })
+    }
+  }
+
+  // Historical sub-annual slice (e.g. quarterly interpolation)
+  const points: MacroPoint[] = []
+  const step = 0.25
+  const sY = Math.max(1930, startYear)
+  const eY = Math.min(2026, endYear)
+  for (let y = sY; y <= eY + 0.01; y += step) {
+    const pt = interpolateMacroPoint(y)
+    const yearInt = Math.floor(y)
+    const quarter = Math.round((y - yearInt) / 0.25) + 1
+    const qLabel = quarter <= 4 ? `Q${quarter} ${yearInt}` : `${yearInt}`
+    points.push({
+      year: Math.round(y * 100) / 100,
+      timeLabel: qLabel,
+      usdKwh: pt.usdKwh,
+      goldAvu: pt.goldAvu,
+      powHashRate: pt.powHashRate,
+      centsPerKwh: pt.centsPerKwh,
+      goldUsd: pt.goldUsd,
+      cpiIndex: pt.cpiIndex,
+      notes: pt.notes,
+    })
+  }
+  return points.length >= 2 ? points : allMacroData.slice(0, 2)
+}
+
+const data1y = computed<MacroPoint[]>(() => {
+  const last12 = RECENT_MONTHLY_ANCHORS.slice(-12)
+  const tokenKey = (props.selectedWallet || 'monad').toLowerCase()
+  const tokenConf = activeTokenInfo.value
+
+  return last12.map((anchor, idx) => {
+    const isLast = idx === last12.length - 1
+    const stepsAgo = 11 - idx
+    const timeLabel = stepsAgo === 0 ? 'Now' : `-${stepsAgo}m`
+
+    let tokenAvu: number | undefined = undefined
+    if (anchor.yearNum >= tokenConf.inceptionYear) {
+      if (isLast) {
+        tokenAvu = currentLiveRate.value
+      } else {
+        tokenAvu =
+          tokenConf.monthlyHistory?.[anchor.monthKey] ??
+          anchor.tokenRates[tokenKey] ??
+          tokenConf.history[Math.floor(anchor.yearNum)]
+      }
+    }
+
+    return {
+      year: timeLabel,
+      timeLabel: timeLabel,
+      usdKwh: anchor.usdKwh,
+      goldAvu: anchor.goldAvu,
+      powHashRate: anchor.powHashRate,
+      tokenAvu: tokenAvu ?? currentLiveRate.value,
+    }
+  })
+})
 
 // Hardware Milestones
 interface HardwareMilestone {
@@ -1475,9 +2363,12 @@ const ALL_HARDWARE_MILESTONES: HardwareMilestone[] = [
 ]
 
 // Custom Zoom State
-const customZoomRange = ref<{ startIndex: number; endIndex: number } | null>(
-  null,
-)
+const customZoomRange = ref<{
+  startIndex: number
+  endIndex: number
+  startYear?: number
+  endYear?: number
+} | null>(null)
 const isCustomZoomed = computed(() => customZoomRange.value !== null)
 
 function resetCustomZoom() {
@@ -1516,7 +2407,35 @@ const activeMacroData = computed<MacroPoint[]>(() => {
   if (!customZoomRange.value) {
     return raw
   }
-  const { startIndex, endIndex } = customZoomRange.value
+  const { startIndex, endIndex, startYear, endYear } = customZoomRange.value
+
+  if (isFineGrainedRange.value) {
+    const clampedStart = Math.max(0, Math.min(startIndex, raw.length - 2))
+    const clampedEnd = Math.max(
+      clampedStart + 1,
+      Math.min(endIndex, raw.length - 1),
+    )
+    return raw.slice(clampedStart, clampedEnd + 1)
+  }
+
+  const rawStartYear =
+    startYear ??
+    (typeof raw[startIndex]?.year === 'number'
+      ? (raw[startIndex].year as number)
+      : undefined)
+  const rawEndYear =
+    endYear ??
+    (typeof raw[endIndex]?.year === 'number'
+      ? (raw[endIndex].year as number)
+      : undefined)
+
+  if (typeof rawStartYear === 'number' && typeof rawEndYear === 'number') {
+    const yearSpan = rawEndYear - rawStartYear
+    if (yearSpan <= 3.5 || rawStartYear >= 2023) {
+      return getSubAnnualMacroSlice(rawStartYear, rawEndYear)
+    }
+  }
+
   const clampedStart = Math.max(0, Math.min(startIndex, raw.length - 2))
   const clampedEnd = Math.max(
     clampedStart + 1,
@@ -1643,9 +2562,21 @@ function onSvgMouseUp() {
 
       if (endIndex - startIndex >= 1) {
         const baseOffset = customZoomRange.value?.startIndex ?? 0
+        const startPt = rawPoints[startIndex]
+        const endPt = rawPoints[endIndex]
+        const startY =
+          typeof startPt?.year === 'number'
+            ? startPt.year
+            : parseFloat(String(startPt?.year))
+        const endY =
+          typeof endPt?.year === 'number'
+            ? endPt.year
+            : parseFloat(String(endPt?.year))
         customZoomRange.value = {
           startIndex: baseOffset + startIndex,
           endIndex: baseOffset + endIndex,
+          startYear: isNaN(startY) ? undefined : startY,
+          endYear: isNaN(endY) ? undefined : endY,
         }
       }
     }
@@ -1690,9 +2621,10 @@ const leftAxisValues = computed(() => {
       const yearNum = typeof pt.year === 'number' ? pt.year : 2026
       if (yearNum >= activeTokenInfo.value.inceptionYear) {
         const tVal =
-          yearNum === 2026
+          pt.tokenAvu ??
+          (yearNum === 2026
             ? currentLiveRate.value
-            : activeTokenInfo.value.history[yearNum]
+            : activeTokenInfo.value.history[Math.floor(yearNum)])
         if (typeof tVal === 'number') {
           vals.push(tVal)
         }
@@ -1731,8 +2663,24 @@ const usdMaxLimit = computed(() => {
 
 const usdMinLimit = computed(() => 0)
 
-const goldMaxLimit = computed(() => 35000)
+const goldMaxLimit = computed(() => {
+  if (!showGold.value && showToken.value && isLargeTokenScale.value) {
+    const slice = activeMacroData.value
+    const tokenVals = slice
+      .map(p => p.tokenAvu)
+      .filter((v): v is number => typeof v === 'number')
+    if (tokenVals.length) {
+      const maxVal = Math.max(...tokenVals, currentLiveRate.value)
+      return Math.ceil((maxVal * 1.15) / 100) * 100
+    }
+  }
+  return 35000
+})
+
 const goldMinLimit = computed(() => {
+  if (!showGold.value && showToken.value && isLargeTokenScale.value) {
+    return 0
+  }
   if (selectedRange.value === '5y' || selectedRange.value === 'asic')
     return 20000
   if (selectedRange.value === 'pow') return 10000
@@ -1744,15 +2692,29 @@ const usdMaxLabel = computed(() => `${usdMaxLimit.value}`)
 const usdMidLabel = computed(() => `${Math.round(usdMaxLimit.value / 2)}`)
 const usdMinLabel = computed(() => `${usdMinLimit.value}`)
 
-const goldMaxLabel = computed(() => `${Math.round(goldMaxLimit.value / 1000)}k`)
-const goldMidLabel = computed(
-  () => `${Math.round((goldMaxLimit.value + goldMinLimit.value) / 2000)}k`,
-)
-const goldMinLabel = computed(() => `${Math.round(goldMinLimit.value / 1000)}k`)
+const goldMaxLabel = computed(() => {
+  if (!showGold.value && showToken.value && isLargeTokenScale.value) {
+    return formatTokenAxisLabel(goldMaxLimit.value)
+  }
+  return `${Math.round(goldMaxLimit.value / 1000)}k`
+})
+const goldMidLabel = computed(() => {
+  if (!showGold.value && showToken.value && isLargeTokenScale.value) {
+    return formatTokenAxisLabel((goldMaxLimit.value + goldMinLimit.value) / 2)
+  }
+  return `${Math.round((goldMaxLimit.value + goldMinLimit.value) / 2000)}k`
+})
+const goldMinLabel = computed(() => {
+  if (!showGold.value && showToken.value && isLargeTokenScale.value) {
+    return formatTokenAxisLabel(goldMinLimit.value)
+  }
+  return `${Math.round(goldMinLimit.value / 1000)}k`
+})
 
 function formatTokenAxisLabel(val: number): string {
-  if (val >= 10000) {
-    return `${(val / 1000).toFixed(1)}k`
+  if (val >= 1000) {
+    const kVal = val / 1000
+    return kVal % 1 === 0 ? `${kVal.toFixed(0)}k` : `${kVal.toFixed(1)}k`
   }
   if (val >= 100) {
     return `${Math.round(val)}`
@@ -1760,13 +2722,25 @@ function formatTokenAxisLabel(val: number): string {
   return `${val.toFixed(1)}`
 }
 
+function formatTickLabel(point: MacroPoint): string {
+  if (point.timeLabel) {
+    return point.timeLabel
+  }
+  return String(point.year)
+}
+
 function shouldShowTick(idx: number, total: number): boolean {
   if (total <= 14) return true
   const pt = activeMacroData.value[idx]
-  if (pt && typeof pt.year === 'number' && total > 50) {
+  if (
+    pt &&
+    typeof pt.year === 'number' &&
+    Number.isInteger(pt.year) &&
+    total > 50
+  ) {
     return (pt.year - 1930) % 20 === 0 || idx === total - 1
   }
-  if (total <= 25) return idx % 6 === 0 || idx === total - 1
+  if (total <= 25) return idx % 4 === 0 || idx === total - 1
   if (total <= 35) return idx % 5 === 0 || idx === total - 1
   return idx % Math.ceil(total / 6) === 0 || idx === total - 1
 }
@@ -1992,12 +2966,15 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
         ? yBottom - (Math.min(pt.powHashRate, maxUsd) / maxUsd) * yHeight
         : null
 
-    let tokenAvu: number | undefined = undefined
-    if (yearNum >= activeTokenInfo.value.inceptionYear) {
+    let tokenAvu: number | undefined = pt.tokenAvu
+    if (
+      tokenAvu === undefined &&
+      yearNum >= activeTokenInfo.value.inceptionYear
+    ) {
       tokenAvu =
         yearNum === 2026
           ? currentLiveRate.value
-          : activeTokenInfo.value.history[yearNum]
+          : activeTokenInfo.value.history[Math.floor(yearNum)]
     }
 
     let tokenY: number | null = null

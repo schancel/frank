@@ -39,7 +39,7 @@
 use std::{
     fmt,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -649,7 +649,8 @@ pub trait JsonRpcTransport: fmt::Debug + Send + Sync {
 #[derive(Clone)]
 pub struct HttpTransport {
     client: reqwest::Client,
-    rpc_url: url::Url,
+    rpc_urls: Vec<url::Url>,
+    next_index: Arc<AtomicUsize>,
     next_id: Arc<AtomicU64>,
 }
 
@@ -658,9 +659,15 @@ impl HttpTransport {
     /// its path) as a [`HttpTransport`]. The caller is responsible for sourcing the URL (e.g.
     /// from the `MONAD_TESTNET_HTTP_RPC_URL` env var) — this never reads env/config itself.
     pub fn new(rpc_url: url::Url) -> Self {
+        Self::new_multi(vec![rpc_url])
+    }
+
+    /// Wrap multiple RPC endpoint URLs with round-robin load balancing and automatic fallback.
+    pub fn new_multi(rpc_urls: Vec<url::Url>) -> Self {
         HttpTransport {
             client: reqwest::Client::new(),
-            rpc_url,
+            rpc_urls,
+            next_index: Arc::new(AtomicUsize::new(0)),
             next_id: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -669,15 +676,19 @@ impl HttpTransport {
 impl fmt::Debug for HttpTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Deliberately don't print the full URL: Alchemy embeds the API key in the URL path.
-        f.debug_struct("HttpTransport")
-            .field(
-                "rpc_url_origin",
-                &format!(
+        let origins: Vec<String> = self
+            .rpc_urls
+            .iter()
+            .map(|url| {
+                format!(
                     "{}://{}",
-                    self.rpc_url.scheme(),
-                    self.rpc_url.host_str().unwrap_or("<unknown-host>")
-                ),
-            )
+                    url.scheme(),
+                    url.host_str().unwrap_or("<unknown-host>")
+                )
+            })
+            .collect();
+        f.debug_struct("HttpTransport")
+            .field("rpc_url_origins", &origins)
             .finish()
     }
 }
@@ -685,6 +696,13 @@ impl fmt::Debug for HttpTransport {
 #[async_trait]
 impl JsonRpcTransport for HttpTransport {
     async fn call(&self, method: &str, params: Value) -> Result<Value, MonadRpcError> {
+        let num_urls = self.rpc_urls.len();
+        if num_urls == 0 {
+            return Err(MonadRpcError::InvalidResponse {
+                method: method.to_string(),
+                reason: "no RPC endpoints configured".to_string(),
+            });
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = JsonRpcRequest {
             jsonrpc: "2.0",
@@ -700,41 +718,80 @@ impl JsonRpcTransport for HttpTransport {
                 method: method.to_string(),
                 reason: source.to_string(),
             })?;
-        let response = self
-            .client
-            .post(self.rpc_url.clone())
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body)
-            .send()
-            .await
-            .map_err(|source| MonadRpcError::transport(method, source))?;
 
-        let status = response.status();
-        let body_bytes = response
-            .bytes()
-            .await
-            .map_err(|source| MonadRpcError::transport(method, source))?;
+        let start_idx = self.next_index.fetch_add(1, Ordering::Relaxed) % num_urls;
+        let mut last_error = None;
 
-        if !status.is_success() {
-            // Status-first: the body is kept only for already-known detection.
-            return Err(MonadRpcError::HttpStatus {
-                method: method.to_string(),
-                status: status.as_u16(),
-                body: String::from_utf8_lossy(&body_bytes).into_owned(),
-            });
-        }
+        for attempt in 0..num_urls {
+            let idx = (start_idx + attempt) % num_urls;
+            let rpc_url = &self.rpc_urls[idx];
 
-        let parsed: JsonRpcResponse = serde_json::from_slice(&body_bytes).map_err(|source| {
-            MonadRpcError::InvalidResponse {
-                method: method.to_string(),
-                reason: source.to_string(),
+            let response = match self
+                .client
+                .post(rpc_url.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.clone())
+                .send()
+                .await
+            {
+                Ok(resp) => resp,
+                Err(source) => {
+                    last_error = Some(MonadRpcError::transport(method, source));
+                    continue;
+                }
+            };
+
+            let status = response.status();
+            if status.is_server_error() && attempt + 1 < num_urls {
+                last_error = Some(MonadRpcError::HttpStatus {
+                    method: method.to_string(),
+                    status: status.as_u16(),
+                    body: "upstream server error".to_string(),
+                });
+                continue;
             }
-        })?;
 
-        if let Some(error) = parsed.error {
-            return Err(classify_rpc_error(method, error));
+            let body_bytes = match response.bytes().await {
+                Ok(bytes) => bytes,
+                Err(source) => {
+                    last_error = Some(MonadRpcError::transport(method, source));
+                    continue;
+                }
+            };
+
+            if !status.is_success() {
+                last_error = Some(MonadRpcError::HttpStatus {
+                    method: method.to_string(),
+                    status: status.as_u16(),
+                    body: String::from_utf8_lossy(&body_bytes).into_owned(),
+                });
+                if attempt + 1 < num_urls {
+                    continue;
+                } else {
+                    return Err(last_error.unwrap());
+                }
+            }
+
+            let parsed: JsonRpcResponse =
+                serde_json::from_slice(&body_bytes).map_err(|source| {
+                    MonadRpcError::InvalidResponse {
+                        method: method.to_string(),
+                        reason: source.to_string(),
+                    }
+                })?;
+
+            if let Some(error) = parsed.error {
+                return Err(classify_rpc_error(method, error));
+            }
+            return Ok(parsed.result);
         }
-        Ok(parsed.result)
+
+        Err(
+            last_error.unwrap_or_else(|| MonadRpcError::InvalidResponse {
+                method: method.to_string(),
+                reason: "all RPC upstreams failed".to_string(),
+            }),
+        )
     }
 }
 
@@ -758,6 +815,13 @@ impl MonadHttpClient<HttpTransport> {
     pub fn new(rpc_url: url::Url) -> Self {
         MonadHttpClient {
             transport: HttpTransport::new(rpc_url),
+        }
+    }
+
+    /// Construct a client talking to multiple HTTPS JSON-RPC endpoints with load balancing and failover.
+    pub fn new_multi(rpc_urls: Vec<url::Url>) -> Self {
+        MonadHttpClient {
+            transport: HttpTransport::new_multi(rpc_urls),
         }
     }
 }

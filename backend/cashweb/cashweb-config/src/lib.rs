@@ -728,6 +728,9 @@ pub struct EvmRpcChainConf {
     pub expected_chain_id: u64,
     /// Name of the server-only environment variable containing the upstream HTTP(S) URL.
     pub upstream_env: String,
+    /// Optional additional environment variable names containing fallback upstream HTTP(S) URLs.
+    #[serde(default)]
+    pub upstream_envs: Vec<String>,
     /// Optional server-only environment variable containing the upstream WebSocket URL.
     #[serde(default)]
     pub upstream_ws_env: Option<String>,
@@ -853,17 +856,21 @@ impl EvmRpcConf {
             {
                 return Err(EvmRpcConfigError::NativeChainIdMismatch(chain.id.clone()));
             }
-            let valid_env = !chain.upstream_env.is_empty()
-                && chain.upstream_env.len() <= 128
-                && chain.upstream_env.bytes().enumerate().all(|(index, byte)| {
-                    byte.is_ascii_uppercase()
-                        || byte == b'_'
-                        || (index > 0 && byte.is_ascii_digit())
-                });
-            if !valid_env {
-                return Err(EvmRpcConfigError::InvalidUpstreamEnv(
-                    chain.upstream_env.clone(),
-                ));
+            let mut all_envs = vec![chain.upstream_env.as_str()];
+            for env_name in &chain.upstream_envs {
+                all_envs.push(env_name.as_str());
+            }
+            for env_name in all_envs {
+                let valid_env = !env_name.is_empty()
+                    && env_name.len() <= 128
+                    && env_name.bytes().enumerate().all(|(index, byte)| {
+                        byte.is_ascii_uppercase()
+                            || byte == b'_'
+                            || (index > 0 && byte.is_ascii_digit())
+                    });
+                if !valid_env {
+                    return Err(EvmRpcConfigError::InvalidUpstreamEnv(env_name.to_string()));
+                }
             }
             if let Some(upstream_ws_env) = &chain.upstream_ws_env {
                 let valid_ws_env = !upstream_ws_env.is_empty()
@@ -1179,6 +1186,9 @@ pub struct SolanaProxyChainConf {
     pub id: String,
     /// Server-only environment variable containing a Solana HTTP JSON-RPC URL.
     pub upstream_env: String,
+    /// Optional additional environment variable names containing fallback upstream HTTP(S) URLs.
+    #[serde(default)]
+    pub upstream_envs: Vec<String>,
     /// Expected base58 genesis hash reported by `getGenesisHash`.
     pub expected_genesis_hash: String,
 }
@@ -1265,15 +1275,21 @@ impl SolanaProxyConf {
             let protocol = protocol_chain(&chain.id)
                 .filter(|row| row.family == ProtocolChainFamily::Solana)
                 .ok_or_else(|| SolanaProxyConfigError::WrongChainFamily(chain.id.clone()))?;
-            let valid_env = !chain.upstream_env.is_empty()
-                && chain.upstream_env.len() <= 128
-                && chain.upstream_env.bytes().enumerate().all(|(i, b)| {
-                    b.is_ascii_uppercase() || b == b'_' || (i > 0 && b.is_ascii_digit())
-                });
-            if !valid_env {
-                return Err(SolanaProxyConfigError::InvalidUpstreamEnv(
-                    chain.upstream_env.clone(),
-                ));
+            let mut all_envs = vec![chain.upstream_env.as_str()];
+            for env_name in &chain.upstream_envs {
+                all_envs.push(env_name.as_str());
+            }
+            for env_name in all_envs {
+                let valid_env = !env_name.is_empty()
+                    && env_name.len() <= 128
+                    && env_name.bytes().enumerate().all(|(i, b)| {
+                        b.is_ascii_uppercase() || b == b'_' || (i > 0 && b.is_ascii_digit())
+                    });
+                if !valid_env {
+                    return Err(SolanaProxyConfigError::InvalidUpstreamEnv(
+                        env_name.to_string(),
+                    ));
+                }
             }
             if chain.expected_genesis_hash.len() < 40 || chain.expected_genesis_hash.len() > 45 {
                 return Err(SolanaProxyConfigError::InvalidGenesisHash(chain.id.clone()));
@@ -1575,6 +1591,7 @@ continuity_file = "/var/lib/frank/continuity"
                 id: "monad-testnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "MONAD_TESTNET_HTTP_RPC_URL".to_string(),
+                upstream_envs: vec![],
                 upstream_ws_env: None,
                 checkpoint_block_number: Some(0),
                 checkpoint_block_hash: Some(
@@ -1681,6 +1698,7 @@ continuity_file = "/var/lib/frank/continuity"
                 id: "btc-mainnet".to_string(),
                 expected_chain_id: 10_143,
                 upstream_env: "BTC_RPC".to_string(),
+                upstream_envs: vec![],
                 upstream_ws_env: None,
                 checkpoint_block_number: Some(0),
                 checkpoint_block_hash: Some(
@@ -1757,6 +1775,7 @@ continuity_file = "/var/lib/frank/continuity"
             chains: vec![SolanaProxyChainConf {
                 id: "solana-devnet".to_string(),
                 upstream_env: "SOLANA_DEVNET_RPC".to_string(),
+                upstream_envs: vec![],
                 expected_genesis_hash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string(),
             }],
             ..SolanaProxyConf::default()
@@ -1786,6 +1805,7 @@ continuity_file = "/var/lib/frank/continuity"
             chains: vec![SolanaProxyChainConf {
                 id: "monad-testnet".to_string(),
                 upstream_env: "SOLANA_DEVNET_RPC".to_string(),
+                upstream_envs: vec![],
                 expected_genesis_hash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string(),
             }],
             ..SolanaProxyConf::default()

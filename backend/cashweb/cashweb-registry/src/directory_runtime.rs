@@ -777,7 +777,7 @@ impl DirectoryRuntime {
             }
         }
         let claim = Claim(address);
-        let (sender, mut receiver) = mpsc::channel::<Job>(8);
+        let (sender, mut receiver) = mpsc::channel::<Job>(if cfg!(test) { 8 } else { 128 });
         let (ready_send, ready) = oneshot::channel();
         let (stopped, _) = watch::channel(false);
         let shared = Arc::new(Shared {

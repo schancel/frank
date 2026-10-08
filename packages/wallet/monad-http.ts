@@ -166,7 +166,8 @@ function toMonadTxReceipt(receipt: TransactionReceipt): MonadTxReceipt {
  * three JSON-RPC calls this ticket scopes, plus `eth_blockNumber` as a convenience.
  */
 export interface MonadHttpClientOptions {
-  rpcUrl: string
+  rpcUrl?: string
+  rpcUrls?: readonly string[]
   chainId?: number | bigint
   relayAuth?: MonadRelayRpcAuth
   demoOnlyAbortOnDestroy?: boolean
@@ -179,12 +180,14 @@ export class MonadHttpClient {
    * Read by the caller from env/config and passed in — this class never reads env itself. */
   constructor({
     rpcUrl,
+    rpcUrls,
     chainId,
     relayAuth,
     demoOnlyAbortOnDestroy,
   }: MonadHttpClientOptions) {
     this.provider = createMonadJsonRpcProvider({
       rpcUrl,
+      rpcUrls,
       chainId,
       relayAuth,
       demoOnlyAbortOnDestroy,

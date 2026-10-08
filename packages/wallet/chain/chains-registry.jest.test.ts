@@ -186,6 +186,11 @@ describe('chains-registry', () => {
       caip2: 'eip155:11155111',
       nativeChainId: 11155111,
       networkTag: 'SEPO',
+      rpcUrls: [
+        'https://magical-prettiest-mountain.ethereum-sepolia.quiknode.pro/c080e49e29466648ec94f6f18020b705be336ddf/',
+        'https://ethereum-sepolia-rpc.publicnode.com',
+        'https://rpc.sepolia.org',
+      ],
       contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: 'uniswap-universal-router',

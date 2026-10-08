@@ -68,6 +68,7 @@ export interface ChainRegistryEntry {
   readonly networkTag?: string
   readonly addressPrefix?: string
   readonly rpcUrl?: string
+  readonly rpcUrls?: readonly string[]
   readonly explorerUrl?: string
   readonly contracts?: ChainContracts
   readonly exchange?: ChainExchangeConfig
@@ -264,6 +265,11 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> =
       caip2: 'eip155:11155111',
       nativeChainId: 11155111,
       networkTag: 'SEPO',
+      rpcUrls: Object.freeze([
+        'https://magical-prettiest-mountain.ethereum-sepolia.quiknode.pro/c080e49e29466648ec94f6f18020b705be336ddf/',
+        'https://ethereum-sepolia-rpc.publicnode.com',
+        'https://rpc.sepolia.org',
+      ]),
       contracts: CANONICAL_EVM_CONTRACTS,
       exchange: Object.freeze({
         pluginId: 'uniswap-universal-router',

@@ -43,6 +43,7 @@ use crate::{
         bitcoin_proxy::BitcoinProxyRuntime,
         hourly_quota::{normalize_quota_ip, FixedHourQuota, QuotaDenial},
         server::RegistryServer,
+        upstream_cooldown::UpstreamCooldownTracker,
     },
     monad_http::Address,
     store::monad_messages::ChallengeConsumption,
@@ -409,6 +410,7 @@ pub struct EvmRpcRuntime {
     ws_permits: Arc<Semaphore>,
     ws_customers: Arc<Mutex<HashMap<Address, usize>>>,
     ws_per_customer_limit: usize,
+    cooldowns: UpstreamCooldownTracker,
 }
 
 struct WsCustomerAdmission {
@@ -601,6 +603,7 @@ impl EvmRpcRuntime {
             ws_permits: Arc::new(Semaphore::new(conf.max_concurrency)),
             ws_customers: Arc::new(Mutex::new(HashMap::new())),
             ws_per_customer_limit: (conf.max_concurrency / 4).max(1),
+            cooldowns: UpstreamCooldownTracker::default(),
         });
         runtime.verify_chain_identities().await?;
         Ok(Some(runtime))
@@ -1845,72 +1848,81 @@ pub(crate) async fn handle_proxy_ws(
     Extension(server): Extension<RegistryServer>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, RpcRejection> {
-    let runtime = server
+    if let Some(runtime) = server
         .evm_rpc
         .as_deref()
         .filter(|runtime| runtime.has_chain(&chain_id))
-        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
-    let chain = runtime.chains.get(&chain_id).expect("chain checked above");
-    let upstream_url = chain
-        .upstream_ws_url
-        .clone()
-        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "rpc_ws_disabled"))?;
-    let (customer, expires_at_ms) = runtime
-        .auth
-        .verify_capability(&capability, &chain_id, now_ms())
-        .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
-    let customer_admission = runtime.admit_ws_customer(customer)?;
-    let permit = Arc::clone(&runtime.ws_permits)
-        .try_acquire_owned()
-        .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
-    let max_client_bytes = runtime.max_request_bytes;
-    let max_upstream_bytes = runtime.max_response_bytes.min(MAX_WS_RESPONSE_BYTES);
-    let timeout = runtime.timeout;
-    let quota = runtime.customer_quota.clone();
-    let request_permits = Arc::clone(&runtime.permits);
-    let chain = chain.clone();
-    let lifetime_ms = expires_at_ms.saturating_sub(now_ms()).max(1) as u64;
-    let expiry_deadline = tokio::time::Instant::now() + Duration::from_millis(lifetime_ms);
-    Ok(ws
-        .max_message_size(max_client_bytes)
-        .max_frame_size(max_client_bytes)
-        .on_upgrade(move |socket| async move {
-            let _permit = permit;
-            let _customer_admission = customer_admission;
-            let config = WebSocketConfig {
-                max_send_queue: Some(32),
-                max_message_size: Some(max_upstream_bytes),
-                max_frame_size: Some(max_upstream_bytes),
-                accept_unmasked_frames: false,
-            };
-            let connect_deadline = expiry_deadline.min(tokio::time::Instant::now() + timeout);
-            let connected = tokio::time::timeout_at(
-                connect_deadline,
-                connect_async_with_config(upstream_url.as_str(), Some(config)),
-            )
-            .await;
-            let Ok(Ok((mut upstream, _response))) = connected else {
-                return;
-            };
-            if verify_ws_socket(&mut upstream, &chain, connect_deadline)
-                .await
-                .is_err()
-            {
-                return;
-            }
-            proxy_ws_connection(
-                socket,
-                upstream,
-                chain,
-                customer,
-                quota,
-                request_permits,
-                timeout,
-                expiry_deadline,
-            )
-            .await;
-        })
-        .into_response())
+    {
+        let chain = runtime.chains.get(&chain_id).expect("chain checked above");
+        let upstream_url = chain
+            .upstream_ws_url
+            .clone()
+            .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "rpc_ws_disabled"))?;
+        let (customer, expires_at_ms) = runtime
+            .auth
+            .verify_capability(&capability, &chain_id, now_ms())
+            .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+        let customer_admission = runtime.admit_ws_customer(customer)?;
+        let permit = Arc::clone(&runtime.ws_permits)
+            .try_acquire_owned()
+            .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
+        let max_client_bytes = runtime.max_request_bytes;
+        let max_upstream_bytes = runtime.max_response_bytes.min(MAX_WS_RESPONSE_BYTES);
+        let timeout = runtime.timeout;
+        let quota = runtime.customer_quota.clone();
+        let request_permits = Arc::clone(&runtime.permits);
+        let chain = chain.clone();
+        let lifetime_ms = expires_at_ms.saturating_sub(now_ms()).max(1) as u64;
+        let expiry_deadline = tokio::time::Instant::now() + Duration::from_millis(lifetime_ms);
+        Ok(ws
+            .max_message_size(max_client_bytes)
+            .max_frame_size(max_client_bytes)
+            .on_upgrade(move |socket| async move {
+                let _permit = permit;
+                let _customer_admission = customer_admission;
+                let config = WebSocketConfig {
+                    max_send_queue: Some(32),
+                    max_message_size: Some(max_upstream_bytes),
+                    max_frame_size: Some(max_upstream_bytes),
+                    accept_unmasked_frames: false,
+                };
+                let connect_deadline = expiry_deadline.min(tokio::time::Instant::now() + timeout);
+                let connected = tokio::time::timeout_at(
+                    connect_deadline,
+                    connect_async_with_config(upstream_url.as_str(), Some(config)),
+                )
+                .await;
+                let Ok(Ok((mut upstream, _response))) = connected else {
+                    return;
+                };
+                if verify_ws_socket(&mut upstream, &chain, connect_deadline)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                proxy_ws_connection(
+                    socket,
+                    upstream,
+                    chain,
+                    customer,
+                    quota,
+                    request_permits,
+                    timeout,
+                    expiry_deadline,
+                )
+                .await;
+            })
+            .into_response())
+    } else if server
+        .bitcoin_proxy
+        .as_deref()
+        .is_some_and(|runtime| runtime.has_chain(&chain_id))
+    {
+        crate::http::bitcoin_proxy::handle_proxy_ws(chain_id, capability, server, ws).await
+    } else {
+        Err(rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))
+    }
 }
 
 async fn proxy_ws_connection<S>(
@@ -2249,8 +2261,8 @@ async fn proxy_rpc_inner(
             .map_err(|denial| quota_error("rpc_hourly_quota", cost.broadcast, denial))?;
     }
     let deadline = tokio::time::Instant::now() + runtime.timeout;
-    let num_upstreams = chain.upstream_urls.len();
-    if num_upstreams == 0 {
+    let ordered_upstreams = runtime.cooldowns.splay_order(&chain.upstream_urls);
+    if ordered_upstreams.is_empty() {
         return Err(broadcast_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_unavailable",
@@ -2258,18 +2270,10 @@ async fn proxy_rpc_inner(
             true,
         ));
     }
-    let start_idx = if num_upstreams <= 1 {
-        0
-    } else {
-        use rand::Rng;
-        rand::thread_rng().gen_range(0..num_upstreams)
-    };
     let mut last_error = None;
     let mut spool = None;
 
-    for attempt in 0..num_upstreams {
-        let idx = (start_idx + attempt) % num_upstreams;
-        let upstream_url = &chain.upstream_urls[idx];
+    for (attempt, upstream_url) in ordered_upstreams.iter().enumerate() {
         let remaining_time = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining_time.is_zero() {
             return Err(broadcast_error(
@@ -2283,12 +2287,13 @@ async fn proxy_rpc_inner(
         let upstream = async {
             let response = runtime
                 .client
-                .post(upstream_url.clone())
+                .post((*upstream_url).clone())
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body.clone())
                 .send()
                 .await
                 .map_err(|_| {
+                    runtime.cooldowns.mark_failure(upstream_url);
                     broadcast_error(
                         StatusCode::BAD_GATEWAY,
                         "rpc_upstream_unavailable",
@@ -2297,13 +2302,18 @@ async fn proxy_rpc_inner(
                     )
                 })?;
             let status = response.status();
-            if status.is_server_error() && attempt + 1 < num_upstreams {
-                return Err(broadcast_error(
-                    StatusCode::BAD_GATEWAY,
-                    "rpc_upstream_unavailable",
-                    cost.broadcast,
-                    true,
-                ));
+            if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                runtime.cooldowns.mark_failure(upstream_url);
+                if attempt + 1 < ordered_upstreams.len() {
+                    return Err(broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        cost.broadcast,
+                        true,
+                    ));
+                }
+            } else {
+                runtime.cooldowns.mark_success(upstream_url);
             }
             super::json_rpc::spool_response(response, runtime.max_response_bytes, remaining_time)
                 .await
@@ -2314,18 +2324,24 @@ async fn proxy_rpc_inner(
                         cost.broadcast,
                         true,
                     ),
-                    super::json_rpc::SpoolError::Timeout => broadcast_error(
-                        StatusCode::GATEWAY_TIMEOUT,
-                        "rpc_upstream_timeout",
-                        cost.broadcast,
-                        true,
-                    ),
-                    super::json_rpc::SpoolError::Io => broadcast_error(
-                        StatusCode::BAD_GATEWAY,
-                        "rpc_upstream_unavailable",
-                        cost.broadcast,
-                        true,
-                    ),
+                    super::json_rpc::SpoolError::Timeout => {
+                        runtime.cooldowns.mark_failure(upstream_url);
+                        broadcast_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            "rpc_upstream_timeout",
+                            cost.broadcast,
+                            true,
+                        )
+                    }
+                    super::json_rpc::SpoolError::Io => {
+                        runtime.cooldowns.mark_failure(upstream_url);
+                        broadcast_error(
+                            StatusCode::BAD_GATEWAY,
+                            "rpc_upstream_unavailable",
+                            cost.broadcast,
+                            true,
+                        )
+                    }
                 })
         };
 
@@ -2338,6 +2354,7 @@ async fn proxy_rpc_inner(
                 last_error = Some(err);
             }
             Err(_) => {
+                runtime.cooldowns.mark_failure(upstream_url);
                 last_error = Some(broadcast_error(
                     StatusCode::GATEWAY_TIMEOUT,
                     "rpc_upstream_timeout",
@@ -2483,6 +2500,7 @@ mod tests {
             ws_permits: Arc::new(Semaphore::new(1)),
             ws_customers: Arc::new(Mutex::new(HashMap::new())),
             ws_per_customer_limit: 1,
+            cooldowns: UpstreamCooldownTracker::default(),
         }
     }
 

@@ -9,6 +9,7 @@ import {
   issueMonadRelayRpcCapability,
   monadProtocolIdentity,
   RELAXED_CANCELLATION_POLL_INTERVAL_MS,
+  RpcCooldownTracker,
 } from "./monad-provider";
 
 describe("MonadJsonRpcProvider (#534)", () => {
@@ -1482,5 +1483,238 @@ describe("MonadJsonRpcProvider (#534)", () => {
     } finally {
       provider.destroy();
     }
+  });
+});
+
+describe("Multi-RPC failover, cooldown, and 429 rollover", () => {
+  describe("RpcCooldownTracker", () => {
+    it("partitions healthy and cooling endpoints", () => {
+      const tracker = new RpcCooldownTracker(10_000);
+      const now = 1_000_000;
+      tracker.markFailure("http://bad1", now);
+      expect(tracker.isCooling("http://bad1", now + 1_000)).toBe(true);
+      expect(tracker.isCooling("http://good1", now + 1_000)).toBe(false);
+
+      // Splay order puts healthy first
+      const order = tracker.splayOrder(
+        ["http://bad1", "http://good1"],
+        now + 1_000
+      );
+      expect(order[0]).toBe("http://good1");
+      expect(order[1]).toBe("http://bad1");
+
+      // Expired cooldown
+      expect(tracker.isCooling("http://bad1", now + 10_001)).toBe(false);
+    });
+
+    it("clears cooling on markSuccess", () => {
+      const tracker = new RpcCooldownTracker(10_000);
+      tracker.markFailure("http://bad");
+      expect(tracker.isCooling("http://bad")).toBe(true);
+      tracker.markSuccess("http://bad");
+      expect(tracker.isCooling("http://bad")).toBe(false);
+    });
+
+    it("falls back to all cooling endpoints if all fail", () => {
+      const tracker = new RpcCooldownTracker(10_000);
+      const now = 1000;
+      tracker.markFailure("http://a", now);
+      tracker.markFailure("http://b", now);
+      const order = tracker.splayOrder(["http://a", "http://b"], now);
+      expect(order).toHaveLength(2);
+      expect(order).toContain("http://a");
+      expect(order).toContain("http://b");
+    });
+  });
+
+  describe("MonadJsonRpcProvider multi-RPC rollover", () => {
+    let serverA: Server;
+    let serverB: Server;
+    let serverAUrl: string;
+    let serverBUrl: string;
+    let serverACount = 0;
+    let serverBCount = 0;
+    let serverAStatus = 429;
+    let serverBStatus = 200;
+
+    beforeEach(async () => {
+      serverACount = 0;
+      serverBCount = 0;
+      serverAStatus = 429;
+      serverBStatus = 200;
+
+      const handler = (
+        _isA: boolean,
+        getStatus: () => number,
+        incCount: () => void
+      ) => {
+        return (req: any, res: any) => {
+          let body = "";
+          req.on("data", (chunk: any) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            incCount();
+            const status = getStatus();
+            if (status !== 200) {
+              res.writeHead(status, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: `HTTP ${status}` }));
+              return;
+            }
+            try {
+              const payload = JSON.parse(body);
+              const items = Array.isArray(payload) ? payload : [payload];
+              const responses = items.map((item: any) => {
+                if (item.method === "eth_chainId") {
+                  return { jsonrpc: "2.0", id: item.id, result: "0x279f" };
+                }
+                if (item.method === "eth_getBalance") {
+                  return { jsonrpc: "2.0", id: item.id, result: "0x2a" };
+                }
+                return { jsonrpc: "2.0", id: item.id, result: "0x0" };
+              });
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(
+                JSON.stringify(
+                  Array.isArray(payload) ? responses : responses[0]
+                )
+              );
+            } catch {
+              res.writeHead(400, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "bad request" }));
+            }
+          });
+        };
+      };
+
+      serverA = createServer(
+        handler(true, () => serverAStatus, () => serverACount++)
+      );
+      serverB = createServer(
+        handler(false, () => serverBStatus, () => serverBCount++)
+      );
+
+      await new Promise<void>((resolve) =>
+        serverA.listen(0, "127.0.0.1", () => {
+          serverAUrl = `http://127.0.0.1:${(serverA.address() as AddressInfo).port}`;
+          resolve();
+        })
+      );
+      await new Promise<void>((resolve) =>
+        serverB.listen(0, "127.0.0.1", () => {
+          serverBUrl = `http://127.0.0.1:${(serverB.address() as AddressInfo).port}`;
+          resolve();
+        })
+      );
+    });
+
+    afterEach(async () => {
+      await Promise.all([
+        new Promise<void>((resolve) => serverA.close(() => resolve())),
+        new Promise<void>((resolve) => serverB.close(() => resolve())),
+      ]);
+    });
+
+    it("rolls over to healthy RPC when primary returns 429 Too Many Requests", async () => {
+      serverAStatus = 429;
+      serverBStatus = 200;
+
+      // Mock random to prevent shuffling serverB first during initial request
+      const randomSpy = jest.spyOn(Math, "random").mockReturnValue(0.9);
+
+      // Pass serverAUrl first, serverBUrl second
+      const provider = createMonadJsonRpcProvider({
+        rpcUrl: serverAUrl,
+        rpcUrls: [serverAUrl, serverBUrl],
+        chainId: DEFAULT_MONAD_CHAIN_ID,
+      });
+
+      try {
+        const balance = await provider.getBalance(
+          "0x0000000000000000000000000000000000000001"
+        );
+        expect(balance).toBe(42n);
+        expect(serverACount).toBeGreaterThanOrEqual(1);
+        expect(serverBCount).toBeGreaterThanOrEqual(1);
+
+        // Subsequent call prefers serverB because serverA is now in cooldown!
+        randomSpy.mockRestore();
+        const countBeforeSecondCall = serverACount;
+        const balance2 = await provider.getBalance(
+          "0x0000000000000000000000000000000000000002"
+        );
+        expect(balance2).toBe(42n);
+        // serverA was not hit because it's cooling!
+        expect(serverACount).toBe(countBeforeSecondCall);
+      } finally {
+        randomSpy.mockRestore();
+        provider.destroy();
+      }
+    });
+
+    it("rolls over to healthy RPC when primary returns 503 Service Unavailable", async () => {
+      serverAStatus = 503;
+      serverBStatus = 200;
+
+      const randomSpy = jest.spyOn(Math, "random").mockReturnValue(0.9);
+
+      const provider = createMonadJsonRpcProvider({
+        rpcUrls: [serverAUrl, serverBUrl],
+        chainId: DEFAULT_MONAD_CHAIN_ID,
+      });
+
+      try {
+        const balance = await provider.getBalance(
+          "0x0000000000000000000000000000000000000001"
+        );
+        expect(balance).toBe(42n);
+        expect(serverACount).toBeGreaterThanOrEqual(1);
+        expect(serverBCount).toBeGreaterThanOrEqual(1);
+      } finally {
+        randomSpy.mockRestore();
+        provider.destroy();
+      }
+    });
+
+    it("rolls over when first endpoint suffers connection refusal", async () => {
+      const deadPort = 59999;
+      const deadUrl = `http://127.0.0.1:${deadPort}`;
+
+      const randomSpy = jest.spyOn(Math, "random").mockReturnValue(0.9);
+
+      const provider = createMonadJsonRpcProvider({
+        rpcUrls: [deadUrl, serverBUrl],
+        chainId: DEFAULT_MONAD_CHAIN_ID,
+      });
+
+      try {
+        const balance = await provider.getBalance(
+          "0x0000000000000000000000000000000000000001"
+        );
+        expect(balance).toBe(42n);
+        expect(serverBCount).toBeGreaterThanOrEqual(1);
+      } finally {
+        randomSpy.mockRestore();
+        provider.destroy();
+      }
+    });
+
+    it("fails fast if all configured endpoints return 429", async () => {
+      serverAStatus = 429;
+      serverBStatus = 429;
+
+      const provider = createMonadJsonRpcProvider({
+        rpcUrls: [serverAUrl, serverBUrl],
+        chainId: DEFAULT_MONAD_CHAIN_ID,
+      });
+
+      try {
+        await expect(
+          provider.getBalance("0x0000000000000000000000000000000000000001")
+        ).rejects.toThrow(/429/);
+      } finally {
+        provider.destroy();
+      }
+    });
   });
 });

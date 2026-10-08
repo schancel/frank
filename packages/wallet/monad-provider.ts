@@ -34,7 +34,8 @@ export function monadProtocolIdentity(chain: string):
 }
 
 export interface MonadJsonRpcProviderOptions extends JsonRpcApiProviderOptions {
-  rpcUrl: string;
+  rpcUrl?: string;
+  rpcUrls?: readonly string[];
   chainId?: number | bigint | Networkish;
   relayAuth?: MonadRelayRpcAuth;
   /** Only the validated disposable demo composition opts into direct request cancellation. */
@@ -124,66 +125,187 @@ async function readBoundedRelayResponse(
   return body;
 }
 
+export class RpcCooldownTracker {
+  readonly cooldownMs: number;
+  private readonly coolingUntil = new Map<string, number>();
+
+  constructor(cooldownMs = 30_000) {
+    this.cooldownMs = cooldownMs;
+  }
+
+  isCooling(url: string, now = Date.now()): boolean {
+    const until = this.coolingUntil.get(url);
+    if (until === undefined) return false;
+    if (now >= until) {
+      this.coolingUntil.delete(url);
+      return false;
+    }
+    return true;
+  }
+
+  markFailure(url: string, now = Date.now()): void {
+    this.coolingUntil.set(url, now + this.cooldownMs);
+  }
+
+  markSuccess(url: string): void {
+    this.coolingUntil.delete(url);
+  }
+
+  splayOrder(urls: readonly string[], now = Date.now()): string[] {
+    if (urls.length <= 1) return [...urls];
+    const healthy: string[] = [];
+    const cooling: string[] = [];
+    for (const url of urls) {
+      if (this.isCooling(url, now)) {
+        cooling.push(url);
+      } else {
+        healthy.push(url);
+      }
+    }
+    const shuffle = (list: string[]): string[] => {
+      const copy = [...list];
+      for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const temp = copy[i];
+        copy[i] = copy[j];
+        copy[j] = temp;
+      }
+      return copy;
+    };
+    if (healthy.length === 0) {
+      return shuffle(cooling);
+    }
+    return [...shuffle(healthy), ...shuffle(cooling)];
+  }
+}
+
 /** ethers' Node transport currently rejects cancellation without closing its socket. Use the
  * platform fetch transport so cancellation reaches the wire in browsers and modern Node runtimes. */
-function makeRelayGetUrl(
+export function makeRelayGetUrl(
   maxResponseBytes?: number,
   sanitizeTransportErrors = false,
-  externalAbort?: AbortSignal
+  externalAbort?: AbortSignal,
+  rpcUrls?: readonly string[],
+  cooldownTracker?: RpcCooldownTracker
 ): FetchGetUrlFunc | undefined {
   const fetchImpl = (globalThis as unknown as { fetch?: RelayFetch }).fetch;
   if (!fetchImpl) return undefined;
+  const tracker = cooldownTracker ?? new RpcCooldownTracker();
   return async (request, signal) => {
-    const controller = new AbortController();
-    let cancellationError: Error | null = null;
-    const timer = setTimeout(() => {
-      cancellationError = makeError("request timeout", "TIMEOUT");
-      controller.abort();
-    }, request.timeout);
-    signal?.addListener(() => {
-      cancellationError = makeError("request cancelled", "CANCELLED");
-      controller.abort();
-    });
-    const abortFromLifecycle = () => {
-      cancellationError = makeError("request cancelled", "CANCELLED");
-      controller.abort();
-    };
-    externalAbort?.addEventListener("abort", abortFromLifecycle, {
-      once: true,
-    });
-    if (externalAbort?.aborted) abortFromLifecycle();
-    try {
-      const response = await fetchImpl(request.url, {
-        method: request.method,
-        headers: Object.fromEntries(request),
-        body: request.body ?? undefined,
-        signal: controller.signal,
+    const urlsToTry =
+      rpcUrls && rpcUrls.length > 0
+        ? tracker.splayOrder(
+            rpcUrls.includes(request.url) ? rpcUrls : [request.url, ...rpcUrls]
+          )
+        : [request.url];
+
+    let lastError: Error | null = null;
+    let lastResponse:
+      | {
+          statusCode: number;
+          statusMessage: string;
+          headers: Record<string, string>;
+          body: Uint8Array;
+        }
+      | undefined = undefined;
+
+    for (let i = 0; i < urlsToTry.length; i++) {
+      const targetUrl = urlsToTry[i];
+      const hasNext = i + 1 < urlsToTry.length;
+
+      const controller = new AbortController();
+      let cancellationError: Error | null = null;
+      const timer = setTimeout(() => {
+        cancellationError = makeError("request timeout", "TIMEOUT");
+        controller.abort();
+      }, request.timeout);
+      signal?.addListener(() => {
+        cancellationError = makeError("request cancelled", "CANCELLED");
+        controller.abort();
       });
-      const headers: Record<string, string> = {};
-      response.headers.forEach((value, key) => {
-        headers[key.toLowerCase()] = value;
-      });
-      return {
-        statusCode: response.status,
-        statusMessage: response.statusText,
-        headers,
-        body:
-          maxResponseBytes === undefined
-            ? new Uint8Array(await response.arrayBuffer())
-            : await readBoundedRelayResponse(response, maxResponseBytes),
+      const abortFromLifecycle = () => {
+        cancellationError = makeError("request cancelled", "CANCELLED");
+        controller.abort();
       };
-    } catch (error) {
-      // Once fetch has returned headers, every rejection path must still tear down the body.
-      // In particular, an oversized declared Content-Length is rejected before a reader exists.
-      controller.abort();
-      if (cancellationError) throw cancellationError;
+      externalAbort?.addEventListener("abort", abortFromLifecycle, {
+        once: true,
+      });
+      if (externalAbort?.aborted) abortFromLifecycle();
+
+      try {
+        const response = await fetchImpl(targetUrl, {
+          method: request.method,
+          headers: Object.fromEntries(request),
+          body: request.body ?? undefined,
+          signal: controller.signal,
+        });
+        const headers: Record<string, string> = {};
+        response.headers.forEach((value, key) => {
+          headers[key.toLowerCase()] = value;
+        });
+
+        const is429 = response.status === 429;
+        const is5xx = response.status >= 500 && response.status <= 599;
+
+        if (is429 || is5xx) {
+          tracker.markFailure(targetUrl);
+          let body: Uint8Array = new Uint8Array(0);
+          try {
+            body =
+              maxResponseBytes === undefined
+                ? new Uint8Array((await response.arrayBuffer()) as ArrayBuffer)
+                : await readBoundedRelayResponse(response, maxResponseBytes);
+          } catch {}
+
+          lastResponse = {
+            statusCode: response.status,
+            statusMessage: response.statusText,
+            headers,
+            body,
+          };
+
+          if (hasNext && !controller.signal.aborted) {
+            continue;
+          }
+          return lastResponse;
+        }
+
+        tracker.markSuccess(targetUrl);
+        return {
+          statusCode: response.status,
+          statusMessage: response.statusText,
+          headers,
+          body:
+            maxResponseBytes === undefined
+              ? new Uint8Array(await response.arrayBuffer())
+              : await readBoundedRelayResponse(response, maxResponseBytes),
+        };
+      } catch (error) {
+        // Once fetch has returned headers, every rejection path must still tear down the body.
+        // In particular, an oversized declared Content-Length is rejected before a reader exists.
+        controller.abort();
+        if (cancellationError) throw cancellationError;
+        tracker.markFailure(targetUrl);
+        lastError = error as Error;
+        if (hasNext) {
+          continue;
+        }
+        if (sanitizeTransportErrors)
+          throw makeError("relay RPC transport failed", "SERVER_ERROR");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        externalAbort?.removeEventListener("abort", abortFromLifecycle);
+      }
+    }
+
+    if (lastResponse) return lastResponse;
+    if (lastError) {
       if (sanitizeTransportErrors)
         throw makeError("relay RPC transport failed", "SERVER_ERROR");
-      throw error;
-    } finally {
-      clearTimeout(timer);
-      externalAbort?.removeEventListener("abort", abortFromLifecycle);
+      throw lastError;
     }
+    throw makeError("no RPC endpoints available", "SERVER_ERROR");
   };
 }
 
@@ -663,6 +785,7 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
     url: string | FetchRequest,
     expectedChainId?: number | bigint | Networkish,
     options?: JsonRpcApiProviderOptions & {
+      rpcUrls?: readonly string[];
       relayAuth?: MonadRelayRpcAuth;
       demoOnlyAbortOnDestroy?: boolean;
     }
@@ -674,7 +797,7 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
 
     // Pass staticNetwork: true so ethers initializes its internal #network and does NOT
     // enter the unbounded _start() loop that retries network detection every 1s indefinitely on 503.
-    const { relayAuth, demoOnlyAbortOnDestroy, ...providerOptions } =
+    const { relayAuth, demoOnlyAbortOnDestroy, rpcUrls, ...providerOptions } =
       options ?? {};
     if (demoOnlyAbortOnDestroy === true && relayAuth) {
       throw new Error(
@@ -687,19 +810,47 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
         : url;
     const demoAbortController =
       demoOnlyAbortOnDestroy === true ? new AbortController() : null;
+
+    const effectiveRpcUrls =
+      rpcUrls && rpcUrls.length > 0
+        ? rpcUrls
+        : typeof url === "string" && !relayAuth
+        ? [url]
+        : undefined;
+
     if (demoAbortController) {
       // Reuse the existing wire-cancellable, bounded platform fetch transport. Ethers'
       // default direct transport does not cancel dispatched batches on destroy().
       const transport = makeRelayGetUrl(
         MAX_RELAY_RPC_RESPONSE_BYTES,
         true,
-        demoAbortController.signal
+        demoAbortController.signal,
+        effectiveRpcUrls
       );
       if (!transport)
         throw new Error("Demo RPC requires platform fetch cancellation");
       connection =
         typeof url === "string" ? new FetchRequest(url) : url.clone();
+      connection.retryFunc = async () => false;
       connection.getUrlFunc = transport;
+    } else if (!relayAuth && effectiveRpcUrls && effectiveRpcUrls.length > 0) {
+      const transport = makeRelayGetUrl(
+        MAX_RELAY_RPC_RESPONSE_BYTES,
+        false,
+        undefined,
+        effectiveRpcUrls
+      );
+      if (transport) {
+        if (typeof url === "string") {
+          connection = new FetchRequest(url);
+          connection.retryFunc = async () => false;
+          connection.getUrlFunc = transport;
+        } else if (!(url as FetchRequest).getUrlFunc) {
+          connection = (url as FetchRequest).clone();
+          connection.retryFunc = async () => false;
+          connection.getUrlFunc = transport;
+        }
+      }
     }
     super(connection, chainId, {
       ...providerOptions,
@@ -780,5 +931,11 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
 export function createMonadJsonRpcProvider(
   options: MonadJsonRpcProviderOptions
 ): MonadJsonRpcProvider {
-  return new MonadJsonRpcProvider(options.rpcUrl, options.chainId, options);
+  const rpcUrl =
+    options.rpcUrl ??
+    (options.rpcUrls && options.rpcUrls.length > 0 ? options.rpcUrls[0] : "");
+  if (!rpcUrl) {
+    throw new Error("createMonadJsonRpcProvider requires rpcUrl or rpcUrls");
+  }
+  return new MonadJsonRpcProvider(rpcUrl, options.chainId, options);
 }

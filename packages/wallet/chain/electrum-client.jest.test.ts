@@ -386,4 +386,94 @@ describe('ElectrumClient', () => {
       expect(pingSent).toBe(true)
     })
   })
+
+  describe('relay capability endpoint integration', () => {
+    let client: ElectrumClient
+
+    afterEach(async () => {
+      await client?.close()
+    })
+
+    it('connects to relay capability WS endpoint and multiplexes requests and push notifications', async () => {
+      const relayWsUrl =
+        'wss://relay.frank.internal/chain-rpc/btc-mainnet/cap/test-token-abcdef/ws'
+      client = new ElectrumClient({
+        endpoints: [relayWsUrl],
+        WebSocketClass: MockWebSocket,
+        pingIntervalMs: 0,
+      })
+
+      await client.connect()
+      expect(client.isConnected).toBe(true)
+      expect(client.currentEndpoint).toBe(relayWsUrl)
+
+      const ws = MockWebSocket.instances[0]
+      expect(ws.url).toBe(relayWsUrl)
+
+      // Test RPC multiplexing over relay WS
+      const scriptHash =
+        '8b01df4e368ea28f8dc0423bcf7a4923e3a12d307c875e47a0cfbf90b5c39161'
+      let pushCount = 0
+      let latestStatus: string | null = null
+
+      const subPromise = client.subscribeScriptHash(scriptHash, status => {
+        pushCount++
+        latestStatus = status
+      })
+
+      const subMsg = ws.sentMessages.find(
+        m => JSON.parse(m).method === 'blockchain.scripthash.subscribe',
+      )
+      expect(subMsg).toBeDefined()
+      const parsedSub = JSON.parse(subMsg!)
+
+      // Simulate initial subscription response from relay
+      ws.simulateServerMessage({
+        jsonrpc: '2.0',
+        id: parsedSub.id,
+        result: 'initial-status-hash',
+      })
+      const initResult = await subPromise
+      expect(initResult).toBe('initial-status-hash')
+
+      // Simulate push notification from relay for scriptHash
+      ws.simulateServerMessage({
+        jsonrpc: '2.0',
+        method: 'blockchain.scripthash.subscribe',
+        params: [scriptHash, 'updated-status-hash'],
+      })
+      expect(pushCount).toBe(1)
+      expect(latestStatus).toBe('updated-status-hash')
+
+      // Query balance concurrently
+      const balancePromise = client.getBalance(scriptHash)
+      const balanceMsg = ws.sentMessages.find(
+        m => JSON.parse(m).method === 'blockchain.scripthash.get_balance',
+      )
+      expect(balanceMsg).toBeDefined()
+      const parsedBalance = JSON.parse(balanceMsg!)
+      ws.simulateServerMessage({
+        jsonrpc: '2.0',
+        id: parsedBalance.id,
+        result: { confirmed: 5000000000, unconfirmed: 0 },
+      })
+      const balance = await balancePromise
+      expect(balance.confirmed).toBe(5000000000)
+
+      // Broadcast transaction
+      const broadcastPromise = client.broadcastTransaction('0200000001...')
+      const broadcastMsg = ws.sentMessages.find(
+        m => JSON.parse(m).method === 'blockchain.transaction.broadcast',
+      )
+      expect(broadcastMsg).toBeDefined()
+      const parsedBroadcast = JSON.parse(broadcastMsg!)
+      ws.simulateServerMessage({
+        jsonrpc: '2.0',
+        id: parsedBroadcast.id,
+        result: 'txid-1234567890abcdef',
+      })
+      const txid = await broadcastPromise
+      expect(txid).toBe('txid-1234567890abcdef')
+    })
+  })
 })

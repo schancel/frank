@@ -18,6 +18,7 @@ import { MonadHdKeyring } from './monad-hd-keyring'
 import { SolanaHdKeyring, SolanaChangeKeyring } from './ed25519-hd-keyring'
 import { MonadAccountTxSigner } from './monad-account-tx'
 import { TransactionBundleCapability } from './transaction-bundle-wallet'
+import { AccountUtxoPool } from './account-utxo-pool'
 
 const TEST_MNEMONIC =
   'announce room limb pattern dry unit scale effort smooth jazz weasel alcohol'
@@ -98,12 +99,15 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
         const res = results[i]
         expect(res.outcome).toBe('swept')
         expect(res.sourceAddress).toBe(sub0.address)
-        const expectedChangeAddress = changeKeyring.deriveChangeAccount(i).address
+        const expectedChangeAddress =
+          changeKeyring.deriveChangeAccount(i).address
         expect(res.destinationAddress).toBe(expectedChangeAddress)
         expect(res.amountSwept).toBeGreaterThan(0n)
       }
 
-      expect(mockHttpClient.submitRawTransaction).toHaveBeenCalledTimes(results.length)
+      expect(mockHttpClient.submitRawTransaction).toHaveBeenCalledTimes(
+        results.length,
+      )
 
       // Change index advanced by the number of splits generated
       expect(engine.getNextChangeIndex()).toBe(results.length)
@@ -113,7 +117,10 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
 
       const stats = await engine.getHygieneStats()
       expect(stats.totalSweptCount).toBe(results.length)
-      const expectedTotalSwept = results.reduce((acc, r) => acc + r.amountSwept, 0n)
+      const expectedTotalSwept = results.reduce(
+        (acc, r) => acc + r.amountSwept,
+        0n,
+      )
       expect(stats.totalSweptWei).toBe(expectedTotalSwept)
     })
 
@@ -139,7 +146,9 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       const res = results[0]
       expect(res.outcome).toBe('swept')
       expect(res.sourceAddress).toBe(sub0.address)
-      expect(res.destinationAddress).toBe(changeKeyring.deriveChangeAccount(0).address)
+      expect(res.destinationAddress).toBe(
+        changeKeyring.deriveChangeAccount(0).address,
+      )
       expect(res.amountSwept).toBe(60_000_000_000_000n - 42_000_000_000_000n)
       expect(engine.getNextChangeIndex()).toBe(1)
       expect(engine.isDirty(sub0.address)).toBe(false)
@@ -191,6 +200,53 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       expect(engine.isBackgroundWorkerActive()).toBe(false)
 
       jest.useRealTimers()
+    })
+
+    it('integrates with AccountUtxoPool to resolve signers, sweep dirty accounts, and register change', async () => {
+      const pool = new AccountUtxoPool()
+      const dirtySub = hdKeyring.deriveSubAccount(7)
+      const dirtyUtxo = pool.registerSubAccount({
+        chain: 'monad',
+        address: dirtySub.address,
+        privateKey: dirtySub.privateKey,
+        balanceWei: 1_000_000n,
+        index: 7,
+      })
+
+      // Simulate nonce > 0 externally
+      pool.updateBalanceAndNonce({
+        id: dirtyUtxo.id,
+        balanceWei: 800_000n,
+        nonce: 1,
+      })
+
+      mockProvider.getBalance.mockResolvedValue(800_000n)
+      mockProvider.getTransactionCount.mockResolvedValue(1)
+
+      const engine = new MonadAccountHygieneEngine({
+        provider: mockProvider,
+        httpClient: mockHttpClient,
+        changeKeyring,
+        accountUtxoPool: pool,
+        options: {
+          minSweepBalance: 20_000n,
+        },
+      })
+
+      const results = await engine.sweepDirtyAccounts()
+      expect(results.length).toBeGreaterThanOrEqual(1)
+      expect(results[0].outcome).toBe('swept')
+
+      // Dirty UTXO in pool is marked spent
+      const sourceUtxo = pool.getUtxo(dirtyUtxo.id)
+      expect(sourceUtxo?.status).toBe('spent')
+
+      // Fresh change account is registered in pool with clean status and attached private key
+      const cleanChange = pool.getCleanUtxos('monad')
+      expect(cleanChange.length).toBeGreaterThanOrEqual(1)
+      expect(cleanChange[0].origin).toBe('change')
+      expect(cleanChange[0].status).toBe('clean')
+      expect(cleanChange[0].privateKey).toBeDefined()
     })
   })
 

@@ -1988,16 +1988,7 @@ const networkTooltipY = computed(() => {
   grid-column: span 2;
 }
 
-@media (min-width: 900px) {
-  .metric-cards-grid {
-    grid-template-columns: repeat(5, 1fr);
-  }
-  .metric-card-featured {
-    grid-column: span 1;
-  }
-}
-
-@media (max-width: 420px) {
+@media (max-width: 520px) {
   .metric-cards-grid {
     grid-template-columns: 1fr;
   }

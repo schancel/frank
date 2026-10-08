@@ -19,276 +19,280 @@
     </q-header>
 
     <q-page-container>
-      <q-page class="q-ma-none q-pa-md column full-height">
-        <q-card
-          flat
-          class="col column full-width bg-transparent"
-          :style="{
-            maxWidth: activeTab === 'parity' ? '1100px' : '680px',
-            width: '100%',
-            margin: '0 auto',
-          }"
-        >
-          <q-card-section>
-            <div class="text-h6 row items-center" data-testid="wallet-name">
-              <span data-testid="wallet-name-text">
-                {{
-                  getCustomName(selectedWallet) ||
-                  (selectedWallet === 'ecash'
-                    ? $t('walletPanel.ecash')
-                    : selectedWallet === 'solana'
-                    ? $t('walletPanel.solana')
-                    : selectedWallet === 'tempo'
-                    ? $t('walletPanel.tempo')
-                    : selectedWallet === 'ethereum'
-                    ? $t('walletPanel.ethereum')
-                    : selectedWallet === 'hyperliquid'
-                    ? $t('walletPanel.hyperliquid')
-                    : $t('walletPanel.mainWallet'))
-                }}
-              </span>
-              <q-badge
-                v-if="isTestnet"
-                color="orange"
-                text-color="black"
-                :label="$t('walletPanel.testnet')"
-                class="q-ml-sm text-bold"
-                data-testid="wallet-testnet-badge"
-              />
-            </div>
-            <div class="text-caption" data-testid="wallet-chain">
-              {{
-                selectedWallet === 'ecash'
-                  ? isTestnet
-                    ? $t('walletPanel.ecashTestnet')
-                    : $t('walletPanel.ecash')
-                  : selectedWallet === 'solana'
-                  ? isTestnet
-                    ? $t('walletPanel.solanaTestnet')
-                    : $t('walletPanel.solana')
-                  : selectedWallet === 'tempo'
-                  ? isTestnet
-                    ? $t('walletPanel.tempoTestnet')
-                    : $t('walletPanel.tempo')
-                  : selectedWallet === 'ethereum'
-                  ? isTestnet
-                    ? $t('walletPanel.ethereumTestnet')
-                    : $t('walletPanel.ethereum')
-                  : selectedWallet === 'hyperliquid'
-                  ? isTestnet
-                    ? $t('walletPanel.hyperliquidTestnet')
-                    : $t('walletPanel.hyperliquid')
-                  : isTestnet
-                  ? $t('walletPanel.monadTestnet')
-                  : $t('walletPanel.monad')
-              }}
-            </div>
-          </q-card-section>
-          <q-separator />
-          <q-tabs
-            v-model="activeTab"
-            dense
-            class="text-grey-7"
-            active-color="primary"
-            indicator-color="primary"
-            align="justify"
-            narrow-indicator
-            data-testid="wallet-tabs"
-          >
-            <q-tab
-              name="balance"
-              icon="account_balance_wallet"
-              :label="$t('walletPanel.tabBalance')"
-              data-testid="wallet-tab-balance"
-            />
-            <q-tab
-              name="swap"
-              icon="swap_horiz"
-              :label="$t('walletPanel.tabSwap')"
-              data-testid="wallet-tab-swap"
-            />
-            <q-tab
-              name="parity"
-              icon="show_chart"
-              :label="$t('walletPanel.tabParity')"
-              data-testid="wallet-tab-parity"
-            />
-          </q-tabs>
-          <q-separator />
-
-          <q-tab-panels
-            v-model="activeTab"
-            animated
-            class="bg-transparent col column"
-            data-testid="wallet-tab-panels"
-          >
-            <q-tab-panel name="balance" class="q-pa-none">
-              <q-card-section class="q-py-sm">
-                <div
-                  class="text-bold text-subtitle1 text-center"
-                  role="status"
-                  aria-live="polite"
-                  data-testid="wallet-balance"
-                >
+      <q-page
+        class="q-ma-none q-pa-none column full-height relative-position"
+        style="overflow: hidden"
+      >
+        <q-scroll-area class="col full-width full-height">
+          <div class="q-pa-md">
+            <q-card
+              flat
+              class="col column full-width bg-transparent"
+              style="max-width: 720px; width: 100%; margin: 0 auto"
+            >
+              <q-card-section>
+                <div class="text-h6 row items-center" data-testid="wallet-name">
+                  <span data-testid="wallet-name-text">
+                    {{
+                      getCustomName(selectedWallet) ||
+                      (selectedWallet === 'ecash'
+                        ? $t('walletPanel.ecash')
+                        : selectedWallet === 'solana'
+                        ? $t('walletPanel.solana')
+                        : selectedWallet === 'tempo'
+                        ? $t('walletPanel.tempo')
+                        : selectedWallet === 'ethereum'
+                        ? $t('walletPanel.ethereum')
+                        : selectedWallet === 'hyperliquid'
+                        ? $t('walletPanel.hyperliquid')
+                        : $t('walletPanel.mainWallet'))
+                    }}
+                  </span>
+                  <q-badge
+                    v-if="isTestnet"
+                    color="orange"
+                    text-color="black"
+                    :label="$t('walletPanel.testnet')"
+                    class="q-ml-sm text-bold"
+                    data-testid="wallet-testnet-badge"
+                  />
+                </div>
+                <div class="text-caption" data-testid="wallet-chain">
                   {{
-                    selectedWallet === 'monad'
-                      ? balanceText
-                      : chainLoaded && chainFormattedBalance
-                      ? chainFormattedBalance
-                      : selectedWallet === 'ecash'
+                    selectedWallet === 'ecash'
                       ? isTestnet
-                        ? $t('walletPanel.zeroTxec')
-                        : $t('walletPanel.zeroXec')
+                        ? $t('walletPanel.ecashTestnet')
+                        : $t('walletPanel.ecash')
                       : selectedWallet === 'solana'
                       ? isTestnet
-                        ? $t('walletPanel.zeroTsol')
-                        : $t('walletPanel.zeroSol')
+                        ? $t('walletPanel.solanaTestnet')
+                        : $t('walletPanel.solana')
                       : selectedWallet === 'tempo'
                       ? isTestnet
-                        ? $t('walletPanel.zeroTusd')
-                        : $t('walletPanel.zeroUsd')
+                        ? $t('walletPanel.tempoTestnet')
+                        : $t('walletPanel.tempo')
                       : selectedWallet === 'ethereum'
                       ? isTestnet
-                        ? $t('walletPanel.zeroSep')
-                        : $t('walletPanel.zeroEth')
+                        ? $t('walletPanel.ethereumTestnet')
+                        : $t('walletPanel.ethereum')
                       : selectedWallet === 'hyperliquid'
                       ? isTestnet
-                        ? $t('walletPanel.zeroThype')
-                        : $t('walletPanel.zeroHype')
-                      : balanceText
+                        ? $t('walletPanel.hyperliquidTestnet')
+                        : $t('walletPanel.hyperliquid')
+                      : isTestnet
+                      ? $t('walletPanel.monadTestnet')
+                      : $t('walletPanel.monad')
                   }}
-                </div>
-                <div
-                  class="text-caption text-primary cursor-pointer flex items-center justify-center q-gutter-xs q-mt-xs"
-                  data-testid="wallet-unit-rate-avu"
-                  @click="showAvuDialog = true"
-                >
-                  <span>{{ currentUnitRateAvu }}</span>
-                  <q-icon name="help_outline" size="14px" />
-                  <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
-                </div>
-                <div
-                  v-if="currentWalletAvu"
-                  class="text-caption text-grey-7 text-center q-mt-xs cursor-pointer flex items-center justify-center q-gutter-xs"
-                  data-testid="wallet-balance-avu"
-                  @click="showAvuDialog = true"
-                >
-                  <span>{{ currentWalletAvu }}</span>
-                  <q-icon name="help_outline" size="14px" />
-                  <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
-                </div>
-                <div
-                  v-if="currentWalletHasError"
-                  class="text-negative text-caption text-center"
-                  data-testid="wallet-balance-error"
-                >
-                  {{ $t('walletPanel.balanceUnavailable') }}
                 </div>
               </q-card-section>
               <q-separator />
-              <q-card-section>
-                <div
-                  class="row justify-center items-center"
-                  style="min-height: 300px"
-                  data-testid="wallet-qr-container"
-                >
-                  <qrcode-vue
-                    v-if="displayAddress"
-                    style="margin-left: auto; margin-right: auto"
-                    :value="displayAddress"
-                    :size="300"
-                    level="H"
-                    data-testid="wallet-qr"
-                  />
-                  <q-skeleton
-                    v-else
-                    size="300px"
-                    square
-                    data-testid="wallet-qr-skeleton"
-                  />
-                </div>
-                <div class="row q-mt-md">
-                  <q-input
-                    class="fit"
-                    filled
-                    auto-grow
-                    :loading="!displayAddress"
-                    v-model="displayAddress"
-                    readonly
-                  >
-                    <template #append>
-                      <q-btn
-                        dense
-                        color="primary"
-                        flat
-                        icon="content_copy"
-                        :aria-label="$t('a11y.copyAddress')"
-                        :disable="!displayAddress"
-                        data-testid="wallet-copy-address"
-                        @click="copyAddress"
+              <q-tabs
+                v-model="activeTab"
+                dense
+                no-caps
+                class="text-grey-7"
+                active-color="primary"
+                indicator-color="primary"
+                align="justify"
+                narrow-indicator
+                data-testid="wallet-tabs"
+              >
+                <q-tab
+                  name="balance"
+                  icon="account_balance_wallet"
+                  :label="$t('walletPanel.tabBalance')"
+                  data-testid="wallet-tab-balance"
+                />
+                <q-tab
+                  name="swap"
+                  icon="swap_horiz"
+                  :label="$t('walletPanel.tabSwap')"
+                  data-testid="wallet-tab-swap"
+                />
+                <q-tab
+                  name="parity"
+                  icon="show_chart"
+                  :label="$t('walletPanel.tabParity')"
+                  data-testid="wallet-tab-parity"
+                />
+              </q-tabs>
+              <q-separator />
+
+              <q-tab-panels
+                v-model="activeTab"
+                animated
+                class="bg-transparent col column"
+                data-testid="wallet-tab-panels"
+              >
+                <q-tab-panel name="balance" class="q-pa-none">
+                  <q-card-section class="q-py-sm">
+                    <div
+                      class="text-bold text-subtitle1 text-center"
+                      role="status"
+                      aria-live="polite"
+                      data-testid="wallet-balance"
+                    >
+                      {{
+                        selectedWallet === 'monad'
+                          ? balanceText
+                          : chainLoaded && chainFormattedBalance
+                          ? chainFormattedBalance
+                          : selectedWallet === 'ecash'
+                          ? isTestnet
+                            ? $t('walletPanel.zeroTxec')
+                            : $t('walletPanel.zeroXec')
+                          : selectedWallet === 'solana'
+                          ? isTestnet
+                            ? $t('walletPanel.zeroTsol')
+                            : $t('walletPanel.zeroSol')
+                          : selectedWallet === 'tempo'
+                          ? isTestnet
+                            ? $t('walletPanel.zeroTusd')
+                            : $t('walletPanel.zeroUsd')
+                          : selectedWallet === 'ethereum'
+                          ? isTestnet
+                            ? $t('walletPanel.zeroSep')
+                            : $t('walletPanel.zeroEth')
+                          : selectedWallet === 'hyperliquid'
+                          ? isTestnet
+                            ? $t('walletPanel.zeroThype')
+                            : $t('walletPanel.zeroHype')
+                          : balanceText
+                      }}
+                    </div>
+                    <div
+                      class="text-caption text-primary cursor-pointer flex items-center justify-center q-gutter-xs q-mt-xs"
+                      data-testid="wallet-unit-rate-avu"
+                      @click="showAvuDialog = true"
+                    >
+                      <span>{{ currentUnitRateAvu }}</span>
+                      <q-icon name="help_outline" size="14px" />
+                      <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+                    </div>
+                    <div
+                      v-if="currentWalletAvu"
+                      class="text-caption text-grey-7 text-center q-mt-xs cursor-pointer flex items-center justify-center q-gutter-xs"
+                      data-testid="wallet-balance-avu"
+                      @click="showAvuDialog = true"
+                    >
+                      <span>{{ currentWalletAvu }}</span>
+                      <q-icon name="help_outline" size="14px" />
+                      <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+                    </div>
+                    <div
+                      v-if="currentWalletHasError"
+                      class="text-negative text-caption text-center"
+                      data-testid="wallet-balance-error"
+                    >
+                      {{ $t('walletPanel.balanceUnavailable') }}
+                    </div>
+                  </q-card-section>
+                  <q-separator />
+                  <q-card-section>
+                    <div
+                      class="row justify-center items-center"
+                      style="min-height: 300px"
+                      data-testid="wallet-qr-container"
+                    >
+                      <qrcode-vue
+                        v-if="displayAddress"
+                        style="margin-left: auto; margin-right: auto"
+                        :value="displayAddress"
+                        :size="300"
+                        level="H"
+                        data-testid="wallet-qr"
                       />
-                    </template>
-                  </q-input>
-                </div>
-                <q-card-actions
-                  align="right"
-                  class="q-px-none q-pt-md bg-transparent"
-                >
-                  <q-btn
-                    no-caps
-                    outline
-                    color="primary"
-                    :label="$t('walletPanel.sendToContact')"
-                    :disable="selectedWallet !== 'monad'"
-                    data-testid="wallet-contact-send-action"
-                    @click="openSendContact"
-                  />
-                  <q-btn
-                    no-caps
-                    :label="
-                      selectedWallet === 'ecash'
-                        ? isTestnet
-                          ? $t('walletPanel.sendTxec')
-                          : $t('walletPanel.sendXec')
-                        : selectedWallet === 'solana'
-                        ? isTestnet
-                          ? $t('walletPanel.sendTsol')
-                          : $t('walletPanel.sendSol')
-                        : selectedWallet === 'tempo'
-                        ? isTestnet
-                          ? 'Send tUSD'
-                          : 'Send USD'
-                        : selectedWallet === 'ethereum'
-                        ? isTestnet
-                          ? 'Send SEP'
-                          : 'Send ETH'
-                        : selectedWallet === 'hyperliquid'
-                        ? isTestnet
-                          ? 'Send tHYPE'
-                          : 'Send HYPE'
-                        : isTestnet
-                        ? $t('walletPanel.sendMont')
-                        : $t('walletPanel.send')
-                    "
-                    color="primary"
-                    :disable="selectedWallet !== 'monad'"
-                    data-testid="wallet-send-action"
-                    data-test="wallet-legacy-send-action"
-                    @click="openSend"
-                  />
-                </q-card-actions>
-              </q-card-section>
-            </q-tab-panel>
+                      <q-skeleton
+                        v-else
+                        size="300px"
+                        square
+                        data-testid="wallet-qr-skeleton"
+                      />
+                    </div>
+                    <div class="row q-mt-md">
+                      <q-input
+                        class="fit"
+                        filled
+                        auto-grow
+                        :loading="!displayAddress"
+                        v-model="displayAddress"
+                        readonly
+                      >
+                        <template #append>
+                          <q-btn
+                            dense
+                            color="primary"
+                            flat
+                            icon="content_copy"
+                            :aria-label="$t('a11y.copyAddress')"
+                            :disable="!displayAddress"
+                            data-testid="wallet-copy-address"
+                            @click="copyAddress"
+                          />
+                        </template>
+                      </q-input>
+                    </div>
+                    <q-card-actions
+                      align="right"
+                      class="q-px-none q-pt-md bg-transparent"
+                    >
+                      <q-btn
+                        no-caps
+                        outline
+                        color="primary"
+                        :label="$t('walletPanel.sendToContact')"
+                        :disable="selectedWallet !== 'monad'"
+                        data-testid="wallet-contact-send-action"
+                        @click="openSendContact"
+                      />
+                      <q-btn
+                        no-caps
+                        :label="
+                          selectedWallet === 'ecash'
+                            ? isTestnet
+                              ? $t('walletPanel.sendTxec')
+                              : $t('walletPanel.sendXec')
+                            : selectedWallet === 'solana'
+                            ? isTestnet
+                              ? $t('walletPanel.sendTsol')
+                              : $t('walletPanel.sendSol')
+                            : selectedWallet === 'tempo'
+                            ? isTestnet
+                              ? 'Send tUSD'
+                              : 'Send USD'
+                            : selectedWallet === 'ethereum'
+                            ? isTestnet
+                              ? 'Send SEP'
+                              : 'Send ETH'
+                            : selectedWallet === 'hyperliquid'
+                            ? isTestnet
+                              ? 'Send tHYPE'
+                              : 'Send HYPE'
+                            : isTestnet
+                            ? $t('walletPanel.sendMont')
+                            : $t('walletPanel.send')
+                        "
+                        color="primary"
+                        :disable="selectedWallet !== 'monad'"
+                        data-testid="wallet-send-action"
+                        data-test="wallet-legacy-send-action"
+                        @click="openSend"
+                      />
+                    </q-card-actions>
+                  </q-card-section>
+                </q-tab-panel>
 
-            <q-tab-panel name="swap" class="q-pa-none">
-              <d-app-swap-view :selected-wallet="selectedWallet" />
-            </q-tab-panel>
+                <q-tab-panel name="swap" class="q-pa-none">
+                  <d-app-swap-view :selected-wallet="selectedWallet" />
+                </q-tab-panel>
 
-            <q-tab-panel name="parity" class="q-pa-none">
-              <avu-parity-chart :selected-wallet="selectedWallet" />
-            </q-tab-panel>
-          </q-tab-panels>
-        </q-card>
+                <q-tab-panel name="parity" class="q-pa-none">
+                  <avu-parity-chart :selected-wallet="selectedWallet" />
+                </q-tab-panel>
+              </q-tab-panels>
+            </q-card>
+          </div>
+        </q-scroll-area>
       </q-page>
 
       <avu-explainer-dialog v-model="showAvuDialog" />

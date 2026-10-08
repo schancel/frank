@@ -40,6 +40,14 @@
             @update:model-value="onFromAssetChange"
           />
         </div>
+        <div
+          v-if="fromEnergyAvu"
+          class="row items-center q-mt-xs text-caption text-grey-6"
+          data-testid="swap-from-avu"
+        >
+          <q-icon name="bolt" size="13px" color="amber-8" class="q-mr-xs" />
+          <span>{{ fromEnergyAvu }}</span>
+        </div>
       </q-card>
 
       <!-- Swap Invert Button: Floating centered pill on seam -->
@@ -91,6 +99,14 @@
             data-testid="swap-to-asset"
             @update:model-value="calculateQuote"
           />
+        </div>
+        <div
+          v-if="toEnergyAvu"
+          class="row items-center q-mt-xs text-caption text-grey-6"
+          data-testid="swap-to-avu"
+        >
+          <q-icon name="bolt" size="13px" color="amber-8" class="q-mr-xs" />
+          <span>{{ toEnergyAvu }}</span>
         </div>
       </q-card>
 
@@ -164,9 +180,9 @@ import { defaultPluginRegistry } from '@frank/wallet/plugins'
 export const SWAP_FEE_BPS = 8.75 // 0.0875% = 1/10th of MetaMask's 0.875%
 
 export const SUPPORTED_SWAP_ASSETS = [
-  { label: 'USDC', value: 'USDC' },
-  { label: 'AVU (1 kWh)', value: 'AVU' },
   { label: 'MON (Monad)', value: 'MON' },
+  { label: 'USDC', value: 'USDC' },
+  { label: 'USDT', value: 'USDT' },
   { label: 'SOL (Solana)', value: 'SOL' },
   { label: 'ETH (Ethereum)', value: 'ETH' },
   { label: 'XEC (eCash)', value: 'XEC' },
@@ -181,10 +197,10 @@ export default defineComponent({
     },
   },
   setup(props) {
-    const fromAsset = ref<string>('USDC')
-    const toAsset = ref<string>('AVU')
+    const fromAsset = ref<string>('MON')
+    const toAsset = ref<string>('USDC')
     const fromAmount = ref<string>('100')
-    const estimatedToAmount = ref<string>('813.01')
+    const estimatedToAmount = ref<string>('349.69')
     const isExecuting = ref<boolean>(false)
     const lastTxHash = ref<string | null>(null)
 
@@ -194,12 +210,39 @@ export default defineComponent({
     // In production, these derive from @frank/price-feeds and the DAppPlugin.getQuote()
     const RATES_IN_USD: Record<string, number> = {
       USDC: 1.0,
-      AVU: 0.123, // ~12.3 cents per kWh
-      MON: 0.024,
+      USDT: 1.0,
+      MON: 3.5,
       SOL: 145.0,
       ETH: 2550.0,
       XEC: 0.000041,
     }
+
+    // 11.90 AVU per USD ($0.084 / kWh industrial energy benchmark)
+    const AVU_PER_USD = 11.9
+
+    const fromEnergyAvu = computed(() => {
+      const val = parseFloat(fromAmount.value)
+      if (isNaN(val) || val <= 0) return ''
+      const priceUsd = RATES_IN_USD[fromAsset.value] || 1.0
+      const avu = val * priceUsd * AVU_PER_USD
+      return `≈ ${avu.toLocaleString('en-US', {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      })} AVU (kWh)`
+    })
+
+    const toEnergyAvu = computed(() => {
+      const val = parseFloat(
+        (estimatedToAmount.value || '').toString().replace(/,/g, ''),
+      )
+      if (isNaN(val) || val <= 0) return ''
+      const priceUsd = RATES_IN_USD[toAsset.value] || 1.0
+      const avu = val * priceUsd * AVU_PER_USD
+      return `≈ ${avu.toLocaleString('en-US', {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      })} AVU (kWh)`
+    })
 
     const availableBalance = computed(() => {
       if (fromAsset.value === 'USDC') return '1,000.00 USDC'
@@ -209,13 +252,13 @@ export default defineComponent({
     })
 
     const setMaxAmount = () => {
-      fromAmount.value = '1000'
+      fromAmount.value = '100'
       calculateQuote()
     }
 
     const onFromAssetChange = () => {
       if (fromAsset.value === toAsset.value) {
-        toAsset.value = fromAsset.value === 'USDC' ? 'AVU' : 'USDC'
+        toAsset.value = fromAsset.value === 'USDC' ? 'MON' : 'USDC'
       }
       calculateQuote()
     }
@@ -310,6 +353,8 @@ export default defineComponent({
       toAsset,
       fromAmount,
       estimatedToAmount,
+      fromEnergyAvu,
+      toEnergyAvu,
       assetOptions,
       availableBalance,
       protocolFeeDisplay,

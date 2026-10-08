@@ -70,14 +70,24 @@ describe('DAppSwapView component', () => {
 
   test('flips from and to assets when flip button is clicked', async () => {
     const wrapper = mountSwapView()
-    expect((wrapper.vm as any).fromAsset).toBe('USDC')
-    expect((wrapper.vm as any).toAsset).toBe('AVU')
+    expect((wrapper.vm as any).fromAsset).toBe('MON')
+    expect((wrapper.vm as any).toAsset).toBe('USDC')
 
     const flipBtn = wrapper.find('[data-testid="swap-flip-btn"]')
     await flipBtn.trigger('click')
 
-    expect((wrapper.vm as any).fromAsset).toBe('AVU')
-    expect((wrapper.vm as any).toAsset).toBe('USDC')
+    expect((wrapper.vm as any).fromAsset).toBe('USDC')
+    expect((wrapper.vm as any).toAsset).toBe('MON')
+  })
+
+  test('displays AVU thermodynamic energy equivalents for input and output', () => {
+    const wrapper = mountSwapView()
+    const fromAvu = wrapper.find('[data-testid="swap-from-avu"]')
+    const toAvu = wrapper.find('[data-testid="swap-to-avu"]')
+    expect(fromAvu.exists()).toBe(true)
+    expect(fromAvu.text()).toContain('AVU (kWh)')
+    expect(toAvu.exists()).toBe(true)
+    expect(toAvu.text()).toContain('AVU (kWh)')
   })
 
   test('calculates estimated output deducting protocol fee', async () => {

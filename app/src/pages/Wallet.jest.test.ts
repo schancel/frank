@@ -129,6 +129,7 @@ function mountWallet() {
             'q-toolbar-title',
             'q-page-container',
             'q-page',
+            'q-scroll-area',
             'q-card',
             'q-card-section',
             'q-card-actions',

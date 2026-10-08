@@ -66,13 +66,12 @@ test('welcome landing page is readable without an account', async () => {
 
 test('root redirects to /welcome when not logged in, and /forum when ready', async () => {
   mockStatus.status = 'fresh'
-  expect(
-    await mockGuard({ path: '/', fullPath: '/', params: {} }, {}),
-  ).toBe('/welcome')
+  expect(await mockGuard({ path: '/', fullPath: '/', params: {} }, {})).toBe(
+    '/welcome',
+  )
 
   mockStatus.status = 'ready'
-  expect(
-    await mockGuard({ path: '/', fullPath: '/', params: {} }, {}),
-  ).toBe('/forum')
+  expect(await mockGuard({ path: '/', fullPath: '/', params: {} }, {})).toBe(
+    '/forum',
+  )
 })
-

@@ -866,3 +866,63 @@ it('rejects an incomplete query instead of treating it as verified empty', async
   expect(store.messages).toHaveLength(1)
   expect(store.outageStatus).toBe('outage')
 })
+
+describe('useForumStore: setEntries snapshot diffing', () => {
+  it('skips $patch when messages are identical to avoid DOM re-renders', () => {
+    const store = useForumStore()
+    const msg = makeMessage({ payloadDigest: 'digest-1', voteWeightWei: '100' })
+    store.setEntries([msg])
+
+    const patchSpy = jest.spyOn(store, '$patch')
+    store.setEntries([msg])
+    expect(patchSpy).not.toHaveBeenCalled()
+
+    patchSpy.mockRestore()
+  })
+
+  it('triggers $patch when voteWeight changes', () => {
+    const store = useForumStore()
+    const msg = makeMessage({ payloadDigest: 'digest-1', voteWeightWei: '100' })
+    store.setEntries([msg])
+
+    const patchSpy = jest.spyOn(store, '$patch')
+    const updatedMsg = makeMessage({
+      payloadDigest: 'digest-1',
+      voteWeightWei: '200',
+    })
+    store.setEntries([updatedMsg])
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    expect(store.messages[0].voteWeightWei).toBe('200')
+
+    patchSpy.mockRestore()
+  })
+
+  it('triggers $patch when reply count changes', () => {
+    const store = useForumStore()
+    const root = makeMessage({ payloadDigest: 'root' })
+    store.setEntries([root])
+    expect(store.getMessage('root')?.replies).toHaveLength(0)
+
+    const patchSpy = jest.spyOn(store, '$patch')
+    const child = makeMessage({ payloadDigest: 'child', parentDigest: 'root' })
+    store.setEntries([root, child])
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    expect(store.getMessage('root')?.replies).toHaveLength(1)
+
+    patchSpy.mockRestore()
+  })
+
+  it('triggers $patch when new messages are added or length changes', () => {
+    const store = useForumStore()
+    const msg1 = makeMessage({ payloadDigest: 'digest-1' })
+    store.setEntries([msg1])
+
+    const patchSpy = jest.spyOn(store, '$patch')
+    const msg2 = makeMessage({ payloadDigest: 'digest-2' })
+    store.setEntries([msg1, msg2])
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    expect(store.messages).toHaveLength(2)
+
+    patchSpy.mockRestore()
+  })
+})

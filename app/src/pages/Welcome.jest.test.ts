@@ -41,10 +41,8 @@ function mountWelcome(messages: Messages) {
   })
 }
 
-const text = (
-  wrapper: ReturnType<typeof mountWelcome>,
-  name: string,
-): string => wrapper.find(`[data-test="${name}"]`).text()
+const text = (wrapper: ReturnType<typeof mountWelcome>, name: string): string =>
+  wrapper.find(`[data-test="${name}"]`).text()
 
 describe('Welcome: landing page for visitors without an account', () => {
   it('renders hero branding, title, and "Free speech is not free" tagline', () => {

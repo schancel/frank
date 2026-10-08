@@ -773,6 +773,7 @@ export function autoHealDuplicateDirectConversations({
 
     const primary =
       list.find(c => c.id === canonicalId) ||
+      list.find(c => (c.messages?.length ?? 0) > 0) ||
       list.find(c => chats[peer] && chats[peer].id === c.id) ||
       list[0]
 
@@ -903,6 +904,59 @@ export function autoHealDuplicateDirectConversations({
       }
     }
   }
+}
+
+/**
+ * Deduplicates direct and email conversations sharing the same peer address.
+ * Prioritizes conversations containing messages over empty placeholders.
+ */
+export function deduplicateDirectConversations(
+  conversations: Iterable<Conversation>,
+): Conversation[] {
+  const result: Conversation[] = []
+  const directConvsByPeer = new Map<string, Conversation>()
+
+  for (const conv of conversations) {
+    if (!conv || conv.deletedAt) continue
+    const peer = extractDirectPeerAddress(conv, null)
+    if (peer && !conv.topic) {
+      const existing = directConvsByPeer.get(peer)
+      if (!existing) {
+        directConvsByPeer.set(peer, conv)
+      } else {
+        const existingMsgCount = existing.messages?.length ?? 0
+        const currentMsgCount = conv.messages?.length ?? 0
+
+        // If one has messages and the other is empty, the one with messages wins.
+        if (currentMsgCount > 0 && existingMsgCount === 0) {
+          directConvsByPeer.set(peer, conv)
+        } else if (currentMsgCount > 0 && existingMsgCount > 0) {
+          const existingTime =
+            existing.lastReceived ||
+            existing.updatedAt ||
+            existing.createdAt ||
+            0
+          const currentTime =
+            conv.lastReceived || conv.updatedAt || conv.createdAt || 0
+          if (currentTime > existingTime) {
+            directConvsByPeer.set(peer, conv)
+          }
+        } else if (currentMsgCount === 0 && existingMsgCount === 0) {
+          if (!existing.address && conv.address) {
+            directConvsByPeer.set(peer, conv)
+          }
+        }
+      }
+    } else {
+      result.push(conv)
+    }
+  }
+
+  for (const conv of directConvsByPeer.values()) {
+    result.push(conv)
+  }
+
+  return result
 }
 
 export async function rehydateChat(chatState: RestorableState): Promise<State> {
@@ -1150,6 +1204,18 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         (messageB.serverTime ?? messageB.receivedTime ?? 0),
     )
   }
+
+  // Auto-heal duplicate direct conversations across all hydration sources
+  autoHealDuplicateDirectConversations({
+    conversations,
+    chats,
+    ownAddress,
+    activeChatAddr: chatState.activeChatAddr,
+    activeConversationId: chatState.activeConversationId ?? null,
+    messages,
+    logicalMessages,
+  })
+
   return {
     conversations,
     chats,
@@ -1233,7 +1299,7 @@ export const useChatStore = defineStore('chats', {
           }
         }
       }
-      return Array.from(allConversations.values())
+      return deduplicateDirectConversations(allConversations.values())
         .map(chat => chat?.totalUnreadMessages ?? 0)
         .reduce((acc, val) => acc + val, 0)
     },
@@ -1254,7 +1320,7 @@ export const useChatStore = defineStore('chats', {
           }
         }
       }
-      const all = Array.from(allConversations.values())
+      const all = deduplicateDirectConversations(allConversations.values())
       const sortedOrder = all.sort((contactA, contactB) => {
         assert(contactA && contactB, 'Make typescript happy')
         if (contactB.totalUnreadValue - contactA.totalUnreadValue !== 0) {
@@ -1271,6 +1337,14 @@ export const useChatStore = defineStore('chats', {
 
         if (contactB.totalUnreadMessages - contactA.totalUnreadMessages !== 0) {
           return contactB.totalUnreadMessages - contactA.totalUnreadMessages
+        }
+
+        const timeB =
+          contactB.lastReceived || contactB.updatedAt || contactB.createdAt || 0
+        const timeA =
+          contactA.lastReceived || contactA.updatedAt || contactA.createdAt || 0
+        if (timeB !== timeA) {
+          return timeB - timeA
         }
 
         // No other tiebreakers
@@ -2724,23 +2798,27 @@ export const useChatStore = defineStore('chats', {
           } catch {
             // ignore
           }
+          const matchingConvs = Object.values(this.conversations).filter(
+            c =>
+              c.kind === 'direct' &&
+              (!topic || c.topic === topic) &&
+              (c.address === address ||
+                c.address === canonicalAddr ||
+                (c.participants &&
+                  c.participants.some(
+                    p =>
+                      sameCanonicalAddress(p, address) ||
+                      (canonicalAddr && sameCanonicalAddress(p, canonicalAddr)),
+                  ))),
+          )
+          const convWithMessages = matchingConvs.find(
+            c => (c.messages?.length ?? 0) > 0,
+          )
           conv =
+            convWithMessages ||
+            matchingConvs[0] ||
             this.chats[canonicalAddr] ||
-            this.chats[address] ||
-            Object.values(this.conversations).find(
-              c =>
-                c.kind === 'direct' &&
-                (!topic || c.topic === topic) &&
-                (c.address === address ||
-                  c.address === canonicalAddr ||
-                  (c.participants &&
-                    c.participants.some(
-                      p =>
-                        sameCanonicalAddress(p, address) ||
-                        (canonicalAddr &&
-                          sameCanonicalAddress(p, canonicalAddr)),
-                    ))),
-            )
+            this.chats[address]
         }
         if (!conv) {
           for (const p of normalizedParticipants) {
@@ -2760,7 +2838,7 @@ export const useChatStore = defineStore('chats', {
           if (this.conversations[directId]) {
             conv = this.conversations[directId]
           } else {
-            conv = Object.values(this.conversations).find(c => {
+            const candidates = Object.values(this.conversations).filter(c => {
               if (c.kind !== 'direct') return false
               if (topic !== undefined && c.topic !== topic) return false
               if (!topic && c.topic) return false
@@ -2788,17 +2866,13 @@ export const useChatStore = defineStore('chats', {
                 cNorm.length <= 2 &&
                 normalizedParticipants.length <= 2
               ) {
-                if (
-                  c.address &&
-                  normalizedParticipants.some(p =>
-                    sameCanonicalAddress(p, c.address),
-                  )
-                ) {
-                  return true
-                }
+                return true
               }
               return false
             })
+            conv =
+              candidates.find(c => (c.messages?.length ?? 0) > 0) ||
+              candidates[0]
           }
         }
       }
@@ -3015,6 +3089,17 @@ export const useChatStore = defineStore('chats', {
         displayAddress = address
       }
       let conv = this.chats[displayAddress]
+      const peerConvs = this.getConversationsForAddress(displayAddress).filter(
+        c => c.kind === 'direct' && !c.topic,
+      )
+      const withMessages = peerConvs.find(c => (c.messages?.length ?? 0) > 0)
+      if (withMessages) {
+        conv = withMessages
+        this.chats[displayAddress] = conv
+      } else if (!conv && peerConvs.length > 0) {
+        conv = peerConvs[0]
+        this.chats[displayAddress] = conv
+      }
       if (!conv) {
         conv = this.createConversation({
           kind: 'direct',
@@ -3032,12 +3117,17 @@ export const useChatStore = defineStore('chats', {
         return
       }
       let conv = this.conversations[conversationId]
-      if (!conv) {
-        try {
-          const displayAddress = toChainDisplayAddress(conversationId)
-          conv =
-            this.chats[displayAddress] ||
-            this.getConversationsForAddress(displayAddress)[0]
+      try {
+        const displayAddress = toChainDisplayAddress(conversationId)
+        const peerConvs = this.getConversationsForAddress(
+          displayAddress,
+        ).filter(c => c.kind === 'direct' && !c.topic)
+        const withMessages = peerConvs.find(c => (c.messages?.length ?? 0) > 0)
+        if (withMessages) {
+          conv = withMessages
+          this.chats[displayAddress] = conv
+        } else if (!conv) {
+          conv = this.chats[displayAddress] || peerConvs[0]
           if (!conv) {
             conv = this.createConversation({
               kind: 'direct',
@@ -3045,9 +3135,9 @@ export const useChatStore = defineStore('chats', {
               address: displayAddress,
             })
           }
-        } catch {
-          // not a valid chain address and not in conversations
         }
+      } catch {
+        // not a valid chain address and not in conversations
       }
       if (!conv) {
         this.activeConversationId = conversationId

@@ -12,8 +12,67 @@
           data-test="wallet-menu-btn"
           @click="$emit('toggleMyDrawerOpen')"
         />
-        <q-toolbar-title class="h6">
-          {{ $t('walletPanel.title') }}
+        <q-toolbar-title class="q-py-xs">
+          <div class="row items-center no-wrap" data-testid="wallet-name">
+            <span
+              class="text-weight-bold ellipsis"
+              data-testid="wallet-name-text"
+            >
+              {{
+                getCustomName(selectedWallet) ||
+                (selectedWallet === 'ecash'
+                  ? $t('walletPanel.ecash')
+                  : selectedWallet === 'solana'
+                  ? $t('walletPanel.solana')
+                  : selectedWallet === 'tempo'
+                  ? $t('walletPanel.tempo')
+                  : selectedWallet === 'ethereum'
+                  ? $t('walletPanel.ethereum')
+                  : selectedWallet === 'hyperliquid'
+                  ? $t('walletPanel.hyperliquid')
+                  : $t('walletPanel.mainWallet'))
+              }}
+            </span>
+            <q-badge
+              v-if="isTestnet"
+              outline
+              color="white"
+              :label="$t('walletPanel.testnet')"
+              class="q-ml-xs text-bold"
+              data-testid="wallet-testnet-badge"
+            />
+          </div>
+          <div
+            class="text-caption text-white ellipsis"
+            style="line-height: 1.1; opacity: 0.85"
+            data-testid="wallet-chain"
+          >
+            {{
+              selectedWallet === 'ecash'
+                ? isTestnet
+                  ? $t('walletPanel.ecashTestnet')
+                  : $t('walletPanel.ecash')
+                : selectedWallet === 'solana'
+                ? isTestnet
+                  ? $t('walletPanel.solanaTestnet')
+                  : $t('walletPanel.solana')
+                : selectedWallet === 'tempo'
+                ? isTestnet
+                  ? $t('walletPanel.tempoTestnet')
+                  : $t('walletPanel.tempo')
+                : selectedWallet === 'ethereum'
+                ? isTestnet
+                  ? $t('walletPanel.ethereumTestnet')
+                  : $t('walletPanel.ethereum')
+                : selectedWallet === 'hyperliquid'
+                ? isTestnet
+                  ? $t('walletPanel.hyperliquidTestnet')
+                  : $t('walletPanel.hyperliquid')
+                : isTestnet
+                ? $t('walletPanel.monadTestnet')
+                : $t('walletPanel.monad')
+            }}
+          </div>
         </q-toolbar-title>
       </q-toolbar>
     </q-header>
@@ -27,62 +86,6 @@
               class="col column full-width bg-transparent"
               style="max-width: 720px; width: 100%; margin: 0 auto"
             >
-              <q-card-section>
-                <div class="text-h6 row items-center" data-testid="wallet-name">
-                  <span data-testid="wallet-name-text">
-                    {{
-                      getCustomName(selectedWallet) ||
-                      (selectedWallet === 'ecash'
-                        ? $t('walletPanel.ecash')
-                        : selectedWallet === 'solana'
-                        ? $t('walletPanel.solana')
-                        : selectedWallet === 'tempo'
-                        ? $t('walletPanel.tempo')
-                        : selectedWallet === 'ethereum'
-                        ? $t('walletPanel.ethereum')
-                        : selectedWallet === 'hyperliquid'
-                        ? $t('walletPanel.hyperliquid')
-                        : $t('walletPanel.mainWallet'))
-                    }}
-                  </span>
-                  <q-badge
-                    v-if="isTestnet"
-                    color="orange"
-                    text-color="black"
-                    :label="$t('walletPanel.testnet')"
-                    class="q-ml-sm text-bold"
-                    data-testid="wallet-testnet-badge"
-                  />
-                </div>
-                <div class="text-caption" data-testid="wallet-chain">
-                  {{
-                    selectedWallet === 'ecash'
-                      ? isTestnet
-                        ? $t('walletPanel.ecashTestnet')
-                        : $t('walletPanel.ecash')
-                      : selectedWallet === 'solana'
-                      ? isTestnet
-                        ? $t('walletPanel.solanaTestnet')
-                        : $t('walletPanel.solana')
-                      : selectedWallet === 'tempo'
-                      ? isTestnet
-                        ? $t('walletPanel.tempoTestnet')
-                        : $t('walletPanel.tempo')
-                      : selectedWallet === 'ethereum'
-                      ? isTestnet
-                        ? $t('walletPanel.ethereumTestnet')
-                        : $t('walletPanel.ethereum')
-                      : selectedWallet === 'hyperliquid'
-                      ? isTestnet
-                        ? $t('walletPanel.hyperliquidTestnet')
-                        : $t('walletPanel.hyperliquid')
-                      : isTestnet
-                      ? $t('walletPanel.monadTestnet')
-                      : $t('walletPanel.monad')
-                  }}
-                </div>
-              </q-card-section>
-              <q-separator />
               <q-tabs
                 v-model="activeTab"
                 dense

@@ -1,10 +1,14 @@
 <template>
   <q-page
+    :style-fn="pageStyleFn"
     class="email-thread-page column no-wrap full-height relative-position"
     data-testid="email-thread-view"
   >
     <!-- Thread Header Banner -->
-    <div class="email-thread-header q-px-lg q-py-md shadow-1">
+    <div
+      class="email-thread-header q-px-lg q-py-md shadow-1"
+      style="flex-shrink: 0"
+    >
       <div class="row items-center justify-between no-wrap q-mb-xs">
         <div class="row items-center no-wrap ellipsis col">
           <q-icon name="mail" size="24px" color="primary" class="q-mr-sm" />
@@ -99,11 +103,11 @@
     </div>
 
     <!-- Scrollable Email Message Cards Area -->
-    <div class="col relative-position">
+    <div class="col relative-position" style="min-height: 0; overflow: hidden">
       <q-scroll-area
         ref="emailScroll"
         class="q-px-none absolute full-width full-height column"
-        :content-style="{ padding: '16px 24px 180px 24px' }"
+        :content-style="{ padding: '16px 24px 24px 24px' }"
       >
         <div class="email-cards-container">
           <!-- Draft placeholder when there are 0 messages -->
@@ -256,9 +260,11 @@
                       sandbox="allow-same-origin"
                       class="email-html-frame"
                     />
-                    <div v-else class="email-body-text text-body1">
-                      {{ card.textBody }}
-                    </div>
+                    <div
+                      v-else
+                      class="email-body-text text-body1"
+                      v-html="formatMessageBody(card.textBody)"
+                    />
 
                     <!-- Attachments -->
                     <div
@@ -330,7 +336,15 @@
     </div>
 
     <!-- Docked Email Composer -->
-    <div class="email-composer-dock shadow-4 q-px-lg q-py-md">
+    <div
+      class="email-composer-dock shadow-4 q-px-lg q-py-md"
+      style="
+        flex-shrink: 0;
+        max-height: 50vh;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      "
+    >
       <!-- Unverified Peer Composer Warning Notice -->
       <div
         v-if="!isVerifiedGateway"
@@ -410,6 +424,16 @@
             color="primary"
             @click="showCc = !showCc"
           />
+          <q-btn
+            flat
+            dense
+            size="sm"
+            :label="
+              showBcc ? $t('emailThread.hideBcc') : $t('emailThread.showBcc')
+            "
+            color="primary"
+            @click="showBcc = !showBcc"
+          />
         </div>
         <div class="text-caption text-grey-6" v-if="stampStatus">
           {{ stampStatus }}
@@ -482,6 +506,43 @@
         </div>
       </div>
 
+      <!-- Recipient Bcc Field -->
+      <div
+        class="row items-center q-mb-xs"
+        v-if="showBcc || bccList.length > 0"
+        data-testid="composer-bcc-row"
+      >
+        <span
+          class="col-auto text-caption text-weight-bold text-grey-7 q-mr-sm"
+          style="width: 32px"
+          >{{ $t('emailThread.bcc') }}:</span
+        >
+        <div class="col row items-center q-gutter-xs">
+          <q-chip
+            v-for="(addr, idx) in bccList"
+            :key="idx"
+            removable
+            dense
+            size="sm"
+            color="deep-purple-7"
+            text-color="white"
+            @remove="removeBccRecipient(idx)"
+          >
+            {{ addr }}
+          </q-chip>
+          <q-input
+            ref="bccInputRef"
+            v-model="newBccInput"
+            dense
+            borderless
+            :placeholder="$t('emailThread.addBccRecipient')"
+            class="col text-caption input-inline"
+            @keydown.enter.prevent="addBccRecipient"
+            @keydown="handleRecipientKeydown($event, 'bcc')"
+          />
+        </div>
+      </div>
+
       <!-- Subject Field -->
       <div class="row items-center q-mb-sm">
         <span
@@ -531,10 +592,145 @@
         </q-chip>
       </div>
 
+      <!-- Formatting Toolbar -->
+      <div
+        class="row items-center q-gutter-xs q-mb-xs formatting-toolbar"
+        role="toolbar"
+        :aria-label="$t('a11y.formatting')"
+      >
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="format_bold"
+          :aria-label="$t('emailThread.formatBold', 'Bold')"
+          @mousedown.prevent
+          @click="applyFormat('bold')"
+        >
+          <q-tooltip>{{ $t('emailThread.formatBold', 'Bold') }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="format_italic"
+          :aria-label="$t('emailThread.formatItalic', 'Italic')"
+          @mousedown.prevent
+          @click="applyFormat('italic')"
+        >
+          <q-tooltip>{{ $t('emailThread.formatItalic', 'Italic') }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="title"
+          :aria-label="$t('emailThread.formatHeading', 'Heading')"
+          @mousedown.prevent
+          @click="applyFormat('heading')"
+        >
+          <q-tooltip>{{
+            $t('emailThread.formatHeading', 'Heading')
+          }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="format_quote"
+          :aria-label="$t('emailThread.formatQuote', 'Quote')"
+          @mousedown.prevent
+          @click="applyFormat('quote')"
+        >
+          <q-tooltip>{{ $t('emailThread.formatQuote', 'Quote') }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="code"
+          :aria-label="$t('emailThread.formatCode', 'Code')"
+          @mousedown.prevent
+          @click="applyFormat('code')"
+        >
+          <q-tooltip>{{ $t('emailThread.formatCode', 'Code') }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="format_list_bulleted"
+          :aria-label="$t('emailThread.formatBullet', 'Bullet list')"
+          @mousedown.prevent
+          @click="applyFormat('bullet')"
+        >
+          <q-tooltip>{{
+            $t('emailThread.formatBullet', 'Bullet list')
+          }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          flat
+          dense
+          round
+          size="sm"
+          icon="link"
+          :aria-label="$t('emailThread.formatLink', 'Link')"
+          @mousedown.prevent
+          @click="applyFormat('link')"
+        >
+          <q-tooltip>{{ $t('emailThread.formatLink', 'Link') }}</q-tooltip>
+        </q-btn>
+        <q-btn
+          v-if="activeReplyCard"
+          flat
+          dense
+          size="xs"
+          icon="reply"
+          color="primary"
+          :label="$t('emailThread.quoteOriginal', 'Quote Original')"
+          @click="insertOriginalQuote(activeReplyCard)"
+          class="q-px-xs"
+        >
+          <q-tooltip>{{
+            $t('emailThread.quoteOriginal', 'Quote Original')
+          }}</q-tooltip>
+        </q-btn>
+        <q-space />
+        <q-btn
+          flat
+          dense
+          size="xs"
+          :icon="isPreviewMode ? 'edit' : 'visibility'"
+          :label="
+            isPreviewMode
+              ? $t('emailThread.edit', 'Edit')
+              : $t('emailThread.preview', 'Preview')
+          "
+          color="grey-7"
+          @click="isPreviewMode = !isPreviewMode"
+        />
+      </div>
+
       <!-- Message Textarea & Send Bar -->
       <div class="row items-end q-col-gutter-sm">
         <div class="col">
+          <div
+            v-if="isPreviewMode"
+            class="email-body-preview q-pa-sm rounded-borders"
+            :class="{
+              'bg-grey-2': !$q.dark.isActive,
+              'bg-grey-9': $q.dark.isActive,
+            }"
+            v-html="renderedPreviewText"
+          />
           <q-input
+            v-else
             ref="bodyInputRef"
             v-model="replyText"
             type="textarea"
@@ -613,7 +809,11 @@ import type {
 } from '@frank/cashweb/types/messages'
 import { formatConversationTimestamp } from 'src/utils/formatting'
 import { defaultEmailGatewayAddress } from 'src/utils/constants'
-import { purify } from 'src/utils/markdown'
+import { purify, renderMarkdown } from 'src/utils/markdown'
+import {
+  applyMarkdownFormat,
+  type MarkdownFormatAction,
+} from 'src/utils/post-editor'
 import { useSettingsStore } from 'src/stores/settings'
 
 interface ParsedEmailCard {
@@ -622,6 +822,7 @@ interface ParsedEmailCard {
   fromName?: string
   to: EmailParty[]
   cc?: EmailParty[]
+  bcc?: EmailParty[]
   subject: string
   textBody: string
   snippet: string
@@ -665,12 +866,17 @@ export default defineComponent({
       allExpanded: false,
       replyMode: 'reply_all' as 'reply' | 'reply_all',
       showCc: false,
+      showBcc: false,
       toList: [] as string[],
       ccList: [] as string[],
+      bccList: [] as string[],
       newToInput: '',
       newCcInput: '',
+      newBccInput: '',
       subject: '',
       replyText: '',
+      isPreviewMode: false,
+      activeReplyCard: null as ParsedEmailCard | null,
       activeInReplyTo: undefined as string | undefined,
       activeReferences: undefined as string[] | undefined,
       htmlViewMap: {} as Record<string, boolean>,
@@ -821,8 +1027,17 @@ export default defineComponent({
     canSend(): boolean {
       return (
         (this.replyText.trim().length > 0 || this.stagedFiles.length > 0) &&
-        (this.toList.length > 0 || this.newToInput.trim().length > 0)
+        (this.toList.length > 0 ||
+          this.newToInput.trim().length > 0 ||
+          this.bccList.length > 0 ||
+          this.newBccInput.trim().length > 0)
       )
+    },
+    renderedPreviewText(): string {
+      if (!this.replyText || this.replyText.trim() === '') {
+        return '<span class="text-grey-6 italic">Nothing to preview</span>'
+      }
+      return purify(renderMarkdown(this.replyText, this.$q.dark.isActive))
     },
     latestEmail(): ParsedEmailCard | undefined {
       return this.parsedEmails[this.parsedEmails.length - 1]
@@ -1009,6 +1224,7 @@ export default defineComponent({
       }
     },
     prepareReply(card: ParsedEmailCard, mode: 'reply' | 'reply_all') {
+      this.activeReplyCard = card
       this.replyMode = mode
       this.populateRecipientsForCard(card, mode)
 
@@ -1024,8 +1240,72 @@ export default defineComponent({
         ? [card.rawEmail.messageId]
         : undefined
 
+      // Standard email convention: insert bottom quote with cursor at top
+      this.insertOriginalQuote(card)
+
       // Expand card and scroll to composer
       this.expandedMap[card.id] = true
+    },
+    pageStyleFn(offset: number, height: number) {
+      return {
+        height: `${height - offset}px`,
+        maxHeight: `${height - offset}px`,
+      }
+    },
+    formatMessageBody(text: string): string {
+      if (!text) return ''
+      return purify(renderMarkdown(text, this.$q.dark.isActive))
+    },
+    getTextareaElement(): HTMLTextAreaElement | null {
+      const inputComp = this.$refs.bodyInputRef as
+        | { $el?: HTMLElement; nativeEl?: HTMLTextAreaElement }
+        | undefined
+      if (inputComp?.nativeEl) return inputComp.nativeEl
+      return (
+        (inputComp?.$el?.querySelector('textarea') as HTMLTextAreaElement) ||
+        null
+      )
+    },
+    applyFormat(action: MarkdownFormatAction) {
+      if (this.isPreviewMode) {
+        this.isPreviewMode = false
+      }
+      const textarea = this.getTextareaElement()
+      const start = textarea?.selectionStart ?? this.replyText.length
+      const end = textarea?.selectionEnd ?? this.replyText.length
+      const res = applyMarkdownFormat(this.replyText, start, end, action)
+      this.replyText = res.text
+      this.$nextTick(() => {
+        if (textarea && typeof textarea.focus === 'function') {
+          textarea.focus()
+          if (typeof textarea.setSelectionRange === 'function') {
+            textarea.setSelectionRange(res.selectionStart, res.selectionEnd)
+          }
+        }
+      })
+    },
+    insertOriginalQuote(card: ParsedEmailCard) {
+      const quoteHeader = `On ${card.formattedDate || 'earlier'}, ${
+        card.fromName || card.fromAddress
+      } wrote:`
+      const quotedBody = (card.textBody || '')
+        .split('\n')
+        .map(line => `> ${line}`)
+        .join('\n')
+      const quoteBlock = `\n\n${quoteHeader}\n${quotedBody}\n`
+
+      if (!this.replyText || this.replyText.trim() === '') {
+        this.replyText = quoteBlock
+        this.$nextTick(() => {
+          const textarea = this.getTextareaElement()
+          if (textarea && typeof textarea.setSelectionRange === 'function') {
+            textarea.focus()
+            textarea.setSelectionRange(0, 0)
+          }
+        })
+      } else {
+        this.replyText = `${this.replyText.trimEnd()}${quoteBlock}`
+      }
     },
     addToRecipient() {
       const val = this.newToInput.trim()
@@ -1047,11 +1327,22 @@ export default defineComponent({
     removeCcRecipient(index: number) {
       this.ccList.splice(index, 1)
     },
-    handleRecipientKeydown(event: KeyboardEvent, field: 'to' | 'cc') {
+    addBccRecipient() {
+      const val = this.newBccInput.trim()
+      if (val && !this.bccList.includes(val)) {
+        this.bccList.push(val)
+      }
+      this.newBccInput = ''
+    },
+    removeBccRecipient(index: number) {
+      this.bccList.splice(index, 1)
+    },
+    handleRecipientKeydown(event: KeyboardEvent, field: 'to' | 'cc' | 'bcc') {
       if (event.key === ',' || event.key === ';' || event.key === ' ') {
         event.preventDefault()
         if (field === 'to') this.addToRecipient()
-        else this.addCcRecipient()
+        else if (field === 'cc') this.addCcRecipient()
+        else if (field === 'bcc') this.addBccRecipient()
       }
     },
     isHtmlView(id: string): boolean {
@@ -1115,11 +1406,15 @@ export default defineComponent({
       // Flush any pending text in input fields
       if (this.newToInput.trim()) this.addToRecipient()
       if (this.newCcInput.trim()) this.addCcRecipient()
+      if (this.newBccInput.trim()) this.addBccRecipient()
 
       const toParties: EmailParty[] = this.toList.map(addr => ({
         address: addr,
       }))
       const ccParties: EmailParty[] = this.ccList.map(addr => ({
+        address: addr,
+      }))
+      const bccParties: EmailParty[] = this.bccList.map(addr => ({
         address: addr,
       }))
 
@@ -1149,6 +1444,7 @@ export default defineComponent({
         from: { address: 'me' },
         to: toParties,
         cc: ccParties.length > 0 ? ccParties : undefined,
+        bcc: bccParties.length > 0 ? bccParties : undefined,
         subject: emailSubject,
         textBody: this.replyText,
         inReplyTo: this.activeInReplyTo,
@@ -1183,9 +1479,10 @@ export default defineComponent({
         targetAddress,
       })
 
-      // Clear text and staged files
+      // Clear text, staged files, preview
       this.replyText = ''
       this.stagedFiles = []
+      this.isPreviewMode = false
     },
   },
 })
@@ -1194,12 +1491,19 @@ export default defineComponent({
 <style scoped>
 .email-thread-page {
   background-color: var(--q-page-background, #f5f6f8);
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
 }
 
 .email-thread-header {
   background-color: var(--q-card-background, #ffffff);
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   z-index: 10;
+  flex-shrink: 0;
 }
 
 .email-card {
@@ -1228,10 +1532,24 @@ export default defineComponent({
   background-color: var(--q-card-background, #ffffff);
   border-top: 1px solid rgba(0, 0, 0, 0.12);
   z-index: 20;
+  flex-shrink: 0;
 }
 
 .body--dark .email-composer-dock {
   background-color: #181818;
+}
+
+.formatting-toolbar {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  padding-bottom: 4px;
+}
+
+.email-body-preview {
+  min-height: 80px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  line-height: 1.5;
 }
 
 .input-inline {

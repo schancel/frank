@@ -59,7 +59,7 @@
           color="primary"
           class="swap-flip-btn shadow-2"
           data-testid="swap-flip-btn"
-          aria-label="Switch assets"
+          :aria-label="$t('a11y.switchAssets')"
           @click="flipAssets"
         />
       </div>

@@ -74,6 +74,7 @@ const SAME_IN_FRENCH = new Set([
   'emailThread.cc',
   'emailThread.hideCc',
   'emailThread.showCc',
+  'emailThread.formatCode',
 ])
 
 const placeholders = (text: string) =>

@@ -2577,58 +2577,107 @@ export const useChatStore = defineStore('chats', {
       await this.setOutgoingState(address, id, 'pending', {})
       if (!stillCurrent()) return { state: 'busy' }
       let ownDigest: string | undefined
-      let result: DirectMessageSendResult
-      try {
-        result = await activeChain.directMessages.send({
-          wallet,
-          recipient,
-          items: message.items,
-          ...(message.stampValueWei === undefined
-            ? {}
-            : { stampValue: message.stampValueWei }),
-          ...(onPreparationProgress === undefined
-            ? {}
-            : { onPreparationProgress }),
-          onAttemptCreated: async attemptDigest => {
-            ownDigest = attemptDigest
-            // Strict: this write must be durable before the relay sees any byte of the set.
-            // If it fails, the send stops before any relay request. The wallet does NOT roll the
-            // attempt back: its payment intent stays journaled, later sends wait behind it, and
-            // reconciliation finishes and delivers those same bytes. `ownDigest` is therefore
-            // kept on the message by the failure path below whenever that later write succeeds.
+      let result: DirectMessageSendResult | undefined
+      let lastSendError: unknown
+      const maxSendAttempts = 3
+
+      for (let sendAttempt = 1; sendAttempt <= maxSendAttempts; sendAttempt++) {
+        if (!stillCurrent()) return { state: 'busy' }
+        try {
+          result = await activeChain.directMessages.send({
+            wallet,
+            recipient,
+            items: message.items,
+            ...(message.stampValueWei === undefined
+              ? {}
+              : { stampValue: message.stampValueWei }),
+            ...(onPreparationProgress === undefined
+              ? {}
+              : { onPreparationProgress }),
+            onAttemptCreated: async attemptDigest => {
+              ownDigest = attemptDigest
+              // Strict: this write must be durable before the relay sees any byte of the set.
+              // If it fails, the send stops before any relay request. The wallet does NOT roll the
+              // attempt back: its payment intent stays journaled, later sends wait behind it, and
+              // reconciliation finishes and delivers those same bytes. `ownDigest` is therefore
+              // kept on the message by the failure path below whenever that later write succeeds.
+              await this.setOutgoingState(
+                address,
+                id,
+                'pending',
+                { attemptDigest },
+                { strict: true },
+              )
+            },
+          })
+          break
+        } catch (error) {
+          lastSendError = error
+          if (error instanceof MonadStampPendingAttemptError) {
+            // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
+            // bytes. Without an own set, an earlier attempt is still pending and this message has
+            // not been paid for yet; it is sent once that clears.
+            console.info('[sendDirectMessage pending]:', error)
             await this.setOutgoingState(
               address,
               id,
-              'pending',
-              { attemptDigest },
-              { strict: true },
+              'payment-pending',
+              ownDigest === undefined
+                ? {}
+                : { attemptDigest: ownDigest, live: true },
             )
-          },
-        })
-      } catch (error) {
-        if (error instanceof MonadStampPendingAttemptError) {
-          // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
-          // bytes. Without an own set, an earlier attempt is still pending and this message has
-          // not been paid for yet; it is sent once that clears.
-          console.info('[sendDirectMessage pending]:', error)
-          await this.setOutgoingState(
-            address,
-            id,
-            'payment-pending',
-            ownDigest === undefined
+            return { state: 'payment-pending' }
+          }
+
+          const errorStr =
+            String(error) +
+            (error instanceof Error ? ' ' + error.message : '') +
+            (typeof error === 'object' && error !== null && 'info' in error
+              ? ' ' + JSON.stringify((error as any).info)
+              : '')
+          const isTransientRpc =
+            errorStr.includes('502') ||
+            errorStr.includes('503') ||
+            errorStr.includes('504') ||
+            errorStr.includes('429') ||
+            errorStr.includes('SERVER_ERROR') ||
+            errorStr.includes('TIMEOUT') ||
+            errorStr.includes('invalid_rpc_upstream_response') ||
+            errorStr.includes('rpc_upstream_unavailable') ||
+            errorStr.includes('network') ||
+            errorStr.includes('failed to fetch') ||
+            errorStr.includes('Failed to fetch')
+
+          if (isTransientRpc && sendAttempt < maxSendAttempts && stillCurrent()) {
+            console.warn(
+              `[sendDirectMessage transient rpc error (attempt ${sendAttempt}/${maxSendAttempts})]:`,
+              error,
+            )
+            await new Promise(r => setTimeout(r, sendAttempt * 500))
+            continue
+          }
+
+          console.error('[sendDirectMessage error]:', error)
+          const failure = classifySendFailure(error, ownDigest)
+          await this.setOutgoingState(address, id, 'error', {
+            ...(failure.keepDigest === undefined
               ? {}
-              : { attemptDigest: ownDigest, live: true },
-          )
-          return { state: 'payment-pending' }
+              : { attemptDigest: failure.keepDigest }),
+            failureReason: failure.reason,
+            detail: errorDetail(error),
+          })
+          return { state: 'failed', reason: failure.reason }
         }
-        console.error('[sendDirectMessage error]:', error)
-        const failure = classifySendFailure(error, ownDigest)
+      }
+
+      if (!result) {
+        const failure = classifySendFailure(lastSendError, ownDigest)
         await this.setOutgoingState(address, id, 'error', {
           ...(failure.keepDigest === undefined
             ? {}
             : { attemptDigest: failure.keepDigest }),
           failureReason: failure.reason,
-          detail: errorDetail(error),
+          detail: errorDetail(lastSendError),
         })
         return { state: 'failed', reason: failure.reason }
       }

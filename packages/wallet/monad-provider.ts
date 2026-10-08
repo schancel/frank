@@ -708,23 +708,50 @@ export function createMonadRelayRpcConnection(
   if (relayRpcTransport) {
     connection.getUrlFunc = async (relayRequest, signal) => {
       try {
-        const response = await relayRpcTransport(relayRequest, signal);
-        if (response.statusCode !== 401 || destroyed) return response;
-        if (cachedCapability?.rpcUrl === relayRequest.url) {
-          cachedCapability = null;
+        let attempts = 0;
+        const maxAttempts = 3;
+        let currentRequest = relayRequest;
+
+        while (true) {
+          attempts++;
+          const response = await relayRpcTransport(currentRequest, signal);
+          if (response.statusCode === 401 && !destroyed) {
+            if (cachedCapability?.rpcUrl === currentRequest.url) {
+              cachedCapability = null;
+            }
+            const renewed = await capabilityFor(currentRequest.timeout);
+            if (destroyed) throw new Error("relay capability request cancelled");
+            const retry = currentRequest.clone();
+            retry.url = renewed.rpcUrl;
+            currentRequest = retry;
+            const retryResponse = await relayRpcTransport(currentRequest, signal);
+            if (
+              retryResponse.statusCode === 401 &&
+              cachedCapability?.rpcUrl === renewed.rpcUrl
+            ) {
+              cachedCapability = null;
+            }
+            return retryResponse;
+          }
+
+          const isTransientGateway =
+            response.statusCode === 502 ||
+            response.statusCode === 503 ||
+            response.statusCode === 504;
+
+          if (
+            isTransientGateway &&
+            attempts < maxAttempts &&
+            !destroyed &&
+            !signal?.cancelled
+          ) {
+            const delayMs = attempts * 300;
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            continue;
+          }
+
+          return response;
         }
-        const renewed = await capabilityFor(relayRequest.timeout);
-        if (destroyed) throw new Error("relay capability request cancelled");
-        const retry = relayRequest.clone();
-        retry.url = renewed.rpcUrl;
-        const retryResponse = await relayRpcTransport(retry, signal);
-        if (
-          retryResponse.statusCode === 401 &&
-          cachedCapability?.rpcUrl === renewed.rpcUrl
-        ) {
-          cachedCapability = null;
-        }
-        return retryResponse;
       } finally {
         activeCapabilityRequests.delete(relayRequest);
       }

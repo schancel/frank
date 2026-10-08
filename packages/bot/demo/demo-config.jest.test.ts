@@ -156,6 +156,15 @@ describe('resolveDemoConfig', () => {
     expect(problemsOf(() => REAL({ MONAD_TESTNET_HTTP_RPC_URL: 'ws://x' }))).toEqual([
       'MONAD_TESTNET_HTTP_RPC_URL must be an http(s) URL',
     ])
+    expect(problemsOf(() => REAL({ MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc1.example.invalid,ws://bad' }))).toEqual([
+      'MONAD_TESTNET_HTTP_RPC_URL must be an http(s) URL',
+    ])
+    const multiRpc = REAL({
+      MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc1.example.invalid, https://rpc2.example.invalid',
+    })
+    expect(multiRpc.rpcUrl).toBe('https://rpc1.example.invalid, https://rpc2.example.invalid')
+    expect(multiRpc.secrets).toContain('https://rpc1.example.invalid')
+    expect(multiRpc.secrets).toContain('https://rpc2.example.invalid')
     expect(problemsOf(() => REAL({ FRANK_NETWORK_TAG: 'MON1' }))[0]).toMatch(/must be MONT/)
     expect(problemsOf(() => REAL({ MONAD_TESTNET_WS_RPC_URL: 'https://x' }))).toEqual([
       'MONAD_TESTNET_WS_RPC_URL must be a ws(s) URL',

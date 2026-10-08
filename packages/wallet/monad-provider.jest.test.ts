@@ -629,6 +629,85 @@ describe("MonadJsonRpcProvider (#534)", () => {
     expect(rotated.statusCode).toBe(200);
   });
 
+  it("retries and recovers when relay returns transient 502 Bad Gateway", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let rpcAttempts = 0;
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (req.url?.endsWith("/capability/auth")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              epoch: "11".repeat(32),
+              nonce: "22".repeat(32),
+              expires_at_ms: Date.now() + 60_000,
+              token: "33".repeat(32),
+              signing_domain: "frank:rpc-http-auth:v1",
+              customer,
+              chain: "monad-testnet",
+              body_sha256: createHash("sha256").update(body).digest("hex"),
+              network_tag: Buffer.from("MONT").toString("hex"),
+            })
+          );
+          return;
+        }
+        if (req.url?.endsWith("/capability")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              rpc_path: "/chain-rpc/monad-testnet/cap/bearer/rpc",
+              expires_at_ms: Date.now() + 60_000,
+            })
+          );
+          return;
+        }
+        rpcAttempts++;
+        if (rpcAttempts === 1) {
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid_rpc_upstream_response" }));
+          return;
+        }
+        const payload = JSON.parse(body);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ jsonrpc: "2.0", id: payload.id, result: "0x42" })
+        );
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const connection = createMonadRelayRpcConnection(rpcUrl, {
+      chain: "monad-testnet",
+      customer,
+      networkTag: "MONT",
+      signDigest: () =>
+        Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+    });
+    const request = connection.clone();
+    request.body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "eth_getBalance",
+      params: [`0x${"34".repeat(20)}`, "latest"],
+    });
+    request.setHeader("content-type", "application/json");
+
+    const response = await request.send();
+    expect(response.statusCode).toBe(200);
+    expect(rpcAttempts).toBe(2);
+  });
+
   it("does not retain a renewed capability that is also rejected", async () => {
     const customer = `0x${"12".repeat(20)}`;
     let capabilityRequests = 0;

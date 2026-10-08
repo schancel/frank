@@ -669,7 +669,13 @@ export function resolveDemoConfig(params: {
       problems.push(
         'MONAD_TESTNET_HTTP_RPC_URL is required (set it in the environment or your .env file), or run with --fake-chain',
       )
-    } else if (!/^https?:\/\//.test(rpcUrl)) {
+    } else if (
+      !rpcUrl
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .every((u) => /^https?:\/\//.test(u))
+    ) {
       problems.push('MONAD_TESTNET_HTTP_RPC_URL must be an http(s) URL')
     }
     if (wsRpcUrl && !/^wss?:\/\//.test(wsRpcUrl)) {
@@ -927,7 +933,15 @@ export function resolveDemoConfig(params: {
   ]
 
   const secrets = [
-    fakeChain ? undefined : rpcUrl,
+    ...(fakeChain
+      ? []
+      : [
+          rpcUrl,
+          ...rpcUrl
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        ]),
     wsRpcUrl,
     fakeChain ? undefined : merged.XEC_TESTNET_CHRONIK_URL,
     fakeChain ? undefined : merged.SOLANA_DEVNET_HTTP_RPC_URL,

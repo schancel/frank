@@ -22,7 +22,7 @@
  */
 
 import { getAddress, Provider } from 'ethers'
-import { Keypair, PublicKey } from '@solana/web3.js'
+import { Blockhash, Keypair, PublicKey, Transaction, SystemProgram } from '@solana/web3.js'
 import { getBase58Encoder } from '@solana/codecs-strings'
 import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
 import {
@@ -338,6 +338,17 @@ export class EvmChainFamilyAdapter {
   }) {
     return this.pool.createSweepPlan(params)
   }
+
+  createBatchSweepPlan(params: {
+    chain: string
+    dirtyUtxoIds: string[]
+    destinationAddresses: string[]
+    dustThresholdWei?: bigint
+    minFeePerTxWei?: bigint
+    maxChangeOutputs?: number
+  }) {
+    return this.pool.createBatchSweepPlan(params)
+  }
 }
 
 /**
@@ -423,6 +434,109 @@ export class SolanaChainFamilyAdapter {
 
   async createSigner(coinOrId: ChainUtxoCoin | string): Promise<Keypair> {
     return this.pool.createSolanaSigner(coinOrId)
+  }
+
+  /**
+   * Constructs and signs a single atomic multi-input Solana transaction.
+   * Unlike EVM which requires multi-block confirmation staging, Solana natively supports
+   * multiple transfer instructions from distinct sub-accounts in ONE single transaction.
+   */
+  async buildMultiInputTransfer(params: {
+    inputs: ChainUtxoCoin[]
+    recipientAddress: string
+    targetAmountLamports: bigint
+    changeAddress?: string
+    recentBlockhash: string
+    feeLamports?: bigint
+  }): Promise<{
+    transaction: Transaction
+    signers: Keypair[]
+    changeLamports: bigint
+  }> {
+    const {
+      inputs,
+      recipientAddress,
+      targetAmountLamports,
+      changeAddress,
+      recentBlockhash,
+      feeLamports = 5_000n,
+    } = params
+
+    if (inputs.length === 0) {
+      throw new Error('At least one input coin is required')
+    }
+
+    const signers: Keypair[] = []
+    let totalLamports = 0n
+    for (const input of inputs) {
+      signers.push(await this.pool.createSolanaSigner(input))
+      totalLamports += input.balanceWei
+    }
+
+    const totalNeeded = targetAmountLamports + feeLamports
+    if (totalLamports < totalNeeded) {
+      throw new Error(
+        `Insufficient funds: total inputs ${totalLamports} lamports < needed ${totalNeeded} lamports`,
+      )
+    }
+
+    const transaction = new Transaction()
+    transaction.recentBlockhash = recentBlockhash as unknown as Blockhash
+    transaction.feePayer = signers[0].publicKey
+
+    let remainingToPay = targetAmountLamports
+    const recipientPubkey = new PublicKey(recipientAddress)
+
+    for (let i = 0; i < inputs.length; i++) {
+      const input = inputs[i]
+      const signer = signers[i]
+      const availableFromInput =
+        i === 0 ? input.balanceWei - feeLamports : input.balanceWei
+
+      if (remainingToPay > 0n) {
+        const transferAmount =
+          availableFromInput >= remainingToPay
+            ? remainingToPay
+            : availableFromInput
+        if (transferAmount > 0n) {
+          transaction.add(
+            SystemProgram.transfer({
+              fromPubkey: signer.publicKey,
+              toPubkey: recipientPubkey,
+              lamports: transferAmount,
+            }),
+          )
+          remainingToPay -= transferAmount
+        }
+
+        const leftover = availableFromInput - transferAmount
+        if (leftover > 0n && changeAddress) {
+          transaction.add(
+            SystemProgram.transfer({
+              fromPubkey: signer.publicKey,
+              toPubkey: new PublicKey(changeAddress),
+              lamports: leftover,
+            }),
+          )
+        }
+      } else if (availableFromInput > 0n && changeAddress) {
+        transaction.add(
+          SystemProgram.transfer({
+            fromPubkey: signer.publicKey,
+            toPubkey: new PublicKey(changeAddress),
+            lamports: availableFromInput,
+          }),
+        )
+      }
+    }
+
+    transaction.sign(...signers)
+
+    return {
+      transaction,
+      signers,
+      changeLamports: totalLamports - totalNeeded,
+    }
   }
 }
 
@@ -540,11 +654,13 @@ export class ChainUtxoPool {
 
     // Check if this outpoint was already recorded as spent
     let status = coin.status ?? 'clean'
+    let isSpentOutpoint = false
     if (coin.outpoint) {
       const opScoped = this.outpointKey(coin.outpoint.txid, coin.outpoint.vout, coin.chain)
       const opGlobal = this.outpointKey(coin.outpoint.txid, coin.outpoint.vout)
       if (this.spentOutpointKeys.has(opScoped) || this.spentOutpointKeys.has(opGlobal)) {
         status = 'spent'
+        isSpentOutpoint = true
       }
     }
 
@@ -554,7 +670,7 @@ export class ChainUtxoPool {
       family,
       address: canonicalAddress,
       privateKey: coin.privateKey,
-      balanceWei: status === 'spent' ? 0n : (coin.balanceWei ?? 0n),
+      balanceWei: isSpentOutpoint ? 0n : (coin.balanceWei ?? 0n),
       nonce: coin.nonce ?? (family !== 'utxo' ? 0 : undefined),
       outpoint: coin.outpoint,
       status,
@@ -1374,6 +1490,89 @@ export class ChainUtxoPool {
       dirtyUtxo: utxo,
       totalSweepableWei: availableWei,
       changeOutputs,
+    }
+  }
+
+  /**
+   * Plans a multi-UTXO consolidation sweep.
+   * Aggregates multiple small or dirty coins into clean change accounts or a designated existing account.
+   * Enforces healthy output thresholds (each output >= 2 * minFeeWei) to prevent generating dust accounts.
+   */
+  createBatchSweepPlan(params: {
+    chain: string
+    dirtyUtxoIds: string[]
+    destinationAddresses: string[]
+    dustThresholdWei?: bigint
+    minFeePerTxWei?: bigint
+    maxChangeOutputs?: number
+  }): {
+    dirtyUtxos: ChainUtxoCoin[]
+    totalGrossWei: bigint
+    totalFeesWei: bigint
+    totalNetWei: bigint
+    consolidationOutputs: Array<{ address: string; amountWei: bigint }>
+  } {
+    const {
+      chain,
+      dirtyUtxoIds,
+      destinationAddresses,
+      dustThresholdWei = 1_000n,
+      minFeePerTxWei = 21_000n,
+      maxChangeOutputs = destinationAddresses.length,
+    } = params
+
+    if (dirtyUtxoIds.length === 0) {
+      throw new Error('At least one dirty UTXO id is required to batch sweep')
+    }
+    if (destinationAddresses.length === 0) {
+      throw new Error('At least one destination address is required')
+    }
+
+    const dirtyUtxos: ChainUtxoCoin[] = []
+    let totalGrossWei = 0n
+    for (const id of dirtyUtxoIds) {
+      const coin = this.getCoin(id)
+      if (!coin) {
+        throw new Error(`Dirty UTXO not found: ${id}`)
+      }
+      dirtyUtxos.push(coin)
+      totalGrossWei += coin.balanceWei
+    }
+
+    const totalFeesWei = BigInt(dirtyUtxos.length) * minFeePerTxWei
+    if (totalGrossWei <= totalFeesWei + dustThresholdWei) {
+      throw new Error(
+        `Total gross balance (${totalGrossWei} wei) across ${dirtyUtxos.length} coins is insufficient to cover sweep fees (${totalFeesWei} wei) plus dust threshold`,
+      )
+    }
+
+    const totalNetWei = totalGrossWei - totalFeesWei
+    // Enforce that change outputs are substantial enough (at least 2 * minFeePerTxWei) so they never become unspendable dust
+    const minHealthyOutput =
+      minFeePerTxWei * 2n > dustThresholdWei ? minFeePerTxWei * 2n : dustThresholdWei
+
+    const splits = computeGeometricRadixChangeSplits({
+      totalAvailableWei: totalNetWei,
+      dustThresholdWei: minHealthyOutput,
+      minFeePerTxWei: 0n,
+      maxOutputs: Math.min(destinationAddresses.length, maxChangeOutputs),
+    })
+
+    const consolidationOutputs: Array<{ address: string; amountWei: bigint }> = []
+    for (let i = 0; i < splits.length; i++) {
+      const addr = destinationAddresses[i % destinationAddresses.length]
+      consolidationOutputs.push({
+        address: formatUtxoAddress(addr, chain, dirtyUtxos[0]?.family),
+        amountWei: splits[i],
+      })
+    }
+
+    return {
+      dirtyUtxos,
+      totalGrossWei,
+      totalFeesWei,
+      totalNetWei,
+      consolidationOutputs,
     }
   }
 

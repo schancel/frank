@@ -195,6 +195,59 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(pool.getCleanCoins('monad')).toHaveLength(1)
       expect(pool.getPendingCoins('monad')).toHaveLength(0)
     })
+
+    it('creates multi-UTXO batch sweep plans enforcing healthy non-dust output thresholds', () => {
+      const dirty1 = pool.evm.importPrivateKey({
+        chain: 'monad',
+        address: Wallet.createRandom().address,
+        privateKey: Wallet.createRandom().privateKey,
+        balanceWei: 100_000n,
+        nonce: 1, // dirty
+      })
+      const dirty2 = pool.evm.importPrivateKey({
+        chain: 'monad',
+        address: Wallet.createRandom().address,
+        privateKey: Wallet.createRandom().privateKey,
+        balanceWei: 150_000n,
+        nonce: 2, // dirty
+      })
+      const dirty3 = pool.evm.importPrivateKey({
+        chain: 'monad',
+        address: Wallet.createRandom().address,
+        privateKey: Wallet.createRandom().privateKey,
+        balanceWei: 250_000n,
+        nonce: 1, // dirty
+      })
+
+      const dest1 = Wallet.createRandom().address
+      const dest2 = Wallet.createRandom().address
+
+      // Batch sweep of 3 dirty coins: gross = 500,000, fee = 3 * 21,000 = 63,000, net = 437,000
+      const plan = pool.evm.createBatchSweepPlan({
+        chain: 'monad',
+        dirtyUtxoIds: [dirty1.id, dirty2.id, dirty3.id],
+        destinationAddresses: [dest1, dest2],
+        minFeePerTxWei: 21_000n,
+      })
+
+      expect(plan.dirtyUtxos).toHaveLength(3)
+      expect(plan.totalGrossWei).toBe(500_000n)
+      expect(plan.totalFeesWei).toBe(63_000n)
+      expect(plan.totalNetWei).toBe(437_000n)
+      expect(plan.consolidationOutputs.length).toBeGreaterThanOrEqual(1)
+
+      // Every output is healthy (well above 2 * minFeePerTxWei = 42,000)
+      for (const output of plan.consolidationOutputs) {
+        expect(output.amountWei).toBeGreaterThanOrEqual(42_000n)
+      }
+
+      // Exact sum of outputs equals net
+      const totalOutputs = plan.consolidationOutputs.reduce(
+        (sum, o) => sum + o.amountWei,
+        0n,
+      )
+      expect(totalOutputs).toBe(plan.totalNetWei)
+    })
   })
 
   describe('Solana Family Adapter & Coin Selection', () => {
@@ -345,6 +398,38 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       })
       expect(stealthCoin.origin).toBe('stealth')
       expect(pool.getCleanCoins('solana-mainnet')).toHaveLength(2)
+    })
+
+    it('builds an atomic multi-input Solana transfer transaction from multiple sub-accounts', async () => {
+      const recipient = await Keypair.generate()
+      const change = await Keypair.generate()
+
+      const coin1 = pool.solana.registerAccount({
+        chain: 'solana',
+        address: solanaKp1.publicKey.toBase58(),
+        privateKey: Buffer.from(solanaKp1.secretKey).toString('hex'),
+        balanceWei: 300_000_000n, // 0.3 SOL
+      })
+      const coin2 = pool.solana.registerDerivedAccount({
+        chain: 'solana',
+        address: solanaKp2.publicKey.toBase58(),
+        privateKey: Buffer.from(solanaKp2.secretKey).toString('hex'),
+        balanceWei: 400_000_000n, // 0.4 SOL
+      })
+
+      // Target 600,000,000 lamports (0.6 SOL) + 5,000 fee
+      const result = await pool.solana.buildMultiInputTransfer({
+        inputs: [coin1, coin2],
+        recipientAddress: recipient.publicKey.toBase58(),
+        targetAmountLamports: 600_000_000n,
+        changeAddress: change.publicKey.toBase58(),
+        recentBlockhash: 'GfJc19J8P8v92jLK23V2GBjuAEGB1111111111111111',
+      })
+
+      expect(result.signers).toHaveLength(2)
+      expect(result.transaction.instructions.length).toBeGreaterThanOrEqual(2)
+      expect(result.changeLamports).toBe(700_000_000n - 600_005_000n)
+      expect(result.transaction.signatures).toHaveLength(2)
     })
   })
 

@@ -394,20 +394,36 @@ async function issueMonadRelayRpcCapabilityWithLifecycle(
   };
 }
 
+export const RELAXED_CANCELLATION_POLL_INTERVAL_MS = 200;
+export const DEFAULT_IS_CANCELLED = () => false;
+
+function isNoopCancellation(predicate: () => boolean): boolean {
+  if (predicate === DEFAULT_IS_CANCELLED) return true;
+  const normalized = predicate.toString().replace(/\s+/g, "");
+  return (
+    normalized === "()=>false" ||
+    normalized === "()=>!1" ||
+    normalized === "()=>{returnfalse;}" ||
+    normalized === "()=>{returnfalse}" ||
+    normalized === "()=>{return!1;}" ||
+    normalized === "()=>{return!1}" ||
+    /^function(?:\w+)?\(\)\{return(?:false|!1);?\}$/.test(normalized)
+  );
+}
+
 /** Obtain one standard-client-compatible HTTP/WebSocket bearer URL pair from a relay. */
 export async function issueMonadRelayRpcCapability(
   rpcUrl: string,
   auth: MonadRelayRpcAuth,
   timeout = 30_000,
-  isCancelled: () => boolean = () => false
+  isCancelled?: (() => boolean) | AbortSignal
 ): Promise<MonadRelayRpcCapability> {
   let cancel!: () => void;
   const cancelled = new Promise<void>((resolve) => {
     cancel = resolve;
   });
   const activeRequests = new Set<FetchRequest>();
-  const poll = setInterval(() => {
-    if (!isCancelled()) return;
+  const triggerCancel = () => {
     cancel();
     for (const request of activeRequests) {
       try {
@@ -415,9 +431,49 @@ export async function issueMonadRelayRpcCapability(
       } catch {}
     }
     activeRequests.clear();
-  }, 10);
+  };
+
+  let poll: ReturnType<typeof setInterval> | undefined;
+  let onAbort: (() => void) | undefined;
+  let signal: AbortSignal | undefined;
+  let checkCancelled: () => boolean = DEFAULT_IS_CANCELLED;
+
+  if (isCancelled !== undefined && isCancelled !== null) {
+    if (
+      (typeof AbortSignal !== "undefined" &&
+        isCancelled instanceof AbortSignal) ||
+      typeof (isCancelled as any).addEventListener === "function"
+    ) {
+      const activeSignal = isCancelled as AbortSignal;
+      signal = activeSignal;
+      checkCancelled = () => activeSignal.aborted;
+      if (activeSignal.aborted) {
+        triggerCancel();
+      } else {
+        onAbort = () => triggerCancel();
+        activeSignal.addEventListener("abort", onAbort, { once: true });
+      }
+    } else if (typeof isCancelled === "function") {
+      checkCancelled = isCancelled;
+      if (!isNoopCancellation(isCancelled)) {
+        if (isCancelled()) {
+          triggerCancel();
+        } else {
+          poll = setInterval(() => {
+            if (!isCancelled()) return;
+            if (poll !== undefined) {
+              clearInterval(poll);
+              poll = undefined;
+            }
+            triggerCancel();
+          }, RELAXED_CANCELLATION_POLL_INTERVAL_MS);
+        }
+      }
+    }
+  }
+
   const lifecycle: RelayCapabilityLifecycle = {
-    isCancelled,
+    isCancelled: checkCancelled,
     cancelled,
     trackRequest: (request) => {
       activeRequests.add(request);
@@ -432,7 +488,12 @@ export async function issueMonadRelayRpcCapability(
       lifecycle
     );
   } finally {
-    clearInterval(poll);
+    if (poll !== undefined) {
+      clearInterval(poll);
+    }
+    if (onAbort && signal && typeof signal.removeEventListener === "function") {
+      signal.removeEventListener("abort", onAbort);
+    }
     for (const request of activeRequests) {
       try {
         request.cancel();

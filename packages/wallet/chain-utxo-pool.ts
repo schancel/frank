@@ -66,6 +66,7 @@ export interface ChainUtxoCoin {
   readonly derivationPath?: string
   readonly ephemeralPubKey?: string
   readonly txHash?: string
+  readonly index?: number
 }
 
 // Aliases for backwards compatibility with AccountUtxoPool
@@ -717,6 +718,7 @@ export class ChainUtxoPool {
       discoveredAt: Date.now(),
       lastUpdatedMs: Date.now(),
       derivationPath: params.derivationPath,
+      index: params.index,
     })
   }
 
@@ -742,6 +744,7 @@ export class ChainUtxoPool {
       discoveredAt: Date.now(),
       lastUpdatedMs: Date.now(),
       derivationPath: params.derivationPath,
+      index: params.index,
     })
   }
 

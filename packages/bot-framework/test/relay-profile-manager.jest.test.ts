@@ -3,6 +3,7 @@ import * as monadIdentity from '@frank/wallet/monad-identity'
 
 jest.mock('@frank/wallet/monad-identity', () => ({
   fetchMonadProfile: jest.fn(),
+  registerMonadIdentity: jest.fn(),
   registerMonadIdentityCbor: jest.fn(),
 }))
 
@@ -156,4 +157,38 @@ describe('RelayProfileManager', () => {
       },
     })
   })
+
+  it('falls back to protobuf registerMonadIdentity when registerMonadIdentityCbor fails', async () => {
+    ;(
+      monadIdentity.registerMonadIdentityCbor as jest.Mock
+    ).mockRejectedValueOnce(new Error('CBOR unsupported'))
+    ;(
+      monadIdentity.registerMonadIdentity as jest.Mock
+    ).mockResolvedValueOnce({})
+
+    await RelayProfileManager.registerProfile({
+      relayBaseUrl: 'https://relay.example.com',
+      identity: dummyIdentity,
+      label: 'TestBot',
+      profile: {
+        name: 'Bot Name',
+        bio: 'Bot Bio',
+        bot: true,
+      },
+      force: true,
+    })
+
+    expect(monadIdentity.registerMonadIdentityCbor).toHaveBeenCalledTimes(1)
+    expect(monadIdentity.registerMonadIdentity).toHaveBeenCalledWith({
+      relayBaseUrl: 'https://relay.example.com',
+      identity: dummyIdentity,
+      profile: {
+        name: 'Bot Name',
+        bio: 'Bot Bio',
+        avatar: undefined,
+        bot: true,
+      },
+    })
+  })
 })
+

@@ -97,6 +97,7 @@ describe('useChainBalance', () => {
     expect(mockFetchSolanaBalance).toHaveBeenCalledWith({
       address: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
       networkId: 'solana-devnet',
+      relayBaseUrl: 'http://127.0.0.1:8098',
     })
 
     const { formattedBalance, loaded, balance } = useChainBalance('solana')

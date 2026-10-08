@@ -93,6 +93,44 @@ describe("ecash-balance", () => {
       expect(result.formatted).toBe("2500.5 XEC");
     });
 
+    it("fails over to secondary Chronik URL when primary fails", async () => {
+      const calledUrls: string[] = [];
+      const clientFactory = (url: string) => {
+        calledUrls.push(url);
+        if (url.includes("127.0.0.1")) {
+          return {
+            script: () => ({
+              utxos: jest
+                .fn()
+                .mockRejectedValue(
+                  new Error("Error connecting to known Chronik instances")
+                ),
+            }),
+          };
+        }
+        return {
+          script: () => ({
+            utxos: jest.fn().mockResolvedValue({
+              utxos: [{ sats: 300_000n }],
+            }),
+          }),
+        };
+      };
+
+      const result = await fetchEcashBalance({
+        address: TESTNET_ADDR,
+        relayBaseUrl: "http://127.0.0.1:8098",
+        client: clientFactory,
+      });
+
+      expect(calledUrls).toEqual([
+        "http://127.0.0.1:8098/chain-rpc/xec-testnet/chronik",
+        DEFAULT_CHRONIK_UPSTREAMS["xec-testnet"],
+      ]);
+      expect(result.sats).toBe(300_000n);
+      expect(result.formatted).toBe("3000 tXEC");
+    });
+
     it("handles empty utxo list as 0 balance", async () => {
       const mockScript = jest.fn(() => ({
         utxos: jest.fn().mockResolvedValue({ utxos: [] }),

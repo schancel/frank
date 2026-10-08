@@ -475,6 +475,18 @@ export default configure(ctx => {
           }`,
           changeOrigin: true,
         },
+        '/address': {
+          target: `http://127.0.0.1:${
+            process.env.FRANK_DEMO_RELAY_PORT || 8098
+          }`,
+          changeOrigin: true,
+        },
+        '/profiles': {
+          target: `http://127.0.0.1:${
+            process.env.FRANK_DEMO_RELAY_PORT || 8098
+          }`,
+          changeOrigin: true,
+        },
         '/docs': {
           target: `http://127.0.0.1:${
             process.env.FRANK_DOCS_DEV_PORT ||

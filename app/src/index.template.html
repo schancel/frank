@@ -62,12 +62,13 @@
               }
             }
           }
-          var origSend = XMLHttpRequest.prototype.send
-          XMLHttpRequest.prototype.send = function () {
+          var origOpen = XMLHttpRequest.prototype.open
+          XMLHttpRequest.prototype.open = function () {
+            var res = origOpen.apply(this, arguments)
             try {
               this.setRequestHeader('ngrok-skip-browser-warning', '1')
             } catch (e) {}
-            return origSend.apply(this, arguments)
+            return res
           }
         } catch (e) {}
       })()

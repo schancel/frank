@@ -148,12 +148,14 @@ export async function fetchChainBalance(
       if (!address) {
         return
       }
+      const relayBaseUrl = loadMonadChainConfigFromEnv().relayBaseUrl
       const networkId = activeChain.isTestnet
         ? 'solana-devnet'
         : 'solana-mainnet'
       const result = await fetchSolanaBalance({
         address,
         networkId,
+        relayBaseUrl,
       })
       solanaState.value = {
         balance: result.lamports,

@@ -62,6 +62,7 @@ interface ActiveBotInstance {
   context: BotContext;
   lastPollTimestamp: number;
   lastAuthRecoveryMs?: number;
+  inFlightDigests: Set<string>;
 }
 
 export class FrankBotHost {
@@ -268,15 +269,47 @@ export class FrankBotHost {
     ) {
       try {
         const botBalance = await this.provider.getBalance(botAddress);
-        if (botBalance < 2_000_000_000_000_000_000n) {
-          await this.nonceSequencer.withNonce(async (nonce) => {
-            const tx = await this.fundingWallet!.sendTransaction({
-              to: botAddress,
-              value: 5_000_000_000_000_000_000n,
-              nonce,
+        if (botBalance < 100_000_000_000_000_000n) {
+          const mainBalance = await this.provider.getBalance(
+            this.fundingWallet.address
+          );
+          const fundAmount =
+            mainBalance > 1_000_000_000_000_000_000n
+              ? 500_000_000_000_000_000n
+              : mainBalance / 4n;
+          if (fundAmount > 10_000_000_000_000_000n) {
+            await this.nonceSequencer.withNonce(async (nonce) => {
+              const tx = await this.fundingWallet!.sendTransaction({
+                to: botAddress,
+                value: fundAmount,
+                nonce,
+              });
+              await tx.wait();
             });
-            await tx.wait();
-          });
+          }
+        }
+        const receiveAddress = (await wallet.getReceiveAddress()).raw;
+        if (receiveAddress.toLowerCase() !== botAddress.toLowerCase()) {
+          const receiveBalance = await this.provider.getBalance(receiveAddress);
+          if (receiveBalance < 100_000_000_000_000_000n) {
+            const mainBalance = await this.provider.getBalance(
+              this.fundingWallet.address
+            );
+            const fundAmount =
+              mainBalance > 1_000_000_000_000_000_000n
+                ? 500_000_000_000_000_000n
+                : mainBalance / 4n;
+            if (fundAmount > 10_000_000_000_000_000n) {
+              await this.nonceSequencer.withNonce(async (nonce) => {
+                const tx = await this.fundingWallet!.sendTransaction({
+                  to: receiveAddress,
+                  value: fundAmount,
+                  nonce,
+                });
+                await tx.wait();
+              });
+            }
+          }
         }
       } catch (err) {
         console.warn(
@@ -312,12 +345,12 @@ export class FrankBotHost {
 
       lookupPeer: (addr: string) => directory.lookupPeer(addr),
 
-      sendMessage: async (recipientAddress: string, items) => {
-        return this.sendMessageWithFallback(wallet, recipientAddress, items);
+      sendMessage: async (recipientAddress: string, items, conversationId?: string) => {
+        return this.sendMessageWithFallback(wallet, recipientAddress, items, conversationId);
       },
 
-      sendDirectMessage: async (recipientAddress: string, items) => {
-        return this.sendMessageWithFallback(wallet, recipientAddress, items);
+      sendDirectMessage: async (recipientAddress: string, items, conversationId?: string) => {
+        return this.sendMessageWithFallback(wallet, recipientAddress, items, conversationId);
       },
 
       onNewUserRegistered: (cb) => {
@@ -453,6 +486,14 @@ export class FrankBotHost {
       },
     };
 
+    let savedCursor = 0;
+    try {
+      const cursorStr = await state.get("cursor:lastPollTimestamp");
+      if (cursorStr) savedCursor = parseInt(cursorStr, 10);
+    } catch {
+      // ignore
+    }
+
     const instance: ActiveBotInstance = {
       definition,
       wallet,
@@ -462,7 +503,9 @@ export class FrankBotHost {
       loopGuard,
       peerQueue,
       context,
-      lastPollTimestamp: Date.now() - 60_000,
+      lastPollTimestamp:
+        savedCursor > 0 ? savedCursor : Date.now() - 24 * 3600_000,
+      inFlightDigests: new Set<string>(),
     };
 
     this.instances.set(definition.id, instance);
@@ -548,15 +591,23 @@ export class FrankBotHost {
         }
 
         for (const msg of messages) {
-          instance.lastPollTimestamp = Math.max(
-            instance.lastPollTimestamp,
-            msg.receivedTime + 1
-          );
-
-          // 1. Idempotency check on payload digest
+          // 1. Idempotency check on payload digest (both in-flight and stored)
+          if (instance.inFlightDigests.has(msg.payloadDigest)) {
+            continue;
+          }
           const digestKey = `digest:${msg.payloadDigest}`;
           const alreadyProcessed = await instance.state.get(digestKey);
-          if (alreadyProcessed) continue;
+          if (alreadyProcessed) {
+            instance.lastPollTimestamp = Math.max(
+              instance.lastPollTimestamp,
+              msg.receivedTime + 1
+            );
+            void instance.state.put(
+              "cursor:lastPollTimestamp",
+              String(instance.lastPollTimestamp)
+            );
+            continue;
+          }
 
           // 2. Loop guard check (echoes, denylists, bot peers)
           const sender = msg.senderAddress.raw;
@@ -564,6 +615,14 @@ export class FrankBotHost {
           if (dropReason) {
             console.log(
               `[bot-host] [${id}] Dropped message from ${sender}: ${dropReason}`
+            );
+            instance.lastPollTimestamp = Math.max(
+              instance.lastPollTimestamp,
+              msg.receivedTime + 1
+            );
+            void instance.state.put(
+              "cursor:lastPollTimestamp",
+              String(instance.lastPollTimestamp)
             );
             continue;
           }
@@ -575,22 +634,31 @@ export class FrankBotHost {
             )}..., items: ${msg.items.map((i) => i.type).join(",")})`
           );
 
+          instance.inFlightDigests.add(msg.payloadDigest);
+
           // 3. Dispatch in per-peer serialized queue
           void instance.peerQueue.enqueue(sender, async () => {
             const msgCtx: BotMessageContext = {
-              conversationId: sender,
+              conversationId: msg.conversationId || sender,
               peerAddress: sender,
               peerSubject: msg.payloadDigest,
               timestampMs: msg.receivedTime,
               payloadDigest: msg.payloadDigest,
               items: msg.items,
               reply: async (replyItems) => {
-                await instance.context.sendMessage(sender, replyItems);
+                await instance.context.sendMessage(
+                  sender,
+                  replyItems,
+                  msg.conversationId
+                );
                 instance.loopGuard.recordReply(sender);
               },
             };
 
             try {
+              if (await instance.state.get(digestKey)) {
+                return;
+              }
               let reply = await instance.definition.onMessage(
                 msgCtx,
                 instance.context
@@ -606,12 +674,26 @@ export class FrankBotHost {
                 }
               }
               if (Array.isArray(reply) && reply.length > 0) {
-                await instance.context.sendMessage(sender, reply);
+                await instance.context.sendMessage(
+                  sender,
+                  reply,
+                  msg.conversationId
+                );
                 instance.loopGuard.recordReply(sender);
               }
               await instance.state.put(digestKey, String(Date.now()));
+              instance.lastPollTimestamp = Math.max(
+                instance.lastPollTimestamp,
+                msg.receivedTime + 1
+              );
+              await instance.state.put(
+                "cursor:lastPollTimestamp",
+                String(instance.lastPollTimestamp)
+              );
             } catch (err) {
               console.error(`[bot-host] Error in bot ${id}.onMessage:`, err);
+            } finally {
+              instance.inFlightDigests.delete(msg.payloadDigest);
             }
           });
         }
@@ -813,15 +895,28 @@ export class FrankBotHost {
   private async sendMessageWithFallback(
     wallet: MonadChainWalletHandle,
     recipientAddress: string,
-    items: MessageItem[]
+    items: MessageItem[],
+    conversationId?: string
   ): Promise<DirectMessageSendResult> {
     try {
-      return await this.chain.directMessages.send({
+      const res = await this.chain.directMessages.send({
         wallet,
         recipient: toChainAddress(recipientAddress),
         items,
+        conversationId,
       });
-    } catch {
+      console.log(
+        `[bot-host] Canonical send to ${recipientAddress} succeeded (digest: ${res.payloadDigest.slice(
+          0,
+          10
+        )}...)`
+      );
+      return res;
+    } catch (err) {
+      console.warn(
+        `[bot-host] Canonical send to ${recipientAddress} failed, falling back to standard send:`,
+        err
+      );
       return this.sendStandardDirectMessage(wallet, recipientAddress, items);
     }
   }
@@ -913,7 +1008,8 @@ export class FrankBotHost {
   }
 
   async stop(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running && this.instances.size === 0) return;
+    const wasRunning = this.running;
     this.running = false;
 
     if (this.resolveStop) {

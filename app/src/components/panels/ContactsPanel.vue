@@ -85,13 +85,11 @@
             <q-item-section class="col" style="min-width: 0">
               <div class="row items-center no-wrap">
                 <q-item-label lines="1" class="text-weight-medium ellipsis">
-                  {{
-                    item.contact?.profile?.name ||
-                    formatAddrCompact(item.address)
-                  }}
+                  {{ contactDisplayName(item) }}
                 </q-item-label>
                 <account-badge
                   :address="item.address"
+                  :name="contactDisplayName(item)"
                   :account-type="item.contact?.profile?.accountType"
                   :bot-role="item.contact?.profile?.botRole"
                   :is-bot="item.contact?.profile?.isBot"
@@ -123,7 +121,7 @@
                   class="q-ml-xs"
                   :aria-label="
                     $t('a11y.deleteContact', {
-                      name: item.contact?.profile?.name || '',
+                      name: contactDisplayName(item),
                     })
                   "
                   @click.stop="deleteContact(item.address)"
@@ -161,7 +159,7 @@
             v-ripple
             class="q-py-sm full-width"
             data-test="directory-search-result"
-            @click="addAndStartChat(res)"
+            @click="addAndOpenProfile(res)"
           >
             <q-item-section avatar style="min-width: 44px; padding-right: 8px">
               <q-avatar rounded size="40px">
@@ -180,6 +178,7 @@
                 </q-item-label>
                 <account-badge
                   :address="res.address"
+                  :name="res.name"
                   :account-type="res.accountType"
                   :bot-role="res.botRole"
                   :is-bot="res.bot"
@@ -245,6 +244,7 @@ import {
   defineComponent,
   inject,
   onBeforeUnmount,
+  onMounted,
   ref,
   watch,
 } from 'vue'
@@ -332,7 +332,12 @@ export default defineComponent({
       }
       return contactEntries.value
         .filter(([address, contact]) => {
-          const name = contact.profile?.name?.toLowerCase() ?? ''
+          const rawName = contact.profile?.name?.toLowerCase() ?? ''
+          const name =
+            rawName === 'loading...' ||
+            rawName === pendingRelayData.profile.name.toLowerCase()
+              ? ''
+              : rawName
           return name.includes(q) || address.toLowerCase().includes(q)
         })
         .map(([address, contact]) => ({ address, contact }))
@@ -349,6 +354,36 @@ export default defineComponent({
         ? `${address.slice(0, 6)}...${address.slice(-4)}`
         : address
     }
+
+    function contactDisplayName(item: {
+      address: string
+      contact?: ContactState
+    }): string {
+      const name = item.contact?.profile?.name
+      if (
+        !name ||
+        name === 'Loading...' ||
+        name === pendingRelayData.profile.name ||
+        name.trim() === ''
+      ) {
+        return formatAddrCompact(item.address)
+      }
+      return name
+    }
+
+    onMounted(() => {
+      for (const [address, contact] of contactEntries.value) {
+        if (
+          !contact.profile?.name ||
+          contact.profile.name === 'Loading...' ||
+          contact.profile.name === pendingRelayData.profile.name
+        ) {
+          if (typeof contactStore.refresh === 'function') {
+            void contactStore.refresh(address)
+          }
+        }
+      }
+    })
 
     function isContact(addr: string): boolean {
       if (typeof contactStore.isContact === 'function') {
@@ -550,8 +585,20 @@ export default defineComponent({
       }
     }
 
+    function addAndOpenProfile(item: NetworkSearchResult) {
+      addNetworkContact(item)
+      openProfile(item.address)
+    }
+
     function openAddContact() {
-      openPage(router, '/add-contact')
+      const from =
+        router.currentRoute?.value?.fullPath ||
+        router.currentRoute?.value?.path ||
+        ''
+      const target = from
+        ? `/add-contact?mode=contact&from=${encodeURIComponent(from)}`
+        : '/add-contact?mode=contact'
+      openPage(router, target)
     }
 
     function deleteContact(address: string) {
@@ -570,9 +617,11 @@ export default defineComponent({
       startChat,
       addNetworkContact,
       addAndStartChat,
+      addAndOpenProfile,
       openAddContact,
       deleteContact,
       showMyQrDialog,
+      contactDisplayName,
     }
   },
 })

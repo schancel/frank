@@ -793,7 +793,11 @@ export default {
     composeEmail: 'Compose Email',
     enterBitcoinCashAddress: 'Enter address (0x...) or email address',
     enterAddress: 'Enter address (0x...) or email address',
-    enterAddressOrEmail: 'Enter address (0x...) or email address',
+    enterAddressOrEmail:
+      'Enter address (0x...), contact name, username, or email',
+    existingContacts: 'Existing Contacts',
+    existingContact: 'Existing Contact',
+    clearContact: 'Clear contact',
     topicOptional: 'Topic / Subject (optional)',
     topicPlaceholder: 'e.g. project-planning, inquiry, invoice',
     loading: 'Looking up contact',

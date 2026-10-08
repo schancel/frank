@@ -271,3 +271,56 @@ test('clicking reset storage on locked account invokes accountSession.reset()', 
     window.confirm = originalConfirm
   }
 })
+
+test('submitting in Setup.vue retains the recovery phrase if an error occurs', async () => {
+  mockImportBip39Wallet.mockRejectedValueOnce(new Error('Import failed'))
+  const view = render()
+
+  await view.get('[data-test="legacy-recovery"]').trigger('click')
+  await flushPromises()
+
+  const phrase = 'test test test test test test test test test test test junk'
+  const phraseInput = view.get('[data-test="legacy-phrase"]')
+  await phraseInput.setValue(phrase)
+  await flushPromises()
+
+  await view.get('form').trigger('submit')
+  await flushPromises()
+
+  expect(view.find('[data-test="legacy-phrase"]').exists()).toBe(true)
+  expect(
+    (view.get('[data-test="legacy-phrase"]').element as HTMLTextAreaElement)
+      .value,
+  ).toBe(phrase)
+  expect(view.find('[data-test="account-error"]').exists()).toBe(true)
+  expect(
+    view.get('[data-test="identify-legacy"]').attributes('disabled'),
+  ).toBeUndefined()
+  expect(mockPush).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+test('submitting BIP-39 phrase when initial custody is locked recovers and successfully imports', async () => {
+  mockImportBip39Wallet.mockClear()
+  mockPush.mockClear()
+  Object.assign(mockAccount, {
+    status: 'locked',
+    account: { displayName: 'Corrupted' },
+  })
+  const view = render()
+
+  await view.get('[data-test="legacy-locked-recovery"]').trigger('click')
+  await flushPromises()
+
+  const phrase = 'test test test test test test test test test test test junk'
+  const phraseInput = view.get('[data-test="legacy-phrase"]')
+  await phraseInput.setValue(phrase)
+  await flushPromises()
+
+  await view.get('form').trigger('submit')
+  await flushPromises()
+
+  expect(mockImportBip39Wallet).toHaveBeenCalledWith(phrase, "m/44'/60'/1'/0/0")
+  expect(mockPush).toHaveBeenCalledWith('/wallet')
+  view.unmount()
+})

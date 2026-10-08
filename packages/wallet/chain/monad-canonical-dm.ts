@@ -594,6 +594,17 @@ async function send(
   if (!recipient)
     throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
   const messageId = randomBytes(16)
+  let conversationIdBytes: Uint8Array | undefined
+  if (params.conversationId) {
+    if (typeof params.conversationId === 'string') {
+      const clean = params.conversationId.replace(/-/g, '')
+      if (clean.length === 32) {
+        conversationIdBytes = Uint8Array.from(Buffer.from(clean, 'hex'))
+      }
+    } else if (params.conversationId.length === 16) {
+      conversationIdBytes = params.conversationId
+    }
+  }
   const roles = owner.roles.create(directory.network, senderCurrent)
   let sealed
   try {
@@ -602,6 +613,7 @@ async function send(
       senderCurrent,
       recipientCurrent: recipient.current,
       messageId,
+      conversationId: conversationIdBytes,
       items,
       roles,
     })

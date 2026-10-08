@@ -25,6 +25,7 @@
             flat
             icon="add"
             :aria-label="$t('a11y.addContact')"
+            data-testid="start-conversation-btn"
             @click="openAddContact"
           />
         </q-item>
@@ -91,8 +92,8 @@ export default defineComponent({
           router.currentRoute?.value?.path ||
           ''
         const target = from.startsWith('/chat')
-          ? `/add-contact?from=${encodeURIComponent(from)}`
-          : '/add-contact'
+          ? `/add-contact?mode=conversation&from=${encodeURIComponent(from)}`
+          : '/add-contact?mode=conversation'
         openPage(router, target)
       },
       openComposeEmail() {
@@ -106,7 +107,15 @@ export default defineComponent({
         openPage(router, target)
       },
       selectConversation(item: Conversation | string) {
-        const target = typeof item === 'string' ? item : item.id || item.address
+        const target =
+          typeof item === 'string'
+            ? item
+            : item.kind === 'direct' &&
+              !item.topic &&
+              !item.name &&
+              item.address
+            ? item.address
+            : item.id || item.address
         if (typeof chatStore.setActiveConversation === 'function') {
           chatStore.setActiveConversation(target)
         } else if (typeof chatStore.setActiveChat === 'function') {

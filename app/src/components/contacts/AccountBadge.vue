@@ -37,6 +37,10 @@ export default defineComponent({
       type: String,
       default: '',
     },
+    name: {
+      type: String,
+      default: '',
+    },
     accountType: {
       type: Number,
       default: undefined,
@@ -65,33 +69,71 @@ export default defineComponent({
           ? contactStore.isCurated(props.address)
           : false
 
-      const contactProfile =
-        props.address && typeof contactStore.getContactProfile === 'function'
-          ? contactStore.getContactProfile(props.address)
-          : undefined
+      let resolvedType = props.accountType
+      let resolvedRole = props.botRole
+      let resolvedIsBot = props.isBot
 
-      const inferred =
-        isCurated && contactProfile?.name
-          ? inferCuratedBotAttributes(contactProfile.name)
-          : {}
+      if (
+        isCurated &&
+        (resolvedType === undefined || resolvedType === 0) &&
+        resolvedRole === undefined
+      ) {
+        let contactName = props.name || ''
+        if (
+          !contactName &&
+          props.address &&
+          typeof contactStore.getContact === 'function'
+        ) {
+          const contact = contactStore.getContact(props.address)
+          if (contact?.profile) {
+            contactName = contact.profile.name || ''
+            if (resolvedType === undefined || resolvedType === 0) {
+              resolvedType = contact.profile.accountType
+            }
+            if (resolvedRole === undefined) {
+              resolvedRole = contact.profile.botRole
+            }
+            if (resolvedIsBot === undefined) {
+              resolvedIsBot = contact.profile.isBot
+            }
+          }
+        }
+        if (
+          !contactName &&
+          props.address &&
+          Array.isArray(contactStore.curatedDefaults)
+        ) {
+          const entry = contactStore.curatedDefaults.find(
+            d =>
+              d.address &&
+              d.address.toLowerCase() === props.address.toLowerCase(),
+          )
+          if (entry?.name) {
+            contactName = entry.name
+          }
+        }
+        if (
+          contactName &&
+          (resolvedType === undefined || resolvedType === 0) &&
+          resolvedRole === undefined
+        ) {
+          const inferred = inferCuratedBotAttributes(contactName)
+          if (inferred.accountType !== undefined) {
+            resolvedType = inferred.accountType
+          }
+          if (inferred.botRole !== undefined) {
+            resolvedRole = inferred.botRole
+          }
+          if (inferred.isBot !== undefined && resolvedIsBot === undefined) {
+            resolvedIsBot = inferred.isBot
+          }
+        }
+      }
 
       const type =
-        props.accountType !== undefined
-          ? props.accountType
-          : contactProfile?.accountType !== undefined
-          ? contactProfile.accountType
-          : inferred.accountType !== undefined
-          ? inferred.accountType
-          : props.isBot ?? contactProfile?.isBot ?? inferred.isBot
-          ? 1
-          : 0
+        resolvedType !== undefined ? resolvedType : resolvedIsBot ? 1 : 0
 
-      const role =
-        props.botRole !== undefined
-          ? props.botRole
-          : contactProfile?.botRole !== undefined
-          ? contactProfile.botRole
-          : inferred.botRole
+      const role = resolvedRole
 
       if (isCurated) {
         if (type === 2 && role === 2) {

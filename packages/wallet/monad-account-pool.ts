@@ -601,6 +601,13 @@ export class MonadSubAccountPool {
       params.provider,
       params.gasReserveWei
     );
+    for (const account of accounts) {
+      this.syncUtxo(
+        account.index,
+        "available",
+        account.capacityWei + params.gasReserveWei
+      );
+    }
     let selection = this.selectFundedCapacity(params.stampValueWei, accounts);
     if (
       selection.length >= 2 ||

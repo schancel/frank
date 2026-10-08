@@ -1037,17 +1037,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const received: DirectMessageReceived[] = [];
       const seenDigests = new Set<string>();
       if (canonical) {
-        try {
-          const canonicalReceived = await canonical.fetchSince(params);
-          for (const msg of canonicalReceived) {
-            const digest = (msg.payloadDigest ?? "").toLowerCase();
-            if (digest) {
-              seenDigests.add(digest);
-            }
-            received.push(msg);
+        const canonicalReceived = await canonical.fetchSince(params);
+        for (const msg of canonicalReceived) {
+          const digest = (msg.payloadDigest ?? "").toLowerCase();
+          if (digest) {
+            seenDigests.add(digest);
           }
-        } catch (err) {
-          console.warn("[monad-chain] canonical fetchSince failed:", err);
+          received.push(msg);
         }
       }
 
@@ -1148,7 +1144,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             receivedTime: record.timestamp,
           });
         }
-      } catch {
+      } catch (err) {
+        if (!canonical) {
+          throw err;
+        }
         // Standard mailbox read is best-effort fallback alongside canonical messaging
       }
       received.sort((a, b) => (a.receivedTime ?? 0) - (b.receivedTime ?? 0));
@@ -2170,10 +2169,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     (result) => result.status === "rejected"
                   );
                   if (failure?.status === "rejected") throw failure.reason;
+                } finally {
                   walletsByIdentity.delete(identityKey);
                   if (economicOwnerKey !== undefined)
                     openTypedEvmAccounts.delete(economicOwnerKey);
-                } finally {
                   provider.destroy();
                   httpClient.destroy();
                   material.dispose();

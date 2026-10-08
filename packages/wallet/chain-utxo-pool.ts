@@ -507,7 +507,7 @@ export class ChainUtxoPool {
     }
   }
 
-  private chainKey(chain: string): string {
+  chainKey(chain: string): string {
     return chain.toLowerCase()
   }
 
@@ -1364,9 +1364,304 @@ export class ChainUtxoPool {
       changeOutputs,
     }
   }
+
+  /**
+   * Creates a transactional View over this UTXO pool.
+   * Enables staging unconfirmed change outputs, chaining child transactions off parents,
+   * selecting from chained change outputs, and committing or rolling back atomically.
+   */
+  createView(): ChainUtxoView {
+    return new ChainUtxoView(this)
+  }
+}
+
+export interface ApplyTransactionParams {
+  readonly chain: string
+  readonly inputs: Array<ChainUtxoCoin | string>
+  readonly changeOutputs?: Array<{
+    readonly address: string
+    readonly privateKey: string
+    readonly balanceWei: bigint
+    readonly family?: ChainFamily
+    readonly nonce?: number
+    readonly outpoint?: { txid: string; vout: number }
+    readonly origin?: ChainUtxoOrigin
+    readonly label?: string
+  }>
+  /** For EVM accounts that spent some balance: update the existing coin with new nonce and remaining balance */
+  readonly updatedAccounts?: Array<{
+    readonly id: string
+    readonly remainingBalanceWei: bigint
+    readonly nextNonce: number
+  }>
+}
+
+/**
+ * Transactional View over ChainUtxoPool.
+ *
+ * Implements a copy-on-write overlay over the underlying UTXO inventory:
+ * - Selected/spent inputs are marked spent in the view without mutating the base pool.
+ * - Change outputs and updated account balances are staged in the view.
+ * - Subsequent transactions constructed in the same session can chain off staged change outputs.
+ * - On success, commit() applies the changes to the base pool.
+ * - On failure or cancellation, rollback() discards all staged changes.
+ */
+export class ChainUtxoView {
+  private readonly spentCoinIds: Set<string> = new Set()
+  private readonly stagedCoinsById: Map<string, ChainUtxoCoin> = new Map()
+
+  constructor(private readonly basePool: ChainUtxoPool) {}
+
+  /**
+   * Returns all clean coins available in this view:
+   * (Base pool clean coins NOT marked spent in this view) + (Clean coins created in this view)
+   */
+  getCleanCoins(chain: string): ChainUtxoCoin[] {
+    const fromBase = this.basePool
+      .getCleanCoins(chain)
+      .filter(coin => !this.spentCoinIds.has(coin.id))
+    const fromStaged = Array.from(this.stagedCoinsById.values()).filter(
+      coin =>
+        this.basePool.chainKey(coin.chain) === this.basePool.chainKey(chain) &&
+        coin.status === 'clean' &&
+        !this.spentCoinIds.has(coin.id),
+    )
+    return [...fromBase, ...fromStaged]
+  }
+
+  /**
+   * Retrieves a coin by ID from this view (checking staged coins first, then base pool).
+   */
+  getCoin(id: string): ChainUtxoCoin | undefined {
+    if (this.spentCoinIds.has(id)) {
+      const staged = this.stagedCoinsById.get(id)
+      return staged ?? this.basePool.getCoin(id)
+    }
+    return this.stagedCoinsById.get(id) ?? this.basePool.getCoin(id)
+  }
+
+  /**
+   * Selects coins from the view's available inventory for transaction construction.
+   * Can select from change outputs or accounts updated by earlier transactions in this view!
+   */
+  selectCoins(params: SelectCoinsParams): CoinSelectionResult {
+    const {
+      chain,
+      family: explicitFamily,
+      targetAmountWei,
+      feeReserveWei = 0n,
+      allowDirty = false,
+      originPreference,
+      decoyAvoidance = true,
+      dustThresholdWei = 1_000n,
+      maxChangeOutputs = 5,
+    } = params
+
+    const family = explicitFamily ?? inferChainFamily(chain)
+    const defaultFee =
+      family === 'solana' ? 5_000n : family === 'utxo' ? 500n : 21_000n
+    const minFeePerTxWei = params.minFeePerTxWei ?? defaultFee
+
+    const neededWei = targetAmountWei + feeReserveWei
+    if (neededWei <= 0n) {
+      return {
+        selected: [],
+        totalSelectedWei: 0n,
+        changeWei: 0n,
+        suggestedChangeSplits: [],
+      }
+    }
+
+    let candidates: ChainUtxoCoin[] = []
+    if (allowDirty) {
+      const baseAll = this.basePool
+        .getAllCoins(chain)
+        .filter(u => !this.spentCoinIds.has(u.id))
+      const stagedAll = Array.from(this.stagedCoinsById.values()).filter(
+        u =>
+          this.basePool.chainKey(u.chain) === this.basePool.chainKey(chain) &&
+          !this.spentCoinIds.has(u.id),
+      )
+      candidates = [...baseAll, ...stagedAll].filter(
+        u => u.status !== 'pending' && u.balanceWei > 0n,
+      )
+    } else {
+      candidates = this.getCleanCoins(chain).filter(u => u.balanceWei > 0n)
+    }
+
+    if (explicitFamily) {
+      candidates = candidates.filter(u => u.family === explicitFamily)
+    }
+
+    if (originPreference) {
+      const preferred = candidates.filter(u => u.origin === originPreference)
+      if (preferred.length > 0) {
+        candidates = preferred
+      }
+    }
+
+    if (candidates.length === 0) {
+      throw new Error(
+        `Insufficient funds in ChainUtxoView for ${chain}: no spendable coins found`,
+      )
+    }
+
+    // 1. Single coin best-fit: smallest coin >= neededWei
+    const singleCovers = candidates
+      .filter(u => u.balanceWei >= neededWei)
+      .sort((a, b) =>
+        a.balanceWei < b.balanceWei ? -1 : a.balanceWei > b.balanceWei ? 1 : 0,
+      )
+
+    let selected: ChainUtxoCoin[] = []
+    let totalSelectedWei = 0n
+
+    if (singleCovers.length > 0) {
+      selected = [singleCovers[0]]
+      totalSelectedWei = singleCovers[0].balanceWei
+    } else {
+      // 2. Greedy largest-first combination
+      const sortedDesc = [...candidates].sort((a, b) =>
+        a.balanceWei > b.balanceWei ? -1 : a.balanceWei < b.balanceWei ? 1 : 0,
+      )
+
+      for (const coin of sortedDesc) {
+        selected.push(coin)
+        totalSelectedWei += coin.balanceWei
+        if (totalSelectedWei >= neededWei) {
+          break
+        }
+      }
+
+      if (totalSelectedWei < neededWei) {
+        throw new Error(
+          `Insufficient funds in ChainUtxoView for ${chain}: needed ${neededWei} wei, available ${totalSelectedWei} wei across ${candidates.length} coins`,
+        )
+      }
+    }
+
+    const changeWei = totalSelectedWei - neededWei
+    let suggestedChangeSplits: bigint[] = []
+
+    if (changeWei >= dustThresholdWei + minFeePerTxWei) {
+      suggestedChangeSplits = computeGeometricRadixChangeSplits({
+        totalAvailableWei: changeWei,
+        recipientAmountWei: decoyAvoidance ? targetAmountWei : undefined,
+        dustThresholdWei,
+        minFeePerTxWei,
+        maxOutputs: maxChangeOutputs,
+      })
+    } else if (changeWei >= dustThresholdWei) {
+      suggestedChangeSplits = [changeWei]
+    }
+
+    return {
+      selected,
+      totalSelectedWei,
+      changeWei,
+      suggestedChangeSplits,
+    }
+  }
+
+  /**
+   * Applies a newly constructed transaction to this view.
+   * Consumes input coins and registers created change outputs / updated account states.
+   */
+  applyTransaction(params: ApplyTransactionParams): void {
+    const { chain, inputs, changeOutputs = [], updatedAccounts = [] } = params
+
+    // 1. Mark inputs as spent in this view
+    for (const input of inputs) {
+      const id = typeof input === 'string' ? input : input.id
+      this.spentCoinIds.add(id)
+      this.stagedCoinsById.delete(id)
+    }
+
+    // 2. Register fresh change outputs into stagedCoinsById
+    for (const change of changeOutputs) {
+      const family = change.family ?? inferChainFamily(chain)
+      const formattedAddress = formatUtxoAddress(change.address, chain, family)
+      const nonceOrOutpoint = change.outpoint ?? change.nonce ?? 0
+      const id = makeUtxoId(chain, formattedAddress, nonceOrOutpoint, family)
+
+      const coin: ChainUtxoCoin = {
+        id,
+        chain,
+        family,
+        address: formattedAddress,
+        privateKey: change.privateKey,
+        balanceWei: change.balanceWei,
+        nonce: change.nonce ?? (change.outpoint ? undefined : 0),
+        outpoint: change.outpoint,
+        status: 'clean',
+        origin: change.origin ?? 'change',
+        label: change.label ?? 'Chained Transaction Change Output',
+        discoveredAt: Date.now(),
+        lastUpdatedMs: Date.now(),
+      }
+      this.stagedCoinsById.set(id, coin)
+    }
+
+    // 3. For EVM accounts whose balance was partially spent: update nonce & remaining balance
+    for (const update of updatedAccounts) {
+      const existing = this.getCoin(update.id)
+      if (existing) {
+        const family = existing.family
+        const formattedAddress = existing.address
+        const nextId = makeUtxoId(chain, formattedAddress, update.nextNonce, family)
+        const updatedCoin: ChainUtxoCoin = {
+          ...existing,
+          id: nextId,
+          nonce: update.nextNonce,
+          balanceWei: update.remainingBalanceWei,
+          status: 'clean',
+          lastUpdatedMs: Date.now(),
+        }
+        this.stagedCoinsById.set(nextId, updatedCoin)
+      }
+    }
+  }
+
+  /**
+   * Commits all changes staged in this view into the underlying ChainUtxoPool.
+   * Consumed coins become 'pending', and created change outputs are registered.
+   */
+  commit(): void {
+    for (const spentId of this.spentCoinIds) {
+      if (this.basePool.getCoin(spentId)) {
+        this.basePool.markPending(spentId)
+      }
+    }
+    for (const stagedCoin of this.stagedCoinsById.values()) {
+      this.basePool.registerCoin(stagedCoin)
+    }
+  }
+
+  /**
+   * Rolls back all staged changes in this view, leaving the base pool unaffected.
+   */
+  rollback(): void {
+    this.spentCoinIds.clear()
+    this.stagedCoinsById.clear()
+  }
+
+  /**
+   * Helper to check if a coin ID has been spent within this view.
+   */
+  isSpentInView(id: string): boolean {
+    return this.spentCoinIds.has(id)
+  }
+
+  /**
+   * Retrieves all newly created coins staged in this view.
+   */
+  getStagedCoins(): ChainUtxoCoin[] {
+    return Array.from(this.stagedCoinsById.values())
+  }
 }
 
 /**
  * Backwards compatibility export alias for AccountUtxoPool.
  */
 export const AccountUtxoPool = ChainUtxoPool
+

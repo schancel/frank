@@ -216,8 +216,11 @@
       </div>
 
       <!-- Keep the legacy-relay reconnect affordance while that runtime mode exists. The Wallet
-      panel is the primary balance surface; this compatibility footer is not shown in Monad mode. -->
-      <q-list v-if="$status.setup" class="drawer-balance-footer">
+      panel is the primary balance surface; this compatibility footer is not shown when on the wallet tab. -->
+      <q-list
+        v-if="$status.setup && tab !== 'wallet'"
+        class="drawer-balance-footer"
+      >
         <q-separator />
         <q-item clickable class="drawer-balance-item">
           <q-item-section @click="openReceive">

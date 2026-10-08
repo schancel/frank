@@ -51,21 +51,21 @@ describe('Chat.vue stamp preparation status', () => {
     { stage: 'ready', fundingTxHashes: [] },
   ]
 
-  it('keeps the English wording', () => {
+  it('only displays banner when funding stage is in-flight in en-us', () => {
     expect(stages.map(p => statusFor('en-us', p))).toEqual([
-      'Checking private stamp accounts…',
+      null,
       'Preparing private stamp accounts (1/2 on-chain transactions; up to 7 wei MON fee reserve each)…',
-      'Private stamp accounts ready; sending message…',
+      null,
     ])
   })
 
-  it('is French in fr-fr, with every placeholder filled', () => {
+  it('is French in fr-fr for funding stage, with every placeholder filled, and null otherwise', () => {
     const texts = stages.map(p => statusFor('fr-fr', p))
+    expect(texts[0]).toBeNull()
     expect(texts[1]).toContain('1/2')
     expect(texts[1]).toContain('7 wei MON')
-    for (const text of texts) {
-      expect(text).not.toMatch(/[{}]|undefined/)
-      expect(text).not.toMatch(/private|stamp|sending|Checking|Preparing/)
-    }
+    expect(texts[1]).not.toMatch(/[{}]|undefined/)
+    expect(texts[1]).not.toMatch(/private|stamp|sending|Checking|Preparing/)
+    expect(texts[2]).toBeNull()
   })
 })

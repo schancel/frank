@@ -46,6 +46,7 @@ import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
 import {
   activeChain,
+  CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
 } from '@frank/wallet/chain'
 import { sameCanonicalAddress } from '../utils/own-address'
@@ -1266,6 +1267,41 @@ describe('stores/chats.ts (ticket #42)', () => {
           failureReason: 'recipient-unregistered',
         }),
       )
+    })
+
+    it('classifies CanonicalMessagingHoldError as actionable interrupted error and logs to console', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      const consoleErrorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      const holdError = new CanonicalMessagingHoldError(
+        'An earlier payment could not be finished yet.',
+      )
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(holdError)
+
+      await expect(
+        chats.sendMessage({
+          wallet,
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'held message' }],
+        }),
+      ).resolves.toEqual({
+        state: 'failed',
+        reason: 'error',
+      })
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages[0]?.delivery).toEqual(
+        expect.objectContaining({
+          failureReason: 'error',
+        }),
+      )
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        '[sendDirectMessage error]:',
+        holdError,
+      )
+      consoleErrorSpy.mockRestore()
     })
 
     it('does not make a delivered message look retryable when local persistence fails', async () => {

@@ -78,6 +78,7 @@ import {
 } from "./storage/sub-account-pool-storage";
 import type { MonadWalletOperationAdmission } from "./storage/monad-wallet-bundle";
 import { selectStampAccounts } from "./monad-stamp-account-selection";
+import type { ChainUtxoPool } from "./chain-utxo-pool";
 
 export type {
   SubAccountPoolStore,
@@ -167,6 +168,53 @@ export class MonadSubAccountPool {
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission
   ) => Promise<T>;
+  accountUtxoPool?: ChainUtxoPool;
+
+  setAccountUtxoPool(pool: ChainUtxoPool): void {
+    this.accountUtxoPool = pool;
+  }
+
+  private syncUtxo(index: number, status: SubAccountStatus, balanceWei?: bigint): void {
+    if (!this.accountUtxoPool) return;
+    const derived = this.keyring.deriveSubAccount(index);
+    const utxos = this.accountUtxoPool.getCoinsByAddress(derived.address, "monad");
+    if (utxos.length === 0) {
+      this.accountUtxoPool.registerSubAccount({
+        chain: "monad",
+        address: derived.address,
+        privateKey: derived.privateKey,
+        balanceWei: balanceWei ?? 0n,
+        derivationPath: this.keyring.subAccountPath(index),
+        index,
+      });
+      const registered = this.accountUtxoPool.getCoinsByAddress(derived.address, "monad")[0];
+      if (registered) {
+        if (status === "spent" || status === "retired") {
+          this.accountUtxoPool.markSpent(registered.id);
+        } else if (status === "in-use" || status === "funding") {
+          this.accountUtxoPool.markPending(registered.id);
+        }
+      }
+      return;
+    }
+    const coin = utxos[0];
+    if (balanceWei !== undefined) {
+      coin.balanceWei = balanceWei;
+    }
+    if (status === "spent" || status === "retired") {
+      if (coin.status !== "spent") {
+        this.accountUtxoPool.markSpent(coin.id);
+      }
+    } else if (status === "in-use" || status === "funding") {
+      if (coin.status === "clean") {
+        this.accountUtxoPool.markPending(coin.id);
+      }
+    } else if (status === "available") {
+      if (coin.status === "pending") {
+        this.accountUtxoPool.releasePending(coin.id);
+      }
+    }
+  }
 
   constructor(params: {
     keyring: MonadHdKeyring;
@@ -315,6 +363,7 @@ export class MonadSubAccountPool {
     const { fundingAttempt: _fundingAttempt, ...base } = existing;
     const updated: SubAccountRecord = { ...base, status };
     this.store.put(updated);
+    this.syncUtxo(index, status);
     if (status === "spent" || status === "retired") {
       this.triggerProactiveWarming();
     }
@@ -552,6 +601,13 @@ export class MonadSubAccountPool {
       params.provider,
       params.gasReserveWei
     );
+    for (const account of accounts) {
+      this.syncUtxo(
+        account.index,
+        "available",
+        account.capacityWei + params.gasReserveWei
+      );
+    }
     let selection = this.selectFundedCapacity(params.stampValueWei, accounts);
     if (
       selection.length >= 2 ||
@@ -642,96 +698,37 @@ export class MonadSubAccountPool {
       );
     }
 
-    if (capacities.length > 1) {
-      let startNonce: number;
-      if (params.fundingOverrides?.nonce !== undefined) {
-        startNonce = params.fundingOverrides.nonce;
-      } else {
-        const pendingCount = await params.provider.getTransactionCount(
-          params.mainAccountSigner.address,
-          "pending"
-        );
-        startNonce = Number(pendingCount);
-      }
-
-      for (const [offset, paymentCapacityWei] of capacities.entries()) {
-        const target = unfunded[offset];
-        const fundedValue = paymentCapacityWei + params.gasReserveWei;
-        const nonce = startNonce + offset;
-        const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
-          target.address,
-          fundedValue,
-          { ...params.fundingOverrides, nonce }
-        );
-        this.store.put({
-          ...target,
-          status: "funding",
-          fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
-        });
-        await this.store.flush();
-        params.onProgress?.({
-          stage: "funding",
-          completed: 0,
-          total: capacities.length,
-          feeReserveWei: params.gasReserveWei,
-          txHash: signedTx.txHash,
-        });
-        await params.mainAccountSigner.submit(signedTx);
-      }
-
-      let completedCount = 0;
-      await Promise.all(
-        capacities.map(async (paymentCapacityWei, offset) => {
-          const target = unfunded[offset];
-          const txHash = await this.finishFundingAttempt(
-            this.store.getByIndex(target.index) as SubAccountRecord,
-            params.mainAccountSigner,
-            params.receipt,
-            false
-          );
-          this.capacityCache.set(target.index, {
-            capacityWei: paymentCapacityWei,
-            checkedAtMs: Date.now(),
-          });
-          fundingTxHashes.push(txHash);
-          completedCount++;
+    for (const [offset, paymentCapacityWei] of capacities.entries()) {
+      const target = unfunded[offset];
+      const result = await this.fundAccount({
+        target,
+        paymentCapacityWei,
+        gasReserveWei: params.gasReserveWei,
+        mainAccountSigner: params.mainAccountSigner,
+        overrides: params.fundingOverrides,
+        receipt: params.receipt,
+        onSigned: (signedTx) =>
           params.onProgress?.({
             stage: "funding",
-            completed: completedCount,
+            completed: offset,
             total: capacities.length,
             feeReserveWei: params.gasReserveWei,
-            txHash,
-          });
-        })
+            txHash: signedTx.txHash,
+          }),
+      });
+      this.syncUtxo(
+        target.index,
+        "available",
+        paymentCapacityWei + params.gasReserveWei
       );
-    } else {
-      for (const [offset, paymentCapacityWei] of capacities.entries()) {
-        const target = unfunded[offset];
-        const result = await this.fundAccount({
-          target,
-          paymentCapacityWei,
-          gasReserveWei: params.gasReserveWei,
-          mainAccountSigner: params.mainAccountSigner,
-          overrides: params.fundingOverrides,
-          receipt: params.receipt,
-          onSigned: (signedTx) =>
-            params.onProgress?.({
-              stage: "funding",
-              completed: offset,
-              total: capacities.length,
-              feeReserveWei: params.gasReserveWei,
-              txHash: signedTx.txHash,
-            }),
-        });
-        fundingTxHashes.push(result.txHash);
-        params.onProgress?.({
-          stage: "funding",
-          completed: offset + 1,
-          total: capacities.length,
-          feeReserveWei: params.gasReserveWei,
-          txHash: result.txHash,
-        });
-      }
+      fundingTxHashes.push(result.txHash);
+      params.onProgress?.({
+        stage: "funding",
+        completed: offset + 1,
+        total: capacities.length,
+        feeReserveWei: params.gasReserveWei,
+        txHash: result.txHash,
+      });
     }
 
     accounts = await this.fundedCapacities(
@@ -1163,6 +1160,7 @@ export class MonadSubAccountPool {
       capacityWei: params.paymentCapacityWei,
       checkedAtMs: Date.now(),
     });
+    this.syncUtxo(params.target.index, "available", fundedValue);
     return {
       index: params.target.index,
       address: params.target.address,

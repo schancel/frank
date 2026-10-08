@@ -186,6 +186,8 @@ export interface NativeWalletHandle {
   /** Stable configured network discriminator (for example, mainnet versus testnet). */
   readonly networkId: string;
   readonly identity: FrankIdentityHandle;
+  /** Attached chain-agnostic UTXO pool (if configured). */
+  readonly chainUtxoPool?: import("../chain-utxo-pool").ChainUtxoPool;
   /** Address to show for a new inbound payment; may rotate independently of wallet identity. */
   getReceiveAddress(): Promise<ChainAddress>;
   getBalance(): Promise<bigint>;

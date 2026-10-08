@@ -63,6 +63,7 @@ import {
   type MonadChainWalletHandle,
 } from './monad-chain'
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
+import { LevelCanonicalLinkStore } from './monad-canonical-dm'
 
 // Offline chain state: only these single-use sender accounts hold funds.
 const mockBalances = new Map<string, bigint>()
@@ -330,7 +331,7 @@ async function fixture(funded = true) {
       fetch,
     }
   }
-  return {
+  const ret = {
     chain,
     alice,
     bob,
@@ -340,12 +341,13 @@ async function fixture(funded = true) {
     setPhase: (next: typeof phase) => (phase = next),
     directoryFor,
     close: async () => {
-      await alice.close()
-      await bob.close()
-      for (const store of stores) await store.close()
+      await ret.alice.close().catch(() => undefined)
+      await ret.bob.close().catch(() => undefined)
+      for (const store of stores) await store.close().catch(() => undefined)
       rmSync(directory, { recursive: true, force: true })
     },
   }
+  return ret
 }
 
 const text = (value: string) => [{ type: 'text' as const, text: value }]
@@ -866,6 +868,55 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     wallet: MonadChainWalletHandle,
     knownDigests: string[] = [],
   ) => f.chain.directMessages.unattributedAttempts({ wallet, knownDigests })
+
+  it('auto-heals orphaned or unreconciled links in owner.links and allows new sends to proceed', async () => {
+    const aliceAddr = (await f.alice.getReceiveAddress()).raw.toLowerCase()
+    const storageLocation = `${join(f.root, 'wallet')}-evm-${aliceAddr}`
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    await f.alice.close()
+
+    const store = await LevelCanonicalLinkStore.open(storageLocation)
+    const orphanedDigest = 'ab'.repeat(32)
+    await store.put({
+      attemptRef: 'orphaned-ref-999',
+      consumerId: 'frank-dm:orphaned',
+      digest: orphanedDigest,
+      prepared: {
+        payload: '00',
+        context: '00',
+        stampValueWei: '1000',
+        economicBinding: '00',
+        walletBindingId: 'unknown',
+        network: 'monad-testnet',
+        chainId: 10143,
+        senderSubject: '00',
+        senderFingerprint: '00',
+      },
+      acknowledged: false,
+    })
+    await store.close()
+
+    ;(f as any).alice = await reopen(directory)
+
+    // Settle auto-heals the orphaned link; send proceeds cleanly with its own fresh payment intent:
+    const result = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('message after orphaned link auto-healed'),
+    })
+    expect(result.payloadDigest).toBeDefined()
+    expect(result.stampPayments.length).toBeGreaterThan(0)
+
+    // Reconciling attempts marks the orphaned digest as dead without throwing
+    const statuses = await f.chain.directMessages.reconcileAttempts({
+      wallet: f.alice,
+      payloadDigests: [orphanedDigest, result.payloadDigest],
+    })
+    expect(statuses[orphanedDigest]).toBe('dead')
+    expect(statuses[result.payloadDigest]).toBe('delivered')
+    await f.alice.close()
+  })
 
   it('keeps reporting a delivered attempt no message recorded across wallet reopens, and never pays for it twice', async () => {
     const { directory, digest } = await interruptedSend('orphan')

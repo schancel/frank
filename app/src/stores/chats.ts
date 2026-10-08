@@ -42,6 +42,7 @@ import '@frank/wallet/message-item-plugins/blackjack/plugin'
 import '@frank/wallet/message-item-plugins/digital-goods/plugin'
 import '@frank/wallet/message-item-plugins/raffle/plugin'
 import {
+  CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
   type DirectMessageAttemptStatus,
   type DirectMessagePreparationProgress,
@@ -2605,6 +2606,7 @@ export const useChatStore = defineStore('chats', {
           },
         })
       } catch (error) {
+        console.error('[sendDirectMessage error]:', error)
         if (error instanceof MonadStampPendingAttemptError) {
           // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
           // bytes. Without an own set, an earlier attempt is still pending and this message has

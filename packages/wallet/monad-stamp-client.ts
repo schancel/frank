@@ -1125,7 +1125,21 @@ export class MonadStampClient {
       outcome: 'confirmed' | 'failed' | 'stuck',
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
       const sweeps: Array<ChangeSweepOutcome | undefined> = []
-      for (const handle of handles) {
+      for (let i = 0; i < handles.length; i++) {
+        const handle = handles[i]
+        const signedTx = signedTxs[i]
+        if (outcome === 'confirmed' && signedTx) {
+          const rawTx =
+            typeof signedTx.rawTx === 'string'
+              ? signedTx.rawTx
+              : hexlify(signedTx.rawTx)
+          this.pool.recordSpendTransaction(handle.index, {
+            rawTx,
+            txHash: signedTx.txHash,
+            valueWei: signedTx.value.toString(),
+          })
+          await this.pool.flush()
+        }
         const signer = this.pool.getSigner(handle.index, {
           provider: this.provider,
           httpClient: this.httpClient,
@@ -1241,13 +1255,17 @@ export class MonadStampClient {
     }
 
     const changeSweeps = await releaseAll('confirmed')
-    if (
-      changeSweeps.some(
-        sweep =>
-          sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
-      )
-    ) {
-      throw new MonadStampPendingAttemptError([payloadHashHex])
+    for (const sweep of changeSweeps) {
+      if (
+        sweep?.swept === false &&
+        sweep.reason !== 'below-dust-threshold' &&
+        sweep.reason !== 'sweep-pending'
+      ) {
+        console.warn(
+          `[monad-stamp-client] Non-fatal change sweep issue for message ${payloadHashHex}:`,
+          sweep,
+        )
+      }
     }
     await this.attemptJournal?.delete(payloadHashHex)
     recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'delivered')
@@ -1329,9 +1347,20 @@ export class MonadStampClient {
           Uint8Array.from(attempt.messageBytes),
         )
         await this.putStampedMessage(message, undefined, retry)
-        for (const index of attempt.leaseIndices) {
+        for (let i = 0; i < attempt.leaseIndices.length; i++) {
+          const index = attempt.leaseIndices[i]
           const record = this.pool.getRecord(index)
           if (record !== undefined && record.status !== 'spent') {
+            const rawBytes = message.stampPayments[i]?.rawTx
+            if (rawBytes && rawBytes.length > 0) {
+              const rawTx = hexlify(rawBytes)
+              const tx = Transaction.from(rawTx)
+              this.pool.recordSpendTransaction(index, {
+                rawTx,
+                txHash: tx.hash!,
+                valueWei: tx.value.toString(),
+              })
+            }
             this.pool.setStatus(index, 'spent')
             await this.pool.flush()
           }
@@ -1762,6 +1791,49 @@ export class MonadCanonicalStampClient {
           .filter(a => !a.cleanupComplete)
           .flatMap(a => a.reservations.map(r => r.index)),
       ])
+      let baseNonce = 0
+      let baseGasLimit = input.overrides?.gasLimit ?? 21_000n
+      let baseChainId = BigInt(input.prepared.chainId)
+      let baseMaxFeePerGas = input.overrides?.maxFeePerGas
+      let baseMaxPriorityFeePerGas = input.overrides?.maxPriorityFeePerGas
+      let baseGasPrice = input.overrides?.gasPrice
+
+      const candidateRecords = this.wallet.pool
+        .records()
+        .filter(
+          r => r.status === 'available' && !protectedIndices.has(r.index),
+        )
+
+      // Resolve base quote once outside the loop only if fee fields were not provided in overrides
+      if (baseMaxFeePerGas === undefined && baseGasPrice === undefined) {
+        if (candidateRecords.length > 0) {
+          const sampleSigner = this.wallet.pool.getSigner(
+            candidateRecords[0].index,
+            this.wallet,
+          )
+          const sampleQuote = Transaction.from(
+            (
+              await sampleSigner.populateUnsignedTransfer(
+                hexlify(destination(0).address),
+                1n,
+                input.overrides,
+              )
+            ).unsignedSerialized,
+          )
+          baseNonce = sampleQuote.nonce
+          baseChainId = sampleQuote.chainId
+          baseGasLimit = sampleQuote.gasLimit
+          baseMaxFeePerGas = sampleQuote.maxFeePerGas ?? undefined
+          baseMaxPriorityFeePerGas =
+            sampleQuote.maxPriorityFeePerGas ?? undefined
+          baseGasPrice = sampleQuote.gasPrice ?? undefined
+        }
+      }
+
+      const fee = baseMaxFeePerGas ?? baseGasPrice ?? 2n
+      if (fee === null || baseChainId.toString() !== input.prepared.chainId)
+        throw new Error('canonical-wallet:quote-mismatch')
+
       const quotes = []
       const frozenQuotes = new Map<
         number,
@@ -1775,42 +1847,50 @@ export class MonadCanonicalStampClient {
           balance: bigint
         }
       >()
-      for (const record of this.wallet.pool
-        .records()
-        .filter(
-          r => r.status === 'available' && !protectedIndices.has(r.index),
-        )) {
-        const balance = await this.wallet.provider.getBalance(record.address)
+
+      for (const record of candidateRecords) {
+        // Fast in-memory balance check from accountUtxoPool, or provider query
+        let balance: bigint | undefined
+        if (this.wallet.accountUtxoPool) {
+          const utxos = this.wallet.accountUtxoPool.getCoinsByAddress(
+            record.address,
+            'monad',
+          )
+          if (utxos.length > 0 && utxos[0].balanceWei > 0n) {
+            balance = utxos[0].balanceWei
+          }
+        }
+        if (balance === undefined) {
+          balance = await this.wallet.provider.getBalance(record.address)
+          if (this.wallet.accountUtxoPool && balance > 0n) {
+            const utxos = this.wallet.accountUtxoPool.getCoinsByAddress(
+              record.address,
+              'monad',
+            )
+            if (utxos.length > 0) {
+              utxos[0].balanceWei = balance
+            }
+          }
+        }
         if (balance <= 0n) continue
         const signer = this.wallet.pool.getSigner(record.index, this.wallet)
         if (signer.address.toLowerCase() !== record.address.toLowerCase())
           throw new Error('canonical-wallet:pool-custody-mismatch')
-        const quote = Transaction.from(
-          (
-            await signer.populateUnsignedTransfer(
-              hexlify(destination(0).address),
-              1n,
-              input.overrides,
-            )
-          ).unsignedSerialized,
-        )
-        const fee = quote.maxFeePerGas ?? quote.gasPrice
-        if (fee === null || quote.chainId.toString() !== input.prepared.chainId)
-          throw new Error('canonical-wallet:quote-mismatch')
+
         const capacityWei =
-          balance > quote.gasLimit * fee ? balance - quote.gasLimit * fee : 0n
+          balance > baseGasLimit * fee ? balance - baseGasLimit * fee : 0n
         quotes.push({
           index: record.index,
           address: record.address,
           capacityWei,
         })
         frozenQuotes.set(record.index, {
-          nonce: quote.nonce,
-          chainId: quote.chainId,
-          gasLimit: quote.gasLimit,
-          maxFeePerGas: quote.maxFeePerGas ?? undefined,
-          maxPriorityFeePerGas: quote.maxPriorityFeePerGas ?? undefined,
-          gasPrice: quote.gasPrice ?? undefined,
+          nonce: 0,
+          chainId: baseChainId,
+          gasLimit: baseGasLimit,
+          maxFeePerGas: baseMaxFeePerGas,
+          maxPriorityFeePerGas: baseMaxPriorityFeePerGas,
+          gasPrice: baseGasPrice,
           balance,
         })
       }
@@ -1831,15 +1911,15 @@ export class MonadCanonicalStampClient {
           {
             nonce: quote.nonce,
             chainId: quote.chainId,
-            gasLimit: input.overrides?.gasLimit,
+            gasLimit: quote.gasLimit,
             maxFeePerGas: quote.maxFeePerGas,
             maxPriorityFeePerGas: quote.maxPriorityFeePerGas,
             gasPrice: quote.gasPrice,
           },
         )
         const tx = Transaction.from(frozen.unsignedSerialized),
-          fee = tx.maxFeePerGas ?? tx.gasPrice
-        if (fee === null || tx.value + tx.gasLimit * fee > quote.balance)
+          txFee = tx.maxFeePerGas ?? tx.gasPrice
+        if (txFee === null || tx.value + tx.gasLimit * txFee > quote.balance)
           throw new Error('canonical-wallet:selection-capacity-changed')
         members.push({
           reservation: {

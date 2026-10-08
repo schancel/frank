@@ -588,7 +588,6 @@ export default defineComponent({
       // session, 2026-09-27) by actually clicking Send in a real browser and finding the message
       // never left the input box.
       try {
-        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: recipient,
@@ -632,7 +631,6 @@ export default defineComponent({
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       this.sendingMessage = true
       try {
-        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: recipient,
@@ -694,7 +692,6 @@ export default defineComponent({
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
-        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: recipient,
@@ -719,7 +716,6 @@ export default defineComponent({
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
-        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: recipient,
@@ -738,12 +734,10 @@ export default defineComponent({
         this.$nextTick(this.buttonScrollBottom)
       }
     },
-    // Shows the preparation stage of a send (checking / funding / ready) in the composer status
-    // line, translated -- one place for every way a send can prepare its stamp accounts.
+    // Shows the preparation stage of a send in the composer status line, translated --
+    // only when a background on-chain funding transaction is genuinely in-flight.
     showStampPreparation(progress: DirectMessagePreparationProgress) {
-      if (progress.stage === 'checking') {
-        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
-      } else if (progress.stage === 'funding') {
+      if (progress.stage === 'funding') {
         this.stampPreparationStatus = this.$t('chat.stampPreparationFunding', {
           completed: progress.completed,
           total: progress.total,
@@ -751,7 +745,7 @@ export default defineComponent({
           unit: activeChain.unit,
         })
       } else {
-        this.stampPreparationStatus = this.$t('chat.stampPreparationReady')
+        this.stampPreparationStatus = null
       }
     },
     // Handles a plugin renderer's `sendFollowUp` emit (see ChatMessage.vue's own relay of it --
@@ -829,7 +823,6 @@ export default defineComponent({
       this.sendingMessage = true
       let outcome: OutgoingOutcome
       try {
-        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         outcome = await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: peer,
@@ -990,7 +983,6 @@ export default defineComponent({
       }
       this.sendingMessage = true
       try {
-        this.stampPreparationStatus = this.$t('chat.stampPreparationChecking')
         const stampValue = activeChain.fromDisplayAmount(
           this.getStampAmount(targetAddress),
         )

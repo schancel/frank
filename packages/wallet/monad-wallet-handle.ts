@@ -28,6 +28,7 @@ import type { MonadIdentity } from './monad-identity'
 
 import type { AccountHygieneEngine } from './account-hygiene'
 import type { MonadAddressInventory } from './monad-address-inventory'
+import type { ChainUtxoPool, AccountUtxoPool } from './chain-utxo-pool'
 
 export interface MonadWalletHandle {
   /** Master / author identity for signing messages and topic posts. */
@@ -42,13 +43,17 @@ export interface MonadWalletHandle {
   hygieneEngine?: AccountHygieneEngine<string>
   /** Unified HD address inventory tracking spend and change branches (Ticket #924). */
   inventory?: MonadAddressInventory
+  /** Unified in-memory UTXO and spendable account pool (Issue #1184). */
+  accountUtxoPool?: ChainUtxoPool
+  /** @deprecated Use `accountUtxoPool` instead. */
   pool: MonadSubAccountPool
   leaseManager: SubAccountLeaseManager
   provider: Provider
   httpClient: MonadTxSubmitter
   /** HD change branch used to recover the unused balance from confirmed, single-use payment
    * accounts. Optional for narrow tests and external callers that have not wired persistence yet;
-   * `MonadChain.createWallet` always supplies it from the same seed as `pool`. */
+   * `MonadChain.createWallet` always supplies it from the same seed as `pool`.
+   * @deprecated Use `accountUtxoPool` instead. */
   changePool?: MonadChangePool
   /** Durable public journal of recipient-owned one-time stamp outputs and their sweep state. */
   stampPaymentJournal?: StampPaymentJournal

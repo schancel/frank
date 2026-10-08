@@ -17,6 +17,11 @@ import {
   snapshotEcashDomainRoot,
 } from "./ecash-seed-boundary";
 import type { LegacyEcashSeedOptions } from "./ecash-legacy-seed";
+import type {
+  ChainUtxoPool,
+  ChainUtxoCoin,
+  ChainUtxoOrigin,
+} from "./chain-utxo-pool";
 
 export type EcashAddressPrefix = "ecash" | "ectest" | "ecregtest";
 export type EcashNetworkId =
@@ -166,6 +171,7 @@ export interface EcashWalletOptions {
   /** Test seam for independently checking every URL reported by a failover client. */
   checkpointClientFactory?: (url: string) => EcashCheckpointClient;
   nativeAttemptStore?: NativeTransactionAttemptStore;
+  chainUtxoPool?: ChainUtxoPool;
   getTransactionStatus?: (
     transaction: ChainTransaction
   ) => Promise<"confirmed" | "failed" | "pending" | "unknown">;
@@ -180,6 +186,7 @@ export class EcashWallet implements NativeWalletHandle {
   readonly family = "bitcoin" as const;
   readonly chainIdentifier: string;
   readonly networkId: string;
+  readonly chainUtxoPool?: ChainUtxoPool;
   private operationQueue: Promise<void> = Promise.resolve();
   private lastSubmittedNative: ChainTransaction | undefined;
   private unresolvedNative:
@@ -199,8 +206,10 @@ export class EcashWallet implements NativeWalletHandle {
     private readonly nativeAttemptStore: NativeTransactionAttemptStore,
     private readonly getTransactionStatus: (
       transaction: ChainTransaction
-    ) => Promise<"confirmed" | "failed" | "pending" | "unknown">
+    ) => Promise<"confirmed" | "failed" | "pending" | "unknown">,
+    chainUtxoPool?: ChainUtxoPool
   ) {
+    this.chainUtxoPool = chainUtxoPool;
     this.networkId = networkId;
     this.chainIdentifier = attemptNetworkId;
     this.nativeAttemptKey = nativeTransactionAttemptKey({
@@ -283,7 +292,8 @@ export class EcashWallet implements NativeWalletHandle {
       canonicalId,
       checkpointHash,
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
-      params.getTransactionStatus ?? (async () => "unknown")
+      params.getTransactionStatus ?? (async () => "unknown"),
+      params.chainUtxoPool
     );
   }
 
@@ -292,6 +302,36 @@ export class EcashWallet implements NativeWalletHandle {
       address: { raw: this.primaryAddress },
       displayAddress: this.primaryAddress,
     };
+  }
+
+  getChainUtxoPool(): ChainUtxoPool | undefined {
+    return this.chainUtxoPool;
+  }
+
+  registerUtxoCoin(params: {
+    address: string;
+    privateKey: string;
+    txid: string;
+    vout: number;
+    satoshis: bigint;
+    origin?: ChainUtxoOrigin;
+    label?: string;
+    pool?: ChainUtxoPool;
+  }): ChainUtxoCoin {
+    const targetPool = params.pool ?? this.chainUtxoPool;
+    if (!targetPool) {
+      throw new Error("No ChainUtxoPool provided or attached to EcashWallet");
+    }
+    return targetPool.utxo.registerOutpoint({
+      chain: this.chainIdentifier,
+      address: params.address,
+      privateKey: params.privateKey,
+      txid: params.txid,
+      vout: params.vout,
+      balanceWei: params.satoshis,
+      origin: params.origin ?? "utxo",
+      label: params.label,
+    });
   }
 
   async getReceiveAddress(): Promise<ChainAddress> {

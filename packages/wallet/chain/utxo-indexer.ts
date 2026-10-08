@@ -26,6 +26,11 @@ import {
 } from './electrum-client'
 import type { ChainRegistryEntry } from './chains-registry'
 import { getEcashChronikUrls } from './ecash-balance'
+import type {
+  ChainUtxoPool,
+  ChainUtxoCoin,
+  ChainUtxoOrigin,
+} from '../chain-utxo-pool'
 
 export interface UtxoItem {
   readonly txId: string
@@ -47,6 +52,45 @@ export interface UtxoIndexer {
     onUpdate: () => void,
   ): Promise<() => void>
   close(): Promise<void>
+  syncToPool?(params: {
+    address: string
+    privateKey: string
+    pool: ChainUtxoPool
+    origin?: ChainUtxoOrigin
+  }): Promise<ChainUtxoCoin[]>
+}
+
+/**
+ * Synchronizes unspent transaction outputs from a UtxoIndexer into a ChainUtxoPool.
+ */
+export async function syncIndexerUtxosToPool(params: {
+  indexer: UtxoIndexer
+  address: string
+  privateKey: string
+  pool: ChainUtxoPool
+  chain?: string
+  origin?: ChainUtxoOrigin
+}): Promise<ChainUtxoCoin[]> {
+  const {
+    indexer,
+    address,
+    privateKey,
+    pool,
+    chain = indexer.chainId,
+    origin = 'utxo',
+  } = params
+  const utxos = await indexer.fetchUtxos(address)
+  return utxos.map(u =>
+    pool.utxo.registerOutpoint({
+      chain,
+      address,
+      privateKey,
+      txid: u.txId,
+      vout: u.outputIndex,
+      balanceWei: u.satoshis,
+      origin,
+    }),
+  )
 }
 
 /**
@@ -175,6 +219,22 @@ export class ElectrumUtxoIndexer implements UtxoIndexer {
 
   async close(): Promise<void> {
     await this.client.close()
+  }
+
+  async syncToPool(params: {
+    address: string
+    privateKey: string
+    pool: ChainUtxoPool
+    origin?: ChainUtxoOrigin
+  }): Promise<ChainUtxoCoin[]> {
+    return syncIndexerUtxosToPool({
+      indexer: this,
+      address: params.address,
+      privateKey: params.privateKey,
+      pool: params.pool,
+      chain: this.chainId,
+      origin: params.origin,
+    })
   }
 }
 
@@ -365,6 +425,22 @@ export class ChronikUtxoIndexer implements UtxoIndexer {
       this.wsEndpoint = undefined
     }
     this.subscribers.clear()
+  }
+
+  async syncToPool(params: {
+    address: string
+    privateKey: string
+    pool: ChainUtxoPool
+    origin?: ChainUtxoOrigin
+  }): Promise<ChainUtxoCoin[]> {
+    return syncIndexerUtxosToPool({
+      indexer: this,
+      address: params.address,
+      privateKey: params.privateKey,
+      pool: params.pool,
+      chain: this.chainId,
+      origin: params.origin,
+    })
   }
 }
 

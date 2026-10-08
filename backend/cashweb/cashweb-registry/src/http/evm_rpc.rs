@@ -965,6 +965,7 @@ fn validate_call(call: &Value, chain: &EvmChainRuntime) -> Result<CallCost, RpcR
         "eth_chainId"
             | "eth_blockNumber"
             | "eth_getBalance"
+            | "eth_getCode"
             | "eth_getTransactionCount"
             | "eth_gasPrice"
             | "eth_feeHistory"
@@ -976,6 +977,8 @@ fn validate_call(call: &Value, chain: &EvmChainRuntime) -> Result<CallCost, RpcR
             | "eth_getBlockByNumber"
             | "eth_getLogs"
             | "eth_sendRawTransaction"
+            | "net_version"
+            | "web3_clientVersion"
     );
     if !allowed {
         return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
@@ -1019,14 +1022,18 @@ fn validate_call(call: &Value, chain: &EvmChainRuntime) -> Result<CallCost, RpcR
         }
     }
     let cost = match method {
-        "eth_chainId" | "eth_blockNumber" | "eth_gasPrice" | "eth_maxPriorityFeePerGas" => {
-            CallCost {
-                units: 1,
-                anonymous: true,
-                broadcast: false,
-            }
-        }
+        "eth_chainId"
+        | "eth_blockNumber"
+        | "eth_gasPrice"
+        | "eth_maxPriorityFeePerGas"
+        | "net_version"
+        | "web3_clientVersion" => CallCost {
+            units: 1,
+            anonymous: true,
+            broadcast: false,
+        },
         "eth_getBalance"
+        | "eth_getCode"
         | "eth_getTransactionCount"
         | "eth_getTransactionByHash"
         | "eth_getTransactionReceipt" => CallCost {
@@ -2419,6 +2426,21 @@ mod tests {
         }
         validate_call(
             &json!({"jsonrpc":"2.0","id":"same","method":"eth_getLogs","params":[{"fromBlock":"0x1","toBlock":"0xa"}]}),
+            chain,
+        )
+        .unwrap();
+        validate_call(
+            &json!({"jsonrpc":"2.0","id":1,"method":"eth_getCode","params":["0x0000000000000000000000000000000000000000","latest"]}),
+            chain,
+        )
+        .unwrap();
+        validate_call(
+            &json!({"jsonrpc":"2.0","id":1,"method":"net_version","params":[]}),
+            chain,
+        )
+        .unwrap();
+        validate_call(
+            &json!({"jsonrpc":"2.0","id":1,"method":"web3_clientVersion","params":[]}),
             chain,
         )
         .unwrap();

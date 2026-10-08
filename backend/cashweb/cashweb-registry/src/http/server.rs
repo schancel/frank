@@ -402,6 +402,25 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["directory", "v1", _, "address", _] => {
             Cow::Borrowed("/directory/v1/:network/address/:address")
         }
+        ["chains"] => Cow::Borrowed("/chains"),
+        ["peers"] => Cow::Borrowed("/peers"),
+        ["metadata"] => Cow::Borrowed("/metadata"),
+        ["metadata", _] => Cow::Borrowed("/metadata/:address"),
+        ["metadata", "monad"] => Cow::Borrowed("/metadata/monad"),
+        ["metadata", "monad", "curated-defaults"] => {
+            Cow::Borrowed("/metadata/monad/curated-defaults")
+        }
+        ["metadata", "monad", "search"] => Cow::Borrowed("/metadata/monad/search"),
+        ["metadata", "monad", _] => Cow::Borrowed("/metadata/monad/:address"),
+        ["profiles"] => Cow::Borrowed("/profiles"),
+        ["profiles", "curated-defaults"] => Cow::Borrowed("/profiles/curated-defaults"),
+        ["profiles", "search"] => Cow::Borrowed("/profiles/search"),
+        ["chain-rpc", _, "rpc"] => Cow::Borrowed("/chain-rpc/:chain/rpc"),
+        ["chain-rpc", _, "rpc", "auth"] => Cow::Borrowed("/chain-rpc/:chain/rpc/auth"),
+        ["chain-rpc", _, "capability"] => Cow::Borrowed("/chain-rpc/:chain/capability"),
+        ["chain-rpc", _, "capability", "auth"] => {
+            Cow::Borrowed("/chain-rpc/:chain/capability/auth")
+        }
         ["chain-rpc", _, "cap", _, "rpc"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/rpc"),
         ["chain-rpc", _, "cap", _, "ws"] => Cow::Borrowed("/chain-rpc/:chain/cap/:capability/ws"),
         ["chain-rpc", _, "cap", _, "chronik", ..] => {
@@ -411,6 +430,35 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["chain-rpc", _, "chronik-auth", ..] => {
             Cow::Borrowed("/chain-rpc/:chain/chronik-auth/*path")
         }
+        ["message"] => Cow::Borrowed("/message"),
+        ["message", "auth", _] => Cow::Borrowed("/message/auth/:recipient"),
+        ["message", "inbox", _] => Cow::Borrowed("/message/inbox/:recipient"),
+        ["message", "mailbox", _] => Cow::Borrowed("/message/mailbox/:address"),
+        ["message", "mailbox", _, "ws"] => Cow::Borrowed("/message/mailbox/:address/ws"),
+        ["message", "recovery", _] => Cow::Borrowed("/message/recovery/:recipient"),
+        ["message", "recovery", _, _, _, "ack"] => {
+            Cow::Borrowed("/message/recovery/:recipient/:payload_hash/:obligation_id/ack")
+        }
+        ["message", "monad", "cbor"] => Cow::Borrowed("/message/monad/cbor"),
+        ["message", "monad", "cbor", "auth", _] => {
+            Cow::Borrowed("/message/monad/cbor/auth/:recipient")
+        }
+        ["message", "monad", "cbor", "inbox", _] => {
+            Cow::Borrowed("/message/monad/cbor/inbox/:recipient")
+        }
+        ["message", "monad", "cbor", "mailbox", _] => {
+            Cow::Borrowed("/message/monad/cbor/mailbox/:address")
+        }
+        ["message", "monad", "cbor", "mailbox", _, "ws"] => {
+            Cow::Borrowed("/message/monad/cbor/mailbox/:address/ws")
+        }
+        ["message", "monad", "topics"] => Cow::Borrowed("/message/monad/topics"),
+        ["message", "monad", "topics", "vote"] => Cow::Borrowed("/message/monad/topics/vote"),
+        ["message", "monad", "topics", "discover"] => {
+            Cow::Borrowed("/message/monad/topics/discover")
+        }
+        ["message", "monad", "topics", "status"] => Cow::Borrowed("/message/monad/topics/status"),
+        ["message", "monad", "topics", _] => Cow::Borrowed("/message/monad/topics/:payload_hash"),
         // Unknown paths under this namespace are fail-closed. Routers may percent-decode
         // or normalize segments differently than this logging middleware, so no
         // chain-rpc-shaped miss is allowed to copy attacker-controlled path text to logs.
@@ -484,7 +532,11 @@ mod request_log_tests {
         }
         assert_eq!(
             safe_log_path("/chain-rpc/monad-testnet/rpc"),
-            "/chain-rpc/*redacted"
+            "/chain-rpc/:chain/rpc"
+        );
+        assert_eq!(
+            safe_log_path("/message/mailbox/0x08d818283fbf30eae4ff96b7a8428739b2aecb11"),
+            "/message/mailbox/:address"
         );
         for path in [
             "/chain-rpc/xec-mainnet/chronik/script/p2pkh/sentinel-wallet/history",

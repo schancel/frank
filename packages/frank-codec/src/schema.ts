@@ -73,6 +73,7 @@ import type {
   OpaqueSection,
   PaymentMember,
   PaymentTransfer,
+  TokenTransfer,
   StealthMetadata,
   ProfileEntry,
   ProfileHeader,
@@ -811,6 +812,41 @@ export function paymentTransfer(
   }
 }
 
+export function tokenTransfer(
+  v: FrankValue | undefined,
+  path = 'token-transfer',
+  allow = false,
+): TokenTransfer {
+  const m = fields(v, path, [1, 2, 3, 4, 5], [6], false, allow)
+  const rawAmount = m.get(3)
+  let amount: bigint
+  if (typeof rawAmount === 'bigint') {
+    if (rawAmount < 0n) throw bad(`${path}.3`, 'amount must be non-negative')
+    amount = rawAmount
+  } else if (rawAmount instanceof Uint8Array) {
+    if (rawAmount.length === 0) {
+      amount = 0n
+    } else {
+      let hex = ''
+      for (let i = 0; i < rawAmount.length; i++) {
+        hex += rawAmount[i].toString(16).padStart(2, '0')
+      }
+      amount = BigInt('0x' + hex)
+    }
+  } else {
+    throw bad(`${path}.3`, 'expected unsigned integer or biguint')
+  }
+
+  return {
+    chainNamespace: tstr(m.get(1), `${path}.1`, 1, 64),
+    contractAddress: tstr(m.get(2), `${path}.2`, 1, 128),
+    amount,
+    decimals: u32ish(m.get(4), `${path}.4`, 0, 255),
+    symbol: tstr(m.get(5), `${path}.5`, 1, 32),
+    rawTxOrPermit: m.has(6) ? bstr(m.get(6), `${path}.6`, 1, 65536) : undefined,
+  }
+}
+
 function signatureEntry(
   v: FrankValue | undefined,
   path: string,
@@ -986,9 +1022,7 @@ export function parseForumContent(
             ...(e.has(7)
               ? { botAddress: tstr(e.get(7), `${p}.7`, 0, 128) }
               : {}),
-            ...(e.has(8)
-              ? { title: tstr(e.get(8), `${p}.8`, 0, 512) }
-              : {}),
+            ...(e.has(8) ? { title: tstr(e.get(8), `${p}.8`, 0, 512) } : {}),
             ...(e.has(9)
               ? { message: tstr(e.get(9), `${p}.9`, 0, MAX_TEXT_STRING_BYTES) }
               : {}),
@@ -1259,9 +1293,7 @@ export function parseDraft(
         ) as AccountType
       }
       if (m.has(16)) {
-        st.botRole = Number(
-          uintRange(m.get(16), `${P}.16`, 0n, 7n),
-        ) as BotRole
+        st.botRole = Number(uintRange(m.get(16), `${P}.16`, 0n, 7n)) as BotRole
       }
       if (m.has(5)) {
         st.keyTransitions = asList(m.get(5), `${P}.5`, 1, 16).map((e, i) =>
@@ -1315,9 +1347,12 @@ export function parseDraft(
       }
     }
     case TYPE_ENCRYPTED_MESSAGE_CONTENT: {
-      const m = fields(payload, P, [0, 1, 2, 3, 4], [5], true, allow)
+      const m = fields(payload, P, [0, 1, 2, 3, 4], [5, 6], true, allow)
       const convName = m.has(5)
         ? conversationName(m.get(5), `${P}.5`)
+        : undefined
+      const transfer = m.has(6)
+        ? tokenTransfer(m.get(6), `${P}.6`, allow)
         : undefined
       return {
         type: 6,
@@ -1327,6 +1362,7 @@ export function parseDraft(
         contentDigest: bstr(m.get(3), `${P}.3`, 32, 32),
         conversationId: bstr(m.get(4), `${P}.4`, 16, 16),
         conversationName: convName,
+        tokenTransfer: transfer,
         unknownFields: m.unknown,
       }
     }

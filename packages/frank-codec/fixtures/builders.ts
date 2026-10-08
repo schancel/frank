@@ -9,6 +9,8 @@ import {
   paymentCommitment,
   recipientPayloadDigest,
 } from '../src/hash'
+import type { TokenTransfer } from '../src/types'
+import { encodeTokenTransferMap } from '../src/token-transfer'
 
 export type Fields = Map<number, Encodable>
 
@@ -184,6 +186,7 @@ export function type6Frame(
   rev8 = rev8Frame(),
   conversationId = DEFAULT_CONVERSATION_ID,
   conversationName?: string,
+  tokenTransfer?: TokenTransfer,
 ): Uint8Array {
   const entries: [number, any][] = [
     [0, NET],
@@ -194,6 +197,9 @@ export function type6Frame(
   ]
   if (conversationName !== undefined) {
     entries.push([5, conversationName])
+  }
+  if (tokenTransfer !== undefined) {
+    entries.push([6, encodeTokenTransferMap(tokenTransfer)])
   }
   return fr(6, M(entries))
 }

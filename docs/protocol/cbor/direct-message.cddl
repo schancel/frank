@@ -53,6 +53,19 @@ encrypted-message-content = {
   3: digest-32, ; T1a digest of field 2
   4: uuid-16, ; stable logical conversation_id (ticket #818)
   ? 5: conversation-name, ; short text; required on opening message; optional afterwards (ticket #818)
+  ? 6: token-transfer, ; optional token transfer attached to message (tickets #1152, #1153)
+  * uint => frank-value,
+}
+
+message-content = encrypted-message-content
+
+token-transfer = {
+  1: tstr, ; chain namespace (e.g. "monad", "ethereum", "solana")
+  2: tstr, ; contract address
+  3: #6.1001(biguint), ; amount in base units
+  4: uint, ; decimals
+  5: tstr, ; symbol
+  ? 6: bstr, ; optional raw tx or permit bytes
   * uint => frank-value,
 }
 

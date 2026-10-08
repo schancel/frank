@@ -259,12 +259,22 @@ export type RecipientEncryptedPayload =
   | RecipientEncryptedPayloadV1
   | RecipientEncryptedPayloadV2
 
+export interface TokenTransfer {
+  chainNamespace: string
+  contractAddress: string
+  amount: bigint
+  decimals: number
+  symbol: string
+  rawTxOrPermit?: Uint8Array
+}
+
 export interface EncryptedMessageContent<F> {
   type: 6
   network: string
   messageId: Uint8Array
   conversationId: Uint8Array
   conversationName?: string
+  tokenTransfer?: TokenTransfer
   /** The type-8 message-content-revision frame. */
   revisionFrame: F
   contentDigest: Uint8Array

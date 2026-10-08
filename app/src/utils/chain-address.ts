@@ -58,6 +58,7 @@ export function safeToChainDisplayAddress(
   address?: string | null,
 ): string | null {
   if (!address) return null
+  if (typeof activeChain?.parseAddress !== 'function') return address
   const parsed = activeChain.parseAddress(address)
   if (!parsed) return null
   return activeChain.formatAddress(parsed)

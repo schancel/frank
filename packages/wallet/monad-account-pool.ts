@@ -698,12 +698,19 @@ export class MonadSubAccountPool {
     const fundingTxHashes: string[] = [];
     for (const record of this.store.getAll()) {
       if (record.status === "funding") {
-        const txHash = await this.finishFundingAttempt(
-          record,
-          params.mainAccountSigner,
-          params.receipt
-        );
-        fundingTxHashes.push(txHash);
+        try {
+          const txHash = await this.finishFundingAttempt(
+            record,
+            params.mainAccountSigner,
+            params.receipt
+          );
+          fundingTxHashes.push(txHash);
+        } catch (err) {
+          console.warn(
+            `[MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account ${record.index}:`,
+            err
+          );
+        }
       } else if (record.status === "available") {
         // A legacy `available` record is ambiguous: it may be merely derived, or it may have been
         // used before confirmed leases became terminal. Never re-fund that address. An empty one
@@ -1008,6 +1015,35 @@ export class MonadSubAccountPool {
       status = await signer.getStatus(attempt.txHash);
     }
     if (status === "pending") {
+      let isSuperceded = false;
+      try {
+        const parsed = Transaction.from(attempt.rawTx);
+        if (parsed.from && typeof signer.getTransactionCount === "function") {
+          const currentNonce = await signer.getTransactionCount(parsed.from);
+          if (currentNonce > BigInt(parsed.nonce)) {
+            isSuperceded = true;
+          }
+        }
+      } catch {}
+
+      let balance = 0n;
+      try {
+        balance = await signer.getBalance(record.address);
+      } catch {}
+      const { fundingAttempt: _fundingAttempt, ...base } = record;
+      if (balance > 0n) {
+        this.store.put({ ...base, status: "available" });
+        await this.store.flush();
+        return attempt.txHash;
+      }
+      if (isSuperceded) {
+        this.store.put({ ...base, status: "retired" });
+        this.capacityCache.delete(record.index);
+        await this.store.flush();
+        throw new Error(
+          `Funding transaction ${attempt.txHash} was superceded by a later nonce and sub-account ${record.index} was retired`
+        );
+      }
       throw new Error(`Funding transaction ${attempt.txHash} is still pending`);
     }
     if (status === "failed") {

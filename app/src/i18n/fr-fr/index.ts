@@ -297,6 +297,35 @@ export default {
     contactsUnreadOne: 'Contacts, {count} message non lu',
     contactsUnreadOther: 'Contacts, {count} messages non lus',
     loginSignUp: 'Connexion / Inscription',
+    welcome: 'Introduction',
+  },
+  welcome: {
+    title: 'Bienvenue sur Frank',
+    tagline: "La liberté d'expression n'est pas gratuite.",
+    subtitle:
+      'Messagerie privée et résistante au spam économique sur Monad.',
+    introText:
+      'Frank combine des identités cryptographiques sans permission avec de véritables enjeux économiques. Les expéditeurs paient pour capter l’attention, les publications publiques brûlent de la valeur et la vie privée est préservée par des transactions furtives ambiantes.',
+    createAccount: 'Créer un compte',
+    createAccountSubtitle:
+      'Générez une identité cryptographique locale en quelques secondes sans aucun identifiant personnel.',
+    browseForum: 'Parcourir le forum',
+    browseForumSubtitle:
+      'Consultez les sujets publics et les discussions sans avoir besoin de compte.',
+    readDocs: 'Lire la documentation',
+    howItWorks: 'Comment fonctionne Frank',
+    pillarFreeSpeechTitle: "La liberté d'expression n'est pas gratuite",
+    pillarFreeSpeechDesc:
+      'Quand envoyer un message ne coûte rien, les robots s’imposent et les plateformes censurent. Frank remplace les gardiens par des règles économiques : les messages directs paient le destinataire et les sujets publics brûlent de la valeur.',
+    pillarPrivacyTitle: 'Confidentialité ambiante et DKSAP',
+    pillarPrivacyDesc:
+      'Les paiements sont acheminés vers des adresses furtives éphémères. Les transactions se fondent dans le trafic ordinaire de gaz, créant une confidentialité collective sur la blockchain.',
+    pillarIdentityTitle: 'Identité souveraine sans données personnelles',
+    pillarIdentityDesc:
+      'Aucun numéro de téléphone, code SMS ou courriel requis. Votre identité est une paire de clés secp256k1 générée localement sur votre appareil.',
+    pillarRelayTitle: 'Relais de boîtes aux lettres fédérés',
+    pillarRelayDesc:
+      'Les relais acheminent et stockent des enveloppes chiffrées de bout en bout sans jamais accéder au texte en clair ni agir comme autorités centrales.',
   },
   docs: {
     title: 'Documentation',
@@ -1096,7 +1125,7 @@ export default {
       'Frank est une messagerie cryptographique décentralisée et souveraine conçue pour la blockchain Monad, prolongeant et faisant évoluer le protocole Stamp. Elle combine des identités cryptographiques sans permission avec une résistance économique réelle au spam.',
     frankAccounts:
       'Les comptes sont des paires de clés secp256k1 générées localement sur votre appareil. Frank ne requiert aucun numéro de téléphone, adresse courriel ou fournisseur centralisé.',
-    stampTitle: 'Le protocole Stamp : la parole n’est pas gratuite',
+    stampTitle: 'Le protocole Stamp : la liberté d’expression n’est pas gratuite',
     stampIntro:
       'Plutôt que de s’en remettre à des gardiens centralisés ou à la surveillance pour filtrer le spam, le protocole Stamp introduit des incitations économiques directes dans la communication.',
     stampDMsTitle: 'Messages directs et remise rémunérée',

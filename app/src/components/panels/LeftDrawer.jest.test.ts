@@ -340,4 +340,22 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
       expect(wrapper.find('.drawer-balance-item').exists()).toBe(true)
     })
   })
+
+  describe('welcome introduction link', () => {
+    it('shows introduction link above all topics when not logged in', async () => {
+      mockRouterPush.mockReset()
+      const wrapper = mountDrawer(false)
+      const welcomeItem = wrapper.find('[data-test="nav-welcome"]')
+      expect(welcomeItem.exists()).toBe(true)
+      expect(welcomeItem.text()).toContain('leftDrawer.welcome')
+
+      await welcomeItem.trigger('click')
+      expect(mockRouterPush).toHaveBeenCalledWith('/welcome')
+    })
+
+    it('hides introduction link when user account setup is complete', () => {
+      const wrapper = mountDrawer(true)
+      expect(wrapper.find('[data-test="nav-welcome"]').exists()).toBe(false)
+    })
+  })
 })

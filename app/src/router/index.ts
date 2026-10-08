@@ -71,12 +71,16 @@ export default () => {
       to.path === '/setup' ||
       to.path === '/changelog' ||
       to.path === '/about' ||
+      to.path === '/welcome' ||
       to.path === '/docs' ||
       to.path.startsWith('/docs/') ||
       to.path === '/' ||
       to.path.startsWith('/forum') ||
       to.path.startsWith('/topic')
     ) {
+      if (to.path === '/') {
+        return accountStatus.status === 'ready' ? '/forum' : '/welcome'
+      }
       return
     }
     if (accountStatus.status !== 'ready') return '/setup'

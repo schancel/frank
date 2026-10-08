@@ -20,6 +20,9 @@ features:
   - title: Zero PII & Uncensorable Identity
     details: Conventional messengers gate communication behind phone numbers, SMS codes, and personal identity. Frank requires zero PII. Identities are sovereign cryptographic keypairs derived entirely offline on your device—making surveillance, account bans, and de-platforming mathematically impossible.
     link: /guide/introduction
+  - title: Economic Anti-Spam (Stamps & Burns)
+    details: Free speech is not free. When communication is costless, bot swarms destroy the open commons. Frank replaces gatekeepers with economic physics: direct messages pay the recipient, and public topics burn value.
+    link: /protocol/stamp-derivation
   - title: DKSAP Stealth & Ambient Privacy
     details: Dual-Key Stealth Address Protocol with Chaum-Pedersen DLEQ proofs. Every payment generates fresh, unlinkable recipient stealth addresses with zero calldata identifiers to defeat public ledger graph surveillance.
     link: /protocol/ambient-privacy

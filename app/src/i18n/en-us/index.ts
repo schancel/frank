@@ -291,6 +291,34 @@ export default {
     contactsUnreadOne: 'Contacts, {count} unread message',
     contactsUnreadOther: 'Contacts, {count} unread messages',
     loginSignUp: 'Log in / Sign up',
+    welcome: 'Introduction',
+  },
+  welcome: {
+    title: 'Welcome to Frank',
+    tagline: 'Free speech is not free.',
+    subtitle: 'Private, economically spam-resistant messaging on Monad.',
+    introText:
+      'Frank combines permissionless cryptographic identities with real economic stakes. Senders pay for attention, public broadcasts burn value, and privacy is preserved through ambient stealth transactions.',
+    createAccount: 'Create Account',
+    createAccountSubtitle:
+      'Generate a local cryptographic identity in seconds with zero PII.',
+    browseForum: 'Browse Forum',
+    browseForumSubtitle:
+      'Read public topics and community discussions without an account.',
+    readDocs: 'Read Documentation',
+    howItWorks: 'How Frank Works',
+    pillarFreeSpeechTitle: 'Free Speech Is Not Free',
+    pillarFreeSpeechDesc:
+      'When messaging is costless, bots dominate and platforms censor. Frank replaces gatekeepers with economic physics: direct messages pay the recipient, and public topics burn value.',
+    pillarPrivacyTitle: 'Ambient Privacy & DKSAP',
+    pillarPrivacyDesc:
+      'Payments route to derived one-time stealth addresses. Transactions look like ordinary peer-to-peer gas transfers, creating herd privacy across the entire blockchain.',
+    pillarIdentityTitle: 'Zero-PII Sovereign Identity',
+    pillarIdentityDesc:
+      'No phone numbers, SMS codes, or email required. Your identity is a local secp256k1 keypair derived entirely on your device.',
+    pillarRelayTitle: 'Federated Mailbox Relays',
+    pillarRelayDesc:
+      'Relays route and store end-to-end encrypted envelopes without ever seeing message plaintext or acting as identity gatekeepers.',
   },
   docs: {
     title: 'Documentation',
@@ -1066,7 +1094,7 @@ export default {
       'Frank is a decentralized, sovereign cryptomessenger designed for the Monad blockchain, continuing and evolving the Stamp protocol. It combines permissionless cryptographic identities with real economic spam resistance.',
     frankAccounts:
       'Accounts are permissionless secp256k1 keypairs generated entirely on your device. Frank requires no phone numbers, email addresses, or central account providers.',
-    stampTitle: 'The Stamp Protocol: Speaking Is Not Free',
+    stampTitle: 'The Stamp Protocol: Free Speech Is Not Free',
     stampIntro:
       'Rather than relying on centralized gatekeepers or surveillance to filter spam, the Stamp protocol introduces direct economic incentives into communication.',
     stampDMsTitle: 'Direct Messages & Paid Delivery',

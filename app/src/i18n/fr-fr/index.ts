@@ -297,7 +297,7 @@ export default {
     contactsUnreadOne: 'Contacts, {count} message non lu',
     contactsUnreadOther: 'Contacts, {count} messages non lus',
     loginSignUp: 'Connexion / Inscription',
-    welcome: 'Introduction',
+    welcome: 'Présentation',
   },
   welcome: {
     title: 'Bienvenue sur Frank',

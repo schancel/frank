@@ -310,7 +310,7 @@ export class SolanaWallet
         error: NativeTransactionSubmissionError
       }
     | undefined
-  protected readonly connection: SolanaWalletConnection
+  readonly connection: SolanaWalletConnection
   protected readonly signer: Keypair
   private readonly nativeAttemptStore: NativeTransactionAttemptStore
   private readonly getTransactionStatus: (
@@ -664,6 +664,7 @@ export class SolanaWallet
           throw this.unresolvedNative.error
         }
         let activeSigner = this.signer
+        let spendingStealthAddress: string | undefined
         if (params.fromAddress) {
           if (params.fromAddress === this.address) {
             activeSigner = this.signer
@@ -675,6 +676,7 @@ export class SolanaWallet
               )
             }
             activeSigner = acc.keypair
+            spendingStealthAddress = acc.address
           }
         } else {
           try {
@@ -689,6 +691,7 @@ export class SolanaWallet
               )
               if (selected) {
                 activeSigner = selected.keypair
+                spendingStealthAddress = selected.address
               }
             }
           } catch {
@@ -702,7 +705,18 @@ export class SolanaWallet
           ],
           signer: activeSigner,
         })
-        return this.submitNativeBundle(bundle, params.onSigned, activeSigner)
+        const submitted = await this.submitNativeBundle(
+          bundle,
+          params.onSigned,
+          activeSigner,
+        )
+        if (spendingStealthAddress) {
+          await this.stealthKeyring.recordSpend(spendingStealthAddress, {
+            valueLamports: params.value,
+            txHash: submitted.txHash,
+          })
+        }
+        return submitted
       },
     )
   }

@@ -56,6 +56,11 @@ export interface SolanaStealthAccountRecord {
   readonly discoveredAtMs: number;
   readonly initialAmountLamports?: bigint;
   readonly txHash?: string;
+  readonly nonce?: number;
+  readonly isClean?: boolean;
+  readonly isSpent?: boolean;
+  readonly balanceLamports?: bigint;
+  readonly lastUpdatedMs?: number;
 }
 
 export interface SolanaStealthMetadata {
@@ -285,8 +290,59 @@ export class SolanaStealthKeyring {
     if (existing !== undefined) {
       return false;
     }
-    await this.store.put(record);
+    const fullRecord: SolanaStealthAccountRecord = {
+      ...record,
+      nonce: record.nonce ?? 0,
+      isClean: record.isClean ?? true,
+      isSpent: record.isSpent ?? false,
+      balanceLamports:
+        record.balanceLamports ?? record.initialAmountLamports ?? 0n,
+      lastUpdatedMs:
+        record.lastUpdatedMs ?? record.discoveredAtMs ?? Date.now(),
+    };
+    await this.store.put(fullRecord);
     return true;
+  }
+
+  async recordSpend(
+    address: string,
+    details?: { valueLamports?: bigint; valueWei?: bigint; txHash?: string }
+  ): Promise<SolanaStealthAccountRecord | undefined> {
+    const record = this.store.get(address);
+    if (!record) {
+      return undefined;
+    }
+    const deduct = details?.valueLamports ?? details?.valueWei ?? 0n;
+    const currentBalance = record.balanceLamports ?? 0n;
+    const newBalance = currentBalance >= deduct ? currentBalance - deduct : 0n;
+    const updated: SolanaStealthAccountRecord = {
+      ...record,
+      isSpent: true,
+      isClean: false,
+      nonce: (record.nonce ?? 0) + 1,
+      balanceLamports: newBalance,
+      lastUpdatedMs: Date.now(),
+      ...(details?.txHash ? { txHash: details.txHash } : {}),
+    };
+    await this.store.put(updated);
+    return updated;
+  }
+
+  async updateBalance(
+    address: string,
+    balance: bigint
+  ): Promise<SolanaStealthAccountRecord | undefined> {
+    const record = this.store.get(address);
+    if (!record) {
+      return undefined;
+    }
+    const updated: SolanaStealthAccountRecord = {
+      ...record,
+      balanceLamports: balance,
+      lastUpdatedMs: Date.now(),
+    };
+    await this.store.put(updated);
+    return updated;
   }
 
   hasAccount(address: string): boolean {
@@ -317,20 +373,24 @@ export class SolanaStealthKeyring {
 
   /**
    * Sums the spendable on-chain balance of all registered stealth accounts for a given network.
+   * Skips spent accounts.
    */
   async getTotalBalance(
     connection: SolanaWalletConnection,
     networkTag?: string
   ): Promise<bigint> {
-    const accounts = await this.getAccounts(networkTag);
+    const all = await this.getAccounts(networkTag);
+    const accounts = all.filter((a) => !a.isSpent);
     if (accounts.length === 0) return 0n;
 
     const balances = await Promise.all(
       accounts.map(async (account) => {
         try {
-          return BigInt(
+          const bal = BigInt(
             await connection.getBalance(account.keypair.publicKey)
           );
+          await this.updateBalance(account.address, bal);
+          return bal;
         } catch {
           return 0n;
         }
@@ -342,6 +402,8 @@ export class SolanaStealthKeyring {
 
   /**
    * Selects a single stealth account with sufficient balance to cover `neededLamports`.
+   * First pass: in-memory O(1) selection against unspent accounts with cached balance >= neededLamports.
+   * Second pass: bounded parallel verification of remaining unspent accounts.
    */
   async selectAccountForSpend(
     neededLamports: bigint,
@@ -349,18 +411,56 @@ export class SolanaStealthKeyring {
     networkTag?: string
   ): Promise<SolanaStealthAccountRecord | undefined> {
     const accounts = await this.getAccounts(networkTag);
+
+    // First pass (In-Memory O(1) selection): check all accounts for networkTag.
+    // If an account has !account.isSpent && (account.balanceLamports ?? 0n) >= neededLamports,
+    // select and return it immediately without any network calls!
     for (const account of accounts) {
-      try {
-        const bal = BigInt(
-          await connection.getBalance(account.keypair.publicKey)
-        );
-        if (bal >= neededLamports) {
-          return account;
-        }
-      } catch {
-        continue;
+      if (
+        !account.isSpent &&
+        (account.balanceLamports ?? 0n) >= neededLamports
+      ) {
+        return account;
       }
     }
+
+    // Second pass (Parallel Bounded Verification): if no cached account has enough balance,
+    // filter out accounts where isSpent === true.
+    const candidateAccounts = accounts.filter((account) => !account.isSpent);
+    if (candidateAccounts.length === 0) {
+      return undefined;
+    }
+
+    // Query balances concurrently in chunks of 6 using Promise.all
+    const CHUNK_SIZE = 6;
+    for (let i = 0; i < candidateAccounts.length; i += CHUNK_SIZE) {
+      const chunk = candidateAccounts.slice(i, i + CHUNK_SIZE);
+      const results = await Promise.all(
+        chunk.map(async (account) => {
+          try {
+            const bal = BigInt(
+              await connection.getBalance(account.keypair.publicKey)
+            );
+            await this.updateBalance(account.address, bal);
+            return { account, balance: bal };
+          } catch {
+            return { account, balance: 0n };
+          }
+        })
+      );
+
+      for (const res of results) {
+        if (res.balance >= neededLamports) {
+          return (
+            this.getAccount(res.account.address) ?? {
+              ...res.account,
+              balanceLamports: res.balance,
+            }
+          );
+        }
+      }
+    }
+
     return undefined;
   }
 
@@ -457,6 +557,32 @@ export async function buildSolanaStealthPayment(
   });
 
   // 2. Build and sign transaction bundle via wallet
+  let fromAddress = params.fromAddress;
+  let spendingStealthAddress: string | undefined;
+
+  if (fromAddress) {
+    if (wallet.stealthKeyring?.hasAccount(fromAddress)) {
+      spendingStealthAddress = fromAddress;
+    }
+  } else if (wallet.stealthKeyring) {
+    try {
+      const primaryBal = await wallet.getPrimaryBalance();
+      if (primaryBal < amountLamports) {
+        const selected = await wallet.stealthKeyring.selectAccountForSpend(
+          amountLamports,
+          wallet.connection,
+          params.networkTag ?? wallet.networkId
+        );
+        if (selected) {
+          fromAddress = selected.address;
+          spendingStealthAddress = selected.address;
+        }
+      }
+    } catch {
+      // ignore balance check error
+    }
+  }
+
   const intentId = new Uint8Array(32);
   const cryptoObj = (
     globalThis as unknown as {
@@ -477,13 +603,20 @@ export async function buildSolanaStealthPayment(
         lamports: amountLamports,
       },
     ],
-    fromAddress: params.fromAddress,
+    fromAddress,
   });
 
   // 3. Submit transaction bundle
   const submission = await wallet.submitTransactionBundle(bundle);
   const txHash = submission.submitted[0]?.txId;
   const rawTransaction = bundle.transactions[0].rawTransaction;
+
+  if (spendingStealthAddress && wallet.stealthKeyring) {
+    await wallet.stealthKeyring.recordSpend(spendingStealthAddress, {
+      valueLamports: amountLamports,
+      txHash,
+    });
+  }
 
   // 4. Construct StealthItem
   const stealthItem: StealthItem = {

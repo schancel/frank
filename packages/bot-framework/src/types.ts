@@ -59,7 +59,10 @@ export interface BotMessageContext {
   readonly timestampMs: number;
   readonly payloadDigest: string;
   readonly items: MessageItem[];
-  reply(items: MessageItem[]): Promise<void>;
+  reply(
+    items: MessageItem[],
+    options?: { stampValueWei?: bigint }
+  ): Promise<DirectMessageSendResult>;
 }
 
 export interface BotScheduleDefinition {
@@ -101,12 +104,14 @@ export interface BotContext {
   sendMessage(
     recipientAddress: string,
     items: MessageItem[],
-    conversationId?: string
+    conversationId?: string,
+    options?: { stampValueWei?: bigint }
   ): Promise<DirectMessageSendResult>;
   sendDirectMessage(
     recipientAddress: string,
     items: MessageItem[],
-    conversationId?: string
+    conversationId?: string,
+    options?: { stampValueWei?: bigint }
   ): Promise<DirectMessageSendResult>;
   onNewUserRegistered(
     callback: (user: NewUserEvent) => void | Promise<void>

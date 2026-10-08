@@ -357,12 +357,34 @@ export class FrankBotHost {
 
       lookupPeer: (addr: string) => directory.lookupPeer(addr),
 
-      sendMessage: async (recipientAddress: string, items, conversationId?: string) => {
-        return this.sendMessageWithFallback(wallet, recipientAddress, items, conversationId);
+      sendMessage: async (
+        recipientAddress: string,
+        items,
+        conversationId?: string,
+        options?: { stampValueWei?: bigint }
+      ) => {
+        return this.sendMessageWithFallback(
+          wallet,
+          recipientAddress,
+          items,
+          conversationId,
+          options
+        );
       },
 
-      sendDirectMessage: async (recipientAddress: string, items, conversationId?: string) => {
-        return this.sendMessageWithFallback(wallet, recipientAddress, items, conversationId);
+      sendDirectMessage: async (
+        recipientAddress: string,
+        items,
+        conversationId?: string,
+        options?: { stampValueWei?: bigint }
+      ) => {
+        return this.sendMessageWithFallback(
+          wallet,
+          recipientAddress,
+          items,
+          conversationId,
+          options
+        );
       },
 
       onNewUserRegistered: (cb) => {
@@ -679,13 +701,15 @@ export class FrankBotHost {
               timestampMs: msg.receivedTime,
               payloadDigest: msg.payloadDigest,
               items: msg.items,
-              reply: async (replyItems) => {
-                await instance.context.sendMessage(
+              reply: async (replyItems, options) => {
+                const res = await instance.context.sendMessage(
                   sender,
                   replyItems,
-                  msg.conversationId
+                  msg.conversationId,
+                  options
                 );
                 instance.loopGuard.recordReply(sender);
+                return res;
               },
             };
 
@@ -934,8 +958,10 @@ export class FrankBotHost {
     wallet: MonadChainWalletHandle,
     recipientAddress: string,
     items: MessageItem[],
-    conversationId?: string
+    conversationId?: string,
+    options?: { stampValueWei?: bigint }
   ): Promise<DirectMessageSendResult> {
+    const stampValue = options?.stampValueWei ?? (items as any).stampValueWei;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const res = await this.chain.directMessages.send({
@@ -943,6 +969,7 @@ export class FrankBotHost {
           recipient: toChainAddress(recipientAddress),
           items,
           conversationId,
+          ...(stampValue !== undefined ? { stampValue } : {}),
         });
         console.log(
           `[bot-host] Canonical send to ${recipientAddress} succeeded (digest: ${res.payloadDigest.slice(
@@ -971,16 +998,27 @@ export class FrankBotHost {
           `[bot-host] Canonical send to ${recipientAddress} failed, falling back to standard send:`,
           err
         );
-        return this.sendStandardDirectMessage(wallet, recipientAddress, items);
+        return this.sendStandardDirectMessage(
+          wallet,
+          recipientAddress,
+          items,
+          options
+        );
       }
     }
-    return this.sendStandardDirectMessage(wallet, recipientAddress, items);
+    return this.sendStandardDirectMessage(
+      wallet,
+      recipientAddress,
+      items,
+      options
+    );
   }
 
   private async sendStandardDirectMessage(
     wallet: MonadChainWalletHandle,
     recipientAddress: string,
-    items: MessageItem[]
+    items: MessageItem[],
+    options?: { stampValueWei?: bigint }
   ): Promise<DirectMessageSendResult> {
     const prev = this.walletSendQueues.get(wallet) ?? Promise.resolve();
     const run = prev.then(async () => {
@@ -996,41 +1034,42 @@ export class FrankBotHost {
             );
           }
 
-          let fundingPrivateKeyHex = this.options.fundingPrivateKeyHex;
-          if (!fundingPrivateKeyHex) {
-            const instance = Array.from(this.instances.values()).find(
-              (i) => i.wallet === wallet
-            );
-            const candidateKeys = [
-              instance?.evmMainPrivateKey,
-              wallet.mainPrivateKey,
-              wallet.mainAccount?.privateKey,
-              wallet.identity.toPrivateKeyHex(),
-            ].filter(Boolean) as string[];
+          const instance = Array.from(this.instances.values()).find(
+            (i) => i.wallet === wallet
+          );
+          const candidateKeys = [
+            this.options.fundingPrivateKeyHex,
+            instance?.evmMainPrivateKey,
+            wallet.mainPrivateKey,
+            wallet.mainAccount?.privateKey,
+            wallet.identity.toPrivateKeyHex(),
+          ].filter(Boolean) as string[];
 
-            let bestKey: string | undefined;
-            let maxBal = -1n;
-            for (const key of candidateKeys) {
-              try {
-                const signerAddr = new Wallet(key).address;
-                const bal = await this.provider.getBalance(signerAddr);
-                if (bal > maxBal) {
-                  maxBal = bal;
-                  bestKey = key;
-                }
-              } catch {}
-            }
-            if (bestKey && maxBal >= this.options.stampValueWei) {
-              fundingPrivateKeyHex = bestKey;
-            }
-            if (!fundingPrivateKeyHex) {
-              fundingPrivateKeyHex =
-                instance?.evmMainPrivateKey ??
-                wallet.mainPrivateKey ??
-                wallet.mainAccount?.privateKey ??
-                wallet.identity.toPrivateKeyHex();
-            }
+          let bestKey: string | undefined;
+          let maxBal = -1n;
+          for (const key of candidateKeys) {
+            try {
+              const signerAddr = new Wallet(key).address;
+              const bal = await this.provider.getBalance(signerAddr);
+              if (bal > maxBal) {
+                maxBal = bal;
+                bestKey = key;
+              }
+            } catch {}
           }
+          let fundingPrivateKeyHex =
+            bestKey && maxBal >= this.options.stampValueWei
+              ? bestKey
+              : this.options.fundingPrivateKeyHex ||
+                instance?.evmMainPrivateKey ||
+                wallet.mainPrivateKey ||
+                wallet.mainAccount?.privateKey ||
+                wallet.identity.toPrivateKeyHex();
+
+          const targetStampWei =
+            options?.stampValueWei ??
+            (items as any).stampValueWei ??
+            this.options.stampValueWei;
 
           const botRpcUrls = this.options.rpcUrl
             .split(',')
@@ -1056,7 +1095,7 @@ export class FrankBotHost {
           await wallet.pool.prepareStampInventory({
             mainAccountSigner,
             provider: this.provider,
-            stampValueWei: this.options.stampValueWei,
+            stampValueWei: targetStampWei,
             gasReserveWei,
           });
 
@@ -1086,7 +1125,7 @@ export class FrankBotHost {
           const res = await stampClient.submitStampedMessage({
             encryptedPayload: envelope,
             recipientPublicKey: toPubKey,
-            stampValueWei: this.options.stampValueWei,
+            stampValueWei: targetStampWei,
             waitForLease: {
               timeoutMs: 30_000,
               pollIntervalMs: 250,
@@ -1101,11 +1140,11 @@ export class FrankBotHost {
           );
           return {
             payloadDigest: res.payloadHashHex,
-            stampValueWei: this.options.stampValueWei,
+            stampValueWei: targetStampWei,
             stampPayments: res.txHashes.map((h) => ({
               txHash: h,
               destinationAddress: recipientAddress,
-              valueWei: this.options.stampValueWei,
+              valueWei: targetStampWei,
             })),
             preparationTxHashes: [],
           };

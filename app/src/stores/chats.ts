@@ -35,11 +35,12 @@ import '@frank/wallet/message-item-plugins/built-in'
 import '@frank/wallet/message-item-plugins/blackjack/plugin'
 import '@frank/wallet/message-item-plugins/digital-goods/plugin'
 import '@frank/wallet/message-item-plugins/raffle/plugin'
-import type {
-  DirectMessageAttemptStatus,
-  DirectMessagePreparationProgress,
-  DirectMessageSendResult,
-  WalletHandle,
+import {
+  CanonicalRecipientNotPublishedError,
+  type DirectMessageAttemptStatus,
+  type DirectMessagePreparationProgress,
+  type DirectMessageSendResult,
+  type WalletHandle,
 } from '@frank/wallet/chain'
 import { Utxo } from '@frank/cashweb/types/utxo'
 import {
@@ -573,6 +574,7 @@ function classifySendFailure(
   error: unknown,
   ownDigest: string | undefined,
 ): { reason: OutgoingFailureReason; keepDigest?: string } {
+  const held = heldCause(error)
   if (error instanceof MonadStampRecoveredAttemptError) {
     return { reason: 'recovered' }
   }
@@ -589,12 +591,21 @@ function classifySendFailure(
   if (error instanceof MonadMailboxUnavailableError) {
     return { reason: 'unavailable' }
   }
+  if (
+    error instanceof CanonicalRecipientNotPublishedError ||
+    (error instanceof Error &&
+      error.name === 'CanonicalRecipientNotPublishedError') ||
+    held instanceof CanonicalRecipientNotPublishedError ||
+    (held instanceof Error &&
+      held.name === 'CanonicalRecipientNotPublishedError')
+  ) {
+    return { reason: 'recipient-unregistered' }
+  }
   if (isInsufficientFundsError(error)) {
     return { reason: 'insufficient-funds' }
   }
   // An earlier payment that could not be finished holds this send. Show why it could not be
   // finished; whatever payment set this message already has stays on it.
-  const held = heldCause(error)
   if (isInsufficientFundsError(held)) {
     return { reason: 'insufficient-funds', keepDigest: ownDigest }
   }

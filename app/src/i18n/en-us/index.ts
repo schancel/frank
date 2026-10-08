@@ -456,6 +456,7 @@ export default {
     reasonUnverified: 'Delivery could not be confirmed.',
     reasonRecovered: 'An earlier message was delivered meanwhile.',
     reasonInsufficientFunds: 'There are not enough funds to send this message.',
+    reasonRecipientUnregistered: 'Recipient is not registered on this relay.',
     reasonError: 'The message could not be sent.',
     retry: 'Retry',
     retryHint:

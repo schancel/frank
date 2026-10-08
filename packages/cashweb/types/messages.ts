@@ -69,18 +69,18 @@ export type ChannelUpdateItem = CanonicalChannelUpdateItem;
 
 /** Email bridge message item (Type 26). */
 export interface EmailItem {
-  type: 'email'
-  messageId: string
-  from: EmailParty
-  to: EmailParty[]
-  cc?: EmailParty[]
-  subject: string
-  textBody: string
-  htmlBody?: string
-  inReplyTo?: string
-  references?: string[]
-  attachments?: EmailAttachment[]
-  replyTo?: EmailParty
+  type: "email";
+  messageId: string;
+  from: EmailParty;
+  to: EmailParty[];
+  cc?: EmailParty[];
+  subject: string;
+  textBody: string;
+  htmlBody?: string;
+  inReplyTo?: string;
+  references?: string[];
+  attachments?: EmailAttachment[];
+  replyTo?: EmailParty;
 }
 
 /**
@@ -483,6 +483,8 @@ export type OutgoingFailureReason =
   | "recovered"
   /** The wallet could not prepare the message's stamp because the account lacks funds. */
   | "insufficient-funds"
+  /** The recipient address has no published directory entry on this relay. */
+  | "recipient-unregistered"
   | "error";
 
 /** Delivery bookkeeping for an outgoing (`outbound`) direct message that is not yet confirmed. */

@@ -101,6 +101,10 @@ export {
   TopicPostOutcomeUnknownError,
 } from "./active-chain";
 export {
+  CanonicalRecipientNotPublishedError,
+  CanonicalRelayCannotForwardError,
+} from "./monad-canonical-dm";
+export {
   DefaultNativeTransactionAttemptStore,
   InMemoryNativeTransactionAttemptStore,
   defaultNativeTransactionAttemptStore,

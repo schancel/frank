@@ -55,6 +55,30 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(wrapper.emitted('discardClick')).toHaveLength(1)
   })
 
+  it('shows recipient-unregistered failure reason in English and French', () => {
+    const en = mountSuffix(
+      {
+        status: 'error',
+        failureReason: 'recipient-unregistered',
+      },
+      enUS,
+    )
+    expect(en.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+      'Recipient is not registered on this relay.',
+    )
+
+    const fr = mountSuffix(
+      {
+        status: 'error',
+        failureReason: 'recipient-unregistered',
+      },
+      frFR,
+    )
+    expect(fr.get('[data-testid="outgoing-failure-reason"]').text()).toBe(
+      "Le destinataire n'est pas enregistré sur ce relais.",
+    )
+  })
+
   it('claims "not charged again" only when the payment is known live', () => {
     const live = mountSuffix({
       status: 'payment-pending',

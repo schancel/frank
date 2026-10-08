@@ -353,6 +353,13 @@ export const useContactStore = defineStore('contacts', {
       const apiAddress = toChainDisplayAddress(address)
       const contact = this.contacts[apiAddress]
       if (!contact) {
+        this.addContact({
+          address: apiAddress,
+          contact: {
+            profile,
+            inbox,
+          },
+        })
         return
       }
       contact.lastUpdateTime = moment().valueOf()
@@ -555,10 +562,18 @@ export const useContactStore = defineStore('contacts', {
         const profileInfo = await fetchContactProfile(chainAddress)
         if (!profileInfo) {
           console.debug(`No registered profile found for ${address}`)
+          const displayAddress = safeToChainDisplayAddress(address) ?? address
+          const currentName = oldContactInfo.profile?.name
+          const name =
+            !isBlankName(currentName) &&
+            currentName !== pendingRelayData.profile.name
+              ? currentName
+              : `${shortAddressLabel(displayAddress)} (Unregistered)`
           this.updateContact({
             address,
             profile: {
               ...oldContactInfo.profile,
+              name,
               signedName: oldContactInfo.profile.signedName ?? null,
               isBot: oldContactInfo.profile.isBot ?? false,
               accountType: oldContactInfo.profile.accountType ?? 0,
@@ -577,7 +592,8 @@ export const useContactStore = defineStore('contacts', {
             name: !isBlankName(profileInfo.name)
               ? (profileInfo.name as string)
               : !isBlankName(oldContactInfo.profile.name) &&
-                oldContactInfo.profile.name !== pendingRelayData.profile.name
+                oldContactInfo.profile.name !== pendingRelayData.profile.name &&
+                !oldContactInfo.profile.name.endsWith('(Unregistered)')
               ? oldContactInfo.profile.name
               : shortAddressLabel(
                   safeToChainDisplayAddress(address) ?? address,
@@ -599,6 +615,21 @@ export const useContactStore = defineStore('contacts', {
         })
       } catch (err) {
         console.error(err)
+        const displayAddress = safeToChainDisplayAddress(address) ?? address
+        const currentName = oldContactInfo.profile?.name
+        if (
+          isBlankName(currentName) ||
+          currentName === pendingRelayData.profile.name
+        ) {
+          this.updateContact({
+            address,
+            profile: {
+              ...oldContactInfo.profile,
+              name: `${shortAddressLabel(displayAddress)} (Unregistered)`,
+            },
+            inbox: oldContactInfo.inbox,
+          })
+        }
       }
     },
   },

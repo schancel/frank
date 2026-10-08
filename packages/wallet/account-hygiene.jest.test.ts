@@ -77,7 +77,7 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       expect(dirtyList[0].reason).toBe('nonce-incremented')
     })
 
-    it('sweeps leftover balance to fresh BIP-44 change address when above dust threshold', async () => {
+    it('sweeps leftover balance across change accounts according to geometric distribution when substantially above dust', async () => {
       const engine = new MonadAccountHygieneEngine({
         provider: mockProvider,
         httpClient: mockHttpClient,
@@ -90,28 +90,59 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       engine.markDirty(sub0.address)
 
       // Provider balance: 0.1 MON. Dust threshold (21000 * 1 gwei * 2) = 42,000 gwei = 42,000,000,000,000 wei.
+      // 0.1 MON is substantially above dust (> 2x dust + fees), so it distributes across geometric change splits.
+      const results = await engine.sweepDirtyAccounts()
+      expect(results.length).toBeGreaterThan(1)
+
+      for (let i = 0; i < results.length; i++) {
+        const res = results[i]
+        expect(res.outcome).toBe('swept')
+        expect(res.sourceAddress).toBe(sub0.address)
+        const expectedChangeAddress = changeKeyring.deriveChangeAccount(i).address
+        expect(res.destinationAddress).toBe(expectedChangeAddress)
+        expect(res.amountSwept).toBeGreaterThan(0n)
+      }
+
+      expect(mockHttpClient.submitRawTransaction).toHaveBeenCalledTimes(results.length)
+
+      // Change index advanced by the number of splits generated
+      expect(engine.getNextChangeIndex()).toBe(results.length)
+
+      // Dirty account is now cleaned / unmarked
+      expect(engine.isDirty(sub0.address)).toBe(false)
+
+      const stats = await engine.getHygieneStats()
+      expect(stats.totalSweptCount).toBe(results.length)
+      const expectedTotalSwept = results.reduce((acc, r) => acc + r.amountSwept, 0n)
+      expect(stats.totalSweptWei).toBe(expectedTotalSwept)
+    })
+
+    it('sweeps single change output when balance is slightly above dust but below geometric split threshold', async () => {
+      // Dust threshold: 42,000 gwei = 42,000,000,000,000 wei.
+      // Set balance to 60,000 gwei (above dust, but below 2x dust + fees = 105,000 gwei).
+      mockProvider.getBalance.mockResolvedValue(60_000_000_000_000n)
+
+      const engine = new MonadAccountHygieneEngine({
+        provider: mockProvider,
+        httpClient: mockHttpClient,
+        changeKeyring,
+        hdKeyring,
+        initialChangeIndex: 0,
+      })
+
+      const sub0 = hdKeyring.deriveSubAccount(0)
+      engine.markDirty(sub0.address)
+
       const results = await engine.sweepDirtyAccounts()
       expect(results).toHaveLength(1)
 
       const res = results[0]
       expect(res.outcome).toBe('swept')
       expect(res.sourceAddress).toBe(sub0.address)
-
-      // Verify destination is BIP-44 change address 0
-      const expectedChange0 = changeKeyring.deriveChangeAccount(0).address
-      expect(res.destinationAddress).toBe(expectedChange0)
-      expect(res.amountSwept).toBeGreaterThan(0n)
-      expect(mockHttpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
-
-      // Change index advanced to 1
+      expect(res.destinationAddress).toBe(changeKeyring.deriveChangeAccount(0).address)
+      expect(res.amountSwept).toBe(60_000_000_000_000n - 42_000_000_000_000n)
       expect(engine.getNextChangeIndex()).toBe(1)
-
-      // Dirty account is now cleaned / unmarked
       expect(engine.isDirty(sub0.address)).toBe(false)
-
-      const stats = await engine.getHygieneStats()
-      expect(stats.totalSweptCount).toBe(1)
-      expect(stats.totalSweptWei).toBe(res.amountSwept)
     })
 
     it('skips sweep when account balance is at or below dust threshold', async () => {

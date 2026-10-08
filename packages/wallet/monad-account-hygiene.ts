@@ -19,11 +19,9 @@ import {
 } from './account-hygiene';
 import { MonadChangeKeyring } from './monad-change-keyring';
 import { MonadHdKeyring } from './monad-hd-keyring';
-import {
-  MonadAccountTxSigner,
-  MonadTxSubmitter,
-} from './monad-account-tx';
+import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx';
 import { estimateDustThresholdWei } from './monad-change-pool';
+import { computeGeometricRadixChangeSplits } from './monad-change-distribution';
 
 export interface MonadAccountHygieneParams {
   readonly provider: Provider;
@@ -31,7 +29,7 @@ export interface MonadAccountHygieneParams {
   readonly changeKeyring: MonadChangeKeyring;
   readonly hdKeyring?: MonadHdKeyring;
   readonly signerSupplier?: (
-    address: string,
+    address: string
   ) => Promise<MonadAccountTxSigner | null> | (MonadAccountTxSigner | null);
   readonly options?: AccountHygieneOptions;
   readonly initialChangeIndex?: number;
@@ -43,10 +41,13 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
   private readonly changeKeyring: MonadChangeKeyring;
   private readonly hdKeyring?: MonadHdKeyring;
   private readonly signerSupplier?: (
-    address: string,
+    address: string
   ) => Promise<MonadAccountTxSigner | null> | (MonadAccountTxSigner | null);
 
-  private readonly dirtyAccounts = new Map<string, DirtyAccountRecord<string>>();
+  private readonly dirtyAccounts = new Map<
+    string,
+    DirtyAccountRecord<string>
+  >();
   private readonly sweepIntervalMs: number;
   private readonly jitterMaxMs: number;
   private readonly maxSweepsPerRun: number;
@@ -86,7 +87,7 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
   markDirty(
     address: string,
     reason: ChainDirtyReason = 'nonce-incremented',
-    metadata?: Record<string, unknown>,
+    metadata?: Record<string, unknown>
   ): void {
     const key = this.normalizeAddress(address);
     if (!this.dirtyAccounts.has(key)) {
@@ -118,7 +119,9 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
   /**
    * Helper to resolve a MonadAccountTxSigner for a given dirty address.
    */
-  private async resolveSigner(address: string): Promise<MonadAccountTxSigner | null> {
+  private async resolveSigner(
+    address: string
+  ): Promise<MonadAccountTxSigner | null> {
     if (this.signerSupplier) {
       const signer = await this.signerSupplier(address);
       if (signer) return signer;
@@ -166,7 +169,9 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
               sourceAddress: address,
               amountSwept: 0n,
               outcome: 'not-eligible',
-              error: new Error(`No signer available for dirty address ${address}`),
+              error: new Error(
+                `No signer available for dirty address ${address}`
+              ),
             });
             continue;
           }
@@ -174,13 +179,16 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
           const balanceWei = await this.provider.getBalance(address);
           let dustThreshold = 0n;
           try {
-            dustThreshold = this.minSweepBalance ?? (await estimateDustThresholdWei(this.provider));
+            dustThreshold =
+              this.minSweepBalance ??
+              (await estimateDustThresholdWei(this.provider));
           } catch (feeErr) {
             results.push({
               sourceAddress: address,
               amountSwept: 0n,
               outcome: 'error',
-              error: feeErr instanceof Error ? feeErr : new Error(String(feeErr)),
+              error:
+                feeErr instanceof Error ? feeErr : new Error(String(feeErr)),
             });
             continue;
           }
@@ -198,31 +206,100 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
             continue;
           }
 
-          const sweptValueWei = balanceWei - dustThreshold;
-          const destinationAccount = this.changeKeyring.deriveChangeAccount(this.nextChangeIndex);
-          const destinationAddress = destinationAccount.address;
+          const minFeePerTx = dustThreshold > 0n ? dustThreshold / 2n : 0n;
+          const isSubstantiallyAboveDust =
+            balanceWei >= 2n * dustThreshold + minFeePerTx;
 
-          const signedTx = await signer.buildAndSignTransfer(
-            destinationAddress,
-            sweptValueWei,
-          );
+          let splits: bigint[] = [];
+          if (isSubstantiallyAboveDust) {
+            splits = computeGeometricRadixChangeSplits({
+              totalAvailableWei: balanceWei - dustThreshold,
+              dustThresholdWei: dustThreshold,
+              minFeePerTxWei: minFeePerTx,
+            });
+          }
 
-          await this.httpClient.submitRawTransaction(signedTx.rawTx);
+          if (splits.length > 1) {
+            let currentNonce = await this.provider.getTransactionCount(
+              address,
+              'pending'
+            );
+            let sweepSucceeded = true;
 
-          // Advance change pointer and update statistics
-          this.nextChangeIndex++;
-          this.totalSweptWei += sweptValueWei;
-          this.totalSweptCount++;
-          this.lastSweepTimestamp = Date.now();
-          this.unmarkDirty(address);
+            for (const splitWei of splits) {
+              try {
+                const destinationAccount =
+                  this.changeKeyring.deriveChangeAccount(this.nextChangeIndex);
+                const destinationAddress = destinationAccount.address;
 
-          results.push({
-            sourceAddress: address,
-            destinationAddress,
-            amountSwept: sweptValueWei,
-            txId: signedTx.txHash,
-            outcome: 'swept',
-          });
+                const signedTx = await signer.buildAndSignTransfer(
+                  destinationAddress,
+                  splitWei,
+                  { nonce: currentNonce++ }
+                );
+
+                await this.httpClient.submitRawTransaction(signedTx.rawTx);
+
+                this.nextChangeIndex++;
+                this.totalSweptWei += splitWei;
+                this.totalSweptCount++;
+                this.lastSweepTimestamp = Date.now();
+
+                results.push({
+                  sourceAddress: address,
+                  destinationAddress,
+                  amountSwept: splitWei,
+                  txId: signedTx.txHash,
+                  outcome: 'swept',
+                });
+              } catch (splitErr) {
+                sweepSucceeded = false;
+                results.push({
+                  sourceAddress: address,
+                  amountSwept: 0n,
+                  outcome: 'error',
+                  error:
+                    splitErr instanceof Error
+                      ? splitErr
+                      : new Error(String(splitErr)),
+                });
+                break;
+              }
+            }
+
+            if (sweepSucceeded) {
+              this.unmarkDirty(address);
+            }
+          } else {
+            const sweptValueWei =
+              splits.length === 1 ? splits[0] : balanceWei - dustThreshold;
+            const destinationAccount = this.changeKeyring.deriveChangeAccount(
+              this.nextChangeIndex
+            );
+            const destinationAddress = destinationAccount.address;
+
+            const signedTx = await signer.buildAndSignTransfer(
+              destinationAddress,
+              sweptValueWei
+            );
+
+            await this.httpClient.submitRawTransaction(signedTx.rawTx);
+
+            // Advance change pointer and update statistics
+            this.nextChangeIndex++;
+            this.totalSweptWei += sweptValueWei;
+            this.totalSweptCount++;
+            this.lastSweepTimestamp = Date.now();
+            this.unmarkDirty(address);
+
+            results.push({
+              sourceAddress: address,
+              destinationAddress,
+              amountSwept: sweptValueWei,
+              txId: signedTx.txHash,
+              outcome: 'swept',
+            });
+          }
         } catch (err) {
           results.push({
             sourceAddress: address,

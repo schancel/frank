@@ -86,8 +86,14 @@ export type {
 let currentActiveChain: ActiveChain = MonadChain;
 const activeChainListeners = new Set<(chain: ActiveChain) => void>();
 
+export const activeChain: ActiveChain = Object.assign({}, MonadChain);
+
 export function setActiveChain(chain: ActiveChain): void {
   currentActiveChain = chain;
+  for (const key of Object.keys(activeChain)) {
+    delete (activeChain as any)[key];
+  }
+  Object.assign(activeChain, chain);
   for (const listener of activeChainListeners) {
     try {
       listener(chain);
@@ -117,28 +123,6 @@ export function setNetworkMode(mode: "testnet" | "mainnet"): ActiveChain {
   setActiveChain(newChain);
   return newChain;
 }
-
-export const activeChain: ActiveChain = new Proxy({} as ActiveChain, {
-  get(_target, prop) {
-    const value = Reflect.get(currentActiveChain, prop, currentActiveChain);
-    if (typeof value === "function") {
-      return value.bind(currentActiveChain);
-    }
-    return value;
-  },
-  set(_target, prop, value) {
-    return Reflect.set(currentActiveChain, prop, value, currentActiveChain);
-  },
-  has(_target, prop) {
-    return Reflect.has(currentActiveChain, prop);
-  },
-  ownKeys(_target) {
-    return Reflect.ownKeys(currentActiveChain);
-  },
-  getOwnPropertyDescriptor(_target, prop) {
-    return Reflect.getOwnPropertyDescriptor(currentActiveChain, prop);
-  },
-});
 
 export {
   PROTOCOL_CHAINS,

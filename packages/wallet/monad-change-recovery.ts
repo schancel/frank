@@ -39,6 +39,7 @@
 import { Provider } from 'ethers'
 
 import { MonadChangeKeyring } from './monad-change-keyring'
+import { listTokensForChain } from './token-registry'
 
 /** Default safety cap on how many indices `recoverNextChangeIndex`'s exponential search will
  * probe before giving up -- guards against an unbounded RPC loop (e.g. against a misconfigured
@@ -48,18 +49,75 @@ import { MonadChangeKeyring } from './monad-change-keyring'
  * round-trips if genuinely needed. */
 export const DEFAULT_MAX_CHANGE_INDEX_SEARCH = 2 ** 20
 
-/** The `nonce > 0 OR balance > 0` used/unused check this file's header describes, for a single
- * change-account address. Exported for reuse/testing (e.g. a caller wanting to sanity-check one
- * specific index without running a full recovery search). */
+/** ERC-20 `balanceOf(address)` selector: keccak256("balanceOf(address)")[0..4]. */
+export const ERC20_BALANCE_OF_SELECTOR = '0x70a08231'
+
+/**
+ * Checks whitelisted token balances at a given change address.
+ * Safely ignores tokens that revert or cannot be queried (e.g. mock provider or not deployed).
+ */
+export async function checkTokenBalanceOnIndex(
+  provider: Provider,
+  address: string,
+  tokenAddresses?: string[],
+): Promise<bigint> {
+  if (typeof provider.call !== 'function') {
+    return 0n
+  }
+
+  const contracts =
+    tokenAddresses && tokenAddresses.length > 0
+      ? tokenAddresses
+      : listTokensForChain('monad')
+          .filter(t => t.standard === 'erc20')
+          .map(t => t.contractAddress)
+
+  let totalBalance = 0n
+  const cleanAddr = address.startsWith('0x') ? address.slice(2) : address
+  const data =
+    ERC20_BALANCE_OF_SELECTOR + cleanAddr.toLowerCase().padStart(64, '0')
+
+  for (const contract of contracts) {
+    try {
+      const res = await provider.call({
+        to: contract,
+        data,
+      })
+      if (res && res !== '0x' && res !== '0x0') {
+        const bal = BigInt(res)
+        if (bal > 0n) {
+          totalBalance += bal
+        }
+      }
+    } catch {
+      // Contract call failed or token not deployed; continue
+    }
+  }
+
+  return totalBalance
+}
+
+/** The `nonce > 0 OR balance > 0 OR tokenBalance > 0` used/unused check, for a single
+ * change-account address. Exported for reuse/testing. */
 export async function isChangeIndexUsed(
   provider: Provider,
   address: string,
+  tokenAddresses?: string[],
 ): Promise<boolean> {
   const [nonce, balance] = await Promise.all([
     provider.getTransactionCount(address),
     provider.getBalance(address),
   ])
-  return nonce > 0 || balance > BigInt(0)
+  if (nonce > 0 || balance > BigInt(0)) {
+    return true
+  }
+
+  const tokenBalance = await checkTokenBalanceOnIndex(
+    provider,
+    address,
+    tokenAddresses,
+  )
+  return tokenBalance > 0n
 }
 
 export interface RecoverNextChangeIndexParams {
@@ -70,6 +128,8 @@ export interface RecoverNextChangeIndexParams {
   provider: Provider
   /** Safety cap on the exponential search -- see `DEFAULT_MAX_CHANGE_INDEX_SEARCH`. */
   maxIndex?: number
+  /** Optional token addresses to check alongside native balance (defaults to Monad whitelisted tokens). */
+  whitelistedTokens?: string[]
 }
 
 /**
@@ -99,7 +159,11 @@ export async function recoverNextChangeIndex(
   }
 
   const usedAt = (index: number): Promise<boolean> =>
-    isChangeIndexUsed(provider, keyring.deriveChangeAccount(index).address)
+    isChangeIndexUsed(
+      provider,
+      keyring.deriveChangeAccount(index).address,
+      params.whitelistedTokens,
+    )
 
   if (!(await usedAt(0))) return 0
 

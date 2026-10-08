@@ -186,3 +186,26 @@ export type {
   BuildSolanaStealthPaymentParams,
   SolanaStealthPaymentResult,
 } from '../solana-stealth'
+
+export {
+  ElectrumClient,
+  toElectrumScriptHash,
+} from './electrum-client'
+export type {
+  ElectrumUtxo,
+  ElectrumHistoryItem,
+  ElectrumBalance,
+  ElectrumClientOptions,
+} from './electrum-client'
+
+export {
+  ElectrumUtxoIndexer,
+  ChronikUtxoIndexer,
+  createUtxoIndexer,
+  resolveElectrumScriptHash,
+} from './utxo-indexer'
+export type {
+  UtxoItem,
+  UtxoIndexer,
+  CreateUtxoIndexerOptions,
+} from './utxo-indexer'

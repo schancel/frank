@@ -91,6 +91,7 @@ import {
   DirectMessageReceived,
   DirectMessageSendResult,
   ProfileInfo,
+  StampPaymentInfo,
   TopicBroadcastClient,
   TopicPostOutcomeUnknownError,
   NativeWalletHandle,
@@ -1109,25 +1110,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
         }
 
-        const stampValueWei = record.message.stampPayments.reduce(
-          (sum, payment) =>
-            sum + Transaction.from(hexlify(payment.rawTx)).value,
-          BigInt(0)
-        );
-        const stampPayments = record.message.stampPayments.flatMap(
-          (payment) => {
-            const tx = Transaction.from(hexlify(payment.rawTx));
-            return tx.hash === null || tx.to === null
-              ? []
-              : [
-                  {
-                    txHash: tx.hash,
-                    destinationAddress: tx.to,
-                    valueWei: tx.value,
-                  },
-                ];
+        let stampValueWei = 0n;
+        const stampPayments: StampPaymentInfo[] = [];
+        for (const payment of record.message.stampPayments) {
+          const tx = Transaction.from(hexlify(payment.rawTx));
+          stampValueWei += tx.value;
+          if (tx.hash !== null && tx.to !== null) {
+            stampPayments.push({
+              txHash: tx.hash,
+              destinationAddress: tx.to,
+              valueWei: tx.value,
+            });
           }
-        );
+        }
 
         received.push({
           senderAddress: toChainAddress(envelope.from),

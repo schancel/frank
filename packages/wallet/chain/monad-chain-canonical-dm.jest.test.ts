@@ -450,6 +450,8 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     )
     expect(received[0].recipientAddress.raw).toBe(f.bob.identity.address.raw)
     expect(received[0].stampValueWei).toBe(1_000n)
+    expect(received[0].stampPayments).toHaveLength(1)
+    expect(received[0].stampPayments[0].valueWei).toBe(1_000n)
     expect(received[0].receivedTime).toBe(1234)
     const auth = inboxPage.mock.calls[0][0]
     expect(auth.relayBaseUrl).toBe(RELAY + '/')

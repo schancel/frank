@@ -12,7 +12,7 @@
  * crypto with no network dependency, and exercising them for real is a stronger check that
  * `directMessages.send`/`fetchSince` actually encrypt/decrypt, not merely pass a plaintext through.
  */
-import { Wallet, getBytes, hexlify } from "ethers";
+import { Wallet, Transaction, getBytes, hexlify } from "ethers";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -35,6 +35,7 @@ import { StoredMonadMessageProto } from "../monad-stamp-client";
 import { MonadTopicPostAbandonedError } from "../monad-topic-post-client";
 import { MessageItem, TextItem } from "@frank/cashweb/types/messages";
 import {
+  buildEnvelope,
   decryptEnvelope,
   parseEnvelope,
 } from "@frank/cashweb/relay/monad-message-envelope";
@@ -110,6 +111,9 @@ jest.mock("../monad-account-tx", () => {
     MonadAccountTxSigner: jest.fn(),
   };
 });
+jest.mock("@frank/cashweb/relay/monad-message-feed", () => ({
+  fetchMonadMessagesSince: jest.fn(),
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { MonadStampClient } = jest.requireMock("../monad-stamp-client");
@@ -125,6 +129,7 @@ import {
   fetchMonadTopicPostsSince,
 } from "../monad-topic-tally-client";
 import { fetchMonadProfile } from "../monad-identity";
+import { fetchMonadMessagesSince } from "@frank/cashweb/relay/monad-message-feed";
 const mockedFetchMonadTopicPostsSince =
   fetchMonadTopicPostsSince as jest.MockedFunction<
     typeof fetchMonadTopicPostsSince
@@ -138,6 +143,10 @@ const mockedFetchDiscoveredTopics =
 const mockedFetchMonadProfile = fetchMonadProfile as jest.MockedFunction<
   typeof fetchMonadProfile
 >;
+const mockedFetchMonadMessagesSince =
+  fetchMonadMessagesSince as jest.MockedFunction<
+    typeof fetchMonadMessagesSince
+  >;
 
 const TEST_CONFIG: MonadChainConfig = {
   networkId: "monad-test",
@@ -634,6 +643,108 @@ describe("createMonadChain: directMessages", () => {
     ).rejects.toThrow(
       "Canonical direct messages require persistent typed wallet custody on a Monad network."
     );
+  });
+
+  it("processes direct messages with multiple stamp payments calculating stampValueWei and stampPayments in a single pass", async () => {
+    const chain = createMonadChain(TEST_CONFIG);
+    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
+    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX);
+    const wallet = makeWallet(alice);
+
+    const txSigner = new Wallet(BOB_PRIVATE_KEY_HEX);
+    const dest1 = "0x" + "aa".repeat(20);
+    const dest2 = "0x" + "bb".repeat(20);
+    const rawTx1 = await txSigner.signTransaction({
+      to: dest1,
+      value: 12345n,
+      nonce: 0,
+      gasLimit: 21000,
+      gasPrice: 1000000000n,
+      chainId: 10143,
+    });
+    const rawTx2 = await txSigner.signTransaction({
+      to: dest2,
+      value: 67890n,
+      nonce: 1,
+      gasLimit: 21000,
+      gasPrice: 1000000000n,
+      chainId: 10143,
+    });
+
+    const parsedTx1 = Transaction.from(rawTx1);
+    const parsedTx2 = Transaction.from(rawTx2);
+
+    const envelopeBytes = buildEnvelope({
+      fromAddress: bob.address.raw,
+      fromPrivateKey: bob.toNakamotoPrivateKey(),
+      toAddress: alice.address.raw,
+      toPubKey: getBytes(alice.compressedPubKey),
+      plaintext: serializeMessageItems([{ type: "text", text: "hello alice" }]),
+      networkTag: "MONT",
+    });
+
+    const payloadHashBytes = getBytes("0x" + "11".repeat(32));
+    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
+      {
+        message: {
+          encryptedPayload: envelopeBytes,
+          payloadHash: payloadHashBytes,
+          stampPayments: [
+            { childIndex: 0, rawTx: getBytes(rawTx1) },
+            { childIndex: 1, rawTx: getBytes(rawTx2) },
+          ],
+        },
+        timestamp: 1600000000000,
+        networkTag: getBytes("0x4d4f4e54"),
+      },
+    ]);
+
+    mockedFetchMonadProfile.mockResolvedValueOnce({
+      address: bob.address.raw,
+      pubKey: getBytes(bob.compressedPubKey),
+    } as any);
+
+    const txFromSpy = jest.spyOn(Transaction, "from");
+    txFromSpy.mockClear();
+
+    const received = await chain.directMessages.fetchSince({
+      wallet,
+      sinceMs: 0,
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0].stampValueWei).toBe(12345n + 67890n);
+    expect(received[0].stampPayments).toEqual([
+      {
+        txHash: parsedTx1.hash,
+        destinationAddress: parsedTx1.to,
+        valueWei: 12345n,
+      },
+      {
+        txHash: parsedTx2.hash,
+        destinationAddress: parsedTx2.to,
+        valueWei: 67890n,
+      },
+    ]);
+    // Verifies single-pass transaction parsing: exactly 1 top-level Transaction.from(hex) call per payment (2 total),
+    // rather than 2 per payment (4 total) in the previous two-pass reduce + flatMap implementation.
+    const stringCalls = txFromSpy.mock.calls.filter(
+      (call) => typeof call[0] === "string"
+    );
+    expect(stringCalls).toHaveLength(2);
+    expect(txFromSpy).toHaveBeenCalledTimes(4); // 2 top-level + 2 internal ethers delegates
+
+    expect(received[0].items).toEqual([{ type: "text", text: "hello alice" }]);
+    expect(received[0].senderAddress.raw.toLowerCase()).toBe(
+      bob.address.raw.toLowerCase()
+    );
+    expect(received[0].recipientAddress.raw.toLowerCase()).toBe(
+      alice.address.raw.toLowerCase()
+    );
+    expect(received[0].payloadDigest).toBe("11".repeat(32));
+    expect(received[0].receivedTime).toBe(1600000000000);
+
+    txFromSpy.mockRestore();
   });
 });
 

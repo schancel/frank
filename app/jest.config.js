@@ -81,6 +81,7 @@ module.exports = {
     // Use Quasar's CommonJS server entry in Jest. The older
     // `quasar.cjs.prod.js` filename disappeared in Quasar 2.33.
     '^quasar$': 'quasar/dist/quasar.server.prod.cjs',
+    '(.*[\\/])?avatar$': '<rootDir>/src/utils/avatar.node.ts',
     '^~/(.*)$': '<rootDir>/$1',
     '^src/(.*)$': '<rootDir>/src/$1',
     '^app/(.*)$': '<rootDir>/$1',
@@ -98,7 +99,6 @@ module.exports = {
     // transitively pull in @frank/wallet/chain, which imports the real `vite-env.ts` (a genuine
     // `import.meta.env` reference Jest can never parse) via this exact relative specifier.
     '^\\./vite-env$': '<rootDir>/../packages/wallet/chain/vite-env.node.ts',
-    '.*utils/avatar$': '<rootDir>/src/utils/avatar.node.ts',
   },
   transform: {
     // See https://jestjs.io/docs/en/configuration.html#transformignorepatterns-array-string

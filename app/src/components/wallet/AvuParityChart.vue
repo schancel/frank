@@ -203,45 +203,154 @@
         class="col-12 col-md-auto row items-center q-gutter-x-sm text-caption text-grey-6"
       >
         <template v-if="selectedRange !== 'networks'">
-          <span class="row items-center q-gutter-xs">
-            <span
-              class="legend-dot"
-              :style="{ backgroundColor: themeColors.usd }"
-            />
-            <span>{{ $t('walletPanel.chartUsdKwh') }}</span>
-          </span>
-          <span class="row items-center q-gutter-xs">
-            <span
-              class="legend-dot"
-              :style="{ backgroundColor: themeColors.gold }"
-            />
-            <span>{{ $t('walletPanel.chartGoldAvu') }}</span>
-          </span>
-          <span class="row items-center q-gutter-xs">
-            <span
-              class="legend-dot"
-              :style="{ backgroundColor: themeColors.pow }"
-            />
-            <span>{{ $t('walletPanel.chartPowEmergence') }}</span>
-          </span>
+          <!-- USD Spot Toggle -->
           <span
-            class="row items-center q-gutter-xs"
-            data-test="chart-legend-token"
+            class="legend-item cursor-pointer row items-center q-gutter-xs"
+            :class="{
+              'legend-item--active': showUsd,
+              'legend-item--inactive': !showUsd,
+            }"
+            data-test="toggle-metric-usd"
+            role="button"
+            tabindex="0"
+            :aria-pressed="showUsd"
+            @click="toggleMetric('usd')"
           >
             <span
               class="legend-dot"
-              :style="{ backgroundColor: themeColors.token }"
+              :style="{
+                backgroundColor: showUsd ? themeColors.usd : themeColors.axis,
+              }"
             />
-            <span>{{
-              `${activeTokenInfo.name} (${$t('walletPanel.chartTokenAvu')})`
-            }}</span>
+            <span
+              :class="
+                showUsd ? 'text-weight-medium' : 'text-strike text-grey-5'
+              "
+            >
+              {{ $t('walletPanel.chartUsdKwh') }}
+            </span>
           </span>
-          <span v-if="!isFineGrainedRange" class="row items-center q-gutter-xs">
+
+          <!-- Gold Toggle -->
+          <span
+            class="legend-item cursor-pointer row items-center q-gutter-xs"
+            :class="{
+              'legend-item--active': showGold,
+              'legend-item--inactive': !showGold,
+            }"
+            data-test="toggle-metric-gold"
+            role="button"
+            tabindex="0"
+            :aria-pressed="showGold"
+            @click="toggleMetric('gold')"
+          >
             <span
               class="legend-dot"
-              :style="{ backgroundColor: themeColors.milestone }"
+              :style="{
+                backgroundColor: showGold ? themeColors.gold : themeColors.axis,
+              }"
             />
-            <span>{{ $t('walletPanel.chartHardwareEff') }}</span>
+            <span
+              :class="
+                showGold ? 'text-weight-medium' : 'text-strike text-grey-5'
+              "
+            >
+              {{ $t('walletPanel.chartGoldAvu') }}
+            </span>
+          </span>
+
+          <!-- PoW Hash Toggle -->
+          <span
+            class="legend-item cursor-pointer row items-center q-gutter-xs"
+            :class="{
+              'legend-item--active': showPow,
+              'legend-item--inactive': !showPow,
+            }"
+            data-test="toggle-metric-pow"
+            role="button"
+            tabindex="0"
+            :aria-pressed="showPow"
+            @click="toggleMetric('pow')"
+          >
+            <span
+              class="legend-dot"
+              :style="{
+                backgroundColor: showPow ? themeColors.pow : themeColors.axis,
+              }"
+            />
+            <span
+              :class="
+                showPow ? 'text-weight-medium' : 'text-strike text-grey-5'
+              "
+            >
+              {{ $t('walletPanel.chartPowEmergence') }}
+            </span>
+          </span>
+
+          <!-- Active Token Toggle -->
+          <span
+            class="legend-item cursor-pointer row items-center q-gutter-xs"
+            :class="{
+              'legend-item--active': showToken,
+              'legend-item--inactive': !showToken,
+            }"
+            data-test="chart-legend-token"
+            data-testid="toggle-metric-token"
+            role="button"
+            tabindex="0"
+            :aria-pressed="showToken"
+            @click="toggleMetric('token')"
+          >
+            <span
+              class="legend-dot"
+              :style="{
+                backgroundColor: showToken
+                  ? themeColors.token
+                  : themeColors.axis,
+              }"
+            />
+            <span
+              :class="
+                showToken ? 'text-weight-medium' : 'text-strike text-grey-5'
+              "
+            >
+              {{
+                `${activeTokenInfo.name} (${$t('walletPanel.chartTokenAvu')})`
+              }}
+            </span>
+          </span>
+
+          <!-- Hardware Milestones Toggle (only in non-fine-grained) -->
+          <span
+            v-if="!isFineGrainedRange"
+            class="legend-item cursor-pointer row items-center q-gutter-xs"
+            :class="{
+              'legend-item--active': showMilestones,
+              'legend-item--inactive': !showMilestones,
+            }"
+            data-test="toggle-metric-milestones"
+            role="button"
+            tabindex="0"
+            :aria-pressed="showMilestones"
+            @click="toggleMetric('milestones')"
+          >
+            <span
+              class="legend-dot"
+              :style="{
+                backgroundColor: showMilestones
+                  ? themeColors.milestone
+                  : themeColors.axis,
+              }"
+            />
+            <span
+              :class="
+                showMilestones
+                  ? 'text-weight-medium'
+                  : 'text-strike text-grey-5'
+              "
+            >
+              {{ $t('walletPanel.chartHardwareEff') }}
+            </span>
           </span>
         </template>
         <template v-else>
@@ -325,6 +434,7 @@
             stroke-width="1.5"
           />
           <line
+            v-if="hasRightAxis"
             x1="625"
             y1="20"
             x2="625"
@@ -350,10 +460,16 @@
           />
 
           <!-- USD Area Fill -->
-          <path :d="macroUsdAreaPath" :fill="themeColors.usd" opacity="0.12" />
+          <path
+            v-if="showUsd"
+            :d="macroUsdAreaPath"
+            :fill="themeColors.usd"
+            opacity="0.12"
+          />
 
           <!-- USD Line -->
           <path
+            v-if="showUsd"
             :d="macroUsdLinePath"
             fill="none"
             :stroke="themeColors.usd"
@@ -364,6 +480,7 @@
 
           <!-- Gold Line -->
           <path
+            v-if="showGold"
             :d="macroGoldLinePath"
             fill="none"
             :stroke="themeColors.gold"
@@ -374,7 +491,7 @@
 
           <!-- PoW Line -->
           <path
-            v-if="macroPowLinePath"
+            v-if="showPow && macroPowLinePath"
             :d="macroPowLinePath"
             fill="none"
             :stroke="themeColors.pow"
@@ -386,7 +503,7 @@
 
           <!-- Active Token Parity Line -->
           <path
-            v-if="macroTokenLinePath"
+            v-if="showToken && macroTokenLinePath"
             :d="macroTokenLinePath"
             fill="none"
             :stroke="themeColors.token"
@@ -412,6 +529,7 @@
 
           <!-- Hardware Milestone Indicator Lines -->
           <g
+            v-if="showMilestones"
             v-for="m in activeMilestonesMapped"
             :key="`milestone-${m.year}-${m.label}`"
             class="milestone-group cursor-pointer"
@@ -451,13 +569,22 @@
             <!-- Invisible larger hit area -->
             <circle
               :cx="point.x"
-              :cy="point.usdY"
+              :cy="
+                showUsd
+                  ? point.usdY
+                  : showPow && point.powY !== null
+                  ? point.powY
+                  : showToken && point.tokenY !== null
+                  ? point.tokenY
+                  : point.goldY
+              "
               r="14"
               fill="transparent"
               class="cursor-pointer"
             />
             <!-- USD circle -->
             <circle
+              v-if="showUsd"
               :cx="point.x"
               :cy="point.usdY"
               :r="
@@ -473,6 +600,7 @@
             />
             <!-- Gold circle -->
             <circle
+              v-if="showGold"
               :cx="point.x"
               :cy="point.goldY"
               :r="
@@ -488,7 +616,7 @@
             />
             <!-- PoW marker if available -->
             <circle
-              v-if="point.powY !== null"
+              v-if="showPow && point.powY !== null"
               :cx="point.x"
               :cy="point.powY"
               :r="
@@ -504,7 +632,7 @@
             />
             <!-- Active Token circle if available -->
             <circle
-              v-if="point.tokenY !== null"
+              v-if="showToken && point.tokenY !== null"
               :cx="point.x"
               :cy="point.tokenY"
               :r="
@@ -534,66 +662,70 @@
           </g>
 
           <!-- Left Axis Labels -->
-          <text
-            x="50"
-            y="35"
-            font-size="10"
-            text-anchor="end"
-            :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
-          >
-            {{ leftAxisMaxLabel }}
-          </text>
-          <text
-            x="50"
-            y="130"
-            font-size="10"
-            text-anchor="end"
-            :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
-          >
-            {{ leftAxisMidLabel }}
-          </text>
-          <text
-            x="50"
-            y="230"
-            font-size="10"
-            text-anchor="end"
-            :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
-          >
-            {{ leftAxisMinLabel }}
-          </text>
+          <template v-if="hasLeftAxis">
+            <text
+              x="50"
+              y="35"
+              font-size="10"
+              text-anchor="end"
+              :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
+            >
+              {{ leftAxisMaxLabel }}
+            </text>
+            <text
+              x="50"
+              y="130"
+              font-size="10"
+              text-anchor="end"
+              :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
+            >
+              {{ leftAxisMidLabel }}
+            </text>
+            <text
+              x="50"
+              y="230"
+              font-size="10"
+              text-anchor="end"
+              :fill="isFineGrainedRange ? themeColors.token : themeColors.usd"
+            >
+              {{ leftAxisMinLabel }}
+            </text>
+          </template>
 
           <!-- Right Axis Labels -->
-          <text
-            x="630"
-            y="35"
-            font-size="10"
-            text-anchor="start"
-            :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
-          >
-            {{ rightAxisMaxLabel }}
-          </text>
-          <text
-            x="630"
-            y="130"
-            font-size="10"
-            text-anchor="start"
-            :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
-          >
-            {{ rightAxisMidLabel }}
-          </text>
-          <text
-            x="630"
-            y="230"
-            font-size="10"
-            text-anchor="start"
-            :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
-          >
-            {{ rightAxisMinLabel }}
-          </text>
+          <template v-if="hasRightAxis">
+            <text
+              x="630"
+              y="35"
+              font-size="10"
+              text-anchor="start"
+              :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
+            >
+              {{ rightAxisMaxLabel }}
+            </text>
+            <text
+              x="630"
+              y="130"
+              font-size="10"
+              text-anchor="start"
+              :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
+            >
+              {{ rightAxisMidLabel }}
+            </text>
+            <text
+              x="630"
+              y="230"
+              font-size="10"
+              text-anchor="start"
+              :fill="isFineGrainedRange ? themeColors.usd : themeColors.gold"
+            >
+              {{ rightAxisMinLabel }}
+            </text>
+          </template>
 
           <!-- Interactive Hover Tooltip Box (Data Point) -->
           <g
-            v-if="activeHoverPoint"
+            v-if="activeHoverPoint && activeTooltipEntries.length > 0"
             class="chart-svg-tooltip"
             data-test="chart-tooltip"
           >
@@ -601,7 +733,7 @@
               :x="macroTooltipX"
               :y="macroTooltipY"
               width="220"
-              :height="activeHoverPoint.tokenAvu !== undefined ? 104 : 85"
+              :height="30 + activeTooltipEntries.length * 16"
               rx="6"
               :fill="themeColors.tooltipBg"
               :stroke="themeColors.tooltipBorder"
@@ -618,47 +750,15 @@
               {{ activeHoverPoint.year }}
             </text>
             <text
+              v-for="(entry, eIdx) in activeTooltipEntries"
+              :key="`tt-entry-${eIdx}`"
               :x="macroTooltipX + 12"
-              :y="macroTooltipY + 38"
+              :y="macroTooltipY + 36 + eIdx * 16"
               font-size="11"
-              :fill="themeColors.usd"
+              :fill="entry.color"
+              :data-test="entry.testId"
             >
-              {{ `USD: ${activeHoverPoint.usdKwh.toFixed(1)} kWh/$` }}
-            </text>
-            <text
-              :x="macroTooltipX + 12"
-              :y="macroTooltipY + 54"
-              font-size="11"
-              :fill="themeColors.gold"
-            >
-              {{
-                `Gold: ${activeHoverPoint.goldAvu.toLocaleString(
-                  'en-US',
-                )} AVU/oz`
-              }}
-            </text>
-            <text
-              v-if="activeHoverPoint.powHashRate"
-              :x="macroTooltipX + 12"
-              :y="macroTooltipY + 70"
-              font-size="11"
-              :fill="themeColors.pow"
-            >
-              {{ `PoW: ${activeHoverPoint.powHashRate} kWh/$` }}
-            </text>
-            <text
-              v-if="activeHoverPoint.tokenAvu !== undefined"
-              :x="macroTooltipX + 12"
-              :y="macroTooltipY + (activeHoverPoint.powHashRate ? 86 : 70)"
-              font-size="11"
-              :fill="themeColors.token"
-              data-test="chart-tooltip-token"
-            >
-              {{
-                `${activeTokenInfo.symbol}: ${formatTokenAvuHover(
-                  activeHoverPoint.tokenAvu,
-                )}`
-              }}
+              {{ entry.label }}
             </text>
           </g>
 
@@ -1121,6 +1221,32 @@ const isFineGrainedRange = computed(() => {
   return ['24h', 'recent', '7d', '30d', '1y'].includes(selectedRange.value)
 })
 
+// Metric visibility toggles
+const showUsd = ref(true)
+const showPow = ref(true)
+const showGold = ref(true)
+const showToken = ref(true)
+const showMilestones = ref(true)
+
+function toggleMetric(metric: 'usd' | 'pow' | 'gold' | 'token' | 'milestones') {
+  if (metric === 'usd') showUsd.value = !showUsd.value
+  else if (metric === 'pow') showPow.value = !showPow.value
+  else if (metric === 'gold') showGold.value = !showGold.value
+  else if (metric === 'token') showToken.value = !showToken.value
+  else if (metric === 'milestones') showMilestones.value = !showMilestones.value
+}
+
+const hasLeftAxis = computed(() => {
+  return showUsd.value || showPow.value || showToken.value
+})
+
+const hasRightAxis = computed(() => {
+  if (isFineGrainedRange.value) {
+    return showUsd.value || showPow.value
+  }
+  return showGold.value || (showToken.value && isLargeTokenScale.value)
+})
+
 // Theme-driven styling
 const isDark = computed(() => Boolean($q?.dark?.isActive))
 const cardBgClass = computed(() => (isDark.value ? 'bg-dark' : 'bg-white'))
@@ -1462,14 +1588,16 @@ function onSvgMouseMove(event: MouseEvent) {
   }
 
   // Check if cursor is hovering near a hardware milestone marker (near top marker icon)
-  const milestones = activeMilestonesMapped.value
-  const hoveredMilestone = milestones.find(
-    m => Math.abs(pt.x - m.x) <= 8 && pt.y <= 50,
-  )
-  if (hoveredMilestone) {
-    activeHoverMilestone.value = hoveredMilestone
-    activeHoverPoint.value = null
-    return
+  if (showMilestones.value) {
+    const milestones = activeMilestonesMapped.value
+    const hoveredMilestone = milestones.find(
+      m => Math.abs(pt.x - m.x) <= 8 && pt.y <= 50,
+    )
+    if (hoveredMilestone) {
+      activeHoverMilestone.value = hoveredMilestone
+      activeHoverPoint.value = null
+      return
+    }
   }
   activeHoverMilestone.value = null
 
@@ -1546,15 +1674,58 @@ const isLargeTokenScale = computed(() => {
   return currentLiveRate.value > 200
 })
 
+const leftAxisValues = computed(() => {
+  const slice = activeMacroData.value
+  const vals: number[] = []
+
+  for (const pt of slice) {
+    if (showUsd.value && typeof pt.usdKwh === 'number') {
+      vals.push(pt.usdKwh)
+    }
+    if (showPow.value && typeof pt.powHashRate === 'number') {
+      vals.push(pt.powHashRate)
+    }
+    if (showToken.value && !isLargeTokenScale.value) {
+      const yearNum = typeof pt.year === 'number' ? pt.year : 2026
+      if (yearNum >= activeTokenInfo.value.inceptionYear) {
+        const tVal =
+          yearNum === 2026
+            ? currentLiveRate.value
+            : activeTokenInfo.value.history[yearNum]
+        if (typeof tVal === 'number') {
+          vals.push(tVal)
+        }
+      }
+    }
+  }
+
+  return vals
+})
+
 const usdMaxLimit = computed(() => {
-  const tokenVal = !isLargeTokenScale.value ? currentLiveRate.value : 0
-  if (selectedRange.value === '5y' || selectedRange.value === 'asic') {
-    return Math.max(20, Math.ceil(tokenVal / 10) * 10)
+  const vals = leftAxisValues.value
+  if (!vals.length) return 150
+
+  const rawMax = Math.max(...vals)
+
+  // In unzoomed 'all' range with USD visible, maintain the 150 benchmark ceiling
+  if (
+    selectedRange.value === 'all' &&
+    !isCustomZoomed.value &&
+    showUsd.value &&
+    rawMax > 50
+  ) {
+    return Math.max(150, Math.ceil(rawMax / 10) * 10)
   }
-  if (selectedRange.value === 'pow') {
-    return Math.max(30, Math.ceil(tokenVal / 10) * 10)
-  }
-  return Math.max(150, Math.ceil(tokenVal / 10) * 10)
+
+  // Otherwise, scale dynamically based on the active series in view
+  const target = rawMax * 1.15
+  if (target <= 10) return 10
+  if (target <= 20) return 20
+  if (target <= 30) return 30
+  if (target <= 50) return 50
+  if (target <= 100) return 100
+  return Math.ceil(target / 10) * 10
 })
 
 const usdMinLimit = computed(() => 0)
@@ -1637,12 +1808,20 @@ const leftAxisMinLabel = computed(() => {
 const rightAxisMaxLabel = computed(() => {
   if (isFineGrainedRange.value) {
     const slice = activeMacroData.value
-    const energyVals = [
-      ...slice.map(p => p.usdKwh),
-      ...slice
-        .filter(p => p.powHashRate !== undefined)
-        .map(p => p.powHashRate!),
-    ]
+    const energyVals: number[] = []
+    if (showUsd.value) {
+      energyVals.push(...slice.map(p => p.usdKwh))
+    }
+    if (showPow.value) {
+      energyVals.push(
+        ...slice
+          .filter(p => p.powHashRate !== undefined)
+          .map(p => p.powHashRate!),
+      )
+    }
+    if (!energyVals.length) {
+      energyVals.push(10, 15)
+    }
     const energyMin = Math.min(...energyVals)
     const energyMax = Math.max(...energyVals)
     const energySpan = Math.max(energyMax - energyMin, 0.25)
@@ -1654,12 +1833,20 @@ const rightAxisMaxLabel = computed(() => {
 const rightAxisMidLabel = computed(() => {
   if (isFineGrainedRange.value) {
     const slice = activeMacroData.value
-    const energyVals = [
-      ...slice.map(p => p.usdKwh),
-      ...slice
-        .filter(p => p.powHashRate !== undefined)
-        .map(p => p.powHashRate!),
-    ]
+    const energyVals: number[] = []
+    if (showUsd.value) {
+      energyVals.push(...slice.map(p => p.usdKwh))
+    }
+    if (showPow.value) {
+      energyVals.push(
+        ...slice
+          .filter(p => p.powHashRate !== undefined)
+          .map(p => p.powHashRate!),
+      )
+    }
+    if (!energyVals.length) {
+      energyVals.push(10, 15)
+    }
     const energyMin = Math.min(...energyVals)
     const energyMax = Math.max(...energyVals)
     return ((energyMax + energyMin) / 2).toFixed(1)
@@ -1670,12 +1857,20 @@ const rightAxisMidLabel = computed(() => {
 const rightAxisMinLabel = computed(() => {
   if (isFineGrainedRange.value) {
     const slice = activeMacroData.value
-    const energyVals = [
-      ...slice.map(p => p.usdKwh),
-      ...slice
-        .filter(p => p.powHashRate !== undefined)
-        .map(p => p.powHashRate!),
-    ]
+    const energyVals: number[] = []
+    if (showUsd.value) {
+      energyVals.push(...slice.map(p => p.usdKwh))
+    }
+    if (showPow.value) {
+      energyVals.push(
+        ...slice
+          .filter(p => p.powHashRate !== undefined)
+          .map(p => p.powHashRate!),
+      )
+    }
+    if (!energyVals.length) {
+      energyVals.push(10, 15)
+    }
     const energyMin = Math.min(...energyVals)
     const energyMax = Math.max(...energyVals)
     const energySpan = Math.max(energyMax - energyMin, 0.25)
@@ -1714,12 +1909,20 @@ const macroPointsMapped = computed<MappedMacroPoint[]>(() => {
     const tokenYMin = Math.max(0, tokenMin - tokenSpan * 0.25)
     const tokenYMax = tokenMax + tokenSpan * 0.25
 
-    const energyVals = [
-      ...slice.map(p => p.usdKwh),
-      ...slice
-        .filter(p => p.powHashRate !== undefined)
-        .map(p => p.powHashRate!),
-    ]
+    const energyVals: number[] = []
+    if (showUsd.value) {
+      energyVals.push(...slice.map(p => p.usdKwh))
+    }
+    if (showPow.value) {
+      energyVals.push(
+        ...slice
+          .filter(p => p.powHashRate !== undefined)
+          .map(p => p.powHashRate!),
+      )
+    }
+    if (!energyVals.length) {
+      energyVals.push(10, 15)
+    }
     const energyMin = Math.min(...energyVals)
     const energyMax = Math.max(...energyVals)
     const energySpan = Math.max(energyMax - energyMin, 0.25)
@@ -1911,9 +2114,53 @@ const macroTooltipX = computed(() => {
   return x > 440 ? x - 220 : x + 15
 })
 
+const activeTooltipEntries = computed(() => {
+  if (!activeHoverPoint.value) return []
+  const pt = activeHoverPoint.value
+  const entries: Array<{ label: string; color: string; testId?: string }> = []
+
+  if (showUsd.value && typeof pt.usdKwh === 'number') {
+    entries.push({
+      label: `USD: ${pt.usdKwh.toFixed(1)} kWh/$`,
+      color: themeColors.value.usd,
+    })
+  }
+
+  if (showGold.value && typeof pt.goldAvu === 'number') {
+    entries.push({
+      label: `Gold: ${pt.goldAvu.toLocaleString('en-US')} AVU/oz`,
+      color: themeColors.value.gold,
+    })
+  }
+
+  if (showPow.value && pt.powHashRate !== undefined) {
+    entries.push({
+      label: `PoW: ${pt.powHashRate} kWh/$`,
+      color: themeColors.value.pow,
+    })
+  }
+
+  if (showToken.value && pt.tokenAvu !== undefined) {
+    entries.push({
+      label: `${activeTokenInfo.value.symbol}: ${formatTokenAvuHover(
+        pt.tokenAvu,
+      )}`,
+      color: themeColors.value.token,
+      testId: 'chart-tooltip-token',
+    })
+  }
+
+  return entries
+})
+
 const macroTooltipY = computed(() => {
   if (!activeHoverPoint.value) return 0
-  const targetY = activeHoverPoint.value.tokenY ?? activeHoverPoint.value.usdY
+  const pt = activeHoverPoint.value
+  const targetY =
+    (showToken.value && pt.tokenY !== null ? pt.tokenY : null) ??
+    (showUsd.value ? pt.usdY : null) ??
+    (showPow.value && pt.powY !== null ? pt.powY : null) ??
+    pt.goldY
   return Math.max(30, Math.min(targetY - 40, 140))
 })
 
@@ -2089,6 +2336,39 @@ const networkTooltipY = computed(() => {
   height: 8px;
   border-radius: 50%;
   display: inline-block;
+  transition: background-color 0.15s ease;
+}
+
+.legend-item {
+  padding: 3px 8px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+  user-select: none;
+  border: 1px solid transparent;
+}
+
+.legend-item:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.body--dark .legend-item:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.legend-item--active {
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+.body--dark .legend-item--active {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.legend-item--inactive {
+  opacity: 0.45;
+}
+
+.legend-item--inactive:hover {
+  opacity: 0.75;
 }
 
 .unselectable {

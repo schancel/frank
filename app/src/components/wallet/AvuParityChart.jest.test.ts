@@ -416,4 +416,73 @@ describe('AvuParityChart component', () => {
       lightWrapper.find('[data-test="metric-card-avu-hash"]').classes(),
     ).toContain('bg-white')
   })
+
+  test('supports turning metrics on and off on the overlay and dynamically auto-scales to avoid distortion', async () => {
+    const wrapper = mountChart()
+
+    // Initially, all metrics are on
+    const goldToggle = wrapper.find('[data-test="toggle-metric-gold"]')
+    const usdToggle = wrapper.find('[data-test="toggle-metric-usd"]')
+    const powToggle = wrapper.find('[data-test="toggle-metric-pow"]')
+    const tokenToggle = wrapper.find('[data-test="chart-legend-token"]')
+    const milestoneToggle = wrapper.find(
+      '[data-test="toggle-metric-milestones"]',
+    )
+
+    expect(goldToggle.exists()).toBe(true)
+    expect(usdToggle.exists()).toBe(true)
+    expect(powToggle.exists()).toBe(true)
+    expect(tokenToggle.exists()).toBe(true)
+    expect(milestoneToggle.exists()).toBe(true)
+
+    // Verify Gold and right axis are initially visible
+    expect((wrapper.vm as any).showGold).toBe(true)
+    expect((wrapper.vm as any).hasRightAxis).toBe(true)
+
+    // 1. Toggle Gold OFF
+    await goldToggle.trigger('click')
+    expect((wrapper.vm as any).showGold).toBe(false)
+    expect((wrapper.vm as any).hasRightAxis).toBe(false)
+
+    // Hover last point (2026): Tooltip should NOT contain Gold
+    const points = wrapper.findAll('[data-test="chart-hover-point"]')
+    const point2026 = points[points.length - 1]
+    await point2026.trigger('mouseenter')
+
+    const tooltip = wrapper.find('[data-test="chart-tooltip"]')
+    expect(tooltip.exists()).toBe(true)
+    expect(tooltip.text()).not.toContain('Gold:')
+    expect(tooltip.text()).toContain('USD: 12.0 kWh/$')
+    expect(tooltip.text()).toContain('PoW: 11.9 kWh/$')
+
+    // 2. Toggle Gold back ON
+    await goldToggle.trigger('click')
+    expect((wrapper.vm as any).showGold).toBe(true)
+    expect((wrapper.vm as any).hasRightAxis).toBe(true)
+    await point2026.trigger('mouseenter')
+    expect(wrapper.find('[data-test="chart-tooltip"]').text()).toContain(
+      'Gold:',
+    )
+
+    // 3. Toggle Token OFF
+    expect(wrapper.find('[data-test="macro-token-line"]').exists()).toBe(true)
+    await tokenToggle.trigger('click')
+    expect((wrapper.vm as any).showToken).toBe(false)
+    expect(wrapper.find('[data-test="macro-token-line"]').exists()).toBe(false)
+
+    // 4. Toggle Milestones OFF
+    expect(
+      wrapper.findAll('[data-test="hardware-milestone-marker"]').length,
+    ).toBeGreaterThan(0)
+    await milestoneToggle.trigger('click')
+    expect((wrapper.vm as any).showMilestones).toBe(false)
+    expect(
+      wrapper.findAll('[data-test="hardware-milestone-marker"]').length,
+    ).toBe(0)
+
+    // 5. Dynamic auto-scaling: In 5Y view with USD + PoW active, scale adapts to 20 instead of 150
+    await wrapper.find('button[data-test-option="5y"]').trigger('click')
+    // With token toggled off, max scales to 20!
+    expect((wrapper.vm as any).usdMaxLimit).toBe(20)
+  })
 })

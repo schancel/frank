@@ -16,6 +16,16 @@ export interface EvmBurnParams {
   readonly overrides?: MonadTxOverrides;
 }
 
+export interface EvmDrainParams {
+  readonly from: string;
+  readonly recipient: string;
+  readonly balanceWei: bigint;
+  readonly baseFeeWei: bigint;
+  readonly priorityTipWei?: bigint;
+  readonly gasLimit?: bigint;
+  readonly nonce?: number;
+}
+
 /**
  * Strategy interface abstracting EVM transaction construction and balance checking.
  * Allows standard native-gas EVM chains (Monad, Ethereum L1, Base, Arbitrum, HyperEVM)
@@ -26,6 +36,7 @@ export interface EvmTransactionBuilder {
   getBalance(params: { address: string; provider: Provider }): Promise<bigint>;
   buildTransfer(params: EvmTransferParams): Promise<TransactionRequest>;
   buildBurn(params: EvmBurnParams): Promise<TransactionRequest>;
+  buildZeroRefundDrain(params: EvmDrainParams): Promise<TransactionRequest>;
 }
 
 /**
@@ -82,6 +93,37 @@ export class NativeEvmTransactionBuilder implements EvmTransactionBuilder {
       }),
       ...(params.overrides?.nonce !== undefined && {
         nonce: params.overrides.nonce,
+      }),
+    };
+  }
+
+  async buildZeroRefundDrain(
+    params: EvmDrainParams
+  ): Promise<TransactionRequest> {
+    const gasLimit = params.gasLimit ?? 21_000n;
+    const maxFeePerGas =
+      params.baseFeeWei + (params.priorityTipWei ?? 1_000_000_000n);
+    const maxPriorityFeePerGas = maxFeePerGas;
+    const totalFee = gasLimit * maxFeePerGas;
+
+    if (params.balanceWei <= totalFee) {
+      throw new RangeError(
+        "Account balance is insufficient to pay zero-refund drain fee"
+      );
+    }
+
+    const drainValue = params.balanceWei - totalFee;
+
+    return {
+      from: params.from,
+      to: params.recipient,
+      value: drainValue,
+      data: "0x",
+      gasLimit,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      ...(params.nonce !== undefined && {
+        nonce: params.nonce,
       }),
     };
   }
@@ -184,6 +226,41 @@ export class Tip20TransactionBuilder implements EvmTransactionBuilder {
       }),
       ...(params.overrides?.nonce !== undefined && {
         nonce: params.overrides.nonce,
+      }),
+    };
+  }
+
+  async buildZeroRefundDrain(
+    params: EvmDrainParams
+  ): Promise<TransactionRequest> {
+    const gasLimit = params.gasLimit ?? 65_000n;
+    const maxFeePerGas =
+      params.baseFeeWei + (params.priorityTipWei ?? 1_000_000_000n);
+    const maxPriorityFeePerGas = maxFeePerGas;
+    const totalFee = gasLimit * maxFeePerGas;
+
+    if (params.balanceWei <= totalFee) {
+      throw new RangeError(
+        "Account balance is insufficient to pay zero-refund drain fee"
+      );
+    }
+
+    const drainValue = params.balanceWei - totalFee;
+    const data = TIP20_INTERFACE.encodeFunctionData("transfer", [
+      params.recipient,
+      drainValue,
+    ]);
+
+    return {
+      from: params.from,
+      to: this.tokenAddress,
+      value: 0n,
+      data,
+      gasLimit,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      ...(params.nonce !== undefined && {
+        nonce: params.nonce,
       }),
     };
   }

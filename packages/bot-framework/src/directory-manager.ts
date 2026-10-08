@@ -80,7 +80,9 @@ export class DirectoryManager {
   }
 
   isHomeRelay(endpoint: string): boolean | Promise<boolean> {
-    return this.directory.isHomeRelay ? this.directory.isHomeRelay(endpoint) : true;
+    return this.directory.isHomeRelay
+      ? this.directory.isHomeRelay(endpoint)
+      : true;
   }
 
   async selfCurrent() {
@@ -126,7 +128,7 @@ export class DirectoryManager {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(async () => {
       try {
-        await this.directory.selfCurrent();
+        await this.directory.publish();
       } catch (err: unknown) {
         console.warn("Directory renewal heartbeat error:", err);
       }

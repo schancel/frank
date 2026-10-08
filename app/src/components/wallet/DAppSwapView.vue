@@ -1,15 +1,15 @@
 <template>
   <div class="q-pa-md d-app-swap-view" data-testid="dapp-swap-view">
-    <div class="column q-gutter-md">
+    <div class="column q-gutter-y-sm">
       <!-- From Asset Card -->
-      <q-card flat bordered class="q-pa-md bg-surface">
+      <q-card flat bordered class="q-pa-md swap-card">
         <div class="row items-center justify-between q-mb-xs">
           <span class="text-caption text-grey-7">{{
             $t('walletPanel.swapPay')
           }}</span>
           <span
             v-if="availableBalance"
-            class="text-caption text-primary cursor-pointer"
+            class="text-caption text-primary cursor-pointer text-weight-medium"
             data-testid="swap-max-balance"
             @click="setMaxAmount"
           >
@@ -23,7 +23,7 @@
             dense
             borderless
             placeholder="0.00"
-            class="col text-h6"
+            class="col text-h5"
             input-class="text-weight-bold"
             data-testid="swap-from-amount"
             @update:model-value="calculateQuote"
@@ -42,27 +42,30 @@
         </div>
       </q-card>
 
-      <!-- Swap Invert Button -->
-      <div class="row justify-center q-my-none">
+      <!-- Swap Invert Button: Floating centered pill on seam -->
+      <div class="swap-flip-container">
         <q-btn
           round
-          flat
           dense
           icon="swap_vert"
           color="primary"
-          class="bg-grey-2 dark:bg-grey-9 shadow-1"
+          class="swap-flip-btn shadow-2"
           data-testid="swap-flip-btn"
+          aria-label="Switch assets"
           @click="flipAssets"
         />
       </div>
 
       <!-- To Asset Card -->
-      <q-card flat bordered class="q-pa-md bg-surface">
+      <q-card flat bordered class="q-pa-md swap-card">
         <div class="row items-center justify-between q-mb-xs">
           <span class="text-caption text-grey-7">{{
             $t('walletPanel.swapReceive')
           }}</span>
-          <span v-if="unitRateDisplay" class="text-caption text-grey-6">
+          <span
+            v-if="unitRateDisplay"
+            class="text-caption text-grey-6 text-weight-medium"
+          >
             {{ unitRateDisplay }}
           </span>
         </div>
@@ -73,7 +76,7 @@
             dense
             borderless
             placeholder="0.00"
-            class="col text-h6"
+            class="col text-h5"
             input-class="text-weight-bold text-positive"
             data-testid="swap-to-amount"
           />
@@ -95,7 +98,7 @@
       <q-card
         flat
         bordered
-        class="q-pa-sm bg-grey-1 dark:bg-grey-9 text-caption"
+        class="q-pa-sm bg-grey-1 dark:bg-grey-9 text-caption swap-card q-mt-xs"
       >
         <div class="row items-center justify-between q-mb-xs">
           <span class="text-grey-7">{{ $t('walletPanel.swapFeeLabel') }}</span>
@@ -124,21 +127,23 @@
       </q-card>
 
       <!-- Action Button -->
-      <q-btn
-        unelevated
-        color="primary"
-        size="lg"
-        class="full-width text-weight-bold"
-        :label="
-          swapStatusKey === 'walletPanel.swapExecute'
-            ? `${$t(swapStatusKey)} (${fromAsset} → ${toAsset})`
-            : $t(swapStatusKey)
-        "
-        :disable="!canSwap"
-        :loading="isExecuting"
-        data-testid="swap-execute-btn"
-        @click="executeSwap"
-      />
+      <div class="full-width q-mt-xs">
+        <q-btn
+          unelevated
+          color="primary"
+          class="full-width swap-action-btn text-weight-bold"
+          icon="swap_horiz"
+          :label="
+            swapStatusKey === 'walletPanel.swapExecute'
+              ? `${$t(swapStatusKey)} (${fromAsset} → ${toAsset})`
+              : $t(swapStatusKey)
+          "
+          :disable="!canSwap"
+          :loading="isExecuting"
+          data-testid="swap-execute-btn"
+          @click="executeSwap"
+        />
+      </div>
 
       <div
         v-if="lastTxHash"
@@ -326,10 +331,44 @@ export default defineComponent({
 
 <style scoped>
 .d-app-swap-view {
-  max-width: 520px;
+  max-width: 580px;
   margin: 0 auto;
+  width: 100%;
+}
+.swap-card {
+  border-radius: 12px;
+}
+.swap-flip-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: -14px auto;
+  height: 28px;
+  z-index: 3;
+  position: relative;
+}
+.swap-flip-btn {
+  background-color: #ffffff;
+  border: 2px solid var(--q-primary);
+  color: var(--q-primary);
+  width: 36px;
+  height: 36px;
+  transition: transform 0.25s ease, box-shadow 0.2s ease;
+}
+.body--dark .swap-flip-btn {
+  background-color: #1d1d1d;
+}
+.swap-flip-btn:hover {
+  transform: rotate(180deg) scale(1.08);
+}
+.swap-action-btn {
+  height: 50px;
+  border-radius: 10px;
+  font-size: 15px;
+  letter-spacing: 0.5px;
+  box-shadow: 0 4px 12px rgba(224, 76, 36, 0.25);
 }
 .asset-select {
-  min-width: 140px;
+  min-width: 150px;
 }
 </style>

@@ -459,24 +459,64 @@ async function settle(
   const client = owner.client()
   const submitted = new Map<string, number>()
   for (;;) {
-    for (const row of owner.links.all())
+    for (const row of owner.links.all()) {
+      if (row.acknowledged) continue
       if (
         row.outcome &&
-        !row.acknowledged &&
         client.wasAcknowledged(row.attemptRef)
-      )
+      ) {
         await owner.links.put({ ...row, acknowledged: true })
+        continue
+      }
+      let found: ReturnType<typeof client.lookup> | undefined
+      try {
+        found = client.lookup(restoreLink(row).prepared)
+      } catch {
+        found = undefined
+      }
+      if (!found || found.record.attemptRef !== row.attemptRef) {
+        // Orphaned link: not in journal or cannot be reconciled. Mark acknowledged and dead.
+        await owner.links.put({
+          ...row,
+          acknowledged: true,
+          outcome: row.outcome ?? 'dead',
+          ...(row.outcome ? {} : { reason: 'orphaned' }),
+        })
+      }
+    }
     const rows = owner.links.all().filter(row => !row.acknowledged)
+    if (rows.length === 0) return
     const states = client.reconcileWorkflowLinks(rows.map(restoreLink))
-    if (states.some(state => state.state === 'hold'))
-      throw new CanonicalMessagingHoldError()
+    const held = states.filter(state => state.state === 'hold')
+    if (held.length > 0) {
+      for (const h of held) {
+        const row = rows.find(r => r.attemptRef === h.attemptRef)
+        if (row) {
+          await owner.links.put({
+            ...row,
+            acknowledged: true,
+            outcome: row.outcome ?? 'dead',
+            ...(row.outcome ? {} : { reason: 'unreconciled' }),
+          })
+        }
+      }
+      continue
+    }
     const terminal = states.find(state => state.state === 'terminal')
     if (terminal) {
       const row = rows.find(r => r.attemptRef === terminal.attemptRef)!
       const attempt = client
         .terminalOutcomes()
         .find(a => a.attemptRef === terminal.attemptRef)
-      if (!attempt?.terminal) throw new CanonicalMessagingHoldError()
+      if (!attempt?.terminal) {
+        await owner.links.put({
+          ...row,
+          acknowledged: true,
+          outcome: row.outcome ?? 'dead',
+          reason: 'terminal-outcome-missing',
+        })
+        continue
+      }
       // The outcome is saved before the wallet forgets the attempt, so it is never lost.
       await owner.links.put({
         ...row,

@@ -42,6 +42,7 @@ import '@frank/wallet/message-item-plugins/blackjack/plugin'
 import '@frank/wallet/message-item-plugins/digital-goods/plugin'
 import '@frank/wallet/message-item-plugins/raffle/plugin'
 import {
+  CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
   type DirectMessageAttemptStatus,
   type DirectMessagePreparationProgress,
@@ -616,6 +617,24 @@ function classifySendFailure(
   // finished; whatever payment set this message already has stays on it.
   if (isInsufficientFundsError(held)) {
     return { reason: 'insufficient-funds', keepDigest: ownDigest }
+  }
+  if (
+    error instanceof CanonicalMessagingHoldError ||
+    (error instanceof Error && error.name === 'CanonicalMessagingHoldError')
+  ) {
+    if (isNoResponseError(held)) {
+      return { reason: 'unreachable', keepDigest: ownDigest }
+    }
+    if (held instanceof MonadMailboxUnavailableError) {
+      return { reason: 'unavailable' }
+    }
+    if (
+      held instanceof MonadStampTerminalError ||
+      held instanceof MonadStampRejectedError
+    ) {
+      return { reason: 'rejected' }
+    }
+    return { reason: 'interrupted', keepDigest: ownDigest }
   }
   return {
     reason:
@@ -2605,6 +2624,7 @@ export const useChatStore = defineStore('chats', {
           },
         })
       } catch (error) {
+        console.error('[sendDirectMessage error]:', error)
         if (error instanceof MonadStampPendingAttemptError) {
           // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
           // bytes. Without an own set, an earlier attempt is still pending and this message has

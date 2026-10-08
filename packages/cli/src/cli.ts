@@ -5,6 +5,17 @@ import { createIdentityCommand, showIdentityCommand } from './commands/identity'
 import { inboxCommand, listenCommand } from './commands/inbox'
 import { mailSendCommand } from './commands/mail'
 import { sendCommand } from './commands/send'
+import {
+  swapBuildCommand,
+  swapPluginsCommand,
+  swapQuoteCommand,
+} from './commands/swap'
+import {
+  tokenBalanceCommand,
+  tokenListCommand,
+  tokenRecordCommand,
+  tokenSendCommand,
+} from './commands/token'
 import { topicPostCommand, topicReadCommand } from './commands/topic'
 
 export function createProgram(): Command {
@@ -78,11 +89,26 @@ export function createProgram(): Command {
       'Stamp payment amount in wei or MON (default: 0.01 MON)',
     )
     .option('-r, --relay <url>', 'Override relay base URL')
-    .option('--subject <subject>', 'Email subject line (when sending to email recipient)')
-    .option('-c, --conversation <id>', 'Frank conversation ID (when sending to email recipient)')
-    .option('--in-reply-to <id>', 'In-Reply-To Frank message ID (when sending to email recipient)')
-    .option('-m, --message-id <id>', 'Frank message ID (when sending to email recipient)')
-    .option('-g, --gateway <url>', 'Override mail gateway HTTP URL (when sending to email recipient)')
+    .option(
+      '--subject <subject>',
+      'Email subject line (when sending to email recipient)',
+    )
+    .option(
+      '-c, --conversation <id>',
+      'Frank conversation ID (when sending to email recipient)',
+    )
+    .option(
+      '--in-reply-to <id>',
+      'In-Reply-To Frank message ID (when sending to email recipient)',
+    )
+    .option(
+      '-m, --message-id <id>',
+      'Frank message ID (when sending to email recipient)',
+    )
+    .option(
+      '-g, --gateway <url>',
+      'Override mail gateway HTTP URL (when sending to email recipient)',
+    )
     .option('--password <password>', 'Password if keystore is encrypted')
     .action(async (recipient, message, opts, cmd) => {
       await sendCommand(recipient, message, mergeOptions(opts, cmd))
@@ -97,11 +123,19 @@ export function createProgram(): Command {
 
   mailCmd
     .command('send <recipientEmail> <message>')
-    .description('Send an outbound email to an external recipient via the mail gateway')
+    .description(
+      'Send an outbound email to an external recipient via the mail gateway',
+    )
     .option('-s, --subject <subject>', 'Email subject line')
-    .option('-c, --conversation <id>', 'Frank conversation ID for thread preservation')
+    .option(
+      '-c, --conversation <id>',
+      'Frank conversation ID for thread preservation',
+    )
     .option('--in-reply-to <id>', 'In-Reply-To Frank message ID')
-    .option('-m, --message-id <id>', 'Frank message ID for outbound message tracking')
+    .option(
+      '-m, --message-id <id>',
+      'Frank message ID for outbound message tracking',
+    )
     .option('-g, --gateway <url>', 'Override mail gateway HTTP URL')
     .option('--password <password>', 'Password if keystore is encrypted')
     .action(async (recipientEmail, message, opts, cmd) => {
@@ -210,6 +244,128 @@ export function createProgram(): Command {
     )
     .action(async (topicName, opts, cmd) => {
       await topicReadCommand(topicName, mergeOptions(opts, cmd))
+    })
+
+  // --- Token commands ---
+  const token = program
+    .command('token')
+    .description(
+      'Token management, local LevelDB UTXOs, and encrypted transfers',
+    )
+
+  token
+    .command('list')
+    .description(
+      'List supported tokens across Monad, Ethereum, Solana, and eCash',
+    )
+    .option('-c, --chain <chain>', 'Filter by chain identifier')
+    .action(async (opts, cmd) => {
+      await tokenListCommand(mergeOptions(opts, cmd))
+    })
+
+  token
+    .command('balance')
+    .description(
+      'Display token balances and unspent UTXOs from local LevelDB TokenUtxoStore',
+    )
+    .option('-c, --chain <chain>', 'Filter by chain identifier')
+    .option('-t, --token <symbolOrAddress>', 'Specific token to query')
+    .option('--password <password>', 'Password if keystore is encrypted')
+    .action(async (opts, cmd) => {
+      await tokenBalanceCommand(mergeOptions(opts, cmd))
+    })
+
+  token
+    .command('record <amount> <token>')
+    .description(
+      'Record an inbound or offline unspent token note into local storage',
+    )
+    .option('-c, --chain <chain>', 'Chain identifier (default: monad)')
+    .option(
+      '--recipient <address>',
+      'Recipient address (defaults to active identity)',
+    )
+    .option('--tx <hash>', 'Transaction hash reference')
+    .option('--derivation-index <n>', 'Derivation index')
+    .option('--password <password>', 'Password if keystore is encrypted')
+    .action(async (amount, tokenSym, opts, cmd) => {
+      await tokenRecordCommand(amount, tokenSym, mergeOptions(opts, cmd))
+    })
+
+  token
+    .command('send <recipient> <amount> <token>')
+    .description('Send tokens to a recipient via Type 6 Encrypted DM')
+    .option('-c, --chain <chain>', 'Chain identifier (default: monad)')
+    .option('-r, --relay <url>', 'Override relay base URL')
+    .option('-s, --stamp <amount>', 'Stamp payment amount')
+    .option('--memo <memo>', 'Optional transfer memo')
+    .option('--password <password>', 'Password if keystore is encrypted')
+    .action(async (recipient, amount, tokenSym, opts, cmd) => {
+      await tokenSendCommand(
+        recipient,
+        amount,
+        tokenSym,
+        mergeOptions(opts, cmd),
+      )
+    })
+
+  // --- Swap commands ---
+  const swap = program
+    .command('swap')
+    .description(
+      'dApp DEX swaps with 8.75 bps partner fee sharing and HD change address settlement',
+    )
+
+  swap
+    .command('plugins')
+    .description(
+      'List registered dApp plugins (Uniswap, Jupiter, Prediction Escrow)',
+    )
+    .action(async (opts, cmd) => {
+      await swapPluginsCommand(mergeOptions(opts, cmd))
+    })
+
+  swap
+    .command('quote <fromAsset> <toAsset> <amount>')
+    .description(
+      'Query swap quote with 8.75 bps protocol convenience fee breakdown',
+    )
+    .option('-p, --plugin <id>', 'Specific dApp plugin ID')
+    .option('--fee-bps <bps>', 'Protocol fee in basis points (default: 8.75)')
+    .option('--slippage <bps>', 'Slippage in basis points (default: 50)')
+    .action(async (fromAsset, toAsset, amount, opts, cmd) => {
+      await swapQuoteCommand(
+        fromAsset,
+        toAsset,
+        amount,
+        mergeOptions(opts, cmd),
+      )
+    })
+
+  swap
+    .command('build <fromAsset> <toAsset> <amount>')
+    .description(
+      'Build swap transaction settling into a recoverable HD change address (m/44/60/0/1/i or m/44/501/0/1/i)',
+    )
+    .option('-p, --plugin <id>', 'Specific dApp plugin ID')
+    .option(
+      '--destination <address>',
+      'Custom destination address (defaults to next HD change address)',
+    )
+    .option(
+      '--change-index <n>',
+      'HD change address derivation index (default: 0)',
+    )
+    .option('--fee-bps <bps>', 'Protocol fee in basis points (default: 8.75)')
+    .option('--slippage <bps>', 'Slippage in basis points (default: 50)')
+    .option('--password <password>', 'Password if keystore is encrypted')
+    .action(async (fromAsset, toAsset, amount, opts, cmd) => {
+      await swapBuildCommand(
+        fromAsset,
+        toAsset,
+        amount,
+        mergeOptions(opts, cmd),
+      )
     })
 
   return program

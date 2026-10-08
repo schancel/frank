@@ -12,3 +12,16 @@ export * from './plugin-registry'
 export * from './uniswap-plugin'
 export * from './jupiter-plugin'
 export * from './prediction-escrow-plugin'
+
+import { DAppPluginRegistry } from './plugin-registry'
+import { UniswapDAppPlugin } from './uniswap-plugin'
+import { JupiterDAppPlugin } from './jupiter-plugin'
+import { PredictionEscrowDAppPlugin } from './prediction-escrow-plugin'
+
+export function createStandardPluginRegistry(): DAppPluginRegistry {
+  const registry = new DAppPluginRegistry()
+  registry.register(new UniswapDAppPlugin())
+  registry.register(new JupiterDAppPlugin())
+  registry.register(new PredictionEscrowDAppPlugin())
+  return registry
+}

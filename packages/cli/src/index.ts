@@ -8,6 +8,8 @@ export * from './commands/send'
 export * from './commands/inbox'
 export * from './commands/balance'
 export * from './commands/topic'
+export * from './commands/token'
+export * from './commands/swap'
 
 export async function main(): Promise<void> {
   const program = createProgram()

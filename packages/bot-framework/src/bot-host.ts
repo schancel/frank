@@ -168,7 +168,13 @@ export class FrankBotHost {
       }
     }
 
-    this.provider = new JsonRpcProvider(this.options.rpcUrl);
+    const rpcUrls = this.options.rpcUrl
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const primaryRpcUrl = rpcUrls[0] || 'https://testnet-rpc.monad.xyz';
+
+    this.provider = new JsonRpcProvider(primaryRpcUrl);
     this.chain = createMonadChain({
       ...envConfig,
       relayBaseUrl: this.options.relayBaseUrl,
@@ -1026,10 +1032,20 @@ export class FrankBotHost {
             }
           }
 
+          const botRpcUrls = this.options.rpcUrl
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const botPrimaryRpcUrl =
+            botRpcUrls[0] || 'https://testnet-rpc.monad.xyz';
+
           const mainAccountSigner = new MonadAccountTxSigner({
             privateKey: fundingPrivateKeyHex,
             provider: this.provider,
-            httpClient: new MonadHttpClient({ rpcUrl: this.options.rpcUrl }),
+            httpClient: new MonadHttpClient({
+              rpcUrl: botPrimaryRpcUrl,
+              rpcUrls: botRpcUrls,
+            }),
           });
 
           const gasReserveWei = await quoteMonadStampPaymentGasReserve({
@@ -1059,7 +1075,10 @@ export class FrankBotHost {
             provider: this.provider,
             httpClient:
               wallet.httpClient ??
-              new MonadHttpClient({ rpcUrl: this.options.rpcUrl }),
+              new MonadHttpClient({
+                rpcUrl: botPrimaryRpcUrl,
+                rpcUrls: botRpcUrls,
+              }),
             changePool: wallet.changePool,
             relayBaseUrl: this.options.relayBaseUrl,
           });

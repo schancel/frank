@@ -143,7 +143,30 @@ async function fetchBalance(force: boolean) {
     ) {
       console.debug('balance refresh waiting for directory admission')
     } else {
-      console.error('balance refresh failed', err)
+      const errStr =
+        String(err) +
+        (err instanceof Error ? ' ' + err.message : '') +
+        (typeof err === 'object' && err !== null && 'info' in err
+          ? ' ' + JSON.stringify((err as any).info)
+          : '')
+      const isTransientRpc =
+        errStr.includes('502') ||
+        errStr.includes('503') ||
+        errStr.includes('504') ||
+        errStr.includes('429') ||
+        errStr.includes('SERVER_ERROR') ||
+        errStr.includes('TIMEOUT') ||
+        errStr.includes('invalid_rpc_upstream_response') ||
+        errStr.includes('rpc_upstream_unavailable') ||
+        errStr.includes('network') ||
+        errStr.includes('failed to fetch') ||
+        errStr.includes('Failed to fetch')
+
+      if (isTransientRpc) {
+        console.warn('balance refresh transient rpc issue (will retry)', err)
+      } else {
+        console.error('balance refresh failed', err)
+      }
     }
     if (isCurrent()) {
       failures++

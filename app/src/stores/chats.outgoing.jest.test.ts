@@ -278,6 +278,25 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(outcome).toEqual({ state: 'failed', reason })
     })
 
+    it('retries transient 502 Bad Gateway and succeeds when send resolves', async () => {
+      const sendSpy = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValueOnce(
+          new Error(
+            'server response 502 Bad Gateway (invalid_rpc_upstream_response)',
+          ),
+        )
+        .mockResolvedValueOnce(okResult(HASH))
+
+      const outcome = await useChatStore().sendMessage({
+        wallet,
+        address: PEER,
+        items: TEXT,
+      })
+      expect(outcome).toEqual({ state: 'sent', payloadDigest: HASH })
+      expect(sendSpy).toHaveBeenCalledTimes(2)
+    })
+
     it('an in-flight message left over from a stopped app becomes a failed one (no attempt) it can Retry', async () => {
       let release: () => void = () => undefined
       jest.spyOn(activeChain.directMessages, 'send').mockReturnValue(

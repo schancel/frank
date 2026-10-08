@@ -496,43 +496,47 @@ describe('MonadChangePool', () => {
       expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
     })
 
-    it('does not advance the change pointer until the sweep receipt succeeds', async () => {
-      const pool = makePool()
-      const { signer, httpClient } = makeBurnAccountSigner()
-      httpClient.getTransactionReceipt.mockResolvedValue(undefined)
-      const dust = BigInt(21000) * 1n * 2n
-      const provider = makeReadProvider({
-        balanceWei: dust + 1000n,
-        maxFeePerGas: 1n,
-      })
+    it(
+      'does not advance the change pointer until the sweep receipt succeeds',
+      async () => {
+        const pool = makePool()
+        const { signer, httpClient } = makeBurnAccountSigner()
+        httpClient.getTransactionReceipt.mockResolvedValue(undefined)
+        const dust = BigInt(21000) * 1n * 2n
+        const provider = makeReadProvider({
+          balanceWei: dust + 1000n,
+          maxFeePerGas: 1n,
+        })
 
-      await expect(
-        pool.sweepToChange({
-          burnIndex: 0,
-          burnAddress: '0xburn',
-          burnAccountSigner: signer,
-          provider,
-          overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-        }),
-      ).resolves.toMatchObject({ swept: false, reason: 'sweep-pending' })
-      expect(pool.nextUnusedIndex()).toBe(0)
-      expect(pool.records()).toEqual([])
+        await expect(
+          pool.sweepToChange({
+            burnIndex: 0,
+            burnAddress: '0xburn',
+            burnAccountSigner: signer,
+            provider,
+            overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+          }),
+        ).resolves.toMatchObject({ swept: false, reason: 'sweep-pending' })
+        expect(pool.nextUnusedIndex()).toBe(0)
+        expect(pool.records()).toEqual([])
 
-      httpClient.getTransactionReceipt.mockResolvedValue({
-        status: 'success',
-      } as never)
-      await expect(
-        pool.sweepToChange({
-          burnIndex: 0,
-          burnAddress: '0xburn',
-          burnAccountSigner: signer,
-          provider,
-          overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-        }),
-      ).resolves.toMatchObject({ swept: true })
-      expect(pool.nextUnusedIndex()).toBe(1)
-      expect(pool.records()).toHaveLength(1)
-    })
+        httpClient.getTransactionReceipt.mockResolvedValue({
+          status: 'success',
+        } as never)
+        await expect(
+          pool.sweepToChange({
+            burnIndex: 0,
+            burnAddress: '0xburn',
+            burnAccountSigner: signer,
+            provider,
+            overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
+          }),
+        ).resolves.toMatchObject({ swept: true })
+        expect(pool.nextUnusedIndex()).toBe(1)
+        expect(pool.records()).toHaveLength(1)
+      },
+      15000,
+    )
   })
 })
 

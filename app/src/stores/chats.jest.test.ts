@@ -2886,16 +2886,16 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(rehydrated.chats[peerAddress]).toBe(peerConvs[0])
     })
   })
-  describe("ticket #819 / #820: converging geometric stamp suggestion and override lifecycle", () => {
-    it("computes geometric stamp suggestion from conversation messages and handles override lifecycle", () => {
+  describe('ticket #819 / #820: converging geometric stamp suggestion and override lifecycle', () => {
+    it('computes geometric stamp suggestion from conversation messages and handles override lifecycle', () => {
       const store = useChatStore()
-      const peerAddress = "0x1111111111111111111111111111111111111111"
-      const convId = "conv-geometric-test"
+      const peerAddress = '0x1111111111111111111111111111111111111111'
+      const convId = 'conv-geometric-test'
       const ONE_MON = 1_000_000_000_000_000_000n
 
       store.conversations[convId] = {
         id: convId,
-        kind: "direct",
+        kind: 'direct',
         address: peerAddress,
         participants: [peerAddress],
         messages: [
@@ -2903,25 +2903,25 @@ describe('stores/chats.ts (ticket #42)', () => {
           {
             outbound: true,
             stampValueWei: 5n * ONE_MON,
-            status: "confirmed",
+            status: 'confirmed',
             items: [],
             outpoints: [],
             receivedTime: 100,
             serverTime: 100,
-            senderAddress: "0x0000000000000000000000000000000000000001",
-            payloadDigest: "d1",
+            senderAddress: '0x0000000000000000000000000000000000000001',
+            payloadDigest: 'd1',
           },
           // B replied with 0.1 MON
           {
             outbound: false,
             stampValueWei: ONE_MON / 10n,
-            status: "confirmed",
+            status: 'confirmed',
             items: [],
             outpoints: [],
             receivedTime: 200,
             serverTime: 200,
             senderAddress: peerAddress,
-            payloadDigest: "d2",
+            payloadDigest: 'd2',
           },
         ],
         totalUnreadMessages: 0,

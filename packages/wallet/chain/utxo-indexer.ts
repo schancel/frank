@@ -6,7 +6,7 @@
  * - ElectrumUtxoIndexer for Bitcoin (BTC), Bitcoin Cash (BCH), Dogecoin (DOGE), etc.
  */
 
-import { ChronikClient, ScriptUtxos, WsEndpoint, SubscribeMsg, ScriptType } from 'chronik-client'
+import { ChronikClient, ScriptUtxos, WsEndpoint, ScriptType } from 'chronik-client'
 import { Address } from 'ecash-lib/dist/address/address'
 import {
   decodeAddress,
@@ -251,13 +251,9 @@ export class ChronikUtxoIndexer implements UtxoIndexer {
 
     const utxos: UtxoItem[] = []
     for (const group of groups) {
-      for (const u of group.utxos ?? []) {
-        const sats =
-          u.value !== undefined
-            ? BigInt(u.value)
-            : (u as any).sats !== undefined
-              ? BigInt((u as any).sats)
-              : 0n
+      for (const u of (group.utxos ?? []) as any[]) {
+        const rawSats = u.sats !== undefined ? u.sats : u.value !== undefined ? u.value : 0n
+        const sats = typeof rawSats === 'bigint' ? rawSats : BigInt(rawSats)
         utxos.push({
           txId: u.outpoint.txid,
           outputIndex: u.outpoint.outIdx,
@@ -284,13 +280,9 @@ export class ChronikUtxoIndexer implements UtxoIndexer {
     let confirmed = 0n
     let unconfirmed = 0n
     for (const group of groups) {
-      for (const u of group.utxos ?? []) {
-        const sats =
-          u.value !== undefined
-            ? BigInt(u.value)
-            : (u as any).sats !== undefined
-              ? BigInt((u as any).sats)
-              : 0n
+      for (const u of (group.utxos ?? []) as any[]) {
+        const rawSats = u.sats !== undefined ? u.sats : u.value !== undefined ? u.value : 0n
+        const sats = typeof rawSats === 'bigint' ? rawSats : BigInt(rawSats)
         if (u.blockHeight > 0) {
           confirmed += sats
         } else {
@@ -322,7 +314,12 @@ export class ChronikUtxoIndexer implements UtxoIndexer {
 
     this.ensureWs()
     try {
-      this.wsEndpoint?.subscribe(type, hash)
+      const ep = this.wsEndpoint as any
+      if (typeof ep?.subscribeToScript === 'function') {
+        ep.subscribeToScript(type, hash)
+      } else if (typeof ep?.subscribe === 'function') {
+        ep.subscribe(type, hash)
+      }
     } catch {}
 
     return () => {
@@ -332,7 +329,12 @@ export class ChronikUtxoIndexer implements UtxoIndexer {
         if (list.size === 0) {
           this.subscribers.delete(key)
           try {
-            this.wsEndpoint?.unsubscribe(type, hash)
+            const ep = this.wsEndpoint as any
+            if (typeof ep?.unsubscribeFromScript === 'function') {
+              ep.unsubscribeFromScript(type, hash)
+            } else if (typeof ep?.unsubscribe === 'function') {
+              ep.unsubscribe(type, hash)
+            }
           } catch {}
         }
       }
@@ -342,7 +344,7 @@ export class ChronikUtxoIndexer implements UtxoIndexer {
   private ensureWs(): void {
     if (!this.wsEndpoint) {
       this.wsEndpoint = this.chronik.ws({
-        onMessage: (_msg: SubscribeMsg) => {
+        onMessage: (_msg: unknown) => {
           for (const set of this.subscribers.values()) {
             for (const cb of set) {
               try {
@@ -399,7 +401,12 @@ export function createUtxoIndexer(
       relayBaseUrl: options?.relayBaseUrl,
       chronikUrls: options?.chronikUrls,
     })
-    const chronik = new ChronikClient(urls[0])
+    let chronik: ChronikClient
+    try {
+      chronik = new (ChronikClient as any)(urls)
+    } catch {
+      chronik = new (ChronikClient as any)(urls[0] ?? 'https://chronik.e.cash')
+    }
     return new ChronikUtxoIndexer(chainConfig.id, chronik)
   }
 

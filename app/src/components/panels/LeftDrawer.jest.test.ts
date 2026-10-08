@@ -265,17 +265,13 @@ describe('LeftDrawer Wallet rail tab (#399)', () => {
   })
 
   describe('forum header consistency', () => {
-    it('renders standard header with title and new post button', async () => {
-      mockRouterPush.mockReset()
+    it('renders standard header with title without duplicate new post button', () => {
       const wrapper = mountDrawer()
       const forumPanel = wrapper.get('#rail-panel-forum')
       expect(forumPanel.text()).toContain('leftDrawer.forum')
 
       const newPostBtn = forumPanel.find('button[aria-label="a11y.newPost"]')
-      expect(newPostBtn.exists()).toBe(true)
-
-      await newPostBtn.trigger('click')
-      expect(mockRouterPush).toHaveBeenCalledWith('/new-post')
+      expect(newPostBtn.exists()).toBe(false)
     })
 
     it('navigates to /forum when clicking a topic while on a thread route', async () => {

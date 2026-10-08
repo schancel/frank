@@ -86,7 +86,7 @@ export interface ScriptRules {
 export type ProtocolIdentityProbe = Readonly<
   | {
       kind: 'operator-block-checkpoint'
-      capability: 'json-rpc' | 'chronik'
+      capability: 'json-rpc' | 'chronik' | 'electrum'
     }
   | {
       kind: 'evm-chain-id'
@@ -95,7 +95,7 @@ export type ProtocolIdentityProbe = Readonly<
     }
   | {
       kind: 'block-hash'
-      capability: 'json-rpc' | 'chronik'
+      capability: 'json-rpc' | 'chronik' | 'electrum'
       height: number
       expected: string
     }
@@ -107,7 +107,11 @@ export interface ChainDescriptor {
   /** Relay dispatch family. Nakamoto-style chains share the Bitcoin proxy family. */
   readonly proxyFamily: 'bitcoin'
   /** Capabilities the protocol permits; a relay may advertise only a configured subset. */
-  readonly allowedProxyCapabilities: readonly ('json-rpc' | 'chronik')[]
+  readonly allowedProxyCapabilities: readonly (
+    | 'json-rpc'
+    | 'chronik'
+    | 'electrum'
+  )[]
   /** Required checks binding an upstream to this exact chain. */
   readonly identityProbes: readonly ProtocolIdentityProbe[]
   readonly family: ChainFamily

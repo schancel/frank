@@ -71,6 +71,10 @@ function bitcoinIdentityProbes(
 ): readonly ProtocolIdentityProbe[] {
   const checkpoint =
     PUBLIC_CHECKPOINTS[protocolId as keyof typeof PUBLIC_CHECKPOINTS]
+  const electrumProbe: ProtocolIdentityProbe = Object.freeze({
+    kind: 'operator-block-checkpoint' as const,
+    capability: 'electrum' as const,
+  })
   if (!checkpoint) {
     return Object.freeze([
       Object.freeze({
@@ -81,6 +85,7 @@ function bitcoinIdentityProbes(
         kind: 'operator-block-checkpoint' as const,
         capability: 'chronik' as const,
       }),
+      electrumProbe,
     ])
   }
   const [height, expected] = checkpoint
@@ -97,6 +102,7 @@ function bitcoinIdentityProbes(
       height,
       expected,
     }),
+    electrumProbe,
   ])
 }
 
@@ -119,6 +125,7 @@ export function chain(
     allowedProxyCapabilities: Object.freeze([
       'json-rpc' as const,
       'chronik' as const,
+      'electrum' as const,
     ]),
     identityProbes: bitcoinIdentityProbes(protocolId),
     alsoDocumentsSlip44: Object.freeze([...fields.alsoDocumentsSlip44]),

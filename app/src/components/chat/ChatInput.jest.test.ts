@@ -65,6 +65,7 @@ const globalOptions = {
     QIcon: slotted('i'),
     QInput,
     QSlider: slotted('div'),
+    QBadge: slotted('span'),
     QSpace: slotted('div'),
     QSpinnerDots: slotted('span'),
   },
@@ -280,18 +281,19 @@ describe('modernized chat input interface (#1003)', () => {
     expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('2×')
   })
 
-  it('displays active preparation status and loads button when disable and stampStatus are set', () => {
+  it('does not render bottom stamp status bar to prevent scroll bounce glitches and loads send button when disabled', () => {
     const wrapper = mount(ChatInput, {
       props: {
         disable: true,
-        stampStatus: 'Checking sub-accounts…',
       },
       global: globalOptions,
     })
     expect(wrapper.find('[data-testid="chat-input-stamp-status"]').exists()).toBe(
-      true,
+      false,
     )
-    expect(wrapper.text()).toContain('Checking sub-accounts…')
+    const sendBtn = wrapper.find('.chat-send-btn')
+    expect(sendBtn.attributes('loading')).toBe('true')
+    expect(sendBtn.attributes('disable')).toBe('true')
   })
 })
 
@@ -303,5 +305,54 @@ describe('ChatInput toolbar alignment and layout (#1009)', () => {
     expect(sfc).toMatch(/\.chat-send-btn\s*\{[^}]*padding:\s*0 !important/)
     expect(sfc).toMatch(/\.chat-send-btn\s*\{[^}]*flex-shrink:\s*0/)
     expect(sfc).toMatch(/\.chat-input-container\s*\{[^}]*min-width:\s*0/)
+  })
+})
+
+describe("orders-of-magnitude stamp slider and geometric suggestion lifecycle (Issues #819 & #820)", () => {
+  it("correctly maps multipliers across 4 orders of magnitude in decadeIndex", async () => {
+    const wrapper = mount(ChatInput, {
+      props: { stampAmount: (10n ** 16n).toString() },
+      global: globalOptions,
+    })
+    const vm = wrapper.vm as any
+    // 1x default -> index 0
+    expect(vm.decadeIndex).toBe(0)
+
+    // Set to 10x (index 3)
+    vm.decadeIndex = 3
+    const emitted = wrapper.emitted("update:stampAmount")
+    expect(emitted).toBeTruthy()
+    // 10x of default stamp = 10^17 wei in test mock
+    expect(emitted[0][0]).toBe((10n ** 17n).toString())
+  })
+
+  it("renders converged badge when suggestedStampAmount matches and not overridden", () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        stampAmount: "0.71",
+        suggestedStampAmount: "0.71",
+        isOverridden: false,
+      },
+      global: globalOptions,
+    })
+    expect(wrapper.find('[data-testid="stamp-converged-badge"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="stamp-override-badge"]').exists()).toBe(false)
+  })
+
+  it("renders override badge and reset button when isOverridden is true", async () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        stampAmount: "1.0",
+        suggestedStampAmount: "0.71",
+        isOverridden: true,
+      },
+      global: globalOptions,
+    })
+    expect(wrapper.find('[data-testid="stamp-override-badge"]').exists()).toBe(true)
+    const resetBtn = wrapper.find('[data-testid="chat-input-reset-suggested"]')
+    expect(resetBtn.exists()).toBe(true)
+
+    await resetBtn.trigger("click")
+    expect(wrapper.emitted("resetStampToSuggested")).toBeTruthy()
   })
 })

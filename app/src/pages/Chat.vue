@@ -114,8 +114,10 @@
         ref="chatInput"
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
+        :suggested-stamp-amount="suggestedStampAmount"
+        :is-overridden="isStampOverridden"
+        @resetStampToSuggested="resetStampToSuggested"
         :disable="sendingMessage"
-        :stamp-status="stampPreparationStatus"
         @sendMessage="sendMessage"
       />
     </q-footer>
@@ -538,6 +540,12 @@ export default defineComponent({
         this.$nextTick(() => message.$el.scrollIntoView({ behavior: 'smooth' }))
       }, 50)()
     },
+    resetStampToSuggested() {
+      const target = this.conversation?.id || this.recipientAddress
+      if (target && typeof this.chatStore?.clearStampOverride === "function") {
+        this.chatStore.clearStampOverride(target)
+      }
+    },
     async sendMessage(message: string) {
       if (this.sendingMessage) {
         return
@@ -589,6 +597,10 @@ export default defineComponent({
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })
+        const target = this.conversation?.id || recipient
+        if (target && typeof this.chatStore?.clearStampOverride === "function") {
+          this.chatStore.clearStampOverride(target)
+        }
       } catch (err) {
         // Send failures do not throw: the message stays in the conversation, marked failed with a
         // Retry and Discard (#269/#270). Only a precondition failure (e.g. an invalid recipient)
@@ -1108,6 +1120,25 @@ export default defineComponent({
 
       return this.messages.slice(start, end)
     },
+    suggestedStampAmount(): string {
+      const target = this.conversation?.id || this.recipientAddress
+      if (!target || typeof this.chatStore?.getPeerStampSuggestion !== "function") {
+        return activeChain.toDisplayAmount(activeChain.defaultStampValue)
+      }
+      try {
+        const suggested = this.chatStore.getPeerStampSuggestion(target)
+        return activeChain.toDisplayAmount(suggested)
+      } catch {
+        return activeChain.toDisplayAmount(activeChain.defaultStampValue)
+      }
+    },
+    isStampOverridden(): boolean {
+      const target = this.conversation?.id || this.recipientAddress
+      if (!target || typeof this.chatStore?.getStampOverrideWei !== "function") {
+        return false
+      }
+      return this.chatStore.getStampOverrideWei(target) !== undefined
+    },
     stampAmount: {
       set(stampAmount: string | undefined) {
         let rawAmount: bigint
@@ -1120,6 +1151,20 @@ export default defineComponent({
           rawAmount < activeChain.defaultStampValue
             ? activeChain.defaultStampValue
             : rawAmount
+
+        const target = this.conversation?.id || this.recipientAddress
+        if (target && typeof this.chatStore?.getPeerStampSuggestion === "function") {
+          const suggested = this.chatStore.getPeerStampSuggestion(target)
+          if (rawAmount === suggested) {
+            this.chatStore.clearStampOverride?.(target)
+          } else {
+            this.chatStore.setStampOverride?.({
+              address: target,
+              overrideWei: rawAmount,
+            })
+          }
+        }
+
         this.setStampAmount({
           address: this.recipientAddress,
           stampAmount: Number(rawAmount),
@@ -1136,6 +1181,20 @@ export default defineComponent({
       },
       get() {
         const target = this.conversation?.id || this.recipientAddress
+        const override =
+          target && typeof this.chatStore?.getStampOverrideWei === "function"
+            ? this.chatStore.getStampOverrideWei(target)
+            : undefined
+        if (override !== undefined) {
+          return activeChain.toDisplayAmount(override)
+        }
+        if (
+          target &&
+          typeof this.chatStore?.getPeerStampSuggestion === "function"
+        ) {
+          const suggested = this.chatStore.getPeerStampSuggestion(target)
+          return activeChain.toDisplayAmount(suggested)
+        }
         const stored = this.getStampAmount(target)
         const storedRaw = BigInt(stored)
         // Values persisted by the old Lotus-denominated control (and the earlier Monad preview)

@@ -1,14 +1,5 @@
 <template>
   <div class="row full-width items-center">
-    <div
-      v-if="disable && stampStatus"
-      class="chat-input-status-bar row items-center full-width q-px-md q-py-xs text-caption text-primary"
-      data-testid="chat-input-stamp-status"
-      style="font-size: 11px; line-height: 1.2"
-    >
-      <q-spinner-dots size="14px" class="q-mr-xs" />
-      <span class="ellipsis text-weight-medium">{{ stampStatus }}</span>
-    </div>
     <q-toolbar class="chat-input-toolbar full-width items-center">
       <q-btn
         dense
@@ -107,11 +98,35 @@
           :disable="disable"
         >
           <span class="chat-stamp-pill-text q-ml-xs"
-            >{{ stampMultiplier }}×</span
+            >{{ stampPillText }}</span
           >
           <q-tooltip>{{ stampLabel }}</q-tooltip>
           <q-menu anchor="top middle" self="bottom middle">
-            <div class="q-pa-md" style="min-width: 280px">
+            <div class="q-pa-md" style="min-width: 320px">
+              <div class="row items-center justify-between q-mb-xs">
+                <div class="text-subtitle2 text-weight-medium">
+                  {{ $t('chatInput.stampPayment') }}
+                </div>
+                <q-badge
+                  v-if="suggestedStampAmount && !isOverridden"
+                  color="teal"
+                  outline
+                  class="text-caption"
+                  data-testid="stamp-converged-badge"
+                >
+                  {{ $t('chatInput.convergedPill') }}
+                </q-badge>
+                <q-badge
+                  v-else-if="isOverridden"
+                  color="orange"
+                  outline
+                  class="text-caption"
+                  data-testid="stamp-override-badge"
+                >
+                  {{ $t('chatInput.overridePill') }}
+                </q-badge>
+              </div>
+
               <q-input
                 v-model="innerStampAmount"
                 dense
@@ -121,22 +136,43 @@
                 :suffix="chainUnit"
                 :label="$t('chatInput.stampPayment')"
               />
-              <q-slider
-                v-model="stampMultiplier"
-                class="q-mt-md"
-                :min="1"
-                :max="100"
-                :step="1"
-                label
-                label-always
-                :label-value="
-                  $t('chatInput.stampMultiplierValue', {
-                    multiplier: stampMultiplier,
-                  })
-                "
-              />
-              <div class="text-caption text-grey-7">
+              <div class="q-mt-sm">
+                <q-slider
+                  v-model="decadeIndex"
+                  class="q-mt-md"
+                  :min="0"
+                  :max="12"
+                  :step="1"
+                  label
+                  label-always
+                  :label-value="sliderLabelValue"
+                  markers
+                  :marker-labels="decadeMarkerLabels"
+                  data-testid="chat-input-stamp-slider"
+                />
+              </div>
+              <div class="text-caption text-grey-7 q-mt-sm">
                 {{ $t('chatInput.stampQuickSelection') }}
+              </div>
+
+              <div
+                v-if="suggestedStampAmount && isOverridden"
+                class="row items-center justify-between q-mt-sm"
+              >
+                <div class="text-caption text-grey-7">
+                  {{ $t('chatInput.suggestedStamp', { amount: `${suggestedStampAmount} ${chainUnit}` }) }}
+                </div>
+                <q-btn
+                  flat
+                  dense
+                  size="sm"
+                  color="primary"
+                  icon="restart_alt"
+                  class="q-px-xs"
+                  data-testid="chat-input-reset-suggested"
+                  :label="$t('chatInput.resetToSuggested')"
+                  @click="resetToSuggested"
+                />
               </div>
             </div>
           </q-menu>
@@ -163,6 +199,10 @@ import emoji from 'node-emoji'
 import { processInput } from '../../utils/chat'
 import { activeChain } from '@frank/wallet/chain'
 
+export const DECADE_MULTIPLIERS = [
+  1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000,
+]
+
 export default defineComponent({
   props: {
     message: {
@@ -173,9 +213,13 @@ export default defineComponent({
       type: String,
       default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
     },
-    stampStatus: {
-      type: String as () => string | null,
-      default: null,
+    suggestedStampAmount: {
+      type: String,
+      default: () => '',
+    },
+    isOverridden: {
+      type: Boolean,
+      default: false,
     },
     // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
     // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its
@@ -190,6 +234,7 @@ export default defineComponent({
   emits: [
     'update:message',
     'update:stampAmount',
+    'resetStampToSuggested',
     'sendMessage',
     'sendFileClicked',
     'blackjackClicked',
@@ -197,6 +242,9 @@ export default defineComponent({
     'offerSwapClicked',
   ],
   methods: {
+    resetToSuggested() {
+      this.$emit('resetStampToSuggested')
+    },
     offerSwapClicked() {
       this.$emit('offerSwapClicked')
     },
@@ -245,23 +293,86 @@ export default defineComponent({
     chainUnit() {
       return activeChain.unit
     },
-    stampLabel() {
-      return `${this.stampAmount} ${activeChain.unit}`
+    decadeMarkerLabels(): Record<number, string> {
+      return { 0: '1×', 3: '10×', 6: '100×', 9: '1k×', 12: '10k×' }
     },
-    minimumStampAmount() {
-      return activeChain.toDisplayAmount(activeChain.defaultStampValue)
+    decadeIndex: {
+      get(): number {
+        let selected: bigint
+        try {
+          selected = activeChain.fromDisplayAmount(this.stampAmount)
+        } catch {
+          return 0
+        }
+        if (selected <= activeChain.defaultStampValue) {
+          return 0
+        }
+        const mult = Number(selected) / Number(activeChain.defaultStampValue)
+        let closest = 0
+        let minDiff = Infinity
+        for (let i = 0; i < DECADE_MULTIPLIERS.length; i++) {
+          const diff = Math.abs(Math.log(mult) - Math.log(DECADE_MULTIPLIERS[i]))
+          if (diff < minDiff) {
+            minDiff = diff
+            closest = i
+          }
+        }
+        return closest
+      },
+      set(index: number) {
+        const i = Math.max(0, Math.min(DECADE_MULTIPLIERS.length - 1, Math.round(index)))
+        const mult = DECADE_MULTIPLIERS[i]
+        const raw = activeChain.defaultStampValue * BigInt(mult)
+        this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
+      },
+    },
+    sliderLabelValue(): string {
+      const mult = DECADE_MULTIPLIERS[this.decadeIndex] ?? 1
+      const raw = activeChain.defaultStampValue * BigInt(mult)
+      const amountStr = activeChain.toDisplayAmount(raw)
+      return this.$t('chatInput.stampMultiplierValue', {
+        multiplier: mult,
+        amount: `${amountStr} ${this.chainUnit}`,
+      })
     },
     stampMultiplier: {
-      get() {
-        const selected = activeChain.fromDisplayAmount(this.stampAmount)
-        const multiple = selected / activeChain.defaultStampValue
-        return Math.max(1, Math.min(100, Number(multiple)))
+      get(): string {
+        let selected: bigint
+        try {
+          selected = activeChain.fromDisplayAmount(this.stampAmount)
+        } catch {
+          return '1'
+        }
+        const multiple = Number(selected) / Number(activeChain.defaultStampValue)
+        if (!Number.isFinite(multiple) || multiple <= 1) {
+          return '1'
+        }
+        if (Math.abs(multiple - Math.round(multiple)) < 0.05) {
+          return String(Math.round(multiple))
+        }
+        return multiple.toFixed(1)
       },
       set(value: number) {
         const intVal = Number.isFinite(value) ? Math.round(value) : 1
         const raw = activeChain.defaultStampValue * BigInt(intVal)
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
       },
+    },
+    stampPillText(): string {
+      return `${this.stampMultiplier}×`
+    },
+    stampLabel(): string {
+      const base = `${this.stampAmount} ${activeChain.unit}`
+      if (this.suggestedStampAmount && !this.isOverridden) {
+        return `${base} (${this.$t('chatInput.convergedPill')})`
+      }
+      if (this.isOverridden) {
+        return `${base} (${this.$t('chatInput.overridePill')})`
+      }
+      return base
+    },
+    minimumStampAmount() {
+      return activeChain.toDisplayAmount(activeChain.defaultStampValue)
     },
     innerMessage: {
       get() {

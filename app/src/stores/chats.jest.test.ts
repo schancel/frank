@@ -2886,4 +2886,67 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(rehydrated.chats[peerAddress]).toBe(peerConvs[0])
     })
   })
+  describe("ticket #819 / #820: converging geometric stamp suggestion and override lifecycle", () => {
+    it("computes geometric stamp suggestion from conversation messages and handles override lifecycle", () => {
+      const store = useChatStore()
+      const peerAddress = "0x1111111111111111111111111111111111111111"
+      const convId = "conv-geometric-test"
+      const ONE_MON = 1_000_000_000_000_000_000n
+
+      store.conversations[convId] = {
+        id: convId,
+        kind: "direct",
+        address: peerAddress,
+        participants: [peerAddress],
+        messages: [
+          // A opened with 5.0 MON
+          {
+            outbound: true,
+            stampValueWei: 5n * ONE_MON,
+            status: "confirmed",
+            items: [],
+            outpoints: [],
+            receivedTime: 100,
+            serverTime: 100,
+            senderAddress: "0x0000000000000000000000000000000000000001",
+            payloadDigest: "d1",
+          },
+          // B replied with 0.1 MON
+          {
+            outbound: false,
+            stampValueWei: ONE_MON / 10n,
+            status: "confirmed",
+            items: [],
+            outpoints: [],
+            receivedTime: 200,
+            serverTime: 200,
+            senderAddress: peerAddress,
+            payloadDigest: "d2",
+          },
+        ],
+        totalUnreadMessages: 0,
+        totalUnreadValue: 0,
+        totalValue: 0,
+        lastReceived: 200,
+        lastRead: 200,
+        stampAmount: 0,
+      } as any
+
+      // Expected suggestion is ~0.7071 MON (707106781186547524n)
+      const suggestion = store.getPeerStampSuggestion(convId)
+      expect(suggestion).toBe(707_106_781_186_547_524n)
+
+      // Override is initially undefined
+      expect(store.getStampOverrideWei(convId)).toBeUndefined()
+
+      // Set manual override
+      const customOverride = 2n * ONE_MON
+      store.setStampOverride({ address: convId, overrideWei: customOverride })
+      expect(store.getStampOverrideWei(convId)).toBe(customOverride)
+
+      // Clear override
+      store.clearStampOverride(convId)
+      expect(store.getStampOverrideWei(convId)).toBeUndefined()
+    })
+  })
 })

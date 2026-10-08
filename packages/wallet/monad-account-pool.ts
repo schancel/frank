@@ -642,32 +642,96 @@ export class MonadSubAccountPool {
       );
     }
 
-    for (const [offset, paymentCapacityWei] of capacities.entries()) {
-      const target = unfunded[offset];
-      const result = await this.fundAccount({
-        target,
-        paymentCapacityWei,
-        gasReserveWei: params.gasReserveWei,
-        mainAccountSigner: params.mainAccountSigner,
-        overrides: params.fundingOverrides,
-        receipt: params.receipt,
-        onSigned: (signedTx) =>
+    if (capacities.length > 1) {
+      let startNonce: number;
+      if (params.fundingOverrides?.nonce !== undefined) {
+        startNonce = params.fundingOverrides.nonce;
+      } else {
+        const pendingCount = await params.provider.getTransactionCount(
+          params.mainAccountSigner.address,
+          "pending"
+        );
+        startNonce = Number(pendingCount);
+      }
+
+      for (const [offset, paymentCapacityWei] of capacities.entries()) {
+        const target = unfunded[offset];
+        const fundedValue = paymentCapacityWei + params.gasReserveWei;
+        const nonce = startNonce + offset;
+        const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
+          target.address,
+          fundedValue,
+          { ...params.fundingOverrides, nonce }
+        );
+        this.store.put({
+          ...target,
+          status: "funding",
+          fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
+        });
+        await this.store.flush();
+        params.onProgress?.({
+          stage: "funding",
+          completed: 0,
+          total: capacities.length,
+          feeReserveWei: params.gasReserveWei,
+          txHash: signedTx.txHash,
+        });
+        await params.mainAccountSigner.submit(signedTx);
+      }
+
+      let completedCount = 0;
+      await Promise.all(
+        capacities.map(async (paymentCapacityWei, offset) => {
+          const target = unfunded[offset];
+          const txHash = await this.finishFundingAttempt(
+            this.store.getByIndex(target.index) as SubAccountRecord,
+            params.mainAccountSigner,
+            params.receipt,
+            false
+          );
+          this.capacityCache.set(target.index, {
+            capacityWei: paymentCapacityWei,
+            checkedAtMs: Date.now(),
+          });
+          fundingTxHashes.push(txHash);
+          completedCount++;
           params.onProgress?.({
             stage: "funding",
-            completed: offset,
+            completed: completedCount,
             total: capacities.length,
             feeReserveWei: params.gasReserveWei,
-            txHash: signedTx.txHash,
-          }),
-      });
-      fundingTxHashes.push(result.txHash);
-      params.onProgress?.({
-        stage: "funding",
-        completed: offset + 1,
-        total: capacities.length,
-        feeReserveWei: params.gasReserveWei,
-        txHash: result.txHash,
-      });
+            txHash,
+          });
+        })
+      );
+    } else {
+      for (const [offset, paymentCapacityWei] of capacities.entries()) {
+        const target = unfunded[offset];
+        const result = await this.fundAccount({
+          target,
+          paymentCapacityWei,
+          gasReserveWei: params.gasReserveWei,
+          mainAccountSigner: params.mainAccountSigner,
+          overrides: params.fundingOverrides,
+          receipt: params.receipt,
+          onSigned: (signedTx) =>
+            params.onProgress?.({
+              stage: "funding",
+              completed: offset,
+              total: capacities.length,
+              feeReserveWei: params.gasReserveWei,
+              txHash: signedTx.txHash,
+            }),
+        });
+        fundingTxHashes.push(result.txHash);
+        params.onProgress?.({
+          stage: "funding",
+          completed: offset + 1,
+          total: capacities.length,
+          feeReserveWei: params.gasReserveWei,
+          txHash: result.txHash,
+        });
+      }
     }
 
     accounts = await this.fundedCapacities(
@@ -696,7 +760,8 @@ export class MonadSubAccountPool {
     receipt?: FundingReceiptOptions;
   }): Promise<string[]> {
     const fundingTxHashes: string[] = [];
-    for (const record of this.store.getAll()) {
+    const allRecords = this.store.getAll();
+    for (const record of allRecords) {
       if (record.status === "funding") {
         try {
           const txHash = await this.finishFundingAttempt(
@@ -711,25 +776,30 @@ export class MonadSubAccountPool {
             err
           );
         }
-      } else if (record.status === "available") {
-        // A legacy `available` record is ambiguous: it may be merely derived, or it may have been
-        // used before confirmed leases became terminal. Never re-fund that address. An empty one
-        // is retired; production-created `unfunded` records are the only refill targets.
-        const balance = await params.provider.getBalance(record.address);
-        const transactionCount = await params.provider.getTransactionCount(
-          record.address,
-          "pending"
-        );
-        if (transactionCount > 0 || balance <= params.gasReserveWei) {
-          this.store.put({ ...record, status: "retired" });
-          this.capacityCache.delete(record.index);
-        } else {
-          this.capacityCache.set(record.index, {
-            capacityWei: balance - params.gasReserveWei,
-            checkedAtMs: Date.now(),
-          });
-        }
       }
+    }
+    const availableRecords = allRecords.filter(
+      (record) => record.status === "available"
+    );
+    if (availableRecords.length > 0) {
+      await Promise.all(
+        availableRecords.map(async (record) => {
+          const [balance, transactionCount] = await Promise.all([
+            params.provider.getBalance(record.address),
+            params.provider.getTransactionCount(record.address, "pending"),
+          ]);
+          if (transactionCount > 0 || balance <= params.gasReserveWei) {
+            const { fundingAttempt: _fundingAttempt, ...base } = record;
+            this.store.put({ ...base, status: "retired" });
+            this.capacityCache.delete(record.index);
+          } else {
+            this.capacityCache.set(record.index, {
+              capacityWei: balance - params.gasReserveWei,
+              checkedAtMs: Date.now(),
+            });
+          }
+        })
+      );
     }
     await this.store.flush();
     return fundingTxHashes;

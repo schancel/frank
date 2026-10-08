@@ -110,22 +110,53 @@ describe('AccountBadge.vue', () => {
     expect(wrapper.text()).toContain('profile.badgeGame')
   })
 
-  it('resolves curation from contactStore.curatedDefaults when curated prop is omitted', () => {
+  it('renders official bot badge for a curated generic bot without role', () => {
+    const wrapper = mountBadge({
+      address: '0x8888888888888888888888888888888888888888',
+      accountType: 1,
+      curated: true,
+    })
+    expect(wrapper.find('[data-testid="badge-official-bot"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.text()).toContain('profile.badgeOfficialBot')
+  })
+
+  it('renders official service badge for a curated generic service without role', () => {
+    const wrapper = mountBadge({
+      address: '0x9999999999999999999999999999999999999999',
+      accountType: 2,
+      curated: true,
+    })
+    expect(wrapper.find('[data-testid="badge-official-service"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.text()).toContain('profile.badgeOfficialService')
+  })
+
+  it('infers game role for curated Blackjack Dealer when accountType/botRole are omitted', () => {
     const contactsStore = useContactStore()
     contactsStore.replaceCuratedDefaults([
       {
-        address: '0x7777777777777777777777777777777777777777',
-        name: 'Curated Bot',
+        address: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        name: 'Blackjack Dealer',
       },
     ])
+    contactsStore.addContact({
+      address: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      contact: {
+        profile: {
+          name: 'Blackjack Dealer',
+        },
+      },
+    })
 
     const wrapper = mountBadge({
-      address: '0x7777777777777777777777777777777777777777',
-      accountType: 1,
-      botRole: 1,
+      address: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     })
-    expect(wrapper.find('[data-testid="badge-official-ai"]').exists()).toBe(
+    expect(wrapper.find('[data-testid="badge-official-game"]').exists()).toBe(
       true,
     )
+    expect(wrapper.text()).toContain('profile.badgeOfficialGame')
   })
 })

@@ -66,6 +66,7 @@ const globalOptions = {
     QInput,
     QSlider: slotted('div'),
     QSpace: slotted('div'),
+    QSpinnerDots: slotted('span'),
   },
   directives: { 'close-popup': {} },
   mocks: {
@@ -277,6 +278,20 @@ describe('modernized chat input interface (#1003)', () => {
       global: globalOptions,
     })
     expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('2×')
+  })
+
+  it('displays active preparation status and loads button when disable and stampStatus are set', () => {
+    const wrapper = mount(ChatInput, {
+      props: {
+        disable: true,
+        stampStatus: 'Checking sub-accounts…',
+      },
+      global: globalOptions,
+    })
+    expect(wrapper.find('[data-testid="chat-input-stamp-status"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.text()).toContain('Checking sub-accounts…')
   })
 })
 

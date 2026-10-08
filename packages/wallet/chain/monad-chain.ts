@@ -2182,6 +2182,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 return preparation.fundingTxHashes;
               });
             canonicalInventoryFunders.set(wallet, prepareInventory);
+            pool.configureProactiveWarming({
+              provider,
+              mainAccountSigner: new MonadAccountTxSigner({
+                privateKey: mainAccount.privateKey,
+                provider,
+                httpClient,
+              }),
+              stampValueWei: config.defaultStampValueWei,
+              gasReserveWei: BigInt(21_000) * BigInt(2_000_000_000),
+              minCount: 2,
+            });
+            pool.triggerProactiveWarming();
             const links =
               storageLocation !== undefined
                 ? await LevelCanonicalLinkStore.open(storageLocation)

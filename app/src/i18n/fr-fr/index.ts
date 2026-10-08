@@ -1042,6 +1042,8 @@ export default {
     botRoleModerator: 'Modérateur',
     botRoleAnnouncer: "Diffuseur d'annonces",
     badgeOfficial: 'Officiel',
+    badgeOfficialBot: 'Robot officiel',
+    badgeOfficialService: 'Service officiel',
     badgeBot: 'Bot',
     badgeService: 'Service',
     badgeAi: 'IA Officielle',

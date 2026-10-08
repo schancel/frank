@@ -115,6 +115,7 @@
         v-model:message="message"
         v-model:stamp-amount="stampAmount"
         :disable="sendingMessage"
+        :stamp-status="stampPreparationStatus"
         @sendMessage="sendMessage"
       />
     </q-footer>

@@ -306,6 +306,12 @@ fn validate_call(call: &Value) -> Result<CallCost, RpcRejection> {
             | "getHealth"
             | "simulateTransaction"
             | "sendTransaction"
+            | "getTokenAccountsByOwner"
+            | "getTokenAccountBalance"
+            | "getTokenLargestAccounts"
+            | "getTokenSupply"
+            | "getMinimumBalanceForRentExemption"
+            | "getRecentPrioritizationFees"
     );
     if !allowed {
         return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
@@ -357,12 +363,98 @@ fn validate_call(call: &Value) -> Result<CallCost, RpcRejection> {
                 }
             }
         }
+        "getTokenAccountsByOwner" => {
+            if let Some(params_arr) = params.as_array() {
+                if params_arr.len() > 3 {
+                    return Err(rpc_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_token_accounts_params",
+                    ));
+                }
+                if let Some(owner) = params_arr.first().and_then(Value::as_str) {
+                    if owner.len() > 50 {
+                        return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_owner_address"));
+                    }
+                }
+            }
+        }
+        "getTokenAccountBalance" => {
+            if let Some(params_arr) = params.as_array() {
+                if params_arr.len() > 2 {
+                    return Err(rpc_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_token_account_balance_params",
+                    ));
+                }
+                if let Some(account) = params_arr.first().and_then(Value::as_str) {
+                    if account.len() > 50 {
+                        return Err(rpc_error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_account_address",
+                        ));
+                    }
+                }
+            }
+        }
+        "getTokenLargestAccounts" | "getTokenSupply" => {
+            if let Some(params_arr) = params.as_array() {
+                if params_arr.len() > 2 {
+                    return Err(rpc_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_token_supply_params",
+                    ));
+                }
+                if let Some(mint) = params_arr.first().and_then(Value::as_str) {
+                    if mint.len() > 50 {
+                        return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_mint_address"));
+                    }
+                }
+            }
+        }
+        "getMinimumBalanceForRentExemption" => {
+            if let Some(params_arr) = params.as_array() {
+                if params_arr.len() > 2 {
+                    return Err(rpc_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_rent_exemption_params",
+                    ));
+                }
+                if let Some(size) = params_arr.first().and_then(Value::as_u64) {
+                    if size > 10_000_000 {
+                        return Err(rpc_error(
+                            StatusCode::BAD_REQUEST,
+                            "rent_exemption_size_limit_exceeded",
+                        ));
+                    }
+                }
+            }
+        }
+        "getRecentPrioritizationFees" => {
+            if let Some(params_arr) = params.as_array() {
+                if let Some(first) = params_arr.first() {
+                    if let Some(accounts) = first.as_array() {
+                        if accounts.len() > MAX_ACCOUNTS_IN_BATCH_QUERY {
+                            return Err(rpc_error(
+                                StatusCode::BAD_REQUEST,
+                                "rpc_batch_limit_exceeded",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     }
 
     let cost = match method {
-        "getGenesisHash" | "getLatestBlockhash" | "getSlot" | "getBlockHeight" | "getEpochInfo"
-        | "getVersion" | "getHealth" => CallCost {
+        "getGenesisHash"
+        | "getLatestBlockhash"
+        | "getSlot"
+        | "getBlockHeight"
+        | "getEpochInfo"
+        | "getVersion"
+        | "getHealth"
+        | "getMinimumBalanceForRentExemption" => CallCost {
             units: 1,
             anonymous: true,
             broadcast: false,
@@ -371,12 +463,18 @@ fn validate_call(call: &Value) -> Result<CallCost, RpcRejection> {
         | "getAccountInfo"
         | "getSignatureStatuses"
         | "getTransaction"
-        | "getFeeForMessage" => CallCost {
+        | "getFeeForMessage"
+        | "getTokenAccountBalance"
+        | "getTokenSupply"
+        | "getRecentPrioritizationFees" => CallCost {
             units: 2,
             anonymous: true,
             broadcast: false,
         },
-        "getMultipleAccounts" | "getSignaturesForAddress" => CallCost {
+        "getMultipleAccounts"
+        | "getSignaturesForAddress"
+        | "getTokenAccountsByOwner"
+        | "getTokenLargestAccounts" => CallCost {
             units: 5,
             anonymous: true,
             broadcast: false,
@@ -860,6 +958,12 @@ mod tests {
             "getEpochInfo",
             "getVersion",
             "getHealth",
+            "getTokenAccountsByOwner",
+            "getTokenAccountBalance",
+            "getTokenLargestAccounts",
+            "getTokenSupply",
+            "getMinimumBalanceForRentExemption",
+            "getRecentPrioritizationFees",
         ] {
             let call = json!({
                 "jsonrpc": "2.0",

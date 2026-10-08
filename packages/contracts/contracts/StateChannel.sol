@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./IERC20.sol";
+
 /**
  * @title StateChannel
  * @notice Universal symmetric 2-party state channel with monotonic sequence checkpoints,
- * cooperative instant close, and dispute challenge windows (Nitro / Perun pattern).
+ * cooperative instant close, dispute challenge windows (Nitro / Perun pattern),
+ * and ERC-20 token support alongside native coin.
  * Completely application-agnostic: supports games (Blackjack, Poker), streaming micropayments, etc.
  */
 contract StateChannel {
     struct Channel {
         address[2] participants;      // [partyA, partyB]
+        address token;                // address(0) for native ETH/MON, non-zero for ERC-20
         uint256[2] balances;          // [balanceA, balanceB]
         uint256 currentSeq;           // Monotonically increasing sequence number
         uint256 challengeDuration;    // Challenge period in seconds (e.g. 1 hour)
@@ -35,6 +39,7 @@ contract StateChannel {
         bytes32 indexed channelId,
         address indexed partyA,
         address indexed partyB,
+        address token,
         uint256 depositA,
         uint256 challengeDuration
     );
@@ -79,7 +84,25 @@ contract StateChannel {
     error ZeroDuration();
 
     /**
-     * @notice Initializes a symmetric 2-party state channel.
+     * @notice Initializes a symmetric 2-party state channel with ERC-20 token or native coin.
+     * @param channelId Unique channel identifier.
+     * @param peer Counterparty address.
+     * @param token Address of ERC-20 token, or address(0) for native coin.
+     * @param depositA Amount to fund from partyA.
+     * @param challengeDuration Challenge window duration in seconds for unilateral checkpoints.
+     */
+    function openChannel(
+        bytes32 channelId,
+        address peer,
+        address token,
+        uint256 depositA,
+        uint256 challengeDuration
+    ) public payable nonReentrant {
+        _openInternal(channelId, peer, token, depositA, challengeDuration);
+    }
+
+    /**
+     * @notice Backward-compatible overload for native coin state channels.
      * @param channelId Unique channel identifier.
      * @param peer Counterparty address.
      * @param challengeDuration Challenge window duration in seconds for unilateral checkpoints.
@@ -89,34 +112,80 @@ contract StateChannel {
         address peer,
         uint256 challengeDuration
     ) external payable nonReentrant {
+        _openInternal(channelId, peer, address(0), msg.value, challengeDuration);
+    }
+
+    function _openInternal(
+        bytes32 channelId,
+        address peer,
+        address token,
+        uint256 depositA,
+        uint256 challengeDuration
+    ) internal {
         if (channels[channelId].participants[0] != address(0)) revert ChannelAlreadyExists();
         if (peer == address(0) || peer == msg.sender) revert InvalidZeroAddress();
         if (challengeDuration == 0) revert ZeroDuration();
 
+        if (token == address(0)) {
+            if (msg.value != depositA) revert TransferFailed();
+        } else {
+            if (msg.value != 0) revert TransferFailed();
+            if (depositA > 0) {
+                bool success = IERC20(token).transferFrom(msg.sender, address(this), depositA);
+                if (!success) revert TransferFailed();
+            }
+        }
+
         channels[channelId] = Channel({
             participants: [msg.sender, peer],
-            balances: [msg.value, 0],
+            token: token,
+            balances: [depositA, 0],
             currentSeq: 0,
             challengeDuration: challengeDuration,
             challengeExpiresAt: 0,
             settled: false
         });
 
-        emit ChannelOpened(channelId, msg.sender, peer, msg.value, challengeDuration);
+        emit ChannelOpened(channelId, msg.sender, peer, token, depositA, challengeDuration);
     }
 
     /**
-     * @notice Counterparty joins the channel and funds their initial balance.
+     * @notice Counterparty joins the channel and funds their initial balance with explicit deposit amount.
+     * Supports both native coin and ERC-20 channels.
+     * @param channelId Unique channel identifier.
+     * @param depositB Amount to fund from partyB.
+     */
+    function joinChannel(bytes32 channelId, uint256 depositB) public payable nonReentrant {
+        _joinInternal(channelId, depositB);
+    }
+
+    /**
+     * @notice Backward-compatible overload for joining native coin channels.
      * @param channelId Unique channel identifier.
      */
     function joinChannel(bytes32 channelId) external payable nonReentrant {
+        _joinInternal(channelId, msg.value);
+    }
+
+    function _joinInternal(bytes32 channelId, uint256 depositB) internal {
         Channel storage ch = channels[channelId];
         if (ch.participants[0] == address(0)) revert ChannelNotFound();
         if (ch.settled) revert ChannelAlreadySettled();
         if (msg.sender != ch.participants[1]) revert Unauthorized();
 
-        ch.balances[1] += msg.value;
-        emit ChannelJoined(channelId, msg.sender, msg.value);
+        if (ch.token == address(0)) {
+            if (msg.value != depositB) revert TransferFailed();
+            ch.balances[1] += msg.value;
+            emit ChannelJoined(channelId, msg.sender, msg.value);
+        } else {
+            if (msg.value != 0) revert TransferFailed();
+            if (depositB > 0) {
+                bool success = IERC20(ch.token).transferFrom(msg.sender, address(this), depositB);
+                if (!success) revert TransferFailed();
+            }
+            ch.balances[1] += depositB;
+            emit ChannelJoined(channelId, msg.sender, depositB);
+        }
     }
 
     /**
@@ -159,6 +228,7 @@ contract StateChannel {
     /**
      * @notice Cooperatively settles and closes the channel immediately with zero challenge delay.
      * Payouts can be routed to arbitrary destination addresses (e.g. fresh DKSAP stealth addresses).
+     * Supports both native coin and ERC-20 channels.
      * @param channelId Unique channel identifier.
      * @param seq Final sequence number (must be >= currentSeq).
      * @param balances Final agreed balance distribution [balanceA, balanceB].
@@ -195,14 +265,26 @@ contract StateChannel {
         address dest0 = payout0 == address(0) ? ch.participants[0] : payout0;
         address dest1 = payout1 == address(0) ? ch.participants[1] : payout1;
 
-        if (balances[0] > 0) {
-            (bool s0, ) = payable(dest0).call{value: balances[0]}("");
-            if (!s0) revert TransferFailed();
-        }
+        if (ch.token == address(0)) {
+            if (balances[0] > 0) {
+                (bool s0, ) = payable(dest0).call{value: balances[0]}("");
+                if (!s0) revert TransferFailed();
+            }
 
-        if (balances[1] > 0) {
-            (bool s1, ) = payable(dest1).call{value: balances[1]}("");
-            if (!s1) revert TransferFailed();
+            if (balances[1] > 0) {
+                (bool s1, ) = payable(dest1).call{value: balances[1]}("");
+                if (!s1) revert TransferFailed();
+            }
+        } else {
+            if (balances[0] > 0) {
+                bool s0 = IERC20(ch.token).transfer(dest0, balances[0]);
+                if (!s0) revert TransferFailed();
+            }
+
+            if (balances[1] > 0) {
+                bool s1 = IERC20(ch.token).transfer(dest1, balances[1]);
+                if (!s1) revert TransferFailed();
+            }
         }
 
         emit ChannelSettled(channelId, balances, true);
@@ -224,6 +306,7 @@ contract StateChannel {
     /**
      * @notice Settles and disburses funds after a challenge window has expired with no higher seq submitted.
      * Guarantees that an honest party receives their checkpointed balance even if peer abandons.
+     * Supports both native coin and ERC-20 channels.
      * @param channelId Unique channel identifier.
      */
     function closeAfterChallenge(bytes32 channelId) external nonReentrant {
@@ -237,14 +320,26 @@ contract StateChannel {
         uint256 bal0 = ch.balances[0];
         uint256 bal1 = ch.balances[1];
 
-        if (bal0 > 0) {
-            (bool s0, ) = payable(ch.participants[0]).call{value: bal0}("");
-            if (!s0) revert TransferFailed();
-        }
+        if (ch.token == address(0)) {
+            if (bal0 > 0) {
+                (bool s0, ) = payable(ch.participants[0]).call{value: bal0}("");
+                if (!s0) revert TransferFailed();
+            }
 
-        if (bal1 > 0) {
-            (bool s1, ) = payable(ch.participants[1]).call{value: bal1}("");
-            if (!s1) revert TransferFailed();
+            if (bal1 > 0) {
+                (bool s1, ) = payable(ch.participants[1]).call{value: bal1}("");
+                if (!s1) revert TransferFailed();
+            }
+        } else {
+            if (bal0 > 0) {
+                bool s0 = IERC20(ch.token).transfer(ch.participants[0], bal0);
+                if (!s0) revert TransferFailed();
+            }
+
+            if (bal1 > 0) {
+                bool s1 = IERC20(ch.token).transfer(ch.participants[1], bal1);
+                if (!s1) revert TransferFailed();
+            }
         }
 
         emit ChannelSettled(channelId, [bal0, bal1], false);
@@ -252,6 +347,7 @@ contract StateChannel {
 
     /**
      * @notice Unilaterally refunds partyA if partyB never joined and funding timeout elapsed.
+     * Supports both native coin and ERC-20 channels.
      * @param channelId Unique channel identifier.
      */
     function refundTimeout(bytes32 channelId) external nonReentrant {
@@ -264,8 +360,15 @@ contract StateChannel {
         ch.settled = true;
         uint256 amount = ch.balances[0];
 
-        (bool success, ) = payable(ch.participants[0]).call{value: amount}("");
-        if (!success) revert TransferFailed();
+        if (amount > 0) {
+            if (ch.token == address(0)) {
+                (bool success, ) = payable(ch.participants[0]).call{value: amount}("");
+                if (!success) revert TransferFailed();
+            } else {
+                bool success = IERC20(ch.token).transfer(ch.participants[0], amount);
+                if (!success) revert TransferFailed();
+            }
+        }
 
         emit ChannelRefunded(channelId, ch.participants[0], amount);
     }

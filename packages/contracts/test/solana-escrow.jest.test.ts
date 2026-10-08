@@ -11,8 +11,12 @@ import {
 
 describe('Solana Escrow Contracts & Constants', () => {
   it('exports canonical Solana program IDs and PDA seeds', () => {
-    expect(SOLANA_GENERIC_HTLC_PROGRAM_ID).toBe('HTLC111111111111111111111111111111111111111')
-    expect(SOLANA_STATE_CHANNEL_PROGRAM_ID).toBe('CHAN111111111111111111111111111111111111111')
+    expect(SOLANA_GENERIC_HTLC_PROGRAM_ID).toBe(
+      'HTLC111111111111111111111111111111111111111',
+    )
+    expect(SOLANA_STATE_CHANNEL_PROGRAM_ID).toBe(
+      'CHAN111111111111111111111111111111111111111',
+    )
     expect(SOLANA_HTLC_LOCK_SEED).toBe('generic_htlc')
     expect(SOLANA_STATE_CHANNEL_SEED).toBe('state_channel')
   })

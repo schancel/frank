@@ -45,10 +45,11 @@
       "network": "mainnet",
       "caip2": "bip122:000000000019d6689c085ae165831e93",
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "block-hash", "capability": "json-rpc", "height": 481824, "expected": "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893" },
-        { "kind": "block-hash", "capability": "chronik", "height": 481824, "expected": "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893" }
+        { "kind": "block-hash", "capability": "chronik", "height": 481824, "expected": "0000000000000000001c8018d9cb3b742ef25114f27563e3fc4a1902167f9893" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -57,10 +58,11 @@
       "network": "testnet",
       "caip2": "bip122:000000000933ea01ad0ee984209779ba",
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "block-hash", "capability": "json-rpc", "height": 5125000, "expected": "00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133" },
-        { "kind": "block-hash", "capability": "chronik", "height": 5125000, "expected": "00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133" }
+        { "kind": "block-hash", "capability": "chronik", "height": 5125000, "expected": "00000000000009ad1946e21cb4f1a6323ee99c89017b59d5166472672b868133" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -69,10 +71,11 @@
       "network": "regtest",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "operator-block-checkpoint", "capability": "chronik" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -81,10 +84,11 @@
       "network": "mainnet",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "block-hash", "capability": "json-rpc", "height": 478559, "expected": "000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec" },
-        { "kind": "block-hash", "capability": "chronik", "height": 478559, "expected": "000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec" }
+        { "kind": "block-hash", "capability": "chronik", "height": 478559, "expected": "000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -93,10 +97,11 @@
       "network": "testnet",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "block-hash", "capability": "json-rpc", "height": 1155876, "expected": "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5" },
-        { "kind": "block-hash", "capability": "chronik", "height": 1155876, "expected": "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5" }
+        { "kind": "block-hash", "capability": "chronik", "height": 1155876, "expected": "00000000000e38fef93ed9582a7df43815d5c2ba9fd37ef70c9a0ea4a285b8f5" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -105,10 +110,11 @@
       "network": "regtest",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "operator-block-checkpoint", "capability": "chronik" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -117,10 +123,11 @@
       "network": "mainnet",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "block-hash", "capability": "json-rpc", "height": 661648, "expected": "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d" },
-        { "kind": "block-hash", "capability": "chronik", "height": 661648, "expected": "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d" }
+        { "kind": "block-hash", "capability": "chronik", "height": 661648, "expected": "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -129,10 +136,11 @@
       "network": "testnet",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "block-hash", "capability": "json-rpc", "height": 1421481, "expected": "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b" },
-        { "kind": "block-hash", "capability": "chronik", "height": 1421481, "expected": "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b" }
+        { "kind": "block-hash", "capability": "chronik", "height": 1421481, "expected": "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -141,10 +149,11 @@
       "network": "regtest",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "operator-block-checkpoint", "capability": "chronik" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -153,10 +162,11 @@
       "network": "mainnet",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "block-hash", "capability": "json-rpc", "height": 0, "expected": "000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470" },
-        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470" }
+        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "000000000abc0cde58ee7e919d3d4de183e6844add1fd5d14b4eac89d958f470" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -165,10 +175,11 @@
       "network": "testnet",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "block-hash", "capability": "json-rpc", "height": 0, "expected": "00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1" },
-        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1" }
+        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "00000000080a6c9633aae9d24b9acda10d7e6b028e7aa714069798d18ca7bad1" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -177,10 +188,11 @@
       "network": "regtest",
       "caip2": null,
       "native_chain_id": null,
-      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
       "identity_probes": [
         { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
-        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+        { "kind": "operator-block-checkpoint", "capability": "chronik" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     },
     {
@@ -282,6 +294,79 @@
           "height": 0,
           "expected": "0xba49153e6f3996a340f3fe3d69e7c0826b717ae672cb115cf0527cada0b78e9e"
         }
+      ]
+    },
+    {
+      "id": "ethereum-mainnet",
+      "family": "evm",
+      "network": "mainnet",
+      "caip2": "eip155:1",
+      "native_chain_id": "1",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "1" },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 0,
+          "expected": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3"
+        }
+      ]
+    },
+    {
+      "id": "ethereum-sepolia",
+      "family": "evm",
+      "network": "testnet",
+      "caip2": "eip155:11155111",
+      "native_chain_id": "11155111",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        { "kind": "evm-chain-id", "capability": "json-rpc", "expected": "11155111" },
+        {
+          "kind": "block-hash",
+          "capability": "json-rpc",
+          "height": 0,
+          "expected": "0x25a5cc106eea7138acab33231d7160d69cb777ee0c2c553fcddf5138993e6fa9"
+        }
+      ]
+    },
+    {
+      "id": "btc-testnet4",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
+      ]
+    },
+    {
+      "id": "doge-mainnet",
+      "family": "bitcoin",
+      "network": "mainnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
+      "identity_probes": [
+        { "kind": "block-hash", "capability": "json-rpc", "height": 0, "expected": "1a91e3dace36e2be3bf030a65679fe821aa1d6ef92e7c9902eb318182c355691" },
+        { "kind": "block-hash", "capability": "chronik", "height": 0, "expected": "1a91e3dace36e2be3bf030a65679fe821aa1d6ef92e7c9902eb318182c355691" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
+      ]
+    },
+    {
+      "id": "doge-testnet",
+      "family": "bitcoin",
+      "network": "testnet",
+      "caip2": null,
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik", "electrum"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" },
+        { "kind": "operator-block-checkpoint", "capability": "electrum" }
       ]
     }
   ]

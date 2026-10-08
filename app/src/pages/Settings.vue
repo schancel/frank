@@ -78,6 +78,87 @@
                       ref="contactRefreshInterval"
                     />
                   </div>
+                  <q-separator class="q-my-md" />
+                  <div class="text-subtitle2 q-mb-sm">
+                    {{ $t('settings.networkModeTitle') }}
+                  </div>
+                  <div class="row items-center justify-between q-mb-sm">
+                    <div>
+                      <div class="text-body2 text-weight-medium">
+                        {{ $t('settings.testnetMode') }}
+                      </div>
+                      <div class="text-caption text-grey">
+                        {{ $t('settings.testnetModeLockedHint') }}
+                      </div>
+                    </div>
+                    <q-toggle
+                      v-model="isTestnetMode"
+                      color="warning"
+                      data-test="testnet-mode-toggle"
+                    />
+                  </div>
+                  <q-banner
+                    v-if="isTestnetMode"
+                    dense
+                    rounded
+                    class="bg-amber-1 text-amber-10 q-mb-md"
+                  >
+                    <template #avatar>
+                      <q-icon name="info" color="amber-9" />
+                    </template>
+                    {{ $t('settings.testnetActiveBanner') }}
+                  </q-banner>
+                  <q-banner
+                    v-else
+                    dense
+                    rounded
+                    class="bg-blue-1 text-blue-10 q-mb-md"
+                  >
+                    <template #avatar>
+                      <q-icon name="verified" color="primary" />
+                    </template>
+                    {{ $t('settings.mainnetActiveBanner') }}
+                  </q-banner>
+
+                  <div
+                    class="text-caption text-weight-medium text-grey-8 q-mb-xs"
+                  >
+                    {{ $t('settings.supportedChainsTitle') }}
+                  </div>
+                  <q-list dense class="rounded-borders">
+                    <q-item
+                      v-for="chain in supportedChains"
+                      :key="chain.id"
+                      class="q-px-none"
+                    >
+                      <q-item-section avatar style="min-width: 36px">
+                        <q-icon
+                          :name="chain.icon"
+                          size="20px"
+                          color="primary"
+                        />
+                      </q-item-section>
+                      <q-item-section>
+                        <q-item-label class="text-body2">
+                          {{ $t(chain.defaultNameKey) }}
+                        </q-item-label>
+                        <q-item-label caption class="text-grey-7">
+                          {{
+                            isTestnetMode
+                              ? $t(chain.testnetChainKey)
+                              : $t(chain.chainKey)
+                          }}
+                        </q-item-label>
+                      </q-item-section>
+                      <q-item-section side>
+                        <q-badge
+                          :color="isTestnetMode ? 'warning' : 'primary'"
+                          outline
+                          :label="$t('settings.chainActive')"
+                        />
+                      </q-item-section>
+                    </q-item>
+                  </q-list>
                 </q-tab-panel>
                 <q-tab-panel name="appearance">
                   <div class="row items-center q-mb-md">
@@ -218,7 +299,7 @@ import {
   applyTheme,
 } from 'src/utils/theme'
 
-import { defineComponent, onUnmounted, ref, watch } from 'vue'
+import { computed, defineComponent, onUnmounted, ref, watch } from 'vue'
 import { QInput } from 'quasar'
 
 import { useAppearanceStore } from 'src/stores/appearance'
@@ -226,6 +307,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useSettingsStore } from 'src/stores/settings'
 import { storeToRefs } from 'pinia'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
+import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
 const msToMinutes = 60000
 
 export default defineComponent({
@@ -292,9 +374,17 @@ export default defineComponent({
       emailGatewayInput.value = settingsStore.emailGatewayAddress
     }
 
+    const isTestnetMode = computed({
+      get: () => settingsStore.networkMode === 'testnet',
+      set: (val: boolean) => {
+        settingsStore.setNetworkMode(val ? 'testnet' : 'mainnet')
+      },
+    })
+
     return {
       appearanceStore,
       isSaved,
+      isTestnetMode,
       darkMode: ref(storeDarkMode.value),
       theme,
       themeOptions,
@@ -312,6 +402,7 @@ export default defineComponent({
       emailGatewayError,
       saveEmailGateway,
       resetEmailGateway,
+      supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
     }
   },
   data() {

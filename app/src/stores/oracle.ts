@@ -69,6 +69,9 @@ export const UNIT_RATE_ASSET_METRICS: Record<
   hyperliquid: { symbol: '1 HYPE', multiplier: 1 },
   tempo: { symbol: '1 TUSD', multiplier: 1 },
   ecash: { symbol: '1M XEC', multiplier: 1_000_000 },
+  bitcoin: { symbol: '1 BTC', multiplier: 1 },
+  bitcoincash: { symbol: '1 BCH', multiplier: 1 },
+  dogecoin: { symbol: '1 DOGE', multiplier: 1 },
 }
 
 /**

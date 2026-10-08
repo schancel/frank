@@ -38,7 +38,7 @@
         <q-separator />
 
         <!-- Wallets (Monad Main Wallet is pinned first) -->
-        <template v-for="(wallet, index) in WALLET_CONFIGS" :key="wallet.id">
+        <template v-for="(wallet, index) in visibleWallets" :key="wallet.id">
           <q-separator v-if="index > 0" />
           <q-item
             clickable
@@ -208,127 +208,11 @@ import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
 import { formatAvu } from '@frank/wallet/oracle'
 import { formatCompactCryptoBalance } from '../../utils/formatting'
+import { WALLET_CONFIGS, WalletItemConfig } from '../../utils/wallet-configs'
 
-interface WalletItemConfig {
-  id: string
-  isMain?: boolean
-  icon: string
-  dataTest: string
-  nameDataTest: string
-  nameTextDataTest: string
-  badgeDataTest: string
-  renameBtnDataTest: string
-  chainDataTest: string
-  balanceDataTest: string
-  defaultNameKey: string
-  testnetDefaultNameKey?: string
-  chainKey: string
-  testnetChainKey: string
-  balanceZeroKey?: string
-  testnetBalanceZeroKey?: string
-}
-
-// Monad is intentionally placed first as the primary stamp wallet
-const WALLET_CONFIGS: WalletItemConfig[] = [
-  {
-    id: 'monad',
-    isMain: true,
-    icon: 'account_balance_wallet',
-    dataTest: 'wallet-row',
-    nameDataTest: 'wallet-name',
-    nameTextDataTest: 'wallet-name-text',
-    badgeDataTest: 'testnet-badge',
-    renameBtnDataTest: 'rename-monad-btn',
-    chainDataTest: 'wallet-chain',
-    balanceDataTest: 'wallet-balance',
-    defaultNameKey: 'walletPanel.mainWallet',
-    chainKey: 'walletPanel.monad',
-    testnetChainKey: 'walletPanel.monadTestnet',
-  },
-  {
-    id: 'ecash',
-    icon: 'toll',
-    dataTest: 'ecash-wallet-row',
-    nameDataTest: 'ecash-wallet-name',
-    nameTextDataTest: 'ecash-wallet-name-text',
-    badgeDataTest: 'ecash-testnet-badge',
-    renameBtnDataTest: 'rename-ecash-btn',
-    chainDataTest: 'ecash-wallet-chain',
-    balanceDataTest: 'ecash-wallet-balance',
-    defaultNameKey: 'walletPanel.ecash',
-    chainKey: 'walletPanel.ecash',
-    testnetChainKey: 'walletPanel.ecashTestnet',
-    balanceZeroKey: 'walletPanel.zeroXec',
-    testnetBalanceZeroKey: 'walletPanel.zeroTxec',
-  },
-  {
-    id: 'solana',
-    icon: 'account_balance',
-    dataTest: 'solana-wallet-row',
-    nameDataTest: 'solana-wallet-name',
-    nameTextDataTest: 'solana-wallet-name-text',
-    badgeDataTest: 'solana-testnet-badge',
-    renameBtnDataTest: 'rename-solana-btn',
-    chainDataTest: 'solana-wallet-chain',
-    balanceDataTest: 'solana-wallet-balance',
-    defaultNameKey: 'walletPanel.solana',
-    chainKey: 'walletPanel.solana',
-    testnetChainKey: 'walletPanel.solanaTestnet',
-    balanceZeroKey: 'walletPanel.zeroSol',
-    testnetBalanceZeroKey: 'walletPanel.zeroTsol',
-  },
-  {
-    id: 'tempo',
-    icon: 'speed',
-    dataTest: 'tempo-wallet-row',
-    nameDataTest: 'tempo-wallet-name',
-    nameTextDataTest: 'tempo-wallet-name-text',
-    badgeDataTest: 'tempo-testnet-badge',
-    renameBtnDataTest: 'rename-tempo-btn',
-    chainDataTest: 'tempo-wallet-chain',
-    balanceDataTest: 'tempo-wallet-balance',
-    defaultNameKey: 'walletPanel.tempo',
-    testnetDefaultNameKey: 'walletPanel.tempoTestnet',
-    chainKey: 'walletPanel.tempo',
-    testnetChainKey: 'walletPanel.tempoTestnet',
-    balanceZeroKey: 'walletPanel.zeroUsd',
-    testnetBalanceZeroKey: 'walletPanel.zeroTusd',
-  },
-  {
-    id: 'ethereum',
-    icon: 'diamond',
-    dataTest: 'ethereum-wallet-row',
-    nameDataTest: 'ethereum-wallet-name',
-    nameTextDataTest: 'ethereum-wallet-name-text',
-    badgeDataTest: 'ethereum-testnet-badge',
-    renameBtnDataTest: 'rename-ethereum-btn',
-    chainDataTest: 'ethereum-wallet-chain',
-    balanceDataTest: 'ethereum-wallet-balance',
-    defaultNameKey: 'walletPanel.ethereum',
-    testnetDefaultNameKey: 'walletPanel.ethereumTestnet',
-    chainKey: 'walletPanel.ethereum',
-    testnetChainKey: 'walletPanel.ethereumTestnet',
-    balanceZeroKey: 'walletPanel.zeroEth',
-    testnetBalanceZeroKey: 'walletPanel.zeroSep',
-  },
-  {
-    id: 'hyperliquid',
-    icon: 'waves',
-    dataTest: 'hyperliquid-wallet-row',
-    nameDataTest: 'hyperliquid-wallet-name',
-    nameTextDataTest: 'hyperliquid-wallet-name-text',
-    badgeDataTest: 'hyperliquid-testnet-badge',
-    renameBtnDataTest: 'rename-hyperliquid-btn',
-    chainDataTest: 'hyperliquid-wallet-chain',
-    balanceDataTest: 'hyperliquid-wallet-balance',
-    defaultNameKey: 'walletPanel.hyperliquid',
-    testnetDefaultNameKey: 'walletPanel.hyperliquidTestnet',
-    chainKey: 'walletPanel.hyperliquid',
-    testnetChainKey: 'walletPanel.hyperliquidTestnet',
-    balanceZeroKey: 'walletPanel.zeroHype',
-    testnetBalanceZeroKey: 'walletPanel.zeroThype',
-  },
-]
+const visibleWallets = computed(() =>
+  WALLET_CONFIGS.filter(wallet => wallet.enabled !== false),
+)
 
 const isTestnet = computed(() => activeChain.isTestnet ?? false)
 
@@ -392,6 +276,9 @@ const prewarmChains = () => {
       'tempo',
       'ethereum',
       'hyperliquid',
+      'bitcoin',
+      'bitcoincash',
+      'dogecoin',
     ]) {
       accountSession?.getChainAddress?.(chain)?.catch(() => undefined)
     }

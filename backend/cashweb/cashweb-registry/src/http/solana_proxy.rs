@@ -33,6 +33,7 @@ use crate::{
         },
         hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
+        upstream_cooldown::UpstreamCooldownTracker,
     },
     monad_http::Address,
 };
@@ -46,7 +47,6 @@ const MAX_WIRE_TRANSACTION_CHARS: usize = 4096;
 struct SolanaChain {
     id: String,
     upstream_urls: Vec<Url>,
-    upstream_index: Arc<std::sync::atomic::AtomicUsize>,
     expected_genesis_hash: String,
 }
 
@@ -75,6 +75,7 @@ pub struct SolanaProxyRuntime {
     customer_quota: FixedHourQuota<Address>,
     anonymous_quota: FixedHourQuota<IpAddr>,
     capability_ttl: Duration,
+    cooldowns: UpstreamCooldownTracker,
 }
 
 impl fmt::Debug for SolanaProxyRuntime {
@@ -190,7 +191,6 @@ impl SolanaProxyRuntime {
                 SolanaChain {
                     id: row.id.clone(),
                     upstream_urls,
-                    upstream_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     expected_genesis_hash: row.expected_genesis_hash.clone(),
                 },
             );
@@ -213,6 +213,7 @@ impl SolanaProxyRuntime {
             customer_quota: FixedHourQuota::new(conf.customer_units_per_hour),
             anonymous_quota: FixedHourQuota::new(conf.anonymous_units_per_hour),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
+            cooldowns: UpstreamCooldownTracker::default(),
         });
         runtime.verify_genesis_hashes().await?;
         Ok(Some(runtime))
@@ -793,8 +794,8 @@ async fn proxy_rpc_inner(
     }
 
     let deadline = tokio::time::Instant::now() + runtime.timeout;
-    let num_upstreams = chain.upstream_urls.len();
-    if num_upstreams == 0 {
+    let ordered_upstreams = runtime.cooldowns.splay_order(&chain.upstream_urls);
+    if ordered_upstreams.is_empty() {
         return Err(broadcast_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_unavailable",
@@ -802,16 +803,10 @@ async fn proxy_rpc_inner(
             true,
         ));
     }
-    let start_idx = chain
-        .upstream_index
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        % num_upstreams;
     let mut last_error = None;
     let mut spool = None;
 
-    for attempt in 0..num_upstreams {
-        let idx = (start_idx + attempt) % num_upstreams;
-        let upstream_url = &chain.upstream_urls[idx];
+    for (attempt, upstream_url) in ordered_upstreams.iter().enumerate() {
         let remaining_time = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining_time.is_zero() {
             return Err(broadcast_error(
@@ -825,12 +820,13 @@ async fn proxy_rpc_inner(
         let upstream = async {
             let response = runtime
                 .client
-                .post(upstream_url.clone())
+                .post((*upstream_url).clone())
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body.clone())
                 .send()
                 .await
                 .map_err(|_| {
+                    runtime.cooldowns.mark_failure(upstream_url);
                     broadcast_error(
                         StatusCode::BAD_GATEWAY,
                         "rpc_upstream_unavailable",
@@ -839,13 +835,18 @@ async fn proxy_rpc_inner(
                     )
                 })?;
             let status = response.status();
-            if status.is_server_error() && attempt + 1 < num_upstreams {
-                return Err(broadcast_error(
-                    StatusCode::BAD_GATEWAY,
-                    "rpc_upstream_unavailable",
-                    cost.broadcast,
-                    true,
-                ));
+            if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                runtime.cooldowns.mark_failure(upstream_url);
+                if attempt + 1 < ordered_upstreams.len() {
+                    return Err(broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        cost.broadcast,
+                        true,
+                    ));
+                }
+            } else {
+                runtime.cooldowns.mark_success(upstream_url);
             }
             super::json_rpc::spool_response(response, runtime.max_response_bytes, remaining_time)
                 .await
@@ -856,18 +857,24 @@ async fn proxy_rpc_inner(
                         cost.broadcast,
                         true,
                     ),
-                    super::json_rpc::SpoolError::Timeout => broadcast_error(
-                        StatusCode::GATEWAY_TIMEOUT,
-                        "rpc_upstream_timeout",
-                        cost.broadcast,
-                        true,
-                    ),
-                    super::json_rpc::SpoolError::Io => broadcast_error(
-                        StatusCode::BAD_GATEWAY,
-                        "rpc_upstream_unavailable",
-                        cost.broadcast,
-                        true,
-                    ),
+                    super::json_rpc::SpoolError::Timeout => {
+                        runtime.cooldowns.mark_failure(upstream_url);
+                        broadcast_error(
+                            StatusCode::GATEWAY_TIMEOUT,
+                            "rpc_upstream_timeout",
+                            cost.broadcast,
+                            true,
+                        )
+                    }
+                    super::json_rpc::SpoolError::Io => {
+                        runtime.cooldowns.mark_failure(upstream_url);
+                        broadcast_error(
+                            StatusCode::BAD_GATEWAY,
+                            "rpc_upstream_unavailable",
+                            cost.broadcast,
+                            true,
+                        )
+                    }
                 })
         };
 
@@ -880,6 +887,7 @@ async fn proxy_rpc_inner(
                 last_error = Some(err);
             }
             Err(_) => {
+                runtime.cooldowns.mark_failure(upstream_url);
                 last_error = Some(broadcast_error(
                     StatusCode::GATEWAY_TIMEOUT,
                     "rpc_upstream_timeout",

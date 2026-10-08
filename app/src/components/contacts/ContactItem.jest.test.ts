@@ -14,7 +14,12 @@ jest.mock('../../adapters/level-message-store', () => ({
   store: Promise.resolve({}),
 }))
 jest.mock('src/utils/avatar', () => ({ profileAvatar: () => 'avatar' }))
-jest.mock('@frank/wallet/chain', () => ({ activeChain: {} }))
+jest.mock('@frank/wallet/chain', () => ({
+  activeChain: {
+    parseAddress: (address: string) => ({ raw: address }),
+    formatAddress: (address: { raw: string }) => address.raw,
+  },
+}))
 
 function t(key: string): string {
   const value = key

@@ -364,8 +364,15 @@ export function getDefaultRelayBaseUrl(): string {
  * from, and why two places), with permissive fallbacks -- see this file's header,
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
  * directly, and why it never throws on a missing var. */
-export function loadMonadChainConfigFromEnv(): MonadChainConfig {
-  const rpcChain = readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
+export function loadMonadChainConfigFromEnv(overrides?: {
+  isTestnet?: boolean;
+}): MonadChainConfig {
+  const rpcChain =
+    overrides?.isTestnet !== undefined
+      ? overrides.isTestnet
+        ? "monad-testnet"
+        : "monad-mainnet"
+      : readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
   const protocolIdentity = monadProtocolIdentity(rpcChain);
   const rawChainId = readEnv("MONAD_CHAIN_ID");
   // Quasar emits this explicit flag as a boolean; Node env values are strings.
@@ -381,7 +388,10 @@ export function loadMonadChainConfigFromEnv(): MonadChainConfig {
   }
 
   return {
-    networkId: readEnv("MONAD_NETWORK_ID") ?? rpcChain,
+    networkId:
+      overrides?.isTestnet !== undefined
+        ? rpcChain
+        : readEnv("MONAD_NETWORK_ID") ?? rpcChain,
     rpcChain,
     // Known protocol rows are atomic: public overrides must not create a
     // mainnet route with a testnet chain ID (or the inverse).

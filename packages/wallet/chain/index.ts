@@ -6,20 +6,24 @@
  * `LotusChain`, once one is actually built for real -- see issue #41's "Non-goals"), never a
  * runtime branch anywhere else in the app.
  */
-import { MonadChain } from './monad-chain'
-import { ActiveChain } from './active-chain'
-export { createChain } from './chain-factory'
-export type { ChainFactoryConfig } from './chain-factory'
-export type { EcashChainConfig } from './ecash-chain'
+import {
+  MonadChain,
+  createMonadChain,
+  loadMonadChainConfigFromEnv,
+} from "./monad-chain";
+import { ActiveChain } from "./active-chain";
+export { createChain } from "./chain-factory";
+export type { ChainFactoryConfig } from "./chain-factory";
+export type { EcashChainConfig } from "./ecash-chain";
 export {
   fetchEcashBalance,
   getEcashChronikUrls,
   DEFAULT_CHRONIK_UPSTREAMS,
-} from './ecash-balance'
+} from "./ecash-balance";
 export type {
   FetchEcashBalanceOptions,
   EcashBalanceResult,
-} from './ecash-balance'
+} from "./ecash-balance";
 export {
   canonicalEcashNetworkId,
   ECASH_CHECKPOINTS,
@@ -27,8 +31,8 @@ export {
   ECASH_MAINNET_CHECKPOINT_HASH,
   ECASH_TESTNET_CHECKPOINT_HEIGHT,
   ECASH_TESTNET_CHECKPOINT_HASH,
-} from '../ecash-wallet'
-export type { EcashNetworkId, EcashAddressPrefix } from '../ecash-wallet'
+} from "../ecash-wallet";
+export type { EcashNetworkId, EcashAddressPrefix } from "../ecash-wallet";
 export {
   createEvmChain,
   createMonadChain,
@@ -37,49 +41,88 @@ export {
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,
   getDefaultRelayBaseUrl,
-} from './monad-chain'
+} from "./monad-chain";
 export type {
   EvmChainConfig,
   EvmChainWalletHandle,
   MonadChainConfig,
   MonadChainWalletHandle,
-} from './monad-chain'
+} from "./monad-chain";
 export {
   NativeEvmTransactionBuilder,
   defaultNativeEvmTransactionBuilder,
   Tip20TransactionBuilder,
   defaultTempoTransactionBuilder,
   TEMPO_PATH_USD_ADDRESS,
-} from './evm-transaction-builder'
+} from "./evm-transaction-builder";
 export type {
   EvmTransactionBuilder,
   EvmTransferParams,
   EvmBurnParams,
-} from './evm-transaction-builder'
-export type { SolanaChainConfig } from './solana-chain'
+} from "./evm-transaction-builder";
+export type { SolanaChainConfig } from "./solana-chain";
 export {
   fetchSolanaBalance,
   fetchSolanaTokenAccounts,
   DEFAULT_SOLANA_RPC_URLS,
   KNOWN_SOLANA_DEVNET_TOKENS,
-} from './solana-balance'
+} from "./solana-balance";
 export type {
   FetchSolanaBalanceOptions,
   SolanaBalanceResult,
   SolanaTokenAccount,
-} from './solana-balance'
+} from "./solana-balance";
 export {
   EvmLegacyConsolidator,
   InMemoryLegacySendJournalStore,
-} from './evm-legacy-consolidator'
+} from "./evm-legacy-consolidator";
 export type {
   EvmLegacyConsolidatorConfig,
   FundingAccount,
   LegacySendIntent,
   LegacySendJournalStore,
-} from './evm-legacy-consolidator'
+} from "./evm-legacy-consolidator";
 
-export const activeChain: ActiveChain = MonadChain
+let currentActiveChain: ActiveChain = MonadChain;
+const activeChainListeners = new Set<(chain: ActiveChain) => void>();
+
+export const activeChain: ActiveChain = Object.assign({}, MonadChain);
+
+export function setActiveChain(chain: ActiveChain): void {
+  currentActiveChain = chain;
+  for (const key of Object.keys(activeChain)) {
+    delete (activeChain as any)[key];
+  }
+  Object.assign(activeChain, chain);
+  for (const listener of activeChainListeners) {
+    try {
+      listener(chain);
+    } catch (err) {
+      console.error("Error in activeChain change listener", err);
+    }
+  }
+}
+
+export function getActiveChain(): ActiveChain {
+  return currentActiveChain;
+}
+
+export function onActiveChainChange(
+  listener: (chain: ActiveChain) => void
+): () => void {
+  activeChainListeners.add(listener);
+  return () => {
+    activeChainListeners.delete(listener);
+  };
+}
+
+export function setNetworkMode(mode: "testnet" | "mainnet"): ActiveChain {
+  const isTestnet = mode === "testnet";
+  const config = loadMonadChainConfigFromEnv({ isTestnet });
+  const newChain = createMonadChain(config);
+  setActiveChain(newChain);
+  return newChain;
+}
 
 export {
   PROTOCOL_CHAINS,
@@ -94,7 +137,11 @@ export {
   getChainsByCurve,
   resolveChainIdentifier,
   getChainExchangeConfig,
-} from './chains-registry'
+  isChainEnabled,
+  getChainsByNetwork,
+  resolveNetworkId,
+  validateChainAddress,
+} from "./chains-registry";
 export type {
   ChainRegistryEntry,
   ChainExchangeConfig,
@@ -103,23 +150,23 @@ export type {
   SupportedChainKind,
   SupportedCurve,
   SupportedNetwork,
-} from './chains-registry'
+} from "./chains-registry";
 
 export {
   NativeTransactionSubmissionError,
   TopicPostOutcomeUnknownError,
-} from './active-chain'
+} from "./active-chain";
 export {
   CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
   CanonicalRelayCannotForwardError,
-} from './monad-canonical-dm'
+} from "./monad-canonical-dm";
 export {
   DefaultNativeTransactionAttemptStore,
   InMemoryNativeTransactionAttemptStore,
   defaultNativeTransactionAttemptStore,
   nativeTransactionAttemptKey,
-} from './chain-wallet'
+} from "./chain-wallet";
 
 export type {
   ActiveChain,
@@ -149,9 +196,9 @@ export type {
   LegacySendResult,
   ContactSendProgress,
   ContactSendResult,
-} from './active-chain'
+} from "./active-chain";
 
-export type { NativeTransactionAttemptStore } from './chain-wallet'
+export type { NativeTransactionAttemptStore } from "./chain-wallet";
 
 export {
   MonadStealthKeyring,
@@ -159,7 +206,7 @@ export {
   deriveEvmStealthAddress,
   deriveEvmStealthPrivateKey,
   buildEvmStealthPayment,
-} from '../monad-stealth'
+} from "../monad-stealth";
 export type {
   EvmStealthDestination,
   EvmStealthDerivedAccount,
@@ -167,7 +214,7 @@ export type {
   MonadStealthKeyringStore,
   BuildEvmStealthPaymentParams,
   EvmStealthPaymentResult,
-} from '../monad-stealth'
+} from "../monad-stealth";
 
 export {
   SOLANA_MIN_STEALTH_LAMPORTS,
@@ -177,7 +224,7 @@ export {
   deriveSolanaStealthAddress,
   deriveSolanaStealthKeypair,
   buildSolanaStealthPayment,
-} from '../solana-stealth'
+} from "../solana-stealth";
 export type {
   SolanaStealthDestination,
   SolanaStealthDerivedAccount,
@@ -186,27 +233,24 @@ export type {
   SolanaStealthMetadata,
   BuildSolanaStealthPaymentParams,
   SolanaStealthPaymentResult,
-} from '../solana-stealth'
+} from "../solana-stealth";
 
-export {
-  ElectrumClient,
-  toElectrumScriptHash,
-} from './electrum-client'
+export { ElectrumClient, toElectrumScriptHash } from "./electrum-client";
 export type {
   ElectrumUtxo,
   ElectrumHistoryItem,
   ElectrumBalance,
   ElectrumClientOptions,
-} from './electrum-client'
+} from "./electrum-client";
 
 export {
   ElectrumUtxoIndexer,
   ChronikUtxoIndexer,
   createUtxoIndexer,
   resolveElectrumScriptHash,
-} from './utxo-indexer'
+} from "./utxo-indexer";
 export type {
   UtxoItem,
   UtxoIndexer,
   CreateUtxoIndexerOptions,
-} from './utxo-indexer'
+} from "./utxo-indexer";

@@ -1,6 +1,8 @@
 import { reactive, readonly } from 'vue'
 import {
   activeChain,
+  getChainRegistryEntry,
+  resolveNetworkId,
   type NativeWalletHandle,
   type SupportedCurve,
   type WalletHandle,
@@ -92,8 +94,8 @@ export function createAccountSession(deps: {
   })
   let custody: AccountCustody | undefined
   let wallet: RuntimeWallet | undefined
-  const chainAddressCache = new Map<'monad' | 'ecash' | 'solana', string>()
-  const chainAddressInFlight = new Map<'ecash' | 'solana', Promise<string>>()
+  const chainAddressCache = new Map<string, string>()
+  const chainAddressInFlight = new Map<string, Promise<string>>()
   const curveKeyCache = new Map<SupportedCurve, Uint8Array>()
   const curveKeyInFlight = new Map<SupportedCurve, Promise<Uint8Array>>()
   let generation = 0
@@ -232,6 +234,8 @@ export function createAccountSession(deps: {
       walletRevision = latest.revision
       if (wallet?.identity?.displayAddress) {
         chainAddressCache.set('monad', wallet.identity.displayAddress)
+        const netId = resolveNetworkId('monad', activeChain.isTestnet ?? false)
+        chainAddressCache.set(netId, wallet.identity.displayAddress)
       }
       publish(latest)
       state.status = 'ready'
@@ -346,22 +350,39 @@ export function createAccountSession(deps: {
       return this.getActiveDomainRoot('evm-wallet')
     },
     getCachedChainAddress(chain: string): string | undefined {
-      if (chain === 'monad') {
+      const isTestnet = activeChain.isTestnet ?? false
+      const netId = resolveNetworkId(chain, isTestnet)
+      if (chain === 'monad' || netId.startsWith('monad-')) {
         return (
-          chainAddressCache.get('monad') ?? wallet?.identity?.displayAddress
+          chainAddressCache.get(netId) ??
+          chainAddressCache.get('monad') ??
+          wallet?.identity?.displayAddress
         )
       }
       return (
+        chainAddressCache.get(netId) ??
         chainAddressCache.get(chain) ??
         (chain !== 'ecash' &&
         chain !== 'solana' &&
+        chain !== 'bitcoin' &&
+        chain !== 'bitcoincash' &&
+        chain !== 'dogecoin' &&
+        !netId.startsWith('xec-') &&
+        !netId.startsWith('solana-') &&
+        !netId.startsWith('btc-') &&
+        !netId.startsWith('bch-') &&
+        !netId.startsWith('doge-') &&
         wallet?.identity?.displayAddress
           ? wallet.identity.displayAddress
           : undefined)
       )
     },
     async getChainAddress(chain: string): Promise<string> {
-      if (chain === 'monad') {
+      const fallbackTestnet = activeChain.isTestnet ?? false
+      const netId = resolveNetworkId(chain, fallbackTestnet)
+      const entry = getChainRegistryEntry(netId)
+      const isTestnet = entry?.isTestnet ?? fallbackTestnet
+      if (chain === 'monad' || netId.startsWith('monad-')) {
         const wallet = await session.getWallet()
         let address: unknown
         if (typeof (wallet as any).getReceiveAddress === 'function') {
@@ -375,23 +396,31 @@ export function createAccountSession(deps: {
             : activeChain.addressToString(
                 address as Parameters<typeof activeChain.addressToString>[0],
               )
+        chainAddressCache.set(netId, formatted)
         chainAddressCache.set('monad', formatted)
         return formatted
       }
-      const cached = chainAddressCache.get(chain)
+      const cached = chainAddressCache.get(netId)
       if (cached) return cached
-      const inFlight = chainAddressInFlight.get(chain)
+      const inFlight = chainAddressInFlight.get(netId)
       if (inFlight) return inFlight
       const promise = (async () => {
         const purpose =
-          chain === 'ecash'
+          chain === 'ecash' ||
+          chain === 'bitcoin' ||
+          chain === 'bitcoincash' ||
+          chain === 'dogecoin' ||
+          netId.startsWith('xec-') ||
+          netId.startsWith('btc-') ||
+          netId.startsWith('bch-') ||
+          netId.startsWith('doge-')
             ? 'ecash-bch-wallet'
-            : chain === 'solana'
+            : chain === 'solana' || netId.startsWith('solana-')
             ? 'solana-wallet'
             : 'evm-wallet'
         const root = await this.getActiveDomainRoot(purpose)
         try {
-          if (chain === 'ecash') {
+          if (chain === 'ecash' || netId.startsWith('xec-')) {
             const { HDNodeWallet } = await import('ethers')
             const { encodeCashAddress } = await import('ecashaddrjs')
             const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
@@ -405,33 +434,118 @@ export function createAccountSession(deps: {
               pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
             )
             const hash160 = ripemd160(sha256(pubKeyBytes))
-            const prefix = activeChain.isTestnet ? 'ectest' : 'ecash'
+            const prefix = isTestnet ? 'ectest' : 'ecash'
             const addr = encodeCashAddress(prefix, 'p2pkh', hash160)
-            chainAddressCache.set('ecash', addr)
+            chainAddressCache.set(netId, addr)
             return addr
-          } else if (chain === 'solana') {
+          } else if (chain === 'bitcoin' || netId.startsWith('btc-')) {
+            const { HDNodeWallet } = await import('ethers')
+            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+            const { sha256 } = await import('@noble/hashes/sha256.js')
+            const {
+              encodeAddress,
+              pubkeyHashFromBytes,
+              BTC_MAINNET,
+              BTC_TESTNET,
+            } = await import('@frank/nakamoto')
+            const path = isTestnet ? "m/84'/1'/0'/0/0" : "m/84'/0'/0'/0/0"
+            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
+            const pubKeyHex = hdNode.publicKey.startsWith('0x')
+              ? hdNode.publicKey.slice(2)
+              : hdNode.publicKey
+            const pubKeyBytes = Uint8Array.from(
+              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
+            )
+            const hash160 = ripemd160(sha256(pubKeyBytes))
+            const pkh = pubkeyHashFromBytes(hash160)
+            if (pkh.ok) {
+              const res = encodeAddress(
+                { kind: 'p2wpkh', hash: pkh.value },
+                isTestnet ? BTC_TESTNET : BTC_MAINNET,
+                'bech32',
+              )
+              if (res.ok) {
+                chainAddressCache.set(netId, res.value)
+                return res.value
+              }
+            }
+            throw new Error('Failed to derive Bitcoin address')
+          } else if (chain === 'bitcoincash' || netId.startsWith('bch-')) {
+            const { HDNodeWallet } = await import('ethers')
+            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+            const { sha256 } = await import('@noble/hashes/sha256.js')
+            const {
+              encodeAddress,
+              pubkeyHashFromBytes,
+              BCH_MAINNET,
+              BCH_TESTNET,
+            } = await import('@frank/nakamoto')
+            const path = "m/44'/145'/0'/0/0"
+            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
+            const pubKeyHex = hdNode.publicKey.startsWith('0x')
+              ? hdNode.publicKey.slice(2)
+              : hdNode.publicKey
+            const pubKeyBytes = Uint8Array.from(
+              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
+            )
+            const hash160 = ripemd160(sha256(pubKeyBytes))
+            const pkh = pubkeyHashFromBytes(hash160)
+            if (pkh.ok) {
+              const res = encodeAddress(
+                { kind: 'p2pkh', hash: pkh.value },
+                isTestnet ? BCH_TESTNET : BCH_MAINNET,
+                'cashaddr',
+              )
+              if (res.ok) {
+                chainAddressCache.set(netId, res.value)
+                return res.value
+              }
+            }
+            throw new Error('Failed to derive Bitcoin Cash address')
+          } else if (chain === 'dogecoin' || netId.startsWith('doge-')) {
+            const { HDNodeWallet } = await import('ethers')
+            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+            const { sha256 } = await import('@noble/hashes/sha256.js')
+            const { encodeBase58Check } = await import('@frank/nakamoto')
+            const path = "m/44'/3'/0'/0/0"
+            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
+            const pubKeyHex = hdNode.publicKey.startsWith('0x')
+              ? hdNode.publicKey.slice(2)
+              : hdNode.publicKey
+            const pubKeyBytes = Uint8Array.from(
+              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
+            )
+            const hash160 = ripemd160(sha256(pubKeyBytes))
+            const version = isTestnet ? 0x71 : 0x1e
+            const payload = new Uint8Array(21)
+            payload[0] = version
+            payload.set(hash160, 1)
+            const addr = encodeBase58Check(payload)
+            chainAddressCache.set(netId, addr)
+            return addr
+          } else if (chain === 'solana' || netId.startsWith('solana-')) {
             const { Keypair } = await import('@solana/web3.js')
             const kp = await Keypair.fromSeed(root)
             const addr = kp.publicKey.toBase58()
-            chainAddressCache.set('solana', addr)
+            chainAddressCache.set(netId, addr)
             return addr
           } else {
             const { HDNodeWallet } = await import('ethers')
             const hdNode =
               HDNodeWallet.fromSeed(root).derivePath("m/44'/60'/0'/0/0")
             const addr = hdNode.address
-            chainAddressCache.set(chain, addr)
+            chainAddressCache.set(netId, addr)
             return addr
           }
         } finally {
           root.fill(0)
-          chainAddressInFlight.delete(chain)
+          chainAddressInFlight.delete(netId)
         }
       })()
-      chainAddressInFlight.set(chain, promise)
+      chainAddressInFlight.set(netId, promise)
       promise.catch(() => {
-        if (chainAddressInFlight.get(chain) === promise) {
-          chainAddressInFlight.delete(chain)
+        if (chainAddressInFlight.get(netId) === promise) {
+          chainAddressInFlight.delete(netId)
         }
       })
       return promise

@@ -14,9 +14,13 @@ import {
 } from './custody'
 import { DOMAIN_PURPOSES, DERIVATION_REGISTRY_ID } from '@frank/domain-roots'
 
-jest.mock('@frank/wallet/chain', () => ({
-  activeChain: { createWallet: jest.fn(), isTestnet: true },
-}))
+jest.mock('@frank/wallet/chain', () => {
+  const actual = jest.requireActual('@frank/wallet/chain')
+  return {
+    ...actual,
+    activeChain: { createWallet: jest.fn(), isTestnet: true },
+  }
+})
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void
@@ -398,14 +402,53 @@ test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash a
   expect(typeof solanaAddr).toBe('string')
   expect(solanaAddr.length).toBeGreaterThan(30)
 
+  const btcAddr = await f.session.getChainAddress('bitcoin')
+  expect(btcAddr.startsWith('tb1q')).toBe(true)
+
+  const bchAddr = await f.session.getChainAddress('bitcoincash')
+  expect(bchAddr.startsWith('bchtest:')).toBe(true)
+
+  const dogeAddr = await f.session.getChainAddress('dogecoin')
+  expect(dogeAddr.startsWith('n')).toBe(true)
+
   // Verify caching and synchronous retrieval
   expect(f.session.getCachedChainAddress('ecash')).toBe(ecashAddr)
   expect(f.session.getCachedChainAddress('solana')).toBe(solanaAddr)
+  expect(f.session.getCachedChainAddress('bitcoin')).toBe(btcAddr)
+  expect(f.session.getCachedChainAddress('bitcoincash')).toBe(bchAddr)
+  expect(f.session.getCachedChainAddress('dogecoin')).toBe(dogeAddr)
 
   const initialTakeRootsCalls = f.capability.takeRoots.mock.calls.length
   const cachedEcash = await f.session.getChainAddress('ecash')
   expect(cachedEcash).toBe(ecashAddr)
   expect(f.capability.takeRoots).toHaveBeenCalledTimes(initialTakeRootsCalls)
+})
+
+test('resolves and isolates testnet vs mainnet addresses by canonical network ID', async () => {
+  const f = fixture()
+  f.capability.takeRoots = jest.fn(() =>
+    DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 1),
+    })),
+  )
+  await f.session.initialize()
+
+  const btcTestnet = await f.session.getChainAddress('btc-testnet')
+  const btcMainnet = await f.session.getChainAddress('btc-mainnet')
+  expect(btcTestnet.startsWith('tb1q')).toBe(true)
+  expect(btcMainnet.startsWith('bc1q')).toBe(true)
+  expect(btcTestnet).not.toBe(btcMainnet)
+
+  expect(f.session.getCachedChainAddress('btc-testnet')).toBe(btcTestnet)
+  expect(f.session.getCachedChainAddress('btc-mainnet')).toBe(btcMainnet)
+
+  const xecTestnet = await f.session.getChainAddress('xec-testnet')
+  const xecMainnet = await f.session.getChainAddress('xec-mainnet')
+  expect(xecTestnet.startsWith('ectest:')).toBe(true)
+  expect(xecMainnet.startsWith('ecash:')).toBe(true)
+  expect(xecTestnet).not.toBe(xecMainnet)
 })
 
 test('getCurvePublicKey and getCachedCurvePublicKey derive and cache public keys for secp256k1 and ed25519', async () => {

@@ -1,7 +1,7 @@
 //! Bitcoin-family JSON-RPC and Chronik HTTP/Protobuf proxy.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     net::{IpAddr, SocketAddr},
     sync::Arc,
@@ -10,16 +10,25 @@ use std::{
 
 use axum::{
     body::{boxed, Bytes},
-    extract::{connect_info::ConnectInfo, Extension, OriginalUri, Path},
+    extract::{
+        connect_info::ConnectInfo,
+        ws::{Message as ClientWsMessage, WebSocket, WebSocketUpgrade},
+        Extension, OriginalUri, Path,
+    },
     http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use bitcoinsuite_chronik_client::proto;
 use cashweb_config::{BitcoinProxyConf, BitcoinProxyConfigError};
+use futures::{SinkExt, StreamExt};
 use prost::Message;
 use serde_json::{json, Value};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_tungstenite::{
+    connect_async_with_config,
+    tungstenite::{protocol::WebSocketConfig, Message as UpstreamWsMessage},
+};
 use url::Url;
 
 use crate::{
@@ -31,6 +40,7 @@ use crate::{
         },
         hourly_quota::{normalize_quota_ip, FixedHourQuota},
         server::RegistryServer,
+        upstream_cooldown::UpstreamCooldownTracker,
     },
     monad_http::Address,
 };
@@ -41,8 +51,9 @@ const MAX_STARTUP_RESPONSE_BYTES: usize = 1024 * 1024;
 #[derive(Clone)]
 struct Chain {
     id: String,
-    rpc: Option<Url>,
-    chronik: Option<Url>,
+    rpc_urls: Vec<Url>,
+    chronik_urls: Vec<Url>,
+    electrum_urls: Vec<Url>,
     checkpoint_height: u64,
     checkpoint_hash: String,
 }
@@ -79,8 +90,9 @@ impl fmt::Debug for Chain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BitcoinProxyChain")
             .field("id", &self.id)
-            .field("rpc", &self.rpc.as_ref().map(|_| "<redacted>"))
-            .field("chronik", &self.chronik.as_ref().map(|_| "<redacted>"))
+            .field("rpc_urls_count", &self.rpc_urls.len())
+            .field("chronik_urls_count", &self.chronik_urls.len())
+            .field("electrum_urls_count", &self.electrum_urls.len())
             .field("checkpoint_height", &self.checkpoint_height)
             .field("checkpoint_hash", &self.checkpoint_hash)
             .finish()
@@ -101,6 +113,8 @@ pub struct BitcoinProxyRuntime {
     chronik_quota: FixedHourQuota<IpAddr>,
     broadcast_quota: FixedHourQuota<IpAddr>,
     capability_ttl: Duration,
+    cooldowns: UpstreamCooldownTracker,
+    customer_quota: Arc<FixedHourQuota<Address>>,
 }
 
 impl fmt::Debug for BitcoinProxyRuntime {
@@ -145,8 +159,8 @@ impl BitcoinProxyRuntime {
     pub(crate) fn has_chronik_chain(&self, id: &str) -> bool {
         self.chains
             .get(id)
-            .and_then(|chain| chain.chronik.as_ref())
-            .is_some()
+            .map(|chain| !chain.chronik_urls.is_empty())
+            .unwrap_or(false)
     }
 
     pub(crate) fn body_admission(&self) -> (Arc<Semaphore>, usize, Duration) {
@@ -157,14 +171,15 @@ impl BitcoinProxyRuntime {
         )
     }
 
-    pub(crate) fn configured_capabilities(&self) -> Vec<(String, bool, bool)> {
+    pub(crate) fn configured_capabilities(&self) -> Vec<(String, bool, bool, bool)> {
         self.chains
             .values()
             .map(|chain| {
                 (
                     chain.id.clone(),
-                    chain.rpc.is_some(),
-                    chain.chronik.is_some(),
+                    !chain.rpc_urls.is_empty(),
+                    !chain.chronik_urls.is_empty(),
+                    !chain.electrum_urls.is_empty(),
                 )
             })
             .collect()
@@ -183,25 +198,67 @@ impl BitcoinProxyRuntime {
         }
         let mut chains = HashMap::new();
         for row in &conf.chains {
-            let resolve = |name: &Option<String>| -> Result<Option<Url>, BitcoinProxyStartError> {
-                let Some(name) = name else { return Ok(None) };
-                let raw = env(name)
-                    .filter(|s| !s.trim().is_empty())
-                    .ok_or_else(|| BitcoinProxyStartError::MissingUpstream(name.clone()))?;
-                let url = raw
-                    .trim()
-                    .parse::<Url>()
-                    .ok()
-                    .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
-                    .ok_or_else(|| BitcoinProxyStartError::InvalidUpstream(name.clone()))?;
-                Ok(Some(url))
+            let resolve_urls = |primary: &Option<String>,
+                                extras: &[String]|
+             -> Result<Vec<Url>, BitcoinProxyStartError> {
+                if primary.is_none() && extras.is_empty() {
+                    return Ok(Vec::new());
+                }
+                let mut urls = Vec::new();
+                let mut all_envs = Vec::new();
+                if let Some(p) = primary {
+                    all_envs.push(p.as_str());
+                }
+                for extra in extras {
+                    all_envs.push(extra.as_str());
+                }
+                for env_name in &all_envs {
+                    if let Some(raw) = env(env_name).filter(|s| !s.trim().is_empty()) {
+                        for token in raw
+                            .split([',', ' ', '\n', '\t'])
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            let url = token
+                                .parse::<Url>()
+                                .ok()
+                                .filter(|u| {
+                                    matches!(
+                                        u.scheme(),
+                                        "http" | "https" | "ws" | "wss" | "ssl" | "tcp"
+                                    ) && u.host_str().is_some()
+                                })
+                                .ok_or_else(|| {
+                                    BitcoinProxyStartError::InvalidUpstream(env_name.to_string())
+                                })?;
+                            if !urls.contains(&url) {
+                                urls.push(url);
+                            }
+                        }
+                    }
+                }
+                if urls.is_empty() {
+                    let missing = primary
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| extras[0].clone());
+                    return Err(BitcoinProxyStartError::MissingUpstream(missing));
+                }
+                Ok(urls)
             };
             chains.insert(
                 row.id.clone(),
                 Chain {
                     id: row.id.clone(),
-                    rpc: resolve(&row.rpc_upstream_env)?,
-                    chronik: resolve(&row.chronik_upstream_env)?,
+                    rpc_urls: resolve_urls(&row.rpc_upstream_env, &row.rpc_upstream_envs)?,
+                    chronik_urls: resolve_urls(
+                        &row.chronik_upstream_env,
+                        &row.chronik_upstream_envs,
+                    )?,
+                    electrum_urls: resolve_urls(
+                        &row.electrum_upstream_env,
+                        &row.electrum_upstream_envs,
+                    )?,
                     checkpoint_height: row.checkpoint_height,
                     checkpoint_hash: row.checkpoint_hash.to_ascii_lowercase(),
                 },
@@ -224,65 +281,82 @@ impl BitcoinProxyRuntime {
             chronik_quota: FixedHourQuota::new(conf.anonymous_chronik_requests_per_hour),
             broadcast_quota: FixedHourQuota::new(conf.anonymous_broadcasts_per_hour),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
+            cooldowns: UpstreamCooldownTracker::default(),
+            customer_quota: Arc::new(FixedHourQuota::new(10_000)),
         });
         runtime.verify_checkpoints().await?;
         Ok(Some(runtime))
     }
 
     pub(crate) fn has_rpc_chain(&self, id: &str) -> bool {
-        self.chains.get(id).and_then(|c| c.rpc.as_ref()).is_some()
+        self.chains
+            .get(id)
+            .map(|c| !c.rpc_urls.is_empty() || !c.electrum_urls.is_empty())
+            .unwrap_or(false)
     }
 
     async fn verify_checkpoints(&self) -> Result<(), BitcoinProxyStartError> {
         for chain in self.chains.values() {
-            if let Some(url) = &chain.rpc {
-                let body = json!({"jsonrpc":"1.0","id":"startup","method":"getblockhash","params":[chain.checkpoint_height]});
-                let response = self
-                    .bounded_request_with_limit(
-                        self.rpc_request_builder(url, serde_json::to_vec(&body).unwrap()),
-                        MAX_STARTUP_RESPONSE_BYTES,
-                    )
-                    .await
-                    .map_err(|_| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-                if !response.status.is_success() {
-                    return Err(BitcoinProxyStartError::UpstreamUnavailable(
-                        chain.id.clone(),
-                    ));
-                }
-                let actual = super::json_rpc::startup_result(
-                    &response.body,
-                    super::json_rpc::JsonRpcVersion::Legacy,
-                    &json!("startup"),
-                )
-                .and_then(|value| value.as_str().map(str::to_owned))
-                .ok_or_else(|| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-                if !actual.eq_ignore_ascii_case(&chain.checkpoint_hash) {
-                    return Err(BitcoinProxyStartError::CheckpointMismatch {
-                        id: chain.id.clone(),
-                    });
-                }
-            }
-            if let Some(base) = &chain.chronik {
-                let url =
-                    chronik_endpoint_url(base, &format!("block/{}", chain.checkpoint_height), None)
+            for url in &chain.rpc_urls {
+                if matches!(url.scheme(), "http" | "https") {
+                    let body = json!({"jsonrpc":"1.0","id":"startup","method":"getblockhash","params":[chain.checkpoint_height]});
+                    let response = self
+                        .bounded_request_with_limit(
+                            self.rpc_request_builder(url, serde_json::to_vec(&body).unwrap()),
+                            MAX_STARTUP_RESPONSE_BYTES,
+                        )
+                        .await
                         .map_err(|_| {
                             BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone())
                         })?;
-                let bytes = self
-                    .simple_request_with_limit(self.client.get(url), MAX_STARTUP_RESPONSE_BYTES)
-                    .await
+                    if !response.status.is_success() {
+                        return Err(BitcoinProxyStartError::UpstreamUnavailable(
+                            chain.id.clone(),
+                        ));
+                    }
+                    let actual = super::json_rpc::startup_result(
+                        &response.body,
+                        super::json_rpc::JsonRpcVersion::Legacy,
+                        &json!("startup"),
+                    )
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .ok_or_else(|| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
+                    if !actual.eq_ignore_ascii_case(&chain.checkpoint_hash) {
+                        return Err(BitcoinProxyStartError::CheckpointMismatch {
+                            id: chain.id.clone(),
+                        });
+                    }
+                }
+            }
+            for base in &chain.chronik_urls {
+                if matches!(base.scheme(), "http" | "https") {
+                    let url = chronik_endpoint_url(
+                        base,
+                        &format!("block/{}", chain.checkpoint_height),
+                        None,
+                    )
                     .map_err(|_| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-                let block = proto::Block::decode(bytes.as_ref())
-                    .map_err(|_| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-                let mut hash = block
-                    .block_info
-                    .ok_or_else(|| BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone()))?
-                    .hash;
-                hash.reverse();
-                if hex::encode(hash) != chain.checkpoint_hash {
-                    return Err(BitcoinProxyStartError::CheckpointMismatch {
-                        id: chain.id.clone(),
-                    });
+                    let bytes = self
+                        .simple_request_with_limit(self.client.get(url), MAX_STARTUP_RESPONSE_BYTES)
+                        .await
+                        .map_err(|_| {
+                            BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone())
+                        })?;
+                    let block = proto::Block::decode(bytes.as_ref()).map_err(|_| {
+                        BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone())
+                    })?;
+                    let mut hash = block
+                        .block_info
+                        .ok_or_else(|| {
+                            BitcoinProxyStartError::UpstreamUnavailable(chain.id.clone())
+                        })?
+                        .hash;
+                    hash.reverse();
+                    if hex::encode(hash) != chain.checkpoint_hash {
+                        return Err(BitcoinProxyStartError::CheckpointMismatch {
+                            id: chain.id.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -380,7 +454,7 @@ fn parse_customer(headers: &HeaderMap) -> Result<Option<Address>, RpcRejection> 
 fn validate_rpc(
     body: &[u8],
     max: usize,
-) -> Result<(u32, bool, bool, super::json_rpc::JsonRpcVersion), RpcRejection> {
+) -> Result<(u32, bool, bool, super::json_rpc::JsonRpcVersion, bool), RpcRejection> {
     if body.is_empty() || body.len() > max {
         return Err(rpc_error(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -398,6 +472,8 @@ fn validate_rpc(
     let mut only_send = calls.len() == 1;
     let mut contains_send = false;
     let mut version = None;
+    let mut is_electrum = false;
+    let mut is_core_rpc = false;
     for call in calls {
         let obj = call
             .as_object()
@@ -423,7 +499,26 @@ fn validate_rpc(
             .get("method")
             .and_then(Value::as_str)
             .ok_or_else(|| rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"))?;
-        let allowed = matches!(
+        let is_electrum_method = matches!(
+            method,
+            "server.version"
+                | "server.ping"
+                | "server.banner"
+                | "server.features"
+                | "blockchain.headers.subscribe"
+                | "blockchain.estimatefee"
+                | "blockchain.block.header"
+                | "blockchain.block.headers"
+                | "blockchain.scripthash.get_balance"
+                | "blockchain.scripthash.get_history"
+                | "blockchain.scripthash.get_mempool"
+                | "blockchain.scripthash.listunspent"
+                | "blockchain.scripthash.subscribe"
+                | "blockchain.transaction.get"
+                | "blockchain.transaction.broadcast"
+                | "blockchain.transaction.get_merkle"
+        );
+        let is_node_method = matches!(
             method,
             "getblockchaininfo"
                 | "getnetworkinfo"
@@ -437,24 +532,39 @@ fn validate_rpc(
                 | "estimatesmartfee"
                 | "sendrawtransaction"
         );
-        if !allowed {
+        if !is_electrum_method && !is_node_method {
             return Err(rpc_error(StatusCode::FORBIDDEN, "rpc_method_denied"));
         }
-        only_send &= method == "sendrawtransaction";
-        contains_send |= method == "sendrawtransaction";
-        units = units.saturating_add(if method == "sendrawtransaction" {
+        if is_electrum_method {
+            is_electrum = true;
+        }
+        if is_node_method {
+            is_core_rpc = true;
+        }
+        let is_broadcast =
+            method == "sendrawtransaction" || method == "blockchain.transaction.broadcast";
+        only_send &= is_broadcast;
+        contains_send |= is_broadcast;
+        units = units.saturating_add(if is_broadcast {
             10
-        } else if matches!(method, "getblock" | "getrawtransaction") {
+        } else if matches!(
+            method,
+            "getblock" | "getrawtransaction" | "blockchain.transaction.get"
+        ) {
             5
         } else {
             1
         });
+    }
+    if is_electrum && is_core_rpc {
+        return Err(rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"));
     }
     Ok((
         units,
         only_send,
         contains_send,
         version.expect("non-empty calls"),
+        is_electrum,
     ))
 }
 
@@ -596,15 +706,21 @@ pub(crate) fn issue_capability(
             .issue_capability(customer, &chain_id, now_ms(), ttl_ms);
     let chain = &runtime.chains[&chain_id];
     Ok(Json(RpcCapabilityBody {
-        rpc_path: chain
-            .rpc
-            .as_ref()
-            .map(|_| format!("/chain-rpc/{chain_id}/cap/{token}/rpc")),
-        chronik_path: chain
-            .chronik
-            .as_ref()
-            .map(|_| format!("/chain-rpc/{chain_id}/cap/{token}/chronik")),
-        ws_path: None,
+        rpc_path: if !chain.rpc_urls.is_empty() || !chain.electrum_urls.is_empty() {
+            Some(format!("/chain-rpc/{chain_id}/cap/{token}/rpc"))
+        } else {
+            None
+        },
+        chronik_path: if !chain.chronik_urls.is_empty() {
+            Some(format!("/chain-rpc/{chain_id}/cap/{token}/chronik"))
+        } else {
+            None
+        },
+        ws_path: if !chain.electrum_urls.is_empty() {
+            Some(format!("/chain-rpc/{chain_id}/cap/{token}/ws"))
+        } else {
+            None
+        },
         expires_at_ms,
     }))
 }
@@ -644,10 +760,26 @@ async fn proxy_rpc_inner(
     let chain = runtime
         .chains
         .get(&chain_id)
-        .filter(|c| c.rpc.is_some())
+        .filter(|c| !c.rpc_urls.is_empty() || !c.electrum_urls.is_empty())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
-    let (_units, send_only, contains_broadcast, version) =
+    let (_units, send_only, contains_broadcast, version, is_electrum) =
         validate_rpc(&body, runtime.max_request_bytes)?;
+    let target_upstreams = if is_electrum {
+        if !chain.electrum_urls.is_empty() {
+            &chain.electrum_urls
+        } else {
+            &chain.rpc_urls
+        }
+    } else {
+        if !chain.rpc_urls.is_empty() {
+            &chain.rpc_urls
+        } else {
+            &chain.electrum_urls
+        }
+    };
+    if target_upstreams.is_empty() {
+        return Err(rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"));
+    }
     let correlation = super::json_rpc::request_correlation(&body).map_err(|_| {
         preflight_broadcast_error(
             rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"),
@@ -712,63 +844,125 @@ async fn proxy_rpc_inner(
             .map_err(|denial| quota_error("rpc_hourly_quota", true, denial))?;
     }
     let deadline = tokio::time::Instant::now() + runtime.timeout;
-    let upstream = tokio::time::timeout_at(
-        deadline,
-        runtime
-            .rpc_request_builder(chain.rpc.as_ref().unwrap(), body.to_vec())
-            .send(),
-    )
-    .await
-    .map_err(|_| {
-        broadcast_error(
-            StatusCode::GATEWAY_TIMEOUT,
-            "rpc_upstream_timeout",
-            contains_broadcast,
-            true,
-        )
-    })?
-    .map_err(|_| {
-        broadcast_error(
+    let ordered_upstreams = runtime.cooldowns.splay_order(target_upstreams);
+    if ordered_upstreams.is_empty() {
+        return Err(broadcast_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_unavailable",
             contains_broadcast,
             true,
-        )
-    })?;
-    let upstream_status = upstream.status();
-    let spool = tokio::time::timeout_at(
-        deadline,
-        super::json_rpc::spool_response(upstream, runtime.max_response_bytes, runtime.timeout),
-    )
-    .await
-    .map_err(|_| {
-        broadcast_error(
-            StatusCode::GATEWAY_TIMEOUT,
-            "rpc_upstream_timeout",
-            contains_broadcast,
-            true,
-        )
-    })?
-    .map_err(|error| match error {
-        super::json_rpc::SpoolError::TooLarge => broadcast_error(
-            StatusCode::BAD_GATEWAY,
-            "rpc_upstream_response_too_large",
-            contains_broadcast,
-            true,
-        ),
-        super::json_rpc::SpoolError::Timeout => broadcast_error(
-            StatusCode::GATEWAY_TIMEOUT,
-            "rpc_upstream_timeout",
-            contains_broadcast,
-            true,
-        ),
-        super::json_rpc::SpoolError::Io => broadcast_error(
-            StatusCode::BAD_GATEWAY,
-            "rpc_upstream_unavailable",
-            contains_broadcast,
-            true,
-        ),
-    })?;
+        ));
+    }
+    let mut last_error = None;
+    let mut upstream_res = None;
+
+    for (attempt, upstream_url) in ordered_upstreams.iter().enumerate() {
+        let remaining_time = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining_time.is_zero() {
+            return Err(broadcast_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "rpc_upstream_timeout",
+                contains_broadcast,
+                true,
+            ));
+        }
+
+        let send_attempt = async {
+            let upstream = runtime
+                .rpc_request_builder(upstream_url, body.to_vec())
+                .send()
+                .await
+                .map_err(|_| {
+                    runtime.cooldowns.mark_failure(upstream_url);
+                    broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        contains_broadcast,
+                        true,
+                    )
+                })?;
+            let status = upstream.status();
+            if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                runtime.cooldowns.mark_failure(upstream_url);
+                if attempt + 1 < ordered_upstreams.len() {
+                    return Err(broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        contains_broadcast,
+                        true,
+                    ));
+                }
+            } else {
+                runtime.cooldowns.mark_success(upstream_url);
+            }
+            let spool = super::json_rpc::spool_response(
+                upstream,
+                runtime.max_response_bytes,
+                remaining_time,
+            )
+            .await
+            .map_err(|error| match error {
+                super::json_rpc::SpoolError::TooLarge => broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_response_too_large",
+                    contains_broadcast,
+                    true,
+                ),
+                super::json_rpc::SpoolError::Timeout => {
+                    runtime.cooldowns.mark_failure(upstream_url);
+                    broadcast_error(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "rpc_upstream_timeout",
+                        contains_broadcast,
+                        true,
+                    )
+                }
+                super::json_rpc::SpoolError::Io => {
+                    runtime.cooldowns.mark_failure(upstream_url);
+                    broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        contains_broadcast,
+                        true,
+                    )
+                }
+            })?;
+            Ok((status, spool))
+        };
+
+        match tokio::time::timeout_at(deadline, send_attempt).await {
+            Ok(Ok((status, spool))) => {
+                upstream_res = Some((status, spool));
+                break;
+            }
+            Ok(Err(err)) => {
+                last_error = Some(err);
+            }
+            Err(_) => {
+                runtime.cooldowns.mark_failure(upstream_url);
+                last_error = Some(broadcast_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "rpc_upstream_timeout",
+                    contains_broadcast,
+                    true,
+                ));
+            }
+        }
+    }
+
+    let (upstream_status, spool) = match upstream_res {
+        Some(res) => res,
+        None => {
+            return Err(last_error.unwrap_or_else(|| {
+                broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_unavailable",
+                    contains_broadcast,
+                    true,
+                )
+            }));
+        }
+    };
     let inspected = tokio::time::timeout_at(deadline, spool.inspect(version, correlation))
         .await
         .map_err(|_| {
@@ -1105,7 +1299,7 @@ pub(crate) async fn issue_chronik_challenge(
     let _chain = runtime
         .chains
         .get(&chain_id)
-        .filter(|c| c.chronik.is_some())
+        .filter(|c| !c.chronik_urls.is_empty())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     let path = canonical_chronik_path(&path)?;
     let method = headers
@@ -1194,7 +1388,7 @@ async fn proxy_chronik_inner(
     let chain = runtime
         .chains
         .get(&chain_id)
-        .filter(|c| c.chronik.is_some())
+        .filter(|c| !c.chronik_urls.is_empty())
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     let path = canonical_chronik_path(&path)?;
     let (public, broadcast) = chronik_policy(&method, &path)
@@ -1273,33 +1467,112 @@ async fn proxy_chronik_inner(
             .charge(ip, units, unix_seconds())
             .map_err(|denial| quota_error("rpc_hourly_quota", is_broadcast, denial))?;
     }
-    let url = chronik_endpoint_url(chain.chronik.as_ref().unwrap(), &path, uri.query()).map_err(
-        |_| {
-            broadcast_error(
-                StatusCode::BAD_GATEWAY,
-                "rpc_upstream_unavailable",
-                broadcast,
-                false,
-            )
-        },
-    )?;
-    let request = if method == Method::GET {
-        runtime.client.get(url)
-    } else {
-        runtime
-            .client
-            .post(url)
-            .header(reqwest::header::CONTENT_TYPE, "application/x-protobuf")
-            .body(body.to_vec())
-    };
-    let upstream = runtime.bounded_request(request).await.map_err(|_| {
-        broadcast_error(
+    let deadline = tokio::time::Instant::now() + runtime.timeout;
+    let ordered_upstreams = runtime.cooldowns.splay_order(&chain.chronik_urls);
+    if ordered_upstreams.is_empty() {
+        return Err(broadcast_error(
             StatusCode::BAD_GATEWAY,
             "rpc_upstream_unavailable",
             broadcast,
             true,
-        )
-    })?;
+        ));
+    }
+    let mut last_error = None;
+    let mut upstream_res = None;
+
+    for (attempt, base) in ordered_upstreams.iter().enumerate() {
+        let remaining_time = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining_time.is_zero() {
+            return Err(broadcast_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "rpc_upstream_timeout",
+                broadcast,
+                true,
+            ));
+        }
+
+        let url = match chronik_endpoint_url(base, &path, uri.query()) {
+            Ok(url) => url,
+            Err(_) => {
+                return Err(broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_unavailable",
+                    broadcast,
+                    false,
+                ));
+            }
+        };
+        let request = if method == Method::GET {
+            runtime.client.get(url)
+        } else {
+            runtime
+                .client
+                .post(url)
+                .header(reqwest::header::CONTENT_TYPE, "application/x-protobuf")
+                .body(body.to_vec())
+        };
+
+        let send_attempt = async {
+            let upstream = runtime.bounded_request(request).await.map_err(|_| {
+                runtime.cooldowns.mark_failure(base);
+                broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_unavailable",
+                    broadcast,
+                    true,
+                )
+            })?;
+            if upstream.status.is_server_error()
+                || upstream.status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            {
+                runtime.cooldowns.mark_failure(base);
+                if attempt + 1 < ordered_upstreams.len() {
+                    return Err(broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        broadcast,
+                        true,
+                    ));
+                }
+            } else {
+                runtime.cooldowns.mark_success(base);
+            }
+            Ok(upstream)
+        };
+
+        match tokio::time::timeout_at(deadline, send_attempt).await {
+            Ok(Ok(upstream)) => {
+                upstream_res = Some(upstream);
+                break;
+            }
+            Ok(Err(err)) => {
+                last_error = Some(err);
+            }
+            Err(_) => {
+                runtime.cooldowns.mark_failure(base);
+                last_error = Some(broadcast_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "rpc_upstream_timeout",
+                    broadcast,
+                    true,
+                ));
+            }
+        }
+    }
+
+    let upstream = match upstream_res {
+        Some(u) => u,
+        None => {
+            return Err(last_error.unwrap_or_else(|| {
+                broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_unavailable",
+                    broadcast,
+                    true,
+                )
+            }));
+        }
+    };
     let body = if upstream.status.is_success() {
         upstream.body
     } else {
@@ -1332,6 +1605,441 @@ async fn proxy_chronik_inner(
     ))
 }
 
+const MAX_ELECTRUM_WS_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ELECTRUM_WS_PENDING_REQUESTS: usize = 64;
+const MAX_ELECTRUM_WS_SUBSCRIPTIONS: usize = 256;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum ElectrumWsRpcId {
+    String(String),
+    Number(String),
+    Null,
+}
+
+impl ElectrumWsRpcId {
+    fn from_value(value: &Value) -> Option<Self> {
+        if !crate::http::json_rpc::rpc_id_is_bounded(value) {
+            return None;
+        }
+        match value {
+            Value::String(value) => Some(Self::String(value.clone())),
+            Value::Number(value) => Some(Self::Number(value.to_string())),
+            Value::Null => Some(Self::Null),
+            _ => None,
+        }
+    }
+}
+
+enum ElectrumWsPendingKind {
+    Call,
+    SubscribeScriptHash(String),
+    SubscribeHeaders,
+    UnsubscribeScriptHash(String),
+}
+
+struct ElectrumWsPending {
+    id: Value,
+    kind: ElectrumWsPendingKind,
+    deadline: tokio::time::Instant,
+    _permit: OwnedSemaphorePermit,
+}
+
+fn electrum_ws_error(id: Value, code: i64, message: &'static str) -> ClientWsMessage {
+    ClientWsMessage::Text(
+        json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}}).to_string(),
+    )
+}
+
+async fn bounded_ws_send<S, M>(sink: &mut S, message: M, deadline: tokio::time::Instant) -> bool
+where
+    S: futures::Sink<M> + Unpin,
+{
+    matches!(
+        tokio::time::timeout_at(deadline, sink.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
+pub(crate) async fn handle_proxy_ws(
+    chain_id: String,
+    capability: String,
+    server: RegistryServer,
+    ws: WebSocketUpgrade,
+) -> Result<Response, RpcRejection> {
+    let runtime = server
+        .bitcoin_proxy
+        .as_deref()
+        .filter(|runtime| runtime.has_chain(&chain_id))
+        .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
+    let chain = runtime.chains.get(&chain_id).expect("chain checked above");
+    if chain.electrum_urls.is_empty() {
+        return Err(rpc_error(StatusCode::NOT_FOUND, "rpc_ws_disabled"));
+    }
+    let (customer, expires_at_ms) = runtime
+        .auth
+        .verify_capability(&capability, &chain_id, now_ms())
+        .ok_or_else(|| rpc_error(StatusCode::UNAUTHORIZED, "rpc_auth_failed"))?;
+    let permit = Arc::clone(&runtime.permits)
+        .try_acquire_owned()
+        .map_err(|_| rpc_error(StatusCode::SERVICE_UNAVAILABLE, "rpc_busy"))?;
+    let max_client_bytes = runtime.max_request_bytes;
+    let max_upstream_bytes = runtime
+        .max_response_bytes
+        .min(MAX_ELECTRUM_WS_RESPONSE_BYTES);
+    let timeout = runtime.timeout;
+    let quota = runtime.customer_quota.clone();
+    let request_permits = Arc::clone(&runtime.permits);
+    let electrum_urls = chain.electrum_urls.clone();
+    let cooldowns = runtime.cooldowns.clone();
+    let lifetime_ms = expires_at_ms.saturating_sub(now_ms()).max(1) as u64;
+    let expiry_deadline = tokio::time::Instant::now() + Duration::from_millis(lifetime_ms);
+
+    Ok(ws
+        .max_message_size(max_client_bytes)
+        .max_frame_size(max_client_bytes)
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            let config = WebSocketConfig {
+                max_send_queue: Some(32),
+                max_message_size: Some(max_upstream_bytes),
+                max_frame_size: Some(max_upstream_bytes),
+                accept_unmasked_frames: false,
+            };
+            let ordered_upstreams = cooldowns.splay_order(&electrum_urls);
+            let mut connected = None;
+            for upstream_url in &ordered_upstreams {
+                if tokio::time::Instant::now() >= expiry_deadline {
+                    break;
+                }
+                let connect_deadline = expiry_deadline.min(tokio::time::Instant::now() + timeout);
+                let res = tokio::time::timeout_at(
+                    connect_deadline,
+                    connect_async_with_config(upstream_url.as_str(), Some(config)),
+                )
+                .await;
+                match res {
+                    Ok(Ok((upstream_stream, _))) => {
+                        cooldowns.mark_success(upstream_url);
+                        connected = Some(upstream_stream);
+                        break;
+                    }
+                    _ => {
+                        cooldowns.mark_failure(upstream_url);
+                    }
+                }
+            }
+            let Some(upstream) = connected else {
+                return;
+            };
+            proxy_electrum_ws_connection(
+                socket,
+                upstream,
+                customer,
+                quota,
+                request_permits,
+                timeout,
+                expiry_deadline,
+            )
+            .await;
+        })
+        .into_response())
+}
+
+async fn proxy_electrum_ws_connection<S>(
+    socket: WebSocket,
+    upstream: tokio_tungstenite::WebSocketStream<S>,
+    customer: Address,
+    quota: Arc<FixedHourQuota<Address>>,
+    request_permits: Arc<Semaphore>,
+    request_timeout: Duration,
+    expiry_deadline: tokio::time::Instant,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    enum WsEvent<C, U> {
+        Client(C),
+        Upstream(U),
+    }
+
+    let (mut client_write, mut client_read) = socket.split();
+    let (mut upstream_write, mut upstream_read) = upstream.split();
+    let mut active_subscriptions = HashSet::<String>::new();
+    let mut pending = HashMap::<ElectrumWsRpcId, ElectrumWsPending>::new();
+
+    loop {
+        if tokio::time::Instant::now() >= expiry_deadline {
+            break;
+        }
+        let next_deadline = pending.values().map(|request| request.deadline).min();
+        let deadline = next_deadline
+            .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(86_400));
+        tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(expiry_deadline) => break,
+            _ = tokio::time::sleep_until(deadline), if next_deadline.is_some() => {
+                let request = pending
+                    .iter()
+                    .min_by_key(|(_, request)| request.deadline)
+                    .map(|(key, request)| (key.clone(), request.id.clone()));
+                let Some((key, id)) = request else { continue; };
+                pending.remove(&key);
+                pending.clear();
+                let cleanup_deadline = (tokio::time::Instant::now() + request_timeout)
+                    .min(expiry_deadline);
+                let _ = bounded_ws_send(
+                    &mut client_write,
+                    electrum_ws_error(id, -32002, "upstream request timed out"),
+                    cleanup_deadline,
+                ).await;
+                let _ = bounded_ws_send(
+                    &mut client_write,
+                    ClientWsMessage::Close(None),
+                    cleanup_deadline,
+                ).await;
+                let _ = bounded_ws_send(
+                    &mut upstream_write,
+                    UpstreamWsMessage::Close(None),
+                    cleanup_deadline,
+                ).await;
+                return;
+            }
+            event = async {
+                tokio::select! {
+                    client = client_read.next() => WsEvent::Client(client),
+                    upstream = upstream_read.next() => WsEvent::Upstream(upstream),
+                }
+            } => match event {
+                WsEvent::Client(client) => {
+                    let Some(Ok(client)) = client else { break; };
+                    match client {
+                        ClientWsMessage::Text(text) => {
+                            let parsed = crate::http::json_rpc::parse_without_duplicate_keys(text.as_bytes());
+                            let id = parsed.as_ref().ok().and_then(|value| value.get("id")).cloned().unwrap_or(Value::Null);
+                            let Ok(value) = parsed else {
+                                if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32600, "invalid request"), expiry_deadline).await { return; }
+                                continue;
+                            };
+                            let Some(id_key) = ElectrumWsRpcId::from_value(&id) else {
+                                if !bounded_ws_send(&mut client_write, electrum_ws_error(Value::Null, -32600, "invalid request id"), expiry_deadline).await { return; }
+                                continue;
+                            };
+                            if pending.len() >= MAX_ELECTRUM_WS_PENDING_REQUESTS || pending.contains_key(&id_key) {
+                                if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32005, "pending request limit exceeded"), expiry_deadline).await { return; }
+                                continue;
+                            }
+                            let obj = match value.as_object() {
+                                Some(o) => o,
+                                None => {
+                                    if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32600, "invalid request"), expiry_deadline).await { return; }
+                                    continue;
+                                }
+                            };
+                            let method = match obj.get("method").and_then(Value::as_str) {
+                                Some(m) => m,
+                                None => {
+                                    if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32600, "method required"), expiry_deadline).await { return; }
+                                    continue;
+                                }
+                            };
+                            let is_electrum_method = matches!(
+                                method,
+                                "server.version"
+                                    | "server.ping"
+                                    | "server.banner"
+                                    | "server.features"
+                                    | "blockchain.headers.subscribe"
+                                    | "blockchain.estimatefee"
+                                    | "blockchain.block.header"
+                                    | "blockchain.block.headers"
+                                    | "blockchain.scripthash.get_balance"
+                                    | "blockchain.scripthash.get_history"
+                                    | "blockchain.scripthash.get_mempool"
+                                    | "blockchain.scripthash.listunspent"
+                                    | "blockchain.scripthash.subscribe"
+                                    | "blockchain.scripthash.unsubscribe"
+                                    | "blockchain.transaction.get"
+                                    | "blockchain.transaction.broadcast"
+                                    | "blockchain.transaction.get_merkle"
+                            );
+                            if !is_electrum_method {
+                                if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32601, "method denied by relay"), expiry_deadline).await { return; }
+                                continue;
+                            }
+                            let is_broadcast = method == "blockchain.transaction.broadcast";
+                            let cost = if is_broadcast {
+                                10
+                            } else if matches!(method, "blockchain.transaction.get" | "blockchain.block.header" | "blockchain.block.headers") {
+                                5
+                            } else {
+                                1
+                            };
+                            let request_permit = match Arc::clone(&request_permits).try_acquire_owned() {
+                                Ok(p) => p,
+                                Err(_) => {
+                                    if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32005, "relay busy"), expiry_deadline).await { return; }
+                                    continue;
+                                }
+                            };
+                            if quota.charge(customer, cost, unix_seconds()).is_err() {
+                                if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32005, "hourly quota exceeded"), expiry_deadline).await { return; }
+                                continue;
+                            }
+                            let kind = match method {
+                                "blockchain.scripthash.subscribe" => {
+                                    let scripthash = obj
+                                        .get("params")
+                                        .and_then(Value::as_array)
+                                        .and_then(|p| p.first())
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default();
+                                    if scripthash.len() != 64 || !scripthash.chars().all(|c| c.is_ascii_hexdigit()) {
+                                        if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32602, "invalid scripthash"), expiry_deadline).await { return; }
+                                        continue;
+                                    }
+                                    if active_subscriptions.len() >= MAX_ELECTRUM_WS_SUBSCRIPTIONS {
+                                        if !bounded_ws_send(&mut client_write, electrum_ws_error(id, -32005, "subscription limit exceeded"), expiry_deadline).await { return; }
+                                        continue;
+                                    }
+                                    ElectrumWsPendingKind::SubscribeScriptHash(scripthash.to_string())
+                                }
+                                "blockchain.headers.subscribe" => ElectrumWsPendingKind::SubscribeHeaders,
+                                "blockchain.scripthash.unsubscribe" => {
+                                    let scripthash = obj
+                                        .get("params")
+                                        .and_then(Value::as_array)
+                                        .and_then(|p| p.first())
+                                        .and_then(Value::as_str)
+                                        .unwrap_or_default();
+                                    ElectrumWsPendingKind::UnsubscribeScriptHash(scripthash.to_string())
+                                }
+                                _ => ElectrumWsPendingKind::Call,
+                            };
+                            pending.insert(
+                                id_key.clone(),
+                                ElectrumWsPending {
+                                    id: id.clone(),
+                                    kind,
+                                    deadline: tokio::time::Instant::now() + request_timeout,
+                                    _permit: request_permit,
+                                },
+                            );
+                            if !bounded_ws_send(&mut upstream_write, UpstreamWsMessage::Text(text), expiry_deadline).await {
+                                pending.remove(&id_key);
+                                break;
+                            }
+                        }
+                        ClientWsMessage::Ping(payload) => {
+                            if !bounded_ws_send(&mut client_write, ClientWsMessage::Pong(payload), expiry_deadline).await { break; }
+                        }
+                        ClientWsMessage::Close(_) => break,
+                        ClientWsMessage::Binary(_) => {
+                            if !bounded_ws_send(&mut client_write, electrum_ws_error(Value::Null, -32600, "binary requests not supported"), expiry_deadline).await { return; }
+                        }
+                        ClientWsMessage::Pong(_) => {}
+                    }
+                }
+                WsEvent::Upstream(upstream) => {
+                    let Some(Ok(upstream)) = upstream else { break; };
+                    match upstream {
+                        UpstreamWsMessage::Text(text) => {
+                            let Ok(mut value) = crate::http::json_rpc::parse_without_duplicate_keys(text.as_bytes()) else { break; };
+                            if let Some(id) = value.get("id").cloned() {
+                                if id.is_null() && value.get("method").is_some() {
+                                    handle_push_notification(&value, &mut active_subscriptions, &quota, customer, &mut client_write, expiry_deadline).await;
+                                    continue;
+                                }
+                                let Some(id_key) = ElectrumWsRpcId::from_value(&id) else { break; };
+                                let Some(request) = pending.remove(&id_key) else { break; };
+                                if request.deadline <= tokio::time::Instant::now() {
+                                    let _ = bounded_ws_send(
+                                        &mut client_write,
+                                        electrum_ws_error(request.id, -32002, "upstream request timed out"),
+                                        expiry_deadline,
+                                    ).await;
+                                    return;
+                                }
+                                if value.get("error").is_none() || value.get("error") == Some(&Value::Null) {
+                                    match request.kind {
+                                        ElectrumWsPendingKind::SubscribeScriptHash(scripthash) => {
+                                            active_subscriptions.insert(scripthash);
+                                        }
+                                        ElectrumWsPendingKind::SubscribeHeaders => {
+                                            active_subscriptions.insert("__headers__".to_string());
+                                        }
+                                        ElectrumWsPendingKind::UnsubscribeScriptHash(scripthash) => {
+                                            active_subscriptions.remove(&scripthash);
+                                        }
+                                        ElectrumWsPendingKind::Call => {}
+                                    }
+                                }
+                                crate::http::json_rpc::sanitize_response_errors(&mut value);
+                                if !bounded_ws_send(&mut client_write, ClientWsMessage::Text(value.to_string()), expiry_deadline).await { break; }
+                            } else if value.get("method").is_some() {
+                                handle_push_notification(&value, &mut active_subscriptions, &quota, customer, &mut client_write, expiry_deadline).await;
+                            }
+                        }
+                        UpstreamWsMessage::Ping(payload) => {
+                            if !bounded_ws_send(&mut upstream_write, UpstreamWsMessage::Pong(payload), expiry_deadline).await { break; }
+                        }
+                        UpstreamWsMessage::Close(_) => break,
+                        UpstreamWsMessage::Binary(_) => break,
+                        UpstreamWsMessage::Pong(_) | UpstreamWsMessage::Frame(_) => {}
+                    }
+                }
+            }
+        }
+    }
+    pending.clear();
+    let close_deadline = (tokio::time::Instant::now() + request_timeout).min(expiry_deadline);
+    let _ = bounded_ws_send(
+        &mut client_write,
+        ClientWsMessage::Close(None),
+        close_deadline,
+    )
+    .await;
+    let _ = bounded_ws_send(
+        &mut upstream_write,
+        UpstreamWsMessage::Close(None),
+        close_deadline,
+    )
+    .await;
+}
+
+async fn handle_push_notification<S>(
+    value: &Value,
+    active_subscriptions: &mut HashSet<String>,
+    quota: &Arc<FixedHourQuota<Address>>,
+    customer: Address,
+    client_write: &mut S,
+    expiry_deadline: tokio::time::Instant,
+) where
+    S: futures::Sink<ClientWsMessage> + Unpin,
+{
+    let method = value.get("method").and_then(Value::as_str);
+    let is_subscribed = match method {
+        Some("blockchain.scripthash.subscribe") => {
+            let scripthash = value
+                .get("params")
+                .and_then(Value::as_array)
+                .and_then(|p| p.first())
+                .and_then(Value::as_str);
+            scripthash.is_some_and(|sh| active_subscriptions.contains(sh))
+        }
+        Some("blockchain.headers.subscribe") => active_subscriptions.contains("__headers__"),
+        _ => false,
+    };
+    if is_subscribed {
+        if quota.charge(customer, 1, unix_seconds()).is_ok() {
+            let _ = bounded_ws_send(
+                client_write,
+                ClientWsMessage::Text(value.to_string()),
+                expiry_deadline,
+            )
+            .await;
+        }
+    }
+}
+
 /// Extra request headers needed by Bitcoin-family proxy preflight requests.
 pub const BITCOIN_PROXY_CORS_HEADERS: [&str; 1] = [PROXY_METHOD_HEADER];
 
@@ -1360,7 +2068,8 @@ mod tests {
                 1,
                 false,
                 false,
-                crate::http::json_rpc::JsonRpcVersion::Legacy
+                crate::http::json_rpc::JsonRpcVersion::Legacy,
+                false
             )
         );
         let send = br#"{"jsonrpc":"1.0","id":1,"method":"sendrawtransaction","params":["00"]}"#;
@@ -1370,13 +2079,42 @@ mod tests {
                 10,
                 true,
                 true,
-                crate::http::json_rpc::JsonRpcVersion::Legacy
+                crate::http::json_rpc::JsonRpcVersion::Legacy,
+                false
             )
         );
         let v2 = br#"{"jsonrpc":"2.0","id":1,"method":"getblockhash","params":[1]}"#;
         assert_eq!(
             validate_rpc(v2, 1024).unwrap(),
-            (1, false, false, crate::http::json_rpc::JsonRpcVersion::V2)
+            (
+                1,
+                false,
+                false,
+                crate::http::json_rpc::JsonRpcVersion::V2,
+                false
+            )
+        );
+        let electrum_read = br#"{"jsonrpc":"2.0","id":1,"method":"blockchain.scripthash.listunspent","params":["00"]}"#;
+        assert_eq!(
+            validate_rpc(electrum_read, 1024).unwrap(),
+            (
+                1,
+                false,
+                false,
+                crate::http::json_rpc::JsonRpcVersion::V2,
+                true
+            )
+        );
+        let electrum_broadcast = br#"{"jsonrpc":"2.0","id":1,"method":"blockchain.transaction.broadcast","params":["00"]}"#;
+        assert_eq!(
+            validate_rpc(electrum_broadcast, 1024).unwrap(),
+            (
+                10,
+                true,
+                true,
+                crate::http::json_rpc::JsonRpcVersion::V2,
+                true
+            )
         );
         let denied = br#"{"jsonrpc":"1.0","id":1,"method":"dumpprivkey","params":[]}"#;
         assert!(validate_rpc(denied, 1024).is_err());
@@ -1392,7 +2130,7 @@ mod tests {
             String::from_utf8_lossy(read),
             String::from_utf8_lossy(send)
         );
-        let (_, send_only, contains_send, _) =
+        let (_, send_only, contains_send, _, _) =
             validate_rpc(mixed_broadcast.as_bytes(), 1024).unwrap();
         assert!(!send_only);
         assert!(contains_send);
@@ -1402,6 +2140,12 @@ mod tests {
             String::from_utf8_lossy(v2)
         );
         assert!(validate_rpc(mixed_versions.as_bytes(), 1024).is_err());
+        let mixed_family = format!(
+            "[{},{}]",
+            String::from_utf8_lossy(read),
+            String::from_utf8_lossy(electrum_read)
+        );
+        assert!(validate_rpc(mixed_family.as_bytes(), 1024).is_err());
         for malformed in [
             br#"{"jsonrpc":null,"id":1,"method":"getblockhash","params":[1]}"#.as_slice(),
             br#"{"jsonrpc":false,"id":1,"method":"getblockhash","params":[1]}"#.as_slice(),
@@ -1538,8 +2282,9 @@ mod tests {
     fn debug_output_redacts_both_upstream_urls() {
         let chain = Chain {
             id: "xec-mainnet".to_string(),
-            rpc: Some("https://user:secret@rpc.example/key".parse().unwrap()),
-            chronik: Some("https://chronik.example/secret".parse().unwrap()),
+            rpc_urls: vec!["https://user:secret@rpc.example/key".parse().unwrap()],
+            chronik_urls: vec!["https://chronik.example/secret".parse().unwrap()],
+            electrum_urls: vec![],
             checkpoint_height: 1,
             checkpoint_hash: "00".repeat(32),
         };
@@ -1564,6 +2309,8 @@ mod tests {
             chronik_quota: FixedHourQuota::new(100),
             broadcast_quota: FixedHourQuota::new(10),
             capability_ttl: Duration::from_secs(60 * 60),
+            cooldowns: UpstreamCooldownTracker::default(),
+            customer_quota: Arc::new(FixedHourQuota::new(10_000)),
         };
         let debug = format!("{runtime:?}");
         assert!(!debug.contains("secret"));
@@ -1603,7 +2350,11 @@ mod tests {
             chains: vec![BitcoinProxyChainConf {
                 id: "xec-regtest".to_string(),
                 rpc_upstream_env: None,
+                rpc_upstream_envs: vec![],
                 chronik_upstream_env: Some("CHRONIK_URL".to_string()),
+                chronik_upstream_envs: vec![],
+                electrum_upstream_env: None,
+                electrum_upstream_envs: vec![],
                 checkpoint_height: 42,
                 checkpoint_hash: hex::encode(&conventional_hash),
             }],
@@ -1733,8 +2484,9 @@ mod tests {
                     "xec-mainnet".to_string(),
                     Chain {
                         id: "xec-mainnet".to_string(),
-                        rpc: Some(upstream_url.clone()),
-                        chronik: Some(upstream_url.clone()),
+                        rpc_urls: vec![upstream_url.clone()],
+                        chronik_urls: vec![upstream_url.clone()],
+                        electrum_urls: vec![],
                         checkpoint_height: 1,
                         checkpoint_hash: "00".repeat(32),
                     },
@@ -1743,8 +2495,9 @@ mod tests {
                     "bch-mainnet".to_string(),
                     Chain {
                         id: "bch-mainnet".to_string(),
-                        rpc: None,
-                        chronik: Some(upstream_url),
+                        rpc_urls: vec![],
+                        chronik_urls: vec![upstream_url],
+                        electrum_urls: vec![],
                         checkpoint_height: 1,
                         checkpoint_hash: "00".repeat(32),
                     },
@@ -1761,6 +2514,8 @@ mod tests {
             chronik_quota: FixedHourQuota::new(100),
             broadcast_quota: FixedHourQuota::new(10),
             capability_ttl: Duration::from_secs(60 * 60),
+            cooldowns: UpstreamCooldownTracker::default(),
+            customer_quota: Arc::new(FixedHourQuota::new(10_000)),
         });
         let (capability, _) = runtime.auth.issue_capability(
             Address([7; 20]),
@@ -1927,5 +2682,118 @@ mod tests {
             .unwrap();
         assert_eq!(modified.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(upstream_calls.load(Ordering::SeqCst), 5);
+    }
+
+    #[tokio::test]
+    async fn test_multi_upstream_rpc_failover() {
+        let failing_upstream = Router::new().route(
+            "/",
+            routing::post(|| async {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "upstream crashed"})),
+                )
+            }),
+        );
+        let failing_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        failing_listener.set_nonblocking(true).unwrap();
+        let failing_addr = failing_listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(failing_listener)
+                .unwrap()
+                .serve(failing_upstream.into_make_service()),
+        );
+
+        let working_upstream = Router::new().route(
+            "/",
+            routing::post(|| async {
+                Json(json!({"result": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f", "error": null, "id": 1}))
+            }),
+        );
+        let working_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        working_listener.set_nonblocking(true).unwrap();
+        let working_addr = working_listener.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(working_listener)
+                .unwrap()
+                .serve(working_upstream.into_make_service()),
+        );
+
+        let failing_url: Url = format!("http://{failing_addr}").parse().unwrap();
+        let working_url: Url = format!("http://{working_addr}").parse().unwrap();
+
+        let runtime = Arc::new(BitcoinProxyRuntime {
+            chains: HashMap::from([(
+                "btc-mainnet".to_string(),
+                Chain {
+                    id: "btc-mainnet".to_string(),
+                    rpc_urls: vec![failing_url, working_url],
+                    chronik_urls: vec![],
+                    electrum_urls: vec![],
+                    checkpoint_height: 1,
+                    checkpoint_hash: "00".repeat(32),
+                },
+            )]),
+            client: reqwest::Client::new(),
+            auth: RpcAuthState::new(),
+            network_tag: vec![],
+            permits: Arc::new(Semaphore::new(4)),
+            ingress_permits: Arc::new(Semaphore::new(4)),
+            max_request_bytes: 1024,
+            max_response_bytes: 1024,
+            timeout: Duration::from_secs(2),
+            chronik_quota: FixedHourQuota::new(100),
+            broadcast_quota: FixedHourQuota::new(10),
+            capability_ttl: Duration::from_secs(60 * 60),
+            cooldowns: UpstreamCooldownTracker::default(),
+            customer_quota: Arc::new(FixedHourQuota::new(10_000)),
+        });
+
+        let (capability, _) = runtime.auth.issue_capability(
+            Address([1; 20]),
+            "btc-mainnet",
+            now_ms(),
+            60 * 60 * 1000,
+        );
+
+        let tempdir = TempDir::new("cashweb-registry--failover-test").unwrap();
+        let registry = Registry::new(
+            Db::open(tempdir.path().join("db.rocksdb")).unwrap(),
+            Arc::new(DisabledChainAdapter),
+            Net::Regtest,
+        );
+        let event_bus = registry.event_bus().clone();
+        let server = RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
+            curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
+            bitcoin_proxy: Some(runtime),
+            solana_proxy: None,
+            spa_dir: None,
+            event_bus,
+        };
+        let router = server.into_router();
+
+        let rpc_body = br#"{"jsonrpc":"1.0","id":1,"method":"getblockhash","params":[1]}"#;
+        let response = router
+            .oneshot(
+                Request::post(format!("/chain-rpc/btc-mainnet/cap/{capability}/rpc"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(rpc_body.as_slice()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let response_bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        let json_resp: Value = serde_json::from_slice(&response_bytes).unwrap();
+        assert_eq!(
+            json_resp["result"],
+            "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
     }
 }

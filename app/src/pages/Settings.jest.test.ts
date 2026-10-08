@@ -81,10 +81,15 @@ const mockSetEmailGatewayAddress = jest.fn((address: string) => {
 const mockResetEmailGatewayAddress = jest.fn(() => {
   mockSettingsStore.emailGatewayAddress = defaultEmailGatewayAddress
 })
+const mockSetNetworkMode = jest.fn((mode: 'testnet' | 'mainnet') => {
+  mockSettingsStore.networkMode = mode
+})
 const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayAddress: defaultEmailGatewayAddress,
+  networkMode: 'testnet',
   setEmailGatewayAddress: mockSetEmailGatewayAddress,
   resetEmailGatewayAddress: mockResetEmailGatewayAddress,
+  setNetworkMode: mockSetNetworkMode,
 })
 jest.mock('src/stores/settings', () => ({
   useSettingsStore: () => mockSettingsStore,
@@ -431,5 +436,51 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     const input = wrapper.find('[data-test="email-gateway-input"]')
     expect((input.element as HTMLInputElement).value).toBe(newAddress)
     wrapper.unmount()
+  })
+
+  describe('Network Environment & Chains Section', () => {
+    it('renders the testnet mode toggle and allows switching to mainnet', async () => {
+      mockSettingsStore.networkMode = 'testnet'
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+
+      expect((wrapper.vm as any).isTestnetMode).toBe(true)
+      const toggle = wrapper.find('[data-test="testnet-mode-toggle"]')
+      expect(toggle.exists()).toBe(true)
+      expect(toggle.attributes('disable')).toBeUndefined()
+
+      // Toggle off to mainnet
+      ;(wrapper.vm as any).isTestnetMode = false
+      expect(mockSettingsStore.networkMode).toBe('mainnet')
+      expect(mockSetNetworkMode).toHaveBeenCalledWith('mainnet')
+
+      // Toggle back to testnet
+      ;(wrapper.vm as any).isTestnetMode = true
+      expect(mockSettingsStore.networkMode).toBe('testnet')
+      expect(mockSetNetworkMode).toHaveBeenCalledWith('testnet')
+
+      wrapper.unmount()
+    })
+
+    it('renders the supported settlement networks list', async () => {
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+
+      const supported = (wrapper.vm as any).supportedChains
+      expect(supported).toBeDefined()
+      expect(supported.length).toBeGreaterThanOrEqual(9)
+      const chainIds = supported.map((c: any) => c.id)
+      expect(chainIds).toContain('monad')
+      expect(chainIds).toContain('bitcoin')
+      expect(chainIds).toContain('bitcoincash')
+      expect(chainIds).toContain('dogecoin')
+      expect(chainIds).toContain('ecash')
+      expect(chainIds).toContain('solana')
+      expect(chainIds).toContain('tempo')
+      expect(chainIds).toContain('ethereum')
+      expect(chainIds).toContain('hyperliquid')
+
+      wrapper.unmount()
+    })
   })
 })

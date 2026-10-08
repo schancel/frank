@@ -113,6 +113,8 @@ pub enum ProtocolProxyCapability {
     JsonRpc,
     /// Bitcoin-family Chronik HTTP/Protobuf API.
     Chronik,
+    /// Bitcoin-family Electrum JSON-RPC API.
+    Electrum,
 }
 
 /// Return the compiled protocol chain registry.
@@ -207,10 +209,21 @@ pub fn protocol_chain_registry() -> &'static ProtocolChainRegistry {
                         assert!(chain.allowed_proxy_capabilities.iter().all(|capability| chain
                             .identity_probes
                             .iter()
-                            .any(|probe| matches!(probe, ProtocolIdentityProbe::BlockHash { capability: probe_capability, expected, .. }
-                                if probe_capability == capability
-                                    && expected.len() == 64
-                                    && expected.bytes().all(|byte| byte.is_ascii_hexdigit())))));
+                            .any(|probe| match probe {
+                                ProtocolIdentityProbe::BlockHash {
+                                    capability: probe_capability,
+                                    expected,
+                                    ..
+                                } => {
+                                    probe_capability == capability
+                                        && expected.len() == 64
+                                        && expected.bytes().all(|byte| byte.is_ascii_hexdigit())
+                                }
+                                ProtocolIdentityProbe::OperatorBlockCheckpoint {
+                                    capability: probe_capability,
+                                } => probe_capability == capability,
+                                _ => false,
+                            })));
                     }
                 }
                 ProtocolChainFamily::Solana => {
@@ -979,8 +992,19 @@ pub struct BitcoinProxyChainConf {
     pub id: String,
     /// Server-only environment variable containing a Bitcoin JSON-RPC URL.
     pub rpc_upstream_env: Option<String>,
+    /// Additional server-only environment variables containing Bitcoin JSON-RPC URLs.
+    #[serde(default)]
+    pub rpc_upstream_envs: Vec<String>,
     /// Server-only environment variable containing a Chronik base URL.
     pub chronik_upstream_env: Option<String>,
+    /// Additional server-only environment variables containing Chronik base URLs.
+    #[serde(default)]
+    pub chronik_upstream_envs: Vec<String>,
+    /// Server-only environment variable containing an Electrum base URL.
+    pub electrum_upstream_env: Option<String>,
+    /// Additional server-only environment variables containing Electrum base URLs.
+    #[serde(default)]
+    pub electrum_upstream_envs: Vec<String>,
     /// Checkpoint height queried on every configured upstream before readiness.
     pub checkpoint_height: u64,
     /// Expected conventional big-endian block hash at the checkpoint.
@@ -1064,13 +1088,23 @@ impl BitcoinProxyConf {
             let protocol = protocol_chain(&chain.id)
                 .filter(|row| row.family == ProtocolChainFamily::Bitcoin)
                 .ok_or_else(|| BitcoinProxyConfigError::WrongChainFamily(chain.id.clone()))?;
-            if chain.rpc_upstream_env.is_none() && chain.chronik_upstream_env.is_none() {
+            let has_upstream = chain.rpc_upstream_env.is_some()
+                || !chain.rpc_upstream_envs.is_empty()
+                || chain.chronik_upstream_env.is_some()
+                || !chain.chronik_upstream_envs.is_empty()
+                || chain.electrum_upstream_env.is_some()
+                || !chain.electrum_upstream_envs.is_empty();
+            if !has_upstream {
                 return Err(BitcoinProxyConfigError::MissingUpstream(chain.id.clone()));
             }
             for name in chain
                 .rpc_upstream_env
                 .iter()
+                .chain(chain.rpc_upstream_envs.iter())
                 .chain(chain.chronik_upstream_env.iter())
+                .chain(chain.chronik_upstream_envs.iter())
+                .chain(chain.electrum_upstream_env.iter())
+                .chain(chain.electrum_upstream_envs.iter())
             {
                 let valid = !name.is_empty()
                     && name.len() <= 128
@@ -1087,14 +1121,12 @@ impl BitcoinProxyConf {
                 return Err(BitcoinProxyConfigError::InvalidCheckpoint(chain.id.clone()));
             }
             let configured_capabilities = [
-                chain
-                    .rpc_upstream_env
-                    .as_ref()
-                    .map(|_| ProtocolProxyCapability::JsonRpc),
-                chain
-                    .chronik_upstream_env
-                    .as_ref()
-                    .map(|_| ProtocolProxyCapability::Chronik),
+                (chain.rpc_upstream_env.is_some() || !chain.rpc_upstream_envs.is_empty())
+                    .then_some(ProtocolProxyCapability::JsonRpc),
+                (chain.chronik_upstream_env.is_some() || !chain.chronik_upstream_envs.is_empty())
+                    .then_some(ProtocolProxyCapability::Chronik),
+                (chain.electrum_upstream_env.is_some() || !chain.electrum_upstream_envs.is_empty())
+                    .then_some(ProtocolProxyCapability::Electrum),
             ];
             for capability in configured_capabilities.into_iter().flatten() {
                 if let Some((height, expected)) =
@@ -1654,7 +1686,7 @@ continuity_file = "/var/lib/frank/continuity"
     fn protocol_registry_is_unique_and_family_validation_fails_closed() {
         let registry = protocol_chain_registry();
         assert_eq!(registry.schema_version, 1);
-        assert_eq!(registry.chains.len(), 21);
+        assert_eq!(registry.chains.len(), 26);
         assert_eq!(
             registry
                 .chains
@@ -1721,7 +1753,11 @@ continuity_file = "/var/lib/frank/continuity"
             chains: vec![BitcoinProxyChainConf {
                 id: "xec-mainnet".to_string(),
                 rpc_upstream_env: None,
+                rpc_upstream_envs: vec![],
                 chronik_upstream_env: Some("XEC_CHRONIK".to_string()),
+                chronik_upstream_envs: vec![],
+                electrum_upstream_env: None,
+                electrum_upstream_envs: vec![],
                 checkpoint_height: 661_648,
                 checkpoint_hash: "000000000000000004284c9d8b2c8ff731efeaec6be50729bdc9bd07f910757d"
                     .to_string(),

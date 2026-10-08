@@ -28,7 +28,17 @@ import { CANONICAL_EVM_CONTRACTS } from "@frank/wallet/chain/chains-registry";
 import { encodeStateChannelCloseCall } from "@frank/wallet/game-escrow";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
-import { welcomeItems } from "../../blackjack-greeter";
+import {
+  buildChallenge,
+  buildAccept,
+  dealerStep,
+  applyHandEvent,
+  foldHand,
+  DEALER_COVER_MULTIPLE,
+  type HandEvent,
+  type HandItem,
+  type HandState,
+} from "@frank/wallet/message-item-plugins/blackjack/hand";
 
 export interface ActiveGameRecord {
   gameId: string;
@@ -53,6 +63,26 @@ function normalizeEvmAddress(addr: string): string {
   const clean = addr.startsWith("0x") ? addr.slice(2) : addr;
   const hex = Buffer.from(clean, "utf8").toString("hex");
   return "0x" + hex.padStart(40, "0").slice(-40);
+}
+
+function serializeEvents(events: HandEvent[]): string {
+  return JSON.stringify(events, (_key, val) =>
+    typeof val === "bigint" ? val.toString() : val
+  );
+}
+
+function deserializeEvents(raw?: string | null): HandEvent[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((e: any) => ({
+      ...e,
+      stampWei: BigInt(e.stampWei ?? 0),
+    }));
+  } catch {
+    return [];
+  }
 }
 
 async function getStoredGame(
@@ -162,13 +192,54 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     console.log(
       `[blackjack] Proactively challenging new user ${user.address} to blackjack`
     );
-    const challengeItems = welcomeItems({
-      minWagerWei: this.minWagerWei,
-      maxWagerWei: this.maxWagerWei,
-      stampValueWei: 10_000_000_000_000_000n,
-    });
     try {
-      await ctx.sendMessage(user.address, challengeItems);
+      const bal = await ctx.getBalance().catch(() => 200_000_000_000_000_000n);
+      const reserveWei = 20_000_000_000_000_000n;
+      const free = bal > reserveWei ? bal - reserveWei : 0n;
+      const dealerMax = free / DEALER_COVER_MULTIPLE;
+      const maxBet =
+        dealerMax > this.maxWagerWei
+          ? this.maxWagerWei
+          : dealerMax >= this.minWagerWei
+          ? dealerMax
+          : this.minWagerWei;
+      const gameId = randomBytes(16).toString("hex");
+      const seed = randomBytes(32).toString("hex");
+      await ctx.state.put(`seed:${gameId}`, seed);
+      await ctx.state.put(`active:${user.address}`, gameId);
+
+      const built = buildChallenge({
+        gameId,
+        role: "dealer",
+        maxBetWei: maxBet,
+        spendableWei:
+          bal > reserveWei ? bal : maxBet * DEALER_COVER_MULTIPLE + reserveWei,
+        reserveWei,
+        seed,
+      });
+
+      if ("item" in built) {
+        const welcomeDM = [
+          built.item,
+          {
+            type: "text",
+            text: `Welcome to the blackjack table! Table limits: ${
+              Number(this.minWagerWei) / 1e18
+            } MON to ${Number(maxBet) / 1e18} MON per hand. Enter your bet and click Bet above to play!`,
+          },
+        ];
+        const res = await ctx.sendMessage(user.address, welcomeDM as any);
+        if (res) {
+          const event: HandEvent = {
+            item: built.item,
+            from: ctx.address,
+            to: user.address,
+            stampWei: res.stampValueWei ?? 0n,
+            digest: res.payloadDigest,
+          };
+          await ctx.state.put(`events:${gameId}`, serializeEvents([event]));
+        }
+      }
     } catch (err) {
       console.warn(
         `[blackjack] Failed to send challenge DM to ${user.address}:`,
@@ -180,7 +251,17 @@ export class BlackjackDealerBot implements FrankBotDefinition {
   async onMessage(msgCtx: BotMessageContext, ctx?: BotContext): Promise<void> {
     const effectiveCtx = ctx ?? (msgCtx as any);
 
-    // Check if any item represents a blackjack action
+    // 1. Check for modern peer-to-peer blackjack hand item
+    const handItem = msgCtx.items.find(
+      (item: any) => item.type === "blackjack-hand"
+    ) as HandItem | undefined;
+
+    if (handItem) {
+      await this.handleP2pHand(msgCtx, effectiveCtx, handItem);
+      return;
+    }
+
+    // 2. Check for legacy blackjack-move item
     const moveItem = msgCtx.items.find(
       (item: any) =>
         item.type === "blackjack-move" ||
@@ -188,53 +269,219 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         item.action !== undefined
     ) as any;
 
-    if (!moveItem) {
-      // Plain text or greeting: send welcome and instructions
-      const welcomeItem = buildBlackjackWelcomeItem({
-        minWagerWei: this.minWagerWei,
-        maxWagerWei: this.maxWagerWei,
-        rules: BLACKJACK_RULES_SUMMARY,
-      });
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: `Welcome to Frank Blackjack! Minimum bet is ${
-            Number(this.minWagerWei) / 1e18
-          } MON. Send a bet to start a game.`,
-        } as any,
-        welcomeItem,
-      ]);
+    if (moveItem) {
+      const action = moveItem.action;
+      const gameId = String(moveItem.gameId ?? msgCtx.conversationId);
+      console.log(
+        `[blackjack] onMessage received legacy move: action=${action}, gameId=${gameId}, from=${msgCtx.peerAddress}`
+      );
+
+      if (action === "bet") {
+        await this.handleBet(msgCtx, effectiveCtx, moveItem, gameId);
+      } else if (action === "hit") {
+        await this.handleHit(msgCtx, effectiveCtx, gameId);
+      } else if (action === "stand") {
+        await this.handleStand(msgCtx, effectiveCtx, gameId);
+      } else if (action === "deal") {
+        await msgCtx.reply([
+          {
+            type: "text",
+            text: `Blackjack: deal is a dealer-only action [game=${JSON.stringify(
+              gameId
+            )}]`,
+          } as any,
+        ]);
+      } else {
+        await msgCtx.reply([
+          {
+            type: "text",
+            text: `Unknown blackjack action: ${action}. Available actions: bet, hit, stand.`,
+          } as any,
+        ]);
+      }
       return;
     }
 
-    const action = moveItem.action;
-    const gameId = String(moveItem.gameId ?? msgCtx.conversationId);
-    console.log(
-      `[blackjack] onMessage received: action=${action}, gameId=${gameId}, from=${msgCtx.peerAddress}`
-    );
+    // 3. Plain text or greeting / question (e.g. "How do I challenge?")
+    await this.issueChallenge(msgCtx, effectiveCtx);
+  }
 
-    if (action === "bet") {
-      await this.handleBet(msgCtx, effectiveCtx, moveItem, gameId);
-    } else if (action === "hit") {
-      await this.handleHit(msgCtx, effectiveCtx, gameId);
-    } else if (action === "stand") {
-      await this.handleStand(msgCtx, effectiveCtx, gameId);
-    } else if (action === "deal") {
-      await msgCtx.reply([
+  private async issueChallenge(
+    msgCtx: BotMessageContext,
+    ctx: BotContext
+  ): Promise<void> {
+    const bal = await ctx.getBalance().catch(() => 200_000_000_000_000_000n);
+    const reserveWei = 20_000_000_000_000_000n;
+    const free = bal > reserveWei ? bal - reserveWei : 0n;
+    const dealerMax = free / DEALER_COVER_MULTIPLE;
+    const maxBet =
+      dealerMax > this.maxWagerWei
+        ? this.maxWagerWei
+        : dealerMax >= this.minWagerWei
+        ? dealerMax
+        : this.minWagerWei;
+    const gameId = randomBytes(16).toString("hex");
+    const seed = randomBytes(32).toString("hex");
+    await ctx.state.put(`seed:${gameId}`, seed);
+    await ctx.state.put(`active:${msgCtx.peerAddress}`, gameId);
+
+    const built = buildChallenge({
+      gameId,
+      role: "dealer",
+      maxBetWei: maxBet,
+      spendableWei:
+        bal > reserveWei ? bal : maxBet * DEALER_COVER_MULTIPLE + reserveWei,
+      reserveWei,
+      seed,
+    });
+
+    if ("item" in built) {
+      const replyItems = [
+        built.item,
         {
           type: "text",
-          text: `Blackjack: deal is a dealer-only action [game=${JSON.stringify(
-            gameId
-          )}]`,
-        } as any,
-      ]);
-    } else {
-      await msgCtx.reply([
-        {
-          type: "text",
-          text: `Unknown blackjack action: ${action}. Available actions: bet, hit, stand.`,
-        } as any,
-      ]);
+          text: `Here is a fresh blackjack challenge! Enter your bet amount above and click "Bet" to start playing (Table limits: ${
+            Number(this.minWagerWei) / 1e18
+          } MON - ${
+            Number(maxBet) / 1e18
+          } MON). You can also challenge me anytime by clicking the 🎲 casino icon in the chat bar!`,
+        },
+      ];
+      const sendRes = await msgCtx.reply(replyItems as any);
+      if (sendRes) {
+        const event: HandEvent = {
+          item: built.item,
+          from: ctx.address,
+          to: msgCtx.peerAddress,
+          stampWei: sendRes.stampValueWei ?? 0n,
+          digest: sendRes.payloadDigest,
+        };
+        await ctx.state.put(`events:${gameId}`, serializeEvents([event]));
+      }
+    }
+  }
+
+  private async handleP2pHand(
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
+    handItem: HandItem
+  ): Promise<void> {
+    const gameId = handItem.gameId;
+    const eventsKey = `events:${gameId}`;
+    const rawEvents = await ctx.state.get(eventsKey);
+    const events: HandEvent[] = deserializeEvents(rawEvents);
+
+    const incomingEvent: HandEvent = {
+      item: handItem,
+      from: msgCtx.peerAddress,
+      to: ctx.address,
+      stampWei: (msgCtx as any).stampValueWei ?? 0n,
+      digest: msgCtx.payloadDigest,
+    };
+    events.push(incomingEvent);
+
+    const { state } = foldHand(events);
+
+    if (handItem.action === "challenge") {
+      let seed = await ctx.state.get(`seed:${gameId}`);
+      if (!seed) {
+        seed = randomBytes(32).toString("hex");
+        await ctx.state.put(`seed:${gameId}`, seed);
+      }
+      await ctx.state.put(`active:${msgCtx.peerAddress}`, gameId);
+
+      if (state) {
+        const bal = await ctx.getBalance().catch(() => 200_000_000_000_000_000n);
+        const reserveWei = 20_000_000_000_000_000n;
+        const free = bal > reserveWei ? bal - reserveWei : 0n;
+        const dealerMax = free / DEALER_COVER_MULTIPLE;
+        const wanted =
+          state.maxBetWei < dealerMax
+            ? state.maxBetWei
+            : dealerMax > 0n
+            ? dealerMax
+            : this.minWagerWei;
+
+        const built = buildAccept({
+          state,
+          spendableWei:
+            bal > reserveWei ? bal : wanted * DEALER_COVER_MULTIPLE + reserveWei,
+          reserveWei,
+          seed,
+          wantedMaxBetWei: wanted,
+        });
+
+        if ("item" in built) {
+          const sendRes = await msgCtx.reply([
+            built.item,
+            {
+              type: "text",
+              text: `Challenge accepted! Max bet: ${
+                Number(wanted) / 1e18
+              } MON. Enter your bet and click Bet to begin!`,
+            },
+          ] as any);
+          if (sendRes) {
+            events.push({
+              item: built.item,
+              from: ctx.address,
+              to: msgCtx.peerAddress,
+              stampWei: sendRes.stampValueWei ?? 0n,
+              digest: sendRes.payloadDigest,
+            });
+            await ctx.state.put(eventsKey, serializeEvents(events));
+          }
+        }
+      }
+      return;
+    }
+
+    // Move actions: bet, hit, stand, double
+    let seed = await ctx.state.get(`seed:${gameId}`);
+    if (!seed) {
+      console.error(`[blackjack] Missing seed for game ${gameId}`);
+      return;
+    }
+
+    const step = dealerStep(state, seed);
+    if (!step) {
+      console.warn(
+        `[blackjack] dealerStep returned undefined for game ${gameId}, phase=${state?.phase}`
+      );
+      await ctx.state.put(eventsKey, serializeEvents(events));
+      return;
+    }
+
+    let text = "";
+    if (step.item.action === "deal") {
+      text = "Cards dealt! Your turn: Hit, Stand, or Double.";
+    } else if (step.item.action === "card") {
+      text = "Card dealt. Hit or Stand?";
+    } else if (step.item.action === "reveal") {
+      const outcome = state?.outcome ?? "resolved";
+      text = `Game over: ${outcome}!`;
+    } else if (step.item.action === "refund") {
+      text = "Bet refunded.";
+    }
+
+    const replyItems: any[] = [step.item];
+    if (text) {
+      replyItems.push({ type: "text", text });
+    }
+
+    const sendRes = await msgCtx.reply(replyItems, {
+      stampValueWei: step.payWei,
+    });
+
+    if (sendRes) {
+      events.push({
+        item: step.item,
+        from: ctx.address,
+        to: msgCtx.peerAddress,
+        stampWei: sendRes.stampValueWei ?? step.payWei ?? 0n,
+        digest: sendRes.payloadDigest,
+      });
+      await ctx.state.put(eventsKey, serializeEvents(events));
     }
   }
 

@@ -1,5 +1,6 @@
 import { Keypair, PublicKey } from "@solana/web3.js";
 import * as bip39 from "bip39";
+import { getBase58Decoder } from "@solana/codecs-strings";
 
 import { HDSeed, NativeAssetChain, ChainAddress } from "./active-chain";
 import { formatBaseUnit, parseBaseUnit } from "./base-unit";
@@ -126,6 +127,73 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         if (wallet.family !== "solana") {
           throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
         }
+
+        if (wallet.chainUtxoPool) {
+          const primaryBalance = await wallet.getBalance().catch(() => 0n);
+          const exceedsPrimary = value > primaryBalance;
+          let selection:
+            | ReturnType<typeof wallet.chainUtxoPool.selectCoins>
+            | undefined;
+          try {
+            selection = wallet.chainUtxoPool.selectCoins({
+              chain: "solana",
+              targetAmountWei: value,
+            });
+          } catch (err) {
+            if (exceedsPrimary) {
+              throw err;
+            }
+          }
+
+          if (selection && (exceedsPrimary || selection.selected.length > 1)) {
+            const { blockhash } = await config.connection.getLatestBlockhash();
+            const changeAddress =
+              (wallet as SolanaWallet).address ??
+              (await wallet.getReceiveAddress()).raw;
+            const multiTransfer =
+              await wallet.chainUtxoPool.solana.buildMultiInputTransfer({
+                inputs: selection.selected,
+                recipientAddress: recipient.raw,
+                targetAmountLamports: value,
+                changeAddress,
+                recentBlockhash: blockhash,
+                feeLamports: 5_000n,
+              });
+
+            const base58Decoder = getBase58Decoder();
+            const txHash = multiTransfer.transaction.signature
+              ? base58Decoder.decode(multiTransfer.transaction.signature)
+              : undefined;
+
+            if (onSigned && txHash) {
+              await onSigned({ txHash });
+            }
+
+            onProgress?.({ status: { stage: "broadcasting" } });
+            const serialized = await multiTransfer.transaction.serialize();
+            const rpcTxHash = await config.connection.sendRawTransaction(
+              serialized
+            );
+            const finalTxHash = rpcTxHash || txHash || "";
+
+            for (const coin of selection.selected) {
+              try {
+                wallet.chainUtxoPool.markSpent(coin.id);
+              } catch {}
+            }
+
+            onProgress?.({
+              status: { stage: "confirmed", txHash: finalTxHash },
+            });
+            return {
+              txHash: finalTxHash,
+              totalValueSent: value,
+              totalFeePaid: 5000n,
+              inputCount: selection.selected.length,
+            };
+          }
+        }
+
         onProgress?.({ status: { stage: "broadcasting" } });
         const result = await wallet.sendNative({ recipient, value, onSigned });
         onProgress?.({ status: { stage: "confirmed", txHash: result.txHash } });
@@ -135,7 +203,21 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
           totalFeePaid: 5000n,
         };
       },
-      async estimateLegacyFee() {
+      async estimateLegacyFee(params) {
+        const pool = params?.wallet?.chainUtxoPool;
+        if (pool && params?.value) {
+          try {
+            const selection = pool.selectCoins({
+              chain: "solana",
+              targetAmountWei: params.value,
+            });
+            return {
+              totalFee: 5000n,
+              inputCount: selection.selected.length,
+              deliveryFee: 5000n,
+            };
+          } catch {}
+        }
         return {
           totalFee: 5000n,
           inputCount: 1,

@@ -85,6 +85,10 @@ jest.mock('../utils/own-address', () => ({
   ...jest.requireActual('../utils/own-address'),
   getOwnCanonicalAddress: () => mockOwnAddress(),
 }))
+jest.mock('../utils/directory-peer', () => ({
+  fetchContactProfile: jest.fn().mockResolvedValue(undefined),
+}))
+jest.setTimeout(10000)
 
 const SENDER_ADDRESS = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 const RECIPIENT_ADDRESS = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'

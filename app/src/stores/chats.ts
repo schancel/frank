@@ -3197,8 +3197,10 @@ export const useChatStore = defineStore('chats', {
         return
       }
       let conv = this.conversations[conversationId]
+      let activatedByContactAddress: string | null = null
       try {
         const displayAddress = toChainDisplayAddress(conversationId)
+        activatedByContactAddress = displayAddress
         const peerConvs = this.getConversationsForAddress(
           displayAddress,
         ).filter(c => c.kind === 'direct' && !c.topic)
@@ -3225,6 +3227,13 @@ export const useChatStore = defineStore('chats', {
         return
       }
       this.activeConversationId = conv.id
+      if (
+        activatedByContactAddress &&
+        (conv.kind === 'direct' || conv.kind === 'email')
+      ) {
+        conv.address = activatedByContactAddress
+        this.chats[activatedByContactAddress] = conv
+      }
       if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
         this.activeChatAddr = conv.address
         const contacts = useContactStore()

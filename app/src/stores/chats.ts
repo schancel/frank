@@ -1473,6 +1473,65 @@ export const useChatStore = defineStore('chats', {
       recordLogicalMessage(this.logicalMessages, message, conv.id)
     },
     /**
+     * Records a local self-message (such as swap transaction logs or saved notes)
+     * addressed to the user's own canonical identity address.
+     * Persists directly to the durable message store without requiring an external relay trip.
+     */
+    async selfSendMessage({
+      items,
+      type = 'system',
+      meta,
+    }: {
+      items: MessageItem[]
+      type?: string
+      meta?: Record<string, any>
+    }): Promise<string> {
+      let ownAddress = await getOwnCanonicalAddress()
+      if (!ownAddress) {
+        ownAddress = 'self'
+      }
+      const messageId =
+        'msg-self-' +
+        Date.now() +
+        '-' +
+        Math.random().toString(36).substring(2, 9)
+      const timestamp = Date.now()
+
+      this.sendMessageLocal({
+        address: ownAddress,
+        senderAddress: ownAddress,
+        index: messageId,
+        items,
+        outpoints: [],
+        status: 'confirmed',
+        previousHash: null,
+        timestamp,
+      })
+
+      try {
+        const messageStore = await store
+        await messageStore.saveMessage({
+          index: messageId,
+          copartyAddress: ownAddress,
+          senderAddress: ownAddress,
+          message: {
+            outbound: true,
+            status: 'confirmed',
+            receivedTime: timestamp,
+            serverTime: timestamp,
+            items,
+            outpoints: [],
+            senderAddress: ownAddress,
+          },
+        })
+      } catch (err) {
+        console.warn('Failed to persist selfSendMessage to messageStore', err)
+      }
+
+      return messageId
+    },
+
+    /**
      * Sends a direct message like iMessage does (#269/#270): the message appears in the
      * conversation at once and is stored durably with its text; if the send fails it stays
      * visible, marked failed with the reason, and the user can Retry or Discard it, also after a

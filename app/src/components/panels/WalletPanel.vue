@@ -113,6 +113,41 @@
               </q-item-label>
             </q-item-section>
           </q-item>
+
+          <!-- Token Sublist when chain has multiple assets (e.g. SOL + tUSDC) -->
+          <div
+            v-if="
+              selectedChain === wallet.id && getWalletTokens(wallet).length > 1
+            "
+            class="q-pl-xl q-pr-md q-py-xs bg-grey-2 dark:bg-grey-9 q-my-xs q-mx-sm rounded-borders"
+            :data-test="`${wallet.id}-token-sublist`"
+          >
+            <div
+              v-for="token in getWalletTokens(wallet)"
+              :key="token.id"
+              class="row items-center justify-between text-caption q-py-xs text-grey-8 dark:text-grey-3"
+              :data-test="`subtoken-${token.symbol.toLowerCase()}`"
+            >
+              <div class="row items-center no-wrap">
+                <q-icon
+                  :name="token.isNative ? 'toll' : 'generating_tokens'"
+                  size="13px"
+                  class="q-mr-xs text-primary"
+                />
+                <span class="text-weight-medium">{{ token.symbol }}</span>
+              </div>
+              <div class="row items-center no-wrap q-gutter-x-xs">
+                <span>{{ token.balanceFormatted }}</span>
+                <span
+                  v-if="token.avuFormatted"
+                  class="text-grey-6 text-caption"
+                >
+                  ({{ token.avuFormatted }})
+                </span>
+              </div>
+            </div>
+          </div>
+
           <p
             v-if="wallet.isMain && loaded && hasError"
             role="status"
@@ -404,7 +439,11 @@ function selectWallet(wallet: string) {
 }
 
 const { loaded, hasError, formattedBalance, balance } = useBalance()
-const { getFormattedBalance, getRawBalance } = useMultichainBalance()
+const { getFormattedBalance, getRawBalance, getTokens } = useMultichainBalance()
+
+function getWalletTokens(wallet: WalletItemConfig) {
+  return getTokens?.(wallet.id) || []
+}
 
 const oracle = useSafeOracleStore()
 onMounted(() => {

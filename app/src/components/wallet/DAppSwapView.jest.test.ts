@@ -72,7 +72,7 @@ describe('DAppSwapView component', () => {
     const destElem = wrapper.find('[data-testid="swap-destination-address"]')
     expect(destElem.exists()).toBe(true)
     expect(destElem.text()).toContain(
-      'Direct settlement to fresh HD change address',
+      'Direct settlement to private stealth address',
     )
   })
 

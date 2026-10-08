@@ -51,10 +51,25 @@ const mockFetchSolanaBalance = jest.fn().mockResolvedValue({
   networkId: 'solana-devnet',
 })
 
+const mockFetchSolanaTokenAccounts = jest.fn().mockResolvedValue([
+  {
+    mint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    symbol: 'tUSDC',
+    name: 'USD Coin (Devnet)',
+    balanceRaw: 100000000n,
+    decimals: 6,
+    uiAmount: 100.0,
+    formatted: '100.00 tUSDC',
+    avuFormatted: '≈ 1,190.5 AVU',
+  },
+])
+
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: { isTestnet: true },
   fetchEcashBalance: (...args: unknown[]) => mockFetchEcashBalance(...args),
   fetchSolanaBalance: (...args: unknown[]) => mockFetchSolanaBalance(...args),
+  fetchSolanaTokenAccounts: (...args: unknown[]) =>
+    mockFetchSolanaTokenAccounts(...args),
   loadMonadChainConfigFromEnv: () => ({
     relayBaseUrl: 'http://127.0.0.1:8098',
   }),
@@ -100,21 +115,28 @@ describe('useChainBalance', () => {
       relayBaseUrl: 'http://127.0.0.1:8098',
     })
 
-    const { formattedBalance, loaded, balance } = useChainBalance('solana')
+    const { formattedBalance, loaded, balance, tokens } =
+      useChainBalance('solana')
     expect(loaded.value).toBe(true)
     expect(balance.value).toBe(2_500_000_000n)
     expect(formattedBalance.value).toBe('2.5 tSOL')
+    expect(tokens.value).toHaveLength(2)
+    expect(tokens.value[0].symbol).toBe('tSOL')
+    expect(tokens.value[1].symbol).toBe('tUSDC')
+    expect(tokens.value[1].balanceFormatted).toBe('100.00 tUSDC')
   })
 
   it('provides multichain helper methods', async () => {
     await fetchChainBalance('ecash', true)
     await fetchChainBalance('solana', true)
-    const { getFormattedBalance, isChainLoaded } = useMultichainBalance()
+    const { getFormattedBalance, isChainLoaded, getTokens } =
+      useMultichainBalance()
     expect(getFormattedBalance('monad')).toBe('10 MON')
     expect(getFormattedBalance('ecash')).toBe('10000 tXEC')
     expect(getFormattedBalance('solana')).toBe('2.5 tSOL')
     expect(isChainLoaded('ecash')).toBe(true)
     expect(isChainLoaded('solana')).toBe(true)
+    expect(getTokens('solana')).toHaveLength(2)
   })
 
   it('handles fetch error gracefully', async () => {

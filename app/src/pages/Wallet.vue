@@ -280,6 +280,170 @@
                       />
                     </q-card-actions>
                   </q-card-section>
+
+                  <!-- Assets & Tokens Card -->
+                  <div class="q-px-md q-pt-md">
+                    <q-card
+                      flat
+                      bordered
+                      class="q-pa-md bg-transparent"
+                      data-testid="wallet-tokens-card"
+                    >
+                      <div class="row items-center justify-between q-mb-sm">
+                        <div class="row items-center q-gutter-x-xs">
+                          <q-icon
+                            name="account_balance_wallet"
+                            size="18px"
+                            color="primary"
+                          />
+                          <span class="text-subtitle2 text-weight-bold">
+                            {{ $t('walletPanel.assetsAndTokens') }}
+                          </span>
+                        </div>
+                        <q-badge outline color="primary" class="text-bold">
+                          {{ activeTokens.length }}
+                          {{ activeTokens.length === 1 ? 'Asset' : 'Assets' }}
+                        </q-badge>
+                      </div>
+
+                      <q-list separator class="rounded-borders">
+                        <q-item
+                          v-for="token in activeTokens"
+                          :key="token.id"
+                          class="q-px-none q-py-sm"
+                          :data-testid="`wallet-token-item-${token.symbol.toLowerCase()}`"
+                        >
+                          <q-item-section avatar top>
+                            <q-avatar
+                              size="36px"
+                              :color="
+                                token.isNative ? 'primary' : 'deep-purple'
+                              "
+                              text-color="white"
+                              :icon="
+                                token.isNative ? 'toll' : 'generating_tokens'
+                              "
+                            />
+                          </q-item-section>
+                          <q-item-section>
+                            <q-item-label class="text-weight-bold">
+                              {{ token.symbol }}
+                              <span
+                                class="text-caption text-grey-7 font-weight-normal q-ml-xs"
+                              >
+                                · {{ token.name }}
+                              </span>
+                            </q-item-label>
+                            <q-item-label caption class="ellipsis text-grey-6">
+                              <span
+                                v-if="!token.isNative && token.mintOrAddress"
+                              >
+                                {{ $t('walletPanel.tokenMint') }}:
+                                {{ token.mintOrAddress.slice(0, 8) }}...{{
+                                  token.mintOrAddress.slice(-6)
+                                }}
+                              </span>
+                              <span v-else>
+                                {{ $t('walletPanel.nativeCoin') }}
+                              </span>
+                            </q-item-label>
+                          </q-item-section>
+                          <q-item-section side>
+                            <q-item-label class="text-weight-bolder text-right">
+                              {{ token.balanceFormatted }}
+                            </q-item-label>
+                            <q-item-label
+                              caption
+                              class="text-grey-7 text-right"
+                            >
+                              {{ token.avuFormatted }}
+                            </q-item-label>
+                          </q-item-section>
+                        </q-item>
+                      </q-list>
+                    </q-card>
+                  </div>
+
+                  <!-- Recent Activity / Transactions Card -->
+                  <div class="q-px-md q-pt-md q-pb-lg">
+                    <q-card
+                      flat
+                      bordered
+                      class="q-pa-md bg-transparent"
+                      data-testid="wallet-activity-card"
+                    >
+                      <div class="row items-center justify-between q-mb-sm">
+                        <div class="row items-center q-gutter-x-xs">
+                          <q-icon name="history" size="18px" color="primary" />
+                          <span class="text-subtitle2 text-weight-bold">
+                            {{ $t('walletPanel.recentActivity') }}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div
+                        v-if="recentSwaps.length === 0"
+                        class="text-center text-caption text-grey-6 q-py-md"
+                        data-testid="wallet-activity-empty"
+                      >
+                        <q-icon
+                          name="receipt_long"
+                          size="32px"
+                          color="grey-5"
+                          class="q-mb-xs block q-mx-auto"
+                        />
+                        {{ $t('walletPanel.noRecentActivity') }}
+                      </div>
+
+                      <q-list
+                        v-else
+                        separator
+                        class="rounded-borders"
+                        data-testid="wallet-activity-list"
+                      >
+                        <q-item
+                          v-for="swap in recentSwaps"
+                          :key="swap.id"
+                          class="q-px-none q-py-sm"
+                          data-testid="wallet-activity-item"
+                        >
+                          <q-item-section avatar top>
+                            <q-avatar
+                              size="32px"
+                              color="primary"
+                              text-color="white"
+                              icon="swap_horiz"
+                            />
+                          </q-item-section>
+                          <q-item-section>
+                            <q-item-label class="text-weight-bold">
+                              {{ swap.fromAmount }} {{ swap.fromAsset }} →
+                              {{ swap.toAmount }} {{ swap.toAsset }}
+                            </q-item-label>
+                            <q-item-label caption class="text-grey-7">
+                              {{ swap.route }} ·
+                              {{ formatSwapTime(swap.timestamp) }}
+                            </q-item-label>
+                          </q-item-section>
+                          <q-item-section side>
+                            <q-badge color="positive" outline class="text-bold">
+                              {{ swap.status.toUpperCase() }}
+                            </q-badge>
+                            <a
+                              v-if="selectedWallet === 'solana'"
+                              :href="`https://explorer.solana.com/tx/${swap.txHash}?cluster=devnet`"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              class="text-caption text-primary q-mt-xs text-right cursor-pointer"
+                              style="text-decoration: underline"
+                            >
+                              {{ $t('walletPanel.viewInExplorer') }}
+                            </a>
+                          </q-item-section>
+                        </q-item>
+                      </q-list>
+                    </q-card>
+                  </div>
                 </q-tab-panel>
 
                 <q-tab-panel name="swap" class="q-pa-none">
@@ -319,6 +483,8 @@ import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountSession, accountStatus } from '../accounts/session'
 import { activeChain } from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
+import { useSwapHistory } from 'src/composables/useSwapHistory'
+import { getChainTokens, type TokenItem } from 'src/composables/useChainBalance'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -393,6 +559,27 @@ export default defineComponent({
         chainBalance.value,
       )
     })
+
+    const swapHistory = useSwapHistory()
+    const recentSwaps = computed(() => {
+      return swapHistory.getSwapsForChain(selectedWallet.value).value
+    })
+
+    const activeTokens = computed<TokenItem[]>(() => {
+      return getChainTokens(selectedWallet.value)
+    })
+
+    const formatSwapTime = (timestamp: number) => {
+      try {
+        const diff = Date.now() - timestamp
+        if (diff < 60_000) return 'Just now'
+        if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`
+        if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`
+        return new Date(timestamp).toLocaleDateString()
+      } catch {
+        return ''
+      }
+    }
 
     // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
     // not look like a real zero.
@@ -507,6 +694,9 @@ export default defineComponent({
       openReceive() {
         openPage(router, '/wallet')
       },
+      activeTokens,
+      recentSwaps,
+      formatSwapTime,
     }
   },
 })

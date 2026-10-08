@@ -60,6 +60,18 @@ jest.mock('src/composables/useChainBalance', () => ({
     if (val === 'monad') return balance
     return mockChainBalance
   },
+  getChainTokens: (chain: string) => [
+    {
+      id: `${chain}-native`,
+      symbol: chain.toUpperCase(),
+      name: `${chain} Native`,
+      mintOrAddress: '',
+      balanceFormatted: '1.0',
+      numericBalance: 1.0,
+      avuFormatted: '≈ 100 AVU',
+      isNative: true,
+    },
+  ],
 }))
 jest.mock('src/stores/oracle', () => ({
   useSafeOracleStore: () => ({

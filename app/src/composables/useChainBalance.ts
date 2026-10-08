@@ -19,16 +19,31 @@ import {
   activeChain,
   fetchEcashBalance,
   fetchSolanaBalance,
+  fetchSolanaTokenAccounts,
   loadMonadChainConfigFromEnv,
+  type SolanaTokenAccount,
 } from '@frank/wallet/chain'
 import { accountSession, accountStatus } from '../accounts/session'
 import { useBalance, APP_STATE_EVENT, BALANCE_POLL_MS } from './useBalance'
+
+export interface TokenItem {
+  id: string
+  symbol: string
+  name: string
+  mintOrAddress: string
+  balanceFormatted: string
+  numericBalance: number
+  avuFormatted: string
+  decimals?: number
+  isNative?: boolean
+}
 
 export interface ChainBalanceState {
   balance: bigint | null
   formattedBalance: string
   loaded: boolean
   hasError: boolean
+  tokens?: SolanaTokenAccount[]
 }
 
 // Reactive store for non-monad chain balances
@@ -44,6 +59,7 @@ const solanaState = ref<ChainBalanceState>({
   formattedBalance: '',
   loaded: false,
   hasError: false,
+  tokens: [],
 })
 
 let multichainConsumers = 0
@@ -152,16 +168,24 @@ export async function fetchChainBalance(
       const networkId = activeChain.isTestnet
         ? 'solana-devnet'
         : 'solana-mainnet'
-      const result = await fetchSolanaBalance({
-        address,
-        networkId,
-        relayBaseUrl,
-      })
+      const [result, tokensResult] = await Promise.all([
+        fetchSolanaBalance({
+          address,
+          networkId,
+          relayBaseUrl,
+        }),
+        fetchSolanaTokenAccounts({
+          address,
+          networkId,
+          relayBaseUrl,
+        }).catch(() => []),
+      ])
       solanaState.value = {
         balance: result.lamports,
         formattedBalance: result.formatted,
         loaded: true,
         hasError: false,
+        tokens: tokensResult,
       }
     } catch (err) {
       console.error('Failed to fetch Solana balance', err)
@@ -275,9 +299,12 @@ export function useChainBalance(chainRef: Ref<string> | string) {
     return false
   })
 
+  const tokens = computed<TokenItem[]>(() => getChainTokens(chain.value))
+
   return {
     balance,
     formattedBalance,
+    tokens,
     loaded,
     hasError,
     refresh: () => {
@@ -285,6 +312,63 @@ export function useChainBalance(chainRef: Ref<string> | string) {
       return fetchChainBalance(chain.value, true)
     },
   }
+}
+
+/**
+ * Returns available native and sub-token assets for a given chain.
+ */
+export function getChainTokens(chainName: string): TokenItem[] {
+  if (chainName === 'solana') {
+    const isTestnet = activeChain.isTestnet
+    const nativeSymbol = isTestnet ? 'tSOL' : 'SOL'
+    const nativeBal =
+      solanaState.value.formattedBalance ||
+      (isTestnet ? '0.00 tSOL' : '0.00 SOL')
+    const nativeNum = solanaState.value.balance
+      ? Number(solanaState.value.balance) / 1e9
+      : 0
+    const avuVal = nativeNum * 145.0 * 11.90476
+    const nativeAvu =
+      avuVal > 0
+        ? `≈ ${avuVal.toLocaleString('en-US', {
+            minimumFractionDigits: 1,
+            maximumFractionDigits: 1,
+          })} AVU`
+        : ''
+
+    const items: TokenItem[] = [
+      {
+        id: 'solana-native',
+        symbol: nativeSymbol,
+        name: 'Solana',
+        mintOrAddress: accountSession.getCachedChainAddress?.('solana') || '',
+        balanceFormatted: nativeBal,
+        numericBalance: nativeNum,
+        avuFormatted: nativeAvu,
+        decimals: 9,
+        isNative: true,
+      },
+    ]
+
+    const splTokens = solanaState.value.tokens || []
+    for (const t of splTokens) {
+      items.push({
+        id: t.mint,
+        symbol: t.symbol,
+        name: t.name,
+        mintOrAddress: t.mint,
+        balanceFormatted: t.formatted,
+        numericBalance: t.uiAmount,
+        avuFormatted: t.avuFormatted,
+        decimals: t.decimals,
+        isNative: false,
+      })
+    }
+
+    return items
+  }
+
+  return []
 }
 
 /**
@@ -302,6 +386,7 @@ export function useMultichainBalance() {
     monad,
     ecash: readonly(ecashState),
     solana: readonly(solanaState),
+    getTokens: (chain: string) => getChainTokens(chain),
     getFormattedBalance(chain: string): string | undefined {
       if (chain === 'monad') {
         return monad.loaded.value ? monad.formattedBalance.value : undefined

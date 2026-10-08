@@ -698,6 +698,28 @@ export function isChainEnabled(id: string): boolean {
 }
 
 /**
+ * Resolves an arbitrary chain identifier or kind to its canonical registry network ID
+ * (e.g. 'bitcoin' with isTestnet: true -> 'btc-testnet', 'solana' -> 'solana-devnet').
+ * If the input is already a canonical network ID, returns it directly.
+ */
+export function resolveNetworkId(chainOrId: string, isTestnet = false): string {
+  const direct = getChainRegistryEntry(chainOrId);
+  if (direct) return direct.id;
+  try {
+    const byKind = getChainRegistryByKind(
+      chainOrId as SupportedChainKind,
+      isTestnet
+    );
+    if (byKind) return byKind.id;
+  } catch {
+    // not a known chain kind
+  }
+  const resolved = resolveChainIdentifier(chainOrId);
+  if (resolved) return resolved.id;
+  return chainOrId;
+}
+
+/**
  * Retrieves all registered chains for a given network type (testnet vs mainnet).
  */
 export function getChainsByNetwork(isTestnet: boolean): ChainRegistryEntry[] {

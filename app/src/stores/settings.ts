@@ -1,10 +1,12 @@
 import { defineStore } from 'pinia'
 import { LevelDB } from 'level'
+import { setNetworkMode } from '@frank/wallet/chain'
 
 import { defaultEmailGatewayAddress } from 'src/utils/constants'
 
 export interface SettingsState {
   emailGatewayAddress: string
+  networkMode: 'testnet' | 'mainnet'
 }
 
 export function saveSettings(
@@ -36,6 +38,7 @@ export const ETHEREUM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/
 export const useSettingsStore = defineStore('settings', {
   state: (): SettingsState => ({
     emailGatewayAddress: defaultEmailGatewayAddress,
+    networkMode: 'testnet',
   }),
   actions: {
     setEmailGatewayAddress(address: string) {
@@ -49,13 +52,21 @@ export const useSettingsStore = defineStore('settings', {
     resetEmailGatewayAddress() {
       this.emailGatewayAddress = defaultEmailGatewayAddress
     },
+    setNetworkMode(mode: 'testnet' | 'mainnet') {
+      this.networkMode = mode
+      setNetworkMode(mode)
+    },
   },
   storage: {
     save(storage, _mutation, state): Promise<void> {
       return saveSettings(storage, state)
     },
-    restore(storage): Promise<Partial<SettingsState>> {
-      return restoreSettings(storage)
+    async restore(storage): Promise<Partial<SettingsState>> {
+      const restored = await restoreSettings(storage)
+      if (restored.networkMode) {
+        setNetworkMode(restored.networkMode)
+      }
+      return restored
     },
   },
 })

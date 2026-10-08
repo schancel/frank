@@ -106,6 +106,41 @@ describe('Multi-chain transaction explorer configuration', () => {
     expect(multiChainExplorerUrl('ecash123', 'ecash-mainnet')).toBe(
       'https://blockchair.com/ecash/transaction/ecash123',
     )
+
+    // Bitcoin
+    expect(multiChainExplorerUrl('btc123', 'btc-testnet')).toBe(
+      'https://mempool.space/testnet/tx/btc123',
+    )
+    expect(multiChainExplorerUrl('btc123', 'btc-mainnet')).toBe(
+      'https://mempool.space/tx/btc123',
+    )
+    expect(
+      multiChainExplorerUrl('btc123', 'bitcoin', { isTestnet: true }),
+    ).toBe('https://mempool.space/testnet/tx/btc123')
+    expect(multiChainExplorerUrl('btc123', 'bitcoin')).toBe(
+      'https://mempool.space/tx/btc123',
+    )
+
+    // Bitcoin Cash
+    expect(multiChainExplorerUrl('bch123', 'bch-testnet')).toBe(
+      'https://chipnet.imaginary.cash/tx/bch123',
+    )
+    expect(multiChainExplorerUrl('bch123', 'bch-mainnet')).toBe(
+      'https://blockchair.com/bitcoin-cash/transaction/bch123',
+    )
+
+    // Dogecoin
+    expect(multiChainExplorerUrl('doge123', 'doge-mainnet')).toBe(
+      'https://blockchair.com/dogecoin/transaction/doge123',
+    )
+
+    // Ethereum
+    expect(multiChainExplorerUrl('0xeth', 'ethereum-sepolia')).toBe(
+      'https://sepolia.etherscan.io/tx/0xeth',
+    )
+    expect(multiChainExplorerUrl('0xeth', 'ethereum-mainnet')).toBe(
+      'https://etherscan.io/tx/0xeth',
+    )
   })
 
   it('safely returns undefined for unknown network without throwing', () => {

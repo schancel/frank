@@ -6,7 +6,11 @@
  * `LotusChain`, once one is actually built for real -- see issue #41's "Non-goals"), never a
  * runtime branch anywhere else in the app.
  */
-import { MonadChain } from "./monad-chain";
+import {
+  MonadChain,
+  createMonadChain,
+  loadMonadChainConfigFromEnv,
+} from "./monad-chain";
 import { ActiveChain } from "./active-chain";
 export { createChain } from "./chain-factory";
 export type { ChainFactoryConfig } from "./chain-factory";
@@ -79,7 +83,62 @@ export type {
   LegacySendJournalStore,
 } from "./evm-legacy-consolidator";
 
-export const activeChain: ActiveChain = MonadChain;
+let currentActiveChain: ActiveChain = MonadChain;
+const activeChainListeners = new Set<(chain: ActiveChain) => void>();
+
+export function setActiveChain(chain: ActiveChain): void {
+  currentActiveChain = chain;
+  for (const listener of activeChainListeners) {
+    try {
+      listener(chain);
+    } catch (err) {
+      console.error("Error in activeChain change listener", err);
+    }
+  }
+}
+
+export function getActiveChain(): ActiveChain {
+  return currentActiveChain;
+}
+
+export function onActiveChainChange(
+  listener: (chain: ActiveChain) => void
+): () => void {
+  activeChainListeners.add(listener);
+  return () => {
+    activeChainListeners.delete(listener);
+  };
+}
+
+export function setNetworkMode(mode: "testnet" | "mainnet"): ActiveChain {
+  const isTestnet = mode === "testnet";
+  const config = loadMonadChainConfigFromEnv({ isTestnet });
+  const newChain = createMonadChain(config);
+  setActiveChain(newChain);
+  return newChain;
+}
+
+export const activeChain: ActiveChain = new Proxy({} as ActiveChain, {
+  get(_target, prop) {
+    const value = Reflect.get(currentActiveChain, prop, currentActiveChain);
+    if (typeof value === "function") {
+      return value.bind(currentActiveChain);
+    }
+    return value;
+  },
+  set(_target, prop, value) {
+    return Reflect.set(currentActiveChain, prop, value, currentActiveChain);
+  },
+  has(_target, prop) {
+    return Reflect.has(currentActiveChain, prop);
+  },
+  ownKeys(_target) {
+    return Reflect.ownKeys(currentActiveChain);
+  },
+  getOwnPropertyDescriptor(_target, prop) {
+    return Reflect.getOwnPropertyDescriptor(currentActiveChain, prop);
+  },
+});
 
 export {
   PROTOCOL_CHAINS,
@@ -96,6 +155,7 @@ export {
   getChainExchangeConfig,
   isChainEnabled,
   getChainsByNetwork,
+  resolveNetworkId,
   validateChainAddress,
 } from "./chains-registry";
 export type {

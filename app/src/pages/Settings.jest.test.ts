@@ -81,10 +81,15 @@ const mockSetEmailGatewayAddress = jest.fn((address: string) => {
 const mockResetEmailGatewayAddress = jest.fn(() => {
   mockSettingsStore.emailGatewayAddress = defaultEmailGatewayAddress
 })
+const mockSetNetworkMode = jest.fn((mode: 'testnet' | 'mainnet') => {
+  mockSettingsStore.networkMode = mode
+})
 const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayAddress: defaultEmailGatewayAddress,
+  networkMode: 'testnet',
   setEmailGatewayAddress: mockSetEmailGatewayAddress,
   resetEmailGatewayAddress: mockResetEmailGatewayAddress,
+  setNetworkMode: mockSetNetworkMode,
 })
 jest.mock('src/stores/settings', () => ({
   useSettingsStore: () => mockSettingsStore,
@@ -434,16 +439,25 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
   })
 
   describe('Network Environment & Chains Section', () => {
-    it('renders the testnet mode toggle as disabled and active', async () => {
+    it('renders the testnet mode toggle and allows switching to mainnet', async () => {
+      mockSettingsStore.networkMode = 'testnet'
       const router = await openDirectly('#/settings')
       const wrapper = mountSettings(router)
 
+      expect((wrapper.vm as any).isTestnetMode).toBe(true)
       const toggle = wrapper.find('[data-test="testnet-mode-toggle"]')
       expect(toggle.exists()).toBe(true)
-      expect(
-        toggle.attributes('model-value') ?? toggle.attributes('modelvalue'),
-      ).toBe('true')
-      expect(toggle.attributes('disable')).toBe('true')
+      expect(toggle.attributes('disable')).toBeUndefined()
+
+      // Toggle off to mainnet
+      ;(wrapper.vm as any).isTestnetMode = false
+      expect(mockSettingsStore.networkMode).toBe('mainnet')
+      expect(mockSetNetworkMode).toHaveBeenCalledWith('mainnet')
+
+      // Toggle back to testnet
+      ;(wrapper.vm as any).isTestnetMode = true
+      expect(mockSettingsStore.networkMode).toBe('testnet')
+      expect(mockSetNetworkMode).toHaveBeenCalledWith('testnet')
 
       wrapper.unmount()
     })

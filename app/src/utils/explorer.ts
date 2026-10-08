@@ -18,6 +18,7 @@ export interface ExplorerOptions {
   relayBaseUrl?: string
   rpcUrl?: string
   localExplorerUrl?: string
+  isTestnet?: boolean
 }
 
 function readEnv(key: string): string | undefined {
@@ -164,7 +165,34 @@ export function hasMultiChainExplorer(
     tag === 'xec1' ||
     tag === 'xec-mainnet' ||
     tag === 'ecash-mainnet' ||
-    tag === 'ecash'
+    tag === 'ecash' ||
+    tag === 'btct' ||
+    tag === 'btc-testnet' ||
+    tag === 'bitcoin-testnet' ||
+    tag === 'btc1' ||
+    tag === 'btc-mainnet' ||
+    tag === 'bitcoin-mainnet' ||
+    tag === 'bitcoin' ||
+    tag === 'bcht' ||
+    tag === 'bch-testnet' ||
+    tag === 'bitcoincash-testnet' ||
+    tag === 'bch1' ||
+    tag === 'bch-mainnet' ||
+    tag === 'bitcoincash-mainnet' ||
+    tag === 'bitcoincash' ||
+    tag === 'doget' ||
+    tag === 'doge-testnet' ||
+    tag === 'dogecoin-testnet' ||
+    tag === 'doge1' ||
+    tag === 'doge-mainnet' ||
+    tag === 'dogecoin-mainnet' ||
+    tag === 'dogecoin' ||
+    tag === 'etht' ||
+    tag === 'ethereum-sepolia' ||
+    tag === 'sepolia' ||
+    tag === 'eth1' ||
+    tag === 'ethereum-mainnet' ||
+    tag === 'ethereum'
   ) {
     return true
   }
@@ -233,6 +261,72 @@ export function multiChainExplorerUrl(
     return `https://blockchair.com/ecash/transaction/${encodeURIComponent(
       txId,
     )}`
+  }
+
+  // Bitcoin
+  if (
+    tag === 'btct' ||
+    tag === 'btc-testnet' ||
+    tag === 'bitcoin-testnet' ||
+    (tag === 'bitcoin' && options?.isTestnet)
+  ) {
+    return `https://mempool.space/testnet/tx/${encodeURIComponent(txId)}`
+  }
+  if (
+    tag === 'btc1' ||
+    tag === 'btc-mainnet' ||
+    tag === 'bitcoin-mainnet' ||
+    tag === 'bitcoin'
+  ) {
+    return `https://mempool.space/tx/${encodeURIComponent(txId)}`
+  }
+
+  // Bitcoin Cash
+  if (
+    tag === 'bcht' ||
+    tag === 'bch-testnet' ||
+    tag === 'bitcoincash-testnet' ||
+    (tag === 'bitcoincash' && options?.isTestnet)
+  ) {
+    return `https://chipnet.imaginary.cash/tx/${encodeURIComponent(txId)}`
+  }
+  if (
+    tag === 'bch1' ||
+    tag === 'bch-mainnet' ||
+    tag === 'bitcoincash-mainnet' ||
+    tag === 'bitcoincash'
+  ) {
+    return `https://blockchair.com/bitcoin-cash/transaction/${encodeURIComponent(
+      txId,
+    )}`
+  }
+
+  // Dogecoin
+  if (
+    tag === 'doget' ||
+    tag === 'doge-testnet' ||
+    tag === 'dogecoin-testnet' ||
+    tag === 'doge1' ||
+    tag === 'doge-mainnet' ||
+    tag === 'dogecoin-mainnet' ||
+    tag === 'dogecoin'
+  ) {
+    return `https://blockchair.com/dogecoin/transaction/${encodeURIComponent(
+      txId,
+    )}`
+  }
+
+  // Ethereum
+  if (
+    tag === 'etht' ||
+    tag === 'ethereum-sepolia' ||
+    tag === 'sepolia' ||
+    (tag === 'ethereum' && options?.isTestnet)
+  ) {
+    return `https://sepolia.etherscan.io/tx/${encodeURIComponent(txId)}`
+  }
+  if (tag === 'eth1' || tag === 'ethereum-mainnet' || tag === 'ethereum') {
+    return `https://etherscan.io/tx/${encodeURIComponent(txId)}`
   }
 
   const directBase = transactionExplorerBases[rawTag]

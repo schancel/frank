@@ -46,7 +46,16 @@ describe('settings store', () => {
     expect(store.emailGatewayAddress).toBe(defaultEmailGatewayAddress)
   })
 
-  it('saves and restores settings to LevelDB storage', async () => {
+  it('initializes with testnet networkMode and updates via setNetworkMode', () => {
+    const store = useSettingsStore()
+    expect(store.networkMode).toBe('testnet')
+    store.setNetworkMode('mainnet')
+    expect(store.networkMode).toBe('mainnet')
+    store.setNetworkMode('testnet')
+    expect(store.networkMode).toBe('testnet')
+  })
+
+  it('saves and restores settings to LevelDB storage including networkMode', async () => {
     const fakeStore: Record<string, string> = {}
     const mockStorage = {
       put: jest.fn((key: string, val: string) => {
@@ -61,6 +70,7 @@ describe('settings store', () => {
 
     const state = {
       emailGatewayAddress: '0x2222222222222222222222222222222222222222',
+      networkMode: 'mainnet' as const,
     }
     await saveSettings(mockStorage, state)
     expect(mockStorage.put).toHaveBeenCalledWith(
@@ -72,5 +82,6 @@ describe('settings store', () => {
     expect(restored.emailGatewayAddress).toBe(
       '0x2222222222222222222222222222222222222222',
     )
+    expect(restored.networkMode).toBe('mainnet')
   })
 })

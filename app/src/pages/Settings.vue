@@ -92,21 +92,32 @@
                       </div>
                     </div>
                     <q-toggle
-                      :model-value="true"
-                      :disable="true"
+                      v-model="isTestnetMode"
                       color="warning"
                       data-test="testnet-mode-toggle"
                     />
                   </div>
                   <q-banner
+                    v-if="isTestnetMode"
                     dense
                     rounded
                     class="bg-amber-1 text-amber-10 q-mb-md"
                   >
                     <template #avatar>
-                      <q-icon name="lock" color="amber-9" />
+                      <q-icon name="info" color="amber-9" />
                     </template>
-                    {{ $t('settings.mainnetLockedBanner') }}
+                    {{ $t('settings.testnetActiveBanner') }}
+                  </q-banner>
+                  <q-banner
+                    v-else
+                    dense
+                    rounded
+                    class="bg-blue-1 text-blue-10 q-mb-md"
+                  >
+                    <template #avatar>
+                      <q-icon name="verified" color="primary" />
+                    </template>
+                    {{ $t('settings.mainnetActiveBanner') }}
                   </q-banner>
 
                   <div
@@ -132,12 +143,16 @@
                           {{ $t(chain.defaultNameKey) }}
                         </q-item-label>
                         <q-item-label caption class="text-grey-7">
-                          {{ $t(chain.testnetChainKey) }}
+                          {{
+                            isTestnetMode
+                              ? $t(chain.testnetChainKey)
+                              : $t(chain.chainKey)
+                          }}
                         </q-item-label>
                       </q-item-section>
                       <q-item-section side>
                         <q-badge
-                          color="warning"
+                          :color="isTestnetMode ? 'warning' : 'primary'"
                           outline
                           :label="$t('settings.chainActive')"
                         />
@@ -284,7 +299,7 @@ import {
   applyTheme,
 } from 'src/utils/theme'
 
-import { defineComponent, onUnmounted, ref, watch } from 'vue'
+import { computed, defineComponent, onUnmounted, ref, watch } from 'vue'
 import { QInput } from 'quasar'
 
 import { useAppearanceStore } from 'src/stores/appearance'
@@ -359,9 +374,17 @@ export default defineComponent({
       emailGatewayInput.value = settingsStore.emailGatewayAddress
     }
 
+    const isTestnetMode = computed({
+      get: () => settingsStore.networkMode === 'testnet',
+      set: (val: boolean) => {
+        settingsStore.setNetworkMode(val ? 'testnet' : 'mainnet')
+      },
+    })
+
     return {
       appearanceStore,
       isSaved,
+      isTestnetMode,
       darkMode: ref(storeDarkMode.value),
       theme,
       themeOptions,

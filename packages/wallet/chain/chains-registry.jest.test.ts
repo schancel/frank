@@ -17,6 +17,7 @@ import {
   getChainExchangeConfig,
   isChainEnabled,
   getChainsByNetwork,
+  resolveNetworkId,
   validateChainAddress,
 } from "./chains-registry";
 
@@ -858,6 +859,31 @@ describe("chains-registry", () => {
         validateChainAddress("dogecoin", "nUHU9DXJHWE9oTNky1m99XFr7h2snReVPP")
       ).toBe(true);
       expect(validateChainAddress("dogecoin", "invalid-doge")).toBe(false);
+    });
+  });
+
+  describe("resolveNetworkId", () => {
+    it("resolves canonical network IDs for both testnet and mainnet", () => {
+      // Direct canonical IDs are returned unchanged
+      expect(resolveNetworkId("btc-testnet")).toBe("btc-testnet");
+      expect(resolveNetworkId("btc-mainnet")).toBe("btc-mainnet");
+      expect(resolveNetworkId("xec-testnet")).toBe("xec-testnet");
+
+      // Chain kinds resolve according to isTestnet flag
+      expect(resolveNetworkId("bitcoin", true)).toBe("btc-testnet");
+      expect(resolveNetworkId("bitcoin", false)).toBe("btc-mainnet");
+      expect(resolveNetworkId("bitcoincash", true)).toBe("bch-testnet");
+      expect(resolveNetworkId("bitcoincash", false)).toBe("bch-mainnet");
+      expect(resolveNetworkId("dogecoin", true)).toBe("doge-testnet");
+      expect(resolveNetworkId("dogecoin", false)).toBe("doge-mainnet");
+      expect(resolveNetworkId("ecash", true)).toBe("xec-testnet");
+      expect(resolveNetworkId("ecash", false)).toBe("xec-mainnet");
+      expect(resolveNetworkId("solana", true)).toBe("solana-devnet");
+      expect(resolveNetworkId("solana", false)).toBe("solana-mainnet");
+      expect(resolveNetworkId("monad", true)).toBe("monad-testnet");
+      expect(resolveNetworkId("monad", false)).toBe("monad-mainnet");
+      expect(resolveNetworkId("ethereum", true)).toBe("ethereum-sepolia");
+      expect(resolveNetworkId("ethereum", false)).toBe("ethereum-mainnet");
     });
   });
 });

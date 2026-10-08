@@ -100,11 +100,13 @@ export interface BotContext {
   lookupPeer(address: string): Promise<DirectoryPeerInfo | undefined>;
   sendMessage(
     recipientAddress: string,
-    items: MessageItem[]
+    items: MessageItem[],
+    conversationId?: string
   ): Promise<DirectMessageSendResult>;
   sendDirectMessage(
     recipientAddress: string,
-    items: MessageItem[]
+    items: MessageItem[],
+    conversationId?: string
   ): Promise<DirectMessageSendResult>;
   onNewUserRegistered(
     callback: (user: NewUserEvent) => void | Promise<void>

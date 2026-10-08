@@ -232,6 +232,7 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     recipient: ChainAddress;
     items: MessageItem[];
+    conversationId?: string | Uint8Array;
     /** Raw native-chain value attached as the mandatory stamp payment. */
     stampValue?: bigint;
     onPreparationProgress?: (

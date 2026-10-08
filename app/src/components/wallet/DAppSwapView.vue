@@ -174,12 +174,12 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref } from 'vue'
+import { computed, defineComponent, ref, watch } from 'vue'
 import { defaultPluginRegistry } from '@frank/wallet/plugins'
 
 export const SWAP_FEE_BPS = 8.75 // 0.0875% = 1/10th of MetaMask's 0.875%
 
-export const SUPPORTED_SWAP_ASSETS = [
+export const ALL_SWAP_ASSETS = [
   { label: 'MON (Monad)', value: 'MON' },
   { label: 'USDC', value: 'USDC' },
   { label: 'USDT', value: 'USDT' },
@@ -204,7 +204,33 @@ export default defineComponent({
     const isExecuting = ref<boolean>(false)
     const lastTxHash = ref<string | null>(null)
 
-    const assetOptions = SUPPORTED_SWAP_ASSETS
+    // Contextualize token selection to the active wallet chain
+    const assetOptions = computed(() => {
+      if (props.selectedWallet === 'solana') {
+        return [
+          { label: 'SOL (Solana)', value: 'SOL' },
+          { label: 'USDC', value: 'USDC' },
+          { label: 'USDT', value: 'USDT' },
+        ]
+      }
+      if (
+        props.selectedWallet === 'ethereum' ||
+        props.selectedWallet === 'sepolia'
+      ) {
+        return [
+          { label: 'ETH (Ethereum)', value: 'ETH' },
+          { label: 'USDC', value: 'USDC' },
+          { label: 'USDT', value: 'USDT' },
+        ]
+      }
+      return [
+        { label: 'MON (Monad)', value: 'MON' },
+        { label: 'USDC', value: 'USDC' },
+        { label: 'USDT', value: 'USDT' },
+        { label: 'SOL (Solana)', value: 'SOL' },
+        { label: 'ETH (Ethereum)', value: 'ETH' },
+      ]
+    })
 
     // Approximate baseline rates for instantaneous quote estimation
     // In production, these derive from @frank/price-feeds and the DAppPlugin.getQuote()
@@ -246,19 +272,33 @@ export default defineComponent({
 
     const availableBalance = computed(() => {
       if (fromAsset.value === 'USDC') return '1,000.00 USDC'
+      if (fromAsset.value === 'USDT') return '500.00 USDT'
       if (fromAsset.value === 'MON') return '250.00 MON'
       if (fromAsset.value === 'SOL') return '5.20 SOL'
+      if (fromAsset.value === 'ETH') return '1.25 ETH'
       return '100.00'
     })
 
     const setMaxAmount = () => {
-      fromAmount.value = '100'
+      if (fromAsset.value === 'USDC') fromAmount.value = '1000'
+      else if (fromAsset.value === 'USDT') fromAmount.value = '500'
+      else if (fromAsset.value === 'MON') fromAmount.value = '250'
+      else if (fromAsset.value === 'SOL') fromAmount.value = '5.2'
+      else if (fromAsset.value === 'ETH') fromAmount.value = '1.25'
+      else fromAmount.value = '100'
       calculateQuote()
     }
 
     const onFromAssetChange = () => {
       if (fromAsset.value === toAsset.value) {
-        toAsset.value = fromAsset.value === 'USDC' ? 'MON' : 'USDC'
+        const fallback =
+          props.selectedWallet === 'solana'
+            ? 'SOL'
+            : props.selectedWallet === 'ethereum' ||
+              props.selectedWallet === 'sepolia'
+            ? 'ETH'
+            : 'MON'
+        toAsset.value = fromAsset.value === 'USDC' ? fallback : 'USDC'
       }
       calculateQuote()
     }
@@ -290,6 +330,25 @@ export default defineComponent({
         maximumFractionDigits: 6,
       })
     }
+
+    const setDefaultsForWallet = (walletId: string) => {
+      if (walletId === 'solana') {
+        fromAsset.value = 'SOL'
+        toAsset.value = 'USDC'
+        fromAmount.value = '1'
+      } else if (walletId === 'ethereum' || walletId === 'sepolia') {
+        fromAsset.value = 'ETH'
+        toAsset.value = 'USDC'
+        fromAmount.value = '0.1'
+      } else {
+        fromAsset.value = 'MON'
+        toAsset.value = 'USDC'
+        fromAmount.value = '100'
+      }
+      calculateQuote()
+    }
+
+    watch(() => props.selectedWallet, setDefaultsForWallet, { immediate: true })
 
     const protocolFeeDisplay = computed(() => {
       const val = parseFloat(fromAmount.value)

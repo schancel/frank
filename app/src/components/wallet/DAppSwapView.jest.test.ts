@@ -116,4 +116,12 @@ describe('DAppSwapView component', () => {
       true,
     )
   })
+
+  test('contextualizes swap pair and router for Solana wallet', () => {
+    const wrapper = mountSwapView({ selectedWallet: 'solana' })
+    expect((wrapper.vm as any).fromAsset).toBe('SOL')
+    expect((wrapper.vm as any).toAsset).toBe('USDC')
+    const routerElem = wrapper.find('[data-testid="swap-router-name"]')
+    expect(routerElem.text()).toContain('Jupiter Aggregator')
+  })
 })

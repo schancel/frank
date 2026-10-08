@@ -1,8 +1,16 @@
 /** @jest-environment jsdom */
+import { setActivePinia, createPinia } from 'pinia'
 import { useSwapHistory } from './useSwapHistory'
+
+jest.mock('../stores/chats', () => ({
+  useChatStore: jest.fn(() => ({
+    selfSendMessage: jest.fn().mockResolvedValue(undefined),
+  })),
+}))
 
 describe('useSwapHistory composable', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     localStorage.clear()
   })
 

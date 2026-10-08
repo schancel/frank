@@ -117,7 +117,6 @@
         :suggested-stamp-amount="suggestedStampAmount"
         :is-overridden="isStampOverridden"
         @resetStampToSuggested="resetStampToSuggested"
-        :disable="sendingMessage"
         @sendMessage="sendMessage"
       />
     </q-footer>
@@ -261,6 +260,7 @@ export default defineComponent({
       message: '',
       stampPreparationStatus: null as string | null,
       sendingMessage: false,
+      activeSendCount: 0,
       blackjackDialog: false,
       stealthDialog: false,
       swapDialog: false,
@@ -547,9 +547,6 @@ export default defineComponent({
       }
     },
     async sendMessage(message: string) {
-      if (this.sendingMessage) {
-        return
-      }
       const recipient = this.recipientAddress || this.address
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
       const rawPrice = this.getAcceptancePrice(recipient)
@@ -570,6 +567,7 @@ export default defineComponent({
       // being prepared.
       const submittedMessage = message
       const replyDigestToSend = this.replyDigest
+      this.activeSendCount = (this.activeSendCount || 0) + 1
       this.sendingMessage = true
       this.message = ''
       this.replyDigest = null
@@ -610,8 +608,11 @@ export default defineComponent({
         errorNotify(err instanceof Error ? err : new Error(String(err)))
         return
       } finally {
-        this.stampPreparationStatus = null
-        this.sendingMessage = false
+        this.activeSendCount = Math.max(0, (this.activeSendCount || 1) - 1)
+        if (this.activeSendCount === 0) {
+          this.stampPreparationStatus = null
+          this.sendingMessage = false
+        }
       }
       // After message send, scroll to bottom if not already there
       if (!this.bottom) {

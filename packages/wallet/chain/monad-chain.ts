@@ -75,6 +75,7 @@ import {
 import {
   JsonRpcProvider,
   Transaction,
+  Wallet,
   formatEther,
   getAddress,
   getBytes,
@@ -445,6 +446,8 @@ export interface MonadChainWalletHandle
   readonly networkId: string;
   readonly identity: MonadIdentity;
   readonly stealthKeyring: MonadStealthKeyring;
+  readonly mainAccount?: Wallet;
+  readonly mainPrivateKey?: string;
   close(): Promise<void>;
 }
 
@@ -1211,7 +1214,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           });
         }
       }
-      return Array.from(accountsByAddress.values());
+      if (accountsByAddress.size > 0) {
+        return Array.from(accountsByAddress.values());
+      }
     }
 
     const accounts: FundingAccount[] = [];
@@ -1231,6 +1236,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         });
       }
     } catch {}
+
+    if (monadWallet.identity?.address?.raw) {
+      const identAddr = monadWallet.identity.address.raw;
+      if (identAddr.toLowerCase() !== mainAddress.toLowerCase()) {
+        try {
+          const identBal = await monadWallet.provider.getBalance(identAddr);
+          if (identBal > 0n) {
+            accounts.push({
+              address: identAddr,
+              balanceWei: identBal,
+              privateKey: monadWallet.identity.toPrivateKeyHex(),
+            });
+          }
+        } catch {}
+      }
+    }
 
     try {
       const candidateStealth = (
@@ -1967,6 +1988,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             identity,
             stealthKeyring,
             accountUtxoPool,
+            mainAccount,
+            mainPrivateKey: mainAccount.privateKey,
             async getReceiveAddress() {
               requireOpenWallet(wallet);
               return { raw: mainAccount.address };
@@ -1977,11 +2000,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 address: mainAccount.address,
                 provider,
               });
+              const identityBalance =
+                identity.address.raw.toLowerCase() ===
+                mainAccount.address.toLowerCase()
+                  ? 0n
+                  : await transactionBuilder.getBalance({
+                      address: identity.address.raw,
+                      provider,
+                    });
               const stealthBalance = await stealthKeyring.getTotalBalance(
                 provider,
                 config.networkTag
               );
-              return mainBalance + stealthBalance;
+              return mainBalance + identityBalance + stealthBalance;
             },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
@@ -2079,15 +2110,25 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       mainAccount.address
                     );
                     if (mainBalance < value) {
-                      const selected =
-                        await stealthKeyring.selectAccountForSpend(
-                          value,
-                          provider,
-                          config.networkTag
-                        );
-                      if (selected) {
-                        spendingPrivateKey = selected.privateKey;
-                        selectedStealthAddress = selected.address;
+                      const identAddr = identity.address.raw;
+                      const identBal =
+                        identAddr.toLowerCase() !==
+                        mainAccount.address.toLowerCase()
+                          ? await provider.getBalance(identAddr)
+                          : 0n;
+                      if (identBal >= value) {
+                        spendingPrivateKey = identity.toPrivateKeyHex();
+                      } else {
+                        const selected =
+                          await stealthKeyring.selectAccountForSpend(
+                            value,
+                            provider,
+                            config.networkTag
+                          );
+                        if (selected) {
+                          spendingPrivateKey = selected.privateKey;
+                          selectedStealthAddress = selected.address;
+                        }
                       }
                     }
                   } catch {
@@ -2286,8 +2327,24 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }) =>
               runWalletExclusive(wallet, async () => {
                 const triggerReplenishment = async (): Promise<string[]> => {
+                  let fundingPrivateKey = mainAccount.privateKey;
+                  try {
+                    const mainBal = await provider.getBalance(mainAccount.address);
+                    if (
+                      mainBal === 0n &&
+                      identity.address.raw.toLowerCase() !==
+                        mainAccount.address.toLowerCase()
+                    ) {
+                      const identBal = await provider.getBalance(
+                        identity.address.raw
+                      );
+                      if (identBal > 0n) {
+                        fundingPrivateKey = identity.toPrivateKeyHex();
+                      }
+                    }
+                  } catch {}
                   const mainAccountSigner = new MonadAccountTxSigner({
-                    privateKey: mainAccount.privateKey,
+                    privateKey: fundingPrivateKey,
                     provider,
                     httpClient,
                   });
@@ -2308,29 +2365,27 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   return preparation.fundingTxHashes;
                 };
 
+                // Verify that the sub-account pool actually has at least 2 funded sub-accounts ready
                 let hasSufficientCleanCoins = false;
                 try {
-                  const selection = accountUtxoPool.selectCoins({
-                    chain: "monad",
-                    targetAmountWei: stampValueWei,
-                    feeReserveWei: defaultGasReserveWei,
-                  });
-                  if (selection.selected.length > 0) {
+                  const accounts = await pool.fundedCapacities(
+                    provider,
+                    defaultGasReserveWei
+                  );
+                  const selection = accounts.filter(
+                    (a) => a.capacityWei >= (stampValueWei * BigInt(3)) / BigInt(8)
+                  );
+                  if (
+                    selection.length >= 2 ||
+                    (stampValueWei === BigInt(1) && selection.length === 1)
+                  ) {
                     hasSufficientCleanCoins = true;
                   }
                 } catch {
                   hasSufficientCleanCoins = false;
                 }
 
-                const cleanCoins = accountUtxoPool
-                  .getCleanCoins("monad")
-                  .filter((u) => u.balanceWei >= stampValueWei);
-
                 if (hasSufficientCleanCoins) {
-                  // Asynchronously trigger replenishment if clean capacity < 2 without blocking
-                  if (cleanCoins.length < 2) {
-                    void triggerReplenishment().catch(() => []);
-                  }
                   return [];
                 }
 

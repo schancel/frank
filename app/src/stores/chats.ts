@@ -2606,11 +2606,11 @@ export const useChatStore = defineStore('chats', {
           },
         })
       } catch (error) {
-        console.error('[sendDirectMessage error]:', error)
         if (error instanceof MonadStampPendingAttemptError) {
           // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
           // bytes. Without an own set, an earlier attempt is still pending and this message has
           // not been paid for yet; it is sent once that clears.
+          console.info('[sendDirectMessage pending]:', error)
           await this.setOutgoingState(
             address,
             id,
@@ -2621,6 +2621,7 @@ export const useChatStore = defineStore('chats', {
           )
           return { state: 'payment-pending' }
         }
+        console.error('[sendDirectMessage error]:', error)
         const failure = classifySendFailure(error, ownDigest)
         await this.setOutgoingState(address, id, 'error', {
           ...(failure.keepDigest === undefined
@@ -3196,8 +3197,10 @@ export const useChatStore = defineStore('chats', {
         return
       }
       let conv = this.conversations[conversationId]
+      let activatedByContactAddress: string | null = null
       try {
         const displayAddress = toChainDisplayAddress(conversationId)
+        activatedByContactAddress = displayAddress
         const peerConvs = this.getConversationsForAddress(
           displayAddress,
         ).filter(c => c.kind === 'direct' && !c.topic)
@@ -3224,6 +3227,13 @@ export const useChatStore = defineStore('chats', {
         return
       }
       this.activeConversationId = conv.id
+      if (
+        activatedByContactAddress &&
+        (conv.kind === 'direct' || conv.kind === 'email')
+      ) {
+        conv.address = activatedByContactAddress
+        this.chats[activatedByContactAddress] = conv
+      }
       if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
         this.activeChatAddr = conv.address
         const contacts = useContactStore()

@@ -1806,27 +1806,50 @@ export class MonadCanonicalStampClient {
 
       // Resolve base quote once outside the loop only if fee fields were not provided in overrides
       if (baseMaxFeePerGas === undefined && baseGasPrice === undefined) {
-        if (candidateRecords.length > 0) {
-          const sampleSigner = this.wallet.pool.getSigner(
-            candidateRecords[0].index,
-            this.wallet,
-          )
-          const sampleQuote = Transaction.from(
-            (
-              await sampleSigner.populateUnsignedTransfer(
-                hexlify(destination(0).address),
-                1n,
-                input.overrides,
-              )
-            ).unsignedSerialized,
-          )
-          baseNonce = sampleQuote.nonce
-          baseChainId = sampleQuote.chainId
-          baseGasLimit = sampleQuote.gasLimit
-          baseMaxFeePerGas = sampleQuote.maxFeePerGas ?? undefined
+        try {
+          const feeData = await this.wallet.provider.getFeeData()
+          baseMaxFeePerGas = feeData.maxFeePerGas ?? undefined
           baseMaxPriorityFeePerGas =
-            sampleQuote.maxPriorityFeePerGas ?? undefined
-          baseGasPrice = sampleQuote.gasPrice ?? undefined
+            feeData.maxPriorityFeePerGas ?? undefined
+          baseGasPrice =
+            baseMaxFeePerGas !== undefined
+              ? undefined
+              : (feeData.gasPrice ?? undefined)
+        } catch {
+          // Fall back to sample signer if feeData query fails
+        }
+        if (
+          baseMaxFeePerGas === undefined &&
+          baseGasPrice === undefined &&
+          candidateRecords.length > 0
+        ) {
+          try {
+            const sampleSigner = this.wallet.pool.getSigner(
+              candidateRecords[0].index,
+              this.wallet,
+            )
+            const sampleQuote = Transaction.from(
+              (
+                await sampleSigner.populateUnsignedTransfer(
+                  hexlify(destination(0).address),
+                  1n,
+                  { gasLimit: baseGasLimit, ...input.overrides },
+                )
+              ).unsignedSerialized,
+            )
+            baseNonce = sampleQuote.nonce
+            baseChainId = sampleQuote.chainId
+            baseGasLimit = sampleQuote.gasLimit
+            baseMaxFeePerGas = sampleQuote.maxFeePerGas ?? undefined
+            baseMaxPriorityFeePerGas =
+              sampleQuote.maxPriorityFeePerGas ?? undefined
+            baseGasPrice =
+              baseMaxFeePerGas !== undefined
+                ? undefined
+                : (sampleQuote.gasPrice ?? undefined)
+          } catch {
+            // Keep default fees
+          }
         }
       }
 
@@ -1905,17 +1928,21 @@ export class MonadCanonicalStampClient {
         const signer = this.wallet.pool.getSigner(selection.index, this.wallet)
         // Plain value transfer to the one-off child address: no calldata, so nothing on
         // chain marks this as a Frank message payment (#826).
+        const overrides: MonadTxOverrides = {
+          nonce: quote.nonce,
+          chainId: quote.chainId,
+          gasLimit: quote.gasLimit,
+        }
+        if (quote.maxFeePerGas !== undefined) {
+          overrides.maxFeePerGas = quote.maxFeePerGas
+          overrides.maxPriorityFeePerGas = quote.maxPriorityFeePerGas
+        } else if (quote.gasPrice !== undefined) {
+          overrides.gasPrice = quote.gasPrice
+        }
         const frozen = await signer.populateUnsignedTransfer(
           hexlify(destination(i).address),
           selection.paymentValueWei,
-          {
-            nonce: quote.nonce,
-            chainId: quote.chainId,
-            gasLimit: quote.gasLimit,
-            maxFeePerGas: quote.maxFeePerGas,
-            maxPriorityFeePerGas: quote.maxPriorityFeePerGas,
-            gasPrice: quote.gasPrice,
-          },
+          overrides,
         )
         const tx = Transaction.from(frozen.unsignedSerialized),
           txFee = tx.maxFeePerGas ?? tx.gasPrice

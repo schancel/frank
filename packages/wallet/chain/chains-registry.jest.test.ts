@@ -333,6 +333,71 @@ describe('chains-registry', () => {
         supportedAssets: ['USD', 'USDC', 'USDT', 'AVU'],
       },
     })
+
+    expect(PROTOCOL_CHAINS['btc-mainnet']).toEqual({
+      id: 'btc-mainnet',
+      kind: 'bitcoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'mainnet',
+      isTestnet: false,
+      name: 'Bitcoin',
+      unit: 'BTC',
+      caip2: 'bip122:000000000019d6689c085ae165831e93',
+      networkTag: 'BTC1',
+      electrumServers: ['wss://electrum.blockstream.info:50002'],
+    })
+
+    expect(PROTOCOL_CHAINS['btc-testnet']).toEqual({
+      id: 'btc-testnet',
+      kind: 'bitcoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'testnet',
+      isTestnet: true,
+      name: 'Bitcoin Testnet',
+      unit: 'tBTC',
+      caip2: 'bip122:000000000933ea01ad0ee984209779ba',
+      networkTag: 'BTCT',
+      electrumServers: ['wss://electrum.blockstream.info:60002'],
+    })
+
+    expect(PROTOCOL_CHAINS['bch-mainnet']).toEqual({
+      id: 'bch-mainnet',
+      kind: 'bitcoincash',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'mainnet',
+      isTestnet: false,
+      name: 'Bitcoin Cash',
+      unit: 'BCH',
+      addressPrefix: 'bitcoincash',
+      networkTag: 'BCH1',
+      electrumServers: [
+        'wss://fulcrum.fountainhead.cash:50004',
+        'wss://bch.ninja:50004',
+      ],
+    })
+
+    expect(PROTOCOL_CHAINS['doge-mainnet']).toEqual({
+      id: 'doge-mainnet',
+      kind: 'dogecoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'mainnet',
+      isTestnet: false,
+      name: 'Dogecoin',
+      unit: 'DOGE',
+      networkTag: 'DOGE',
+      electrumServers: [
+        'wss://electrum.doge.keys4coins.com:50002',
+        'wss://doge-electrum.cryptonode.id:50004',
+      ],
+    })
   })
 
   it('resolves exchange router configuration via getChainExchangeConfig', () => {

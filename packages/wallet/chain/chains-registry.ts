@@ -7,6 +7,9 @@ export type SupportedChainKind =
   | 'ethereum'
   | 'hyperliquid'
   | 'tempo'
+  | 'bitcoin'
+  | 'bitcoincash'
+  | 'dogecoin'
 export type SupportedCurve = 'secp256k1' | 'ed25519'
 
 export interface ChainContracts {
@@ -68,6 +71,7 @@ export interface ChainRegistryEntry {
   readonly explorerUrl?: string
   readonly contracts?: ChainContracts
   readonly exchange?: ChainExchangeConfig
+  readonly electrumServers?: readonly string[]
 }
 
 export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> =
@@ -428,6 +432,71 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> =
         }),
         supportedAssets: Object.freeze(['USD', 'USDC', 'USDT', 'AVU']),
       }),
+    }),
+    'btc-mainnet': Object.freeze({
+      id: 'btc-mainnet',
+      kind: 'bitcoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'mainnet',
+      isTestnet: false,
+      name: 'Bitcoin',
+      unit: 'BTC',
+      caip2: 'bip122:000000000019d6689c085ae165831e93',
+      networkTag: 'BTC1',
+      electrumServers: Object.freeze([
+        'wss://electrum.blockstream.info:50002',
+      ]),
+    }),
+    'btc-testnet': Object.freeze({
+      id: 'btc-testnet',
+      kind: 'bitcoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'testnet',
+      isTestnet: true,
+      name: 'Bitcoin Testnet',
+      unit: 'tBTC',
+      caip2: 'bip122:000000000933ea01ad0ee984209779ba',
+      networkTag: 'BTCT',
+      electrumServers: Object.freeze([
+        'wss://electrum.blockstream.info:60002',
+      ]),
+    }),
+    'bch-mainnet': Object.freeze({
+      id: 'bch-mainnet',
+      kind: 'bitcoincash',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'mainnet',
+      isTestnet: false,
+      name: 'Bitcoin Cash',
+      unit: 'BCH',
+      addressPrefix: 'bitcoincash',
+      networkTag: 'BCH1',
+      electrumServers: Object.freeze([
+        'wss://fulcrum.fountainhead.cash:50004',
+        'wss://bch.ninja:50004',
+      ]),
+    }),
+    'doge-mainnet': Object.freeze({
+      id: 'doge-mainnet',
+      kind: 'dogecoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'mainnet',
+      isTestnet: false,
+      name: 'Dogecoin',
+      unit: 'DOGE',
+      networkTag: 'DOGE',
+      electrumServers: Object.freeze([
+        'wss://electrum.doge.keys4coins.com:50002',
+        'wss://doge-electrum.cryptonode.id:50004',
+      ]),
     }),
   })
 

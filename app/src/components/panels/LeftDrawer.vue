@@ -165,14 +165,6 @@
               >
                 <q-item-label>{{ $t('leftDrawer.forum') }}</q-item-label>
               </q-item-section>
-              <q-space />
-              <q-btn
-                dense
-                flat
-                icon="add"
-                :aria-label="$t('a11y.newPost')"
-                @click="openNewPost"
-              />
             </q-item>
             <q-separator />
             <q-item
@@ -359,9 +351,6 @@ export default defineComponent({
       }
       return router.push('/forum')
     }
-    function openNewPost() {
-      openPage(router, '/new-post')
-    }
     function openSettingsTab() {
       markRailNavigation()
       return router.push('/settings')
@@ -531,7 +520,6 @@ export default defineComponent({
       openWelcome,
       openActiveOrRecentChat,
       openForumTab,
-      openNewPost,
       openSettingsTab,
       openWalletTab,
       discoveredTopicNames,

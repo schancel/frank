@@ -30,17 +30,17 @@
  * real `ChainAdapter` assembly (#2) may want to fold these into one client; that consolidation is
  * out of scope here.
  */
-import { Provider, Transaction, TransactionRequest, Wallet } from 'ethers'
+import { Provider, Transaction, TransactionRequest, Wallet } from "ethers";
 
-import { MonadTxReceipt } from './monad-http'
+import { MonadTxReceipt } from "./monad-http";
 
 /** The subset of `MonadHttpClient` this module depends on, expressed as a structural interface
  * (rather than importing the `MonadHttpClient` class type directly) so unit tests can supply a
  * plain mock object without needing to satisfy the class's private internal field. The real
  * `MonadHttpClient` already implements this shape. */
 export interface MonadTxSubmitter {
-  submitRawTransaction(rawTxHex: string): Promise<string>
-  getTransactionReceipt(txHash: string): Promise<MonadTxReceipt | undefined>
+  submitRawTransaction(rawTxHex: string): Promise<string>;
+  getTransactionReceipt(txHash: string): Promise<MonadTxReceipt | undefined>;
 }
 
 /** Explicit overrides for any field this module would otherwise fetch/estimate. Per the ticket,
@@ -51,15 +51,15 @@ export interface MonadTxOverrides {
   /** Overrides the freshly-fetched `eth_getTransactionCount` nonce. Only intended for tests or
    * for a future caller (ticket #18) that has its own nonce-leasing logic; this ticket's own
    * construction path always fetches fresh when this is omitted. */
-  nonce?: number
-  gasLimit?: bigint
+  nonce?: number;
+  gasLimit?: bigint;
   /** EIP-1559 fee cap. Leave both this and `maxPriorityFeePerGas` unset to let ethers pick via
    * `eth_feeHistory`/`eth_gasPrice` (auto-detecting EIP-1559 vs. legacy support). */
-  maxFeePerGas?: bigint
-  maxPriorityFeePerGas?: bigint
+  maxFeePerGas?: bigint;
+  maxPriorityFeePerGas?: bigint;
   /** Legacy (pre-EIP-1559) gas price; mutually exclusive with the two fields above. */
-  gasPrice?: bigint
-  chainId?: bigint
+  gasPrice?: bigint;
+  chainId?: bigint;
 }
 
 /** A fully built and locally-signed Monad transaction, ready to submit as-is. All chain-dependent
@@ -67,30 +67,30 @@ export interface MonadTxOverrides {
  * signing — never placeholders — so callers/tests can assert on them directly. */
 export interface SignedMonadTx {
   /** 0x-prefixed signed raw transaction, ready for `eth_sendRawTransaction`. */
-  rawTx: string
+  rawTx: string;
   /** Locally-computed transaction hash (keccak256 of the signed encoding) — this must match the
    * hash the node returns from `eth_sendRawTransaction` on submit; see `submit()`. */
-  txHash: string
-  from: string
-  to: string
-  value: bigint
+  txHash: string;
+  from: string;
+  to: string;
+  value: bigint;
   /** `'0x'` for a plain value transfer. */
-  data: string
-  nonce: number
-  gasLimit: bigint
-  maxFeePerGas: bigint | undefined
-  maxPriorityFeePerGas: bigint | undefined
-  gasPrice: bigint | undefined
-  chainId: bigint
+  data: string;
+  nonce: number;
+  gasLimit: bigint;
+  maxFeePerGas: bigint | undefined;
+  maxPriorityFeePerGas: bigint | undefined;
+  gasPrice: bigint | undefined;
+  chainId: bigint;
 }
 
 /** Fully resolved ordinary Ethereum bytes. Public identity is checked again at signing. */
 export interface FrozenUnsignedMonadTx {
-  readonly from: string
-  readonly unsignedSerialized: string
+  readonly from: string;
+  readonly unsignedSerialized: string;
 }
 
-export type MonadTxStatus = 'pending' | 'confirmed' | 'failed'
+export type MonadTxStatus = "pending" | "confirmed" | "failed";
 
 /**
  * Builds, signs, submits, and tracks Monad transactions for a single EOA held in memory (a raw
@@ -98,8 +98,8 @@ export type MonadTxStatus = 'pending' | 'confirmed' | 'failed'
  * scope (tickets #14/#18) — this class only ever manages the one key it's constructed with.
  */
 export class MonadAccountTxSigner {
-  private readonly wallet: Wallet
-  private readonly httpClient: MonadTxSubmitter
+  private readonly wallet: Wallet;
+  private readonly httpClient: MonadTxSubmitter;
 
   /**
    * @param privateKey 0x-prefixed hex private key for the single EOA this instance signs for.
@@ -108,17 +108,17 @@ export class MonadAccountTxSigner {
    * @param httpClient Used for `submitRawTransaction`/`getTransactionReceipt` (submit + track).
    */
   constructor(params: {
-    privateKey: string
-    provider: Provider
-    httpClient: MonadTxSubmitter
+    privateKey: string;
+    provider: Provider;
+    httpClient: MonadTxSubmitter;
   }) {
-    this.wallet = new Wallet(params.privateKey, params.provider)
-    this.httpClient = params.httpClient
+    this.wallet = new Wallet(params.privateKey, params.provider);
+    this.httpClient = params.httpClient;
   }
 
   /** The EOA address this instance signs for. */
   get address(): string {
-    return this.wallet.address
+    return this.wallet.address;
   }
 
   /** Build and locally sign a plain native-value transfer: `value` MON (in wei) to `to`, no
@@ -126,9 +126,9 @@ export class MonadAccountTxSigner {
   async buildAndSignTransfer(
     to: string,
     value: bigint,
-    overrides: MonadTxOverrides = {},
+    overrides: MonadTxOverrides = {}
   ): Promise<SignedMonadTx> {
-    return this.buildAndSign(to, value, '0x', overrides)
+    return this.buildAndSign(to, value, "0x", overrides);
   }
 
   /** Build and locally sign a value+calldata transaction: `value` MON (in wei) to `to`, carrying
@@ -139,14 +139,14 @@ export class MonadAccountTxSigner {
     to: string,
     value: bigint,
     data: string,
-    overrides: MonadTxOverrides = {},
+    overrides: MonadTxOverrides = {}
   ): Promise<SignedMonadTx> {
-    if (data === undefined || data === '' || data === '0x') {
+    if (data === undefined || data === "" || data === "0x") {
       throw new Error(
-        'buildAndSignCall requires non-empty calldata; use buildAndSignTransfer for plain value transfers',
-      )
+        "buildAndSignCall requires non-empty calldata; use buildAndSignTransfer for plain value transfers"
+      );
     }
-    return this.buildAndSign(to, value, data, overrides)
+    return this.buildAndSign(to, value, data, overrides);
   }
 
   /** Resolve quotes without creating a signature or submitting any transaction. */
@@ -154,11 +154,11 @@ export class MonadAccountTxSigner {
     to: string,
     value: bigint,
     data: string,
-    overrides: MonadTxOverrides = {},
+    overrides: MonadTxOverrides = {}
   ): Promise<FrozenUnsignedMonadTx> {
-    if (!data || data === '0x')
-      throw new Error('Canonical call requires calldata')
-    return this.populateUnsigned(to, value, data, overrides)
+    if (!data || data === "0x")
+      throw new Error("Canonical call requires calldata");
+    return this.populateUnsigned(to, value, data, overrides);
   }
 
   /** Resolve quotes for a plain value transfer with empty calldata, without signing or
@@ -167,30 +167,30 @@ export class MonadAccountTxSigner {
   async populateUnsignedTransfer(
     to: string,
     value: bigint,
-    overrides: MonadTxOverrides = {},
+    overrides: MonadTxOverrides = {}
   ): Promise<FrozenUnsignedMonadTx> {
-    return this.populateUnsigned(to, value, '0x', overrides)
+    return this.populateUnsigned(to, value, "0x", overrides);
   }
 
   private async populateUnsigned(
     to: string,
     value: bigint,
     data: string,
-    overrides: MonadTxOverrides,
+    overrides: MonadTxOverrides
   ): Promise<FrozenUnsignedMonadTx> {
     const populated = await this.wallet.populateTransaction({
       to,
       value,
       data,
       ...overrides,
-    })
-    const { from, ...unsignedFields } = populated
+    });
+    const { from, ...unsignedFields } = populated;
     if (
-      typeof from !== 'string' ||
+      typeof from !== "string" ||
       from.toLowerCase() !== this.address.toLowerCase()
     )
-      throw new Error('Canonical populated sender mismatch')
-    const transaction = Transaction.from(unsignedFields)
+      throw new Error("Canonical populated sender mismatch");
+    const transaction = Transaction.from(unsignedFields);
     if (
       transaction.data.toLowerCase() !== data.toLowerCase() ||
       transaction.to === null ||
@@ -203,20 +203,20 @@ export class MonadAccountTxSigner {
         : transaction.maxFeePerGas === null ||
           transaction.maxPriorityFeePerGas === null)
     )
-      throw new Error('Incomplete canonical unsigned transaction')
+      throw new Error("Incomplete canonical unsigned transaction");
     return Object.freeze({
       from: this.address.toLowerCase(),
       unsignedSerialized: transaction.unsignedSerialized,
-    })
+    });
   }
 
   /** Sign exactly previously persisted unsigned bytes; never reads nonce, fees or gas. */
   async signFrozenUnsigned(
-    input: FrozenUnsignedMonadTx,
+    input: FrozenUnsignedMonadTx
   ): Promise<SignedMonadTx> {
     if (input.from !== this.address.toLowerCase())
-      throw new Error('Canonical unsigned sender mismatch')
-    const transaction = Transaction.from(input.unsignedSerialized)
+      throw new Error("Canonical unsigned sender mismatch");
+    const transaction = Transaction.from(input.unsignedSerialized);
     if (
       transaction.signature !== null ||
       transaction.unsignedSerialized !== input.unsignedSerialized ||
@@ -226,15 +226,15 @@ export class MonadAccountTxSigner {
       transaction.value <= 0n ||
       (transaction.type !== 0 && transaction.type !== 2)
     )
-      throw new Error('Invalid canonical unsigned transaction')
-    const rawTx = await this.wallet.signTransaction(transaction)
-    const parsed = Transaction.from(rawTx)
+      throw new Error("Invalid canonical unsigned transaction");
+    const rawTx = await this.wallet.signTransaction(transaction);
+    const parsed = Transaction.from(rawTx);
     if (
       parsed.unsignedSerialized !== input.unsignedSerialized ||
       parsed.from?.toLowerCase() !== input.from ||
       parsed.hash === null
     )
-      throw new Error('Canonical signed transaction mismatch')
+      throw new Error("Canonical signed transaction mismatch");
     return {
       rawTx,
       txHash: parsed.hash,
@@ -248,44 +248,44 @@ export class MonadAccountTxSigner {
       maxPriorityFeePerGas: parsed.maxPriorityFeePerGas ?? undefined,
       gasPrice: parsed.gasPrice ?? undefined,
       chainId: parsed.chainId,
-    }
+    };
   }
 
   private async buildAndSign(
     to: string,
     value: bigint,
     data: string,
-    overrides: MonadTxOverrides,
+    overrides: MonadTxOverrides
   ): Promise<SignedMonadTx> {
-    const request: TransactionRequest = { to, value, data }
-    if (overrides.nonce !== undefined) request.nonce = overrides.nonce
-    if (overrides.gasLimit !== undefined) request.gasLimit = overrides.gasLimit
+    const request: TransactionRequest = { to, value, data };
+    if (overrides.nonce !== undefined) request.nonce = overrides.nonce;
+    if (overrides.gasLimit !== undefined) request.gasLimit = overrides.gasLimit;
     if (overrides.maxFeePerGas !== undefined) {
-      request.maxFeePerGas = overrides.maxFeePerGas
+      request.maxFeePerGas = overrides.maxFeePerGas;
     }
     if (overrides.maxPriorityFeePerGas !== undefined) {
-      request.maxPriorityFeePerGas = overrides.maxPriorityFeePerGas
+      request.maxPriorityFeePerGas = overrides.maxPriorityFeePerGas;
     }
-    if (overrides.gasPrice !== undefined) request.gasPrice = overrides.gasPrice
-    if (overrides.chainId !== undefined) request.chainId = overrides.chainId
+    if (overrides.gasPrice !== undefined) request.gasPrice = overrides.gasPrice;
+    if (overrides.chainId !== undefined) request.chainId = overrides.chainId;
 
     // `populateTransaction` fills in whatever wasn't explicitly overridden above by querying
     // `this.wallet.provider`: nonce via `eth_getTransactionCount(address, "pending")`, gasLimit
     // via `eth_estimateGas`, fee fields via `eth_feeHistory`/`eth_gasPrice` (auto-detecting
     // EIP-1559 support), and chainId via `eth_chainId`. See `ethers`'
     // `AbstractSigner.populateTransaction` (providers/abstract-signer.ts).
-    const populated = await this.wallet.populateTransaction(request)
-    const rawTx = await this.wallet.signTransaction(populated)
+    const populated = await this.wallet.populateTransaction(request);
+    const rawTx = await this.wallet.signTransaction(populated);
 
     // Re-derive every field from the signed encoding itself (rather than trusting `populated`
     // directly) so `SignedMonadTx` reflects exactly what was signed, byte for byte.
-    const parsed = Transaction.from(rawTx)
+    const parsed = Transaction.from(rawTx);
     if (parsed.to === null) {
       // Only possible for contract-creation txs (`to` omitted), which this module never builds.
-      throw new Error('Signed transaction unexpectedly has no `to` address')
+      throw new Error("Signed transaction unexpectedly has no `to` address");
     }
     if (parsed.hash === null) {
-      throw new Error('Signed transaction unexpectedly has no hash')
+      throw new Error("Signed transaction unexpectedly has no hash");
     }
 
     return {
@@ -301,7 +301,7 @@ export class MonadAccountTxSigner {
       maxPriorityFeePerGas: parsed.maxPriorityFeePerGas ?? undefined,
       gasPrice: parsed.gasPrice ?? undefined,
       chainId: parsed.chainId,
-    }
+    };
   }
 
   /** Submit an already-built, already-signed transaction via `MonadHttpClient.
@@ -309,18 +309,18 @@ export class MonadAccountTxSigner {
    * reports, after checking it matches the hash computed locally at sign time — a mismatch would
    * indicate a serialization bug and should never happen in practice. */
   async submit(signedTx: SignedMonadTx): Promise<string> {
-    return this.submitRaw(signedTx.rawTx, signedTx.txHash)
+    return this.submitRaw(signedTx.rawTx, signedTx.txHash);
   }
 
   /** Replays a previously journaled signed transaction without reconstructing or re-signing it. */
   async submitRaw(rawTx: string, expectedTxHash: string): Promise<string> {
-    const broadcastHash = await this.httpClient.submitRawTransaction(rawTx)
+    const broadcastHash = await this.httpClient.submitRawTransaction(rawTx);
     if (broadcastHash.toLowerCase() !== expectedTxHash.toLowerCase()) {
       throw new Error(
-        `Broadcast tx hash (${broadcastHash}) does not match the hash computed at sign time (${expectedTxHash})`,
-      )
+        `Broadcast tx hash (${broadcastHash}) does not match the hash computed at sign time (${expectedTxHash})`
+      );
     }
-    return broadcastHash
+    return broadcastHash;
   }
 
   /** Track a submitted transaction's status via `MonadHttpClient.getTransactionReceipt`
@@ -330,8 +330,24 @@ export class MonadAccountTxSigner {
    * means the tx was mined — Monad, a modern EVM chain, should never actually produce this case
    * (see `MonadTxReceipt`'s doc comment in `monad-http.ts`). */
   async getStatus(txHash: string): Promise<MonadTxStatus> {
-    const receipt = await this.httpClient.getTransactionReceipt(txHash)
-    if (receipt === undefined) return 'pending'
-    return receipt.status === 'failure' ? 'failed' : 'confirmed'
+    const receipt = await this.httpClient.getTransactionReceipt(txHash);
+    if (receipt === undefined) return "pending";
+    return receipt.status === "failure" ? "failed" : "confirmed";
+  }
+
+  /** Read native balance (in wei) for an address (or this signer's own address). */
+  async getBalance(address?: string): Promise<bigint> {
+    const target = address ?? this.address;
+    return (this.wallet.provider as Provider).getBalance(target);
+  }
+
+  /** Read on-chain transaction count (nonce) for an address (or this signer's own address). */
+  async getTransactionCount(address?: string): Promise<bigint> {
+    const target = address ?? this.address;
+    const count = await (this.wallet.provider as Provider).getTransactionCount(
+      target,
+      "latest"
+    );
+    return BigInt(count);
   }
 }

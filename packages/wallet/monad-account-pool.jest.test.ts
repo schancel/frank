@@ -1526,5 +1526,80 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       expect(available.length).toBe(2);
       expect(httpClient.submitRawTransaction).toHaveBeenCalled();
     });
+
+    it("detects superceded funding attempts, retires them, and allows preparation to succeed (Issue #1189)", async () => {
+      const {
+        balances,
+        defaultOverrides,
+        httpClient,
+        mainAccountSigner,
+        pool,
+        provider,
+        store,
+      } = setupWarmingTest();
+      pool.ensureSize(2);
+
+      // Subaccount 0 is in 'funding' state with a stale raw transaction whose nonce is 0
+      const mainWallet = new Wallet(Wallet.createRandom().privateKey, provider);
+      const staleTx = await mainWallet.signTransaction({
+        to: pool.getRecord(0)!.address,
+        value: 10_000n,
+        nonce: 0,
+        gasLimit: 21_000n,
+        gasPrice: 1_000_000_000n,
+        chainId: CHAIN_ID,
+      });
+      const staleHash = Transaction.from(staleTx).hash;
+
+      store.put({
+        index: 0,
+        address: pool.getRecord(0)!.address,
+        status: "funding",
+        fundingAttempt: {
+          rawTx: staleTx,
+          txHash: staleHash!,
+        },
+      });
+
+      // The node rejects resubmitting the stale tx
+      httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+        if (rawTx === staleTx) {
+          throw new Error("An existing transaction had higher priority");
+        }
+        const transaction = Transaction.from(rawTx);
+        balances.set(
+          transaction.to!.toLowerCase(),
+          (balances.get(transaction.to!.toLowerCase()) ?? 0n) +
+            transaction.value
+        );
+        return transaction.hash;
+      });
+
+      // The main signer on-chain nonce is now 5 (> 0), so nonce 0 is superceded
+      jest
+        .spyOn(mainAccountSigner, "getTransactionCount")
+        .mockResolvedValue(5n);
+      // getStatus returns 'pending' for the stale evicted tx, and 'confirmed' for fresh txs
+      jest
+        .spyOn(mainAccountSigner, "getStatus")
+        .mockImplementation(async (h) =>
+          h === staleHash ? "pending" : "confirmed"
+        );
+      // Balance on sub-account 0 is 0
+      balances.set(pool.getRecord(0)!.address.toLowerCase(), 0n);
+
+      // Preparing inventory must NOT hang or throw; it recovers sub-account 0 by retiring it
+      const result = await pool.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: defaultOverrides,
+        receipt: { maxAttempts: 1, intervalMs: 1 },
+      });
+
+      expect(result.selectedAccountCount).toBeGreaterThanOrEqual(1);
+      expect(pool.getRecord(0)?.status).toBe("retired");
+    });
   });
 });

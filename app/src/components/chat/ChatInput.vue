@@ -1,5 +1,14 @@
 <template>
   <div class="row full-width items-center">
+    <div
+      v-if="disable && stampStatus"
+      class="chat-input-status-bar row items-center full-width q-px-md q-py-xs text-caption text-primary"
+      data-testid="chat-input-stamp-status"
+      style="font-size: 11px; line-height: 1.2"
+    >
+      <q-spinner-dots size="14px" class="q-mr-xs" />
+      <span class="ellipsis text-weight-medium">{{ stampStatus }}</span>
+    </div>
     <q-toolbar class="chat-input-toolbar full-width items-center">
       <q-btn
         dense
@@ -141,6 +150,7 @@
         class="chat-send-btn q-btn"
         :aria-label="$t('a11y.sendMessage')"
         :disable="disable"
+        :loading="disable"
         @mousedown.prevent="sendMessage"
       />
     </q-toolbar>
@@ -162,6 +172,10 @@ export default defineComponent({
     stampAmount: {
       type: String,
       default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
+    },
+    stampStatus: {
+      type: String as () => string | null,
+      default: null,
     },
     // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
     // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its

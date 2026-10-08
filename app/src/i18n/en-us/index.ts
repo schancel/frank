@@ -1017,6 +1017,8 @@ export default {
     botRoleModerator: 'Moderator',
     botRoleAnnouncer: 'Announcer',
     badgeOfficial: 'Official',
+    badgeOfficialBot: 'Official Bot',
+    badgeOfficialService: 'Official Service',
     badgeBot: 'Bot',
     badgeService: 'Service',
     badgeAi: 'Official AI',

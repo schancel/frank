@@ -28,6 +28,7 @@
 <script lang="ts">
 import { computed, defineComponent } from 'vue'
 import { useContactStore } from 'src/stores/contacts'
+import { inferCuratedBotAttributes } from 'src/utils/curated-bots'
 
 export default defineComponent({
   name: 'AccountBadge',
@@ -64,14 +65,33 @@ export default defineComponent({
           ? contactStore.isCurated(props.address)
           : false
 
+      const contactProfile =
+        props.address && typeof contactStore.getContactProfile === 'function'
+          ? contactStore.getContactProfile(props.address)
+          : undefined
+
+      const inferred =
+        isCurated && contactProfile?.name
+          ? inferCuratedBotAttributes(contactProfile.name)
+          : {}
+
       const type =
         props.accountType !== undefined
           ? props.accountType
-          : props.isBot
+          : contactProfile?.accountType !== undefined
+          ? contactProfile.accountType
+          : inferred.accountType !== undefined
+          ? inferred.accountType
+          : (props.isBot ?? contactProfile?.isBot ?? inferred.isBot)
           ? 1
           : 0
 
-      const role = props.botRole
+      const role =
+        props.botRole !== undefined
+          ? props.botRole
+          : contactProfile?.botRole !== undefined
+          ? contactProfile.botRole
+          : inferred.botRole
 
       if (isCurated) {
         if (type === 2 && role === 2) {
@@ -146,7 +166,7 @@ export default defineComponent({
         }
         if (type === 1) {
           return {
-            i18nKey: 'profile.badgeBot',
+            i18nKey: 'profile.badgeOfficialBot',
             icon: 'smart_toy',
             color: 'purple-7',
             textColor: 'white',
@@ -156,7 +176,7 @@ export default defineComponent({
         }
         if (type === 2) {
           return {
-            i18nKey: 'profile.badgeService',
+            i18nKey: 'profile.badgeOfficialService',
             icon: 'build',
             color: 'teal-8',
             textColor: 'white',

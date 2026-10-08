@@ -27,6 +27,7 @@ import { mapObjIndexed } from 'ramda'
 import assert from 'assert'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import { markRaw } from 'vue'
+import { inferCuratedBotAttributes } from '../utils/curated-bots'
 
 export const defaultRelayData: {
   profile: {
@@ -329,6 +330,8 @@ export const useContactStore = defineStore('contacts', {
           bio: contact.profile?.bio ?? null,
           avatar: contact.profile?.avatar ?? null,
           isBot: contact.profile?.isBot,
+          accountType: contact.profile?.accountType,
+          botRole: contact.profile?.botRole,
           pubKey: contact.profile?.pubKey
             ? markRaw(contact.profile?.pubKey)
             : null,
@@ -483,6 +486,7 @@ export const useContactStore = defineStore('contacts', {
       if (await isOwnAddress(apiAddress)) return
       // The await above can interleave with another add of the same address.
       if (this.isContact(apiAddress)) return
+      const inferred = inferCuratedBotAttributes(name)
       const contact = {
         ...pendingRelayData,
         profile: {
@@ -491,6 +495,9 @@ export const useContactStore = defineStore('contacts', {
           bio: '',
           avatar: null,
           pubKey: null,
+          isBot: inferred.isBot ?? true,
+          accountType: inferred.accountType,
+          botRole: inferred.botRole,
         },
       }
       this.addContact({ address: apiAddress, contact })

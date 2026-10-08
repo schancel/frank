@@ -110,6 +110,29 @@ export default defineComponent({
       { immediate: true },
     )
 
+    watch(
+      () => accountStatus.status,
+      status => {
+        if (status === 'ready') {
+          fetchCuratedDefaultContacts({
+            relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
+          })
+            .then(async curated => {
+              contacts.replaceCuratedDefaults(curated)
+              for (const contact of curated) {
+                await contacts.addDefaultContact(contact)
+              }
+              await contacts.refreshContacts()
+            })
+            .catch(err => {
+              contacts.clearCuratedDefaults()
+              console.error(err)
+            })
+        }
+      },
+      { immediate: true },
+    )
+
     return {
       addDefaultContact: contacts.addDefaultContact,
       refreshContacts: contacts.refreshContacts,

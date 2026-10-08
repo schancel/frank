@@ -557,8 +557,10 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     writeFileSync(curatedPath, combinedToml, { mode: 0o600 })
     abortIfStopping()
 
-    const prebuiltBin = join(REPO_ROOT, 'backend', 'cashweb', 'target', 'debug', 'cashwebd-exe')
-    const effectiveCashwebdBin = config.cashwebdBin ?? (existsSync(prebuiltBin) ? prebuiltBin : undefined)
+    const releaseBin = join(REPO_ROOT, 'backend', 'cashweb', 'target', 'release', 'cashwebd-exe')
+    const debugBin = join(REPO_ROOT, 'backend', 'cashweb', 'target', 'debug', 'cashwebd-exe')
+    const prebuiltBin = existsSync(releaseBin) ? releaseBin : (existsSync(debugBin) ? debugBin : undefined)
+    const effectiveCashwebdBin = config.cashwebdBin ?? prebuiltBin
 
     const relayDb = join(config.stateDir, 'relay', 'registry.rocksdb')
     mkdirSync(dirname(relayDb), { recursive: true, mode: 0o700 })

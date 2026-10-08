@@ -524,6 +524,8 @@ describe('Wallet detail page (#570)', () => {
     // Tab buttons exist
     const balanceTab = wrapper.find('[data-testid="wallet-tab-balance"]')
     expect(balanceTab.exists()).toBe(true)
+    const swapTab = wrapper.find('[data-testid="wallet-tab-swap"]')
+    expect(swapTab.exists()).toBe(true)
     const parityTab = wrapper.find('[data-testid="wallet-tab-parity"]')
     expect(parityTab.exists()).toBe(true)
 
@@ -534,12 +536,17 @@ describe('Wallet detail page (#570)', () => {
     const panels = wrapper.find('[data-testid="wallet-tab-panels"]')
     expect(panels.exists()).toBe(true)
 
-    // AvuParityChart component is registered and embedded
+    // Components are registered and embedded
     expect(wrapper.findComponent({ name: 'AvuParityChart' }).exists()).toBe(
       true,
     )
+    expect(wrapper.findComponent({ name: 'DAppSwapView' }).exists()).toBe(true)
 
     // Switching activeTab
+    wrapper.vm.activeTab = 'swap'
+    await nextTick()
+    expect(wrapper.vm.activeTab).toBe('swap')
+
     wrapper.vm.activeTab = 'parity'
     await nextTick()
     expect(wrapper.vm.activeTab).toBe('parity')

@@ -372,6 +372,20 @@ export default {
     avuRatesRefUsd: 'USD Reference',
     tabBalance: 'Balance & Transfer',
     tabParity: 'Thermodynamic Parity',
+    tabSwap: 'Instant Swap',
+    swapPay: 'You Pay',
+    swapReceive: 'You Receive (Estimated)',
+    swapAvailable: 'Available',
+    swapFeeLabel: 'Protocol Convenience Fee (8.75 bps)',
+    swapFeeSavingsBadge: '10x Cheaper than MetaMask',
+    swapRouting: 'Execution Route',
+    swapDestinationChange:
+      'Direct settlement to fresh HD change address (seed recoverable, zero link to identity)',
+    swapSelectDifferent: 'Select different assets to swap',
+    swapEnterAmount: 'Enter an amount to swap',
+    swapExecute: 'Swap Now',
+    swapSuccess:
+      'Swap executed successfully! Funds delivered to your change address.',
     avuTooltip:
       '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute. An unforgeable thermodynamic standard of real purchasing power.',
     avuHashLabel: 'AVU (Hash-Derived)',

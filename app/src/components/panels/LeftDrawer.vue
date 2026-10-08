@@ -176,8 +176,24 @@
             </q-item>
             <q-separator />
             <q-item
+              v-if="!$status.setup"
               clickable
-              :active="!selectedForumTopic"
+              :active="isWelcomeActive"
+              active-class="active-topic-item active-chat-list-item"
+              class="topic-list-item"
+              data-test="nav-welcome"
+              @click="openWelcome"
+            >
+              <q-item-section avatar class="topic-avatar-section">
+                <q-icon name="info" size="18px" />
+              </q-item-section>
+              <q-item-section class="topic-name-section">{{
+                $t('leftDrawer.welcome')
+              }}</q-item-section>
+            </q-item>
+            <q-item
+              clickable
+              :active="!selectedForumTopic && !isWelcomeActive"
               active-class="active-topic-item active-chat-list-item"
               class="topic-list-item"
               data-test="topic-all"
@@ -466,7 +482,8 @@ export default defineComponent({
         if (
           path.startsWith('/forum') ||
           path.startsWith('/new-post') ||
-          path.startsWith('/topic')
+          path.startsWith('/topic') ||
+          path === '/welcome'
         ) {
           tab.value = 'forum'
           maybeRefreshTopics()
@@ -501,8 +518,17 @@ export default defineComponent({
       { immediate: true },
     )
 
+    const isWelcomeActive = computed(() => route?.path === '/welcome')
+    function openWelcome() {
+      if (route?.path !== '/welcome') {
+        void router.push('/welcome')
+      }
+    }
+
     return {
       tab,
+      isWelcomeActive,
+      openWelcome,
       openActiveOrRecentChat,
       openForumTab,
       openNewPost,

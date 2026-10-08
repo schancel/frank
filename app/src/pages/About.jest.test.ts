@@ -136,7 +136,7 @@ describe('About: Frank & Stamp protocol overview', () => {
   it('explains the Stamp protocol mechanism and economics', () => {
     const en = mountAbout(enUS)
     const stamp = text(en, 'about-stamp')
-    expect(stamp).toContain('The Stamp Protocol: Speaking Is Not Free')
+    expect(stamp).toContain('The Stamp Protocol: Free Speech Is Not Free')
     expect(stamp).toContain('Direct Messages & Paid Delivery')
     expect(stamp).toContain('pays the recipient directly')
     expect(stamp).toContain('Topic Broadcasts & Burn Weights')
@@ -162,7 +162,7 @@ describe('About: Frank & Stamp protocol overview', () => {
     )
     expect(text(fr, 'about-frank')).toContain('À propos de Frank')
     expect(text(fr, 'about-stamp')).toContain(
-      'Le protocole Stamp : la parole n’est pas gratuite',
+      'Le protocole Stamp : la liberté d’expression n’est pas gratuite',
     )
     expect(text(fr, 'about-links')).toContain('Liens et code source')
   })

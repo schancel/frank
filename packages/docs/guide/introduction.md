@@ -10,14 +10,28 @@ Conventional communication networks—including Telegram, Signal, WhatsApp, and 
 
 **Frank eliminates personal identifying information (PII) entirely.** There is no registration form, no phone number prompt, no email verification, and no central database of accounts. Identities are self-sovereign mathematical keypairs derived locally and offline on your own device.
 
+### The Economic Principle: Free Speech Is Not Free
+
+Early internet protocols (SMTP for email, Usenet for discussion, XMPP for chat) were designed as open, federated networks without central authorities. Yet today, over 85% of email and virtually all consumer messaging are concentrated inside a handful of centralized corporate platforms.
+
+This centralization was not an accident; it was an economic inevitability:
+1. **The Asymmetric Cost Structure**: In zero-cost messaging, the marginal cost to transmit a message is ~$0, while the cost to receive, process, and filter spam is borne entirely by the recipient and the server operator.
+2. **The Inevitability of Gatekeepers**: Because open networks could not stop automated spam without filtering, users fled to centralized platforms that could afford massive machine-learning filters—at the price of total surveillance, algorithmic control, and arbitrary account de-platforming.
+
+For communication to be genuinely free—**free as in liberty, unmoderated, and self-sovereign**—it cannot be **free of charge**. When speaking carries zero economic cost, botnets, Sybil farms, and rage-bait algorithms dominate the conversation. Frank replaces gatekeepers with economic physics:
+
+- **Direct Messages (Paid Delivery)**: Every direct message carries an on-chain stamp transaction that pays the recipient directly via derived one-time stealth addresses. Senders compensate recipients for their attention, eliminating cold unsolicited spam at the source.
+- **Public Topics & Governance (Proof-of-Burn)**: Public broadcast posts and community votes burn native value to an unspendable burn address, giving provable, non-falsifiable economic weight to public discourse without requiring centralized moderators.
+
 Frank is an open protocol and decentralized communication system that combines:
 
 1. **Zero-PII Sovereign Cryptographic Identity**: Every user is an autonomous cryptographic actor. Handles like `alice@domain.org` map to self-sovereign directory attestations signed by the user's root authority key, with zero central account authorities.
-2. **Dual-Key Stealth Address Protocol (DKSAP)**: Message envelopes and payment transactions leverage stealth address derivation on secp256k1, ensuring mathematical unlinkability between senders and recipients.
-3. **Deterministic CBOR (FRNK v1)**: All wire payloads, directory statements, and topic records are encoded with canonical, deterministic CBOR with strict byte-level invariants and zero ambiguous floating-point or integer encodings.
-4. **Dual-Protocol Routing (SRV + MX)**: A unified identifier (e.g. `alice@domain.com`) resolves to a high-speed Frank relay over DNS SRV and falls back to traditional SMTP email via standard MX records and an automated bidirectional mail gateway.
-5. **Censorship-Resistant Federated Relay Mesh**: Relays run either as zero-dependency standalone binaries or horizontally clustered nodes, providing open store-and-forward routing with no centralized gatekeepers.
-6. **Ambient Privacy & Graph Entropy**: Rather than forcing users into conspicuous mixer pools (e.g. Tornado Cash) which attract regulatory blacklisting and negative taint, Frank's automated UTXO/EVM wallet mixing operates through standard peer-to-peer gas transfers. This creates positive privacy externalities ("herd privacy") across the entire blockchain.
+2. **Economic Anti-Spam via Stamps & Burns**: Speaking carries verifiable economic stakes. Direct messages pay recipients via one-time stealth keys; public topic posts and votes burn value.
+3. **Dual-Key Stealth Address Protocol (DKSAP)**: Message envelopes and payment transactions leverage stealth address derivation on secp256k1, ensuring mathematical unlinkability between senders and recipients.
+4. **Deterministic CBOR (FRNK v1)**: All wire payloads, directory statements, and topic records are encoded with canonical, deterministic CBOR with strict byte-level invariants and zero ambiguous floating-point or integer encodings.
+5. **Dual-Protocol Routing (SRV + MX)**: A unified identifier (e.g. `alice@domain.com`) resolves to a high-speed Frank relay over DNS SRV and falls back to traditional SMTP email via standard MX records and an automated bidirectional mail gateway.
+6. **Censorship-Resistant Federated Relay Mesh**: Relays run either as zero-dependency standalone binaries or horizontally clustered nodes, providing open store-and-forward routing with no centralized gatekeepers.
+7. **Ambient Privacy & Graph Entropy**: Rather than forcing users into conspicuous mixer pools (e.g. Tornado Cash) which attract regulatory blacklisting and negative taint, Frank's automated UTXO/EVM wallet mixing operates through standard peer-to-peer gas transfers. This creates positive privacy externalities ("herd privacy") across the entire blockchain.
 
 ---
 

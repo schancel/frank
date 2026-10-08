@@ -9,7 +9,7 @@
   Every direct message carries a real payment to its recipient. Public topic posts and votes burn value.
 </p>
 
-Frank is a Monad port and continuation of Stamp, a cryptomessenger built around a simple rule: **speaking is not free**. A sender must attach an on-chain stamp transaction to every message, and the relay independently verifies that transaction before accepting the message.
+Frank is a Monad port and continuation of Stamp, a cryptomessenger built around a simple rule: **free speech is not free**. A sender must attach an on-chain stamp transaction to every message, and the relay independently verifies that transaction before accepting the message.
 
 That economic primitive makes Frank more than chat. It is a candidate transport for any Ethereum-family protocol that needs private, asynchronous negotiation before on-chain settlement: agent coordination, swaps, payment channels, threshold signing, credentials, escrow, games, and other multi-round protocols.
 

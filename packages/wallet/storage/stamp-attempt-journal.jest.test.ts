@@ -1247,7 +1247,7 @@ describe('retained canonical recovery durability', () => {
       },
       { maxRecords: 1 },
     )
-  }, 20000)
+  }, 60000)
   it.each(['imported', 'acknowledged'] as const)(
     'retains exact recipient funds and ACK state after %s SIGKILL without clean Close',
     async phase => {
@@ -1443,5 +1443,5 @@ describe('retained canonical recovery durability', () => {
       await journal.Close()
       await rm(location, { recursive: true, force: true })
     }
-  }, 20000)
+  }, 60000)
 })

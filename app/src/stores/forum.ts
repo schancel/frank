@@ -261,6 +261,28 @@ export const useForumStore = defineStore('forum', {
 
     setEntries(messages: ForumMessage[]) {
       const snapshot = forumSnapshot(messages)
+
+      const currentMessages = this.messages
+      if (
+        currentMessages &&
+        currentMessages.length === snapshot.messages.length &&
+        currentMessages.every((m, i) => {
+          const s = snapshot.messages[i]
+          return (
+            m.payloadDigest === s.payloadDigest &&
+            m.poster === s.poster &&
+            m.voteWeightWei === s.voteWeightWei &&
+            m.replies?.length === s.replies?.length &&
+            (m.timestamp === s.timestamp ||
+              (m.timestamp instanceof Date &&
+                s.timestamp instanceof Date &&
+                m.timestamp.getTime() === s.timestamp.getTime()))
+          )
+        })
+      ) {
+        return
+      }
+
       this.$patch(state => {
         state.messages = snapshot.messages
         state.index = snapshot.index

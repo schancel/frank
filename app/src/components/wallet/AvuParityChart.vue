@@ -528,34 +528,35 @@
           />
 
           <!-- Hardware Milestone Indicator Lines -->
-          <g
-            v-if="showMilestones"
-            v-for="m in activeMilestonesMapped"
-            :key="`milestone-${m.year}-${m.label}`"
-            class="milestone-group cursor-pointer"
-            data-test="hardware-milestone-marker"
-            @mouseenter="activeHoverMilestone = m"
-            @click="activeHoverMilestone = m"
-          >
-            <line
-              :x1="m.x"
-              y1="25"
-              :x2="m.x"
-              y2="230"
-              :stroke="themeColors.milestone"
-              stroke-width="1.5"
-              stroke-dasharray="2 3"
-              opacity="0.75"
-            />
-            <circle
-              :cx="m.x"
-              cy="25"
-              r="5"
-              :fill="themeColors.milestone"
-              :stroke="cardBgHex"
-              stroke-width="1.5"
-            />
-          </g>
+          <template v-if="showMilestones">
+            <g
+              v-for="m in activeMilestonesMapped"
+              :key="`milestone-${m.year}-${m.label}`"
+              class="milestone-group cursor-pointer"
+              data-test="hardware-milestone-marker"
+              @mouseenter="activeHoverMilestone = m"
+              @click="activeHoverMilestone = m"
+            >
+              <line
+                :x1="m.x"
+                y1="25"
+                :x2="m.x"
+                y2="230"
+                :stroke="themeColors.milestone"
+                stroke-width="1.5"
+                stroke-dasharray="2 3"
+                opacity="0.75"
+              />
+              <circle
+                :cx="m.x"
+                cy="25"
+                r="5"
+                :fill="themeColors.milestone"
+                :stroke="cardBgHex"
+                stroke-width="1.5"
+              />
+            </g>
+          </template>
 
           <!-- Data Points & Hover Targets -->
           <g

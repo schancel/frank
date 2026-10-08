@@ -4,7 +4,22 @@ import DOMPurify from 'dompurify'
 import { colors } from 'quasar'
 const { getPaletteColor } = colors
 
+const MAX_CACHE_ENTRIES = 1000
+const cache = new Map<string, string>()
+
+export function clearMarkdownCache() {
+  cache.clear()
+}
+
 export function renderMarkdown(input: string, linkColor: boolean) {
+  const cacheKey = `${linkColor ? 1 : 0}:${input}`
+  const cached = cache.get(cacheKey)
+  if (cached !== undefined) {
+    cache.delete(cacheKey)
+    cache.set(cacheKey, cached)
+    return cached
+  }
+
   const renderer = new marked.Renderer()
   // linkColor boolean is true if dark, false otherwise
   const linkColorName = linkColor ? 'blue-2' : 'blue'
@@ -25,10 +40,21 @@ export function renderMarkdown(input: string, linkColor: boolean) {
       '</div>'
     )
   }
-  return DOMPurify.sanitize(marked.marked(input, { renderer: renderer }), {
-    ADD_ATTR: ['target'],
-    RETURN_DOM: false,
-  })
+  const result = DOMPurify.sanitize(
+    marked.marked(input, { renderer: renderer }),
+    {
+      ADD_ATTR: ['target'],
+      RETURN_DOM: false,
+    },
+  )
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value
+    if (oldestKey !== undefined) {
+      cache.delete(oldestKey)
+    }
+  }
+  cache.set(cacheKey, result)
+  return result
 }
 
 export function purify(input: string) {

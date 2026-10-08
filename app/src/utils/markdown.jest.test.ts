@@ -20,7 +20,8 @@
  * -- which palette name it asks for -- from Quasar's real color resolution, which is out of scope
  * for this file's own tests.
  */
-import { renderMarkdown, purify } from './markdown'
+import DOMPurify from 'dompurify'
+import { renderMarkdown, purify, clearMarkdownCache } from './markdown'
 
 jest.mock('quasar', () => ({
   colors: {
@@ -29,6 +30,11 @@ jest.mock('quasar', () => ({
 }))
 
 describe('renderMarkdown', () => {
+  beforeEach(() => {
+    clearMarkdownCache()
+    jest.clearAllMocks()
+  })
+
   it('renders basic markdown to HTML', () => {
     expect(renderMarkdown('**bold** and *italic*', false)).toContain(
       '<strong>bold</strong>',
@@ -72,6 +78,73 @@ describe('renderMarkdown', () => {
   it('strips a javascript: URL rendered as a markdown link', () => {
     const html = renderMarkdown('[click me](javascript:alert(1))', false)
     expect(html.toLowerCase()).not.toContain('javascript:')
+  })
+
+  it('returns exact same HTML on cache hits', () => {
+    const input = 'hello **world** [link](https://example.com)'
+    const first = renderMarkdown(input, false)
+    const second = renderMarkdown(input, false)
+    expect(first).toBe(second)
+  })
+
+  it('proves DOMPurify.sanitize is only called once for repeated inputs', () => {
+    const sanitizeSpy = jest.spyOn(DOMPurify, 'sanitize')
+    const input = 'repeated **markdown** content'
+
+    const first = renderMarkdown(input, false)
+    expect(sanitizeSpy).toHaveBeenCalledTimes(1)
+
+    const second = renderMarkdown(input, false)
+    expect(second).toBe(first)
+    expect(sanitizeSpy).toHaveBeenCalledTimes(1)
+
+    sanitizeSpy.mockRestore()
+  })
+
+  it('produces distinct cache entries for different linkColor boolean values', () => {
+    const sanitizeSpy = jest.spyOn(DOMPurify, 'sanitize')
+    const input = '[click](https://example.com)'
+
+    const light = renderMarkdown(input, false)
+    const dark = renderMarkdown(input, true)
+
+    expect(light).toContain('style="color: mock-color(blue)"')
+    expect(dark).toContain('style="color: mock-color(blue-2)"')
+    expect(light).not.toBe(dark)
+    expect(sanitizeSpy).toHaveBeenCalledTimes(2)
+
+    const lightCached = renderMarkdown(input, false)
+    const darkCached = renderMarkdown(input, true)
+
+    expect(lightCached).toBe(light)
+    expect(darkCached).toBe(dark)
+    expect(sanitizeSpy).toHaveBeenCalledTimes(2)
+
+    sanitizeSpy.mockRestore()
+  })
+
+  it('evicts the oldest entry when cache capacity exceeds 1000 entries', () => {
+    const sanitizeSpy = jest.spyOn(DOMPurify, 'sanitize')
+
+    renderMarkdown('oldest-entry', false)
+    expect(sanitizeSpy).toHaveBeenCalledTimes(1)
+
+    for (let i = 1; i <= 1000; i++) {
+      renderMarkdown(`entry-${i}`, false)
+    }
+    expect(sanitizeSpy).toHaveBeenCalledTimes(1001)
+
+    // 'oldest-entry' was evicted, so rendering it again is a cache miss
+    sanitizeSpy.mockClear()
+    renderMarkdown('oldest-entry', false)
+    expect(sanitizeSpy).toHaveBeenCalledTimes(1)
+
+    // 'entry-1000' is still cached, so rendering it is a cache hit
+    sanitizeSpy.mockClear()
+    renderMarkdown('entry-1000', false)
+    expect(sanitizeSpy).toHaveBeenCalledTimes(0)
+
+    sanitizeSpy.mockRestore()
   })
 })
 

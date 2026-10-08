@@ -302,8 +302,7 @@ export default {
   welcome: {
     title: 'Bienvenue sur Frank',
     tagline: "La liberté d'expression n'est pas gratuite.",
-    subtitle:
-      'Messagerie privée et résistante au spam économique sur Monad.',
+    subtitle: 'Messagerie privée et résistante au spam économique sur Monad.',
     introText:
       'Frank combine des identités cryptographiques sans permission avec de véritables enjeux économiques. Les expéditeurs paient pour capter l’attention, les publications publiques brûlent de la valeur et la vie privée est préservée par des transactions furtives ambiantes.',
     createAccount: 'Créer un compte',
@@ -1125,7 +1124,8 @@ export default {
       'Frank est une messagerie cryptographique décentralisée et souveraine conçue pour la blockchain Monad, prolongeant et faisant évoluer le protocole Stamp. Elle combine des identités cryptographiques sans permission avec une résistance économique réelle au spam.',
     frankAccounts:
       'Les comptes sont des paires de clés secp256k1 générées localement sur votre appareil. Frank ne requiert aucun numéro de téléphone, adresse courriel ou fournisseur centralisé.',
-    stampTitle: 'Le protocole Stamp : la liberté d’expression n’est pas gratuite',
+    stampTitle:
+      'Le protocole Stamp : la liberté d’expression n’est pas gratuite',
     stampIntro:
       'Plutôt que de s’en remettre à des gardiens centralisés ou à la surveillance pour filtrer le spam, le protocole Stamp introduit des incitations économiques directes dans la communication.',
     stampDMsTitle: 'Messages directs et remise rémunérée',

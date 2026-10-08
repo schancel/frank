@@ -31,11 +31,14 @@ import { createPinia, setActivePinia } from 'pinia'
 import {
   indexOutboundDeliveryOwners,
   rehydateChat,
+  rehydrateState,
   useChatStore,
   makeConversationId,
   uuidv5,
   NULL_CONVERSATION_NAMESPACE,
   getTrustedEmailGatewayAddress,
+  type RestorableState,
+  type ChatMessage,
 } from './chats'
 import { defaultEmailGatewayAddress } from '../utils/constants'
 import { useProfileStore } from './my-profile'
@@ -45,6 +48,7 @@ import {
   activeChain,
   CanonicalRecipientNotPublishedError,
 } from '@frank/wallet/chain'
+import { sameCanonicalAddress } from '../utils/own-address'
 import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import type { MessageWrapper, EmailItem } from '@frank/cashweb/types/messages'
@@ -2434,6 +2438,216 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
       expect(conv?.kind).toBe('email')
       expect(conv?.verifiedGateway).toBe(false)
+    })
+  })
+
+  describe('ticket #1178: collapse 1-on-1 direct messages into canonical peer conversation thread', () => {
+    it('collapses multiple incoming direct messages with different conversationId UUIDs from the same sender into a single canonical thread (fixes #1178)', async () => {
+      const chats = useChatStore()
+      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
+
+      const peerAddress = RECIPIENT_ADDRESS
+      const uuid1 = '11111111-1111-4111-8111-111111111111'
+      const uuid2 = '22222222-2222-4222-8222-222222222222'
+      const uuid3 = '33333333-3333-4333-8333-333333333333'
+
+      // First incoming message with UUID-1
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: peerAddress,
+          copartyAddress: peerAddress,
+          copartyPubKey: {} as any,
+          index: 'msg-uuid-1',
+          stampValue: 10,
+          message: {
+            conversationId: uuid1,
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'Hello from Qwen (message 1)' }],
+            serverTime: 1000,
+            receivedTime: 1000,
+            outpoints: [],
+            senderAddress: peerAddress,
+          } as any,
+        },
+      ])
+
+      // Second incoming message from same sender with UUID-2
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: peerAddress,
+          copartyAddress: peerAddress,
+          copartyPubKey: {} as any,
+          index: 'msg-uuid-2',
+          stampValue: 10,
+          message: {
+            conversationId: uuid2,
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'Hello from Qwen (message 2)' }],
+            serverTime: 2000,
+            receivedTime: 2000,
+            outpoints: [],
+            senderAddress: peerAddress,
+          } as any,
+        },
+      ])
+
+      // Third incoming message from same sender with UUID-3
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: peerAddress,
+          copartyAddress: peerAddress,
+          copartyPubKey: {} as any,
+          index: 'msg-uuid-3',
+          stampValue: 10,
+          message: {
+            conversationId: uuid3,
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'Hello from Qwen (message 3)' }],
+            serverTime: 3000,
+            receivedTime: 3000,
+            outpoints: [],
+            senderAddress: peerAddress,
+          } as any,
+        },
+      ])
+
+      // Verify only ONE direct conversation exists for this peer
+      const peerConversations = Object.values(chats.conversations).filter(
+        c =>
+          c.kind === 'direct' &&
+          c.participants.some(p => sameCanonicalAddress(p, peerAddress)),
+      )
+      expect(peerConversations).toHaveLength(1)
+
+      const canonicalConv = peerConversations[0]
+      expect(chats.chats[peerAddress]).toBe(canonicalConv)
+      expect(canonicalConv.messages).toHaveLength(3)
+      expect(canonicalConv.messages.map(m => m.payloadDigest)).toEqual([
+        'msg-uuid-1',
+        'msg-uuid-2',
+        'msg-uuid-3',
+      ])
+      // All messages should have conversationId assigned to the canonical conversation id
+      for (const msg of canonicalConv.messages) {
+        expect(msg.conversationId).toBe(canonicalConv.id)
+      }
+    })
+
+    it('rehydrateState auto-heals pre-existing duplicate direct conversation records with the same peer into a single consolidated thread with all messages preserved (fixes #1178)', async () => {
+      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
+      const peerAddress = RECIPIENT_ADDRESS
+
+      const dupId1 = 'dup-thread-1'
+      const dupId2 = 'dup-thread-2'
+      const canonicalParticipants = [SENDER_ADDRESS, peerAddress].sort()
+
+      const msg1: ChatMessage = {
+        payloadDigest: 'dup-msg-1',
+        conversationId: dupId1,
+        senderAddress: peerAddress,
+        outbound: false,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'Message in thread 1' }],
+        serverTime: 100,
+        receivedTime: 100,
+        outpoints: [],
+        stampValueWei: 100n,
+      } as any
+
+      const msg2: ChatMessage = {
+        payloadDigest: 'dup-msg-2',
+        conversationId: dupId2,
+        senderAddress: peerAddress,
+        outbound: false,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'Message in thread 2' }],
+        serverTime: 200,
+        receivedTime: 200,
+        outpoints: [],
+        stampValueWei: 200n,
+      } as any
+
+      const duplicateState: RestorableState = {
+        activeChatAddr: null,
+        activeConversationId: null,
+        conversations: {
+          [dupId1]: {
+            id: dupId1,
+            kind: 'direct',
+            address: peerAddress,
+            participants: canonicalParticipants,
+            messages: [msg1],
+            lastReceived: 100,
+            lastRead: 50,
+            totalUnreadMessages: 1,
+            totalUnreadValue: 100,
+            totalValue: 100,
+          } as any,
+          [dupId2]: {
+            id: dupId2,
+            kind: 'direct',
+            address: peerAddress,
+            participants: canonicalParticipants,
+            messages: [msg2],
+            lastReceived: 200,
+            lastRead: 150,
+            totalUnreadMessages: 1,
+            totalUnreadValue: 200,
+            totalValue: 200,
+          } as any,
+        },
+        chats: {
+          [peerAddress]: {
+            id: dupId2,
+            address: peerAddress,
+            messages: [],
+          } as any,
+        },
+        lastReceived: 200,
+      }
+
+      const rehydrated = await rehydrateState(duplicateState)
+
+      // Duplicate conversation keys should be collapsed into a single thread
+      const peerConvs = Object.values(rehydrated.conversations).filter(
+        c =>
+          c.kind === 'direct' &&
+          c.participants.some(p => sameCanonicalAddress(p, peerAddress)),
+      )
+      expect(peerConvs).toHaveLength(1)
+
+      const consolidatedConv = peerConvs[0]
+      // chats[peerAddress] must point to consolidated conversation
+      expect(rehydrated.chats[peerAddress]).toBe(consolidatedConv)
+
+      // The orphaned duplicate conversation key must be deleted
+      const orphanedKey = consolidatedConv.id === dupId1 ? dupId2 : dupId1
+      expect(rehydrated.conversations[orphanedKey]).toBeUndefined()
+
+      // All messages must be preserved, sorted, and re-keyed to the consolidated conversation
+      expect(consolidatedConv.messages).toHaveLength(2)
+      expect(consolidatedConv.messages[0].payloadDigest).toBe('dup-msg-1')
+      expect(consolidatedConv.messages[1].payloadDigest).toBe('dup-msg-2')
+      expect(consolidatedConv.messages[0].conversationId).toBe(
+        consolidatedConv.id,
+      )
+      expect(consolidatedConv.messages[1].conversationId).toBe(
+        consolidatedConv.id,
+      )
+
+      // Accounting must be recomputed
+      expect(consolidatedConv.lastReceived).toBe(200)
+      expect(consolidatedConv.lastRead).toBe(150)
+      // msg1 (serverTime 100) <= lastRead 150 -> read; msg2 (serverTime 200) > lastRead 150 -> unread
+      expect(consolidatedConv.totalUnreadMessages).toBe(1)
+      expect(consolidatedConv.totalUnreadValue).toBe(200)
+      expect(consolidatedConv.totalValue).toBe(300)
     })
   })
 })

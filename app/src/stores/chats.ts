@@ -696,6 +696,215 @@ export type RestorableState = {
   lastReceived: number | null
 }
 
+export function extractDirectPeerAddress(
+  conv: Conversation,
+  ownAddr: string | null,
+): string | null {
+  if (conv.kind !== 'direct' || conv.topic) return null
+
+  let peer: string | null = null
+  if (conv.participants && conv.participants.length > 0) {
+    const peers = ownAddr
+      ? conv.participants.filter(p => !sameCanonicalAddress(p, ownAddr))
+      : conv.participants
+    if (peers.length === 1) {
+      peer = peers[0]
+    } else if (
+      peers.length > 1 &&
+      conv.address &&
+      peers.some(p => sameCanonicalAddress(p, conv.address))
+    ) {
+      peer = conv.address
+    } else if (conv.address && conv.address !== conv.id) {
+      peer = conv.address
+    } else if (peers.length > 0) {
+      peer = peers[0]
+    }
+  } else if (conv.address && conv.address !== conv.id) {
+    peer = conv.address
+  } else if (conv.address) {
+    peer = conv.address
+  }
+
+  if (!peer) return null
+  try {
+    return toChainDisplayAddress(peer)
+  } catch {
+    return peer
+  }
+}
+
+export function autoHealDuplicateDirectConversations({
+  conversations,
+  chats,
+  ownAddress,
+  activeChatAddr = null,
+  activeConversationId = null,
+  messages,
+  logicalMessages,
+}: {
+  conversations: Record<string, Conversation>
+  chats: Record<string, ChatState>
+  ownAddress: string | null
+  activeChatAddr?: string | null
+  activeConversationId?: string | null
+  messages?: Record<string, Message>
+  logicalMessages?: Record<string, LogicalMessageRecord>
+}): void {
+  const directConvsByPeer = new Map<string, Conversation[]>()
+  for (const conv of Object.values(conversations)) {
+    const peer = extractDirectPeerAddress(conv, ownAddress)
+    if (!peer) continue
+    let list = directConvsByPeer.get(peer)
+    if (!list) {
+      list = []
+      directConvsByPeer.set(peer, list)
+    }
+    list.push(conv)
+  }
+
+  for (const [peer, list] of directConvsByPeer.entries()) {
+    if (list.length <= 1) continue
+
+    const canonicalParticipants = ownAddress
+      ? Array.from(new Set([ownAddress, peer])).sort()
+      : [peer]
+    const canonicalId = makeConversationId(canonicalParticipants)
+
+    const primary =
+      list.find(c => c.id === canonicalId) ||
+      list.find(c => chats[peer] && chats[peer].id === c.id) ||
+      list[0]
+
+    for (const dup of list) {
+      if (dup === primary) continue
+
+      // Merge messages arrays, deduplicating by payloadDigest and sorting by serverTime / receivedTime
+      const msgMap = new Map<string, ChatMessage>()
+      for (const msg of primary.messages) {
+        const digest = msg.payloadDigest || (msg as any).index
+        if (digest) {
+          msgMap.set(digest, { ...msg, conversationId: primary.id })
+        }
+      }
+      for (const msg of dup.messages) {
+        const digest = msg.payloadDigest || (msg as any).index
+        if (!digest) continue
+        if (!msgMap.has(digest)) {
+          msgMap.set(digest, { ...msg, conversationId: primary.id })
+        } else {
+          const existing = msgMap.get(digest)!
+          msgMap.set(
+            digest,
+            Object.assign({}, existing, msg, { conversationId: primary.id }),
+          )
+        }
+      }
+      primary.messages = Array.from(msgMap.values()).sort((a, b) => {
+        const timeA = a.serverTime ?? a.receivedTime ?? 0
+        const timeB = b.serverTime ?? b.receivedTime ?? 0
+        return timeA - timeB
+      })
+
+      // Merge metadata
+      primary.lastRead = Math.max(primary.lastRead ?? 0, dup.lastRead ?? 0)
+      primary.lastReceived = Math.max(
+        primary.lastReceived ?? 0,
+        dup.lastReceived ?? 0,
+      )
+      if (
+        dup.createdAt &&
+        (!primary.createdAt || dup.createdAt < primary.createdAt)
+      ) {
+        primary.createdAt = dup.createdAt
+      }
+      if (
+        dup.updatedAt &&
+        (!primary.updatedAt || dup.updatedAt > primary.updatedAt)
+      ) {
+        primary.updatedAt = dup.updatedAt
+      }
+      if (!primary.name && dup.name) {
+        primary.name = dup.name
+      }
+      if (primary.stampAmount === undefined && dup.stampAmount !== undefined) {
+        primary.stampAmount = dup.stampAmount
+      }
+
+      // Delete orphaned duplicate conversation key from conversations
+      delete conversations[dup.id]
+      if (dup.address) {
+        chats[dup.address] = primary
+        try {
+          chats[toChainDisplayAddress(dup.address)] = primary
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    if (ownAddress) {
+      primary.participants = canonicalParticipants
+    } else if (!primary.participants.includes(peer)) {
+      primary.participants = [peer]
+    }
+    primary.address = peer
+
+    // Recompute accounting: unread counts, total values, lastReceived, lastRead
+    for (const msg of primary.messages) {
+      const msgTime = msg.serverTime ?? msg.receivedTime ?? 0
+      primary.lastReceived = Math.max(primary.lastReceived, msgTime)
+    }
+
+    primary.totalValue = 0
+    primary.totalUnreadMessages = 0
+    primary.totalUnreadValue = 0
+    for (const message of primary.messages) {
+      const value = accountedMessageValue(message)
+      primary.totalValue += value
+      const msgTime = message.serverTime ?? message.receivedTime ?? 0
+      if (
+        !message.outbound &&
+        primary.address !== activeChatAddr &&
+        primary.id !== activeConversationId &&
+        primary.lastRead < msgTime
+      ) {
+        primary.totalUnreadMessages += 1
+        primary.totalUnreadValue += value
+      }
+    }
+
+    // Update chats[copartyAddress] to point to the canonical conversation
+    chats[peer] = primary
+    try {
+      chats[toChainDisplayAddress(peer)] = primary
+    } catch {
+      // ignore
+    }
+    if (primary.address) {
+      chats[primary.address] = primary
+      try {
+        chats[toChainDisplayAddress(primary.address)] = primary
+      } catch {
+        // ignore
+      }
+    }
+
+    if (messages || logicalMessages) {
+      for (const msg of primary.messages) {
+        if (msg.payloadDigest) {
+          if (messages) {
+            messages[msg.payloadDigest] = msg
+          }
+          if (logicalMessages) {
+            recordLogicalMessage(logicalMessages, msg, primary.id)
+          }
+        }
+      }
+    }
+  }
+}
+
 export async function rehydateChat(chatState: RestorableState): Promise<State> {
   if (!chatState) {
     return freshChatsState()
@@ -727,10 +936,10 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         members: rawConv.members || {},
         epoch: rawConv.epoch,
         address: rawConv.address || id,
-        messages: [],
-        totalUnreadMessages: 0,
-        totalUnreadValue: 0,
-        totalValue: 0,
+        messages: Array.isArray(rawConv.messages) ? [...rawConv.messages] : [],
+        totalUnreadMessages: rawConv.totalUnreadMessages ?? 0,
+        totalUnreadValue: rawConv.totalUnreadValue ?? 0,
+        totalValue: rawConv.totalValue ?? 0,
         lastReceived: rawConv.lastReceived ?? 0,
         lastRead: rawConv.lastRead ?? 0,
         stampAmount: rawConv.stampAmount ?? defaultStampAmount,
@@ -749,7 +958,20 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         }
       }
     }
+
+    // Auto-heal duplicate direct conversations sharing the same peer address
+    autoHealDuplicateDirectConversations({
+      conversations,
+      chats,
+      ownAddress,
+      activeChatAddr: chatState.activeChatAddr,
+      activeConversationId: chatState.activeConversationId ?? null,
+      messages,
+      logicalMessages,
+    })
   }
+
+  // Exported alias for rehydateChat
 
   // 2. Migrate legacy chats into conversations if not already restored
   if (chatState.chats) {
@@ -848,6 +1070,10 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     assert(newMsg.senderAddress !== undefined, 'senderAddress is not defined')
 
     const message: ChatMessage = { payloadDigest: index, ...newMsg }
+    const emailItem = message.items?.find(it => it.type === 'email') as
+      | EmailItem
+      | undefined
+    const isEmail = !!emailItem
     const displayAddress =
       safeChainDisplayAddress(copartyAddress) || copartyAddress
     const rawConvId =
@@ -855,38 +1081,38 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     const participants = ownAddress
       ? Array.from(new Set([ownAddress, displayAddress])).sort()
       : [displayAddress]
-    const convId = rawConvId
-      ? makeConversationId(participants, rawConvId)
+    const convId = isEmail
+      ? rawConvId
+        ? makeConversationId(participants, rawConvId)
+        : makeConversationId(participants)
       : makeConversationId(participants)
 
-    let conv = conversations[convId]
+    let conv =
+      chats[displayAddress] ||
+      (copartyAddress ? chats[copartyAddress] : undefined) ||
+      conversations[convId]
     if (!conv) {
-      conv = chats[displayAddress]
-      if (!conv) {
-        const members: Record<string, ConversationMember> = {}
-        for (const p of participants)
-          members[p] = { address: p, role: 'member' }
-        conv = {
-          ...defaultContactObject,
-          id: convId,
-          kind: 'direct',
-          address: displayAddress,
-          participants,
-          members,
-          messages: [],
-        }
-        conversations[convId] = conv
+      const members: Record<string, ConversationMember> = {}
+      for (const p of participants) members[p] = { address: p, role: 'member' }
+      conv = {
+        ...defaultContactObject,
+        id: convId,
+        kind: isEmail ? 'email' : 'direct',
+        address: displayAddress,
+        participants,
+        members,
+        messages: [],
       }
-      chats[displayAddress] = conv
-      chats[copartyAddress] = conv
+      conversations[convId] = conv
     }
+    chats[displayAddress] = conv
+    chats[copartyAddress] = conv
 
     message.conversationId = conv.id
     messages[index] = message
-    conv.messages.push(message)
-    const emailItem = message.items?.find(it => it.type === 'email') as
-      | EmailItem
-      | undefined
+    if (!conv.messages.some(m => m.payloadDigest === message.payloadDigest)) {
+      conv.messages.push(message)
+    }
     if (emailItem) {
       conv.kind = 'email'
       if (!conv.name && emailItem.subject) {
@@ -919,7 +1145,9 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
   // Resort conversations
   for (const conv of Object.values(conversations)) {
     conv.messages.sort(
-      (messageA, messageB) => messageA.serverTime - messageB.serverTime,
+      (messageA, messageB) =>
+        (messageA.serverTime ?? messageA.receivedTime ?? 0) -
+        (messageB.serverTime ?? messageB.receivedTime ?? 0),
     )
   }
   return {
@@ -932,6 +1160,8 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     lastReceived,
   }
 }
+
+export const rehydrateState = rehydateChat
 
 export const useChatStore = defineStore('chats', {
   state: (): State => freshChatsState(),
@@ -2486,6 +2716,92 @@ export const useChatStore = defineStore('chats', {
       const id =
         conversationId || makeConversationId(normalizedParticipants, topic)
       let conv = this.conversations[id]
+      if (!conv && kind === 'direct' && !conversationId) {
+        if (address) {
+          let canonicalAddr = address
+          try {
+            canonicalAddr = toChainDisplayAddress(address)
+          } catch {
+            // ignore
+          }
+          conv =
+            this.chats[canonicalAddr] ||
+            this.chats[address] ||
+            Object.values(this.conversations).find(
+              c =>
+                c.kind === 'direct' &&
+                (!topic || c.topic === topic) &&
+                (c.address === address ||
+                  c.address === canonicalAddr ||
+                  (c.participants &&
+                    c.participants.some(
+                      p =>
+                        sameCanonicalAddress(p, address) ||
+                        (canonicalAddr &&
+                          sameCanonicalAddress(p, canonicalAddr)),
+                    ))),
+            )
+        }
+        if (!conv) {
+          for (const p of normalizedParticipants) {
+            const chatForP = this.chats[p]
+            if (
+              chatForP &&
+              chatForP.kind === 'direct' &&
+              (!topic || chatForP.topic === topic)
+            ) {
+              conv = chatForP
+              break
+            }
+          }
+        }
+        if (!conv) {
+          const directId = makeConversationId(normalizedParticipants, topic)
+          if (this.conversations[directId]) {
+            conv = this.conversations[directId]
+          } else {
+            conv = Object.values(this.conversations).find(c => {
+              if (c.kind !== 'direct') return false
+              if (topic !== undefined && c.topic !== topic) return false
+              if (!topic && c.topic) return false
+              if (!c.participants || c.participants.length === 0) return false
+              const cNorm = c.participants
+                .map(p => {
+                  try {
+                    return toChainDisplayAddress(p)
+                  } catch {
+                    return p
+                  }
+                })
+                .sort()
+              if (
+                cNorm.length === normalizedParticipants.length &&
+                cNorm.every((p, idx) => p === normalizedParticipants[idx])
+              ) {
+                return true
+              }
+              const matchCount = cNorm.filter(p =>
+                normalizedParticipants.some(np => sameCanonicalAddress(p, np)),
+              ).length
+              if (
+                matchCount > 0 &&
+                cNorm.length <= 2 &&
+                normalizedParticipants.length <= 2
+              ) {
+                if (
+                  c.address &&
+                  normalizedParticipants.some(p =>
+                    sameCanonicalAddress(p, c.address),
+                  )
+                ) {
+                  return true
+                }
+              }
+              return false
+            })
+          }
+        }
+      }
       if (conv) {
         if (name !== undefined) conv.name = name
         if (topic !== undefined) conv.topic = topic
@@ -2496,6 +2812,17 @@ export const useChatStore = defineStore('chats', {
         conv.updatedAt = Date.now()
         if ((kind === 'direct' || kind === 'email') && conv.address) {
           this.chats[conv.address] = conv
+        }
+        if (address) {
+          this.chats[address] = conv
+          try {
+            this.chats[toChainDisplayAddress(address)] = conv
+          } catch {
+            // ignore
+          }
+        }
+        for (const p of normalizedParticipants) {
+          this.chats[p] = conv
         }
         return conv
       }
@@ -3041,12 +3368,28 @@ export const useChatStore = defineStore('chats', {
           (newMsg as any).subject ||
           emailItem?.subject ||
           (newMsg as any).name
+        const isEmail = !!emailItem
+        const kind = isEmail ? 'email' : 'direct'
         const participants = ownAddress
           ? Array.from(new Set([ownAddress, displayAddress])).sort()
           : [displayAddress]
-        const convId = rawConvId
-          ? makeConversationId(participants, rawConvId)
-          : makeConversationId(participants)
+
+        let conv: Conversation | undefined
+        if (rawConvId) {
+          const topicConvId = makeConversationId(participants, rawConvId)
+          if (this.conversations[rawConvId]) {
+            conv = this.conversations[rawConvId]
+          } else if (this.conversations[topicConvId]) {
+            conv = this.conversations[topicConvId]
+          }
+        }
+
+        const convId =
+          kind === 'direct'
+            ? makeConversationId(participants)
+            : rawConvId
+            ? makeConversationId(participants, rawConvId)
+            : makeConversationId(participants)
 
         const trustedGateway = getTrustedEmailGatewayAddress()
         const isVerifiedGateway = newMsg.outbound
@@ -3054,22 +3397,28 @@ export const useChatStore = defineStore('chats', {
             sameCanonicalAddress(displayAddress, trustedGateway)
           : sameCanonicalAddress(newMsg.senderAddress, trustedGateway)
 
-        let conv = this.conversations[convId]
         if (!conv) {
-          const existingChat = this.chats[displayAddress]
-          if (existingChat && existingChat.id === convId) {
-            conv = existingChat
-            this.conversations[convId] = conv
-          } else {
-            conv = this.createConversation({
-              kind: emailItem ? 'email' : 'direct',
-              participants,
-              conversationId: convId,
-              name: convName,
-              address: displayAddress,
-              verifiedGateway: emailItem ? isVerifiedGateway : undefined,
-            })
-          }
+          conv =
+            this.chats[displayAddress] ||
+            (copartyAddress ? this.chats[copartyAddress] : undefined) ||
+            this.conversations[convId]
+        }
+
+        if (!conv) {
+          conv = this.createConversation({
+            kind,
+            participants,
+            conversationId: convId,
+            name: convName,
+            address: displayAddress,
+            verifiedGateway: emailItem ? isVerifiedGateway : undefined,
+          })
+        }
+
+        this.conversations[conv.id] = conv
+        this.chats[displayAddress] = conv
+        if (copartyAddress) {
+          this.chats[copartyAddress] = conv
         }
 
         // Tombstone check: ignore replayed/older messages for a deleted conversation
@@ -3092,13 +3441,14 @@ export const useChatStore = defineStore('chats', {
           conv.updatedAt = Date.now()
         }
 
+        ;(newMsg as any).conversationId = conv.id
         const message: ChatMessage = {
+          ...newMsg,
           payloadDigest: index,
           conversationId: conv.id,
           logicalMessageId: (newMsg as any).logicalMessageId || index,
           revisionDigest: (newMsg as any).revisionDigest || index,
           deliveryDigest: index,
-          ...newMsg,
         }
 
         if (newMsg.items && Array.isArray(newMsg.items)) {
@@ -3138,7 +3488,16 @@ export const useChatStore = defineStore('chats', {
           this.messages[index] = Object.assign(existingMessage, message, {
             outbound: wasOutbound,
             senderAddress,
+            conversationId: conv.id,
           })
+          if (!conv.messages.some(m => m.payloadDigest === index)) {
+            conv.messages.push(this.messages[index])
+            conv.messages.sort(
+              (a, b) =>
+                (a.serverTime ?? a.receivedTime ?? 0) -
+                (b.serverTime ?? b.receivedTime ?? 0),
+            )
+          }
           if (emailItem) {
             conv.kind = 'email'
             if (!conv.name && emailItem.subject) {
@@ -3161,7 +3520,15 @@ export const useChatStore = defineStore('chats', {
 
         this.messages[index] = message
         this.chats[displayAddress] = conv
-        conv.messages.push(message)
+        if (!conv.messages.some(m => m.payloadDigest === index)) {
+          conv.messages.push(message)
+          conv.messages.sort(
+            (a, b) =>
+              (a.serverTime ?? a.receivedTime ?? 0) -
+              (b.serverTime ?? b.receivedTime ?? 0),
+          )
+        }
+
         if (emailItem) {
           conv.kind = 'email'
           if (!conv.name && emailItem.subject) {

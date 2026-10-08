@@ -78,6 +78,7 @@ import {
 } from "./storage/sub-account-pool-storage";
 import type { MonadWalletOperationAdmission } from "./storage/monad-wallet-bundle";
 import { selectStampAccounts } from "./monad-stamp-account-selection";
+import type { ChainUtxoPool } from "./chain-utxo-pool";
 
 export type {
   SubAccountPoolStore,
@@ -167,6 +168,53 @@ export class MonadSubAccountPool {
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission
   ) => Promise<T>;
+  accountUtxoPool?: ChainUtxoPool;
+
+  setAccountUtxoPool(pool: ChainUtxoPool): void {
+    this.accountUtxoPool = pool;
+  }
+
+  private syncUtxo(index: number, status: SubAccountStatus, balanceWei?: bigint): void {
+    if (!this.accountUtxoPool) return;
+    const derived = this.keyring.deriveSubAccount(index);
+    const utxos = this.accountUtxoPool.getCoinsByAddress(derived.address, "monad");
+    if (utxos.length === 0) {
+      this.accountUtxoPool.registerSubAccount({
+        chain: "monad",
+        address: derived.address,
+        privateKey: derived.privateKey,
+        balanceWei: balanceWei ?? 0n,
+        derivationPath: this.keyring.subAccountPath(index),
+        index,
+      });
+      const registered = this.accountUtxoPool.getCoinsByAddress(derived.address, "monad")[0];
+      if (registered) {
+        if (status === "spent" || status === "retired") {
+          this.accountUtxoPool.markSpent(registered.id);
+        } else if (status === "in-use" || status === "funding") {
+          this.accountUtxoPool.markPending(registered.id);
+        }
+      }
+      return;
+    }
+    const coin = utxos[0];
+    if (balanceWei !== undefined) {
+      coin.balanceWei = balanceWei;
+    }
+    if (status === "spent" || status === "retired") {
+      if (coin.status !== "spent") {
+        this.accountUtxoPool.markSpent(coin.id);
+      }
+    } else if (status === "in-use" || status === "funding") {
+      if (coin.status === "clean") {
+        this.accountUtxoPool.markPending(coin.id);
+      }
+    } else if (status === "available") {
+      if (coin.status === "pending") {
+        this.accountUtxoPool.releasePending(coin.id);
+      }
+    }
+  }
 
   constructor(params: {
     keyring: MonadHdKeyring;
@@ -315,6 +363,7 @@ export class MonadSubAccountPool {
     const { fundingAttempt: _fundingAttempt, ...base } = existing;
     const updated: SubAccountRecord = { ...base, status };
     this.store.put(updated);
+    this.syncUtxo(index, status);
     if (status === "spent" || status === "retired") {
       this.triggerProactiveWarming();
     }
@@ -693,6 +742,11 @@ export class MonadSubAccountPool {
             capacityWei: paymentCapacityWei,
             checkedAtMs: Date.now(),
           });
+          this.syncUtxo(
+            target.index,
+            "available",
+            paymentCapacityWei + params.gasReserveWei
+          );
           fundingTxHashes.push(txHash);
           completedCount++;
           params.onProgress?.({
@@ -1163,6 +1217,7 @@ export class MonadSubAccountPool {
       capacityWei: params.paymentCapacityWei,
       checkedAtMs: Date.now(),
     });
+    this.syncUtxo(params.target.index, "available", fundedValue);
     return {
       index: params.target.index,
       address: params.target.address,

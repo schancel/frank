@@ -114,6 +114,7 @@ import type {
 import type { HDSeed } from "./active-chain";
 import { MonadChangePool } from "../monad-change-pool";
 import { MonadSubAccountPool } from "../monad-account-pool";
+import { ChainUtxoPool } from "../chain-utxo-pool";
 import {
   BurnNotSentError,
   SubAccountLeaseManager,
@@ -1653,6 +1654,53 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           keyring: changeKeyring,
           store: changeStore,
         });
+        const accountUtxoPool = new ChainUtxoPool();
+        pool.setAccountUtxoPool(accountUtxoPool);
+        changePool.setAccountUtxoPool(accountUtxoPool);
+
+        // Populate initial HD sub-accounts with attached private keys
+        const initialSubSize = Math.max(config.subAccountPoolSize, 5);
+        for (let i = 0; i < initialSubSize; i++) {
+          const derived = keyring.deriveSubAccount(i);
+          accountUtxoPool.registerSubAccount({
+            chain: "monad",
+            address: derived.address,
+            privateKey: derived.privateKey,
+            balanceWei: 0n,
+            derivationPath: keyring.subAccountPath(i),
+            index: i,
+          });
+        }
+        for (const record of pool.records()) {
+          const derived = keyring.deriveSubAccount(record.index);
+          const cached = pool.capacityCache.get(record.index);
+          const bal = cached !== undefined ? cached.capacityWei : 0n;
+          const utxo = accountUtxoPool.registerSubAccount({
+            chain: "monad",
+            address: derived.address,
+            privateKey: derived.privateKey,
+            balanceWei: bal,
+            derivationPath: keyring.subAccountPath(record.index),
+            index: record.index,
+          });
+          if (record.status === "spent" || record.status === "retired") {
+            accountUtxoPool.markSpent(utxo.id);
+          } else if (record.status === "in-use") {
+            accountUtxoPool.markPending(utxo.id);
+          }
+        }
+        // Populate initial HD change accounts with attached private keys
+        for (let k = 0; k < 5; k++) {
+          const derived = changeKeyring.deriveChangeAccount(k);
+          accountUtxoPool.registerChangeAccount({
+            chain: "monad",
+            address: derived.address,
+            privateKey: derived.privateKey,
+            balanceWei: 0n,
+            derivationPath: changeKeyring.subAccountPath(k),
+            index: k,
+          });
+        }
         const leaseManager = new SubAccountLeaseManager(pool);
         let topicOwner: MonadWalletPersistenceBundle | undefined;
         let canonicalLinks: CanonicalLinkStore | undefined;
@@ -1839,12 +1887,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
           };
           const stealthKeyring = new MonadStealthKeyring();
+          for (const s of stealthKeyring.getAccounts()) {
+            accountUtxoPool.registerStealthAccount({
+              chain: "monad",
+              address: s.address,
+              privateKey: s.privateKey,
+              balanceWei: s.balanceWei ?? 0n,
+              ephemeralPubKey: s.ephemeralPubKey,
+              txHash: s.txHash,
+            });
+          }
           const wallet: MonadChainWalletHandle = {
             family: "evm",
             chainIdentifier,
             networkId: config.networkId,
             identity,
             stealthKeyring,
+            accountUtxoPool,
             async getReceiveAddress() {
               requireOpenWallet(wallet);
               return { raw: mainAccount.address };
@@ -2153,33 +2212,67 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   runWalletExclusive(wallet, () => task(), true),
               });
             });
-            // Same ordinary owner path as legacy inventory: wallet queue, then main account.
+            // Fast in-memory coin selection using ChainUtxoPool (< 1ms, zero network calls)
+            const defaultGasReserveWei =
+              BigInt(21_000) * BigInt(2_000_000_000);
+
             const prepareInventory: CanonicalInventoryFunder = ({
               stampValueWei,
               recipientStampKey,
               onProgress,
             }) =>
               runWalletExclusive(wallet, async () => {
-                const mainAccountSigner = new MonadAccountTxSigner({
-                  privateKey: mainAccount.privateKey,
-                  provider,
-                  httpClient,
-                });
-                const preparation = await runMainAccountExclusive(
-                  wallet,
-                  async () =>
-                    pool.prepareStampInventory({
-                      mainAccountSigner,
-                      provider,
-                      stampValueWei,
-                      gasReserveWei: await quoteMonadStampPaymentGasReserve({
-                        signer: mainAccountSigner,
-                        recipientPublicKey: recipientStampKey,
-                      }),
-                      onProgress,
-                    })
-                );
-                return preparation.fundingTxHashes;
+                const triggerReplenishment = async (): Promise<string[]> => {
+                  const mainAccountSigner = new MonadAccountTxSigner({
+                    privateKey: mainAccount.privateKey,
+                    provider,
+                    httpClient,
+                  });
+                  const preparation = await runMainAccountExclusive(
+                    wallet,
+                    async () =>
+                      pool.prepareStampInventory({
+                        mainAccountSigner,
+                        provider,
+                        stampValueWei,
+                        gasReserveWei: await quoteMonadStampPaymentGasReserve({
+                          signer: mainAccountSigner,
+                          recipientPublicKey: recipientStampKey,
+                        }).catch(() => defaultGasReserveWei),
+                        onProgress,
+                      })
+                  );
+                  return preparation.fundingTxHashes;
+                };
+
+                let hasSufficientCleanCoins = false;
+                try {
+                  const selection = accountUtxoPool.selectCoins({
+                    chain: "monad",
+                    targetAmountWei: stampValueWei,
+                    feeReserveWei: defaultGasReserveWei,
+                  });
+                  if (selection.selected.length > 0) {
+                    hasSufficientCleanCoins = true;
+                  }
+                } catch {
+                  hasSufficientCleanCoins = false;
+                }
+
+                const cleanCoins = accountUtxoPool
+                  .getCleanCoins("monad")
+                  .filter((u) => u.balanceWei >= stampValueWei);
+
+                if (hasSufficientCleanCoins) {
+                  // Asynchronously trigger replenishment if clean capacity < 2 without blocking
+                  if (cleanCoins.length < 2) {
+                    void triggerReplenishment().catch(() => []);
+                  }
+                  return [];
+                }
+
+                // If insufficient clean capacity for immediate payment, replenish synchronously
+                return await triggerReplenishment();
               });
             canonicalInventoryFunders.set(wallet, prepareInventory);
             if (config.subAccountPoolSize > 0) {

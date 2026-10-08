@@ -190,7 +190,10 @@ import {
   newSeed,
   saveSeed,
 } from '../utils/blackjack-hand'
-import { getOwnCanonicalAddress } from '../utils/own-address'
+import {
+  getOwnCanonicalAddress,
+  sameCanonicalAddress,
+} from '../utils/own-address'
 import {
   buildChallenge,
   soleHandItem,
@@ -1023,17 +1026,32 @@ export default defineComponent({
             activeConversation?: Conversation | null
           }
         | undefined
-      if (store?.conversations && this.address in store.conversations) {
-        return store.conversations[this.address] ?? null
-      }
       if (
         store?.activeConversationId &&
         store.conversations?.[store.activeConversationId]
       ) {
-        return store.conversations[store.activeConversationId] ?? null
+        const active = store.conversations[store.activeConversationId]
+        if (
+          !this.address ||
+          store.activeConversationId === this.address ||
+          sameCanonicalAddress(active?.address, this.address) ||
+          active?.participants?.some(p => sameCanonicalAddress(p, this.address))
+        ) {
+          return active ?? null
+        }
       }
       if (this.chats && this.address in this.chats) {
-        return (this.chats[this.address] as Conversation) ?? null
+        const chatConv = this.chats[this.address] as Conversation
+        if (
+          chatConv &&
+          ((chatConv.messages?.length ?? 0) > 0 ||
+            !(store?.conversations && this.address in store.conversations))
+        ) {
+          return chatConv
+        }
+      }
+      if (store?.conversations && this.address in store.conversations) {
+        return store.conversations[this.address] ?? null
       }
       if (store?.activeConversation) {
         return store.activeConversation

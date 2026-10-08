@@ -2650,4 +2650,240 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(consolidatedConv.totalValue).toBe(300)
     })
   })
+
+  describe('ticket #1186: deduplicate direct chats and suppress empty peer placeholders', () => {
+    it('getSortedChatOrder suppresses empty placeholder when an active conversation with messages exists for the same direct peer (fixes #1186)', () => {
+      const chats = useChatStore()
+      const peerAddress = RECIPIENT_ADDRESS
+      const emptyId = peerAddress
+      const canonicalId = 'canonical-conv-123'
+
+      const msg1: ChatMessage = {
+        payloadDigest: 'msg-1',
+        conversationId: canonicalId,
+        senderAddress: peerAddress,
+        outbound: false,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'You alive?' }],
+        serverTime: 500,
+        receivedTime: 500,
+        outpoints: [],
+        stampValueWei: 1000n,
+      } as any
+
+      // Two entries exist in state: an empty placeholder and the active conversation with messages
+      chats.conversations[emptyId] = {
+        id: emptyId,
+        kind: 'direct',
+        address: peerAddress,
+        participants: [peerAddress],
+        messages: [],
+        totalUnreadMessages: 0,
+        totalUnreadValue: 0,
+        totalValue: 0,
+        createdAt: 100,
+      } as any
+
+      chats.conversations[canonicalId] = {
+        id: canonicalId,
+        kind: 'direct',
+        address: peerAddress,
+        participants: [SENDER_ADDRESS, peerAddress],
+        messages: [msg1],
+        totalUnreadMessages: 1,
+        totalUnreadValue: 1000,
+        totalValue: 1000,
+        lastReceived: 500,
+        createdAt: 200,
+      } as any
+
+      chats.chats[peerAddress] = chats.conversations[emptyId] as any
+
+      // getSortedChatOrder should deduplicate by peer and suppress the empty placeholder
+      const sorted = chats.getSortedChatOrder
+      const peerEntries = sorted.filter(
+        c =>
+          c.kind === 'direct' &&
+          c.participants?.some(p => sameCanonicalAddress(p, peerAddress)),
+      )
+      expect(peerEntries).toHaveLength(1)
+      expect(peerEntries[0].id).toBe(canonicalId)
+      expect(peerEntries[0].messages).toHaveLength(1)
+
+      // totalUnread should also not double count
+      expect(chats.totalUnread).toBe(1)
+    })
+
+    it('getSortedChatOrder retains a freshly opened direct chat when no conversation with messages exists yet', () => {
+      const chats = useChatStore()
+      const peerAddress = THIRD_ADDRESS
+
+      chats.conversations['fresh-conv'] = {
+        id: 'fresh-conv',
+        kind: 'direct',
+        address: peerAddress,
+        participants: [peerAddress],
+        messages: [],
+        totalUnreadMessages: 0,
+        totalUnreadValue: 0,
+        totalValue: 0,
+        createdAt: 100,
+      } as any
+
+      const sorted = chats.getSortedChatOrder
+      const peerEntries = sorted.filter(
+        c =>
+          c.kind === 'direct' &&
+          c.participants?.some(p => sameCanonicalAddress(p, peerAddress)),
+      )
+      expect(peerEntries).toHaveLength(1)
+      expect(peerEntries[0].id).toBe('fresh-conv')
+    })
+
+    it('setActiveChat reuses existing conversation with messages instead of creating an empty duplicate (fixes #1186)', () => {
+      const chats = useChatStore()
+      const contacts = useContactStore()
+      jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined as any)
+      const peerAddress = RECIPIENT_ADDRESS
+      const canonicalId = 'canonical-conv-reuse'
+
+      const msg: ChatMessage = {
+        payloadDigest: 'msg-reuse',
+        conversationId: canonicalId,
+        senderAddress: peerAddress,
+        outbound: false,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'Hello' }],
+        serverTime: 100,
+        receivedTime: 100,
+        outpoints: [],
+      } as any
+
+      chats.conversations[canonicalId] = {
+        id: canonicalId,
+        kind: 'direct',
+        address: peerAddress,
+        participants: [SENDER_ADDRESS, peerAddress],
+        messages: [msg],
+        totalUnreadMessages: 0,
+        totalUnreadValue: 0,
+        totalValue: 0,
+      } as any
+
+      // chats[peerAddress] is not set yet
+      expect(chats.chats[peerAddress]).toBeUndefined()
+
+      chats.setActiveChat(peerAddress)
+
+      expect(chats.activeConversationId).toBe(canonicalId)
+      expect(chats.chats[peerAddress]).toBe(chats.conversations[canonicalId])
+      // No extra conversation should be created in conversations
+      expect(Object.keys(chats.conversations)).toHaveLength(1)
+    })
+
+    it('setActiveConversation reuses conversation with messages when passed peer address instead of an empty placeholder (fixes #1186)', () => {
+      const chats = useChatStore()
+      const contacts = useContactStore()
+      jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined as any)
+      const peerAddress = RECIPIENT_ADDRESS
+      const canonicalId = 'canonical-conv-nav'
+
+      const msg: ChatMessage = {
+        payloadDigest: 'msg-nav',
+        conversationId: canonicalId,
+        senderAddress: peerAddress,
+        outbound: false,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'Active message' }],
+        serverTime: 100,
+        receivedTime: 100,
+        outpoints: [],
+      } as any
+
+      // Placeholder exists at peerAddress key, but canonicalId has the actual messages
+      chats.conversations[peerAddress] = {
+        id: peerAddress,
+        kind: 'direct',
+        address: peerAddress,
+        participants: [peerAddress],
+        messages: [],
+      } as any
+
+      chats.conversations[canonicalId] = {
+        id: canonicalId,
+        kind: 'direct',
+        address: peerAddress,
+        participants: [SENDER_ADDRESS, peerAddress],
+        messages: [msg],
+      } as any
+
+      chats.setActiveConversation(peerAddress)
+
+      expect(chats.activeConversationId).toBe(canonicalId)
+      expect(chats.chats[peerAddress]).toBe(chats.conversations[canonicalId])
+    })
+
+    it('rehydrateState auto-heals when chatState.chats has an empty contact and conversations has the active thread (fixes #1186)', async () => {
+      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
+      const peerAddress = RECIPIENT_ADDRESS
+      const canonicalId = 'canonical-conv-rehydrate'
+
+      const msg: ChatMessage = {
+        payloadDigest: 'msg-rehydrate',
+        conversationId: canonicalId,
+        senderAddress: peerAddress,
+        outbound: false,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'Rehydrated message' }],
+        serverTime: 300,
+        receivedTime: 300,
+        outpoints: [],
+        stampValueWei: 500n,
+      } as any
+
+      const stateWithEmptyChatAndActiveConv: RestorableState = {
+        activeChatAddr: null,
+        activeConversationId: null,
+        conversations: {
+          [canonicalId]: {
+            id: canonicalId,
+            kind: 'direct',
+            address: peerAddress,
+            participants: [SENDER_ADDRESS, peerAddress],
+            messages: [msg],
+            lastReceived: 300,
+            lastRead: 100,
+            totalUnreadMessages: 1,
+            totalUnreadValue: 500,
+            totalValue: 500,
+          } as any,
+        },
+        chats: {
+          [peerAddress]: {
+            id: peerAddress,
+            address: peerAddress,
+            messages: [],
+          } as any,
+        },
+        lastReceived: 300,
+      }
+
+      const rehydrated = await rehydrateState(stateWithEmptyChatAndActiveConv)
+
+      // Only ONE conversation for this peer should exist in rehydrated.conversations
+      const peerConvs = Object.values(rehydrated.conversations).filter(
+        c =>
+          c.kind === 'direct' &&
+          c.participants?.some(p => sameCanonicalAddress(p, peerAddress)),
+      )
+      expect(peerConvs).toHaveLength(1)
+      expect(peerConvs[0].id).toBe(canonicalId)
+      expect(peerConvs[0].messages).toHaveLength(1)
+
+      // The placeholder peerAddress key should not exist in conversations
+      expect(rehydrated.conversations[peerAddress]).toBeUndefined()
+      // chats[peerAddress] should point to the active conversation
+      expect(rehydrated.chats[peerAddress]).toBe(peerConvs[0])
+    })
+  })
 })

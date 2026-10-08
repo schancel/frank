@@ -156,4 +156,28 @@ describe('ChatList compose email action', () => {
     await composeBtn.trigger('click')
     expect(mockPush).toHaveBeenCalledWith('/add-contact?compose=email')
   })
+
+  it('renders start conversation button and navigates to /add-contact?mode=conversation when clicked', async () => {
+    mockWidth = 1024
+    const wrapper = mount(ChatList, {
+      props: { compact: false },
+      global: {
+        components: {
+          QScrollArea: passthrough,
+          QList: passthrough,
+          QItem: passthrough,
+          QItemSection: passthrough,
+          QItemLabel: passthrough,
+          QSeparator: passthrough,
+          QSpace: passthrough,
+          QBtn: passthrough,
+        },
+        mocks: { $status: { setup: true }, $t: (k: string) => k },
+      },
+    })
+    const startConvBtn = wrapper.find('[data-testid="start-conversation-btn"]')
+    expect(startConvBtn.exists()).toBe(true)
+    await startConvBtn.trigger('click')
+    expect(mockPush).toHaveBeenCalledWith('/add-contact?mode=conversation')
+  })
 })

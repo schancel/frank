@@ -815,7 +815,11 @@ export default {
     composeEmail: 'Rédiger un e-mail',
     enterBitcoinCashAddress: 'Entrez une adresse (0x...) ou une adresse e-mail',
     enterAddress: 'Entrez une adresse (0x...) ou une adresse e-mail',
-    enterAddressOrEmail: 'Entrez une adresse (0x...) ou une adresse e-mail',
+    enterAddressOrEmail:
+      'Entrez une adresse (0x...), un nom de contact, nom d’utilisateur ou e-mail',
+    existingContacts: 'Contacts existants',
+    existingContact: 'Contact existant',
+    clearContact: 'Effacer le contact',
     topicOptional: 'Sujet / Topic (facultatif)',
     topicPlaceholder: 'ex. projet-x, devis, support',
     loading: 'Recherche du contact',

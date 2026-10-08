@@ -12,22 +12,42 @@ import AddContact from './AddContact.vue'
 
 const mockAddContactToStore = jest.fn()
 const mockCreateOrOpenEmailConversation = jest.fn(
-  (opts: { recipientEmail: string; gatewayAddress?: string }) => ({
+  (opts: {
+    recipientEmail: string
+    gatewayAddress?: string
+    subject?: string
+  }) => ({
     id: 'conv-email-' + opts.recipientEmail,
     kind: 'email',
-    name: opts.recipientEmail,
+    name: opts.subject || opts.recipientEmail,
+    topic: opts.subject || opts.recipientEmail,
     emailRecipient: opts.recipientEmail,
   }),
 )
+const mockCreateConversation = jest.fn((opts: any) => ({
+  id: 'conv-topic-' + (opts.topic || 'default'),
+  ...opts,
+}))
 const mockSetActiveConversation = jest.fn()
 import { setDirectoryLookup } from 'src/utils/directory-peer'
+let mockExistingContacts: Record<string, any> = {}
+
 jest.mock('src/stores/contacts', () => ({
   defaultRelayData: { profile: { name: '', bio: '', avatar: '' } },
-  useContactStore: () => ({ addContact: mockAddContactToStore }),
+  shortAddressLabel: (address: string) =>
+    address.length > 12
+      ? `${address.slice(0, 6)}…${address.slice(-4)}`
+      : address,
+  useContactStore: () => ({
+    addContact: mockAddContactToStore,
+    getContacts: mockExistingContacts,
+    contacts: mockExistingContacts,
+  }),
 }))
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({
     createOrOpenEmailConversation: mockCreateOrOpenEmailConversation,
+    createConversation: mockCreateConversation,
     setActiveConversation: mockSetActiveConversation,
     activeChatAddr: null,
     getSortedChatOrder: [],
@@ -183,6 +203,10 @@ async function typeAndFire(wrapper: VueWrapper, value: string): Promise<void> {
 
 const addButton = (w: VueWrapper) =>
   w.findAll('button').find(b => b.text() === 'Add')!
+const addAndChatButton = (w: VueWrapper) =>
+  w.find('[data-test="add-and-chat-btn"]')
+const startConversationButton = (w: VueWrapper) =>
+  w.find('[data-test="start-conversation-btn"]')
 const cancelButton = (w: VueWrapper) =>
   w.findAll('button').find(b => b.text() === 'Cancel')!
 const isBusy = (w: VueWrapper) => w.find('input').attributes('aria-busy')
@@ -195,6 +219,7 @@ describe('AddContact latest lookup', () => {
 
   beforeEach(() => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+    mockExistingContacts = {}
     mockAddContactToStore.mockReset()
     mockOpenChat.mockReset()
     mockRouter.go.mockReset()
@@ -249,9 +274,9 @@ describe('AddContact latest lookup', () => {
         }),
       },
     })
-    // The canonical resolved address, not the raw '  a  ' the user typed.
-    expect(mockOpenChat).toHaveBeenCalledTimes(1)
-    expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+    // In contact mode, Add saves contact to store without opening chat immediately
+    expect(mockOpenChat).not.toHaveBeenCalled()
+    expect(mockRouter.push).toHaveBeenCalledWith('/chat')
   })
 
   it('offers any address with a published directory entry even though it has no display profile', async () => {
@@ -268,7 +293,7 @@ describe('AddContact latest lookup', () => {
       await addButton(wrapper).trigger('click')
       expect(mockAddContactToStore).toHaveBeenCalledTimes(1)
       expect(mockAddContactToStore.mock.calls[0][0].address).toBe(ADDRESS_A)
-      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+      expect(mockOpenChat).not.toHaveBeenCalled()
 
       // Not one special peer: another published address is offered just the same.
       wrapper.unmount()
@@ -331,8 +356,7 @@ describe('AddContact latest lookup', () => {
     })
     const storedProfile = mockAddContactToStore.mock.calls[0][0].contact.profile
     expect(storedProfile.signedName).toBe('Blackjack Dealer')
-    expect(mockOpenChat).toHaveBeenCalledTimes(1)
-    expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+    expect(mockOpenChat).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -365,7 +389,11 @@ describe('AddContact latest lookup', () => {
 
     await type(wrapper, 'a')
     await wrapper.find('input').trigger('keydown.enter')
-    expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+    expect(mockAddContactToStore).toHaveBeenCalledWith({
+      address: ADDRESS_A,
+      contact: expect.anything(),
+    })
+    expect(mockOpenChat).not.toHaveBeenCalled()
   })
 
   describe('leading-edge debounce', () => {
@@ -490,7 +518,7 @@ describe('AddContact latest lookup', () => {
             profile: expect.objectContaining({ name: 'Alice' }),
           }),
         })
-        expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_OWN)
+        expect(mockOpenChat).not.toHaveBeenCalled()
       },
     )
   })
@@ -517,7 +545,7 @@ describe('AddContact latest lookup', () => {
       address: ADDRESS_B,
       contact: { profile: expect.objectContaining({ name: 'Bob' }) },
     })
-    expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_B)
+    expect(mockOpenChat).not.toHaveBeenCalled()
   })
 
   it('ignores a stale rejection and a stale not-found completion', async () => {
@@ -800,9 +828,7 @@ describe('AddContact latest lookup', () => {
 
       const startBtn = wrapper.find('[data-test="start-email-thread-btn"]')
       expect(startBtn.exists()).toBe(true)
-      expect(startBtn.text()).toBe(
-        'Start Email Thread to alice@example.com (via Frank Email Gateway)',
-      )
+      expect(startBtn.text()).toBe(translate('newContactDialog.startEmail'))
     })
 
     it('starts email thread and navigates to conversation on button click', async () => {
@@ -855,6 +881,271 @@ describe('AddContact latest lookup', () => {
       expect(input.attributes('placeholder')).toBe(
         translate('newContactDialog.enterAddressOrEmail'),
       )
+    })
+
+    it('passes custom topic/subject when starting email thread', async () => {
+      await type(wrapper, 'partner@enterprise.com')
+      await settle()
+
+      // Set optional topic
+      wrapper.vm.topic = 'Partnership Agreement'
+      await settle()
+
+      const startBtn = wrapper.find('[data-test="start-email-thread-btn"]')
+      await startBtn.trigger('click')
+
+      expect(mockCreateOrOpenEmailConversation).toHaveBeenCalledWith({
+        recipientEmail: 'partner@enterprise.com',
+        gatewayAddress: expect.any(String),
+        subject: 'Partnership Agreement',
+      })
+    })
+
+    it('creates topic-based conversation when topic is provided for peer contact', async () => {
+      wrapper.unmount()
+      wrapper = mountPage({ query: { mode: 'conversation' } })
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+
+      await typeAndFire(wrapper, '  a  ')
+
+      wrapper.vm.topic = 'Project Sprint'
+      await settle()
+
+      const startBtn = startConversationButton(wrapper)
+      expect(startBtn.exists()).toBe(true)
+      await startBtn.trigger('click')
+
+      expect(mockCreateConversation).toHaveBeenCalledWith({
+        kind: 'direct',
+        topic: 'Project Sprint',
+        name: 'Project Sprint',
+        participants: [ADDRESS_A],
+        address: ADDRESS_A,
+      })
+      expect(mockSetActiveConversation).toHaveBeenCalledWith(
+        'conv-topic-Project Sprint',
+      )
+      expect(mockOpenChat).toHaveBeenCalledWith(
+        mockRouter,
+        'conv-topic-Project Sprint',
+      )
+    })
+
+    it('in contact mode, hides topic input and uses address or email placeholder', () => {
+      expect(wrapper.find('.text-h6').text()).toBe(
+        translate('newContactDialog.newContact'),
+      )
+      expect(wrapper.find('[data-test="topic-input"]').exists()).toBe(false)
+      expect(wrapper.find('input').attributes('placeholder')).toBe(
+        translate('newContactDialog.enterAddressOrEmail'),
+      )
+    })
+
+    it('in contact mode, Add & Chat commits contact and opens chat', async () => {
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+
+      await typeAndFire(wrapper, 'a')
+      const addAndChatBtn = addAndChatButton(wrapper)
+      expect(addAndChatBtn.exists()).toBe(true)
+      await addAndChatBtn.trigger('click')
+
+      expect(mockAddContactToStore).toHaveBeenCalledWith({
+        address: ADDRESS_A,
+        contact: expect.anything(),
+      })
+      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+    })
+
+    it('in conversation mode, renders topic input and start conversation button which opens chat', async () => {
+      wrapper.unmount()
+      wrapper = mountPage({ query: { mode: 'conversation' } })
+
+      expect(wrapper.find('.text-h6').text()).toBe(
+        translate('newContactDialog.startConversation'),
+      )
+      expect(wrapper.find('[data-test="topic-input"]').exists()).toBe(true)
+      expect(wrapper.find('input').attributes('placeholder')).toBe(
+        translate('newContactDialog.enterAddressOrEmail'),
+      )
+
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+      await typeAndFire(wrapper, 'a')
+
+      const startBtn = startConversationButton(wrapper)
+      expect(startBtn.exists()).toBe(true)
+      await startBtn.trigger('click')
+
+      expect(mockAddContactToStore).toHaveBeenCalledWith({
+        address: ADDRESS_A,
+        contact: expect.anything(),
+      })
+      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+    })
+
+    it('in conversation mode, Enter key starts conversation and opens chat', async () => {
+      wrapper.unmount()
+      wrapper = mountPage({ query: { mode: 'conversation' } })
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+
+      await type(wrapper, 'a')
+      await wrapper.find('input').trigger('keydown.enter')
+
+      expect(mockAddContactToStore).toHaveBeenCalledWith({
+        address: ADDRESS_A,
+        contact: expect.anything(),
+      })
+      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+    })
+
+    describe('existing contacts selection and thread starting', () => {
+      beforeEach(() => {
+        mockExistingContacts = {
+          [ADDRESS_A]: {
+            lastUpdateTime: Date.now(),
+            notify: true,
+            relayURL: null,
+            profile: {
+              name: 'Alice Smith',
+              signedName: 'Alice',
+              username: 'alice',
+              bio: 'Core contributor',
+              avatar: 'https://example.com/alice.png',
+              pubKey: PROFILE_PUBKEY as any,
+            },
+            inbox: {},
+          },
+          [ADDRESS_B]: {
+            lastUpdateTime: Date.now(),
+            notify: true,
+            relayURL: null,
+            profile: {
+              name: 'Bob Jones',
+              signedName: 'Bob',
+              username: 'bobby',
+              bio: '',
+              avatar: '',
+              pubKey: PROFILE_PUBKEY as any,
+            },
+            inbox: {},
+          },
+        }
+      })
+
+      it('typing existing contact display name resolves immediately and enables Start Conversation', async () => {
+        wrapper.unmount()
+        wrapper = mountPage({ query: { mode: 'conversation' } })
+
+        await type(wrapper, 'Alice Smith')
+        await settle()
+
+        expect(chain.fetchProfile).not.toHaveBeenCalled()
+        expect(
+          wrapper.find('[data-test="selected-contact-section"]').exists(),
+        ).toBe(true)
+        expect(
+          wrapper.find('[data-test="existing-contact-badge"]').exists(),
+        ).toBe(true)
+
+        const startBtn = startConversationButton(wrapper)
+        expect(startBtn.attributes('disabled')).toBeUndefined()
+        await startBtn.trigger('click')
+
+        expect(mockAddContactToStore).toHaveBeenCalledWith({
+          address: ADDRESS_A,
+          contact: expect.anything(),
+        })
+        expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+      })
+
+      it('typing existing contact username with @ resolves contact and starts topic thread', async () => {
+        wrapper.unmount()
+        wrapper = mountPage({ query: { mode: 'conversation' } })
+
+        await type(wrapper, '@alice')
+        await settle()
+
+        expect(
+          wrapper.find('[data-test="selected-contact-section"]').exists(),
+        ).toBe(true)
+
+        wrapper.vm.topic = 'Roadmap Discussion'
+        await settle()
+
+        const startBtn = startConversationButton(wrapper)
+        await startBtn.trigger('click')
+
+        expect(mockCreateConversation).toHaveBeenCalledWith({
+          kind: 'direct',
+          topic: 'Roadmap Discussion',
+          name: 'Roadmap Discussion',
+          participants: [ADDRESS_A],
+          address: ADDRESS_A,
+        })
+        expect(mockOpenChat).toHaveBeenCalledWith(
+          mockRouter,
+          'conv-topic-Roadmap Discussion',
+        )
+      })
+
+      it('typing partial name displays suggestions list and clicking suggestion selects contact', async () => {
+        wrapper.unmount()
+        wrapper = mountPage({ query: { mode: 'conversation' } })
+
+        await type(wrapper, 'Ali')
+        await settle()
+
+        const suggestions = wrapper.find(
+          '[data-test="existing-contacts-suggestions"]',
+        )
+        expect(suggestions.exists()).toBe(true)
+        const items = wrapper.findAll('[data-test="existing-contact-item"]')
+        expect(items.length).toBe(1)
+        expect(items[0].text()).toContain('Alice Smith')
+        expect(items[0].text()).toContain('@alice')
+
+        // Click suggestion
+        await items[0].trigger('click')
+        await settle()
+
+        expect(
+          wrapper.find('[data-test="selected-contact-section"]').exists(),
+        ).toBe(true)
+        expect(
+          wrapper.find('[data-test="existing-contact-badge"]').exists(),
+        ).toBe(true)
+
+        const startBtn = startConversationButton(wrapper)
+        await startBtn.trigger('click')
+        expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+      })
+
+      it('in conversation mode, Enter key on partial match auto-selects contact and opens chat', async () => {
+        wrapper.unmount()
+        wrapper = mountPage({ query: { mode: 'conversation' } })
+
+        await type(wrapper, 'Bob')
+        await wrapper.find('input').trigger('keydown.enter')
+        await settle()
+
+        expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_B)
+      })
+
+      it('clearing selected contact resets input and selection', async () => {
+        wrapper.unmount()
+        wrapper = mountPage({ query: { mode: 'conversation' } })
+
+        await type(wrapper, 'Bob Jones')
+        await settle()
+
+        expect(
+          wrapper.find('[data-test="selected-contact-section"]').exists(),
+        ).toBe(true)
+        wrapper.vm.clearSelectedContact()
+        await settle()
+
+        expect(wrapper.vm.selectedExistingAddress).toBeNull()
+        expect(wrapper.vm.contact).toBeNull()
+      })
     })
   })
 })

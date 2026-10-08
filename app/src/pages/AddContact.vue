@@ -7,6 +7,8 @@
             {{
               isComposeMode
                 ? $t('newContactDialog.composeEmail')
+                : isConversationMode
+                ? $t('newContactDialog.startConversation')
                 : $t('newContactDialog.newContact')
             }}
           </div>
@@ -21,6 +23,93 @@
             :aria-busy="lookupPending"
             ref="address"
             data-test="address-input"
+            @keydown.enter.prevent="onEnter()"
+          >
+            <template v-if="selectedExistingAddress" #append>
+              <q-btn
+                round
+                dense
+                flat
+                icon="close"
+                size="sm"
+                :title="$t('newContactDialog.clearContact')"
+                data-test="clear-contact-btn"
+                @click="clearSelectedContact"
+              />
+            </template>
+          </q-input>
+
+          <!-- Existing contact suggestions dropdown / list -->
+          <div
+            v-if="showSuggestions"
+            class="existing-contacts-dropdown q-mt-xs rounded-borders shadow-2"
+            :class="
+              $q?.dark?.isActive ? 'bg-grey-9 text-white' : 'bg-white text-dark'
+            "
+            style="max-height: 200px; overflow-y: auto"
+            data-test="existing-contacts-suggestions"
+          >
+            <q-list separator dense>
+              <q-item-label header class="text-caption text-grey-6 q-py-xs">
+                {{ $t('newContactDialog.existingContacts') }}
+              </q-item-label>
+              <q-item
+                v-for="item in matchingExistingContacts"
+                :key="item.address"
+                clickable
+                v-ripple
+                class="q-py-sm"
+                data-test="existing-contact-item"
+                @click="selectExistingContact(item.address, item.contact, true)"
+              >
+                <q-item-section avatar>
+                  <q-avatar size="32px">
+                    <img
+                      v-if="item.contact.profile?.avatar"
+                      :src="item.contact.profile.avatar"
+                    />
+                    <q-icon
+                      v-else
+                      :name="
+                        item.contact.profile?.isBot ? 'smart_toy' : 'person'
+                      "
+                      color="primary"
+                    />
+                  </q-avatar>
+                </q-item-section>
+                <q-item-section>
+                  <q-item-label class="text-weight-bold">
+                    {{
+                      item.contact.profile?.name ||
+                      formatShortAddress(item.address)
+                    }}
+                    <span
+                      v-if="item.contact.profile?.username"
+                      class="text-caption text-grey-6 q-ml-xs"
+                    >
+                      @{{ item.contact.profile.username }}
+                    </span>
+                  </q-item-label>
+                  <q-item-label caption class="text-grey-6 font-mono">
+                    {{ formatShortAddress(item.address) }}
+                  </q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-icon name="arrow_forward" size="xs" color="primary" />
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </div>
+
+          <q-input
+            v-if="isConversationMode"
+            v-model="topic"
+            filled
+            dense
+            class="q-mt-sm"
+            :label="$t('newContactDialog.topicOptional')"
+            :placeholder="$t('newContactDialog.topicPlaceholder')"
+            data-test="topic-input"
             @keydown.enter.prevent="onEnter()"
           />
         </q-card-section>
@@ -76,15 +165,53 @@
               </q-item-section>
             </q-item>
           </q-card-section>
-          <q-card-section v-else-if="contact" class="q-py-none">
+          <q-card-section
+            v-else-if="contact"
+            class="q-py-none"
+            data-test="selected-contact-section"
+          >
             <q-item>
               <q-item-section avatar v-if="contact?.profile?.avatar">
                 <q-avatar rounded>
                   <img :src="contact?.profile?.avatar" size="xl" />
                 </q-avatar>
               </q-item-section>
+              <q-item-section avatar v-else>
+                <q-avatar
+                  rounded
+                  color="primary"
+                  text-color="white"
+                  :icon="contact?.profile?.isBot ? 'smart_toy' : 'person'"
+                />
+              </q-item-section>
               <q-item-section>
-                <q-item-label>{{ contact?.profile?.name }}</q-item-label>
+                <q-item-label class="text-weight-bold">
+                  {{
+                    contact?.profile?.name ||
+                    formatShortAddress(acceptedLookup?.resolvedAddress || '')
+                  }}
+                  <span
+                    v-if="contact?.profile?.username"
+                    class="text-caption text-grey-6 q-ml-xs"
+                  >
+                    @{{ contact?.profile?.username }}
+                  </span>
+                </q-item-label>
+                <q-item-label
+                  caption
+                  v-if="acceptedLookup?.resolvedAddress"
+                  class="font-mono"
+                >
+                  {{ acceptedLookup.resolvedAddress }}
+                </q-item-label>
+              </q-item-section>
+              <q-item-section side v-if="isExistingContact">
+                <q-badge
+                  color="positive"
+                  outline
+                  :label="$t('newContactDialog.existingContact')"
+                  data-test="existing-contact-badge"
+                />
               </q-item-section>
             </q-item>
           </q-card-section>
@@ -129,29 +256,53 @@
             data-test="add-contact-show-my-qr"
             @click="showMyQrDialog = true"
           />
-          <div>
+          <div class="row items-center q-gutter-sm">
             <q-btn
               label="Cancel"
               color="negative"
               flat
-              class="q-mr-sm"
+              no-caps
               @click="cancel"
             />
-            <q-btn
-              v-if="isEmailRecipient"
-              color="primary"
-              icon="mail"
-              :label="emailAffordanceLabel"
-              data-test="start-email-thread-btn"
-              @click="startEmailThread"
-            />
-            <q-btn
-              v-else
-              :disable="!canAdd"
-              label="Add"
-              color="primary"
-              @click="addContact()"
-            />
+            <template v-if="isEmailRecipient">
+              <q-btn
+                color="primary"
+                no-caps
+                icon="mail"
+                :label="$t('newContactDialog.startEmail')"
+                data-test="start-email-thread-btn"
+                @click="startEmailThread"
+              />
+            </template>
+            <template v-else-if="isConversationMode">
+              <q-btn
+                :disable="!canAdd"
+                no-caps
+                :label="$t('newContactDialog.startConversationBtn')"
+                color="primary"
+                data-test="start-conversation-btn"
+                @click="addContactAndOpenChat()"
+              />
+            </template>
+            <template v-else>
+              <q-btn
+                :disable="!canAdd"
+                outline
+                no-caps
+                color="primary"
+                :label="$t('newContactDialog.addAndChat')"
+                data-test="add-and-chat-btn"
+                @click="addContactAndOpenChat()"
+              />
+              <q-btn
+                :disable="!canAdd"
+                label="Add"
+                no-caps
+                color="primary"
+                data-test="add-contact-btn"
+                @click="addContactOnly()"
+              />
+            </template>
           </div>
         </q-card-actions>
       </q-card>
@@ -167,6 +318,7 @@ import { QInput } from 'quasar'
 import {
   ContactState,
   defaultRelayData,
+  shortAddressLabel,
   useContactStore,
 } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
@@ -203,7 +355,9 @@ export default defineComponent({
   data() {
     return {
       address: (this.$route?.query?.to as string) || '',
+      topic: (this.$route?.query?.topic as string) || '',
       acceptedLookup: null as AcceptedLookup | null,
+      selectedExistingAddress: null as string | null,
       showMyQrDialog: false,
       // Bumped on every address change; a lookup may only publish a result while its own
       // generation is still the latest, which is the single staleness mechanism.
@@ -217,6 +371,7 @@ export default defineComponent({
     const contactStore = useContactStore()
 
     return {
+      contactStore,
       addressRef: ref<QInput | null>(null),
       // Plain (non-reactive) bookkeeping: setup state is not deeply reactive.
       lookupSchedule: {
@@ -230,6 +385,14 @@ export default defineComponent({
     isComposeMode(): boolean {
       return this.$route?.query?.compose === 'email'
     },
+    isConversationMode(): boolean {
+      return Boolean(
+        this.$route?.query?.mode === 'conversation' || this.isComposeMode,
+      )
+    },
+    isContactMode(): boolean {
+      return !this.isConversationMode
+    },
     isEmailRecipient(): boolean {
       return EMAIL_REGEX.test(this.address.trim())
     },
@@ -240,13 +403,73 @@ export default defineComponent({
       return `Start Email Thread to ${this.emailAddress} (via Frank Email Gateway)`
     },
     inputPlaceholder(): string {
-      if (this.isComposeMode) {
-        return this.$t('newContactDialog.enterAddressOrEmail')
+      return this.$t('newContactDialog.enterAddressOrEmail')
+    },
+    allContacts(): Record<string, ContactState | undefined> {
+      try {
+        const store = this.contactStore || useContactStore()
+        if (
+          typeof store.getContacts === 'object' &&
+          store.getContacts !== null
+        ) {
+          return store.getContacts
+        }
+        if (typeof store.contacts === 'object' && store.contacts !== null) {
+          return store.contacts
+        }
+      } catch {
+        // Pinia not active
       }
-      return this.$t('newContactDialog.enterBitcoinCashAddress')
+      return {}
+    },
+    matchingExistingContacts(): Array<{
+      address: string
+      contact: ContactState
+    }> {
+      const q = this.address.trim().toLowerCase()
+      if (!q || EMAIL_REGEX.test(q)) {
+        return []
+      }
+      const cleanQ = q.replace(/^@/, '')
+      const entries = Object.entries(this.allContacts)
+      const matches: Array<{ address: string; contact: ContactState }> = []
+
+      for (const [addr, contact] of entries) {
+        if (!contact) continue
+        const name = contact.profile?.name?.toLowerCase() || ''
+        const signedName = contact.profile?.signedName?.toLowerCase() || ''
+        const username = contact.profile?.username?.toLowerCase() || ''
+        const addressLower = addr.toLowerCase()
+
+        if (
+          name.includes(cleanQ) ||
+          name.includes(q) ||
+          signedName.includes(cleanQ) ||
+          username.includes(cleanQ) ||
+          addressLower.includes(q)
+        ) {
+          matches.push({ address: addr, contact })
+        }
+      }
+      return matches
+    },
+    showSuggestions(): boolean {
+      return (
+        !this.selectedExistingAddress &&
+        this.matchingExistingContacts.length > 0 &&
+        !this.isEmailRecipient &&
+        this.address.trim() !== ''
+      )
+    },
+    isExistingContact(): boolean {
+      if (!this.acceptedLookup?.resolvedAddress) return false
+      return Boolean(this.allContacts[this.acceptedLookup.resolvedAddress])
     },
     canAdd(): boolean {
-      return this.acceptedLookup !== null
+      return (
+        this.acceptedLookup !== null ||
+        this.matchingExistingContacts.length === 1
+      )
     },
     contact(): Partial<ContactState> | null {
       return this.acceptedLookup?.contact ?? null
@@ -256,6 +479,7 @@ export default defineComponent({
         !this.lookupPending &&
         this.contact === null &&
         !this.isEmailRecipient &&
+        this.matchingExistingContacts.length === 0 &&
         this.address.trim() !== ''
       )
     },
@@ -267,15 +491,46 @@ export default defineComponent({
         this.lookupPending ||
         Date.now() - this.lookupSchedule.lastFiredAt < LOOKUP_DEBOUNCE_MS
       this.cancelScheduledLookup()
+
+      if (this.selectedExistingAddress) {
+        const selected = this.allContacts[this.selectedExistingAddress]
+        const text = newAddress.trim().toLowerCase()
+        const matchesSelected =
+          text === this.selectedExistingAddress.toLowerCase() ||
+          (selected?.profile?.name &&
+            text === selected.profile.name.toLowerCase()) ||
+          (selected?.profile?.username &&
+            text.replace(/^@/, '') === selected.profile.username.toLowerCase())
+        if (!matchesSelected) {
+          this.selectedExistingAddress = null
+          this.acceptedLookup = null
+        } else {
+          return
+        }
+      }
+
       this.acceptedLookup = null
       this.lookupPending = false
       this.lookupFailure = null
+
       if (newAddress.trim() === '') {
         return
       }
       if (EMAIL_REGEX.test(newAddress.trim())) {
         return
       }
+
+      // Check if it's an exact match for an existing contact
+      const exactContact = this.findExactExistingContact(newAddress)
+      if (exactContact) {
+        this.selectExistingContact(
+          exactContact.address,
+          exactContact.contact,
+          false,
+        )
+        return
+      }
+
       const normalizedAddress = this.canonicalizeAddress(newAddress)
       if (!normalizedAddress) {
         return
@@ -298,6 +553,69 @@ export default defineComponent({
     },
   },
   methods: {
+    findExactExistingContact(
+      query: string,
+    ): { address: string; contact: ContactState } | null {
+      const q = query.trim().toLowerCase()
+      if (!q || EMAIL_REGEX.test(q)) return null
+      const cleanQ = q.replace(/^@/, '')
+
+      for (const [addr, contact] of Object.entries(this.allContacts)) {
+        if (!contact) continue
+        const name = contact.profile?.name?.toLowerCase()
+        const signedName = contact.profile?.signedName?.toLowerCase()
+        const username = contact.profile?.username?.toLowerCase()
+        const addressLower = addr.toLowerCase()
+
+        if (
+          (name && (name === q || name === cleanQ)) ||
+          (signedName && (signedName === q || signedName === cleanQ)) ||
+          (username && (username === q || username === cleanQ)) ||
+          addressLower === q
+        ) {
+          return { address: addr, contact }
+        }
+      }
+      return null
+    },
+    selectExistingContact(
+      resolvedAddress: string,
+      contact: ContactState,
+      updateInput = true,
+    ) {
+      this.cancelScheduledLookup()
+      this.lookupPending = false
+      this.lookupFailure = null
+      this.selectedExistingAddress = resolvedAddress
+      this.acceptedLookup = {
+        resolvedAddress,
+        contact: {
+          profile: {
+            ...defaultRelayData.profile,
+            ...contact.profile,
+          },
+        },
+      }
+      if (updateInput) {
+        this.address =
+          contact.profile?.name ||
+          (contact.profile?.username
+            ? `@${contact.profile.username}`
+            : resolvedAddress)
+      }
+    },
+    clearSelectedContact() {
+      this.selectedExistingAddress = null
+      this.acceptedLookup = null
+      this.address = ''
+    },
+    formatShortAddress(addr: string): string {
+      if (!addr) return ''
+      if (typeof shortAddressLabel === 'function') {
+        return shortAddressLabel(addr)
+      }
+      return addr.length > 12 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
+    },
     canonicalizeAddress(address: string) {
       try {
         const chainAddress = activeChain.parseAddress(address.trim())
@@ -323,10 +641,6 @@ export default defineComponent({
       chainAddress: ChainAddress,
       resolvedAddress: string,
     ) {
-      // Resolve via the active chain instead of the old Lotus-only
-      // `toAPIAddress`/`RegistryHandler`/`ReadOnlyRelayClient` trio (ticket #44) -- mirrors
-      // `stores/contacts.ts`'s own `fetchAndAddContact` network-resolution branch, but kept
-      // local here (not committed to the store) until the user actually clicks "Add".
       try {
         if (generation !== this.lookupGeneration) {
           return
@@ -369,8 +683,20 @@ export default defineComponent({
     onEnter() {
       if (this.isEmailRecipient) {
         this.startEmailThread()
-      } else {
-        this.addContact()
+      } else if (this.canAdd) {
+        if (this.isConversationMode) {
+          this.addContactAndOpenChat()
+        } else {
+          this.addContactOnly()
+        }
+      } else if (this.matchingExistingContacts.length > 0) {
+        const first = this.matchingExistingContacts[0]
+        this.selectExistingContact(first.address, first.contact, true)
+        if (this.isConversationMode) {
+          this.addContactAndOpenChat()
+        } else {
+          this.addContactOnly()
+        }
       }
     },
     startEmailThread() {
@@ -392,21 +718,24 @@ export default defineComponent({
       try {
         const chatStore = useChatStore()
         let conv: any
+        const customTopic = this.topic.trim() || undefined
         if (
           typeof (chatStore as any).createOrOpenEmailConversation === 'function'
         ) {
           conv = (chatStore as any).createOrOpenEmailConversation({
             recipientEmail: email,
             gatewayAddress,
+            subject: customTopic,
           })
         } else if (typeof chatStore.createConversation === 'function') {
           conv = chatStore.createConversation({
             kind: 'email',
-            topic: email,
-            name: email,
+            topic: customTopic || email,
+            name: customTopic || email,
             emailRecipient: email,
             address: gatewayAddress,
             participants: [gatewayAddress],
+            verifiedGateway: true,
           })
         }
         if (conv?.id) {
@@ -420,17 +749,69 @@ export default defineComponent({
       }
       openChat(this.$router, targetId)
     },
-    addContact() {
-      if (!this.canAdd) {
+    addContactOnly() {
+      if (!this.acceptedLookup && this.matchingExistingContacts.length === 1) {
+        const single = this.matchingExistingContacts[0]
+        this.selectExistingContact(single.address, single.contact, true)
+      }
+      if (!this.canAdd || !this.acceptedLookup) {
         return
       }
       const { resolvedAddress, contact } = this.acceptedLookup as AcceptedLookup
       this.addContactToStore({ address: resolvedAddress, contact })
+      if (typeof (this as any).$q?.notify === 'function') {
+        ;(this as any).$q.notify({
+          type: 'positive',
+          message: this.$t('newContactDialog.contactAdded'),
+          timeout: 2000,
+        })
+      }
+      this.cancel()
+    },
+    addContactAndOpenChat() {
+      if (!this.acceptedLookup && this.matchingExistingContacts.length === 1) {
+        const single = this.matchingExistingContacts[0]
+        this.selectExistingContact(single.address, single.contact, true)
+      }
+      if (!this.canAdd || !this.acceptedLookup) {
+        return
+      }
+      const { resolvedAddress, contact } = this.acceptedLookup as AcceptedLookup
+      this.addContactToStore({ address: resolvedAddress, contact })
+      const customTopic = this.topic.trim()
+      if (customTopic) {
+        try {
+          const chatStore = useChatStore()
+          if (typeof chatStore.createConversation === 'function') {
+            const conv = chatStore.createConversation({
+              kind: 'direct',
+              topic: customTopic,
+              name: customTopic,
+              participants: [resolvedAddress],
+              address: resolvedAddress,
+            })
+            if (typeof chatStore.setActiveConversation === 'function') {
+              chatStore.setActiveConversation(conv.id)
+            }
+            openChat(this.$router, conv.id)
+            return
+          }
+        } catch {
+          // Pinia not active in test environment
+        }
+      }
       openChat(this.$router, resolvedAddress)
+    },
+    addContact() {
+      if (this.isConversationMode) {
+        this.addContactAndOpenChat()
+      } else {
+        this.addContactOnly()
+      }
     },
     cancel() {
       const from = this.$route?.query?.from
-      if (typeof from === 'string' && from.startsWith('/chat')) {
+      if (typeof from === 'string' && from.length > 0) {
         void this.$router.push(from)
         return
       }

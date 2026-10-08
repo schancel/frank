@@ -289,6 +289,9 @@
           @mouseleave="onSvgMouseLeave"
           @dblclick="resetCustomZoom"
         >
+          <!-- Background hit area for smooth continuous mouse tracking -->
+          <rect x="0" y="0" width="680" height="290" fill="transparent" />
+
           <!-- Grid Lines (Horizontal) -->
           <g class="grid-lines" opacity="0.3">
             <line
@@ -391,6 +394,20 @@
             stroke-linecap="round"
             stroke-linejoin="round"
             data-test="macro-token-line"
+          />
+
+          <!-- Active Hover Vertical Crosshair Line -->
+          <line
+            v-if="activeHoverPoint"
+            :x1="activeHoverPoint.x"
+            y1="20"
+            :x2="activeHoverPoint.x"
+            y2="230"
+            :stroke="themeColors.axis"
+            stroke-width="1.5"
+            stroke-dasharray="3 3"
+            opacity="0.6"
+            style="pointer-events: none"
           />
 
           <!-- Hardware Milestone Indicator Lines -->
@@ -1426,10 +1443,54 @@ function onSvgMouseDown(event: MouseEvent) {
 }
 
 function onSvgMouseMove(event: MouseEvent) {
-  if (!isDragging.value) return
   const pt = getSvgCoordinates(event)
   if (!pt) return
-  dragCurrentX.value = Math.max(55, Math.min(625, pt.x))
+
+  if (isDragging.value) {
+    dragCurrentX.value = Math.max(55, Math.min(625, pt.x))
+    return
+  }
+
+  if (selectedRange.value === 'networks') {
+    return
+  }
+
+  // If outside plot area, clear hover
+  if (pt.x < 50 || pt.x > 630 || pt.y < 15 || pt.y > 255) {
+    clearHover()
+    return
+  }
+
+  // Check if cursor is hovering near a hardware milestone marker (near top marker icon)
+  const milestones = activeMilestonesMapped.value
+  const hoveredMilestone = milestones.find(
+    m => Math.abs(pt.x - m.x) <= 8 && pt.y <= 50,
+  )
+  if (hoveredMilestone) {
+    activeHoverMilestone.value = hoveredMilestone
+    activeHoverPoint.value = null
+    return
+  }
+  activeHoverMilestone.value = null
+
+  // Find nearest data point along the X axis
+  const points = macroPointsMapped.value
+  if (!points.length) return
+
+  let closest: MappedMacroPoint = points[0]
+  let minDiff = Math.abs(points[0].x - pt.x)
+
+  for (let i = 1; i < points.length; i++) {
+    const diff = Math.abs(points[i].x - pt.x)
+    if (diff < minDiff) {
+      minDiff = diff
+      closest = points[i]
+    } else {
+      break
+    }
+  }
+
+  activeHoverPoint.value = closest
 }
 
 function onSvgMouseUp() {
@@ -2036,5 +2097,10 @@ const networkTooltipY = computed(() => {
 
 .cursor-crosshair {
   cursor: crosshair;
+}
+
+.chart-svg-tooltip {
+  pointer-events: none;
+  user-select: none;
 }
 </style>

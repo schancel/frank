@@ -7,6 +7,10 @@ export interface FetchSolanaBalanceOptions {
   networkId?: "solana-devnet" | "solana-mainnet" | "solana-testnet" | string;
   /** Custom RPC URL override. If omitted, uses default upstream RPC. */
   rpcUrl?: string;
+  /** Relay base URL to route via the relay's Solana reverse proxy (`/chain-rpc/<networkId>/rpc`). */
+  relayBaseUrl?: string;
+  /** Direct Solana RPC endpoints override for failover. */
+  rpcUrls?: string[];
   /** Injected fetch implementation for unit testing or custom environments. */
   fetchImpl?: typeof fetch;
 }
@@ -27,7 +31,34 @@ export const DEFAULT_SOLANA_RPC_URLS: Record<
 };
 
 /**
+ * Resolves failover Solana RPC URLs.
+ * Places the local/configured relay reverse proxy first (when relayBaseUrl is given),
+ * followed by the default public upstream RPC endpoints.
+ */
+export function getSolanaRpcUrls(params: {
+  networkId: "solana-devnet" | "solana-mainnet";
+  relayBaseUrl?: string;
+  rpcUrl?: string;
+  rpcUrls?: string[];
+}): string[] {
+  if (params.rpcUrls && params.rpcUrls.length > 0) {
+    return params.rpcUrls;
+  }
+  if (params.rpcUrl) {
+    return [params.rpcUrl];
+  }
+  const urls: string[] = [];
+  if (params.relayBaseUrl) {
+    const cleanRelay = params.relayBaseUrl.replace(/\/+$/, "");
+    urls.push(`${cleanRelay}/chain-rpc/${params.networkId}/rpc`);
+  }
+  urls.push(DEFAULT_SOLANA_RPC_URLS[params.networkId]);
+  return urls;
+}
+
+/**
  * Public, read-only Solana balance fetcher by address via standard JSON-RPC.
+ * Supports multi-endpoint failover through relay reverse proxies and upstream RPCs.
  * Does not require private keys, custody initialization, or heavy SDK initialization.
  */
 export async function fetchSolanaBalance(
@@ -44,7 +75,13 @@ export async function fetchSolanaBalance(
     ? "solana-devnet"
     : "solana-mainnet";
 
-  const rpcUrl = options.rpcUrl || DEFAULT_SOLANA_RPC_URLS[canonicalNetwork];
+  const rpcUrls = getSolanaRpcUrls({
+    networkId: canonicalNetwork,
+    relayBaseUrl: options.relayBaseUrl,
+    rpcUrl: options.rpcUrl,
+    rpcUrls: options.rpcUrls,
+  });
+
   const unit = isTestnet ? "tSOL" : "SOL";
   const fetchFn = options.fetchImpl ?? globalThis.fetch;
 
@@ -52,40 +89,51 @@ export async function fetchSolanaBalance(
     throw new Error("fetch is not available in the current environment");
   }
 
-  const response = await fetchFn(rpcUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getBalance",
-      params: [options.address, { commitment: "confirmed" }],
-    }),
-  });
+  let lastError: unknown = null;
 
-  if (!response.ok) {
-    throw new Error(`Solana RPC HTTP error: ${response.status}`);
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const response = await fetchFn(rpcUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "ngrok-skip-browser-warning": "1",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getBalance",
+          params: [options.address, { commitment: "confirmed" }],
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Solana RPC HTTP error: ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        error?: { message?: string };
+        result?: { value?: number | string | bigint };
+      };
+
+      if (data.error) {
+        throw new Error(data.error.message || "Solana RPC error");
+      }
+
+      const rawValue = data.result?.value ?? 0;
+      const lamports = BigInt(rawValue);
+      const formatted = `${formatBaseUnit(lamports, 9)} ${unit}`;
+
+      return {
+        lamports,
+        formatted,
+        unit,
+        networkId: canonicalNetwork,
+      };
+    } catch (err) {
+      lastError = err;
+    }
   }
 
-  const data = (await response.json()) as {
-    error?: { message?: string };
-    result?: { value?: number | string | bigint };
-  };
-
-  if (data.error) {
-    throw new Error(data.error.message || "Solana RPC error");
-  }
-
-  const rawValue = data.result?.value ?? 0;
-  const lamports = BigInt(rawValue);
-  const formatted = `${formatBaseUnit(lamports, 9)} ${unit}`;
-
-  return {
-    lamports,
-    formatted,
-    unit,
-    networkId: canonicalNetwork,
-  };
+  throw lastError ?? new Error("Failed to connect to any Solana RPC endpoint");
 }

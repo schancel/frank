@@ -2,14 +2,24 @@
   <div class="d-app-swap-view q-py-sm" data-testid="dapp-swap-view">
     <div class="column q-gutter-y-sm">
       <!-- From Asset Card -->
-      <q-card flat bordered class="q-pa-md swap-card">
+      <q-card
+        flat
+        bordered
+        class="q-pa-md swap-card transition-colors"
+        :class="{ 'swap-card--error': isInsufficientBalance }"
+      >
         <div class="row items-center justify-between q-mb-xs">
           <span class="text-caption text-grey-7">{{
             $t('walletPanel.swapPay')
           }}</span>
           <span
             v-if="availableBalance"
-            class="text-caption text-primary cursor-pointer text-weight-medium"
+            class="text-caption cursor-pointer text-weight-medium transition-colors"
+            :class="
+              isInsufficientBalance
+                ? 'text-negative text-weight-bold'
+                : 'text-primary'
+            "
             data-testid="swap-max-balance"
             @click="setMaxAmount"
           >
@@ -17,17 +27,33 @@
           </span>
         </div>
         <div class="row items-center q-gutter-sm no-wrap">
-          <q-input
-            v-model="fromAmount"
-            type="number"
-            dense
-            borderless
-            placeholder="0.00"
-            class="col text-h5"
-            input-class="text-weight-bold"
-            data-testid="swap-from-amount"
-            @update:model-value="calculateQuote"
-          />
+          <div
+            class="swap-amount-box col row items-center no-wrap"
+            :class="{ 'swap-amount-box--error': isInsufficientBalance }"
+          >
+            <q-input
+              v-model="fromAmount"
+              type="number"
+              dense
+              borderless
+              placeholder="0.00"
+              class="col text-h5 swap-num-input"
+              input-class="text-weight-bold"
+              data-testid="swap-from-amount"
+              @update:model-value="calculateQuote"
+            />
+            <q-btn
+              flat
+              dense
+              no-caps
+              size="sm"
+              color="primary"
+              class="swap-max-pill q-px-xs q-mr-xs text-weight-bolder"
+              data-testid="swap-max-btn"
+              :label="$t('walletPanel.swapMaxBtn')"
+              @click="setMaxAmount"
+            />
+          </div>
           <q-select
             v-model="fromAsset"
             :options="assetOptions"
@@ -41,7 +67,17 @@
           />
         </div>
         <div
-          v-if="fromEnergyAvu"
+          v-if="isInsufficientBalance"
+          class="row items-center q-mt-xs text-caption text-negative text-weight-medium"
+          data-testid="swap-error-message"
+        >
+          <q-icon name="error_outline" size="14px" class="q-mr-xs" />
+          <span>{{
+            $t('walletPanel.swapInsufficientBalance', { asset: fromAsset })
+          }}</span>
+        </div>
+        <div
+          v-else-if="fromEnergyAvu"
           class="row items-center q-mt-xs text-caption text-grey-6"
           data-testid="swap-from-avu"
         >
@@ -78,16 +114,20 @@
           </span>
         </div>
         <div class="row items-center q-gutter-sm no-wrap">
-          <q-input
-            :model-value="estimatedToAmount"
-            readonly
-            dense
-            borderless
-            placeholder="0.00"
-            class="col text-h5"
-            input-class="text-weight-bold text-positive"
-            data-testid="swap-to-amount"
-          />
+          <div
+            class="swap-amount-box swap-amount-box--readonly col row items-center no-wrap"
+          >
+            <q-input
+              :model-value="estimatedToAmount"
+              readonly
+              dense
+              borderless
+              placeholder="0.00"
+              class="col text-h5 swap-num-input"
+              input-class="text-weight-bold text-positive"
+              data-testid="swap-to-amount"
+            />
+          </div>
           <q-select
             v-model="toAsset"
             :options="assetOptions"
@@ -146,12 +186,14 @@
       <div class="full-width q-mt-xs">
         <q-btn
           unelevated
-          color="primary"
+          :color="isInsufficientBalance ? 'negative' : 'primary'"
           class="full-width swap-action-btn text-weight-bold"
-          icon="swap_horiz"
+          :icon="isInsufficientBalance ? 'warning' : 'swap_horiz'"
           :label="
             swapStatusKey === 'walletPanel.swapExecute'
               ? `${$t(swapStatusKey)} (${fromAsset} → ${toAsset})`
+              : swapStatusKey === 'walletPanel.swapInsufficientBalance'
+              ? $t(swapStatusKey, { asset: fromAsset })
               : $t(swapStatusKey)
           "
           :disable="!canSwap"
@@ -270,22 +312,34 @@ export default defineComponent({
       })} AVU (kWh)`
     })
 
+    const AVAILABLE_BALANCES: Record<
+      string,
+      { numeric: number; formatted: string }
+    > = {
+      USDC: { numeric: 1000.0, formatted: '1,000.00 USDC' },
+      USDT: { numeric: 500.0, formatted: '500.00 USDT' },
+      MON: { numeric: 250.0, formatted: '250.00 MON' },
+      SOL: { numeric: 5.2, formatted: '5.20 SOL' },
+      ETH: { numeric: 1.25, formatted: '1.25 ETH' },
+      XEC: { numeric: 10000000.0, formatted: '10,000,000 XEC' },
+    }
+
+    const availableNumericBalance = computed(() => {
+      return AVAILABLE_BALANCES[fromAsset.value]?.numeric ?? 100.0
+    })
+
     const availableBalance = computed(() => {
-      if (fromAsset.value === 'USDC') return '1,000.00 USDC'
-      if (fromAsset.value === 'USDT') return '500.00 USDT'
-      if (fromAsset.value === 'MON') return '250.00 MON'
-      if (fromAsset.value === 'SOL') return '5.20 SOL'
-      if (fromAsset.value === 'ETH') return '1.25 ETH'
-      return '100.00'
+      return AVAILABLE_BALANCES[fromAsset.value]?.formatted ?? '100.00'
+    })
+
+    const isInsufficientBalance = computed(() => {
+      const val = parseFloat(fromAmount.value)
+      if (isNaN(val) || val <= 0) return false
+      return val > availableNumericBalance.value
     })
 
     const setMaxAmount = () => {
-      if (fromAsset.value === 'USDC') fromAmount.value = '1000'
-      else if (fromAsset.value === 'USDT') fromAmount.value = '500'
-      else if (fromAsset.value === 'MON') fromAmount.value = '250'
-      else if (fromAsset.value === 'SOL') fromAmount.value = '5.2'
-      else if (fromAsset.value === 'ETH') fromAmount.value = '1.25'
-      else fromAmount.value = '100'
+      fromAmount.value = availableNumericBalance.value.toString()
       calculateQuote()
     }
 
@@ -378,7 +432,12 @@ export default defineComponent({
 
     const canSwap = computed(() => {
       const val = parseFloat(fromAmount.value)
-      return !isNaN(val) && val > 0 && fromAsset.value !== toAsset.value
+      return (
+        !isNaN(val) &&
+        val > 0 &&
+        !isInsufficientBalance.value &&
+        fromAsset.value !== toAsset.value
+      )
     })
 
     const swapStatusKey = computed(() => {
@@ -386,6 +445,8 @@ export default defineComponent({
         return 'walletPanel.swapSelectDifferent'
       const val = parseFloat(fromAmount.value)
       if (isNaN(val) || val <= 0) return 'walletPanel.swapEnterAmount'
+      if (isInsufficientBalance.value)
+        return 'walletPanel.swapInsufficientBalance'
       return 'walletPanel.swapExecute'
     })
 
@@ -416,6 +477,7 @@ export default defineComponent({
       toEnergyAvu,
       assetOptions,
       availableBalance,
+      isInsufficientBalance,
       protocolFeeDisplay,
       activeRouterName,
       unitRateDisplay,
@@ -440,6 +502,86 @@ export default defineComponent({
 }
 .swap-card {
   border-radius: 12px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.swap-card--error {
+  border-color: var(--q-negative, #c10015) !important;
+  box-shadow: 0 0 0 1px rgba(193, 0, 21, 0.2);
+}
+.swap-amount-box {
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 2px 8px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+.body--dark .swap-amount-box {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.swap-amount-box:hover {
+  border-color: rgba(0, 0, 0, 0.28);
+}
+.body--dark .swap-amount-box:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.swap-amount-box:focus-within {
+  border-color: var(--q-primary, #1976d2);
+  box-shadow: 0 0 0 1px var(--q-primary, #1976d2);
+}
+.body--dark .swap-amount-box:focus-within {
+  border-color: var(--q-primary, #1976d2);
+  box-shadow: 0 0 0 1px var(--q-primary, #1976d2);
+}
+.swap-amount-box--readonly {
+  background: rgba(0, 0, 0, 0.015);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+.body--dark .swap-amount-box--readonly {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.swap-amount-box--readonly:hover,
+.swap-amount-box--readonly:focus-within {
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: none;
+}
+.body--dark .swap-amount-box--readonly:hover,
+.body--dark .swap-amount-box--readonly:focus-within {
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+.swap-amount-box--error {
+  border-color: var(--q-negative, #c10015) !important;
+  background-color: rgba(193, 0, 21, 0.04) !important;
+}
+.swap-amount-box--error:focus-within {
+  box-shadow: 0 0 0 1px var(--q-negative, #c10015) !important;
+}
+.swap-max-pill {
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 6px;
+  background-color: rgba(25, 118, 210, 0.1);
+  transition: background-color 0.15s ease;
+}
+.body--dark .swap-max-pill {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+.swap-max-pill:hover {
+  background-color: rgba(25, 118, 210, 0.2);
+}
+.body--dark .swap-max-pill:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+.swap-num-input :deep(input::-webkit-outer-spin-button),
+.swap-num-input :deep(input::-webkit-inner-spin-button) {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.swap-num-input :deep(input[type='number']) {
+  -moz-appearance: textfield;
 }
 .swap-flip-container {
   display: flex;

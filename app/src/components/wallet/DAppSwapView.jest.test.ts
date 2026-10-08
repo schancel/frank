@@ -3,8 +3,16 @@ import { mount } from '@vue/test-utils'
 import DAppSwapView from './DAppSwapView.vue'
 import en from '../../i18n/en-us'
 
-const t = (key: string) =>
-  key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
+const t = (key: string, params?: Record<string, any>) => {
+  let val =
+    key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
+  if (typeof val === 'string' && params) {
+    for (const [k, v] of Object.entries(params)) {
+      val = val.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v))
+    }
+  }
+  return val
+}
 
 function mountSwapView(props = {}) {
   return mount(DAppSwapView, {
@@ -123,5 +131,41 @@ describe('DAppSwapView component', () => {
     expect((wrapper.vm as any).toAsset).toBe('USDC')
     const routerElem = wrapper.find('[data-testid="swap-router-name"]')
     expect(routerElem.text()).toContain('Jupiter Aggregator')
+  })
+
+  test('validates balance: shows error and disables swap button when input exceeds balance', async () => {
+    const wrapper = mountSwapView({ selectedWallet: 'solana' })
+    // Solana available is 5.20 SOL
+    const fromInput = wrapper.find('[data-testid="swap-from-amount"]')
+    await fromInput.setValue('10000')
+
+    const errorMsg = wrapper.find('[data-testid="swap-error-message"]')
+    expect(errorMsg.exists()).toBe(true)
+    expect(errorMsg.text()).toContain('Insufficient SOL balance')
+
+    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
+    expect(executeBtn.attributes('disabled')).toBeDefined()
+    expect(executeBtn.text()).toContain('Insufficient SOL balance')
+  })
+
+  test('clicking MAX sets the available balance and clears insufficient balance error', async () => {
+    const wrapper = mountSwapView({ selectedWallet: 'solana' })
+    const fromInput = wrapper.find('[data-testid="swap-from-amount"]')
+    await fromInput.setValue('999')
+
+    expect(wrapper.find('[data-testid="swap-error-message"]').exists()).toBe(
+      true,
+    )
+
+    const maxBtn = wrapper.find('[data-testid="swap-max-btn"]')
+    await maxBtn.trigger('click')
+
+    expect((wrapper.vm as any).fromAmount).toBe('5.2')
+    expect(wrapper.find('[data-testid="swap-error-message"]').exists()).toBe(
+      false,
+    )
+
+    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
+    expect(executeBtn.attributes('disabled')).toBeUndefined()
   })
 })

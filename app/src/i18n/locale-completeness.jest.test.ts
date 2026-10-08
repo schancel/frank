@@ -50,6 +50,7 @@ const SAME_IN_FRENCH = new Set([
   'walletPanel.zeroThype',
   'walletPanel.avuDrawerHeader',
   'walletPanel.chartTokenAvu',
+  'walletPanel.swapMaxBtn',
   'SettingPanel.contacts',
   'contactBookDialog.contacts',
   'chatRightDrawer.notifications',

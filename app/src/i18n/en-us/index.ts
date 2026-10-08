@@ -385,6 +385,8 @@ export default {
       'Direct settlement to fresh HD change address (seed recoverable, zero link to identity)',
     swapSelectDifferent: 'Select different assets to swap',
     swapEnterAmount: 'Enter an amount to swap',
+    swapInsufficientBalance: 'Insufficient {asset} balance',
+    swapMaxBtn: 'MAX',
     swapExecute: 'Swap Now',
     swapSuccess:
       'Swap executed successfully! Funds delivered to your change address.',

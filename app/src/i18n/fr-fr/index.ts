@@ -391,6 +391,8 @@ export default {
       'Règlement direct sur une nouvelle adresse de change HD (récupérable par graine, aucun lien avec l’identité)',
     swapSelectDifferent: 'Sélectionnez des actifs différents à échanger',
     swapEnterAmount: 'Saisissez un montant à échanger',
+    swapInsufficientBalance: 'Solde insuffisant en {asset}',
+    swapMaxBtn: 'MAX',
     swapExecute: 'Échanger maintenant',
     swapSuccess:
       'Échange exécuté avec succès ! Fonds versés sur votre adresse de change.',

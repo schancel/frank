@@ -19,11 +19,8 @@
     </q-header>
 
     <q-page-container>
-      <q-page
-        class="q-ma-none q-pa-none column full-height relative-position"
-        style="overflow: hidden"
-      >
-        <q-scroll-area class="col full-width full-height">
+      <q-page class="q-ma-none q-pa-none">
+        <q-scroll-area class="absolute full-width full-height">
           <div class="q-pa-md">
             <q-card
               flat

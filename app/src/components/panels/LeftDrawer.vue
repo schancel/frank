@@ -76,6 +76,7 @@
           icon="account_balance_wallet"
           class="wallet-rail-tab"
           :aria-label="$t('leftDrawer.wallet')"
+          @click="openWalletTab"
         >
           <q-tooltip>{{ $t('leftDrawer.wallet') }}</q-tooltip>
         </q-tab>
@@ -349,6 +350,12 @@ export default defineComponent({
       markRailNavigation()
       return router.push('/settings')
     }
+    function openWalletTab() {
+      markRailNavigation()
+      if (!route?.path?.startsWith('/wallet')) {
+        return router.push('/wallet')
+      }
+    }
     function openActiveOrRecentChat() {
       const target =
         chats.activeConversationId ??
@@ -449,7 +456,7 @@ export default defineComponent({
     )
     watch(
       () => route.path,
-      path => {
+      (path, oldPath) => {
         // `/new-post` (not `/forum/new-post`) is intentionally a top-level path -- see
         // `router/index.ts`'s own comment on `protectedRoutes` -- but is still a Forum page.
         // Only force the highlight on navigation -- never overrides a subsequent direct
@@ -472,13 +479,23 @@ export default defineComponent({
           path.startsWith('/changelog')
         ) {
           tab.value = 'settings'
-        } else if (
-          path.startsWith('/add-contact') ||
-          path.startsWith('/contacts')
-        ) {
+        } else if (path.startsWith('/add-contact')) {
+          if (
+            route.query?.mode === 'conversation' ||
+            route.query?.compose === 'email'
+          ) {
+            tab.value = 'chats'
+          } else {
+            tab.value = 'contacts'
+          }
+        } else if (path.startsWith('/contacts')) {
           tab.value = 'contacts'
         } else if (path.startsWith('/chat')) {
-          tab.value = 'chats'
+          if (oldPath?.startsWith('/add-contact') && tab.value === 'contacts') {
+            // Keep contacts tab active when returning from adding a contact
+          } else {
+            tab.value = 'chats'
+          }
         }
       },
       { immediate: true },
@@ -490,6 +507,7 @@ export default defineComponent({
       openForumTab,
       openNewPost,
       openSettingsTab,
+      openWalletTab,
       discoveredTopicNames,
       selectedForumTopic,
       browseForumTopic,

@@ -1190,6 +1190,30 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     wallet: MonadChainWalletHandle
   ): Promise<FundingAccount[]> {
     const monadWallet = asMonadWallet(wallet, config.networkId);
+    if (monadWallet.accountUtxoPool) {
+      const coins = monadWallet.accountUtxoPool
+        .getAllCoins("monad")
+        .filter(
+          (c) =>
+            c.balanceWei > 0n &&
+            c.status !== "pending" &&
+            Boolean(c.privateKey)
+        );
+      const accountsByAddress = new Map<string, FundingAccount>();
+      for (const coin of coins) {
+        const key = coin.address.toLowerCase();
+        const existing = accountsByAddress.get(key);
+        if (!existing || coin.balanceWei > existing.balanceWei) {
+          accountsByAddress.set(key, {
+            address: coin.address,
+            balanceWei: coin.balanceWei,
+            privateKey: coin.privateKey,
+          });
+        }
+      }
+      return Array.from(accountsByAddress.values());
+    }
+
     const accounts: FundingAccount[] = [];
     const material = walletMaterial.get(monadWallet);
 
@@ -1293,6 +1317,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         transactionBuilder,
         onSyncTransaction: async (syncItem) => {
           applyWalletSyncItem(wallet, syncItem);
+          if (monadWallet.accountUtxoPool && syncItem.spentInputs) {
+            for (const input of syncItem.spentInputs) {
+              const coins = monadWallet.accountUtxoPool.getCoinsByAddress(
+                input.address,
+                "monad"
+              );
+              for (const c of coins) {
+                try {
+                  monadWallet.accountUtxoPool.markSpent(c.id);
+                } catch {}
+              }
+            }
+          }
           try {
             await directMessages.send({
               wallet,

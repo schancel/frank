@@ -530,7 +530,7 @@ export class SolanaChainFamilyAdapter {
       }
     }
 
-    transaction.sign(...signers)
+    await transaction.sign(...signers)
 
     return {
       transaction,

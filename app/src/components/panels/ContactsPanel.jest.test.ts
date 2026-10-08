@@ -52,16 +52,17 @@ jest.mock('pinia', () => ({
   }),
 }))
 
+const mockRefresh = jest.fn()
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
     getContacts: mockContacts,
     deleteContact: mockDeleteContact,
     addContact: mockAddContact,
     isContact: (addr: string) => Boolean(mockContacts.value[addr]),
-    refresh: jest.fn(),
+    refresh: mockRefresh,
   }),
   pendingRelayData: {
-    profile: { name: '', bio: '', avatar: null, pubKey: null },
+    profile: { name: 'Loading...', bio: '', avatar: null, pubKey: null },
   },
 }))
 
@@ -222,6 +223,23 @@ describe('ContactsPanel navigation', () => {
     expect((wrapper.vm as any).showMyQrDialog).toBe(true)
   })
 
+  it('displays compact address instead of Loading... when a contact is pending resolution and triggers refresh', async () => {
+    mockContacts.value['0x3333333333333333333333333333333333333333'] = {
+      profile: { name: 'Loading...', avatar: null },
+    }
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).not.toContain('Loading...')
+    expect(text).toContain('0x3333...3333')
+    expect(mockRefresh).toHaveBeenCalledWith(
+      '0x3333333333333333333333333333333333333333',
+    )
+
+    delete mockContacts.value['0x3333333333333333333333333333333333333333']
+  })
+
   describe('Network Directory Search', () => {
     beforeEach(() => {
       jest.useFakeTimers({
@@ -266,7 +284,7 @@ describe('ContactsPanel navigation', () => {
       expect(results[0].text()).toContain('profile.badgeBot')
     })
 
-    it('clicking a directory search result adds the contact and navigates to chat', async () => {
+    it('clicking a directory search result adds the contact and opens profile', async () => {
       mockSearchMonadProfiles.mockResolvedValueOnce([
         {
           address: '0x3333333333333333333333333333333333333333',
@@ -299,6 +317,41 @@ describe('ContactsPanel navigation', () => {
               isBot: true,
             }),
           }),
+        }),
+      )
+      expect(mockPush).toHaveBeenCalledWith(
+        '/chat/0x3333333333333333333333333333333333333333?info=true',
+      )
+    })
+
+    it('clicking chat button on directory search result adds contact and opens chat directly', async () => {
+      mockSearchMonadProfiles.mockResolvedValueOnce([
+        {
+          address: '0x3333333333333333333333333333333333333333',
+          rawBytes: new Uint8Array([1, 2, 3]),
+        },
+      ])
+      mockDecodeProfileBytes.mockReturnValueOnce({
+        name: 'Qwen Bot',
+        avatar: 'qwen.png',
+        bot: true,
+      })
+
+      const wrapper = mountPanel()
+      await flushPromises()
+
+      const input = wrapper.find('input')
+      await input.setValue('qwen')
+      jest.advanceTimersByTime(350)
+      await flushPromises()
+
+      const result = wrapper.find('[data-test="directory-search-result"]')
+      const chatBtn = result.find('button[data-icon="chat"]')
+      await chatBtn.trigger('click')
+
+      expect(mockAddContact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: '0x3333333333333333333333333333333333333333',
         }),
       )
       expect(mockPush).toHaveBeenCalledWith(

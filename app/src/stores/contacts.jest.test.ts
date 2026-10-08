@@ -844,6 +844,36 @@ describe('stores/contacts.ts (ticket #42)', () => {
       ])
       expect(Object.keys(contacts.getContacts)).toHaveLength(4)
     })
+
+    it('infers curated bot attributes for defaults when added', async () => {
+      const contacts = useContactStore()
+      await contacts.addDefaultContact({
+        address: `0x${'10'.repeat(20)}`,
+        name: 'Monad Faucet',
+      })
+      await contacts.addDefaultContact({
+        address: `0x${'20'.repeat(20)}`,
+        name: 'Blackjack Dealer',
+      })
+      await contacts.addDefaultContact({
+        address: `0x${'30'.repeat(20)}`,
+        name: 'Qwen AI',
+      })
+      const faucet = contacts.getContact(`0x${'10'.repeat(20)}`)
+      expect(faucet?.profile.accountType).toBe(2)
+      expect(faucet?.profile.botRole).toBe(2)
+      expect(faucet?.profile.isBot).toBe(false)
+
+      const dealer = contacts.getContact(`0x${'20'.repeat(20)}`)
+      expect(dealer?.profile.accountType).toBe(1)
+      expect(dealer?.profile.botRole).toBe(3)
+      expect(dealer?.profile.isBot).toBe(true)
+
+      const qwen = contacts.getContact(`0x${'30'.repeat(20)}`)
+      expect(qwen?.profile.accountType).toBe(1)
+      expect(qwen?.profile.botRole).toBe(1)
+      expect(qwen?.profile.isBot).toBe(true)
+    })
   })
 
   describe('store-key consistency (decision 2)', () => {

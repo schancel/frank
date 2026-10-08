@@ -89,6 +89,32 @@ describe('AccountBadge.vue', () => {
     expect(wrapper.text()).toContain('profile.badgeOfficialGame')
   })
 
+  it('renders official merchant badge for a curated bot with merchant role', () => {
+    const wrapper = mountBadge({
+      address: '0x4444444444444444444444444444444444444445',
+      accountType: 1, // Bot
+      botRole: 5, // Merchant
+      curated: true,
+    })
+    expect(
+      wrapper.find('[data-testid="badge-official-merchant"]').exists(),
+    ).toBe(true)
+    expect(wrapper.text()).toContain('profile.badgeOfficialMerchant')
+  })
+
+  it('renders official moderator badge for a curated bot with moderator role', () => {
+    const wrapper = mountBadge({
+      address: '0x4444444444444444444444444444444444444446',
+      accountType: 1, // Bot
+      botRole: 6, // Moderator
+      curated: true,
+    })
+    expect(
+      wrapper.find('[data-testid="badge-official-moderator"]').exists(),
+    ).toBe(true)
+    expect(wrapper.text()).toContain('profile.badgeOfficialModerator')
+  })
+
   it('renders uncurated bot badge for self-declared bot', () => {
     const wrapper = mountBadge({
       address: '0x5555555555555555555555555555555555555555',
@@ -110,7 +136,26 @@ describe('AccountBadge.vue', () => {
     expect(wrapper.text()).toContain('profile.badgeGame')
   })
 
-  it('renders official bot badge for a curated generic bot without role', () => {
+  it('resolves curation from contactStore.curatedDefaults when curated prop is omitted', () => {
+    const contactsStore = useContactStore()
+    contactsStore.replaceCuratedDefaults([
+      {
+        address: '0x7777777777777777777777777777777777777777',
+        name: 'Curated Bot',
+      },
+    ])
+
+    const wrapper = mountBadge({
+      address: '0x7777777777777777777777777777777777777777',
+      accountType: 1,
+      botRole: 1,
+    })
+    expect(wrapper.find('[data-testid="badge-official-ai"]').exists()).toBe(
+      true,
+    )
+  })
+
+  it('renders official bot badge for curated generic bot', () => {
     const wrapper = mountBadge({
       address: '0x8888888888888888888888888888888888888888',
       accountType: 1,
@@ -122,7 +167,7 @@ describe('AccountBadge.vue', () => {
     expect(wrapper.text()).toContain('profile.badgeOfficialBot')
   })
 
-  it('renders official service badge for a curated generic service without role', () => {
+  it('renders official service badge for curated generic service', () => {
     const wrapper = mountBadge({
       address: '0x9999999999999999999999999999999999999999',
       accountType: 2,
@@ -134,29 +179,41 @@ describe('AccountBadge.vue', () => {
     expect(wrapper.text()).toContain('profile.badgeOfficialService')
   })
 
-  it('infers game role for curated Blackjack Dealer when accountType/botRole are omitted', () => {
+  it('infers official game role from curated bot name when role/type are omitted', () => {
     const contactsStore = useContactStore()
     contactsStore.replaceCuratedDefaults([
       {
-        address: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         name: 'Blackjack Dealer',
       },
     ])
-    contactsStore.addContact({
-      address: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
-      contact: {
-        profile: {
-          name: 'Blackjack Dealer',
-        },
-      },
-    })
 
     const wrapper = mountBadge({
-      address: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      name: 'Blackjack Dealer',
     })
     expect(wrapper.find('[data-testid="badge-official-game"]').exists()).toBe(
       true,
     )
     expect(wrapper.text()).toContain('profile.badgeOfficialGame')
+  })
+
+  it('infers official faucet role from curated service name when role/type are omitted', () => {
+    const contactsStore = useContactStore()
+    contactsStore.replaceCuratedDefaults([
+      {
+        address: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        name: 'Monad Faucet',
+      },
+    ])
+
+    const wrapper = mountBadge({
+      address: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      name: 'Monad Faucet',
+    })
+    expect(wrapper.find('[data-testid="badge-official-faucet"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.text()).toContain('profile.badgeFaucet')
   })
 })

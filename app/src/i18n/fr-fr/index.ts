@@ -449,6 +449,8 @@ export default {
     reasonRecovered: 'Un message précédent a été remis entre-temps.',
     reasonInsufficientFunds:
       'Les fonds sont insuffisants pour envoyer ce message.',
+    reasonRecipientUnregistered:
+      "Le destinataire n'est pas enregistré sur ce relais.",
     reasonError: 'Le message n’a pas pu être envoyé.',
     retry: 'Réessayer',
     retryHint:

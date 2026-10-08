@@ -256,6 +256,81 @@ describe('stores/contacts.ts (ticket #42)', () => {
       expect(contacts.getContactProfile(ADDRESS).name).toBe('0x3e3e\u20263E3e')
     })
 
+    it('replaces the Loading... placeholder with short address and (Unregistered) when profile lookup returns undefined', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      contacts.addLoadingContact({
+        address: ADDRESS,
+        pubKey: undefined as never,
+      })
+      expect(contacts.getContactProfile(ADDRESS).name).toBe('Loading...')
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue(undefined as never)
+
+      await contacts.refresh(ADDRESS)
+
+      expect(contacts.getContactProfile(ADDRESS).name).toBe(
+        '0x3e3e\u20263E3e (Unregistered)',
+      )
+    })
+
+    it('preserves user-assigned name when profile lookup returns undefined', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          profile: { name: 'Alice', bio: '', avatar: '', pubKey: null },
+        },
+      })
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue(undefined as never)
+
+      await contacts.refresh(ADDRESS)
+
+      expect(contacts.getContactProfile(ADDRESS).name).toBe('Alice')
+    })
+
+    it('creates contact entry with (Unregistered) fallback if contact was not yet in store', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue(undefined as never)
+
+      await contacts.refresh(ADDRESS)
+
+      expect(contacts.getContactProfile(ADDRESS).name).toBe(
+        '0x3e3e\u20263E3e (Unregistered)',
+      )
+    })
+
+    it('replaces (Unregistered) label with short address once registered without display name', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          profile: {
+            name: '0x3e3e\u20263E3e (Unregistered)',
+            bio: '',
+            avatar: '',
+            pubKey: null,
+          },
+        },
+      })
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+
+      await contacts.refresh(ADDRESS)
+
+      expect(contacts.getContactProfile(ADDRESS).name).toBe('0x3e3e\u20263E3e')
+    })
+
     it('shows a curated default bot immediately, then its registered name, bio and avatar (#317)', async () => {
       const contacts = useContactStore()
       contacts.setUpdateInterval(0)

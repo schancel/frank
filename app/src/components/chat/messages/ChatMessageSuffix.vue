@@ -245,6 +245,7 @@ export default defineComponent({
         error: 'outgoing.reasonError',
       }
       keys['insufficient-funds'] = 'outgoing.reasonInsufficientFunds'
+      keys['recipient-unregistered'] = 'outgoing.reasonRecipientUnregistered'
       const key = keys[this.failureReason]
       return key === undefined ? '' : this.$t(key)
     },

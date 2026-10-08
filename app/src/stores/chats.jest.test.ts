@@ -41,7 +41,10 @@ import { defaultEmailGatewayAddress } from '../utils/constants'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
-import { activeChain } from '@frank/wallet/chain'
+import {
+  activeChain,
+  CanonicalRecipientNotPublishedError,
+} from '@frank/wallet/chain'
 import type { WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import type { MessageWrapper, EmailItem } from '@frank/cashweb/types/messages'
@@ -1231,6 +1234,32 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect.objectContaining({
           failureReason: 'insufficient-funds',
           detail: expect.stringContaining('secret technical totals'),
+        }),
+      )
+    })
+
+    it('reports recipient-unregistered when recipient has no directory entry', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockRejectedValue(
+          new CanonicalRecipientNotPublishedError(RECIPIENT_ADDRESS),
+        )
+
+      await expect(
+        chats.sendMessage({
+          wallet,
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'hello unregistered user' }],
+        }),
+      ).resolves.toEqual({
+        state: 'failed',
+        reason: 'recipient-unregistered',
+      })
+      expect(chats.chats[RECIPIENT_ADDRESS]?.messages[0]?.delivery).toEqual(
+        expect.objectContaining({
+          failureReason: 'recipient-unregistered',
         }),
       )
     })

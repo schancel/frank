@@ -42,6 +42,7 @@ import {
   SolanaHdKeyring,
 } from './ed25519-hd-keyring'
 import { SolanaAccountHygieneEngine } from './solana-account-hygiene'
+import type { ChainUtxoPool, ChainUtxoCoin } from './chain-utxo-pool'
 
 /**
  * Minimum transfer amount for a Solana stealth address.
@@ -303,6 +304,7 @@ export class SolanaWallet
   readonly hygiene?: AccountHygieneEngine<string>
   readonly hdKeyring?: SolanaHdKeyring
   readonly changeKeyring?: SolanaChangeKeyring
+  readonly chainUtxoPool?: ChainUtxoPool
   private lastSubmittedNative: ChainTransaction | undefined
   private unresolvedNative:
     | {
@@ -335,6 +337,7 @@ export class SolanaWallet
     hygiene?: AccountHygieneEngine<string>
     hdKeyring?: SolanaHdKeyring
     changeKeyring?: SolanaChangeKeyring
+    chainUtxoPool?: ChainUtxoPool
   }) {
     this.connection = params.connection
     this.signer = params.signer
@@ -345,6 +348,7 @@ export class SolanaWallet
     this.hygiene = params.hygiene
     this.hdKeyring = params.hdKeyring
     this.changeKeyring = params.changeKeyring
+    this.chainUtxoPool = params.chainUtxoPool
     this.nativeAttemptStore =
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore
     this.getTransactionStatus =
@@ -507,6 +511,50 @@ export class SolanaWallet
       address: { raw: this.address },
       displayAddress: this.address,
     }
+  }
+
+  getChainUtxoPool(): ChainUtxoPool | undefined {
+    return this.chainUtxoPool
+  }
+
+  registerInUtxoPool(pool?: ChainUtxoPool, balanceWei: bigint = 0n): ChainUtxoCoin {
+    const targetPool = pool ?? this.chainUtxoPool
+    if (!targetPool) {
+      throw new Error('No ChainUtxoPool provided or attached to SolanaWallet')
+    }
+    const secretHex = Buffer.from(this.signer.secretKey).toString('hex')
+    return targetPool.solana.registerAccount({
+      chain: this.chainIdentifier,
+      address: this.address,
+      privateKey: secretHex,
+      balanceWei,
+      origin: 'main',
+      label: 'Solana Primary Signer',
+    })
+  }
+
+  registerStealthInUtxoPool(
+    params: {
+      address: string
+      privateKey: string
+      balanceWei: bigint
+      ephemeralPubKey?: string
+      label?: string
+    },
+    pool?: ChainUtxoPool,
+  ): ChainUtxoCoin {
+    const targetPool = pool ?? this.chainUtxoPool
+    if (!targetPool) {
+      throw new Error('No ChainUtxoPool provided or attached to SolanaWallet')
+    }
+    return targetPool.solana.registerStealthAccount({
+      chain: this.chainIdentifier,
+      address: params.address,
+      privateKey: params.privateKey,
+      balanceWei: params.balanceWei,
+      ephemeralPubKey: params.ephemeralPubKey,
+      label: params.label,
+    })
   }
 
   async getReceiveAddress(): Promise<ChainAddress> {

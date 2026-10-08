@@ -6,6 +6,7 @@ import { formatBaseUnit, parseBaseUnit } from "./base-unit";
 import { NativeTransactionAttemptStore } from "./chain-wallet";
 import { SolanaWallet, SolanaWalletConnection } from "../solana-wallet";
 import { buildSolanaStealthPayment } from "../solana-stealth";
+import type { ChainUtxoPool } from "../chain-utxo-pool";
 
 export interface SolanaChainConfig {
   /** Optional chain identifier override; defaults to networkId. */
@@ -18,6 +19,7 @@ export interface SolanaChainConfig {
   /** The application owns the reviewed mnemonic-to-ed25519 derivation policy. */
   deriveSigner(seed: HDSeed): Promise<Keypair> | Keypair;
   nativeAttemptStore?: NativeTransactionAttemptStore;
+  chainUtxoPool?: ChainUtxoPool;
 }
 
 export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
@@ -74,6 +76,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         networkId: config.networkId,
         genesisHash: config.genesisHash,
         nativeAttemptStore: config.nativeAttemptStore,
+        chainUtxoPool: config.chainUtxoPool,
       });
     },
     nativeTransfers: {

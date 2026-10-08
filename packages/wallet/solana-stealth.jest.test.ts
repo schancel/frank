@@ -351,4 +351,302 @@ describe("Solana Stealth Engine (STEALTH-5)", () => {
       chainId: "solana-devnet",
     });
   });
+
+  describe("Solana Stealth UTXO inventory tracking & parallel balance resolution (#1170)", () => {
+    it("initializes account with default utxo metadata in addAccount", async () => {
+      const keyring = new SolanaStealthKeyring();
+      const kp = await Keypair.generate();
+      await keyring.addAccount({
+        address: kp.publicKey.toBase58(),
+        keypair: kp,
+        seed: kp.secretKey.slice(0, 32),
+        ephemeralPubKey: "ee".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 1234,
+        initialAmountLamports: 2_000_000n,
+      });
+
+      const record = keyring.getAccount(kp.publicKey.toBase58());
+      expect(record).toBeDefined();
+      expect(record?.nonce).toBe(0);
+      expect(record?.isClean).toBe(true);
+      expect(record?.isSpent).toBe(false);
+      expect(record?.balanceLamports).toBe(2_000_000n);
+      expect(record?.lastUpdatedMs).toBeDefined();
+    });
+
+    it("performs instant in-memory selection when cached balance is sufficient without network calls", async () => {
+      const connection = new MockSolanaConnection();
+      const keyring = new SolanaStealthKeyring();
+      const kp = await Keypair.generate();
+
+      await keyring.addAccount({
+        address: kp.publicKey.toBase58(),
+        keypair: kp,
+        seed: kp.secretKey.slice(0, 32),
+        ephemeralPubKey: "ff".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 100,
+        initialAmountLamports: 2_500_000n,
+      });
+
+      const getBalanceSpy = jest.spyOn(connection, "getBalance");
+
+      const selected = await keyring.selectAccountForSpend(
+        1_000_000n,
+        connection,
+        "solana-devnet"
+      );
+
+      expect(selected).toBeDefined();
+      expect(selected?.address).toBe(kp.publicKey.toBase58());
+      // Zero network calls because cached balance was sufficient!
+      expect(getBalanceSpy).not.toHaveBeenCalled();
+    });
+
+    it("recordSpend properly marks account as spent (isSpent === true, isClean === false, nonce === 1)", async () => {
+      const keyring = new SolanaStealthKeyring();
+      const kp = await Keypair.generate();
+      const addr = kp.publicKey.toBase58();
+
+      await keyring.addAccount({
+        address: addr,
+        keypair: kp,
+        seed: kp.secretKey.slice(0, 32),
+        ephemeralPubKey: "aa".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 100,
+        initialAmountLamports: 3_000_000n,
+      });
+
+      const updated = await keyring.recordSpend(addr, {
+        valueLamports: 1_000_000n,
+        txHash: "solana_tx_hash_1",
+      });
+
+      expect(updated).toBeDefined();
+      expect(updated?.isSpent).toBe(true);
+      expect(updated?.isClean).toBe(false);
+      expect(updated?.nonce).toBe(1);
+      expect(updated?.balanceLamports).toBe(2_000_000n);
+      expect(updated?.txHash).toBe("solana_tx_hash_1");
+
+      const fetched = keyring.getAccount(addr);
+      expect(fetched?.isSpent).toBe(true);
+      expect(fetched?.isClean).toBe(false);
+      expect(fetched?.nonce).toBe(1);
+      expect(fetched?.balanceLamports).toBe(2_000_000n);
+    });
+
+    it("skips spent accounts during subsequent selections", async () => {
+      const connection = new MockSolanaConnection();
+      const keyring = new SolanaStealthKeyring();
+      const kp1 = await Keypair.generate();
+      const kp2 = await Keypair.generate();
+
+      await keyring.addAccount({
+        address: kp1.publicKey.toBase58(),
+        keypair: kp1,
+        seed: kp1.secretKey.slice(0, 32),
+        ephemeralPubKey: "11".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 100,
+        initialAmountLamports: 5_000_000n,
+      });
+
+      await keyring.addAccount({
+        address: kp2.publicKey.toBase58(),
+        keypair: kp2,
+        seed: kp2.secretKey.slice(0, 32),
+        ephemeralPubKey: "22".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 200,
+        initialAmountLamports: 2_000_000n,
+      });
+
+      // Mark kp1 as spent
+      await keyring.recordSpend(kp1.publicKey.toBase58(), {
+        valueLamports: 5_000_000n,
+      });
+
+      // kp1 has balance, but must be skipped because isSpent === true!
+      const selected = await keyring.selectAccountForSpend(
+        1_500_000n,
+        connection,
+        "solana-devnet"
+      );
+      expect(selected?.address).toBe(kp2.publicKey.toBase58());
+
+      // If kp2 is also spent, none can be selected
+      await keyring.recordSpend(kp2.publicKey.toBase58(), {
+        valueLamports: 2_000_000n,
+      });
+      const none = await keyring.selectAccountForSpend(
+        500_000n,
+        connection,
+        "solana-devnet"
+      );
+      expect(none).toBeUndefined();
+    });
+
+    it("queries balances in parallel when cached balance is insufficient", async () => {
+      const connection = new MockSolanaConnection();
+      const keyring = new SolanaStealthKeyring();
+
+      const kp1 = await Keypair.generate();
+      const kp2 = await Keypair.generate();
+      const kp3 = await Keypair.generate();
+
+      await keyring.addAccount({
+        address: kp1.publicKey.toBase58(),
+        keypair: kp1,
+        seed: kp1.secretKey.slice(0, 32),
+        ephemeralPubKey: "01".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 100,
+        initialAmountLamports: 0n,
+      });
+      await keyring.addAccount({
+        address: kp2.publicKey.toBase58(),
+        keypair: kp2,
+        seed: kp2.secretKey.slice(0, 32),
+        ephemeralPubKey: "02".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 200,
+        initialAmountLamports: 0n,
+      });
+      await keyring.addAccount({
+        address: kp3.publicKey.toBase58(),
+        keypair: kp3,
+        seed: kp3.secretKey.slice(0, 32),
+        ephemeralPubKey: "03".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 300,
+        initialAmountLamports: 0n,
+      });
+
+      let activeQueries = 0;
+      let maxConcurrentQueries = 0;
+
+      jest
+        .spyOn(connection, "getBalance")
+        .mockImplementation(async (pubkey: PublicKey) => {
+          activeQueries++;
+          maxConcurrentQueries = Math.max(maxConcurrentQueries, activeQueries);
+          await new Promise((r) => setTimeout(r, 20));
+          activeQueries--;
+          if (pubkey.equals(kp2.publicKey)) {
+            return 4_000_000n;
+          }
+          return 500_000n;
+        });
+
+      const selected = await keyring.selectAccountForSpend(
+        3_000_000n,
+        connection,
+        "solana-devnet"
+      );
+
+      expect(selected?.address).toBe(kp2.publicKey.toBase58());
+      expect(selected?.balanceLamports).toBe(4_000_000n);
+      expect(maxConcurrentQueries).toBeGreaterThan(1);
+      expect(keyring.getAccount(kp2.publicKey.toBase58())?.balanceLamports).toBe(
+        4_000_000n
+      );
+    });
+
+    it("buildSolanaStealthPayment invokes recordSpend on stealthKeyring when spending from stealth account", async () => {
+      const connection = new MockSolanaConnection();
+      const signer = await Keypair.generate();
+      // Primary account has 0 balance
+      connection.balances.set(signer.publicKey.toBase58(), 0n);
+
+      const keyring = new SolanaStealthKeyring();
+      const stealthKp = await Keypair.generate();
+      const stealthAddr = stealthKp.publicKey.toBase58();
+      // Stealth account has 5_000_000 lamports
+      connection.balances.set(stealthAddr, 5_000_000n);
+
+      await keyring.addAccount({
+        address: stealthAddr,
+        keypair: stealthKp,
+        seed: stealthKp.secretKey.slice(0, 32),
+        ephemeralPubKey: "99".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 100,
+        initialAmountLamports: 5_000_000n,
+      });
+
+      const wallet = new SolanaWallet({
+        connection,
+        signer,
+        networkId: "solana-devnet",
+        genesisHash: connection.genesisHash,
+        stealthKeyring: keyring,
+        nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+      });
+
+      const recipient = await Keypair.generate();
+      const result = await buildSolanaStealthPayment({
+        wallet,
+        recipientSpendPubKey: recipient.publicKey,
+        amountLamports: 1_500_000n,
+      });
+
+      expect(result.txHash).toBeDefined();
+
+      const record = keyring.getAccount(stealthAddr);
+      expect(record?.isSpent).toBe(true);
+      expect(record?.isClean).toBe(false);
+      expect(record?.nonce).toBe(1);
+      expect(record?.balanceLamports).toBe(3_500_000n);
+      expect(record?.txHash).toBe(result.txHash);
+    });
+
+    it("SolanaWallet.sendNative invokes recordSpend on stealthKeyring when spending from stealth account", async () => {
+      const connection = new MockSolanaConnection();
+      const signer = await Keypair.generate();
+      // Primary account has only 50 lamports (insufficient)
+      connection.balances.set(signer.publicKey.toBase58(), 50n);
+
+      const keyring = new SolanaStealthKeyring();
+      const stealthKp = await Keypair.generate();
+      const stealthAddr = stealthKp.publicKey.toBase58();
+      connection.balances.set(stealthAddr, 3_000_000n);
+
+      await keyring.addAccount({
+        address: stealthAddr,
+        keypair: stealthKp,
+        seed: stealthKp.secretKey.slice(0, 32),
+        ephemeralPubKey: "88".repeat(32),
+        networkTag: "solana-devnet",
+        discoveredAtMs: 100,
+        initialAmountLamports: 3_000_000n,
+      });
+
+      const wallet = new SolanaWallet({
+        connection,
+        signer,
+        networkId: "solana-devnet",
+        genesisHash: connection.genesisHash,
+        stealthKeyring: keyring,
+        nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+      });
+
+      const recipient = await Keypair.generate();
+      const tx = await wallet.sendNative({
+        recipient: { raw: recipient.publicKey.toBase58() },
+        value: 1_000_000n,
+      });
+
+      expect(tx.txHash).toBeDefined();
+
+      const record = keyring.getAccount(stealthAddr);
+      expect(record?.isSpent).toBe(true);
+      expect(record?.isClean).toBe(false);
+      expect(record?.nonce).toBe(1);
+      expect(record?.balanceLamports).toBe(2_000_000n);
+      expect(record?.txHash).toBe(tx.txHash);
+    });
+  });
 });

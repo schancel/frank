@@ -47,6 +47,11 @@ export interface StealthAccountRecord {
   readonly discoveredAtMs: number
   readonly initialAmountWei?: bigint
   readonly txHash?: string
+  readonly nonce?: number
+  readonly isClean?: boolean
+  readonly isSpent?: boolean
+  readonly balanceWei?: bigint
+  readonly lastUpdatedMs?: number
 }
 
 function randomScalar(): Uint8Array {
@@ -180,8 +185,58 @@ export class MonadStealthKeyring {
     if (existing !== undefined) {
       return false
     }
-    await this.store.put(record)
+    const fullRecord: StealthAccountRecord = {
+      ...record,
+      nonce: record.nonce ?? 0,
+      isClean: record.isClean ?? true,
+      isSpent: record.isSpent ?? false,
+      balanceWei: record.balanceWei ?? record.initialAmountWei ?? 0n,
+      lastUpdatedMs:
+        record.lastUpdatedMs ?? record.discoveredAtMs ?? Date.now(),
+    }
+    await this.store.put(fullRecord)
     return true
+  }
+
+  async recordSpend(
+    address: string,
+    details?: { valueWei?: bigint; txHash?: string },
+  ): Promise<StealthAccountRecord | undefined> {
+    const record = this.store.get(address)
+    if (!record) {
+      return undefined
+    }
+    const deduct = details?.valueWei ?? 0n
+    const currentBalance = record.balanceWei ?? 0n
+    const newBalance = currentBalance >= deduct ? currentBalance - deduct : 0n
+    const updated: StealthAccountRecord = {
+      ...record,
+      isSpent: true,
+      isClean: false,
+      nonce: (record.nonce ?? 0) + 1,
+      balanceWei: newBalance,
+      lastUpdatedMs: Date.now(),
+      ...(details?.txHash ? { txHash: details.txHash } : {}),
+    }
+    await this.store.put(updated)
+    return updated
+  }
+
+  async updateBalance(
+    address: string,
+    balance: bigint,
+  ): Promise<StealthAccountRecord | undefined> {
+    const record = this.store.get(address)
+    if (!record) {
+      return undefined
+    }
+    const updated: StealthAccountRecord = {
+      ...record,
+      balanceWei: balance,
+      lastUpdatedMs: Date.now(),
+    }
+    await this.store.put(updated)
+    return updated
   }
 
   hasAccount(address: string): boolean {
@@ -202,18 +257,21 @@ export class MonadStealthKeyring {
 
   /**
    * Sums the spendable on-chain balance of all registered stealth accounts for a given network.
+   * Skips spent accounts.
    */
   async getTotalBalance(
     provider: Provider,
     networkTag?: string,
   ): Promise<bigint> {
-    const accounts = this.getAccounts(networkTag)
+    const accounts = this.getAccounts(networkTag).filter(a => !a.isSpent)
     if (accounts.length === 0) return 0n
 
     const balances = await Promise.all(
       accounts.map(async account => {
         try {
-          return await provider.getBalance(account.address)
+          const bal = await provider.getBalance(account.address)
+          await this.updateBalance(account.address, bal)
+          return bal
         } catch {
           return 0n
         }
@@ -224,7 +282,9 @@ export class MonadStealthKeyring {
   }
 
   /**
-   * Selects a single stealth account with sufficient balance to cover `amountWei` plus optional fee reserve.
+   * Selects a single stealth account with sufficient balance to cover `neededWei`.
+   * First pass: in-memory O(1) selection against unspent accounts with cached balance >= neededWei.
+   * Second pass: bounded parallel verification of remaining unspent accounts.
    */
   async selectAccountForSpend(
     neededWei: bigint,
@@ -232,16 +292,51 @@ export class MonadStealthKeyring {
     networkTag?: string,
   ): Promise<StealthAccountRecord | undefined> {
     const accounts = this.getAccounts(networkTag)
+
+    // First pass (In-Memory O(1) selection): check all accounts for networkTag.
+    // If an account has !account.isSpent && (account.balanceWei ?? 0n) >= neededWei,
+    // select and return it immediately without any network calls!
     for (const account of accounts) {
-      try {
-        const bal = await provider.getBalance(account.address)
-        if (bal >= neededWei) {
-          return account
-        }
-      } catch {
-        continue
+      if (!account.isSpent && (account.balanceWei ?? 0n) >= neededWei) {
+        return account
       }
     }
+
+    // Second pass (Parallel Bounded Verification): if no cached account has enough balance,
+    // filter out accounts where isSpent === true.
+    const candidateAccounts = accounts.filter(account => !account.isSpent)
+    if (candidateAccounts.length === 0) {
+      return undefined
+    }
+
+    // Query balances concurrently in chunks of 6 using Promise.all
+    const CHUNK_SIZE = 6
+    for (let i = 0; i < candidateAccounts.length; i += CHUNK_SIZE) {
+      const chunk = candidateAccounts.slice(i, i + CHUNK_SIZE)
+      const results = await Promise.all(
+        chunk.map(async account => {
+          try {
+            const bal = await provider.getBalance(account.address)
+            await this.updateBalance(account.address, bal)
+            return { account, balance: bal }
+          } catch {
+            return { account, balance: 0n }
+          }
+        }),
+      )
+
+      for (const res of results) {
+        if (res.balance >= neededWei) {
+          return (
+            this.getAccount(res.account.address) ?? {
+              ...res.account,
+              balanceWei: res.balance,
+            }
+          )
+        }
+      }
+    }
+
     return undefined
   }
 }
@@ -281,10 +376,12 @@ export async function buildEvmStealthPayment(
   let fundingPrivateKey =
     wallet.identity?.toPrivateKeyHex() ??
     (wallet as any).mainAccount?.privateKey
+  let selectedStealthAddress: string | undefined
   if (params.fromAddress) {
     const custom = wallet.stealthKeyring?.getAccount(params.fromAddress)
     if (custom) {
       fundingPrivateKey = custom.privateKey
+      selectedStealthAddress = custom.address
     } else if (
       params.fromAddress.toLowerCase() !==
       (
@@ -309,6 +406,7 @@ export async function buildEvmStealthPayment(
       )
       if (selected) {
         fundingPrivateKey = selected.privateKey
+        selectedStealthAddress = selected.address
       }
     }
   }
@@ -329,6 +427,13 @@ export async function buildEvmStealthPayment(
   const txHash = await wallet.httpClient.submitRawTransaction(
     signed.rawTx,
   )
+
+  if (selectedStealthAddress && wallet.stealthKeyring) {
+    await wallet.stealthKeyring.recordSpend(selectedStealthAddress, {
+      valueWei: amountWei,
+      txHash,
+    })
+  }
 
   // 5. Construct StealthItem
   const stealthItem: StealthItem = {

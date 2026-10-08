@@ -389,4 +389,260 @@ describe('Monad / EVM Stealth Direct Payment Engine (#897)', () => {
       expect(parsedWallet.address.toLowerCase()).toBe(stealthAddress.toLowerCase())
     })
   })
+
+  describe('UTXO inventory tracking & parallel balance resolution (#1170)', () => {
+    it('initializes account with default utxo metadata in addAccount', async () => {
+      const keyring = new MonadStealthKeyring()
+      await keyring.addAccount({
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 1234,
+        initialAmountWei: 10_000n,
+      })
+
+      const record = keyring.getAccount('0x1111111111111111111111111111111111111111')
+      expect(record).toBeDefined()
+      expect(record?.nonce).toBe(0)
+      expect(record?.isClean).toBe(true)
+      expect(record?.isSpent).toBe(false)
+      expect(record?.balanceWei).toBe(10_000n)
+      expect(record?.lastUpdatedMs).toBeDefined()
+    })
+
+    it('performs instant in-memory selection when cached balance is sufficient without network calls', async () => {
+      const keyring = new MonadStealthKeyring()
+      await keyring.addAccount({
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+        initialAmountWei: 50_000n,
+      })
+
+      const getBalanceSpy = jest.fn(async () => 0n)
+      const mockProvider = {
+        getBalance: getBalanceSpy,
+      } as any
+
+      const selected = await keyring.selectAccountForSpend(
+        30_000n,
+        mockProvider,
+        'MONT',
+      )
+
+      expect(selected).toBeDefined()
+      expect(selected?.address.toLowerCase()).toBe(
+        '0x1111111111111111111111111111111111111111',
+      )
+      // Zero network calls made because cached balance was sufficient!
+      expect(getBalanceSpy).not.toHaveBeenCalled()
+    })
+
+    it('recordSpend properly marks account as spent (isSpent === true, isClean === false, nonce === 1)', async () => {
+      const keyring = new MonadStealthKeyring()
+      const addr = '0x1111111111111111111111111111111111111111'
+      await keyring.addAccount({
+        address: addr,
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+        initialAmountWei: 50_000n,
+      })
+
+      const updated = await keyring.recordSpend(addr, {
+        valueWei: 20_000n,
+        txHash: '0x' + 'ff'.repeat(32),
+      })
+
+      expect(updated).toBeDefined()
+      expect(updated?.isSpent).toBe(true)
+      expect(updated?.isClean).toBe(false)
+      expect(updated?.nonce).toBe(1)
+      expect(updated?.balanceWei).toBe(30_000n)
+      expect(updated?.txHash).toBe('0x' + 'ff'.repeat(32))
+
+      const fetched = keyring.getAccount(addr)
+      expect(fetched?.isSpent).toBe(true)
+      expect(fetched?.isClean).toBe(false)
+      expect(fetched?.nonce).toBe(1)
+      expect(fetched?.balanceWei).toBe(30_000n)
+    })
+
+    it('skips spent accounts during subsequent selections', async () => {
+      const keyring = new MonadStealthKeyring()
+      const addr1 = '0x1111111111111111111111111111111111111111'
+      const addr2 = '0x2222222222222222222222222222222222222222'
+
+      await keyring.addAccount({
+        address: addr1,
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+        initialAmountWei: 100_000n,
+      })
+      await keyring.addAccount({
+        address: addr2,
+        privateKey: '0x' + '22'.repeat(32),
+        ephemeralPubKey: '0x02' + '22'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 200,
+        initialAmountWei: 40_000n,
+      })
+
+      // Mark addr1 as spent
+      await keyring.recordSpend(addr1, { valueWei: 100_000n })
+
+      const mockProvider = {
+        getBalance: jest.fn(async () => 100_000n),
+      } as any
+
+      // Even though addr1 has sufficient initial/queried balance, it must be skipped because isSpent === true!
+      const selected = await keyring.selectAccountForSpend(
+        30_000n,
+        mockProvider,
+        'MONT',
+      )
+      expect(selected?.address.toLowerCase()).toBe(addr2.toLowerCase())
+
+      // If we also mark addr2 as spent, none can be selected
+      await keyring.recordSpend(addr2, { valueWei: 40_000n })
+      const none = await keyring.selectAccountForSpend(
+        10_000n,
+        mockProvider,
+        'MONT',
+      )
+      expect(none).toBeUndefined()
+    })
+
+    it('queries balances in parallel when cached balance is insufficient', async () => {
+      const keyring = new MonadStealthKeyring()
+      const addr1 = '0x1111111111111111111111111111111111111111'
+      const addr2 = '0x2222222222222222222222222222222222222222'
+      const addr3 = '0x3333333333333333333333333333333333333333'
+
+      // Accounts have 0 cached balance
+      await keyring.addAccount({
+        address: addr1,
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+        initialAmountWei: 0n,
+      })
+      await keyring.addAccount({
+        address: addr2,
+        privateKey: '0x' + '22'.repeat(32),
+        ephemeralPubKey: '0x02' + '22'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 200,
+        initialAmountWei: 0n,
+      })
+      await keyring.addAccount({
+        address: addr3,
+        privateKey: '0x' + '33'.repeat(32),
+        ephemeralPubKey: '0x02' + '33'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 300,
+        initialAmountWei: 0n,
+      })
+
+      let activeQueries = 0
+      let maxConcurrentQueries = 0
+
+      const mockProvider = {
+        getBalance: jest.fn(async (addr: string) => {
+          activeQueries++
+          maxConcurrentQueries = Math.max(maxConcurrentQueries, activeQueries)
+          await new Promise(r => setTimeout(r, 20))
+          activeQueries--
+          if (addr.toLowerCase() === addr2.toLowerCase()) {
+            return 80_000n
+          }
+          return 5_000n
+        }),
+      } as any
+
+      const selected = await keyring.selectAccountForSpend(
+        50_000n,
+        mockProvider,
+        'MONT',
+      )
+
+      expect(selected?.address.toLowerCase()).toBe(addr2.toLowerCase())
+      expect(selected?.balanceWei).toBe(80_000n)
+      expect(maxConcurrentQueries).toBeGreaterThan(1)
+      expect(keyring.getAccount(addr2)?.balanceWei).toBe(80_000n)
+    })
+
+    it('buildEvmStealthPayment invokes recordSpend when spending from a stealth account', async () => {
+      const recipient = Wallet.createRandom()
+      const recipientSpendPubKey = getBytes(
+        SigningKey.computePublicKey(recipient.privateKey, true),
+      )
+
+      const mockHttpClient = {
+        submitRawTransaction: jest.fn(async () => '0x' + '99'.repeat(32)),
+        destroy: jest.fn(),
+      }
+
+      const stealthKp = Wallet.createRandom()
+      const stealthKeyring = new MonadStealthKeyring()
+      await stealthKeyring.addAccount({
+        address: stealthKp.address,
+        privateKey: stealthKp.privateKey,
+        ephemeralPubKey: '0x02' + '77'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+        initialAmountWei: 100_000n,
+      })
+
+      const mockProvider = {
+        _perform: jest.fn(async (req: { method: string }) => {
+          if (req.method === 'getTransactionCount') return 0
+          if (req.method === 'estimateGas') return 21_000n
+          if (req.method === 'getGasPrice') return 1n
+          if (req.method === 'getPriorityFee') return 1n
+          if (req.method === 'getBalance') return 0n // main account has 0
+          throw new Error(`Unexpected: ${req.method}`)
+        }),
+        getBalance: jest.fn(async () => 0n),
+        estimateGas: jest.fn(async () => 21_000n),
+        getFeeData: jest.fn(async () => ({
+          gasPrice: 1n,
+          maxFeePerGas: 2n,
+          maxPriorityFeePerGas: 1n,
+        })),
+        getTransactionCount: jest.fn(async () => 0),
+        getNetwork: jest.fn(async () => ({ chainId: 10143n })),
+      } as any
+
+      const walletHandle = {
+        mainAccount: Wallet.createRandom(),
+        provider: mockProvider,
+        httpClient: mockHttpClient,
+        stealthKeyring,
+      } as any
+
+      const res = await buildEvmStealthPayment({
+        wallet: walletHandle,
+        recipientSpendPubKey,
+        amountWei: 40_000n,
+        networkTag: 'MONT',
+      })
+
+      expect(res.txHash).toBe('0x' + '99'.repeat(32))
+
+      const stealthRecord = stealthKeyring.getAccount(stealthKp.address)
+      expect(stealthRecord?.isSpent).toBe(true)
+      expect(stealthRecord?.isClean).toBe(false)
+      expect(stealthRecord?.nonce).toBe(1)
+      expect(stealthRecord?.balanceWei).toBe(60_000n)
+      expect(stealthRecord?.txHash).toBe('0x' + '99'.repeat(32))
+    })
+  })
 })

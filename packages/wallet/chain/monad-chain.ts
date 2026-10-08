@@ -1182,15 +1182,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     } catch {}
 
     try {
-      const stealthAccounts = monadWallet.stealthKeyring?.getAccounts() ?? [];
-      for (const st of stealthAccounts) {
-        const bal = await monadWallet.provider.getBalance(st.address);
-        if (bal > 0n) {
-          accounts.push({
-            address: st.address,
-            balanceWei: bal,
-            privateKey: st.privateKey,
-          });
+      const candidateStealth = (
+        monadWallet.stealthKeyring?.getAccounts() ?? []
+      ).filter((st) => !st.isSpent);
+      const stealthBalances = await Promise.all(
+        candidateStealth.map(async (st) => {
+          try {
+            const bal = await monadWallet.provider.getBalance(st.address);
+            if (bal > 0n) {
+              await monadWallet.stealthKeyring?.updateBalance(st.address, bal);
+              return {
+                address: st.address,
+                balanceWei: bal,
+                privateKey: st.privateKey,
+              };
+            }
+          } catch {}
+          return undefined;
+        })
+      );
+      for (const acc of stealthBalances) {
+        if (acc) {
+          accounts.push(acc);
         }
       }
     } catch {}
@@ -1938,6 +1951,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     );
                   }
                   let spendingPrivateKey = mainAccount.privateKey;
+                  let selectedStealthAddress: string | undefined;
                   try {
                     const mainBalance = await provider.getBalance(
                       mainAccount.address
@@ -1951,6 +1965,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                         );
                       if (selected) {
                         spendingPrivateKey = selected.privateKey;
+                        selectedStealthAddress = selected.address;
                       }
                     }
                   } catch {
@@ -2006,7 +2021,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                           txValue,
                           overrides
                         );
-                  return submitNative(signed, onSigned);
+                  const submitted = await submitNative(signed, onSigned);
+                  if (selectedStealthAddress) {
+                    await stealthKeyring.recordSpend(selectedStealthAddress, {
+                      valueWei: value,
+                      txHash: submitted.txHash,
+                    });
+                  }
+                  return submitted;
                 })
               );
             },

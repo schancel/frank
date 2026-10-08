@@ -5,7 +5,7 @@
  * swap routers, prediction markets, and escrow protocols across EVM and Solana.
  */
 
-export type DAppChainType = 'evm' | 'solana' | 'multi'
+export type DAppChainType = 'evm' | 'solana' | 'bitcoin' | 'ecash' | 'multi'
 
 export interface DAppPluginMetadata {
   readonly id: string

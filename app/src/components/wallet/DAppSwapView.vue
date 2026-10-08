@@ -218,13 +218,33 @@
 <script lang="ts">
 import { computed, defineComponent, ref, watch } from 'vue'
 import { defaultPluginRegistry } from '@frank/wallet/plugins'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, getChainExchangeConfig } from '@frank/wallet/chain'
 import { useBalance } from 'src/composables/useBalance'
 import { useChainBalance } from 'src/composables/useChainBalance'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { accountSession } from 'src/accounts/session'
 
 export const SWAP_FEE_BPS = 8.75 // 0.0875% = 1/10th of MetaMask's 0.875%
+
+export const ASSET_LABELS: Record<string, string> = {
+  MON: 'MON (Monad)',
+  MONT: 'MONT (Monad Testnet)',
+  SOL: 'SOL (Solana)',
+  tSOL: 'tSOL (Solana Testnet)',
+  dSOL: 'dSOL (Solana Devnet)',
+  ETH: 'ETH (Ethereum)',
+  SEP: 'SEP (Sepolia)',
+  HOL: 'HOL (Holesky)',
+  XEC: 'XEC (eCash)',
+  tXEC: 'tXEC (eCash Testnet)',
+  HYPE: 'HYPE (Hyperliquid)',
+  tHYPE: 'tHYPE (Hyperliquid Testnet)',
+  USD: 'USD (Tempo)',
+  tUSD: 'tUSD (Tempo Moderato)',
+  USDC: 'USDC',
+  USDT: 'USDT',
+  AVU: 'AVU (kWh)',
+}
 
 export const ALL_SWAP_ASSETS = [
   { label: 'MON (Monad)', value: 'MON' },
@@ -258,8 +278,28 @@ export default defineComponent({
     const monadBalance = useBalance()
     const swapHistory = useSwapHistory()
 
+    const exchangeConfig = computed(() => {
+      return getChainExchangeConfig(props.selectedWallet, activeChain.isTestnet)
+    })
+
     // Contextualize token selection to the active wallet chain
     const assetOptions = computed(() => {
+      const ex = exchangeConfig.value
+      if (ex && ex.supportedAssets && ex.supportedAssets.length > 0) {
+        return ex.supportedAssets.map(sym => ({
+          label: ASSET_LABELS[sym] ?? sym,
+          value: sym,
+        }))
+      }
+      if (props.selectedWallet === 'ecash') {
+        const nativeUnit = activeChain.isTestnet ? 'tXEC' : 'XEC'
+        return [
+          { label: ASSET_LABELS[nativeUnit] ?? nativeUnit, value: nativeUnit },
+          { label: 'USDC', value: 'USDC' },
+          { label: 'USDT', value: 'USDT' },
+          { label: 'AVU (kWh)', value: 'AVU' },
+        ]
+      }
       if (props.selectedWallet === 'solana') {
         return [
           { label: 'SOL (Solana)', value: 'SOL' },
@@ -292,9 +332,20 @@ export default defineComponent({
       USDC: 1.0,
       USDT: 1.0,
       MON: 3.5,
+      MONT: 3.5,
       SOL: 145.0,
+      tSOL: 145.0,
+      dSOL: 145.0,
       ETH: 2550.0,
+      SEP: 2550.0,
+      HOL: 2550.0,
       XEC: 0.000041,
+      tXEC: 0.000041,
+      HYPE: 40.0,
+      tHYPE: 40.0,
+      USD: 1.0,
+      tUSD: 1.0,
+      AVU: 0.084,
     }
 
     // 11.90 AVU per USD ($0.084 / kWh industrial energy benchmark)
@@ -331,14 +382,40 @@ export default defineComponent({
       USDC: { numeric: 1000.0, formatted: '1,000.00 USDC' },
       USDT: { numeric: 500.0, formatted: '500.00 USDT' },
       MON: { numeric: 250.0, formatted: '250.00 MON' },
+      MONT: { numeric: 250.0, formatted: '250.00 MONT' },
       SOL: { numeric: 5.2, formatted: '5.20 SOL' },
+      tSOL: { numeric: 5.2, formatted: '5.20 tSOL' },
+      dSOL: { numeric: 5.2, formatted: '5.20 dSOL' },
       ETH: { numeric: 1.25, formatted: '1.25 ETH' },
+      SEP: { numeric: 1.25, formatted: '1.25 SEP' },
+      HOL: { numeric: 1.25, formatted: '1.25 HOL' },
       XEC: { numeric: 10000000.0, formatted: '10,000,000 XEC' },
+      tXEC: { numeric: 10000000.0, formatted: '10,000,000 tXEC' },
+      HYPE: { numeric: 50.0, formatted: '50.00 HYPE' },
+      tHYPE: { numeric: 50.0, formatted: '50.00 tHYPE' },
+      USD: { numeric: 500.0, formatted: '500.00 USD' },
+      tUSD: { numeric: 500.0, formatted: '500.00 tUSD' },
+      AVU: { numeric: 10000.0, formatted: '10,000.00 AVU' },
     }
 
     const availableNumericBalance = computed(() => {
+      if (currentChain.value === 'ecash') {
+        if (fromAsset.value === 'XEC' || fromAsset.value === 'tXEC') {
+          if (
+            chainBalance.balance.value !== null &&
+            chainBalance.balance.value !== undefined
+          ) {
+            // 1 XEC = 100 satoshis
+            return Number(chainBalance.balance.value) / 100
+          }
+        }
+      }
       if (currentChain.value === 'solana') {
-        if (fromAsset.value === 'SOL') {
+        if (
+          fromAsset.value === 'SOL' ||
+          fromAsset.value === 'tSOL' ||
+          fromAsset.value === 'dSOL'
+        ) {
           if (
             chainBalance.balance.value !== null &&
             chainBalance.balance.value !== undefined
@@ -354,7 +431,10 @@ export default defineComponent({
           if (token) return token.numericBalance
         }
       }
-      if (currentChain.value === 'monad' && fromAsset.value === 'MON') {
+      if (
+        currentChain.value === 'monad' &&
+        (fromAsset.value === 'MON' || fromAsset.value === 'MONT')
+      ) {
         if (
           monadBalance.balance.value !== null &&
           monadBalance.balance.value !== undefined
@@ -366,8 +446,22 @@ export default defineComponent({
     })
 
     const availableBalance = computed(() => {
+      if (currentChain.value === 'ecash') {
+        if (fromAsset.value === 'XEC' || fromAsset.value === 'tXEC') {
+          if (
+            chainBalance.loaded.value &&
+            chainBalance.formattedBalance.value
+          ) {
+            return chainBalance.formattedBalance.value
+          }
+        }
+      }
       if (currentChain.value === 'solana') {
-        if (fromAsset.value === 'SOL') {
+        if (
+          fromAsset.value === 'SOL' ||
+          fromAsset.value === 'tSOL' ||
+          fromAsset.value === 'dSOL'
+        ) {
           if (
             chainBalance.loaded.value &&
             chainBalance.formattedBalance.value
@@ -383,7 +477,10 @@ export default defineComponent({
           if (token) return token.balanceFormatted
         }
       }
-      if (currentChain.value === 'monad' && fromAsset.value === 'MON') {
+      if (
+        currentChain.value === 'monad' &&
+        (fromAsset.value === 'MON' || fromAsset.value === 'MONT')
+      ) {
         if (monadBalance.loaded.value && monadBalance.formattedBalance.value) {
           return monadBalance.formattedBalance.value
         }
@@ -404,13 +501,19 @@ export default defineComponent({
 
     const onFromAssetChange = () => {
       if (fromAsset.value === toAsset.value) {
+        const ex = exchangeConfig.value
         const fallback =
-          props.selectedWallet === 'solana'
+          ex?.defaultPair.from ??
+          (props.selectedWallet === 'ecash'
+            ? activeChain.isTestnet
+              ? 'tXEC'
+              : 'XEC'
+            : props.selectedWallet === 'solana'
             ? 'SOL'
             : props.selectedWallet === 'ethereum' ||
               props.selectedWallet === 'sepolia'
             ? 'ETH'
-            : 'MON'
+            : 'MON')
         toAsset.value = fromAsset.value === 'USDC' ? fallback : 'USDC'
       }
       calculateQuote()
@@ -445,7 +548,16 @@ export default defineComponent({
     }
 
     const setDefaultsForWallet = (walletId: string) => {
-      if (walletId === 'solana') {
+      const ex = getChainExchangeConfig(walletId, activeChain.isTestnet)
+      if (ex?.defaultPair) {
+        fromAsset.value = ex.defaultPair.from
+        toAsset.value = ex.defaultPair.to
+        fromAmount.value = ex.defaultPair.defaultAmount ?? '100'
+      } else if (walletId === 'ecash') {
+        fromAsset.value = activeChain.isTestnet ? 'tXEC' : 'XEC'
+        toAsset.value = 'USDC'
+        fromAmount.value = '1000000'
+      } else if (walletId === 'solana') {
         fromAsset.value = 'SOL'
         toAsset.value = 'USDC'
         fromAmount.value = '1'
@@ -472,7 +584,27 @@ export default defineComponent({
     })
 
     const activeRouterName = computed(() => {
-      if (fromAsset.value === 'SOL' || toAsset.value === 'SOL') {
+      const ex = exchangeConfig.value
+      if (ex) {
+        const plugin = defaultPluginRegistry.get(ex.pluginId)
+        if (plugin) return plugin.name
+        return ex.routerName
+      }
+      if (
+        props.selectedWallet === 'ecash' ||
+        fromAsset.value === 'XEC' ||
+        fromAsset.value === 'tXEC' ||
+        toAsset.value === 'XEC' ||
+        toAsset.value === 'tXEC'
+      ) {
+        const ecashPlugin = defaultPluginRegistry.get('ecash-atomic-swap')
+        return ecashPlugin ? ecashPlugin.name : 'eCash Atomic Swap Router'
+      }
+      if (
+        fromAsset.value === 'SOL' ||
+        toAsset.value === 'SOL' ||
+        props.selectedWallet === 'solana'
+      ) {
         const jup =
           defaultPluginRegistry.get('jupiter-aggregator') ??
           defaultPluginRegistry.get('jupiter')
@@ -600,7 +732,7 @@ export default defineComponent({
         })
 
         // Refresh balance immediately
-        if (currentChain.value === 'solana') {
+        if (currentChain.value === 'solana' || currentChain.value === 'ecash') {
           void chainBalance.refresh()
         } else if (currentChain.value === 'monad') {
           void monadBalance.refresh()

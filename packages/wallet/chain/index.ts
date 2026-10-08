@@ -93,9 +93,12 @@ export {
   getChainRegistryByCaip2,
   getChainsByCurve,
   resolveChainIdentifier,
+  getChainExchangeConfig,
 } from './chains-registry'
 export type {
   ChainRegistryEntry,
+  ChainExchangeConfig,
+  ExchangeAdapterType,
   SupportedChainFamily,
   SupportedChainKind,
   SupportedCurve,

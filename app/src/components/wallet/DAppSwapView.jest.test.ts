@@ -133,6 +133,29 @@ describe('DAppSwapView component', () => {
     expect(routerElem.text()).toContain('Jupiter Aggregator')
   })
 
+  test('contextualizes swap pair and router for eCash wallet', () => {
+    const wrapper = mountSwapView({ selectedWallet: 'ecash' })
+    expect(['XEC', 'tXEC']).toContain((wrapper.vm as any).fromAsset)
+    expect((wrapper.vm as any).toAsset).toBe('USDC')
+    const routerElem = wrapper.find('[data-testid="swap-router-name"]')
+    expect(routerElem.text()).toBe('eCash Atomic Swap Router')
+    expect(routerElem.text()).not.toContain('Uniswap')
+    const balanceElem = wrapper.find('[data-testid="swap-max-balance"]')
+    expect(balanceElem.text()).toContain('XEC')
+  })
+
+  test('contextualizes router for Hyperliquid and Tempo chains', () => {
+    const hlWrapper = mountSwapView({ selectedWallet: 'hyperliquid' })
+    expect(hlWrapper.find('[data-testid="swap-router-name"]').text()).toBe(
+      'Hyperliquid L1 Orderbook Router',
+    )
+
+    const tempoWrapper = mountSwapView({ selectedWallet: 'tempo' })
+    expect(tempoWrapper.find('[data-testid="swap-router-name"]').text()).toBe(
+      'Tempo Settlement Engine',
+    )
+  })
+
   test('validates balance: shows error and disables swap button when input exceeds balance', async () => {
     const wrapper = mountSwapView({ selectedWallet: 'solana' })
     // Solana available is 5.20 SOL

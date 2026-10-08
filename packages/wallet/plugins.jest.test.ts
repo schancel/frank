@@ -11,6 +11,9 @@ import {
   UniswapDAppPlugin,
   JupiterDAppPlugin,
   PredictionEscrowDAppPlugin,
+  EcashSwapPlugin,
+  TempoDAppPlugin,
+  HyperliquidDAppPlugin,
   findAssociatedTokenAddress,
   DEFAULT_UNISWAP_FEE_RECIPIENT,
   DEFAULT_UNISWAP_ROUTER_ADDRESS,
@@ -106,10 +109,21 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
 
     it('instantiates standard plugin registry with all reference plugins pre-registered', () => {
       const registry = createStandardPluginRegistry()
-      expect(registry.list().length).toBe(3)
+      expect(registry.list().length).toBe(6)
       expect(registry.has('uniswap-universal-router')).toBe(true)
       expect(registry.has('jupiter-aggregator')).toBe(true)
+      expect(registry.has('ecash-atomic-swap')).toBe(true)
       expect(registry.has('prediction-escrow')).toBe(true)
+      expect(registry.has('tempo-router')).toBe(true)
+      expect(registry.has('hyperliquid-l1')).toBe(true)
+    })
+    it('populates defaultPluginRegistry singleton with standard plugins', () => {
+      expect(defaultPluginRegistry.has('uniswap-universal-router')).toBe(true)
+      expect(defaultPluginRegistry.has('jupiter-aggregator')).toBe(true)
+      expect(defaultPluginRegistry.has('ecash-atomic-swap')).toBe(true)
+      expect(defaultPluginRegistry.get('ecash-atomic-swap')?.name).toBe(
+        'eCash Atomic Swap Router',
+      )
     })
   })
 
@@ -473,6 +487,117 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
       expect(
         plugin.verifyOrderSignature(order, '0xinvalid', wallet.address),
       ).toBe(false)
+    })
+  })
+
+  describe('eCash Atomic Swap Reference Plugin', () => {
+    const plugin = new EcashSwapPlugin()
+
+    it('provides valid metadata for eCash atomic swap adaptor', () => {
+      const meta = plugin.getMetadata()
+      expect(meta.id).toBe('ecash-atomic-swap')
+      expect(meta.name).toBe('eCash Atomic Swap Router')
+      expect(meta.chainType).toBe('ecash')
+    })
+
+    it('calculates quote with 8.75 bps protocol fee deduction for XEC -> USDC', async () => {
+      // 1,000,000 XEC = 100,000,000 satoshis (2 decimals)
+      // 1,000,000 * 0.000041 = $41.00 gross
+      // Net after 8.75 bps = $40.964125 -> ~40,964,125 micro-USDC
+      const inputAmount = 100_000_000n
+      const quote = await plugin.getQuote({
+        inputToken: 'XEC',
+        outputToken: 'USDC',
+        inputAmount,
+      })
+
+      expect(quote.pluginId).toBe('ecash-atomic-swap')
+      expect(quote.inputToken).toBe('XEC')
+      expect(quote.outputToken).toBe('USDC')
+      expect(quote.inputAmount).toBe(inputAmount)
+      expect(quote.feeBps).toBe(8.75)
+      expect(quote.expectedOutputAmount).toBeGreaterThan(40_000_000n)
+      expect(quote.expectedOutputAmount).toBeLessThan(42_000_000n)
+      expect(quote.route).toEqual(
+        expect.objectContaining({
+          type: 'htlc-atomic-swap',
+          router: 'eCash Atomic Swap Router',
+        }),
+      )
+    })
+
+    it('calculates quote for XEC -> AVU (energy anchor equivalent)', async () => {
+      const inputAmount = 100_000_000n // 1,000,000 XEC
+      const quote = await plugin.getQuote({
+        inputToken: 'XEC',
+        outputToken: 'AVU',
+        inputAmount,
+      })
+
+      expect(quote.outputToken).toBe('AVU')
+      expect(quote.expectedOutputAmount).toBeGreaterThan(0n)
+    })
+
+    it('builds prepared transaction settling directly to recipient cashaddress', async () => {
+      const quote = await plugin.getQuote({
+        inputToken: 'XEC',
+        outputToken: 'USDC',
+        inputAmount: 100_000_000n,
+      })
+
+      const destinationAddress =
+        'ecash:qp3wjpa3tjlj042z2wv7hahsldgwhwy0rq9sywjpyy'
+      const preparedTx = await plugin.buildTransaction({
+        quote,
+        userAddress: 'ecash:qz0k2n44k6c2x5f8q3h6p8z0z4q2p8q4k6c2x5f8q3',
+        destinationAddress,
+      })
+
+      expect(preparedTx.pluginId).toBe('ecash-atomic-swap')
+      expect(preparedTx.chainType).toBe('ecash')
+      expect(preparedTx.recipient).toBe(destinationAddress)
+      expect(preparedTx.metadata).toEqual(
+        expect.objectContaining({
+          swapType: 'ecash-atomic-swap',
+          router: 'eCash Atomic Swap Router',
+          inputToken: 'XEC',
+          outputToken: 'USDC',
+          recipientAddress: destinationAddress,
+        }),
+      )
+    })
+
+    it('refuses to build transaction when destinationAddress is missing', async () => {
+      const quote = await plugin.getQuote({
+        inputToken: 'XEC',
+        outputToken: 'USDC',
+        inputAmount: 100_000_000n,
+      })
+
+      await expect(
+        plugin.buildTransaction({
+          quote,
+          userAddress: 'ecash:qz0k2n44k6c2x5f8q3h6p8z0z4q2p8q4k6c2x5f8q3',
+        }),
+      ).rejects.toThrow(/destinationAddress/)
+    })
+
+    it('rejects zero or negative input amount with RangeError', async () => {
+      await expect(
+        plugin.getQuote({
+          inputToken: 'XEC',
+          outputToken: 'USDC',
+          inputAmount: 0n,
+        }),
+      ).rejects.toThrow(RangeError)
+
+      await expect(
+        plugin.getQuote({
+          inputToken: 'XEC',
+          outputToken: 'USDC',
+          inputAmount: -100n,
+        }),
+      ).rejects.toThrow(RangeError)
     })
   })
 

@@ -8,6 +8,7 @@ import {
   createMonadRelayRpcConnection,
   issueMonadRelayRpcCapability,
   monadProtocolIdentity,
+  RELAXED_CANCELLATION_POLL_INTERVAL_MS,
 } from "./monad-provider";
 
 describe("MonadJsonRpcProvider (#534)", () => {
@@ -910,11 +911,288 @@ describe("MonadJsonRpcProvider (#534)", () => {
         new Promise((_, reject) =>
           setTimeout(
             () => reject(new Error("cancellation was not prompt")),
-            200
+            1_000
           )
         ),
       ])
     ).rejects.toThrow(/cancel/i);
+  });
+
+  it("does not start setInterval for standard capability issuance or no-op predicates (#1171)", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (req.url?.endsWith("/capability/auth")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              epoch: "11".repeat(32),
+              nonce: "22".repeat(32),
+              expires_at_ms: Date.now() + 60_000,
+              token: "33".repeat(32),
+              signing_domain: "frank:rpc-http-auth:v1",
+              customer,
+              chain: "monad-testnet",
+              body_sha256: createHash("sha256").update(body).digest("hex"),
+              network_tag: Buffer.from("MONT").toString("hex"),
+            })
+          );
+          return;
+        }
+        if (req.url?.endsWith("/capability")) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              rpc_path: "/chain-rpc/monad-testnet/cap/bearer/rpc",
+              expires_at_ms: Date.now() + 60_000,
+            })
+          );
+          return;
+        }
+        res.writeHead(404).end();
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const setIntervalSpy = jest.spyOn(global, "setInterval");
+    try {
+      // 1. Standard issuance (default isCancelled omitted)
+      const cap1 = await issueMonadRelayRpcCapability(rpcUrl, {
+        chain: "monad-testnet",
+        customer,
+        networkTag: "MONT",
+        signDigest: () =>
+          Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+      });
+      expect(cap1.rpcUrl).toContain("/chain-rpc/monad-testnet/cap/bearer/rpc");
+      expect(setIntervalSpy).toHaveBeenCalledTimes(0);
+
+      // 2. Explicit no-op predicate () => false
+      const cap2 = await issueMonadRelayRpcCapability(
+        rpcUrl,
+        {
+          chain: "monad-testnet",
+          customer,
+          networkTag: "MONT",
+          signDigest: () =>
+            Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+        },
+        30_000,
+        () => false
+      );
+      expect(cap2.rpcUrl).toContain("/chain-rpc/monad-testnet/cap/bearer/rpc");
+      expect(setIntervalSpy).toHaveBeenCalledTimes(0);
+
+      // 3. Explicit undefined
+      const cap3 = await issueMonadRelayRpcCapability(
+        rpcUrl,
+        {
+          chain: "monad-testnet",
+          customer,
+          networkTag: "MONT",
+          signDigest: () =>
+            Uint8Array.from([0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01]),
+        },
+        30_000,
+        undefined
+      );
+      expect(cap3.rpcUrl).toContain("/chain-rpc/monad-testnet/cap/bearer/rpc");
+      expect(setIntervalSpy).toHaveBeenCalledTimes(0);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("cancels in-flight requests immediately with AbortSignal without setInterval (#1171)", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let signingResolve!: () => void;
+    const signing = new Promise<void>((resolve) => {
+      signingResolve = resolve;
+    });
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            epoch: "11".repeat(32),
+            nonce: "22".repeat(32),
+            expires_at_ms: Date.now() + 60_000,
+            token: "33".repeat(32),
+            signing_domain: "frank:rpc-http-auth:v1",
+            customer,
+            chain: "monad-testnet",
+            body_sha256: createHash("sha256").update(body).digest("hex"),
+            network_tag: Buffer.from("MONT").toString("hex"),
+          })
+        );
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const setIntervalSpy = jest.spyOn(global, "setInterval");
+    try {
+      const controller = new AbortController();
+      const issuing = issueMonadRelayRpcCapability(
+        rpcUrl,
+        {
+          chain: "monad-testnet",
+          customer,
+          networkTag: "MONT",
+          signDigest: () => {
+            signingResolve();
+            return new Promise<Uint8Array>(() => {});
+          },
+        },
+        30_000,
+        controller.signal
+      );
+
+      await signing;
+      controller.abort();
+
+      await expect(
+        Promise.race([
+          issuing,
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("cancellation was not prompt")),
+              100
+            )
+          ),
+        ])
+      ).rejects.toThrow(/cancel/i);
+
+      expect(setIntervalSpy).toHaveBeenCalledTimes(0);
+
+      // Pre-aborted signal cancels immediately with 0 timers
+      const preAborted = new AbortController();
+      preAborted.abort();
+      await expect(
+        issueMonadRelayRpcCapability(
+          rpcUrl,
+          {
+            chain: "monad-testnet",
+            customer,
+            networkTag: "MONT",
+            signDigest: () => new Uint8Array(0),
+          },
+          30_000,
+          preAborted.signal
+        )
+      ).rejects.toThrow(/cancel/i);
+
+      expect(setIntervalSpy).toHaveBeenCalledTimes(0);
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
+  it("cancels on the relaxed timer when passing a custom cancellation function (#1171)", async () => {
+    const customer = `0x${"12".repeat(20)}`;
+    let cancelled = false;
+    let signingResolve!: () => void;
+    const signing = new Promise<void>((resolve) => {
+      signingResolve = resolve;
+    });
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            epoch: "11".repeat(32),
+            nonce: "22".repeat(32),
+            expires_at_ms: Date.now() + 60_000,
+            token: "33".repeat(32),
+            signing_domain: "frank:rpc-http-auth:v1",
+            customer,
+            chain: "monad-testnet",
+            body_sha256: createHash("sha256").update(body).digest("hex"),
+            network_tag: Buffer.from("MONT").toString("hex"),
+          })
+        );
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        rpcUrl = `http://127.0.0.1:${
+          (server.address() as AddressInfo).port
+        }/chain-rpc/monad-testnet/rpc`;
+        resolve();
+      });
+    });
+
+    const setIntervalSpy = jest.spyOn(global, "setInterval");
+    const clearIntervalSpy = jest.spyOn(global, "clearInterval");
+    try {
+      const customPredicate = () => cancelled;
+      const issuing = issueMonadRelayRpcCapability(
+        rpcUrl,
+        {
+          chain: "monad-testnet",
+          customer,
+          networkTag: "MONT",
+          signDigest: () => {
+            signingResolve();
+            return new Promise<Uint8Array>(() => {});
+          },
+        },
+        30_000,
+        customPredicate
+      );
+
+      // Relaxed timer is installed at RELAXED_CANCELLATION_POLL_INTERVAL_MS
+      expect(setIntervalSpy).toHaveBeenCalledWith(
+        expect.any(Function),
+        RELAXED_CANCELLATION_POLL_INTERVAL_MS
+      );
+      expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+
+      await signing;
+      cancelled = true;
+
+      await expect(
+        Promise.race([
+          issuing,
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("cancellation was not prompt")),
+              1_000
+            )
+          ),
+        ])
+      ).rejects.toThrow(/cancel/i);
+
+      // Verify timer was cleaned up
+      expect(clearIntervalSpy).toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
+    }
   });
 
   it("rejects an oversized streamed capability response", async () => {

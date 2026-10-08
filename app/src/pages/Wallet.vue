@@ -102,6 +102,12 @@
               data-testid="wallet-tab-balance"
             />
             <q-tab
+              name="swap"
+              icon="swap_horiz"
+              :label="$t('walletPanel.tabSwap')"
+              data-testid="wallet-tab-swap"
+            />
+            <q-tab
               name="parity"
               icon="show_chart"
               :label="$t('walletPanel.tabParity')"
@@ -274,6 +280,10 @@
               </q-card-section>
             </q-tab-panel>
 
+            <q-tab-panel name="swap" class="q-pa-none">
+              <d-app-swap-view :selected-wallet="selectedWallet" />
+            </q-tab-panel>
+
             <q-tab-panel name="parity" class="q-pa-none">
               <avu-parity-chart :selected-wallet="selectedWallet" />
             </q-tab-panel>
@@ -293,6 +303,7 @@ import { useRoute, useRouter } from 'vue-router'
 import QrcodeVue from 'qrcode.vue'
 import AvuExplainerDialog from 'src/components/wallet/AvuExplainerDialog.vue'
 import AvuParityChart from 'src/components/wallet/AvuParityChart.vue'
+import DAppSwapView from 'src/components/wallet/DAppSwapView.vue'
 import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
@@ -313,6 +324,7 @@ export default defineComponent({
     QrcodeVue,
     AvuExplainerDialog,
     AvuParityChart,
+    DAppSwapView,
   },
   emits: ['toggleMyDrawerOpen'],
   setup() {

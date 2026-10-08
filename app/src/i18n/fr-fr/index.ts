@@ -378,6 +378,20 @@ export default {
     avuRatesRefUsd: 'Référence USD',
     tabBalance: 'Solde & Transfert',
     tabParity: 'Parité thermodynamique',
+    tabSwap: 'Échange instantané',
+    swapPay: 'Vous payez',
+    swapReceive: 'Vous recevez (estimé)',
+    swapAvailable: 'Disponible',
+    swapFeeLabel: 'Frais de protocole (8,75 bps)',
+    swapFeeSavingsBadge: '10x moins cher que MetaMask',
+    swapRouting: 'Itinéraire d’exécution',
+    swapDestinationChange:
+      'Règlement direct sur une nouvelle adresse de change HD (récupérable par graine, aucun lien avec l’identité)',
+    swapSelectDifferent: 'Sélectionnez des actifs différents à échanger',
+    swapEnterAmount: 'Saisissez un montant à échanger',
+    swapExecute: 'Échanger maintenant',
+    swapSuccess:
+      'Échange exécuté avec succès ! Fonds versés sur votre adresse de change.',
     avuTooltip:
       '1 AVU ≡ 1 kWh (3,6 MJ) d’énergie physique. Un étalon thermodynamique infalsifiable de pouvoir d’achat réel.',
     avuHashLabel: 'AVU (Réseau PoW)',

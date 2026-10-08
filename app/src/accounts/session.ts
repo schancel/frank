@@ -751,7 +751,36 @@ export async function importBip39Wallet(
     deriveDomainRoot(seedBytes, purpose),
   )
 
-  const snapshot = await accountSession.snapshot()
+  let snapshot: CustodySnapshot
+  let autoHealed = false
+  try {
+    if (
+      accountSession.state.status === 'locked' ||
+      accountSession.state.status === 'unavailable'
+    ) {
+      await accountSession.reset()
+      autoHealed = true
+    }
+    snapshot = await accountSession.snapshot()
+    if (
+      !autoHealed &&
+      (accountSession.state.status === 'locked' ||
+        accountSession.state.status === 'unavailable')
+    ) {
+      await accountSession.reset()
+      autoHealed = true
+      snapshot = await accountSession.snapshot()
+    }
+  } catch (error) {
+    if (!autoHealed) {
+      await accountSession.reset()
+      autoHealed = true
+      snapshot = await accountSession.snapshot()
+    } else {
+      throw error
+    }
+  }
+
   const attemptId = crypto.randomUUID()
   const accountId = crypto.randomUUID()
   const expectedActive = {

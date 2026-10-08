@@ -837,10 +837,12 @@ const statusText = computed(() =>
     ? 'Opening account storage…'
     : 'Account storage locked or unavailable.',
 )
-function clearSecrets() {
+function clearSecrets(preserveLegacyPhrase = false) {
   shownShare.value = ''
   shareInput.value = ''
-  legacyPhrase.value = ''
+  if (!preserveLegacyPhrase) {
+    legacyPhrase.value = ''
+  }
   detectedAccount.value = ''
 }
 function focus() {
@@ -883,9 +885,12 @@ async function run(work: () => Promise<void>) {
     await work()
   } catch (failure) {
     ceremony.cancel()
-    clearSecrets()
+    const wasLegacy = mode.value === 'legacy'
+    clearSecrets(wasLegacy)
     if (alive && token === request) {
-      mode.value = 'choice'
+      if (!wasLegacy) {
+        mode.value = 'choice'
+      }
       error.value = recoveryErrorMessage(failure)
       focus()
     }
@@ -980,7 +985,6 @@ function confirm() {
 function submitLegacyPhrase() {
   return run(async () => {
     let phrase = legacyPhrase.value
-    legacyPhrase.value = ''
     try {
       const { scanBip39Accounts } = await import('@frank/wallet/bip39-import')
       let provider: any = undefined
@@ -1006,6 +1010,7 @@ function submitLegacyPhrase() {
       }
 
       await importBip39Wallet(phrase, scanned.path)
+      legacyPhrase.value = ''
       void usePersistentStorageStore().afterActivation()
       emit('setupCompleted')
       await router.push('/wallet')

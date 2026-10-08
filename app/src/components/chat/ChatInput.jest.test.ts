@@ -288,9 +288,9 @@ describe('modernized chat input interface (#1003)', () => {
       },
       global: globalOptions,
     })
-    expect(wrapper.find('[data-testid="chat-input-stamp-status"]').exists()).toBe(
-      false,
-    )
+    expect(
+      wrapper.find('[data-testid="chat-input-stamp-status"]').exists(),
+    ).toBe(false)
     const sendBtn = wrapper.find('.chat-send-btn')
     expect(sendBtn.attributes('loading')).toBe('true')
     expect(sendBtn.attributes('disable')).toBe('true')
@@ -308,8 +308,8 @@ describe('ChatInput toolbar alignment and layout (#1009)', () => {
   })
 })
 
-describe("orders-of-magnitude stamp slider and geometric suggestion lifecycle (Issues #819 & #820)", () => {
-  it("correctly maps multipliers across 4 orders of magnitude in decadeIndex", async () => {
+describe('orders-of-magnitude stamp slider and geometric suggestion lifecycle (Issues #819 & #820)', () => {
+  it('correctly maps multipliers across 4 orders of magnitude in decadeIndex', async () => {
     const wrapper = mount(ChatInput, {
       props: { stampAmount: (10n ** 16n).toString() },
       global: globalOptions,
@@ -320,39 +320,45 @@ describe("orders-of-magnitude stamp slider and geometric suggestion lifecycle (I
 
     // Set to 10x (index 3)
     vm.decadeIndex = 3
-    const emitted = wrapper.emitted("update:stampAmount")
+    const emitted = wrapper.emitted('update:stampAmount')
     expect(emitted).toBeTruthy()
     // 10x of default stamp = 10^17 wei in test mock
     expect(emitted[0][0]).toBe((10n ** 17n).toString())
   })
 
-  it("renders converged badge when suggestedStampAmount matches and not overridden", () => {
+  it('renders converged badge when suggestedStampAmount matches and not overridden', () => {
     const wrapper = mount(ChatInput, {
       props: {
-        stampAmount: "0.71",
-        suggestedStampAmount: "0.71",
+        stampAmount: '0.71',
+        suggestedStampAmount: '0.71',
         isOverridden: false,
       },
       global: globalOptions,
     })
-    expect(wrapper.find('[data-testid="stamp-converged-badge"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="stamp-override-badge"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="stamp-converged-badge"]').exists()).toBe(
+      true,
+    )
+    expect(wrapper.find('[data-testid="stamp-override-badge"]').exists()).toBe(
+      false,
+    )
   })
 
-  it("renders override badge and reset button when isOverridden is true", async () => {
+  it('renders override badge and reset button when isOverridden is true', async () => {
     const wrapper = mount(ChatInput, {
       props: {
-        stampAmount: "1.0",
-        suggestedStampAmount: "0.71",
+        stampAmount: '1.0',
+        suggestedStampAmount: '0.71',
         isOverridden: true,
       },
       global: globalOptions,
     })
-    expect(wrapper.find('[data-testid="stamp-override-badge"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="stamp-override-badge"]').exists()).toBe(
+      true,
+    )
     const resetBtn = wrapper.find('[data-testid="chat-input-reset-suggested"]')
     expect(resetBtn.exists()).toBe(true)
 
-    await resetBtn.trigger("click")
-    expect(wrapper.emitted("resetStampToSuggested")).toBeTruthy()
+    await resetBtn.trigger('click')
+    expect(wrapper.emitted('resetStampToSuggested')).toBeTruthy()
   })
 })

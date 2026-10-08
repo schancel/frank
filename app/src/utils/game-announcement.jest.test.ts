@@ -115,7 +115,8 @@ describe('Game Announcement Parser and Route Resolver', () => {
         kind: 'post',
         title: "🎲 Liar's Dice Table #table5555",
         url: '/chat/0xBotDice?join=table5555',
-        message: `🎲 Table Created!\n• Table ID: table5555\n• Host: 0xBob222222222222222222222222222222222222\n• Buy-in: 0.1 MON\n• Players: 2/6\n[Join Table](/chat/0xBotDice?join=table5555)`,
+        message:
+          '🎲 Table Created!\n• Table ID: table5555\n• Host: 0xBob222222222222222222222222222222222222\n• Buy-in: 0.1 MON\n• Players: 2/6\n[Join Table](/chat/0xBotDice?join=table5555)',
       }
 
       const parsed = parseGameAnnouncement(entry, dummyMessage)

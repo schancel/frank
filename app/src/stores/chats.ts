@@ -23,7 +23,11 @@ import {
   tallyMessageItemsValue,
 } from '@frank/wallet/message-item-plugins'
 import '@frank/wallet/message-item-plugins/built-in'
-import { computeGeometricStampSuggestion, derivePeerStampMetrics, type PeerStampMetrics } from '@frank/wallet/stamp-suggestion'
+import {
+  computeGeometricStampSuggestion,
+  derivePeerStampMetrics,
+  type PeerStampMetrics,
+} from '@frank/wallet/stamp-suggestion'
 
 // Sidebar/notification previews (`getMessageItemPreview` above) need every registered type's
 // plugin loaded here too, not just `built-in` -- found live (CDP-driven testing while building the
@@ -1366,52 +1370,58 @@ export const useChatStore = defineStore('chats', {
         return 0
       }
     },
-    getPeerStampSuggestion: state => (addressOrId: string): bigint => {
-      let chat: Conversation | undefined
-      if (state.conversations && addressOrId in state.conversations) {
-        chat = state.conversations[addressOrId]
-      } else {
+    getPeerStampSuggestion:
+      state =>
+      (addressOrId: string): bigint => {
+        let chat: Conversation | undefined
+        if (state.conversations && addressOrId in state.conversations) {
+          chat = state.conversations[addressOrId]
+        } else {
+          try {
+            const displayAddress = toChainDisplayAddress(addressOrId)
+            chat = state.chats[displayAddress]
+          } catch {
+            // ignore
+          }
+        }
+        const messages = chat?.messages ?? []
+        const metrics = derivePeerStampMetrics(messages)
+        return computeGeometricStampSuggestion({
+          lastSentWei: metrics.lastSentWei,
+          lastReceivedWei: metrics.lastReceivedWei,
+          netReceivedWei: metrics.netReceivedWei,
+          defaultStampWei: activeChain.defaultStampValue,
+        })
+      },
+    getPeerStampMetrics:
+      state =>
+      (addressOrId: string): PeerStampMetrics => {
+        let chat: Conversation | undefined
+        if (state.conversations && addressOrId in state.conversations) {
+          chat = state.conversations[addressOrId]
+        } else {
+          try {
+            const displayAddress = toChainDisplayAddress(addressOrId)
+            chat = state.chats[displayAddress]
+          } catch {
+            // ignore
+          }
+        }
+        return derivePeerStampMetrics(chat?.messages ?? [])
+      },
+    getStampOverrideWei:
+      state =>
+      (addressOrId: string): bigint | undefined => {
+        if (state.conversations && addressOrId in state.conversations) {
+          return state.conversations[addressOrId]?.stampOverrideWei
+        }
         try {
           const displayAddress = toChainDisplayAddress(addressOrId)
-          chat = state.chats[displayAddress]
+          return state.chats[displayAddress]?.stampOverrideWei
         } catch {
-          // ignore
+          return undefined
         }
-      }
-      const messages = chat?.messages ?? []
-      const metrics = derivePeerStampMetrics(messages)
-      return computeGeometricStampSuggestion({
-        lastSentWei: metrics.lastSentWei,
-        lastReceivedWei: metrics.lastReceivedWei,
-        netReceivedWei: metrics.netReceivedWei,
-        defaultStampWei: activeChain.defaultStampValue,
-      })
-    },
-    getPeerStampMetrics: state => (addressOrId: string): PeerStampMetrics => {
-      let chat: Conversation | undefined
-      if (state.conversations && addressOrId in state.conversations) {
-        chat = state.conversations[addressOrId]
-      } else {
-        try {
-          const displayAddress = toChainDisplayAddress(addressOrId)
-          chat = state.chats[displayAddress]
-        } catch {
-          // ignore
-        }
-      }
-      return derivePeerStampMetrics(chat?.messages ?? [])
-    },
-    getStampOverrideWei: state => (addressOrId: string): bigint | undefined => {
-      if (state.conversations && addressOrId in state.conversations) {
-        return state.conversations[addressOrId]?.stampOverrideWei
-      }
-      try {
-        const displayAddress = toChainDisplayAddress(addressOrId)
-        return state.chats[displayAddress]?.stampOverrideWei
-      } catch {
-        return undefined
-      }
-    },
+      },
     getStampAmount: state => (addressOrId: string) => {
       if (state.conversations && addressOrId in state.conversations) {
         return (

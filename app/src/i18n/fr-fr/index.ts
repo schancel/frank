@@ -87,7 +87,8 @@ export default {
     emojiPickerTitle: 'Choisir un emoji',
     stampPrice: 'Prix du timbre',
     stampPayment: 'Paiement du timbre',
-    stampQuickSelection: 'Sélection rapide par ordres de grandeur (1× à 10 000×)',
+    stampQuickSelection:
+      'Sélection rapide par ordres de grandeur (1× à 10 000×)',
     stampMultiplierValue: '{multiplier}× par défaut ({amount})',
     suggestedStamp: 'Suggéré : {amount}',
     resetToSuggested: 'Réinitialiser au montant suggéré',

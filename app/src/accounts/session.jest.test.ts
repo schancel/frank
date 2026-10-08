@@ -1,9 +1,11 @@
 import {
+  accountSession,
   createAccountSession,
+  importBip39Wallet,
   resetAccountStorage,
   type RuntimeWallet,
 } from './session'
-import { watch } from 'vue'
+import { toRaw, watch } from 'vue'
 import {
   CustodyError,
   type AccountCustody,
@@ -534,4 +536,96 @@ test('setStandby suppresses background revalidate and custody acquisition', asyn
   await f.session.initialize()
   expect(f.session.state.status).toBe('standby')
   expect(f.custody.openActive).not.toHaveBeenCalled()
+})
+
+test('importBip39Wallet recovers and successfully imports when initial custody throws locked error', async () => {
+  const phrase = 'test test test test test test test test test test test junk'
+  const resetSpy = jest
+    .spyOn(accountSession, 'reset')
+    .mockImplementation(async () => undefined)
+  const snapshotSpy = jest
+    .spyOn(accountSession, 'snapshot')
+    .mockRejectedValueOnce(new CustodyError('locked'))
+    .mockResolvedValue({
+      schema: 1,
+      revision: 0,
+      active: null,
+      pending: null,
+    })
+  const stageSpy = jest
+    .spyOn(accountSession, 'stage')
+    .mockImplementation(async () => undefined)
+  const activateSpy = jest
+    .spyOn(accountSession, 'activatePending')
+    .mockImplementation(async () => undefined)
+  const getWalletSpy = jest
+    .spyOn(accountSession, 'getWallet')
+    .mockResolvedValue({
+      identity: {
+        address: { raw: '0x8C8d35429F74ec245F8Ef2f4Fd1e551cFF97d650' },
+      },
+    } as unknown as RuntimeWallet)
+
+  try {
+    const result = await importBip39Wallet(phrase)
+    expect(resetSpy).toHaveBeenCalledTimes(1)
+    expect(snapshotSpy).toHaveBeenCalledTimes(2)
+    expect(stageSpy).toHaveBeenCalledTimes(1)
+    expect(activateSpy).toHaveBeenCalledTimes(1)
+    expect(result.address).toBe('0x8C8d35429F74ec245F8Ef2f4Fd1e551cFF97d650')
+  } finally {
+    resetSpy.mockRestore()
+    snapshotSpy.mockRestore()
+    stageSpy.mockRestore()
+    activateSpy.mockRestore()
+    getWalletSpy.mockRestore()
+  }
+})
+
+test('importBip39Wallet recovers and successfully imports when initial status is locked or unavailable', async () => {
+  const phrase = 'test test test test test test test test test test test junk'
+  const rawState = toRaw(accountSession.state) as { status: string }
+  const origStatus = rawState.status
+  rawState.status = 'locked'
+
+  const resetSpy = jest
+    .spyOn(accountSession, 'reset')
+    .mockImplementation(async () => {
+      rawState.status = 'fresh'
+    })
+  const snapshotSpy = jest.spyOn(accountSession, 'snapshot').mockResolvedValue({
+    schema: 1,
+    revision: 0,
+    active: null,
+    pending: null,
+  })
+  const stageSpy = jest
+    .spyOn(accountSession, 'stage')
+    .mockImplementation(async () => undefined)
+  const activateSpy = jest
+    .spyOn(accountSession, 'activatePending')
+    .mockImplementation(async () => undefined)
+  const getWalletSpy = jest
+    .spyOn(accountSession, 'getWallet')
+    .mockResolvedValue({
+      identity: {
+        address: { raw: '0x8C8d35429F74ec245F8Ef2f4Fd1e551cFF97d650' },
+      },
+    } as unknown as RuntimeWallet)
+
+  try {
+    const result = await importBip39Wallet(phrase)
+    expect(resetSpy).toHaveBeenCalledTimes(1)
+    expect(snapshotSpy).toHaveBeenCalledTimes(1)
+    expect(stageSpy).toHaveBeenCalledTimes(1)
+    expect(activateSpy).toHaveBeenCalledTimes(1)
+    expect(result.address).toBe('0x8C8d35429F74ec245F8Ef2f4Fd1e551cFF97d650')
+  } finally {
+    rawState.status = origStatus
+    resetSpy.mockRestore()
+    snapshotSpy.mockRestore()
+    stageSpy.mockRestore()
+    activateSpy.mockRestore()
+    getWalletSpy.mockRestore()
+  }
 })

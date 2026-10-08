@@ -86,7 +86,8 @@ export default {
     emojiPickerTitle: 'Select an emoji',
     stampPrice: 'Stamp Price',
     stampPayment: 'Stamp payment',
-    stampQuickSelection: 'Quick selection across orders of magnitude (1× to 10,000×)',
+    stampQuickSelection:
+      'Quick selection across orders of magnitude (1× to 10,000×)',
     stampMultiplierValue: '{multiplier}× default ({amount})',
     suggestedStamp: 'Suggested: {amount}',
     resetToSuggested: 'Reset to suggested',

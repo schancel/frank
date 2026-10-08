@@ -82,7 +82,7 @@ export default defineComponent({
           ? contactProfile.accountType
           : inferred.accountType !== undefined
           ? inferred.accountType
-          : (props.isBot ?? contactProfile?.isBot ?? inferred.isBot)
+          : props.isBot ?? contactProfile?.isBot ?? inferred.isBot
           ? 1
           : 0
 

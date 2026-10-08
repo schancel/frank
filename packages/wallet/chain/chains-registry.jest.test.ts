@@ -361,7 +361,24 @@ describe('chains-registry', () => {
       unit: 'tBTC',
       caip2: 'bip122:000000000933ea01ad0ee984209779ba',
       networkTag: 'BTCT',
-      electrumServers: ['wss://electrum.blockstream.info:60002'],
+      electrumServers: [
+        'wss://testnet.aranguren.org:51004',
+        'wss://blackie.c3-soft.com:57008',
+      ],
+    })
+
+    expect(PROTOCOL_CHAINS['btc-testnet4']).toEqual({
+      id: 'btc-testnet4',
+      kind: 'bitcoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'testnet',
+      isTestnet: true,
+      name: 'Bitcoin Testnet4',
+      unit: 'tBTC',
+      networkTag: 'BTC4',
+      electrumServers: ['wss://blackie.c3-soft.com:57012'],
     })
 
     expect(PROTOCOL_CHAINS['bch-mainnet']).toEqual({
@@ -382,6 +399,25 @@ describe('chains-registry', () => {
       ],
     })
 
+    expect(PROTOCOL_CHAINS['bch-testnet']).toEqual({
+      id: 'bch-testnet',
+      kind: 'bitcoincash',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'testnet',
+      isTestnet: true,
+      name: 'Bitcoin Cash Chipnet',
+      unit: 'tBCH',
+      addressPrefix: 'bchtest',
+      networkTag: 'BCHT',
+      electrumServers: [
+        'wss://chipnet.bch.ninja:50004',
+        'wss://chipnet.imaginary.cash:50004',
+        'wss://blackie.c3-soft.com:64004',
+      ],
+    })
+
     expect(PROTOCOL_CHAINS['doge-mainnet']).toEqual({
       id: 'doge-mainnet',
       kind: 'dogecoin',
@@ -396,6 +432,22 @@ describe('chains-registry', () => {
       electrumServers: [
         'wss://electrum.doge.keys4coins.com:50002',
         'wss://doge-electrum.cryptonode.id:50004',
+      ],
+    })
+
+    expect(PROTOCOL_CHAINS['doge-testnet']).toEqual({
+      id: 'doge-testnet',
+      kind: 'dogecoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'testnet',
+      isTestnet: true,
+      name: 'Dogecoin Testnet',
+      unit: 'tDOGE',
+      networkTag: 'DOGT',
+      electrumServers: [
+        'wss://testnet-electrum.cryptonode.id:50004',
       ],
     })
   })
@@ -654,7 +706,7 @@ describe('chains-registry', () => {
 
     it('verifies protocol registry schema version and chain count', () => {
       expect(protocolRegistry.schema_version).toBe(1)
-      expect(protocolRegistry.chains.length).toBe(21)
+      expect(protocolRegistry.chains.length).toBe(26)
     })
 
     it('ensures wallet and relay protocol registries agree on shared chain identifiers and properties', () => {

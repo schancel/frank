@@ -462,7 +462,23 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> =
       caip2: 'bip122:000000000933ea01ad0ee984209779ba',
       networkTag: 'BTCT',
       electrumServers: Object.freeze([
-        'wss://electrum.blockstream.info:60002',
+        'wss://testnet.aranguren.org:51004',
+        'wss://blackie.c3-soft.com:57008',
+      ]),
+    }),
+    'btc-testnet4': Object.freeze({
+      id: 'btc-testnet4',
+      kind: 'bitcoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'testnet',
+      isTestnet: true,
+      name: 'Bitcoin Testnet4',
+      unit: 'tBTC',
+      networkTag: 'BTC4',
+      electrumServers: Object.freeze([
+        'wss://blackie.c3-soft.com:57012',
       ]),
     }),
     'bch-mainnet': Object.freeze({
@@ -482,6 +498,24 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> =
         'wss://bch.ninja:50004',
       ]),
     }),
+    'bch-testnet': Object.freeze({
+      id: 'bch-testnet',
+      kind: 'bitcoincash',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'testnet',
+      isTestnet: true,
+      name: 'Bitcoin Cash Chipnet',
+      unit: 'tBCH',
+      addressPrefix: 'bchtest',
+      networkTag: 'BCHT',
+      electrumServers: Object.freeze([
+        'wss://chipnet.bch.ninja:50004',
+        'wss://chipnet.imaginary.cash:50004',
+        'wss://blackie.c3-soft.com:64004',
+      ]),
+    }),
     'doge-mainnet': Object.freeze({
       id: 'doge-mainnet',
       kind: 'dogecoin',
@@ -496,6 +530,21 @@ export const PROTOCOL_CHAINS: Record<string, ChainRegistryEntry> =
       electrumServers: Object.freeze([
         'wss://electrum.doge.keys4coins.com:50002',
         'wss://doge-electrum.cryptonode.id:50004',
+      ]),
+    }),
+    'doge-testnet': Object.freeze({
+      id: 'doge-testnet',
+      kind: 'dogecoin',
+      family: 'bitcoin',
+      curve: 'secp256k1',
+      keyType: 1,
+      network: 'testnet',
+      isTestnet: true,
+      name: 'Dogecoin Testnet',
+      unit: 'tDOGE',
+      networkTag: 'DOGT',
+      electrumServers: Object.freeze([
+        'wss://testnet-electrum.cryptonode.id:50004',
       ]),
     }),
   })

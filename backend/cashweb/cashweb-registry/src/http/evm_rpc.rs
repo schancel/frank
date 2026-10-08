@@ -202,7 +202,6 @@ struct EvmChainRuntime {
     id: String,
     expected_chain_id: u64,
     upstream_urls: Vec<Url>,
-    upstream_index: Arc<std::sync::atomic::AtomicUsize>,
     upstream_ws_url: Option<Url>,
     checkpoint: Option<(u64, String)>,
     max_get_logs_range: u64,
@@ -573,7 +572,6 @@ impl EvmRpcRuntime {
                     id: chain.id.clone(),
                     expected_chain_id: chain.expected_chain_id,
                     upstream_urls,
-                    upstream_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     upstream_ws_url,
                     checkpoint: chain
                         .checkpoint_block_number
@@ -2260,10 +2258,12 @@ async fn proxy_rpc_inner(
             true,
         ));
     }
-    let start_idx = chain
-        .upstream_index
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        % num_upstreams;
+    let start_idx = if num_upstreams <= 1 {
+        0
+    } else {
+        use rand::Rng;
+        rand::thread_rng().gen_range(0..num_upstreams)
+    };
     let mut last_error = None;
     let mut spool = None;
 
@@ -2458,7 +2458,6 @@ mod tests {
             id: "monad-testnet".to_string(),
             expected_chain_id: 10_143,
             upstream_urls: vec!["http://127.0.0.1:1/provider-secret".parse().unwrap()],
-            upstream_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             upstream_ws_url: None,
             checkpoint: None,
             max_get_logs_range: 10,

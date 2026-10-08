@@ -46,7 +46,6 @@ const MAX_WIRE_TRANSACTION_CHARS: usize = 4096;
 struct SolanaChain {
     id: String,
     upstream_urls: Vec<Url>,
-    upstream_index: Arc<std::sync::atomic::AtomicUsize>,
     expected_genesis_hash: String,
 }
 
@@ -190,7 +189,6 @@ impl SolanaProxyRuntime {
                 SolanaChain {
                     id: row.id.clone(),
                     upstream_urls,
-                    upstream_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     expected_genesis_hash: row.expected_genesis_hash.clone(),
                 },
             );
@@ -802,10 +800,12 @@ async fn proxy_rpc_inner(
             true,
         ));
     }
-    let start_idx = chain
-        .upstream_index
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        % num_upstreams;
+    let start_idx = if num_upstreams <= 1 {
+        0
+    } else {
+        use rand::Rng;
+        rand::thread_rng().gen_range(0..num_upstreams)
+    };
     let mut last_error = None;
     let mut spool = None;
 

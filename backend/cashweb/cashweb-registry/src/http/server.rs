@@ -78,13 +78,16 @@ async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json
         }
     }
     if let Some(runtime) = &server.bitcoin_proxy {
-        for (id, json_rpc, chronik) in runtime.configured_capabilities() {
+        for (id, json_rpc, chronik, electrum) in runtime.configured_capabilities() {
             let capabilities = configured.entry(id).or_default();
             if json_rpc {
                 capabilities.push(ProtocolProxyCapability::JsonRpc);
             }
             if chronik {
                 capabilities.push(ProtocolProxyCapability::Chronik);
+            }
+            if electrum {
+                capabilities.push(ProtocolProxyCapability::Electrum);
             }
         }
     }

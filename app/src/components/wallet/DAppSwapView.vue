@@ -253,8 +253,10 @@ export default defineComponent({
 
     const activeRouterName = computed(() => {
       if (fromAsset.value === 'SOL' || toAsset.value === 'SOL') {
-        const jup = defaultPluginRegistry.get('jupiter')
-        return jup ? jup.name : 'Jupiter Routing Engine'
+        const jup =
+          defaultPluginRegistry.get('jupiter-aggregator') ??
+          defaultPluginRegistry.get('jupiter')
+        return jup ? jup.name : 'Jupiter Aggregator (Solana)'
       }
       const uni = defaultPluginRegistry.get('uniswap-universal-router')
       return uni ? uni.name : 'Uniswap Universal Router'

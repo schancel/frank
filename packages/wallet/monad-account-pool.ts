@@ -691,101 +691,37 @@ export class MonadSubAccountPool {
       );
     }
 
-    if (capacities.length > 1) {
-      let startNonce: number;
-      if (params.fundingOverrides?.nonce !== undefined) {
-        startNonce = params.fundingOverrides.nonce;
-      } else {
-        const pendingCount = await params.provider.getTransactionCount(
-          params.mainAccountSigner.address,
-          "pending"
-        );
-        startNonce = Number(pendingCount);
-      }
-
-      for (const [offset, paymentCapacityWei] of capacities.entries()) {
-        const target = unfunded[offset];
-        const fundedValue = paymentCapacityWei + params.gasReserveWei;
-        const nonce = startNonce + offset;
-        const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
-          target.address,
-          fundedValue,
-          { ...params.fundingOverrides, nonce }
-        );
-        this.store.put({
-          ...target,
-          status: "funding",
-          fundingAttempt: { rawTx: signedTx.rawTx, txHash: signedTx.txHash },
-        });
-        await this.store.flush();
-        params.onProgress?.({
-          stage: "funding",
-          completed: 0,
-          total: capacities.length,
-          feeReserveWei: params.gasReserveWei,
-          txHash: signedTx.txHash,
-        });
-        await params.mainAccountSigner.submit(signedTx);
-      }
-
-      let completedCount = 0;
-      await Promise.all(
-        capacities.map(async (paymentCapacityWei, offset) => {
-          const target = unfunded[offset];
-          const txHash = await this.finishFundingAttempt(
-            this.store.getByIndex(target.index) as SubAccountRecord,
-            params.mainAccountSigner,
-            params.receipt,
-            false
-          );
-          this.capacityCache.set(target.index, {
-            capacityWei: paymentCapacityWei,
-            checkedAtMs: Date.now(),
-          });
-          this.syncUtxo(
-            target.index,
-            "available",
-            paymentCapacityWei + params.gasReserveWei
-          );
-          fundingTxHashes.push(txHash);
-          completedCount++;
+    for (const [offset, paymentCapacityWei] of capacities.entries()) {
+      const target = unfunded[offset];
+      const result = await this.fundAccount({
+        target,
+        paymentCapacityWei,
+        gasReserveWei: params.gasReserveWei,
+        mainAccountSigner: params.mainAccountSigner,
+        overrides: params.fundingOverrides,
+        receipt: params.receipt,
+        onSigned: (signedTx) =>
           params.onProgress?.({
             stage: "funding",
-            completed: completedCount,
+            completed: offset,
             total: capacities.length,
             feeReserveWei: params.gasReserveWei,
-            txHash,
-          });
-        })
+            txHash: signedTx.txHash,
+          }),
+      });
+      this.syncUtxo(
+        target.index,
+        "available",
+        paymentCapacityWei + params.gasReserveWei
       );
-    } else {
-      for (const [offset, paymentCapacityWei] of capacities.entries()) {
-        const target = unfunded[offset];
-        const result = await this.fundAccount({
-          target,
-          paymentCapacityWei,
-          gasReserveWei: params.gasReserveWei,
-          mainAccountSigner: params.mainAccountSigner,
-          overrides: params.fundingOverrides,
-          receipt: params.receipt,
-          onSigned: (signedTx) =>
-            params.onProgress?.({
-              stage: "funding",
-              completed: offset,
-              total: capacities.length,
-              feeReserveWei: params.gasReserveWei,
-              txHash: signedTx.txHash,
-            }),
-        });
-        fundingTxHashes.push(result.txHash);
-        params.onProgress?.({
-          stage: "funding",
-          completed: offset + 1,
-          total: capacities.length,
-          feeReserveWei: params.gasReserveWei,
-          txHash: result.txHash,
-        });
-      }
+      fundingTxHashes.push(result.txHash);
+      params.onProgress?.({
+        stage: "funding",
+        completed: offset + 1,
+        total: capacities.length,
+        feeReserveWei: params.gasReserveWei,
+        txHash: result.txHash,
+      });
     }
 
     accounts = await this.fundedCapacities(

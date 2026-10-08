@@ -426,7 +426,11 @@ export class MonadChangePool {
     this.store.setPendingIntent(intent)
     await this.store.flush()
     await params.burnAccountSigner.submit(signedTx)
-    const status = await params.burnAccountSigner.getStatus(signedTx.txHash)
+    let status = await params.burnAccountSigner.getStatus(signedTx.txHash)
+    for (let attempt = 0; status === 'pending' && attempt < 20; attempt++) {
+      await new Promise(r => setTimeout(r, 250))
+      status = await params.burnAccountSigner.getStatus(signedTx.txHash)
+    }
     if (status === 'confirmed') return this.finalizeIntent(intent)
     if (status === 'failed') {
       this.store.clearPendingIntent()
@@ -527,6 +531,7 @@ async function sweepIfSpent(
       params.admission,
     )
   } catch (error) {
+    console.warn('[monad-change-pool] sweepToChange error for burn account ' + record.address + ':', error)
     return { swept: false, reason: 'sweep-error', error }
   }
 }

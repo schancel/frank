@@ -123,8 +123,9 @@ export function assertSubAccountLifecycleMatrix(
 ): void {
   const { funding, spend, recovery, legacyTerminal } = record.lifecycle ?? {}
   const isLegacyTerminal =
-    legacyTerminal?.version === 1 &&
-    legacyTerminal.reason === 'base-era-terminal'
+    (legacyTerminal?.version === 1 &&
+      legacyTerminal.reason === 'base-era-terminal') ||
+    (record.status === 'spent' && spend === undefined)
   if (
     ((record.status === 'unfunded' || record.status === 'funding') &&
       (funding !== undefined ||

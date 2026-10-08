@@ -523,8 +523,19 @@ export const useContactStore = defineStore('contacts', {
       }
     },
     async refreshContacts() {
-      for (const address of Object.keys(this.contacts)) {
-        await this.refresh(address)
+      const addresses = Object.keys(this.contacts)
+      const CONCURRENCY_LIMIT = 6
+      for (let i = 0; i < addresses.length; i += CONCURRENCY_LIMIT) {
+        const chunk = addresses.slice(i, i + CONCURRENCY_LIMIT)
+        await Promise.all(
+          chunk.map(async address => {
+            try {
+              await this.refresh(address)
+            } catch (err) {
+              console.error(`Failed to refresh contact ${address}:`, err)
+            }
+          }),
+        )
       }
     },
     async refresh(address: string) {

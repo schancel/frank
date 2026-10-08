@@ -569,6 +569,91 @@ describe('stores/contacts.ts (ticket #42)', () => {
     })
   })
 
+  describe('refreshContacts', () => {
+    it('refreshes all contacts with bounded concurrency (up to 6 concurrently)', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      const addresses: string[] = []
+      for (let i = 1; i <= 14; i++) {
+        const hex = i.toString(16).padStart(2, '0').repeat(20)
+        const addr = `0x${hex}`
+        addresses.push(addr)
+        contacts.addContact({
+          address: addr,
+          contact: {
+            profile: {
+              name: `Contact ${i}`,
+              bio: '',
+              avatar: '',
+              pubKey: null,
+            },
+          },
+        })
+      }
+
+      let active = 0
+      let maxActive = 0
+      const refreshed: string[] = []
+
+      jest
+        .spyOn(contacts, 'refresh')
+        .mockImplementation(async (addr: string) => {
+          active++
+          maxActive = Math.max(maxActive, active)
+          refreshed.push(addr)
+          await new Promise(r => setTimeout(r, 10))
+          active--
+        })
+
+      await contacts.refreshContacts()
+
+      expect(refreshed).toHaveLength(14)
+      expect(maxActive).toBeGreaterThan(1)
+      expect(maxActive).toBeLessThanOrEqual(6)
+      for (const addr of addresses) {
+        expect(refreshed).toContain(toDisplay(addr))
+      }
+    })
+
+    it('isolated errors in individual contact refresh do not stop other contacts from refreshing', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      const addresses: string[] = []
+      for (let i = 1; i <= 5; i++) {
+        const hex = i.toString(16).padStart(2, '0').repeat(20)
+        const addr = `0x${hex}`
+        addresses.push(addr)
+        contacts.addContact({
+          address: addr,
+          contact: {
+            profile: {
+              name: `Contact ${i}`,
+              bio: '',
+              avatar: '',
+              pubKey: null,
+            },
+          },
+        })
+      }
+
+      const failingAddr = toDisplay(addresses[2])
+      const refreshed: string[] = []
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      jest
+        .spyOn(contacts, 'refresh')
+        .mockImplementation(async (addr: string) => {
+          if (addr === failingAddr) {
+            throw new Error(`Network failure for ${addr}`)
+          }
+          refreshed.push(addr)
+        })
+
+      await expect(contacts.refreshContacts()).resolves.toBeUndefined()
+      expect(refreshed).toHaveLength(4)
+      expect(refreshed).not.toContain(failingAddr)
+    })
+  })
+
   describe('curated default contacts (#317)', () => {
     const DEFAULTS = [
       { address: `0x${'01'.repeat(20)}`, name: 'Blackjack Dealer' },

@@ -153,7 +153,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, getCurrentInstance, onMounted, watch } from 'vue'
+import {
+  ref,
+  computed,
+  getCurrentInstance,
+  onMounted,
+  onUnmounted,
+  watch,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { activeChain } from '@frank/wallet/chain'
 import { accountSession, accountStatus } from '../../accounts/session'
@@ -402,6 +409,9 @@ const { getFormattedBalance, getRawBalance } = useMultichainBalance()
 const oracle = useSafeOracleStore()
 onMounted(() => {
   oracle.startBackgroundWorker?.()
+})
+onUnmounted(() => {
+  oracle.stopBackgroundWorker?.()
 })
 
 function getWalletAvu(wallet: WalletItemConfig): string {

@@ -195,9 +195,12 @@ export const useOracleStore = defineStore('oracle', {
 
     startBackgroundWorker(intervalMs = 300000): void {
       if (workerIntervalId !== null) return
-      // Trigger initial async refresh in background
-      void this.refresh()
+      // Trigger initial async refresh in background if visible
+      if (typeof document === 'undefined' || !document.hidden) {
+        void this.refresh()
+      }
       workerIntervalId = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return
         void this.refresh()
       }, intervalMs)
     },

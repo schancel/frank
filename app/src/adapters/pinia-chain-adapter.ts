@@ -494,6 +494,8 @@ export function startDirectMessagePolling({
  * longest pause it backs off to while they stay pending. */
 export const OUTGOING_RECONCILE_INTERVAL_MS = 15_000
 export const MAX_OUTGOING_RECONCILE_INTERVAL_MS = 120_000
+export const IDLE_OUTGOING_RECONCILE_INTERVAL_MS = 60_000
+export const BACKGROUND_OUTGOING_RECONCILE_INTERVAL_MS = 60_000
 
 export interface OutgoingReconciliation {
   stop: () => void
@@ -511,10 +513,14 @@ export function startOutgoingReconciliation({
   wallet,
   intervalMs = OUTGOING_RECONCILE_INTERVAL_MS,
   maxIntervalMs = MAX_OUTGOING_RECONCILE_INTERVAL_MS,
+  idleIntervalMs = IDLE_OUTGOING_RECONCILE_INTERVAL_MS,
+  backgroundIntervalMs = BACKGROUND_OUTGOING_RECONCILE_INTERVAL_MS,
 }: {
   wallet: WalletHandle
   intervalMs?: number
   maxIntervalMs?: number
+  idleIntervalMs?: number
+  backgroundIntervalMs?: number
 }): OutgoingReconciliation {
   const chats = useChatStore()
   let stopped = false
@@ -552,6 +558,7 @@ export function startOutgoingReconciliation({
   knownPending = pendingIds()
 
   const tick = async () => {
+    if (ticking || stopped) return
     ticking = true
     resetRequested = false
     let pending = 0
@@ -562,13 +569,39 @@ export function startOutgoingReconciliation({
       pending = 1
     }
     ticking = false
+    if (stopped) return
     knownPending = pendingIds()
     delayMs =
       pending > 0 && !resetRequested
         ? Math.min(maxIntervalMs, delayMs * 2)
+        : pending === 0
+        ? idleIntervalMs
         : intervalMs
-    schedule(delayMs)
+    let scheduledDelay = delayMs
+    if (typeof document !== 'undefined' && document.hidden) {
+      scheduledDelay = Math.max(scheduledDelay, backgroundIntervalMs)
+    }
+    schedule(scheduledDelay)
   }
+
+  const onVisibilityChange = () => {
+    if (stopped) return
+    if (typeof document !== 'undefined' && !document.hidden) {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      void tick()
+    }
+  }
+
+  if (
+    typeof document !== 'undefined' &&
+    typeof document.addEventListener === 'function'
+  ) {
+    document.addEventListener('visibilitychange', onVisibilityChange)
+  }
+
   void tick()
 
   // A message that newly becomes payment-pending must not wait out a long backoff earned by an
@@ -596,6 +629,12 @@ export function startOutgoingReconciliation({
       unsubscribe()
       if (timer !== undefined) clearTimeout(timer)
       timer = undefined
+      if (
+        typeof document !== 'undefined' &&
+        typeof document.removeEventListener === 'function'
+      ) {
+        document.removeEventListener('visibilitychange', onVisibilityChange)
+      }
     },
   }
 }

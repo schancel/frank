@@ -152,9 +152,7 @@ test('displays formatted live balance and handles loading and stale states', asy
 test('displays fetched non-zero eCash balance when loaded', async () => {
   mockEcashBalance.value = '10000 tXEC'
   const view = render()
-  expect(view.get('[data-test="ecash-wallet-balance"]').text()).toBe(
-    '10000 tXEC',
-  )
+  expect(view.get('[data-test="ecash-wallet-balance"]').text()).toBe('10 ktXEC')
 })
 
 test('clicking wallet rows navigates to the respective chain', async () => {
@@ -276,27 +274,14 @@ test('opens rename dialog on edit icon click and handles save and reset', async 
   expect(view.find('[data-test="ecash-wallet-name-text"]').text()).toBe('eCash')
 })
 
-test('displays unit rate in each wallet row and allows clicking drawer header link to open AvuExplainerDialog', async () => {
+test('omits unit rate in wallet rows (kept for main page) and allows clicking drawer header link to open AvuExplainerDialog', async () => {
   const view = render()
 
-  // Dynamic unit rate captions in each wallet row
-  expect(view.find('[data-test="monad-wallet-unit-rate"]').text()).toBe(
-    '1 MON ≈ 41.67 AVU',
-  )
-  expect(view.find('[data-test="ecash-wallet-unit-rate"]').text()).toBe(
-    '1M XEC ≈ 416.67 AVU',
-  )
-  expect(view.find('[data-test="solana-wallet-unit-rate"]').text()).toBe(
-    '1 SOL ≈ 1,785.71 AVU',
-  )
-  expect(view.find('[data-test="tempo-wallet-unit-rate"]').text()).toBe(
-    '1 TUSD ≈ 11.90 AVU',
-  )
-  expect(view.find('[data-test="ethereum-wallet-unit-rate"]').text()).toBe(
-    '1 ETH ≈ 30,952.38 AVU',
-  )
-  expect(view.find('[data-test="hyperliquid-wallet-unit-rate"]').text()).toBe(
-    '1 HYPE ≈ 476.19 AVU',
+  // Unit rate captions are omitted from drawer wallet rows to save height
+  expect(view.find('[data-test="monad-wallet-unit-rate"]').exists()).toBe(false)
+  expect(view.find('[data-test="ecash-wallet-unit-rate"]').exists()).toBe(false)
+  expect(view.find('[data-test="solana-wallet-unit-rate"]').exists()).toBe(
+    false,
   )
 
   // Drawer header link 1 AVU ≡ 1 kWh (?) is clickable

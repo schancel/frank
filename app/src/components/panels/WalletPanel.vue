@@ -7,32 +7,31 @@
     >
       <q-list class="full-width">
         <q-separator />
-        <q-item>
+        <q-item class="wallet-header-item">
           <q-item-section>
-            <q-item-label>{{ $t('walletPanel.title') }}</q-item-label>
+            <div class="row items-center no-wrap">
+              <span class="text-subtitle1 text-weight-bold">{{
+                $t('walletPanel.title')
+              }}</span>
+              <span
+                v-if="portfolioTotalAvu"
+                class="text-caption text-weight-medium text-grey-8 q-ml-sm"
+                data-test="portfolio-total-avu"
+              >
+                ({{ portfolioTotalAvu }})
+                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+              </span>
+            </div>
           </q-item-section>
           <q-item-section side>
-            <div class="row items-center q-gutter-xs">
-              <q-item-label
-                v-if="portfolioTotalAvu"
-                caption
-                class="text-weight-medium text-grey-8 q-mr-xs cursor-pointer"
-              >
-                <span data-test="portfolio-total-avu">{{
-                  portfolioTotalAvu
-                }}</span>
-                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
-              </q-item-label>
-              <q-item-label
-                caption
-                class="text-weight-medium text-primary cursor-pointer flex items-center q-gutter-xs"
-                data-test="drawer-avu-explainer-link"
-                @click.stop="showAvuDialog = true"
-              >
-                <span>{{ $t('walletPanel.avuDrawerHeader') }}</span>
-                <q-icon name="help_outline" size="12px" />
-                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
-              </q-item-label>
+            <div
+              class="text-caption text-weight-medium text-primary cursor-pointer row items-center no-wrap q-gutter-xs"
+              data-test="drawer-avu-explainer-link"
+              @click.stop="showAvuDialog = true"
+            >
+              <span>{{ $t('walletPanel.avuDrawerHeader') }}</span>
+              <q-icon name="help_outline" size="13px" />
+              <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
             </div>
           </q-item-section>
         </q-item>
@@ -44,9 +43,11 @@
           <q-item
             clickable
             v-ripple
+            dense
             :data-test="wallet.dataTest"
             :active="selectedChain === wallet.id"
             active-class="active-chat-list-item"
+            class="wallet-list-item q-py-xs"
             @click="selectWallet(wallet.id)"
           >
             <q-item-section avatar>
@@ -96,29 +97,19 @@
               <q-item-label
                 caption
                 :role="wallet.isMain ? 'status' : undefined"
-                :data-test="wallet.balanceDataTest"
+                class="row items-center no-wrap ellipsis text-grey-8"
               >
-                {{ getWalletBalance(wallet) }}
-              </q-item-label>
-              <q-item-label
-                v-if="getWalletAvu(wallet)"
-                caption
-                class="text-grey-7"
-              >
-                <span :data-test="`${wallet.id}-wallet-avu`">{{
-                  getWalletAvu(wallet)
+                <span :data-test="wallet.balanceDataTest">{{
+                  getWalletBalance(wallet)
                 }}</span>
-                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
-              </q-item-label>
-              <q-item-label
-                v-if="getWalletUnitRate(wallet)"
-                caption
-                class="text-grey-6"
-              >
-                <span :data-test="`${wallet.id}-wallet-unit-rate`">{{
-                  getWalletUnitRate(wallet)
-                }}</span>
-                <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+                <span
+                  v-if="getWalletAvu(wallet)"
+                  class="text-grey-7 q-ml-xs no-shrink"
+                  :data-test="`${wallet.id}-wallet-avu`"
+                >
+                  · {{ getWalletAvu(wallet) }}
+                  <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+                </span>
               </q-item-label>
             </q-item-section>
           </q-item>
@@ -174,6 +165,7 @@ import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
 import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
 import { formatAvu } from '@frank/wallet/oracle'
+import { formatCompactCryptoBalance } from '../../utils/formatting'
 
 interface WalletItemConfig {
   id: string
@@ -326,23 +318,28 @@ function getWalletChainLabel(wallet: WalletItemConfig): string {
 }
 
 function getWalletBalance(wallet: WalletItemConfig): string {
+  let balance = ''
   if (wallet.isMain) {
-    return loaded.value
+    balance = loaded.value
       ? formattedBalance.value
       : getTranslation(
           hasError.value
             ? 'walletPanel.balanceUnavailable'
             : 'walletPanel.balanceLoading',
         )
+  } else {
+    const chainBalance = getFormattedBalance(wallet.id)
+    if (chainBalance) {
+      balance = chainBalance
+    } else if (isTestnet.value && wallet.testnetBalanceZeroKey) {
+      balance = getTranslation(wallet.testnetBalanceZeroKey)
+    } else {
+      balance = wallet.balanceZeroKey
+        ? getTranslation(wallet.balanceZeroKey)
+        : '0'
+    }
   }
-  const chainBalance = getFormattedBalance(wallet.id)
-  if (chainBalance) {
-    return chainBalance
-  }
-  if (isTestnet.value && wallet.testnetBalanceZeroKey) {
-    return getTranslation(wallet.testnetBalanceZeroKey)
-  }
-  return wallet.balanceZeroKey ? getTranslation(wallet.balanceZeroKey) : '0'
+  return formatCompactCryptoBalance(balance)
 }
 
 const prewarmChains = () => {
@@ -415,10 +412,6 @@ function getWalletAvu(wallet: WalletItemConfig): string {
   const raw = getRawBalance?.(wallet.id)
   if (!raw) return ''
   return oracle.formatAvuAmount(wallet.id as any, raw)
-}
-
-function getWalletUnitRate(wallet: WalletItemConfig): string {
-  return oracle.formatUnitRate ? oracle.formatUnitRate(wallet.id as any) : ''
 }
 
 const portfolioTotalAvu = computed(() => {

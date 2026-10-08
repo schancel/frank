@@ -1,13 +1,13 @@
 <template>
   <div class="avu-parity-chart q-pa-sm" data-test="avu-parity-chart">
     <!-- Top Metrics Cards -->
-    <div class="row q-col-gutter-sm q-mb-md">
+    <div class="metric-cards-grid q-mb-md">
       <!-- 0. Active Token Rate -->
-      <div class="col-12 col-sm-6 col-md">
+      <div class="metric-card-wrapper metric-card-featured">
         <q-card
           bordered
           flat
-          class="metric-card"
+          class="metric-card full-height"
           :class="cardBgClass"
           data-test="metric-card-token-rate"
         >
@@ -31,17 +31,23 @@
             <div class="text-caption text-grey-6 text-weight-regular ellipsis">
               {{ activeTokenUnitSubtext }}
             </div>
-            <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+            <q-tooltip
+              anchor="top middle"
+              self="bottom middle"
+              :offset="[0, 8]"
+            >
+              {{ $t('walletPanel.avuTooltip') }}
+            </q-tooltip>
           </q-card-section>
         </q-card>
       </div>
 
       <!-- 1. AVU Hash -->
-      <div class="col-12 col-sm-6 col-md">
+      <div class="metric-card-wrapper">
         <q-card
           bordered
           flat
-          class="metric-card"
+          class="metric-card full-height"
           :class="cardBgClass"
           data-test="metric-card-avu-hash"
         >
@@ -60,17 +66,23 @@
             <div class="text-caption text-grey-6 text-weight-regular ellipsis">
               {{ avuHashSubtext }}
             </div>
-            <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+            <q-tooltip
+              anchor="top middle"
+              self="bottom middle"
+              :offset="[0, 8]"
+            >
+              {{ $t('walletPanel.avuTooltip') }}
+            </q-tooltip>
           </q-card-section>
         </q-card>
       </div>
 
       <!-- 2. AVU Spot -->
-      <div class="col-12 col-sm-6 col-md">
+      <div class="metric-card-wrapper">
         <q-card
           bordered
           flat
-          class="metric-card"
+          class="metric-card full-height"
           :class="cardBgClass"
           data-test="metric-card-avu-spot"
         >
@@ -89,17 +101,23 @@
             <div class="text-caption text-grey-6 text-weight-regular ellipsis">
               {{ avuSpotSubtext }}
             </div>
-            <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+            <q-tooltip
+              anchor="top middle"
+              self="bottom middle"
+              :offset="[0, 8]"
+            >
+              {{ $t('walletPanel.avuTooltip') }}
+            </q-tooltip>
           </q-card-section>
         </q-card>
       </div>
 
       <!-- 3. TPI -->
-      <div class="col-12 col-sm-6 col-md">
+      <div class="metric-card-wrapper">
         <q-card
           bordered
           flat
-          class="metric-card"
+          class="metric-card full-height"
           :class="cardBgClass"
           data-test="metric-card-tpi"
         >
@@ -118,17 +136,16 @@
             <div class="text-caption text-grey-6 text-weight-regular ellipsis">
               {{ tpiSubtext }}
             </div>
-            <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
           </q-card-section>
         </q-card>
       </div>
 
       <!-- 4. Arbitrage Margin -->
-      <div class="col-12 col-sm-6 col-md">
+      <div class="metric-card-wrapper">
         <q-card
           bordered
           flat
-          class="metric-card"
+          class="metric-card full-height"
           :class="cardBgClass"
           data-test="metric-card-arbitrage"
         >
@@ -147,7 +164,6 @@
             <div class="text-caption text-grey-6 text-weight-regular ellipsis">
               {{ arbitrageSubtext }}
             </div>
-            <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
           </q-card-section>
         </q-card>
       </div>
@@ -1958,8 +1974,41 @@ const networkTooltipY = computed(() => {
   width: 100%;
 }
 
+.metric-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.metric-card-wrapper {
+  display: flex;
+}
+
+.metric-card-featured {
+  grid-column: span 2;
+}
+
+@media (min-width: 900px) {
+  .metric-cards-grid {
+    grid-template-columns: repeat(5, 1fr);
+  }
+  .metric-card-featured {
+    grid-column: span 1;
+  }
+}
+
+@media (max-width: 420px) {
+  .metric-cards-grid {
+    grid-template-columns: 1fr;
+  }
+  .metric-card-featured {
+    grid-column: span 1;
+  }
+}
+
 .metric-card {
   border-radius: 8px;
+  width: 100%;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 

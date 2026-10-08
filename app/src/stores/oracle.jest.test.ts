@@ -13,15 +13,27 @@ jest.mock('@frank/wallet/oracle', () => {
 })
 
 describe('useOracleStore (Pinia Store)', () => {
+  const originalHidden = Object.getOwnPropertyDescriptor(document, 'hidden')
+
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
     jest.clearAllMocks()
+    if (originalHidden) {
+      Object.defineProperty(document, 'hidden', originalHidden)
+    } else {
+      delete (document as Partial<Document>).hidden
+    }
   })
 
   afterEach(() => {
     const store = useOracleStore()
     store.stopBackgroundWorker()
+    if (originalHidden) {
+      Object.defineProperty(document, 'hidden', originalHidden)
+    } else {
+      delete (document as Partial<Document>).hidden
+    }
   })
 
   it('initializes with default PoW thermodynamic rates and zero history', () => {
@@ -100,6 +112,26 @@ describe('useOracleStore (Pinia Store)', () => {
     store.stopBackgroundWorker()
     jest.advanceTimersByTime(20000)
     expect(refreshSpy).toHaveBeenCalledTimes(2)
+    jest.useRealTimers()
+  })
+
+  it('skips background worker refresh when document is hidden', () => {
+    jest.useFakeTimers()
+    const store = useOracleStore()
+    const refreshSpy = jest.spyOn(store, 'refresh').mockResolvedValue()
+
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => true,
+    })
+
+    store.startBackgroundWorker(10000)
+    expect(refreshSpy).not.toHaveBeenCalled()
+
+    jest.advanceTimersByTime(20000)
+    expect(refreshSpy).not.toHaveBeenCalled()
+
+    store.stopBackgroundWorker()
     jest.useRealTimers()
   })
 })

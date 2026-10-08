@@ -8,6 +8,7 @@ import { createPinia, setActivePinia } from 'pinia'
 ;(global as any).document = { hasFocus: () => true }
 
 import {
+  IDLE_OUTGOING_RECONCILE_INTERVAL_MS,
   MAX_OUTGOING_RECONCILE_INTERVAL_MS,
   OUTGOING_RECONCILE_INTERVAL_MS,
   startOutgoingReconciliation,
@@ -240,6 +241,145 @@ describe('startOutgoingReconciliation (#270)', () => {
       expect(reconcile.mock.calls.length).toBe(before + 2)
       expect(jest.getTimerCount()).toBe(1)
       polling.stop()
+    })
+  })
+
+  describe('lifecycle and visibility throttling', () => {
+    interface MockDocument {
+      hasFocus: () => boolean
+      hidden: boolean
+      addEventListener: jest.Mock
+      removeEventListener: jest.Mock
+    }
+    let listeners: Record<string, ((event?: Event) => void)[]> = {}
+    const originalDocument = (global as unknown as { document?: MockDocument })
+      .document
+
+    const getDocument = (): MockDocument =>
+      (global as unknown as { document: MockDocument }).document
+
+    beforeEach(() => {
+      listeners = {}
+      ;(global as unknown as { document: MockDocument }).document = {
+        hasFocus: () => true,
+        hidden: false,
+        addEventListener: jest.fn(
+          (event: string, cb: (event?: Event) => void) => {
+            listeners[event] = listeners[event] || []
+            listeners[event].push(cb)
+          },
+        ),
+        removeEventListener: jest.fn(
+          (event: string, cb: (event?: Event) => void) => {
+            if (listeners[event]) {
+              listeners[event] = listeners[event].filter(l => l !== cb)
+            }
+          },
+        ),
+      }
+    })
+
+    afterEach(() => {
+      ;(global as unknown as { document?: MockDocument }).document =
+        originalDocument
+    })
+
+    function triggerVisibilityChange(hidden: boolean) {
+      getDocument().hidden = hidden
+      for (const cb of listeners['visibilitychange'] ?? []) {
+        cb()
+      }
+    }
+
+    it('backs off to idle cadence (60s) when pending === 0', async () => {
+      const chats = useChatStore()
+      const reconcileOutgoingSpy = jest.spyOn(chats, 'reconcileOutgoing')
+
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reconcileOutgoingSpy).toHaveBeenCalledTimes(1)
+
+      // Nothing pending: should pause for IDLE_OUTGOING_RECONCILE_INTERVAL_MS (60s), not 15s
+      await jest.advanceTimersByTimeAsync(OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcileOutgoingSpy).toHaveBeenCalledTimes(1)
+
+      await jest.advanceTimersByTimeAsync(
+        IDLE_OUTGOING_RECONCILE_INTERVAL_MS -
+          OUTGOING_RECONCILE_INTERVAL_MS -
+          1,
+      )
+      expect(reconcileOutgoingSpy).toHaveBeenCalledTimes(1)
+
+      await jest.advanceTimersByTimeAsync(1)
+      expect(reconcileOutgoingSpy).toHaveBeenCalledTimes(2)
+
+      polling.stop()
+    })
+
+    it('relaxes reconciliation delay to at least 60s when document.hidden = true', async () => {
+      await pendingMessage()
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({ [HASH]: 'live' })
+
+      getDocument().hidden = true
+
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reconcile).toHaveBeenCalledTimes(1)
+
+      // In foreground, backoff after 1st tick would be 30s (2 * 15s).
+      // But because document.hidden = true, delay is relaxed to Math.max(30s, 60s) = 60s.
+      await jest.advanceTimersByTimeAsync(30_000)
+      expect(reconcile).toHaveBeenCalledTimes(1)
+
+      await jest.advanceTimersByTimeAsync(30_000)
+      expect(reconcile).toHaveBeenCalledTimes(2)
+
+      polling.stop()
+    })
+
+    it('wakes up and triggers tick() immediately when visibility changes to visible', async () => {
+      await pendingMessage()
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({ [HASH]: 'live' })
+
+      getDocument().hidden = true
+
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reconcile).toHaveBeenCalledTimes(1)
+
+      // Tab remains hidden for 20s (timer armed for 60s)
+      await jest.advanceTimersByTimeAsync(20_000)
+      expect(reconcile).toHaveBeenCalledTimes(1)
+
+      // Tab becomes visible again
+      triggerVisibilityChange(false)
+      await jest.advanceTimersByTimeAsync(0)
+
+      // Should have triggered tick immediately upon becoming visible
+      expect(reconcile).toHaveBeenCalledTimes(2)
+
+      polling.stop()
+    })
+
+    it('removes visibilitychange listener and clears timer on stop()', async () => {
+      const polling = startOutgoingReconciliation({ wallet })
+      expect(getDocument().addEventListener).toHaveBeenCalledWith(
+        'visibilitychange',
+        expect.any(Function),
+      )
+      expect(listeners['visibilitychange']?.length).toBe(1)
+
+      polling.stop()
+      expect(getDocument().removeEventListener).toHaveBeenCalledWith(
+        'visibilitychange',
+        expect.any(Function),
+      )
+      expect(listeners['visibilitychange']?.length).toBe(0)
+      expect(jest.getTimerCount()).toBe(0)
     })
   })
 })

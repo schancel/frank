@@ -41,6 +41,9 @@ jest.mock('../../composables/useChainBalance', () => ({
   }),
 }))
 
+const mockStartBackgroundWorker = jest.fn()
+const mockStopBackgroundWorker = jest.fn()
+
 jest.mock('../../stores/oracle', () => ({
   useSafeOracleStore: () => ({
     getAvu: () => 0,
@@ -55,7 +58,8 @@ jest.mock('../../stores/oracle', () => ({
       return ''
     },
     snapshot: { totalConstituents: 0, constituents: [] },
-    startBackgroundWorker: jest.fn(),
+    startBackgroundWorker: mockStartBackgroundWorker,
+    stopBackgroundWorker: mockStopBackgroundWorker,
   }),
 }))
 
@@ -96,6 +100,8 @@ beforeEach(() => {
   localStorage.clear()
   const { clearAllCustomNames } = useWalletNames()
   clearAllCustomNames()
+  mockStartBackgroundWorker.mockClear()
+  mockStopBackgroundWorker.mockClear()
 })
 
 afterEach(() => {
@@ -301,4 +307,13 @@ test('renders universal AVU tooltips on portfolio total and drawer header', () =
       tt.text().includes('1 AVU ≡ 1 kWh (3.6 MJ) of physical compute'),
     ),
   ).toBe(true)
+})
+
+test('starts background worker on mount and stops it on unmount', () => {
+  const view = render()
+  expect(mockStartBackgroundWorker).toHaveBeenCalledTimes(1)
+  expect(mockStopBackgroundWorker).not.toHaveBeenCalled()
+
+  view.unmount()
+  expect(mockStopBackgroundWorker).toHaveBeenCalledTimes(1)
 })

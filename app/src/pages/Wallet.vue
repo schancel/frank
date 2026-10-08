@@ -20,16 +20,8 @@
             >
               {{
                 getCustomName(selectedWallet) ||
-                (selectedWallet === 'ecash'
-                  ? $t('walletPanel.ecash')
-                  : selectedWallet === 'solana'
-                  ? $t('walletPanel.solana')
-                  : selectedWallet === 'tempo'
-                  ? $t('walletPanel.tempo')
-                  : selectedWallet === 'ethereum'
-                  ? $t('walletPanel.ethereum')
-                  : selectedWallet === 'hyperliquid'
-                  ? $t('walletPanel.hyperliquid')
+                (currentWalletConfig
+                  ? $t(currentWalletConfig.defaultNameKey)
                   : $t('walletPanel.mainWallet'))
               }}
             </span>
@@ -48,26 +40,10 @@
             data-testid="wallet-chain"
           >
             {{
-              selectedWallet === 'ecash'
+              currentWalletConfig
                 ? isTestnet
-                  ? $t('walletPanel.ecashTestnet')
-                  : $t('walletPanel.ecash')
-                : selectedWallet === 'solana'
-                ? isTestnet
-                  ? $t('walletPanel.solanaTestnet')
-                  : $t('walletPanel.solana')
-                : selectedWallet === 'tempo'
-                ? isTestnet
-                  ? $t('walletPanel.tempoTestnet')
-                  : $t('walletPanel.tempo')
-                : selectedWallet === 'ethereum'
-                ? isTestnet
-                  ? $t('walletPanel.ethereumTestnet')
-                  : $t('walletPanel.ethereum')
-                : selectedWallet === 'hyperliquid'
-                ? isTestnet
-                  ? $t('walletPanel.hyperliquidTestnet')
-                  : $t('walletPanel.hyperliquid')
+                  ? $t(currentWalletConfig.testnetChainKey)
+                  : $t(currentWalletConfig.chainKey)
                 : isTestnet
                 ? $t('walletPanel.monadTestnet')
                 : $t('walletPanel.monad')
@@ -487,6 +463,7 @@ import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { getChainTokens, type TokenItem } from 'src/composables/useChainBalance'
 import { getExplorerUrl } from 'src/utils/explorer'
 import type { SwapRecord } from 'src/stores/swaps'
+import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -524,6 +501,10 @@ export default defineComponent({
       if (query) return query
       return 'monad'
     })
+
+    const currentWalletConfig = computed(() =>
+      WALLET_CONFIGS.find(w => w.id === selectedWallet.value),
+    )
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
     const {
@@ -602,6 +583,9 @@ export default defineComponent({
     const prewarmChains = (active: string) => {
       if (accountStatus.status === 'ready') {
         for (const chain of [
+          'bitcoin',
+          'bitcoincash',
+          'dogecoin',
           'ecash',
           'solana',
           'tempo',
@@ -674,6 +658,7 @@ export default defineComponent({
       activeTab,
       selectedWallet,
       selectedChain: selectedWallet,
+      currentWalletConfig,
       isTestnet,
       displayAddress,
       balanceText,

@@ -116,18 +116,32 @@ afterEach(() => {
 test('renders list of wallets without recovery banners or demo buttons', () => {
   const view = render()
   expect(view.find('[data-test="wallet-row"]').exists()).toBe(true)
+  expect(view.find('[data-test="bitcoin-wallet-row"]').exists()).toBe(true)
+  expect(view.find('[data-test="bitcoincash-wallet-row"]').exists()).toBe(true)
+  expect(view.find('[data-test="dogecoin-wallet-row"]').exists()).toBe(true)
   expect(view.find('[data-test="ecash-wallet-row"]').exists()).toBe(true)
   expect(view.find('[data-test="solana-wallet-row"]').exists()).toBe(true)
   expect(view.text()).toContain('Wallets')
   expect(view.text()).toContain('Main wallet')
+  expect(view.text()).toContain('Bitcoin')
+  expect(view.text()).toContain('Bitcoin Cash')
+  expect(view.text()).toContain('Dogecoin')
   expect(view.text()).toContain('eCash')
   expect(view.text()).toContain('Solana')
   // No informative text walls or demo buttons
   expect(view.text()).not.toContain('Messaging is unavailable')
   expect(view.find('[data-test="recovery-descriptor"]').exists()).toBe(false)
   expect(view.find('[data-test="testnet-badge"]').exists()).toBe(true)
+  expect(view.find('[data-test="bitcoin-testnet-badge"]').exists()).toBe(true)
+  expect(view.find('[data-test="bitcoincash-testnet-badge"]').exists()).toBe(
+    true,
+  )
+  expect(view.find('[data-test="dogecoin-testnet-badge"]').exists()).toBe(true)
   expect(view.find('[data-test="ecash-testnet-badge"]').exists()).toBe(true)
   expect(view.find('[data-test="solana-testnet-badge"]').exists()).toBe(true)
+  expect(view.text()).toContain('0 tBTC')
+  expect(view.text()).toContain('0 tBCH')
+  expect(view.text()).toContain('0 tDOGE')
   expect(view.text()).toContain('0 tXEC')
   expect(view.text()).toContain('0 tSOL')
 })
@@ -167,6 +181,15 @@ test('clicking wallet rows navigates to the respective chain', async () => {
 
   await view.find('[data-test="wallet-row"]').trigger('click')
   expect(mockRouterPush).toHaveBeenCalledWith('/wallet')
+
+  await view.find('[data-test="bitcoin-wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith('/wallet/bitcoin')
+
+  await view.find('[data-test="bitcoincash-wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith('/wallet/bitcoincash')
+
+  await view.find('[data-test="dogecoin-wallet-row"]').trigger('click')
+  expect(mockRouterPush).toHaveBeenCalledWith('/wallet/dogecoin')
 
   await view.find('[data-test="ecash-wallet-row"]').trigger('click')
   expect(mockRouterPush).toHaveBeenCalledWith('/wallet/ecash')

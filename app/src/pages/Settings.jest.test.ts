@@ -432,4 +432,41 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
     expect((input.element as HTMLInputElement).value).toBe(newAddress)
     wrapper.unmount()
   })
+
+  describe('Network Environment & Chains Section', () => {
+    it('renders the testnet mode toggle as disabled and active', async () => {
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+
+      const toggle = wrapper.find('[data-test="testnet-mode-toggle"]')
+      expect(toggle.exists()).toBe(true)
+      expect(
+        toggle.attributes('model-value') ?? toggle.attributes('modelvalue'),
+      ).toBe('true')
+      expect(toggle.attributes('disable')).toBe('true')
+
+      wrapper.unmount()
+    })
+
+    it('renders the supported settlement networks list', async () => {
+      const router = await openDirectly('#/settings')
+      const wrapper = mountSettings(router)
+
+      const supported = (wrapper.vm as any).supportedChains
+      expect(supported).toBeDefined()
+      expect(supported.length).toBeGreaterThanOrEqual(9)
+      const chainIds = supported.map((c: any) => c.id)
+      expect(chainIds).toContain('monad')
+      expect(chainIds).toContain('bitcoin')
+      expect(chainIds).toContain('bitcoincash')
+      expect(chainIds).toContain('dogecoin')
+      expect(chainIds).toContain('ecash')
+      expect(chainIds).toContain('solana')
+      expect(chainIds).toContain('tempo')
+      expect(chainIds).toContain('ethereum')
+      expect(chainIds).toContain('hyperliquid')
+
+      wrapper.unmount()
+    })
+  })
 })

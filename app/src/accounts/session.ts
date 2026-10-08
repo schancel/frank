@@ -92,8 +92,8 @@ export function createAccountSession(deps: {
   })
   let custody: AccountCustody | undefined
   let wallet: RuntimeWallet | undefined
-  const chainAddressCache = new Map<'monad' | 'ecash' | 'solana', string>()
-  const chainAddressInFlight = new Map<'ecash' | 'solana', Promise<string>>()
+  const chainAddressCache = new Map<string, string>()
+  const chainAddressInFlight = new Map<string, Promise<string>>()
   const curveKeyCache = new Map<SupportedCurve, Uint8Array>()
   const curveKeyInFlight = new Map<SupportedCurve, Promise<Uint8Array>>()
   let generation = 0
@@ -355,6 +355,9 @@ export function createAccountSession(deps: {
         chainAddressCache.get(chain) ??
         (chain !== 'ecash' &&
         chain !== 'solana' &&
+        chain !== 'bitcoin' &&
+        chain !== 'bitcoincash' &&
+        chain !== 'dogecoin' &&
         wallet?.identity?.displayAddress
           ? wallet.identity.displayAddress
           : undefined)
@@ -384,7 +387,10 @@ export function createAccountSession(deps: {
       if (inFlight) return inFlight
       const promise = (async () => {
         const purpose =
-          chain === 'ecash'
+          chain === 'ecash' ||
+          chain === 'bitcoin' ||
+          chain === 'bitcoincash' ||
+          chain === 'dogecoin'
             ? 'ecash-bch-wallet'
             : chain === 'solana'
             ? 'solana-wallet'
@@ -408,6 +414,93 @@ export function createAccountSession(deps: {
             const prefix = activeChain.isTestnet ? 'ectest' : 'ecash'
             const addr = encodeCashAddress(prefix, 'p2pkh', hash160)
             chainAddressCache.set('ecash', addr)
+            return addr
+          } else if (chain === 'bitcoin') {
+            const { HDNodeWallet } = await import('ethers')
+            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+            const { sha256 } = await import('@noble/hashes/sha256.js')
+            const {
+              encodeAddress,
+              pubkeyHashFromBytes,
+              BTC_MAINNET,
+              BTC_TESTNET,
+            } = await import('@frank/nakamoto')
+            const path = activeChain.isTestnet
+              ? "m/84'/1'/0'/0/0"
+              : "m/84'/0'/0'/0/0"
+            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
+            const pubKeyHex = hdNode.publicKey.startsWith('0x')
+              ? hdNode.publicKey.slice(2)
+              : hdNode.publicKey
+            const pubKeyBytes = Uint8Array.from(
+              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
+            )
+            const hash160 = ripemd160(sha256(pubKeyBytes))
+            const pkh = pubkeyHashFromBytes(hash160)
+            if (pkh.ok) {
+              const res = encodeAddress(
+                { kind: 'p2wpkh', hash: pkh.value },
+                activeChain.isTestnet ? BTC_TESTNET : BTC_MAINNET,
+                'bech32',
+              )
+              if (res.ok) {
+                chainAddressCache.set('bitcoin', res.value)
+                return res.value
+              }
+            }
+            throw new Error('Failed to derive Bitcoin address')
+          } else if (chain === 'bitcoincash') {
+            const { HDNodeWallet } = await import('ethers')
+            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+            const { sha256 } = await import('@noble/hashes/sha256.js')
+            const {
+              encodeAddress,
+              pubkeyHashFromBytes,
+              BCH_MAINNET,
+              BCH_TESTNET,
+            } = await import('@frank/nakamoto')
+            const path = "m/44'/145'/0'/0/0"
+            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
+            const pubKeyHex = hdNode.publicKey.startsWith('0x')
+              ? hdNode.publicKey.slice(2)
+              : hdNode.publicKey
+            const pubKeyBytes = Uint8Array.from(
+              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
+            )
+            const hash160 = ripemd160(sha256(pubKeyBytes))
+            const pkh = pubkeyHashFromBytes(hash160)
+            if (pkh.ok) {
+              const res = encodeAddress(
+                { kind: 'p2pkh', hash: pkh.value },
+                activeChain.isTestnet ? BCH_TESTNET : BCH_MAINNET,
+                'cashaddr',
+              )
+              if (res.ok) {
+                chainAddressCache.set('bitcoincash', res.value)
+                return res.value
+              }
+            }
+            throw new Error('Failed to derive Bitcoin Cash address')
+          } else if (chain === 'dogecoin') {
+            const { HDNodeWallet } = await import('ethers')
+            const { ripemd160 } = await import('@noble/hashes/ripemd160.js')
+            const { sha256 } = await import('@noble/hashes/sha256.js')
+            const { encodeBase58Check } = await import('@frank/nakamoto')
+            const path = "m/44'/3'/0'/0/0"
+            const hdNode = HDNodeWallet.fromSeed(root).derivePath(path)
+            const pubKeyHex = hdNode.publicKey.startsWith('0x')
+              ? hdNode.publicKey.slice(2)
+              : hdNode.publicKey
+            const pubKeyBytes = Uint8Array.from(
+              pubKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) ?? [],
+            )
+            const hash160 = ripemd160(sha256(pubKeyBytes))
+            const version = activeChain.isTestnet ? 0x71 : 0x1e
+            const payload = new Uint8Array(21)
+            payload[0] = version
+            payload.set(hash160, 1)
+            const addr = encodeBase58Check(payload)
+            chainAddressCache.set('dogecoin', addr)
             return addr
           } else if (chain === 'solana') {
             const { Keypair } = await import('@solana/web3.js')

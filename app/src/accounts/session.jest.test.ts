@@ -398,9 +398,21 @@ test('getActiveDomainRoot and getChainAddress derive valid addresses for ecash a
   expect(typeof solanaAddr).toBe('string')
   expect(solanaAddr.length).toBeGreaterThan(30)
 
+  const btcAddr = await f.session.getChainAddress('bitcoin')
+  expect(btcAddr.startsWith('tb1q')).toBe(true)
+
+  const bchAddr = await f.session.getChainAddress('bitcoincash')
+  expect(bchAddr.startsWith('bchtest:')).toBe(true)
+
+  const dogeAddr = await f.session.getChainAddress('dogecoin')
+  expect(dogeAddr.startsWith('n')).toBe(true)
+
   // Verify caching and synchronous retrieval
   expect(f.session.getCachedChainAddress('ecash')).toBe(ecashAddr)
   expect(f.session.getCachedChainAddress('solana')).toBe(solanaAddr)
+  expect(f.session.getCachedChainAddress('bitcoin')).toBe(btcAddr)
+  expect(f.session.getCachedChainAddress('bitcoincash')).toBe(bchAddr)
+  expect(f.session.getCachedChainAddress('dogecoin')).toBe(dogeAddr)
 
   const initialTakeRootsCalls = f.capability.takeRoots.mock.calls.length
   const cachedEcash = await f.session.getChainAddress('ecash')

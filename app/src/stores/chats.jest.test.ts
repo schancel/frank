@@ -1290,11 +1290,11 @@ describe('stores/chats.ts (ticket #42)', () => {
         }),
       ).resolves.toEqual({
         state: 'failed',
-        reason: 'interrupted',
+        reason: 'error',
       })
       expect(chats.chats[RECIPIENT_ADDRESS]?.messages[0]?.delivery).toEqual(
         expect.objectContaining({
-          failureReason: 'interrupted',
+          failureReason: 'error',
         }),
       )
       expect(consoleErrorSpy).toHaveBeenCalledWith(

@@ -618,24 +618,6 @@ function classifySendFailure(
   if (isInsufficientFundsError(held)) {
     return { reason: 'insufficient-funds', keepDigest: ownDigest }
   }
-  if (
-    error instanceof CanonicalMessagingHoldError ||
-    (error instanceof Error && error.name === 'CanonicalMessagingHoldError')
-  ) {
-    if (isNoResponseError(held)) {
-      return { reason: 'unreachable', keepDigest: ownDigest }
-    }
-    if (held instanceof MonadMailboxUnavailableError) {
-      return { reason: 'unavailable' }
-    }
-    if (
-      held instanceof MonadStampTerminalError ||
-      held instanceof MonadStampRejectedError
-    ) {
-      return { reason: 'rejected' }
-    }
-    return { reason: 'interrupted', keepDigest: ownDigest }
-  }
   return {
     reason:
       isNoResponseError(error) || isNoResponseError(held)

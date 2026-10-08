@@ -1144,7 +1144,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             receivedTime: record.timestamp,
           });
         }
-      } catch {
+      } catch (err) {
+        if (!canonical) {
+          throw err;
+        }
         // Standard mailbox read is best-effort fallback alongside canonical messaging
       }
       received.sort((a, b) => (a.receivedTime ?? 0) - (b.receivedTime ?? 0));

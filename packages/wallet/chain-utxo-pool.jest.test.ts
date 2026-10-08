@@ -3,6 +3,7 @@ import { Keypair } from '@solana/web3.js'
 import { getBase58Decoder } from '@solana/codecs-strings'
 import {
   ChainUtxoPool,
+  ChainUtxoView,
   ChainUtxoCoin,
   makeUtxoId,
   inferChainFamily,
@@ -593,4 +594,145 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(durationMs).toBeLessThan(5)
     })
   })
+
+  describe('ChainUtxoView Transactional Overlay & Chaining', () => {
+    let pool: ChainUtxoPool
+    const walletA = Wallet.createRandom()
+    const walletChange1 = Wallet.createRandom()
+    const walletChange2 = Wallet.createRandom()
+
+    beforeEach(() => {
+      pool = new ChainUtxoPool()
+      // Initial state: 1 UTXO of 100,000 satoshis on eCash
+      pool.utxo.registerOutpoint({
+        chain: 'ecash',
+        address: 'ecash:qzparent123',
+        privateKey: walletA.privateKey,
+        txid: 'tx_parent_001',
+        vout: 0,
+        balanceWei: 100_000n,
+      })
+    })
+
+    it('allows chaining child transactions off unconfirmed change outputs in a view', () => {
+      const view = pool.createView()
+
+      // Tx 1: Spend 40,000 + 500 fee from parent -> creates 59,500 change
+      const sel1 = view.selectCoins({
+        chain: 'ecash',
+        targetAmountWei: 40_000n,
+        feeReserveWei: 500n,
+      })
+      expect(sel1.selected.length).toBe(1)
+      expect(sel1.selected[0].balanceWei).toBe(100_000n)
+
+      // Apply Tx 1 in the view
+      view.applyTransaction({
+        chain: 'ecash',
+        inputs: sel1.selected,
+        changeOutputs: [
+          {
+            address: 'ecash:qzchange1',
+            privateKey: walletChange1.privateKey,
+            balanceWei: 59_500n,
+            outpoint: { txid: 'tx_child_001', vout: 1 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      // The original parent UTXO is now marked spent in this view
+      expect(view.isSpentInView(sel1.selected[0].id)).toBe(true)
+
+      // Tx 2: Wants to spend 30,000 + 500 fee
+      // Even though base pool only has the parent (which is spent in view),
+      // the view can select the staged change output from Tx 1!
+      const sel2 = view.selectCoins({
+        chain: 'ecash',
+        targetAmountWei: 30_000n,
+        feeReserveWei: 500n,
+      })
+      expect(sel2.selected.length).toBe(1)
+      expect(sel2.selected[0].address).toBe('ecash:qzchange1')
+      expect(sel2.selected[0].balanceWei).toBe(59_500n)
+      expect(sel2.selected[0].outpoint?.txid).toBe('tx_child_001')
+
+      // Apply Tx 2 in the view
+      view.applyTransaction({
+        chain: 'ecash',
+        inputs: sel2.selected,
+        changeOutputs: [
+          {
+            address: 'ecash:qzchange2',
+            privateKey: walletChange2.privateKey,
+            balanceWei: 29_000n,
+            outpoint: { txid: 'tx_child_002', vout: 1 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      // Base pool is completely untouched prior to commit
+      expect(pool.getCleanCoins('ecash').length).toBe(1)
+      expect(pool.getCleanCoins('ecash')[0].balanceWei).toBe(100_000n)
+
+      // Commit the view
+      view.commit()
+
+      // After commit, parent is pending in base pool, and the staged coins are registered
+      expect(pool.getPendingCoins('ecash').length).toBe(1)
+      expect(pool.getCleanCoins('ecash').length).toBe(1)
+      expect(pool.getCleanCoins('ecash')[0].balanceWei).toBe(29_000n)
+      expect(pool.getCleanCoins('ecash')[0].outpoint?.txid).toBe('tx_child_002')
+    })
+
+    it('stages sequential EVM account nonce and balance updates in a view', () => {
+      const evmPool = new ChainUtxoPool()
+      const evmWallet = Wallet.createRandom()
+      evmPool.evm.registerSubAccount({
+        chain: 'monad',
+        address: evmWallet.address,
+        privateKey: evmWallet.privateKey,
+        balanceWei: 50_000_000n,
+      })
+
+      const view = evmPool.createView()
+
+      // Tx 1: Spends 20,000,000 + 21,000 fee
+      const sel1 = view.selectCoins({
+        chain: 'monad',
+        targetAmountWei: 20_000_000n,
+        feeReserveWei: 21_000n,
+      })
+      expect(sel1.selected[0].nonce).toBe(0)
+
+      view.applyTransaction({
+        chain: 'monad',
+        inputs: sel1.selected,
+        updatedAccounts: [
+          {
+            id: sel1.selected[0].id,
+            remainingBalanceWei: 29_979_000n,
+            nextNonce: 1,
+          },
+        ],
+      })
+
+      // Tx 2: Chained spend from the same account with incremented nonce
+      const sel2 = view.selectCoins({
+        chain: 'monad',
+        targetAmountWei: 10_000_000n,
+        feeReserveWei: 21_000n,
+      })
+      expect(sel2.selected.length).toBe(1)
+      expect(sel2.selected[0].nonce).toBe(1)
+      expect(sel2.selected[0].balanceWei).toBe(29_979_000n)
+
+      // Rollback discards all changes cleanly
+      view.rollback()
+      expect(view.getCleanCoins('monad')[0].nonce).toBe(0)
+      expect(view.getCleanCoins('monad')[0].balanceWei).toBe(50_000_000n)
+    })
+  })
 })
+

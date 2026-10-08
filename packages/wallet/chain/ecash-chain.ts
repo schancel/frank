@@ -14,6 +14,7 @@ import {
   EcashWalletFactory,
 } from "../ecash-wallet";
 import type { ChronikClient } from "chronik-client";
+import type { ChainUtxoPool } from "../chain-utxo-pool";
 
 export interface EcashChainConfig {
   /** Optional chain identifier override; defaults to networkId. */
@@ -25,6 +26,7 @@ export interface EcashChainConfig {
   /** Test/embedding seam; production uses ecash-wallet's HD wallet implementation. */
   walletFactory?: EcashWalletFactory;
   nativeAttemptStore?: NativeTransactionAttemptStore;
+  chainUtxoPool?: ChainUtxoPool;
 }
 
 const ECASH_MAINNET_PREFIX: EcashAddressPrefix = "ecash";
@@ -114,6 +116,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         networkId: canonicalNetwork,
         walletFactory: config.walletFactory,
         nativeAttemptStore: config.nativeAttemptStore,
+        chainUtxoPool: config.chainUtxoPool,
         getTransactionStatus: (transaction) =>
           getEcashTransactionStatus(config, transaction),
       });

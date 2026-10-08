@@ -1002,15 +1002,20 @@ export class FrankBotHost {
               wallet.identity.toPrivateKeyHex(),
             ].filter(Boolean) as string[];
 
+            let bestKey: string | undefined;
+            let maxBal = -1n;
             for (const key of candidateKeys) {
               try {
                 const signerAddr = new Wallet(key).address;
                 const bal = await this.provider.getBalance(signerAddr);
-                if (bal >= this.options.stampValueWei) {
-                  fundingPrivateKeyHex = key;
-                  break;
+                if (bal > maxBal) {
+                  maxBal = bal;
+                  bestKey = key;
                 }
               } catch {}
+            }
+            if (bestKey && maxBal >= this.options.stampValueWei) {
+              fundingPrivateKeyHex = bestKey;
             }
             if (!fundingPrivateKeyHex) {
               fundingPrivateKeyHex =

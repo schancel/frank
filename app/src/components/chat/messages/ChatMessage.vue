@@ -29,6 +29,18 @@
       >
         <!-- Wrap a div around the template to keep all items within 1 QChatMessasge -->
         <div data-testid="chat-message-body" class="chat-message-body">
+          <chat-message-menu
+            :address="address"
+            :message="message"
+            :payload-digest="payloadDigest"
+            :index="index"
+            @replyClick="replyClicked({ address, payloadDigest })"
+            @forwardClick="forwardClicked({ address, payloadDigest })"
+            @txClick="transactionDialog = true"
+            @deleteClick="deleteDialog = true"
+            @resendClick="resend()"
+            @discardClick="confirmDiscard()"
+          />
           <template v-for="(item, subIndex) in message.items" :key="subIndex">
             <chat-message-reply
               v-if="item.type == 'reply'"
@@ -185,6 +197,7 @@ import ChatMessageDice from './ChatMessageDice.vue'
 import ChatMessageLiarsDice from './ChatMessageLiarsDice.vue'
 import ChatMessagePoker from './ChatMessagePoker.vue'
 import ChatMessageChannel from './ChatMessageChannel.vue'
+import ChatMessageMenu from '../../context_menus/ChatMessageMenu.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
@@ -203,7 +216,7 @@ import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
 export default defineComponent({
   name: 'ChatMessage',
   components: {
-    // ChatMessageMenu,
+    ChatMessageMenu,
     ChatMessageReply,
     ChatMessageText,
     ChatMessageBlackjack,

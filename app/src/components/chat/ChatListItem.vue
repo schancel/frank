@@ -48,6 +48,7 @@
           <account-badge
             v-if="effectiveAddress && !conversation?.topic"
             :address="effectiveAddress"
+            :name="subjectOrName"
             :account-type="targetProfile?.accountType"
             :bot-role="targetProfile?.botRole"
             :is-bot="targetProfile?.isBot"
@@ -98,6 +99,78 @@
         class="q-my-xs"
       />
     </q-item-section>
+
+    <!-- Right-click contextual menu -->
+    <q-menu touch-position context-menu>
+      <q-list dense style="min-width: 160px">
+        <q-item clickable v-close-popup @click="openConversation">
+          <q-item-section avatar>
+            <q-icon name="chat" size="xs" />
+          </q-item-section>
+          <q-item-section>{{ $t('chatListMenu.openChat') }}</q-item-section>
+        </q-item>
+        <q-item
+          v-if="effectiveAddress"
+          clickable
+          v-close-popup
+          @click="viewProfile"
+        >
+          <q-item-section avatar>
+            <q-icon name="person" size="xs" />
+          </q-item-section>
+          <q-item-section>{{ $t('chatListMenu.viewProfile') }}</q-item-section>
+        </q-item>
+        <q-item
+          v-if="effectiveAddress"
+          clickable
+          v-close-popup
+          @click="copyAddress"
+        >
+          <q-item-section avatar>
+            <q-icon name="content_copy" size="xs" />
+          </q-item-section>
+          <q-item-section>{{ $t('chatListMenu.copyAddress') }}</q-item-section>
+        </q-item>
+        <q-separator v-if="effectiveAddress && hasNotifyToggle" />
+        <q-item
+          v-if="effectiveAddress && hasNotifyToggle"
+          clickable
+          v-close-popup
+          @click="toggleNotify"
+        >
+          <q-item-section avatar>
+            <q-icon
+              :name="isMuted ? 'notifications' : 'notifications_off'"
+              size="xs"
+            />
+          </q-item-section>
+          <q-item-section>
+            {{ isMuted ? $t('chatListMenu.unmute') : $t('chatListMenu.mute') }}
+          </q-item-section>
+        </q-item>
+        <q-separator />
+        <q-item
+          clickable
+          v-close-popup
+          @click="deleteDialogOpen = true"
+          class="text-negative"
+        >
+          <q-item-section avatar>
+            <q-icon name="delete" size="xs" color="negative" />
+          </q-item-section>
+          <q-item-section>{{ $t('chatListMenu.deleteChat') }}</q-item-section>
+        </q-item>
+      </q-list>
+    </q-menu>
+
+    <!-- Delete Chat Confirmation Dialog -->
+    <q-dialog v-model="deleteDialogOpen">
+      <delete-chat-dialog
+        :address="effectiveAddress || effectiveId"
+        :name="subjectOrName"
+        @deleted="onChatDeleted"
+      />
+    </q-dialog>
   </q-item>
 </template>
 
@@ -105,42 +178,97 @@
 import { type Conversation, useChatStore } from 'src/stores/chats'
 import { useContactStore } from 'src/stores/contacts'
 import { useProfileStore } from 'src/stores/my-profile'
-import { defineComponent, type PropType } from 'vue'
+import { defineComponent, ref, type PropType } from 'vue'
+import { copyToClipboard } from 'quasar'
 import { profileAvatar } from 'src/utils/avatar'
 import {
   sameCanonicalAddress,
   useReactiveOwnCanonicalAddress,
 } from 'src/utils/own-address'
 import { formatConversationTimestamp } from 'src/utils/formatting'
-import { toChainDisplayAddress } from 'src/utils/chain-address'
+import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
+import { openChat, openContactProfile } from 'src/utils/routes'
+import { addressCopiedNotify } from 'src/utils/notifications'
 import AccountBadge from 'src/components/contacts/AccountBadge.vue'
+import DeleteChatDialog from '../dialogs/DeleteChatDialog.vue'
 
 export default defineComponent({
   components: {
     AccountBadge,
+    DeleteChatDialog,
   },
   setup() {
     const contacts = useContactStore()
     const chats = useChatStore()
     const myProfile = useProfileStore()
+    const deleteDialogOpen = ref(false)
 
     return {
       getContactProfile: contacts.getContactProfile,
       getLatestMessage: chats.getLatestMessage,
       chatStore: chats,
+      contacts,
       chats,
       myProfile,
+      deleteDialogOpen,
       profileAvatar,
       ownAddress: useReactiveOwnCanonicalAddress(),
     }
   },
   methods: {
+    openConversation() {
+      const target =
+        this.conversation?.kind === 'direct' &&
+        !this.conversation.topic &&
+        !this.conversation.name &&
+        this.effectiveAddress
+          ? this.effectiveAddress
+          : this.effectiveId
+      if (typeof this.chatStore.setActiveConversation === 'function') {
+        this.chatStore.setActiveConversation(target)
+      } else if (typeof this.chatStore.setActiveChat === 'function') {
+        this.chatStore.setActiveChat(target)
+      }
+      if (this.$router) {
+        openChat(this.$router, target)
+      }
+    },
+    viewProfile() {
+      if (!this.effectiveAddress) return
+      if (this.$router) {
+        openContactProfile(this.$router, this.effectiveAddress)
+      }
+    },
+    copyAddress() {
+      if (!this.effectiveAddress) return
+      copyToClipboard(this.effectiveAddress)
+        .then(() => {
+          addressCopiedNotify()
+        })
+        .catch(() => {
+          // copy failed
+        })
+    },
+    toggleNotify() {
+      if (!this.effectiveAddress) return
+      const current = this.contacts.getNotify?.(this.effectiveAddress) ?? true
+      this.contacts.setNotify?.({
+        address: this.effectiveAddress,
+        value: !current,
+      })
+    },
+    onChatDeleted() {
+      this.deleteDialogOpen = false
+      if (this.isActive && this.$router) {
+        this.$router.push('/chat')
+      }
+    },
     formatParticipant(address: string): string {
       if (sameCanonicalAddress(address, this.ownAddress)) {
         return this.$t('selfChat.you')
       }
       const profile = this.getContactProfile(address)
-      if (profile?.name) {
+      if (profile?.name && profile.name !== 'Loading...') {
         return profile.name
       }
       try {
@@ -158,6 +286,19 @@ export default defineComponent({
     },
   },
   computed: {
+    isMuted(): boolean {
+      if (!this.effectiveAddress) return false
+      return (
+        (this.contacts.getNotify?.(this.effectiveAddress) ?? true) === false
+      )
+    },
+    hasNotifyToggle(): boolean {
+      return Boolean(
+        this.effectiveAddress &&
+          isChainAddress(this.effectiveAddress) &&
+          !sameCanonicalAddress(this.effectiveAddress, this.ownAddress),
+      )
+    },
     isEmail(): boolean {
       return this.conversation?.kind === 'email'
     },
@@ -284,7 +425,21 @@ export default defineComponent({
       ) {
         return this.$t('selfChat.you')
       }
-      return this.contact?.name ?? (this.effectiveAddress || this.effectiveId)
+      const rawName = this.contact?.name
+      if (!rawName || rawName === 'Loading...' || rawName.trim() === '') {
+        const target = this.effectiveAddress || this.effectiveId
+        try {
+          const display = toChainDisplayAddress(target)
+          return display.length > 12
+            ? `${display.slice(0, 6)}...${display.slice(-4)}`
+            : display
+        } catch {
+          return target.length > 12
+            ? `${target.slice(0, 6)}...${target.slice(-4)}`
+            : target
+        }
+      }
+      return rawName
     },
     presentedAvatar(): string | undefined {
       if (
@@ -300,7 +455,9 @@ export default defineComponent({
       if (
         activeParam &&
         (activeParam === this.effectiveAddress ||
-          activeParam === this.effectiveId)
+          activeParam === this.effectiveId ||
+          sameCanonicalAddress(activeParam, this.effectiveAddress) ||
+          sameCanonicalAddress(activeParam, this.effectiveId))
       ) {
         return true
       }
@@ -318,7 +475,8 @@ export default defineComponent({
       }
       if (
         store?.activeChatAddr &&
-        store.activeChatAddr === this.effectiveAddress
+        (store.activeChatAddr === this.effectiveAddress ||
+          sameCanonicalAddress(store.activeChatAddr, this.effectiveAddress))
       ) {
         return true
       }

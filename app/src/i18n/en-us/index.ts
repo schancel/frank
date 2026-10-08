@@ -552,7 +552,22 @@ export default {
     deleteMessage: 'Delete message',
   },
   chatMessageMenu: {
+    reply: 'Reply',
+    forward: 'Forward',
+    copy: 'Copy Text',
+    stampTransaction: 'Stamp Transaction',
+    resend: 'Resend',
+    discard: 'Discard',
+    delete: 'Delete',
     messageCopied: 'Message copied to clipboard',
+  },
+  chatListMenu: {
+    openChat: 'Open Chat',
+    viewProfile: 'View Profile',
+    copyAddress: 'Copy Address',
+    mute: 'Mute Notifications',
+    unmute: 'Unmute Notifications',
+    deleteChat: 'Delete Conversation',
   },
   notifications: {
     addressCopied: 'Address copied to clipboard.',

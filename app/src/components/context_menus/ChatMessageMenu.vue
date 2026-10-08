@@ -1,58 +1,90 @@
 <template>
   <q-menu touch-position context-menu>
-    <q-list dense style="min-width: 100px">
+    <q-list dense style="min-width: 140px">
       <q-item
-        v-if="message.outpoints != null"
+        v-if="canReply"
         clickable
         v-close-popup
         @click="$emit('replyClick')"
       >
-        <q-item-section>Reply</q-item-section>
+        <q-item-section avatar>
+          <q-icon name="reply" size="xs" />
+        </q-item-section>
+        <q-item-section>{{ $t('chatMessageMenu.reply') }}</q-item-section>
       </q-item>
       <q-item
-        v-if="message.outpoints != null"
+        v-if="canForward"
         clickable
         v-close-popup
         @click="$emit('forwardClick')"
       >
-        <q-item-section>Forward</q-item-section>
+        <q-item-section avatar>
+          <q-icon name="forward" size="xs" />
+        </q-item-section>
+        <q-item-section>{{ $t('chatMessageMenu.forward') }}</q-item-section>
+      </q-item>
+      <q-item v-if="canCopy" clickable v-close-popup @click="copyMessage">
+        <q-item-section avatar>
+          <q-icon name="content_copy" size="xs" />
+        </q-item-section>
+        <q-item-section>{{ $t('chatMessageMenu.copy') }}</q-item-section>
+      </q-item>
+      <q-separator v-if="hasStamp || isError" />
+      <q-item v-if="hasStamp" clickable v-close-popup @click="$emit('txClick')">
+        <q-item-section avatar>
+          <q-icon name="receipt_long" size="xs" />
+        </q-item-section>
+        <q-item-section>{{
+          $t('chatMessageMenu.stampTransaction')
+        }}</q-item-section>
+      </q-item>
+      <q-item
+        v-if="isError"
+        clickable
+        v-close-popup
+        @click="$emit('resendClick')"
+      >
+        <q-item-section avatar>
+          <q-icon name="replay" size="xs" />
+        </q-item-section>
+        <q-item-section>{{ $t('chatMessageMenu.resend') }}</q-item-section>
+      </q-item>
+      <q-item
+        v-if="isError"
+        clickable
+        v-close-popup
+        @click="$emit('discardClick')"
+        class="text-negative"
+      >
+        <q-item-section avatar>
+          <q-icon name="delete_forever" size="xs" color="negative" />
+        </q-item-section>
+        <q-item-section>{{ $t('chatMessageMenu.discard') }}</q-item-section>
       </q-item>
       <q-separator />
       <q-item
-        v-if="message.outpoints != null"
         clickable
         v-close-popup
-        @click="$emit('txClick')"
+        @click="$emit('deleteClick')"
+        class="text-negative"
       >
-        <q-item-section>Stamp Transaction</q-item-section>
-      </q-item>
-      <q-item
-        :v-if="index && payloadDigest"
-        clickable
-        v-close-popup
-        @click="resend"
-      >
-        <q-item-section>Resend</q-item-section>
-      </q-item>
-      <q-separator />
-      <q-item clickable v-close-popup @click="copyMessage">
-        <q-item-section>Copy</q-item-section>
-      </q-item>
-      <q-item clickable v-close-popup @click="$emit('deleteClick')">
-        <q-item-section>Delete</q-item-section>
+        <q-item-section avatar>
+          <q-icon name="delete" size="xs" color="negative" />
+        </q-item-section>
+        <q-item-section>{{ $t('chatMessageMenu.delete') }}</q-item-section>
       </q-item>
     </q-list>
   </q-menu>
 </template>
 
 <script lang="ts">
-import { defineComponent, PropType } from 'vue'
-
+import { defineComponent, type PropType } from 'vue'
 import { copyToClipboard } from 'quasar'
-import { useChatStore } from 'src/stores/chats'
-import { Message } from '@frank/cashweb/types/messages'
+import type { Message } from '@frank/cashweb/types/messages'
+import { infoNotify } from 'src/utils/notifications'
 
 export default defineComponent({
+  name: 'ChatMessageMenu',
   props: {
     address: {
       type: String,
@@ -67,74 +99,85 @@ export default defineComponent({
       required: true,
     },
     index: {
-      type: Number,
+      type: [Number, String],
       required: false,
       default: () => 0,
     },
   },
-  setup() {
-    const chatStore = useChatStore()
-    return {
-      deleteMessage: chatStore.deleteMessage,
-      getStampAmount: chatStore.getStampAmount,
-    }
+  emits: [
+    'deleteClick',
+    'replyClick',
+    'txClick',
+    'forwardClick',
+    'resendClick',
+    'discardClick',
+  ],
+  computed: {
+    canReply(): boolean {
+      return this.message.status === 'confirmed' && Boolean(this.payloadDigest)
+    },
+    canForward(): boolean {
+      return (
+        this.message.status === 'confirmed' &&
+        Array.isArray(this.message.items) &&
+        this.message.items.length > 0
+      )
+    },
+    canCopy(): boolean {
+      return (
+        Array.isArray(this.message.items) &&
+        this.message.items.some(
+          it =>
+            it.type === 'text' ||
+            it.type === 'stealth' ||
+            it.type === 'swap-offer',
+        )
+      )
+    },
+    hasStamp(): boolean {
+      return (
+        (Array.isArray(this.message.stampPayments) &&
+          this.message.stampPayments.length > 0) ||
+        (Array.isArray(this.message.outpoints) &&
+          this.message.outpoints.length > 0)
+      )
+    },
+    isError(): boolean {
+      return this.message.status === 'error' && Boolean(this.message.outbound)
+    },
   },
-  emits: ['deleteClick', 'replyClick', 'txClick', 'forwardClick'],
   methods: {
-    sendMessage(args: {
-      address: string
-      text: string
-      replyDigest?: string | undefined
-      stampAmount: number
-    }) {
-      return this.$relayClient.sendMessage(args)
-    },
-    sendStealthPayment(args: {
-      address: string
-      stampAmount: number
-      amount: number
-      memo: string
-    }) {
-      return this.$relayClient.sendStealthPayment(args)
-    },
-    sendImage(args: {
-      address: string
-      image: string
-      caption: string
-      replyDigest: string
-      stampAmount: number
-    }) {
-      return this.$relayClient.sendImage(args)
-    },
-    resend() {
-      this.deleteMessage({
-        address: this.address,
-        payloadDigest: this.payloadDigest,
-      })
-      const stampAmount = this.getStampAmount(this.address)
-      return this.$relayClient.sendMessageImpl({
-        address: this.address,
-        items: this.message.items,
-        stampAmount,
-      })
-    },
     copyMessage() {
-      const textItem = this.message.items.find(el => el.type === 'text')
-      const text = textItem && 'text' in textItem ? textItem.text : ''
-      copyToClipboard(text)
-        .then(() => {
-          this.$q.notify({
-            message:
-              '<div class="text-center"> ' +
-              this.$t('chatMessageMenu.messageCopied') +
-              ' </div>',
-            html: true,
-            color: 'purple',
+      let text = ''
+      if (Array.isArray(this.message.items)) {
+        const textItem = this.message.items.find(el => el.type === 'text')
+        if (
+          textItem &&
+          'text' in textItem &&
+          typeof textItem.text === 'string'
+        ) {
+          text = textItem.text
+        } else {
+          const stealthItem = this.message.items.find(
+            el => el.type === 'stealth',
+          )
+          if (stealthItem && 'memo' in stealthItem && stealthItem.memo) {
+            text = String(stealthItem.memo)
+          }
+        }
+      }
+      if (!text && this.payloadDigest) {
+        text = this.payloadDigest
+      }
+      if (text) {
+        copyToClipboard(text)
+          .then(() => {
+            infoNotify(this.$t('chatMessageMenu.messageCopied'))
           })
-        })
-        .catch(() => {
-          // fail
-        })
+          .catch(() => {
+            // copy failed
+          })
+      }
     },
   },
 })

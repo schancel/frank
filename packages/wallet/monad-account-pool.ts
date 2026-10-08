@@ -95,6 +95,10 @@ export const DEFAULT_TOPUP_BUFFER_SIZE = 5;
 
 export const DEFAULT_MIN_AVAILABLE_CAPACITY_COUNT = 2;
 export const CAPACITY_CACHE_TTL_MS = 30_000;
+export const INTER_TX_FUNDING_DELAY_MS =
+  process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID !== undefined
+    ? 0
+    : 2000;
 
 export interface SubAccountCapacityCacheEntry {
   capacityWei: bigint;
@@ -699,6 +703,11 @@ export class MonadSubAccountPool {
     }
 
     for (const [offset, paymentCapacityWei] of capacities.entries()) {
+      if (offset > 0 && INTER_TX_FUNDING_DELAY_MS > 0) {
+        // Monad testnet pipelined execution requires a brief delay between consecutive
+        // funding transactions from the same account to avoid MIP-4 reserve balance violations.
+        await new Promise((resolve) => setTimeout(resolve, INTER_TX_FUNDING_DELAY_MS));
+      }
       const target = unfunded[offset];
       const result = await this.fundAccount({
         target,
@@ -958,11 +967,13 @@ export class MonadSubAccountPool {
       const fundedValue = capacityWei + params.gasReserveWei;
       const gasLimit =
         params.overrides?.gasLimit ??
-        (await params.provider.estimateGas({
-          from: params.fromAddress,
-          to: target.address,
-          value: fundedValue,
-        }));
+        (await params.provider
+          .estimateGas({
+            from: params.fromAddress,
+            to: target.address,
+            value: fundedValue,
+          })
+          .catch(() => BigInt(21_000)));
       let feePerGas =
         params.overrides?.gasPrice ?? params.overrides?.maxFeePerGas;
       if (feePerGas === undefined) {
@@ -1324,7 +1335,12 @@ export class MonadSubAccountPool {
     await this.store.flush();
 
     const results: FanOutFundingResult[] = [];
-    for (const target of targets) {
+    for (const [offset, target] of targets.entries()) {
+      if (offset > 0 && INTER_TX_FUNDING_DELAY_MS > 0) {
+        // Monad testnet pipelined execution requires a brief delay between consecutive
+        // funding transactions from the same account to avoid MIP-4 reserve balance violations.
+        await new Promise((resolve) => setTimeout(resolve, INTER_TX_FUNDING_DELAY_MS));
+      }
       results.push(
         await this.fundAccount({
           target,
@@ -1461,6 +1477,11 @@ export class MonadSubAccountPool {
               capacityWei: stampValueWei,
               checkedAtMs: Date.now(),
             });
+            this.syncUtxo(
+              result.index,
+              "available",
+              stampValueWei + gasReserveWei
+            );
             await this.store.flush();
           },
         });

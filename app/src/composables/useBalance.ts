@@ -29,6 +29,7 @@ import {
 } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import { accountStatus } from '../accounts/session'
+import { messagingState } from '../utils/messaging-state'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { isWalletNotReady } from 'src/composables/wallet-not-ready'
 
@@ -93,12 +94,16 @@ function schedule() {
     backgrounded
   )
     return
+  const delay =
+    failures <= 0 && (balance.value === null || balance.value === 0n)
+      ? 3000
+      : nextBalanceDelay(failures)
   timer = setTimeout(() => {
     timer = undefined
     if (pending)
       schedule() // still waiting on a fetch: skip this tick, keep ticking
     else void fetchBalance(true)
-  }, nextBalanceDelay(failures))
+  }, delay)
 }
 
 /** Fetches now. `force` (also what `refresh()` does) bypasses the in-flight guard. */
@@ -132,6 +137,11 @@ async function fetchBalance(force: boolean) {
     // Anything else is a real failure worth an error-level log.
     if (isWalletNotReady(err)) {
       console.debug('balance refresh waiting for a wallet (no seed phrase yet)')
+    } else if (
+      messagingState.status !== 'ready' &&
+      (String(err).includes('rpc_auth_failed') || String(err).includes('401'))
+    ) {
+      console.debug('balance refresh waiting for directory admission')
     } else {
       console.error('balance refresh failed', err)
     }
@@ -172,13 +182,26 @@ function acquire() {
   consumers++
   if (consumers === 1) {
     stopSessionWatch = watch(
-      () => [accountStatus.revision, accountStatus.status],
-      () => {
-        balance.value = null
-        hasError.value = false
-        requestId++
-        pending = false
-        void fetchBalance(true)
+      () =>
+        [
+          accountStatus.revision,
+          accountStatus.status,
+          messagingState.status,
+        ] as const,
+      (
+        [newRev, newAccStatus, newMsgStatus],
+        oldValue,
+      ) => {
+        const [oldRev, oldAccStatus, oldMsgStatus] = oldValue ?? []
+        if (newRev !== oldRev || newAccStatus !== oldAccStatus) {
+          balance.value = null
+          hasError.value = false
+          requestId++
+          pending = false
+          void fetchBalance(true)
+        } else if (newMsgStatus === 'ready' && oldMsgStatus !== 'ready') {
+          void fetchBalance(true)
+        }
       },
       { flush: 'sync' },
     )

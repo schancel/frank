@@ -178,11 +178,18 @@ export class MonadAccountTxSigner {
     data: string,
     overrides: MonadTxOverrides
   ): Promise<FrozenUnsignedMonadTx> {
+    const cleanOverrides = { ...overrides };
+    if (
+      cleanOverrides.maxFeePerGas !== undefined ||
+      cleanOverrides.maxPriorityFeePerGas !== undefined
+    ) {
+      delete cleanOverrides.gasPrice;
+    }
     const populated = await this.wallet.populateTransaction({
       to,
       value,
       data,
-      ...overrides,
+      ...cleanOverrides,
     });
     const { from, ...unsignedFields } = populated;
     if (

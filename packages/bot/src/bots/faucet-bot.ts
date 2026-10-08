@@ -104,13 +104,14 @@ export class FaucetBot implements FrankBotDefinition {
       }
 
       console.log(`[faucet] Funding new user ${user.address} with ${formatMon(this.amountWei)}`);
-      await ctx.state.put(`funded:${addr}`, String(Date.now()));
-      this.fundedThisRun++;
 
       const { txHash } = await ctx.sendTransfer({
         to: user.address,
         valueWei: this.amountWei,
       });
+
+      await ctx.state.put(`funded:${addr}`, String(Date.now()));
+      this.fundedThisRun++;
 
       console.log(`[faucet] Funded ${user.address} (tx: ${txHash})`);
 
@@ -127,6 +128,7 @@ export class FaucetBot implements FrankBotDefinition {
         console.warn(`[faucet] Failed to send welcome DM to ${user.address}:`, dmErr);
       }
     } catch (err) {
+      await ctx.state.del(`funded:${addr}`).catch(() => {});
       console.error(`[faucet] Failed to fund ${user.address}:`, err);
     }
   }

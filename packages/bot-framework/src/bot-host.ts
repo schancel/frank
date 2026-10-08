@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import { homedir } from "os";
 import { randomBytes, createHash } from "crypto";
 import { JsonRpcProvider, Wallet, type TransactionReceipt } from "ethers";
@@ -18,7 +18,9 @@ import {
   fetchMonadProfilesSince,
   decodeProfileBytes,
   fetchMonadIdentityPubKey,
+  MONAD_IDENTITY_DERIVATION_PATH,
 } from "@frank/wallet/monad-identity";
+import { monadMasterFromDomainRoot } from "@frank/wallet/monad-domain-root";
 import { buildEnvelope } from "@frank/cashweb/relay/monad-message-envelope";
 import {
   MonadMailboxAuthError,
@@ -63,6 +65,7 @@ interface ActiveBotInstance {
   lastPollTimestamp: number;
   lastAuthRecoveryMs?: number;
   inFlightDigests: Set<string>;
+  evmMainPrivateKey?: string;
 }
 
 export class FrankBotHost {
@@ -118,15 +121,27 @@ export class FrankBotHost {
         if (options.fundingPrivateKeyHex) return options.fundingPrivateKeyHex;
         if (process.env.E2E_DEMO_MAIN_WALLET_PRIVATE_KEY)
           return process.env.E2E_DEMO_MAIN_WALLET_PRIVATE_KEY;
-        const jsonPath =
-          process.env.FRANK_DEMO_FAUCET_WALLET_JSON ??
-          process.env.E2E_DEMO_MAIN_WALLET_JSON;
-        if (jsonPath && existsSync(jsonPath)) {
-          try {
-            const parsed = JSON.parse(readFileSync(jsonPath, "utf8"));
-            return parsed.privateKey ?? parsed.privateKeyHex ?? "";
-          } catch {
-            return "";
+        const candidates = [
+          process.env.FRANK_DEMO_FAUCET_WALLET_JSON,
+          process.env.E2E_DEMO_MAIN_WALLET_JSON,
+        ].filter(Boolean) as string[];
+        for (const raw of candidates) {
+          const resolvedPaths = [
+            raw,
+            resolve(process.cwd(), raw),
+            resolve(__dirname, "../../..", raw),
+            resolve(__dirname, "../../../..", raw),
+          ];
+          for (const p of resolvedPaths) {
+            if (existsSync(p)) {
+              try {
+                const parsed = JSON.parse(readFileSync(p, "utf8"));
+                const key = parsed.privateKey ?? parsed.privateKeyHex;
+                if (key) return key;
+              } catch {
+                // ignore invalid file
+              }
+            }
           }
         }
         return "";
@@ -226,6 +241,13 @@ export class FrankBotHost {
       authentication: deriveDomainRoot(accountRoot, "identity-authentication"),
       messaging: deriveDomainRoot(accountRoot, "messaging-encryption"),
     })) as MonadChainWalletHandle;
+
+    let evmMainPrivateKey: string | undefined;
+    try {
+      const evmRoot = deriveDomainRoot(accountRoot, "evm-wallet");
+      const evmMaster = monadMasterFromDomainRoot(evmRoot, "evm-wallet");
+      evmMainPrivateKey = evmMaster.derivePath(MONAD_IDENTITY_DERIVATION_PATH).privateKey;
+    } catch {}
 
     const botAddress = wallet.identity.address.raw;
     const botSubject = Buffer.from(wallet.identity.compressedPubKey).toString(
@@ -380,11 +402,29 @@ export class FrankBotHost {
           });
         }
 
-        const tx = await botWallet.sendTransaction({
-          to,
-          data: data ?? "0x",
-          value: valueWei,
-        });
+        let tx: any;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const nextNonce = await this.provider.getTransactionCount(botAddress, "pending");
+            tx = await botWallet.sendTransaction({
+              to,
+              data: data ?? "0x",
+              value: valueWei,
+              nonce: nextNonce,
+            });
+            break;
+          } catch (err: any) {
+            const isNonceError =
+              String(err).includes("nonce") ||
+              String(err).includes("NONCE_EXPIRED") ||
+              err?.code === "NONCE_EXPIRED";
+            if (isNonceError && attempt < 3) {
+              await new Promise((r) => setTimeout(r, 600 * attempt));
+              continue;
+            }
+            throw err;
+          }
+        }
         return { txHash: tx.hash };
       },
 
@@ -490,6 +530,7 @@ export class FrankBotHost {
       lastPollTimestamp:
         savedCursor > 0 ? savedCursor : Date.now() - 24 * 3600_000,
       inFlightDigests: new Set<string>(),
+      evmMainPrivateKey,
     };
 
     this.instances.set(definition.id, instance);
@@ -859,6 +900,9 @@ export class FrankBotHost {
           await instance.state.put(greetedKey, String(Date.now()));
 
           try {
+            if (id !== "faucet") {
+              await new Promise((r) => setTimeout(r, 1000 + Math.floor(Math.random() * 4000)));
+            }
             await instance.definition.onNewUser(event, instance.context);
           } catch (err) {
             console.error(`[bot-host] error in bot "${id}".onNewUser:`, err);
@@ -886,27 +930,45 @@ export class FrankBotHost {
     items: MessageItem[],
     conversationId?: string
   ): Promise<DirectMessageSendResult> {
-    try {
-      const res = await this.chain.directMessages.send({
-        wallet,
-        recipient: toChainAddress(recipientAddress),
-        items,
-        conversationId,
-      });
-      console.log(
-        `[bot-host] Canonical send to ${recipientAddress} succeeded (digest: ${res.payloadDigest.slice(
-          0,
-          10
-        )}...)`
-      );
-      return res;
-    } catch (err) {
-      console.warn(
-        `[bot-host] Canonical send to ${recipientAddress} failed, falling back to standard send:`,
-        err
-      );
-      return this.sendStandardDirectMessage(wallet, recipientAddress, items);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const res = await this.chain.directMessages.send({
+          wallet,
+          recipient: toChainAddress(recipientAddress),
+          items,
+          conversationId,
+        });
+        console.log(
+          `[bot-host] Canonical send to ${recipientAddress} succeeded (digest: ${res.payloadDigest.slice(
+            0,
+            10
+          )}...)`
+        );
+        return res;
+      } catch (err: any) {
+        const msg = err?.message || String(err);
+        const isTransient =
+          msg.includes("429") ||
+          msg.includes("limit reached") ||
+          msg.includes("502") ||
+          msg.includes("503") ||
+          msg.includes("SERVER_ERROR");
+        if (isTransient && attempt < 3) {
+          const delayMs = 1500 * attempt + Math.floor(Math.random() * 500);
+          console.warn(
+            `[bot-host] Canonical send transient error (attempt ${attempt}/3): ${msg}. Retrying in ${delayMs}ms...`
+          );
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        console.warn(
+          `[bot-host] Canonical send to ${recipientAddress} failed, falling back to standard send:`,
+          err
+        );
+        return this.sendStandardDirectMessage(wallet, recipientAddress, items);
+      }
     }
+    return this.sendStandardDirectMessage(wallet, recipientAddress, items);
   }
 
   private async sendStandardDirectMessage(
@@ -916,83 +978,135 @@ export class FrankBotHost {
   ): Promise<DirectMessageSendResult> {
     const prev = this.walletSendQueues.get(wallet) ?? Promise.resolve();
     const run = prev.then(async () => {
-      const toPubKey = await fetchMonadIdentityPubKey({
-        relayBaseUrl: this.options.relayBaseUrl,
-        address: recipientAddress,
-      });
-      if (!toPubKey) {
-        throw new Error(
-          `No registered profile or pubkey for ${recipientAddress}`
-        );
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const toPubKey = await fetchMonadIdentityPubKey({
+            relayBaseUrl: this.options.relayBaseUrl,
+            address: recipientAddress,
+          });
+          if (!toPubKey) {
+            throw new Error(
+              `No registered profile or pubkey for ${recipientAddress}`
+            );
+          }
+
+          let fundingPrivateKeyHex = this.options.fundingPrivateKeyHex;
+          if (!fundingPrivateKeyHex) {
+            const instance = Array.from(this.instances.values()).find(
+              (i) => i.wallet === wallet
+            );
+            const candidateKeys = [
+              instance?.evmMainPrivateKey,
+              wallet.mainPrivateKey,
+              wallet.mainAccount?.privateKey,
+              wallet.identity.toPrivateKeyHex(),
+            ].filter(Boolean) as string[];
+
+            for (const key of candidateKeys) {
+              try {
+                const signerAddr = new Wallet(key).address;
+                const bal = await this.provider.getBalance(signerAddr);
+                if (bal >= this.options.stampValueWei) {
+                  fundingPrivateKeyHex = key;
+                  break;
+                }
+              } catch {}
+            }
+            if (!fundingPrivateKeyHex) {
+              fundingPrivateKeyHex =
+                instance?.evmMainPrivateKey ??
+                wallet.mainPrivateKey ??
+                wallet.mainAccount?.privateKey ??
+                wallet.identity.toPrivateKeyHex();
+            }
+          }
+
+          const mainAccountSigner = new MonadAccountTxSigner({
+            privateKey: fundingPrivateKeyHex,
+            provider: this.provider,
+            httpClient: new MonadHttpClient({ rpcUrl: this.options.rpcUrl }),
+          });
+
+          const gasReserveWei = await quoteMonadStampPaymentGasReserve({
+            signer: mainAccountSigner,
+            recipientPublicKey: toPubKey,
+          });
+
+          await wallet.pool.prepareStampInventory({
+            mainAccountSigner,
+            provider: this.provider,
+            stampValueWei: this.options.stampValueWei,
+            gasReserveWei,
+          });
+
+          const envelope = buildEnvelope({
+            fromAddress: wallet.identity.address.raw,
+            fromPrivateKey: wallet.identity.toNakamotoPrivateKey(),
+            toAddress: recipientAddress,
+            toPubKey,
+            plaintext: serializeMessageItems(items),
+            networkTag: this.options.networkTag,
+          });
+
+          const stampClient = new MonadStampClient({
+            pool: wallet.pool,
+            leaseManager: wallet.leaseManager,
+            provider: this.provider,
+            httpClient:
+              wallet.httpClient ??
+              new MonadHttpClient({ rpcUrl: this.options.rpcUrl }),
+            changePool: wallet.changePool,
+            relayBaseUrl: this.options.relayBaseUrl,
+          });
+
+          const res = await stampClient.submitStampedMessage({
+            encryptedPayload: envelope,
+            recipientPublicKey: toPubKey,
+            stampValueWei: this.options.stampValueWei,
+            waitForLease: {
+              timeoutMs: 30_000,
+              pollIntervalMs: 250,
+            },
+          });
+
+          console.log(
+            `[bot-host] Standard send to ${recipientAddress} succeeded (digest: ${res.payloadHashHex.slice(
+              0,
+              10
+            )}...)`
+          );
+          return {
+            payloadDigest: res.payloadHashHex,
+            stampValueWei: this.options.stampValueWei,
+            stampPayments: res.txHashes.map((h) => ({
+              txHash: h,
+              destinationAddress: recipientAddress,
+              valueWei: this.options.stampValueWei,
+            })),
+            preparationTxHashes: [],
+          };
+        } catch (err: any) {
+          const msg = err?.message || String(err);
+          const isTransient =
+            msg.includes("429") ||
+            msg.includes("limit reached") ||
+            msg.includes("502") ||
+            msg.includes("503") ||
+            msg.includes("SERVER_ERROR");
+          if (isTransient && attempt < 3) {
+            const delayMs = 1500 * attempt + Math.floor(Math.random() * 500);
+            console.warn(
+              `[bot-host] Standard send transient error (attempt ${attempt}/3): ${msg}. Retrying in ${delayMs}ms...`
+            );
+            await new Promise((r) => setTimeout(r, delayMs));
+            continue;
+          }
+          throw err;
+        }
       }
-
-      const fundingPrivateKeyHex =
-        this.options.fundingPrivateKeyHex || wallet.identity.toPrivateKeyHex();
-
-      const mainAccountSigner = new MonadAccountTxSigner({
-        privateKey: fundingPrivateKeyHex,
-        provider: this.provider,
-        httpClient: new MonadHttpClient({ rpcUrl: this.options.rpcUrl }),
-      });
-
-      const gasReserveWei = await quoteMonadStampPaymentGasReserve({
-        signer: mainAccountSigner,
-        recipientPublicKey: toPubKey,
-      });
-
-      await wallet.pool.prepareStampInventory({
-        mainAccountSigner,
-        provider: this.provider,
-        stampValueWei: this.options.stampValueWei,
-        gasReserveWei,
-      });
-
-      const envelope = buildEnvelope({
-        fromAddress: wallet.identity.address.raw,
-        fromPrivateKey: wallet.identity.toNakamotoPrivateKey(),
-        toAddress: recipientAddress,
-        toPubKey,
-        plaintext: serializeMessageItems(items),
-        networkTag: this.options.networkTag,
-      });
-
-      const stampClient = new MonadStampClient({
-        pool: wallet.pool,
-        leaseManager: wallet.leaseManager,
-        provider: this.provider,
-        httpClient:
-          wallet.httpClient ??
-          new MonadHttpClient({ rpcUrl: this.options.rpcUrl }),
-        changePool: wallet.changePool,
-        relayBaseUrl: this.options.relayBaseUrl,
-      });
-
-      const res = await stampClient.submitStampedMessage({
-        encryptedPayload: envelope,
-        recipientPublicKey: toPubKey,
-        stampValueWei: this.options.stampValueWei,
-        waitForLease: {
-          timeoutMs: 30_000,
-          pollIntervalMs: 250,
-        },
-      });
-
-      console.log(
-        `[bot-host] Standard send to ${recipientAddress} succeeded (digest: ${res.payloadHashHex.slice(
-          0,
-          10
-        )}...)`
+      throw new Error(
+        `sendStandardDirectMessage failed after retries for ${recipientAddress}`
       );
-      return {
-        payloadDigest: res.payloadHashHex,
-        stampValueWei: this.options.stampValueWei,
-        stampPayments: res.txHashes.map((h) => ({
-          txHash: h,
-          destinationAddress: recipientAddress,
-          valueWei: this.options.stampValueWei,
-        })),
-        preparationTxHashes: [],
-      };
     });
     this.walletSendQueues.set(
       wallet,

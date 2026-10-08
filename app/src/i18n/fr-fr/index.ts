@@ -562,7 +562,22 @@ export default {
     deleteMessage: 'Supprimer le message',
   },
   chatMessageMenu: {
+    reply: 'Répondre',
+    forward: 'Transférer',
+    copy: 'Copier le texte',
+    stampTransaction: 'Transaction de timbre',
+    resend: 'Renvoyer',
+    discard: 'Ignorer',
+    delete: 'Supprimer',
     messageCopied: 'Message copié dans le presse-papier',
+  },
+  chatListMenu: {
+    openChat: 'Ouvrir la conversation',
+    viewProfile: 'Voir le profil',
+    copyAddress: "Copier l'adresse",
+    mute: 'Désactiver les notifications',
+    unmute: 'Activer les notifications',
+    deleteChat: 'Supprimer la conversation',
   },
   notifications: {
     addressCopied: 'Adresse copiée dans le presse-papier.',

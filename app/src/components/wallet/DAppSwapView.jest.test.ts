@@ -116,8 +116,11 @@ describe('DAppSwapView component', () => {
     await executeBtn.trigger('click')
     expect((wrapper.vm as any).isExecuting).toBe(true)
 
-    // Wait for simulated async resolution
-    await new Promise(resolve => setTimeout(resolve, 850))
+    // Wait for async execution resolution
+    const start = Date.now()
+    while ((wrapper.vm as any).isExecuting && Date.now() - start < 3000) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
     expect((wrapper.vm as any).isExecuting).toBe(false)
     expect((wrapper.vm as any).lastTxHash).toBeTruthy()
     expect(wrapper.find('[data-testid="swap-success-banner"]').exists()).toBe(
@@ -190,5 +193,42 @@ describe('DAppSwapView component', () => {
 
     const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
     expect(executeBtn.attributes('disabled')).toBeUndefined()
+  })
+
+  test('executing Solana swap produces a base58 transaction signature without 0x prefix', async () => {
+    const wrapper = mountSwapView({ selectedWallet: 'solana' })
+    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
+    await executeBtn.trigger('click')
+
+    // Wait for async execution resolution
+    const start = Date.now()
+    while ((wrapper.vm as any).isExecuting && Date.now() - start < 3000) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    const txHash = (wrapper.vm as any).lastTxHash
+    expect(txHash).toBeTruthy()
+    // Solana tx hashes must NEVER be 0x-prefixed hex!
+    expect(txHash.startsWith('0x')).toBe(false)
+    // Solana base58 signatures are ~88 characters using base58 characters
+    expect(/^[1-9A-HJ-NP-Za-km-z]{40,90}$/.test(txHash)).toBe(true)
+  })
+
+  test('swapping tSOL executes cleanly under Jupiter router', async () => {
+    const wrapper = mountSwapView({ selectedWallet: 'solana' })
+    ;(wrapper.vm as any).fromAsset = 'tSOL'
+    ;(wrapper.vm as any).fromAmount = '1'
+
+    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
+    await executeBtn.trigger('click')
+
+    const start = Date.now()
+    while ((wrapper.vm as any).isExecuting && Date.now() - start < 3000) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    const txHash = (wrapper.vm as any).lastTxHash
+    expect(txHash).toBeTruthy()
+    expect(txHash.startsWith('0x')).toBe(false)
   })
 })

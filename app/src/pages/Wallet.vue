@@ -430,8 +430,8 @@
                               {{ swap.status.toUpperCase() }}
                             </q-badge>
                             <a
-                              v-if="selectedWallet === 'solana'"
-                              :href="`https://explorer.solana.com/tx/${swap.txHash}?cluster=devnet`"
+                              v-if="getExplorerLink(swap)"
+                              :href="getExplorerLink(swap)"
                               target="_blank"
                               rel="noopener noreferrer"
                               class="text-caption text-primary q-mt-xs text-right cursor-pointer"
@@ -485,6 +485,8 @@ import { activeChain } from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { getChainTokens, type TokenItem } from 'src/composables/useChainBalance'
+import { getExplorerUrl } from 'src/utils/explorer'
+import type { SwapRecord } from 'src/stores/swaps'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -579,6 +581,13 @@ export default defineComponent({
       } catch {
         return ''
       }
+    }
+
+    const getExplorerLink = (swap: SwapRecord) => {
+      if (!swap.txHash) return undefined
+      return getExplorerUrl(swap.txHash, swap.chain, {
+        isTestnet: isTestnet.value,
+      })
     }
 
     // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
@@ -697,6 +706,7 @@ export default defineComponent({
       activeTokens,
       recentSwaps,
       formatSwapTime,
+      getExplorerLink,
     }
   },
 })

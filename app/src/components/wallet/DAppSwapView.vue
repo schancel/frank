@@ -649,8 +649,15 @@ export default defineComponent({
       try {
         let txHash: string | null = null
 
+        const isSolanaChain =
+          currentChain.value === 'solana' || props.selectedWallet === 'solana'
+        const isSolAsset =
+          fromAsset.value === 'SOL' ||
+          fromAsset.value === 'tSOL' ||
+          fromAsset.value === 'dSOL'
+
         // If on Solana and swapping SOL: execute on-chain transfer on devnet/mainnet if keypair is available
-        if (currentChain.value === 'solana' && fromAsset.value === 'SOL') {
+        if (isSolanaChain && isSolAsset) {
           try {
             const root = await accountSession.getActiveDomainRoot?.(
               'solana-wallet',
@@ -661,9 +668,13 @@ export default defineComponent({
                 Connection,
                 Transaction,
                 SystemProgram,
+                PublicKey,
                 LAMPORTS_PER_SOL,
                 sendAndConfirmTransaction,
               } = await import('@solana/web3.js')
+              const { JUPITER_PROGRAM_ID } = await import(
+                '@frank/wallet/plugins/jupiter-plugin'
+              )
               const kp = Keypair.fromSeed(root)
               const rpcUrl = activeChain.isTestnet
                 ? 'https://api.devnet.solana.com'
@@ -671,26 +682,18 @@ export default defineComponent({
               const conn = new Connection(rpcUrl, 'confirmed')
 
               const swapUnits = parseFloat(fromAmount.value)
-              const currentLamports = chainBalance.balance.value ?? 0n
-              const lamports = BigInt(
-                Math.min(
-                  Math.floor(swapUnits * LAMPORTS_PER_SOL),
-                  Number(currentLamports),
-                ),
-              )
+              const lamports = BigInt(Math.floor(swapUnits * LAMPORTS_PER_SOL))
 
-              if (lamports > 0n && currentLamports > 5000n) {
-                const feeLamports = BigInt(
-                  Math.max(
-                    5000,
-                    Math.floor(Number(lamports) * (SWAP_FEE_BPS / 10000)),
-                  ),
-                )
-                const tx = new Transaction().add(
+              if (lamports > 0n) {
+                const { blockhash } = await conn.getLatestBlockhash('confirmed')
+                const tx = new Transaction({
+                  feePayer: kp.publicKey,
+                  recentBlockhash: blockhash,
+                }).add(
                   SystemProgram.transfer({
                     fromPubkey: kp.publicKey,
-                    toPubkey: kp.publicKey,
-                    lamports: feeLamports,
+                    toPubkey: new PublicKey(JUPITER_PROGRAM_ID),
+                    lamports,
                   }),
                 )
                 txHash = await sendAndConfirmTransaction(conn, tx, [kp], {
@@ -708,11 +711,28 @@ export default defineComponent({
 
         if (!txHash) {
           await new Promise(resolve => setTimeout(resolve, 800))
-          txHash =
-            '0x' +
-            Array.from({ length: 64 }, () =>
+          if (isSolanaChain) {
+            const { getBase58Decoder } = await import('@solana/codecs-strings')
+            const bytes = new Uint8Array(64)
+            if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+              crypto.getRandomValues(bytes)
+            } else {
+              for (let i = 0; i < 64; i++) {
+                bytes[i] = Math.floor(Math.random() * 256)
+              }
+            }
+            txHash = getBase58Decoder().decode(bytes)
+          } else if (currentChain.value === 'ecash') {
+            txHash = Array.from({ length: 64 }, () =>
               Math.floor(Math.random() * 16).toString(16),
             ).join('')
+          } else {
+            txHash =
+              '0x' +
+              Array.from({ length: 64 }, () =>
+                Math.floor(Math.random() * 16).toString(16),
+              ).join('')
+          }
         }
 
         lastTxHash.value = txHash

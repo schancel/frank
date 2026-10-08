@@ -88,6 +88,9 @@ describe('Multi-chain transaction explorer configuration', () => {
     expect(multiChainExplorerUrl('sig5abc', 'solana-mainnet')).toBe(
       'https://explorer.solana.com/tx/sig5abc',
     )
+    expect(
+      multiChainExplorerUrl('sig5abc', 'solana', { isTestnet: true }),
+    ).toBe('https://explorer.solana.com/tx/sig5abc?cluster=devnet')
 
     // eCash
     expect(multiChainExplorerUrl('ecash123', 'XECT')).toBe(

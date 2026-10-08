@@ -63,6 +63,7 @@ import type {
   ImageItem,
   StealthItem,
   WalletSyncItem,
+  SwapRecordItem,
   EmailItem,
 } from '@frank/cashweb/types/messages'
 import {
@@ -1414,6 +1415,20 @@ export const useChatStore = defineStore('chats', {
         return
       }
 
+      const isInternalSyncOnly =
+        items.length > 0 &&
+        items.every(
+          it =>
+            it.type === 'swap-record' ||
+            it.type === 'wallet-sync' ||
+            it.type === 'payment-transfer',
+        )
+
+      if (isInternalSyncOnly) {
+        this.messages[payloadDigest] = message
+        return
+      }
+
       // Chat may be null if it is a self send
       if (!conv) {
         if (
@@ -1496,6 +1511,18 @@ export const useChatStore = defineStore('chats', {
         '-' +
         Math.random().toString(36).substring(2, 9)
       const timestamp = Date.now()
+
+      // Handle typed swap records
+      for (const item of items) {
+        if (item && item.type === 'swap-record') {
+          try {
+            const { useSwapStore } = await import('./swaps')
+            useSwapStore().handleSwapItem(item as SwapRecordItem)
+          } catch (err) {
+            console.warn('[chats] failed to handle swap record item:', err)
+          }
+        }
+      }
 
       this.sendMessageLocal({
         address: ownAddress,
@@ -3085,6 +3112,14 @@ export const useChatStore = defineStore('chats', {
                   resolver: appMultiChainResolver,
                 }).catch(err => {
                   console.warn('[chats] failed to route wallet sync item:', err)
+                })
+              } catch {
+                // ignore
+              }
+            } else if (item && item.type === 'swap-record') {
+              try {
+                void import('./swaps').then(({ useSwapStore }) => {
+                  useSwapStore().handleSwapItem(item as SwapRecordItem)
                 })
               } catch {
                 // ignore

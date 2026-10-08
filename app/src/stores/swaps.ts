@@ -1,0 +1,262 @@
+import { defineStore } from 'pinia'
+import {
+  cborMap,
+  decodeCanonical,
+  encodeCanonical,
+  fromHex,
+  toHex,
+} from '@frank/codec'
+import type { SwapRecordItem } from '@frank/cashweb/types/messages'
+import { useChatStore } from './chats'
+
+export interface SwapRecord {
+  id: string
+  timestamp: number
+  chain: string
+  fromAsset: string
+  toAsset: string
+  fromAmount: string
+  toAmount: string
+  txHash: string
+  route: string
+  feeDisplay: string
+  destinationAddress?: string
+  status: 'confirmed' | 'pending' | 'failed'
+  cborPayload?: string
+}
+
+export const SWAP_STORAGE_KEY = 'frank_swap_history'
+
+/**
+ * Encodes a swap record into canonical CBOR map bytes.
+ * Keys:
+ * 0: id (string)
+ * 1: chain (string)
+ * 2: fromAsset (string)
+ * 3: toAsset (string)
+ * 4: fromAmount (string)
+ * 5: toAmount (string)
+ * 6: txHash (string)
+ * 7: route (string)
+ * 8: feeDisplay (string)
+ * 9: timestamp (uint)
+ * 10: status (string)
+ * 11: destinationAddress (string)
+ */
+export function encodeSwapRecord(record: SwapRecord): Uint8Array {
+  return encodeCanonical(
+    cborMap([
+      [0, record.id],
+      [1, record.chain.toLowerCase()],
+      [2, record.fromAsset],
+      [3, record.toAsset],
+      [4, record.fromAmount],
+      [5, record.toAmount],
+      [6, record.txHash],
+      [7, record.route],
+      [8, record.feeDisplay],
+      [9, BigInt(record.timestamp)],
+      [10, record.status],
+      [11, record.destinationAddress || ''],
+    ]),
+  )
+}
+
+export function decodeSwapRecord(bytes: Uint8Array): Partial<SwapRecord> {
+  const map = decodeCanonical(bytes) as Map<number | bigint, any>
+  return {
+    id: map.get(0n) ?? map.get(0),
+    chain: map.get(1n) ?? map.get(1),
+    fromAsset: map.get(2n) ?? map.get(2),
+    toAsset: map.get(3n) ?? map.get(3),
+    fromAmount: map.get(4n) ?? map.get(4),
+    toAmount: map.get(5n) ?? map.get(5),
+    txHash: map.get(6n) ?? map.get(6),
+    route: map.get(7n) ?? map.get(7),
+    feeDisplay: map.get(8n) ?? map.get(8),
+    timestamp: Number(map.get(9n) ?? map.get(9) ?? Date.now()),
+    status: (map.get(10n) ??
+      map.get(10) ??
+      'confirmed') as SwapRecord['status'],
+    destinationAddress: map.get(11n) ?? map.get(11) ?? undefined,
+  }
+}
+
+export const useSwapStore = defineStore('swaps', {
+  state: () => {
+    let initialSwaps: SwapRecord[] = []
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        const raw = window.localStorage.getItem(SWAP_STORAGE_KEY)
+        if (raw) {
+          initialSwaps = JSON.parse(raw)
+        }
+      } catch {
+        // Ignore storage parse errors
+      }
+    }
+    return {
+      swaps: initialSwaps as SwapRecord[],
+    }
+  },
+
+  getters: {
+    allSwaps: state => {
+      return [...state.swaps].sort((a, b) => b.timestamp - a.timestamp)
+    },
+
+    getSwapsForChain: state => (chainName: string) => {
+      const c = chainName.toLowerCase()
+      return state.swaps.filter(
+        s => s.chain === c || (c === 'solana' && s.chain.includes('solana')),
+      )
+    },
+  },
+
+  actions: {
+    saveToStorage() {
+      if (typeof window === 'undefined' || !window.localStorage) return
+      try {
+        window.localStorage.setItem(
+          SWAP_STORAGE_KEY,
+          JSON.stringify(this.swaps.slice(0, 100)),
+        )
+      } catch {
+        // Ignore write error
+      }
+    },
+
+    async recordSwap(
+      params: Omit<SwapRecord, 'id' | 'timestamp' | 'status'> & {
+        id?: string
+        timestamp?: number
+        status?: 'confirmed' | 'pending' | 'failed'
+      },
+    ): Promise<SwapRecord> {
+      const id =
+        params.id ||
+        'swap-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7)
+      const timestamp = params.timestamp || Date.now()
+      const status = params.status || 'confirmed'
+
+      const record: SwapRecord = {
+        id,
+        timestamp,
+        chain: params.chain.toLowerCase(),
+        fromAsset: params.fromAsset,
+        toAsset: params.toAsset,
+        fromAmount: params.fromAmount,
+        toAmount: params.toAmount,
+        txHash: params.txHash,
+        route: params.route,
+        feeDisplay: params.feeDisplay,
+        destinationAddress: params.destinationAddress,
+        status,
+      }
+
+      // Encode typed canonical CBOR payload
+      let cborBytes: Uint8Array | undefined
+      try {
+        cborBytes = encodeSwapRecord(record)
+        record.cborPayload = toHex(cborBytes)
+      } catch (err) {
+        console.warn('[useSwapStore] Failed to encode CBOR swap payload:', err)
+      }
+
+      // Prepend to reactive state (deduplicating by id and txHash)
+      const existingIdx = this.swaps.findIndex(
+        s => s.id === record.id || (s.txHash && s.txHash === record.txHash),
+      )
+      if (existingIdx >= 0) {
+        this.swaps[existingIdx] = record
+      } else {
+        this.swaps = [record, ...this.swaps.slice(0, 99)]
+      }
+      this.saveToStorage()
+
+      // Self-send typed CBOR swap message (NO text item, avoiding chat inbox pollution)
+      try {
+        const chats = useChatStore()
+        if (typeof chats?.selfSendMessage === 'function') {
+          const swapItem: SwapRecordItem = {
+            type: 'swap-record',
+            swapId: record.id,
+            chain: record.chain,
+            fromAsset: record.fromAsset,
+            toAsset: record.toAsset,
+            fromAmount: record.fromAmount,
+            toAmount: record.toAmount,
+            txHash: record.txHash,
+            route: record.route,
+            feeDisplay: record.feeDisplay,
+            destinationAddress: record.destinationAddress,
+            status: record.status,
+            timestamp: record.timestamp,
+            cborPayload: record.cborPayload,
+          }
+
+          await chats.selfSendMessage({
+            items: [swapItem],
+            type: 'swap',
+            meta: {
+              swapId: record.id,
+              chain: record.chain,
+              txHash: record.txHash,
+            },
+          })
+        }
+      } catch (err) {
+        console.warn('[useSwapStore] Failed to self-send typed CBOR swap:', err)
+      }
+
+      return record
+    },
+
+    /**
+     * Message handler for incoming or self-sent swap items.
+     * Extracts swap record, decodes CBOR if available, and reactively updates state.
+     */
+    handleSwapItem(item: SwapRecordItem): void {
+      if (!item || item.type !== 'swap-record') return
+
+      let record: SwapRecord = {
+        id: item.swapId,
+        timestamp: item.timestamp || Date.now(),
+        chain: (item.chain || 'solana').toLowerCase(),
+        fromAsset: item.fromAsset,
+        toAsset: item.toAsset,
+        fromAmount: item.fromAmount,
+        toAmount: item.toAmount,
+        txHash: item.txHash,
+        route: item.route,
+        feeDisplay: item.feeDisplay,
+        destinationAddress: item.destinationAddress,
+        status: item.status || 'confirmed',
+        cborPayload: item.cborPayload,
+      }
+
+      // If cborPayload is present, decode to ensure consistency
+      if (item.cborPayload) {
+        try {
+          const decoded = decodeSwapRecord(fromHex(item.cborPayload))
+          record = { ...record, ...decoded }
+        } catch {
+          // Keep raw fields if decode fails
+        }
+      }
+
+      const existingIdx = this.swaps.findIndex(
+        s => s.id === record.id || (s.txHash && s.txHash === record.txHash),
+      )
+      if (existingIdx >= 0) {
+        this.swaps[existingIdx] = {
+          ...this.swaps[existingIdx],
+          ...record,
+        }
+      } else {
+        this.swaps = [record, ...this.swaps.slice(0, 99)]
+      }
+      this.saveToStorage()
+    },
+  },
+})

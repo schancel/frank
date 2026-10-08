@@ -210,6 +210,11 @@ export function multiChainExplorerUrl(
     )}?cluster=devnet`
   }
   if (tag === 'sol1' || tag === 'solana-mainnet' || tag === 'solana') {
+    if (options?.isTestnet) {
+      return `https://explorer.solana.com/tx/${encodeURIComponent(
+        txId,
+      )}?cluster=devnet`
+    }
     return `https://explorer.solana.com/tx/${encodeURIComponent(txId)}`
   }
 

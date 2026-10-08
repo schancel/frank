@@ -1125,7 +1125,21 @@ export class MonadStampClient {
       outcome: 'confirmed' | 'failed' | 'stuck',
     ): Promise<Array<ChangeSweepOutcome | undefined>> => {
       const sweeps: Array<ChangeSweepOutcome | undefined> = []
-      for (const handle of handles) {
+      for (let i = 0; i < handles.length; i++) {
+        const handle = handles[i]
+        const signedTx = signedTxs[i]
+        if (outcome === 'confirmed' && signedTx) {
+          const rawTx =
+            typeof signedTx.rawTx === 'string'
+              ? signedTx.rawTx
+              : hexlify(signedTx.rawTx)
+          this.pool.recordSpendTransaction(handle.index, {
+            rawTx,
+            txHash: signedTx.txHash,
+            valueWei: signedTx.value.toString(),
+          })
+          await this.pool.flush()
+        }
         const signer = this.pool.getSigner(handle.index, {
           provider: this.provider,
           httpClient: this.httpClient,
@@ -1241,13 +1255,17 @@ export class MonadStampClient {
     }
 
     const changeSweeps = await releaseAll('confirmed')
-    if (
-      changeSweeps.some(
-        sweep =>
-          sweep?.swept === false && sweep.reason !== 'below-dust-threshold',
-      )
-    ) {
-      throw new MonadStampPendingAttemptError([payloadHashHex])
+    for (const sweep of changeSweeps) {
+      if (
+        sweep?.swept === false &&
+        sweep.reason !== 'below-dust-threshold' &&
+        sweep.reason !== 'sweep-pending'
+      ) {
+        console.warn(
+          `[monad-stamp-client] Non-fatal change sweep issue for message ${payloadHashHex}:`,
+          sweep,
+        )
+      }
     }
     await this.attemptJournal?.delete(payloadHashHex)
     recordAttemptOutcome(this.attemptJournal, payloadHashHex, 'delivered')
@@ -1329,9 +1347,20 @@ export class MonadStampClient {
           Uint8Array.from(attempt.messageBytes),
         )
         await this.putStampedMessage(message, undefined, retry)
-        for (const index of attempt.leaseIndices) {
+        for (let i = 0; i < attempt.leaseIndices.length; i++) {
+          const index = attempt.leaseIndices[i]
           const record = this.pool.getRecord(index)
           if (record !== undefined && record.status !== 'spent') {
+            const rawBytes = message.stampPayments[i]?.rawTx
+            if (rawBytes && rawBytes.length > 0) {
+              const rawTx = hexlify(rawBytes)
+              const tx = Transaction.from(rawTx)
+              this.pool.recordSpendTransaction(index, {
+                rawTx,
+                txHash: tx.hash!,
+                valueWei: tx.value.toString(),
+              })
+            }
             this.pool.setStatus(index, 'spent')
             await this.pool.flush()
           }

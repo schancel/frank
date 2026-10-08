@@ -267,42 +267,26 @@ export class FrankBotHost {
       this.nonceSequencer &&
       definition.id !== "faucet"
     ) {
-      try {
-        const botBalance = await this.provider.getBalance(botAddress);
-        if (botBalance < 100_000_000_000_000_000n) {
-          const mainBalance = await this.provider.getBalance(
-            this.fundingWallet.address
-          );
-          const fundAmount =
-            mainBalance > 1_000_000_000_000_000_000n
-              ? 500_000_000_000_000_000n
-              : mainBalance / 4n;
-          if (fundAmount > 10_000_000_000_000_000n) {
-            await this.nonceSequencer.withNonce(async (nonce) => {
-              const tx = await this.fundingWallet!.sendTransaction({
-                to: botAddress,
-                value: fundAmount,
-                nonce,
-              });
-              await tx.wait();
-            });
-          }
-        }
-        const receiveAddress = (await wallet.getReceiveAddress()).raw;
-        if (receiveAddress.toLowerCase() !== botAddress.toLowerCase()) {
-          const receiveBalance = await this.provider.getBalance(receiveAddress);
-          if (receiveBalance < 100_000_000_000_000_000n) {
-            const mainBalance = await this.provider.getBalance(
+      const receiveAddress = (await wallet.getReceiveAddress()).raw;
+      const targets = [
+        { addr: botAddress, label: "Identity address" },
+        { addr: receiveAddress, label: "EVM main account" },
+      ];
+      for (const target of targets) {
+        try {
+          const bal = await this.provider.getBalance(target.addr);
+          if (bal < 100_000_000_000_000_000n) {
+            const funderBal = await this.provider.getBalance(
               this.fundingWallet.address
             );
             const fundAmount =
-              mainBalance > 1_000_000_000_000_000_000n
+              funderBal > 1_000_000_000_000_000_000n
                 ? 500_000_000_000_000_000n
-                : mainBalance / 4n;
+                : funderBal / 4n;
             if (fundAmount > 10_000_000_000_000_000n) {
               await this.nonceSequencer.withNonce(async (nonce) => {
                 const tx = await this.fundingWallet!.sendTransaction({
-                  to: receiveAddress,
+                  to: target.addr,
                   value: fundAmount,
                   nonce,
                 });
@@ -310,12 +294,12 @@ export class FrankBotHost {
               });
             }
           }
+        } catch (fundErr) {
+          console.warn(
+            `[bot-host] Failed initial funding for ${target.label} (${target.addr}) of bot ${definition.id}:`,
+            fundErr
+          );
         }
-      } catch (err) {
-        console.warn(
-          `[bot-host] Failed initial funding for bot ${definition.id}:`,
-          err
-        );
       }
     }
 
@@ -385,7 +369,7 @@ export class FrankBotHost {
         const needed = valueWei + gasLimit * gasPrice;
 
         if (botBalance < needed && this.fundingWallet && this.nonceSequencer) {
-          const topUp = needed - botBalance + 5_000_000_000_000_000_000n;
+          const topUp = needed - botBalance + 50_000_000_000_000_000n;
           await this.nonceSequencer.withNonce(async (nonce) => {
             const tx = await this.fundingWallet!.sendTransaction({
               to: botAddress,
@@ -438,7 +422,7 @@ export class FrankBotHost {
         const needed = valueWei + gasLimit * gasPrice;
 
         if (botBalance < needed && this.fundingWallet && this.nonceSequencer) {
-          const topUp = needed - botBalance + 5_000_000_000_000_000_000n;
+          const topUp = needed - botBalance + 50_000_000_000_000_000n;
           await this.nonceSequencer.withNonce(async (nonce) => {
             const tx = await this.fundingWallet!.sendTransaction({
               to: botAddress,
@@ -547,7 +531,10 @@ export class FrankBotHost {
 
     // Start registration watcher if enabled
     if (this.options.watchRegistrations) {
-      this.lastRegistrationPollMs = Date.now() - 3600_000;
+      if (typeof this.lastRegistrationPollMs !== "number") {
+        this.lastRegistrationPollMs = 0;
+      }
+      void this.pollRegistrations();
       this.registrationTimer = setInterval(() => {
         void this.pollRegistrations();
       }, 5000);
@@ -875,6 +862,7 @@ export class FrankBotHost {
             await instance.definition.onNewUser(event, instance.context);
           } catch (err) {
             console.error(`[bot-host] error in bot "${id}".onNewUser:`, err);
+            await instance.state.del(greetedKey).catch(() => {});
           }
         }
 
@@ -989,6 +977,12 @@ export class FrankBotHost {
         },
       });
 
+      console.log(
+        `[bot-host] Standard send to ${recipientAddress} succeeded (digest: ${res.payloadHashHex.slice(
+          0,
+          10
+        )}...)`
+      );
       return {
         payloadDigest: res.payloadHashHex,
         stampValueWei: this.options.stampValueWei,
@@ -1002,7 +996,12 @@ export class FrankBotHost {
     });
     this.walletSendQueues.set(
       wallet,
-      run.catch(() => {})
+      run.catch((err) => {
+        console.error(
+          `[bot-host] Standard send to ${recipientAddress} failed:`,
+          err
+        );
+      })
     );
     return run;
   }

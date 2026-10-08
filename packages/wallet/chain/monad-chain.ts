@@ -1036,16 +1036,29 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const canonical = canonicalMessagingFor(wallet);
       const received: DirectMessageReceived[] = [];
       const seenDigests = new Set<string>();
+      if (canonical) {
+        try {
+          const canonicalReceived = await canonical.fetchSince(params);
+          for (const msg of canonicalReceived) {
+            const digest = (msg.payloadDigest ?? "").toLowerCase();
+            if (digest) {
+              seenDigests.add(digest);
+            }
+            received.push(msg);
+          }
+        } catch (err) {
+          console.warn("[monad-chain] canonical fetchSince failed:", err);
+        }
+      }
 
-      if (canonical) return canonical.fetchSince(params);
-
-      const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
-      const stored = await fetchMonadMessagesSince({
-        ...mailbox,
-        sinceMs: params.sinceMs,
-        onTruncated: params.onTruncated,
-      });
-      const myAddress = wallet.identity.address.raw.toLowerCase();
+      try {
+        const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
+        const stored = await fetchMonadMessagesSince({
+          ...mailbox,
+          sinceMs: params.sinceMs,
+          onTruncated: params.onTruncated,
+        });
+        const myAddress = wallet.identity.address.raw.toLowerCase();
 
       for (const record of stored) {
         if (record.message === undefined) continue;
@@ -1125,16 +1138,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
         }
 
-        received.push({
-          senderAddress: toChainAddress(envelope.from),
-          recipientAddress: toChainAddress(envelope.to),
-          items,
-          payloadDigest: payloadHashHex,
-          stampValueWei,
-          stampPayments,
-          receivedTime: record.timestamp,
-        });
+          received.push({
+            senderAddress: toChainAddress(envelope.from),
+            recipientAddress: toChainAddress(envelope.to),
+            items,
+            payloadDigest: payloadHashHex,
+            stampValueWei,
+            stampPayments,
+            receivedTime: record.timestamp,
+          });
+        }
+      } catch {
+        // Standard mailbox read is best-effort fallback alongside canonical messaging
       }
+      received.sort((a, b) => (a.receivedTime ?? 0) - (b.receivedTime ?? 0));
       return received;
     },
 

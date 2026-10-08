@@ -120,13 +120,14 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
         throw new Error(`Sub-account ${record.index} also has a checkpoint`)
       }
       if (
-        this.allowUnboundForMigration &&
         record.status === 'spent' &&
-        record.lifecycle === undefined
+        record.lifecycle?.spend === undefined &&
+        record.lifecycle?.legacyTerminal === undefined
       ) {
         record = {
           ...record,
           lifecycle: {
+            ...record.lifecycle,
             legacyTerminal: {
               version: 1,
               reason: 'base-era-terminal',

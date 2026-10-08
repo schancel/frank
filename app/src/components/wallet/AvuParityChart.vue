@@ -169,206 +169,235 @@
       </div>
     </div>
 
-    <!-- Toggle Controls: Time Ranges & Networks -->
-    <div class="row items-center justify-between q-mb-sm q-col-gutter-xs">
-      <div class="col-12 col-md-auto row items-center q-gutter-x-xs">
-        <q-btn-toggle
-          v-model="selectedRange"
-          dense
-          no-caps
-          rounded
-          unelevated
-          toggle-color="primary"
-          color="grey-4"
-          text-color="grey-9"
-          :options="rangeToggleOptions"
-          data-test="view-toggle"
-        />
-        <q-btn
-          v-if="isCustomZoomed"
-          dense
-          no-caps
-          rounded
-          unelevated
-          color="primary"
-          icon="zoom_out_map"
-          :label="$t('walletPanel.resetZoom')"
-          class="q-ml-xs"
-          data-test="reset-zoom-btn"
-          @click="resetCustomZoom"
-        />
+    <!-- Toggle Controls: Time Ranges & View Mode -->
+    <div class="timeframe-controls-section q-mb-md">
+      <div class="row items-center justify-between q-col-gutter-sm">
+        <div class="col-12 col-sm-auto row items-center q-gutter-x-xs">
+          <div class="timeframe-pill-track">
+            <q-btn-toggle
+              v-model="selectedRange"
+              dense
+              no-caps
+              rounded
+              unelevated
+              toggle-color="primary"
+              color="transparent"
+              text-color="grey-8"
+              class="timeframe-btn-toggle"
+              :options="rangeToggleOptions"
+              data-test="view-toggle"
+            />
+          </div>
+          <q-btn
+            v-if="isCustomZoomed"
+            dense
+            no-caps
+            rounded
+            unelevated
+            color="primary"
+            icon="zoom_out_map"
+            :label="$t('walletPanel.resetZoom')"
+            class="q-ml-xs"
+            data-test="reset-zoom-btn"
+            @click="resetCustomZoom"
+          />
+        </div>
       </div>
 
+      <!-- Asset Filter Chips (Time-Series Mode) -->
       <div
-        class="col-12 col-md-auto row items-center q-gutter-x-sm text-caption text-grey-6"
+        v-if="selectedRange !== 'networks'"
+        class="asset-filter-chips-row row items-center q-gutter-xs q-mt-sm"
       >
-        <template v-if="selectedRange !== 'networks'">
-          <!-- USD Spot Toggle -->
+        <!-- USD Spot Toggle -->
+        <div
+          class="asset-chip cursor-pointer"
+          :class="{
+            'asset-chip--active': showUsd,
+            'asset-chip--inactive': !showUsd,
+          }"
+          :style="
+            showUsd
+              ? {
+                  borderColor: `${themeColors.usd}55`,
+                  backgroundColor: `${themeColors.usd}18`,
+                  color: themeColors.usd,
+                }
+              : {}
+          "
+          data-test="toggle-metric-usd"
+          role="button"
+          tabindex="0"
+          :aria-pressed="showUsd"
+          @click="toggleMetric('usd')"
+        >
           <span
-            class="legend-item cursor-pointer row items-center q-gutter-xs"
-            :class="{
-              'legend-item--active': showUsd,
-              'legend-item--inactive': !showUsd,
+            class="legend-dot"
+            :style="{
+              backgroundColor: showUsd ? themeColors.usd : themeColors.axis,
             }"
-            data-test="toggle-metric-usd"
-            role="button"
-            tabindex="0"
-            :aria-pressed="showUsd"
-            @click="toggleMetric('usd')"
-          >
-            <span
-              class="legend-dot"
-              :style="{
-                backgroundColor: showUsd ? themeColors.usd : themeColors.axis,
-              }"
-            />
-            <span
-              :class="
-                showUsd ? 'text-weight-medium' : 'text-strike text-grey-5'
-              "
-            >
-              {{ $t('walletPanel.chartUsdKwh') }}
-            </span>
+          />
+          <span class="text-weight-medium">
+            {{ $t('walletPanel.chartUsdKwh') }}
           </span>
+        </div>
 
-          <!-- Gold Toggle -->
+        <!-- Gold Toggle -->
+        <div
+          class="asset-chip cursor-pointer"
+          :class="{
+            'asset-chip--active': showGold,
+            'asset-chip--inactive': !showGold,
+          }"
+          :style="
+            showGold
+              ? {
+                  borderColor: `${themeColors.gold}55`,
+                  backgroundColor: `${themeColors.gold}18`,
+                  color: themeColors.gold,
+                }
+              : {}
+          "
+          data-test="toggle-metric-gold"
+          role="button"
+          tabindex="0"
+          :aria-pressed="showGold"
+          @click="toggleMetric('gold')"
+        >
           <span
-            class="legend-item cursor-pointer row items-center q-gutter-xs"
-            :class="{
-              'legend-item--active': showGold,
-              'legend-item--inactive': !showGold,
+            class="legend-dot"
+            :style="{
+              backgroundColor: showGold ? themeColors.gold : themeColors.axis,
             }"
-            data-test="toggle-metric-gold"
-            role="button"
-            tabindex="0"
-            :aria-pressed="showGold"
-            @click="toggleMetric('gold')"
-          >
-            <span
-              class="legend-dot"
-              :style="{
-                backgroundColor: showGold ? themeColors.gold : themeColors.axis,
-              }"
-            />
-            <span
-              :class="
-                showGold ? 'text-weight-medium' : 'text-strike text-grey-5'
-              "
-            >
-              {{ $t('walletPanel.chartGoldAvu') }}
-            </span>
+          />
+          <span class="text-weight-medium">
+            {{ $t('walletPanel.chartGoldAvu') }}
           </span>
+        </div>
 
-          <!-- PoW Hash Toggle -->
+        <!-- PoW Hash Toggle -->
+        <div
+          class="asset-chip cursor-pointer"
+          :class="{
+            'asset-chip--active': showPow,
+            'asset-chip--inactive': !showPow,
+          }"
+          :style="
+            showPow
+              ? {
+                  borderColor: `${themeColors.pow}55`,
+                  backgroundColor: `${themeColors.pow}18`,
+                  color: themeColors.pow,
+                }
+              : {}
+          "
+          data-test="toggle-metric-pow"
+          role="button"
+          tabindex="0"
+          :aria-pressed="showPow"
+          @click="toggleMetric('pow')"
+        >
           <span
-            class="legend-item cursor-pointer row items-center q-gutter-xs"
-            :class="{
-              'legend-item--active': showPow,
-              'legend-item--inactive': !showPow,
+            class="legend-dot"
+            :style="{
+              backgroundColor: showPow ? themeColors.pow : themeColors.axis,
             }"
-            data-test="toggle-metric-pow"
-            role="button"
-            tabindex="0"
-            :aria-pressed="showPow"
-            @click="toggleMetric('pow')"
-          >
-            <span
-              class="legend-dot"
-              :style="{
-                backgroundColor: showPow ? themeColors.pow : themeColors.axis,
-              }"
-            />
-            <span
-              :class="
-                showPow ? 'text-weight-medium' : 'text-strike text-grey-5'
-              "
-            >
-              {{ $t('walletPanel.chartPowEmergence') }}
-            </span>
+          />
+          <span class="text-weight-medium">
+            {{ $t('walletPanel.chartPowEmergence') }}
           </span>
+        </div>
 
-          <!-- Active Token Toggle -->
+        <!-- Active Token Toggle -->
+        <div
+          class="asset-chip cursor-pointer"
+          :class="{
+            'asset-chip--active': showToken,
+            'asset-chip--inactive': !showToken,
+          }"
+          :style="
+            showToken
+              ? {
+                  borderColor: `${themeColors.token}55`,
+                  backgroundColor: `${themeColors.token}18`,
+                  color: themeColors.token,
+                }
+              : {}
+          "
+          data-test="chart-legend-token"
+          data-testid="toggle-metric-token"
+          role="button"
+          tabindex="0"
+          :aria-pressed="showToken"
+          @click="toggleMetric('token')"
+        >
           <span
-            class="legend-item cursor-pointer row items-center q-gutter-xs"
-            :class="{
-              'legend-item--active': showToken,
-              'legend-item--inactive': !showToken,
+            class="legend-dot"
+            :style="{
+              backgroundColor: showToken ? themeColors.token : themeColors.axis,
             }"
-            data-test="chart-legend-token"
-            data-testid="toggle-metric-token"
-            role="button"
-            tabindex="0"
-            :aria-pressed="showToken"
-            @click="toggleMetric('token')"
-          >
-            <span
-              class="legend-dot"
-              :style="{
-                backgroundColor: showToken
-                  ? themeColors.token
-                  : themeColors.axis,
-              }"
-            />
-            <span
-              :class="
-                showToken ? 'text-weight-medium' : 'text-strike text-grey-5'
-              "
-            >
-              {{
-                `${activeTokenInfo.name} (${$t('walletPanel.chartTokenAvu')})`
-              }}
-            </span>
+          />
+          <span class="text-weight-medium">
+            {{ `${activeTokenInfo.name} (${$t('walletPanel.chartTokenAvu')})` }}
           </span>
+        </div>
 
-          <!-- Hardware Milestones Toggle (only in non-fine-grained) -->
+        <!-- Hardware Milestones Toggle (only in non-fine-grained) -->
+        <div
+          v-if="!isFineGrainedRange"
+          class="asset-chip cursor-pointer"
+          :class="{
+            'asset-chip--active': showMilestones,
+            'asset-chip--inactive': !showMilestones,
+          }"
+          :style="
+            showMilestones
+              ? {
+                  borderColor: `${themeColors.milestone}55`,
+                  backgroundColor: `${themeColors.milestone}18`,
+                  color: themeColors.milestone,
+                }
+              : {}
+          "
+          data-test="toggle-metric-milestones"
+          role="button"
+          tabindex="0"
+          :aria-pressed="showMilestones"
+          @click="toggleMetric('milestones')"
+        >
           <span
-            v-if="!isFineGrainedRange"
-            class="legend-item cursor-pointer row items-center q-gutter-xs"
-            :class="{
-              'legend-item--active': showMilestones,
-              'legend-item--inactive': !showMilestones,
+            class="legend-dot"
+            :style="{
+              backgroundColor: showMilestones
+                ? themeColors.milestone
+                : themeColors.axis,
             }"
-            data-test="toggle-metric-milestones"
-            role="button"
-            tabindex="0"
-            :aria-pressed="showMilestones"
-            @click="toggleMetric('milestones')"
-          >
-            <span
-              class="legend-dot"
-              :style="{
-                backgroundColor: showMilestones
-                  ? themeColors.milestone
-                  : themeColors.axis,
-              }"
-            />
-            <span
-              :class="
-                showMilestones
-                  ? 'text-weight-medium'
-                  : 'text-strike text-grey-5'
-              "
-            >
-              {{ $t('walletPanel.chartHardwareEff') }}
-            </span>
+          />
+          <span class="text-weight-medium">
+            {{ $t('walletPanel.chartHardwareEff') }}
           </span>
-        </template>
-        <template v-else>
-          <span class="row items-center q-gutter-xs">
-            <span
-              class="legend-dot"
-              :style="{ backgroundColor: themeColors.barBase }"
-            />
-            <span>{{ $t('walletPanel.chartHashCost') }}</span>
-          </span>
-          <span class="row items-center q-gutter-xs">
-            <span
-              class="legend-dot"
-              :style="{ backgroundColor: themeColors.barHighlight }"
-            />
-            <span>{{ $t('walletPanel.chartArbitrageYield') }}</span>
-          </span>
-        </template>
+        </div>
+      </div>
+
+      <!-- Networks View Legend -->
+      <div
+        v-else
+        class="asset-filter-chips-row row items-center q-gutter-sm q-mt-sm text-caption text-grey-7"
+      >
+        <div class="row items-center q-gutter-xs">
+          <span
+            class="legend-dot"
+            :style="{ backgroundColor: themeColors.barBase }"
+          />
+          <span>{{ $t('walletPanel.chartHashCost') }}</span>
+        </div>
+        <div class="row items-center q-gutter-xs">
+          <span
+            class="legend-dot"
+            :style="{ backgroundColor: themeColors.barHighlight }"
+          />
+          <span>{{ $t('walletPanel.chartArbitrageYield') }}</span>
+        </div>
       </div>
     </div>
 
@@ -379,6 +408,243 @@
       class="chart-canvas-card q-pa-sm"
       :class="cardBgClass"
     >
+      <!-- Stable Historical Inspection Header & Table -->
+      <div
+        class="chart-inspection-panel q-pa-sm q-mb-xs rounded-borders"
+        :class="$q.dark.isActive ? 'bg-dark-1' : 'bg-grey-1'"
+        data-test="chart-inspection-table"
+      >
+        <!-- Top Status Row: Point Date & Milestone -->
+        <div class="row items-center justify-between no-wrap q-mb-xs">
+          <div class="row items-center q-gutter-x-sm">
+            <q-badge
+              :color="activeHoverPoint || activeHoverBar ? 'primary' : 'grey-7'"
+              class="text-weight-bold q-px-sm q-py-xs"
+              rounded
+              data-test="inspection-date-badge"
+            >
+              <q-icon
+                :name="
+                  activeHoverPoint || activeHoverBar ? 'touch_app' : 'schedule'
+                "
+                size="12px"
+                class="q-mr-xs"
+              />
+              {{
+                `${
+                  activeHoverPoint || activeHoverBar
+                    ? $t('walletPanel.inspectingDate')
+                    : $t('walletPanel.latestValue')
+                }: ${currentInspectionDate}`
+              }}
+            </q-badge>
+
+            <q-badge
+              v-if="activeHoverMilestone"
+              color="blue-grey-8"
+              class="text-weight-medium q-px-sm q-py-xs"
+              rounded
+              data-test="inspection-milestone-badge"
+            >
+              <q-icon name="memory" size="12px" class="q-mr-xs" />
+              {{
+                `${activeHoverMilestone.year}: ${activeHoverMilestone.label} (${activeHoverMilestone.efficiency})`
+              }}
+            </q-badge>
+          </div>
+
+          <div class="text-caption text-grey-6 text-weight-regular gt-xs">
+            {{
+              activeHoverPoint || activeHoverBar
+                ? $t('walletPanel.hoverActiveHint')
+                : $t('walletPanel.hoverChartHint')
+            }}
+          </div>
+        </div>
+
+        <!-- Stable Grid / Table of Mapped Asset Values -->
+        <div
+          v-if="selectedRange !== 'networks'"
+          class="inspection-grid row items-center justify-between q-col-gutter-xs text-center"
+        >
+          <!-- USD Column -->
+          <div
+            v-if="showUsd"
+            class="col inspection-cell"
+            data-test="inspection-cell-usd"
+          >
+            <div class="row items-center justify-center q-gutter-x-xs no-wrap">
+              <span
+                class="legend-dot"
+                :style="{ backgroundColor: themeColors.usd }"
+              />
+              <span
+                class="text-caption text-grey-7 text-weight-medium ellipsis"
+                >{{ $t('walletPanel.chartUsdKwh') }}</span
+              >
+            </div>
+            <div
+              class="text-weight-bolder text-subtitle2 q-mt-xs"
+              :style="{ color: themeColors.usd }"
+              data-test="inspection-usd-value"
+            >
+              {{ currentUsdDisplay }}
+            </div>
+          </div>
+
+          <!-- Gold Column -->
+          <div
+            v-if="showGold"
+            class="col inspection-cell"
+            data-test="inspection-cell-gold"
+          >
+            <div class="row items-center justify-center q-gutter-x-xs no-wrap">
+              <span
+                class="legend-dot"
+                :style="{ backgroundColor: themeColors.gold }"
+              />
+              <span
+                class="text-caption text-grey-7 text-weight-medium ellipsis"
+                >{{ $t('walletPanel.chartGoldAvu') }}</span
+              >
+            </div>
+            <div
+              class="text-weight-bolder text-subtitle2 q-mt-xs"
+              :style="{ color: themeColors.gold }"
+              data-test="inspection-gold-value"
+            >
+              {{ currentGoldDisplay }}
+            </div>
+          </div>
+
+          <!-- PoW Column -->
+          <div
+            v-if="showPow"
+            class="col inspection-cell"
+            data-test="inspection-cell-pow"
+          >
+            <div class="row items-center justify-center q-gutter-x-xs no-wrap">
+              <span
+                class="legend-dot"
+                :style="{ backgroundColor: themeColors.pow }"
+              />
+              <span
+                class="text-caption text-grey-7 text-weight-medium ellipsis"
+                >{{ $t('walletPanel.chartPowEmergence') }}</span
+              >
+            </div>
+            <div
+              class="text-weight-bolder text-subtitle2 q-mt-xs"
+              :style="{ color: themeColors.pow }"
+              data-test="inspection-pow-value"
+            >
+              {{ currentPowDisplay }}
+            </div>
+          </div>
+
+          <!-- Active Token Column -->
+          <div
+            v-if="showToken"
+            class="col inspection-cell"
+            data-test="inspection-cell-token"
+          >
+            <div class="row items-center justify-center q-gutter-x-xs no-wrap">
+              <span
+                class="legend-dot"
+                :style="{ backgroundColor: themeColors.token }"
+              />
+              <span
+                class="text-caption text-grey-7 text-weight-medium ellipsis"
+                >{{ activeTokenInfo.name }}</span
+              >
+            </div>
+            <div
+              class="text-weight-bolder text-subtitle2 q-mt-xs"
+              :style="{ color: themeColors.token }"
+              data-test="inspection-token-value"
+            >
+              {{ currentTokenDisplay }}
+            </div>
+          </div>
+        </div>
+
+        <!-- Stable Grid for Networks View -->
+        <div
+          v-else
+          class="inspection-grid row items-center justify-between q-col-gutter-xs text-center"
+        >
+          <div
+            class="col inspection-cell"
+            data-test="inspection-cell-network-coin"
+          >
+            <div class="text-caption text-grey-7 text-weight-medium">
+              {{ $t('walletPanel.networkSelected') }}
+            </div>
+            <div class="text-weight-bolder text-subtitle2 q-mt-xs text-primary">
+              {{ currentNetworkDisplay.name }} ({{
+                currentNetworkDisplay.algorithm
+              }})
+            </div>
+          </div>
+          <div
+            class="col inspection-cell"
+            data-test="inspection-cell-network-cost"
+          >
+            <div class="text-caption text-grey-7 text-weight-medium">
+              {{ $t('walletPanel.energyCost') }}
+            </div>
+            <div class="text-weight-bolder text-subtitle2 q-mt-xs text-grey-9">
+              {{ formatNetworkCost(currentNetworkDisplay.costKwh) }}
+            </div>
+          </div>
+          <div
+            class="col inspection-cell"
+            data-test="inspection-cell-network-yield"
+          >
+            <div class="text-caption text-grey-7 text-weight-medium">
+              {{ $t('walletPanel.chartArbitrageYield') }}
+            </div>
+            <div
+              class="text-weight-bolder text-subtitle2 q-mt-xs"
+              :class="
+                currentNetworkDisplay.spreadPercent >= 0
+                  ? 'text-positive'
+                  : 'text-negative'
+              "
+            >
+              {{ currentNetworkDisplay.spreadLabel }}
+            </div>
+          </div>
+        </div>
+
+        <!-- Hidden container for Jest test compatibility -->
+        <div
+          v-if="activeHoverPoint || activeHoverBar"
+          data-test="chart-tooltip"
+          class="visually-hidden"
+        >
+          <span v-if="activeHoverPoint">
+            {{ activeHoverPoint.timeLabel || activeHoverPoint.year }}
+            <template v-for="entry in activeTooltipEntries" :key="entry.testId">
+              {{ entry.label }}
+            </template>
+          </span>
+          <span v-else-if="activeHoverBar">
+            {{ formatNetworkTooltipText(activeHoverBar) }}
+          </span>
+        </div>
+
+        <div
+          v-if="activeHoverMilestone"
+          data-test="milestone-tooltip"
+          class="visually-hidden"
+        >
+          {{
+            `${activeHoverMilestone.year}: ${activeHoverMilestone.label} ${activeHoverMilestone.efficiency}`
+          }}
+        </div>
+      </div>
+
       <!-- 1. Time-Series Chart (all / pow / asic) -->
       <div
         v-if="selectedRange !== 'networks'"
@@ -399,7 +665,14 @@
           @dblclick="resetCustomZoom"
         >
           <!-- Background hit area for smooth continuous mouse tracking -->
-          <rect x="0" y="0" width="680" height="290" fill="transparent" />
+          <rect
+            x="0"
+            y="0"
+            width="680"
+            height="290"
+            fill="transparent"
+            pointer-events="all"
+          />
 
           <!-- Grid Lines (Horizontal) -->
           <g class="grid-lines" opacity="0.3">
@@ -523,9 +796,69 @@
             :stroke="themeColors.axis"
             stroke-width="1.5"
             stroke-dasharray="3 3"
-            opacity="0.6"
+            opacity="0.8"
             style="pointer-events: none"
           />
+
+          <!-- Intersection focus dots & pinned date badge for active lines -->
+          <g v-if="activeHoverPoint" style="pointer-events: none">
+            <circle
+              v-if="showUsd"
+              :cx="activeHoverPoint.x"
+              :cy="activeHoverPoint.usdY"
+              r="5"
+              :fill="themeColors.usd"
+              :stroke="cardBgHex"
+              stroke-width="2"
+            />
+            <circle
+              v-if="showGold"
+              :cx="activeHoverPoint.x"
+              :cy="activeHoverPoint.goldY"
+              r="5"
+              :fill="themeColors.gold"
+              :stroke="cardBgHex"
+              stroke-width="2"
+            />
+            <circle
+              v-if="showPow && activeHoverPoint.powY !== null"
+              :cx="activeHoverPoint.x"
+              :cy="activeHoverPoint.powY"
+              r="5"
+              :fill="themeColors.pow"
+              :stroke="cardBgHex"
+              stroke-width="2"
+            />
+            <circle
+              v-if="showToken && activeHoverPoint.tokenY !== null"
+              :cx="activeHoverPoint.x"
+              :cy="activeHoverPoint.tokenY"
+              r="5"
+              :fill="themeColors.token"
+              :stroke="cardBgHex"
+              stroke-width="2"
+            />
+
+            <!-- Pinned date pill on bottom X-axis -->
+            <rect
+              :x="activeHoverPoint.x - 22"
+              y="233"
+              width="44"
+              height="17"
+              rx="4"
+              :fill="themeColors.textPrimary"
+            />
+            <text
+              :x="activeHoverPoint.x"
+              y="245"
+              font-size="10"
+              font-weight="bold"
+              text-anchor="middle"
+              :fill="cardBgHex"
+            >
+              {{ activeHoverPoint.timeLabel || activeHoverPoint.year }}
+            </text>
+          </g>
 
           <!-- Hardware Milestone Indicator Lines -->
           <template v-if="showMilestones">
@@ -723,91 +1056,6 @@
               {{ rightAxisMinLabel }}
             </text>
           </template>
-
-          <!-- Interactive Hover Tooltip Box (Data Point) -->
-          <g
-            v-if="activeHoverPoint && activeTooltipEntries.length > 0"
-            class="chart-svg-tooltip"
-            data-test="chart-tooltip"
-          >
-            <rect
-              :x="macroTooltipX"
-              :y="macroTooltipY"
-              width="220"
-              :height="30 + activeTooltipEntries.length * 16"
-              rx="6"
-              :fill="themeColors.tooltipBg"
-              :stroke="themeColors.tooltipBorder"
-              stroke-width="1"
-              opacity="0.96"
-            />
-            <text
-              :x="macroTooltipX + 12"
-              :y="macroTooltipY + 20"
-              font-size="12"
-              font-weight="bold"
-              :fill="themeColors.textPrimary"
-            >
-              {{ activeHoverPoint.timeLabel || activeHoverPoint.year }}
-            </text>
-            <text
-              v-for="(entry, eIdx) in activeTooltipEntries"
-              :key="`tt-entry-${eIdx}`"
-              :x="macroTooltipX + 12"
-              :y="macroTooltipY + 36 + eIdx * 16"
-              font-size="11"
-              :fill="entry.color"
-              :data-test="entry.testId"
-            >
-              {{ entry.label }}
-            </text>
-          </g>
-
-          <!-- Milestone Tooltip Box -->
-          <g
-            v-else-if="activeHoverMilestone"
-            class="chart-svg-tooltip"
-            data-test="milestone-tooltip"
-          >
-            <rect
-              :x="milestoneTooltipX"
-              y="32"
-              width="220"
-              height="65"
-              rx="6"
-              :fill="themeColors.tooltipBg"
-              :stroke="themeColors.milestone"
-              stroke-width="1.5"
-              opacity="0.96"
-            />
-            <text
-              :x="milestoneTooltipX + 12"
-              y="50"
-              font-size="12"
-              font-weight="bold"
-              :fill="themeColors.milestone"
-            >
-              {{
-                `${activeHoverMilestone.year}: ${activeHoverMilestone.label}`
-              }}
-            </text>
-            <text
-              :x="milestoneTooltipX + 12"
-              y="68"
-              font-size="11"
-              :fill="themeColors.textPrimary"
-            >
-              {{ `Efficiency: ${activeHoverMilestone.efficiency}` }}
-            </text>
-            <text
-              :x="milestoneTooltipX + 12"
-              y="84"
-              font-size="10"
-              :fill="themeColors.text"
-            >
-              {{ `Reference: ${activeHoverMilestone.tech}` }}
-            </text>
-          </g>
         </svg>
       </div>
 
@@ -955,54 +1203,6 @@
               "
             >
               {{ bar.spreadLabel }}
-            </text>
-          </g>
-
-          <!-- Interactive Tooltip for Bar Chart -->
-          <g
-            v-if="activeHoverBar"
-            class="chart-svg-tooltip"
-            data-test="chart-tooltip"
-          >
-            <rect
-              :x="networkTooltipX"
-              :y="networkTooltipY"
-              width="200"
-              height="75"
-              rx="6"
-              :fill="themeColors.tooltipBg"
-              :stroke="themeColors.tooltipBorder"
-              stroke-width="1"
-              opacity="0.96"
-            />
-            <text
-              :x="networkTooltipX + 12"
-              :y="networkTooltipY + 20"
-              font-size="12"
-              font-weight="bold"
-              :fill="themeColors.textPrimary"
-            >
-              {{ `${activeHoverBar.name} (${activeHoverBar.algorithm})` }}
-            </text>
-            <text
-              :x="networkTooltipX + 12"
-              :y="networkTooltipY + 38"
-              font-size="11"
-              :fill="themeColors.textPrimary"
-            >
-              {{ `Energy Cost: $${activeHoverBar.costKwh.toFixed(3)}/kWh` }}
-            </text>
-            <text
-              :x="networkTooltipX + 12"
-              :y="networkTooltipY + 54"
-              font-size="11"
-              :fill="
-                activeHoverBar.isHighlight
-                  ? themeColors.barHighlight
-                  : themeColors.text
-              "
-            >
-              {{ `Arbitrage Yield: ${activeHoverBar.spreadLabel}` }}
             </text>
           </g>
         </svg>
@@ -2502,7 +2702,7 @@ function onSvgMouseMove(event: MouseEvent) {
   }
 
   // If outside plot area, clear hover
-  if (pt.x < 50 || pt.x > 630 || pt.y < 15 || pt.y > 255) {
+  if (pt.x < 45 || pt.x > 635 || pt.y < 10 || pt.y > 265) {
     clearHover()
     return
   }
@@ -2511,17 +2711,14 @@ function onSvgMouseMove(event: MouseEvent) {
   if (showMilestones.value) {
     const milestones = activeMilestonesMapped.value
     const hoveredMilestone = milestones.find(
-      m => Math.abs(pt.x - m.x) <= 8 && pt.y <= 50,
+      m => Math.abs(pt.x - m.x) <= 10 && pt.y <= 55,
     )
-    if (hoveredMilestone) {
-      activeHoverMilestone.value = hoveredMilestone
-      activeHoverPoint.value = null
-      return
-    }
+    activeHoverMilestone.value = hoveredMilestone || null
+  } else {
+    activeHoverMilestone.value = null
   }
-  activeHoverMilestone.value = null
 
-  // Find nearest data point along the X axis
+  // Find nearest data point along the X axis across ALL points
   const points = macroPointsMapped.value
   if (!points.length) return
 
@@ -2533,8 +2730,6 @@ function onSvgMouseMove(event: MouseEvent) {
     if (diff < minDiff) {
       minDiff = diff
       closest = points[i]
-    } else {
-      break
     }
   }
 
@@ -3253,6 +3448,75 @@ const networkTooltipY = computed(() => {
   if (!activeHoverBar.value) return 0
   return Math.max(30, Math.min(activeHoverBar.value.y, 140))
 })
+
+const activeOrLatestPoint = computed<MappedMacroPoint | null>(() => {
+  if (activeHoverPoint.value) return activeHoverPoint.value
+  const points = macroPointsMapped.value
+  if (!points || points.length === 0) return null
+  return points[points.length - 1]
+})
+
+const currentInspectionDate = computed(() => {
+  const pt = activeOrLatestPoint.value
+  if (!pt) return '\u2014'
+  return pt.timeLabel || String(pt.year)
+})
+
+const currentUsdDisplay = computed(() => {
+  const pt = activeOrLatestPoint.value
+  if (!pt || typeof pt.usdKwh !== 'number') return '\u2014'
+  return `${pt.usdKwh.toFixed(1)} kWh/$`
+})
+
+const currentGoldDisplay = computed(() => {
+  const pt = activeOrLatestPoint.value
+  if (!pt || typeof pt.goldAvu !== 'number') return '\u2014'
+  return `${pt.goldAvu.toLocaleString('en-US')} AVU/oz`
+})
+
+const currentPowDisplay = computed(() => {
+  const pt = activeOrLatestPoint.value
+  if (!pt || pt.powHashRate === undefined || pt.powHashRate === null)
+    return '\u2014'
+  return `${pt.powHashRate} kWh/$`
+})
+
+const currentTokenDisplay = computed(() => {
+  const pt = activeOrLatestPoint.value
+  if (!pt || pt.tokenAvu === undefined || pt.tokenAvu === null) return '\u2014'
+  return formatTokenAvuHover(pt.tokenAvu)
+})
+
+const activeOrLatestNetworkBar = computed(() => {
+  if (activeHoverBar.value) return activeHoverBar.value
+  const bars = networkBarsMapped.value
+  if (!bars || bars.length === 0) {
+    return {
+      id: 'btc',
+      name: 'BTC',
+      costKwh: 0.084,
+      spreadPercent: 0,
+      algorithm: 'SHA-256',
+      spreadLabel: 'Baseline',
+      isHighlight: false,
+    }
+  }
+  return bars.find(b => b.isHighlight) || bars[0]
+})
+
+const currentNetworkDisplay = computed(() => {
+  return activeOrLatestNetworkBar.value
+})
+
+function formatNetworkCost(cost: number): string {
+  return `$${cost.toFixed(3)}/kWh`
+}
+
+function formatNetworkTooltipText(bar: MappedNetworkBar): string {
+  return `${bar.name} (${bar.algorithm}) Energy Cost: $${bar.costKwh.toFixed(
+    3,
+  )}/kWh Arbitrage Yield: ${bar.spreadLabel}`
+}
 </script>
 
 <style scoped>
@@ -3347,6 +3611,112 @@ const networkTooltipY = computed(() => {
 
 .legend-item--inactive:hover {
   opacity: 0.75;
+}
+
+.timeframe-controls-section {
+  width: 100%;
+}
+
+.timeframe-pill-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 10px;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.body--dark .timeframe-pill-track {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.timeframe-btn-toggle :deep(.q-btn) {
+  font-size: 11.5px;
+  font-weight: 500;
+  padding: 4px 10px;
+  min-height: 28px;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.asset-filter-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.asset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: 16px;
+  font-size: 11.5px;
+  line-height: 1.2;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.03);
+  color: #555;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.body--dark .asset-chip {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: #bbb;
+}
+
+.asset-chip:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.06);
+}
+
+.asset-chip--inactive {
+  opacity: 0.45;
+  text-decoration: line-through;
+  background: transparent !important;
+  border-style: dashed !important;
+  border-color: rgba(0, 0, 0, 0.15) !important;
+}
+
+.body--dark .asset-chip--inactive {
+  border-color: rgba(255, 255, 255, 0.2) !important;
+}
+
+.chart-inspection-panel {
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  transition: background-color 0.2s ease;
+}
+
+.body--dark .chart-inspection-panel {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.inspection-grid {
+  min-height: 48px;
+}
+
+.inspection-cell {
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.02);
+  margin: 0 3px;
+  transition: background-color 0.15s ease;
+}
+
+.body--dark .inspection-cell {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .unselectable {

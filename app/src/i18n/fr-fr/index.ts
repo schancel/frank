@@ -473,6 +473,12 @@ export default {
     hardwareMilestones: 'Jalons d’efficacité matérielle',
     chartTokenAvu: 'AVU / kWh',
     activeTokenCardTitle: 'Parité {name} ({symbol})',
+    inspectingDate: 'Inspection',
+    latestValue: 'Dernière valeur',
+    hoverChartHint: 'Survolez le graphique pour inspecter l’historique',
+    hoverActiveHint: 'Inspection des valeurs historiques des actifs',
+    networkSelected: 'Réseau / Crypto',
+    energyCost: 'Coût énergétique',
   },
   chatList: {
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',

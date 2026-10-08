@@ -467,6 +467,12 @@ export default {
     hardwareMilestones: 'Hardware Efficiency Milestones',
     chartTokenAvu: 'AVU / kWh',
     activeTokenCardTitle: '{name} ({symbol}) Parity',
+    inspectingDate: 'Inspecting',
+    latestValue: 'Latest',
+    hoverChartHint: 'Hover chart to inspect historical dates',
+    hoverActiveHint: 'Inspecting historical values across assets',
+    networkSelected: 'Network / Coin',
+    energyCost: 'Energy Cost',
   },
   chatList: {
     noContactMessage: 'Add contacts from the drawer above...',

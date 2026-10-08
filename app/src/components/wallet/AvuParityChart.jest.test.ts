@@ -561,4 +561,55 @@ describe('AvuParityChart component', () => {
     expect(vm.goldMaxLimit).toBeGreaterThanOrEqual(3000)
     expect(vm.goldMaxLabel).toContain('3.') // e.g. 3.5k
   })
+
+  test('renders stable inspection table above chart and dynamically maps asset prices to the hovered date', async () => {
+    const wrapper = mountChart()
+
+    // 1. Stable inspection table exists
+    const table = wrapper.find('[data-test="chart-inspection-table"]')
+    expect(table.exists()).toBe(true)
+
+    // 2. Defaults to latest values when not hovering
+    const dateBadge = wrapper.find('[data-test="inspection-date-badge"]')
+    expect(dateBadge.exists()).toBe(true)
+    expect(dateBadge.text()).toContain('2026')
+
+    const usdVal = wrapper.find('[data-test="inspection-usd-value"]')
+    const goldVal = wrapper.find('[data-test="inspection-gold-value"]')
+    const powVal = wrapper.find('[data-test="inspection-pow-value"]')
+    const tokenVal = wrapper.find('[data-test="inspection-token-value"]')
+
+    expect(usdVal.text()).toBe('12.0 kWh/$')
+    expect(goldVal.text()).toBe('31,547 AVU/oz')
+    expect(powVal.text()).toBe('11.9 kWh/$')
+    expect(tokenVal.text()).toBe('41.7 AVU (kWh)')
+
+    // 3. Hovering over point (e.g. index 0: 1930) updates table values
+    const points = wrapper.findAll('[data-test="chart-hover-point"]')
+    await points[0].trigger('mouseenter')
+
+    expect(
+      wrapper.find('[data-test="inspection-date-badge"]').text(),
+    ).toContain('1930')
+    expect(wrapper.find('[data-test="inspection-usd-value"]').text()).toBe(
+      '142.9 kWh/$',
+    )
+    expect(wrapper.find('[data-test="inspection-gold-value"]').text()).toBe(
+      '2,953 AVU/oz',
+    )
+
+    // 4. In Networks view, displays coin, energy cost, and yield
+    const networksBtn = wrapper.find('button[data-test-option="networks"]')
+    await networksBtn.trigger('click')
+
+    expect(
+      wrapper.find('[data-test="inspection-cell-network-coin"]').text(),
+    ).toContain('XEC (SHA-256)')
+    expect(
+      wrapper.find('[data-test="inspection-cell-network-cost"]').text(),
+    ).toContain('$0.141/kWh')
+    expect(
+      wrapper.find('[data-test="inspection-cell-network-yield"]').text(),
+    ).toContain('+67.8%')
+  })
 })

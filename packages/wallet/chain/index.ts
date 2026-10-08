@@ -59,6 +59,7 @@ export type {
   EvmTransactionBuilder,
   EvmTransferParams,
   EvmBurnParams,
+  EvmDrainParams,
 } from "./evm-transaction-builder";
 export type { SolanaChainConfig } from "./solana-chain";
 export {

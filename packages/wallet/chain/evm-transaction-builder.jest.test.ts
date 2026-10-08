@@ -76,6 +76,128 @@ describe("NativeEvmTransactionBuilder", () => {
     });
   });
 
+  describe("buildZeroRefundDrain", () => {
+    const from = "0x1111111111111111111111111111111111111111";
+    const recipient = "0x2222222222222222222222222222222222222222";
+    const baseFeeWei = 25_000_000_000n;
+
+    it("produces equal maxFeePerGas and maxPriorityFeePerGas with default 1 gwei tip", async () => {
+      const balanceWei = 1_000_000_000_000_000_000n;
+      const tx = await builder.buildZeroRefundDrain({
+        from,
+        recipient,
+        balanceWei,
+        baseFeeWei,
+      });
+
+      const expectedMaxFee = baseFeeWei + 1_000_000_000n;
+      expect(tx.maxFeePerGas).toBe(expectedMaxFee);
+      expect(tx.maxPriorityFeePerGas).toBe(expectedMaxFee);
+      expect(tx.gasLimit).toBe(21_000n);
+      expect(tx.from).toBe(from);
+      expect(tx.to).toBe(recipient);
+      expect(tx.data).toBe("0x");
+    });
+
+    it("verifies value + gasLimit * maxFeePerGas === balanceWei", async () => {
+      const balanceWei = 500_000_000_000_000_000n;
+      const tx = await builder.buildZeroRefundDrain({
+        from,
+        recipient,
+        balanceWei,
+        baseFeeWei,
+      });
+
+      const gasLimit = BigInt(tx.gasLimit as bigint);
+      const maxFeePerGas = BigInt(tx.maxFeePerGas as bigint);
+      const value = BigInt(tx.value as bigint);
+
+      expect(value + gasLimit * maxFeePerGas).toBe(balanceWei);
+      expect(value).toBe(balanceWei - 21_000n * (baseFeeWei + 1_000_000_000n));
+    });
+
+    it("honors custom gasLimit, priorityTipWei, and nonce", async () => {
+      const balanceWei = 100_000_000_000_000_000n;
+      const customGasLimit = 35_000n;
+      const customTip = 2_500_000_000n;
+      const customNonce = 12;
+
+      const tx = await builder.buildZeroRefundDrain({
+        from,
+        recipient,
+        balanceWei,
+        baseFeeWei,
+        priorityTipWei: customTip,
+        gasLimit: customGasLimit,
+        nonce: customNonce,
+      });
+
+      const expectedMaxFee = baseFeeWei + customTip;
+      expect(tx.gasLimit).toBe(customGasLimit);
+      expect(tx.maxFeePerGas).toBe(expectedMaxFee);
+      expect(tx.maxPriorityFeePerGas).toBe(expectedMaxFee);
+      expect(tx.nonce).toBe(customNonce);
+
+      const gasLimit = BigInt(tx.gasLimit as bigint);
+      const maxFeePerGas = BigInt(tx.maxFeePerGas as bigint);
+      const value = BigInt(tx.value as bigint);
+      expect(value + gasLimit * maxFeePerGas).toBe(balanceWei);
+    });
+
+    it("throws RangeError if balance is strictly less than required zero-refund drain fee", async () => {
+      const gasLimit = 21_000n;
+      const maxFeePerGas = baseFeeWei + 1_000_000_000n;
+      const exactFee = gasLimit * maxFeePerGas;
+
+      await expect(
+        builder.buildZeroRefundDrain({
+          from,
+          recipient,
+          balanceWei: exactFee - 1n,
+          baseFeeWei,
+        })
+      ).rejects.toThrow(
+        new RangeError(
+          "Account balance is insufficient to pay zero-refund drain fee"
+        )
+      );
+    });
+
+    it("throws RangeError if balance is exactly equal to zero-refund drain fee", async () => {
+      const gasLimit = 21_000n;
+      const maxFeePerGas = baseFeeWei + 1_000_000_000n;
+      const exactFee = gasLimit * maxFeePerGas;
+
+      await expect(
+        builder.buildZeroRefundDrain({
+          from,
+          recipient,
+          balanceWei: exactFee,
+          baseFeeWei,
+        })
+      ).rejects.toThrow(
+        new RangeError(
+          "Account balance is insufficient to pay zero-refund drain fee"
+        )
+      );
+    });
+
+    it("throws RangeError if balance is zero", async () => {
+      await expect(
+        builder.buildZeroRefundDrain({
+          from,
+          recipient,
+          balanceWei: 0n,
+          baseFeeWei,
+        })
+      ).rejects.toThrow(
+        new RangeError(
+          "Account balance is insufficient to pay zero-refund drain fee"
+        )
+      );
+    });
+  });
+
   it("exports a singleton defaultNativeEvmTransactionBuilder", () => {
     expect(defaultNativeEvmTransactionBuilder).toBeInstanceOf(
       NativeEvmTransactionBuilder
@@ -154,6 +276,47 @@ describe("Tip20TransactionBuilder", () => {
     expect(typeof tx.data === "string" && tx.data.endsWith("feedbeef")).toBe(
       true
     );
+  });
+
+  describe("buildZeroRefundDrain", () => {
+    const from = "0x1111111111111111111111111111111111111111";
+    const recipient = "0x2222222222222222222222222222222222222222";
+    const baseFeeWei = 25_000_000_000n;
+
+    it("builds a TIP-20 zero-refund drain encoding transfer data and value 0n", async () => {
+      const balanceWei = 50_000_000_000_000_000n;
+      const tx = await builder.buildZeroRefundDrain({
+        from,
+        recipient,
+        balanceWei,
+        baseFeeWei,
+      });
+
+      const expectedMaxFee = baseFeeWei + 1_000_000_000n;
+      expect(tx.maxFeePerGas).toBe(expectedMaxFee);
+      expect(tx.maxPriorityFeePerGas).toBe(expectedMaxFee);
+      expect(tx.gasLimit).toBe(65_000n);
+      expect(tx.to).toBe(TEMPO_PATH_USD_ADDRESS);
+      expect(tx.value).toBe(0n);
+      expect(
+        typeof tx.data === "string" && tx.data.startsWith("0xa9059cbb")
+      ).toBe(true);
+    });
+
+    it("throws RangeError on insufficient balance", async () => {
+      await expect(
+        builder.buildZeroRefundDrain({
+          from,
+          recipient,
+          balanceWei: 100n,
+          baseFeeWei,
+        })
+      ).rejects.toThrow(
+        new RangeError(
+          "Account balance is insufficient to pay zero-refund drain fee"
+        )
+      );
+    });
   });
 
   it("exports defaultTempoTransactionBuilder pointing to pathUSD", () => {

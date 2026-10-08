@@ -10,6 +10,7 @@ import {
   compressAvatarDataUrl,
   compressAvatarFile,
 } from './avatar-resize'
+import { profileAvatar, clearAvatarCache } from './avatar'
 
 describe('avatar resizing and compression utilities', () => {
   describe('isAvatarTooLarge', () => {
@@ -273,5 +274,66 @@ describe('avatar resizing and compression utilities', () => {
         window.Image = originalImage
       }
     })
+  })
+})
+
+describe('profileAvatar', () => {
+  beforeEach(() => {
+    clearAvatarCache()
+  })
+
+  it('returns custom avatars directly without using default avatars or caching', () => {
+    expect(profileAvatar('https://example.com/avatar.png', 'alice')).toBe(
+      'https://example.com/avatar.png',
+    )
+    expect(profileAvatar('data:image/webp;base64,AAA', 'bob')).toBe(
+      'data:image/webp;base64,AAA',
+    )
+    expect(profileAvatar('custom-avatar')).toBe('custom-avatar')
+  })
+
+  it('returns exact same URL string on repeated lookups for the same identity', () => {
+    const first = profileAvatar(undefined, 'Alice')
+    const second = profileAvatar(undefined, 'Alice')
+    expect(first).toBe(second)
+    expect(first).toMatch(/^assets\/avatars\//)
+  })
+
+  it('normalizes identity case so case variants share the same cache entry', () => {
+    const lower = profileAvatar(null, 'carol')
+    const upper = profileAvatar(null, 'CAROL')
+    const mixed = profileAvatar(undefined, 'CaRoL')
+    expect(upper).toBe(lower)
+    expect(mixed).toBe(lower)
+  })
+
+  it('handles default empty identity gracefully', () => {
+    const first = profileAvatar()
+    const second = profileAvatar(null)
+    const third = profileAvatar(undefined, '')
+    expect(first).toBe(second)
+    expect(second).toBe(third)
+  })
+
+  it('clears the cache when clearAvatarCache is called', () => {
+    const first = profileAvatar(undefined, 'dave')
+    clearAvatarCache()
+    const second = profileAvatar(undefined, 'dave')
+    expect(second).toBe(first)
+  })
+
+  it('bounds cache size to 2000 entries and evicts oldest on overflow', () => {
+    const firstUrl = profileAvatar(undefined, 'identity-0')
+
+    for (let i = 1; i <= 2000; i++) {
+      profileAvatar(undefined, `identity-${i}`)
+    }
+
+    // After 2001 total insertions, 'identity-0' was evicted
+    const regeneratedFirstUrl = profileAvatar(undefined, 'identity-0')
+    expect(regeneratedFirstUrl).toBe(firstUrl)
+
+    const retainedUrl = profileAvatar(undefined, 'identity-2000')
+    expect(retainedUrl).toBeDefined()
   })
 })

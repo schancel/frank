@@ -80,11 +80,11 @@
     <q-page-container>
       <q-page class="q-ma-none q-pa-none">
         <q-scroll-area class="absolute full-width full-height">
-          <div class="q-pa-md">
+          <div class="wallet-scroll-content">
             <q-card
               flat
-              class="col column full-width bg-transparent"
-              style="max-width: 720px; width: 100%; margin: 0 auto"
+              class="wallet-content-card bg-transparent"
+              style="max-width: 680px; width: 100%; margin: 0 auto"
             >
               <q-tabs
                 v-model="activeTab"
@@ -511,3 +511,27 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.wallet-scroll-content {
+  width: 100%;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 20px 32px;
+  box-sizing: border-box;
+}
+
+.wallet-content-card {
+  width: 100%;
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+@media (max-width: 600px) {
+  .wallet-scroll-content {
+    padding: 8px 10px 24px;
+  }
+}
+</style>

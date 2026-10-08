@@ -1,5 +1,5 @@
 <template>
-  <div class="q-pa-md d-app-swap-view" data-testid="dapp-swap-view">
+  <div class="d-app-swap-view q-py-sm" data-testid="dapp-swap-view">
     <div class="column q-gutter-y-sm">
       <!-- From Asset Card -->
       <q-card flat bordered class="q-pa-md swap-card">
@@ -435,9 +435,8 @@ export default defineComponent({
 
 <style scoped>
 .d-app-swap-view {
-  max-width: 580px;
-  margin: 0 auto;
   width: 100%;
+  margin: 0 auto;
 }
 .swap-card {
   border-radius: 12px;

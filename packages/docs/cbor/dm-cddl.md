@@ -69,6 +69,17 @@ encrypted-message-content = {
   3: digest-32,            ; T1a digest of field 2
   4: uuid-16,              ; stable logical conversation_id
   ? 5: tstr .size (1..512),; optional conversation name
+  ? 6: token-transfer,     ; optional token transfer
+  * uint => frank-value,
+}
+
+token-transfer = {
+  1: tstr,                 ; chain namespace
+  2: tstr,                 ; contract address
+  3: #6.1001(biguint),     ; amount in base units
+  4: uint,                 ; decimals
+  5: tstr,                 ; symbol
+  ? 6: bstr,               ; optional raw tx / permit
   * uint => frank-value,
 }
 

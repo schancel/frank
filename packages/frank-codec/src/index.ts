@@ -18,6 +18,7 @@ export * from './blackjack'
 export * from './stealth'
 export * from './channel'
 export * from './forwarding'
+export * from './token-transfer'
 export * from './email'
 export * from './directory-preview'
 export type {

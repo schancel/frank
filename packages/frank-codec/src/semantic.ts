@@ -17,6 +17,7 @@ import {
   type ForumCursor,
   type ForumTopicPage,
   type ForumDiscoveryPage,
+  type TokenTransfer,
 } from './types'
 
 const semantic = (message: string, location = 'root'): FrankCodecError =>
@@ -183,12 +184,55 @@ function typedOf<T extends FinalPayload['type']>(
  * Runs the stage 9 checks of one frame after its children have finished. `prior` is the
  * context's prior statement (type 2 only); `undefined` means the caller supplied none.
  */
+export function checkTokenTransferSemantics(
+  transfer: TokenTransfer,
+  path = 'root/payload.6',
+): void {
+  if (transfer.amount <= 0n) {
+    throw semantic('token transfer amount must be positive', `${path}.3`)
+  }
+  if (
+    !Number.isSafeInteger(transfer.decimals) ||
+    transfer.decimals < 0 ||
+    transfer.decimals > 255
+  ) {
+    throw semantic('token transfer decimals must be in 0..255', `${path}.4`)
+  }
+  if (transfer.chainNamespace.trim().length === 0) {
+    throw semantic(
+      'token transfer chain namespace cannot be empty',
+      `${path}.1`,
+    )
+  }
+  if (transfer.contractAddress.trim().length === 0) {
+    throw semantic(
+      'token transfer contract address cannot be empty',
+      `${path}.2`,
+    )
+  }
+  if (transfer.symbol.trim().length === 0) {
+    throw semantic('token transfer symbol cannot be empty', `${path}.5`)
+  }
+  if (
+    transfer.rawTxOrPermit !== undefined &&
+    transfer.rawTxOrPermit.length === 0
+  ) {
+    throw semantic('token transfer rawTxOrPermit cannot be empty', `${path}.6`)
+  }
+}
+
 export function checkSemantics(
   typed: FinalPayload,
   prior: DirectoryStatement<ParsedFrame> | null | undefined,
 ): void {
   const P = 'root/payload'
   switch (typed.type) {
+    case 6: {
+      if (typed.tokenTransfer) {
+        checkTokenTransferSemantics(typed.tokenTransfer, `${P}.6`)
+      }
+      return
+    }
     case 18: {
       if (typed.schema === 3) {
         if (typed.action === 'challenge' || typed.action === 'accept') {

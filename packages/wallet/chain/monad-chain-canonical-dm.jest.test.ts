@@ -331,7 +331,7 @@ async function fixture(funded = true) {
       fetch,
     }
   }
-  return {
+  const ret = {
     chain,
     alice,
     bob,
@@ -341,12 +341,13 @@ async function fixture(funded = true) {
     setPhase: (next: typeof phase) => (phase = next),
     directoryFor,
     close: async () => {
-      await alice.close()
-      await bob.close()
-      for (const store of stores) await store.close()
+      await ret.alice.close().catch(() => undefined)
+      await ret.bob.close().catch(() => undefined)
+      for (const store of stores) await store.close().catch(() => undefined)
       rmSync(directory, { recursive: true, force: true })
     },
   }
+  return ret
 }
 
 const text = (value: string) => [{ type: 'text' as const, text: value }]
@@ -914,6 +915,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     })
     expect(statuses[orphanedDigest]).toBe('dead')
     expect(statuses[result.payloadDigest]).toBe('delivered')
+    await f.alice.close()
   })
 
   it('keeps reporting a delivered attempt no message recorded across wallet reopens, and never pays for it twice', async () => {

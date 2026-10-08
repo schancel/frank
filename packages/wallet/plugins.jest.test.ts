@@ -7,6 +7,7 @@ import * as bip39 from 'bip39'
 import {
   DAppPluginRegistry,
   defaultPluginRegistry,
+  createStandardPluginRegistry,
   UniswapDAppPlugin,
   JupiterDAppPlugin,
   PredictionEscrowDAppPlugin,
@@ -101,6 +102,14 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
 
       expect(prediction.getMetadata().chainType).toBe('evm')
       expect(prediction.getMetadata().id).toBe('prediction-escrow')
+    })
+
+    it('instantiates standard plugin registry with all reference plugins pre-registered', () => {
+      const registry = createStandardPluginRegistry()
+      expect(registry.list().length).toBe(3)
+      expect(registry.has('uniswap-universal-router')).toBe(true)
+      expect(registry.has('jupiter-aggregator')).toBe(true)
+      expect(registry.has('prediction-escrow')).toBe(true)
     })
   })
 

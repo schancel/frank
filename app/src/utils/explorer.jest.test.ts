@@ -6,6 +6,7 @@ import {
   transactionExplorerUrl,
   multiChainExplorerUrl,
   hasMultiChainExplorer,
+  getExplorerUrl,
 } from './explorer'
 
 describe('Monad transaction explorer configuration', () => {
@@ -110,6 +111,9 @@ describe('Multi-chain transaction explorer configuration', () => {
   it('safely returns undefined for unknown network without throwing', () => {
     expect(multiChainExplorerUrl('0x123', 'UNKNOWN')).toBeUndefined()
     expect(hasMultiChainExplorer('UNKNOWN')).toBe(false)
+    expect(getExplorerUrl('0x123', 'monad-testnet')).toBe(
+      'https://testnet.monadscan.com/tx/0x123',
+    )
   })
 })
 

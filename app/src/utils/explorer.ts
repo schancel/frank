@@ -242,3 +242,5 @@ export function multiChainExplorerUrl(
 
   return undefined
 }
+
+export const getExplorerUrl = multiChainExplorerUrl

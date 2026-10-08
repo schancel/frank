@@ -55,7 +55,19 @@
                     (input instanceof Request ? input.headers : undefined) ||
                     {},
                 )
-                if (!h.has('ngrok-skip-browser-warning')) {
+                var url =
+                  typeof input === 'string'
+                    ? input
+                    : input && input.url
+                    ? input.url
+                    : ''
+                var isNgrok =
+                  (url && url.includes('ngrok')) ||
+                  (typeof location !== 'undefined' &&
+                    location.hostname &&
+                    location.hostname.includes('ngrok') &&
+                    !url.startsWith('http'))
+                if (isNgrok && !h.has('ngrok-skip-browser-warning')) {
                   h.set('ngrok-skip-browser-warning', '1')
                 }
                 opts.headers = h
@@ -65,10 +77,24 @@
               }
             }
           }
+          var origOpen = XMLHttpRequest.prototype.open
+          XMLHttpRequest.prototype.open = function (method, url) {
+            this._reqUrl = url
+            return origOpen.apply(this, arguments)
+          }
           var origSend = XMLHttpRequest.prototype.send
           XMLHttpRequest.prototype.send = function () {
             try {
-              this.setRequestHeader('ngrok-skip-browser-warning', '1')
+              var url = this._reqUrl || ''
+              var isNgrok =
+                (url && url.includes('ngrok')) ||
+                (typeof location !== 'undefined' &&
+                  location.hostname &&
+                  location.hostname.includes('ngrok') &&
+                  !url.startsWith('http'))
+              if (isNgrok) {
+                this.setRequestHeader('ngrok-skip-browser-warning', '1')
+              }
             } catch (e) {}
             return origSend.apply(this, arguments)
           }

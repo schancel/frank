@@ -167,9 +167,12 @@ export class EvmLegacyConsolidator {
   }
 
   /**
-   * Executes the two-phase legacy send:
-   * Phase 1: Fan-in from selected internal accounts to an ephemeral single-use staging EOA.
-   * Phase 2: Drains from the staging EOA to the destination legacy address with nonce = 1, discarding the key.
+   * Executes the legacy send:
+   * - Fast-Path Direct Execution: If a single account covers the target amount (balanceWei >= value + deliveryFee),
+   *   funds are sent directly to the destination address with zero intermediate staging account or hops.
+   * - In-Set Leader Selection: If multi-account fan-in is required, the account with the largest balance
+   *   is designated as the leader. Peer accounts send fan-in transfers directly into the leader address,
+   *   and the leader executes the final delivery transfer to the legacy recipient.
    */
   async sendLegacy(params: {
     recipient: ChainAddress;
@@ -201,36 +204,133 @@ export class EvmLegacyConsolidator {
     for (const acc of available) {
       if (acc.balanceWei <= singleTransferFee) continue;
       selected.push(acc);
+      if (selected.length === 1 && selected[0].balanceWei >= value + deliveryFee) {
+        break;
+      }
       netAggregated += acc.balanceWei - singleTransferFee;
       if (netAggregated >= value + deliveryFee) {
         break;
       }
     }
 
-    if (netAggregated < value + deliveryFee && selected.length > 0) {
+    if (selected.length === 0) {
+      throw new RangeError(
+        `No spendable clean accounts available for legacy consolidation`
+      );
+    }
+
+    if (selected.length === 1 && selected[0].balanceWei < value + deliveryFee) {
+      throw new RangeError(
+        `Insufficient clean balance across accounts to fulfill legacy send of ${value} plus consolidation gas fees`
+      );
+    }
+
+    if (selected.length > 1 && netAggregated < value + deliveryFee) {
       // If we don't have enough to cover value + delivery fee, check if we can cover at least value
       if (netAggregated < value) {
         throw new RangeError(
           `Insufficient clean balance across accounts to fulfill legacy send of ${value} plus consolidation gas fees`
         );
       }
-    } else if (selected.length === 0) {
-      throw new RangeError(
-        `No spendable clean accounts available for legacy consolidation`
-      );
     }
 
-    // Step 2: Generate ephemeral staging EOA
-    const stagingWallet = Wallet.createRandom(this.provider);
+    // Fast-Path Direct Execution:
+    // If a single account covers the target amount, send directly to recipient.raw
+    if (selected.length === 1 && selected[0].balanceWei >= value + deliveryFee) {
+      const funder = selected[0];
+      const funderWallet = new Wallet(funder.privateKey, this.provider);
 
-    // Step 3: Persist intent to journal
+      onProgress?.({
+        status: {
+          stage: "broadcasting",
+        },
+        message: `Broadcasting direct transfer to destination address`,
+      });
+
+      const txResponse = await funderWallet.sendTransaction({
+        to: recipient.raw,
+        value,
+        gasLimit: this.standardGasLimit,
+      });
+
+      if (onSigned) {
+        await onSigned({ txHash: txResponse.hash });
+      }
+
+      onProgress?.({
+        status: {
+          stage: "broadcasting",
+          txHash: txResponse.hash,
+        },
+        message: `Broadcasting direct transfer to destination address`,
+      });
+
+      onProgress?.({
+        status: {
+          stage: "confirmed",
+          txHash: txResponse.hash,
+        },
+        message: `Legacy transfer confirmed on-chain`,
+      });
+
+      const directSyncItem: WalletSyncItem = {
+        type: "wallet-sync",
+        direction: "out",
+        chainIdentifier: this.chainIdentifier,
+        txHash: txResponse.hash,
+        spentInputs: [
+          {
+            address: funder.address,
+            valueWei: (value + deliveryFee).toString(),
+          },
+        ],
+        createdOutputs: [
+          {
+            address: recipient.raw,
+            valueWei: value.toString(),
+          },
+        ],
+        timestamp: Date.now(),
+      };
+
+      if (this.inventory) {
+        this.inventory.processSyncTransaction(directSyncItem);
+      }
+
+      if (this.onSyncTransaction) {
+        try {
+          await this.onSyncTransaction(directSyncItem);
+        } catch (err) {
+          console.warn("Could not dispatch direct sync item:", err);
+        }
+      }
+
+      return {
+        txHash: txResponse.hash,
+        intermediateTxHashes: [],
+        totalValueSent: value,
+        totalFeePaid: deliveryFee,
+      };
+    }
+
+    // In-Set Leader Selection:
+    // Sort selected descending by balanceWei
+    selected.sort((a, b) =>
+      b.balanceWei > a.balanceWei ? 1 : b.balanceWei < a.balanceWei ? -1 : 0
+    );
+
+    const leader = selected[0];
+    const peers = selected.slice(1);
+    const leaderWallet = new Wallet(leader.privateKey, this.provider);
+
+    // Step 2: Persist intent to journal using leader as staging/leader address
     const intentId = `legacy-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const intent: LegacySendIntent = {
       id: intentId,
       recipientAddress: recipient.raw,
       targetValueWei: value.toString(),
-      stagingAddress: stagingWallet.address,
-      stagingPrivateKey: stagingWallet.privateKey,
+      stagingAddress: leader.address,
+      stagingPrivateKey: leader.privateKey,
       inputAddresses: selected.map((a) => a.address),
       phase: "consolidating",
       consolidationTxHashes: [],
@@ -244,27 +344,30 @@ export class EvmLegacyConsolidator {
       status: {
         stage: "consolidating",
         completed: 0,
-        total: selected.length,
+        total: peers.length,
         stagingTxHashes: [],
       },
-      message: `Consolidating funds from ${selected.length} accounts to intermediate staging account`,
+      message: `Consolidating funds from ${peers.length} accounts to leader account`,
     });
 
-    // Step 4: Phase 1 Fan-in consolidation
-    let neededInStaging = value + deliveryFee;
+    // Step 3: Phase 1 Fan-in consolidation into leader
+    let neededInLeader =
+      value + deliveryFee > leader.balanceWei
+        ? value + deliveryFee - leader.balanceWei
+        : 0n;
     let totalConsolidationFeePaid = 0n;
 
-    for (let i = 0; i < selected.length; i++) {
-      const funder = selected[i];
+    for (let i = 0; i < peers.length; i++) {
+      const funder = peers[i];
       const maxFunderNet = funder.balanceWei - singleTransferFee;
       const transferAmount =
-        maxFunderNet >= neededInStaging ? neededInStaging : maxFunderNet;
+        maxFunderNet >= neededInLeader ? neededInLeader : maxFunderNet;
 
       if (transferAmount <= 0n) continue;
 
       const funderSigner = new Wallet(funder.privateKey, this.provider);
       const txResponse = await funderSigner.sendTransaction({
-        to: stagingWallet.address,
+        to: leader.address,
         value: transferAmount,
         gasLimit: this.standardGasLimit,
       });
@@ -287,7 +390,7 @@ export class EvmLegacyConsolidator {
         ],
         createdOutputs: [
           {
-            address: stagingWallet.address,
+            address: leader.address,
             valueWei: transferAmount.toString(),
             branch: "staging",
           },
@@ -312,33 +415,33 @@ export class EvmLegacyConsolidator {
         status: {
           stage: "consolidating",
           completed: i + 1,
-          total: selected.length,
+          total: peers.length,
           stagingTxHashes: [...intent.consolidationTxHashes],
         },
-        message: `Funded staging account (${i + 1}/${selected.length})`,
+        message: `Funded leader account (${i + 1}/${peers.length})`,
       });
 
       await txResponse.wait?.();
-      neededInStaging -= transferAmount;
-      if (neededInStaging <= 0n) break;
+      neededInLeader -= transferAmount;
+      if (neededInLeader <= 0n) break;
     }
 
     intent.phase = "consolidated";
     intent.updatedAtMs = Date.now();
     await this.journal.setPendingIntent(intent);
 
-    // Step 5: Phase 2 Drain from staging to recipient
-    const stagingBalance = await this.provider.getBalance(stagingWallet.address);
+    // Step 4: Phase 2 Drain from leader to recipient
+    const leaderBalance = await this.provider.getBalance(leader.address);
     const actualDeliveryGas = this.standardGasLimit * gasPrice;
     const actualDrainValue =
-      stagingBalance >= value + actualDeliveryGas
+      leaderBalance >= value + actualDeliveryGas
         ? value
-        : stagingBalance > actualDeliveryGas
-        ? stagingBalance - actualDeliveryGas
+        : leaderBalance > actualDeliveryGas
+        ? leaderBalance - actualDeliveryGas
         : 0n;
 
     if (actualDrainValue <= 0n) {
-      throw new Error("Staging account balance is insufficient to cover delivery gas fee");
+      throw new Error("Leader account balance is insufficient to cover delivery gas fee");
     }
 
     const drainTxRequest = {
@@ -347,8 +450,8 @@ export class EvmLegacyConsolidator {
       gasLimit: this.standardGasLimit,
     };
 
-    const populated = await stagingWallet.populateTransaction(drainTxRequest);
-    const signedRaw = await stagingWallet.signTransaction(populated);
+    const populated = await leaderWallet.populateTransaction(drainTxRequest);
+    const signedRaw = await leaderWallet.signTransaction(populated);
     const drainTxHash = keccak256(signedRaw);
 
     if (onSigned) {
@@ -363,7 +466,7 @@ export class EvmLegacyConsolidator {
     onProgress?.({
       status: {
         stage: "draining",
-        stagingAddress: stagingWallet.address,
+        stagingAddress: leader.address,
         drainTxHash,
       },
       message: `Broadcasting final transfer to destination address`,
@@ -379,7 +482,7 @@ export class EvmLegacyConsolidator {
       txHash: drainTxHash,
       spentInputs: [
         {
-          address: stagingWallet.address,
+          address: leader.address,
           valueWei: actualDrainValue.toString(),
         },
       ],

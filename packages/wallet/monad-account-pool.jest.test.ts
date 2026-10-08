@@ -20,328 +20,330 @@
  *     `monad-account-pool.livecheck.ts` in this same directory (run via `tsc`+`node`) — see that
  *     file's header for how to run it; it was run for this handoff and all assertions passed.
  */
-import { JsonRpcProvider, Transaction, Wallet } from 'ethers'
+import { JsonRpcProvider, Transaction, Wallet } from "ethers";
 
-import { MonadHdKeyring, subAccountPath } from './monad-hd-keyring'
+import { MonadHdKeyring, subAccountPath } from "./monad-hd-keyring";
 import {
+  CAPACITY_CACHE_TTL_MS,
   DEFAULT_TOPUP_BUFFER_SIZE,
   fanOutFundSubAccounts,
   MonadSubAccountPool,
-} from './monad-account-pool'
-import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
-import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store'
-import { InMemorySubAccountPoolStore } from './storage/sub-account-pool-storage'
+} from "./monad-account-pool";
+import { SubAccountLeaseManager } from "./monad-account-lease";
+import { MonadAccountTxSigner, MonadTxSubmitter } from "./monad-account-tx";
+import { LevelSubAccountPoolStore } from "./storage/level-sub-account-pool-store";
+import { InMemorySubAccountPoolStore } from "./storage/sub-account-pool-storage";
 
 const TEST_MNEMONIC =
-  'test test test test test test test test test test test junk'
-const CHAIN_ID = 10143 // Monad testnet's chain ID; only a realistic stand-in here.
+  "test test test test test test test test test test test junk";
+const CHAIN_ID = 10143; // Monad testnet's chain ID; only a realistic stand-in here.
 
 function makeStubProvider(
-  perform: (req: { method: string }) => Promise<unknown>,
+  perform: (req: { method: string }) => Promise<unknown>
 ) {
-  const provider = new JsonRpcProvider('http://127.0.0.1:1', CHAIN_ID, {
+  const provider = new JsonRpcProvider("http://127.0.0.1:1", CHAIN_ID, {
     staticNetwork: true,
     cacheTimeout: -1,
-  })
+  });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(provider as any)._perform = perform
-  return provider
+  (provider as any)._perform = perform;
+  return provider;
 }
 
 function makeMockHttpClient(): jest.Mocked<MonadTxSubmitter> {
   return {
     submitRawTransaction: jest.fn(
-      async (rawTxHex: string) => Transaction.from(rawTxHex).hash,
+      async (rawTxHex: string) => Transaction.from(rawTxHex).hash
     ),
     getTransactionReceipt: jest.fn(),
-  }
+  };
 }
 
-describe('MonadHdKeyring', () => {
-  it('derives deterministically from a snapshotted byte domain root', () => {
-    const root = new Uint8Array(32).fill(0x21)
+describe("MonadHdKeyring", () => {
+  it("derives deterministically from a snapshotted byte domain root", () => {
+    const root = new Uint8Array(32).fill(0x21);
     const first = MonadHdKeyring.fromDomainRoot({
-      purpose: 'evm-wallet',
+      purpose: "evm-wallet",
       bytes: root,
-    }).deriveSubAccount(0)
-    root.fill(0xff)
+    }).deriveSubAccount(0);
+    root.fill(0xff);
     const second = MonadHdKeyring.fromDomainRoot({
-      purpose: 'evm-wallet',
+      purpose: "evm-wallet",
       bytes: new Uint8Array(32).fill(0x21),
-    }).deriveSubAccount(0)
-    expect(first).toEqual(second)
-  })
+    }).deriveSubAccount(0);
+    expect(first).toEqual(second);
+  });
 
-  it('rejects domain roots outside the BIP-32 seed boundary', () => {
+  it("rejects domain roots outside the BIP-32 seed boundary", () => {
     expect(() =>
       MonadHdKeyring.fromDomainRoot({
-        purpose: 'evm-wallet',
+        purpose: "evm-wallet",
         bytes: new Uint8Array(15),
-      }),
-    ).toThrow(/16 to 64 bytes/)
+      })
+    ).toThrow(/16 to 64 bytes/);
     expect(() =>
       MonadHdKeyring.fromDomainRoot({
-        purpose: 'evm-wallet',
+        purpose: "evm-wallet",
         bytes: new Uint8Array(65),
-      }),
-    ).toThrow(/16 to 64 bytes/)
-  })
+      })
+    ).toThrow(/16 to 64 bytes/);
+  });
 
-  it('rejects a domain root allocated to another purpose at runtime', () => {
+  it("rejects a domain root allocated to another purpose at runtime", () => {
     expect(() =>
       MonadHdKeyring.fromDomainRoot({
-        purpose: 'identity-authentication',
+        purpose: "identity-authentication",
         bytes: new Uint8Array(32),
-      } as unknown as Parameters<typeof MonadHdKeyring.fromDomainRoot>[0]),
-    ).toThrow(/evm-wallet.*domain root/)
-  })
+      } as unknown as Parameters<typeof MonadHdKeyring.fromDomainRoot>[0])
+    ).toThrow(/evm-wallet.*domain root/);
+  });
 
-  it('derives the same address/private key from the same mnemonic + index (deterministic)', () => {
-    const a = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(0)
-    const b = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(0)
-    expect(a.address).toBe(b.address)
-    expect(a.privateKey).toBe(b.privateKey)
-  })
+  it("derives the same address/private key from the same mnemonic + index (deterministic)", () => {
+    const a = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(0);
+    const b = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC).deriveSubAccount(0);
+    expect(a.address).toBe(b.address);
+    expect(a.privateKey).toBe(b.privateKey);
+  });
 
-  it('derives different keypairs for different indices from the same mnemonic', () => {
-    const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-    const a0 = keyring.deriveSubAccount(0)
-    const a1 = keyring.deriveSubAccount(1)
-    expect(a0.address).not.toBe(a1.address)
-    expect(a0.privateKey).not.toBe(a1.privateKey)
-  })
+  it("derives different keypairs for different indices from the same mnemonic", () => {
+    const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+    const a0 = keyring.deriveSubAccount(0);
+    const a1 = keyring.deriveSubAccount(1);
+    expect(a0.address).not.toBe(a1.address);
+    expect(a0.privateKey).not.toBe(a1.privateKey);
+  });
 
-  it('builds the expected BIP-44 path for a given index', () => {
-    expect(subAccountPath(0)).toBe("m/44'/60'/0'/0/0")
-    expect(subAccountPath(7)).toBe("m/44'/60'/0'/0/7")
-  })
+  it("builds the expected BIP-44 path for a given index", () => {
+    expect(subAccountPath(0)).toBe("m/44'/60'/0'/0/0");
+    expect(subAccountPath(7)).toBe("m/44'/60'/0'/0/7");
+  });
 
-  it('rejects a negative or non-integer index', () => {
-    const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-    expect(() => keyring.deriveSubAccount(-1)).toThrow()
-    expect(() => keyring.deriveSubAccount(1.5)).toThrow()
-  })
+  it("rejects a negative or non-integer index", () => {
+    const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+    expect(() => keyring.deriveSubAccount(-1)).toThrow();
+    expect(() => keyring.deriveSubAccount(1.5)).toThrow();
+  });
 
-  it('generate() produces a fresh, valid mnemonic that round-trips through fromMnemonic', () => {
-    const { keyring, mnemonic } = MonadHdKeyring.generate()
-    expect(mnemonic.split(' ')).toHaveLength(12)
-    const rebuilt = MonadHdKeyring.fromMnemonic(mnemonic)
+  it("generate() produces a fresh, valid mnemonic that round-trips through fromMnemonic", () => {
+    const { keyring, mnemonic } = MonadHdKeyring.generate();
+    expect(mnemonic.split(" ")).toHaveLength(12);
+    const rebuilt = MonadHdKeyring.fromMnemonic(mnemonic);
     expect(keyring.deriveSubAccount(0).address).toBe(
-      rebuilt.deriveSubAccount(0).address,
-    )
-  })
+      rebuilt.deriveSubAccount(0).address
+    );
+  });
 
-  it('rejects an invalid mnemonic', () => {
-    expect(() => MonadHdKeyring.fromMnemonic('not a real mnemonic')).toThrow(
-      /invalid.*mnemonic/i,
-    )
-  })
-})
+  it("rejects an invalid mnemonic", () => {
+    expect(() => MonadHdKeyring.fromMnemonic("not a real mnemonic")).toThrow(
+      /invalid.*mnemonic/i
+    );
+  });
+});
 
-describe('MonadSubAccountPool', () => {
-  describe('ensureSize', () => {
+describe("MonadSubAccountPool", () => {
+  describe("ensureSize", () => {
     it('derives and persists sub-accounts as "available" up to the requested size', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      const records = pool.ensureSize(3)
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      const records = pool.ensureSize(3);
 
-      expect(records).toHaveLength(3)
-      expect(records.map(r => r.index)).toEqual([0, 1, 2])
-      expect(records.every(r => r.status === 'available')).toBe(true)
-      expect(records[1].address).toBe(keyring.deriveSubAccount(1).address)
-    })
+      expect(records).toHaveLength(3);
+      expect(records.map((r) => r.index)).toEqual([0, 1, 2]);
+      expect(records.every((r) => r.status === "available")).toBe(true);
+      expect(records[1].address).toBe(keyring.deriveSubAccount(1).address);
+    });
 
-    it('is idempotent: re-calling with the same size does not reset existing status', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(2)
-      pool.setStatus(0, 'in-use')
-      pool.setStatus(1, 'retired')
+    it("is idempotent: re-calling with the same size does not reset existing status", () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(2);
+      pool.setStatus(0, "in-use");
+      pool.setStatus(1, "retired");
 
-      pool.ensureSize(2)
+      pool.ensureSize(2);
 
-      expect(pool.getRecord(0)?.status).toBe('in-use')
-      expect(pool.getRecord(1)?.status).toBe('retired')
-    })
+      expect(pool.getRecord(0)?.status).toBe("in-use");
+      expect(pool.getRecord(1)?.status).toBe("retired");
+    });
 
     it('growing the pool leaves existing records untouched and adds new "available" ones', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(2)
-      pool.setStatus(0, 'in-use')
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(2);
+      pool.setStatus(0, "in-use");
 
-      const records = pool.ensureSize(4)
+      const records = pool.ensureSize(4);
 
-      expect(records).toHaveLength(4)
-      expect(pool.getRecord(0)?.status).toBe('in-use')
-      expect(pool.getRecord(3)?.status).toBe('available')
-    })
+      expect(records).toHaveLength(4);
+      expect(pool.getRecord(0)?.status).toBe("in-use");
+      expect(pool.getRecord(3)?.status).toBe("available");
+    });
 
-    it('rejects a negative size', () => {
+    it("rejects a negative size", () => {
       const pool = new MonadSubAccountPool({
         keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
-      })
-      expect(() => pool.ensureSize(-1)).toThrow()
-    })
-  })
+      });
+      expect(() => pool.ensureSize(-1)).toThrow();
+    });
+  });
 
-  describe('selectForStamp (per-stamp rotation)', () => {
-    it('round-robins over available accounts, skipping in-use and retired ones', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(4)
-      pool.setStatus(1, 'in-use')
-      pool.setStatus(2, 'retired')
+  describe("selectForStamp (per-stamp rotation)", () => {
+    it("round-robins over available accounts, skipping in-use and retired ones", () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(4);
+      pool.setStatus(1, "in-use");
+      pool.setStatus(2, "retired");
       // Available: 0, 3
 
       const selections = Array.from(
         { length: 5 },
-        () => pool.selectForStamp()?.index,
-      )
+        () => pool.selectForStamp()?.index
+      );
 
-      expect(selections).toEqual([0, 3, 0, 3, 0])
-    })
+      expect(selections).toEqual([0, 3, 0, 3, 0]);
+    });
 
-    it('never mutates the selected record’s status', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(2)
+    it("never mutates the selected record’s status", () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(2);
 
-      pool.selectForStamp()
+      pool.selectForStamp();
 
-      expect(pool.records().every(r => r.status === 'available')).toBe(true)
-    })
+      expect(pool.records().every((r) => r.status === "available")).toBe(true);
+    });
 
-    it('returns undefined when no account is available', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(2)
-      pool.setStatus(0, 'retired')
-      pool.setStatus(1, 'retired')
+    it("returns undefined when no account is available", () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(2);
+      pool.setStatus(0, "retired");
+      pool.setStatus(1, "retired");
 
-      expect(pool.selectForStamp()).toBeUndefined()
-    })
+      expect(pool.selectForStamp()).toBeUndefined();
+    });
 
-    it('returns undefined for an empty pool', () => {
+    it("returns undefined for an empty pool", () => {
       const pool = new MonadSubAccountPool({
         keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
-      })
-      expect(pool.selectForStamp()).toBeUndefined()
-    })
+      });
+      expect(pool.selectForStamp()).toBeUndefined();
+    });
 
-    it('resumes rotation after the previously-selected index rather than restarting at 0', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(3)
+    it("resumes rotation after the previously-selected index rather than restarting at 0", () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(3);
 
-      expect(pool.selectForStamp()?.index).toBe(0)
-      expect(pool.selectForStamp()?.index).toBe(1)
+      expect(pool.selectForStamp()?.index).toBe(0);
+      expect(pool.selectForStamp()?.index).toBe(1);
       // Newly retiring index 2 after it's already been passed shouldn't affect 0/1 rotation order.
-      pool.setStatus(2, 'retired')
-      expect(pool.selectForStamp()?.index).toBe(0)
-    })
-  })
+      pool.setStatus(2, "retired");
+      expect(pool.selectForStamp()?.index).toBe(0);
+    });
+  });
 
-  describe('getSigner', () => {
-    it('returns a MonadAccountTxSigner for the re-derived private key at that index', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(1)
+  describe("getSigner", () => {
+    it("returns a MonadAccountTxSigner for the re-derived private key at that index", () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(1);
 
       const provider = makeStubProvider(async () => {
-        throw new Error('no chain reads expected')
-      })
+        throw new Error("no chain reads expected");
+      });
       const signer = pool.getSigner(0, {
         provider,
         httpClient: makeMockHttpClient(),
-      })
+      });
 
       expect(signer.address.toLowerCase()).toBe(
-        keyring.deriveSubAccount(0).address.toLowerCase(),
-      )
-    })
+        keyring.deriveSubAccount(0).address.toLowerCase()
+      );
+    });
 
-    it('throws for an index the pool was never sized to include', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(1)
+    it("throws for an index the pool was never sized to include", () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(1);
 
       expect(() =>
         pool.getSigner(5, {
           provider: makeStubProvider(async () => {
-            throw new Error('unused')
+            throw new Error("unused");
           }),
           httpClient: makeMockHttpClient(),
-        }),
-      ).toThrow(/No sub-account at index 5/)
-    })
-  })
+        })
+      ).toThrow(/No sub-account at index 5/);
+    });
+  });
 
-  describe('setStatus', () => {
-    it('throws for an unknown index', () => {
+  describe("setStatus", () => {
+    it("throws for an unknown index", () => {
       const pool = new MonadSubAccountPool({
         keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
-      })
-      pool.ensureSize(1)
-      expect(() => pool.setStatus(9, 'retired')).toThrow(
-        /No sub-account at index 9/,
-      )
-    })
-  })
+      });
+      pool.ensureSize(1);
+      expect(() => pool.setStatus(9, "retired")).toThrow(
+        /No sub-account at index 9/
+      );
+    });
+  });
 
-  describe('prepareStampInventory', () => {
+  describe("prepareStampInventory", () => {
     function setupPreparation() {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const store = new InMemorySubAccountPoolStore()
-      const pool = new MonadSubAccountPool({ keyring, store })
-      pool.ensureUnfundedSize(3)
-      const balances = new Map<string, bigint>()
-      const childNonces = new Map<string, number>()
-      let nonce = 0
-      const httpClient = makeMockHttpClient()
-      httpClient.submitRawTransaction.mockImplementation(async rawTx => {
-        const transaction = Transaction.from(rawTx)
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const store = new InMemorySubAccountPoolStore();
+      const pool = new MonadSubAccountPool({ keyring, store });
+      pool.ensureUnfundedSize(3);
+      const balances = new Map<string, bigint>();
+      const childNonces = new Map<string, number>();
+      let nonce = 0;
+      const httpClient = makeMockHttpClient();
+      httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+        const transaction = Transaction.from(rawTx);
         balances.set(
           transaction.to!.toLowerCase(),
           (balances.get(transaction.to!.toLowerCase()) ?? 0n) +
-            transaction.value,
-        )
-        return transaction.hash
-      })
-      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+            transaction.value
+        );
+        return transaction.hash;
+      });
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
         txHash,
         blockNumber: 1,
-        blockHash: '0x' + '00'.repeat(32),
-        status: 'success',
+        blockHash: "0x" + "00".repeat(32),
+        status: "success",
         gasUsed: 21_000n,
         effectiveGasPrice: 1n,
         logs: [],
-      }))
-      const mainWallet = Wallet.createRandom()
-      balances.set(mainWallet.address.toLowerCase(), 1_000_000n)
-      const provider = makeStubProvider(async request => {
-        if (request.method === 'getTransactionCount') {
+      }));
+      const mainWallet = Wallet.createRandom();
+      balances.set(mainWallet.address.toLowerCase(), 1_000_000n);
+      const provider = makeStubProvider(async (request) => {
+        if (request.method === "getTransactionCount") {
           const address = (
             request as unknown as { address: string; blockTag?: string }
-          ).address.toLowerCase()
+          ).address.toLowerCase();
           return address === mainWallet.address.toLowerCase()
             ? nonce++
             : (request as unknown as { blockTag?: string }).blockTag ===
-              'pending'
+              "pending"
             ? childNonces.get(address) ?? 0
-            : 0
+            : 0;
         }
-        if (request.method === 'getBalance') {
-          const address = (request as unknown as { address: string }).address
-          return balances.get(address.toLowerCase()) ?? 0n
+        if (request.method === "getBalance") {
+          const address = (request as unknown as { address: string }).address;
+          return balances.get(address.toLowerCase()) ?? 0n;
         }
-        throw new Error(`unexpected _perform: ${request.method}`)
-      })
+        throw new Error(`unexpected _perform: ${request.method}`);
+      });
       const mainAccountSigner = new MonadAccountTxSigner({
         privateKey: mainWallet.privateKey,
         provider,
         httpClient,
-      })
+      });
       return {
         balances,
         childNonces,
@@ -351,15 +353,15 @@ describe('MonadSubAccountPool', () => {
         provider,
         store,
         mainAddress: mainWallet.address,
-      }
+      };
     }
 
-    it('does not move funds on derivation, then prepares unequal receipt-confirmed accounts on Send', async () => {
+    it("does not move funds on derivation, then prepares unequal receipt-confirmed accounts on Send", async () => {
       const { httpClient, mainAccountSigner, pool, provider } =
-        setupPreparation()
-      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
+        setupPreparation();
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled();
 
-      const progress: string[] = []
+      const progress: string[] = [];
       const result = await pool.prepareStampInventory({
         mainAccountSigner,
         provider,
@@ -372,32 +374,32 @@ describe('MonadSubAccountPool', () => {
           chainId: BigInt(CHAIN_ID),
         },
         receipt: { maxAttempts: 0 },
-        onProgress: event => progress.push(event.stage),
-      })
+        onProgress: (event) => progress.push(event.stage),
+      });
 
-      expect(result.selectedAccountCount).toBe(2)
-      expect(result.fundingTxHashes).toHaveLength(2)
-      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(2)
+      expect(result.selectedAccountCount).toBe(2);
+      expect(result.fundingTxHashes).toHaveLength(2);
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(2);
       expect(
-        pool.records().filter(record => record.status === 'available'),
+        pool.records().filter((record) => record.status === "available")
       ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ index: 0 }),
           expect.objectContaining({ index: 1 }),
-        ]),
-      )
-      expect(await provider.getBalance(pool.getRecord(0)!.address)).toBe(385n)
-      expect(await provider.getBalance(pool.getRecord(1)!.address)).toBe(635n)
-      expect(progress[0]).toBe('checking')
-      expect(progress[progress.length - 1]).toBe('ready')
-    })
+        ])
+      );
+      expect(await provider.getBalance(pool.getRecord(0)!.address)).toBe(385n);
+      expect(await provider.getBalance(pool.getRecord(1)!.address)).toBe(635n);
+      expect(progress[0]).toBe("checking");
+      expect(progress[progress.length - 1]).toBe("ready");
+    });
 
-    it('estimates ordinary UI funding from the main account when gasLimit is not overridden', async () => {
+    it("estimates ordinary UI funding from the main account when gasLimit is not overridden", async () => {
       const { mainAccountSigner, mainAddress, pool, provider } =
-        setupPreparation()
+        setupPreparation();
       const estimateGas = jest
-        .spyOn(provider, 'estimateGas')
-        .mockResolvedValue(21_000n)
+        .spyOn(provider, "estimateGas")
+        .mockResolvedValue(21_000n);
 
       const result = await pool.prepareStampInventory({
         mainAccountSigner,
@@ -410,16 +412,16 @@ describe('MonadSubAccountPool', () => {
           chainId: BigInt(CHAIN_ID),
         },
         receipt: { maxAttempts: 0 },
-      })
+      });
 
-      expect(result.selectedAccountCount).toBe(2)
-      expect(estimateGas).toHaveBeenCalled()
+      expect(result.selectedAccountCount).toBe(2);
+      expect(estimateGas).toHaveBeenCalled();
       expect(estimateGas.mock.calls[0][0]).toEqual(
-        expect.objectContaining({ from: mainAddress }),
-      )
-    })
+        expect.objectContaining({ from: mainAddress })
+      );
+    });
 
-    it('retires a used legacy available address even when it still has spendable balance', async () => {
+    it("retires a used legacy available address even when it still has spendable balance", async () => {
       const {
         balances,
         childNonces,
@@ -427,10 +429,10 @@ describe('MonadSubAccountPool', () => {
         mainAccountSigner,
         pool,
         provider,
-      } = setupPreparation()
-      pool.setStatus(0, 'available')
-      balances.set(pool.getRecord(0)!.address.toLowerCase(), 1_000n)
-      childNonces.set(pool.getRecord(0)!.address.toLowerCase(), 1)
+      } = setupPreparation();
+      pool.setStatus(0, "available");
+      balances.set(pool.getRecord(0)!.address.toLowerCase(), 1_000n);
+      childNonces.set(pool.getRecord(0)!.address.toLowerCase(), 1);
 
       await pool.prepareStampInventory({
         mainAccountSigner,
@@ -444,20 +446,20 @@ describe('MonadSubAccountPool', () => {
           chainId: BigInt(CHAIN_ID),
         },
         receipt: { maxAttempts: 0 },
-      })
+      });
 
-      expect(pool.getRecord(0)?.status).toBe('retired')
+      expect(pool.getRecord(0)?.status).toBe("retired");
       const fundedDestinations = httpClient.submitRawTransaction.mock.calls.map(
-        ([raw]) => Transaction.from(raw).to!.toLowerCase(),
-      )
+        ([raw]) => Transaction.from(raw).to!.toLowerCase()
+      );
       expect(fundedDestinations).not.toContain(
-        pool.getRecord(0)!.address.toLowerCase(),
-      )
-    })
+        pool.getRecord(0)!.address.toLowerCase()
+      );
+    });
 
-    it('funds one real account for the one-wei fallback instead of reporting an empty pool ready', async () => {
+    it("funds one real account for the one-wei fallback instead of reporting an empty pool ready", async () => {
       const { httpClient, mainAccountSigner, pool, provider } =
-        setupPreparation()
+        setupPreparation();
 
       const result = await pool.prepareStampInventory({
         mainAccountSigner,
@@ -471,13 +473,13 @@ describe('MonadSubAccountPool', () => {
           chainId: BigInt(CHAIN_ID),
         },
         receipt: { maxAttempts: 0 },
-      })
+      });
 
-      expect(result.selectedAccountCount).toBe(1)
-      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
-    })
+      expect(result.selectedAccountCount).toBe(1);
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+    });
 
-    it('fails before broadcasting when the complete preferred funding set is unaffordable', async () => {
+    it("fails before broadcasting when the complete preferred funding set is unaffordable", async () => {
       const {
         balances,
         httpClient,
@@ -485,10 +487,10 @@ describe('MonadSubAccountPool', () => {
         mainAddress,
         pool,
         provider,
-      } = setupPreparation()
+      } = setupPreparation();
       // Preferred set: (375 + 10) + (625 + 10) of value, plus two 21,000-gas
       // funding transfers at a 1-wei fee cap = 43,020 wei total.
-      balances.set(mainAddress.toLowerCase(), 22_009n)
+      balances.set(mainAddress.toLowerCase(), 22_009n);
 
       await expect(
         pool.prepareStampInventory({
@@ -503,16 +505,16 @@ describe('MonadSubAccountPool', () => {
             chainId: BigInt(CHAIN_ID),
           },
           receipt: { maxAttempts: 0 },
-        }),
-      ).rejects.toThrow(/need up to 22010 wei, have 22009 wei/)
+        })
+      ).rejects.toThrow(/need up to 22010 wei, have 22009 wei/);
 
-      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
-      expect(pool.records().every(record => record.status === 'unfunded')).toBe(
-        true,
-      )
-    })
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled();
+      expect(
+        pool.records().every((record) => record.status === "unfunded")
+      ).toBe(true);
+    });
 
-    it('falls back to one funded account when one is affordable but the preferred two are not', async () => {
+    it("falls back to one funded account when one is affordable but the preferred two are not", async () => {
       const {
         balances,
         httpClient,
@@ -520,8 +522,8 @@ describe('MonadSubAccountPool', () => {
         mainAddress,
         pool,
         provider,
-      } = setupPreparation()
-      balances.set(mainAddress.toLowerCase(), 22_010n)
+      } = setupPreparation();
+      balances.set(mainAddress.toLowerCase(), 22_010n);
 
       const result = await pool.prepareStampInventory({
         mainAccountSigner,
@@ -535,19 +537,19 @@ describe('MonadSubAccountPool', () => {
           chainId: BigInt(CHAIN_ID),
         },
         receipt: { maxAttempts: 0 },
-      })
+      });
 
-      expect(result.selectedAccountCount).toBe(1)
-      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+      expect(result.selectedAccountCount).toBe(1);
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
       const funded = Transaction.from(
-        httpClient.submitRawTransaction.mock.calls[0][0],
-      )
-      expect(funded.value).toBe(1_010n)
-    })
+        httpClient.submitRawTransaction.mock.calls[0][0]
+      );
+      expect(funded.value).toBe(1_010n);
+    });
 
-    it('serializes concurrent preparations so main-account nonces remain distinct', async () => {
+    it("serializes concurrent preparations so main-account nonces remain distinct", async () => {
       const { httpClient, mainAccountSigner, pool, provider } =
-        setupPreparation()
+        setupPreparation();
       await Promise.all([
         pool.prepareStampInventory({
           mainAccountSigner,
@@ -575,18 +577,18 @@ describe('MonadSubAccountPool', () => {
           },
           receipt: { maxAttempts: 0 },
         }),
-      ])
+      ]);
 
       const nonces = httpClient.submitRawTransaction.mock.calls.map(
-        ([raw]) => Transaction.from(raw).nonce,
-      )
-      expect(nonces).toEqual([0, 1])
-    })
+        ([raw]) => Transaction.from(raw).nonce
+      );
+      expect(nonces).toEqual([0, 1]);
+    });
 
-    it('resubmits the exact durable funding transaction after restart and funds only the missing capacity', async () => {
+    it("resubmits the exact durable funding transaction after restart and funds only the missing capacity", async () => {
       const { balances, httpClient, mainAccountSigner, pool, provider, store } =
-        setupPreparation()
-      const first = pool.getRecord(0)!
+        setupPreparation();
+      const first = pool.getRecord(0)!;
       const signed = await mainAccountSigner.buildAndSignTransfer(
         first.address,
         385n,
@@ -595,41 +597,41 @@ describe('MonadSubAccountPool', () => {
           maxFeePerGas: 1n,
           maxPriorityFeePerGas: 1n,
           chainId: BigInt(CHAIN_ID),
-        },
-      )
+        }
+      );
       store.put({
         ...first,
-        status: 'funding',
+        status: "funding",
         fundingAttempt: {
           rawTx: signed.rawTx,
           txHash: signed.txHash,
         },
-      })
-      const broadcasted = new Set<string>()
-      httpClient.submitRawTransaction.mockImplementation(async rawTx => {
-        const transaction = Transaction.from(rawTx)
-        broadcasted.add(transaction.hash)
-        balances.set(transaction.to!.toLowerCase(), transaction.value)
-        return transaction.hash
-      })
-      httpClient.getTransactionReceipt.mockImplementation(async txHash =>
+      });
+      const broadcasted = new Set<string>();
+      httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+        const transaction = Transaction.from(rawTx);
+        broadcasted.add(transaction.hash);
+        balances.set(transaction.to!.toLowerCase(), transaction.value);
+        return transaction.hash;
+      });
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) =>
         broadcasted.has(txHash)
           ? {
               txHash,
               blockNumber: 1,
-              blockHash: '0x' + '00'.repeat(32),
-              status: 'success',
+              blockHash: "0x" + "00".repeat(32),
+              status: "success",
               gasUsed: 21_000n,
               effectiveGasPrice: 1n,
               logs: [],
             }
-          : undefined,
-      )
+          : undefined
+      );
 
       const restarted = new MonadSubAccountPool({
         keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
         store,
-      })
+      });
       const result = await restarted.prepareStampInventory({
         mainAccountSigner,
         provider,
@@ -642,70 +644,72 @@ describe('MonadSubAccountPool', () => {
           chainId: BigInt(CHAIN_ID),
         },
         receipt: { intervalMs: 0, maxAttempts: 1 },
-      })
+      });
 
-      expect(httpClient.submitRawTransaction).toHaveBeenCalledWith(signed.rawTx)
-      expect(result.fundingTxHashes[0]).toBe(signed.txHash)
-      expect(result.fundingTxHashes).toHaveLength(2)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledWith(
+        signed.rawTx
+      );
+      expect(result.fundingTxHashes[0]).toBe(signed.txHash);
+      expect(result.fundingTxHashes).toHaveLength(2);
       const fundedValues = httpClient.submitRawTransaction.mock.calls.map(
-        ([raw]) => Transaction.from(raw).value,
-      )
-      expect(fundedValues).toEqual([385n, 635n])
-      expect(restarted.getRecord(0)?.status).toBe('available')
-      expect(restarted.getRecord(0)?.fundingAttempt).toBeUndefined()
-    })
-  })
+        ([raw]) => Transaction.from(raw).value
+      );
+      expect(fundedValues).toEqual([385n, 635n]);
+      expect(restarted.getRecord(0)?.status).toBe("available");
+      expect(restarted.getRecord(0)?.fundingAttempt).toBeUndefined();
+    });
+  });
 
-  describe('prepareBurnAccount (ticket #273: one funded account per topic burn)', () => {
+  describe("prepareBurnAccount (ticket #273: one funded account per topic burn)", () => {
     const FUNDING = {
       gasLimit: 21_000n,
       maxFeePerGas: 1n,
       maxPriorityFeePerGas: 1n,
       chainId: BigInt(CHAIN_ID),
-    }
+    };
 
     function setupBurn() {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const store = new InMemorySubAccountPoolStore()
-      const pool = new MonadSubAccountPool({ keyring, store })
-      pool.ensureUnfundedSize(3)
-      const balances = new Map<string, bigint>()
-      let mainNonce = 0
-      const httpClient = makeMockHttpClient()
-      httpClient.submitRawTransaction.mockImplementation(async rawTx => {
-        const tx = Transaction.from(rawTx)
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const store = new InMemorySubAccountPoolStore();
+      const pool = new MonadSubAccountPool({ keyring, store });
+      pool.ensureUnfundedSize(3);
+      const balances = new Map<string, bigint>();
+      let mainNonce = 0;
+      const httpClient = makeMockHttpClient();
+      httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+        const tx = Transaction.from(rawTx);
         balances.set(
           tx.to!.toLowerCase(),
-          (balances.get(tx.to!.toLowerCase()) ?? 0n) + tx.value,
-        )
-        return tx.hash
-      })
-      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+          (balances.get(tx.to!.toLowerCase()) ?? 0n) + tx.value
+        );
+        return tx.hash;
+      });
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
         txHash,
         blockNumber: 1,
-        blockHash: '0x' + '00'.repeat(32),
-        status: 'success',
+        blockHash: "0x" + "00".repeat(32),
+        status: "success",
         gasUsed: 21_000n,
         effectiveGasPrice: 1n,
         logs: [],
-      }))
-      const mainWallet = Wallet.createRandom()
-      balances.set(mainWallet.address.toLowerCase(), 1_000_000n)
-      const provider = makeStubProvider(async request => {
+      }));
+      const mainWallet = Wallet.createRandom();
+      balances.set(mainWallet.address.toLowerCase(), 1_000_000n);
+      const provider = makeStubProvider(async (request) => {
         const address = (
-          (request as unknown as { address?: string }).address ?? ''
-        ).toLowerCase()
-        if (request.method === 'getTransactionCount') {
-          return address === mainWallet.address.toLowerCase() ? mainNonce++ : 0
+          (request as unknown as { address?: string }).address ?? ""
+        ).toLowerCase();
+        if (request.method === "getTransactionCount") {
+          return address === mainWallet.address.toLowerCase() ? mainNonce++ : 0;
         }
-        if (request.method === 'getBalance') return balances.get(address) ?? 0n
-        throw new Error(`unexpected _perform: ${request.method}`)
-      })
+        if (request.method === "getBalance") return balances.get(address) ?? 0n;
+        throw new Error(`unexpected _perform: ${request.method}`);
+      });
       const mainAccountSigner = new MonadAccountTxSigner({
         privateKey: mainWallet.privateKey,
         provider,
         httpClient,
-      })
+      });
       const prepare = (burnValueWei = 1_000n) =>
         pool.prepareBurnAccount({
           mainAccountSigner,
@@ -714,216 +718,217 @@ describe('MonadSubAccountPool', () => {
           gasReserveWei: 10n,
           fundingOverrides: FUNDING,
           receipt: { maxAttempts: 0 },
-        })
-      return { balances, httpClient, pool, prepare, store, mainAccountSigner }
+        });
+      return { balances, httpClient, pool, prepare, store, mainAccountSigner };
     }
 
-    it('funds exactly one account with burn value + fee reserve and reports progress', async () => {
-      const { httpClient, pool, prepare } = setupBurn()
-      const result = await prepare()
+    it("funds exactly one account with burn value + fee reserve and reports progress", async () => {
+      const { httpClient, pool, prepare } = setupBurn();
+      const result = await prepare();
 
-      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
       expect(
-        Transaction.from(httpClient.submitRawTransaction.mock.calls[0][0])
-          .value,
-      ).toBe(1_010n)
-      expect(pool.getRecord(result.index)?.status).toBe('available')
-      expect(result.fundingTxHashes).toHaveLength(1)
-    })
+        Transaction.from(httpClient.submitRawTransaction.mock.calls[0][0]).value
+      ).toBe(1_010n);
+      expect(pool.getRecord(result.index)?.status).toBe("available");
+      expect(result.fundingTxHashes).toHaveLength(1);
+    });
 
-    it('a second preparation for the same burn reuses the funded account instead of funding another', async () => {
-      const { httpClient, prepare } = setupBurn()
-      const first = await prepare()
-      const second = await prepare()
+    it("a second preparation for the same burn reuses the funded account instead of funding another", async () => {
+      const { httpClient, prepare } = setupBurn();
+      const first = await prepare();
+      const second = await prepare();
 
-      expect(second.index).toBe(first.index)
-      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
-    })
+      expect(second.index).toBe(first.index);
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+    });
 
-    it('does not burn from a larger account (direct-message inventory): it funds a right-sized one', async () => {
-      const { balances, httpClient, pool, prepare } = setupBurn()
+    it("does not burn from a larger account (direct-message inventory): it funds a right-sized one", async () => {
+      const { balances, httpClient, pool, prepare } = setupBurn();
       // A 5/8-of-a-stamp DM account, already receipt-confirmed and available.
-      const big = pool.getRecord(0)!
-      pool.setStatus(big.index, 'available')
-      balances.set(big.address.toLowerCase(), 10_000n)
+      const big = pool.getRecord(0)!;
+      pool.setStatus(big.index, "available");
+      balances.set(big.address.toLowerCase(), 10_000n);
 
-      const result = await prepare(1_000n)
+      const result = await prepare(1_000n);
 
-      expect(result.index).not.toBe(big.index)
-      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
-      expect(pool.getRecord(big.index)?.status).toBe('available')
-    })
+      expect(result.index).not.toBe(big.index);
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+      expect(pool.getRecord(big.index)?.status).toBe("available");
+    });
 
-    it('does not burn from an account that cannot cover the burn: it funds a new one', async () => {
-      const { balances, httpClient, pool, prepare } = setupBurn()
-      const small = pool.getRecord(0)!
-      pool.setStatus(small.index, 'available')
+    it("does not burn from an account that cannot cover the burn: it funds a new one", async () => {
+      const { balances, httpClient, pool, prepare } = setupBurn();
+      const small = pool.getRecord(0)!;
+      pool.setStatus(small.index, "available");
       // 400 wei of capacity (410 balance - 10 reserve) cannot burn 1_000.
-      balances.set(small.address.toLowerCase(), 410n)
+      balances.set(small.address.toLowerCase(), 410n);
 
-      const result = await prepare(1_000n)
+      const result = await prepare(1_000n);
 
-      expect(result.index).not.toBe(small.index)
-      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
-    })
+      expect(result.index).not.toBe(small.index);
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+    });
 
-    it('rejects an unaffordable burn before signing or moving anything', async () => {
-      const { httpClient, pool, prepare } = setupBurn()
+    it("rejects an unaffordable burn before signing or moving anything", async () => {
+      const { httpClient, pool, prepare } = setupBurn();
 
       await expect(prepare(5_000_000n)).rejects.toThrow(
-        /Insufficient main account balance/,
-      )
-      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled()
-      expect(pool.records().every(r => r.status === 'unfunded')).toBe(true)
-    })
+        /Insufficient main account balance/
+      );
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled();
+      expect(pool.records().every((r) => r.status === "unfunded")).toBe(true);
+    });
 
-    it('rejects a non-positive burn value', async () => {
-      const { prepare } = setupBurn()
-      await expect(prepare(0n)).rejects.toThrow(/burnValueWei must be positive/)
-    })
-  })
+    it("rejects a non-positive burn value", async () => {
+      const { prepare } = setupBurn();
+      await expect(prepare(0n)).rejects.toThrow(
+        /burnValueWei must be positive/
+      );
+    });
+  });
 
-  describe('topUpPool (ticket #34: indefinite growth + look-ahead funding buffer)', () => {
+  describe("topUpPool (ticket #34: indefinite growth + look-ahead funding buffer)", () => {
     async function makeSigner(nonceStart = 0) {
-      const httpClient = makeMockHttpClient()
-      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+      const httpClient = makeMockHttpClient();
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
         txHash,
         blockNumber: 1,
-        blockHash: '0x' + '00'.repeat(32),
-        status: 'success',
+        blockHash: "0x" + "00".repeat(32),
+        status: "success",
         gasUsed: 21_000n,
         effectiveGasPrice: 1n,
         logs: [],
-      }))
-      let nonce = nonceStart
-      const provider = makeStubProvider(async req => {
-        if (req.method === 'getTransactionCount')
-          return `0x${(nonce++).toString(16)}`
-        if (req.method === 'estimateGas') return '0x5208'
-        throw new Error(`unexpected _perform: ${req.method}`)
-      })
+      }));
+      let nonce = nonceStart;
+      const provider = makeStubProvider(async (req) => {
+        if (req.method === "getTransactionCount")
+          return `0x${(nonce++).toString(16)}`;
+        if (req.method === "estimateGas") return "0x5208";
+        throw new Error(`unexpected _perform: ${req.method}`);
+      });
       return new MonadAccountTxSigner({
         privateKey: Wallet.createRandom().privateKey,
         provider,
         httpClient,
-      })
+      });
     }
 
-    it('derives and funds fresh indices beyond whatever ensureSize was first called with', async () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(2) // indices 0, 1 -- the "fixed initial size" a caller might start with
+    it("derives and funds fresh indices beyond whatever ensureSize was first called with", async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(2); // indices 0, 1 -- the "fixed initial size" a caller might start with
 
-      const mainAccountSigner = await makeSigner()
+      const mainAccountSigner = await makeSigner();
       const results = await pool.topUpPool({
         mainAccountSigner,
         burnValue: 100n,
         gasReserve: 20n,
         bufferSize: 3,
         overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-      })
+      });
 
       // ensureSize(2) already left 0 and 1 'available', so topping up to a buffer of 3 only needs
       // one fresh index -- 2, never re-deriving 0 or 1.
-      expect(results.map(r => r.index)).toEqual([2])
-      expect(pool.getRecord(2)?.status).toBe('available')
+      expect(results.map((r) => r.index)).toEqual([2]);
+      expect(pool.getRecord(2)?.status).toBe("available");
       expect(pool.getRecord(2)?.address).toBe(
-        keyring.deriveSubAccount(2).address,
-      )
-      expect(pool.records().map(r => r.index)).toEqual([0, 1, 2])
-    })
+        keyring.deriveSubAccount(2).address
+      );
+      expect(pool.records().map((r) => r.index)).toEqual([0, 1, 2]);
+    });
 
-    it('does nothing (funds nothing) when the buffer is already full', async () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(5)
+    it("does nothing (funds nothing) when the buffer is already full", async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(5);
 
-      const mainAccountSigner = await makeSigner()
+      const mainAccountSigner = await makeSigner();
       const results = await pool.topUpPool({
         mainAccountSigner,
         burnValue: 1n,
         gasReserve: 1n,
         bufferSize: 3,
-      })
+      });
 
-      expect(results).toEqual([])
-      expect(pool.records()).toHaveLength(5) // unchanged, nothing new derived
-    })
+      expect(results).toEqual([]);
+      expect(pool.records()).toHaveLength(5); // unchanged, nothing new derived
+    });
 
     it('only counts currently-"available" records toward the buffer -- in-use/spent/retired ones do not count, and growth continues past them (never reuses their indices)', async () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(2)
-      pool.setStatus(0, 'in-use')
-      pool.setStatus(1, 'spent')
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(2);
+      pool.setStatus(0, "in-use");
+      pool.setStatus(1, "spent");
       // 0 available records currently -- both existing indices are used up.
 
-      const mainAccountSigner = await makeSigner()
+      const mainAccountSigner = await makeSigner();
       const results = await pool.topUpPool({
         mainAccountSigner,
         burnValue: 1n,
         gasReserve: 1n,
         bufferSize: 2,
         overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-      })
+      });
 
       // Growth resumes at index 2 (one past the highest known index), never re-touching 0 or 1.
-      expect(results.map(r => r.index)).toEqual([2, 3])
-      expect(pool.getRecord(2)?.status).toBe('available')
-      expect(pool.getRecord(3)?.status).toBe('available')
-      expect(pool.getRecord(0)?.status).toBe('in-use') // untouched
-      expect(pool.getRecord(1)?.status).toBe('spent') // untouched
-    })
+      expect(results.map((r) => r.index)).toEqual([2, 3]);
+      expect(pool.getRecord(2)?.status).toBe("available");
+      expect(pool.getRecord(3)?.status).toBe("available");
+      expect(pool.getRecord(0)?.status).toBe("in-use"); // untouched
+      expect(pool.getRecord(1)?.status).toBe("spent"); // untouched
+    });
 
-    it('uses DEFAULT_TOPUP_BUFFER_SIZE when bufferSize is omitted', async () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
+    it("uses DEFAULT_TOPUP_BUFFER_SIZE when bufferSize is omitted", async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
       // Empty pool -- deficit is the whole default buffer.
-      const mainAccountSigner = await makeSigner()
+      const mainAccountSigner = await makeSigner();
       const results = await pool.topUpPool({
         mainAccountSigner,
         burnValue: 1n,
         gasReserve: 1n,
         overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-      })
+      });
 
-      expect(results).toHaveLength(DEFAULT_TOPUP_BUFFER_SIZE)
-      expect(results.map(r => r.index)).toEqual(
-        Array.from({ length: DEFAULT_TOPUP_BUFFER_SIZE }, (_, i) => i),
-      )
-    })
+      expect(results).toHaveLength(DEFAULT_TOPUP_BUFFER_SIZE);
+      expect(results.map((r) => r.index)).toEqual(
+        Array.from({ length: DEFAULT_TOPUP_BUFFER_SIZE }, (_, i) => i)
+      );
+    });
 
-    it('freshly-funded accounts feed straight into selectForStamp once persisted', async () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      expect(pool.selectForStamp()).toBeUndefined() // nothing derived yet
+    it("freshly-funded accounts feed straight into selectForStamp once persisted", async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      expect(pool.selectForStamp()).toBeUndefined(); // nothing derived yet
 
-      const mainAccountSigner = await makeSigner()
+      const mainAccountSigner = await makeSigner();
       await pool.topUpPool({
         mainAccountSigner,
         burnValue: 1n,
         gasReserve: 1n,
         bufferSize: 2,
         overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-      })
+      });
 
-      expect(pool.selectForStamp()?.index).toBe(0)
-    })
+      expect(pool.selectForStamp()?.index).toBe(0);
+    });
 
-    it('does not make a submitted top-up eligible before its receipt succeeds', async () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      const httpClient = makeMockHttpClient()
-      const provider = makeStubProvider(async req => {
-        if (req.method === 'getTransactionCount') return '0x0'
-        if (req.method === 'estimateGas') return '0x5208'
-        throw new Error(`unexpected _perform: ${req.method}`)
-      })
+    it("does not make a submitted top-up eligible before its receipt succeeds", async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      const httpClient = makeMockHttpClient();
+      const provider = makeStubProvider(async (req) => {
+        if (req.method === "getTransactionCount") return "0x0";
+        if (req.method === "estimateGas") return "0x5208";
+        throw new Error(`unexpected _perform: ${req.method}`);
+      });
       const mainAccountSigner = new MonadAccountTxSigner({
         privateKey: Wallet.createRandom().privateKey,
         provider,
         httpClient,
-      })
+      });
 
       await expect(
         pool.topUpPool({
@@ -933,48 +938,48 @@ describe('MonadSubAccountPool', () => {
           bufferSize: 1,
           overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
           receipt: { maxAttempts: 0 },
-        }),
-      ).rejects.toThrow(/still pending/)
+        })
+      ).rejects.toThrow(/still pending/);
 
-      expect(pool.getRecord(0)?.status).toBe('funding')
-      expect(pool.selectForStamp()).toBeUndefined()
-    })
+      expect(pool.getRecord(0)?.status).toBe("funding");
+      expect(pool.selectForStamp()).toBeUndefined();
+    });
 
-    it('persists exact retry state when a later top-up submission fails', async () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
+    it("persists exact retry state when a later top-up submission fails", async () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
 
-      const httpClient = makeMockHttpClient()
-      let nonce = 0
-      let call = 0
-      const provider = makeStubProvider(async req => {
-        if (req.method === 'getTransactionCount')
-          return `0x${(nonce++).toString(16)}`
-        if (req.method === 'estimateGas') return '0x5208'
-        throw new Error(`unexpected _perform: ${req.method}`)
-      })
+      const httpClient = makeMockHttpClient();
+      let nonce = 0;
+      let call = 0;
+      const provider = makeStubProvider(async (req) => {
+        if (req.method === "getTransactionCount")
+          return `0x${(nonce++).toString(16)}`;
+        if (req.method === "estimateGas") return "0x5208";
+        throw new Error(`unexpected _perform: ${req.method}`);
+      });
       const flakySigner = new MonadAccountTxSigner({
         privateKey: Wallet.createRandom().privateKey,
         provider,
         httpClient,
-      })
+      });
       // Fail the second submitted transaction only -- the first must still be durably recorded.
       httpClient.submitRawTransaction.mockImplementation(
         async (rawTxHex: string) => {
-          call++
-          if (call === 2) throw new Error('simulated relay failure')
-          return Transaction.from(rawTxHex).hash
-        },
-      )
-      httpClient.getTransactionReceipt.mockImplementation(async txHash => ({
+          call++;
+          if (call === 2) throw new Error("simulated relay failure");
+          return Transaction.from(rawTxHex).hash;
+        }
+      );
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
         txHash,
         blockNumber: 1,
-        blockHash: '0x' + '00'.repeat(32),
-        status: 'success',
+        blockHash: "0x" + "00".repeat(32),
+        status: "success",
         gasUsed: 21_000n,
         effectiveGasPrice: 1n,
         logs: [],
-      }))
+      }));
 
       await expect(
         pool.topUpPool({
@@ -983,45 +988,45 @@ describe('MonadSubAccountPool', () => {
           gasReserve: 1n,
           bufferSize: 2,
           overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-        }),
-      ).rejects.toThrow('simulated relay failure')
+        })
+      ).rejects.toThrow("simulated relay failure");
 
       // Index 0's funding succeeded before the throw -- it must be recorded as available.
-      expect(pool.getRecord(0)?.status).toBe('available')
+      expect(pool.getRecord(0)?.status).toBe("available");
       // Index 1's exact signed transaction was persisted before its submit failed. A retry resumes
       // that raw transaction rather than deriving or funding another child.
-      expect(pool.getRecord(1)?.status).toBe('funding')
-      expect(pool.getRecord(1)?.fundingAttempt?.rawTx).toBeDefined()
-    })
-  })
-})
+      expect(pool.getRecord(1)?.status).toBe("funding");
+      expect(pool.getRecord(1)?.fundingAttempt?.rawTx).toBeDefined();
+    });
+  });
+});
 
-describe('fanOutFundSubAccounts', () => {
+describe("fanOutFundSubAccounts", () => {
   async function makeMainAccountSigner(nonceStart = 0) {
-    let nonce = nonceStart
-    const httpClient = makeMockHttpClient()
-    const provider = makeStubProvider(async req => {
-      if (req.method === 'getTransactionCount')
-        return `0x${(nonce++).toString(16)}`
-      if (req.method === 'estimateGas') return '0x5208'
-      throw new Error(`unexpected _perform: ${req.method}`)
-    })
+    let nonce = nonceStart;
+    const httpClient = makeMockHttpClient();
+    const provider = makeStubProvider(async (req) => {
+      if (req.method === "getTransactionCount")
+        return `0x${(nonce++).toString(16)}`;
+      if (req.method === "estimateGas") return "0x5208";
+      throw new Error(`unexpected _perform: ${req.method}`);
+    });
     const signer = new MonadAccountTxSigner({
       privateKey: Wallet.createRandom().privateKey,
       provider,
       httpClient,
-    })
-    return { signer, httpClient }
+    });
+    return { signer, httpClient };
   }
 
-  it('funds each target with burnValue + gasReserve, kept separate as explicit parameters', async () => {
-    const { signer } = await makeMainAccountSigner()
+  it("funds each target with burnValue + gasReserve, kept separate as explicit parameters", async () => {
+    const { signer } = await makeMainAccountSigner();
     const targets = [
-      { index: 0, address: '0x000000000000000000000000000000000000dea0' },
-      { index: 1, address: '0x000000000000000000000000000000000000dea1' },
-    ]
-    const burnValue = 1_000_000_000_000_000n
-    const gasReserve = 250_000_000_000_000n
+      { index: 0, address: "0x000000000000000000000000000000000000dea0" },
+      { index: 1, address: "0x000000000000000000000000000000000000dea1" },
+    ];
+    const burnValue = 1_000_000_000_000_000n;
+    const gasReserve = 250_000_000_000_000n;
 
     const results = await fanOutFundSubAccounts({
       mainAccountSigner: signer,
@@ -1032,26 +1037,26 @@ describe('fanOutFundSubAccounts', () => {
         maxFeePerGas: 2_000_000_000n,
         maxPriorityFeePerGas: 1_000_000_000n,
       },
-    })
+    });
 
-    expect(results).toHaveLength(2)
+    expect(results).toHaveLength(2);
     for (const [i, result] of results.entries()) {
-      expect(result.address).toBe(targets[i].address)
-      expect(result.fundedValue).toBe(burnValue + gasReserve)
-      expect(result.signedTx.value).toBe(burnValue + gasReserve)
+      expect(result.address).toBe(targets[i].address);
+      expect(result.fundedValue).toBe(burnValue + gasReserve);
+      expect(result.signedTx.value).toBe(burnValue + gasReserve);
       expect(result.signedTx.to.toLowerCase()).toBe(
-        targets[i].address.toLowerCase(),
-      )
+        targets[i].address.toLowerCase()
+      );
     }
-  })
+  });
 
-  it('uses distinct, sequential nonces across the fan-out (no racing the same main account)', async () => {
-    const { signer } = await makeMainAccountSigner(5)
+  it("uses distinct, sequential nonces across the fan-out (no racing the same main account)", async () => {
+    const { signer } = await makeMainAccountSigner(5);
     const targets = [
-      { index: 0, address: '0x000000000000000000000000000000000000dea0' },
-      { index: 1, address: '0x000000000000000000000000000000000000dea1' },
-      { index: 2, address: '0x000000000000000000000000000000000000dea2' },
-    ]
+      { index: 0, address: "0x000000000000000000000000000000000000dea0" },
+      { index: 1, address: "0x000000000000000000000000000000000000dea1" },
+      { index: 2, address: "0x000000000000000000000000000000000000dea2" },
+    ];
 
     const results = await fanOutFundSubAccounts({
       mainAccountSigner: signer,
@@ -1062,16 +1067,16 @@ describe('fanOutFundSubAccounts', () => {
         maxFeePerGas: 1n,
         maxPriorityFeePerGas: 1n,
       },
-    })
+    });
 
-    expect(results.map(r => r.signedTx.nonce)).toEqual([5, 6, 7])
-  })
+    expect(results.map((r) => r.signedTx.nonce)).toEqual([5, 6, 7]);
+  });
 
-  it('submits every built transaction through the main account signer', async () => {
-    const { signer, httpClient } = await makeMainAccountSigner()
+  it("submits every built transaction through the main account signer", async () => {
+    const { signer, httpClient } = await makeMainAccountSigner();
     const targets = [
-      { index: 0, address: '0x000000000000000000000000000000000000dea0' },
-    ]
+      { index: 0, address: "0x000000000000000000000000000000000000dea0" },
+    ];
 
     await fanOutFundSubAccounts({
       mainAccountSigner: signer,
@@ -1079,140 +1084,447 @@ describe('fanOutFundSubAccounts', () => {
       burnValue: 10n,
       gasReserve: 5n,
       overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-    })
+    });
 
-    expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1)
-  })
+    expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+  });
 
   it.each([
-    ['burnValue', { burnValue: -1n, gasReserve: 0n }],
-    ['gasReserve', { burnValue: 0n, gasReserve: -1n }],
-  ])('rejects a negative %s', async (_label, amounts) => {
-    const { signer } = await makeMainAccountSigner()
+    ["burnValue", { burnValue: -1n, gasReserve: 0n }],
+    ["gasReserve", { burnValue: 0n, gasReserve: -1n }],
+  ])("rejects a negative %s", async (_label, amounts) => {
+    const { signer } = await makeMainAccountSigner();
     await expect(
       fanOutFundSubAccounts({
         mainAccountSigner: signer,
         targets: [
-          { index: 0, address: '0x000000000000000000000000000000000000dea0' },
+          { index: 0, address: "0x000000000000000000000000000000000000dea0" },
         ],
         ...amounts,
-      }),
-    ).rejects.toThrow(/must be >= 0/)
-  })
+      })
+    ).rejects.toThrow(/must be >= 0/);
+  });
 
-  it('funds zero targets without error when given an empty list', async () => {
-    const { signer } = await makeMainAccountSigner()
+  it("funds zero targets without error when given an empty list", async () => {
+    const { signer } = await makeMainAccountSigner();
     const results = await fanOutFundSubAccounts({
       mainAccountSigner: signer,
       targets: [],
       burnValue: 1n,
       gasReserve: 1n,
-    })
-    expect(results).toEqual([])
-  })
-})
+    });
+    expect(results).toEqual([]);
+  });
+});
 
-describe('MonadSubAccountPool.fundAll', () => {
+describe("MonadSubAccountPool.fundAll", () => {
   it('funds only the "available" records by default, using fanOutFundSubAccounts under the hood', async () => {
-    const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-    const pool = new MonadSubAccountPool({ keyring })
-    pool.ensureSize(3)
-    pool.setStatus(1, 'in-use')
+    const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+    const pool = new MonadSubAccountPool({ keyring });
+    pool.ensureSize(3);
+    pool.setStatus(1, "in-use");
 
-    let nonce = 0
-    const httpClient = makeMockHttpClient()
-    const provider = makeStubProvider(async req => {
-      if (req.method === 'getTransactionCount')
-        return `0x${(nonce++).toString(16)}`
-      if (req.method === 'estimateGas') return '0x5208'
-      throw new Error(`unexpected _perform: ${req.method}`)
-    })
+    let nonce = 0;
+    const httpClient = makeMockHttpClient();
+    const provider = makeStubProvider(async (req) => {
+      if (req.method === "getTransactionCount")
+        return `0x${(nonce++).toString(16)}`;
+      if (req.method === "estimateGas") return "0x5208";
+      throw new Error(`unexpected _perform: ${req.method}`);
+    });
     const mainAccountSigner = new MonadAccountTxSigner({
       privateKey: Wallet.createRandom().privateKey,
       provider,
       httpClient,
-    })
+    });
 
     const results = await pool.fundAll({
       mainAccountSigner,
       burnValue: 100n,
       gasReserve: 20n,
       overrides: { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n },
-    })
+    });
 
-    expect(results.map(r => r.index)).toEqual([0, 2]) // index 1 is in-use, skipped
-    expect(results.every(r => r.fundedValue === 120n)).toBe(true)
-  })
-})
+    expect(results.map((r) => r.index)).toEqual([0, 2]); // index 1 is in-use, skipped
+    expect(results.every((r) => r.fundedValue === 120n)).toBe(true);
+  });
+});
 
-describe('InMemorySubAccountPoolStore / LevelSubAccountPoolStore', () => {
-  it('InMemorySubAccountPoolStore returns records sorted by index', () => {
-    const store = new InMemorySubAccountPoolStore()
-    store.put({ index: 2, address: '0xabc', status: 'available' })
-    store.put({ index: 0, address: '0xdef', status: 'available' })
-    expect(store.getAll().map(r => r.index)).toEqual([0, 2])
-  })
+describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
+  it("InMemorySubAccountPoolStore returns records sorted by index", () => {
+    const store = new InMemorySubAccountPoolStore();
+    store.put({ index: 2, address: "0xabc", status: "available" });
+    store.put({ index: 0, address: "0xdef", status: "available" });
+    expect(store.getAll().map((r) => r.index)).toEqual([0, 2]);
+  });
 
-  it('LevelSubAccountPoolStore persists pool state across a simulated app restart', async () => {
-    const os = await import('os')
-    const path = await import('path')
-    const fs = await import('fs')
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sub-account-pool-test-'))
+  it("LevelSubAccountPoolStore persists pool state across a simulated app restart", async () => {
+    const os = await import("os");
+    const path = await import("path");
+    const fs = await import("fs");
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "sub-account-pool-test-")
+    );
     try {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
 
-      const storeA = new LevelSubAccountPoolStore(dir)
-      await storeA.Open()
-      const poolA = new MonadSubAccountPool({ keyring, store: storeA })
-      poolA.ensureSize(2)
-      poolA.setStatus(1, 'in-use')
-      await storeA.Close()
+      const storeA = new LevelSubAccountPoolStore(dir);
+      await storeA.Open();
+      const poolA = new MonadSubAccountPool({ keyring, store: storeA });
+      poolA.ensureSize(2);
+      poolA.setStatus(1, "in-use");
+      await storeA.Close();
 
-      const storeB = new LevelSubAccountPoolStore(dir)
-      await storeB.Open()
-      const poolB = new MonadSubAccountPool({ keyring, store: storeB })
+      const storeB = new LevelSubAccountPoolStore(dir);
+      await storeB.Open();
+      const poolB = new MonadSubAccountPool({ keyring, store: storeB });
 
-      expect(poolB.records()).toHaveLength(2)
-      expect(poolB.getRecord(1)?.status).toBe('in-use')
+      expect(poolB.records()).toHaveLength(2);
+      expect(poolB.getRecord(1)?.status).toBe("in-use");
       expect(poolB.getRecord(0)?.address).toBe(
-        keyring.deriveSubAccount(0).address,
-      )
-      await storeB.Close()
+        keyring.deriveSubAccount(0).address
+      );
+      await storeB.Close();
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true })
+      fs.rmSync(dir, { recursive: true, force: true });
     }
-  })
+  });
 
-  describe('MonadSubAccountPool.processSyncTransaction (Ticket #1115)', () => {
-    it('records spend checkpoint and marks status spent when matching spent input address', () => {
-      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC)
-      const pool = new MonadSubAccountPool({ keyring })
-      pool.ensureSize(3)
+  describe("MonadSubAccountPool.processSyncTransaction (Ticket #1115)", () => {
+    it("records spend checkpoint and marks status spent when matching spent input address", () => {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring });
+      pool.ensureSize(3);
 
-      const addr0 = keyring.deriveSubAccount(0).address
-      const addr1 = keyring.deriveSubAccount(1).address
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const addr1 = keyring.deriveSubAccount(1).address;
 
-      expect(pool.getRecord(0)?.status).toBe('available')
-      expect(pool.getRecord(0)?.lifecycle?.spend).toBeUndefined()
+      expect(pool.getRecord(0)?.status).toBe("available");
+      expect(pool.getRecord(0)?.lifecycle?.spend).toBeUndefined();
 
       const res = pool.processSyncTransaction({
-        direction: 'out',
-        txHash: '0xdeadbeef',
+        direction: "out",
+        txHash: "0xdeadbeef",
         spentInputs: [
           {
             address: addr0.toLowerCase(),
-            valueWei: '5000000000000',
+            valueWei: "5000000000000",
           },
         ],
-      })
+      });
 
-      expect(res.affectedIndices).toEqual([0])
-      expect(pool.getRecord(0)?.status).toBe('spent')
-      expect(pool.getRecord(0)?.lifecycle?.spend?.txHash).toBe('0xdeadbeef')
+      expect(res.affectedIndices).toEqual([0]);
+      expect(pool.getRecord(0)?.status).toBe("spent");
+      expect(pool.getRecord(0)?.lifecycle?.spend?.txHash).toBe("0xdeadbeef");
 
       // Record 1 should remain untouched
-      expect(pool.getRecord(1)?.status).toBe('available')
-      expect(pool.getRecord(1)?.lifecycle?.spend).toBeUndefined()
-    })
-  })
-})
+      expect(pool.getRecord(1)?.status).toBe("available");
+      expect(pool.getRecord(1)?.lifecycle?.spend).toBeUndefined();
+    });
+  });
+
+  describe("fundedCapacities and capacity caching (Issue #1179)", () => {
+    function setupCapacitiesTest() {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const store = new InMemorySubAccountPoolStore();
+      const pool = new MonadSubAccountPool({ keyring, store });
+      const balances = new Map<string, bigint>();
+      const provider = makeStubProvider(async (request) => {
+        if (request.method === "getBalance") {
+          const address = (request as unknown as { address: string }).address;
+          return balances.get(address.toLowerCase()) ?? 0n;
+        }
+        throw new Error(`unexpected _perform: ${request.method}`);
+      });
+      return { balances, keyring, pool, provider, store };
+    }
+
+    it("queries candidate sub-account balances concurrently in bounded chunks of 6 via Promise.all", async () => {
+      const { balances, pool, provider } = setupCapacitiesTest();
+      // Create 8 available sub-accounts
+      pool.ensureSize(8);
+      for (let i = 0; i < 8; i++) {
+        const record = pool.getRecord(i)!;
+        balances.set(record.address.toLowerCase(), 10_000n);
+      }
+
+      let activeQueries = 0;
+      let maxConcurrentQueries = 0;
+      const getBalanceSpy = jest
+        .spyOn(provider, "getBalance")
+        .mockImplementation(async (addr: any) => {
+          activeQueries++;
+          maxConcurrentQueries = Math.max(maxConcurrentQueries, activeQueries);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          activeQueries--;
+          return balances.get(String(addr).toLowerCase()) ?? 0n;
+        });
+
+      const gasReserveWei = 1_000n;
+      const accounts = await pool.fundedCapacities(provider, gasReserveWei);
+
+      expect(accounts).toHaveLength(8);
+      expect(getBalanceSpy).toHaveBeenCalledTimes(8);
+      // Parallel execution in chunks of 6 ensures concurrency > 1 and <= 6
+      expect(maxConcurrentQueries).toBeGreaterThan(1);
+      expect(maxConcurrentQueries).toBeLessThanOrEqual(6);
+
+      for (let i = 0; i < 8; i++) {
+        expect(accounts[i].index).toBe(i);
+        expect(accounts[i].capacityWei).toBe(9_000n);
+      }
+    });
+
+    it("cached capacities avoid redundant RPC queries within the 30s TTL", async () => {
+      const { balances, pool, provider } = setupCapacitiesTest();
+      pool.ensureSize(4);
+      for (let i = 0; i < 4; i++) {
+        balances.set(pool.getRecord(i)!.address.toLowerCase(), 5_000n);
+      }
+
+      const getBalanceSpy = jest.spyOn(provider, "getBalance");
+      getBalanceSpy.mockClear();
+
+      // Initial call queries RPC and populates capacity cache
+      const initial = await pool.fundedCapacities(provider, 500n);
+      expect(initial).toHaveLength(4);
+      expect(getBalanceSpy).toHaveBeenCalledTimes(4);
+      expect(initial[0].capacityWei).toBe(4_500n);
+
+      // Second call within 30s TTL hits the cache with zero RPC roundtrips
+      getBalanceSpy.mockClear();
+      const cached = await pool.fundedCapacities(provider, 500n);
+      expect(cached).toHaveLength(4);
+      expect(getBalanceSpy).not.toHaveBeenCalled();
+      expect(cached[0].capacityWei).toBe(4_500n);
+
+      // Advance time beyond 30s TTL
+      const baseNow = Date.now();
+      const nowSpy = jest
+        .spyOn(Date, "now")
+        .mockReturnValue(baseNow + CAPACITY_CACHE_TTL_MS + 1_000);
+
+      try {
+        // Third call after TTL expiration re-queries the provider
+        const refreshed = await pool.fundedCapacities(provider, 500n);
+        expect(refreshed).toHaveLength(4);
+        expect(getBalanceSpy).toHaveBeenCalledTimes(4);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it("invalidates or updates capacity cache on spend, lease, and balance updates", async () => {
+      const { balances, pool, provider } = setupCapacitiesTest();
+      pool.ensureSize(3);
+      for (let i = 0; i < 3; i++) {
+        balances.set(pool.getRecord(i)!.address.toLowerCase(), 10_000n);
+      }
+
+      await pool.fundedCapacities(provider, 1_000n);
+      expect(pool.capacityCache.has(0)).toBe(true);
+      expect(pool.capacityCache.has(1)).toBe(true);
+      expect(pool.capacityCache.has(2)).toBe(true);
+
+      // Lease account 0 -> 'in-use' should invalidate cache entry
+      pool.setStatus(0, "in-use");
+      expect(pool.capacityCache.has(0)).toBe(false);
+      expect(pool.capacityCache.has(1)).toBe(true);
+
+      // Spend account 1 -> 'spent' should invalidate cache entry
+      pool.setStatus(1, "spent");
+      expect(pool.capacityCache.has(1)).toBe(false);
+
+      // recordSpendTransaction should invalidate cache entry
+      pool.updateCapacityCache(2, 5_000n);
+      expect(pool.capacityCache.has(2)).toBe(true);
+      pool.recordSpendTransaction(2, {
+        rawTx: "0x12",
+        txHash: "0x34",
+        valueWei: "5000",
+      });
+      expect(pool.capacityCache.has(2)).toBe(false);
+    });
+  });
+
+  describe("ensureMinimumAvailableCapacity (proactive warming, Issue #1179)", () => {
+    function setupWarmingTest() {
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const store = new InMemorySubAccountPoolStore();
+      const pool = new MonadSubAccountPool({ keyring, store });
+      const balances = new Map<string, bigint>();
+      let nonce = 0;
+      const httpClient = makeMockHttpClient();
+      httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+        const transaction = Transaction.from(rawTx);
+        balances.set(
+          transaction.to!.toLowerCase(),
+          (balances.get(transaction.to!.toLowerCase()) ?? 0n) +
+            transaction.value
+        );
+        return transaction.hash;
+      });
+      httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
+        txHash,
+        blockNumber: 1,
+        blockHash: "0x" + "00".repeat(32),
+        status: "success",
+        gasUsed: 21_000n,
+        effectiveGasPrice: 1n,
+        logs: [],
+      }));
+      const mainWallet = Wallet.createRandom();
+      balances.set(mainWallet.address.toLowerCase(), 1_000_000n);
+      const provider = makeStubProvider(async (request) => {
+        if (request.method === "getTransactionCount") {
+          const address = (
+            request as unknown as { address: string; blockTag?: string }
+          ).address.toLowerCase();
+          return address === mainWallet.address.toLowerCase() ? nonce++ : 0;
+        }
+        if (request.method === "getBalance") {
+          const address = (request as unknown as { address: string }).address;
+          return balances.get(address.toLowerCase()) ?? 0n;
+        }
+        if (request.method === "estimateGas") {
+          return "0x5208";
+        }
+        throw new Error(`unexpected _perform: ${request.method}`);
+      });
+      const mainAccountSigner = new MonadAccountTxSigner({
+        privateKey: mainWallet.privateKey,
+        provider,
+        httpClient,
+      });
+      const defaultOverrides = {
+        gasLimit: 21_000n,
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+        chainId: BigInt(CHAIN_ID),
+      };
+      return {
+        balances,
+        httpClient,
+        mainAccountSigner,
+        pool,
+        provider,
+        store,
+        mainAddress: mainWallet.address,
+        defaultOverrides,
+      };
+    }
+
+    it("detects depleted pool capacity and replenishes in the background without throwing or blocking", async () => {
+      const {
+        balances,
+        defaultOverrides,
+        httpClient,
+        mainAccountSigner,
+        pool,
+        provider,
+      } = setupWarmingTest();
+
+      // Start with 0 available sub-accounts in the pool
+      expect(
+        pool.records().filter((r) => r.status === "available").length
+      ).toBe(0);
+
+      const warmingPromise = pool.ensureMinimumAvailableCapacity({
+        mainAccountSigner,
+        provider,
+        minCount: 2,
+        stampValueWei: 1_000n,
+        overrides: defaultOverrides,
+      });
+
+      // Non-blocking: returns a promise immediately without throwing
+      expect(typeof warmingPromise.then).toBe("function");
+
+      await warmingPromise;
+
+      // Pool should now have at least 2 available funded sub-accounts
+      const available = pool.records().filter((r) => r.status === "available");
+      expect(available.length).toBeGreaterThanOrEqual(2);
+      expect(httpClient.submitRawTransaction).toHaveBeenCalledTimes(2);
+
+      // The new accounts should have their capacities cached
+      expect(pool.capacityCache.get(available[0].index)?.capacityWei).toBe(
+        1_000n
+      );
+      expect(pool.capacityCache.get(available[1].index)?.capacityWei).toBe(
+        1_000n
+      );
+    });
+
+    it("does not schedule funding when pool already has sufficient available capacity", async () => {
+      const { balances, httpClient, mainAccountSigner, pool, provider } =
+        setupWarmingTest();
+      pool.ensureSize(2);
+      balances.set(pool.getRecord(0)!.address.toLowerCase(), 22_000n);
+      balances.set(pool.getRecord(1)!.address.toLowerCase(), 22_000n);
+
+      await pool.ensureMinimumAvailableCapacity({
+        mainAccountSigner,
+        provider,
+        minCount: 2,
+        stampValueWei: 1_000n,
+      });
+
+      expect(httpClient.submitRawTransaction).not.toHaveBeenCalled();
+    });
+
+    it("swallows funding errors in background without throwing or unhandled rejections", async () => {
+      const { mainAccountSigner, pool, provider } = setupWarmingTest();
+
+      jest
+        .spyOn(mainAccountSigner, "buildAndSignTransfer")
+        .mockRejectedValue(new Error("Simulated network failure"));
+
+      await expect(
+        pool.ensureMinimumAvailableCapacity({
+          mainAccountSigner,
+          provider,
+          minCount: 2,
+          stampValueWei: 1_000n,
+        })
+      ).resolves.not.toThrow();
+    });
+
+    it("triggers proactive warming when lease is released", async () => {
+      const {
+        balances,
+        defaultOverrides,
+        httpClient,
+        mainAccountSigner,
+        pool,
+        provider,
+      } = setupWarmingTest();
+      pool.ensureSize(2);
+      balances.set(pool.getRecord(0)!.address.toLowerCase(), 22_000n);
+      balances.set(pool.getRecord(1)!.address.toLowerCase(), 22_000n);
+
+      pool.configureProactiveWarming({
+        mainAccountSigner,
+        provider,
+        minCount: 2,
+        stampValueWei: 1_000n,
+        overrides: defaultOverrides,
+      });
+
+      const leaseManager = new SubAccountLeaseManager(pool);
+      const handle = leaseManager.acquireForIndex(0);
+      expect(pool.getRecord(0)?.status).toBe("in-use");
+
+      // Releasing lease moves account 0 to spent, leaving only 1 available (< minCount 2)
+      leaseManager.releaseLease(handle, "confirmed");
+      expect(pool.getRecord(0)?.status).toBe("spent");
+
+      // Awaiting the warming ensures background replenishment completes
+      await pool.ensureMinimumAvailableCapacity();
+
+      const available = pool.records().filter((r) => r.status === "available");
+      expect(available.length).toBe(2);
+      expect(httpClient.submitRawTransaction).toHaveBeenCalled();
+    });
+  });
+});

@@ -23,7 +23,11 @@
         <q-card
           flat
           class="col column full-width bg-transparent"
-          style="max-width: 680px; width: 100%; margin: 0 auto"
+          :style="{
+            maxWidth: activeTab === 'parity' ? '1100px' : '680px',
+            width: '100%',
+            margin: '0 auto',
+          }"
         >
           <q-card-section>
             <div class="text-h6 row items-center" data-testid="wallet-name">

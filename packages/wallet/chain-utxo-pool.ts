@@ -66,6 +66,8 @@ export interface ChainUtxoCoin {
   readonly derivationPath?: string
   readonly ephemeralPubKey?: string
   readonly txHash?: string
+  readonly parentTxHash?: string
+  readonly requiresConfirmation?: boolean
   readonly index?: number
 }
 
@@ -96,6 +98,11 @@ export interface SelectCoinsParams {
   readonly minFeePerTxWei?: bigint
   /** Maximum number of change split outputs. Defaults to 5. */
   readonly maxChangeOutputs?: number
+  /**
+   * If true, allows selecting coins that depend on unconfirmed parent transactions requiring on-chain confirmation.
+   * Defaults to false (only selects immediately spendable coins without block confirmation gates).
+   */
+  readonly allowUnconfirmedDependencies?: boolean
 }
 
 export interface CoinSelectionResult {
@@ -1138,6 +1145,7 @@ export class ChainUtxoPool {
       decoyAvoidance = true,
       dustThresholdWei = 1_000n,
       maxChangeOutputs = 5,
+      allowUnconfirmedDependencies = false,
     } = params
 
     const family = explicitFamily ?? inferChainFamily(chain)
@@ -1162,6 +1170,10 @@ export class ChainUtxoPool {
       )
     } else {
       candidates = this.getCleanCoins(chain).filter(u => u.balanceWei > 0n)
+    }
+
+    if (!allowUnconfirmedDependencies) {
+      candidates = candidates.filter(u => !u.requiresConfirmation)
     }
 
     if (explicitFamily) {
@@ -1387,6 +1399,8 @@ export interface ApplyTransactionParams {
     readonly outpoint?: { txid: string; vout: number }
     readonly origin?: ChainUtxoOrigin
     readonly label?: string
+    readonly parentTxHash?: string
+    readonly requiresConfirmation?: boolean
   }>
   /** For EVM accounts that spent some balance: update the existing coin with new nonce and remaining balance */
   readonly updatedAccounts?: Array<{
@@ -1455,6 +1469,7 @@ export class ChainUtxoView {
       decoyAvoidance = true,
       dustThresholdWei = 1_000n,
       maxChangeOutputs = 5,
+      allowUnconfirmedDependencies = false,
     } = params
 
     const family = explicitFamily ?? inferChainFamily(chain)
@@ -1487,6 +1502,10 @@ export class ChainUtxoView {
       )
     } else {
       candidates = this.getCleanCoins(chain).filter(u => u.balanceWei > 0n)
+    }
+
+    if (!allowUnconfirmedDependencies) {
+      candidates = candidates.filter(u => !u.requiresConfirmation)
     }
 
     if (explicitFamily) {
@@ -1584,6 +1603,16 @@ export class ChainUtxoView {
       const nonceOrOutpoint = change.outpoint ?? change.nonce ?? 0
       const id = makeUtxoId(chain, formattedAddress, nonceOrOutpoint, family)
 
+      // Native UTXO mempools automatically chain unconfirmed outpoints (CPFP).
+      // EVM nodes reject transactions from 0-balance child accounts until the funding tx confirms.
+      const requiresConfirmation =
+        change.requiresConfirmation ??
+        (family === 'utxo'
+          ? false
+          : family === 'evm'
+          ? true
+          : true)
+
       const coin: ChainUtxoCoin = {
         id,
         chain,
@@ -1598,6 +1627,8 @@ export class ChainUtxoView {
         label: change.label ?? 'Chained Transaction Change Output',
         discoveredAt: Date.now(),
         lastUpdatedMs: Date.now(),
+        parentTxHash: change.parentTxHash,
+        requiresConfirmation,
       }
       this.stagedCoinsById.set(id, coin)
     }
@@ -1615,6 +1646,8 @@ export class ChainUtxoView {
           nonce: update.nextNonce,
           balanceWei: update.remainingBalanceWei,
           status: 'clean',
+          // Sequential nonces from the SAME EVM account are accepted and chained in the mempool automatically!
+          requiresConfirmation: false,
           lastUpdatedMs: Date.now(),
         }
         this.stagedCoinsById.set(nextId, updatedCoin)

@@ -733,6 +733,52 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(view.getCleanCoins('monad')[0].nonce).toBe(0)
       expect(view.getCleanCoins('monad')[0].balanceWei).toBe(50_000_000n)
     })
+
+    it('distinguishes between mempool-chainable coins and coins requiring on-chain confirmation', () => {
+      const view = pool.createView()
+      const childWallet = Wallet.createRandom()
+
+      // Tx 1 on Monad: Funds a brand new ephemeral child account
+      view.applyTransaction({
+        chain: 'monad',
+        inputs: [],
+        changeOutputs: [
+          {
+            address: childWallet.address,
+            privateKey: childWallet.privateKey,
+            balanceWei: 10_000_000n,
+            family: 'evm',
+            parentTxHash: '0xparent123',
+          },
+        ],
+      })
+
+      // The newly funded EVM child account has requiresConfirmation = true
+      const stagedChild = view.getCoin(
+        makeUtxoId('monad', childWallet.address, 0, 'evm'),
+      )
+      expect(stagedChild?.requiresConfirmation).toBe(true)
+      expect(stagedChild?.parentTxHash).toBe('0xparent123')
+
+      // By default, selectCoins excludes coins that require on-chain confirmation
+      expect(() => {
+        view.selectCoins({
+          chain: 'monad',
+          targetAmountWei: 5_000_000n,
+          allowUnconfirmedDependencies: false,
+        })
+      }).toThrow(/Insufficient funds/i)
+
+      // When explicitly allowed (e.g. for pipeline orchestration with confirmation wait):
+      const sel = view.selectCoins({
+        chain: 'monad',
+        targetAmountWei: 5_000_000n,
+        allowUnconfirmedDependencies: true,
+      })
+      expect(sel.selected.length).toBe(1)
+      expect(sel.selected[0].address).toBe(childWallet.address)
+      expect(sel.selected[0].requiresConfirmation).toBe(true)
+    })
   })
 })
 

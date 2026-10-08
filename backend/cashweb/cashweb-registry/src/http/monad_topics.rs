@@ -58,7 +58,7 @@ impl fmt::Display for MonadTopicGateConfigError {
 /// read once from the environment (see module docs).
 #[derive(Debug, Clone)]
 pub struct MonadTopicGateConfig {
-    rpc_url: url::Url,
+    rpc_urls: Vec<url::Url>,
     burn_address: Address,
 }
 
@@ -68,15 +68,30 @@ fn required_env(name: &'static str) -> Result<String, MonadTopicGateConfigError>
 
 impl MonadTopicGateConfig {
     fn from_env() -> Result<Self, MonadTopicGateConfigError> {
-        let rpc_url = required_env("MONAD_TESTNET_HTTP_RPC_URL")?;
-        let rpc_url: url::Url = rpc_url
-            .parse()
-            .map_err(|err| MonadTopicGateConfigError::InvalidRpcUrl(format!("{err}")))?;
+        let raw = required_env("MONAD_TESTNET_HTTP_RPC_URL")?;
+        let mut rpc_urls = Vec::new();
+        for token in raw
+            .split([',', ' ', '\n', '\t'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let parsed: url::Url = token
+                .parse()
+                .map_err(|err| MonadTopicGateConfigError::InvalidRpcUrl(format!("{err}")))?;
+            if !rpc_urls.contains(&parsed) {
+                rpc_urls.push(parsed);
+            }
+        }
+        if rpc_urls.is_empty() {
+            return Err(MonadTopicGateConfigError::InvalidRpcUrl(
+                "no valid URLs".to_string(),
+            ));
+        }
         let burn_address_hex = required_env("MONAD_STAMP_BURN_ADDRESS")?;
         let burn_address = Address::from_hex(&burn_address_hex)
             .map_err(|err| MonadTopicGateConfigError::InvalidBurnAddress(format!("{err}")))?;
         Ok(MonadTopicGateConfig {
-            rpc_url,
+            rpc_urls,
             burn_address,
         })
     }
@@ -329,7 +344,7 @@ async fn put_forum(
     let Ok(config) = monad_topic_gate().as_ref() else {
         return forum_error(ForumError::Unavailable);
     };
-    let transport = HttpTransport::new(config.rpc_url.clone());
+    let transport = HttpTransport::new_multi(config.rpc_urls.clone());
     forum_submission(
         &server.registry,
         &transport,

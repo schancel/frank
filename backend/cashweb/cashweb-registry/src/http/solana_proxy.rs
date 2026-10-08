@@ -45,7 +45,8 @@ const MAX_WIRE_TRANSACTION_CHARS: usize = 4096;
 #[derive(Clone)]
 struct SolanaChain {
     id: String,
-    upstream_url: Url,
+    upstream_urls: Vec<Url>,
+    upstream_index: Arc<std::sync::atomic::AtomicUsize>,
     expected_genesis_hash: String,
 }
 
@@ -53,7 +54,7 @@ impl fmt::Debug for SolanaChain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SolanaChain")
             .field("id", &self.id)
-            .field("upstream_url", &"<redacted>")
+            .field("upstream_urls_count", &self.upstream_urls.len())
             .field("expected_genesis_hash", &self.expected_genesis_hash)
             .finish()
     }
@@ -152,20 +153,44 @@ impl SolanaProxyRuntime {
         }
         let mut chains = HashMap::new();
         for row in &conf.chains {
-            let raw = env(&row.upstream_env)
-                .filter(|s| !s.trim().is_empty())
-                .ok_or_else(|| SolanaProxyStartError::MissingUpstream(row.upstream_env.clone()))?;
-            let url = raw
-                .trim()
-                .parse::<Url>()
-                .ok()
-                .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
-                .ok_or_else(|| SolanaProxyStartError::InvalidUpstream(row.upstream_env.clone()))?;
+            let mut upstream_urls = Vec::new();
+            let mut all_envs = vec![row.upstream_env.as_str()];
+            for env_name in &row.upstream_envs {
+                all_envs.push(env_name.as_str());
+            }
+            for env_name in all_envs {
+                if let Some(raw) = env(env_name).filter(|s| !s.trim().is_empty()) {
+                    for token in raw
+                        .split([',', ' ', '\n', '\t'])
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        let url = token
+                            .parse::<Url>()
+                            .ok()
+                            .filter(|u| {
+                                matches!(u.scheme(), "http" | "https") && u.host_str().is_some()
+                            })
+                            .ok_or_else(|| {
+                                SolanaProxyStartError::InvalidUpstream(env_name.to_string())
+                            })?;
+                        if !upstream_urls.contains(&url) {
+                            upstream_urls.push(url);
+                        }
+                    }
+                }
+            }
+            if upstream_urls.is_empty() {
+                return Err(SolanaProxyStartError::MissingUpstream(
+                    row.upstream_env.clone(),
+                ));
+            }
             chains.insert(
                 row.id.clone(),
                 SolanaChain {
                     id: row.id.clone(),
-                    upstream_url: url,
+                    upstream_urls,
+                    upstream_index: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     expected_genesis_hash: row.expected_genesis_hash.clone(),
                 },
             );
@@ -201,37 +226,39 @@ impl SolanaProxyRuntime {
                 "method": "getGenesisHash",
             });
             let body_bytes = serde_json::to_vec(&body).unwrap();
-            let response = tokio::time::timeout(
-                self.timeout,
-                self.client
-                    .post(chain.upstream_url.clone())
-                    .header(reqwest::header::CONTENT_TYPE, "application/json")
-                    .body(body_bytes)
-                    .send(),
-            )
-            .await
-            .map_err(|_| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?
-            .map_err(|_| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
-
-            if !response.status().is_success() {
-                return Err(SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()));
-            }
-            let bytes = read_response(response, MAX_STARTUP_RESPONSE_BYTES)
+            for upstream_url in &chain.upstream_urls {
+                let response = tokio::time::timeout(
+                    self.timeout,
+                    self.client
+                        .post(upstream_url.clone())
+                        .header(reqwest::header::CONTENT_TYPE, "application/json")
+                        .body(body_bytes.clone())
+                        .send(),
+                )
                 .await
+                .map_err(|_| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?
                 .map_err(|_| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
 
-            let actual = super::json_rpc::startup_result(
-                &bytes,
-                super::json_rpc::JsonRpcVersion::V2,
-                &json!("startup"),
-            )
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .ok_or_else(|| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
+                if !response.status().is_success() {
+                    return Err(SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()));
+                }
+                let bytes = read_response(response, MAX_STARTUP_RESPONSE_BYTES)
+                    .await
+                    .map_err(|_| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
 
-            if actual != chain.expected_genesis_hash {
-                return Err(SolanaProxyStartError::GenesisHashMismatch {
-                    id: chain.id.clone(),
-                });
+                let actual = super::json_rpc::startup_result(
+                    &bytes,
+                    super::json_rpc::JsonRpcVersion::V2,
+                    &json!("startup"),
+                )
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .ok_or_else(|| SolanaProxyStartError::UpstreamUnavailable(chain.id.clone()))?;
+
+                if actual != chain.expected_genesis_hash {
+                    return Err(SolanaProxyStartError::GenesisHashMismatch {
+                        id: chain.id.clone(),
+                    });
+                }
             }
         }
         Ok(())
@@ -766,55 +793,116 @@ async fn proxy_rpc_inner(
     }
 
     let deadline = tokio::time::Instant::now() + runtime.timeout;
-    let upstream = async {
-        let response = runtime
-            .client
-            .post(chain.upstream_url.clone())
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body.clone())
-            .send()
-            .await
-            .map_err(|_| {
+    let num_upstreams = chain.upstream_urls.len();
+    if num_upstreams == 0 {
+        return Err(broadcast_error(
+            StatusCode::BAD_GATEWAY,
+            "rpc_upstream_unavailable",
+            cost.broadcast,
+            true,
+        ));
+    }
+    let start_idx = chain
+        .upstream_index
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        % num_upstreams;
+    let mut last_error = None;
+    let mut spool = None;
+
+    for attempt in 0..num_upstreams {
+        let idx = (start_idx + attempt) % num_upstreams;
+        let upstream_url = &chain.upstream_urls[idx];
+        let remaining_time = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining_time.is_zero() {
+            return Err(broadcast_error(
+                StatusCode::GATEWAY_TIMEOUT,
+                "rpc_upstream_timeout",
+                cost.broadcast,
+                true,
+            ));
+        }
+
+        let upstream = async {
+            let response = runtime
+                .client
+                .post(upstream_url.clone())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.clone())
+                .send()
+                .await
+                .map_err(|_| {
+                    broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        cost.broadcast,
+                        true,
+                    )
+                })?;
+            let status = response.status();
+            if status.is_server_error() && attempt + 1 < num_upstreams {
+                return Err(broadcast_error(
+                    StatusCode::BAD_GATEWAY,
+                    "rpc_upstream_unavailable",
+                    cost.broadcast,
+                    true,
+                ));
+            }
+            super::json_rpc::spool_response(response, runtime.max_response_bytes, remaining_time)
+                .await
+                .map_err(|error| match error {
+                    super::json_rpc::SpoolError::TooLarge => broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_response_too_large",
+                        cost.broadcast,
+                        true,
+                    ),
+                    super::json_rpc::SpoolError::Timeout => broadcast_error(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "rpc_upstream_timeout",
+                        cost.broadcast,
+                        true,
+                    ),
+                    super::json_rpc::SpoolError::Io => broadcast_error(
+                        StatusCode::BAD_GATEWAY,
+                        "rpc_upstream_unavailable",
+                        cost.broadcast,
+                        true,
+                    ),
+                })
+        };
+
+        match tokio::time::timeout_at(deadline, upstream).await {
+            Ok(Ok(s)) => {
+                spool = Some(s);
+                break;
+            }
+            Ok(Err(err)) => {
+                last_error = Some(err);
+            }
+            Err(_) => {
+                last_error = Some(broadcast_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "rpc_upstream_timeout",
+                    cost.broadcast,
+                    true,
+                ));
+            }
+        }
+    }
+
+    let spool = match spool {
+        Some(s) => s,
+        None => {
+            return Err(last_error.unwrap_or_else(|| {
                 broadcast_error(
                     StatusCode::BAD_GATEWAY,
                     "rpc_upstream_unavailable",
                     cost.broadcast,
                     true,
                 )
-            })?;
-        super::json_rpc::spool_response(response, runtime.max_response_bytes, runtime.timeout)
-            .await
-            .map_err(|error| match error {
-                super::json_rpc::SpoolError::TooLarge => broadcast_error(
-                    StatusCode::BAD_GATEWAY,
-                    "rpc_upstream_response_too_large",
-                    cost.broadcast,
-                    true,
-                ),
-                super::json_rpc::SpoolError::Timeout => broadcast_error(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "rpc_upstream_timeout",
-                    cost.broadcast,
-                    true,
-                ),
-                super::json_rpc::SpoolError::Io => broadcast_error(
-                    StatusCode::BAD_GATEWAY,
-                    "rpc_upstream_unavailable",
-                    cost.broadcast,
-                    true,
-                ),
-            })
+            }));
+        }
     };
-    let spool = tokio::time::timeout_at(deadline, upstream)
-        .await
-        .map_err(|_| {
-            broadcast_error(
-                StatusCode::GATEWAY_TIMEOUT,
-                "rpc_upstream_timeout",
-                cost.broadcast,
-                true,
-            )
-        })??;
     let inspected = tokio::time::timeout_at(
         deadline,
         spool.inspect(super::json_rpc::JsonRpcVersion::V2, correlation),
@@ -891,6 +979,7 @@ mod tests {
             chains: vec![SolanaProxyChainConf {
                 id: "solana-devnet".to_string(),
                 upstream_env: "SOLANA_DEVNET_RPC".to_string(),
+                upstream_envs: vec![],
                 expected_genesis_hash: genesis_hash.to_string(),
             }],
             ..SolanaProxyConf::default()
@@ -930,6 +1019,7 @@ mod tests {
             chains: vec![SolanaProxyChainConf {
                 id: "solana-devnet".to_string(),
                 upstream_env: "SOLANA_DEVNET_RPC".to_string(),
+                upstream_envs: vec![],
                 expected_genesis_hash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string(),
             }],
             ..SolanaProxyConf::default()
@@ -942,6 +1032,62 @@ mod tests {
             result,
             Err(SolanaProxyStartError::GenesisHashMismatch { id }) if id == "solana-devnet"
         ));
+    }
+
+    #[tokio::test]
+    async fn startup_verification_multi_upstream_loads_and_verifies_all() {
+        let genesis_hash = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+        let make_server = || {
+            Router::new().route(
+                "/",
+                routing::post(move || async move {
+                    Json(json!({
+                        "jsonrpc": "2.0",
+                        "result": genesis_hash,
+                        "id": "startup"
+                    }))
+                }),
+            )
+        };
+        let l1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr1 = l1.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(l1)
+                .unwrap()
+                .serve(make_server().into_make_service()),
+        );
+
+        let l2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr2 = l2.local_addr().unwrap();
+        tokio::spawn(
+            axum::Server::from_tcp(l2)
+                .unwrap()
+                .serve(make_server().into_make_service()),
+        );
+
+        let conf = SolanaProxyConf {
+            enabled: true,
+            chains: vec![SolanaProxyChainConf {
+                id: "solana-devnet".to_string(),
+                upstream_env: "SOLANA_RPC_1".to_string(),
+                upstream_envs: vec!["SOLANA_RPC_2".to_string()],
+                expected_genesis_hash: genesis_hash.to_string(),
+            }],
+            ..SolanaProxyConf::default()
+        };
+        let u1 = format!("http://{addr1}");
+        let u2 = format!("http://{addr2}");
+        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |name| match name {
+            "SOLANA_RPC_1" => Some(u1.clone()),
+            "SOLANA_RPC_2" => Some(u2.clone()),
+            _ => None,
+        })
+        .await
+        .unwrap()
+        .expect("must start");
+
+        let chain = runtime.chains.get("solana-devnet").unwrap();
+        assert_eq!(chain.upstream_urls.len(), 2);
     }
 
     #[test]

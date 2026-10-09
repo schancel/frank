@@ -2348,7 +2348,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   gasReserveWei: BigInt(21_000) * BigInt(2_000_000_000),
                   minCount: Math.min(2, config.subAccountPoolSize),
                 });
-                pool.triggerProactiveWarming();
               });
             }
             const links =

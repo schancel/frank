@@ -259,3 +259,27 @@ export function computeGeometricRadixChangeSplits(
   // Step 6: Return bigint[] of change amounts
   return outputs;
 }
+
+/**
+ * Calculates a randomized decoy jitter delay using an exponential / Poisson
+ * inter-arrival distribution to obfuscate background sweep timings.
+ *
+ * Uses inverse transform sampling: delay = -meanDelayMs * ln(1 - U) where U in [0, 1).
+ * Clamps the resulting delay to [0, maxDelayMs].
+ *
+ * @param meanDelayMs Expected mean delay in milliseconds (default: 30,000 ms)
+ * @param maxDelayMs Maximum ceiling for jitter delay in milliseconds (default: 120,000 ms)
+ * @returns Jitter delay in milliseconds within [0, maxDelayMs]
+ */
+export function calculateDecoyJitterDelayMs(
+  meanDelayMs = 30_000,
+  maxDelayMs = 120_000,
+): number {
+  if (meanDelayMs <= 0 || maxDelayMs <= 0) {
+    return 0;
+  }
+  // Math.random() returns [0, 1), so (1 - Math.random()) returns (0, 1], guaranteeing Math.log is finite and <= 0
+  const u = 1 - Math.random();
+  const rawDelay = -meanDelayMs * Math.log(u);
+  return Math.min(maxDelayMs, Math.max(0, Math.round(rawDelay)));
+}

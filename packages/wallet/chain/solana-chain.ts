@@ -123,7 +123,14 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
           ? "confirmed"
           : "pending";
       },
-      async sendLegacy({ wallet, recipient, value, onProgress, onSigned }) {
+      async sendLegacy({
+        wallet,
+        recipient,
+        value,
+        onProgress,
+        onSigned,
+        priorityFeeMicroLamports,
+      }) {
         if (wallet.family !== "solana") {
           throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
         }
@@ -158,6 +165,7 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
                 changeAddress,
                 recentBlockhash: blockhash,
                 feeLamports: 5_000n,
+                priorityFeeMicroLamports,
               });
 
             const base58Decoder = getBase58Decoder();

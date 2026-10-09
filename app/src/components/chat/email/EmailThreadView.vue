@@ -869,6 +869,7 @@ export default defineComponent({
   data() {
     return {
       composerActive: true,
+      composerInitialized: false,
       preparingSend: false,
       replyRouting: 'peer' as 'peer' | 'gateway',
       expandedMap: {} as Record<string, boolean>,
@@ -1062,31 +1063,19 @@ export default defineComponent({
           if (!(latestId in this.expandedMap)) {
             this.expandedMap[latestId] = true
           }
-          // Also set initial composer values if composer is untouched
-          if (this.toList.length === 0 && !this.replyText) {
-            this.setupComposerDefaults(cards[cards.length - 1])
-          }
-        } else {
-          this.setupNewDraftDefaults()
         }
-      },
-    },
-    conversation: {
-      immediate: true,
-      handler() {
-        if (this.isDraft) {
-          this.setupNewDraftDefaults()
+        // This component is keyed by conversation ID. Initialize once; empty fields do not
+        // imply an untouched draft or permission to replace an explicitly selected parent.
+        if (!this.composerInitialized) {
+          this.composerInitialized = true
+          if (cards.length) this.setupComposerDefaults(cards[cards.length - 1])
+          else this.setupNewDraftDefaults()
         }
       },
     },
   },
   beforeUnmount() {
     this.composerActive = false
-  },
-  mounted() {
-    if (this.isDraft) {
-      this.setupNewDraftDefaults()
-    }
   },
   methods: {
     setupNewDraftDefaults() {
@@ -1481,9 +1470,14 @@ export default defineComponent({
           fallbackText,
           targetAddress,
         })
-        this.replyText = ''
-        this.stagedFiles = []
-        this.isPreviewMode = false
+        // File reads leave authoring enabled. Clear only what this send actually captured.
+        if (this.replyText === body) {
+          this.replyText = ''
+          this.isPreviewMode = false
+        }
+        this.stagedFiles = this.stagedFiles.filter(
+          file => !files.includes(file),
+        )
       } finally {
         this.preparingSend = false
       }

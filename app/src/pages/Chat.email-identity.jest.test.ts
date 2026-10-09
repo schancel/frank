@@ -86,15 +86,53 @@ const controls = Object.fromEntries(
     .map(name => [name, simple]),
 )
 controls.QBtn = defineComponent({
-  props: { icon: String, label: String },
+  props: { icon: String, label: String, disable: Boolean },
   setup:
     (props, { slots }) =>
     () =>
-      h('button', { 'data-icon': props.icon }, [
+      h('button', { 'data-icon': props.icon, 'disabled': props.disable }, [
         props.label,
         slots.default?.(),
       ]),
 })
+controls.QInput = defineComponent({
+  props: { modelValue: String, type: String, disable: Boolean },
+  emits: ['update:modelValue'],
+  setup:
+    (props, { emit }) =>
+    () =>
+      h(props.type === 'textarea' ? 'textarea' : 'input', {
+        value: props.modelValue,
+        disabled: props.disable,
+        onInput: (event: Event) =>
+          emit('update:modelValue', (event.target as HTMLInputElement).value),
+      }),
+})
+controls.QChip = defineComponent({
+  props: { removable: Boolean },
+  emits: ['remove'],
+  setup:
+    (props, { slots, emit }) =>
+    () =>
+      h('span', { 'data-chip': '' }, [
+        slots.default?.(),
+        props.removable
+          ? h(
+              'button',
+              { 'data-remove-recipient': '', 'onClick': () => emit('remove') },
+              'Remove',
+            )
+          : null,
+      ]),
+})
+async function selectFile(root: ReturnType<typeof mount>, file: File) {
+  const input = root.get('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    value: [file],
+    configurable: true,
+  })
+  await input.trigger('change')
+}
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(done => {
@@ -361,6 +399,134 @@ it('preserves the real store recipient-affinity refusal without a replacement ro
     })
     expect(mockErrorNotify).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(app.chats.$state)).toBe(before)
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('preserves postclick body and attachment edits made through enabled authoring controls', async () => {
+  const app = await mountedEmails()
+  try {
+    const composer = app.composer()
+    const fileRead = deferred<string>()
+    jest.spyOn(composer, 'readFileAsBase64').mockReturnValue(fileRead.promise)
+    const handleSend = jest.spyOn(composer, 'handleSend')
+    const originalFile = new File(['old'], 'submitted.txt')
+    const laterFile = new File(['new'], 'later.txt')
+    await app.root.get('textarea').setValue('Submitted body')
+    await selectFile(app.root, originalFile)
+    await app.root.get('button[data-icon="send"]').trigger('click')
+    const preparing = handleSend.mock.results[0].value
+    expect(
+      (app.root.get('textarea').element as HTMLTextAreaElement).disabled,
+    ).toBe(false)
+    await app.root.get('textarea').setValue('Newer unsent body')
+    await selectFile(app.root, laterFile)
+    fileRead.resolve('data:text/plain;base64,b2xk')
+    await preparing
+    await settle()
+    expect(app.send).toHaveBeenCalledTimes(1)
+    expect(app.send.mock.calls[0][0].items[0]).toMatchObject({
+      textBody: 'Submitted body',
+      attachments: [{ filename: 'submitted.txt' }],
+    })
+    expect(
+      (app.root.get('textarea').element as HTMLTextAreaElement).value,
+    ).toBe('Newer unsent body')
+    expect(app.composer().stagedFiles).toEqual([laterFile])
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('retains the explicitly selected parent and Bcc-only attachment draft when new mail arrives', async () => {
+  const app = await mountedEmails()
+  try {
+    const original = app.roots[0].messages[0]
+    original.items[0].references = ['<ancestor@example.com>']
+    await settle()
+    await app.root.findAll('button[data-icon="reply"]')[0].trigger('click')
+    await app.root.get('[data-remove-recipient]').trigger('click')
+    await app.root.get('textarea').setValue('')
+    await app.root
+      .findAll('button')
+      .find(button => button.text() === 'emailThread.showBcc')!
+      .trigger('click')
+    const bcc = app.root.get('[data-testid="composer-bcc-row"] input')
+    await bcc.setValue('private@example.com')
+    await bcc.trigger('keydown.enter')
+    await app.root
+      .get('input[placeholder="emailThread.subjectPlaceholder"]')
+      .setValue('Deliberate subject')
+    const attachment = new File(['data'], 'only.txt')
+    await selectFile(app.root, attachment)
+    expect(app.composer().canSend).toBe(true)
+    app.roots[0].messages.push({
+      ...original,
+      payloadDigest: 'new-arrival',
+      receivedTime: 2,
+      items: [
+        {
+          ...original.items[0],
+          messageId: '<new-arrival@example.com>',
+          from: { address: 'new-sender@example.com' },
+          subject: 'New incoming subject',
+        },
+      ],
+    })
+    await settle()
+    expect(app.composer().activeInReplyTo).toBe('<parent-0@example.com>')
+    expect(app.composer().activeReferences).toEqual([
+      '<ancestor@example.com>',
+      '<parent-0@example.com>',
+    ])
+    expect(app.composer().toList).toEqual([])
+    expect(app.composer().bccList).toEqual(['private@example.com'])
+    expect(app.composer().subject).toBe('Deliberate subject')
+    expect(app.composer().stagedFiles).toEqual([attachment])
+    jest
+      .spyOn(app.composer(), 'readFileAsBase64')
+      .mockResolvedValue('data:text/plain;base64,ZGF0YQ==')
+    await app.composer().handleSend()
+    expect(app.send.mock.calls[0][0].items[0]).toMatchObject({
+      inReplyTo: '<parent-0@example.com>',
+      references: ['<ancestor@example.com>', '<parent-0@example.com>'],
+      to: [],
+      bcc: [{ address: 'private@example.com' }],
+      subject: 'Deliberate subject',
+    })
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('keeps an initially empty root draft independent of arriving mail until explicit Reply', async () => {
+  const app = await mountedEmails()
+  try {
+    await app.select(app.roots[2].id)
+    expect(app.composer().toList).toEqual(['fresh@example.com'])
+    expect(app.composer().activeInReplyTo).toBeUndefined()
+    await app.root.get('[data-remove-recipient]').trigger('click')
+    await app.root
+      .get('input[placeholder="emailThread.subjectPlaceholder"]')
+      .setValue('Fresh subject')
+    const original = app.roots[0].messages[0]
+    app.roots[2].messages.push({
+      ...original,
+      conversationId: app.roots[2].id,
+      payloadDigest: 'first-arrival',
+      items: [
+        { ...original.items[0], messageId: '<first-arrival@example.com>' },
+      ],
+    })
+    await settle()
+    expect(app.composer().activeInReplyTo).toBeUndefined()
+    expect(app.composer().activeReferences).toBeUndefined()
+    expect(app.composer().toList).toEqual([])
+    expect(app.composer().subject).toBe('Fresh subject')
+    await app.root.findAll('button[data-icon="reply"]')[0].trigger('click')
+    expect(app.composer().activeInReplyTo).toBe('<first-arrival@example.com>')
+    expect(app.composer().toList).toEqual(['alice@example.com'])
   } finally {
     app.root.unmount()
   }

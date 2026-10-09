@@ -41,9 +41,11 @@
         >
           P2P
         </q-badge>
-        <q-item-label lines="1" class="text-weight-medium text-body2 ellipsis">{{
-          subjectOrName
-        }}</q-item-label>
+        <q-item-label
+          lines="1"
+          class="text-weight-medium text-body2 ellipsis"
+          >{{ subjectOrName }}</q-item-label
+        >
         <account-badge
           v-if="effectiveAddress && !conversation?.topic"
           :address="effectiveAddress"
@@ -75,7 +77,11 @@
       </div>
       <q-item-label caption lines="2">{{ latestMessageBody }}</q-item-label>
     </q-item-section>
-    <q-item-section v-show="!compact" side class="column items-end justify-start q-gutter-xs">
+    <q-item-section
+      v-show="!compact"
+      side
+      class="column items-end justify-start q-gutter-xs"
+    >
       <q-item-label
         caption
         v-if="formattedTimestamp"

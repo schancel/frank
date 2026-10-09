@@ -90,6 +90,13 @@ export function getSolanaRpcUrls(params: {
   if (params.relayBaseUrl) {
     const cleanRelay = params.relayBaseUrl.replace(/\/+$/, '')
     urls.push(`${cleanRelay}/chain-rpc/${params.networkId}/rpc`)
+    // Public Solana RPC endpoints do not provide CORS headers for web app origins.
+    // In browser environments with a relay reverse proxy configured, do not fail over to
+    // endpoints that are guaranteed to trigger WebKit/Chromium CORS access control errors.
+    if (typeof window === 'undefined') {
+      urls.push(DEFAULT_SOLANA_RPC_URLS[params.networkId])
+    }
+    return urls
   }
   urls.push(DEFAULT_SOLANA_RPC_URLS[params.networkId])
   return urls

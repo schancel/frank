@@ -374,10 +374,22 @@ async fn log_request<B>(
     next: axum::middleware::Next<B>,
 ) -> axum::response::Response {
     let method = request.method().to_owned();
+    let is_pna_requested = request
+        .headers()
+        .get("access-control-request-private-network")
+        .and_then(|v| v.to_str().ok())
+        == Some("true");
     let path = safe_log_path(request.uri().path()).into_owned();
     let start = std::time::Instant::now();
 
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
+
+    if is_pna_requested {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("access-control-allow-private-network"),
+            HeaderValue::from_static("true"),
+        );
+    }
 
     tracing::event!(
         Level::INFO,
@@ -866,6 +878,7 @@ impl RegistryServer {
                         header::HeaderName::from_static(RPC_CORS_HEADERS[5]),
                         header::HeaderName::from_static(BITCOIN_PROXY_CORS_HEADERS[0]),
                         header::HeaderName::from_static("ngrok-skip-browser-warning"),
+                        header::HeaderName::from_static("access-control-request-private-network"),
                     ])
                     .expose_headers([
                         header::CONTENT_TYPE,

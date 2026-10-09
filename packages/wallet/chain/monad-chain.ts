@@ -346,6 +346,9 @@ export function getDefaultRelayBaseUrl(): string {
         }
       }
       const port = readEnv("FRANK_DEMO_RELAY_PORT") ?? "8098";
+      if (window.location.port !== port) {
+        return window.location.origin;
+      }
       return `http://127.0.0.1:${port}`;
     }
     if (!configured) return window.location.origin;

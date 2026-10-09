@@ -63,7 +63,10 @@ export function getEcashChronikUrls(params: {
   const upstream = DEFAULT_CHRONIK_UPSTREAMS[params.networkId];
   if (params.relayBaseUrl) {
     const cleanRelay = params.relayBaseUrl.replace(/\/+$/, "");
-    return [`${cleanRelay}/chain-rpc/${params.networkId}/chronik`, upstream];
+    if (typeof window === "undefined") {
+      return [`${cleanRelay}/chain-rpc/${params.networkId}/chronik`, upstream];
+    }
+    return [`${cleanRelay}/chain-rpc/${params.networkId}/chronik`];
   }
   return [upstream];
 }

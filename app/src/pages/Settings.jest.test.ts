@@ -129,10 +129,29 @@ async function waitForPath(router: Router, path: string) {
   return router.currentRoute.value.path
 }
 
-function mountSettings(router: Router, qMocks: Record<string, any> = {}) {
+function mountSettings(
+  router: Router,
+  qMocks: Record<string, any> = {},
+  renderNetworks = false,
+) {
   return shallowMount(SettingsPage, {
     global: {
       stubs: {
+        ...(renderNetworks
+          ? Object.fromEntries(
+              [
+                'q-page-container',
+                'q-page',
+                'q-card',
+                'q-tab-panels',
+                'q-tab-panel',
+                'q-list',
+                'q-item',
+                'q-item-section',
+                'q-item-label',
+              ].map(name => [name, { template: '<div><slot /></div>' }]),
+            )
+          : {}),
         QSplitter: {
           template: '<div><slot name="before" /><slot name="after" /></div>',
         },
@@ -461,6 +480,24 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
 
       wrapper.unmount()
     })
+
+    it.each([
+      ['testnet', 'Solana Devnet', 'walletPanel.monadTestnet'],
+      ['mainnet', 'Solana', 'walletPanel.monad'],
+    ])(
+      'shows configured settlement captions in %s mode',
+      async (mode, solanaName, monadKey) => {
+        mockSettingsStore.networkMode = mode
+        const router = await openDirectly('#/settings')
+        const wrapper = mountSettings(router, {}, true)
+        const captions = wrapper
+          .findAll('[caption]')
+          .map(caption => caption.text())
+        expect(captions).toContain(solanaName)
+        expect(captions).toContain(monadKey)
+        wrapper.unmount()
+      },
+    )
 
     it('renders the supported settlement networks list', async () => {
       const router = await openDirectly('#/settings')

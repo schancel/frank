@@ -23,6 +23,7 @@ import {
   loadMonadChainConfigFromEnv,
   type SolanaTokenAccount,
 } from '@frank/wallet/chain'
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { accountSession, accountStatus } from '../accounts/session'
 import { useBalance, APP_STATE_EVENT, BALANCE_POLL_MS } from './useBalance'
 import { useSafeOracleStore } from '../stores/oracle'
@@ -434,9 +435,13 @@ export function useChainBalance(chainRef: Ref<string> | string) {
 export function getChainTokens(chainName: string): TokenItem[] {
   if (chainName === 'solana') {
     const items: TokenItem[] = []
-    if (solanaState.value.loaded && solanaState.value.balance !== null) {
-      const isTestnet = activeChain.isTestnet
-      const nativeSymbol = isTestnet ? 'tSOL' : 'SOL'
+    const metadata = solanaScope && getChainRegistryEntry(solanaScope.networkId)
+    if (
+      solanaState.value.loaded &&
+      solanaState.value.balance !== null &&
+      metadata?.family === 'solana'
+    ) {
+      const nativeSymbol = metadata.unit
       const nativeBal = solanaState.value.formattedBalance
       const nativeNum = solanaState.value.balance
         ? Number(solanaState.value.balance) / 1e9

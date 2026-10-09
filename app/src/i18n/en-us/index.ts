@@ -392,6 +392,7 @@ export default {
     receiveXec: 'Receive XEC',
     sendTxec: 'Send tXEC',
     receiveTxec: 'Receive tXEC',
+    sendAsset: 'Send {unit}',
     sendSol: 'Send SOL',
     receiveSol: 'Receive SOL',
     sendTsol: 'Send tSOL',

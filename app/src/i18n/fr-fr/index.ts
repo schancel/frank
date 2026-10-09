@@ -398,6 +398,7 @@ export default {
     receiveXec: 'Recevoir des XEC',
     sendTxec: 'Envoyer des tXEC',
     receiveTxec: 'Recevoir des tXEC',
+    sendAsset: 'Envoyer des {unit}',
     sendSol: 'Envoyer des SOL',
     receiveSol: 'Recevoir des SOL',
     sendTsol: 'Envoyer des tSOL',

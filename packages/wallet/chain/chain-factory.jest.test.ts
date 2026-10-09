@@ -201,7 +201,7 @@ describe("createChain", () => {
     const chain = await createChain({
       family: "solana",
       config: {
-        networkId: "solana-test",
+        networkId: "solana-devnet",
         genesisHash: "solana-test-genesis",
         nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
         connection,
@@ -251,6 +251,7 @@ describe("createChain", () => {
       family: "solana",
       config: {
         networkId: "mislabeled-solana",
+        chainIdentifier: "solana-devnet",
         genesisHash: "different-genesis",
         connection,
         deriveSigner: () => signer,
@@ -273,7 +274,7 @@ describe("createChain", () => {
     await expect(
       otherNetwork.nativeTransfers.getBalance({ wallet })
     ).rejects.toThrow(
-      "Expected Solana network solana-mainnet, got solana-test"
+      "Expected Solana network solana-mainnet, got solana-devnet"
     );
     await expect(
       otherNetwork.nativeTransfers.send({
@@ -282,7 +283,7 @@ describe("createChain", () => {
         value: 7n,
       })
     ).rejects.toThrow(
-      "Expected Solana network solana-mainnet, got solana-test"
+      "Expected Solana network solana-mainnet, got solana-devnet"
     );
     expect(sent).toHaveLength(1);
   });
@@ -409,8 +410,8 @@ describe("createChain", () => {
     });
     const foreignWallet = {
       family: "solana" as const,
-      chainIdentifier: "solana-test",
-      networkId: "solana-test",
+      chainIdentifier: "solana-devnet",
+      networkId: "solana-devnet",
       identity: {
         address: { raw: "foreign" },
         displayAddress: "foreign",
@@ -433,7 +434,7 @@ describe("createChain", () => {
     const config: import("./chain-factory").ChainFactoryConfig = {
       family: "solana",
       config: {
-        networkId: "solana-test",
+        networkId: "solana-devnet",
         genesisHash: "solana-test-genesis",
         connection: {
           getGenesisHash: async () => "solana-test-genesis",

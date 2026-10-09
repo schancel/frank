@@ -472,11 +472,11 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     await wrapper.get('[data-test="send-review-button"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-test="review-network"]').text()).toBe(
-      'Solana Testnet',
+      'Solana Devnet',
     )
     expect(wrapper.get('[data-test="review-recipient"]').text()).toBe(recipient)
-    expect(wrapper.get('[data-test="review-amount"]').text()).toBe('0.001 tSOL')
-    expect(wrapper.get('[data-test="review-fee"]').text()).toBe('0.000005 tSOL')
+    expect(wrapper.get('[data-test="review-amount"]').text()).toBe('0.001 dSOL')
+    expect(wrapper.get('[data-test="review-fee"]').text()).toBe('0.000005 dSOL')
     expect(mockSend).not.toHaveBeenCalled()
     // A route selection or draft change cannot change the reviewed authorization.
     mockRoute.query = { chainIdentifier: 'monad-testnet' }

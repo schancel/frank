@@ -65,7 +65,8 @@ export interface MessageStore {
     options?: { advanceCursor?: boolean }
   ): Promise<void>;
   deleteMessage(payloadDigest: string): Promise<void>;
-  mostRecentMessageTime(newLastServerTime?: number): Promise<number>;
+  /** Read-only server timestamp; advancement belongs to saveMessage. */
+  mostRecentMessageTime(): Promise<number>;
   /**
    * Recipient-scoped mailbox frontier, as an INCLUSIVE relay timestamp: the highest durable
    * receipt time this store holds evidence for, so a poll that resumes here re-fetches that
@@ -91,6 +92,7 @@ export interface MessageStore {
     payloadDigests: string[],
     suppressions: RelayDeliverySuppression[]
   ): Promise<void>;
+  /** May persist a newly observed time for an existing unresolved suppression anchor. */
   suppressedRelayReceipts(
     recipientAddress: string,
     receipts: RelayReceiptIdentity[]

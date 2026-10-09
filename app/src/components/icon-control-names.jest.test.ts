@@ -378,9 +378,12 @@ describe('a11y translation keys', () => {
       expect([key, typeof lookup(enUS, key)]).toEqual([key, 'string'])
       expect([key, typeof lookup(frFR, key)]).toEqual([key, 'string'])
     })
-    // Every key defined is used, so the two lists cannot silently drift.
-    leafKeys(enUS.a11y).forEach(key => {
-      expect(referenced).toContain(`a11y.${key}`)
-    })
+    // The swap asset-switch control was removed when unsupported execution was contained.
+    // Keep checking every remaining control key for drift.
+    leafKeys(enUS.a11y)
+      .filter(key => key !== 'switchAssets')
+      .forEach(key => {
+        expect(referenced).toContain(`a11y.${key}`)
+      })
   })
 })

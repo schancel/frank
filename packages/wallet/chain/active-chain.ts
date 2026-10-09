@@ -227,7 +227,28 @@ export type DirectMessageAttemptStatus =
   | "dead"
   | "unknown";
 
+/** Set by the wallet on the error of a refused `DirectMessageClient.send`; read it through
+ * {@link isDirectMessageNotAttempted}. */
+export const directMessageNotAttempted: unique symbol = Symbol(
+  "frank.directMessageNotAttempted"
+);
+
+/** True only for the rejection of a `DirectMessageClient.send` call that the wallet refused
+ * before attempting anything: this call created no payment intent, moved no funds and exposed
+ * nothing for this message; the same message may be sent again. False says nothing either way:
+ * the send may have funded, reserved, journaled or submitted something, and must be reconciled
+ * rather than repeated. Ask about a rejection when it is caught, not later. */
+export function isDirectMessageNotAttempted(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    Reflect.get(error, directMessageNotAttempted) === true
+  );
+}
+
 export interface DirectMessageClient {
+  /** A rejection may carry the wallet's own not-attempted label; see
+   * {@link isDirectMessageNotAttempted}. Without it, assume the send may have had an effect. */
   send(params: {
     wallet: WalletHandle;
     recipient: ChainAddress;

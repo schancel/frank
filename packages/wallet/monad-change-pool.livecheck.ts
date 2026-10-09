@@ -1,8 +1,8 @@
 /**
  * Standalone, manually-run proof for `monad-change-keyring.ts` / `monad-change-pool.ts` /
- * `monad-change-recovery.ts` / `storage/*-change-pool-*.ts` (ticket #36), in the same spirit as
+ * `storage/*-change-pool-*.ts` (ticket #36), in the same spirit as
  * `monad-account-pool.livecheck.ts` (see that file's header for the convention this follows).
- * `monad-change-pool.jest.test.ts` / `monad-change-recovery.jest.test.ts` cover the same scenarios
+ * `monad-change-pool.jest.test.ts` covers the same scenarios
  * (and more, with proper mocking) via jest, which -- unlike when the #14/#34 livechecks were first
  * written -- is now actually installed and passing in this repo (`yarn test:unit:ci`); this
  * livecheck is kept anyway, matching the established convention, as an independent, jest-free
@@ -11,8 +11,7 @@
  * No network access: sweeps are driven by a `MonadAccountTxSigner` against a stubbed
  * `JsonRpcProvider._perform` (same technique `monad-account-pool.livecheck.ts` uses), and the
  * `level` store checks use a real temp directory on disk (proving cross-"restart" persistence,
- * never touching the network). The bisection-recovery proof runs entirely against an in-memory
- * simulated chain (a plain object satisfying `getTransactionCount`/`getBalance`).
+ * never touching the network).
  *
  * Usage (from `app/`):
  *   node_modules/.bin/tsc --module commonjs --target es2020 --esModuleInterop --resolveJsonModule \
@@ -20,7 +19,6 @@
  *     src/cashweb/wallet/monad-account-tx.ts src/cashweb/wallet/monad-hd-keyring.ts \
  *     src/cashweb/wallet/monad-account-pool.ts src/cashweb/wallet/monad-account-lease.ts \
  *     src/cashweb/wallet/monad-change-keyring.ts src/cashweb/wallet/monad-change-pool.ts \
- *     src/cashweb/wallet/monad-change-recovery.ts \
  *     src/cashweb/wallet/storage/sub-account-pool-storage.ts \
  *     src/cashweb/wallet/storage/level-sub-account-pool-store.ts \
  *     src/cashweb/wallet/storage/change-pool-storage.ts \
@@ -44,11 +42,6 @@ import {
   MonadChangePool,
   releaseLeaseAndSweepChange,
 } from './monad-change-pool'
-import {
-  DEFAULT_MAX_CHANGE_INDEX_SEARCH,
-  isChangeIndexUsed,
-  recoverNextChangeIndex,
-} from './monad-change-recovery'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadSubAccountPool } from './monad-account-pool'
 import { SubAccountLeaseManager } from './monad-account-lease'
@@ -355,78 +348,6 @@ async function checkSetNextUnusedIndexGuard() {
   assertEqual(pool.nextUnusedIndex(), 0, 'force allows the rewind')
 }
 
-async function checkBisectionRecovery() {
-  console.log(
-    '\n== monad-change-recovery: bisection reconstructs the boundary against a simulated chain ==',
-  )
-  const keyring = MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC)
-
-  function makeSimulatedChain(boundary: number): Provider {
-    return {
-      async getTransactionCount(address: string) {
-        for (let i = 0; i < boundary; i++) {
-          if (
-            keyring.deriveChangeAccount(i).address.toLowerCase() ===
-            address.toLowerCase()
-          ) {
-            return i % 2 === 0 ? 1 : 0 // even used indices: nonce > 0 (spent out)
-          }
-        }
-        return 0
-      },
-      async getBalance(address: string) {
-        for (let i = 0; i < boundary; i++) {
-          if (
-            keyring.deriveChangeAccount(i).address.toLowerCase() ===
-            address.toLowerCase()
-          ) {
-            return i % 2 === 0 ? BigInt(0) : BigInt(1) // odd used indices: balance > 0 (still held)
-          }
-        }
-        return BigInt(0)
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any as Provider
-  }
-
-  assertEqual(
-    await recoverNextChangeIndex({ keyring, provider: makeSimulatedChain(0) }),
-    0,
-    'recovers 0 for a wallet with no change history',
-  )
-  for (const boundary of [1, 5, 8, 17, 50]) {
-    const provider = makeSimulatedChain(boundary)
-    const recovered = await recoverNextChangeIndex({ keyring, provider })
-    assertEqual(recovered, boundary, `recovers boundary=${boundary} exactly`)
-    assertTrue(
-      !(await isChangeIndexUsed(
-        provider,
-        keyring.deriveChangeAccount(recovered).address,
-      )),
-      `recovered index ${recovered} is genuinely unused`,
-    )
-  }
-
-  let threw = false
-  try {
-    await recoverNextChangeIndex({
-      keyring,
-      provider: makeSimulatedChain(100_000),
-      maxIndex: 8,
-    })
-  } catch {
-    threw = true
-  }
-  assertTrue(
-    threw,
-    'a saturated search within maxIndex throws rather than guessing',
-  )
-  assertTrue(
-    DEFAULT_MAX_CHANGE_INDEX_SEARCH > 1000,
-    'default search cap is generously sized',
-  )
-}
-
 async function main() {
   await checkDerivationDeterminismAndBranchSeparation()
   await checkDustThreshold()
@@ -434,9 +355,8 @@ async function main() {
   await checkLeaseReleaseWiring()
   await checkLevelStorePersistsAcrossRestart()
   await checkSetNextUnusedIndexGuard()
-  await checkBisectionRecovery()
   console.log(
-    '\nAll monad-change-pool/monad-change-recovery livecheck assertions passed.',
+    '\nAll monad-change-pool livecheck assertions passed.',
   )
 }
 

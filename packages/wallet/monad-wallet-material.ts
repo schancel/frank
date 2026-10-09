@@ -32,7 +32,6 @@ import type { HDSeed } from './chain/active-chain'
 import { MonadIdentity, MONAD_IDENTITY_DERIVATION_PATH } from './monad-identity'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadChangeKeyring } from './monad-change-keyring'
-import { MonadAddressInventory } from './monad-address-inventory'
 import { bip32MasterFromDomainRoot } from './bip32-domain-root'
 import { deriveRoleLeaves, matchLocalRolePoints } from '../role-keys/src'
 import type { RolePoint } from '../role-keys/src'
@@ -577,8 +576,6 @@ export interface MonadWalletMaterial {
   readonly mainAccount: Wallet
   readonly keyring: MonadHdKeyring
   readonly changeKeyring: MonadChangeKeyring
-  /** Unified HD address inventory tracking spend and change branches (Ticket #924). */
-  readonly inventory?: MonadAddressInventory
   readonly fingerprint: string
   /** Owned copy only; never used for legacy identity-based encryption. */
   readonly messagingRoot?: Uint8Array
@@ -670,10 +667,6 @@ export function createMonadWalletMaterial(
     )
     const keyring = MonadHdKeyring.fromDomainRoot(evm)
     const changeKeyring = MonadChangeKeyring.fromDomainRoot(evm)
-    const inventory = MonadAddressInventory.fromKeyrings({
-      spendKeyring: keyring,
-      changeKeyring,
-    })
     const material: MonadWalletMaterial = {
       identity,
       // Existing native main-account path, now solely below the EVM spending root.
@@ -684,7 +677,6 @@ export function createMonadWalletMaterial(
       ),
       keyring,
       changeKeyring,
-      inventory,
       fingerprint,
       messagingRoot: messaging.bytes,
       canonicalRoles,
@@ -718,16 +710,11 @@ export function legacyMnemonicWalletMaterial(
       seed.mnemonic,
       seed.passphrase,
     )
-    const inventory = MonadAddressInventory.fromKeyrings({
-      spendKeyring: keyring,
-      changeKeyring,
-    })
     return {
       identity,
       mainAccount: new Wallet(node.privateKey),
       keyring,
       changeKeyring,
-      inventory,
       fingerprint: `bip39:${node.address.toLowerCase()}`,
       dispose() {},
     }
@@ -738,16 +725,11 @@ export function legacyMnemonicWalletMaterial(
     seed.mnemonic,
     seed.passphrase,
   )
-  const inventory = MonadAddressInventory.fromKeyrings({
-    spendKeyring: keyring,
-    changeKeyring,
-  })
   return {
     identity,
     mainAccount: new Wallet(identity.toPrivateKeyHex()),
     keyring,
     changeKeyring,
-    inventory,
     fingerprint: 'legacy',
     dispose() {},
   }

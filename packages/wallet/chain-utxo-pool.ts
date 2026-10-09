@@ -82,12 +82,6 @@ export interface ChainUtxoCoin {
   readonly index?: number
 }
 
-// Aliases for backwards compatibility with AccountUtxoPool
-export type AccountChain = string
-export type AccountUtxoOrigin = ChainUtxoOrigin
-export type AccountUtxoStatus = ChainUtxoStatus
-export type AccountUtxo = ChainUtxoCoin
-
 export interface SelectCoinsParams {
   readonly chain: string
   readonly family?: ChainFamily
@@ -1777,7 +1771,7 @@ export class ChainUtxoPool {
 
     if (candidates.length === 0) {
       throw new Error(
-        `Insufficient funds in AccountUtxoPool for ${chain}: no spendable coins found`,
+        `Insufficient funds in ChainUtxoPool for ${chain}: no spendable coins found`,
       )
     }
 
@@ -1805,7 +1799,7 @@ export class ChainUtxoPool {
           )
         }
         throw new Error(
-          `Insufficient funds in AccountUtxoPool for ${chain}: no spendable coins found within ancestor limit`,
+          `Insufficient funds in ChainUtxoPool for ${chain}: no spendable coins found within ancestor limit`,
         )
       }
 
@@ -1841,7 +1835,7 @@ export class ChainUtxoPool {
 
       if (totalSelectedWei < neededWei) {
         throw new Error(
-          `Insufficient funds in AccountUtxoPool for ${chain}: needed ${neededWei} wei, available ${totalSelectedWei} wei across ${candidates.length} coins`,
+          `Insufficient funds in ChainUtxoPool for ${chain}: needed ${neededWei} wei, available ${totalSelectedWei} wei across ${candidates.length} coins`,
         )
       }
     }
@@ -1881,29 +1875,6 @@ export class ChainUtxoPool {
       totalSelectedWei,
       changeWei,
       suggestedChangeSplits,
-    }
-  }
-
-  /**
-   * Executes atomic coin selection and state advance with automatic rollback on error.
-   */
-  async withAtomicSelection<T>(
-    params: SelectCoinsParams,
-    action: (selection: CoinSelectionResult) => Promise<T>,
-  ): Promise<{ result: T; selection: CoinSelectionResult }> {
-    const selection = this.selectCoins(params)
-    for (const coin of selection.selected) {
-      this.markPending(coin.id)
-    }
-
-    try {
-      const result = await action(selection)
-      return { result, selection }
-    } catch (err) {
-      for (const coin of selection.selected) {
-        this.releasePending(coin.id)
-      }
-      throw err
     }
   }
 
@@ -2835,9 +2806,4 @@ export class ChainUtxoView {
     return Array.from(this.stagedCoinsById.values())
   }
 }
-
-/**
- * Backwards compatibility export alias for AccountUtxoPool.
- */
-export const AccountUtxoPool = ChainUtxoPool
 

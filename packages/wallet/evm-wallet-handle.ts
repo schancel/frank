@@ -15,7 +15,6 @@ import type { MonadCanonicalRoleOwner } from "./monad-wallet-material";
 import type { MonadStealthKeyring } from "./monad-stealth";
 import type { MonadIdentity } from "./monad-identity";
 import type { AccountHygieneEngine } from "./account-hygiene";
-import type { MonadAddressInventory } from "./monad-address-inventory";
 import type { ChainUtxoPool } from "./chain-utxo-pool";
 import type { WalletHandle, NativeWalletHandle } from "./chain/active-chain";
 
@@ -30,8 +29,6 @@ export interface EvmWalletHandle {
   walletOperationAdmission?: MonadWalletOperationAdmission;
   /** Autonomous account hygiene and lazy dirty sweeper (Ticket #925). Encapsulated beneath the wallet API. */
   hygieneEngine?: AccountHygieneEngine<string>;
-  /** Unified HD address inventory tracking spend and change branches (Ticket #924). */
-  inventory?: MonadAddressInventory;
   /** Unified in-memory UTXO and spendable account pool (Issue #1184). */
   accountUtxoPool?: ChainUtxoPool;
   chainUtxoPool?: ChainUtxoPool;

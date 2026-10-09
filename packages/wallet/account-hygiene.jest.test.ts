@@ -18,7 +18,7 @@ import { MonadHdKeyring } from './monad-hd-keyring'
 import { SolanaHdKeyring, SolanaChangeKeyring } from './ed25519-hd-keyring'
 import { MonadAccountTxSigner } from './monad-account-tx'
 import { TransactionBundleCapability } from './transaction-bundle-wallet'
-import { AccountUtxoPool } from './account-utxo-pool'
+import { ChainUtxoPool } from './chain-utxo-pool'
 
 const TEST_MNEMONIC =
   'announce room limb pattern dry unit scale effort smooth jazz weasel alcohol'
@@ -202,8 +202,8 @@ describe('Account Hygiene & Dirty Account Sweeper (Ticket #925)', () => {
       jest.useRealTimers()
     })
 
-    it('integrates with AccountUtxoPool to resolve signers, sweep dirty accounts, and register change', async () => {
-      const pool = new AccountUtxoPool()
+    it('integrates with ChainUtxoPool to resolve signers, sweep dirty accounts, and register change', async () => {
+      const pool = new ChainUtxoPool()
       const dirtySub = hdKeyring.deriveSubAccount(7)
       const dirtyUtxo = pool.registerSubAccount({
         chain: 'monad',

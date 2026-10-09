@@ -178,36 +178,114 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       }
     })
 
-    it('supports atomic selection with rollback on broadcast error', async () => {
-      const sub = pool.registerSubAccount({
+    // Moved from the deleted alias-pool suite (the alias module is gone; the behaviour is
+    // ChainUtxoPool's own). Replaces the test of the removed atomic-selection helper, which
+    // had no caller outside this suite.
+    it('immediately marks a spent coin as pending and keeps it out of selection', () => {
+      const utxo = pool.registerSubAccount({
         chain: 'monad',
         address: wallet1.address,
         privateKey: wallet1.privateKey,
         balanceWei: 100_000n,
       })
 
-      expect(pool.getCleanCoins('monad')).toHaveLength(1)
+      expect(pool.getCleanUtxos('monad')).toHaveLength(1)
 
-      // Simulate a failure inside atomic selection
-      await expect(
-        pool.withAtomicSelection(
-          {
-            chain: 'monad',
-            targetAmountWei: 50_000n,
-          },
-          async selection => {
-            expect(selection.selected).toHaveLength(1)
-            // Coin is pending inside block
-            expect(pool.getCleanCoins('monad')).toHaveLength(0)
-            expect(pool.getPendingCoins('monad')).toHaveLength(1)
-            throw new Error('Broadcast failed')
-          },
-        ),
-      ).rejects.toThrow('Broadcast failed')
+      const pending = pool.markPending(utxo.id)
+      expect(pending.status).toBe('pending')
 
-      // Rollback restores coin to clean
-      expect(pool.getCleanCoins('monad')).toHaveLength(1)
-      expect(pool.getPendingCoins('monad')).toHaveLength(0)
+      expect(pool.getCleanUtxos('monad')).toHaveLength(0)
+      expect(pool.getPendingUtxos('monad')).toHaveLength(1)
+
+      expect(() => {
+        pool.selectCoins({ chain: 'monad', targetAmountWei: 50_000n })
+      }).toThrow(/Insufficient funds/)
+    })
+
+    it('rolls back pending status to clean if broadcast fails', () => {
+      const utxo = pool.registerSubAccount({
+        chain: 'monad',
+        address: wallet1.address,
+        privateKey: wallet1.privateKey,
+        balanceWei: 100_000n,
+      })
+
+      pool.markPending(utxo.id)
+      expect(pool.getCleanUtxos('monad')).toHaveLength(0)
+
+      pool.releasePending(utxo.id)
+      expect(pool.getCleanUtxos('monad')).toHaveLength(1)
+      expect(pool.getPendingUtxos('monad')).toHaveLength(0)
+    })
+
+    it('permanently marks a confirmed spend as spent and advances the nonce', () => {
+      const utxo = pool.registerSubAccount({
+        chain: 'monad',
+        address: wallet1.address,
+        privateKey: wallet1.privateKey,
+        balanceWei: 100_000n,
+      })
+
+      pool.markPending(utxo.id)
+      const spent = pool.markSpent(utxo.id, 1)
+
+      expect(spent.status).toBe('spent')
+      expect(spent.nonce).toBe(1)
+      expect(spent.balanceWei).toBe(0n)
+
+      expect(pool.getCleanUtxos('monad')).toHaveLength(0)
+      expect(pool.getPendingUtxos('monad')).toHaveLength(0)
+    })
+
+    it('identifies dirty coins with nonce > 0 and remaining balance', () => {
+      const utxo = pool.registerSubAccount({
+        chain: 'monad',
+        address: wallet1.address,
+        privateKey: wallet1.privateKey,
+        balanceWei: 500_000n,
+      })
+
+      pool.updateBalanceAndNonce({
+        id: utxo.id,
+        balanceWei: 350_000n,
+        nonce: 1,
+      })
+
+      const dirty = pool.getDirtyUtxos('monad')
+      expect(dirty).toHaveLength(1)
+      expect(dirty[0].address.toLowerCase()).toBe(wallet1.address.toLowerCase())
+      expect(dirty[0].nonce).toBe(1)
+    })
+
+    it('generates a sweep plan for a dirty coin that conserves the sweepable balance', () => {
+      const utxo = pool.registerSubAccount({
+        chain: 'monad',
+        address: wallet1.address,
+        privateKey: wallet1.privateKey,
+        balanceWei: 1_000_000n,
+      })
+
+      pool.updateBalanceAndNonce({
+        id: utxo.id,
+        balanceWei: 800_000n,
+        nonce: 2,
+      })
+
+      const plan = pool.createSweepPlan({
+        chain: 'monad',
+        dirtyUtxoId: utxo.id,
+        changeAddresses: [wallet2.address, wallet3.address],
+        minFeeWei: 21_000n,
+      })
+
+      expect(plan.dirtyUtxo.id).toBe(utxo.id)
+      expect(plan.totalSweepableWei).toBe(800_000n - 21_000n)
+      expect(plan.changeOutputs.length).toBeGreaterThanOrEqual(1)
+      const totalPlanned = plan.changeOutputs.reduce(
+        (sum, o) => sum + o.amountWei,
+        0n,
+      )
+      expect(totalPlanned).toBe(plan.totalSweepableWei)
     })
 
     it('creates multi-UTXO batch sweep plans enforcing healthy non-dust output thresholds', () => {

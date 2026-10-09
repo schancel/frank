@@ -1,7 +1,6 @@
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { Provider } from 'ethers'
 import {
   TokenRegistry,
   tokenRegistry,
@@ -15,11 +14,6 @@ import {
   serializeTokenUtxo,
   deserializeTokenUtxo,
 } from './token-utxo-store'
-import {
-  checkTokenBalanceOnIndex,
-  isChangeIndexUsed,
-  ERC20_BALANCE_OF_SELECTOR,
-} from './monad-change-recovery'
 
 describe('TokenRegistry (ticket #1152)', () => {
   it('whitelists standard assets: USDC, USDT, AVU, and native coins MON, SOL, ETH, XEC', () => {
@@ -291,56 +285,5 @@ describe('TokenUtxoStore (ticket #1153)', () => {
     expect(balance).toBe(100_000_000n)
 
     await store2.close()
-  })
-})
-
-describe('monad-change-recovery token balance discovery', () => {
-  it('discovers change account use when native balance and nonce are 0, but whitelisted token balance > 0', async () => {
-    const address = '0x1234567890123456789012345678901234567890'
-    const usdcAddress = '0xf817257fed379853cDe0fa4F97AB987181B1E5Ea'
-
-    // Mock Provider with nonce = 0, native balance = 0, but token balance = 50 USDC
-    const mockProvider = {
-      async getTransactionCount(_addr: string): Promise<number> {
-        return 0
-      },
-      async getBalance(_addr: string): Promise<bigint> {
-        return 0n
-      },
-      async call(tx: { to: string; data: string }): Promise<string> {
-        if (tx.to.toLowerCase() === usdcAddress.toLowerCase()) {
-          // Return 50_000_000 encoded as 32-byte hex
-          return '0x' + 50_000_000n.toString(16).padStart(64, '0')
-        }
-        return '0x' + '0'.repeat(64)
-      },
-    } as unknown as Provider
-
-    const tokenBal = await checkTokenBalanceOnIndex(mockProvider, address, [
-      usdcAddress,
-    ])
-    expect(tokenBal).toBe(50_000_000n)
-
-    const isUsed = await isChangeIndexUsed(mockProvider, address, [usdcAddress])
-    expect(isUsed).toBe(true)
-  })
-
-  it('marks index as unused when nonce=0, native balance=0, and all token balances=0', async () => {
-    const address = '0x1234567890123456789012345678901234567890'
-
-    const mockProvider = {
-      async getTransactionCount(_addr: string): Promise<number> {
-        return 0
-      },
-      async getBalance(_addr: string): Promise<bigint> {
-        return 0n
-      },
-      async call(_tx: { to: string; data: string }): Promise<string> {
-        return '0x' + '0'.repeat(64)
-      },
-    } as unknown as Provider
-
-    const isUsed = await isChangeIndexUsed(mockProvider, address)
-    expect(isUsed).toBe(false)
   })
 })

@@ -159,7 +159,7 @@ describe('Privacy Graph Analysis & Entropy Simulation (Ticket #928)', () => {
       expect(stealthTxs.length).toBe(5)
 
       const recipientSpendSecret =
-        frankSimulation.targetInventory!.spendKeyring.deriveSubAccount(
+        frankSimulation.targetSpendKeyring!.deriveSubAccount(
           0,
         ).privateKey
 

@@ -46,14 +46,8 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
         .fn()
         .mockReturnValue({ affectedIndices: [0, 1] }),
     };
-    const mockEvmInventory = {
-      processSyncTransaction: jest
-        .fn()
-        .mockReturnValue({ affectedAccounts: ["0x123"] }),
-    };
     const evmWallet = {
       pool: mockEvmPool,
-      inventory: mockEvmInventory,
     };
 
     const mockUtxoWallet = {
@@ -81,16 +75,13 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
 
     expect(resolver.getWalletForChain).toHaveBeenCalledWith("monad-testnet");
     expect(mockEvmPool.processSyncTransaction).toHaveBeenCalledWith(item);
-    expect(mockEvmInventory.processSyncTransaction).toHaveBeenCalledWith(item);
     expect(mockUtxoWallet.deleteUtxo).not.toHaveBeenCalled();
     expect(res.affectedIndices).toEqual([0, 1]);
-    expect(res.affectedAccounts).toEqual(["0x123"]);
   });
 
   it("routes a Bitcoin / eCash WalletSyncItem ('xec-mainnet') to the UTXO wallet mock", async () => {
     const mockEvmWallet = {
       pool: { processSyncTransaction: jest.fn() },
-      inventory: { processSyncTransaction: jest.fn() },
     };
 
     const mockUtxoWallet = {
@@ -181,12 +172,13 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
   });
 
   it("routes Solana WalletSyncItem to the Solana wallet mock", async () => {
-    const mockSolanaInventory = {
-      markSpent: jest.fn(),
-      consumeNonce: jest.fn(),
+    const mockSolanaPool = {
+      processSyncTransaction: jest
+        .fn()
+        .mockResolvedValue({ affectedIndices: [10] }),
     };
     const mockSolanaWallet = {
-      inventory: mockSolanaInventory,
+      pool: mockSolanaPool,
     };
 
     const resolver: MultiChainWalletResolver = {
@@ -207,12 +199,8 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
     const res = await routeWalletSyncItem(item, { resolver });
 
     expect(resolver.getWalletForChain).toHaveBeenCalledWith("solana-mainnet");
-    expect(mockSolanaInventory.markSpent).toHaveBeenCalledWith("SolAddr123");
-    expect(mockSolanaInventory.consumeNonce).toHaveBeenCalledWith(
-      "SolAddr123",
-      10
-    );
-    expect(res.affectedAccounts).toEqual(["SolAddr123"]);
+    expect(mockSolanaPool.processSyncTransaction).toHaveBeenCalledWith(item);
+    expect(res.affectedIndices).toEqual([10]);
   });
 
   it("falls back to fallbackWallet if resolver returns undefined", async () => {
@@ -325,9 +313,10 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
 
   it("routes supported Sepolia without dynamic registration", async () => {
     const mockEvmWallet = {
-      inventory: {
-        markSpent: jest.fn(),
-        consumeNonce: jest.fn(),
+      pool: {
+        processSyncTransaction: jest
+          .fn()
+          .mockResolvedValue({ affectedIndices: [5] }),
       },
     };
 
@@ -349,14 +338,8 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
     const res = await routeWalletSyncItem(item, { resolver });
 
     expect(resolver.getWalletForChain).toHaveBeenCalledWith("ethereum-sepolia");
-    expect(mockEvmWallet.inventory.markSpent).toHaveBeenCalledWith(
-      "0xrollupaddr"
-    );
-    expect(mockEvmWallet.inventory.consumeNonce).toHaveBeenCalledWith(
-      "0xrollupaddr",
-      5
-    );
-    expect(res.affectedAccounts).toEqual(["0xrollupaddr"]);
+    expect(mockEvmWallet.pool.processSyncTransaction).toHaveBeenCalledWith(item);
+    expect(res.affectedIndices).toEqual([5]);
   });
   // On the base the dispatcher catches the pool's error and the route resolves as if applied.
   it("surfaces the pool's refusal to the caller that awaits the route (#1235)", async () => {
@@ -364,11 +347,9 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
       readonly code = "no-applier";
     }
     const refusal = new PoolRefusal("refused");
-    const inventory = { processSyncTransaction: jest.fn() };
     const evmWallet = {
       chainIdentifier: "monad-testnet",
       pool: { processSyncTransaction: jest.fn().mockRejectedValue(refusal) },
-      inventory,
     };
     const resolver: MultiChainWalletResolver = {
       getWalletForChain: jest.fn().mockResolvedValue(evmWallet),
@@ -383,7 +364,6 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
     };
 
     await expect(routeWalletSyncItem(item, { resolver })).rejects.toBe(refusal);
-    expect(inventory.processSyncTransaction).not.toHaveBeenCalled();
   });
 
   // On the base a Sepolia item routed to the one EVM wallet is applied to it.
@@ -391,7 +371,6 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
     const evmWallet = {
       chainIdentifier: "monad-testnet",
       pool: { processSyncTransaction: jest.fn() },
-      inventory: { processSyncTransaction: jest.fn() },
     };
     const resolver: MultiChainWalletResolver = {
       getWalletForChain: jest.fn().mockResolvedValue(evmWallet),
@@ -411,6 +390,5 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
       }
     );
     expect(evmWallet.pool.processSyncTransaction).not.toHaveBeenCalled();
-    expect(evmWallet.inventory.processSyncTransaction).not.toHaveBeenCalled();
   });
 });

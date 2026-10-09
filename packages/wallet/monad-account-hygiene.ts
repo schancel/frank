@@ -25,14 +25,14 @@ import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
 import { estimateDustThresholdWei } from './monad-change-pool'
 import { computeGeometricRadixChangeSplits } from './monad-change-distribution'
-import type { AccountUtxoPool } from './account-utxo-pool'
+import type { ChainUtxoPool } from './chain-utxo-pool'
 
 export interface MonadAccountHygieneParams {
   readonly provider: Provider
   readonly httpClient: MonadTxSubmitter
   readonly changeKeyring: MonadChangeKeyring
   readonly hdKeyring?: MonadHdKeyring
-  readonly accountUtxoPool?: AccountUtxoPool
+  readonly accountUtxoPool?: ChainUtxoPool
   readonly signerSupplier?: (
     address: string,
   ) => Promise<MonadAccountTxSigner | null> | (MonadAccountTxSigner | null)
@@ -45,7 +45,7 @@ export class MonadAccountHygieneEngine implements AccountHygieneEngine<string> {
   private readonly httpClient: MonadTxSubmitter
   private readonly changeKeyring: MonadChangeKeyring
   private readonly hdKeyring?: MonadHdKeyring
-  private readonly accountUtxoPool?: AccountUtxoPool
+  private readonly accountUtxoPool?: ChainUtxoPool
   private readonly signerSupplier?: (
     address: string,
   ) => Promise<MonadAccountTxSigner | null> | (MonadAccountTxSigner | null)

@@ -241,7 +241,10 @@ describe('Wallet detail page (#570)', () => {
     expect(addressCopiedNotify).toHaveBeenCalledTimes(1)
 
     await wrapper.get('[data-testid="wallet-send-action"]').trigger('click')
-    expect(openPage).toHaveBeenCalledWith(expect.anything(), '/send')
+    expect(openPage).toHaveBeenCalledWith(
+      expect.anything(),
+      '/send?chainIdentifier=monad-testnet',
+    )
 
     await wrapper
       .get('[data-testid="wallet-contact-send-action"]')
@@ -387,7 +390,9 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it('renders Solana wallet details and address when selected', async () => {
+  it('enables native Send for the funded Solana wallet and routes its canonical network', async () => {
+    mockChainBalance.loaded.value = true
+    mockChainBalance.formattedBalance.value = '15 tSOL'
     mockRoute.value = { query: { chain: 'solana' }, path: '/wallet' }
     const wrapper = mountWallet()
     await flush()
@@ -401,9 +406,7 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
       'walletPanel.solanaTestnet',
     )
-    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
-      'walletPanel.zeroTsol',
-    )
+    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe('15 tSOL')
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
     ).toBe('AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9')
@@ -413,7 +416,12 @@ describe('Wallet detail page (#570)', () => {
 
     const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
     expect(sendBtn.text()).toBe('walletPanel.sendTsol')
-    expect(sendBtn.attributes('disabled')).toBeDefined()
+    expect(sendBtn.attributes('disabled')).toBeUndefined()
+    await sendBtn.trigger('click')
+    expect(openPage).toHaveBeenCalledWith(
+      expect.anything(),
+      '/send?chainIdentifier=solana-devnet',
+    )
 
     wrapper.unmount()
   })

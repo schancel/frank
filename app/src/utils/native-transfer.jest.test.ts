@@ -1,5 +1,21 @@
 import { activeChain } from '@frank/wallet/chain'
-import { parseNativeTransferInput } from './native-transfer'
+import {
+  nativeSendChainIdentifier,
+  parseNativeTransferInput,
+} from './native-transfer'
+
+it.each([
+  ['solana', true, 'solana-devnet'],
+  ['solana', false, 'solana-mainnet'],
+  ['solana-devnet', false, 'solana-devnet'],
+  ['unknown', true, undefined],
+  ['ecash', true, undefined],
+])(
+  'resolves the selected native Send network %s (%s)',
+  (wallet, testnet, expected) => {
+    expect(nativeSendChainIdentifier(wallet, testnet)).toBe(expected)
+  },
+)
 
 describe('parseNativeTransferInput', () => {
   it('returns a canonical Monad recipient and wei value', () => {

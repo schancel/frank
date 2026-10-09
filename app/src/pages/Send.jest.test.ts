@@ -4,7 +4,12 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 import Send from './Send.vue'
-import { useActiveWallet } from 'src/composables/useActiveWallet'
+import {
+  activeChain,
+  NativeTransactionSubmissionError,
+} from '@frank/wallet/chain'
+import { createSolanaChain } from '@frank/wallet/chain/solana-chain'
+import type { NativeAssetChain } from '@frank/wallet/chain'
 import { sentTransactionNotify, errorNotify } from 'src/utils/notifications'
 import { navigateBack } from 'src/utils/navigate-back'
 import type { WalletHandle } from '@frank/wallet/chain'
@@ -13,11 +18,19 @@ import frFR from '../i18n/fr-fr'
 
 import { getAddress } from 'ethers'
 const mockSend = jest.fn()
+const mockCaptureWallet = jest.fn()
+const mockAssertCurrent = jest.fn()
+const mockRoute = { query: {} as Record<string, string | string[] | null> }
+let mockSelectedChain: NativeAssetChain | undefined
 const mockGetBalance = jest.fn()
 const mockGetTransactionStatus = jest.fn()
 
 jest.mock('@frank/wallet/chain', () => ({
+  NativeTransactionSubmissionError: jest.requireActual(
+    '@frank/wallet/chain/chain-wallet',
+  ).NativeTransactionSubmissionError,
   activeChain: {
+    chainIdentifier: 'monad-testnet',
     name: 'monad',
     unit: 'MON',
     toDisplayAmount: (raw: bigint) => {
@@ -45,8 +58,13 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 
-jest.mock('src/composables/useActiveWallet', () => ({
-  useActiveWallet: jest.fn(),
+jest.mock('src/accounts/native-transfer', () => ({
+  createNativeTransferContext: jest.fn(async (id: string) => {
+    const chain = mockSelectedChain ?? activeChain
+    if (id !== chain.chainIdentifier)
+      throw new Error('Unknown native Send network')
+    return { chain: { ...chain }, captureWallet: mockCaptureWallet }
+  }),
 }))
 
 jest.mock('src/utils/notifications', () => ({
@@ -60,6 +78,7 @@ jest.mock('src/utils/navigate-back', () => ({
 
 jest.mock('vue-router', () => ({
   useRouter: () => ({ push: jest.fn(), replace: jest.fn() }),
+  useRoute: () => mockRoute,
 }))
 
 function t(
@@ -133,7 +152,13 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     jest.clearAllMocks()
-    ;(useActiveWallet as jest.Mock).mockResolvedValue(mockWallet)
+    mockRoute.query = {}
+    mockSelectedChain = undefined
+    mockCaptureWallet.mockReset().mockResolvedValue({
+      wallet: mockWallet,
+      assertCurrent: mockAssertCurrent,
+    })
+    mockAssertCurrent.mockReset().mockResolvedValue(undefined)
   })
 
   it('initial form action performs no signing or broadcast and opens review state', async () => {
@@ -163,7 +188,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
 
     // Acceptance criterion: No signing or RPC broadcast calls before final confirmation
     expect(mockSend).not.toHaveBeenCalled()
-    expect(useActiveWallet).not.toHaveBeenCalled()
+    expect(mockCaptureWallet).toHaveBeenCalledTimes(1)
   })
 
   it('review displays full/checksummed recipient, amount, network, fee unavailability, total, and warning', async () => {
@@ -240,7 +265,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
 
     // Zero signer/network calls
     expect(mockSend).not.toHaveBeenCalled()
-    expect(useActiveWallet).not.toHaveBeenCalled()
+    expect(mockCaptureWallet).toHaveBeenCalledTimes(1)
   })
 
   it('final confirmation is single-flight and executes transfer upon confirm', async () => {
@@ -281,9 +306,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
 
   it('distinguishes definitely-not-broadcast when failure occurs before signing/broadcast', async () => {
     // Wallet or pre-signing failure
-    ;(useActiveWallet as jest.Mock).mockRejectedValueOnce(
-      new Error('wallet locked'),
-    )
+    mockAssertCurrent.mockRejectedValueOnce(new Error('wallet locked'))
 
     const wrapper = mountSend()
     await wrapper
@@ -372,12 +395,185 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     ).toContain('Confirmer et envoyer')
 
     // Test definitely-not-broadcast in French
-    ;(useActiveWallet as jest.Mock).mockRejectedValueOnce(new Error('fail'))
+    mockAssertCurrent.mockRejectedValueOnce(new Error('fail'))
     await reviewCard.get('[data-test="review-confirm-button"]').trigger('click')
     await flushPromises()
 
     expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
       fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
     })
+  })
+
+  it('keeps the reviewed primary adapter when the global network changes', async () => {
+    mockSend.mockResolvedValue({ txHash: 'original-network-hash' })
+    const wrapper = mountSend()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('1')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    const original = { ...activeChain }
+    const otherSend = jest.fn()
+    try {
+      Object.assign(activeChain, {
+        chainIdentifier: 'monad-mainnet',
+        unit: 'OTHER',
+        nativeTransfers: { send: otherSend },
+      })
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      expect(mockSend).toHaveBeenCalledTimes(1)
+      expect(otherSend).not.toHaveBeenCalled()
+      expect(wrapper.get('[data-test="review-amount"]').text()).toBe('1 MON')
+    } finally {
+      Object.assign(activeChain, original)
+      wrapper.unmount()
+    }
+  })
+
+  function selectSolana() {
+    mockRoute.query = { chainIdentifier: 'solana-devnet' }
+    mockSelectedChain = createSolanaChain({
+      networkId: 'solana-devnet',
+      chainIdentifier: 'solana-devnet',
+      genesisHash: 'test-genesis',
+      connection: {
+        getGenesisHash: jest.fn(),
+        getBalance: jest.fn(),
+        getLatestBlockhash: jest.fn(),
+        getSignatureStatus: jest.fn(),
+        sendRawTransaction: jest.fn(),
+      },
+      deriveSigner: () => {
+        throw new Error('unused')
+      },
+    })
+    const wallet = {
+      family: 'solana',
+      networkId: 'solana-devnet',
+      chainIdentifier: 'solana-devnet',
+      sendNative: mockSend,
+    }
+    mockCaptureWallet.mockResolvedValue({
+      wallet,
+      assertCurrent: mockAssertCurrent,
+    })
+    return wallet
+  }
+
+  it('reviews Solana units, canonical address and fee, then sends the captured amount through the Solana adapter', async () => {
+    selectSolana()
+    mockSend.mockResolvedValue({ txHash: 'solana-signature' })
+    const wrapper = mountSend()
+    const recipient = 'AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9'
+    await wrapper.get('[data-test="send-address-input"]').setValue(recipient)
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.001')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="review-network"]').text()).toBe(
+      'Solana Testnet',
+    )
+    expect(wrapper.get('[data-test="review-recipient"]').text()).toBe(recipient)
+    expect(wrapper.get('[data-test="review-amount"]').text()).toBe('0.001 tSOL')
+    expect(wrapper.get('[data-test="review-fee"]').text()).toBe('0.000005 tSOL')
+    expect(mockSend).not.toHaveBeenCalled()
+    // A route selection or draft change cannot change the reviewed authorization.
+    mockRoute.query = { chainIdentifier: 'monad-testnet' }
+    Object.assign(wrapper.vm, {
+      amount: '9',
+      address: '11111111111111111111111111111111',
+    })
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockAssertCurrent).toHaveBeenCalledTimes(1)
+    expect(mockSend).toHaveBeenCalledWith({
+      recipient: { raw: recipient },
+      value: 1_000_000n,
+      onSigned: expect.any(Function),
+    })
+    expect(sentTransactionNotify).toHaveBeenCalledWith('solana-signature')
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['0x000000000000000000000000000000000000dead', '1'],
+    ['11111111111111111111111111111111', '0.0000000001'],
+    ['11111111111111111111111111111111', '-1'],
+  ])(
+    'does not review invalid Solana input %s / %s',
+    async (address, amount) => {
+      selectSolana()
+      const wrapper = mountSend()
+      await wrapper.get('[data-test="send-address-input"]').setValue(address)
+      await wrapper.get('[data-test="send-amount-input"]').setValue(amount)
+      expect(
+        wrapper.get('[data-test="send-review-button"]').attributes('disabled'),
+      ).toBeDefined()
+      expect(mockCaptureWallet).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
+  it.each(['made-up-network', null, ['solana-devnet', 'monad-testnet']])(
+    'rejects invalid route network %s without silently selecting Monad',
+    async chainIdentifier => {
+      mockRoute.query = { chainIdentifier }
+      const wrapper = mountSend()
+      await wrapper
+        .get('[data-test="send-address-input"]')
+        .setValue('0x000000000000000000000000000000000000dead')
+      await wrapper.get('[data-test="send-amount-input"]').setValue('1')
+      await flushPromises()
+      expect(
+        wrapper.get('[data-test="send-review-button"]').attributes('disabled'),
+      ).toBeDefined()
+      expect(mockCaptureWallet).not.toHaveBeenCalled()
+      expect(errorNotify).toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
+  it('blocks Solana signing when the reviewed session changes before confirmation', async () => {
+    selectSolana()
+    const wrapper = mountSend()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('11111111111111111111111111111111')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('1')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    mockAssertCurrent.mockRejectedValueOnce(new Error('Account changed'))
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
+    })
+    wrapper.unmount()
+  })
+
+  it('reports a recovered uncertain submission hash even without a new signing callback', async () => {
+    selectSolana()
+    mockSend.mockRejectedValue(
+      new NativeTransactionSubmissionError({
+        transaction: { txHash: 'original-solana-signature' },
+        reason: new Error('still unknown'),
+      }),
+    )
+    const wrapper = mountSend()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('11111111111111111111111111111111')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('1')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: expect.stringContaining('original-solana-signature'),
+    })
+    expect(sentTransactionNotify).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })

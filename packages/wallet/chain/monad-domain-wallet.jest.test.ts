@@ -120,7 +120,7 @@ test.each([
   ['native', EvmNativeOperationJournal.prototype],
   ['canonical', LevelCanonicalStampAttemptJournal.prototype],
 ] as const)(
-  'actual wallet publication and warming wait for the %s owner; failure cannot publish',
+  'actual wallet publication waits for the %s owner; failure cannot publish, and warming stays off',
   async (_name, prototype) => {
     const dir = await mkdtemp(join(tmpdir(), 'frank-admission-publication-'))
     const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
@@ -164,7 +164,7 @@ test.each([
       expect(configure).not.toHaveBeenCalled()
       release()
       await opening
-      expect(configure).toHaveBeenCalledTimes(1)
+      expect(configure).not.toHaveBeenCalled()
       expect(warm).not.toHaveBeenCalled()
       await wallet!.close()
       wallet = undefined
@@ -178,7 +178,7 @@ test.each([
       expect(configure).not.toHaveBeenCalled()
       open.mockRestore()
       wallet = await createEvmChain(cfg).createWallet(roots())
-      expect(configure).toHaveBeenCalledTimes(1)
+      expect(configure).not.toHaveBeenCalled()
       expect(warm).not.toHaveBeenCalled()
     } finally {
       release()
@@ -1458,6 +1458,40 @@ test('native recovery references load before startup orphan retirement', async (
   } finally {
     await second?.close()
     await first?.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('retiring a pool account on a normally opened wallet builds and submits no warming transfer (#1235)', async () => {
+  const built = jest.fn(async () => ({
+    rawTx: '0x1234',
+    txHash: '0x' + 'ab'.repeat(32),
+  }))
+  const submitted = jest.fn(async () => '0x' + 'ab'.repeat(32))
+  jest
+    .mocked(MonadAccountTxSigner)
+    .mockImplementation(
+      () => ({ buildAndSignTransfer: built, submit: submitted } as never),
+    )
+  const dir = await mkdtemp(join(tmpdir(), 'frank-warming-off-'))
+  const wallet = (await createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+  }).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    jest.spyOn(wallet.provider, 'getBalance').mockResolvedValue(0n)
+    wallet.pool.setStatus(0, 'in-use')
+    wallet.pool.setStatus(0, 'retired')
+    wallet.pool.triggerProactiveWarming()
+    await wallet.pool.ensureMinimumAvailableCapacity()
+    expect(built).not.toHaveBeenCalled()
+    expect(submitted).not.toHaveBeenCalled()
+    expect(wallet.pool.getProactiveWarmingConfig()).toBeUndefined()
+    expect(
+      wallet.pool.records().filter(row => row.status === 'funding'),
+    ).toEqual([])
+  } finally {
+    await wallet.close()
     await rm(dir, { recursive: true, force: true })
   }
 })

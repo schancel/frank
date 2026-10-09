@@ -40,6 +40,8 @@ export interface MonadJsonRpcProviderOptions extends JsonRpcApiProviderOptions {
   relayAuth?: MonadRelayRpcAuth;
   /** Only the validated disposable demo composition opts into direct request cancellation. */
   demoOnlyAbortOnDestroy?: boolean;
+  /** How long (in ms) to aggregate concurrent JSON-RPC requests into a single batch (default: 10). */
+  batchStallTime?: number;
 }
 
 export interface MonadRelayRpcAuth {
@@ -800,6 +802,7 @@ export function createMonadRelayRpcConnection(
  *      backoff/cancellation policy to govern retry timing.
  *    - Rejects wrong-chain responses if the RPC reports a chain ID different from `expectedChainId`.
  *    - Caches the verified network so healthy steady-state operations do not re-query `eth_chainId`.
+ * 3. Configures JSON-RPC HTTP batching with a default stall window of 10 ms (Issue #1215).
  */
 export class MonadJsonRpcProvider extends JsonRpcProvider {
   readonly expectedChainId: bigint;
@@ -815,6 +818,7 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
       rpcUrls?: readonly string[];
       relayAuth?: MonadRelayRpcAuth;
       demoOnlyAbortOnDestroy?: boolean;
+      batchStallTime?: number;
     }
   ) {
     const chainId =
@@ -885,6 +889,7 @@ export class MonadJsonRpcProvider extends JsonRpcProvider {
       // an account's nonce, broadcasts, and reads the nonce again inside that window would get
       // the stale value and sign a second transaction with the nonce it just used.
       cacheTimeout: providerOptions.cacheTimeout ?? -1,
+      batchStallTime: providerOptions.batchStallTime ?? 10,
       batchMaxCount: providerOptions.batchMaxCount ?? 20,
       batchMaxSize: providerOptions.batchMaxSize ?? 256 * 1024,
       staticNetwork: true,

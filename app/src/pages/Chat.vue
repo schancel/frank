@@ -3,6 +3,7 @@
     <q-page-container>
       <email-thread-view
         v-if="isEmailThread"
+        :key="conversation?.id"
         :conversation="conversation"
         :messages="messages"
         :sending="sendingMessage"
@@ -164,7 +165,9 @@
 import { defineComponent, ref } from 'vue'
 
 import ChatMessageComponent from '../components/chat/messages/ChatMessage.vue'
-import EmailThreadView from '../components/chat/email/EmailThreadView.vue'
+import EmailThreadView, {
+  type EmailReply,
+} from '../components/chat/email/EmailThreadView.vue'
 import ChatBannerStack from '../components/chat/ChatBannerStack.vue'
 import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
@@ -616,14 +619,22 @@ export default defineComponent({
         this.$nextTick(this.buttonScrollBottom)
       }
     },
-    async sendEmailReply(payload: {
-      items: MessageItem[]
-      fallbackText: string
-      targetAddress?: string
-    }) {
+    async sendEmailReply(payload: EmailReply) {
       if (this.sendingMessage) {
         return
       }
+      const conversation = this.chatStore.conversations[payload.conversationId]
+      if (
+        !conversation ||
+        conversation.deletedAt ||
+        this.conversation?.id !== conversation.id
+      ) {
+        errorNotify(
+          new Error('The selected email conversation is no longer available'),
+        )
+        return
+      }
+      const originalName = conversation.name
       const recipient =
         payload.targetAddress || this.recipientAddress || this.address
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
@@ -632,7 +643,7 @@ export default defineComponent({
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: recipient,
-          conversationId: this.conversation?.id,
+          conversationId: conversation.id,
           items: payload.items,
           stampValue,
           onPreparationProgress: this.showStampPreparation,
@@ -640,15 +651,18 @@ export default defineComponent({
         const emailItem = payload.items.find(it => it.type === 'email') as
           | EmailItem
           | undefined
+        const owner = this.chatStore.conversations[conversation.id]
         if (
-          this.conversation &&
-          emailItem?.subject &&
-          (!this.conversation.name ||
-            this.conversation.name.includes('@') ||
-            this.conversation.name === 'New Email' ||
-            this.conversation.name.startsWith('Draft to'))
+          owner === conversation &&
+          !owner.deletedAt &&
+          owner.name === originalName &&
+          emailItem?.subject?.trim() &&
+          (!originalName ||
+            originalName.includes('@') ||
+            originalName === 'New Email' ||
+            originalName.startsWith('Draft to'))
         ) {
-          this.conversation.name = emailItem.subject
+          this.chatStore.renameConversation(conversation.id, emailItem.subject)
         }
       } catch (err) {
         errorNotify(err instanceof Error ? err : new Error(String(err)))

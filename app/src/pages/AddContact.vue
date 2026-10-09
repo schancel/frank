@@ -325,6 +325,7 @@ import { useChatStore } from 'src/stores/chats'
 import { activeChain } from '@frank/wallet/chain'
 import { profilePubKeyFromBytes } from 'src/utils/profile-pubkey'
 import { openChat } from 'src/utils/routes'
+import { errorNotify } from 'src/utils/notifications'
 import { defaultEmailGatewayAddress } from 'src/utils/constants'
 import { useSettingsStore } from 'src/stores/settings'
 
@@ -703,51 +704,20 @@ export default defineComponent({
       if (!this.isEmailRecipient) {
         return
       }
-      const email = this.emailAddress
-      let targetId = email
-      let gatewayAddress = defaultEmailGatewayAddress
       try {
         const settingsStore = useSettingsStore()
-        if (settingsStore.emailGatewayAddress) {
-          gatewayAddress = settingsStore.emailGatewayAddress
-        }
-      } catch {
-        // Pinia not active in test environment
-      }
-
-      try {
         const chatStore = useChatStore()
-        let conv: any
-        const customTopic = this.topic.trim() || undefined
-        if (
-          typeof (chatStore as any).createOrOpenEmailConversation === 'function'
-        ) {
-          conv = (chatStore as any).createOrOpenEmailConversation({
-            recipientEmail: email,
-            gatewayAddress,
-            subject: customTopic,
-          })
-        } else if (typeof chatStore.createConversation === 'function') {
-          conv = chatStore.createConversation({
-            kind: 'email',
-            topic: customTopic || email,
-            name: customTopic || email,
-            emailRecipient: email,
-            address: gatewayAddress,
-            participants: [gatewayAddress],
-            verifiedGateway: true,
-          })
-        }
-        if (conv?.id) {
-          targetId = conv.id
-        }
-        if (typeof chatStore.setActiveConversation === 'function') {
-          chatStore.setActiveConversation(targetId)
-        }
-      } catch {
-        // Pinia not active in test environment
+        const conversation = chatStore.createEmailConversation({
+          recipientEmail: this.emailAddress,
+          gatewayAddress:
+            settingsStore.emailGatewayAddress || defaultEmailGatewayAddress,
+          subject: this.topic.trim() || undefined,
+        })
+        chatStore.setActiveConversation(conversation.id)
+        openChat(this.$router, conversation.id)
+      } catch (err) {
+        errorNotify(err instanceof Error ? err : new Error(String(err)))
       }
-      openChat(this.$router, targetId)
     },
     addContactOnly() {
       if (!this.acceptedLookup && this.matchingExistingContacts.length === 1) {

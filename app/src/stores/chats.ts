@@ -3020,7 +3020,7 @@ export const useChatStore = defineStore('chats', {
       conversation.name = name
       conversation.updatedAt = Date.now()
     },
-    createOrOpenEmailConversation({
+    createEmailConversation({
       recipientEmail,
       subject,
       gatewayAddress = defaultEmailGatewayAddress,
@@ -3030,49 +3030,14 @@ export const useChatStore = defineStore('chats', {
       gatewayAddress?: string
     }): Conversation {
       const normalizedEmail = recipientEmail.toLowerCase().trim()
-      let canonicalGateway = gatewayAddress
-      try {
-        canonicalGateway = toChainDisplayAddress(gatewayAddress)
-      } catch {
-        // keep gatewayAddress as is
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+        throw new Error('Invalid email recipient')
       }
-
-      // Check if an existing email conversation to this recipient already exists
-      const existing = Object.values(this.conversations).find(
-        c =>
-          c &&
-          !c.deletedAt &&
-          c.kind === 'email' &&
-          sameCanonicalAddress(c.address, canonicalGateway) &&
-          c.emailRecipient?.toLowerCase().trim() === normalizedEmail,
-      )
-
-      if (existing) {
-        if (subject && (!existing.name || existing.name === normalizedEmail)) {
-          existing.name = subject
-        }
-        if (!existing.emailRecipient) {
-          existing.emailRecipient = recipientEmail.trim()
-        }
-        if (existing.verifiedGateway === undefined) {
-          existing.verifiedGateway = true
-        }
-        return existing
-      }
-
-      const convId = uuidv5(
-        NULL_CONVERSATION_NAMESPACE,
-        `email:${normalizedEmail}:${Date.now()}:${Math.random()
-          .toString(36)
-          .slice(2)}`,
-      )
-
+      const canonicalGateway = toChainDisplayAddress(gatewayAddress)
       return this.createConversation({
         kind: 'email',
-        conversationId: convId,
-        name: subject || recipientEmail.trim(),
-        topic: recipientEmail.trim(),
-        emailRecipient: recipientEmail.trim(),
+        name: subject?.trim() || undefined,
+        emailRecipient: normalizedEmail,
         address: canonicalGateway,
         participants: [canonicalGateway],
         verifiedGateway: true,

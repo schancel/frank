@@ -443,3 +443,129 @@ it.each([false, true])(
     }
   },
 )
+
+it('Compose Email creates independent equal and blank roots, reopens by ID and preserves direct defaults', async () => {
+  const app = await mountedConversations()
+  try {
+    const defaultId = await app.create(PEER, '', false)
+    const ids: string[] = []
+    for (const [recipient, subject] of [
+      ['alice@example.com', 'Same'],
+      ['alice@example.com', 'Same'],
+      ['alice@example.com', ''],
+      ['alice@example.com', ''],
+      ['bob@example.com', 'Same'],
+    ]) {
+      await app.root.get('[data-testid="compose-email-btn"]').trigger('click')
+      await settle()
+      const page = app.root.getComponent(AddContact)
+      await page.get('[data-test="address-input"]').setValue(recipient)
+      await page.get('[data-test="topic-input"]').setValue(subject)
+      await page.get('[data-test="start-email-thread-btn"]').trigger('click')
+      await settle()
+      const id = app.chats.activeConversationId as string
+      expect(app.router.currentRoute.value.params.address).toBe(id)
+      ids.push(id)
+    }
+    expect(new Set(ids).size).toBe(5)
+    for (const id of ids.slice(0, 2)) {
+      const peer = app.chats.conversations[id].address
+      await app.chats.receiveMessages([
+        {
+          index: `mail-${id}`,
+          conversationId: id,
+          outbound: false,
+          senderAddress: peer,
+          copartyAddress: peer,
+          copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+          stampValue: 0,
+          message: {
+            conversationId: id,
+            outbound: false,
+            senderAddress: peer,
+            status: 'confirmed',
+            receivedTime: 100,
+            serverTime: 100,
+            outpoints: [],
+            items: [
+              {
+                type: 'email',
+                messageId: `<${id}@example.com>`,
+                from: { address: 'alice@example.com' },
+                to: [{ address: 'me@example.com' }],
+                subject: 'Same',
+                textBody: `Only ${id}`,
+              },
+            ],
+          },
+        },
+      ])
+    }
+    expect(app.chats.conversations[ids[0]].totalUnreadMessages).toBe(1)
+    expect(app.chats.conversations[ids[1]].totalUnreadMessages).toBe(1)
+    await app.select(ids[0])
+    expect(app.chats.activeConversation.messages[0].items[0].messageId).toBe(
+      `<${ids[0]}@example.com>`,
+    )
+    expect(app.chats.conversations[ids[1]].totalUnreadMessages).toBe(1)
+    app.chats.sendMessageLocal({
+      address: app.chats.conversations[ids[0]].address,
+      conversationId: ids[0],
+      senderAddress: SELF,
+      index: 'pending-mail-root',
+      logicalMessageId: 'logical-mail-root',
+      status: 'payment-pending',
+      items: [{ type: 'text', text: 'Synthetic pending' }],
+      outpoints: [],
+      previousHash: null,
+      timestamp: 101,
+      delivery: { attemptDigest: 'original-mail-attempt' },
+    })
+    await app.chats.saveOutgoing(
+      app.chats.conversations[ids[0]].address,
+      'pending-mail-root',
+      { strict: true },
+    )
+    for (const id of ids) await app.select(id)
+    expect(Object.keys(app.chats.conversations)).toHaveLength(6)
+    expect(await app.create(PEER, '', false)).toBe(defaultId)
+    let metadata = ''
+    await app.persistence().save(
+      {
+        put: async (_key: string, value: string) => {
+          metadata = value
+        },
+      },
+      null,
+      app.chats.$state,
+    )
+    const restored = await rehydrateState(JSON.parse(metadata))
+    expect(Object.keys(restored.conversations).sort()).toEqual(
+      [defaultId, ...ids].sort(),
+    )
+    expect(restored.messages['pending-mail-root']).toMatchObject({
+      conversationId: ids[0],
+      logicalMessageId: 'logical-mail-root',
+      delivery: { attemptDigest: 'original-mail-attempt' },
+    })
+    for (const id of ids.slice(0, 2)) {
+      expect(
+        restored.conversations[id].messages.some(
+          message => message.payloadDigest === `mail-${id}`,
+        ),
+      ).toBe(true)
+      expect(
+        restored.conversations[id].messages.some(
+          message =>
+            message.payloadDigest === `mail-${ids[id === ids[0] ? 1 : 0]}`,
+        ),
+      ).toBe(false)
+    }
+    expect(restored.conversations[ids[0]].name).toBe('Same')
+    expect(restored.conversations[ids[4]].emailRecipient).toBe(
+      'bob@example.com',
+    )
+  } finally {
+    app.root.unmount()
+  }
+})

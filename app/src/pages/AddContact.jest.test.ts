@@ -10,8 +10,18 @@ import { activeChain } from '@frank/wallet/chain'
 import { openChat } from 'src/utils/routes'
 import AddContact from './AddContact.vue'
 
+const mockErrorNotify = jest.fn()
+const mockSettings = {
+  emailGatewayAddress: '0x3333333333333333333333333333333333333333',
+}
+jest.mock('src/stores/settings', () => ({
+  useSettingsStore: () => mockSettings,
+}))
+jest.mock('src/utils/notifications', () => ({
+  errorNotify: (error: Error) => mockErrorNotify(error),
+}))
 const mockAddContactToStore = jest.fn()
-const mockCreateOrOpenEmailConversation = jest.fn(
+const mockCreateEmailConversation = jest.fn(
   (opts: {
     recipientEmail: string
     gatewayAddress?: string
@@ -46,7 +56,7 @@ jest.mock('src/stores/contacts', () => ({
 }))
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({
-    createOrOpenEmailConversation: mockCreateOrOpenEmailConversation,
+    createEmailConversation: mockCreateEmailConversation,
     createConversation: mockCreateConversation,
     setActiveConversation: mockSetActiveConversation,
     activeChatAddr: null,
@@ -225,7 +235,7 @@ describe('AddContact latest lookup', () => {
     mockRouter.go.mockReset()
     mockRouter.push.mockReset()
     mockRouter.back.mockReset()
-    mockCreateOrOpenEmailConversation.mockReset()
+    mockCreateEmailConversation.mockReset()
     mockSetActiveConversation.mockReset()
     mockCreateConversation.mockClear()
     chain.parseAddress.mockReset()
@@ -235,7 +245,7 @@ describe('AddContact latest lookup', () => {
     mockOwnAddress.mockResolvedValue(ADDRESS_OWN)
     chain.parseAddress.mockImplementation(input => parsedAddresses[input])
     chain.formatAddress.mockImplementation(address => address.raw)
-    mockCreateOrOpenEmailConversation.mockImplementation(
+    mockCreateEmailConversation.mockImplementation(
       (opts: { recipientEmail: string; gatewayAddress?: string }) => ({
         id: 'conv-email-' + opts.recipientEmail,
         kind: 'email',
@@ -839,9 +849,9 @@ describe('AddContact latest lookup', () => {
       const startBtn = wrapper.find('[data-test="start-email-thread-btn"]')
       await startBtn.trigger('click')
 
-      expect(mockCreateOrOpenEmailConversation).toHaveBeenCalledWith({
+      expect(mockCreateEmailConversation).toHaveBeenCalledWith({
         recipientEmail: 'alice@example.com',
-        gatewayAddress: expect.any(String),
+        gatewayAddress: mockSettings.emailGatewayAddress,
       })
       expect(mockSetActiveConversation).toHaveBeenCalledWith(
         'conv-email-alice@example.com',
@@ -852,15 +862,32 @@ describe('AddContact latest lookup', () => {
       )
     })
 
+    it('reports email creation failure without selecting or navigating to a fallback', async () => {
+      await type(wrapper, 'alice@example.com')
+      await settle()
+      mockCreateEmailConversation.mockImplementationOnce(() => {
+        throw new Error('Invalid gateway')
+      })
+      await wrapper
+        .find('[data-test="start-email-thread-btn"]')
+        .trigger('click')
+      expect(mockErrorNotify).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Invalid gateway' }),
+      )
+      expect(mockSetActiveConversation).not.toHaveBeenCalled()
+      expect(mockOpenChat).not.toHaveBeenCalled()
+      expect(mockCreateConversation).not.toHaveBeenCalled()
+    })
+
     it('starts email thread on Enter key when input is an email address', async () => {
       await type(wrapper, 'bob@example.com')
       await settle()
 
       await wrapper.find('input').trigger('keydown.enter')
 
-      expect(mockCreateOrOpenEmailConversation).toHaveBeenCalledWith({
+      expect(mockCreateEmailConversation).toHaveBeenCalledWith({
         recipientEmail: 'bob@example.com',
-        gatewayAddress: expect.any(String),
+        gatewayAddress: mockSettings.emailGatewayAddress,
       })
       expect(mockSetActiveConversation).toHaveBeenCalledWith(
         'conv-email-bob@example.com',
@@ -895,9 +922,9 @@ describe('AddContact latest lookup', () => {
       const startBtn = wrapper.find('[data-test="start-email-thread-btn"]')
       await startBtn.trigger('click')
 
-      expect(mockCreateOrOpenEmailConversation).toHaveBeenCalledWith({
+      expect(mockCreateEmailConversation).toHaveBeenCalledWith({
         recipientEmail: 'partner@enterprise.com',
-        gatewayAddress: expect.any(String),
+        gatewayAddress: mockSettings.emailGatewayAddress,
         subject: 'Partnership Agreement',
       })
     })

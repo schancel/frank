@@ -834,6 +834,13 @@ interface ParsedEmailCard {
   isDkimVerified?: boolean
 }
 
+export interface EmailReply {
+  conversationId: string
+  items: MessageItem[]
+  fallbackText: string
+  targetAddress?: string
+}
+
 export default defineComponent({
   name: 'EmailThreadView',
   props: {
@@ -858,9 +865,11 @@ export default defineComponent({
       default: '',
     },
   },
-  emits: ['sendReply'],
+  emits: { sendReply: (_payload: EmailReply) => true },
   data() {
     return {
+      composerActive: true,
+      preparingSend: false,
       replyRouting: 'peer' as 'peer' | 'gateway',
       expandedMap: {} as Record<string, boolean>,
       allExpanded: false,
@@ -1071,6 +1080,9 @@ export default defineComponent({
       },
     },
   },
+  beforeUnmount() {
+    this.composerActive = false
+  },
   mounted() {
     if (this.isDraft) {
       this.setupNewDraftDefaults()
@@ -1162,6 +1174,7 @@ export default defineComponent({
     },
     setupComposerDefaults(card: ParsedEmailCard) {
       if (!card) return
+      this.activeReplyCard = card
       const hasMultiple = this.canReplyAll(card)
       this.replyMode = hasMultiple ? 'reply_all' : 'reply'
       this.populateRecipientsForCard(card, this.replyMode)
@@ -1171,7 +1184,7 @@ export default defineComponent({
         subj = `Re: ${subj}`
       }
       this.subject = subj
-      this.activeInReplyTo = card.rawEmail?.messageId || card.id
+      this.activeInReplyTo = card.rawEmail?.messageId
       this.activeReferences = card.rawEmail?.references
         ? [...card.rawEmail.references, card.rawEmail.messageId]
         : card.rawEmail?.messageId
@@ -1219,9 +1232,8 @@ export default defineComponent({
       }
     },
     onReplyModeChanged(newMode: 'reply' | 'reply_all') {
-      if (this.latestEmail) {
-        this.populateRecipientsForCard(this.latestEmail, newMode)
-      }
+      const selected = this.activeReplyCard || this.latestEmail
+      if (selected) this.populateRecipientsForCard(selected, newMode)
     },
     prepareReply(card: ParsedEmailCard, mode: 'reply' | 'reply_all') {
       this.activeReplyCard = card
@@ -1233,7 +1245,7 @@ export default defineComponent({
         subj = `Re: ${subj}`
       }
       this.subject = subj
-      this.activeInReplyTo = card.rawEmail?.messageId || card.id
+      this.activeInReplyTo = card.rawEmail?.messageId
       this.activeReferences = card.rawEmail?.references
         ? [...card.rawEmail.references, card.rawEmail.messageId]
         : card.rawEmail?.messageId
@@ -1401,88 +1413,80 @@ export default defineComponent({
       })
     },
     async handleSend() {
-      if (!this.canSend || this.sending) return
-
-      // Flush any pending text in input fields
+      const conversationId = this.conversation?.id
+      if (
+        !conversationId ||
+        !this.canSend ||
+        this.sending ||
+        this.preparingSend
+      )
+        return
       if (this.newToInput.trim()) this.addToRecipient()
       if (this.newCcInput.trim()) this.addCcRecipient()
       if (this.newBccInput.trim()) this.addBccRecipient()
 
-      const toParties: EmailParty[] = this.toList.map(addr => ({
-        address: addr,
-      }))
-      const ccParties: EmailParty[] = this.ccList.map(addr => ({
-        address: addr,
-      }))
-      const bccParties: EmailParty[] = this.bccList.map(addr => ({
-        address: addr,
-      }))
-
-      let attachments: EmailAttachment[] | undefined
-      if (this.stagedFiles.length > 0) {
-        attachments = await Promise.all(
-          this.stagedFiles.map(async file => {
-            const dataBase64 = await this.readFileAsBase64(file)
-            return {
-              filename: file.name,
-              contentType: file.type || 'application/octet-stream',
-              size: file.size,
-              sizeBytes: file.size,
-              dataBase64,
-            }
-          }),
-        )
-      }
-
       const emailSubject =
         this.subject || (this.isDraft ? 'No Subject' : this.threadSubject)
+      const body = this.replyText
       const emailItem: EmailItem = {
         type: 'email',
         messageId: `<frank_${Date.now()}_${Math.random()
           .toString(36)
           .slice(2, 9)}@frank.org>`,
         from: { address: 'me' },
-        to: toParties,
-        cc: ccParties.length > 0 ? ccParties : undefined,
-        bcc: bccParties.length > 0 ? bccParties : undefined,
+        to: this.toList.map(address => ({ address })),
+        cc: this.ccList.length
+          ? this.ccList.map(address => ({ address }))
+          : undefined,
+        bcc: this.bccList.length
+          ? this.bccList.map(address => ({ address }))
+          : undefined,
         subject: emailSubject,
-        textBody: this.replyText,
+        textBody: body,
         inReplyTo: this.activeInReplyTo,
-        references: this.activeReferences,
-        attachments,
+        references: this.activeReferences
+          ? [...this.activeReferences]
+          : undefined,
       }
-
       const isGatewayRoute =
         this.isVerifiedGateway || this.replyRouting === 'gateway'
       const targetAddress =
         !this.isVerifiedGateway && this.replyRouting === 'gateway'
           ? this.emailGatewayAddress
           : undefined
-
       const fallbackText = isGatewayRoute
-        ? `[Email to ${this.toList.join(', ')}]\nSubject: ${emailSubject}\n\n${
-            this.replyText
-          }`
-        : `[Direct P2P Email to ${this.peerFrankAddress} (external email recipients not notified)]\nSubject: ${emailSubject}\n\n${this.replyText}`
-
-      const items: MessageItem[] = [
-        emailItem,
-        {
-          type: 'text',
-          text: fallbackText,
-        },
-      ]
-
-      this.$emit('sendReply', {
-        items,
-        fallbackText,
-        targetAddress,
-      })
-
-      // Clear text, staged files, preview
-      this.replyText = ''
-      this.stagedFiles = []
-      this.isPreviewMode = false
+        ? `[Email to ${this.toList.join(
+            ', ',
+          )}]\nSubject: ${emailSubject}\n\n${body}`
+        : `[Direct P2P Email to ${this.peerFrankAddress} (external email recipients not notified)]\nSubject: ${emailSubject}\n\n${body}`
+      const files = [...this.stagedFiles]
+      this.preparingSend = true
+      try {
+        if (files.length) {
+          emailItem.attachments = await Promise.all(
+            files.map(async file => ({
+              filename: file.name,
+              contentType: file.type || 'application/octet-stream',
+              size: file.size,
+              sizeBytes: file.size,
+              dataBase64: await this.readFileAsBase64(file),
+            })),
+          )
+        }
+        if (!this.composerActive || this.conversation?.id !== conversationId)
+          return
+        this.$emit('sendReply', {
+          conversationId,
+          items: [emailItem, { type: 'text', text: fallbackText }],
+          fallbackText,
+          targetAddress,
+        })
+        this.replyText = ''
+        this.stagedFiles = []
+        this.isPreviewMode = false
+      } finally {
+        this.preparingSend = false
+      }
     },
   },
 })

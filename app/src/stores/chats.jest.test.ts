@@ -3219,39 +3219,60 @@ describe('stores/chats.ts (ticket #42)', () => {
       )
     })
 
-    it('creates or reuses email conversations with createOrOpenEmailConversation', () => {
+    it('creates fresh email roots with equal or blank subjects without changing defaults', () => {
       const chats = useChatStore()
-      const conv1 = chats.createOrOpenEmailConversation({
-        recipientEmail: 'Alice@Example.com',
-        subject: 'First Discussion',
-      })
+      const direct = chats.openDirectConversation(defaultEmailGatewayAddress)
+      const roots = ['Same', 'Same', '', ''].map(subject =>
+        chats.createEmailConversation({
+          recipientEmail: '  Alice@Example.com  ',
+          subject,
+        }),
+      )
+      expect(new Set(roots.map(root => root.id)).size).toBe(4)
+      for (const root of roots) {
+        expect(root).toMatchObject({
+          kind: 'email',
+          emailRecipient: 'alice@example.com',
+          address: defaultEmailGatewayAddress,
+        })
+        expect(root.topic).toBeUndefined()
+        expect(root.messages).toEqual([])
+      }
+      expect(chats.chats[defaultEmailGatewayAddress].id).toBe(direct.id)
+      expect(roots[0].name).toBe('Same')
+      expect(roots[2].name).toBeUndefined()
+    })
 
-      expect(conv1.kind).toBe('email')
-      expect(conv1.emailRecipient).toBe('Alice@Example.com')
-      expect(conv1.name).toBe('First Discussion')
-      expect(conv1.topic).toBe('Alice@Example.com')
-      expect(conv1.address).toBe(defaultEmailGatewayAddress)
-      expect(conv1.participants).toContain(defaultEmailGatewayAddress)
-      expect(conv1.messages).toEqual([])
-
-      // Calling again with same email returns existing conversation
-      const conv2 = chats.createOrOpenEmailConversation({
+    it('separates recipients and configured canonical gateways', () => {
+      const chats = useChatStore()
+      const first = chats.createEmailConversation({
         recipientEmail: 'alice@example.com',
       })
-      expect(conv2.id).toBe(conv1.id)
-
-      // Calling with new subject updates conversation name if it was empty/fallback
-      const convNoSubject = chats.createOrOpenEmailConversation({
+      const other = chats.createEmailConversation({
         recipientEmail: 'bob@example.com',
       })
-      expect(convNoSubject.name).toBe('bob@example.com')
-
-      const convUpdatedSubject = chats.createOrOpenEmailConversation({
-        recipientEmail: 'bob@example.com',
-        subject: 'Updated Subject',
+      const custom = chats.createEmailConversation({
+        recipientEmail: 'alice@example.com',
+        gatewayAddress: RECIPIENT_ADDRESS.toLowerCase(),
       })
-      expect(convUpdatedSubject.id).toBe(convNoSubject.id)
-      expect(convUpdatedSubject.name).toBe('Updated Subject')
+      expect(new Set([first.id, other.id, custom.id]).size).toBe(3)
+      expect(custom.address).toBe(RECIPIENT_ADDRESS)
+      expect(custom.participants).toEqual([RECIPIENT_ADDRESS])
+      expect(chats.getSortedChatOrder).toHaveLength(3)
+    })
+
+    it.each([
+      { recipientEmail: '' },
+      { recipientEmail: '   ' },
+      {
+        recipientEmail: 'alice@example.com',
+        gatewayAddress: 'invalid-gateway',
+      },
+    ])('rejects invalid email creation before owner mutation: %j', input => {
+      const chats = useChatStore()
+      const before = JSON.stringify(chats.$state)
+      expect(() => chats.createEmailConversation(input)).toThrow()
+      expect(JSON.stringify(chats.$state)).toBe(before)
     })
   })
 

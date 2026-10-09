@@ -528,6 +528,8 @@ export default {
     discardConfirmTitle: 'Discard message?',
     discardConfirmMessage:
       'This removes it from your conversation. If its payment is still pending it may still be delivered.',
+    discardFailedConfirmMessage:
+      'This removes the failed message from your conversation. No funds were spent.',
     sendAgainTitle: 'Send again?',
     sendAgainUnverified:
       'We could not confirm whether the first payment was delivered. Sending again may charge you a second time.',

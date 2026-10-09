@@ -477,10 +477,15 @@ export default defineComponent({
         return
       }
 
+      const message =
+        this.message.status === 'error'
+          ? this.$t('outgoing.discardFailedConfirmMessage')
+          : this.$t('outgoing.discardConfirmMessage')
+
       this.$q
         .dialog({
           title: this.$t('outgoing.discardConfirmTitle'),
-          message: this.$t('outgoing.discardConfirmMessage'),
+          message,
           ok: { label: this.$t('outgoing.discard'), color: 'negative' },
           cancel: true,
           persistent: true,

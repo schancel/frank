@@ -536,6 +536,8 @@ export default {
     discardConfirmTitle: 'Supprimer le message ?',
     discardConfirmMessage:
       'Il sera retiré de votre conversation. Si son paiement est encore en attente, il pourrait tout de même être remis.',
+    discardFailedConfirmMessage:
+      'Il sera retiré de votre conversation. Aucun fond n’a été dépensé.',
     sendAgainTitle: 'Renvoyer ?',
     sendAgainUnverified:
       "Nous n'avons pas pu confirmer si le premier paiement a été remis. Renvoyer pourrait vous débiter une seconde fois.",

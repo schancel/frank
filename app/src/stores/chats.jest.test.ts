@@ -2101,6 +2101,56 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.messages['second-keep']).toBeDefined()
     })
 
+    it.each([false, true])(
+      'rejects conflicting logical owners within one batch before any persistence (existing conversations: %s)',
+      async existingConversations => {
+        const chats = existingConversations
+          ? independentPair().chats
+          : useChatStore()
+        const before = JSON.stringify(chats.$state)
+        const first = incoming(firstId, 'batch-first', 100)
+        const second = incoming(secondId, 'batch-second', 200)
+        first.message.logicalMessageId = 'shared-logical-id'
+        second.message.logicalMessageId = 'shared-logical-id'
+        await expect(chats.receiveMessages([first, second])).rejects.toThrow(
+          /Logical message.*another conversation/,
+        )
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+        expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+        expect(JSON.stringify(chats.$state)).toBe(before)
+
+        // Rejection must release receipt claims and leave a valid later batch usable.
+        second.message.logicalMessageId = 'second-logical-id'
+        await chats.receiveMessages([first, second])
+        expect(mockMessageStore.saveMessage).toHaveBeenCalledTimes(2)
+        const rows = mockMessageStore.saveMessage.mock.calls.map(([row]) => row)
+        mockMessageStore.getIterator.mockResolvedValueOnce(rows)
+        const reopened = await rehydrateState(chats.$state)
+        expect(reopened.conversations[firstId].messages).toHaveLength(1)
+        expect(reopened.conversations[secondId].messages).toHaveLength(1)
+        expect(
+          reopened.logicalMessages['shared-logical-id']?.conversationId,
+        ).toBe(firstId)
+        expect(
+          reopened.logicalMessages['second-logical-id']?.conversationId,
+        ).toBe(secondId)
+      },
+    )
+
+    it('accepts same-conversation logical revisions in a single batch and on replay', async () => {
+      const chats = useChatStore()
+      const first = incoming(firstId, 'revision-first', 100)
+      const second = incoming(firstId, 'revision-second', 200)
+      first.message.logicalMessageId = 'shared-logical-id'
+      second.message.logicalMessageId = 'shared-logical-id'
+      await chats.receiveMessages([first, second])
+      await chats.receiveMessages([first, second])
+      expect(chats.conversations[firstId].messages).toHaveLength(2)
+      expect(
+        chats.logicalMessages['shared-logical-id']?.revisions,
+      ).toHaveLength(2)
+    })
+
     it('rejects a conversation ID belonging to another peer before durable receipt or mutation', async () => {
       const chats = useChatStore()
       const foreign = chats.createConversation({

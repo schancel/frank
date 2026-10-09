@@ -17,6 +17,12 @@
       "url": "https://github.com/schancel/frank/issues/1266",
       "publishedAt": "2026-10-09T08:30:14.170285+00:00",
       "bodyPath": "docs/plans/wallet-messaging-baseline/followups/swap-containment.md"
+    },
+    "relay-canonical-read-cost": {
+      "title": "[bug] Bound canonical relay history validation outside the shared request mutex",
+      "url": "https://github.com/schancel/frank/issues/1267",
+      "publishedAt": "2026-10-09T08:41:05.544907+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/relay-canonical-read-cost.md"
     }
   }
 }

@@ -280,6 +280,35 @@ describe('Pinia persistence barrier', () => {
     await observedBarrier
   })
 
+  it.each(['initial restore', 'rehydrate'])(
+    'propagates an unsupported-format error from %s without patching or saving',
+    async phase => {
+      const { pinia } = installPinia()
+      const failure = new Error('Unsupported stored conversation format')
+      const save = jest.fn(async () => undefined)
+      const restore = jest.fn(async () => ({ value: 7 }))
+      if (phase === 'initial restore') restore.mockRejectedValueOnce(failure)
+      const useTestStore = defineStore(`restore-failure-${nextStoreId++}`, {
+        state: () => ({ value: 0 }),
+        storage: { save, restore },
+      })
+      const store = useTestStore(pinia)
+      if (phase === 'initial restore') {
+        await expect(store.restored).rejects.toBe(failure)
+        expect(store.value).toBe(0)
+      } else {
+        await store.restored
+        await store.flushPersistence()
+        save.mockClear()
+        restore.mockRejectedValueOnce(failure)
+        await expect(store.rehydrate()).rejects.toBe(failure)
+        expect(store.value).toBe(7)
+      }
+      await nextTick()
+      expect(save).not.toHaveBeenCalled()
+    },
+  )
+
   it('resolves immediately for stores without persistence', async () => {
     const { pinia } = installPinia()
     const useTransientStore = defineStore(`transient-test-${nextStoreId++}`, {

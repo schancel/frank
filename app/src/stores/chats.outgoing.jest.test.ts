@@ -103,6 +103,7 @@ const wallet = {
 
 const TEXT = [{ type: 'text' as const, text: 'held two' }]
 const HASH = 'ab'.repeat(32)
+const STORED_CONVERSATION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
 const okResult = (payloadDigest: string): DirectMessageSendResult => ({
   payloadDigest,
@@ -156,6 +157,7 @@ async function seedInterrupted() {
       senderAddress: ME,
       copartyAddress: PEER,
       message: {
+        conversationId: STORED_CONVERSATION_ID,
         outbound: true,
         status: 'pending',
         receivedTime: 1,
@@ -982,6 +984,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           senderAddress: oldSender,
           copartyAddress: PEER,
           message: {
+            conversationId: STORED_CONVERSATION_ID,
             outbound: true,
             status: 'payment-pending',
             receivedTime: 1,
@@ -1618,6 +1621,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           senderAddress: ME,
           copartyAddress: PEER,
           message: {
+            conversationId: STORED_CONVERSATION_ID,
             outbound: true,
             status: 'pending',
             receivedTime: 1,
@@ -1634,7 +1638,7 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(message.delivery).toEqual({ attemptDigest: HASH })
     })
 
-    it('an old-format record (no delivery field) still loads unchanged', async () => {
+    it('an explicitly owned confirmed record may omit delivery state', async () => {
       const db = await durable()
       db.set(
         'old',
@@ -1644,6 +1648,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           senderAddress: ME,
           copartyAddress: PEER,
           message: {
+            conversationId: STORED_CONVERSATION_ID,
             outbound: true,
             status: 'confirmed',
             receivedTime: 5,

@@ -63,15 +63,11 @@ export function createStoragePlugin(
     }
     const { save, restore } = options.storage
 
-    const restored = metadataPromise.then(
-      metadata =>
-        new Promise<boolean>(resolve => {
-          restore(storage, metadata, store.$state).then(partialState => {
-            store.$patch(partialState)
-            resolve(true)
-          })
-        }),
-    )
+    const restored = metadataPromise.then(async metadata => {
+      const partialState = await restore(storage, metadata, store.$state)
+      store.$patch(partialState)
+      return true
+    })
 
     // Count mutations synchronously without changing the existing batched save
     // behavior. flushPersistence() snapshots this counter before yielding to

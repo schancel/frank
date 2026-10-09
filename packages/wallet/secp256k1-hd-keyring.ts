@@ -11,7 +11,7 @@
 
 import * as bip39 from 'bip39'
 import { HDNodeWallet, Mnemonic, getBytes } from 'ethers'
-import { MonadDomainRoot, monadMasterFromDomainRoot } from './monad-domain-root'
+import { Bip32DomainRoot, bip32MasterFromDomainRoot } from './bip32-domain-root'
 
 export interface Bip44PathConfig {
   readonly coinType: number // e.g. 60 for EVM, 1899 for eCash, 145 for BCH, 0 for BTC
@@ -98,11 +98,11 @@ export class Secp256k1HdKeyring {
 
   /** Builds keyring from an EVM wallet-domain root. */
   static fromDomainRoot(
-    domainRoot: MonadDomainRoot<'evm-wallet'>,
+    domainRoot: Bip32DomainRoot<'evm-wallet'>,
     pathConfigOrPrefix: Bip44PathConfig | string = { coinType: 60, branch: 0 },
   ): Secp256k1HdKeyring {
     return new Secp256k1HdKeyring(
-      monadMasterFromDomainRoot(domainRoot, 'evm-wallet'),
+      bip32MasterFromDomainRoot(domainRoot, 'evm-wallet'),
       pathConfigOrPrefix,
     )
   }
@@ -176,9 +176,9 @@ export class EvmHdKeyring extends Secp256k1HdKeyring {
   }
 
   static override fromDomainRoot(
-    domainRoot: MonadDomainRoot<'evm-wallet'>,
+    domainRoot: Bip32DomainRoot<'evm-wallet'>,
   ): EvmHdKeyring {
-    return new EvmHdKeyring(monadMasterFromDomainRoot(domainRoot, 'evm-wallet'))
+    return new EvmHdKeyring(bip32MasterFromDomainRoot(domainRoot, 'evm-wallet'))
   }
 
   static override generate(): { keyring: EvmHdKeyring; mnemonic: string } {
@@ -212,10 +212,10 @@ export class EvmChangeKeyring extends Secp256k1HdKeyring {
   }
 
   static override fromDomainRoot(
-    domainRoot: MonadDomainRoot<'evm-wallet'>,
+    domainRoot: Bip32DomainRoot<'evm-wallet'>,
   ): EvmChangeKeyring {
     return new EvmChangeKeyring(
-      monadMasterFromDomainRoot(domainRoot, 'evm-wallet'),
+      bip32MasterFromDomainRoot(domainRoot, 'evm-wallet'),
     )
   }
 

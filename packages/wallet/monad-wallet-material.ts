@@ -33,7 +33,7 @@ import { MonadIdentity, MONAD_IDENTITY_DERIVATION_PATH } from './monad-identity'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadChangeKeyring } from './monad-change-keyring'
 import { MonadAddressInventory } from './monad-address-inventory'
-import { monadMasterFromDomainRoot } from './monad-domain-root'
+import { bip32MasterFromDomainRoot } from './bip32-domain-root'
 import { deriveRoleLeaves, matchLocalRolePoints } from '../role-keys/src'
 import type { RolePoint } from '../role-keys/src'
 import type { Current } from '../directory-admission/src'
@@ -678,7 +678,7 @@ export function createMonadWalletMaterial(
       identity,
       // Existing native main-account path, now solely below the EVM spending root.
       mainAccount: new Wallet(
-        monadMasterFromDomainRoot(evm, 'evm-wallet').derivePath(
+        bip32MasterFromDomainRoot(evm, 'evm-wallet').derivePath(
           MONAD_IDENTITY_DERIVATION_PATH,
         ).privateKey,
       ),

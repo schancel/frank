@@ -20,7 +20,7 @@ import {
   fetchMonadIdentityPubKey,
   MONAD_IDENTITY_DERIVATION_PATH,
 } from "@frank/wallet/monad-identity";
-import { monadMasterFromDomainRoot } from "@frank/wallet/monad-domain-root";
+import { bip32MasterFromDomainRoot } from "@frank/wallet/bip32-domain-root";
 import { buildEnvelope } from "@frank/cashweb/relay/monad-message-envelope";
 import {
   MonadMailboxAuthError,
@@ -251,7 +251,7 @@ export class FrankBotHost {
     let evmMainPrivateKey: string | undefined;
     try {
       const evmRoot = deriveDomainRoot(accountRoot, "evm-wallet");
-      const evmMaster = monadMasterFromDomainRoot(evmRoot, "evm-wallet");
+      const evmMaster = bip32MasterFromDomainRoot(evmRoot, "evm-wallet");
       evmMainPrivateKey = evmMaster.derivePath(MONAD_IDENTITY_DERIVATION_PATH).privateKey;
     } catch {}
 

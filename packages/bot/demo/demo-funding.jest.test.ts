@@ -57,8 +57,10 @@ describe('explicit simulated funding boundary', () => {
     rmSync(dir, { recursive: true, force: true })
   })
   async function balance(address: string): Promise<bigint> {
-    // `connection: close` so a pooled socket to a fake RPC that the test has
-    // since closed and restarted on the same port is never reused.
+    // `connection: close`: the first read after the fake RPC is closed and
+    // restarted on the same port otherwise fails with ECONNRESET. The exact
+    // mechanism is not established; a fresh connection avoids it and cannot
+    // hide a server that is really down.
     const response = await fetch(fake.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', connection: 'close' },

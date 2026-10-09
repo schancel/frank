@@ -12,6 +12,13 @@ import { SubAccountLeaseManager } from '../monad-account-lease'
 import { LevelSubAccountPoolStore } from './level-sub-account-pool-store'
 import { LevelChangePoolStore } from './level-change-pool-store'
 import { type OutgoingTopicOperation } from './topic-operation-journal'
+import { LevelTopicOperationJournal } from './topic-operation-journal'
+import { EvmNativeOperationJournal } from './evm-native-operation-journal'
+import { LevelCanonicalStampAttemptJournal } from './stamp-attempt-journal'
+import {
+  nativeAdmissionJournal,
+  type WalletOperationLifetime,
+} from '../evm-input-admission'
 import {
   createInMemoryMonadWalletBundle,
   openMonadWalletBundle,
@@ -410,6 +417,188 @@ describe('existing-pool private topic owner', () => {
     const leaseManager = new SubAccountLeaseManager(pool)
     return { ...keys, pool, changePool, leaseManager }
   }
+  const readyParams = () => ({
+    ...existingPools(),
+    stampReferencesLeaseIndex: () => false,
+    assertEnclosingAdmission: () => undefined,
+    nativeBinding: {
+      chainIdentifier: 'monad-testnet',
+      nativeChainId: '10143',
+      publicTuple: JSON.stringify({
+        mainAddress: keyrings()
+          .subKeyring.deriveSubAccount(0)
+          .address.toLowerCase(),
+      }),
+    },
+  })
+  function barrier() {
+    let resolve!: () => void
+    const promise = new Promise<void>(done => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+  it.each([
+    ['topic', LevelTopicOperationJournal.prototype],
+    ['native', EvmNativeOperationJournal.prototype],
+    ['canonical', LevelCanonicalStampAttemptJournal.prototype],
+  ] as const)(
+    'all_projections_ready_before_publication waits for the real %s owner and releases failed opens',
+    async (_name, prototype) => {
+      const location = mkdtempSync(join(tmpdir(), 'admission-publication-'))
+      const params = { ...readyParams(), location }
+      const entered = barrier(),
+        release = barrier()
+      const original = prototype.Open
+      let published = false,
+        owner: MonadWalletPersistenceBundle | undefined
+      const spy = jest
+        .spyOn(prototype, 'Open')
+        .mockImplementationOnce(async function (this: typeof prototype) {
+          entered.resolve()
+          await release.promise
+          return original.call(this)
+        })
+      const opening = openExistingPoolMonadTopicOwner(params).then(value => {
+        published = true
+        owner = value
+        return value
+      })
+      try {
+        await entered.promise
+        expect(published).toBe(false)
+        release.resolve()
+        await opening
+        await owner!.runLifetime(async lifetime => {
+          expect(owner!.inputAdmission.inspect(lifetime).status).toBe('ready')
+        })
+        await owner!.close()
+        spy.mockRejectedValueOnce(new Error('owner open interrupted'))
+        await expect(openExistingPoolMonadTopicOwner(params)).rejects.toThrow(
+          'owner open interrupted',
+        )
+        spy.mockRestore()
+        owner = await openExistingPoolMonadTopicOwner(params)
+        await owner.runLifetime(async lifetime => {
+          expect(owner!.inputAdmission.inspect(lifetime).status).toBe('ready')
+        })
+      } finally {
+        release.resolve()
+        await opening.catch(() => undefined)
+        spy.mockRestore()
+        await owner?.close()
+        rmSync(location, { recursive: true, force: true })
+      }
+    },
+  )
+  it('invalid existing pool or change provenance cannot publish financial admission', async () => {
+    for (const component of ['pool', 'change'] as const) {
+      const params = readyParams()
+      const spy =
+        component === 'pool'
+          ? jest.spyOn(params.pool, 'records').mockImplementation(() => {
+              throw new Error('invalid pool owner')
+            })
+          : jest.spyOn(params.changePool, 'records').mockImplementation(() => {
+              throw new Error('invalid change owner')
+            })
+      await expect(openExistingPoolMonadTopicOwner(params)).rejects.toThrow(
+        `invalid ${component} owner`,
+      )
+      spy.mockRestore()
+      const recovered = await openExistingPoolMonadTopicOwner(params)
+      await recovered.close()
+    }
+  })
+  it('a real rejected canonical open preserves its bytes and releases only the failed bundle handles', async () => {
+    const location = mkdtempSync(join(tmpdir(), 'admission-corrupt-owner-'))
+    const params = { ...readyParams(), location }
+    const path = join(location, 'canonical-stamp-attempts-v1')
+    const database = level(path)
+    const original = '{"unsupported":"retained fixture evidence"}'
+    await database.put('unknown-retained-row', original)
+    await database.close()
+    try {
+      for (let n = 0; n < 2; n++) {
+        await expect(openExistingPoolMonadTopicOwner(params)).rejects.toThrow(
+          'corrupt',
+        )
+        const check = level(path)
+        try {
+          const rows = []
+          for await (const [key, value] of check.iterator())
+            rows.push([String(key), String(value)])
+          expect(rows).toEqual([['unknown-retained-row', original]])
+        } finally {
+          await check.close()
+        }
+      }
+    } finally {
+      rmSync(location, { recursive: true, force: true })
+    }
+  })
+  it('a rejected canonical database close never becomes a successful repeated cleanup', async () => {
+    const location = mkdtempSync(join(tmpdir(), 'admission-close-failure-'))
+    const journal = new LevelCanonicalStampAttemptJournal(location)
+    await journal.Open()
+    const database = (
+      journal as unknown as { database: { close(): Promise<void> } }
+    ).database
+    const spy = jest
+      .spyOn(database, 'close')
+      .mockRejectedValueOnce(new Error('close acknowledgement lost'))
+    try {
+      await expect(journal.Close()).rejects.toThrow(
+        'close acknowledgement lost',
+      )
+      await expect(journal.Close()).rejects.toThrow('closed')
+      expect(() => journal.getAll()).toThrow('closed')
+      expect(spy).toHaveBeenCalledTimes(1)
+    } finally {
+      spy.mockRestore()
+      await database.close()
+      rmSync(location, { recursive: true, force: true })
+    }
+  })
+  it('close drains an admitted lifetime but old tokens and writer completions cannot affect the reopened owner', async () => {
+    const params = readyParams(),
+      owner = await openExistingPoolMonadTopicOwner(params)
+    const entered = barrier(),
+      release = barrier()
+    let old!: WalletOperationLifetime,
+      writer!: ReturnType<typeof nativeAdmissionJournal>
+    const operation = owner.runLifetime(async lifetime => {
+      old = lifetime
+      writer = nativeAdmissionJournal(owner.inputAdmission, lifetime)
+      entered.resolve()
+      await release.promise
+      expect(owner.inputAdmission.inspect(lifetime).status).toBe('ready')
+    })
+    await entered.promise
+    let closed = false
+    const closing = owner.close().then(() => {
+      closed = true
+    })
+    await expect(owner.runLifetime(async () => undefined)).rejects.toThrow(
+      'closing or closed',
+    )
+    expect(closed).toBe(false)
+    release.resolve()
+    await operation
+    await closing
+    const next = await openExistingPoolMonadTopicOwner(params)
+    try {
+      expect(() => next.inputAdmission.inspect(old)).toThrow(
+        'Expired or foreign',
+      )
+      expect(() =>
+        writer.cancelUnsigned('evm-native-v1:0000000000000001'),
+      ).toThrow('Expired or foreign')
+      expect(next.nativeJournal!.list()).toEqual([])
+    } finally {
+      await next.close()
+    }
+  })
   it('preserves pool, lease and role identities, refuses competing owners, and guards enclosing admission', async () => {
     const original = existingPools()
     original.pool.ensureSize(1)

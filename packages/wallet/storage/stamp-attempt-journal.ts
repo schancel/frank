@@ -1129,25 +1129,25 @@ export class LevelCanonicalStampAttemptJournal {
   }
 
   async Close(): Promise<void> {
+    if (this.state === 'closed') return
     if (this.state !== 'open' && this.state !== 'faulted')
       canonicalFail('closed')
     this.state = 'closing'
     await this.tail
-    try {
-      await this.database!.close()
-    } finally {
-      this.database = undefined
-      this.rows.clear()
-      this.intents.clear()
-      this.recoveries.clear()
-      this.observations.clear()
-      this.latestObservation.clear()
-      this.publicBinding = undefined
-      this.replaying.clear()
-      this.epoch++
-      this.generation++
-      this.state = 'closed'
-    }
+    // A rejected close is not proof that the handle is gone. Keep it fenced in closing;
+    // only a completed close can make repeated cleanup idempotently successful.
+    await this.database!.close()
+    this.database = undefined
+    this.rows.clear()
+    this.intents.clear()
+    this.recoveries.clear()
+    this.observations.clear()
+    this.latestObservation.clear()
+    this.publicBinding = undefined
+    this.replaying.clear()
+    this.epoch++
+    this.generation++
+    this.state = 'closed'
   }
 
   private assertOpen(): void {

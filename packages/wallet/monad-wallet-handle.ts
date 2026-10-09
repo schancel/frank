@@ -82,7 +82,11 @@ export interface MonadCanonicalWalletHandle extends MonadWalletHandle {
   walletState: MonadWalletPersistenceBundle
   canonicalRoles: MonadCanonicalRoleOwner
   installedNetworkTag: 'MONT' | 'MON1'
-  runCanonicalExclusive<T>(operation: () => Promise<T>): Promise<T>
+  runCanonicalExclusive<T>(
+    operation: (
+      lifetime: import('./storage/monad-wallet-bundle').MonadWalletOperationAdmission,
+    ) => Promise<T>,
+  ): Promise<T>
 }
 
 import type { Timestamp, RelayBinding } from '@frank/codec'

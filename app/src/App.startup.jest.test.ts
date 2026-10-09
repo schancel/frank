@@ -3,7 +3,8 @@
  * @jest-environment-options {"customExportConditions": ["node", "node-addons"]}
  */
 import { mount, flushPromises } from '@vue/test-utils'
-import { createApp, nextTick } from 'vue'
+import { createApp, isRef, nextTick } from 'vue'
+import { Quasar } from 'quasar'
 import { createPinia, setActivePinia } from 'pinia'
 import type { LevelDB } from 'level'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
@@ -128,7 +129,20 @@ jest.mock('./stores/persistent-storage', () => ({
 jest.mock('./stores/relay-client', () => ({
   useRelayClientStore: () => ({ token: '' }),
 }))
-jest.mock('./utils/apply-locale', () => ({ applyLocale: jest.fn() }))
+// Match the actual browser's composition-mode i18n rather than a string-locale mock.
+jest.mock('./boot/i18n', () => {
+  const { createI18n } = jest.requireActual('vue-i18n')
+  const { defaultLocale, messages } = jest.requireActual('./i18n')
+  return {
+    i18n: createI18n({
+      legacy: false,
+      locale: defaultLocale,
+      fallbackLocale: defaultLocale,
+      globalInjection: true,
+      messages,
+    }),
+  }
+})
 jest.mock('./utils/theme', () => ({
   ...jest.requireActual('./utils/theme'),
   applyTheme: jest.fn(),
@@ -189,6 +203,7 @@ const {
   serializeMessageWrapper,
 } = require('@frank/cashweb/relay/storage/level-storage')
 /* eslint-enable @typescript-eslint/no-var-requires */
+const localeRef = i18n.global.locale
 const PEER = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2B2b2B2B2B'
 const SELF = '0x1a1A1A1A1a1A1A1a1A1a1a1a1a1a1a1A1A1a1a1a'
 function message(index: string): MessageWrapper {
@@ -272,6 +287,10 @@ function mountedRoot(
 describe('visible read-only startup failure', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    i18n.global.locale = localeRef
+    localeRef.value = 'en-us'
+    // Jest resolves Quasar's SSR build; observe browser pack dispatch without its SSR-only context.
+    jest.spyOn(Quasar.lang, 'set').mockImplementation(() => undefined)
     mockReadGates.clear()
     mockReadStarted.clear()
     setStartupRestoration({ phase: 'restoring' })
@@ -321,6 +340,14 @@ describe('visible read-only startup failure', () => {
         expect(wrapper.find('[data-test="route-content"]').exists()).toBe(false)
         expect(wrapper.find('button,input').exists()).toBe(false)
       }
+      expect(isRef(i18n.global.locale)).toBe(true)
+      expect(i18n.global.locale).toBe(localeRef)
+      expect(localeRef.value).toBe(badAppearance ? 'en-us' : locale)
+      expect(Quasar.lang.set).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          isoName: badAppearance || locale === 'en-us' ? 'en-US' : 'fr',
+        }),
+      )
       expect(app.config.globalProperties.$status.setup).toBe(false)
       expect(mockInitialize).not.toHaveBeenCalled()
       expect(mockTabInit).not.toHaveBeenCalled()
@@ -540,28 +567,39 @@ describe('visible read-only startup failure', () => {
     },
   )
 
-  it('restores a fresh valid profile, starts normal services and mounts the unchanged runtime', async () => {
-    const { app, pinia } = await fixture()
-    await setupApis({ app })
-    await messagingBoot({ app })
-    expect(startupRestoration.value.phase).toBe('restored')
-    expect(mockInitialize).toHaveBeenCalledTimes(1)
-    expect(mockTabInit).toHaveBeenCalledTimes(1)
-    expect(mockIdentity).toHaveBeenCalledTimes(1)
-    const router = createRouter()
-    await router.push('/wallet')
-    await router.isReady()
-    expect(router.currentRoute.value.path).toBe('/setup')
-    const wrapper = mountedRoot(
-      pinia,
-      router,
-      app.config.globalProperties.$status,
-    )
-    await flushPromises()
-    await nextTick()
-    expect(wrapper.find('[data-test="route-content"]').exists()).toBe(true)
-    expect(mockPersistent).toHaveBeenCalledTimes(1)
-    expect(useAppearanceStore().locale).toBe('en-us')
-    wrapper.unmount()
-  })
+  it.each(['en-us', 'fr-fr'])(
+    'restores a fresh valid %s profile, starts normal services and mounts the unchanged runtime',
+    async locale => {
+      const { app, pinia } = await fixture(locale)
+      await setupApis({ app })
+      await messagingBoot({ app })
+      expect(startupRestoration.value.phase).toBe('restored')
+      expect(mockInitialize).toHaveBeenCalledTimes(1)
+      expect(mockTabInit).toHaveBeenCalledTimes(1)
+      expect(mockIdentity).toHaveBeenCalledTimes(1)
+      const router = createRouter()
+      await router.push('/wallet')
+      await router.isReady()
+      expect(router.currentRoute.value.path).toBe('/setup')
+      const wrapper = mountedRoot(
+        pinia,
+        router,
+        app.config.globalProperties.$status,
+      )
+      await flushPromises()
+      await nextTick()
+      expect(wrapper.find('[data-test="route-content"]').exists()).toBe(true)
+      expect(mockPersistent).toHaveBeenCalledTimes(1)
+      expect(useAppearanceStore().locale).toBe(locale)
+      expect(isRef(i18n.global.locale)).toBe(true)
+      expect(i18n.global.locale).toBe(localeRef)
+      expect(localeRef.value).toBe(locale)
+      expect(Quasar.lang.set).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          isoName: locale === 'en-us' ? 'en-US' : 'fr',
+        }),
+      )
+      wrapper.unmount()
+    },
+  )
 })

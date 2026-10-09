@@ -32,4 +32,8 @@ export default defineComponent({
   margin: 10vh auto;
   padding: 2rem;
 }
+.startup-failure h1 {
+  font-size: clamp(1.5rem, 4vw, 2rem);
+  line-height: 1.25;
+}
 </style>

@@ -1,6 +1,9 @@
 import {
+  FetchRequest,
+  JsonRpcProvider,
   Mnemonic,
   Network,
+  SigningKey,
   Transaction,
   Wallet,
   getBytes,
@@ -2789,16 +2792,25 @@ test('conflicting recovered owners remain read-only without configuring or start
       roots(),
     )) as EvmChainWalletHandle
     mockNativeRpc(wallet, { [expected[0].main]: 500000n })
-    const sign = jest
-      .spyOn(Wallet.prototype, 'signTransaction')
-      .mockRejectedValueOnce(new Error('fixture unsigned native'))
+    // #1235 Stage C changed this fixture on purpose. It used to fail the signature and rely on
+    // the never-signed plan staying in the journal, uncancelled, to conflict with the funding
+    // attempt below. Such a plan is now cancelled by its own failed send (and at open), so that
+    // conflict no longer exists. The subject here is a conflict that must persist, so the
+    // native member is signed and never exposed: a signed member is never cancelled.
     await expect(
-      wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1n }),
-    ).rejects.toThrow('fixture unsigned native')
-    sign.mockRestore()
+      wallet.sendNative({
+        recipient: { raw: expected[1].main },
+        value: 1n,
+        onSigned: async () => {
+          throw new Error('fixture signed, never exposed')
+        },
+      }),
+    ).rejects.toThrow('fixture signed, never exposed')
     const nativeBefore = wallet.getNativeOperations!()
     expect(nativeBefore).toHaveLength(1)
     expect(nativeBefore[0].cancelled).toBe(false)
+    expect(nativeBefore[0].members[0]!.signed).not.toBeNull()
+    expect(nativeBefore[0].members[0]!.exposed).toBe(false)
     jest
       .spyOn(wallet.provider, 'getNetwork')
       .mockResolvedValue(Network.from(10143))
@@ -2871,4 +2883,451 @@ test('conflicting recovered owners remain read-only without configuring or start
     await wallet?.close()
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+// -------------------------------------------------------------------------------------------
+// Stage C of #1235: a native plan that never signed is cancelled, by the send that failed and at
+// wallet open. Composed, file-backed wallets with real reopens. Each test names what it
+// reproduces on main e8d87c2d, or says it is a pin.
+// -------------------------------------------------------------------------------------------
+describe('a native plan that never signed is cancelled (#1235 Stage C)', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'frank-1235-stage-c-'))
+  })
+  afterEach(async () => {
+    for (const opened of spendRecordWallets.splice(0))
+      await opened.close().catch(() => undefined)
+    await rm(dir, { recursive: true, force: true })
+  })
+  type Composed = Awaited<ReturnType<typeof composedWithProductionFundedPoolRow>>
+  const recipient = expected[1].main
+  const outcome = <T>(promise: Promise<T>) =>
+    promise.then(
+      (value): { value?: T; error?: unknown } => ({ value }),
+      (error: unknown): { value?: T; error?: unknown } => ({ error }),
+    )
+  /** A plan written the way a crash between the journal write and the first signature leaves
+   * it: admitted and journalled by the real admission, with no send and no signature. */
+  const crashedPlan = (
+    f: Pick<Composed, 'bundle'>,
+    source:
+      | { kind: 'main'; address: string }
+      | { kind: 'spend'; address: string; index: number },
+    nonce: number,
+    value = 1000n,
+  ) =>
+    f.bundle.runLifetime(async lifetime => {
+      const current = f.bundle.inputAdmission.inspect(lifetime)
+      if (current.status !== 'ready') throw new Error(current.reason)
+      return f.bundle.inputAdmission.prepareNative(lifetime, current.epoch, {
+        kind: 'native',
+        recipient: recipient.toLowerCase(),
+        intendedValueWei: value.toString(),
+        members: [
+          {
+            source,
+            dependencies: [],
+            unsignedTransaction: Transaction.from({
+              type: 2,
+              chainId: 10143n,
+              nonce,
+              to: recipient,
+              value,
+              gasLimit: 21000n,
+              maxFeePerGas: 1n,
+              maxPriorityFeePerGas: 1n,
+            }).unsignedSerialized,
+          },
+        ],
+      })
+    })
+  /** Everything that could reach the network or a key, counted from now on. */
+  const watchNetworkAndKeys = () => {
+    const watched = {
+      fetch: jest
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('network touched')),
+      // The modules themselves: an import namespace cannot be spied on.
+      httpRequest: jest.spyOn(
+        jest.requireActual<typeof import('http')>('http'),
+        'request',
+      ),
+      httpsRequest: jest.spyOn(
+        jest.requireActual<typeof import('https')>('https'),
+        'request',
+      ),
+      rpcSend: jest.spyOn(JsonRpcProvider.prototype, 'send'),
+      rpcTransport: jest.spyOn(FetchRequest.prototype, 'send'),
+      relaySubmit: jest.spyOn(MonadHttpClient.prototype, 'submitRawTransaction'),
+      relayReceipt: jest.spyOn(
+        MonadHttpClient.prototype,
+        'getTransactionReceipt',
+      ),
+      relayLogs: jest.spyOn(MonadHttpClient.prototype, 'getLogs'),
+      relayBlock: jest.spyOn(MonadHttpClient.prototype, 'getBlockNumber'),
+      accountSigner: jest.mocked(MonadAccountTxSigner),
+      signTransaction: jest.spyOn(Wallet.prototype, 'signTransaction'),
+      signDigest: jest.spyOn(SigningKey.prototype, 'sign'),
+    }
+    watched.accountSigner.mockClear()
+    return () =>
+      Object.fromEntries(
+        Object.entries(watched).map(([name, spy]) => [
+          name,
+          spy.mock.calls.length,
+        ]),
+      )
+  }
+  const untouched = {
+    fetch: 0,
+    httpRequest: 0,
+    httpsRequest: 0,
+    rpcSend: 0,
+    rpcTransport: 0,
+    relaySubmit: 0,
+    relayReceipt: 0,
+    relayLogs: 0,
+    relayBlock: 0,
+    accountSigner: 0,
+    signTransaction: 0,
+    signDigest: 0,
+  }
+
+  // Acceptance case 1 (and 5). On main e8d87c2d the plan stays in the journal unsigned and
+  // uncancelled, `canSelect` refuses main, and the second send fails with
+  // "Insufficient unreserved native funds".
+  test('signing throws for a main-sourced sendNative: the send throws its own error, the plan is cancelled in that call and retained, and a second sendNative from main succeeds', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { wallet } = f
+    // Only main holds anything: there is no other account a later send could fall back on.
+    f.rpc.balances.set(f.poolAddress, 0n)
+    f.rpc.balances.set(f.main, 500000n)
+    const sign = jest
+      .spyOn(Wallet.prototype, 'signTransaction')
+      .mockRejectedValueOnce(new Error('fixture: signer unavailable'))
+    const failed = await outcome(
+      wallet.sendNative({ recipient: { raw: recipient }, value: 1000n }),
+    )
+    sign.mockRestore()
+    expect(failed.error).toBeInstanceOf(Error)
+    expect((failed.error as Error).message).toBe('fixture: signer unavailable')
+    // The state the failing call left, read before anything else runs.
+    const [plan] = wallet.getNativeOperations!()
+    const afterFailure = await f.admission()
+    expect(f.rpc.broadcast).not.toHaveBeenCalled()
+    // Asked first, so that main e8d87c2d fails here with its own refusal.
+    const second = await wallet.sendNative({
+      recipient: { raw: recipient },
+      value: 1000n,
+    })
+    expect(plan).toMatchObject({
+      cancelled: true,
+      intendedValueWei: '1000',
+      members: [
+        { source: { kind: 'main', address: f.main }, signed: null, exposed: false },
+      ],
+    })
+    expect(afterFailure).toMatchObject({ status: 'ready', obligations: [] })
+    const operations = wallet.getNativeOperations!()
+    expect(operations).toHaveLength(2)
+    // Retained, not deleted, and untouched by the send that followed.
+    expect(operations[0]).toEqual(plan)
+    expect(second).toEqual({
+      txHash: operations[1]!.members[0]!.signed!.transactionHash,
+    })
+    expect(f.rpc.broadcast).toHaveBeenCalledTimes(1)
+    const sent = Transaction.from(f.rpc.broadcast.mock.calls[0]![0])
+    expect(sent.from).toBe(expected[0].main)
+    // The cancelled plan's nonce was never consumed: the second send uses it.
+    expect(sent.nonce).toBe(Transaction.from(plan!.members[0]!.unsignedTransaction).nonce)
+    await wallet.close()
+    const reopened = await f.open()
+    expect(reopened.wallet.getNativeOperations!()[0]).toEqual(plan)
+    expect(await reopened.admission()).toMatchObject({ status: 'ready' })
+  })
+
+  // Acceptance case 2 (and 5). On main e8d87c2d the pool account stays reserved for good:
+  // `isSpendReserved(0)` is true, in this session and after every reopen.
+  test('signing throws for a pool-sourced send: the plan is cancelled in that call, the pool account is no longer reserved, and it is spent by the next send', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { wallet } = f
+    const sign = jest
+      .spyOn(Wallet.prototype, 'signTransaction')
+      .mockRejectedValueOnce(new Error('fixture: signer unavailable'))
+    const failed = await outcome(f.sendFromPool())
+    sign.mockRestore()
+    expect((failed.error as Error).message).toBe('fixture: signer unavailable')
+    const [plan] = wallet.getNativeOperations!()
+    expect(plan).toMatchObject({
+      cancelled: true,
+      members: [
+        {
+          source: { kind: 'spend', index: 0, address: f.poolAddress },
+          signed: null,
+          exposed: false,
+        },
+      ],
+    })
+    expect(wallet.pool.isSpendReserved(0)).toBe(false)
+    expect(wallet.pool.getRecord(0)).toEqual(availableRow)
+    expect(wallet.pool.selectForStamp()).toMatchObject({ index: 0 })
+    expect(f.rpc.broadcast).not.toHaveBeenCalled()
+    await wallet.close()
+    const reopened = await f.open()
+    expect(reopened.wallet.pool.isSpendReserved(0)).toBe(false)
+    expect(reopened.wallet.getNativeOperations!()).toEqual([plan])
+    // The same send again, from the same account at the same nonce.
+    reopened.transport.mockResolvedValue({ payloadDigest: 'aa' } as never)
+    await reopened.sendFromPool()
+    const [, next] = reopened.wallet.getNativeOperations!()
+    expect(next!.members[0]!.source).toEqual(plan!.members[0]!.source)
+    expect(reopened.wallet.pool.getRecord(0)).toEqual(spentByMember(next!))
+    expect(await reopened.admission()).toMatchObject({ status: 'ready' })
+  })
+
+  // Acceptance cases 3 and 5. On main e8d87c2d both plans survive the reopen uncancelled, the
+  // pool account stays reserved, and the send from main fails with
+  // "Insufficient unreserved native funds".
+  test('a crash between the journal write and signing, then reopen: both plans are cancelled at open with no provider, relay or signer call, retained, and main is selectable again', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const mainPlan = await crashedPlan(
+      f,
+      { kind: 'main', address: f.main },
+      f.rpc.nonces.get(f.main) ?? 0,
+    )
+    const poolPlan = await crashedPlan(
+      f,
+      { kind: 'spend', address: f.poolAddress, index: 0 },
+      0,
+    )
+    expect(f.wallet.getNativeOperations!()).toEqual([mainPlan, poolPlan])
+    expect(f.wallet.pool.isSpendReserved(0)).toBe(true)
+    await f.wallet.close()
+    const counts = watchNetworkAndKeys()
+    const cancel = jest.spyOn(
+      EvmNativeOperationJournal.prototype,
+      'cancelUnsigned',
+    )
+    const reopened = await f.open()
+    // The whole open, the cancel included, touched no network and no key.
+    expect(counts()).toEqual(untouched)
+    expect(reopened.wallet.provider).toBeInstanceOf(JsonRpcProvider)
+    jest.mocked(globalThis.fetch).mockRestore()
+    expect(cancel.mock.calls.map(([id]) => id)).toEqual([
+      mainPlan.operationId,
+      poolPlan.operationId,
+    ])
+    expect(reopened.wallet.getNativeOperations!()).toEqual([
+      { ...mainPlan, cancelled: true },
+      { ...poolPlan, cancelled: true },
+    ])
+    expect(reopened.wallet.pool.isSpendReserved(0)).toBe(false)
+    expect(reopened.wallet.pool.getRecord(0)).toEqual(availableRow)
+    expect(await reopened.admission()).toMatchObject({
+      status: 'ready',
+      obligations: [],
+    })
+    // Only main can pay for this one.
+    reopened.rpc.balances.set(f.poolAddress, 0n)
+    reopened.rpc.broadcast.mockClear()
+    await reopened.sendFromMain()
+    expect(Transaction.from(reopened.rpc.broadcast.mock.calls[0]![0]).from).toBe(
+      expected[0].main,
+    )
+    // A second open has nothing left to cancel.
+    await reopened.wallet.close()
+    cancel.mockClear()
+    const again = await f.open()
+    expect(cancel).not.toHaveBeenCalled()
+    expect(again.wallet.getNativeOperations!().slice(0, 2)).toEqual([
+      { ...mainPlan, cancelled: true },
+      { ...poolPlan, cancelled: true },
+    ])
+  })
+
+  // On main e8d87c2d no cancel is attempted at open at all (the first assertion on `cancel`).
+  test('an open-time cancel that fails does not fail the open: the wallet opens with the plan as it was, and the next open cancels it', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const plan = await crashedPlan(
+      f,
+      { kind: 'main', address: f.main },
+      f.rpc.nonces.get(f.main) ?? 0,
+    )
+    await f.wallet.close()
+    const cancel = jest
+      .spyOn(EvmNativeOperationJournal.prototype, 'cancelUnsigned')
+      .mockRejectedValue(new Error('fixture: cancel failed'))
+    const warned = jest.spyOn(console, 'warn')
+    const errored = jest.spyOn(console, 'error')
+    const reopened = await f.open()
+    expect(cancel).toHaveBeenCalledTimes(1)
+    // Quiet: nothing is logged for it.
+    expect(warned).not.toHaveBeenCalled()
+    expect(errored).not.toHaveBeenCalled()
+    expect(reopened.wallet.getNativeOperations!()).toEqual([plan])
+    expect(await reopened.admission()).toMatchObject({ status: 'ready' })
+    await reopened.wallet.close()
+    cancel.mockRestore()
+    const again = await f.open()
+    expect(again.wallet.getNativeOperations!()).toEqual([
+      { ...plan, cancelled: true },
+    ])
+  })
+
+  // Acceptance case 4. Pin of the limit: main e8d87c2d does not cancel it either. What stays
+  // frozen here is the subject of #1230.
+  test('pin: a fan-in with its first member signed and its drain unsigned is not cancelled, by the failing send or at open; its accounts stay claimed', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { wallet } = f
+    // Neither account covers 150000 alone: the pool account leads, main feeds it.
+    f.rpc.balances.set(f.main, 80000n)
+    const real = Wallet.prototype.signTransaction
+    let signatures = 0
+    const sign = jest
+      .spyOn(Wallet.prototype, 'signTransaction')
+      .mockImplementation(function (this: Wallet, tx) {
+        return ++signatures === 2
+          ? Promise.reject(new Error('fixture: second signature refused'))
+          : real.call(this, tx)
+      })
+    const failed = await outcome(
+      wallet.sendLegacy!({ recipient: { raw: recipient }, value: 150000n }),
+    )
+    sign.mockRestore()
+    expect((failed.error as Error).message).toBe(
+      'fixture: second signature refused',
+    )
+    const [partial] = wallet.getNativeOperations!()
+    expect(partial!.members.map(m => [m.source.kind, m.signed !== null])).toEqual(
+      [
+        ['main', true],
+        ['spend', false],
+      ],
+    )
+    expect(partial!.cancelled).toBe(false)
+    expect(f.rpc.broadcast).not.toHaveBeenCalled()
+    await wallet.close()
+    const cancel = jest.spyOn(
+      EvmNativeOperationJournal.prototype,
+      'cancelUnsigned',
+    )
+    const reopened = await f.open()
+    expect(cancel).not.toHaveBeenCalled()
+    expect(reopened.wallet.getNativeOperations!()).toEqual([partial])
+    expect(reopened.wallet.pool.isSpendReserved(0)).toBe(true)
+    await expect(
+      reopened.wallet.cancelUnsignedNativeOperation!(partial!.operationId),
+    ).rejects.toThrow('conflict')
+    reopened.rpc.balances.set(f.main, 500000n)
+    await expect(
+      reopened.wallet.sendNative({ recipient: { raw: recipient }, value: 1000n }),
+    ).rejects.toThrow('Insufficient unreserved native funds')
+    expect(reopened.wallet.getNativeOperations!()).toHaveLength(1)
+  })
+
+  // Coordinator item 7. On main e8d87c2d: the send below is refused the same way, but its
+  // never-signed plan stays, the admission is `conflicting-authorization` from then on (in the
+  // session and after every reopen), and no later send of any kind is admitted.
+  test('a pool row spent by a transaction no native member owns, then a native plan from it at the next nonce: the send is refused, its plan is cancelled, and the admission is ready again; the same at open', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { wallet } = f
+    // What a paid message leaves: the account's own key spent part of it at nonce 0, recorded on
+    // the row through the real applier, with no native journal member. A residual remains.
+    const { rawTx, item } = await f.signedByPoolKey({ value: 1000n })
+    await applyWalletSyncItem(wallet, item)
+    expect(wallet.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx } },
+    })
+    f.rpc.nonces.set(f.poolAddress, 1)
+    f.rpc.balances.set(f.poolAddress, 99000n)
+    expect(await f.admission()).toMatchObject({ status: 'ready' })
+    // Only the residual covers this (main holds 40000): a native plan from the row at nonce 1.
+    const residualSend = () =>
+      outcome(
+        wallet.sendLegacy!({ recipient: { raw: recipient }, value: 60000n }),
+      )
+    const refused = await residualSend()
+    // The send's own error: the admission refuses to authorize the signature.
+    expect(refused.error).toMatchObject({
+      name: 'EvmInputAdmissionError',
+      reason: 'conflicting-authorization',
+    })
+    const [plan] = wallet.getNativeOperations!()
+    expect(plan).toMatchObject({
+      cancelled: true,
+      members: [
+        {
+          source: { kind: 'spend', index: 0, address: f.poolAddress },
+          signed: null,
+          exposed: false,
+        },
+      ],
+    })
+    expect(Transaction.from(plan!.members[0]!.unsignedTransaction).nonce).toBe(1)
+    expect(f.rpc.broadcast).not.toHaveBeenCalled()
+    expect(await f.admission()).toMatchObject({ status: 'ready' })
+    // The wallet is not stuck: a send main can cover is admitted, signed and broadcast.
+    await f.sendFromMain()
+    expect(f.rpc.broadcast).toHaveBeenCalledTimes(1)
+    expect(Transaction.from(f.rpc.broadcast.mock.calls[0]![0]).from).toBe(
+      expected[0].main,
+    )
+    // What remains: the residual itself is still unreachable. The same send is refused the
+    // same way every time (and cancelled every time).
+    f.rpc.balances.set(f.main, 40000n)
+    const again = await residualSend()
+    expect(again.error).toMatchObject({ reason: 'conflicting-authorization' })
+    expect(wallet.getNativeOperations!().map(row => row.cancelled)).toEqual([
+      true,
+      false,
+      true,
+    ])
+    expect(wallet.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx } },
+    })
+    expect(await f.admission()).toMatchObject({ status: 'ready' })
+    // At open: the state main leaves on disk, a never-signed plan at the next nonce, uncancelled.
+    const stuck = await crashedPlan(
+      f,
+      { kind: 'spend', address: f.poolAddress, index: 0 },
+      1,
+    )
+    expect(await f.admission()).toMatchObject({
+      status: 'unavailable',
+      reason: 'conflicting-authorization',
+    })
+    await wallet.close()
+    const reopened = await f.open()
+    expect(reopened.wallet.getNativeOperations!()[3]).toEqual({
+      ...stuck,
+      cancelled: true,
+    })
+    expect(await reopened.admission()).toMatchObject({ status: 'ready' })
+  })
+
+  // Pin (contract 3.5): a committed row is not undone when a later observation regresses.
+  test('pin: a member that regresses after its row was recorded keeps the row spent and the admission ready, also after a real reopen', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { wallet } = f
+    await outcome(f.sendFromPool())
+    const [included] = wallet.getNativeOperations!()
+    const row = spentByMember(included!)
+    expect(wallet.pool.getRecord(0)).toEqual(row)
+    // The node no longer returns the receipt; a later send's planning looks again.
+    f.withholdReceipts(true)
+    await f.sendFromMain()
+    const regressed = wallet.getNativeOperations!()[0]!
+    expect(regressed.members[0]!.observation.state).toBe('pending')
+    expect(wallet.pool.getRecord(0)).toEqual(row)
+    expect(await f.admission()).toMatchObject({ status: 'ready' })
+    await wallet.close()
+    const reopened = await f.open()
+    expect(await reopened.admission()).toMatchObject({ status: 'ready' })
+    expect(reopened.wallet.pool.getRecord(0)).toEqual(row)
+    expect(reopened.wallet.getNativeOperations!()[0]).toEqual(regressed)
+    expect(reopened.wallet.pool.selectForStamp()).toBeUndefined()
+  })
 })

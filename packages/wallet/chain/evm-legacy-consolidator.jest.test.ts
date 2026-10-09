@@ -22,7 +22,9 @@ import {
   type EvmNativeSource,
 } from '../storage/evm-native-operation-journal'
 import {
+  canonicalAdmissionPool,
   createEvmInputAdmission,
+  EvmInputAdmissionError,
   nativeJournalReader,
   poolSpendAdmission,
   type WalletOperationLifetime,
@@ -157,6 +159,10 @@ describe('wallet-lifetime EVM native operations', () => {
     options: {
       sources?: EvmNativeSource[]
       builder?: EvmTransactionBuilder
+      /** This fixture has no pool. `true` says so the way composition would have to: a local
+       * callback that reports every member as having no pool row. Without it the executor has
+       * no local result for any member and transports nothing (the fail-closed default). */
+      noPoolRows?: boolean
     } = {},
   ) {
     const sign = jest.fn(async (source: EvmNativeSource, raw: string) => {
@@ -172,6 +178,9 @@ describe('wallet-lifetime EVM native operations', () => {
       transactionBuilder: options.builder ?? new NativeEvmTransactionBuilder(),
       getSources: async () => options.sources ?? sources(),
       sign,
+      ...(options.noPoolRows
+        ? { applyLocalMember: async () => ({ kind: 'no-pool-row' as const }) }
+        : {}),
       onSyncTransaction: sync,
     })
     return { executor, sign, sync }
@@ -215,7 +224,13 @@ describe('wallet-lifetime EVM native operations', () => {
     const original = journal.list()[0]!
     expect(original.members[0]!.exposed).toBe(true)
     await reopen()
-    const second = owner(state, { sources: [] })
+    // #1235 Stage C changed this fixture on purpose. It used to configure neither local callback
+    // and still expect `sync` to be called once: with no callback the executor recorded every
+    // included member as locally applied, so transport ran, and the member was marked
+    // sync-applied, with nothing having been recorded anywhere. That default now fails closed
+    // (see "with neither local callback configured" below), so the fixture states what it
+    // means: this executor's members have no pool row.
+    const second = owner(state, { sources: [], noPoolRows: true })
     state.setMode('mine')
     const result = await second.executor.resumeLegacySend(original.operationId)
     await second.executor.resumeLegacySend(original.operationId)
@@ -578,7 +593,11 @@ describe('wallet-lifetime EVM native operations', () => {
   })
   it('keeps sync failure tied to the fulfilled original operation without another payment', async () => {
     const state = chain([200000n])
-    const current = owner(state)
+    // #1235 Stage C changed this fixture on purpose. With neither local callback configured the
+    // test expected `sync` to be attempted twice and the member to end sync-applied: that held
+    // only because the uncomposed default recorded the member as locally applied. The default
+    // now fails closed, so the fixture supplies the local result it relied on implicitly.
+    const current = owner(state, { noPoolRows: true })
     await current.executor.sendLegacy({
       recipient: { raw: recipient },
       value: 1000n,
@@ -671,6 +690,7 @@ describe('wallet-lifetime EVM native operations', () => {
     const lifetime: WalletOperationLifetime = Object.freeze({
       walletBindingId: location,
     })
+    let projected = 0
     const admission = createEvmInputAdmission({
       binding,
       native: journal,
@@ -678,13 +698,16 @@ describe('wallet-lifetime EVM native operations', () => {
       change,
       topic: new InMemoryTopicOperationJournal(),
       leases: new SubAccountLeaseManager(pool),
-      validate: () =>
+      // The admission validates its owners exactly once per projection: this counts projections.
+      validate: () => {
+        projected++
         validateMonadWalletState({
           pool,
           changePool: change,
           subKeyring: keyring,
           changeKeyring,
-        }),
+        })
+      },
       assertLifetime: token => {
         if (token !== lifetime) throw new Error('foreign lifetime')
       },
@@ -745,6 +768,7 @@ describe('wallet-lifetime EVM native operations', () => {
       classify,
       address,
       inspect,
+      projections: () => projected,
     }
   }
   const to = { raw: recipient }
@@ -1167,11 +1191,33 @@ describe('wallet-lifetime EVM native operations', () => {
     await c.executor
       .resumeOperation(journal.list()[2]!.operationId, c.lifetime)
       .catch(() => undefined)
+    // #1235 Stage C changed how rows 3 and 4 are built, not what is asserted. A send whose
+    // signing fails is now cancelled by that send, so it can no longer leave an unsigned,
+    // uncancelled plan behind; that state is what a crash between the journal write and the
+    // first signature leaves, written here the way the crash leaves it.
+    await journal.prepare({
+      kind: 'legacy',
+      recipient,
+      intendedValueWei: '20000',
+      members: [
+        {
+          source: { kind: 'spend', index: 3, address: c.address(3) },
+          dependencies: [],
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            chainId: 10143n,
+            nonce: 0,
+            to: recipient,
+            value: 20000n,
+            gasLimit: 21000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+          }).unsignedSerialized,
+        },
+      ],
+    }) // row 3: unsigned
     c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
-    await send(20000n) // row 3: unsigned
-    c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
-    await send(19000n) // row 4: unsigned, then cancelled
-    await journal.cancelUnsigned(journal.list()[4]!.operationId)
+    await send(19000n) // row 4: never signed, cancelled by its own send
     // Last, because the next send's planning would observe it: signed, never looked for.
     await send(18000n, async () => {
       throw new Error('fixture: never exposed')
@@ -1243,6 +1289,425 @@ describe('wallet-lifetime EVM native operations', () => {
     const error = await pending(c.executor.flushSync(second!.operationId))
     expect(error.operation.operationId).toBe(second!.operationId)
     expect(c.sync).not.toHaveBeenCalled()
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+  })
+  // ---------------------------------------------------------------------------------------
+  // Stage C of #1235: a plan that never signed is cancelled; held members are not re-projected.
+  // Each test names what it reproduces on main e8d87c2d, or says it is a pin.
+  // ---------------------------------------------------------------------------------------
+  /** An unsigned plan from pool row `index`, written the way a crash between the journal write and
+   * the first signature leaves it: through the journal, with no send. */
+  const crashedPlan = (c: Awaited<ReturnType<typeof composed>>, index: number) =>
+    journal.prepare({
+      kind: 'legacy',
+      recipient,
+      intendedValueWei: '1000',
+      members: [
+        {
+          source: { kind: 'spend', index, address: c.address(index) },
+          dependencies: [],
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            chainId: 10143n,
+            nonce: 0,
+            to: recipient,
+            value: 1000n,
+            gasLimit: 21000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+          }).unsignedSerialized,
+        },
+      ],
+    })
+  const calls = (c: Awaited<ReturnType<typeof composed>>) => ({
+    classify: c.classify.mock.calls.length,
+    apply: c.apply.mock.calls.length,
+  })
+
+  // On main e8d87c2d the plan stays unsigned and uncancelled, its account is frozen by
+  // `canSelect`, and the second send fails: "Insufficient unreserved native funds".
+  it.each(['sendNative', 'sendLegacy'] as const)(
+    'a %s whose signing fails is cancelled by that send: its own error is thrown, the row is retained, the account is released and sends again',
+    async method => {
+      const state = chain([])
+      const c = await composed(state, [200000n])
+      c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
+      await expect(
+        c.executor[method]({ recipient: to, value: 1000n }, c.lifetime),
+      ).rejects.toThrow('fixture: custody refused')
+      // The state the failing call left, read before anything else runs.
+      const [failed] = journal.list()
+      const afterFailure = {
+        selectable: journal.canSelect(c.address(0), 0),
+        reserved: journal.referencesSpendIndex(0),
+        admission: c.inspect(),
+        broadcasts: state.raws.length,
+      }
+      // Asked first, so that main e8d87c2d fails here with its own refusal.
+      const sent = await c.executor.sendNative(
+        { recipient: to, value: 1000n },
+        c.lifetime,
+      )
+      expect(failed).toMatchObject({
+        cancelled: true,
+        intendedValueWei: '1000',
+        members: [{ signed: null, exposed: false, source: { index: 0 } }],
+      })
+      expect(afterFailure).toMatchObject({
+        selectable: true,
+        reserved: false,
+        admission: { status: 'ready', obligations: [] },
+        broadcasts: 0,
+      })
+      const rows = journal.list()
+      expect(rows).toHaveLength(2)
+      // Retained, not deleted, and not touched by the send that followed it.
+      expect(rows[0]).toEqual(failed)
+      expect(sent.txHash).toBe(rows[1]!.members[0]!.signed!.transactionHash)
+      expect(Transaction.from(state.raws[0]!).nonce).toBe(0)
+      await reopen()
+      expect(journal.list()[0]).toEqual(failed)
+    },
+  )
+
+  // Pin of the limit. `cancelUnsignedOperations` does not exist on main e8d87c2d.
+  it('pin: a fan-in with one member signed and the next unsigned is never cancelled, by the failed send or by the open-time cancel', async () => {
+    const state = chain([])
+    const c = await composed(state, [100000n, 50000n, 45000n])
+    c.sign.mockImplementationOnce(c.sign.getMockImplementation()!)
+    c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
+    await expect(
+      c.executor.sendLegacy({ recipient: to, value: 110000n }, c.lifetime),
+    ).rejects.toThrow('fixture: custody refused')
+    const partial = journal.list()[0]!
+    expect(partial.members.map(m => m.signed !== null)).toEqual([
+      true,
+      false,
+      false,
+    ])
+    expect(partial.cancelled).toBe(false)
+    const cancel = jest.spyOn(journal, 'cancelUnsigned')
+    await c.executor.cancelUnsignedOperations(c.lifetime)
+    // Not even asked: the consolidator reads the row first, and the journal would refuse.
+    expect(cancel).not.toHaveBeenCalled()
+    await expect(journal.cancelUnsigned(partial.operationId)).rejects.toThrow(
+      'conflict',
+    )
+    expect(journal.list()).toEqual([partial])
+    // Every member's account stays claimed, the unsigned ones included.
+    for (const index of [0, 1, 2]) {
+      expect(journal.canSelect(c.address(index), 0)).toBe(false)
+      expect(journal.referencesSpendIndex(index)).toBe(true)
+    }
+    expect(state.raws).toEqual([])
+  })
+
+  // On main e8d87c2d nothing cancels the crashed plan: the method does not exist.
+  it('the open-time cancel releases every never-signed plan and nothing else, with no provider call, no signature and no local pass; a second run writes nothing', async () => {
+    const state = chain([])
+    const c = await composed(state, [200000n, 150000n, 100000n, 50000n])
+    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime) // row 0: included
+    await c.executor
+      .sendLegacy(
+        {
+          recipient: to,
+          value: 100000n,
+          onSigned: async () => {
+            throw new Error('fixture: never exposed')
+          },
+        },
+        c.lifetime,
+      )
+      .catch(() => undefined) // row 1: signed, never exposed
+    await crashedPlan(c, 2)
+    await crashedPlan(c, 3)
+    const before = journal.list()
+    expect(before.map(r => r.cancelled)).toEqual([false, false, false, false])
+    const provider = providerCalls(state)
+    const signatures = c.sign.mock.calls.length
+    const local = calls(c)
+    const cancel = jest.spyOn(journal, 'cancelUnsigned')
+    await c.executor.cancelUnsignedOperations(c.lifetime)
+    expect(journal.list()).toEqual([
+      before[0],
+      before[1],
+      { ...before[2], cancelled: true },
+      { ...before[3], cancelled: true },
+    ])
+    expect(cancel).toHaveBeenCalledTimes(2)
+    expect(providerCalls(state)).toBe(provider)
+    expect(c.sign.mock.calls.length).toBe(signatures)
+    expect(calls(c)).toEqual(local)
+    expect(state.raws).toHaveLength(1)
+    expect(journal.canSelect(c.address(2), 0)).toBe(true)
+    expect(journal.referencesSpendIndex(3)).toBe(false)
+    expect(journal.canSelect(c.address(1), 0)).toBe(false)
+    await c.executor.cancelUnsignedOperations(c.lifetime)
+    expect(cancel).toHaveBeenCalledTimes(2)
+  })
+
+  // On main e8d87c2d a failed resume of a never-signed plan leaves it standing.
+  it('a cancel that fails changes nothing the caller sees: the send still throws its own error, the open-time cancel does not throw, and a later failed resume cancels the plan', async () => {
+    const state = chain([])
+    const c = await composed(state, [200000n])
+    const cancel = jest
+      .spyOn(journal, 'cancelUnsigned')
+      .mockRejectedValueOnce(new Error('fixture: cancel failed'))
+    c.sign.mockRejectedValueOnce(new Error('fixture: custody refused'))
+    await expect(
+      c.executor.sendNative({ recipient: to, value: 1000n }, c.lifetime),
+    ).rejects.toThrow('fixture: custody refused')
+    expect(cancel).toHaveBeenCalledTimes(1)
+    const id = journal.list()[0]!.operationId
+    expect(journal.list()[0]!.cancelled).toBe(false)
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+    // The open-time cancel never throws: not when the cancel is refused, not when the journal
+    // cannot be read.
+    cancel.mockRejectedValueOnce(new Error('fixture: cancel failed'))
+    await expect(
+      c.executor.cancelUnsignedOperations(c.lifetime),
+    ).resolves.toBeUndefined()
+    const list = jest.spyOn(journal, 'list').mockImplementationOnce(() => {
+      throw new Error('fixture: journal unreadable')
+    })
+    await expect(
+      c.executor.cancelUnsignedOperations(c.lifetime),
+    ).resolves.toBeUndefined()
+    list.mockRestore()
+    expect(journal.list()[0]!.cancelled).toBe(false)
+    // Resuming it, with custody still refusing: the resume's own error, and the plan is cancelled.
+    c.sign.mockRejectedValueOnce(new Error('fixture: custody refused again'))
+    await expect(c.executor.resumeOperation(id, c.lifetime)).rejects.toThrow(
+      'fixture: custody refused again',
+    )
+    expect(journal.list()[0]!.cancelled).toBe(true)
+    await expect(c.executor.resumeOperation(id, c.lifetime)).rejects.toThrow(
+      'Native operation was cancelled',
+    )
+    expect(state.raws).toEqual([])
+  })
+
+  // On main e8d87c2d an executor with neither local callback records the member as applied:
+  // `sync` is called and the member is marked sync-applied with nothing recorded anywhere.
+  it('with neither local callback configured a member has no local result: it is held, never transported and never marked', async () => {
+    const state = chain([200000n])
+    const current = owner(state)
+    await current.executor.sendLegacy({ recipient: to, value: 1000n })
+    const row = journal.list()[0]!
+    expect(row.members[0]!.observation.state).toBe('included-success')
+    const marked = jest.spyOn(journal, 'markSyncApplied')
+    const one = await pending(current.executor.flushSync(row.operationId))
+    expect(one.operation.operationId).toBe(row.operationId)
+    expect(String(one.reason)).toContain('no local spend record')
+    await current.executor.resumeLegacySend(row.operationId)
+    await pending(current.executor.flushSync())
+    expect(current.sync).not.toHaveBeenCalled()
+    expect(marked).not.toHaveBeenCalled()
+    expect(journal.list()[0]!.members[0]!.syncApplied).toBe(false)
+  })
+
+  // Coordinator item 1(a). On main e8d87c2d every pass classifies and applies the held member
+  // again: `apply` is called once per resume below, each one a mutation section and two
+  // projections.
+  it('a member held behind a later member on its address costs nothing on later passes, and is applied by the first pass after that member resolves', async () => {
+    const state = chain([])
+    const c = await composed(state, [300000n, 50000n])
+    // Both from row 0. The first is mined at its broadcast; the node then keeps the second's
+    // broadcast without mining it. The second send's planning saw the first included, and its
+    // pass was refused: the second member holds the address.
+    await c.executor.sendNative({ recipient: to, value: 100000n }, c.lifetime)
+    state.setMode('retained')
+    await c.executor.sendNative({ recipient: to, value: 50000n }, c.lifetime)
+    const [first, second] = journal.list()
+    expect(c.apply.mock.calls).toEqual([[first!.operationId, 0, c.lifetime]])
+    await expect(c.apply.mock.results[0]!.value).rejects.toMatchObject({
+      reason: 'conflicting-authorization',
+    })
+    expect(journal.get(second!.operationId).members[0]!.observation.state).toBe(
+      'missing',
+    )
+    // Repeated passes with nothing changed for that address: a resume of the second operation
+    // looks for its transaction again and still does not find it. The pass reaches the admission
+    // only through the two callbacks, so no call is no projection and no mutation section.
+    for (let pass = 0; pass < 5; pass++) {
+      await c.executor.resumeOperation(second!.operationId, c.lifetime)
+      expect(calls(c)).toEqual({ classify: 1, apply: 1 })
+    }
+    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    await pending(c.executor.flushSync(first!.operationId))
+    // The blocker resolves: the second transaction is mined, and a send from another row
+    // observes it. The journal state of row 0's address changed, so that same send's pass
+    // applies the first member.
+    state.mine(second!.members[0]!.signed!.rawTransaction)
+    state.setMode('mine')
+    state.balances.set(c.address(1), 400000n)
+    await c.executor.sendNative({ recipient: to, value: 350000n }, c.lifetime)
+    expect(journal.get(second!.operationId).members[0]!.observation.state).toBe(
+      'included-success',
+    )
+    expect(c.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx: first!.members[0]!.signed!.rawTransaction } },
+    })
+    expect(c.apply.mock.calls.map(([id]) => id)).toEqual([
+      first!.operationId,
+      first!.operationId,
+    ])
+    // The second member is now held for good, from the snapshot alone.
+    expect(c.classify).toHaveLastReturnedWith('held-terminal')
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+  })
+
+  // Coordinator item 1(b)/(c): a blocker the journal does not show. On main e8d87c2d `apply` is
+  // called by every pass, and the member is applied by the first pass after the blocker clears.
+  it('a refusal the journal cannot explain is remembered for 16 passes and then tried once: the hold outlives its cause by at most that, and is never remembered as applied', async () => {
+    const state = chain([])
+    let blocked = true
+    let real!: (id: string, i: number) => Promise<unknown>
+    const c = await composed(state, [200000n], {
+      applyLocalMember: async (id, i) => {
+        if (blocked) throw new EvmInputAdmissionError('conflicting-authorization')
+        return real(id, i) as never
+      },
+    })
+    real = (id, i) =>
+      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
+    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
+    const row = journal.list()[0]!
+    expect(calls(c)).toEqual({ classify: 1, apply: 1 })
+    // The cause ends at once, in a way the consolidator cannot see.
+    blocked = false
+    for (let pass = 0; pass < 16; pass++) {
+      await c.executor.resumeLegacySend(row.operationId, c.lifetime)
+      expect(calls(c)).toEqual({ classify: 1, apply: 1 })
+    }
+    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    // Still held, so still not transported.
+    await pending(c.executor.flushSync(row.operationId))
+    expect(c.sync).not.toHaveBeenCalled()
+    await c.executor.resumeLegacySend(row.operationId, c.lifetime)
+    expect(calls(c)).toEqual({ classify: 2, apply: 2 })
+    expect(c.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx: row.members[0]!.signed!.rawTransaction } },
+    })
+    await c.executor.flushSync(row.operationId)
+    expect(c.sync).toHaveBeenCalledTimes(1)
+  })
+
+  // Coordinator item 1(d). On main e8d87c2d classification answers `needs-apply` under a
+  // conflicting projection and every pass, also after a refused resume, enters the admission.
+  it('hand-built: under an already-conflicting admission the pass does nothing and cannot replace the failing call\'s error; once the never-signed plan is cancelled the next pass applies the member', async () => {
+    const state = chain([])
+    let transient = true
+    let real!: (id: string, i: number) => Promise<unknown>
+    const c = await composed(state, [200000n, 150000n], {
+      applyLocalMember: async (id, i) => {
+        if (transient) {
+          transient = false
+          throw new Error('fixture: transient failure')
+        }
+        return real(id, i) as never
+      },
+    })
+    real = (id, i) =>
+      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
+    // Included in its own call, and left unapplied by an unexplained failure (not remembered).
+    const result = await c.executor.sendLegacy(
+      { recipient: to, value: 100000n },
+      c.lifetime,
+    )
+    const a = journal.list()[0]!
+    expect(calls(c)).toEqual({ classify: 1, apply: 1 })
+    // Hand-built conflict: a never-signed plan on row 1, whose row is then terminal with no
+    // checkpoint.
+    const plan = await crashedPlan(c, 1)
+    c.pool.setStatus(1, 'in-use')
+    c.pool.setStatus(1, 'spent')
+    await c.pool.flush()
+    expect(c.inspect()).toMatchObject({ reason: 'conflicting-authorization' })
+    const refused = async () => {
+      const before = c.projections()
+      await expect(
+        c.executor.resumeLegacySend(a.operationId, c.lifetime),
+      ).rejects.toMatchObject({
+        name: 'EvmInputAdmissionError',
+        reason: 'conflicting-authorization',
+      })
+      return c.projections() - before
+    }
+    // The first pass asks once (one projection, in classification) and enters no section.
+    const first = await refused()
+    expect(c.classify).toHaveLastReturnedWith('not-eligible')
+    expect(calls(c)).toEqual({ classify: 2, apply: 1 })
+    // Every later pass: nothing. The resume's own refusal is its one projection.
+    for (let pass = 0; pass < 5; pass++) {
+      expect(await refused()).toBe(first - 1)
+      expect(calls(c)).toEqual({ classify: 2, apply: 1 })
+    }
+    expect(first - 1).toBe(1)
+    // A failed resume never cancels an operation that signed.
+    expect(journal.get(a.operationId).cancelled).toBe(false)
+    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    // What wallet open does. The journal changed, so the next pass looks again.
+    await c.executor.cancelUnsignedOperations(c.lifetime)
+    expect(journal.get(plan.operationId).cancelled).toBe(true)
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+    expect(
+      await c.executor.resumeLegacySend(a.operationId, c.lifetime),
+    ).toEqual(result)
+    expect(c.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx: a.members[0]!.signed!.rawTransaction } },
+    })
+    expect(calls(c)).toEqual({ classify: 3, apply: 2 })
+  })
+
+  // Coordinator item 1(c). On main e8d87c2d classification answers `needs-apply` for the leased
+  // row and every pass enters the admission, where the pool refuses (`held`).
+  it('hand-built: a native member whose row is in-use under a live lease is not applied and costs nothing per pass; released unused, it is applied by the next native send', async () => {
+    const state = chain([])
+    let transient = true
+    let real!: (id: string, i: number) => Promise<unknown>
+    const c = await composed(state, [200000n, 150000n], {
+      applyLocalMember: async (id, i) => {
+        if (transient) {
+          transient = false
+          throw new Error('fixture: transient failure')
+        }
+        return real(id, i) as never
+      },
+    })
+    real = (id, i) =>
+      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
+    // Hand-built: the row is made `available` so that a lease can be taken on it afterwards.
+    c.pool.setStatus(0, 'available')
+    await c.pool.flush()
+    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
+    const a = journal.list()[0]!
+    expect(a.members[0]!.source).toMatchObject({ index: 0 })
+    const leases = canonicalAdmissionPool(c.admission, c.lifetime)
+    const lease = await leases.acquire(0)
+    expect(c.pool.getRecord(0)!.status).toBe('in-use')
+    const held = calls(c)
+    for (let pass = 0; pass < 4; pass++) {
+      await c.executor
+        .resumeLegacySend(a.operationId, c.lifetime)
+        .catch(() => undefined)
+      // Asked once, by the first of these passes; never applied.
+      expect(calls(c)).toEqual({ classify: held.classify + 1, apply: held.apply })
+    }
+    expect(c.classify).toHaveLastReturnedWith('not-eligible')
+    expect(c.pool.getRecord(0)).toMatchObject({ status: 'in-use' })
+    expect(c.pool.getRecord(0)!.lifecycle?.spend).toBeUndefined()
+    await leases.release(lease, 'unused')
+    expect(c.pool.getRecord(0)!.status).toBe('available')
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+    await c.executor.sendLegacy({ recipient: to, value: 120000n }, c.lifetime)
+    expect(c.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx: a.members[0]!.signed!.rawTransaction } },
+    })
     expect(c.inspect()).toMatchObject({ status: 'ready' })
   })
 })

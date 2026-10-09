@@ -1,4 +1,5 @@
 import {
+  EvmInputAdmissionError,
   nativeAdmissionJournal,
   type EvmInputAdmission,
   type WalletOperationLifetime,
@@ -91,6 +92,35 @@ interface AvailableSource {
   account: EvmNativeAccountObservation
   spendableValue: bigint
 }
+/** A hold the local pass remembers. `basis` is the journal state it was held under. */
+interface RememberedHold {
+  readonly reason: string
+  readonly basis: string
+  skipped: number
+}
+/** How many consecutive passes skip a remembered hold whose journal basis has not changed before
+ * it is tried once more. What can end a hold without a journal change (a canonical or topic
+ * operation finishing, a lease released, a pool row changing) is invisible from here, so this
+ * bounds how long such a hold outlives its cause: at most this many native sends or resumes. */
+const HELD_RETRY_PASSES = 16
+/** The reason of a refusal that states what the wallet's own records say: the admission's
+ * (`conflicting-authorization`, `invalid-provenance`) or the pool's
+ * (`SubAccountSpendRefusedError`). Anything else (a write that failed, a lifetime that ended, an
+ * unknown throw) is not known to be a hold and is not remembered as one. */
+function refusalReason(error: unknown): string | undefined {
+  if (error instanceof EvmInputAdmissionError)
+    return error.reason === 'conflicting-authorization' ||
+      error.reason === 'invalid-provenance'
+      ? error.reason
+      : undefined
+  if (
+    error instanceof Error &&
+    error.name === 'SubAccountSpendRefusedError' &&
+    typeof (error as { code?: unknown }).code === 'string'
+  )
+    return `pool:${(error as unknown as { code: string }).code}`
+  return undefined
+}
 
 /** Wallet-lifetime native executor. Journal owns recovery; this module owns dependencies. */
 export class EvmLegacyConsolidator {
@@ -100,6 +130,29 @@ export class EvmLegacyConsolidator {
   /** This session's local result per member (`operationId:memberIndex`), written only by the
    * local pass. In memory on purpose: it gates transport, and the pool row is the record. */
   private readonly localResults = new Map<string, 'applied' | 'held'>()
+  /**
+   * Holds the local pass remembers, per member (`operationId:memberIndex`), so a member that was
+   * refused is not classified and applied again by every later pass. Process memory only: never
+   * persisted, gone on reopen.
+   *
+   * Only a HOLD is ever remembered. Nothing here records "applied", "no pool row" or "not
+   * reserved", and a remembered hold only ever skips work that would have been refused: it can
+   * delay a write, never stand in for one, and it takes no part in any selection.
+   *
+   * A remembered hold is dropped, and the member classified and applied afresh, when
+   * - the journal state of its source address changes: any non-cancelled operation's member on
+   *   that address is added, cancelled, signed, or observed in another state. That covers the
+   *   member itself and every native member that can hold the address against it (a later member
+   *   pending, an unsigned plan); or
+   * - `HELD_RETRY_PASSES` passes have skipped it. Every other owner that can hold the row (a
+   *   canonical or topic operation, a lease, a funding attempt) changes without the journal
+   *   changing, and the consolidator cannot see it.
+   */
+  private holds = new Map<string, RememberedHold>()
+  /** The whole pass, held: the admission's projection was not ready (conflicting, invalid or
+   * uncertain), which holds every member alike. Its basis is the whole journal's state, because
+   * a change to any operation (a cancelled plan, an observation) can make the projection ready. */
+  private admissionHold?: RememberedHold
   constructor(private readonly config: EvmLegacyConsolidatorConfig) {}
   private run<T>(task: () => Promise<T>): Promise<T> {
     const run = this.tail.then(task)
@@ -515,13 +568,45 @@ export class EvmLegacyConsolidator {
    *
    * It makes no network request and asks for no signature. A member that is applied, has no pool
    * row, or can never apply costs one classification from the snapshot; only `needs-apply`
-   * enters the admission. It never throws: nothing here may replace the send's own outcome.
+   * enters the admission, and a member (or a whole pass) that was refused is not tried again
+   * until its remembered hold is dropped (`holds`). It never throws: nothing here may replace
+   * the send's own outcome.
    */
   private async localPass(lifetime?: WalletOperationLifetime): Promise<void> {
     try {
       const { classifyLocalMember: classify, applyLocalMember: apply } =
         this.config
-      for (const row of this.config.journal.list()) {
+      const rows = this.config.journal.list()
+      // The journal state a hold was taken under: per source address, and for the whole journal.
+      const byAddress = new Map<string, string>()
+      let whole = ''
+      for (const row of rows) {
+        if (row.cancelled) continue
+        row.members.forEach((member, i) => {
+          const state = `${row.operationId}:${i}:${member.signed ? 1 : 0}:${
+            member.observation.state
+          };`
+          whole += state
+          byAddress.set(
+            member.source.address,
+            (byAddress.get(member.source.address) ?? '') + state,
+          )
+        })
+      }
+      const stillHeld = (hold: RememberedHold | undefined, basis: string) => {
+        if (
+          !hold ||
+          hold.basis !== basis ||
+          hold.skipped >= HELD_RETRY_PASSES
+        )
+          return false
+        hold.skipped++
+        return true
+      }
+      if (stillHeld(this.admissionHold, whole)) return
+      this.admissionHold = undefined
+      const holds = new Map<string, RememberedHold>()
+      for (const row of rows) {
         if (row.cancelled) continue
         for (let i = 0; i < row.members.length; i++) {
           const member = row.members[i]!
@@ -531,39 +616,106 @@ export class EvmLegacyConsolidator {
             member.syncApplied
           )
             continue
+          const key = `${row.operationId}:${i}`
+          const basis = byAddress.get(member.source.address)!
           let result: 'applied' | 'held' = 'held'
-          try {
-            // An executor composed with no local state has nothing to record on.
-            const kind = classify
-              ? classify(row, i, lifetime)
-              : apply
-              ? 'needs-apply'
-              : 'no-pool-row'
-            if (kind === 'applied' || kind === 'no-pool-row') result = 'applied'
-            else if (kind === 'needs-apply' && apply) {
-              await apply(row.operationId, i, lifetime)
-              result = 'applied'
+          const remembered = this.holds.get(key)
+          if (this.admissionHold) {
+            /* The projection is not ready: nothing more is classified or applied in this pass. */
+          } else if (stillHeld(remembered, basis)) holds.set(key, remembered!)
+          else
+            try {
+              // With no local callback there is nothing to record on, and so no local result:
+              // held, so transport and `markSyncApplied` cannot proceed without one.
+              const kind = classify
+                ? classify(row, i, lifetime)
+                : apply
+                ? 'needs-apply'
+                : 'held-terminal'
+              if (kind === 'applied' || kind === 'no-pool-row')
+                result = 'applied'
+              else if (kind === 'needs-apply' && apply) {
+                await apply(row.operationId, i, lifetime)
+                result = 'applied'
+              } else if (kind === 'not-eligible')
+                // The snapshot says this member is eligible, so the refusal is the admission's.
+                this.admissionHold = {
+                  reason: 'admission-not-ready',
+                  basis: whole,
+                  skipped: 0,
+                }
+            } catch (error) {
+              const reason = refusalReason(error)
+              if (reason !== undefined)
+                holds.set(key, { reason, basis, skipped: 0 })
+              /* Otherwise held for this pass only: retried by the next one. */
             }
-          } catch {
-            /* Held: retried by the next pass. */
-          }
-          this.localResults.set(`${row.operationId}:${i}`, result)
+          this.localResults.set(key, result)
         }
       }
+      this.holds = holds
     } catch {
       /* An unreadable journal leaves every result as it was. */
     }
   }
-  /** Runs `body` on the executor queue and then the local pass, in the same hold. The pass runs
-   * whether `body` returned or threw and cannot change either. */
-  private runWithLocalPass<T>(
-    lifetime: WalletOperationLifetime | undefined,
-    body: () => Promise<T>,
-  ): Promise<T> {
+  /**
+   * Cancels an operation when the journal says no member of it was ever signed or exposed: a
+   * plan that failed before its first signature. Such a plan can never land, yet while it stands
+   * it reserves its pool accounts and freezes its source address, the main account included, for
+   * every later native send. The journal's own rule decides (`cancelUnsigned` refuses anything
+   * signed or exposed) and the row is retained, cancelled. `read` is the current row. Never throws.
+   */
+  private async cancelIfNeverSigned(
+    read: () => EvmNativeOperation,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<void> {
+    try {
+      const row = read()
+      if (row.cancelled || row.members.some(m => m.signed || m.exposed)) return
+      await this.journal(lifetime).cancelUnsigned(row.operationId)
+    } catch {
+      /* Left as it was: the next wallet open cancels it. */
+    }
+  }
+  /**
+   * Wallet open: cancels every operation no member of which was ever signed or exposed (a crash
+   * or failure between `prepare` and the first signature). Local only: it reads and writes the
+   * journal, makes no network request, asks for no signature, and never throws.
+   */
+  cancelUnsignedOperations(lifetime?: WalletOperationLifetime): Promise<void> {
     return this.run(async () => {
       try {
-        return await body()
+        for (const row of this.config.journal.list())
+          await this.cancelIfNeverSigned(() => row, lifetime)
+      } catch {
+        /* An unreadable journal cancels nothing. */
+      }
+    })
+  }
+  /** Runs `body` on the executor queue, then in the same hold: if `body` threw, cancels the
+   * operation it names when that operation never signed; then the local pass. Neither can change
+   * what `body` returned or threw. */
+  private runWithLocalPass<T>(
+    lifetime: WalletOperationLifetime | undefined,
+    body: (planned: (operationId: string) => void) => Promise<T>,
+  ): Promise<T> {
+    return this.run(async () => {
+      let operationId: string | undefined
+      let failed = true
+      try {
+        const result = await body(id => {
+          operationId = id
+        })
+        failed = false
+        return result
       } finally {
+        if (failed && operationId !== undefined) {
+          const id = operationId
+          await this.cancelIfNeverSigned(
+            () => this.config.journal.get(id),
+            lifetime,
+          )
+        }
         await this.localPass(lifetime).catch(() => undefined)
       }
     })
@@ -652,9 +804,10 @@ export class EvmLegacyConsolidator {
   ): Promise<EvmNativeOperation> {
     const existing = this.active.get(operationId)
     if (existing) return existing
-    const run = this.runWithLocalPass(lifetime, () =>
-      this.execute(operationId, undefined, lifetime),
-    )
+    const run = this.runWithLocalPass(lifetime, planned => {
+      planned(operationId)
+      return this.execute(operationId, undefined, lifetime)
+    })
     this.active.set(operationId, run)
     void run
       .finally(() => {
@@ -669,8 +822,9 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<ChainTransaction> {
     params = { ...params, recipient: { ...params.recipient } }
-    return this.runWithLocalPass(lifetime, async () => {
+    return this.runWithLocalPass(lifetime, async planned => {
       const row = await this.plan(params, 'native', lifetime)
+      planned(row.operationId)
       return this.transactionHandle(
         await this.execute(row.operationId, params.onSigned, lifetime),
       )
@@ -681,9 +835,10 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<LegacySendResult> {
     params = { ...params, recipient: { ...params.recipient } }
-    return this.runWithLocalPass(lifetime, async () => {
+    return this.runWithLocalPass(lifetime, async planned => {
       params.onProgress?.({ status: { stage: 'planning' } })
       const row = await this.plan(params, 'legacy', lifetime)
+      planned(row.operationId)
       const completed = await this.execute(
         row.operationId,
         params.onSigned,

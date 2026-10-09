@@ -2260,6 +2260,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
             })
           );
+          // Wallet open, native operations. Local only: nothing in this block may make a network
+          // request, ask for a signature or fail the open, and each step stands alone.
+          // A plan that never signed (a crash or failure between the journal write and the first
+          // signature) is cancelled here. That ends its reservation of its pool accounts and its
+          // freeze of its source address; the journal row is retained, cancelled.
+          await topicOwner
+            .runLifetime((lifetime) =>
+              nativeOperationOwners
+                .get(wallet)!
+                .cancelUnsignedOperations(lifetime)
+            )
+            .catch(() => undefined);
           topicOwnerWallet = wallet;
           privateTopicWallets.set(wallet, {
             ...wallet,

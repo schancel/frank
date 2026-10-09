@@ -53,6 +53,12 @@
       "url": "https://github.com/schancel/frank/issues/1283",
       "publishedAt": "2026-10-09T11:02:06.810373+00:00",
       "bodyPath": "docs/plans/wallet-messaging-baseline/followups/native-fee-copy.md"
+    },
+    "native-sync-outcome": {
+      "title": "[bug] Show native payment outcome separately from pending synchronization",
+      "url": "https://github.com/schancel/frank/issues/1289",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/native-sync-outcome.md",
+      "status": "accepted U0; awaiting implementation slot"
     }
   },
   "edges": {
@@ -130,5 +136,10 @@
       "url": "https://github.com/schancel/frank/issues/1283#issuecomment-6080309543",
       "landed": "5c6a7efc65fb1e2b260e82952e9987901b88261b"
     }
+  },
+  "auditComments": {
+    "registry-source": "https://github.com/schancel/frank/issues/1238#issuecomment-6080381156",
+    "evm-boundaries": "https://github.com/schancel/frank/issues/1240#issuecomment-6080382559",
+    "vendor-codec": "https://github.com/schancel/frank/issues/784#issuecomment-6080385274"
   }
 }

@@ -393,6 +393,37 @@ describe("createMonadChain: createWallet", () => {
     expect(MonadAccountTxSigner).not.toHaveBeenCalled();
   });
 
+  it("caches getBalance across repeated calls within TTL and invalidates upon invalidateBalanceCache", async () => {
+    const uniqueSeed = {
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    };
+    const wallet = (await chain.createWallet(
+      uniqueSeed
+    )) as MonadChainWalletHandle;
+
+    let balance = 100_000n;
+    const getBalance = jest.fn(async () => balance);
+    wallet.provider.getBalance = getBalance;
+
+    // First call: queries provider
+    const bal1 = await wallet.getBalance();
+    expect(bal1).toBe(100_000n);
+    expect(getBalance).toHaveBeenCalledTimes(1);
+
+    // Second call within TTL: served from cache without RPC call
+    const bal2 = await wallet.getBalance();
+    expect(bal2).toBe(100_000n);
+    expect(getBalance).toHaveBeenCalledTimes(1);
+
+    // invalidateBalanceCache clears cached balance
+    wallet.invalidateBalanceCache?.();
+    balance = 250_000n;
+    const bal3 = await wallet.getBalance();
+    expect(bal3).toBe(250_000n);
+    expect(getBalance).toHaveBeenCalledTimes(2);
+  });
+
   it("reconciles a restored successful native attempt before a later send", async () => {
     const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore();
     const isolatedConfig = { ...TEST_CONFIG, nativeAttemptStore };

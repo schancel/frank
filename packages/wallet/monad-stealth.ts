@@ -169,15 +169,56 @@ export class MemoryMonadStealthKeyringStore implements MonadStealthKeyringStore 
   }
 }
 
+export const DEFAULT_STEALTH_BALANCE_CACHE_TTL_MS = 45_000
+
+export interface MonadStealthKeyringOptions {
+  balanceCacheTtlMs?: number
+  onAccountAdded?: (record: StealthAccountRecord) => void
+  onSpendRecorded?: (record: StealthAccountRecord) => void
+  onBalanceUpdated?: (record: StealthAccountRecord) => void
+}
+
 /**
  * Keyring managing discovered stealth accounts without sweeping.
  * Funds stay in individual stealth accounts; the wallet spends directly from them.
  */
 export class MonadStealthKeyring {
   private readonly store: MonadStealthKeyringStore
+  private readonly balanceCacheTtlMs: number
+  private readonly options?: MonadStealthKeyringOptions
+  private readonly balanceCache = new Map<
+    string,
+    { balance: bigint; cachedAtMs: number }
+  >()
+  private readonly inFlightQueries = new Map<string, Promise<bigint>>()
 
-  constructor(store?: MonadStealthKeyringStore) {
+  constructor(
+    store?: MonadStealthKeyringStore,
+    options?: MonadStealthKeyringOptions,
+  ) {
     this.store = store ?? new MemoryMonadStealthKeyringStore()
+    this.balanceCacheTtlMs =
+      options?.balanceCacheTtlMs ?? DEFAULT_STEALTH_BALANCE_CACHE_TTL_MS
+    this.options = options
+  }
+
+  private normalizeTag(networkTag?: string): string {
+    return networkTag ? networkTag.toLowerCase() : '__all__'
+  }
+
+  /**
+   * Invalidate in-memory total balance cache for a given networkTag or all tags.
+   */
+  invalidateBalanceCache(networkTag?: string): void {
+    if (networkTag) {
+      this.balanceCache.delete(networkTag.toLowerCase())
+      this.balanceCache.delete('__all__')
+      this.inFlightQueries.delete(networkTag.toLowerCase())
+      this.inFlightQueries.delete('__all__')
+    } else {
+      this.balanceCache.clear()
+      this.inFlightQueries.clear()
+    }
   }
 
   async addAccount(record: StealthAccountRecord): Promise<boolean> {
@@ -195,6 +236,8 @@ export class MonadStealthKeyring {
         record.lastUpdatedMs ?? record.discoveredAtMs ?? Date.now(),
     }
     await this.store.put(fullRecord)
+    this.invalidateBalanceCache(record.networkTag)
+    this.options?.onAccountAdded?.(fullRecord)
     return true
   }
 
@@ -219,6 +262,8 @@ export class MonadStealthKeyring {
       ...(details?.txHash ? { txHash: details.txHash } : {}),
     }
     await this.store.put(updated)
+    this.invalidateBalanceCache(record.networkTag)
+    this.options?.onSpendRecorded?.(updated)
     return updated
   }
 
@@ -236,6 +281,8 @@ export class MonadStealthKeyring {
       lastUpdatedMs: Date.now(),
     }
     await this.store.put(updated)
+    this.invalidateBalanceCache(record.networkTag)
+    this.options?.onBalanceUpdated?.(updated)
     return updated
   }
 
@@ -257,28 +304,86 @@ export class MonadStealthKeyring {
 
   /**
    * Sums the spendable on-chain balance of all registered stealth accounts for a given network.
-   * Skips spent accounts.
+   * Skips spent accounts. Caches result in-memory with a TTL per networkTag.
    */
   async getTotalBalance(
     provider: Provider,
     networkTag?: string,
   ): Promise<bigint> {
-    const accounts = this.getAccounts(networkTag).filter(a => !a.isSpent)
-    if (accounts.length === 0) return 0n
+    const cacheKey = this.normalizeTag(networkTag)
+    const cached = this.balanceCache.get(cacheKey)
+    if (cached && Date.now() - cached.cachedAtMs < this.balanceCacheTtlMs) {
+      return cached.balance
+    }
 
-    const balances = await Promise.all(
-      accounts.map(async account => {
-        try {
-          const bal = await provider.getBalance(account.address)
-          await this.updateBalance(account.address, bal)
-          return bal
-        } catch {
+    const running = this.inFlightQueries.get(cacheKey)
+    if (running) {
+      return running
+    }
+
+    const queryPromise = (async () => {
+      try {
+        const accounts = this.getAccounts(networkTag).filter(a => !a.isSpent)
+        if (accounts.length === 0) {
+          this.balanceCache.set(cacheKey, { balance: 0n, cachedAtMs: Date.now() })
           return 0n
         }
-      }),
-    )
 
-    return balances.reduce((sum, b) => sum + b, 0n)
+        const balances = await Promise.all(
+          accounts.map(async account => {
+            try {
+              const bal = await provider.getBalance(account.address)
+              await this.updateBalance(account.address, bal)
+              return bal
+            } catch {
+              return 0n
+            }
+          }),
+        )
+
+        const total = balances.reduce((sum, b) => sum + b, 0n)
+        this.balanceCache.set(cacheKey, { balance: total, cachedAtMs: Date.now() })
+        return total
+      } finally {
+        this.inFlightQueries.delete(cacheKey)
+      }
+    })()
+
+    this.inFlightQueries.set(cacheKey, queryPromise)
+    return queryPromise
+  }
+
+  /**
+   * Discovers and indexes a stealth account from an incoming StealthItem (keyType === 1).
+   */
+  async registerFromStealthItem(params: {
+    item: StealthItem
+    recipientSpendSecret: Uint8Array | string
+    timestampMs?: number
+  }): Promise<EvmStealthDerivedAccount | undefined> {
+    if (params.item.keyType !== 1 || !params.item.ephemeralPubKey) {
+      return undefined
+    }
+    const ephPubBytes = fromHex(
+      params.item.ephemeralPubKey.startsWith('0x')
+        ? params.item.ephemeralPubKey.slice(2)
+        : params.item.ephemeralPubKey,
+    )
+    const derived = deriveEvmStealthPrivateKey({
+      recipientSpendSecret: params.recipientSpendSecret,
+      ephemeralPubKey: ephPubBytes,
+    })
+    await this.addAccount({
+      address: derived.stealthAddress,
+      privateKey: derived.stealthPrivateKey,
+      ephemeralPubKey: params.item.ephemeralPubKey,
+      networkTag: params.item.networkTag ?? 'MONT',
+      discoveredAtMs: params.timestampMs ?? Date.now(),
+      initialAmountWei:
+        params.item.amount !== undefined ? BigInt(params.item.amount) : undefined,
+      txHash: params.item.transactions?.[0],
+    })
+    return derived
   }
 
   /**

@@ -45,6 +45,9 @@ export interface MonadWalletHandle {
   inventory?: MonadAddressInventory
   /** Unified in-memory UTXO and spendable account pool (Issue #1184). */
   accountUtxoPool?: ChainUtxoPool
+  chainUtxoPool?: ChainUtxoPool
+  /** Invalidate in-memory cached balances across primary and stealth accounts. */
+  invalidateBalanceCache?(networkTag?: string): void
   /** @deprecated Use `accountUtxoPool` instead. */
   pool: MonadSubAccountPool
   leaseManager: SubAccountLeaseManager

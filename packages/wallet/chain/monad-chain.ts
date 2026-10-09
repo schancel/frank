@@ -448,6 +448,8 @@ export interface MonadChainWalletHandle
   readonly stealthKeyring: MonadStealthKeyring;
   readonly mainAccount?: Wallet;
   readonly mainPrivateKey?: string;
+  readonly chainUtxoPool?: ChainUtxoPool;
+  invalidateBalanceCache?(networkTag?: string): void;
   close(): Promise<void>;
 }
 
@@ -1970,7 +1972,40 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               throw error;
             }
           };
-          const stealthKeyring = new MonadStealthKeyring();
+          const stealthKeyring = new MonadStealthKeyring(undefined, {
+            onAccountAdded: (s) => {
+              accountUtxoPool.registerStealthAccount({
+                chain: "monad",
+                address: s.address,
+                privateKey: s.privateKey,
+                balanceWei: s.balanceWei ?? 0n,
+                ephemeralPubKey: s.ephemeralPubKey,
+                txHash: s.txHash,
+              });
+            },
+            onSpendRecorded: (s) => {
+              const coins = accountUtxoPool.getCoinsByAddress(
+                s.address,
+                "monad"
+              );
+              for (const c of coins) {
+                if (c.status !== "spent") {
+                  accountUtxoPool.markSpent(c.id);
+                }
+              }
+            },
+            onBalanceUpdated: (s) => {
+              const coins = accountUtxoPool.getCoinsByAddress(
+                s.address,
+                "monad"
+              );
+              for (const c of coins) {
+                if (s.balanceWei !== undefined) {
+                  c.balanceWei = s.balanceWei;
+                }
+              }
+            },
+          });
           for (const s of stealthKeyring.getAccounts()) {
             accountUtxoPool.registerStealthAccount({
               chain: "monad",
@@ -1981,6 +2016,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               txHash: s.txHash,
             });
           }
+          let primaryBalanceCache:
+            | {
+                mainBalance: bigint;
+                identityBalance: bigint;
+                cachedAtMs: number;
+              }
+            | undefined;
+          const PRIMARY_BALANCE_CACHE_TTL_MS = 4_000;
+
           const wallet: MonadChainWalletHandle = {
             family: "evm",
             chainIdentifier,
@@ -1988,26 +2032,79 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             identity,
             stealthKeyring,
             accountUtxoPool,
+            chainUtxoPool: accountUtxoPool,
             mainAccount,
             mainPrivateKey: mainAccount.privateKey,
+            invalidateBalanceCache(networkTag?: string) {
+              primaryBalanceCache = undefined;
+              stealthKeyring.invalidateBalanceCache(networkTag);
+            },
             async getReceiveAddress() {
               requireOpenWallet(wallet);
               return { raw: mainAccount.address };
             },
             async getBalance() {
               requireOpenWallet(wallet);
-              const mainBalance = await transactionBuilder.getBalance({
-                address: mainAccount.address,
-                provider,
-              });
-              const identityBalance =
-                identity.address.raw.toLowerCase() ===
-                mainAccount.address.toLowerCase()
-                  ? 0n
-                  : await transactionBuilder.getBalance({
+              const now = Date.now();
+              let mainBalance: bigint;
+              let identityBalance: bigint;
+
+              if (
+                primaryBalanceCache !== undefined &&
+                now - primaryBalanceCache.cachedAtMs < PRIMARY_BALANCE_CACHE_TTL_MS
+              ) {
+                mainBalance = primaryBalanceCache.mainBalance;
+                identityBalance = primaryBalanceCache.identityBalance;
+              } else {
+                const mainCoins = accountUtxoPool.getCoinsByAddress(
+                  mainAccount.address,
+                  "monad"
+                );
+                if (
+                  mainCoins.length > 0 &&
+                  mainCoins[0].balanceWei > 0n &&
+                  mainCoins[0].status === "clean"
+                ) {
+                  mainBalance = mainCoins[0].balanceWei;
+                } else {
+                  mainBalance = await transactionBuilder.getBalance({
+                    address: mainAccount.address,
+                    provider,
+                  });
+                }
+
+                if (
+                  material.canonicalRoles !== undefined ||
+                  identity.address.raw.toLowerCase() ===
+                  mainAccount.address.toLowerCase()
+                ) {
+                  identityBalance = 0n;
+                } else {
+                  const identCoins = accountUtxoPool.getCoinsByAddress(
+                    identity.address.raw,
+                    "monad"
+                  );
+                  if (
+                    identCoins.length > 0 &&
+                    identCoins[0].balanceWei > 0n &&
+                    identCoins[0].status === "clean"
+                  ) {
+                    identityBalance = identCoins[0].balanceWei;
+                  } else {
+                    identityBalance = await transactionBuilder.getBalance({
                       address: identity.address.raw,
                       provider,
                     });
+                  }
+                }
+
+                primaryBalanceCache = {
+                  mainBalance,
+                  identityBalance,
+                  cachedAtMs: now,
+                };
+              }
+
               const stealthBalance = await stealthKeyring.getTotalBalance(
                 provider,
                 config.networkTag
@@ -2185,6 +2282,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                           overrides
                         );
                   const submitted = await submitNative(signed, onSigned);
+                  primaryBalanceCache = undefined;
                   if (selectedStealthAddress) {
                     await stealthKeyring.recordSpend(selectedStealthAddress, {
                       valueWei: value,
@@ -2195,8 +2293,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 })
               );
             },
-            sendLegacy: (params) =>
-              nativeTransfers.sendLegacy!({ wallet, ...params }),
+            sendLegacy: async (params) => {
+              try {
+                const res = await nativeTransfers.sendLegacy!({ wallet, ...params });
+                primaryBalanceCache = undefined;
+                stealthKeyring.invalidateBalanceCache(config.networkTag);
+                return res;
+              } catch (err) {
+                primaryBalanceCache = undefined;
+                throw err;
+              }
+            },
             estimateLegacyFee: (params) =>
               nativeTransfers.estimateLegacyFee!({ wallet, ...params }),
             getUnresolvedLegacySend: () => {

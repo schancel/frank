@@ -33,6 +33,16 @@ Use only the state needed to make the next action clear:
 - `SUPERSEDED`: the owner replaces the outcome with genuinely separable, explicitly owned work; inherited acceptance obligations remain visible until proven.
 - `COMPLETE`: current-main merge and outcome-appropriate evidence are present, and item, claim, cleanup, and follow-up accounting are truthful.
 
+For GitHub queue reporting, an explicit body declaration starts a line with
+`State:`, `Readiness:`, or `Planning state:` (case-insensitive), optionally
+preceded by a Markdown bullet. Follow it with one of the state tokens above,
+optionally in backticks, and optional explanatory text. Only `READY` can enter
+the ready queue; conflicting declarations report `NEEDS_SPECIFICATION`.
+Represent unresolved required approval with `NEEDS_SPECIFICATION` or
+`BLOCKED_EXTERNAL`. Owner/acceptance markers and complete scores remain required,
+including for `READY`; bodies without a declaration retain the legacy marker
+and score checks. Incidental mentions of states do not declare readiness.
+
 These labels communicate status; they do not grant edit, merge, closure, or disposition authority. When facts change, record the new state, evidence, owner, and next action in plain language.
 
 ## Candidate and finding separation

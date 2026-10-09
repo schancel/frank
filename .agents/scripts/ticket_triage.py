@@ -15,7 +15,8 @@ import json
 import sys
 from pathlib import Path
 
-AXES = ("value", "cost", "certainty", "unblocking")
+from issue_export import AXES, explicit_readiness
+
 REQUIRED_MARKERS = ("acceptance", "owner")
 
 
@@ -35,6 +36,16 @@ def score(issue: dict) -> float | None:
     return value * certainty * (1 + unblocking) / cost
 
 
+def readiness(issue: dict) -> tuple[str, list[str]]:
+    body = str(issue.get("body") or "")
+    missing = [marker for marker in REQUIRED_MARKERS if marker not in body.lower()]
+    explicit = explicit_readiness(body)
+    if explicit is not None and explicit != "READY":
+        return explicit, missing
+    state = "READY" if not missing and score(issue) is not None else "NEEDS_SPECIFICATION"
+    return state, missing
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("json_file", nargs="?", help="JSON export; defaults to stdin")
@@ -48,10 +59,8 @@ def main() -> int:
     rows = []
     file_owners: dict[str, list[str]] = {}
     for issue in issues:
-        body = str(issue.get("body") or "").lower()
-        missing = [marker for marker in REQUIRED_MARKERS if marker not in body]
+        state, missing = readiness(issue)
         current_score = score(issue)
-        state = "READY" if not missing and current_score is not None else "NEEDS_SPECIFICATION"
         for file in issue.get("files", []):
             if isinstance(file, str) and file.strip():
                 file_owners.setdefault(file.strip(), []).append(str(issue.get("number", "?")))

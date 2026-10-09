@@ -13,6 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from issue_export import from_gh_issues
 from ready_queue import dispatchable, load_waves, ready_waves
 
 
@@ -145,9 +146,54 @@ def test_script_dispatches_ready_issue_beyond_legacy_export_boundary(tmp_path: P
     assert payload["waves"] == [{"wave": 0, "parallel": [185]}]
 
 
+
+def test_export_triage_queue_explicit_readiness(tmp_path: Path) -> None:
+    scores = "\nvalue: 5\ncost: 2\ncertainty: 5\nunblocking: 3\n"
+    bodies = {
+        1: "- Planning state: NEEDS_SPECIFICATION until owner acceptance.\n" + READY_BODY,
+        2: "- Planning state: READY; accepted by the owner.\n" + READY_BODY,
+        3: "Planning state: READY\nowner: maintainer",
+        4: "Planning state: BLOCKED_EXTERNAL\n" + READY_BODY,
+        5: "Planning state: READY\n" + READY_BODY,
+        6: "Readiness: NEEDS_SPECIFICATION; required approval unresolved.\n" + READY_BODY,
+        7: "State: READY\nState: BLOCKED_EXTERNAL\n" + READY_BODY,
+    }
+    issues = from_gh_issues([
+        {"number": number, "title": f"fixture {number}", "body": body + scores}
+        for number, body in bodies.items()
+    ])
+    assert issues[0]["readiness_state"] == "NEEDS_SPECIFICATION"
+    assert issues[1]["readiness_state"] == "READY"
+    triage_path = tmp_path / "explicit-issues.json"
+    triage_path.write_text(json.dumps(issues))
+    triage = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("ticket_triage.py")), str(triage_path)],
+        capture_output=True, text=True, check=False,
+    )
+    assert triage.returncode == 0, triage.stderr
+    states = {int(row.split("\t")[2]): row.split("\t")[1]
+              for row in triage.stdout.splitlines()[1:]}
+    assert states == {1: "NEEDS_SPECIFICATION", 2: "READY", 3: "NEEDS_SPECIFICATION",
+                      4: "BLOCKED_EXTERNAL", 5: "READY", 6: "NEEDS_SPECIFICATION",
+                      7: "NEEDS_SPECIFICATION"}
+    waves_path = tmp_path / "explicit-waves.json"
+    waves_path.write_text(json.dumps([[1, 2, 3, 4, 6, 7], [5]]))
+    queue = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("ready_queue.py")),
+         "--waves", str(waves_path), "--triage", str(triage_path), "--format", "json"],
+        capture_output=True, text=True, check=False,
+    )
+    assert queue.returncode == 0, queue.stderr
+    assert json.loads(queue.stdout)["dispatchable"] == [2]
+    # Missing a predecessor from the score/export input cannot advance later waves.
+    assert dispatchable(ready_waves([[1], [5]], [issues[4]])) == []
+
+
 def main() -> int:
     test_needs_specification_omitted()
     test_dependency_order()
+    with tempfile.TemporaryDirectory() as directory:
+        test_export_triage_queue_explicit_readiness(Path(directory))
     test_unready_blocker_does_not_promote()
     with tempfile.TemporaryDirectory() as directory:
         test_script_omits_needs_specification(Path(directory))

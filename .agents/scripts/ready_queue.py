@@ -18,15 +18,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ticket_triage import REQUIRED_MARKERS, score
+from ticket_triage import readiness
 
 SCRIPTS = Path(__file__).resolve().parent
 
 
 def issue_state(issue: dict) -> str:
-    body = str(issue.get("body") or "").lower()
-    missing = [marker for marker in REQUIRED_MARKERS if marker not in body]
-    return "READY" if not missing and score(issue) is not None else "NEEDS_SPECIFICATION"
+    return readiness(issue)[0]
 
 
 def load_waves(payload: object) -> list[list[int]]:

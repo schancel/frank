@@ -10,7 +10,7 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-from issue_export import from_gh_issues, main as export_main, parse_body
+from issue_export import READINESS_STATES, explicit_readiness, from_gh_issues, main as export_main, parse_body
 
 
 def test_parse_queue_fields() -> None:
@@ -119,8 +119,28 @@ def test_main_uses_current_repository_and_propagates_gh_failure() -> None:
     assert stderr.getvalue() == "gh failed\n"
 
 
+
+def test_explicit_readiness_declarations() -> None:
+    for state in READINESS_STATES:
+        for field in ("State", "Readiness", "Planning state"):
+            body = f"- {field}: `{state.lower()}` with an explanation."
+            assert explicit_readiness(body) == state
+            assert parse_body(body)["readiness_state"] == state
+    assert explicit_readiness("State: READY\nReadiness: READY") == "READY"
+    assert explicit_readiness("State: READY\nReadiness: NEEDS_SPECIFICATION") == "NEEDS_SPECIFICATION"
+    assert explicit_readiness("State: DECLINED\nState: BLOCKED_EXTERNAL") == "NEEDS_SPECIFICATION"
+    for body in (
+        "An example of State: NEEDS_SPECIFICATION does not declare state.",
+        "Acceptance criteria mention READY and NEEDS_SPECIFICATION.",
+        "State: READY_TO_MERGE_EXTRA", "State: `READY", "State: READY`",
+    ):
+        assert explicit_readiness(body) is None
+        assert "readiness_state" not in parse_body(body)
+
+
 def main() -> int:
     test_parse_queue_fields()
+    test_explicit_readiness_declarations()
     test_parse_ignores_inline_digits()
     test_from_gh_issues()
     test_main_exports_all_paginated_issues_and_excludes_pull_requests()

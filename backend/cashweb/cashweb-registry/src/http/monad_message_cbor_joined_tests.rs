@@ -69,9 +69,9 @@ impl JoinedChain {
         };
         Ok(match method {
             "eth_chainId" => serde_json::json!("0x279f"),
-            // Wallet quote reads: 151000 wei less the quoted 50000 gas x 3 wei fee reserve leaves
+            // Plain transfers reserve 21000 gas x 3 wei: a 64000 wei balance leaves
             // 1000 wei of capacity per disposable account, so 1500 wei needs two members.
-            "eth_getBalance" => serde_json::json!("0x24dd8"),
+            "eth_getBalance" => serde_json::json!("0xfa00"),
             "eth_getTransactionCount" => serde_json::json!("0x0"),
             "eth_estimateGas" => serde_json::json!("0xc350"),
             "eth_gasPrice" => serde_json::json!("0x2"),
@@ -341,12 +341,14 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
         assert!(joined.claim(&freeze).is_none());
         assert_eq!(joined.chain.count("eth_sendRawTransaction"), 0);
         assert_eq!(statuses(&freeze["pool"]), ["in-use", "in-use"]);
-        let total: u128 = freeze["members"]
+        let values: Vec<u128> = freeze["members"]
             .as_array()
             .unwrap()
             .iter()
             .map(|member| member["value"].as_str().unwrap().parse::<u128>().unwrap())
-            .sum();
+            .collect();
+        assert_eq!(values, [1000, 500]);
+        let total: u128 = values.iter().sum();
         assert_eq!(total, JOINED_STAMP_VALUE_WEI);
 
         // Wallet process 2: reopened journal, same bytes, real transport PUT. Chain holds receipts.
@@ -441,6 +443,8 @@ async fn joined_real_wallet_terminal_prefix_is_imported_and_acknowledged_by_reci
         let freeze = wallet_phase(&joined.work, "sender-freeze").await;
         let request = joined.frozen(&freeze).await;
         assert_eq!(request.transaction_count(), 2);
+        assert_eq!(freeze["members"][0]["value"], "1000");
+        assert_eq!(freeze["members"][1]["value"], "500");
 
         // Member 0 confirms, member 1 reverts: the relay's durable terminal decision.
         let dead = wallet_phase(&joined.work, "sender-submit").await;

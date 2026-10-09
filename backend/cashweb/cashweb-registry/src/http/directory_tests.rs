@@ -451,6 +451,137 @@ async fn relay_info_is_the_single_configured_tuple() {
     runtime.wait_stopped().await;
 }
 
+const DISPOSITION: &str = "x-frank-directory-disposition";
+
+#[tokio::test]
+async fn unknown_subject_read_is_a_marked_not_found() {
+    // pinned for the TypeScript directory client (#1310): an unknown subject or address is 404, disposition `rejected`, text/plain, body `not-found`.
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let account = entry(80, |_| ());
+    let unknown_address = format!("0x{}", "11".repeat(20));
+    for path in [
+        head(&account.subject),
+        by_address(&account.address),
+        by_address(&unknown_address),
+    ] {
+        let (status, headers, body) = get(&routes, &path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(headers[DISPOSITION], "rejected", "{path}");
+        assert_eq!(headers[header::CONTENT_TYPE], "text/plain", "{path}");
+        assert_eq!(body, b"not-found", "{path}");
+    }
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn expired_entry_read_is_a_marked_409_expired() {
+    // pinned for the TypeScript directory client (#1310): a read of an entry past its signed expiry is 409, disposition `rejected`, body `expired`.
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let account = entry(81, |_| ());
+    assert_eq!(
+        put(&routes, &account.subject, account.attestation.clone())
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&routes, &head(&account.subject)).await.0,
+        StatusCode::OK
+    );
+    clock.set(1800000000);
+    for path in [head(&account.subject), by_address(&account.address)] {
+        let (status, headers, body) = get(&routes, &path).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{path}");
+        assert_eq!(headers[DISPOSITION], "rejected", "{path}");
+        assert_eq!(headers[header::CONTENT_TYPE], "text/plain", "{path}");
+        assert_eq!(body, b"expired", "{path}");
+    }
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn other_409_answers_do_not_say_expired() {
+    // pinned for the TypeScript directory client (#1310): a 409 that is not expiry (a first entry that is not revision 0) has body `trust/continuity`, never `expired`.
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let later = entry(82, |fields| {
+        for (key, value) in fields.iter_mut() {
+            match *key {
+                2 => *value = CborValue::Int(1),
+                13 => *value = CborValue::Bytes(vec![7; 32]),
+                _ => (),
+            }
+        }
+    });
+    let (status, headers, body) = put(&routes, &later.subject, later.attestation).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(headers[DISPOSITION], "rejected");
+    assert_eq!(headers[header::CONTENT_TYPE], "text/plain");
+    assert_eq!(body, b"trust/continuity");
+    assert_ne!(body, b"expired");
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn router_misses_carry_no_disposition_header() {
+    // pinned for the TypeScript directory client (#1310): a routing miss or an error from another layer is not the relay's own answer and has no disposition header.
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let account = entry(83, |_| ());
+    for path in [
+        format!("/directory/v1/{NETWORK}/{}/head/extra", account.subject),
+        format!("/directory/v1/{NETWORK}"),
+        "/directory/v1/nothing-here".to_owned(),
+        "/relay/v1/nothing-here".to_owned(),
+    ] {
+        let (status, headers, _) = get(&routes, &path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        assert!(headers.get(DISPOSITION).is_none(), "{path}");
+    }
+    // Wrong method on a real route is the router's 405, equally unmarked.
+    let (status, headers, _) =
+        request(routes.clone(), "POST", "/relay/v1/info", vec![], MEDIA).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert!(headers.get(DISPOSITION).is_none());
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn relay_info_always_carries_an_explicit_boolean_forwarding() {
+    // pinned for the TypeScript directory client (#1310): `/relay/v1/info` always has the key `forwarding`, a JSON boolean, currently false.
+    let root = tempfile::tempdir().unwrap();
+    let (registry, config, clock) = setup(root.path());
+    let runtime = start(registry, config, &clock).await;
+    let routes = router(Arc::new(runtime.clone()));
+    let read = |body: Vec<u8>| serde_json::from_slice::<Value>(&body).unwrap();
+    let (status, _, body) = get(&routes, "/relay/v1/info").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(read(body)["forwarding"], Value::Bool(false));
+    // Turning federation on with forwarding does not change the advertised value today.
+    runtime.enable_federation(vec![], true);
+    let (status, _, body) = get(&routes, "/relay/v1/info").await;
+    assert_eq!(status, StatusCode::OK);
+    let info = read(body);
+    assert!(info.as_object().unwrap().contains_key("forwarding"));
+    assert_eq!(info["forwarding"], Value::Bool(false));
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
 #[tokio::test]
 async fn exact_http_admission_duplicate_history_and_restart() {
     let root = tempfile::tempdir().unwrap();

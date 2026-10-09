@@ -79,7 +79,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     )
   })
 
-  it('claims "not charged again" only when the payment is known live', () => {
+  it('claims "not charged again" only when the payment is known live', async () => {
     const live = mountSuffix({
       status: 'payment-pending',
       paymentState: 'live',
@@ -88,10 +88,16 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(live.text()).toContain('not be charged again')
     expect(live.text()).not.toContain('Failed to send')
     expect(live.find('[data-testid="outgoing-retry"]').exists()).toBe(false)
+    expect(live.find('[data-testid="outgoing-discard"]').exists()).toBe(true)
+    await live.get('[data-testid="outgoing-discard"]').trigger('click')
+    expect(live.emitted('discardClick')).toHaveLength(1)
 
     const checking = mountSuffix({ status: 'payment-pending' })
     expect(checking.text()).toContain('Checking payment status')
     expect(checking.text()).not.toContain('not be charged again')
+    expect(checking.find('[data-testid="outgoing-discard"]').exists()).toBe(
+      true,
+    )
   })
 
   it('a message queued behind another one makes no payment claim', () => {

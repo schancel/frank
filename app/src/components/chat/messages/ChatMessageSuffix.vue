@@ -77,12 +77,24 @@
       :class="['row', 'items-center', suffixPlacement]"
       data-testid="outgoing-payment-pending"
     >
+      <div v-if="outbound" :class="buttonPlacement">
+        <chat-message-suffix-buttons
+          :status="status"
+          @discardClick="$emit('discardClick')"
+        />
+      </div>
       <div class="col-auto q-pa-xs">
         <q-icon name="schedule" />{{ paymentText }}
       </div>
       <!-- A passed stamp is the time, never a second copy of the status (#393). -->
       <div v-if="stamp" class="col-auto q-pa-xs" data-testid="outgoing-stamp">
         {{ stamp }}
+      </div>
+      <div v-if="!outbound" :class="buttonPlacement">
+        <chat-message-suffix-buttons
+          :status="status"
+          @discardClick="$emit('discardClick')"
+        />
       </div>
     </div>
     <div

@@ -1,6 +1,11 @@
 <template>
-  <div v-if="status === 'error'">
+  <div
+    v-if="
+      status === 'error' || status === 'payment-pending' || status === 'pending'
+    "
+  >
     <q-btn
+      v-if="status === 'error'"
       icon="replay"
       dense
       flat

@@ -465,12 +465,21 @@ export default defineComponent({
           cancel: true,
           persistent: true,
         })
-        .onOk(() => {
-          void this.deleteMessage({
-            address: this.address,
-            payloadDigest: this.payloadDigest,
-            attemptDigest: this.message.delivery?.attemptDigest,
-          })
+        .onOk(async () => {
+          try {
+            await this.deleteMessage({
+              address: this.address,
+              payloadDigest: this.payloadDigest,
+              ...(this.message.delivery?.attemptDigest
+                ? { attemptDigest: this.message.delivery.attemptDigest }
+                : {}),
+            })
+          } catch (error) {
+            console.error('Failed to discard message:', error)
+            errorNotify(
+              error instanceof Error ? error : new Error(String(error)),
+            )
+          }
         })
     },
     replyClicked(args: { address: string; payloadDigest: string }) {

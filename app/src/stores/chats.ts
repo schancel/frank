@@ -1536,7 +1536,31 @@ export const useChatStore = defineStore('chats', {
       attemptDigest?: string
       wallet?: WalletHandle
     }): Promise<void> {
-      const message = this.messages[payloadDigest]
+      let message = this.messages[payloadDigest]
+      if (!message) {
+        if (this.conversations) {
+          for (const conv of Object.values(this.conversations)) {
+            const found = conv?.messages?.find(
+              m => m.payloadDigest === payloadDigest,
+            )
+            if (found) {
+              message = found
+              break
+            }
+          }
+        }
+        if (!message && this.chats) {
+          for (const conv of Object.values(this.chats)) {
+            const found = conv?.messages?.find(
+              m => m.payloadDigest === payloadDigest,
+            )
+            if (found) {
+              message = found
+              break
+            }
+          }
+        }
+      }
       const attemptDigest =
         explicitAttemptDigest || message?.delivery?.attemptDigest
       // Relay inboxes are recipient-indexed. An ordinary outbound row can never return to the
@@ -1596,11 +1620,38 @@ export const useChatStore = defineStore('chats', {
       wallet?: WalletHandle
     }): Promise<void> {
       const messageStore = await store
-      const message = this.messages[payloadDigest]
+      let message = this.messages[payloadDigest]
+      if (!message) {
+        if (this.conversations) {
+          for (const conv of Object.values(this.conversations)) {
+            const found = conv?.messages?.find(
+              m => m.payloadDigest === payloadDigest,
+            )
+            if (found) {
+              message = found
+              break
+            }
+          }
+        }
+        if (!message && this.chats) {
+          for (const conv of Object.values(this.chats)) {
+            const found = conv?.messages?.find(
+              m => m.payloadDigest === payloadDigest,
+            )
+            if (found) {
+              message = found
+              break
+            }
+          }
+        }
+      }
       const installedDelivery = attemptDigest
         ? this.messages[attemptDigest]
         : undefined
       const digests = new Set([payloadDigest, attemptDigest].filter(Boolean))
+      if (message?.delivery?.attemptDigest) {
+        digests.add(message.delivery.attemptDigest)
+      }
       const suppressions: RelayDeliverySuppression[] = []
       if (attemptDigest) suppressions.push({ payloadDigest: attemptDigest })
       if (!payloadDigest.startsWith('pending:')) {
@@ -1641,22 +1692,44 @@ export const useChatStore = defineStore('chats', {
       for (const digest of digests) {
         delete this.messages[digest as string]
       }
-      let conv: Conversation | undefined
+      const matchedConvs = new Set<Conversation>()
       if (this.conversations && address in this.conversations) {
-        conv = this.conversations[address]
-      } else {
-        try {
-          const displayAddress = toChainDisplayAddress(address)
-          conv = this.chats[displayAddress]
-        } catch {
-          conv = this.chats[address]
+        matchedConvs.add(this.conversations[address])
+      }
+      try {
+        const displayAddress = toChainDisplayAddress(address)
+        if (this.chats && this.chats[displayAddress]) {
+          matchedConvs.add(this.chats[displayAddress])
+        }
+      } catch {
+        if (this.chats && this.chats[address]) {
+          matchedConvs.add(this.chats[address])
         }
       }
-      if (conv) {
-        conv.messages = conv.messages.filter(
-          message => !digests.has(message.payloadDigest),
-        )
-        recomputeChatAccounting(conv, this.activeChatAddr)
+      if (this.activeConversation) {
+        matchedConvs.add(this.activeConversation)
+      }
+      if (this.conversations) {
+        for (const c of Object.values(this.conversations)) {
+          if (c?.messages?.some(m => digests.has(m.payloadDigest))) {
+            matchedConvs.add(c)
+          }
+        }
+      }
+      if (this.chats) {
+        for (const c of Object.values(this.chats)) {
+          if (c?.messages?.some(m => digests.has(m.payloadDigest))) {
+            matchedConvs.add(c)
+          }
+        }
+      }
+      for (const conv of matchedConvs) {
+        if (conv?.messages) {
+          conv.messages = conv.messages.filter(
+            message => !digests.has(message.payloadDigest),
+          )
+          recomputeChatAccounting(conv, this.activeChatAddr)
+        }
       }
       if (message) {
         const logicalId = message.logicalMessageId || payloadDigest
@@ -1676,19 +1749,44 @@ export const useChatStore = defineStore('chats', {
         }
       }
       if (message?.outbound) {
-        const targetDigest =
-          attemptDigest ||
-          message?.delivery?.attemptDigest ||
-          (!payloadDigest.startsWith('pending:') ? payloadDigest : undefined)
+        const digestsToDiscard = new Set<string>()
+        if (attemptDigest) digestsToDiscard.add(attemptDigest)
+        if (message?.delivery?.attemptDigest) {
+          digestsToDiscard.add(message.delivery.attemptDigest)
+        }
+        if (!payloadDigest.startsWith('pending:')) {
+          digestsToDiscard.add(payloadDigest)
+        }
         const wallet = explicitWallet || messagingWallet()
-        if (targetDigest && wallet) {
-          try {
-            await activeChain.directMessages?.discardAttempt?.({
-              wallet,
-              payloadDigest: targetDigest,
-            })
-          } catch (err) {
-            console.warn('could not discard attempt during deleteMessage:', err)
+        if (wallet) {
+          if (digestsToDiscard.size === 0) {
+            try {
+              const orphans =
+                await activeChain.directMessages?.unattributedAttempts?.({
+                  wallet,
+                  knownDigests: Object.keys(this.messages).filter(
+                    k => !k.startsWith('pending:'),
+                  ),
+                })
+              if (orphans && orphans.length === 1) {
+                digestsToDiscard.add(orphans[0])
+              }
+            } catch {
+              // ignore
+            }
+          }
+          for (const d of digestsToDiscard) {
+            try {
+              await activeChain.directMessages?.discardAttempt?.({
+                wallet,
+                payloadDigest: d,
+              })
+            } catch (err) {
+              console.warn(
+                'could not discard attempt during deleteMessage:',
+                err,
+              )
+            }
           }
         }
       }
@@ -2368,11 +2466,29 @@ export const useChatStore = defineStore('chats', {
         const stored = row?.message
         if (!stored || stored.status === 'confirmed') {
           delete this.messages[id]
-          const chatKey = safeChainDisplayAddress(address) || address
-          const chat = this.chats[chatKey] || this.conversations[address]
-          if (chat) {
-            chat.messages = chat.messages.filter(m => m.payloadDigest !== id)
-            recomputeChatAccounting(chat, this.activeChatAddr)
+          for (const c of Object.values(this.conversations ?? {})) {
+            if (c?.messages?.some(m => m.payloadDigest === id)) {
+              c.messages = c.messages.filter(m => m.payloadDigest !== id)
+              recomputeChatAccounting(c, this.activeChatAddr)
+            }
+          }
+          for (const c of Object.values(this.chats ?? {})) {
+            if (c?.messages?.some(m => m.payloadDigest === id)) {
+              c.messages = c.messages.filter(m => m.payloadDigest !== id)
+              recomputeChatAccounting(c, this.activeChatAddr)
+            }
+          }
+          if (
+            this.activeConversation?.messages?.some(m => m.payloadDigest === id)
+          ) {
+            this.activeConversation.messages =
+              this.activeConversation.messages.filter(
+                m => m.payloadDigest !== id,
+              )
+            recomputeChatAccounting(
+              this.activeConversation,
+              this.activeChatAddr,
+            )
           }
           return 'gone'
         }

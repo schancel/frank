@@ -434,7 +434,10 @@ describe('outgoing direct messages (#269, #270)', () => {
     })
 
     it('discarding a failed message calls discardAttempt and immediately unblocks subsequent queued messages', async () => {
-      const discardSpy = jest.spyOn(activeChain.directMessages, 'discardAttempt')
+      const discardSpy = jest.spyOn(
+        activeChain.directMessages,
+        'discardAttempt',
+      )
       const send = jest.spyOn(activeChain.directMessages, 'send')
 
       // First message fails after recording an attempt
@@ -444,7 +447,11 @@ describe('outgoing direct messages (#269, #270)', () => {
       })
 
       const chats = useChatStore()
-      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'first' }] })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'first' }],
+      })
       const [first] = only(chats)
       expect(first.status).toBe('error')
 
@@ -452,7 +459,11 @@ describe('outgoing direct messages (#269, #270)', () => {
       send.mockImplementationOnce(async () => {
         throw new MonadStampPendingAttemptError([HASH])
       })
-      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'second' }] })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'second' }],
+      })
       expect(only(chats)).toHaveLength(2)
       expect(only(chats)[1].status).toBe('payment-pending')
       expect(only(chats)[1].delivery?.attemptDigest).toBeUndefined()
@@ -485,7 +496,11 @@ describe('outgoing direct messages (#269, #270)', () => {
       })
 
       const chats = useChatStore()
-      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'first' }] })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'first' }],
+      })
       expect(only(chats)[0].status).toBe('error')
       expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
 
@@ -493,7 +508,11 @@ describe('outgoing direct messages (#269, #270)', () => {
       send.mockImplementationOnce(async () => {
         throw new MonadStampPendingAttemptError([HASH])
       })
-      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'second' }] })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'second' }],
+      })
       expect(only(chats)[1].status).toBe('payment-pending')
 
       // Background reconciliation queries HASH, finds it was delivered on-chain,
@@ -519,7 +538,11 @@ describe('outgoing direct messages (#269, #270)', () => {
       })
 
       const chats = useChatStore()
-      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'first' }] })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'first' }],
+      })
       expect(only(chats)[0].status).toBe('error')
       expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
 
@@ -527,7 +550,11 @@ describe('outgoing direct messages (#269, #270)', () => {
       send.mockImplementationOnce(async () => {
         throw new MonadStampPendingAttemptError([HASH])
       })
-      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'second' }] })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'second' }],
+      })
       expect(only(chats)[1].status).toBe('payment-pending')
 
       // Background reconciliation queries HASH, finds it died on-chain,

@@ -8,16 +8,31 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { Wallet, getBytes } from "ethers";
+import { randomBytes } from "crypto";
+import { Wallet, computeAddress, getBytes } from "ethers";
+import { toHex } from "@frank/codec";
+import { deriveDomainRoot } from "@frank/domain-roots";
+import {
+  restoreCanonicalRequest,
+  type CanonicalFetch,
+} from "@frank/cashweb/relay/canonical-dm-transport";
+import { openNodeDirectoryStore } from "@frank/directory-admission/node";
+import { InMemoryNativeTransactionAttemptStore } from "@frank/wallet/chain/chain-wallet";
+import { MonadStampPendingAttemptError } from "@frank/wallet/monad-stamp-client";
+import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
+import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
 import { FrankBotHost } from "../bot-framework/src/bot-host";
 import { LevelBotStateStore } from "../bot-framework/src/state-store";
 import { QwenBot } from "./src/bots/qwen-bot";
 import { LoopGuard } from "../bot-framework/src/loop-guard";
 import type { InboundOperationStore } from "../bot-framework/src/inbound-operation-store";
-import type {
-  DirectMessageReceived,
-  DirectMessageSendResult,
-  DirectMessageClient,
+import type { BotContext } from "../bot-framework/src/types";
+import {
+  directMessageNotAttempted,
+  isDirectMessageNotAttempted,
+  type DirectMessageReceived,
+  type DirectMessageSendResult,
+  type DirectMessageClient,
 } from "@frank/wallet/chain/active-chain";
 
 const mockSend = jest.fn();
@@ -59,6 +74,74 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
       relayBaseUrl: "http://localhost.invalid",
       defaultStampValueWei: 1n,
     }),
+  };
+});
+
+// Offline chain for the one test that runs the real canonical wallet: the RPC reports only
+// these balances, and a submitted transfer is mined at once. No other test reaches either.
+const mockBalances = new Map<string, bigint>();
+jest.mock("@frank/wallet/monad-provider", () => {
+  const actual = jest.requireActual("@frank/wallet/monad-provider");
+  const ethers = jest.requireActual("ethers");
+  return {
+    ...actual,
+    createMonadJsonRpcProvider: () => {
+      const provider = new ethers.JsonRpcProvider(
+        "http://127.0.0.1:1",
+        10143n,
+        { staticNetwork: true, cacheTimeout: -1 }
+      );
+      provider._perform = async (request: {
+        method: string;
+        address?: string;
+      }) => {
+        if (request.method === "getBalance")
+          return mockBalances.get(request.address!.toLowerCase()) ?? 0n;
+        if (request.method === "getTransactionCount") return 0;
+        if (request.method === "estimateGas") return 50_000n;
+        if (request.method === "getGasPrice") return 2n;
+        if (request.method === "getPriorityFee") return 1n;
+        if (request.method === "getBlock")
+          return {
+            hash: "0x" + "11".repeat(32),
+            parentHash: "0x" + "22".repeat(32),
+            number: "0x1",
+            timestamp: "0x64",
+            nonce: "0x0000000000000000",
+            difficulty: "0x0",
+            gasLimit: "0x1c9c380",
+            gasUsed: "0x0",
+            miner: "0x" + "00".repeat(20),
+            extraData: "0x",
+            baseFeePerGas: "0x1",
+            transactions: [],
+          };
+        throw new Error(`unexpected provider call ${request.method}`);
+      };
+      return provider;
+    },
+  };
+});
+jest.mock("@frank/wallet/monad-http", () => {
+  const ethers = jest.requireActual("ethers");
+  const mined = new Set<string>();
+  return {
+    ...jest.requireActual("@frank/wallet/monad-http"),
+    MonadHttpClient: class {
+      async submitRawTransaction(raw: string) {
+        const tx = ethers.Transaction.from(raw);
+        const to = tx.to.toLowerCase();
+        mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value);
+        mined.add(tx.hash);
+        return tx.hash;
+      }
+      async getTransactionReceipt(hash: string) {
+        return mined.has(hash) ? { status: "success" } : undefined;
+      }
+      destroy() {
+        return undefined;
+      }
+    },
   };
 });
 
@@ -105,6 +188,57 @@ const message = (): DirectMessageReceived => ({
   stampValueWei: 1n,
   stampPayments: [],
 });
+type Send = Parameters<DirectMessageClient["send"]>[0];
+/** What the wallet does to the rejection of a send it refused before creating anything: an own,
+ * non-enumerable accessor that answers only for that object. Only a wallet stand-in may do it. */
+const notAttempted = <E extends Error>(error: E): E =>
+  Object.defineProperty(error, directMessageNotAttempted, {
+    get(this: unknown) {
+      return this === error;
+    },
+  });
+const qwen = () =>
+  (
+    host as unknown as {
+      instances: Map<
+        string,
+        {
+          state: LevelBotStateStore;
+          operations: InboundOperationStore;
+          tasks: Set<Promise<unknown>>;
+          context: BotContext;
+          wallet: EvmChainWalletHandle;
+        }
+      >;
+    }
+  ).instances.get("qwen")!;
+/** Waits for every tracked task, including retry passes that are not on a peer lane. */
+const drain = async () => {
+  for (let tasks = [...qwen().tasks]; tasks.length; tasks = [...qwen().tasks])
+    await Promise.allSettled(tasks);
+};
+const historyKey = (conversationId = message().conversationId, sender = peer) =>
+  "qwen-history:v1:" +
+  JSON.stringify([
+    "monad-testnet",
+    local.compressedPubKey.toString("hex"),
+    sender.signingKey.compressedPublicKey.slice(2),
+    conversationId,
+  ]);
+/** The committed turns of a conversation, or undefined when no history row exists. */
+const turns = async (
+  conversationId?: string,
+  sender?: Wallet
+): Promise<string[] | undefined> => {
+  const raw = await qwen().state.get(historyKey(conversationId, sender));
+  return raw === undefined
+    ? undefined
+    : (JSON.parse(raw) as { messages: { content: string }[] }).messages.map(
+        (turn) => turn.content
+      );
+};
+const stagedText = (digest: string) =>
+  qwen().state.get(`host-prepared:v1:${digest}:text`);
 async function open() {
   host = new FrankBotHost({
     stateDir: root,
@@ -161,19 +295,23 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-it("retains the original reply across pending error, repeated polling and a real Level reopen", async () => {
-  mockSend.mockImplementation(
-    async (params: Parameters<DirectMessageClient["send"]>[0]) => {
-      await params.onAttemptCreated?.(receipt.payloadDigest);
-      throw new Error("canonical attempt pending");
-    }
-  );
+// T1. Was: ended by asserting that NO completion marker existed after the wallet reported the
+// original reply delivered, and never looked at history. That pinned the defect: a reply that
+// linked and then reported pending was paid and delivered, and its turn was never recorded.
+it("commits the history of a reply that linked and reported pending, once, when that reply is observed delivered", async () => {
+  mockSend.mockImplementation(async (params: Send) => {
+    await params.onAttemptCreated?.(receipt.payloadDigest);
+    throw new Error("canonical attempt pending");
+  });
+  mockReconcile.mockResolvedValue({ [receipt.payloadDigest]: "live" });
+  const marker = () => qwen().state.get(`digest:${message().payloadDigest}`);
   let legacy = await open();
   await poll();
   await poll();
   expect(reply).toHaveBeenCalledTimes(1);
   expect(mockSend).toHaveBeenCalledTimes(1);
-  expect(legacy).not.toHaveBeenCalled();
+  expect(await stagedText(message().payloadDigest)).toBe("Saved once");
+  expect(await turns()).toBeUndefined();
   await host.stop();
   legacy = await open();
   // Recovery must work even when mailbox echo is absent.
@@ -182,47 +320,88 @@ it("retains the original reply across pending error, repeated polling and a real
   expect(mockReconcile).toHaveBeenCalledWith(
     expect.objectContaining({ payloadDigests: [receipt.payloadDigest] })
   );
+  expect(qwen().operations.get(message().payloadDigest)).toMatchObject({
+    phase: "started",
+    replies: [{ digest: receipt.payloadDigest, observation: "live" }],
+  });
+  expect(await turns()).toBeUndefined();
+  expect(await marker()).toBeUndefined();
+  mockReconcile.mockResolvedValue({ [receipt.payloadDigest]: "delivered" });
+  await poll();
+  await poll();
+  const committed = await qwen().state.get(historyKey());
+  expect(await turns()).toEqual(["Hello", "Saved once"]);
+  expect(await marker()).toBe("completed");
+  expect(await qwen().state.readEntries("host-prepared:")).toEqual([]);
+  // Stable across further polls, the mailbox echo and another reopen.
   mockFetch.mockImplementation(async () => [message()]);
+  await poll();
+  await host.stop();
+  legacy = await open();
+  await poll();
   await poll();
   expect(reply).toHaveBeenCalledTimes(1);
   expect(mockSend).toHaveBeenCalledTimes(1);
   expect(legacy).not.toHaveBeenCalled();
-  const store = (
-    host as unknown as { instances: Map<string, { state: LevelBotStateStore }> }
-  ).instances.get("qwen")!.state;
-  expect(await store.get(`digest:${message().payloadDigest}`)).toBeUndefined();
+  expect(await qwen().state.get(historyKey())).toBe(committed);
+  // The next prompt of the conversation is generated with the committed pair.
+  mockFetch.mockImplementation(async () => [
+    {
+      ...message(),
+      payloadDigest: "cc".repeat(32),
+      messageId: "03030303-0303-0303-0303-030303030303",
+      receivedTime: 2000,
+    },
+  ]);
+  await poll();
+  expect(reply).toHaveBeenCalledTimes(2);
+  expect(reply.mock.calls[1][0]).toEqual([
+    { role: "user", content: "Hello" },
+    { role: "assistant", content: "Saved once" },
+    { role: "user", content: "Hello" },
+  ]);
 });
 
-it("does not regenerate or repay after delivery followed by a failed history write", async () => {
+// Was: failed Qwen's own `state.put` of the history key after a delivered reply and accepted
+// that the turn was then lost for good. That write no longer exists: history is part of the
+// batch that completes the invocation, so a failed write is retried from disk truth and lands.
+it("does not regenerate or repay after delivery followed by a failed history commit, and commits it once after reopen", async () => {
   const counted = jest.spyOn(LoopGuard.prototype, "recordReply");
-  mockSend.mockImplementation(
-    async (params: Parameters<DirectMessageClient["send"]>[0]) => {
-      await params.onAttemptCreated?.(receipt.payloadDigest);
-      return receipt;
-    }
-  );
+  mockSend.mockImplementation(async (params: Send) => {
+    await params.onAttemptCreated?.(receipt.payloadDigest);
+    return receipt;
+  });
   const legacy = await open();
-  const original = LevelBotStateStore.prototype.put;
+  const original = LevelBotStateStore.prototype.durableBatch;
   let failedHistory = false;
-  jest
-    .spyOn(LevelBotStateStore.prototype, "put")
-    .mockImplementation(function (key, value) {
-      if (key.startsWith("qwen-history:v1:")) {
+  const cut = jest
+    .spyOn(LevelBotStateStore.prototype, "durableBatch")
+    .mockImplementation(function (ops) {
+      if (ops.some((op) => op.key.startsWith("qwen-history:v1:"))) {
         failedHistory = true;
         return Promise.reject(new Error("history unavailable"));
       }
-      return original.call(this, key, value);
+      return original.call(this, ops);
     });
+  const plainWrite = jest.spyOn(LevelBotStateStore.prototype, "put");
   await poll();
-  await poll();
-  await host.stop();
-  await open();
   await poll();
   expect(failedHistory).toBe(true);
+  expect(counted).not.toHaveBeenCalled();
+  await host.stop();
+  cut.mockRestore();
+  await open();
+  expect(await turns()).toBeUndefined();
+  await poll();
+  await poll();
   expect(reply).toHaveBeenCalledTimes(1);
   expect(mockSend).toHaveBeenCalledTimes(1);
   expect(legacy).not.toHaveBeenCalled();
   expect(counted).toHaveBeenCalledTimes(1);
+  expect(await turns()).toEqual(["Hello", "Saved once"]);
+  expect(
+    plainWrite.mock.calls.some(([key]) => key.startsWith("qwen-history:"))
+  ).toBe(false);
 });
 
 it("holds an unversioned existing root before opening a wallet or publishing", async () => {
@@ -236,28 +415,146 @@ it("holds an unversioned existing root before opening a wallet or publishing", a
   expect(readFileSync(join(location, "account-root.hex"), "utf8")).toBe(bytes);
 });
 
+// T2, T13. One row per durable write of the prepared path, each cut both ways: the write is
+// lost, or it lands and its acknowledgement is lost. Either faults the journal until reopen.
+// `sends` counts wallet calls over every lifetime and `intents` the payments they created.
+// Was: a "begin" case that matched the first row write with no reply slot, which since
+// retention is the retain write, not the start write; both are now named and cut separately.
 it.each([
-  ["begin", false],
-  ["reply", false],
-  ["link", false],
-  ["link", true],
-  ["completion", false],
-  ["completion", true],
+  // Nothing durable: the message is fetched again and handled once.
+  {
+    cut: "retain",
+    committed: false,
+    model: [0, 1],
+    sends: [0, 1],
+    end: "completed",
+  },
+  {
+    cut: "retain",
+    committed: true,
+    model: [0, 1],
+    sends: [0, 1],
+    end: "completed",
+  },
+  {
+    cut: "start",
+    committed: false,
+    model: [0, 1],
+    sends: [0, 1],
+    end: "completed",
+  },
+  // Started on disk but the handler never ran: held, never generated.
+  {
+    cut: "start",
+    committed: true,
+    model: [0, 0],
+    sends: [0, 0],
+    end: "started",
+  },
+  // Generated, not staged: the answer is lost and never generated again.
+  {
+    cut: "prepare",
+    committed: false,
+    model: [1, 1],
+    sends: [0, 0],
+    end: "started",
+  },
+  // Staged, no slot: the only state a restart sends from.
+  {
+    cut: "prepare",
+    committed: true,
+    model: [1, 1],
+    sends: [0, 1],
+    end: "completed",
+  },
+  {
+    cut: "slot",
+    committed: false,
+    model: [1, 1],
+    sends: [0, 1],
+    end: "completed",
+  },
+  // A slot on disk whose call nobody can account for: held, never sent.
+  {
+    cut: "slot",
+    committed: true,
+    model: [1, 1],
+    sends: [0, 0],
+    end: "unlinked",
+  },
+  // A labelled refusal whose retraction is lost leaves that slot; one that landed is sent once.
+  {
+    cut: "retract",
+    committed: false,
+    model: [1, 1],
+    sends: [1, 1],
+    end: "unlinked",
+  },
+  {
+    cut: "retract",
+    committed: true,
+    model: [1, 1],
+    sends: [1, 2],
+    end: "completed",
+  },
+  // T13: the wallet has its link and delivers; the host row never learns the digest.
+  {
+    cut: "link",
+    committed: false,
+    model: [1, 1],
+    sends: [1, 1],
+    end: "unlinked",
+  },
+  {
+    cut: "link",
+    committed: true,
+    model: [1, 1],
+    sends: [1, 1],
+    end: "completed",
+  },
+  {
+    cut: "observe",
+    committed: false,
+    model: [1, 1],
+    sends: [1, 1],
+    end: "completed",
+  },
+  {
+    cut: "observe",
+    committed: true,
+    model: [1, 1],
+    sends: [1, 1],
+    end: "completed",
+  },
+  {
+    cut: "completion",
+    committed: false,
+    model: [1, 1],
+    sends: [1, 1],
+    end: "completed",
+  },
+  {
+    cut: "completion",
+    committed: true,
+    model: [1, 1],
+    sends: [1, 1],
+    end: "completed",
+  },
 ] as const)(
-  "holds the real Qwen path at %s write failure (committed=%s)",
-  async (cut, committed) => {
-    const broadcast = jest.fn();
-    mockSend.mockImplementation(
-      async (params: Parameters<DirectMessageClient["send"]>[0]) => {
-        await params.onAttemptCreated?.(receipt.payloadDigest);
-        broadcast();
-        return receipt;
-      }
-    );
+  "recovers the real Qwen path from a cut $cut write (committed=$committed) as $end",
+  async ({ cut, committed, model, sends, end }) => {
+    let intents = 0;
+    mockSend.mockImplementation(async (params: Send) => {
+      if (cut === "retract" && mockSend.mock.calls.length === 1)
+        throw notAttempted(new Error("earlier attempt pending"));
+      intents++; // the wallet's own link is durable before it tells the host
+      await params.onAttemptCreated?.(receipt.payloadDigest);
+      return receipt;
+    });
     const legacy = await open();
     const original = LevelBotStateStore.prototype.durableBatch;
     let injected = false;
-    jest
+    const spy = jest
       .spyOn(LevelBotStateStore.prototype, "durableBatch")
       .mockImplementation(async function (ops) {
         const op = ops.find(
@@ -269,19 +566,29 @@ it.each([
           op?.type === "put"
             ? (JSON.parse(op.value) as {
                 phase: string;
+                prepared?: object;
                 replies: Array<{ digest?: string; observation?: string }>;
               })
             : undefined;
-        const match =
-          row &&
-          (cut === "begin"
-            ? !row.replies.length
-            : cut === "reply"
-            ? row.replies.length === 1 && !row.replies[0].digest
-            : cut === "link"
-            ? !!row.replies[0]?.digest && !row.replies[0].observation
-            : row.phase === "completed");
-        if (!injected && match) {
+        const slot = row?.replies[0];
+        const written = !row
+          ? undefined
+          : row.phase === "deferred"
+          ? "retain"
+          : row.phase === "completed"
+          ? "completion"
+          : !row.prepared
+          ? "start"
+          : ops.length === 3
+          ? "prepare"
+          : !slot
+          ? "retract"
+          : !slot.digest
+          ? "slot"
+          : slot.observation === "delivered"
+          ? "observe"
+          : "link";
+        if (!injected && written === cut) {
           injected = true;
           if (committed) await original.call(this, ops);
           throw new Error("lost storage acknowledgement");
@@ -289,21 +596,48 @@ it.each([
         return original.call(this, ops);
       });
     await poll();
+    await drain();
     expect(injected).toBe(true);
-    expect(reply).toHaveBeenCalledTimes(cut === "begin" ? 0 : 1);
-    expect(mockSend).toHaveBeenCalledTimes(
-      cut === "begin" || cut === "reply" ? 0 : 1
-    );
-    expect(broadcast).toHaveBeenCalledTimes(cut === "completion" ? 1 : 0);
-    expect(legacy).not.toHaveBeenCalled();
-    await host.stop();
-    await open();
-    // No callback exists for begun-only rows. They must hold without guessing which wallet row is theirs.
-    if (cut !== "begin") {
-      await poll();
-      expect(reply).toHaveBeenCalledTimes(1);
-      expect(mockSend).toHaveBeenCalledTimes(cut === "reply" ? 0 : 1);
+    expect(reply).toHaveBeenCalledTimes(model[0]);
+    expect(mockSend).toHaveBeenCalledTimes(sends[0]);
+    // The faulted journal admits nothing more in this process.
+    await poll();
+    await drain();
+    expect(mockSend).toHaveBeenCalledTimes(sends[0]);
+    spy.mockRestore();
+    for (let lifetime = 0; lifetime < 2; lifetime++) {
+      await host.stop();
+      await open();
+      for (let pass = 0; pass < 3; pass++) {
+        await poll();
+        await drain();
+      }
+      expect(reply).toHaveBeenCalledTimes(model[1]);
+      expect(mockSend).toHaveBeenCalledTimes(sends[1]);
+      // Never more than one payment, and the labelled refusal created none.
+      expect(intents).toBe(sends[1] - (cut === "retract" ? 1 : 0));
+      expect(intents).toBeLessThanOrEqual(1);
+      const row = qwen().operations.get(message().payloadDigest);
+      const done = end === "completed";
+      expect(row?.phase).toBe(done ? "completed" : "started");
+      expect(await turns()).toEqual(done ? ["Hello", "Saved once"] : undefined);
+      expect(await qwen().state.get(`digest:${message().payloadDigest}`)).toBe(
+        done ? "completed" : undefined
+      );
+      expect(await stagedText(message().payloadDigest)).toBe(
+        end === "unlinked" ? "Saved once" : undefined
+      );
+      if (end === "started") expect(row).toMatchObject({ replies: [] });
+      if (end === "started") expect(row?.prepared).toBeUndefined();
+      // Held with a slot the wallet never linked to this row: not reconciled, not sent again.
+      if (end === "unlinked") {
+        expect(row?.replies).toEqual([
+          expect.not.objectContaining({ digest: expect.anything() }),
+        ]);
+        expect(mockReconcile).not.toHaveBeenCalled();
+      }
     }
+    expect(legacy).not.toHaveBeenCalled();
   }
 );
 
@@ -961,5 +1295,884 @@ describe("durable retention before dispatch", () => {
     mockReconcile.mockResolvedValue({});
     await pollAllBots();
     expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  describe("prepared reply and continuation", () => {
+    type Attempt = { digest: string; text: string; delivered: boolean };
+    /** The stand-in wallet's payment intents, kept across host restarts as a wallet would. */
+    let attempts: Attempt[];
+    /** How the wallet treats a reply it accepts: deliver it, link it and report pending, or
+     * reject it unlabelled before linking (as inventory funding does). */
+    let plan: (text: string) => "deliver" | "pending" | "unlabelled";
+    /** The canonical wallet refuses, labelled, while an earlier attempt has no outcome. */
+    let oneLiveAttempt: boolean;
+    const textOf = (params: Send) =>
+      (params.items[0] as { type: "text"; text: string }).text;
+    const sends = (text: string) =>
+      mockSend.mock.calls.filter(([params]) => textOf(params) === text).length;
+    const intents = (text: string) =>
+      attempts.filter((attempt) => attempt.text === text).length;
+    const deliver = (text: string) => {
+      for (const attempt of attempts)
+        if (attempt.text === text) attempt.delivered = true;
+    };
+    const pollAllBots = () =>
+      (host as unknown as { pollAllBots(): Promise<void> }).pollAllBots();
+    const pass = async (count = 1) => {
+      for (let index = 0; index < count; index++) {
+        await pollAllBots();
+        await drain();
+      }
+    };
+    const row = (item: DirectMessageReceived) =>
+      qwen().operations.get(item.payloadDigest);
+    const staged = () =>
+      qwen()
+        .operations.listIncomplete()
+        .filter((held) => held.prepared && !held.replies.length);
+    /** A message sent outside any invocation, as Qwen's greeting is: linked, not yet delivered. */
+    const greet = async () => {
+      await qwen()
+        .context.sendMessage(other.address, [
+          { type: "text", text: "greeting" },
+        ])
+        .catch(() => undefined);
+      expect(attempts).toEqual([
+        expect.objectContaining({ text: "greeting", delivered: false }),
+      ]);
+    };
+    beforeEach(() => {
+      attempts = [];
+      plan = () => "deliver";
+      oneLiveAttempt = true;
+      mockSend.mockImplementation(async (params: Send) => {
+        const text = textOf(params);
+        if (oneLiveAttempt && attempts.some((attempt) => !attempt.delivered))
+          throw notAttempted(new Error("earlier attempt pending"));
+        const outcome = text === "greeting" ? "pending" : plan(text);
+        if (outcome === "unlabelled")
+          throw new Error("inventory funding failed");
+        const attempt = {
+          digest: (0xf000 + attempts.length).toString(16).padStart(64, "0"),
+          text,
+          delivered: false,
+        };
+        attempts.push(attempt);
+        await params.onAttemptCreated?.(attempt.digest);
+        if (outcome === "pending") throw new Error("canonical attempt pending");
+        attempt.delivered = true;
+        return { ...receipt, payloadDigest: attempt.digest };
+      });
+      mockReconcile.mockImplementation(
+        async ({ payloadDigests }: { payloadDigests: string[] }) =>
+          Object.fromEntries(
+            payloadDigests.map((digest) => {
+              const attempt = attempts.find((known) => known.digest === digest);
+              return [
+                digest,
+                !attempt ? "unknown" : attempt.delivered ? "delivered" : "live",
+              ];
+            })
+          )
+      );
+    });
+
+    // T3. Reproduces: A2 was generated at once, against history that did not have A1's turn,
+    // and A1's turn was never recorded at all.
+    it("answers a conversation's second prompt only after its first reply delivers and commits, while another conversation goes on", async () => {
+      oneLiveAttempt = false;
+      plan = (text) => (text === "re:A1" ? "pending" : "deliver");
+      const a1 = inbound(1, "A1", 1000);
+      const a2 = inbound(2, "A2", 2000);
+      const b1 = inbound(3, "B1", 3000, other, threadB);
+      mailbox = [a1];
+      await open();
+      await pass();
+      expect(row(a1)).toMatchObject({
+        phase: "started",
+        replies: [{ digest: attempts[0].digest }],
+      });
+      mailbox = [a1, a2, b1];
+      await pass(2);
+      expect(prompts()).toEqual(["A1", "B1"]);
+      expect(row(a2)?.phase).toBe("deferred");
+      expect(await turns(threadB, other)).toEqual(["B1", "re:B1"]);
+      expect(await qwen().state.get("cursor:lastPollTimestamp")).toBe(
+        String(b1.receivedTime + 1)
+      );
+      expect(await turns(threadA)).toBeUndefined();
+      // A1 delivers and commits while the mailbox returns nothing.
+      deliver("re:A1");
+      mailbox = [];
+      await pass();
+      expect(await turns(threadA)).toEqual(["A1", "re:A1"]);
+      expect(row(a1)?.phase).toBe("completed");
+      expect(prompts()).toEqual(["A1", "B1"]);
+      await host.stop();
+      await open();
+      mockFetch.mockClear();
+      mailbox = [a1, a2, b1];
+      await pass(2);
+      expect(scans()[0]).toBe(a2.receivedTime);
+      expect(prompts()).toEqual(["A1", "B1", "A2"]);
+      expect(reply.mock.calls[2][0]).toEqual([
+        { role: "user", content: "A1" },
+        { role: "assistant", content: "re:A1" },
+        { role: "user", content: "A2" },
+      ]);
+      expect(await turns(threadA)).toEqual(["A1", "re:A1", "A2", "re:A2"]);
+      expect(await turns(threadB, other)).toEqual(["B1", "re:B1"]);
+      expect(attempts.map((attempt) => attempt.text)).toEqual([
+        "re:A1",
+        "re:B1",
+        "re:A2",
+      ]);
+      expect(mockSend).toHaveBeenCalledTimes(3);
+    });
+
+    // T3, digest tie. Reproduces: the second prompt of a conversation was started while the
+    // first reply was still undelivered.
+    it("orders two prompts of equal relay time by digest and holds the second until the first reply delivers", async () => {
+      plan = (text) => (text === "re:first" ? "pending" : "deliver");
+      const first = inbound(0x10, "first", 1000);
+      const second = inbound(0x20, "second", 1000);
+      mailbox = [second, first];
+      await open();
+      await pass(3);
+      expect(prompts()).toEqual(["first"]);
+      expect(row(second)?.phase).toBe("deferred");
+      deliver("re:first");
+      await pass(2);
+      expect(prompts()).toEqual(["first", "second"]);
+      expect(reply.mock.calls[1][0]).toHaveLength(3);
+      expect(await turns(threadA)).toEqual([
+        "first",
+        "re:first",
+        "second",
+        "re:second",
+      ]);
+    });
+
+    // The three-call rule. Reproduces: nothing distinguished "refused, nothing attempted" from
+    // "may have paid", so no reply could ever be sent again safely.
+    it("never calls the wallet again for a reply whose first call linked and was rejected unlabelled, whatever is refused labelled afterwards", async () => {
+      plan = (text) => (text === "re:A1" ? "pending" : "deliver");
+      const a1 = inbound(1, "A1", 1000);
+      const b1 = inbound(3, "B1", 3000, other, threadB);
+      mailbox = [a1];
+      await open();
+      await pass();
+      mailbox = [a1, b1];
+      await pass(3);
+      // B1 is refused, labelled, on every pass while A1 has no outcome: taken back each time.
+      expect(sends("re:B1")).toBeGreaterThanOrEqual(2);
+      expect(intents("re:B1")).toBe(0);
+      expect(row(b1)).toMatchObject({ phase: "started", replies: [] });
+      expect(await stagedText(b1.payloadDigest)).toBe("re:B1");
+      expect(sends("re:A1")).toBe(1);
+      expect(row(a1)?.replies).toEqual([
+        expect.objectContaining({ digest: attempts[0].digest }),
+      ]);
+      await host.stop();
+      await open();
+      await pass(2);
+      expect(sends("re:A1")).toBe(1);
+      deliver("re:A1");
+      await pass(2);
+      expect(sends("re:A1")).toBe(1);
+      expect(intents("re:A1")).toBe(1);
+      expect(intents("re:B1")).toBe(1);
+      expect(await turns(threadA)).toEqual(["A1", "re:A1"]);
+      expect(await turns(threadB, other)).toEqual(["B1", "re:B1"]);
+      expect(reply).toHaveBeenCalledTimes(2);
+    });
+
+    // T4, T12. Reproduces: a send refused behind an earlier live attempt left a slot without a
+    // digest, held for ever, and the generated answer was never sent.
+    it("takes back the slot of a send the wallet labelled not attempted, keeps the answer, and sends it once the wallet accepts", async () => {
+      const a1 = inbound(1, "A1", 1000);
+      mailbox = [a1];
+      await open();
+      await greet();
+      const slots: number[] = [];
+      const original = LevelBotStateStore.prototype.durableBatch;
+      const writes = jest
+        .spyOn(LevelBotStateStore.prototype, "durableBatch")
+        .mockImplementation(function (ops) {
+          const op = ops.find(
+            (value) => value.key === rowKey(a1.payloadDigest)
+          );
+          if (op?.type === "put")
+            slots.push(JSON.parse(op.value).replies.length);
+          return original.call(this, ops);
+        });
+      await pass();
+      writes.mockRestore();
+      // Retained, started, staged; then the slot before the wallet call, and its retraction.
+      expect(slots).toEqual([0, 0, 0, 1, 0]);
+      expect(sends("re:A1")).toBe(1);
+      expect(row(a1)).toMatchObject({ phase: "started", replies: [] });
+      expect(await stagedText(a1.payloadDigest)).toBe("re:A1");
+      await pass();
+      expect(sends("re:A1")).toBe(2);
+      await host.stop();
+      await open();
+      await pass();
+      expect(sends("re:A1")).toBe(3);
+      expect(intents("re:A1")).toBe(0);
+      expect(await turns(threadA)).toBeUndefined();
+      deliver("greeting");
+      await pass();
+      expect(sends("re:A1")).toBe(4);
+      expect(intents("re:A1")).toBe(1);
+      expect(await turns(threadA)).toEqual(["A1", "re:A1"]);
+      expect(row(a1)?.phase).toBe("completed");
+      await pass(2);
+      await host.stop();
+      await open();
+      await pass(2);
+      expect(sends("re:A1")).toBe(4);
+      expect(intents("re:A1")).toBe(1);
+      expect(reply).toHaveBeenCalledTimes(1);
+      expect(await turns(threadA)).toEqual(["A1", "re:A1"]);
+    });
+
+    // T12 (unlabelled) and Revision 5. Reproduces: without the label nothing may be assumed, so
+    // the slot is held; and the conversation behind it was then silenced, each later prompt
+    // calling the model and losing its answer.
+    it("holds a reply the wallet rejected unlabelled before linking, never sends it again, and answers the conversation's next prompt without that turn", async () => {
+      plan = (text) => (text === "re:P1" ? "unlabelled" : "deliver");
+      const p1 = inbound(1, "P1", 1000);
+      const p2 = inbound(2, "P2", 2000);
+      mailbox = [p1];
+      await open();
+      await pass(3);
+      expect(sends("re:P1")).toBe(1);
+      expect(row(p1)).toMatchObject({
+        phase: "started",
+        prepared: { stateKey: historyKey(threadA) },
+        replies: [{ stampValue: "1" }],
+      });
+      expect(row(p1)?.replies[0].digest).toBeUndefined();
+      const held = await qwen().state.get(rowKey(p1.payloadDigest));
+      await host.stop();
+      await open();
+      await pass(2);
+      expect(sends("re:P1")).toBe(1);
+      mailbox = [p1, p2];
+      await pass(2);
+      expect(prompts()).toEqual(["P1", "P2"]);
+      expect(reply.mock.calls[1][0]).toEqual([{ role: "user", content: "P2" }]);
+      expect(sends("re:P2")).toBe(1);
+      expect(row(p2)?.phase).toBe("completed");
+      expect(await turns(threadA)).toEqual(["P2", "re:P2"]);
+      await host.stop();
+      await open();
+      await pass(2);
+      // P1: never sent again, never committed, its answer kept as evidence.
+      expect(sends("re:P1")).toBe(1);
+      expect(intents("re:P1")).toBe(0);
+      expect(await qwen().state.get(rowKey(p1.payloadDigest))).toBe(held);
+      expect(await stagedText(p1.payloadDigest)).toBe("re:P1");
+      expect(
+        await qwen().state.get("digest:" + p1.payloadDigest)
+      ).toBeUndefined();
+      expect(await turns(threadA)).toEqual(["P2", "re:P2"]);
+      expect(reply).toHaveBeenCalledTimes(2);
+    });
+
+    // T7. Reproduces: history was overwritten unconditionally after the reply.
+    it("holds a delivered reply whose history key changed meanwhile, overwrites nothing, and keeps its conversation waiting", async () => {
+      plan = (text) => (text === "re:A1" ? "pending" : "deliver");
+      const a1 = inbound(1, "A1", 1000);
+      const a2 = inbound(2, "A2", 2000);
+      mailbox = [a1];
+      await open();
+      await pass();
+      await qwen().state.put(historyKey(threadA), "written by someone else");
+      deliver("re:A1");
+      mailbox = [a1, a2];
+      for (let lifetime = 0; lifetime < 2; lifetime++) {
+        await pass(3);
+        expect(row(a1)).toMatchObject({
+          phase: "started",
+          replies: [{ observation: "delivered" }],
+        });
+        expect(await qwen().state.get(historyKey(threadA))).toBe(
+          "written by someone else"
+        );
+        expect(
+          await qwen().state.get("digest:" + a1.payloadDigest)
+        ).toBeUndefined();
+        expect(await stagedText(a1.payloadDigest)).toBe("re:A1");
+        expect(row(a2)?.phase).toBe("deferred");
+        expect(reply).toHaveBeenCalledTimes(1);
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        await host.stop();
+        await open();
+      }
+    });
+
+    // T7. Reproduces: a reply was sent whatever had happened to its history meanwhile.
+    it("does not send a staged reply whose history key changed before its first send", async () => {
+      const a1 = inbound(1, "A1", 1000);
+      mailbox = [a1];
+      await open();
+      await greet();
+      await pass();
+      expect(staged().map((held) => held.digest)).toEqual([a1.payloadDigest]);
+      await qwen().state.put(historyKey(threadA), "written by someone else");
+      deliver("greeting");
+      await pass(3);
+      await host.stop();
+      await open();
+      await pass(2);
+      // Only the refused call was ever made; no slot was persisted for a second one.
+      expect(sends("re:A1")).toBe(1);
+      expect(intents("re:A1")).toBe(0);
+      expect(row(a1)).toMatchObject({ phase: "started", replies: [] });
+      expect(await stagedText(a1.payloadDigest)).toBe("re:A1");
+      expect(await qwen().state.get(historyKey(threadA))).toBe(
+        "written by someone else"
+      );
+    });
+
+    // T14, OD-6. Reproduces: every prompt called the model and left a slot without a digest
+    // while the wallet was refusing sends.
+    it("stops generating once sixteen answers are staged behind a refused send, apart from handlers already running, and answers everyone once it clears", async () => {
+      const crowd = Array.from(
+        { length: 20 },
+        (_, index) => new Wallet("0x" + (0x30 + index).toString(16).repeat(32))
+      );
+      const question = (index: number) =>
+        inbound(0x100 + index, "Q" + index, 1000 + index, crowd[index]);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      reply.mockImplementation(async (prompt: { content: string }[]) => {
+        const content = prompt[prompt.length - 1].content;
+        if (["Q15", "Q16", "Q17"].includes(content)) await gate;
+        return { content: "re:" + content };
+      });
+      await open();
+      await greet();
+      mailbox = Array.from({ length: 15 }, (_, index) => question(index));
+      await pass(2);
+      expect(reply).toHaveBeenCalledTimes(15);
+      expect(staged()).toHaveLength(15);
+      // Three handlers start while fifteen answers are staged: they are already running when
+      // the sixteenth is staged, and each stages its own.
+      mailbox.push(question(15), question(16), question(17));
+      await pollAllBots();
+      for (let wait = 0; wait < 20 && reply.mock.calls.length < 18; wait++)
+        await settle();
+      expect(reply).toHaveBeenCalledTimes(18);
+      release();
+      await pass();
+      expect(staged()).toHaveLength(18);
+      // At the bound nothing more is generated: later prompts wait, retained, in order.
+      mailbox.push(question(18), question(19));
+      await pass(3);
+      expect(reply).toHaveBeenCalledTimes(18);
+      expect(row(question(18))?.phase).toBe("deferred");
+      expect(row(question(19))?.phase).toBe("deferred");
+      // Every refusal was labelled, so no slot is left behind and nothing but the greeting
+      // was ever attempted.
+      expect(
+        qwen()
+          .operations.listIncomplete()
+          .every((held) => !held.replies.length)
+      ).toBe(true);
+      expect(attempts).toHaveLength(1);
+      deliver("greeting");
+      await pass(4);
+      expect(reply).toHaveBeenCalledTimes(20);
+      for (let index = 0; index < 20; index++) {
+        expect(await turns(threadA, crowd[index])).toEqual([
+          "Q" + index,
+          "re:Q" + index,
+        ]);
+        expect(intents("re:Q" + index)).toBe(1);
+      }
+      expect(attempts).toHaveLength(21);
+      expect(qwen().operations.listIncomplete()).toEqual([]);
+    });
+
+    // T5. Reproduces: at the cap a later prompt of a conversation ran with a stale prompt.
+    it("stages, sends and commits rows retained before the 1,024-row cap, in order, and deletes nothing", async () => {
+      plan = (text) => (text === "re:A1" ? "pending" : "deliver");
+      const a1 = inbound(0x9001, "A1", 1000);
+      const a2 = inbound(0x9002, "A2", 2000);
+      const unretained = inbound(0x9003, "U", 3000, other, threadB);
+      await open();
+      await host.stop();
+      const seeded = await LevelBotStateStore.open(
+        join(root, "bots", "qwen", "state")
+      );
+      await seeded.batch(
+        Array.from({ length: 1022 }, (_, index) => ({
+          type: "put" as const,
+          key: rowKey((index + 1).toString(16).padStart(64, "0")),
+          value: JSON.stringify({
+            version: 1,
+            digest: (index + 1).toString(16).padStart(64, "0"),
+            peerSubject: peer.signingKey.compressedPublicKey.slice(2),
+            peerAddress: peer.address.toLowerCase(),
+            conversationId: threadA,
+            messageId:
+              "00000000-0000-0000-0000-" +
+              (index + 1).toString(16).padStart(12, "0"),
+            receivedTime: 1,
+            phase: "started",
+            replies: [],
+          }),
+        }))
+      );
+      await seeded.close();
+      mailbox = [a1, a2, unretained];
+      await open();
+      await pass(3);
+      expect(prompts()).toEqual(["A1"]);
+      expect(row(a2)?.phase).toBe("deferred");
+      expect(row(unretained)).toBeUndefined();
+      expect(
+        await qwen().state.readEntries("host-inbound:v1:dispatch:")
+      ).toHaveLength(1024);
+      deliver("re:A1");
+      await pass(3);
+      expect(prompts()).toEqual(["A1", "A2"]);
+      expect(reply.mock.calls[1][0]).toHaveLength(3);
+      expect(await turns(threadA)).toEqual(["A1", "re:A1", "A2", "re:A2"]);
+      expect(row(a1)?.phase).toBe("completed");
+      expect(row(a2)?.phase).toBe("completed");
+      expect(row(unretained)).toBeUndefined();
+      expect(
+        await qwen().state.readEntries("host-inbound:v1:dispatch:")
+      ).toHaveLength(1024);
+      expect(await qwen().state.readEntries("host-prepared:")).toEqual([]);
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    // T19 and Revision 5 item 2. Reproduces: a stop() during admission left a generated answer
+    // that was never sent, or a started row whose handler never ran.
+    it.each(["start", "prepare"] as const)(
+      "stages the answer and sends it exactly once after restart when stop() lands during the %s write",
+      async (during) => {
+        const a1 = inbound(1, "A1", 1000);
+        mailbox = [a1];
+        await open();
+        const original = LevelBotStateStore.prototype.durableBatch;
+        let stopping: Promise<void> | undefined;
+        const spy = jest
+          .spyOn(LevelBotStateStore.prototype, "durableBatch")
+          .mockImplementation(function (ops) {
+            const op = ops.find(
+              (value) => value.key === rowKey(a1.payloadDigest)
+            );
+            const written =
+              op?.type === "put"
+                ? (JSON.parse(op.value) as { phase: string; prepared?: object })
+                : undefined;
+            const now =
+              during === "prepare"
+                ? ops.length === 3
+                : written?.phase === "started" && !written.prepared;
+            if (now && !stopping) stopping = host.stop();
+            return original.call(this, ops);
+          });
+        await pollAllBots();
+        for (let wait = 0; wait < 20 && !stopping; wait++) await settle();
+        await stopping;
+        spy.mockRestore();
+        expect(reply).toHaveBeenCalledTimes(1);
+        expect(mockSend).not.toHaveBeenCalled();
+        await open();
+        expect(staged().map((held) => held.digest)).toEqual([a1.payloadDigest]);
+        expect(await stagedText(a1.payloadDigest)).toBe("re:A1");
+        for (let lifetime = 0; lifetime < 2; lifetime++) {
+          await pass(2);
+          expect(reply).toHaveBeenCalledTimes(1);
+          expect(mockSend).toHaveBeenCalledTimes(1);
+          expect(intents("re:A1")).toBe(1);
+          expect(await turns(threadA)).toEqual(["A1", "re:A1"]);
+          expect(row(a1)?.phase).toBe("completed");
+          await host.stop();
+          await open();
+        }
+      }
+    );
+
+    // T6. Reproduces: nothing tracked a continuation, so stop() could not wait for one.
+    it("drains a retried send that is in flight before stop() resolves, and persists its outcome", async () => {
+      const a1 = inbound(1, "A1", 1000);
+      mailbox = [a1];
+      await open();
+      await greet();
+      await pass();
+      deliver("greeting");
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const wallet = mockSend.getMockImplementation()!;
+      let entered = false;
+      mockSend.mockImplementation(async (params: Send) => {
+        entered = true;
+        await gate;
+        return wallet(params);
+      });
+      const polling = pollAllBots();
+      for (let wait = 0; wait < 20 && !entered; wait++) await settle();
+      expect(entered).toBe(true);
+      let stopped = false;
+      const stopping = host.stop().then(() => (stopped = true));
+      await settle();
+      expect(stopped).toBe(false);
+      release();
+      await stopping;
+      await polling;
+      const writes = jest.spyOn(LevelBotStateStore.prototype, "durableBatch");
+      await settle();
+      expect(writes).not.toHaveBeenCalled();
+      await open();
+      expect(row(a1)?.phase).toBe("completed");
+      expect(await turns(threadA)).toEqual(["A1", "re:A1"]);
+      await pass(2);
+      expect(intents("re:A1")).toBe(1);
+      expect(sends("re:A1")).toBe(2);
+      expect(reply).toHaveBeenCalledTimes(1);
+    });
+
+    // T8. Pins what must not change: rows written by earlier code have no staged reply, so the
+    // continuation never completes, re-sends or regenerates them, whatever the wallet reports.
+    it("leaves today's live rows held: no model call, send, completion or history for them, and their conversation is answered", async () => {
+      await open();
+      await host.stop();
+      const call = {
+        recipient: peer.address.toLowerCase(),
+        conversationId: threadA,
+        stampValue: "1",
+      };
+      const shapes = [
+        [{ ...call, digest: "d1".repeat(32), observation: "delivered" }],
+        [{ ...call, digest: "d2".repeat(32), observation: "live" }],
+        [call],
+      ].map((replies, index) => ({
+        version: 1,
+        digest: (index + 1).toString(16).padStart(64, "0"),
+        peerSubject: peer.signingKey.compressedPublicKey.slice(2),
+        peerAddress: peer.address.toLowerCase(),
+        conversationId: threadA,
+        messageId: "00000000-0000-0000-0000-00000000000" + (index + 1),
+        receivedTime: t0 + 100 + index,
+        phase: "started",
+        replies,
+      }));
+      const seeded = await LevelBotStateStore.open(
+        join(root, "bots", "qwen", "state")
+      );
+      await seeded.batch(
+        shapes.map((shape) => ({
+          type: "put" as const,
+          key: rowKey(shape.digest),
+          value: JSON.stringify(shape),
+        }))
+      );
+      await seeded.close();
+      const next = inbound(0x50, "N", 5000);
+      mailbox = [next];
+      await open();
+      await pass(3);
+      expect(prompts()).toEqual(["N"]);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(await turns(threadA)).toEqual(["N", "re:N"]);
+      expect(scans()[scans().length - 1]).toBe(next.receivedTime + 1);
+      for (const shape of shapes) {
+        expect(
+          await qwen().state.get("digest:" + shape.digest)
+        ).toBeUndefined();
+        expect(qwen().operations.get(shape.digest)).toMatchObject({
+          phase: "started",
+          replies: [{ stampValue: "1" }],
+        });
+      }
+      // Apart from the wallet's newer observation of the live one, byte for byte unchanged.
+      expect(await qwen().state.get(rowKey(shapes[0].digest))).toBe(
+        JSON.stringify(shapes[0])
+      );
+      expect(await qwen().state.get(rowKey(shapes[2].digest))).toBe(
+        JSON.stringify(shapes[2])
+      );
+      expect(qwen().operations.get(shapes[1].digest)?.replies[0]).toEqual({
+        ...shapes[1].replies[0],
+        observation: "unknown",
+      });
+    });
+  });
+});
+
+// The label consumer against the wallet that sets the label. Real typed custody, real wallet
+// journals, real directory admission and sealing, the real pending-attempt refusal; the chain
+// RPC and the relay's HTTP answer are offline stand-ins, as in the wallet's own canonical suite.
+describe("with the real canonical wallet", () => {
+  jest.setTimeout(30_000);
+  const RELAY = "https://relay-a.example";
+  const NOW = { seconds: 100n, nanoseconds: 0 };
+  const actual = jest.requireActual<
+    typeof import("@frank/wallet/chain/monad-chain")
+  >("@frank/wallet/chain/monad-chain");
+  const roots = (): MonadRootBundle => {
+    const account = randomBytes(32);
+    return {
+      evm: deriveDomainRoot(account, "evm-wallet"),
+      authentication: deriveDomainRoot(account, "identity-authentication"),
+      messaging: deriveDomainRoot(account, "messaging-encryption"),
+    };
+  };
+  const closers: (() => Promise<unknown>)[] = [];
+  afterEach(async () => {
+    await host?.stop();
+    for (const close of closers.splice(0)) await close().catch(() => undefined);
+    mockBalances.clear();
+  });
+
+  // Reproduces the live failure's third slot: a second reply sent while the first was linked
+  // and undelivered was refused by the wallet before anything existed for it, and the host
+  // kept its slot without a digest for ever, the answer unsent and no history written.
+  it("retracts a reply the wallet's pending check refused, and sends it once after the earlier reply delivers", async () => {
+    const chain = actual.createEvmChain({
+      networkId: "monad-testnet",
+      rpcChain: "monad-testnet",
+      chainId: 10143,
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+      relayBaseUrl: RELAY,
+      networkTag: "MONT",
+      stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+      defaultStampValueWei: 1_000n,
+      defaultTopicVoteValueWei: 1_000n,
+      subAccountPoolSize: 0,
+      walletStorageLocation: join(root, "real-wallet"),
+    });
+    const created: EvmChainWalletHandle[] = [];
+    mockCreate.mockImplementation(async (bundle: MonadRootBundle) => {
+      const wallet = (await chain.createWallet(bundle)) as EvmChainWalletHandle;
+      created.push(wallet);
+      local = wallet.identity;
+      return wallet;
+    });
+    await open();
+    const botWallet = qwen().wallet;
+    expect(created).toEqual([botWallet]);
+    const user = (await chain.createWallet(roots())) as EvmChainWalletHandle;
+    closers.push(() => user.close());
+    // Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded.
+    for (const record of botWallet.pool.ensureSize(4))
+      mockBalances.set(record.address.toLowerCase(), 187_500n + 600n);
+    await botWallet.pool.flush();
+
+    // The bot's own verified directory: both subjects admitted through a real public store.
+    const tuple = {
+      relayId: new Uint8Array(16).fill(1),
+      endpoint: RELAY + "/",
+      identity: {
+        keyType: 1,
+        keyBytes: new Uint8Array(botWallet.identity.compressedPubKey),
+      },
+      expiry: { seconds: 3700n, nanoseconds: 0 },
+      unknownFields: new Map(),
+    };
+    const admit = async (wallet: EvmChainWalletHandle) => {
+      const exported = actual.prepareMonadRevisionZeroExport(wallet, {
+        networkTag: "MONT",
+        network: "monad-testnet",
+        chainId: 10143n,
+        issuedAt: NOW,
+        expiresAt: { seconds: 3700n, nanoseconds: 0 },
+        now: NOW,
+        relay: tuple,
+      });
+      const store = await openNodeDirectoryStore({
+        location: join(root, `directory-${toHex(exported.t1)}`),
+        anchor: {
+          network: "monad-testnet",
+          subject: { keyType: 1, keyBytes: exported.auth.compressedPoint },
+          revisionZero: exported.t1,
+        },
+        mode: { kind: "new" },
+      });
+      closers.push(() => store.close());
+      await store.enroll(
+        [{ statement: exported.statement, attestation: exported.attestation }],
+        { now: NOW, relay: tuple }
+      );
+      return {
+        subject: toHex(exported.auth.compressedPoint),
+        current: () => store.current({ now: NOW, relay: tuple }),
+      };
+    };
+    // The relay answers "retained" (accepted, not delivered) until told otherwise.
+    let phase: "retained" | "delivered" = "retained";
+    const submitted: string[] = [];
+    const fetch: CanonicalFetch = async (url, init) => {
+      const request = {
+        body: new Uint8Array(init.body!),
+        contentType: init.headers["Content-Type"],
+      };
+      const identity = restoreCanonicalRequest(request).identity;
+      submitted.push(identity.payload_hash);
+      const answer = new TextEncoder().encode(
+        JSON.stringify(
+          phase === "delivered"
+            ? { version: 1, phase, identity, mailbox_committed_at_ms: 1234 }
+            : { version: 1, phase, identity }
+        )
+      );
+      let read = false;
+      return {
+        status: phase === "retained" ? 202 : 200,
+        url,
+        headers: {
+          get: (name) =>
+            name.toLowerCase() === "content-type" ? "application/json" : null,
+        },
+        body: {
+          getReader: () => ({
+            read: async () =>
+              read
+                ? { done: true }
+                : ((read = true), { done: false, value: answer }),
+            cancel: async () => undefined,
+            releaseLock: () => undefined,
+          }),
+        },
+      };
+    };
+    const own = await admit(botWallet);
+    const peerEntry = await admit(user);
+    actual.installCanonicalDirectory(botWallet, {
+      network: "monad-testnet",
+      homeEndpoint: RELAY + "/",
+      selfCurrent: own.current,
+      peerCurrent: async (wanted) => {
+        const subject =
+          "subject" in wanted
+            ? wanted.subject
+            : computeAddress("0x" + peerEntry.subject).toLowerCase() ===
+              wanted.address.toLowerCase()
+            ? peerEntry.subject
+            : undefined;
+        return subject === peerEntry.subject
+          ? {
+              subject,
+              endpoint: RELAY + "/",
+              current: await peerEntry.current(),
+            }
+          : undefined;
+      },
+      fetch,
+    });
+    const rejections: unknown[] = [];
+    mockSend.mockImplementation((params: Send) =>
+      chain.directMessages.send(params).catch((error: unknown) => {
+        rejections.push(error);
+        throw error;
+      })
+    );
+    mockReconcile.mockImplementation(
+      (params: Parameters<DirectMessageClient["reconcileAttempts"]>[0]) =>
+        chain.directMessages.reconcileAttempts(params)
+    );
+
+    const threads = [
+      "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a",
+      "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b",
+    ];
+    const prompt = (index: number): DirectMessageReceived => ({
+      ...message(),
+      senderAddress: user.identity.address,
+      senderPublicKey: user.identity.compressedPubKey,
+      conversationId: threads[index],
+      messageId: (index + 1).toString(16).padStart(32, "0"),
+      payloadDigest: (index + 1).toString(16).padStart(64, "0"),
+      receivedTime: Date.now() + index,
+      items: [{ type: "text", text: "P" + (index + 1) }],
+    });
+    const prompts = [prompt(0), prompt(1)];
+    const history = async (index: number) => {
+      const raw = await qwen().state.get(
+        "qwen-history:v1:" +
+          JSON.stringify([
+            "monad-testnet",
+            Buffer.from(local.compressedPubKey).toString("hex"),
+            peerEntry.subject,
+            threads[index],
+          ])
+      );
+      return (
+        raw &&
+        JSON.parse(raw).messages.map(
+          (turn: { content: string }) => turn.content
+        )
+      );
+    };
+    const rowOf = (index: number) =>
+      qwen().operations.get(prompts[index].payloadDigest)!;
+    const pass = async () => {
+      await (host as unknown as { pollAllBots(): Promise<void> }).pollAllBots();
+      await drain();
+    };
+    reply.mockImplementation(async (turnsSoFar: { content: string }[]) => ({
+      content: "re:" + turnsSoFar[turnsSoFar.length - 1].content,
+    }));
+
+    // P1: linked, signed, offered to the relay, not delivered. The wallet reports pending.
+    mockFetch.mockImplementation(async () => [prompts[0]]);
+    await pass();
+    const first = rowOf(0).replies[0].digest;
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(rejections).toHaveLength(1);
+    expect(rejections[0]).toBeInstanceOf(MonadStampPendingAttemptError);
+    expect(isDirectMessageNotAttempted(rejections[0])).toBe(false);
+    expect(submitted).toEqual([first]);
+
+    // P2, another conversation: refused by the wallet's own pending check, with its label.
+    mockFetch.mockImplementation(async () => prompts);
+    await pass();
+    expect(reply).toHaveBeenCalledTimes(2);
+    expect(rejections.length).toBeGreaterThanOrEqual(2);
+    for (const refusal of rejections.slice(1)) {
+      expect(refusal).toBeInstanceOf(MonadStampPendingAttemptError);
+      expect(isDirectMessageNotAttempted(refusal)).toBe(true);
+    }
+    expect(rowOf(1)).toMatchObject({ phase: "started", replies: [] });
+    expect(rowOf(1).prepared).toBeDefined();
+    expect(await stagedText(prompts[1].payloadDigest)).toBe("re:P2");
+    // Only the first reply's own bytes ever reached the relay; nothing exists for the second.
+    expect(new Set(submitted)).toEqual(new Set([first]));
+    expect(
+      await chain.directMessages.unattributedAttempts({
+        wallet: botWallet,
+        knownDigests: [first!],
+      })
+    ).toEqual([]);
+    expect(await history(0)).toBeUndefined();
+    expect(await history(1)).toBeUndefined();
+
+    // The relay delivers the first reply: it commits, and the second is sent, once.
+    phase = "delivered";
+    await pass();
+    await pass();
+    expect(await history(0)).toEqual(["P1", "re:P1"]);
+    expect(await history(1)).toEqual(["P2", "re:P2"]);
+    const second = rowOf(1).replies[0].digest;
+    expect(rowOf(0)).toMatchObject({ phase: "completed" });
+    expect(rowOf(1)).toMatchObject({
+      phase: "completed",
+      replies: [{ observation: "delivered" }],
+    });
+    expect(second).not.toBe(first);
+    // Exactly two payment sets over the whole run, one per reply.
+    expect(new Set(submitted)).toEqual(new Set([first, second]));
+    expect(submitted.filter((hash) => hash === second)).toHaveLength(1);
+    expect(reply).toHaveBeenCalledTimes(2);
+    await pass();
+    expect(new Set(submitted)).toEqual(new Set([first, second]));
   });
 });

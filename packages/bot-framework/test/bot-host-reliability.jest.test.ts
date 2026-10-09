@@ -1,7 +1,11 @@
 import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
 import { FrankBotHost } from "../src/bot-host";
-import type { FrankBotDefinition, BotMessageContext } from "../src/types";
+import type {
+  FrankBotDefinition,
+  BotMessageContext,
+  PreparedReply,
+} from "../src/types";
 
 jest.mock("../src/relay-profile-manager", () => ({
   RelayProfileManager: {
@@ -418,6 +422,151 @@ describe("FrankBotHost Reliability Features", () => {
         String(base + 301)
       );
 
+      await host.stop();
+    });
+  });
+
+  describe("Prepared replies", () => {
+    const other = new Wallet("0x" + "13".repeat(32));
+    const incoming = (
+      digit: string,
+      sender: Wallet,
+      conversationId = "01010101-0101-0101-0101-010101010101"
+    ) => ({
+      senderAddress: { raw: sender.address.toLowerCase() },
+      senderPublicKey: getBytes(sender.signingKey.compressedPublicKey),
+      recipientPublicKey: getBytes("0x" + mockLocalSubject),
+      messageId: digit.repeat(32),
+      recipientAddress: { raw: mockLocalAddress },
+      items: [{ type: "text", text: digit }],
+      conversationId,
+      payloadDigest: digit.repeat(64),
+      receivedTime: Date.now() + 1000 + Number(digit),
+    });
+    const prepared = (text: string, key = "plugin:shared"): PreparedReply => ({
+      kind: "prepared-reply",
+      text,
+      commit: { key, expectedSha256: null, value: "value of " + text },
+    });
+    const drain = async (instance: { tasks: Set<Promise<unknown>> }) => {
+      for (
+        let tasks = [...instance.tasks];
+        tasks.length;
+        tasks = [...instance.tasks]
+      )
+        await Promise.allSettled(tasks);
+    };
+
+    // T17. Pins the rule: a prepared reply is the invocation's only reply. On the base the
+    // returned object was not a reply at all and the invocation completed as if nothing was said.
+    it("holds a handler that returns a prepared reply after it already replied, staging and sending nothing more", async () => {
+      const dummyBot: FrankBotDefinition = {
+        id: "both-bot",
+        getProfile: () => ({ name: "BothBot", bot: true }),
+        onMessage: async (msg) => {
+          await msg.reply([{ type: "text", text: "direct" } as any]);
+          return prepared("staged");
+        },
+      };
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/reply-then-prepared`,
+      });
+      await host.register(dummyBot);
+      const instance = (host as any).instances.get("both-bot");
+      const message = incoming("6", mockPeer);
+      mockDirectMessagesFetchSince.mockResolvedValue([message]);
+      for (let pass = 0; pass < 3; pass++) {
+        await (host as any).pollAllBots();
+        await drain(instance);
+      }
+      expect(mockDirectMessagesSend).toHaveBeenCalledTimes(1);
+      expect(mockDirectMessagesSend.mock.calls[0][0].items).toEqual([
+        { type: "text", text: "direct" },
+      ]);
+      const row = instance.operations.get(message.payloadDigest);
+      expect(row).toMatchObject({
+        phase: "started",
+        replies: [{ observation: "delivered" }],
+      });
+      expect(row.prepared).toBeUndefined();
+      expect(await instance.state.readEntries("host-prepared:")).toEqual([]);
+      expect(await instance.state.get("plugin:shared")).toBeUndefined();
+      expect(
+        await instance.state.get("digest:" + message.payloadDigest)
+      ).toBeUndefined();
+      await host.stop();
+    });
+
+    // T18. Pins the rule: one owed reply per commit key. On the base nothing was staged and no
+    // key was committed by the host at all.
+    it("refuses the second of two conversations that stage a commit to one key before any send, and completes the first", async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const original = mockDirectMessagesSend.getMockImplementation()!;
+      mockDirectMessagesSend.mockImplementation(async (params: any) => {
+        await gate;
+        return original(params);
+      });
+      let handled = 0;
+      const dummyBot: FrankBotDefinition = {
+        id: "shared-key-bot",
+        getProfile: () => ({ name: "SharedKeyBot", bot: true }),
+        onMessage: async (msg) => {
+          handled++;
+          return prepared("answer " + (msg.items[0] as any).text);
+        },
+      };
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/shared-key`,
+      });
+      await host.register(dummyBot);
+      const instance = (host as any).instances.get("shared-key-bot");
+      const first = incoming("7", mockPeer);
+      const second = incoming("8", other);
+      mockDirectMessagesFetchSince.mockResolvedValue([first, second]);
+      await (host as any).pollAllBots();
+      // The first reply's send is in flight, slot persisted and not yet linked.
+      for (
+        let wait = 0;
+        wait < 100 && !mockDirectMessagesSend.mock.calls.length;
+        wait++
+      )
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      await instance.peerQueue.enqueue(other.address, async () => {});
+      expect(handled).toBe(2);
+      expect(instance.operations.get(first.payloadDigest)).toMatchObject({
+        prepared: { stateKey: "plugin:shared" },
+        replies: [{ stampValue: "10000000000000000" }],
+      });
+      expect(
+        instance.operations.get(second.payloadDigest).prepared
+      ).toBeUndefined();
+      release();
+      for (let pass = 0; pass < 3; pass++) {
+        await drain(instance);
+        await (host as any).pollAllBots();
+      }
+      await drain(instance);
+      expect(handled).toBe(2);
+      expect(mockDirectMessagesSend).toHaveBeenCalledTimes(1);
+      expect(mockDirectMessagesSend.mock.calls[0][0]).toMatchObject({
+        items: [{ type: "text", text: "answer 7" }],
+        stampValue: 10_000_000_000_000_000n,
+        conversationId: first.conversationId,
+      });
+      expect(await instance.state.get("plugin:shared")).toBe(
+        "value of answer 7"
+      );
+      expect(instance.operations.get(first.payloadDigest).phase).toBe(
+        "completed"
+      );
+      expect(instance.operations.get(second.payloadDigest)).toMatchObject({
+        phase: "started",
+        replies: [],
+      });
+      expect(await instance.state.readEntries("host-prepared:")).toEqual([]);
       await host.stop();
     });
   });

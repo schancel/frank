@@ -145,6 +145,23 @@ export interface BotContext {
   }): Promise<{ payloadDigest: string }>;
 }
 
+/** A reply the host stages durably before it is first sent, with one plugin value the host
+ * commits at `commit.key` of `ctx.state`, once, when that same reply is observed delivered.
+ * `expectedSha256` is the SHA-256 (lowercase hex) of the value the handler read at the key, or
+ * `null` if it was absent; if the key holds anything else when the reply is sent or delivered the
+ * invocation is held and nothing is overwritten. The key must be scoped to the conversation, and
+ * the handler must not write it itself. A handler that returns one must not also have used
+ * `reply()` or `sendMessage()` in that invocation. */
+export interface PreparedReply {
+  readonly kind: "prepared-reply";
+  readonly text: string;
+  readonly commit: {
+    readonly key: string;
+    readonly expectedSha256: string | null;
+    readonly value: string;
+  };
+}
+
 export interface FrankBotDefinition {
   readonly id: string;
   readonly defaultIdentityPath?: string;
@@ -155,7 +172,7 @@ export interface FrankBotDefinition {
   onMessage(
     message: BotMessageContext,
     ctx: BotContext
-  ): Promise<MessageItem[] | void>;
+  ): Promise<MessageItem[] | PreparedReply | void>;
   onNewUser?(user: NewUserEvent, ctx: BotContext): Promise<void>;
 }
 

@@ -52,6 +52,7 @@ import { LevelBotStateStore } from "./state-store";
 import {
   InboundOperationStore,
   inboundIdentity,
+  inboundOrder,
   conversationIdentity,
   type InboundIdentity,
 } from "./inbound-operation-store";
@@ -61,6 +62,10 @@ import { LoopGuard } from "./loop-guard";
 import { PeerLaneQueue } from "./peer-queue";
 import { LevelSubscriptionManager } from "./subscription-manager";
 import { BotScheduler } from "./scheduler";
+
+// A retained message that fetches stop returning is never dropped on a guess; it waits. Twenty
+// default poll intervals is past any brief relay or directory lapse and soon enough to act on.
+const UNMATCHED_WARN_MS = 60_000;
 
 interface ActiveBotInstance {
   definition: FrankBotDefinition;
@@ -76,6 +81,8 @@ interface ActiveBotInstance {
   lastPollTimestamp: number;
   lastAuthRecoveryMs?: number;
   inFlightDigests: Set<string>;
+  /** Deferred digests no fetch has returned: when first missed, and when last warned. Log only. */
+  unmatched: Map<string, { since: number; warned: number }>;
   evmMainPrivateKey?: string;
 }
 
@@ -93,6 +100,7 @@ export class FrankBotHost {
   private running = false;
   private closing = false;
   private pollTimer?: NodeJS.Timeout;
+  private polling?: Promise<void>;
   private registrationTimer?: NodeJS.Timeout;
   private lastRegistrationPollMs = 0;
   private readonly scheduler = new BotScheduler();
@@ -606,6 +614,7 @@ export class FrankBotHost {
         lastPollTimestamp:
           savedCursor > 0 ? savedCursor : Date.now() - 24 * 3600_000,
         inFlightDigests: new Set<string>(),
+        unmatched: new Map(),
         evmMainPrivateKey,
       };
 
@@ -692,13 +701,22 @@ export class FrankBotHost {
     return this.stopPromise;
   }
 
-  private async pollAllBots(): Promise<void> {
+  // Single-flight: an overlapping tick joins the running pass, and stop() can await it.
+  private pollAllBots(): Promise<void> {
+    this.polling ??= this.pollOnce().finally(() => {
+      this.polling = undefined;
+    });
+    return this.polling;
+  }
+
+  private async pollOnce(): Promise<void> {
     for (const [id, instance] of this.instances.entries()) {
       try {
         if (this.closing) return;
         instance.operations.assertOpen();
         // Independently recover already linked operations, including rows behind the mailbox cursor.
         for (const row of instance.operations.listIncomplete()) {
+          if (this.closing) return;
           if (instance.inFlightDigests.has(row.digest)) continue;
           const payloadDigests = row.replies.flatMap((call) =>
             call.digest ? [call.digest] : []
@@ -727,45 +745,100 @@ export class FrankBotHost {
             );
           }
         }
+        if (this.closing) return;
         const messages = await this.chain.directMessages.fetchSince({
           wallet: instance.wallet,
           sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
         });
+        const accepted: { identity: InboundIdentity; items: MessageItem[] }[] =
+          [];
         for (const msg of messages) {
-          let identity: InboundIdentity;
           try {
-            identity = inboundIdentity(msg, instance.operations.owner);
+            accepted.push({
+              identity: inboundIdentity(msg, instance.operations.owner),
+              items: structuredClone(msg.items),
+            });
           } catch {
             console.warn(
               `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
             );
+          }
+        }
+        // Retain every identity, in handling order, before any handler of this batch can run:
+        // a later message must not move the cursor past one that is not durable yet.
+        accepted.sort((a, b) => inboundOrder(a.identity, b.identity));
+        const fetched = new Map<string, (typeof accepted)[number]>();
+        let full = false;
+        for (const entry of accepted) {
+          const { identity } = entry;
+          // At capacity nothing later is retained, but rows retained earlier are still matched.
+          if (
+            !instance.operations.get(identity.digest) &&
+            (full || instance.loopGuard.shouldDrop(identity.peerAddress))
+          )
+            continue;
+          let outcome: "retained" | "known" | "full";
+          try {
+            outcome = await instance.operations.retain(identity);
+          } catch {
+            instance.operations.assertOpen(); // a failed journal write holds the whole pass
+            console.warn(
+              `[bot-host] [${id}] Inbound retention held; preserve state`
+            );
             continue;
           }
-          const capturedItems = structuredClone(msg.items);
-          if (instance.inFlightDigests.has(identity.digest)) continue;
-          if (instance.loopGuard.shouldDrop(identity.peerAddress)) continue;
-          instance.inFlightDigests.add(identity.digest);
-          const task = instance.peerQueue.enqueue(
-            identity.peerAddress,
-            async () => {
-              try {
-                if (
-                  this.closing ||
-                  !(await instance.operations.admit(identity))
-                )
-                  return;
-                await this.dispatch(instance, identity, capturedItems);
-              } catch {
-                // An interrupted handler may have generated content or paid. It is never retried,
-                // skipped as processed, or completed from a later wallet delivery observation.
-                console.warn(
-                  `[bot-host] [${id}] Inbound invocation held; preserve original operation`
-                );
-              } finally {
-                instance.inFlightDigests.delete(identity.digest);
-              }
+          if (outcome === "full") {
+            full = true;
+            console.warn(
+              `[bot-host] [${id}] Inbound retention full; later messages are not retained`
+            );
+            continue;
+          }
+          fetched.set(identity.digest, entry);
+        }
+        const now = Date.now();
+        for (const row of instance.operations.listDeferred()) {
+          const match = fetched.get(row.digest);
+          if (!match) {
+            const seen = instance.unmatched.get(row.digest) ?? {
+              since: now,
+              warned: now,
+            };
+            instance.unmatched.set(row.digest, seen);
+            if (now - seen.warned >= UNMATCHED_WARN_MS) {
+              seen.warned = now;
+              console.warn(
+                `[bot-host] [${id}] Retained inbound ${
+                  row.digest
+                } not returned by any fetch for ${Math.floor(
+                  (now - seen.since) / 1000
+                )}s; it stays deferred and keeps pinning the scan`
+              );
             }
-          );
+            continue;
+          }
+          instance.unmatched.delete(row.digest);
+          if (instance.inFlightDigests.has(row.digest)) continue;
+          instance.inFlightDigests.add(row.digest);
+          const task = instance.peerQueue.enqueue(row.peerAddress, async () => {
+            try {
+              if (
+                this.closing ||
+                !(await instance.operations.start(match.identity))
+              )
+                return;
+              // The retained identity, not this fetch's relay time, is the invocation's.
+              await this.dispatch(instance, row, match.items);
+            } catch {
+              // An interrupted handler may have generated content or paid. It is never retried,
+              // skipped as processed, or completed from a later wallet delivery observation.
+              console.warn(
+                `[bot-host] [${id}] Inbound invocation held; preserve original operation`
+              );
+            } finally {
+              instance.inFlightDigests.delete(row.digest);
+            }
+          });
           instance.tasks.add(task);
           void task.finally(() => instance.tasks.delete(task));
         }
@@ -1138,9 +1211,12 @@ export class FrankBotHost {
     if (this.registrationTimer) clearInterval(this.registrationTimer);
     this.scheduler.stop();
 
+    // No time bound: an in-flight relay, wallet or model call is waited for, never abandoned.
+    await this.polling?.catch(() => undefined);
     for (const [id, instance] of this.instances.entries()) {
       try {
-        await Promise.allSettled([...instance.tasks]);
+        while (instance.tasks.size)
+          await Promise.allSettled([...instance.tasks]);
         await instance.operations.close();
         if (instance.definition.onStop) {
           await instance.definition.onStop(instance.context);

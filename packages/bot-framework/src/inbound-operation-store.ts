@@ -33,9 +33,20 @@ export interface ReplyCall {
 }
 export interface InboundDispatch extends InboundIdentity {
   version: 1;
-  phase: "started" | "completed";
+  phase: "deferred" | "started" | "completed";
   replies: ReplyCall[];
 }
+/** Handling order. The wallet sorts a fetch by time only, so equal times are tied by digest. */
+export const inboundOrder = (a: InboundIdentity, b: InboundIdentity): number =>
+  a.receivedTime - b.receivedTime ||
+  (a.digest < b.digest ? -1 : a.digest > b.digest ? 1 : 0);
+// receivedTime is relay metadata: the retained value orders the row and is not compared again.
+const MATCHED = [
+  "peerSubject",
+  "peerAddress",
+  "conversationId",
+  "messageId",
+] as const;
 const copy = <T>(value: T): T => structuredClone(value);
 const hold = (): never => {
   throw new Error(
@@ -146,7 +157,7 @@ function validateRow(value: unknown): InboundDispatch {
       "replies",
     ]) ||
     r.version !== 1 ||
-    !["started", "completed"].includes(String(r.phase)) ||
+    !["deferred", "started", "completed"].includes(String(r.phase)) ||
     !hash(r.digest) ||
     !subject(r.peerSubject) ||
     address(r.peerAddress) !== r.peerAddress ||
@@ -157,7 +168,8 @@ function validateRow(value: unknown): InboundDispatch {
     Number(r.receivedTime) < 0 ||
     Number(r.receivedTime) >= Number.MAX_SAFE_INTEGER ||
     !Array.isArray(r.replies) ||
-    r.replies.length > MAX_REPLIES
+    r.replies.length > MAX_REPLIES ||
+    (r.phase === "deferred" && r.replies.length > 0)
   )
     return hold();
   for (const raw of r.replies) {
@@ -189,7 +201,9 @@ function validateRow(value: unknown): InboundDispatch {
 }
 
 /** Invocation/correlation owner only. Wallet owns exact requests, reservations and settlement.
- * A started invocation is never executed again, even if every recorded reply later delivers. */
+ * A fetched message is retained as `deferred` before any handler runs; `start` is the single
+ * permission to invoke the handler. A started invocation is never executed again, even if every
+ * recorded reply later delivers. */
 export class InboundOperationStore {
   private readonly rows = new Map<string, InboundDispatch>();
   private tail: Promise<unknown> = Promise.resolve();
@@ -314,8 +328,16 @@ export class InboundOperationStore {
       .filter((r) => r.phase === "started")
       .map(copy);
   }
+  listDeferred(): InboundDispatch[] {
+    this.assertOpen();
+    return [...this.rows.values()]
+      .filter((r) => r.phase === "deferred")
+      .sort(inboundOrder)
+      .map(copy);
+  }
+  /** Only a deferred row needs its inbound message read again, so only it pins the scan. */
   scanFloor(cursor: number): number {
-    return this.listIncomplete().reduce(
+    return this.listDeferred().reduce(
       (floor, row) => Math.min(floor, row.receivedTime),
       cursor
     );
@@ -325,29 +347,46 @@ export class InboundOperationStore {
     const row = this.rows.get(digest);
     return row && copy(row);
   }
-  admit(input: InboundIdentity): Promise<boolean> {
+  private known(input: InboundIdentity): InboundDispatch | undefined {
+    const existing = this.rows.get(input.digest);
+    if (existing && MATCHED.some((key) => existing[key] !== input[key]))
+      return hold();
+    return existing;
+  }
+  /** Capacity is not a fault: "full" leaves the message unretained and the journal usable. */
+  retain(input: InboundIdentity): Promise<"retained" | "known" | "full"> {
     return this.mutate(async () => {
       const row = validateRow({
         version: 1,
         ...copy(input),
-        phase: "started",
+        phase: "deferred",
         replies: [],
       });
-      const existing = this.rows.get(input.digest);
-      if (existing) {
-        if (
-          Object.entries(input).some(
-            ([key, value]) => existing[key as keyof InboundIdentity] !== value
-          )
-        )
-          return hold();
-        return false;
-      }
-      if (
-        this.rows.size >= MAX_DISPATCHES ||
-        (await this.state.get("digest:" + input.digest)) !== undefined
-      )
+      if (this.known(input)) return "known";
+      if ((await this.state.get("digest:" + input.digest)) !== undefined)
         return hold();
+      if (this.rows.size >= MAX_DISPATCHES) return "full";
+      await this.save(row);
+      return "retained";
+    });
+  }
+  /** True only for the one call that moves the row from deferred to started. A conversation is
+   * one peer lane, so an earlier deferred row of it is the only thing a later row waits for. */
+  start(input: InboundIdentity): Promise<boolean> {
+    return this.mutate(async () => {
+      const existing = this.known(input);
+      if (!existing) return hold();
+      if (existing.phase !== "deferred") return false;
+      for (const other of this.rows.values())
+        if (
+          other.phase === "deferred" &&
+          other.peerSubject === existing.peerSubject &&
+          other.conversationId === existing.conversationId &&
+          inboundOrder(other, existing) < 0
+        )
+          return false;
+      const row = copy(existing);
+      row.phase = "started";
       await this.save(row);
       return true;
     });

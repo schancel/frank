@@ -950,6 +950,7 @@ import {
   ackCanonicalRecovery,
   connectCanonicalMailboxStream,
   fetchCanonicalInboxPage,
+  fetchCanonicalMailboxPage,
   fetchCanonicalRecoveryPage,
   type CanonicalMailboxAuthParams,
 } from "./monad-mailbox-client";
@@ -1033,7 +1034,8 @@ function canonicalNested(
 }
 function canonicalPage(
   recovery = false,
-  metadataOverrides: Record<string, unknown> = {}
+  metadataOverrides: Record<string, unknown> = {},
+  directionHeaders = ""
 ): Uint8Array {
   const request = freezeCanonicalRequest(
     {
@@ -1080,7 +1082,7 @@ function canonicalPage(
     );
   return canonicalConcat(
     canonicalText(
-      `--page\r\nContent-Disposition: inline; name="record"\r\nContent-Type: multipart/mixed; boundary=record\r\nX-Frank-Submission-Identity: ${request.identity.submission_identity}\r\nX-Frank-Mailbox-Timestamp-Ms: 1700000100000\r\n\r\n`
+      `--page\r\nContent-Disposition: inline; name="record"\r\nContent-Type: multipart/mixed; boundary=record\r\nX-Frank-Submission-Identity: ${request.identity.submission_identity}\r\nX-Frank-Mailbox-Timestamp-Ms: 1700000100000\r\n${directionHeaders}\r\n`
     ),
     canonicalNested(parts, "record"),
     canonicalText("\r\n--page--\r\n")
@@ -1213,6 +1215,96 @@ describe("canonical private mailbox", () => {
     ).toBe(true);
     expect(challenge.limit).toBe(50);
     expect(challenge.max_bytes).toBe(8 * 1024 * 1024);
+  });
+  // The outer and inner framing matches record_multipart in
+  // backend/cashweb/cashweb-registry/src/http/monad_message_cbor.rs, including the
+  // direction header emitted by the combined endpoint and omitted by the inbox.
+  test.each(["in", "out"] as const)(
+    "authenticates and parses the relay's explicit %s combined-mailbox record",
+    async (direction) => {
+      page = canonicalPage(
+        false,
+        {},
+        `X-Frank-Mailbox-Direction: ${direction}\r\n`
+      );
+      const result = await fetchCanonicalMailboxPage(auth);
+      expect(result.records).toEqual([
+        {
+          direction,
+          delivery: canonicalDelivery(),
+          context: fromHex(canonicalWire.context),
+          submissionIdentity: freezeCanonicalRequest(
+            {
+              delivery: canonicalDelivery(),
+              context: fromHex(canonicalWire.context),
+              transactions: [canonicalRaw],
+            },
+            "test-fixed"
+          ).identity.submission_identity,
+          timestampMs: 1700000100000,
+        },
+      ]);
+      expect(challenge.resource).toBe("mailbox");
+      expect(auth.signDigest).toHaveBeenCalledWith(
+        mailboxAuthDigest(buildMailboxAuthPreimage(challenge, auth.recipient))
+      );
+      expect(new URL(requests[1][0]).pathname).toBe(
+        `/message/mailbox/${auth.recipient}`
+      );
+    }
+  );
+  test("requires direction on the combined mailbox while accepting the directionless inbox wire", async () => {
+    await expect(fetchCanonicalMailboxPage(auth)).rejects.toThrow(/direction/);
+    expect((await fetchCanonicalInboxPage(auth)).records).toHaveLength(1);
+  });
+  test.each([
+    "X-Frank-Mailbox-Direction: unknown\r\n",
+    "X-Frank-Mailbox-Direction: OUT\r\n",
+    "X-Frank-Mailbox-Direction: in,out\r\n",
+    "X-Frank-Mailbox-Direction: in \r\n",
+    "X-Frank-Mailbox-Direction: \r\n",
+    "X-Frank-Mailbox-Direction: out\r\nX-Frank-Mailbox-Direction: in\r\n",
+    "X-Frank-Mailbox-Direction: out\r\nX-Unrecognized: value\r\n",
+  ])(
+    "rejects malformed or ambiguous combined direction headers %j",
+    async (headers) => {
+      page = canonicalPage(false, {}, headers);
+      const publish = jest.fn();
+      await expect(
+        fetchCanonicalMailboxPage(auth).then(publish)
+      ).rejects.toThrow();
+      expect(publish).not.toHaveBeenCalled();
+    }
+  );
+  test("direction does not bypass combined page byte, cardinality or nested-header limits", async () => {
+    page = canonicalPage(false, {}, "X-Frank-Mailbox-Direction: out\r\n");
+    const original = page;
+    expect(
+      (await fetchCanonicalMailboxPage({ ...auth, maxBytes: page.length }))
+        .records
+    ).toHaveLength(1);
+    await expect(
+      fetchCanonicalMailboxPage({ ...auth, maxBytes: page.length - 1 })
+    ).rejects.toThrow(/byte limit/);
+    page = canonicalConcat(original.slice(0, -10), original);
+    await expect(
+      fetchCanonicalMailboxPage({ ...auth, limit: 1 })
+    ).rejects.toThrow();
+    page = original.slice(0, -3);
+    await expect(fetchCanonicalMailboxPage(auth)).rejects.toThrow();
+    const marker = canonicalText(
+      "Content-Type: application/vnd.frank.cbor\r\n"
+    );
+    const at = Buffer.from(original).indexOf(marker) + marker.length;
+    expect(at).toBeGreaterThan(marker.length);
+    page = canonicalConcat(
+      original.slice(0, at),
+      canonicalText("X-Frank-Mailbox-Direction: out\r\n"),
+      original.slice(at)
+    );
+    await expect(fetchCanonicalMailboxPage(auth)).rejects.toThrow(
+      /record parts/
+    );
   });
   test("authenticates successfully when relayBaseUrl has a trailing slash", async () => {
     const trailingAuth = {

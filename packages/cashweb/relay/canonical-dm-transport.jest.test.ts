@@ -276,6 +276,26 @@ describe('canonical exact request', () => {
       spy.mockRestore()
     }
   })
+  test('admits only the existing mailbox direction header without relaxing header uniqueness', () => {
+    const record = (extra: string) =>
+      text(
+        '--page\r\nContent-Disposition: inline; name="record"\r\n' +
+          'Content-Type: multipart/mixed; boundary=inner\r\n' +
+          'X-Frank-Mailbox-Direction: out\r\n' +
+          extra +
+          '\r\n--inner--\r\n\r\n--page--\r\n',
+      )
+    const read = (extra: string) =>
+      parseCanonicalMultipart(
+        record(extra),
+        'multipart/mixed; boundary=page',
+        'multipart/mixed',
+        1,
+      )
+    expect(read('')[0].headers['x-frank-mailbox-direction']).toBe('out')
+    expect(() => read('X-Frank-Mailbox-Direction: in\r\n')).toThrow(/Duplicate/)
+    expect(() => read('X-Unrecognized: value\r\n')).toThrow(/unsupported/)
+  })
   test('empty exact closed multipart is allowed, extras and oversized headers fail', () => {
     expect(
       parseCanonicalMultipart(

@@ -237,6 +237,74 @@
                     </q-card-actions>
                   </q-card-section>
 
+                  <q-card-section data-testid="wallet-native-operations">
+                    <div class="text-subtitle2 text-weight-bold">
+                      {{ $t('nativeOperation.listTitle') }}
+                    </div>
+                    <p
+                      v-if="nativeOperations.status !== 'available'"
+                      role="status"
+                    >
+                      {{ $t(`nativeOperation.${nativeOperations.status}`) }}
+                    </p>
+                    <template v-else>
+                      <p v-if="!nativeOperations.operations.length">
+                        {{ $t('nativeOperation.empty') }}
+                      </p>
+                      <details
+                        v-for="operation in nativeOperations.operations"
+                        :key="operation.operationId"
+                        data-testid="wallet-native-operation"
+                      >
+                        <summary>
+                          {{
+                            $t(`nativeOperation.${operation.payment}`, {
+                              network: operation.chainIdentifier,
+                            })
+                          }}
+                          — {{ $t('nativeOperation.viewTransfer') }}
+                        </summary>
+                        <p>{{ operation.operationId }}</p>
+                        <p>
+                          {{ $t('nativeOperation.intendedAmount') }}:
+                          {{ nativeAmount(operation.intendedValueWei) }}
+                          {{ nativeUnit }}
+                        </p>
+                        <p class="text-break">{{ operation.recipient }}</p>
+                        <p>
+                          {{
+                            $t(`nativeOperation.fee${operation.feeCoverage}`, {
+                              amount: nativeAmount(operation.observedFeeWei),
+                              unit: nativeUnit,
+                            })
+                          }}
+                        </p>
+                        <p
+                          v-for="(member, index) in operation.members"
+                          :key="index"
+                          class="text-break"
+                        >
+                          {{ member.transactionHash }}
+                          <span v-if="member.blockNumber !== undefined">{{
+                            $t('nativeOperation.block', {
+                              block: member.blockNumber,
+                            })
+                          }}</span>
+                        </p>
+                        <p>
+                          {{
+                            $t(
+                              operation.syncCallbackComplete
+                                ? 'nativeOperation.syncRecorded'
+                                : 'nativeOperation.syncUnrecorded',
+                            )
+                          }}
+                        </p>
+                        <p>{{ $t('nativeOperation.recoveryUnavailable') }}</p>
+                      </details>
+                    </template>
+                  </q-card-section>
+
                   <!-- Assets & Tokens Card -->
                   <div class="q-px-md q-pt-md">
                     <q-card
@@ -430,7 +498,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  ref,
+  shallowRef,
+  watch,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
@@ -445,7 +520,11 @@ import { useWalletNames } from 'src/composables/useWalletNames'
 import { openPage } from 'src/utils/routes'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
 import { accountSession, accountStatus } from '../accounts/session'
-import { activeChain } from '@frank/wallet/chain'
+import {
+  inspectNativeTransferOperations,
+  type NativeOperationInspection,
+} from 'src/accounts/native-transfer'
+import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { getExplorerUrl } from 'src/utils/explorer'
@@ -469,7 +548,15 @@ export default defineComponent({
     const myDrawerOpen = useMyDrawerOpen()
     const route = useRoute()
     const router = useRouter()
-    const isTestnet = computed(() => activeChain.isTestnet ?? false)
+    // The global adapter is a plain object; subscribe to its owner instead of
+    // expecting Vue to observe in-place network replacement.
+    const network = shallowRef({ ...activeChain })
+    onBeforeUnmount(
+      onActiveChainChange(chain => {
+        network.value = { ...chain }
+      }),
+    )
+    const isTestnet = computed(() => network.value.isTestnet ?? false)
     const { getCustomName } = useWalletNames()
     const oracle = useSafeOracleStore()
     const showAvuDialog = ref(false)
@@ -569,6 +656,13 @@ export default defineComponent({
       })
     }
 
+    const nativeOperations = shallowRef<NativeOperationInspection>({
+      status: 'unsupported',
+    })
+    const nativePresentation = shallowRef({
+      unit: '',
+      toDisplayAmount: (value: bigint) => value.toString(),
+    })
     const displayAddress = ref(
       accountSession.getCachedChainAddress?.(selectedWallet.value) ?? '',
     )
@@ -597,8 +691,13 @@ export default defineComponent({
         accountStatus.status,
         accountStatus.revision,
         selectedWallet.value,
+        network.value.chainIdentifier,
       ],
       async ([status, , chain], _previous, onCleanup) => {
+        nativeOperations.value = {
+          status: chain === 'monad' ? 'unavailable' : 'unsupported',
+        }
+        const capturedChain = network.value
         if (status !== 'ready') {
           displayAddress.value = ''
           return
@@ -618,6 +717,11 @@ export default defineComponent({
           if (chain === 'monad') {
             const wallet = await useActiveWallet()
             if (!current) return
+            nativePresentation.value = capturedChain
+            nativeOperations.value = inspectNativeTransferOperations(
+              wallet,
+              capturedChain.chainIdentifier,
+            )
             let address: unknown
             if (typeof wallet.getReceiveAddress === 'function') {
               address = await wallet.getReceiveAddress()
@@ -628,9 +732,9 @@ export default defineComponent({
               displayAddress.value =
                 typeof address === 'string'
                   ? address
-                  : activeChain.addressToString(
+                  : capturedChain.addressToString(
                       address as Parameters<
-                        typeof activeChain.addressToString
+                        typeof capturedChain.addressToString
                       >[0],
                     )
             }
@@ -648,6 +752,10 @@ export default defineComponent({
 
     return {
       myDrawerOpen,
+      nativeOperations,
+      nativeUnit: computed(() => nativePresentation.value.unit),
+      nativeAmount: (value: string) =>
+        nativePresentation.value.toDisplayAmount(BigInt(value)),
       activeTab,
       selectedWallet,
       sendChainIdentifier,

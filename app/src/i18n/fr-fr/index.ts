@@ -943,6 +943,39 @@ export default {
     failedLoadBalance: 'Échec du chargement du solde du portefeuille Monad',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
+  nativeOperation: {
+    title: 'Résultat du transfert',
+    listTitle: 'Transferts natifs',
+    intendedAmount: 'Montant prévu pour le destinataire',
+    processing: 'Vérification du résultat du transfert initial…',
+    included: 'Paiement inclus sur {network}.',
+    reverted:
+      'La transaction du destinataire a été annulée par le réseau {network}. Des frais de réseau peuvent avoir été payés.',
+    partial:
+      'Certaines transactions de financement sont incluses sur {network} ; le paiement au destinataire n’est pas enregistré comme inclus.',
+    pending: 'Le paiement au destinataire est en attente sur {network}.',
+    unknown:
+      'Le résultat du paiement reste indéterminé sur {network}. Des fonds peuvent avoir été transférés.',
+    cancelled: 'Transfert non signé annulé.',
+    feecomplete: 'Frais de réseau observés : {amount} {unit}',
+    feepartial: 'Frais observés à ce stade (partiels) : {amount} {unit}',
+    feeunknown: 'Frais de réseau observés indisponibles.',
+    block: 'Bloc {block}',
+    syncUnrecorded:
+      'La synchronisation du portefeuille n’est pas enregistrée comme terminée.',
+    syncRecorded:
+      'Exécution du rappel de synchronisation enregistrée. Cela ne confirme pas la synchronisation sur les autres appareils.',
+    recoveryUnavailable: 'La reprise est actuellement indisponible.',
+    reviewHeld: 'Cette vérification ne permet pas d’envoyer un autre paiement.',
+    unsupported:
+      'L’historique des transferts natifs est indisponible pour ce portefeuille.',
+    unavailable: 'Les informations du transfert natif sont indisponibles.',
+    empty: 'Aucun transfert natif conservé.',
+    viewTransfer: 'Voir le transfert',
+    back: 'Retour',
+    stale:
+      'Le compte ou la page a changé. Consultez le transfert initial depuis son portefeuille.',
+  },
   sendAddressDialog: {
     sendToAddress: "Envoyer vers l'adresse",
     enterBitcoinCashAddress: "Saisissez l'adresse de destination...",

@@ -71,7 +71,8 @@ const mockFetchSolanaTokenAccounts = jest.fn().mockResolvedValue([
 ])
 
 jest.mock('@frank/wallet/chain', () => ({
-  activeChain: { isTestnet: true },
+  // Preserve the real adapter and its change subscription; mock only this test's I/O.
+  ...jest.requireActual('@frank/wallet/chain'),
   fetchEcashBalance: (...args: unknown[]) => mockFetchEcashBalance(...args),
   fetchSolanaBalance: (...args: unknown[]) => mockFetchSolanaBalance(...args),
   fetchSolanaTokenAccounts: (...args: unknown[]) =>

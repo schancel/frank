@@ -1,8 +1,14 @@
 <template>
   <q-page-container>
     <q-page class="q-ma-none q-pa-sm">
+      <q-card v-if="stale" data-test="send-stale-card">
+        <q-card-section>{{ $t('nativeOperation.stale') }}</q-card-section>
+        <q-card-actions
+          ><q-btn :label="$t('nativeOperation.back')" @click="cancelEdit"
+        /></q-card-actions>
+      </q-card>
       <!-- Edit State -->
-      <q-card v-if="!isReviewing" data-test="send-edit-card">
+      <q-card v-else-if="!isReviewing" data-test="send-edit-card">
         <q-card-section>
           <div class="text-h6">{{ $t('sendAddressDialog.sendToAddress') }}</div>
         </q-card-section>
@@ -49,7 +55,13 @@
       <q-card v-else data-test="send-review-card">
         <q-card-section>
           <div class="text-h6" data-test="review-title">
-            {{ $t('sendAddressDialog.reviewTitle') }}
+            {{
+              $t(
+                dispatched
+                  ? 'nativeOperation.title'
+                  : 'sendAddressDialog.reviewTitle',
+              )
+            }}
           </div>
         </q-card-section>
 
@@ -79,7 +91,11 @@
 
             <div class="row justify-between items-center q-py-xs">
               <span class="text-caption text-grey-7">{{
-                $t('sendAddressDialog.amount')
+                $t(
+                  dispatched
+                    ? 'nativeOperation.intendedAmount'
+                    : 'sendAddressDialog.amount',
+                )
               }}</span>
               <span
                 class="text-weight-bold text-primary"
@@ -89,7 +105,10 @@
               </span>
             </div>
 
-            <div class="row justify-between items-center q-py-xs">
+            <div
+              v-if="!dispatched"
+              class="row justify-between items-center q-py-xs"
+            >
               <span class="text-caption text-grey-7">{{
                 $t('sendAddressDialog.estimatedFee')
               }}</span>
@@ -100,7 +119,10 @@
 
             <q-separator />
 
-            <div class="row justify-between items-center q-py-xs">
+            <div
+              v-if="!dispatched"
+              class="row justify-between items-center q-py-xs"
+            >
               <span class="text-subtitle2">{{
                 $t('sendAddressDialog.maxTotal')
               }}</span>
@@ -114,7 +136,7 @@
           </div>
         </q-card-section>
 
-        <q-card-section class="q-pt-none">
+        <q-card-section v-if="!dispatched" class="q-pt-none">
           <q-banner
             class="bg-amber-1 text-grey-9 q-pa-sm"
             rounded
@@ -128,7 +150,71 @@
           </q-banner>
         </q-card-section>
 
-        <q-card-actions align="right">
+        <q-card-section
+          v-if="dispatched"
+          data-test="native-operation-outcome"
+          role="status"
+        >
+          <p>
+            {{
+              $t(
+                sending
+                  ? 'nativeOperation.processing'
+                  : `nativeOperation.${operation?.payment ?? 'unknown'}`,
+                { network: networkName },
+              )
+            }}
+          </p>
+          <p v-if="operation" data-test="native-operation-id">
+            {{ operation.operationId }}
+          </p>
+          <p
+            v-if="outcomeHash && !operation"
+            class="text-break"
+            data-test="native-operation-hash"
+          >
+            {{ outcomeHash }}
+          </p>
+          <template v-if="operation">
+            <p data-test="native-operation-fee">
+              {{
+                $t(`nativeOperation.fee${operation.feeCoverage}`, {
+                  amount: observedFee,
+                  unit,
+                })
+              }}
+            </p>
+            <p
+              v-for="(member, index) in operation.members"
+              :key="index"
+              class="text-break"
+            >
+              {{ member.transactionHash }}
+              <span v-if="member.blockNumber !== undefined">{{
+                $t('nativeOperation.block', { block: member.blockNumber })
+              }}</span>
+            </p>
+            <p data-test="native-operation-sync">
+              {{
+                $t(
+                  operation.syncCallbackComplete
+                    ? 'nativeOperation.syncRecorded'
+                    : 'nativeOperation.syncUnrecorded',
+                )
+              }}
+            </p>
+          </template>
+          <p>{{ $t('nativeOperation.recoveryUnavailable') }}</p>
+          <p>{{ $t('nativeOperation.reviewHeld') }}</p>
+        </q-card-section>
+        <q-card-actions v-if="dispatched" align="right">
+          <q-btn
+            :label="$t('nativeOperation.back')"
+            data-test="native-operation-back"
+            @click="cancelEdit"
+          />
+        </q-card-actions>
+        <q-card-actions v-else align="right">
           <q-btn
             :disable="sending"
             :label="$t('sendAddressDialog.editTransfer')"
@@ -159,6 +245,8 @@ import {
   onBeforeUnmount,
   ref,
   shallowRef,
+  watch,
+  watchEffect,
 } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -166,9 +254,12 @@ import { sentTransactionNotify, errorNotify } from '../utils/notifications'
 import {
   activeChain,
   NativeTransactionSubmissionError,
+  findEvmNativeOperationStatus,
+  type EvmNativeOperationStatus,
 } from '@frank/wallet/chain'
 import {
   createNativeTransferContext,
+  inspectNativeTransferOperations,
   type NativeTransferContext,
   type NativeTransferBinding,
 } from 'src/accounts/native-transfer'
@@ -185,6 +276,10 @@ export default defineComponent({
     const amount = ref('')
     const isReviewing = ref(false)
     const sending = ref(false)
+    const dispatched = ref(false)
+    const stale = ref(false)
+    const operation = shallowRef<EvmNativeOperationStatus>()
+    const outcomeHash = ref<string>()
     const estimatedFeeText = ref('')
 
     const route = useRoute()
@@ -196,6 +291,18 @@ export default defineComponent({
       amount: string
     }>()
     let disposed = false
+    const invalidate = () => {
+      disposed = true
+      stale.value = true
+      review.value = undefined
+      context.value = undefined
+      operation.value = undefined
+      outcomeHash.value = undefined
+    }
+    watch(() => route.fullPath, invalidate, { flush: 'sync' })
+    watchEffect(() => {
+      if (review.value && !review.value.binding.isCurrent()) invalidate()
+    })
     // A mounted Send page keeps its original network, including while the global UI changes.
     const requestedChain =
       route.query.chainIdentifier === undefined
@@ -258,6 +365,15 @@ export default defineComponent({
       reviewedAmount,
       isReviewing,
       sending,
+      dispatched,
+      stale,
+      operation,
+      outcomeHash,
+      observedFee: computed(() =>
+        operation.value && chain.value
+          ? chain.value.toDisplayAmount(BigInt(operation.value.observedFeeWei))
+          : '',
+      ),
       estimatedFeeText,
       isValid: computed(() => parsedTransfer.value !== undefined),
       formattedRecipient,
@@ -265,7 +381,7 @@ export default defineComponent({
       unit,
       maxTotal,
       reviewTransfer: async () => {
-        if (sending.value) return
+        if (sending.value || dispatched.value || disposed) return
         const transfer = parsedTransfer.value
         const captured = context.value
         const capturedAmount = amount.value
@@ -300,18 +416,19 @@ export default defineComponent({
               )} ${captured.chain.unit}`
             }
           } catch {
-            estimatedFeeText.value = ''
+            if (!disposed) estimatedFeeText.value = ''
           }
         } catch (err) {
+          if (disposed) return
           errorNotify(err, {
             fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
           })
         } finally {
-          sending.value = false
+          if (!disposed) sending.value = false
         }
       },
       cancelReview: () => {
-        if (sending.value) return
+        if (sending.value || dispatched.value || disposed) return
         review.value = undefined
         isReviewing.value = false
       },
@@ -319,11 +436,46 @@ export default defineComponent({
         navigateBack(router)
       },
       confirmSend: async () => {
-        if (sending.value) return
+        if (sending.value || dispatched.value || disposed) return
         const reviewed = review.value
         if (!reviewed) return
         sending.value = true
         let signedTxHash: string | undefined
+        const current = async () => {
+          if (disposed) return false
+          try {
+            await reviewed.binding.assertCurrent()
+            if (disposed) return false
+            return true
+          } catch {
+            invalidate()
+            return false
+          }
+        }
+        const inspect = () => {
+          const evidence = inspectNativeTransferOperations(
+            reviewed.binding.wallet,
+            reviewed.context.chain.chainIdentifier,
+          )
+          const found =
+            evidence.status === 'available'
+              ? findEvmNativeOperationStatus(
+                  evidence.operations,
+                  reviewed.context.chain.chainIdentifier,
+                  signedTxHash,
+                )
+              : undefined
+          // Intent checks are additional guards; identity comes only from the unique final hash.
+          operation.value =
+            found &&
+            found.recipient.toLowerCase() ===
+              reviewed.transfer.recipient.raw.toLowerCase() &&
+            found.intendedValueWei === reviewed.transfer.value.toString()
+              ? found
+              : undefined
+          outcomeHash.value = signedTxHash
+          return evidence
+        }
         try {
           await reviewed.binding.assertCurrent()
           if (disposed) return
@@ -336,28 +488,37 @@ export default defineComponent({
               signedTxHash = signed.txHash
             },
           }
+          // No post-dispatch error proves that a fresh payment is safe.
+          dispatched.value = true
           const result = client.sendLegacy
             ? await client.sendLegacy(params)
             : await client.send(params)
+          signedTxHash = result.txHash
+          if (!(await current())) return
+          inspect()
+          if (
+            reviewed.binding.wallet.family === 'evm' &&
+            (!operation.value ||
+              operation.value.payment !== 'included' ||
+              !operation.value.syncCallbackComplete)
+          )
+            return
           sentTransactionNotify(result.txHash)
           navigateBack(router)
         } catch (err) {
-          if (err instanceof NativeTransactionSubmissionError) {
-            signedTxHash = err.transaction.txHash
-          }
-          if (signedTxHash) {
-            errorNotify(err, {
-              safeMessage: $t('sendAddressDialog.potentiallyBroadcast', {
-                txHash: signedTxHash,
-              }),
-            })
-          } else {
+          if (disposed) return
+          if (!dispatched.value) {
             errorNotify(err, {
               fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
             })
+            return
           }
+          if (err instanceof NativeTransactionSubmissionError)
+            signedTxHash = err.transaction.txHash
+          if (!(await current())) return
+          inspect()
         } finally {
-          sending.value = false
+          if (!disposed) sending.value = false
         }
       },
       send: async function () {

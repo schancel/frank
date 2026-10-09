@@ -217,6 +217,37 @@ describe('EmailThreadView', () => {
     expect(vm.replyText).toBe('')
   })
 
+  it('keeps the selected older RFC parent and participants when changing reply mode', async () => {
+    const wrapper = mountView()
+    const vm = wrapper.vm as any
+    vm.prepareReply(vm.parsedEmails[0], 'reply')
+    vm.onReplyModeChanged('reply_all')
+    vm.replyText = 'Reply to the older card'
+    await vm.handleSend()
+    const payload = wrapper.emitted('sendReply')![0][0] as any
+    expect(payload.items[0]).toMatchObject({
+      inReplyTo: '<msg1@example.com>',
+      references: ['<msg1@example.com>'],
+      to: [{ address: 'alice@example.com' }],
+    })
+    expect(payload.conversationId).toBe(conversation.id)
+  })
+
+  it('never uses a plain card payload digest as an RFC parent', async () => {
+    const wrapper = mountView({
+      messages: [
+        { ...messages[0], items: [{ type: 'text', text: 'plain note' }] },
+      ],
+    })
+    const vm = wrapper.vm as any
+    vm.prepareReply(vm.parsedEmails[0], 'reply')
+    vm.replyText = 'Response'
+    await vm.handleSend()
+    const item = (wrapper.emitted('sendReply')![0][0] as any).items[0]
+    expect(item.inReplyTo).toBeUndefined()
+    expect(item.references).toBeUndefined()
+  })
+
   describe('Peer Email Frame Defense & Trust Classification (ticket-unverified-peer-email-frames)', () => {
     const peerAddress = '0x2222222222222222222222222222222222222222'
     const peerEmailWithDkim: EmailItem = {

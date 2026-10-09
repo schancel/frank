@@ -224,7 +224,11 @@ export class FrankBotHost {
     const hadOtherFiles = readdirSync(botStateDir).some(
       (name) => name !== "state"
     );
-    const state = await LevelBotStateStore.open(join(botStateDir, "state"));
+    const statePath = join(botStateDir, "state");
+    // An empty unversioned state path is still an existing profile. Opening Level
+    // creates this path, so capture its prior existence before opening it.
+    const hadState = existsSync(statePath);
+    const state = await LevelBotStateStore.open(statePath);
     let openedWallet: MonadChainWalletHandle | undefined;
     let openedDirectory: DirectoryManager | undefined;
     let uninstall: (() => void) | undefined;
@@ -232,7 +236,7 @@ export class FrankBotHost {
     try {
       const fresh = await InboundOperationStore.preflight(
         state,
-        !hadRoot && !hadIdentity && !hadOtherFiles
+        !hadRoot && !hadIdentity && !hadOtherFiles && !hadState
       );
       if (!fresh && !hadRoot)
         throw new Error("Bot admission root missing; preserve state");

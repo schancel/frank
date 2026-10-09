@@ -4,6 +4,7 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
+  existsSync,
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -334,6 +335,35 @@ it.each([
     await poll();
     expect(reply).not.toHaveBeenCalled();
     expect(mockSend).not.toHaveBeenCalled();
+  }
+);
+
+it.each(["directory", "database"])(
+  "holds a pre-existing empty state %s without creating an identity or owner marker",
+  async (kind) => {
+    const statePath = join(root, "bots", "qwen", "state");
+    mkdirSync(statePath, { recursive: true });
+    if (kind === "database") {
+      const prior = await LevelBotStateStore.open(statePath);
+      await prior.close();
+    }
+
+    await expect(open()).rejects.toThrow(/preserve|admission/i);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockPublish).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(existsSync(join(root, "bots", "qwen", "account-root.hex"))).toBe(
+      false
+    );
+    expect(existsSync(join(root, "new-identity.json"))).toBe(false);
+    expect(existsSync(statePath)).toBe(true);
+    const retained = await LevelBotStateStore.open(statePath);
+    try {
+      expect(await retained.readEntries()).toEqual([]);
+    } finally {
+      await retained.close();
+    }
   }
 );
 

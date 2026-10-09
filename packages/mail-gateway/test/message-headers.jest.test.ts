@@ -115,10 +115,10 @@ describe('message-headers (S1)', () => {
     });
 
     it('requires exactly one @ with non-empty sides and no angle brackets inside', () => {
-      for (const bad of ['<@b>', '<a@>', '<a@@b>', '<a@b@c>', '<a>', '<a@b', '']) {
+      for (const bad of ['<@b>', '<a@>', '<a@@b>', '<a@b@c>', '<a>', '<a@b', '<a<b@c>', '']) {
         expect(parseMessageId(bad)).toBeUndefined();
       }
-      expect(parseMessageId('<a<b@c>')).toBe('<b@c>');
+      expect(parseMessageId('<a<b@c>')).toBeUndefined();
     });
 
     it('accepts the whole allowed character set and refuses control, space and non-ASCII', () => {
@@ -352,6 +352,252 @@ describe('message-headers (S1)', () => {
       }
       expect(() => assertHeaderValue('a\x7fb')).toThrow();
       expect(() => assertHeaderValue('\x20\x7e\x80')).not.toThrow();
+    });
+  });
+
+  describe('change A: whole-token validation', () => {
+    it('does not extract an ID from inside a rejected token', () => {
+      expect(parseMessageId('<<abc@h>>')).toBeUndefined();
+      expect(parseMessageId('<a b<c@d>')).toBeUndefined();
+      expect(parseMessageId('<a<b@c>')).toBeUndefined();
+      expect(parseMessageIdList('<a<b@c> <x@y>')).toEqual(['<x@y>']);
+    });
+
+    it('skips an oversized whole token and keeps the next valid one', () => {
+      expect(parseMessageId(`${idOfLength(257)} <a@b>`)).toBe('<a@b>');
+      expect(parseMessageId('<toolong <a@b>')).toBeUndefined();
+    });
+
+    it('must not merge two distinct Message-IDs that share an interior substring', () => {
+      const a = readThreadHeaders(enc('Message-ID: <"x<y"@z>\r\n\r\n'));
+      const b = readThreadHeaders(enc('Message-ID: <"w<y"@z>\r\n\r\n'));
+      expect(a).toEqual({ ok: false, reason: 'bad_message_id' });
+      expect(b).toEqual({ ok: false, reason: 'bad_message_id' });
+    });
+
+    it('does not turn an In-Reply-To interior substring into a parent', () => {
+      expect(readThreadHeaders(enc('In-Reply-To: <"x<p"@z>\r\n\r\n'))).toEqual({
+        ok: true,
+        references: [],
+      });
+    });
+
+    it('references skip invalid whole tokens and keep valid ones', () => {
+      const r = readThreadHeaders(enc('References: <"x<y"@z> <a@b> <<c@d>> <e@f>\r\n\r\n'));
+      expect(r).toEqual({ ok: true, references: ['<a@b>', '<e@f>'] });
+    });
+  });
+
+  describe('change B: Message-ID is exactly one valid token', () => {
+    it('rejects an invalid token followed by a valid one', () => {
+      expect(readThreadHeaders(enc('Message-ID: <x y@z> <b@c>\r\n\r\n'))).toEqual({
+        ok: false,
+        reason: 'bad_message_id',
+      });
+    });
+
+    it('rejects two valid tokens and a single invalid token', () => {
+      expect(readThreadHeaders(enc('Message-ID: <a@b> <c@d>\r\n\r\n'))).toEqual({
+        ok: false,
+        reason: 'bad_message_id',
+      });
+      expect(readThreadHeaders(enc('Message-ID: <x y@z>\r\n\r\n'))).toEqual({
+        ok: false,
+        reason: 'bad_message_id',
+      });
+    });
+
+    it('rejects a tokenless value (kept: bad_message_id)', () => {
+      expect(readThreadHeaders(enc('Message-ID: plain@text\r\n\r\n'))).toEqual({
+        ok: false,
+        reason: 'bad_message_id',
+      });
+    });
+  });
+
+  describe('change C: header section end', () => {
+    it('stops at a non-continuation line without a colon', () => {
+      const r = readThreadHeaders(
+        enc('Subject: s\r\nthis is body text\r\nIn-Reply-To: <body@x>\r\n\r\n'),
+      );
+      expect(r).toEqual({ ok: true, references: [] });
+    });
+
+    it('treats a whitespace-only line as the end of the section', () => {
+      expect(readThreadHeaders(enc('Subject: s\r\n \r\nMessage-ID: <body@x>'))).toEqual({
+        ok: true,
+        references: [],
+      });
+      expect(readThreadHeaders(enc('Subject: s\r\n\t\r\nMessage-ID: <body@x>'))).toEqual({
+        ok: true,
+        references: [],
+      });
+    });
+
+    it('treats a bare-CR-only line as empty and not as a separator', () => {
+      expect(readThreadHeaders(enc('Subject: s\r\r\n\r\r\nMessage-ID: <body@x>\r\n'))).toEqual({
+        ok: true,
+        references: [],
+      });
+      // A lone CR inside a value is not a line separator: In-Reply-To is not read as a header
+      // (and its token makes the Message-ID value hold two tokens).
+      expect(readThreadHeaders(enc('Message-ID: <a@b>\rIn-Reply-To: <p@q>\r\n\r\n'))).toEqual({
+        ok: false,
+        reason: 'bad_message_id',
+      });
+      expect(readThreadHeaders(enc('Subject: s\rIn-Reply-To: <p@q>\r\n\r\n'))).toEqual({
+        ok: true,
+        references: [],
+      });
+    });
+
+    it('reads nothing from empty input', () => {
+      expect(readThreadHeaders(new Uint8Array(0))).toEqual({ ok: true, references: [] });
+    });
+
+    it('reads nothing after a leading blank line', () => {
+      expect(readThreadHeaders(enc('\r\nMessage-ID: <a@b>\r\n\r\n'))).toEqual({
+        ok: true,
+        references: [],
+      });
+    });
+
+    it('reads nothing when the first line is a continuation', () => {
+      expect(readThreadHeaders(enc(' Message-ID: <a@b>\r\nIn-Reply-To: <p@q>\r\n\r\n'))).toEqual({
+        ok: true,
+        references: [],
+      });
+    });
+
+    it('does not attach a continuation line after the section ended', () => {
+      const r = readThreadHeaders(enc('Subject: s\r\nbody line\r\n References: <z@z>\r\n'));
+      expect(r).toEqual({ ok: true, references: [] });
+    });
+
+    it('does not read Resent-Message-ID or Original-Message-ID as Message-ID', () => {
+      const r = readThreadHeaders(
+        enc('Resent-Message-ID: <r@x>\r\nOriginal-Message-ID: <o@x>\r\n\r\n'),
+      );
+      expect(r).toEqual({ ok: true, references: [] });
+    });
+
+    it('is a duplicate when one copy is empty', () => {
+      expect(readThreadHeaders(enc('Message-ID: <a@b>\r\nMessage-ID:\r\n\r\n'))).toEqual({
+        ok: false,
+        reason: 'duplicate_header',
+      });
+    });
+
+    it('handles mixed CRLF and LF endings', () => {
+      const r = readThreadHeaders(
+        enc('Message-ID: <a@b>\nIn-Reply-To: <p@q>\r\nReferences: <r1@x>\n <r2@x>\r\n\n'),
+      );
+      expect(r).toEqual({
+        ok: true,
+        messageId: '<a@b>',
+        inReplyTo: '<p@q>',
+        references: ['<r1@x>', '<r2@x>'],
+      });
+    });
+  });
+
+  describe('change D: quoted phrases and comments', () => {
+    it('skips an ID inside a quoted phrase in In-Reply-To', () => {
+      const r = readThreadHeaders(enc('In-Reply-To: "msg <q@x> from Bob" <real@y>\r\n\r\n'));
+      expect(r).toEqual({ ok: true, inReplyTo: '<real@y>', references: [] });
+    });
+
+    it('skips IDs inside nested comments and escaped characters', () => {
+      expect(parseMessageIdList('(a (nested <n@x>) <c@x>) <ok@y>')).toEqual(['<ok@y>']);
+      expect(parseMessageIdList('(a \\) <e@x>) <ok@y>')).toEqual(['<ok@y>']);
+      expect(parseMessageIdList('"a \\" <e@x>" <ok@y>')).toEqual(['<ok@y>']);
+    });
+
+    it('extracts nothing after an unbalanced quote or parenthesis', () => {
+      expect(parseMessageIdList('<a@b> "oops <c@d>')).toEqual(['<a@b>']);
+      expect(parseMessageIdList('<a@b> (oops <c@d>')).toEqual(['<a@b>']);
+      expect(parseMessageId('"oops <c@d>')).toBeUndefined();
+    });
+
+    it('does not strip quote or paren characters that are part of an ID', () => {
+      expect(parseMessageId('<a"b@c>')).toBe('<a"b@c>');
+      expect(parseMessageId('<a(b@c>')).toBe('<a(b@c>');
+    });
+
+    it('strips a comment before counting Message-ID tokens', () => {
+      const r = readThreadHeaders(enc('Message-ID: (was <old@x>) <new@y>\r\n\r\n'));
+      expect(r).toEqual({ ok: true, messageId: '<new@y>', references: [] });
+    });
+
+    it('rejects a Message-ID with an unbalanced quote even after a valid token (stricter wins)', () => {
+      expect(readThreadHeaders(enc('Message-ID: <a@b> "tail\r\n\r\n'))).toEqual({
+        ok: false,
+        reason: 'bad_message_id',
+      });
+    });
+  });
+
+  describe('non-ASCII bytes', () => {
+    it('rejects raw byte 0xE1 inside the brackets and does not collapse it to ASCII', () => {
+      const bytes = Uint8Array.from([
+        ...enc('Message-ID: <a'),
+        0xe1,
+        ...enc('b@c>\r\n\r\n'),
+      ]);
+      expect(readThreadHeaders(bytes)).toEqual({ ok: false, reason: 'bad_message_id' });
+      // 0xE1 & 0x7f is 'a': an ascii-masking decoder would wrongly accept <aab@c>.
+      const lookalike = Uint8Array.from([...enc('In-Reply-To: <'), 0xe1, ...enc('@c>\r\n\r\n')]);
+      expect(readThreadHeaders(lookalike)).toEqual({ ok: true, references: [] });
+    });
+
+    it('rejects a UTF-8 e-acute inside the brackets', () => {
+      expect(readThreadHeaders(enc('Message-ID: <café@x>\r\n\r\n'))).toEqual({
+        ok: false,
+        reason: 'bad_message_id',
+      });
+      expect(readThreadHeaders(enc('References: <café@x> <cafe@x>\r\n\r\n'))).toEqual({
+        ok: true,
+        references: ['<cafe@x>'],
+      });
+    });
+  });
+
+  describe('change E: rendering', () => {
+    it('round-trips a 256-character ID as Message-ID, parent and reference', () => {
+      const id = idOfLength(256);
+      const text = renderThreadHeaders({ messageId: id, inReplyTo: id, references: [id] });
+      expect(readThreadHeaders(enc(`${text}\r\n`))).toEqual({
+        ok: true,
+        messageId: id,
+        inReplyTo: id,
+        references: [id],
+      });
+    });
+
+    it('moves a first reference of 67 to 77 characters to a continuation line', () => {
+      for (const len of [67, 68, 77]) {
+        const id = idOfLength(len);
+        const text = renderThreadHeaders({ messageId: '<m@h>', references: [id, '<b@h>'] });
+        expect(text).toContain(`References:\r\n ${id}`);
+        for (const line of text.split('\r\n')) expect(line.length).toBeLessThanOrEqual(78);
+        const r = readThreadHeaders(enc(`${text}\r\n`));
+        expect(r.ok && r.references).toEqual([id, '<b@h>']);
+      }
+    });
+
+    it('keeps a first reference of 66 characters on the References line', () => {
+      const id = idOfLength(66);
+      const text = renderThreadHeaders({ messageId: '<m@h>', references: [id] });
+      expect(text).toContain(`References: ${id}\r\n`);
+      expect('References: '.length + 66).toBe(78);
+    });
+
+    it('leaves a first reference longer than 77 characters on the References line', () => {
+      const id = idOfLength(78);
+      const text = renderThreadHeaders({ messageId: '<m@h>', references: [id] });
+      expect(text).toContain(`References: ${id}\r\n`);
+      const r = readThreadHeaders(enc(`${text}\r\n`));
+      expect(r.ok && r.references).toEqual([id]);
     });
   });
 });

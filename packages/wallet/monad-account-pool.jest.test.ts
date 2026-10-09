@@ -32,7 +32,11 @@ import {
 import { SubAccountLeaseManager } from "./monad-account-lease";
 import { MonadAccountTxSigner, MonadTxSubmitter } from "./monad-account-tx";
 import { LevelSubAccountPoolStore } from "./storage/level-sub-account-pool-store";
-import { InMemorySubAccountPoolStore } from "./storage/sub-account-pool-storage";
+import {
+  InMemorySubAccountPoolStore,
+  SubAccountPoolStore,
+  SubAccountRecord,
+} from "./storage/sub-account-pool-storage";
 
 const TEST_MNEMONIC =
   "test test test test test test test test test test test junk";
@@ -292,9 +296,10 @@ describe("MonadSubAccountPool", () => {
   });
 
   describe("prepareStampInventory", () => {
-    function setupPreparation() {
+    function setupPreparation(
+      store: SubAccountPoolStore = new InMemorySubAccountPoolStore()
+    ) {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
-      const store = new InMemorySubAccountPoolStore();
       const pool = new MonadSubAccountPool({ keyring, store });
       pool.ensureUnfundedSize(3);
       const balances = new Map<string, bigint>();
@@ -658,6 +663,260 @@ describe("MonadSubAccountPool", () => {
       expect(restarted.getRecord(0)?.status).toBe("available");
       expect(restarted.getRecord(0)?.fundingAttempt).toBeUndefined();
     });
+
+    describe("a funding row whose durable write failed (Issue #1307)", () => {
+      const fundingOverrides = {
+        gasLimit: 21_000n,
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+        chainId: BigInt(CHAIN_ID),
+      };
+
+      /** A real Level store whose disk writes can be made to fail, as a full or failing disk
+       * would. `durable` lists the funding bytes of every write that actually reached disk. */
+      async function openFailableStore(dir: string) {
+        const store = new LevelSubAccountPoolStore(dir);
+        await store.Open();
+        type Batch = (
+          operations: ReadonlyArray<{ value?: string }>,
+          options: unknown
+        ) => Promise<unknown>;
+        const db = (store as unknown as { openedDb: { batch: Batch } })
+          .openedDb;
+        const writeToDisk = db.batch.bind(db);
+        const control = { failWrites: false };
+        const events: string[] = [];
+        db.batch = async (operations, options) => {
+          if (control.failWrites) throw new Error("simulated storage failure");
+          const result = await writeToDisk(operations, options);
+          for (const { value } of operations) {
+            if (value?.includes('"status":"funding"')) {
+              events.push(`durable:${JSON.parse(value).fundingAttempt.rawTx}`);
+            }
+          }
+          return result;
+        };
+        return { control, events, store };
+      }
+
+      async function withStorageDir(run: (dir: string) => Promise<void>) {
+        const os = await import("os");
+        const path = await import("path");
+        const fs = await import("fs");
+        const dir = fs.mkdtempSync(
+          path.join(os.tmpdir(), "sub-account-pool-funding-resume-")
+        );
+        try {
+          await run(dir);
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      }
+
+      /** Opens the pool on a failable store and runs one preparation whose `funding` write
+       * fails: nothing is submitted, but the row still reads `funding` in memory. */
+      async function recordFundingRowThatNeverReachedDisk(dir: string) {
+        const failable = await openFailableStore(dir);
+        const fixture = setupPreparation(failable.store);
+        await fixture.pool.flush();
+        const broadcasted = new Set<string>();
+        fixture.httpClient.getTransactionReceipt.mockImplementation(
+          async (txHash) =>
+            broadcasted.has(txHash)
+              ? {
+                  txHash,
+                  blockNumber: 1,
+                  blockHash: "0x" + "00".repeat(32),
+                  status: "success",
+                  gasUsed: 21_000n,
+                  effectiveGasPrice: 1n,
+                  logs: [],
+                }
+              : undefined
+        );
+        const prepare = (pool: MonadSubAccountPool) =>
+          pool.prepareStampInventory({
+            mainAccountSigner: fixture.mainAccountSigner,
+            provider: fixture.provider,
+            stampValueWei: 1_000n,
+            gasReserveWei: 10n,
+            fundingOverrides,
+            receipt: { intervalMs: 0, maxAttempts: 1 },
+          });
+
+        failable.control.failWrites = true;
+        await expect(prepare(fixture.pool)).rejects.toThrow(
+          "simulated storage failure"
+        );
+        expect(fixture.httpClient.submitRawTransaction).not.toHaveBeenCalled();
+        const undurable = fixture.pool.getRecord(0)!;
+        expect(undurable.status).toBe("funding");
+        const recordedRawTx = undurable.fundingAttempt!.rawTx;
+        expect(failable.events).toEqual([]);
+        return { ...failable, ...fixture, broadcasted, prepare, recordedRawTx };
+      }
+
+      it("submits nothing on resume while the row still cannot be written", async () => {
+        await withStorageDir(async (dir) => {
+          const { httpClient, pool, prepare, store } =
+            await recordFundingRowThatNeverReachedDisk(dir);
+
+          await expect(prepare(pool)).rejects.toThrow(
+            "simulated storage failure"
+          );
+
+          expect(httpClient.submitRawTransaction).not.toHaveBeenCalled();
+          expect(pool.getRecord(0)?.status).toBe("funding");
+          await store.Close();
+
+          const reopened = new LevelSubAccountPoolStore(dir);
+          await reopened.Open();
+          expect(reopened.getByIndex(0)?.status).toBe("unfunded");
+          await reopened.Close();
+        });
+      });
+
+      it("writes the row durably before resubmitting the same bytes exactly once", async () => {
+        await withStorageDir(async (dir) => {
+          const {
+            balances,
+            broadcasted,
+            control,
+            events,
+            httpClient,
+            mainAccountSigner,
+            pool,
+            prepare,
+            provider,
+            recordedRawTx,
+            store,
+          } = await recordFundingRowThatNeverReachedDisk(dir);
+          const childAddress = pool.getRecord(0)!.address;
+
+          // Storage recovers, then the process dies right after the broadcast: no write made
+          // after the resubmission reaches disk.
+          control.failWrites = false;
+          httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+            const transaction = Transaction.from(rawTx);
+            events.push(`submit:${rawTx}`);
+            broadcasted.add(transaction.hash!);
+            balances.set(transaction.to!.toLowerCase(), transaction.value);
+            control.failWrites = true;
+            return transaction.hash!;
+          });
+          await expect(prepare(pool)).rejects.toThrow(
+            "simulated storage failure"
+          );
+
+          expect(events).toEqual([
+            `durable:${recordedRawTx}`,
+            `submit:${recordedRawTx}`,
+          ]);
+          await store.Close();
+
+          const reopened = new LevelSubAccountPoolStore(dir);
+          await reopened.Open();
+          expect(reopened.getByIndex(0)).toEqual({
+            index: 0,
+            address: childAddress,
+            status: "funding",
+            fundingAttempt: {
+              rawTx: recordedRawTx,
+              txHash: Transaction.from(recordedRawTx).hash,
+            },
+          });
+
+          // The restarted wallet finishes the recorded transfer instead of funding the child again.
+          httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+            const transaction = Transaction.from(rawTx);
+            broadcasted.add(transaction.hash!);
+            balances.set(transaction.to!.toLowerCase(), transaction.value);
+            return transaction.hash!;
+          });
+          const restarted = new MonadSubAccountPool({
+            keyring: MonadHdKeyring.fromMnemonic(TEST_MNEMONIC),
+            store: reopened,
+          });
+          const result = await restarted.prepareStampInventory({
+            mainAccountSigner,
+            provider,
+            stampValueWei: 1_000n,
+            gasReserveWei: 10n,
+            fundingOverrides,
+            receipt: { intervalMs: 0, maxAttempts: 1 },
+          });
+
+          expect(result.fundingTxHashes[0]).toBe(
+            Transaction.from(recordedRawTx).hash
+          );
+          expect(restarted.getRecord(0)?.status).toBe("available");
+          const transfersToChild = httpClient.submitRawTransaction.mock.calls
+            .map(([rawTx]) => rawTx)
+            .filter(
+              (rawTx) =>
+                Transaction.from(rawTx).to!.toLowerCase() ===
+                childAddress.toLowerCase()
+            );
+          expect(transfersToChild).toEqual([recordedRawTx]);
+          await reopened.Close();
+        });
+      });
+    });
+
+    it("keeps a replaced funding attempt in funding when the child balance cannot be read (Issue #1307)", async () => {
+      const { balances, httpClient, mainAccountSigner, pool, provider, store } =
+        setupPreparation();
+      const first = pool.getRecord(0)!;
+      const signed = await mainAccountSigner.buildAndSignTransfer(
+        first.address,
+        385n,
+        {
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        }
+      );
+      const fundingRow: SubAccountRecord = {
+        ...first,
+        status: "funding",
+        fundingAttempt: { rawTx: signed.rawTx, txHash: signed.txHash },
+      };
+      store.put(fundingRow);
+      // The transfer was mined (the main-account nonce moved past it), but the receipt lags on
+      // the receipt backend and the balance read fails on the other one.
+      httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+        if (rawTx === signed.rawTx) throw new Error("nonce too low");
+        const transaction = Transaction.from(rawTx);
+        balances.set(transaction.to!.toLowerCase(), transaction.value);
+        return transaction.hash!;
+      });
+      jest
+        .spyOn(mainAccountSigner, "getStatus")
+        .mockImplementation(async (txHash) =>
+          txHash === signed.txHash ? "pending" : "confirmed"
+        );
+      jest.spyOn(mainAccountSigner, "getTransactionCount").mockResolvedValue(5n);
+      jest
+        .spyOn(mainAccountSigner, "getBalance")
+        .mockRejectedValue(new Error("simulated balance read failure"));
+
+      await pool.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: {
+          gasLimit: 21_000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+          chainId: BigInt(CHAIN_ID),
+        },
+        receipt: { intervalMs: 0, maxAttempts: 1 },
+      });
+
+      expect(pool.getRecord(0)).toEqual(fundingRow);
+    });
   });
 
   describe("prepareBurnAccount (ticket #273: one funded account per topic burn)", () => {
@@ -997,6 +1256,134 @@ describe("MonadSubAccountPool", () => {
       // that raw transaction rather than deriving or funding another child.
       expect(pool.getRecord(1)?.status).toBe("funding");
       expect(pool.getRecord(1)?.fundingAttempt?.rawTx).toBeDefined();
+    });
+
+    describe("a recorded attempt with no receipt (Issue #1307)", () => {
+      type Read<T> = () => Promise<T>;
+
+      /** One `funding` row whose transfer the node will not accept again, observed once
+       * (`maxAttempts: 0`): the first receipt read finds nothing, then the given reads run. */
+      async function observeReplacedAttempt(reads: {
+        mainNonce: Read<bigint>;
+        childBalance: Read<bigint>;
+        receiptReread: Read<"pending" | "confirmed" | "failed">;
+      }) {
+        const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+        const store = new InMemorySubAccountPoolStore();
+        const pool = new MonadSubAccountPool({ keyring, store });
+        const [child] = pool.ensureUnfundedSize(1);
+        const mainAccountSigner = await makeSigner();
+        const signed = await mainAccountSigner.buildAndSignTransfer(
+          child.address,
+          2n,
+          { gasLimit: 21_000n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n }
+        );
+        const fundingRow: SubAccountRecord = {
+          ...child,
+          status: "funding",
+          fundingAttempt: { rawTx: signed.rawTx, txHash: signed.txHash },
+        };
+        store.put(fundingRow);
+        const submitRaw = jest
+          .spyOn(mainAccountSigner, "submitRaw")
+          .mockRejectedValue(new Error("nonce too low"));
+        jest
+          .spyOn(mainAccountSigner, "getStatus")
+          .mockResolvedValueOnce("pending")
+          .mockImplementation(reads.receiptReread);
+        jest
+          .spyOn(mainAccountSigner, "getTransactionCount")
+          .mockImplementation(reads.mainNonce);
+        jest
+          .spyOn(mainAccountSigner, "getBalance")
+          .mockImplementation(reads.childBalance);
+
+        const outcome = await pool
+          .topUpPool({
+            mainAccountSigner,
+            burnValue: 1n,
+            gasReserve: 1n,
+            bufferSize: 1,
+            receipt: { maxAttempts: 0 },
+          })
+          .then(
+            () => "resolved",
+            (error: Error) => error.message
+          );
+        // Only the recorded bytes were ever offered to the node: no second child was funded.
+        expect(submitRaw.mock.calls).toEqual([[signed.rawTx, signed.txHash]]);
+        return { fundingRow, outcome, record: pool.getRecord(0) };
+      }
+
+      const advanced: Read<bigint> = async () => 5n;
+      const empty: Read<bigint> = async () => 0n;
+      const absent: Read<"pending"> = async () => "pending";
+      const failing: Read<never> = async () => {
+        throw new Error("simulated read failure");
+      };
+
+      it("stays funding when the nonce advanced but the balance read fails", async () => {
+        const { fundingRow, outcome, record } = await observeReplacedAttempt({
+          mainNonce: advanced,
+          childBalance: failing,
+          receiptReread: absent,
+        });
+        expect(record).toEqual(fundingRow);
+        expect(outcome).toMatch(/still pending/);
+      });
+
+      it("stays funding when the nonce read fails", async () => {
+        const { fundingRow, outcome, record } = await observeReplacedAttempt({
+          mainNonce: failing,
+          childBalance: empty,
+          receiptReread: absent,
+        });
+        expect(record).toEqual(fundingRow);
+        expect(outcome).toMatch(/still pending/);
+      });
+
+      it("stays funding when the receipt cannot be read again", async () => {
+        const { fundingRow, outcome, record } = await observeReplacedAttempt({
+          mainNonce: advanced,
+          childBalance: empty,
+          receiptReread: failing,
+        });
+        expect(record).toEqual(fundingRow);
+        expect(outcome).toBe("simulated read failure");
+      });
+
+      it("becomes available when the receipt has arrived by the re-read", async () => {
+        const { outcome, record } = await observeReplacedAttempt({
+          mainNonce: advanced,
+          childBalance: empty,
+          receiptReread: async () => "confirmed",
+        });
+        expect(record?.status).toBe("available");
+        expect(record?.fundingAttempt).toBeUndefined();
+        expect(outcome).toBe("resolved");
+      });
+
+      it("is retired when the nonce advanced, the balance is zero and the receipt is still absent", async () => {
+        const { outcome, record } = await observeReplacedAttempt({
+          mainNonce: advanced,
+          childBalance: empty,
+          receiptReread: absent,
+        });
+        expect(record?.status).toBe("retired");
+        expect(record?.fundingAttempt).toBeUndefined();
+        expect(outcome).toMatch(/superceded by a later nonce/);
+      });
+
+      it("becomes available when the child holds a balance", async () => {
+        const { outcome, record } = await observeReplacedAttempt({
+          mainNonce: failing,
+          childBalance: async () => 2n,
+          receiptReread: absent,
+        });
+        expect(record?.status).toBe("available");
+        expect(record?.fundingAttempt).toBeUndefined();
+        expect(outcome).toBe("resolved");
+      });
     });
   });
 });

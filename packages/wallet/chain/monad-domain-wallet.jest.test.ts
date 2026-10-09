@@ -50,6 +50,7 @@ import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-stor
 import { LevelChangePoolStore } from '../storage/level-change-pool-store'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import { MonadSubAccountPool } from '../monad-account-pool'
+import { applyWalletSyncItem } from '../sync-dispatcher'
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
 import { MonadStampClient } from '../monad-stamp-client'
 import * as topicModule from '../monad-topic-post-client'
@@ -1458,6 +1459,246 @@ test('native recovery references load before startup orphan retirement', async (
   } finally {
     await second?.close()
     await first?.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+/** Stage 0 of #1235. Row 0 is funded through the pool's own on-demand path, then out-holds main,
+ * so the legacy send selects it as its single source and the mocked RPC includes it in-call. */
+async function sendLegacyFromProductionFundedPoolRow(dir: string) {
+  const bundleModule = jest.requireActual(
+    '../storage/monad-wallet-bundle',
+  ) as typeof import('../storage/monad-wallet-bundle')
+  const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+  const opened: Array<Awaited<ReturnType<typeof originalOpen>>> = []
+  jest
+    .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+    .mockImplementation(async params => {
+      const result = await originalOpen(params)
+      opened.push(result)
+      return result
+    })
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  const open = async () => {
+    const wallet = (await createEvmChain(cfg).createWallet(
+      roots(),
+    )) as EvmChainWalletHandle
+    const bundle = opened[opened.length - 1]!
+    return {
+      wallet,
+      admission: () =>
+        bundle.runLifetime(lifetime =>
+          Promise.resolve(bundle.inputAdmission.inspect(lifetime)),
+        ),
+    }
+  }
+  const first = await open()
+  const wallet = first.wallet
+  const poolAddress = expected[0].pool.toLowerCase()
+  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 1000000n })
+  jest
+    .spyOn(wallet.provider, 'getNetwork')
+    .mockResolvedValue(Network.from(10143))
+  const ActualSigner = jest.requireActual<typeof import('../monad-account-tx')>(
+    '../monad-account-tx',
+  ).MonadAccountTxSigner
+  const funder = new ActualSigner({
+    privateKey: expected[0].mainSecret,
+    provider: wallet.provider,
+    httpClient: {
+      submitRawTransaction: async (raw: string) => {
+        const tx = Transaction.from(raw)
+        await wallet.provider.broadcastTransaction(raw)
+        const to = tx.to!.toLowerCase()
+        rpc.balances.set(to, (rpc.balances.get(to) ?? 0n) + tx.value)
+        return tx.hash!
+      },
+      getTransactionReceipt: async (txHash: string) =>
+        ({ txHash, status: 'success' } as never),
+    },
+  })
+  await wallet.pool.prepareStampInventory({
+    mainAccountSigner: funder,
+    provider: wallet.provider,
+    stampValueWei: 1n,
+    gasReserveWei: 21000n,
+    fundingOverrides: {
+      nonce: 0,
+      chainId: 10143n,
+      gasLimit: 21000n,
+      maxFeePerGas: 1n,
+      maxPriorityFeePerGas: 1n,
+    },
+  })
+  expect(wallet.pool.getRecord(0)).toEqual({
+    index: 0,
+    address: expected[0].pool,
+    status: 'available',
+  })
+  expect(wallet.pool.capacityCache.has(0)).toBe(true)
+  // The pool account now out-holds main and covers the send exactly; main cannot cover it.
+  rpc.balances.set(poolAddress, 121000n)
+  rpc.balances.set(expected[0].main.toLowerCase(), 50000n)
+  rpc.broadcast.mockClear()
+  const processed = jest.spyOn(wallet.pool, 'processSyncTransaction')
+  const sent = await wallet
+    .sendLegacy!({ recipient: { raw: expected[1].main }, value: 100000n })
+    .then(
+      value => ({ value, error: undefined }),
+      (error: unknown) => ({ value: undefined, error }),
+    )
+  const operation = wallet.getNativeOperations!()[0]!
+  expect(operation.members).toHaveLength(1)
+  const member = operation.members[0]!
+  expect(member.source).toEqual({
+    kind: 'spend',
+    address: poolAddress,
+    index: 0,
+  })
+  expect(member.observation.state).toBe('included-success')
+  expect(rpc.broadcast).toHaveBeenCalledTimes(1)
+  expect(rpc.broadcast).toHaveBeenCalledWith(member.signed!.rawTransaction)
+  // The composed path really delivered the consolidator's item to the pool: no raw bytes, and the
+  // fee folded into the value.
+  expect(processed).toHaveBeenCalledTimes(1)
+  expect(processed.mock.calls[0]![0]).toMatchObject({
+    type: 'wallet-sync',
+    direction: 'out',
+    txHash: member.signed!.transactionHash,
+    spentInputs: [{ address: poolAddress, nonce: 0, valueWei: '121000' }],
+  })
+  expect(processed.mock.calls[0]![0]).not.toHaveProperty('rawTx')
+  return { ...first, rpc, sent, operation, open, item: processed.mock.calls[0]![0] }
+}
+
+function expectNoSpendRecordWithoutItsTransaction(wallet: EvmChainWalletHandle) {
+  for (const row of [
+    ...wallet.pool.records(),
+    ...wallet.pool.terminalCheckpoints(),
+  ]) {
+    const spend = row.lifecycle?.spend
+    if (spend === undefined) continue
+    expect(Transaction.from(spend.rawTx).hash).toBe(spend.txHash)
+  }
+}
+
+test('a pool-sourced legacy send included in-call leaves a wallet that reopens (#1235)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-reopen-'))
+  let wallet: EvmChainWalletHandle | undefined
+  try {
+    const first = await sendLegacyFromProductionFundedPoolRow(dir)
+    wallet = first.wallet
+    await wallet.close()
+    wallet = undefined
+    const second = await first.open()
+    wallet = second.wallet
+    expect(await second.admission()).toMatchObject({ status: 'ready' })
+    // What this stage produces: the drained row is not yet marked; the next stage marks it from
+    // the journal member, which is unchanged on disk.
+    expect(wallet.pool.getRecord(0)).toEqual({
+      index: 0,
+      address: expected[0].pool,
+      status: 'available',
+    })
+    expectNoSpendRecordWithoutItsTransaction(wallet)
+    expect(wallet.getNativeOperations!()).toEqual([first.operation])
+    expect(first.operation.members[0]!.syncApplied).toBe(false)
+  } finally {
+    await wallet?.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a pool-sourced legacy send included in-call keeps admission ready in the same session (#1235)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-session-'))
+  let wallet: EvmChainWalletHandle | undefined
+  try {
+    const first = await sendLegacyFromProductionFundedPoolRow(dir)
+    wallet = first.wallet
+    expect(await first.admission()).toMatchObject({ status: 'ready' })
+    expect(wallet.pool.getRecord(0)).toEqual({
+      index: 0,
+      address: expected[0].pool,
+      status: 'available',
+    })
+    expectNoSpendRecordWithoutItsTransaction(wallet)
+    // The drained account is not offered from the stale funded-capacity entry.
+    expect(wallet.pool.capacityCache.has(0)).toBe(false)
+    expect(
+      await wallet.pool.fundedCapacities(wallet.provider, 21000n),
+    ).toEqual([{ index: 0, address: expected[0].pool, capacityWei: 0n }])
+    // A native send for a disjoint pair (main, not the drained account) is still admitted,
+    // signed and broadcast.
+    first.rpc.broadcast.mockClear()
+    await wallet
+      .sendNative({ recipient: { raw: expected[1].main }, value: 1000n })
+      .catch(() => undefined)
+    expect(first.rpc.broadcast).toHaveBeenCalledTimes(1)
+    const next = Transaction.from(first.rpc.broadcast.mock.calls[0]![0])
+    expect(next.from).toBe(expected[0].main)
+    expect(wallet.getNativeOperations!()).toHaveLength(2)
+    expect(await first.admission()).toMatchObject({ status: 'ready' })
+  } finally {
+    await wallet?.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the same item carrying the journal member\'s signed transaction is a spend record admission accepts across reopen (#1235)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-bytes-'))
+  let wallet: EvmChainWalletHandle | undefined
+  try {
+    const first = await sendLegacyFromProductionFundedPoolRow(dir)
+    wallet = first.wallet
+    const signed = first.operation.members[0]!.signed!
+    const committed = {
+      index: 0,
+      address: expected[0].pool,
+      status: 'spent',
+      lifecycle: {
+        spend: {
+          rawTx: signed.rawTransaction,
+          txHash: signed.transactionHash,
+          // The transaction's value, not the item's value plus fee (121000).
+          valueWei: '100000',
+        },
+      },
+    }
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    expect(
+      applyWalletSyncItem(wallet, {
+        ...first.item,
+        rawTx: signed.rawTransaction,
+      } as never),
+    ).toEqual({ affectedIndices: [0] })
+    expect(putMany).toHaveBeenCalledTimes(1)
+    expect(wallet.pool.getRecord(0)).toEqual(committed)
+    const retained = (snapshot: Awaited<ReturnType<typeof first.admission>>) =>
+      snapshot.status === 'ready'
+        ? snapshot.obligations
+            .filter(claim => claim.provenance.kind === 'pool-retained')
+            .map(claim => [claim.provenance, claim.transaction?.transactionHash])
+        : snapshot
+    const claim = [
+      [
+        { kind: 'pool-retained', poolIndex: 0, role: 'spend' },
+        signed.transactionHash,
+      ],
+    ]
+    expect(retained(await first.admission())).toEqual(claim)
+    await wallet.pool.flush()
+    await wallet.close()
+    wallet = undefined
+    const second = await first.open()
+    wallet = second.wallet
+    expect(retained(await second.admission())).toEqual(claim)
+    expect(wallet.pool.getRecord(0)).toEqual(committed)
+  } finally {
+    await wallet?.close()
     await rm(dir, { recursive: true, force: true })
   }
 })

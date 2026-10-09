@@ -16,7 +16,7 @@ export interface LegacySendIntent {
   readonly stagingAddress: string;
   readonly stagingPrivateKey: string;
   readonly inputAddresses: string[];
-  phase: "consolidating" | "consolidated" | "draining" | "confirmed" | "failed";
+  phase: "consolidating" | "consolidated" | "draining" | "confirmed" | "completed" | "failed";
   consolidationTxHashes: string[];
   drainTxHash?: string;
   readonly createdAtMs: number;
@@ -51,6 +51,21 @@ export interface FundingAccount {
   readonly privateKey: string;
 }
 
+export interface SendLegacyParams {
+  recipient: ChainAddress;
+  value: bigint;
+  onProgress?: (progress: LegacySendProgress) => void;
+  onSigned?: (signed: ChainTransaction) => Promise<void>;
+  /**
+   * When true or when waitForDrain is false, broadcasts peer fan-ins into the mempool,
+   * stores the intent as 'consolidating', and returns an optimistic tracking handle
+   * immediately without waiting for on-chain block mining. A background reconciliation
+   * loop monitors fan-in confirmations and completes recipient delivery.
+   */
+  async?: boolean;
+  waitForDrain?: boolean;
+}
+
 export interface EvmLegacyConsolidatorConfig {
   provider: Provider;
   inventory?: EvmAddressInventory;
@@ -62,9 +77,20 @@ export interface EvmLegacyConsolidatorConfig {
   journal?: LegacySendJournalStore;
   standardGasLimit?: bigint;
   onSyncTransaction?: (item: WalletSyncItem) => Promise<void>;
+  asyncConsolidation?: boolean;
+  pollIntervalMs?: number;
+  pollTimeoutMs?: number;
 }
 
 const DEFAULT_STANDARD_TRANSFER_GAS = 21_000n;
+
+interface ActiveTrackingEntry {
+  promise: Promise<LegacySendResult>;
+  callbacks: Set<{
+    onProgress?: (progress: LegacySendProgress) => void;
+    onSigned?: (signed: ChainTransaction) => Promise<void>;
+  }>;
+}
 
 export class EvmLegacyConsolidator {
   private readonly provider: Provider;
@@ -74,6 +100,10 @@ export class EvmLegacyConsolidator {
   private readonly journal: LegacySendJournalStore;
   private readonly standardGasLimit: bigint;
   private readonly onSyncTransaction?: (item: WalletSyncItem) => Promise<void>;
+  private readonly asyncConsolidation: boolean;
+  private readonly pollIntervalMs: number;
+  private readonly pollTimeoutMs: number;
+  private readonly activeTrackingTasks = new Map<string, ActiveTrackingEntry>();
 
   constructor(config: EvmLegacyConsolidatorConfig) {
     this.provider = config.provider;
@@ -85,6 +115,9 @@ export class EvmLegacyConsolidator {
     this.journal = config.journal ?? new InMemoryLegacySendJournalStore();
     this.standardGasLimit = config.standardGasLimit ?? DEFAULT_STANDARD_TRANSFER_GAS;
     this.onSyncTransaction = config.onSyncTransaction;
+    this.asyncConsolidation = config.asyncConsolidation ?? false;
+    this.pollIntervalMs = config.pollIntervalMs ?? 50;
+    this.pollTimeoutMs = config.pollTimeoutMs ?? 60_000;
   }
 
   private async getGasPrice(): Promise<bigint> {
@@ -174,12 +207,7 @@ export class EvmLegacyConsolidator {
    *   is designated as the leader. Peer accounts send fan-in transfers directly into the leader address,
    *   and the leader executes the final delivery transfer to the legacy recipient.
    */
-  async sendLegacy(params: {
-    recipient: ChainAddress;
-    value: bigint;
-    onProgress?: (progress: LegacySendProgress) => void;
-    onSigned?: (signed: ChainTransaction) => Promise<void>;
-  }): Promise<LegacySendResult> {
+  async sendLegacy(params: SendLegacyParams): Promise<LegacySendResult> {
     const { recipient, value, onProgress, onSigned } = params;
 
     if (!isAddress(recipient.raw)) {
@@ -321,7 +349,6 @@ export class EvmLegacyConsolidator {
 
     const leader = selected[0];
     const peers = selected.slice(1);
-    const leaderWallet = new Wallet(leader.privateKey, this.provider);
 
     // Step 2: Persist intent to journal using leader as staging/leader address
     const intentId = `legacy-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -350,7 +377,7 @@ export class EvmLegacyConsolidator {
       message: `Consolidating funds from ${peers.length} accounts to leader account`,
     });
 
-    // Step 3: Phase 1 Fan-in consolidation into leader
+    // Step 3: Phase 1 Fan-in consolidation into leader: broadcast peer fan-in transactions into mempool
     let neededInLeader =
       value + deliveryFee > leader.balanceWei
         ? value + deliveryFee - leader.balanceWei
@@ -421,52 +448,214 @@ export class EvmLegacyConsolidator {
         message: `Funded leader account (${i + 1}/${peers.length})`,
       });
 
-      await txResponse.wait?.();
       neededInLeader -= transferAmount;
       if (neededInLeader <= 0n) break;
     }
 
-    intent.phase = "consolidated";
+    intent.phase = "consolidating";
     intent.updatedAtMs = Date.now();
     await this.journal.setPendingIntent(intent);
 
-    // Step 4: Phase 2 Drain from leader to recipient
-    const leaderBalance = await this.provider.getBalance(leader.address);
-    const actualDeliveryGas = this.standardGasLimit * gasPrice;
+    const isAsync =
+      params.async === true ||
+      params.waitForDrain === false ||
+      (this.asyncConsolidation && params.waitForDrain !== true);
+
+    if (isAsync) {
+      // Start background tracking reconciliation loop without blocking caller
+      this.resumeConsolidation(intent.id, {
+        onProgress,
+        onSigned,
+      }).catch((err) => {
+        console.warn("Background consolidation error:", err);
+      });
+
+      return {
+        txHash: intent.consolidationTxHashes[0],
+        intermediateTxHashes: intent.consolidationTxHashes,
+        totalValueSent: value,
+        totalFeePaid: totalConsolidationFeePaid + deliveryFee,
+      };
+    }
+
+    return await this.resumeConsolidation(intent.id, {
+      onProgress,
+      onSigned,
+    });
+  }
+
+  /**
+   * Resumes or monitors an in-flight consolidation intent:
+   * - Monitors/awaits peer fan-in transaction receipts without holding wallet locks.
+   * - Once peer fan-ins confirm, leader signs and broadcasts the final transfer to recipient.raw and sets phase: 'completed'.
+   */
+  async resumeConsolidation(
+    intentId: string,
+    callbacks?: {
+      onProgress?: (progress: LegacySendProgress) => void;
+      onSigned?: (signed: ChainTransaction) => Promise<void>;
+    }
+  ): Promise<LegacySendResult> {
+    const existing = this.activeTrackingTasks.get(intentId);
+    if (existing) {
+      if (callbacks) {
+        existing.callbacks.add(callbacks);
+      }
+      return existing.promise;
+    }
+
+    const callbacksSet = new Set<{
+      onProgress?: (progress: LegacySendProgress) => void;
+      onSigned?: (signed: ChainTransaction) => Promise<void>;
+    }>();
+    if (callbacks) {
+      callbacksSet.add(callbacks);
+    }
+
+    const entry: ActiveTrackingEntry = {
+      promise: Promise.resolve() as any,
+      callbacks: callbacksSet,
+    };
+
+    entry.promise = this.executeResumeConsolidation(intentId, entry);
+    this.activeTrackingTasks.set(intentId, entry);
+    try {
+      return await entry.promise;
+    } finally {
+      this.activeTrackingTasks.delete(intentId);
+    }
+  }
+
+  private async executeResumeConsolidation(
+    intentId: string,
+    entry: ActiveTrackingEntry
+  ): Promise<LegacySendResult> {
+    const notifySigned = async (signed: ChainTransaction) => {
+      for (const cb of entry.callbacks) {
+        if (cb.onSigned) {
+          await cb.onSigned(signed);
+        }
+      }
+    };
+
+    const notifyProgress = (progress: LegacySendProgress) => {
+      for (const cb of entry.callbacks) {
+        if (cb.onProgress) {
+          cb.onProgress(progress);
+        }
+      }
+    };
+
+    const intent = this.journal.getPendingIntent();
+    if (!intent || intent.id !== intentId) {
+      throw new Error(`No pending legacy send intent found matching id ${intentId}`);
+    }
+
+    if (intent.phase === "failed") {
+      throw new Error(`Consolidation intent ${intentId} has failed`);
+    }
+
+    const gasPrice = await this.getGasPrice();
+    const singleTransferFee = this.standardGasLimit * gasPrice;
+    const deliveryGas = this.standardGasLimit * gasPrice;
+    const totalConsolidationFeePaid =
+      BigInt(intent.consolidationTxHashes.length) * singleTransferFee;
+
+    // Check if the drain transaction was already broadcasted and mined
+    if (intent.drainTxHash) {
+      try {
+        const receipt = await this.provider.getTransactionReceipt(intent.drainTxHash);
+        if (receipt && receipt.status !== 0) {
+          intent.phase = "completed";
+          intent.updatedAtMs = Date.now();
+          await this.journal.setPendingIntent(intent);
+          await this.journal.clearPendingIntent();
+          return {
+            txHash: intent.drainTxHash,
+            intermediateTxHashes: intent.consolidationTxHashes,
+            totalValueSent: BigInt(intent.targetValueWei),
+            totalFeePaid: totalConsolidationFeePaid + deliveryGas,
+          };
+        }
+      } catch {
+        // Fall through to re-checking balance
+      }
+    }
+
+    const startTime = Date.now();
+    if (intent.phase === "consolidating") {
+      for (const txHash of intent.consolidationTxHashes) {
+        let receipt: any = null;
+        while (!receipt) {
+          if (Date.now() - startTime > this.pollTimeoutMs) {
+            intent.phase = "failed";
+            intent.updatedAtMs = Date.now();
+            await this.journal.setPendingIntent(intent);
+            throw new Error(`Consolidation transaction ${txHash} timed out waiting for confirmation`);
+          }
+          try {
+            receipt = await this.provider.getTransactionReceipt(txHash);
+          } catch {
+            receipt = null;
+          }
+          if (!receipt) {
+            await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
+          }
+        }
+        if (receipt.status === 0) {
+          intent.phase = "failed";
+          intent.updatedAtMs = Date.now();
+          await this.journal.setPendingIntent(intent);
+          throw new Error(`Consolidation transaction ${txHash} reverted on-chain`);
+        }
+      }
+
+      intent.phase = "consolidated";
+      intent.updatedAtMs = Date.now();
+      await this.journal.setPendingIntent(intent);
+    }
+
+    // Phase 2 Drain from leader/staging account to recipient
+    const stagingWallet = new Wallet(intent.stagingPrivateKey, this.provider);
+    const stagingBalance = await this.provider.getBalance(stagingWallet.address);
+
+    if (stagingBalance <= deliveryGas) {
+      throw new Error(
+        `Staging account ${stagingWallet.address} has insufficient balance (${stagingBalance}) to drain`
+      );
+    }
+
+    const targetValue = BigInt(intent.targetValueWei);
     const actualDrainValue =
-      leaderBalance >= value + actualDeliveryGas
-        ? value
-        : leaderBalance > actualDeliveryGas
-        ? leaderBalance - actualDeliveryGas
-        : 0n;
+      stagingBalance >= targetValue + deliveryGas
+        ? targetValue
+        : stagingBalance - deliveryGas;
 
     if (actualDrainValue <= 0n) {
       throw new Error("Leader account balance is insufficient to cover delivery gas fee");
     }
 
     const drainTxRequest = {
-      to: recipient.raw,
+      to: intent.recipientAddress,
       value: actualDrainValue,
       gasLimit: this.standardGasLimit,
     };
 
-    const populated = await leaderWallet.populateTransaction(drainTxRequest);
-    const signedRaw = await leaderWallet.signTransaction(populated);
+    const populated = await stagingWallet.populateTransaction(drainTxRequest);
+    const signedRaw = await stagingWallet.signTransaction(populated);
     const drainTxHash = keccak256(signedRaw);
 
-    if (onSigned) {
-      await onSigned({ txHash: drainTxHash });
-    }
+    await notifySigned({ txHash: drainTxHash });
 
     intent.phase = "draining";
     intent.drainTxHash = drainTxHash;
     intent.updatedAtMs = Date.now();
     await this.journal.setPendingIntent(intent);
 
-    onProgress?.({
+    notifyProgress({
       status: {
         stage: "draining",
-        stagingAddress: leader.address,
+        stagingAddress: stagingWallet.address,
         drainTxHash,
       },
       message: `Broadcasting final transfer to destination address`,
@@ -482,13 +671,13 @@ export class EvmLegacyConsolidator {
       txHash: drainTxHash,
       spentInputs: [
         {
-          address: leader.address,
+          address: stagingWallet.address,
           valueWei: actualDrainValue.toString(),
         },
       ],
       createdOutputs: [
         {
-          address: recipient.raw,
+          address: intent.recipientAddress,
           valueWei: actualDrainValue.toString(),
         },
       ],
@@ -507,11 +696,11 @@ export class EvmLegacyConsolidator {
       }
     }
 
-    intent.phase = "confirmed";
+    intent.phase = "completed";
     intent.updatedAtMs = Date.now();
     await this.journal.setPendingIntent(intent);
 
-    onProgress?.({
+    notifyProgress({
       status: {
         stage: "confirmed",
         txHash: drainTxHash,
@@ -525,7 +714,7 @@ export class EvmLegacyConsolidator {
       txHash: drainTxHash,
       intermediateTxHashes: intent.consolidationTxHashes,
       totalValueSent: actualDrainValue,
-      totalFeePaid: totalConsolidationFeePaid + actualDeliveryGas,
+      totalFeePaid: totalConsolidationFeePaid + deliveryGas,
     };
   }
 
@@ -544,87 +733,6 @@ export class EvmLegacyConsolidator {
     if (!pending) {
       throw new Error("No pending legacy send intent to resume");
     }
-
-    const stagingWallet = new Wallet(pending.stagingPrivateKey, this.provider);
-    const gasPrice = await this.getGasPrice();
-    const deliveryGas = this.standardGasLimit * gasPrice;
-
-    // Check if the drain transaction was already broadcasted and mined
-    if (pending.drainTxHash) {
-      try {
-        const receipt = await this.provider.getTransactionReceipt(pending.drainTxHash);
-        if (receipt && receipt.status !== 0) {
-          await this.journal.clearPendingIntent();
-          return {
-            txHash: pending.drainTxHash,
-            intermediateTxHashes: pending.consolidationTxHashes,
-            totalValueSent: BigInt(pending.targetValueWei),
-            totalFeePaid: deliveryGas,
-          };
-        }
-      } catch {
-        // Fall through to re-checking balance
-      }
-    }
-
-    const stagingBalance = await this.provider.getBalance(stagingWallet.address);
-    if (stagingBalance <= deliveryGas) {
-      throw new Error(
-        `Staging account ${stagingWallet.address} has insufficient balance (${stagingBalance}) to drain`
-      );
-    }
-
-    const targetValue = BigInt(pending.targetValueWei);
-    const drainValue =
-      stagingBalance >= targetValue + deliveryGas ? targetValue : stagingBalance - deliveryGas;
-
-    const drainResponse = await stagingWallet.sendTransaction({
-      to: pending.recipientAddress,
-      value: drainValue,
-      gasLimit: this.standardGasLimit,
-    });
-
-    await drainResponse.wait?.();
-
-    const drainSyncItem: WalletSyncItem = {
-      type: "wallet-sync",
-      direction: "out",
-      chainIdentifier: this.chainIdentifier,
-      txHash: drainResponse.hash,
-      spentInputs: [
-        {
-          address: stagingWallet.address,
-          valueWei: drainValue.toString(),
-        },
-      ],
-      createdOutputs: [
-        {
-          address: pending.recipientAddress,
-          valueWei: drainValue.toString(),
-        },
-      ],
-      timestamp: Date.now(),
-    };
-
-    if (this.inventory) {
-      this.inventory.processSyncTransaction(drainSyncItem);
-    }
-
-    if (this.onSyncTransaction) {
-      try {
-        await this.onSyncTransaction(drainSyncItem);
-      } catch (err) {
-        console.warn("Could not dispatch resumed drain sync item:", err);
-      }
-    }
-
-    await this.journal.clearPendingIntent();
-
-    return {
-      txHash: drainResponse.hash,
-      intermediateTxHashes: pending.consolidationTxHashes,
-      totalValueSent: drainValue,
-      totalFeePaid: deliveryGas,
-    };
+    return this.resumeConsolidation(pending.id);
   }
 }

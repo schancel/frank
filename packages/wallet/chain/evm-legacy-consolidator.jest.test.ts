@@ -576,4 +576,277 @@ describe("EvmLegacyConsolidator", () => {
       expect(resumedSyncItems[0].type).toBe("wallet-sync");
     });
   });
+
+  describe("asynchronous multi-account consolidation pipeline (Issue #1217)", () => {
+    it("dispatches non-blocking peer fan-ins and returns optimistic handle without freezing caller", async () => {
+      const balancePeer = 400_000_000_000_000n;
+      const balanceLeader = 800_000_000_000_000n;
+      const targetValue = 1_000_000_000_000_000n;
+
+      const mockProvider = createMockProvider({
+        [wallet1.address]: balancePeer,
+        [wallet2.address]: balanceLeader,
+      });
+
+      // Initially receipts are not mined (null)
+      mockProvider.getTransactionReceipt = jest.fn().mockResolvedValue(null);
+
+      const journal = new InMemoryLegacySendJournalStore();
+      const progressUpdates: LegacySendProgress[] = [];
+
+      const consolidator = new EvmLegacyConsolidator({
+        provider: mockProvider,
+        journal,
+        standardGasLimit,
+        pollIntervalMs: 10,
+        pollTimeoutMs: 100,
+        chainIdentifier: "monad-testnet",
+        getFundingAccounts: async () => [
+          {
+            address: wallet1.address,
+            balanceWei: balancePeer,
+            privateKey: wallet1.privateKey,
+          },
+          {
+            address: wallet2.address,
+            balanceWei: balanceLeader,
+            privateKey: wallet2.privateKey,
+          },
+        ],
+      });
+
+      // Call sendLegacy with waitForDrain: false (non-blocking)
+      const result = await consolidator.sendLegacy({
+        recipient: { raw: recipientAddress },
+        value: targetValue,
+        onProgress: (p) => progressUpdates.push(p),
+        waitForDrain: false,
+      });
+
+      // Caller is NOT frozen: returns immediately with optimistic handle
+      expect(result.txHash).toBeDefined();
+      expect(result.intermediateTxHashes?.length).toBe(1);
+      expect(result.totalValueSent).toBe(targetValue);
+
+      // Peer fan-in was broadcast to the mempool
+      expect(mockProvider.broadcastTransaction).toHaveBeenCalledTimes(1);
+
+      // Journal has the pending intent saved as phase 'consolidating'
+      const pending = journal.getPendingIntent();
+      expect(pending).toBeDefined();
+      expect(pending?.phase).toBe("consolidating");
+      expect(pending?.stagingAddress).toBe(wallet2.address);
+      expect(pending?.consolidationTxHashes).toEqual(result.intermediateTxHashes);
+
+      // Drain transaction has NOT occurred yet
+      expect(pending?.drainTxHash).toBeUndefined();
+      const stages = progressUpdates.map((p) => p.status.stage);
+      expect(stages).toContain("consolidating");
+      expect(stages).not.toContain("draining");
+      expect(stages).not.toContain("confirmed");
+    });
+
+    it("resumes consolidation and delivers final transfer once fan-in transactions confirm", async () => {
+      const balancePeer = 400_000_000_000_000n;
+      const balanceLeader = 800_000_000_000_000n;
+      const targetValue = 1_000_000_000_000_000n;
+
+      const mockProvider = createMockProvider({
+        [wallet1.address]: balancePeer,
+        [wallet2.address]: balanceLeader,
+      });
+
+      const journal = new InMemoryLegacySendJournalStore();
+      const progressUpdates: LegacySendProgress[] = [];
+      const onSignedMock = jest.fn();
+      const syncItems: any[] = [];
+
+      // Start with pending fan-in tx in mempool
+      let fanInMined = false;
+      mockProvider.getTransactionReceipt = jest.fn().mockImplementation(async (hash: string) => {
+        if (!fanInMined) return null;
+        return { status: 1, hash };
+      });
+
+      const consolidator = new EvmLegacyConsolidator({
+        provider: mockProvider,
+        journal,
+        standardGasLimit,
+        pollIntervalMs: 10,
+        chainIdentifier: "monad-testnet",
+        getFundingAccounts: async () => [
+          {
+            address: wallet1.address,
+            balanceWei: balancePeer,
+            privateKey: wallet1.privateKey,
+          },
+          {
+            address: wallet2.address,
+            balanceWei: balanceLeader,
+            privateKey: wallet2.privateKey,
+          },
+        ],
+        onSyncTransaction: async (item) => {
+          syncItems.push(item);
+        },
+      });
+
+      // 1. Non-blocking dispatch
+      const dispatchResult = await consolidator.sendLegacy({
+        recipient: { raw: recipientAddress },
+        value: targetValue,
+        onProgress: (p) => progressUpdates.push(p),
+        async: true,
+      });
+
+      expect(dispatchResult.intermediateTxHashes?.length).toBe(1);
+      const pendingIntent = journal.getPendingIntent()!;
+      expect(pendingIntent.phase).toBe("consolidating");
+
+      // 2. Peer fan-in confirms on-chain
+      fanInMined = true;
+      mockProvider._setBalance(wallet2.address, targetValue + singleTransferFee);
+
+      // 3. Resume consolidation
+      const finalResult = await consolidator.resumeConsolidation(pendingIntent.id, {
+        onProgress: (p) => progressUpdates.push(p),
+        onSigned: onSignedMock,
+      });
+
+      // Final delivery executed by leader
+      expect(finalResult.txHash).toBeDefined();
+      expect(finalResult.totalValueSent).toBe(targetValue);
+      expect(onSignedMock).toHaveBeenCalledWith(
+        expect.objectContaining({ txHash: finalResult.txHash })
+      );
+
+      // Journal is cleared after completion
+      expect(journal.getPendingIntent()).toBeUndefined();
+
+      // Drain sync item was emitted
+      expect(syncItems.length).toBe(2);
+      expect(syncItems[1].txHash).toBe(finalResult.txHash);
+      expect(syncItems[1].spentInputs[0].address).toBe(wallet2.address);
+      expect(syncItems[1].createdOutputs[0].address).toBe(recipientAddress);
+
+      // All progress stages observed
+      const stages = progressUpdates.map((p) => p.status.stage);
+      expect(stages).toContain("consolidating");
+      expect(stages).toContain("draining");
+      expect(stages).toContain("confirmed");
+    });
+
+    it("resumes an interrupted consolidating intent via resumeLegacySend", async () => {
+      const targetValue = 600_000_000_000_000n;
+      const stagingWallet = Wallet.createRandom();
+
+      const mockProvider = createMockProvider({
+        [stagingWallet.address]: targetValue + singleTransferFee,
+      });
+
+      const journal = new InMemoryLegacySendJournalStore();
+      const intentId = "intent-consolidating-interrupt";
+      await journal.setPendingIntent({
+        id: intentId,
+        recipientAddress,
+        targetValueWei: targetValue.toString(),
+        stagingAddress: stagingWallet.address,
+        stagingPrivateKey: stagingWallet.privateKey,
+        inputAddresses: [wallet1.address, stagingWallet.address],
+        phase: "consolidating",
+        consolidationTxHashes: ["0xconsolidation123"],
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+      });
+
+      const consolidator = new EvmLegacyConsolidator({
+        provider: mockProvider,
+        journal,
+        standardGasLimit,
+        pollIntervalMs: 10,
+        chainIdentifier: "monad-testnet",
+      });
+
+      const result = await consolidator.resumeLegacySend();
+      expect(result.txHash).toBeDefined();
+      expect(result.totalValueSent).toBe(targetValue);
+      expect(journal.getPendingIntent()).toBeUndefined();
+    });
+
+    it("marks intent as failed and throws error when peer fan-in transaction reverts on-chain", async () => {
+      const stagingWallet = Wallet.createRandom();
+      const mockProvider = createMockProvider();
+      // Reverted transaction receipt
+      mockProvider.getTransactionReceipt = jest.fn().mockResolvedValue({ status: 0 });
+
+      const journal = new InMemoryLegacySendJournalStore();
+      const intentId = "intent-failed-revert";
+      await journal.setPendingIntent({
+        id: intentId,
+        recipientAddress,
+        targetValueWei: "500000000000000",
+        stagingAddress: stagingWallet.address,
+        stagingPrivateKey: stagingWallet.privateKey,
+        inputAddresses: [wallet1.address, stagingWallet.address],
+        phase: "consolidating",
+        consolidationTxHashes: ["0xfailed_tx"],
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+      });
+
+      const consolidator = new EvmLegacyConsolidator({
+        provider: mockProvider,
+        journal,
+        pollIntervalMs: 10,
+      });
+
+      await expect(consolidator.resumeConsolidation(intentId)).rejects.toThrow(
+        "Consolidation transaction 0xfailed_tx reverted on-chain"
+      );
+
+      const pending = journal.getPendingIntent();
+      expect(pending?.phase).toBe("failed");
+    });
+
+    it("deduplicates concurrent calls to resumeConsolidation for the same intent", async () => {
+      const stagingWallet = Wallet.createRandom();
+      const targetValue = 500_000_000_000_000n;
+      const mockProvider = createMockProvider({
+        [stagingWallet.address]: targetValue + singleTransferFee,
+      });
+
+      const journal = new InMemoryLegacySendJournalStore();
+      const intentId = "intent-concurrent-dedup";
+      await journal.setPendingIntent({
+        id: intentId,
+        recipientAddress,
+        targetValueWei: targetValue.toString(),
+        stagingAddress: stagingWallet.address,
+        stagingPrivateKey: stagingWallet.privateKey,
+        inputAddresses: [wallet1.address],
+        phase: "consolidated",
+        consolidationTxHashes: ["0xaaa"],
+        createdAtMs: Date.now(),
+        updatedAtMs: Date.now(),
+      });
+
+      const consolidator = new EvmLegacyConsolidator({
+        provider: mockProvider,
+        journal,
+        standardGasLimit,
+      });
+
+      // Run two resumeConsolidation calls concurrently
+      const [res1, res2] = await Promise.all([
+        consolidator.resumeConsolidation(intentId),
+        consolidator.resumeConsolidation(intentId),
+      ]);
+
+      expect(res1.txHash).toBe(res2.txHash);
+      expect(res1.totalValueSent).toBe(targetValue);
+      // Ensure provider broadcastTransaction was called only once for the drain
+      expect(mockProvider.broadcastTransaction).toHaveBeenCalledTimes(1);
+      expect(journal.getPendingIntent()).toBeUndefined();
+    });
+  });
 });

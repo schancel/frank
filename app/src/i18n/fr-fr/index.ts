@@ -355,7 +355,7 @@ export default {
     showSeed: 'Afficher la phrase de récupération',
     confirmSeed: 'Confirmer la phrase de récupération',
     balanceLoading: 'Chargement du solde…',
-    balanceUnavailable: 'Solde indisponible. Nouvelle tentative.',
+    balanceUnavailable: 'Solde indisponible.',
     balanceStale: '{balance} (dernière valeur connue)',
     failedLoadAddress: 'Échec du chargement de l’adresse du portefeuille Monad',
     unableCopyAddress: 'Impossible de copier l’adresse Monad',

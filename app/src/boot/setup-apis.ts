@@ -1,8 +1,9 @@
 import { boot } from 'quasar/wrappers'
+import { Quasar } from 'quasar'
 import { reactive, watch } from 'vue'
 import { setStartupRestoration } from './startup-state'
 import { store as messageStore } from '../adapters/level-message-store'
-import { i18n } from './i18n'
+import { applyLocale } from '../utils/apply-locale'
 import { defaultLocale, messages } from '../i18n'
 import { useWalletStore } from '../stores/wallet'
 import { useProfileStore } from '../stores/my-profile'
@@ -17,7 +18,7 @@ import { accountSession, accountStatus } from '../accounts/session'
 export default boot(async ({ app }) => {
   const status = reactive({ loaded: false, setup: false })
   app.config.globalProperties.$status = status
-  i18n.global.locale = defaultLocale
+  applyLocale({ $q: Quasar, locale: defaultLocale })
   try {
     // Wallet inspection remains first and never hydrates secrets.
     await useWalletStore().restored
@@ -47,7 +48,7 @@ export default boot(async ({ app }) => {
     if (results[2]) {
       const locale = useAppearanceStore().locale
       if (Object.prototype.hasOwnProperty.call(messages, locale)) {
-        i18n.global.locale = locale as keyof typeof messages
+        applyLocale({ $q: Quasar, locale })
       }
     }
     if (results.some(success => !success)) {

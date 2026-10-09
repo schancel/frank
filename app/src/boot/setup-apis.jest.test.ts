@@ -79,11 +79,18 @@ jest.mock('src/stores/forum', () => ({ useForumStore: restoredStore }))
 jest.mock('src/stores/chats', () => ({ useChatStore: restoredStore }))
 jest.mock('src/stores/topics', () => ({ useTopicStore: restoredStore }))
 
+import { Quasar } from 'quasar'
 import setupApis from './setup-apis'
 import { accountSession } from '../accounts/session'
 import { startupRestoration } from './startup-state'
 
 describe('setup-apis in Monad mode', () => {
+  beforeEach(() => {
+    // This browser boot fixture resolves Quasar's SSR build under Jest.
+    jest.spyOn(Quasar.lang, 'set').mockImplementation(() => undefined)
+  })
+  afterEach(() => jest.restoreAllMocks())
+
   it('propagates account initialization errors after successful restoration', async () => {
     const failure = new Error('account initialization failed')
     jest.mocked(accountSession.initialize).mockRejectedValueOnce(failure)

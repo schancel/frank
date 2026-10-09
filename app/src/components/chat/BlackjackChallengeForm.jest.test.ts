@@ -78,8 +78,14 @@ describe('BlackjackChallengeForm', () => {
     mockBalance.value = HAND_FEE_RESERVE_WEI + 4_000n
   })
 
+  it('starts on the player role, the one a dealer bot can answer', () => {
+    expect((mountForm().vm as any).role).toBe('player')
+  })
+
   it('lets a dealer offer at most a quarter of its spendable balance', async () => {
     const w = mountForm()
+    ;(w.vm as any).role = 'dealer'
+    await w.vm.$nextTick()
     expect(
       w.find('[data-testid="blackjack-challenge-limit"]').text(),
     ).toContain('1000 MON')

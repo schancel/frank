@@ -375,7 +375,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       item: handItem,
       from: msgCtx.peerAddress,
       to: ctx.address,
-      stampWei: (msgCtx as any).stampValueWei ?? 0n,
+      stampWei: msgCtx.stampValueWei,
       digest: msgCtx.payloadDigest,
     };
     events.push(incomingEvent);

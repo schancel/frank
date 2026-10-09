@@ -59,6 +59,10 @@ export interface BotMessageContext {
   readonly timestampMs: number;
   readonly payloadDigest: string;
   readonly items: MessageItem[];
+  /** Wei paid to this bot with the message: the wallet's `DirectMessageReceived.stampValueWei`,
+   * read from the stamp payments delivered with it, never a number the message's content states.
+   * `0n` when the wallet reported no payment. It is not proof the transfers have confirmed. */
+  readonly stampValueWei: bigint;
   reply(
     items: MessageItem[],
     options?: { stampValueWei?: bigint }

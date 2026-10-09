@@ -723,13 +723,22 @@ export class FrankBotHost {
           wallet: instance.wallet,
           sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
         });
-        const accepted: { identity: InboundIdentity; items: MessageItem[] }[] =
-          [];
+        const accepted: {
+          identity: InboundIdentity;
+          items: MessageItem[];
+          stampValueWei: bigint;
+        }[] = [];
         for (const msg of messages) {
           try {
             accepted.push({
               identity: inboundIdentity(msg, instance.operations.owner),
               items: structuredClone(msg.items),
+              // Only what the wallet read from the delivered stamp payments; anything else is
+              // "nothing was paid", never a value taken from the message's own content.
+              stampValueWei:
+                typeof msg.stampValueWei === "bigint" && msg.stampValueWei > 0n
+                  ? msg.stampValueWei
+                  : 0n,
             });
           } catch {
             console.warn(
@@ -800,7 +809,7 @@ export class FrankBotHost {
             )
               return;
             // The retained identity, not this fetch's relay time, is the invocation's.
-            await this.dispatch(instance, row, match.items);
+            await this.dispatch(instance, row, match);
           });
         }
         this.retryFirstSends(instance);
@@ -1186,7 +1195,7 @@ export class FrankBotHost {
   private async dispatch(
     instance: ActiveBotInstance,
     identity: InboundIdentity,
-    items: MessageItem[]
+    { items, stampValueWei }: { items: MessageItem[]; stampValueWei: bigint }
   ): Promise<void> {
     const replies: Promise<DirectMessageSendResult>[] = [];
     let accepting = true;
@@ -1276,6 +1285,7 @@ export class FrankBotHost {
       payloadDigest: identity.digest,
       timestampMs: identity.receivedTime,
       items,
+      stampValueWei,
       reply: boundReply,
     });
     let prepared: PreparedReply | undefined;

@@ -13,8 +13,8 @@ import frFR from '../../../i18n/fr-fr'
 import ChatMessageRaffle from './ChatMessageRaffle.vue'
 
 const BOT = '0xRaffleBot'
-const store: { chats: Record<string, { messages: any[] }> } = reactive({
-  chats: {},
+const store: { activeConversation: { messages: any[] } } = reactive({
+  activeConversation: { messages: [] },
 }) as any
 
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
@@ -102,11 +102,11 @@ async function mountAt(
   index = messages.length - 1,
   item?: any,
 ) {
-  store.chats = { [BOT]: { messages } }
+  store.activeConversation = { messages }
   const w = mount(ChatMessageRaffle, {
     props: {
       address: BOT,
-      item: item ?? store.chats[BOT].messages[index].items[0],
+      item: item ?? store.activeConversation.messages[index].items[0],
     },
     global: { stubs: quasarStubs, mocks: { $t } },
   })

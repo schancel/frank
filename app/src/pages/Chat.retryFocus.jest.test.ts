@@ -178,6 +178,7 @@ async function mountFailed(monad: boolean) {
   mockOriginalMessage = message
   const messages = reactive([message])
   mockChatStore = reactive({
+    conversations: {},
     chats: { [PEER]: { messages } },
     messages: { failed: message },
     getAcceptancePrice: () => 0,

@@ -17,7 +17,9 @@ jest.mock('pinia', () => ({
   storeToRefs: (store: object) => jest.requireActual('vue').toRefs(store),
 }))
 const mockChatStore = jest.requireActual('vue').reactive({
-  getSortedChatOrder: [{ address: 'addr1', totalUnreadMessages: 0 }],
+  getSortedChatOrder: [
+    { id: 'thread1', address: 'addr1', totalUnreadMessages: 0 },
+  ],
   setActiveConversation: jest.fn(),
   setActiveChat: jest.fn(),
 })
@@ -71,19 +73,19 @@ describe('ChatList closeDrawer', () => {
     mockPush.mockClear()
     mockChatStore.setActiveConversation.mockClear()
     mockChatStore.getSortedChatOrder = [
-      { address: 'addr1', totalUnreadMessages: 0 },
+      { id: 'thread1', address: 'addr1', totalUnreadMessages: 0 },
     ]
   })
 
   it.each([390, 800])('emits closeDrawer at %ipx (mobile)', async width => {
     const wrapper = await selectChatAt(width)
-    expect(mockPush).toHaveBeenCalledWith('/chat/addr1')
+    expect(mockPush).toHaveBeenCalledWith('/chat/thread1')
     expect(wrapper.emitted('closeDrawer')).toHaveLength(1)
   })
 
   it.each([801, 1024])('does not emit at %ipx (desktop)', async width => {
     const wrapper = await selectChatAt(width)
-    expect(mockPush).toHaveBeenCalledWith('/chat/addr1')
+    expect(mockPush).toHaveBeenCalledWith('/chat/thread1')
     expect(wrapper.emitted('closeDrawer')).toBeUndefined()
   })
 })

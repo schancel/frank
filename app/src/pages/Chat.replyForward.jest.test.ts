@@ -17,6 +17,7 @@ jest.mock('../utils/routes', () => ({
 
 jest.mock('../stores/chats', () => ({
   useChatStore: () => ({
+    conversations: {},
     chats: {
       [PEER]: {
         messages: [

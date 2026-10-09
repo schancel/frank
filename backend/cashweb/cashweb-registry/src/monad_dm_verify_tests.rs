@@ -534,3 +534,161 @@ fn exact_frame_and_index_commitments_are_distinct() {
         payment_commitment(&digest, 1)
     );
 }
+
+#[test]
+fn mixed_stamp_calls_preserve_errors_and_results_concurrently() {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Secp256k1<secp256k1_abc::All>>();
+    let v = corpus();
+    let network = v["network"].as_str().unwrap();
+    let key = AccountRef {
+        key_type: 1,
+        key_bytes: bytes(&v, "stamp_key"),
+    };
+    let e = bytes(&v, "ephemeral_point");
+    let x = bytes(&v, "shared_point");
+    let proof = bytes(&v, "proof");
+    let child = &v["destinations"][0];
+    let index = child["index"].as_u64().unwrap() as u32;
+    let expected = canonical_stamp_destination(network, &key, &x, index).unwrap();
+    assert_eq!(hex::encode(expected.1), child["address"].as_str().unwrap());
+    let mut zero_scalar = proof.clone();
+    zero_scalar[..32].fill(0);
+    let mut bad_point = x.clone();
+    bad_point[0] = 4;
+    let mut changed_proof = proof.clone();
+    changed_proof[63] ^= 1;
+    let cases = [
+        (network, &x, &proof, Ok(())),
+        ("other", &x, &proof, Err(CanonicalStampError::Cryptographic)),
+        (
+            "Invalid network",
+            &x,
+            &proof,
+            Err(CanonicalStampError::Encoding),
+        ),
+        (
+            network,
+            &bad_point,
+            &proof,
+            Err(CanonicalStampError::Encoding),
+        ),
+        (
+            network,
+            &x,
+            &zero_scalar,
+            Err(CanonicalStampError::Encoding),
+        ),
+        (
+            network,
+            &x,
+            &changed_proof,
+            Err(CanonicalStampError::Cryptographic),
+        ),
+    ];
+    let check_calls = || {
+        for (network, shared, proof, expected) in &cases {
+            assert_eq!(
+                verify_canonical_stamp_proof(network, &key, &e, shared, proof),
+                *expected
+            );
+        }
+        assert_eq!(
+            canonical_stamp_destination(network, &key, &x, index),
+            Ok(expected)
+        );
+        assert_eq!(
+            canonical_stamp_destination(network, &key, &bad_point, index),
+            Err(CanonicalStampError::Encoding)
+        );
+        assert_eq!(
+            canonical_stamp_destination(network, &key, &x, 0x8000_0000),
+            Err(CanonicalStampError::Encoding)
+        );
+    };
+    check_calls();
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            let check_calls = &check_calls;
+            scope.spawn(move || {
+                for _ in 0..8 {
+                    check_calls();
+                }
+            });
+        }
+    });
+}
+
+/// Fixed, offline public-boundary workload; run alone in a fresh release test process.
+/// Setup/signing is outside timings. This measures local validation, not HTTP/mailbox latency.
+#[test]
+#[ignore = "manual before/after release measurement"]
+fn context_reuse_release_workload() {
+    use crate::monad_evm_tx::{recover_sender, test_support::signed_eip1559_tx};
+    use crate::monad_http::Address;
+    use bitcoinsuite_core::ecc::{Ecc, SecKey};
+    use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+    use std::{hint::black_box, time::Instant};
+
+    let v = corpus();
+    let network = v["network"].as_str().unwrap();
+    let key = AccountRef {
+        key_type: 1,
+        key_bytes: bytes(&v, "stamp_key"),
+    };
+    let e = bytes(&v, "ephemeral_point");
+    let x = bytes(&v, "shared_point");
+    let proof = bytes(&v, "proof");
+    let signer: SecKey = EccSecp256k1::default()
+        .seckey_from_array([0x42; 32])
+        .unwrap();
+    let (raw, sender) = signed_eip1559_tx(
+        &signer,
+        10143,
+        0,
+        Address([0x11; 20]),
+        10_000,
+        b"context-reuse",
+    );
+    let operations: [(&str, Box<dyn Fn()>); 3] = [
+        (
+            "proof",
+            Box::new(|| {
+                verify_canonical_stamp_proof(black_box(network), &key, &e, &x, &proof).unwrap();
+            }),
+        ),
+        (
+            "destination",
+            Box::new(|| {
+                black_box(canonical_stamp_destination(black_box(network), &key, &x, 0).unwrap());
+            }),
+        ),
+        (
+            "recovery",
+            Box::new(|| {
+                assert_eq!(recover_sender(black_box(&raw)).unwrap(), sender);
+            }),
+        ),
+    ];
+    let rounds: usize = std::env::var("FRANK_CONTEXT_BENCH_ROUNDS")
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(512);
+    assert!(rounds > 0);
+    println!("context-workload records=1 operations=3 rounds={rounds} samples=5 concurrency=1 pacing=unthrottled offline=true");
+    for (name, operation) in &operations {
+        let first = Instant::now();
+        operation();
+        println!("first operation={name} ns={}", first.elapsed().as_nanos());
+        for _ in 0..16 {
+            operation();
+        }
+        for sample in 0..5 {
+            let started = Instant::now();
+            for _ in 0..rounds {
+                operation();
+            }
+            let elapsed = started.elapsed();
+            println!("warm operation={name} sample={sample} total_ns={} ns_per_call={} calls_per_second={:.2}", elapsed.as_nanos(), elapsed.as_nanos() / rounds as u128, rounds as f64 / elapsed.as_secs_f64());
+        }
+    }
+}

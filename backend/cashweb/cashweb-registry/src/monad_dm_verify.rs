@@ -8,8 +8,12 @@ use frank_cbor::{
     verify_preview_directory_evidence, AccountRef, DirectMessageCryptoContext, PaymentMember,
     Timestamp, TypedPayload, ValidationResult,
 };
-use secp256k1_abc::{PublicKey, Secp256k1, SecretKey};
+use secp256k1_abc::{All, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
+
+// Immutable curve precomputation only; each call still validates its complete inputs.
+static STAMP_CONTEXT: OnceLock<Secp256k1<All>> = OnceLock::new();
 
 /// A failure in this deliberately partial verifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -76,20 +80,20 @@ pub fn verify_canonical_stamp_proof(
     SecretKey::from_slice(&proof[..32]).map_err(|_| CanonicalStampError::Encoding)?;
     let response =
         SecretKey::from_slice(&proof[32..]).map_err(|_| CanonicalStampError::Encoding)?;
-    let secp = Secp256k1::new();
+    let secp = STAMP_CONTEXT.get_or_init(Secp256k1::new);
     let mut one = [0u8; 32];
     one[31] = 1;
     let generator = PublicKey::from_secret_key(
-        &secp,
+        secp,
         &SecretKey::from_slice(&one).map_err(|_| CanonicalStampError::Encoding)?,
     );
     let subtract = |mut base: PublicKey, mut other: PublicKey| -> Result<PublicKey> {
-        base.mul_assign(&secp, &proof[32..])
+        base.mul_assign(secp, &proof[32..])
             .map_err(|_| CanonicalStampError::Cryptographic)?;
         other
-            .mul_assign(&secp, &proof[..32])
+            .mul_assign(secp, &proof[..32])
             .map_err(|_| CanonicalStampError::Cryptographic)?;
-        other.negate_assign(&secp);
+        other.negate_assign(secp);
         base.combine(&other)
             .map_err(|_| CanonicalStampError::Cryptographic)
     };
@@ -123,7 +127,7 @@ pub fn canonical_stamp_destination(
     transcript.extend_from_slice(&child_index.to_be_bytes());
     let tweak = Sha256::digest(&transcript);
     SecretKey::from_slice(&tweak).map_err(|_| CanonicalStampError::Cryptographic)?;
-    p.mul_assign(&Secp256k1::new(), &tweak)
+    p.mul_assign(STAMP_CONTEXT.get_or_init(Secp256k1::new), &tweak)
         .map_err(|_| CanonicalStampError::Cryptographic)?;
     let encoded = p.serialize();
     let address =

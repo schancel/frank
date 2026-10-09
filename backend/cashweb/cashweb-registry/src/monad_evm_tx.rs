@@ -47,7 +47,11 @@ use bitcoinsuite_core::ecc::Ecc;
 use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
 use rlp::{Rlp, RlpStream};
 use sha3::{Digest, Keccak256};
+use std::sync::OnceLock;
 use thiserror::Error;
+
+// Shared immutable recovery context, not a cache of transaction validation results.
+static RECOVERY_CONTEXT: OnceLock<EccSecp256k1> = OnceLock::new();
 
 use crate::monad_http::Address;
 
@@ -337,7 +341,7 @@ fn recover_sender_and_chain_id(raw_tx: &[u8]) -> Result<(Address, Option<u64>), 
     compact_sig[..32].copy_from_slice(&signing_material.r);
     compact_sig[32..].copy_from_slice(&signing_material.s);
 
-    let ecc = EccSecp256k1::default();
+    let ecc = RECOVERY_CONTEXT.get_or_init(EccSecp256k1::default);
     let pubkey = ecc
         .recover_sig(&compact_sig, signing_material.recovery_id, digest.into())
         .map_err(|err| EvmTxError::RecoveryFailed(format!("{err:?}")))?;
@@ -581,5 +585,70 @@ mod tests {
             recover_sender(&raw_tx),
             Err(EvmTxError::WrongLegacyItemCount(3)),
         );
+    }
+
+    #[test]
+    fn mixed_sender_recovery_preserves_serial_results_concurrently() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<EccSecp256k1>();
+        let signer = seckey(0x42);
+        let to = Address([0x11; 20]);
+        let (typed, sender) = test_support::signed_eip1559_tx(&signer, 10143, 0, to, 1, b"mixed");
+        let legacy = test_support::signed_unprotected_legacy_tx(&signer, 1, to, 2, b"legacy");
+        assert_eq!(recover_sender(&legacy), Ok(sender));
+        assert_eq!(recover_sender(&typed), Ok(sender));
+        let change_field = |index: usize, value: &[u8]| {
+            let rlp = Rlp::new(&typed[1..]);
+            let mut altered = RlpStream::new_list(12);
+            for field in 0..12 {
+                if field == index {
+                    altered.append(&value);
+                } else {
+                    altered.append_raw(rlp.at(field).unwrap().as_raw(), 1);
+                }
+            }
+            let mut raw = vec![EIP1559_TYPE];
+            raw.extend_from_slice(&altered.out());
+            raw
+        };
+        let invalid_recovery = change_field(9, &[4]);
+        let invalid_scalar = change_field(10, &[0xff; 32]);
+        for raw in [&invalid_recovery, &invalid_scalar] {
+            assert!(matches!(
+                recover_sender(raw),
+                Err(EvmTxError::RecoveryFailed(_))
+            ));
+        }
+        let oversized_scalar = change_field(11, &[1; 33]);
+        assert!(matches!(
+            recover_sender(&oversized_scalar),
+            Err(EvmTxError::SignatureComponentTooLong { .. })
+        ));
+        let cases = [
+            legacy,
+            typed,
+            invalid_recovery,
+            invalid_scalar,
+            oversized_scalar,
+            vec![],
+            vec![0x01, 0xc0],
+        ];
+        let serial: Vec<_> = cases
+            .iter()
+            .map(|raw| decode_signed_transaction(raw))
+            .collect();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let cases = &cases;
+                let serial = &serial;
+                scope.spawn(move || {
+                    for _ in 0..8 {
+                        for (raw, expected) in cases.iter().zip(serial) {
+                            assert_eq!(&decode_signed_transaction(raw), expected);
+                        }
+                    }
+                });
+            }
+        });
     }
 }

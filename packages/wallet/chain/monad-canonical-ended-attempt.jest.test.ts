@@ -38,6 +38,7 @@ import {
   MonadStampPendingAttemptError,
   MonadStampTerminalError,
 } from '../monad-stamp-client'
+import { LevelCanonicalStampAttemptJournal } from '../storage/stamp-attempt-journal'
 import { isDirectMessageNotAttempted } from './active-chain'
 import {
   CanonicalRecipientUndeliverableError,
@@ -495,43 +496,60 @@ describe('a paid message the relay has ended (#1323)', () => {
   })
 
   // The new steady state: every message delivered after an ended one stays in the journal behind
-  // it until the ended attempt is resolved, and its link is correlated on every settle. That is
-  // local work only: no finished record is ever handed to the relay again. The local work is not
-  // small: each settle looks every held record up by scanning the journal, so a send gets slower
-  // with every message delivered behind the ended attempt (this test's own timeout reflects it).
-  it('after one ended attempt and 25 delivered messages, a send makes one relay request, for its own payment set only', async () => {
-    const a = await messageA({ kind: 'ended', reason: 'expired' })
-    const elapsed: number[] = []
-    for (let n = 1; n <= 25; n++) {
-      const before = relayBodies.length
-      const started = Date.now()
-      const sent = await send(`message ${n}`)
-      elapsed.push(Date.now() - started)
-      expect(sent.error).toBeUndefined()
-      // Exactly one request, and it carries this message's own payment set.
-      expect(relayBodies).toHaveLength(before + 1)
-      expect(
-        relayBodies.filter(
-          r => identityOf(r) === identityOf(relayBodies[before]),
-        ),
-      ).toHaveLength(1)
-    }
-    expect(bobInbox).toHaveLength(25)
-    expect(journal().getAll()).toHaveLength(26)
-    expectAKept(a)
+  // it until the ended attempt is resolved. This pins what that costs a later send, as counts and
+  // not as time: one relay request, for its own payment set, and a number of journal searches
+  // (a search validates the prepared bytes and scans the journal) that does not grow with the
+  // finished records held. Before the by-reference lookup, with an ended attempt every settle
+  // searched the journal for each held record, so the count grew with every message delivered.
+  // The same must hold with no ended attempt, where nothing is held.
+  it.each([
+    ['one ended attempt and its finished records held', true],
+    ['no ended attempt', false],
+  ])(
+    'with %s, each of 10 sends makes one relay request and the same number of journal searches',
+    async (_name, ended) => {
+      const a = ended
+        ? await messageA({ kind: 'ended', reason: 'expired' })
+        : undefined
+      const searches = [
+        jest.spyOn(LevelCanonicalStampAttemptJournal.prototype, 'lookup'),
+        jest.spyOn(LevelCanonicalStampAttemptJournal.prototype, 'lookupIntent'),
+      ]
+      const searched = () =>
+        searches.reduce((sum, spy) => sum + spy.mock.calls.length, 0)
+      const perSend: number[] = []
+      for (let n = 1; n <= 10; n++) {
+        const requests = relayBodies.length
+        const before = searched()
+        const sent = await send(`message ${n}`)
+        expect(sent.error).toBeUndefined()
+        perSend.push(searched() - before)
+        // Exactly one request, and it carries this message's own payment set.
+        expect(relayBodies).toHaveLength(requests + 1)
+        expect(
+          relayBodies.filter(
+            r => identityOf(r) === identityOf(relayBodies[requests]),
+          ),
+        ).toHaveLength(1)
+      }
+      expect(bobInbox).toHaveLength(10)
+      // Held behind the ended attempt, or dropped as each one finishes.
+      expect(journal().getAll()).toHaveLength(ended ? 11 : 0)
+      expect(perSend[0]).toBeGreaterThan(0)
+      expect(new Set(perSend).size).toBe(1)
 
-    // Reconciling and one more send, with 25 finished records held: still nothing for them.
-    const before = relayBodies.length
-    expect(await reconcile(a.digest)).toBe('dead')
-    expect(relayBodies).toHaveLength(before)
-    await expectLaterMessageDelivered(a, 'message 26')
-    expect(relayBodies).toHaveLength(before + 1)
-    expect(new Set(relayBodies.map(identityOf)).size).toBe(relayBodies.length)
-    expectAKept(a)
-    // Measured when written: 1.1 s for the first send, rising steadily to 29.8 s for the 25th
-    // (without an ended attempt the same sends take 0.8 s rising to about 4 s).
-    expect(elapsed).toHaveLength(25)
-  }, 900_000)
+      // A reconcile with every finished record held: no request, and no more searches than one
+      // per unfinished link.
+      const requests = relayBodies.length
+      const before = searched()
+      if (a) expect(await reconcile(a.digest)).toBe('dead')
+      else expect(await reconcile('00'.repeat(32))).toBe('unknown')
+      expect(relayBodies).toHaveLength(requests)
+      expect(searched() - before).toBeLessThanOrEqual(ended ? 2 : 0)
+      expect(new Set(relayBodies.map(identityOf)).size).toBe(relayBodies.length)
+      if (a) expectAKept(a)
+    },
+  )
 
   // ---- pins: what the fix must not loosen ------------------------------------------------------
 

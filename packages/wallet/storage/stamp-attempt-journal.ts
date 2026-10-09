@@ -811,6 +811,55 @@ function samePrepared(
   )
 }
 
+const PREPARED_KEYS = [
+  'walletBindingId',
+  'accountId',
+  'chainId',
+  'network',
+  'senderSubject',
+  'recipientSubject',
+  'senderT1',
+  'recipientT1',
+  'payload',
+  'context',
+  'economicBinding',
+] as const
+const PREPARED_TEXT_KEYS = PREPARED_KEYS.slice(0, 8)
+
+/**
+ * Whether `candidate` is exactly the prepared attempt of a record this journal returned
+ * (`journalPrepared`): the same fields and no others, the same text values and the same bytes.
+ * The journal validated its own record when it was written and when it was opened, so a candidate
+ * that is exactly equal to it needs no second validation, and the journal holds one record per
+ * payload, so a scanning `lookup` of that candidate would return this record. A caller that
+ * already holds the record by its `attemptRef` uses this instead of the scan. False decides
+ * nothing: the caller must then use `lookup`, which also reports malformed and conflicting input.
+ */
+export function isJournalPrepared(
+  journalPrepared: CanonicalPreparedAttempt,
+  candidate: unknown,
+): boolean {
+  if (typeof candidate !== 'object' || candidate === null) return false
+  const value = candidate as Record<string, unknown>
+  const keys = Object.keys(value)
+  if (
+    keys.length !== PREPARED_KEYS.length ||
+    PREPARED_KEYS.some(
+      key => !Object.prototype.hasOwnProperty.call(value, key),
+    )
+  )
+    return false
+  for (const key of PREPARED_TEXT_KEYS)
+    if (typeof value[key] !== 'string' || value[key] !== journalPrepared[key])
+      return false
+  const bytes = ['payload', 'context', 'economicBinding'] as const
+  return bytes.every(
+    key =>
+      value[key] instanceof Uint8Array &&
+      compareBytes(value[key] as Uint8Array, journalPrepared[key]) === 0,
+  )
+}
+
 function assertReservations(
   value: unknown,
   count: number,
@@ -1182,11 +1231,38 @@ export class LevelCanonicalStampAttemptJournal {
     return result
   }
 
-  private publicRow(row: StoredCanonicalAttempt): CanonicalJournalAttempt {
+  /** Requests already restored from a stored row's body, by that row's stored request. Restoring
+   * is a pure function of the stored body and content type and its result is deeply immutable
+   * (frozen, and its bytes are handed out as copies), so every reader of the same stored row can
+   * share one. The stored text is compared on every use, and a body that does not restore is not
+   * kept: it is parsed, and refused, each time. Without this every read of the journal validated
+   * every held row again, including rows that are finished and only waiting to be dropped. */
+  private readonly restoredRequests = new WeakMap<
+    StoredCanonicalAttempt['request'],
+    { body: string; contentType: string; request: CanonicalExactRequest }
+  >()
+  private restoredRequest(row: StoredCanonicalAttempt): CanonicalExactRequest {
+    const known = this.restoredRequests.get(row.request)
+    if (
+      known !== undefined &&
+      known.body === row.request.body &&
+      known.contentType === row.request.contentType
+    )
+      return known.request
     const request = restoreCanonicalRequest({
       body: fromBase64(row.request.body, CANONICAL_MAX_BODY),
       contentType: row.request.contentType,
     })
+    this.restoredRequests.set(row.request, {
+      body: row.request.body,
+      contentType: row.request.contentType,
+      request,
+    })
+    return request
+  }
+
+  private publicRow(row: StoredCanonicalAttempt): CanonicalJournalAttempt {
+    const request = this.restoredRequest(row)
     return {
       version: 1,
       attemptRef: row.attemptRef,

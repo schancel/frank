@@ -1637,6 +1637,7 @@ import {
 } from '@frank/cashweb/relay/monad-mailbox-client'
 import type { MonadCanonicalWalletHandle } from './monad-wallet-handle'
 import {
+  isJournalPrepared,
   type CanonicalPreparedAttempt,
   type CanonicalJournalIntent,
   type CanonicalJournalAttempt,
@@ -1731,18 +1732,40 @@ export class MonadCanonicalStampClient {
       throw error
     }
   }
+  private preparedIsBound(prepared: CanonicalPreparedAttempt): boolean {
+    const bound = JSON.parse(this.wallet.walletState.canonicalBinding!.tuple)
+    return (
+      prepared.walletBindingId ===
+        this.wallet.walletState.canonicalBinding!.id &&
+      prepared.accountId === bound.main &&
+      prepared.network === bound.network &&
+      prepared.chainId === bound.chainId &&
+      `0x${prepared.senderSubject}` === bound.auth
+    )
+  }
   private assertPreparedOwner(prepared: CanonicalPreparedAttempt): void {
     this.assertOwner()
-    const bound = JSON.parse(this.wallet.walletState.canonicalBinding!.tuple)
-    if (
-      prepared.walletBindingId !==
-        this.wallet.walletState.canonicalBinding!.id ||
-      prepared.accountId !== bound.main ||
-      prepared.network !== bound.network ||
-      prepared.chainId !== bound.chainId ||
-      `0x${prepared.senderSubject}` !== bound.auth
-    )
+    if (!this.preparedIsBound(prepared))
       throw new Error('canonical-wallet:binding-mismatch')
+  }
+  /**
+   * `lookup(prepared)` for a link the caller has already paired, by `attemptRef`, with a record
+   * the journal returned in this same synchronous call, after `assertOwner`. When the link's
+   * prepared attempt is bound to this wallet and is exactly that record's, the answer is that
+   * record: nothing is searched and nothing is validated twice. In every other case the scanning
+   * `lookup` runs unchanged, so a foreign, malformed, conflicting or unknown link is refused,
+   * held or thrown for exactly as before.
+   */
+  private lookupLinked(
+    held: CanonicalWalletLookup,
+    prepared: CanonicalPreparedAttempt,
+  ): CanonicalWalletLookup | undefined {
+    if (
+      isJournalPrepared(held.record.prepared, prepared) &&
+      this.preparedIsBound(prepared)
+    )
+      return held
+    return this.lookup(prepared)
   }
   lookup(
     prepared: CanonicalPreparedAttempt,
@@ -1918,16 +1941,26 @@ export class MonadCanonicalStampClient {
     eligibility?: CanonicalWalletEligibility
   }[] {
     this.assertOwner()
-    const records = [...this.journal.getIntents(), ...this.journal.getAll()]
+    const held: CanonicalWalletLookup[] = [
+      ...this.journal
+        .getIntents()
+        .map(record => ({ kind: 'intent' as const, record })),
+      ...this.journal
+        .getAll()
+        .map(record => ({ kind: 'attempt' as const, record })),
+    ]
+    const records = held.map(item => item.record)
     const snapshot = this.snapshot()
-    const matches = records.map(record => {
+    const matches = held.map(item => {
+      const record = item.record
       const candidates = links.filter(
         link => link.attemptRef === record.attemptRef,
       )
       const link = candidates.length === 1 ? candidates[0] : undefined
       if (!link || link.consumerId !== record.consumerId)
         return { attemptRef: record.attemptRef, state: 'hold' as const }
-      const found = this.lookup(link.prepared)
+      // The record is in hand by reference; only an inexact link is searched for by its bytes.
+      const found = this.lookupLinked(item, link.prepared)
       if (!found || found.record.attemptRef !== record.attemptRef)
         return { attemptRef: record.attemptRef, state: 'hold' as const }
       return {
@@ -1935,6 +1968,7 @@ export class MonadCanonicalStampClient {
         state: 'terminal' as const,
         link,
         record,
+        found,
       }
     })
     // A missing/unknown workflow record blocks all economic replay, not only its own row.
@@ -1949,7 +1983,7 @@ export class MonadCanonicalStampClient {
       this.tokens.set(eligibility, {
         link: {
           ...m.link,
-          prepared: this.lookup(m.link.prepared)!.record.prepared,
+          prepared: m.found.record.prepared,
         },
         snapshot,
       })

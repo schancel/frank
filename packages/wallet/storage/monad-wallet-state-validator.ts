@@ -30,20 +30,54 @@ function normalizedHash(value: string): string {
   return value.toLowerCase().replace(/^0x/, '')
 }
 
-function parseSignedTransaction(rawTx: string, label: string): Transaction {
+/** What validation reads from a signed transaction. */
+interface SignedTransactionFacts {
+  readonly hash: string
+  readonly from: string
+  readonly to: string | null
+  readonly value: bigint
+  readonly data: string
+}
+
+/** The facts of raw transactions that already parsed as signed and canonical, by their exact
+ * text. They are a pure function of that text, and deriving them recovers the signer, which is
+ * costly; the whole wallet state is validated before every payment-journal operation, so without
+ * this every recorded transaction was recovered again each time. Failures are never kept: an
+ * invalid transaction is parsed, and refused with its own label, on every call. */
+const signedTransactionFacts = new Map<string, SignedTransactionFacts>()
+const MAX_SIGNED_TRANSACTION_FACTS = 8192
+
+function parseSignedTransaction(
+  rawTx: string,
+  label: string,
+): SignedTransactionFacts {
+  const known = signedTransactionFacts.get(rawTx)
+  if (known !== undefined) return known
   let transaction: Transaction
   try {
     transaction = Transaction.from(rawTx)
   } catch {
     throw new Error(`Invalid ${label} raw transaction`)
   }
-  if (transaction.hash === null || transaction.from === null) {
+  const hash = transaction.hash
+  const from = transaction.from
+  if (hash === null || from === null) {
     throw new Error(`Invalid ${label}: transaction is unsigned`)
   }
   if (!equalBytes(getBytes(transaction.serialized), getBytes(rawTx))) {
     throw new Error(`Invalid ${label}: non-canonical raw transaction`)
   }
-  return transaction
+  const facts: SignedTransactionFacts = Object.freeze({
+    hash,
+    from,
+    to: transaction.to,
+    value: transaction.value,
+    data: transaction.data,
+  })
+  if (signedTransactionFacts.size >= MAX_SIGNED_TRANSACTION_FACTS)
+    signedTransactionFacts.clear()
+  signedTransactionFacts.set(rawTx, facts)
+  return facts
 }
 
 function assertTransactionCheckpoint(params: {
@@ -53,7 +87,7 @@ function assertTransactionCheckpoint(params: {
   label: string
   sender?: string
   destination?: string
-}): Transaction {
+}): SignedTransactionFacts {
   const transaction = parseSignedTransaction(params.rawTx, params.label)
   if (
     normalizedHash(transaction.hash as string) !== normalizedHash(params.txHash)
@@ -77,6 +111,25 @@ function assertTransactionCheckpoint(params: {
     throw new Error(`Invalid ${params.label}: transaction destination mismatch`)
   }
   return transaction
+}
+
+/** Sub-account addresses already derived, per keyring. An address is a pure function of the
+ * keyring's root and path, which never change, and of the index; deriving one is an elliptic-curve
+ * operation, and every pool row is checked against its address on every validation. Only the
+ * public address is kept. A derivation that throws is not kept and throws again. */
+const derivedSubAccountAddresses = new WeakMap<MonadHdKeyring, Map<number, string>>()
+function subAccountAddress(keyring: MonadHdKeyring, index: number): string {
+  let known = derivedSubAccountAddresses.get(keyring)
+  if (known === undefined) {
+    known = new Map()
+    derivedSubAccountAddresses.set(keyring, known)
+  }
+  let address = known.get(index)
+  if (address === undefined) {
+    address = keyring.deriveSubAccount(index).address
+    known.set(index, address)
+  }
+  return address
 }
 
 /** Network-free semantic boundary for a complete wallet state. It is intentionally shared by
@@ -104,9 +157,7 @@ export function validateMonadWalletState(params: {
 
   for (const record of recordSnapshot) {
     assertSubAccountLifecycleMatrix(record)
-    const expectedAddress = params.subKeyring.deriveSubAccount(
-      record.index,
-    ).address
+    const expectedAddress = subAccountAddress(params.subKeyring, record.index)
     if (getAddress(record.address) !== getAddress(expectedAddress)) {
       throw new Error(
         `Sub-account address does not match keyring at index ${record.index}`,
@@ -211,7 +262,7 @@ export function validateMonadWalletState(params: {
       }).address
       if (
         getAddress(transaction.from as string) !==
-          params.subKeyring.deriveSubAccount(leaseIndex).address ||
+          subAccountAddress(params.subKeyring, leaseIndex) ||
         transaction.to === null ||
         getAddress(transaction.to) !== getAddress(destination) ||
         transaction.data.toLowerCase() !==

@@ -1029,29 +1029,41 @@ export class FrankBotHost {
       });
       return reply;
     };
-    const context: BotContext = {
+    const owner = instance.operations.owner;
+    const network = canonicalNetworkDescriptor(instance.context.networkTag);
+    if (
+      network.network !== owner.chainIdentifier ||
+      instance.context.subject !== owner.subject ||
+      getAddress(instance.context.address).toLowerCase() !== owner.address
+    )
+      throw new Error("Bot invocation context does not match admitted owner");
+    const context: BotContext = Object.freeze({
       ...instance.context,
+      address: owner.address,
+      subject: owner.subject,
+      networkTag: network.tag,
       sendMessage: send,
       sendDirectMessage: send,
+    });
+    const boundReply: BotMessageContext["reply"] = async (items, options) => {
+      const result = await send(
+        identity.peerAddress,
+        items,
+        identity.conversationId,
+        options
+      );
+      instance.loopGuard.recordReply(identity.peerAddress);
+      return result;
     };
-    const msgCtx: BotMessageContext = {
+    const msgCtx: BotMessageContext = Object.freeze({
       conversationId: identity.conversationId,
       peerAddress: identity.peerAddress,
       peerSubject: identity.peerSubject,
       payloadDigest: identity.digest,
       timestampMs: identity.receivedTime,
       items,
-      reply: async (items, options) => {
-        const result = await send(
-          identity.peerAddress,
-          items,
-          identity.conversationId,
-          options
-        );
-        instance.loopGuard.recordReply(identity.peerAddress);
-        return result;
-      },
-    };
+      reply: boundReply,
+    });
     try {
       let reply = await instance.definition.onMessage(msgCtx, context);
       if (!reply || !reply.length)
@@ -1060,7 +1072,7 @@ export class FrankBotHost {
             items,
             identity.peerAddress
           )) ?? undefined;
-      if (reply?.length) await msgCtx.reply(reply);
+      if (reply?.length) await boundReply(reply);
     } catch {
       failed = true;
     } finally {

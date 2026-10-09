@@ -952,7 +952,7 @@ export default {
     amount: 'Montant',
     estimatedFee: 'Frais estimés',
     feeUnavailable: 'Indisponible',
-    maxTotal: 'Total maximal',
+    maxTotal: 'Montant + frais de réseau',
     maxTotalWithFee: '{amount} {unit} (+ frais de réseau)',
     irreversibleWarning:
       'Les transactions sur la blockchain sont irréversibles. Vérifiez le destinataire et le réseau avant de confirmer.',

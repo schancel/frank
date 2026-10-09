@@ -14,54 +14,44 @@
       </q-avatar>
     </q-item-section>
     <q-item-section v-show="!compact">
-      <div class="row items-center no-wrap justify-between">
-        <div class="row items-center no-wrap ellipsis">
-          <q-icon
-            v-if="isEmail && isVerifiedGateway"
-            name="mail"
-            size="15px"
-            color="primary"
-            class="q-mr-xs"
-            data-testid="verified-email-icon"
-          />
-          <q-icon
-            v-else-if="isEmail && !isVerifiedGateway"
-            name="warning"
-            size="15px"
-            color="warning"
-            class="q-mr-xs"
-            data-testid="unverified-email-icon"
-          />
-          <q-badge
-            v-if="isEmail && !isVerifiedGateway"
-            color="warning"
-            text-color="dark"
-            outline
-            class="q-mr-xs text-caption"
-            data-testid="unverified-email-badge"
-          >
-            P2P
-          </q-badge>
-          <q-item-label lines="1" class="text-weight-medium text-body2">{{
-            subjectOrName
-          }}</q-item-label>
-          <account-badge
-            v-if="effectiveAddress && !conversation?.topic"
-            :address="effectiveAddress"
-            :name="subjectOrName"
-            :account-type="targetProfile?.accountType"
-            :bot-role="targetProfile?.botRole"
-            :is-bot="targetProfile?.isBot"
-          />
-        </div>
-        <q-item-label
-          caption
-          v-if="formattedTimestamp"
-          class="text-caption text-grey-6 q-ml-xs text-no-wrap"
-          data-testid="chat-timestamp"
+      <div class="row items-center no-wrap ellipsis">
+        <q-icon
+          v-if="isEmail && isVerifiedGateway"
+          name="mail"
+          size="15px"
+          color="primary"
+          class="q-mr-xs"
+          data-testid="verified-email-icon"
+        />
+        <q-icon
+          v-else-if="isEmail && !isVerifiedGateway"
+          name="warning"
+          size="15px"
+          color="warning"
+          class="q-mr-xs"
+          data-testid="unverified-email-icon"
+        />
+        <q-badge
+          v-if="isEmail && !isVerifiedGateway"
+          color="warning"
+          text-color="dark"
+          outline
+          class="q-mr-xs text-caption"
+          data-testid="unverified-email-badge"
         >
-          {{ formattedTimestamp }}
-        </q-item-label>
+          P2P
+        </q-badge>
+        <q-item-label lines="1" class="text-weight-medium text-body2 ellipsis">{{
+          subjectOrName
+        }}</q-item-label>
+        <account-badge
+          v-if="effectiveAddress && !conversation?.topic"
+          :address="effectiveAddress"
+          :name="subjectOrName"
+          :account-type="targetProfile?.accountType"
+          :bot-role="targetProfile?.botRole"
+          :is-bot="targetProfile?.isBot"
+        />
       </div>
       <div
         class="row items-center q-gutter-xs q-my-none participant-badges"
@@ -85,18 +75,20 @@
       </div>
       <q-item-label caption lines="2">{{ latestMessageBody }}</q-item-label>
     </q-item-section>
-    <q-item-section v-show="!compact" side>
-      <q-badge
-        v-if="!!effectiveValueUnread"
-        color="primary"
-        :label="effectiveValueUnread"
-        class="q-my-xs"
-      />
+    <q-item-section v-show="!compact" side class="column items-end justify-start q-gutter-xs">
+      <q-item-label
+        caption
+        v-if="formattedTimestamp"
+        class="text-caption text-grey-6 text-no-wrap"
+        data-testid="chat-timestamp"
+      >
+        {{ formattedTimestamp }}
+      </q-item-label>
       <q-badge
         v-if="!!effectiveNumUnread"
+        rounded
         color="secondary"
         :label="effectiveNumUnread"
-        class="q-my-xs"
       />
     </q-item-section>
 

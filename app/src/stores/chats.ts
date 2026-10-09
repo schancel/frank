@@ -999,9 +999,9 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         epoch: rawConv.epoch,
         address: rawConv.address || id,
         messages: Array.isArray(rawConv.messages) ? [...rawConv.messages] : [],
-        totalUnreadMessages: rawConv.totalUnreadMessages ?? 0,
-        totalUnreadValue: rawConv.totalUnreadValue ?? 0,
-        totalValue: rawConv.totalValue ?? 0,
+        totalUnreadMessages: 0,
+        totalUnreadValue: 0,
+        totalValue: 0,
         lastReceived: rawConv.lastReceived ?? 0,
         lastRead: rawConv.lastRead ?? 0,
         stampAmount: rawConv.stampAmount ?? defaultStampAmount,
@@ -1204,13 +1204,31 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     conv.totalValue += messageValue
   }
 
-  // Resort conversations
+  // Resort conversations and recompute deterministic accounting from deduplicated messages
   for (const conv of Object.values(conversations)) {
     conv.messages.sort(
       (messageA, messageB) =>
         (messageA.serverTime ?? messageA.receivedTime ?? 0) -
         (messageB.serverTime ?? messageB.receivedTime ?? 0),
     )
+    conv.totalUnreadMessages = 0
+    conv.totalUnreadValue = 0
+    conv.totalValue = 0
+    for (const msg of conv.messages) {
+      const val = accountedMessageValue(msg)
+      conv.totalValue += val
+      const msgTime = msg.serverTime ?? msg.receivedTime ?? 0
+      conv.lastReceived = Math.max(conv.lastReceived ?? 0, msgTime)
+      if (
+        !msg.outbound &&
+        conv.address !== chatState.activeChatAddr &&
+        conv.id !== chatState.activeConversationId &&
+        conv.lastRead < msgTime
+      ) {
+        conv.totalUnreadMessages += 1
+        conv.totalUnreadValue += val
+      }
+    }
   }
 
   // Auto-heal duplicate direct conversations across all hydration sources

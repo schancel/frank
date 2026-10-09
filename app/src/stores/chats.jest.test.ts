@@ -2988,5 +2988,60 @@ describe('stores/chats.ts (ticket #42)', () => {
       store.clearStampOverride(convId)
       expect(store.getStampOverrideWei(convId)).toBeUndefined()
     })
+
+    it('heals corrupted or stale accumulated unread counts and values during hydration', async () => {
+      const convId = 'conv-stale-counts'
+      const peerAddress = '0x4444444444444444444444444444444444444444'
+      const singleMessage = {
+        outbound: false,
+        status: 'confirmed',
+        items: [{ type: 'text' as const, text: 'Hello!' }],
+        serverTime: 500,
+        receivedTime: 500,
+        outpoints: [],
+        stampValueWei: 10_000_000_000_000_000n,
+        senderAddress: peerAddress,
+        destinationAddress: SENDER_ADDRESS,
+      }
+      mockMessageStore.getIterator.mockResolvedValue([
+        {
+          index: 'msg-stale-test',
+          copartyAddress: peerAddress,
+          message: singleMessage,
+        },
+      ])
+
+      const corruptedState: any = {
+        conversations: {
+          [convId]: {
+            id: convId,
+            kind: 'direct',
+            address: peerAddress,
+            participants: [SENDER_ADDRESS, peerAddress],
+            members: {
+              [SENDER_ADDRESS]: { address: SENDER_ADDRESS, role: 'member' },
+              [peerAddress]: { address: peerAddress, role: 'member' },
+            },
+            messages: [],
+            totalUnreadMessages: 52,
+            totalUnreadValue: 520_000_000_000_000_000,
+            totalValue: 520_000_000_000_000_000,
+            lastReceived: 500,
+            lastRead: 0,
+            stampAmount: 0,
+          },
+        },
+        chats: {},
+        lastReceived: 500,
+      }
+
+      const rehydrated = await rehydrateState(corruptedState)
+
+      const healed = rehydrated.conversations[convId]
+      expect(healed.messages).toHaveLength(1)
+      expect(healed.totalUnreadMessages).toBe(1)
+      expect(healed.totalUnreadValue).toBe(10_000_000_000_000_000)
+      expect(healed.totalValue).toBe(10_000_000_000_000_000)
+    })
   })
 })

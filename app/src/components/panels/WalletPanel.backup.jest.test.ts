@@ -25,7 +25,18 @@ jest.mock('../../composables/useBalance', () => ({
     loaded: ref(true),
     hasError: ref(false),
     formattedBalance: ref('10 MON'),
+    balance: ref(10n),
     refresh: jest.fn(),
+  }),
+}))
+
+// Backup navigation does not need balance readers or RPC polling.
+jest.mock('../../composables/useChainBalance', () => ({
+  useMultichainBalance: () => ({
+    monad: jest.requireMock('../../composables/useBalance').useBalance(),
+    getPresentation: () => ({ status: 'loading' }),
+    getRawBalance: () => null,
+    getTokens: () => [],
   }),
 }))
 

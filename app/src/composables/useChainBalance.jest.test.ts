@@ -79,6 +79,7 @@ import {
   useChainBalance,
   useMultichainBalance,
   fetchChainBalance,
+  getChainTokens,
 } from './useChainBalance'
 
 describe('useChainBalance', () => {
@@ -86,6 +87,86 @@ describe('useChainBalance', () => {
     jest.clearAllMocks()
     mockAccountStatus.status = 'ready'
   })
+
+  it('does not invent a native Solana row before a successful observation', async () => {
+    mockAccountStatus.status = 'loading'
+    await fetchChainBalance('solana', true)
+    expect(getChainTokens('solana')).toEqual([])
+    mockAccountStatus.status = 'ready'
+    mockFetchSolanaBalance.mockRejectedValueOnce(new Error('offline'))
+    const error = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
+    await fetchChainBalance('solana', true)
+    expect(getChainTokens('solana')).toEqual([])
+    error.mockRestore()
+  })
+
+  it.each(['ecash', 'solana'])(
+    'shares truthful %s presentation through loading, errors, zero and nonzero',
+    async chain => {
+      mockAccountStatus.status = 'loading'
+      await fetchChainBalance(chain, true)
+      const detail = useChainBalance(chain)
+      const drawer = useMultichainBalance()
+      const expectPresentation = (expected: unknown) => {
+        expect(detail.presentation.value).toEqual(expected)
+        expect(drawer.getPresentation(chain)).toEqual(expected)
+      }
+      expectPresentation({ status: 'loading' })
+      mockAccountStatus.status = 'ready'
+      const fetchBalance =
+        chain === 'ecash' ? mockFetchEcashBalance : mockFetchSolanaBalance
+      const error = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      try {
+        fetchBalance.mockRejectedValueOnce(new Error('offline'))
+        await fetchChainBalance(chain, true)
+        expectPresentation({
+          status: 'unavailable',
+          reason: 'fetch-error',
+          lastKnown: undefined,
+        })
+        if (chain === 'solana') expect(detail.tokens.value).toEqual([])
+        for (const amount of [0n, 25n]) {
+          const formattedBalance = `${amount} ${
+            chain === 'ecash' ? 'tXEC' : 'tSOL'
+          }`
+          fetchBalance.mockResolvedValueOnce(
+            chain === 'ecash'
+              ? { sats: amount, formatted: formattedBalance }
+              : { lamports: amount, formatted: formattedBalance },
+          )
+          await fetchChainBalance(chain, true)
+          const observation = { balance: amount, formattedBalance }
+          expectPresentation({ status: 'available', observation })
+          if (chain === 'solana')
+            expect(detail.tokens.value[0].balanceFormatted).toBe(
+              formattedBalance,
+            )
+          fetchBalance.mockRejectedValueOnce(new Error('offline'))
+          await fetchChainBalance(chain, true)
+          expectPresentation({
+            status: 'unavailable',
+            reason: 'fetch-error',
+            lastKnown: observation,
+          })
+        }
+      } finally {
+        error.mockRestore()
+      }
+    },
+  )
+
+  it.each(['bitcoin', 'bitcoincash', 'dogecoin', 'unknown'])(
+    'reports unsupported %s without Monad funds in either view',
+    chain => {
+      const expected = { status: 'unavailable', reason: 'unsupported' }
+      expect(useChainBalance(chain).presentation.value).toEqual(expected)
+      expect(useMultichainBalance().getPresentation(chain)).toEqual(expected)
+    },
+  )
 
   it('delegates to useBalance for monad', () => {
     const { formattedBalance, loaded } = useChainBalance('monad')

@@ -2360,6 +2360,112 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       expect(await unlinked()).toHaveLength(1)
     })
 
+    it('answers only for the labelled error object itself, however often it is labelled', async () => {
+      const directory = await f.directoryFor('alice', f.alice, f.bob)
+      const reused = new Error('directory unreachable')
+      installCanonicalDirectory(f.alice, {
+        ...directory,
+        peerCurrent: async () => {
+          throw reused
+        },
+      })
+      expectNothingAttempted(await refusal())
+      // Refused the same way with the same object again: still that refusal, still labelled.
+      const again = await refusal()
+      expect(again.error).toBe(reused)
+      expectNothingAttempted(again)
+      expect(Object.keys(reused)).toEqual([])
+      // Neither of these is the object the wallet rejected with, so neither is answered for.
+      expect(isDirectMessageNotAttempted(Object.create(reused))).toBe(false)
+      // A proxy that forwards everything still reads through itself, not as the labelled error.
+      expect(isDirectMessageNotAttempted(new Proxy(reused, {}))).toBe(false)
+      expect(isDirectMessageNotAttempted(reused)).toBe(true)
+    })
+
+    it('does not label a hold raised after inventory preparation, the same class as a labelled hold', async () => {
+      installCanonicalDirectory(
+        f.alice,
+        await f.directoryFor('alice', f.alice, f.bob),
+      )
+      // Intent preparation returns without ever reporting a durable, linked intent.
+      const prepare = jest
+        .spyOn(MonadCanonicalStampClient.prototype, 'prepareIntent')
+        .mockResolvedValueOnce(undefined as never)
+      try {
+        const held = await refusal()
+        expect(held.error).toBeInstanceOf(CanonicalMessagingHoldError)
+        expect((held.error as Error).message).toBe(
+          new CanonicalMessagingHoldError().message,
+        )
+        expect(held.prepared).toBe(1)
+        expect(isDirectMessageNotAttempted(held.error)).toBe(false)
+      } finally {
+        prepare.mockRestore()
+      }
+    })
+
+    it('labels a send held by a payment record no saved message accounts for', async () => {
+      const address = (await f.alice.getReceiveAddress()).raw.toLowerCase()
+      const storageLocation = `${join(f.root, 'wallet')}-evm-${address}`
+      const directory = await f.directoryFor('alice', f.alice, f.bob)
+      await f.alice.close()
+      const store = await LevelCanonicalLinkStore.open(storageLocation)
+      const row = {
+        attemptRef: 'orphaned-ref-999',
+        consumerId: 'frank-dm:orphaned',
+        digest: 'ab'.repeat(32),
+        prepared: { payload: '00', context: '00', economicBinding: '00' },
+      }
+      await store.put(row)
+      await store.close()
+      f.alice = await reopen(directory)
+      const held = await refusal()
+      expect(held.error).toBeInstanceOf(CanonicalMessagingHoldError)
+      expect((held.error as Error).message).toBe(
+        new CanonicalMessagingHoldError().message,
+      )
+      expect((held.error as { cause?: unknown }).cause).toBeUndefined()
+      expectNothingAttempted(held)
+      await f.alice.close()
+      const retained = await LevelCanonicalLinkStore.open(storageLocation)
+      try {
+        expect(retained.all()).toEqual([row])
+      } finally {
+        await retained.close()
+      }
+    })
+
+    it('does not label a possibly attempted send whose cause an earlier call labelled', async () => {
+      const directory = await f.directoryFor('alice', f.alice, f.bob)
+      const unreachable = new Error('directory unreachable')
+      let failing = true
+      installCanonicalDirectory(f.alice, {
+        ...directory,
+        peerCurrent: async wanted => {
+          if (failing) throw unreachable
+          return directory.peerCurrent(wanted)
+        },
+      })
+      expectNothingAttempted(await refusal())
+      failing = false
+      // This call has a durable, linked intent when the caller's own record of it fails.
+      const outer = Object.assign(new Error('could not record the attempt'), {
+        cause: unreachable,
+      })
+      const interrupted = await refusal({
+        onAttemptCreated: () => {
+          throw outer
+        },
+      })
+      expect(interrupted.error).toBe(outer)
+      expect(interrupted.prepared).toBe(1)
+      expect(isDirectMessageNotAttempted(interrupted.error)).toBe(false)
+      // The cause still carries the answer for the earlier call it was the rejection of. It is
+      // not the rejection of this call, which is why a caller must never test a cause.
+      expect(isDirectMessageNotAttempted(outer.cause)).toBe(true)
+      expect(await unlinked()).toHaveLength(1)
+    })
+
     it('never labels an error object again once it has left a send that may have attempted something', async () => {
       const directory = await f.directoryFor('alice', f.alice, f.bob)
       const reused = new Error('directory unreachable')

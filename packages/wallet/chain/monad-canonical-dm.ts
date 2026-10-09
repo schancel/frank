@@ -612,10 +612,12 @@ function statusOf(
  * attempted afterwards, by any send, whichever refusal it comes from. */
 const possiblyAttemptedErrors = new WeakSet<object>()
 
-/** Labels the error of a send refused before inventory preparation and returns the same object.
- * At that point this send has funded, reserved, journaled, linked and submitted nothing; `settle`
- * may have re-sent or finished earlier attempts, which are theirs. An error that cannot carry the
- * label is returned as it is. */
+/** Labels the error of one `send` call refused before inventory preparation and returns the same
+ * object. The label is about that call only: it created no intent, link, reservation, funding or
+ * submission of its own. `settle` may have finished or re-sent earlier attempts inside it, and an
+ * earlier call may have paid for the same content; the label says nothing about either. Only the
+ * labelled object itself answers, not one that inherits from it or wraps it. An error that cannot
+ * carry the label is returned as it is. */
 function notAttempted(error: unknown): unknown {
   if (
     typeof error === 'object' &&
@@ -624,11 +626,12 @@ function notAttempted(error: unknown): unknown {
   ) {
     try {
       Object.defineProperty(error, directMessageNotAttempted, {
-        configurable: true,
-        get: () => !possiblyAttemptedErrors.has(error),
+        get(this: unknown) {
+          return this === error && !possiblyAttemptedErrors.has(error)
+        },
       })
     } catch {
-      // Frozen or sealed: the refusal is unchanged and stays unlabelled.
+      // Already labelled, frozen or sealed: the refusal is unchanged either way.
     }
   }
   return error

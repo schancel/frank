@@ -932,22 +932,36 @@ async function historicalDeliveryIdentity(
       return undefined
     total += value
   }
-  const peer = await directory.peerCurrent({
-    subject: prepared.recipientSubject,
-  })
-  if (!peer || peer.subject !== prepared.recipientSubject) return undefined
-  const evidence = await resolveHistoricalEvidence(
-    directory,
-    record.context,
-    true,
-    self,
-    owner.subject,
-    peer,
-  )
-  const senderEvidence = evidence.senderEvidence ?? self.evidence
-  const recipientEvidence = evidence.recipientEvidence ?? peer.current.evidence
+  const senderEvidence =
+    toHex(self.evidence.hash) === prepared.senderT1
+      ? self.evidence
+      : await directory
+          .peerHistorical?.({
+            subject: prepared.senderSubject,
+            statementHash: prepared.senderT1,
+          })
+          .catch(() => undefined)
+  if (!senderEvidence || toHex(senderEvidence.hash) !== prepared.senderT1)
+    return undefined
+  // A historical recipient need not have a live directory entry. Resolve the exact
+  // original evidence first; Current is only an optional exact-hash fallback.
+  let recipientEvidence = await directory
+    .peerHistorical?.({
+      subject: prepared.recipientSubject,
+      statementHash: prepared.recipientT1,
+    })
+    .catch(() => undefined)
+  if (!recipientEvidence) {
+    const peer = await directory
+      .peerCurrent({
+        subject: prepared.recipientSubject,
+      })
+      .catch(() => undefined)
+    if (peer?.subject === prepared.recipientSubject)
+      recipientEvidence = peer.current.evidence
+  }
   if (
-    toHex(senderEvidence.hash) !== prepared.senderT1 ||
+    !recipientEvidence ||
     toHex(recipientEvidence.hash) !== prepared.recipientT1
   )
     return undefined

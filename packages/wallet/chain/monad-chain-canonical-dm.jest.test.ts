@@ -27,6 +27,7 @@ import { secp256k1 } from '@noble/curves/secp256k1'
 import type { ChannelUpdateItem } from '@frank/cashweb/types/messages'
 import {
   directMessageText,
+  openOwnDirectMessage,
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
@@ -1433,9 +1434,14 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       },
     )
 
-    it.each([true, false])(
-      'uses exact expired historical evidence, with lookup available=%s',
-      async available => {
+    it.each([
+      'complete',
+      'missing sender',
+      'missing recipient',
+      'mismatched recipient',
+    ])(
+      'uses exact expired sender and recipient evidence (%s)',
+      async scenario => {
         const historical = await compactedHistoricalAttempt()
         const wallet = await reopen(historical.directory)
         const old = await historical.directory.selfCurrent()
@@ -1459,6 +1465,23 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
             revisionZero: old.evidence.hash,
           },
           mode: { kind: 'new' },
+        })
+        const recipient = await historical.directory.peerCurrent({
+          subject: historical.attempt.prepared.recipientSubject,
+        })
+        if (!recipient) throw Error('fixture recipient missing')
+        const recipientStore = await openNodeDirectoryStore({
+          location: join(f.root, 'hd1-expired-recipient'),
+          anchor: {
+            network: 'monad-testnet',
+            subject: { keyType: 1, keyBytes: fromHex(recipient.subject) },
+            revisionZero: recipient.current.evidence.hash,
+          },
+          mode: { kind: 'new' },
+        })
+        await recipientStore.enroll([recipient.current.evidence], {
+          now: NOW,
+          relay,
         })
         try {
           await store.enroll([old.evidence], { now: NOW, relay })
@@ -1488,15 +1511,61 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
               'monad-testnet',
             ).statement.expiry.seconds,
           ).toBeLessThan(now.seconds)
+          await expect(recipientStore.current({ now, relay })).rejects.toThrow()
+          const recipientEvidence = await recipientStore.historicalEvidence(
+            fromHex(historical.attempt.prepared.recipientT1),
+          )
+          if (!recipientEvidence)
+            throw new Error('fixture recipient history missing')
+          const archiveRoles = createCanonicalMessageRoles(wallet, current)
+          try {
+            const opened = openOwnDirectMessage({
+              mode: 'archive',
+              network: 'monad-testnet',
+              payload: historical.attempt.prepared.payload,
+              context: historical.attempt.prepared.context,
+              roles: archiveRoles,
+              senderEvidence: old.evidence,
+              recipientEvidence,
+            })
+            expect(toHex(opened.recipientT1)).toBe(
+              historical.attempt.prepared.recipientT1,
+            )
+            expect(toHex(opened.senderT1)).toBe(
+              historical.attempt.prepared.senderT1,
+            )
+          } finally {
+            archiveRoles.dispose()
+          }
+          const historicalRead = jest.fn(
+            async (wanted: { subject: string; statementHash: string }) => {
+              if (wanted.subject === recipient.subject) {
+                if (scenario === 'missing recipient') return undefined
+                if (scenario === 'mismatched recipient') return old.evidence
+                return (
+                  (await recipientStore.historicalEvidence(
+                    fromHex(wanted.statementHash),
+                  )) ?? undefined
+                )
+              }
+              if (scenario === 'missing sender') return undefined
+              return (
+                (await store.historicalEvidence(
+                  fromHex(wanted.statementHash),
+                )) ?? undefined
+              )
+            },
+          )
+          const currentRead = jest.fn(async () => ({
+            subject: recipient.subject,
+            endpoint: recipient.endpoint,
+            current: await recipientStore.current({ now, relay }),
+          }))
           installCanonicalDirectory(wallet, {
             ...historical.directory,
             selfCurrent: () => store.current({ now, relay: renewedRelay }),
-            peerHistorical: available
-              ? async wanted =>
-                  (await store.historicalEvidence(
-                    fromHex(wanted.statementHash),
-                  )) ?? undefined
-              : undefined,
+            peerCurrent: currentRead,
+            peerHistorical: historicalRead,
           })
           mailboxPage.mockResolvedValue({ records: [historical.record] })
           const effects = noHistoricalExecution(wallet)
@@ -1505,24 +1574,31 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
               wallet,
               payloadDigests: [historical.digest],
             })
-            if (available)
+            if (scenario === 'complete') {
               await expect(result).resolves.toEqual({
                 [historical.digest]: 'delivered',
               })
-            else
+              expect(currentRead).not.toHaveBeenCalled()
+              expect(historicalRead).toHaveBeenCalledWith({
+                subject: historical.attempt.prepared.recipientSubject,
+                statementHash: historical.attempt.prepared.recipientT1,
+              })
+            } else {
               await expect(result).rejects.toBeInstanceOf(
                 CanonicalMessagingHoldError,
               )
+            }
             effects.verify()
           } finally {
             effects.restore()
           }
         } finally {
+          await recipientStore.close()
           await store.close()
           await wallet.close()
         }
         expect(await storedHistoricalRow(historical.storageLocation)).toEqual(
-          available
+          scenario === 'complete'
             ? { ...historical.row, outcome: 'delivered', reason: undefined }
             : historical.row,
         )

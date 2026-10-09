@@ -8,6 +8,8 @@ afterEach(() => {
   mockChainBalance.hasError.value = false
 })
 import { nextTick, ref } from 'vue'
+import en from '../i18n/en-us'
+import fr from '../i18n/fr-fr'
 const mockGetChainAddress = jest.fn(async (chain: string) => {
   if (chain === 'ecash')
     return 'ecash:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9'
@@ -128,12 +130,23 @@ async function flush() {
   await nextTick()
 }
 
-function mountWallet() {
+function mountWallet(
+  translate?: (
+    key: string,
+    params?: { balance?: string; unit?: string },
+  ) => string,
+) {
   return shallowMount(Wallet, {
     global: {
       mocks: {
-        $t: (key: string, params?: { balance?: string }) =>
-          params?.balance ? `${key}:${params.balance}` : key,
+        $t:
+          translate ??
+          ((key: string, params?: { balance?: string; unit?: string }) =>
+            params?.balance
+              ? `${key}:${params.balance}`
+              : params?.unit
+              ? `${key}:${params.unit}`
+              : key),
       },
       stubs: {
         // The copy button lives in q-input's named #append slot; a generic stub drops it.
@@ -414,14 +427,14 @@ describe('Wallet detail page (#570)', () => {
       mockChainBalance.hasError.value = false
       mockChainBalance.loaded.value = true
       mockChainBalance.formattedBalance.value =
-        chain === 'ecash' ? '0 tXEC' : '0 tSOL'
+        chain === 'ecash' ? '0 tXEC' : '0 dSOL'
       await nextTick()
       expect(region.text()).toBe(mockChainBalance.formattedBalance.value)
       expect(
         wrapper.find('[data-testid="wallet-balance-error"]').exists(),
       ).toBe(false)
       mockChainBalance.formattedBalance.value =
-        chain === 'ecash' ? '25 tXEC' : '2 tSOL'
+        chain === 'ecash' ? '25 tXEC' : '2 dSOL'
       mockChainBalance.hasError.value = true
       await nextTick()
       expect(region.text()).toBe(mockChainBalance.formattedBalance.value)
@@ -444,9 +457,35 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
+  it.each([
+    [en, 'Send dSOL'],
+    [fr, 'Envoyer des dSOL'],
+  ] as const)(
+    'localizes the configured Solana send unit (%#)',
+    async (messages, expected) => {
+      mockChainBalance.loaded.value = true
+      mockChainBalance.formattedBalance.value = '15 dSOL'
+      mockRoute.value = { query: { chain: 'solana' }, path: '/wallet' }
+      const wrapper = mountWallet((key, params) =>
+        key === 'walletPanel.sendAsset'
+          ? messages.walletPanel.sendAsset.replace('{unit}', params?.unit ?? '')
+          : key,
+      )
+      await flush()
+      expect(wrapper.get('[data-testid="wallet-send-action"]').text()).toBe(
+        expected,
+      )
+      expect(
+        wrapper
+          .get('[data-testid="wallet-send-action"]')
+          .attributes('disabled'),
+      ).toBeUndefined()
+    },
+  )
+
   it('enables native Send for the funded Solana wallet and routes its canonical network', async () => {
     mockChainBalance.loaded.value = true
-    mockChainBalance.formattedBalance.value = '15 tSOL'
+    mockChainBalance.formattedBalance.value = '15 dSOL'
     mockRoute.value = { query: { chain: 'solana' }, path: '/wallet' }
     const wrapper = mountWallet()
     await flush()
@@ -458,9 +497,9 @@ describe('Wallet detail page (#570)', () => {
       true,
     )
     expect(wrapper.get('[data-testid="wallet-chain"]').text()).toBe(
-      'walletPanel.solanaTestnet',
+      'Solana Devnet',
     )
-    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe('15 tSOL')
+    expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe('15 dSOL')
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
     ).toBe('AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9')
@@ -469,7 +508,7 @@ describe('Wallet detail page (#570)', () => {
     )
 
     const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
-    expect(sendBtn.text()).toBe('walletPanel.sendTsol')
+    expect(sendBtn.text()).toBe('walletPanel.sendAsset:dSOL')
     expect(sendBtn.attributes('disabled')).toBeUndefined()
     await sendBtn.trigger('click')
     expect(openPage).toHaveBeenCalledWith(

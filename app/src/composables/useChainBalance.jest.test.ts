@@ -52,8 +52,8 @@ const mockFetchEcashBalance = jest.fn().mockResolvedValue({
 
 const mockFetchSolanaBalance = jest.fn().mockResolvedValue({
   lamports: 2_500_000_000n,
-  formatted: '2.5 tSOL',
-  unit: 'tSOL',
+  formatted: '2.5 dSOL',
+  unit: 'dSOL',
   networkId: 'solana-devnet',
 })
 
@@ -178,7 +178,7 @@ describe('useChainBalance', () => {
           )
         for (const amount of [0n, 25n]) {
           const formattedBalance = `${amount} ${
-            chain === 'ecash' ? 'tXEC' : 'tSOL'
+            chain === 'ecash' ? 'tXEC' : 'dSOL'
           }`
           fetchBalance.mockResolvedValueOnce(
             chain === 'ecash'
@@ -247,9 +247,9 @@ describe('useChainBalance', () => {
       useChainBalance('solana')
     expect(loaded.value).toBe(true)
     expect(balance.value).toBe(2_500_000_000n)
-    expect(formattedBalance.value).toBe('2.5 tSOL')
+    expect(formattedBalance.value).toBe('2.5 dSOL')
     expect(tokens.value).toHaveLength(2)
-    expect(tokens.value[0].symbol).toBe('tSOL')
+    expect(tokens.value[0].symbol).toBe('dSOL')
     expect(tokens.value[1].symbol).toBe('tUSDC')
     expect(tokens.value[1].balanceFormatted).toBe('100.00 tUSDC')
   })
@@ -261,7 +261,7 @@ describe('useChainBalance', () => {
       useMultichainBalance()
     expect(getFormattedBalance('monad')).toBe('10 MON')
     expect(getFormattedBalance('ecash')).toBe('10000 tXEC')
-    expect(getFormattedBalance('solana')).toBe('2.5 tSOL')
+    expect(getFormattedBalance('solana')).toBe('2.5 dSOL')
     expect(isChainLoaded('ecash')).toBe(true)
     expect(isChainLoaded('solana')).toBe(true)
     expect(getTokens('solana')).toHaveLength(2)
@@ -312,6 +312,20 @@ describe('independent Solana observations', () => {
 
   afterEach(() => {
     jest.requireMock('@frank/wallet/chain').activeChain.isTestnet = true
+  })
+
+  it('keeps native symbol on the published observation scope until a new network read', async () => {
+    await fetchChainBalance('solana', true)
+    expect(getChainTokens('solana')[0].symbol).toBe('dSOL')
+    jest.requireMock('@frank/wallet/chain').activeChain.isTestnet = false
+    expect(getChainTokens('solana')[0].symbol).toBe('dSOL')
+    mockFetchSolanaBalance.mockResolvedValueOnce({
+      lamports: 1n,
+      formatted: '0.000000001 SOL',
+    })
+    await fetchChainBalance('solana', true)
+    expect(getChainTokens('solana')[0].symbol).toBe('SOL')
+    expect(getChainTokens('solana')[0].balanceFormatted).toBe('0.000000001 SOL')
   })
 
   it('publishes native success while token accounts are still loading', async () => {
@@ -538,6 +552,18 @@ describe('native Solana AVU presentation', () => {
     const { detail, drawer } = mountSolanaViews(pinia)
     try {
       await flushPromises()
+      expect(detail.get('[data-testid="wallet-chain"]').text()).toBe(
+        'Solana Devnet',
+      )
+      expect(drawer.get('[data-test="solana-wallet-chain"]').text()).toBe(
+        'Solana Devnet',
+      )
+      expect(detail.get('[data-testid="wallet-balance"]').text()).toBe(
+        '2.5 dSOL',
+      )
+      expect(drawer.get('[data-test="solana-wallet-balance"]').text()).toBe(
+        '2.5 dSOL',
+      )
       const expectAgreement = (expected: string) => {
         expect(oracle.formatAvuAmount('solana', 2_500_000_000n)).toBe(expected)
         expect(detail.get('[data-testid="wallet-balance-avu"]').text()).toBe(
@@ -546,14 +572,14 @@ describe('native Solana AVU presentation', () => {
         expect(
           detail
             .get(
-              '[data-testid="wallet-token-item-tsol"] .text-grey-7.text-right',
+              '[data-testid="wallet-token-item-dsol"] .text-grey-7.text-right',
             )
             .text(),
         ).toBe(expected)
         expect(drawer.get('[data-test="solana-wallet-avu"]').text()).toBe(
           `· ${expected}`,
         )
-        expect(drawer.get('[data-test="subtoken-tsol"]').text()).toContain(
+        expect(drawer.get('[data-test="subtoken-dsol"]').text()).toContain(
           `(${expected})`,
         )
       }
@@ -643,7 +669,7 @@ describe('Solana token availability in both views', () => {
           'walletPanel.tokenBalancesStale',
         )
       } finally {
-        resolveNative({ lamports: 0n, formatted: '0 tSOL' })
+        resolveNative({ lamports: 0n, formatted: '0 dSOL' })
         await flushPromises()
         detail.unmount()
         drawer.unmount()
@@ -683,7 +709,7 @@ describe('Solana token availability in both views', () => {
         'walletPanel.tokenBalancesLoading',
       )
       expect(detail.get('[data-testid="wallet-balance"]').text()).toBe(
-        '2.5 tSOL',
+        '2.5 dSOL',
       )
       rejectTokens(new Error('offline'))
       await flushPromises()
@@ -727,14 +753,14 @@ describe('Solana token availability in both views', () => {
 
       mockFetchSolanaBalance.mockResolvedValueOnce({
         lamports: 3_000_000_000n,
-        formatted: '3 tSOL',
+        formatted: '3 dSOL',
       })
       mockFetchSolanaTokenAccounts.mockRejectedValueOnce(
         new Error('offline again'),
       )
       await fetchChainBalance('solana', true)
       await nextTick()
-      expect(detail.get('[data-testid="wallet-balance"]').text()).toBe('3 tSOL')
+      expect(detail.get('[data-testid="wallet-balance"]').text()).toBe('3 dSOL')
       expect(
         detail.get('[data-testid="wallet-token-item-test"]').text(),
       ).toContain('50 TEST')

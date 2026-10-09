@@ -273,7 +273,7 @@ test('reorganizes wallet list item layout: no side section for chain name, chain
   expect(solanaRow.find('.q-item-section--side').exists()).toBe(false)
   const solanaChain = solanaRow.find('[data-test="solana-wallet-chain"]')
   expect(solanaChain.exists()).toBe(true)
-  expect(solanaChain.text()).toBe('Solana Testnet')
+  expect(solanaChain.text()).toBe('Solana Devnet')
 })
 
 test('renders clean default names without repeating testnet in name and badge', () => {

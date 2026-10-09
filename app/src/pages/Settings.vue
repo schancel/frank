@@ -143,11 +143,7 @@
                           {{ $t(chain.defaultNameKey) }}
                         </q-item-label>
                         <q-item-label caption class="text-grey-7">
-                          {{
-                            isTestnetMode
-                              ? $t(chain.testnetChainKey)
-                              : $t(chain.chainKey)
-                          }}
+                          {{ getWalletNetworkLabel(chain, isTestnetMode, $t) }}
                         </q-item-label>
                       </q-item-section>
                       <q-item-section side>
@@ -307,7 +303,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useSettingsStore } from 'src/stores/settings'
 import { storeToRefs } from 'pinia'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
-import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
+import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
 const msToMinutes = 60000
 
 export default defineComponent({
@@ -402,6 +398,7 @@ export default defineComponent({
       emailGatewayError,
       saveEmailGateway,
       resetEmailGateway,
+      getWalletNetworkLabel,
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
     }
   },

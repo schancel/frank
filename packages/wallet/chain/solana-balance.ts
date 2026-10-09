@@ -1,4 +1,5 @@
 import { formatBaseUnit } from './base-unit'
+import { getChainRegistryEntry } from './chains-registry'
 
 export interface FetchSolanaBalanceOptions {
   /** The base58 Solana public key address. */
@@ -128,7 +129,7 @@ export async function fetchSolanaBalance(
     rpcUrls: options.rpcUrls,
   })
 
-  const unit = isTestnet ? 'tSOL' : 'SOL'
+  const unit = getChainRegistryEntry(canonicalNetwork)!.unit
   const fetchFn = options.fetchImpl ?? globalThis.fetch
 
   if (!fetchFn) {

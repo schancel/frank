@@ -41,9 +41,7 @@
           >
             {{
               currentWalletConfig
-                ? isTestnet
-                  ? $t(currentWalletConfig.testnetChainKey)
-                  : $t(currentWalletConfig.chainKey)
+                ? getWalletNetworkLabel(currentWalletConfig, isTestnet, $t)
                 : isTestnet
                 ? $t('walletPanel.monadTestnet')
                 : $t('walletPanel.monad')
@@ -211,9 +209,9 @@
                               ? $t('walletPanel.sendTxec')
                               : $t('walletPanel.sendXec')
                             : selectedWallet === 'solana'
-                            ? isTestnet
-                              ? $t('walletPanel.sendTsol')
-                              : $t('walletPanel.sendSol')
+                            ? $t('walletPanel.sendAsset', {
+                                unit: solanaSendUnit,
+                              })
                             : selectedWallet === 'tempo'
                             ? isTestnet
                               ? 'Send tUSD'
@@ -452,7 +450,8 @@ import { useSafeOracleStore } from 'src/stores/oracle'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { getExplorerUrl } from 'src/utils/explorer'
 import type { SwapRecord } from 'src/stores/swaps'
-import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
+import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
@@ -497,6 +496,12 @@ export default defineComponent({
     )
     const sendChainIdentifier = computed(() =>
       nativeSendChainIdentifier(selectedWallet.value, isTestnet.value),
+    )
+
+    const solanaSendUnit = computed(() =>
+      sendChainIdentifier.value
+        ? getChainRegistryEntry(sendChainIdentifier.value)?.unit
+        : undefined,
     )
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
@@ -646,6 +651,8 @@ export default defineComponent({
       activeTab,
       selectedWallet,
       sendChainIdentifier,
+      solanaSendUnit,
+      getWalletNetworkLabel,
       selectedChain: selectedWallet,
       currentWalletConfig,
       isTestnet,

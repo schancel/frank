@@ -46,6 +46,40 @@ describe('solana-balance', () => {
   })
 
   describe('fetchSolanaBalance', () => {
+    it.each(['solana-testnet', 'custom-devnet'])(
+      'uses the actual returned devnet unit without changing normalization for %s',
+      async networkId => {
+        const mockFetch = jest.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ result: { value: 1_000_000_001 } }),
+        })
+        const result = await fetchSolanaBalance({
+          address: sampleAddress,
+          networkId,
+          relayBaseUrl: 'http://127.0.0.1:8098',
+          fetchImpl: mockFetch,
+        })
+        expect(result).toMatchObject({
+          networkId: 'solana-devnet',
+          unit: 'dSOL',
+          lamports: 1_000_000_001n,
+          formatted: '1.000000001 dSOL',
+        })
+        expect(mockFetch).toHaveBeenCalledWith(
+          'http://127.0.0.1:8098/chain-rpc/solana-devnet/rpc',
+          expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'getBalance',
+              params: [sampleAddress, { commitment: 'confirmed' }],
+            }),
+          }),
+        )
+      },
+    )
+
     it('fetches zero balance from devnet by default', async () => {
       const mockFetch = jest.fn().mockResolvedValue({
         ok: true,
@@ -80,8 +114,8 @@ describe('solana-balance', () => {
       )
 
       expect(result.lamports).toBe(0n)
-      expect(result.formatted).toBe('0 tSOL')
-      expect(result.unit).toBe('tSOL')
+      expect(result.formatted).toBe('0 dSOL')
+      expect(result.unit).toBe('dSOL')
       expect(result.networkId).toBe('solana-devnet')
     })
 
@@ -113,7 +147,7 @@ describe('solana-balance', () => {
       )
 
       expect(result.lamports).toBe(1000000000n)
-      expect(result.formatted).toBe('1 tSOL')
+      expect(result.formatted).toBe('1 dSOL')
     })
 
     it('fails over to secondary RPC when primary returns rate-limit (429)', async () => {
@@ -152,7 +186,7 @@ describe('solana-balance', () => {
         expect.anything(),
       )
       expect(result.lamports).toBe(500000000n)
-      expect(result.formatted).toBe('0.5 tSOL')
+      expect(result.formatted).toBe('0.5 dSOL')
     })
 
     it('formats whole and fractional SOL balances correctly on devnet', async () => {
@@ -174,8 +208,8 @@ describe('solana-balance', () => {
       })
 
       expect(result.lamports).toBe(2500000000n)
-      expect(result.formatted).toBe('2.5 tSOL')
-      expect(result.unit).toBe('tSOL')
+      expect(result.formatted).toBe('2.5 dSOL')
+      expect(result.unit).toBe('dSOL')
       expect(result.networkId).toBe('solana-devnet')
     })
 
@@ -226,7 +260,7 @@ describe('solana-balance', () => {
       })
 
       expect(mockFetch).toHaveBeenCalledWith(customRpc, expect.anything())
-      expect(result.formatted).toBe('0.5 tSOL')
+      expect(result.formatted).toBe('0.5 dSOL')
     })
 
     it('throws on HTTP error status when all endpoints fail', async () => {

@@ -82,11 +82,49 @@ describe("solana-chain", () => {
   });
 
   describe("chain properties", () => {
+    it.each([
+      ["solana-devnet", "Solana Devnet", "dSOL", true],
+      ["solana-testnet", "Solana Testnet", "tSOL", true],
+      ["solana-mainnet", "Solana", "SOL", false],
+    ])(
+      "uses configured metadata for %s",
+      (networkId, name, unit, isTestnet) => {
+        const chain = createSolanaChain({
+          ...config,
+          networkId: networkId as string,
+        });
+        expect({
+          name: chain.name,
+          unit: chain.unit,
+          isTestnet: chain.isTestnet,
+        }).toEqual({ name, unit, isTestnet });
+        expect(chain.chainIdentifier).toBe(networkId);
+        expect(chain.networkId).toBe(networkId);
+        expect(chain.toDisplayAmount(1n)).toBe("0.000000001");
+        expect(chain.fromDisplayAmount("0.000000001")).toBe(1n);
+      }
+    );
+
+    it.each(["unknown-solana", "monad-testnet"])(
+      "rejects unsupported metadata %s before effects",
+      (chainIdentifier) => {
+        const deriveSigner = jest.fn();
+        const getGenesisHash = jest.spyOn(connection, "getGenesisHash");
+        expect(() =>
+          createSolanaChain({ ...config, chainIdentifier, deriveSigner })
+        ).toThrow("Unsupported Solana chain identifier");
+        expect(deriveSigner).not.toHaveBeenCalled();
+        expect(getGenesisHash).not.toHaveBeenCalled();
+        expect(connection.getBalanceCalls).toBe(0);
+        expect(connection.sentRaw).toHaveLength(0);
+      }
+    );
+
     it("reports correct metadata and unit", () => {
       const chain = createSolanaChain(config);
       expect(chain.family).toBe("solana");
-      expect(chain.name).toBe("Solana Testnet");
-      expect(chain.unit).toBe("tSOL");
+      expect(chain.name).toBe("Solana Devnet");
+      expect(chain.unit).toBe("dSOL");
       expect(chain.isTestnet).toBe(true);
       expect(chain.capabilities.legacyConsolidation).toBe("solana-bundle");
     });
@@ -126,7 +164,9 @@ describe("solana-chain", () => {
         expect.objectContaining({ status: { stage: "broadcasting" } })
       );
       expect(onProgress).toHaveBeenCalledWith(
-        expect.objectContaining({ status: { stage: "confirmed", txHash: result.txHash } })
+        expect.objectContaining({
+          status: { stage: "confirmed", txHash: result.txHash },
+        })
       );
     });
 
@@ -185,7 +225,9 @@ describe("solana-chain", () => {
         expect.objectContaining({ status: { stage: "broadcasting" } })
       );
       expect(onProgress).toHaveBeenCalledWith(
-        expect.objectContaining({ status: { stage: "confirmed", txHash: result.txHash } })
+        expect.objectContaining({
+          status: { stage: "confirmed", txHash: result.txHash },
+        })
       );
 
       // Verify input coins are marked spent in the pool
@@ -352,22 +394,36 @@ describe("solana-chain", () => {
         priorityFeeMicroLamports: 20_000n,
       });
 
-      expect(singleTransfer.transaction.instructions.length).toBeGreaterThanOrEqual(3);
+      expect(
+        singleTransfer.transaction.instructions.length
+      ).toBeGreaterThanOrEqual(3);
       const singleLimitIx = singleTransfer.transaction.instructions[0];
       const singlePriceIx = singleTransfer.transaction.instructions[1];
 
-      expect(singleLimitIx.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
-      expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(singleLimitIx)).toEqual({
+      expect(
+        singleLimitIx.programId.equals(ComputeBudgetProgram.programId)
+      ).toBe(true);
+      expect(
+        ComputeBudgetInstruction.decodeSetComputeUnitLimit(singleLimitIx)
+      ).toEqual({
         units: 6000, // 1 input: Math.max(2000, 1000 * 1 + 5000) = 6000
       });
 
-      expect(singlePriceIx.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
-      expect(ComputeBudgetInstruction.decodeSetComputeUnitPrice(singlePriceIx)).toEqual({
+      expect(
+        singlePriceIx.programId.equals(ComputeBudgetProgram.programId)
+      ).toBe(true);
+      expect(
+        ComputeBudgetInstruction.decodeSetComputeUnitPrice(singlePriceIx)
+      ).toEqual({
         microLamports: 20_000n,
       });
 
       // Case B: 3 inputs with 0n priority fee (no SetComputeUnitPrice)
-      const kps = await Promise.all([Keypair.generate(), Keypair.generate(), Keypair.generate()]);
+      const kps = await Promise.all([
+        Keypair.generate(),
+        Keypair.generate(),
+        Keypair.generate(),
+      ]);
       const coins = kps.map((kp, idx) =>
         pool.solana.registerDerivedAccount({
           chain: "solana",
@@ -388,15 +444,20 @@ describe("solana-chain", () => {
       });
 
       const multiLimitIx = multiTransfer.transaction.instructions[0];
-      expect(multiLimitIx.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
-      expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(multiLimitIx)).toEqual({
+      expect(
+        multiLimitIx.programId.equals(ComputeBudgetProgram.programId)
+      ).toBe(true);
+      expect(
+        ComputeBudgetInstruction.decodeSetComputeUnitLimit(multiLimitIx)
+      ).toEqual({
         units: 8000, // 3 inputs: Math.max(2000, 1000 * 3 + 5000) = 8000
       });
 
       const hasPriceIx = multiTransfer.transaction.instructions.some(
         (ix) =>
           ix.programId.equals(ComputeBudgetProgram.programId) &&
-          ComputeBudgetInstruction.decodeInstructionType(ix) === "SetComputeUnitPrice"
+          ComputeBudgetInstruction.decodeInstructionType(ix) ===
+            "SetComputeUnitPrice"
       );
       expect(hasPriceIx).toBe(false);
     });

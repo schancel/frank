@@ -218,7 +218,11 @@ import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
 import { formatAvu } from '@frank/wallet/oracle'
 import { formatCompactCryptoBalance } from '../../utils/formatting'
-import { WALLET_CONFIGS, WalletItemConfig } from '../../utils/wallet-configs'
+import {
+  WALLET_CONFIGS,
+  WalletItemConfig,
+  getWalletNetworkLabel,
+} from '../../utils/wallet-configs'
 
 const visibleWallets = computed(() =>
   WALLET_CONFIGS.filter(wallet => wallet.enabled !== false),
@@ -248,9 +252,7 @@ function getWalletDefaultName(wallet: WalletItemConfig): string {
 }
 
 function getWalletChainLabel(wallet: WalletItemConfig): string {
-  return isTestnet.value
-    ? getTranslation(wallet.testnetChainKey)
-    : getTranslation(wallet.chainKey)
+  return getWalletNetworkLabel(wallet, isTestnet.value, getTranslation)
 }
 
 function getWalletBalance(wallet: WalletItemConfig): string {

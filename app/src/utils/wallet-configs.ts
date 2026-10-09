@@ -1,3 +1,8 @@
+import {
+  getChainRegistryEntry,
+  resolveNetworkId,
+} from '@frank/wallet/chain/chains-registry'
+
 export interface WalletItemConfig {
   id: string
   isMain?: boolean
@@ -179,3 +184,20 @@ export const WALLET_CONFIGS: WalletItemConfig[] = [
     testnetBalanceZeroKey: 'walletPanel.zeroThype',
   },
 ]
+
+/** Shared caption for the existing wallet presentation aliases. */
+export function getWalletNetworkLabel(
+  wallet: WalletItemConfig,
+  isTestnet: boolean,
+  translate: (key: string) => string,
+): string {
+  if (wallet.id === 'solana') {
+    const metadata = getChainRegistryEntry(
+      resolveNetworkId(wallet.id, isTestnet),
+    )
+    if (metadata?.family !== 'solana')
+      throw new Error('Missing Solana network metadata')
+    return metadata.name
+  }
+  return translate(isTestnet ? wallet.testnetChainKey : wallet.chainKey)
+}

@@ -8,6 +8,7 @@ import { NativeTransactionAttemptStore } from "./chain-wallet";
 import { SolanaWallet, SolanaWalletConnection } from "../solana-wallet";
 import { buildSolanaStealthPayment } from "../solana-stealth";
 import type { ChainUtxoPool } from "../chain-utxo-pool";
+import { getChainRegistryEntry } from "./chains-registry";
 
 export interface SolanaChainConfig {
   /** Optional chain identifier override; defaults to networkId. */
@@ -29,8 +30,11 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
     config.networkId.includes("testnet") ||
     config.networkId.includes("devnet");
   const chainIdentifier = config.chainIdentifier ?? config.networkId;
-  const name = isTestnet ? "Solana Testnet" : "Solana";
-  const unit = isTestnet ? "tSOL" : "SOL";
+  const metadata = getChainRegistryEntry(chainIdentifier);
+  if (!metadata || metadata.family !== "solana") {
+    throw new Error(`Unsupported Solana chain identifier: ${chainIdentifier}`);
+  }
+  const { name, unit } = metadata;
   const network = isTestnet ? "testnet" : "mainnet";
 
   return {
@@ -241,7 +245,9 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
         if ("pubKey" in recipient && recipient.pubKey) {
           spendPubkey = recipient.pubKey;
         } else {
-          spendPubkey = new PublicKey((recipient as ChainAddress).raw).toBytes();
+          spendPubkey = new PublicKey(
+            (recipient as ChainAddress).raw
+          ).toBytes();
         }
         onProgress?.({ stage: "deriving-stealth" });
         onProgress?.({ stage: "signing" });

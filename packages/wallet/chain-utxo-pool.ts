@@ -22,13 +22,24 @@
  */
 
 import { getAddress, Provider } from 'ethers'
-import { Blockhash, Keypair, PublicKey, Transaction, SystemProgram } from '@solana/web3.js'
+import {
+  Blockhash,
+  Keypair,
+  PublicKey,
+  Transaction,
+  SystemProgram,
+  ComputeBudgetProgram,
+} from '@solana/web3.js'
 import { getBase58Encoder } from '@solana/codecs-strings'
 import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
 import {
   computeGeometricRadixChangeSplits,
   orderOfMagnitude2,
+  calculateDecoyJitterDelayMs,
 } from './monad-change-distribution'
+
+export { calculateDecoyJitterDelayMs }
+
 
 export type ChainFamily = 'evm' | 'solana' | 'utxo'
 
@@ -448,6 +459,7 @@ export class SolanaChainFamilyAdapter {
     changeAddress?: string
     recentBlockhash: string
     feeLamports?: bigint
+    priorityFeeMicroLamports?: bigint
   }): Promise<{
     transaction: Transaction
     signers: Keypair[]
@@ -460,6 +472,7 @@ export class SolanaChainFamilyAdapter {
       changeAddress,
       recentBlockhash,
       feeLamports = 5_000n,
+      priorityFeeMicroLamports,
     } = params
 
     if (inputs.length === 0) {
@@ -483,6 +496,20 @@ export class SolanaChainFamilyAdapter {
     const transaction = new Transaction()
     transaction.recentBlockhash = recentBlockhash as unknown as Blockhash
     transaction.feePayer = signers[0].publicKey
+
+    const units = Math.max(2000, 1000 * inputs.length + 5000)
+    transaction.add(ComputeBudgetProgram.setComputeUnitLimit({ units }))
+
+    if (
+      priorityFeeMicroLamports !== undefined &&
+      priorityFeeMicroLamports > 0n
+    ) {
+      transaction.add(
+        ComputeBudgetProgram.setComputeUnitPrice({
+          microLamports: priorityFeeMicroLamports,
+        }),
+      )
+    }
 
     let remainingToPay = targetAmountLamports
     const recipientPubkey = new PublicKey(recipientAddress)

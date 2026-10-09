@@ -2,6 +2,7 @@ import {
   orderOfMagnitude2,
   orderOfMagnitude10,
   computeGeometricRadixChangeSplits,
+  calculateDecoyJitterDelayMs,
 } from './monad-change-distribution';
 
 describe('Monad Change Distribution & Geometric Radix Splitting (Issue #1180)', () => {
@@ -234,6 +235,90 @@ describe('Monad Change Distribution & Geometric Radix Splitting (Issue #1180)', 
         if (isShuffled) break;
       }
       expect(isShuffled).toBe(true);
+    });
+  });
+
+  describe('calculateDecoyJitterDelayMs (Issue #1220)', () => {
+    it('produces values within [0, maxDelayMs] with default parameters', () => {
+      for (let i = 0; i < 100; i++) {
+        const delay = calculateDecoyJitterDelayMs();
+        expect(delay).toBeGreaterThanOrEqual(0);
+        expect(delay).toBeLessThanOrEqual(120_000);
+      }
+    });
+
+    it('produces values within [0, maxDelayMs] with custom parameters', () => {
+      const meanDelayMs = 15_000;
+      const maxDelayMs = 45_000;
+      for (let i = 0; i < 100; i++) {
+        const delay = calculateDecoyJitterDelayMs(meanDelayMs, maxDelayMs);
+        expect(delay).toBeGreaterThanOrEqual(0);
+        expect(delay).toBeLessThanOrEqual(maxDelayMs);
+      }
+    });
+
+    it('returns 0 for non-positive meanDelayMs or maxDelayMs', () => {
+      expect(calculateDecoyJitterDelayMs(0, 100_000)).toBe(0);
+      expect(calculateDecoyJitterDelayMs(-5000, 100_000)).toBe(0);
+      expect(calculateDecoyJitterDelayMs(30_000, 0)).toBe(0);
+      expect(calculateDecoyJitterDelayMs(30_000, -10_000)).toBe(0);
+    });
+
+    it('generates an exponential distribution within [0, maxDelayMs]', () => {
+      const meanDelayMs = 30_000;
+      const maxDelayMs = 120_000;
+      const sampleCount = 10_000;
+      const samples: number[] = [];
+
+      for (let i = 0; i < sampleCount; i++) {
+        const delay = calculateDecoyJitterDelayMs(meanDelayMs, maxDelayMs);
+        expect(delay).toBeGreaterThanOrEqual(0);
+        expect(delay).toBeLessThanOrEqual(maxDelayMs);
+        samples.push(delay);
+      }
+
+      // Check sample mean: theoretical capped mean is mean * (1 - e^(-max/mean)) = 30000 * (1 - e^-4) ≈ 29450
+      const sum = samples.reduce((acc, val) => acc + val, 0);
+      const sampleMean = sum / sampleCount;
+      expect(sampleMean).toBeGreaterThan(27_000);
+      expect(sampleMean).toBeLessThan(32_000);
+
+      // Check exponential distribution property: right-skewed with median ≈ mean * ln(2) ≈ 20794
+      const sorted = [...samples].sort((a, b) => a - b);
+      const sampleMedian = sorted[Math.floor(sampleCount / 2)];
+      expect(sampleMedian).toBeGreaterThan(18_000);
+      expect(sampleMedian).toBeLessThan(23_000);
+      expect(sampleMedian).toBeLessThan(sampleMean);
+
+      // In an exponential distribution, approx 1 - 1/e ≈ 63.2% of samples fall below the mean
+      const belowMeanCount = samples.filter((s) => s < sampleMean).length;
+      const proportionBelowMean = belowMeanCount / sampleCount;
+      expect(proportionBelowMean).toBeGreaterThan(0.58);
+      expect(proportionBelowMean).toBeLessThan(0.68);
+    });
+
+    it('correctly uses inverse transform sampling with deterministic Math.random', () => {
+      const meanDelayMs = 30_000;
+      const maxDelayMs = 120_000;
+
+      const randomSpy = jest.spyOn(Math, 'random');
+      try {
+        // u = 1 - 0 = 1 => -30000 * ln(1) = 0
+        randomSpy.mockReturnValue(0);
+        expect(calculateDecoyJitterDelayMs(meanDelayMs, maxDelayMs)).toBe(0);
+
+        // u = 1 - 0.5 = 0.5 => -30000 * ln(0.5) = 30000 * ln(2) ≈ 20794
+        randomSpy.mockReturnValue(0.5);
+        expect(calculateDecoyJitterDelayMs(meanDelayMs, maxDelayMs)).toBe(
+          Math.round(meanDelayMs * Math.LN2),
+        );
+
+        // Very large raw delay => clamped to maxDelayMs
+        randomSpy.mockReturnValue(0.999999);
+        expect(calculateDecoyJitterDelayMs(meanDelayMs, maxDelayMs)).toBe(maxDelayMs);
+      } finally {
+        randomSpy.mockRestore();
+      }
     });
   });
 });

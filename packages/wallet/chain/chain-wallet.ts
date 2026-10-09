@@ -216,6 +216,7 @@ export interface NativeWalletHandle {
     value: bigint;
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
+    priorityFeeMicroLamports?: bigint;
   }): Promise<LegacySendResult>;
 
   /** Computes the estimated network fee required to deliver `value` to a legacy destination. */

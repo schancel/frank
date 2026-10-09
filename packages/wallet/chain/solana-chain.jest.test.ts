@@ -1,4 +1,11 @@
-import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
+import {
+  Keypair,
+  PublicKey,
+  Transaction,
+  VersionedTransaction,
+  ComputeBudgetProgram,
+  ComputeBudgetInstruction,
+} from "@solana/web3.js";
 import { getBase58Decoder } from "@solana/codecs-strings";
 import * as bip39 from "bip39";
 
@@ -250,6 +257,148 @@ describe("solana-chain", () => {
       expect(estimate.totalFee).toBe(5000n);
       expect(estimate.inputCount).toBe(2);
       expect(estimate.deliveryFee).toBe(5000n);
+    });
+
+    it("attaches ComputeBudgetProgram.setComputeUnitLimit and setComputeUnitPrice when priorityFeeMicroLamports is provided (#1220)", async () => {
+      const pool = new ChainUtxoPool();
+      const kp1 = await Keypair.generate();
+      const kp2 = await Keypair.generate();
+
+      const coin1 = pool.solana.registerAccount({
+        chain: "solana",
+        address: kp1.publicKey.toBase58(),
+        privateKey: Buffer.from(kp1.secretKey).toString("hex"),
+        balanceWei: 300_000_000n,
+      });
+      const coin2 = pool.solana.registerDerivedAccount({
+        chain: "solana",
+        address: kp2.publicKey.toBase58(),
+        privateKey: Buffer.from(kp2.secretKey).toString("hex"),
+        balanceWei: 400_000_000n,
+      });
+
+      config.chainUtxoPool = pool;
+      connection.sentRaw = [];
+      connection.balance = 10_000n; // low primary balance forces consolidation
+      const chain = createSolanaChain(config);
+      const wallet = await chain.createWallet({ mnemonic: testMnemonic });
+      const recipientKp = await Keypair.generate();
+      const recipient = { raw: recipientKp.publicKey.toBase58() };
+
+      const result = await chain.nativeTransfers.sendLegacy!({
+        wallet,
+        recipient,
+        value: 500_000_000n,
+        priorityFeeMicroLamports: 12_500n,
+      });
+
+      expect(result.txHash).toBeDefined();
+      expect(connection.sentRaw.length).toBe(1);
+
+      const deserialized = await Transaction.from(connection.sentRaw[0]);
+
+      // Verify SetComputeUnitLimit instruction
+      const limitIx = deserialized.instructions.find(
+        (ix) =>
+          ix.programId.equals(ComputeBudgetProgram.programId) &&
+          ComputeBudgetInstruction.decodeInstructionType(ix) ===
+            "SetComputeUnitLimit"
+      );
+      expect(limitIx).toBeDefined();
+      expect(
+        ComputeBudgetInstruction.decodeSetComputeUnitLimit(limitIx!)
+      ).toEqual({
+        units: 7000, // 2 inputs: Math.max(2000, 1000 * 2 + 5000) = 7000
+      });
+
+      // Verify SetComputeUnitPrice instruction
+      const priceIx = deserialized.instructions.find(
+        (ix) =>
+          ix.programId.equals(ComputeBudgetProgram.programId) &&
+          ComputeBudgetInstruction.decodeInstructionType(ix) ===
+            "SetComputeUnitPrice"
+      );
+      expect(priceIx).toBeDefined();
+      expect(
+        ComputeBudgetInstruction.decodeSetComputeUnitPrice(priceIx!)
+      ).toEqual({
+        microLamports: 12_500n,
+      });
+
+      expect(pool.getCoin(coin1.id)?.status).toBe("spent");
+      expect(pool.getCoin(coin2.id)?.status).toBe("spent");
+    });
+
+    it("verifies buildMultiInputTransfer dynamically computes units and attaches compute budget instructions", async () => {
+      const pool = new ChainUtxoPool();
+      const recipient = await Keypair.generate();
+      const change = await Keypair.generate();
+
+      // Case A: 1 input with positive priority fee
+      const singleKp = await Keypair.generate();
+      const singleCoin = pool.solana.registerAccount({
+        chain: "solana",
+        address: singleKp.publicKey.toBase58(),
+        privateKey: Buffer.from(singleKp.secretKey).toString("hex"),
+        balanceWei: 1_000_000_000n,
+      });
+
+      const singleTransfer = await pool.solana.buildMultiInputTransfer({
+        inputs: [singleCoin],
+        recipientAddress: recipient.publicKey.toBase58(),
+        targetAmountLamports: 100_000_000n,
+        changeAddress: change.publicKey.toBase58(),
+        recentBlockhash: blockhash,
+        priorityFeeMicroLamports: 20_000n,
+      });
+
+      expect(singleTransfer.transaction.instructions.length).toBeGreaterThanOrEqual(3);
+      const singleLimitIx = singleTransfer.transaction.instructions[0];
+      const singlePriceIx = singleTransfer.transaction.instructions[1];
+
+      expect(singleLimitIx.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+      expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(singleLimitIx)).toEqual({
+        units: 6000, // 1 input: Math.max(2000, 1000 * 1 + 5000) = 6000
+      });
+
+      expect(singlePriceIx.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+      expect(ComputeBudgetInstruction.decodeSetComputeUnitPrice(singlePriceIx)).toEqual({
+        microLamports: 20_000n,
+      });
+
+      // Case B: 3 inputs with 0n priority fee (no SetComputeUnitPrice)
+      const kps = await Promise.all([Keypair.generate(), Keypair.generate(), Keypair.generate()]);
+      const coins = kps.map((kp, idx) =>
+        pool.solana.registerDerivedAccount({
+          chain: "solana",
+          address: kp.publicKey.toBase58(),
+          privateKey: Buffer.from(kp.secretKey).toString("hex"),
+          balanceWei: 200_000_000n,
+          index: idx,
+        })
+      );
+
+      const multiTransfer = await pool.solana.buildMultiInputTransfer({
+        inputs: coins,
+        recipientAddress: recipient.publicKey.toBase58(),
+        targetAmountLamports: 500_000_000n,
+        changeAddress: change.publicKey.toBase58(),
+        recentBlockhash: blockhash,
+        priorityFeeMicroLamports: 0n,
+      });
+
+      const multiLimitIx = multiTransfer.transaction.instructions[0];
+      expect(multiLimitIx.programId.equals(ComputeBudgetProgram.programId)).toBe(true);
+      expect(ComputeBudgetInstruction.decodeSetComputeUnitLimit(multiLimitIx)).toEqual({
+        units: 8000, // 3 inputs: Math.max(2000, 1000 * 3 + 5000) = 8000
+      });
+
+      const hasPriceIx = multiTransfer.transaction.instructions.some(
+        (ix) =>
+          ix.programId.equals(ComputeBudgetProgram.programId) &&
+          ComputeBudgetInstruction.decodeInstructionType(ix) === "SetComputeUnitPrice"
+      );
+      expect(hasPriceIx).toBe(false);
     });
   });
 });

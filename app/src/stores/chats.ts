@@ -852,10 +852,72 @@ function openDefaultConversation(
   return conversation
 }
 
+function isInternalMessage(items: unknown): boolean {
+  return (
+    Array.isArray(items) &&
+    items.length > 0 &&
+    items.every(
+      item =>
+        item !== null &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        (item.type === 'swap-record' ||
+          item.type === 'wallet-sync' ||
+          item.type === 'payment-transfer'),
+    )
+  )
+}
+
 export async function rehydateChat(chatState: RestorableState): Promise<State> {
   if (!chatState) {
     return freshChatsState()
   }
+
+  const localStore = await store
+  const messageIterator = await localStore.getIterator()
+  const wrappers: MessageWrapper[] = []
+  for await (const wrapper of messageIterator) {
+    if (wrapper.message) wrappers.push(wrapper)
+  }
+
+  // Validate the complete durable collection before normalizing statuses, pruning leftovers,
+  // or publishing any owner. Old ownerless conversational rows are not a default-thread hint.
+  const validatedRows = wrappers.map(wrapper => {
+    const { index, message } = wrapper
+    if (
+      typeof index !== 'string' ||
+      !index.trim() ||
+      typeof message.outbound !== 'boolean' ||
+      (wrapper.outbound !== undefined &&
+        wrapper.outbound !== message.outbound) ||
+      typeof wrapper.senderAddress !== 'string' ||
+      !wrapper.senderAddress ||
+      typeof message.senderAddress !== 'string' ||
+      !message.senderAddress ||
+      (wrapper.senderAddress !== message.senderAddress &&
+        !sameCanonicalAddress(wrapper.senderAddress, message.senderAddress))
+    )
+      throw new Error(`Invalid stored message envelope for ${index}`)
+    const internal = isInternalMessage(message.items)
+    let conversationId: string | undefined
+    if (message.conversationId !== undefined) {
+      try {
+        if (typeof message.conversationId !== 'string')
+          throw new Error('Invalid ID')
+        conversationId = canonicalConversationId(message.conversationId)
+      } catch {
+        throw new Error(
+          `Unsupported stored conversation format for ${index}: valid conversation ID required`,
+        )
+      }
+    }
+    if (!internal && !conversationId) {
+      throw new Error(
+        `Unsupported stored conversation format for ${index}: explicit conversation ID required`,
+      )
+    }
+    return { wrapper, conversationId, internal }
+  })
 
   const conversations: Record<string, Conversation> = {}
   const messages: Record<string, ChatMessage> = {}
@@ -873,19 +935,46 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     conversations[conversation.id] = conversation
   }
 
-  const localStore = await store
+  const logicalOwners = new Map<string, string>()
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    const { message, copartyAddress, index } = wrapper
+    const peer = safeChainDisplayAddress(copartyAddress) || copartyAddress
+    const existing = conversationId ? conversations[conversationId] : undefined
+    // Internal records never reconstruct a chat or dispatch item effects. Check any explicit
+    // owner reference below, after all conversational owners have been prepared.
+    if (internal) continue
+    if (existing) assertConversationPeer(existing, peer)
+    const id = conversationId!
+    conversations[id] ??= newConversation({
+      id,
+      address: peer,
+      participants: ownAddress ? [ownAddress, peer] : [peer],
+      kind: message.items?.some(item => item.type === 'email')
+        ? 'email'
+        : 'direct',
+    })
+    const logicalId = message.logicalMessageId || index
+    const priorOwner = logicalOwners.get(logicalId)
+    if (priorOwner !== undefined && priorOwner !== id) {
+      throw new Error(
+        `Logical message ${logicalId} already belongs to another conversation`,
+      )
+    }
+    logicalOwners.set(logicalId, id)
+  }
 
-  const messageIterator = await localStore.getIterator()
+  // An internal row may precede the conversational row that establishes its explicit owner.
+  // Check that reference against the complete prepared owner set, independent of iterator order.
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    if (!internal || !conversationId) continue
+    const owner = conversations[conversationId]
+    if (owner) assertConversationPeer(owner, wrapper.copartyAddress)
+  }
+
   let lastReceived = Math.max(
     chatState.lastReceived ?? 0,
     await localStore.mostRecentMessageTime(),
   )
-
-  // Todo, this rehydrate stuff is common to receiveMessage
-  const wrappers: MessageWrapper[] = []
-  for await (const messageWrapper of messageIterator) {
-    if (messageWrapper.message) wrappers.push(messageWrapper)
-  }
   // A message that was delivered after being re-keyed from its local id to its payload hash can
   // leave its old local record behind if the app stopped between the two writes. The confirmed
   // record wins (reconcile by payload hash: never show it twice); drop the leftover.
@@ -894,8 +983,12 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
       .filter(({ message }) => message.status === 'confirmed')
       .map(row => row.index),
   )
-  for (const messageWrapper of wrappers) {
-    const { index, message: newMsg, copartyAddress } = messageWrapper
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    const { index, message: newMsg, copartyAddress } = wrapper
+    if (internal) {
+      messages[index] = { payloadDigest: index, ...newMsg }
+      continue
+    }
     const leftoverOf = newMsg.delivery?.attemptDigest
     if (
       newMsg.status !== 'confirmed' &&
@@ -929,33 +1022,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     const emailItem = message.items?.find(it => it.type === 'email') as
       | EmailItem
       | undefined
-    const isEmail = !!emailItem
-    const displayAddress =
-      safeChainDisplayAddress(copartyAddress) || copartyAddress
-    const rawConvId = newMsg.conversationId
-    const participants = ownAddress
-      ? [ownAddress, displayAddress]
-      : [displayAddress]
-    let conv: Conversation
-    if (rawConvId) {
-      const id = canonicalConversationId(rawConvId)
-      conv =
-        conversations[id] ??
-        newConversation({
-          id,
-          address: displayAddress,
-          participants,
-          kind: isEmail ? 'email' : 'direct',
-        })
-      assertConversationPeer(conv, displayAddress)
-      conversations[id] = conv
-    } else {
-      conv = openDefaultConversation(
-        conversations,
-        displayAddress,
-        participants,
-      )
-    }
+    const conv = conversations[conversationId!]
 
     message.conversationId = conv.id
     messages[index] = message
@@ -1658,16 +1725,7 @@ export const useChatStore = defineStore('chats', {
         return
       }
 
-      const isInternalSyncOnly =
-        items.length > 0 &&
-        items.every(
-          it =>
-            it.type === 'swap-record' ||
-            it.type === 'wallet-sync' ||
-            it.type === 'payment-transfer',
-        )
-
-      if (isInternalSyncOnly) {
+      if (isInternalMessage(items)) {
         this.messages[payloadDigest] = message
         return
       }
@@ -1749,10 +1807,15 @@ export const useChatStore = defineStore('chats', {
       type?: string
       meta?: Record<string, any>
     }): Promise<string> {
-      let ownAddress = await getOwnCanonicalAddress()
-      if (!ownAddress) {
-        ownAddress = 'self'
+      const internal = isInternalMessage(items)
+      const canonicalSelf = await getOwnCanonicalAddress()
+      if (!internal && (!canonicalSelf || !isChainAddress(canonicalSelf))) {
+        throw new Error('Canonical self identity is required for a saved note')
       }
+      const ownAddress = canonicalSelf || 'self'
+      const conversation = internal
+        ? undefined
+        : this.openDirectConversation(ownAddress)
       const messageId =
         'msg-self-' +
         Date.now() +
@@ -1774,6 +1837,7 @@ export const useChatStore = defineStore('chats', {
 
       this.sendMessageLocal({
         address: ownAddress,
+        conversationId: conversation?.id,
         senderAddress: ownAddress,
         index: messageId,
         items,
@@ -1784,21 +1848,7 @@ export const useChatStore = defineStore('chats', {
       })
 
       try {
-        const messageStore = await store
-        await messageStore.saveMessage({
-          index: messageId,
-          copartyAddress: ownAddress,
-          senderAddress: ownAddress,
-          message: {
-            outbound: true,
-            status: 'confirmed',
-            receivedTime: timestamp,
-            serverTime: timestamp,
-            items,
-            outpoints: [],
-            senderAddress: ownAddress,
-          },
-        })
+        await this.saveOutgoing(ownAddress, messageId, { strict: true })
       } catch (err) {
         console.warn('Failed to persist selfSendMessage to messageStore', err)
       }

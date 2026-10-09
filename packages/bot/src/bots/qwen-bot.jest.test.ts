@@ -160,5 +160,54 @@ describe("QwenBot", () => {
     expect(replies[0][0].text).toContain("STUB");
     expect(mockState.has("history:0x5555555555555555555555555555555555555555")).toBe(true);
   });
+
+  test("does not persist history if reply fails", async () => {
+    const msgCtx: BotMessageContext = {
+      conversationId: "conv-fail",
+      peerAddress: "0x6666666666666666666666666666666666666666",
+      peerSubject: "0x6666666666666666666666666666666666666666",
+      timestampMs: Date.now(),
+      payloadDigest: "0x" + "22".repeat(32),
+      items: [{ type: "text", text: "Hello failing reply" }],
+      reply: jest.fn(async () => {
+        throw new Error("RPC 502 Bad Gateway");
+      }),
+    };
+
+    await expect(bot.onMessage(msgCtx, mockContext)).rejects.toThrow("RPC 502 Bad Gateway");
+    expect(mockState.has("history:0x6666666666666666666666666666666666666666")).toBe(false);
+  });
+
+  test("collapses consecutive duplicate user messages from previous failed retries", async () => {
+    const peer = "0x7777777777777777777777777777777777777777";
+    const corruptedHistory = [
+      { role: "user", content: "Greetings qwen" },
+      { role: "user", content: "Greetings qwen" },
+      { role: "user", content: "Greetings qwen" },
+    ];
+    mockState.set(`history:${peer}`, JSON.stringify(corruptedHistory));
+
+    const replies: any[] = [];
+    const msgCtx: BotMessageContext = {
+      conversationId: "conv-dedup",
+      peerAddress: peer,
+      peerSubject: peer,
+      timestampMs: Date.now(),
+      payloadDigest: "0x" + "33".repeat(32),
+      items: [{ type: "text", text: "Greetings qwen" }],
+      reply: jest.fn(async (items) => {
+        replies.push(items);
+      }),
+    };
+
+    await bot.onMessage(msgCtx, mockContext);
+    expect(replies.length).toBe(1);
+
+    const saved = JSON.parse(mockState.get(`history:${peer}`)!);
+    // Should have collapsed the duplicates down to 1 user message + 1 assistant reply
+    expect(saved.length).toBe(2);
+    expect(saved[0]).toEqual({ role: "user", content: "Greetings qwen" });
+    expect(saved[1].role).toBe("assistant");
+  });
 });
 

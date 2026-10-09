@@ -492,8 +492,8 @@ export function startDirectMessagePolling({
 
 /** How often the background reconciliation looks at messages whose payment is pending, and the
  * longest pause it backs off to while they stay pending. */
-export const OUTGOING_RECONCILE_INTERVAL_MS = 15_000
-export const MAX_OUTGOING_RECONCILE_INTERVAL_MS = 120_000
+export const OUTGOING_RECONCILE_INTERVAL_MS = 2_000
+export const MAX_OUTGOING_RECONCILE_INTERVAL_MS = 15_000
 export const IDLE_OUTGOING_RECONCILE_INTERVAL_MS = 60_000
 export const BACKGROUND_OUTGOING_RECONCILE_INTERVAL_MS = 60_000
 

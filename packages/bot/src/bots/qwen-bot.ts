@@ -167,29 +167,45 @@ export class QwenBot implements FrankBotDefinition {
     let history: QwenChatMessage[] = [];
     if (rawHistory) {
       try {
-        history = JSON.parse(rawHistory);
+        const parsed = JSON.parse(rawHistory);
+        if (Array.isArray(parsed)) {
+          // Collapse consecutive identical user messages from any previous failed retries
+          history = parsed.filter((item, idx, arr) => {
+            if (idx === 0) return true;
+            const prev = arr[idx - 1];
+            return !(item.role === "user" && prev.role === "user" && item.content === prev.content);
+          });
+        }
       } catch {
         history = [];
       }
     }
 
-    history.push({ role: "user", content: userText });
+    // Build prompt history for reply generator
+    const promptHistory: QwenChatMessage[] = [...history];
+    const lastMsg = promptHistory[promptHistory.length - 1];
+    if (!lastMsg || lastMsg.role !== "user" || lastMsg.content !== userText) {
+      promptHistory.push({ role: "user", content: userText });
+    }
 
     // Generate completion
-    const result = await this.replyGenerator.reply(history);
-    history.push({ role: "assistant", content: result.content });
+    const result = await this.replyGenerator.reply(promptHistory);
 
-    // Keep bounded history window (last 20 messages)
-    if (history.length > 20) {
-      history = history.slice(-20);
-    }
-    await ctx.state.put(historyKey, JSON.stringify(history));
-
+    // Send reply first; only persist updated history if the reply successfully delivers/sends
     await msgCtx.reply([
       {
         type: "text",
         text: result.content,
       },
     ]);
+
+    let updatedHistory: QwenChatMessage[] = [
+      ...promptHistory,
+      { role: "assistant", content: result.content },
+    ];
+    if (updatedHistory.length > 20) {
+      updatedHistory = updatedHistory.slice(-20);
+    }
+    await ctx.state.put(historyKey, JSON.stringify(updatedHistory));
   }
 }

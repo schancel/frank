@@ -740,6 +740,7 @@ export class FrankBotHost {
                 instance.loopGuard.recordReply(sender);
               }
               await instance.state.put(digestKey, String(Date.now()));
+              await instance.state.del(`fail:${msg.payloadDigest}`).catch(() => {});
               instance.lastPollTimestamp = Math.max(
                 instance.lastPollTimestamp,
                 msg.receivedTime + 1
@@ -750,6 +751,35 @@ export class FrankBotHost {
               );
             } catch (err) {
               console.error(`[bot-host] Error in bot ${id}.onMessage:`, err);
+              const failKey = `fail:${msg.payloadDigest}`;
+              let failCount = 0;
+              try {
+                const prev = await instance.state.get(failKey);
+                failCount = (prev ? parseInt(prev, 10) : 0) + 1;
+              } catch {
+                failCount = 1;
+              }
+              const MAX_RETRIES = 3;
+              if (failCount >= MAX_RETRIES) {
+                console.warn(
+                  `[bot-host] Bot ${id} exceeded ${MAX_RETRIES} attempts for message ${msg.payloadDigest.slice(
+                    0,
+                    10
+                  )}... Skipping message to prevent poison loop.`
+                );
+                await instance.state.put(digestKey, String(Date.now()));
+                await instance.state.del(failKey).catch(() => {});
+                instance.lastPollTimestamp = Math.max(
+                  instance.lastPollTimestamp,
+                  msg.receivedTime + 1
+                );
+                await instance.state.put(
+                  "cursor:lastPollTimestamp",
+                  String(instance.lastPollTimestamp)
+                );
+              } else {
+                await instance.state.put(failKey, String(failCount)).catch(() => {});
+              }
             } finally {
               instance.inFlightDigests.delete(msg.payloadDigest);
             }

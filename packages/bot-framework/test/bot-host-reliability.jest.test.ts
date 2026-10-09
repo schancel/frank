@@ -332,4 +332,70 @@ describe("FrankBotHost Reliability Features", () => {
       await host.stop();
     });
   });
+
+  describe("Poison loop prevention and retry threshold", () => {
+    it("stops retrying a failing message after 3 failures and advances the cursor", async () => {
+      let callCount = 0;
+      const dummyBot: FrankBotDefinition = {
+        id: "failing-bot",
+        getProfile: () => ({ name: "FailingBot", bot: true }),
+        onMessage: async () => {
+          callCount++;
+          throw new Error("Simulated transient RPC failure");
+        },
+      };
+
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/poison-loop-test`,
+      });
+
+      await host.register(dummyBot);
+      const instance = (host as any).instances.get("failing-bot");
+
+      const messageTime = Date.now() + 5000;
+      const failingMsg = {
+        senderAddress: { raw: "0x6666666666666666666666666666666666666666" },
+        recipientAddress: { raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5" },
+        items: [{ type: "text", text: "Crash message" }],
+        payloadDigest: "fail-digest-1",
+        receivedTime: messageTime,
+      };
+
+      // Poll 1: Fails (attempt 1)
+      mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
+      await (host as any).pollAllBots();
+      await instance.peerQueue.enqueue("0x6666666666666666666666666666666666666666", async () => {});
+      expect(callCount).toBe(1);
+      expect(await instance.state.get("digest:fail-digest-1")).toBeUndefined();
+      expect(await instance.state.get("fail:fail-digest-1")).toBe("1");
+
+      // Poll 2: Fails (attempt 2)
+      mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
+      await (host as any).pollAllBots();
+      await instance.peerQueue.enqueue("0x6666666666666666666666666666666666666666", async () => {});
+      expect(callCount).toBe(2);
+      expect(await instance.state.get("digest:fail-digest-1")).toBeUndefined();
+      expect(await instance.state.get("fail:fail-digest-1")).toBe("2");
+
+      // Poll 3: Fails (attempt 3) -> Reaches MAX_RETRIES (3)
+      mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
+      await (host as any).pollAllBots();
+      await instance.peerQueue.enqueue("0x6666666666666666666666666666666666666666", async () => {});
+      expect(callCount).toBe(3);
+
+      // Now digest is marked as processed and cursor advanced!
+      expect(await instance.state.get("digest:fail-digest-1")).toBeDefined();
+      expect(await instance.state.get("fail:fail-digest-1")).toBeUndefined();
+      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(String(messageTime + 1));
+
+      // Poll 4: Relay still returns it, but bot-host skips it without calling onMessage!
+      mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
+      await (host as any).pollAllBots();
+      await instance.peerQueue.enqueue("0x6666666666666666666666666666666666666666", async () => {});
+      expect(callCount).toBe(3); // Not incremented!
+
+      await host.stop();
+    });
+  });
 });

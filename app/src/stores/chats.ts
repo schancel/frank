@@ -2414,6 +2414,18 @@ export const useChatStore = defineStore('chats', {
         const outcome = locked.result
         recoveredOthers =
           outcome.state === 'failed' && outcome.reason === 'recovered'
+        if (outcome.state === 'sent') {
+          const hasQueued = Object.values(this.chats).some(chat =>
+            chat?.messages.some(
+              m =>
+                m.outbound &&
+                m.status === 'payment-pending' &&
+                m.delivery?.attemptDigest === undefined &&
+                walletOwnsMessage(wallet, m),
+            ),
+          )
+          if (hasQueued) void this.reconcileOutgoing({ wallet })
+        }
         return outcome
       } finally {
         inflightOutgoing.delete(id)

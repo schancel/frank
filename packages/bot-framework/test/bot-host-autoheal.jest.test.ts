@@ -1,14 +1,11 @@
+import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
 import { FrankBotHost } from "../src/bot-host";
 import { RelayProfileManager } from "../src/relay-profile-manager";
 import {
   MonadMailboxRetryableError,
   MonadMailboxAuthError,
 } from "@frank/cashweb/relay/monad-mailbox-client";
-import type {
-  FrankBotDefinition,
-  BotMessageContext,
-  BotContext,
-} from "../src/types";
+import type { FrankBotDefinition } from "../src/types";
 
 jest.mock("../src/relay-profile-manager", () => ({
   RelayProfileManager: {
@@ -21,6 +18,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
   return {
     ...actual,
     createMonadChain: jest.fn(() => ({
+      chainIdentifier: "monad-testnet",
       directMessages: {
         fetchSince: jest.fn(),
         send: jest.fn(),
@@ -28,13 +26,15 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
       topics: {
         post: jest.fn(),
       },
-      createWallet: jest.fn().mockResolvedValue({
-        identity: {
-          address: { raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5" },
-          compressedPubKey: new Uint8Array(33),
-          toPrivateKeyHex: () => "0x" + "11".repeat(32),
-        },
-      }),
+      createWallet: jest
+        .fn()
+        .mockImplementation(async (roots: MonadRootBundle) => {
+          const { MonadIdentity } = jest.requireActual<
+            typeof import("@frank/wallet/monad-identity")
+          >("@frank/wallet/monad-identity");
+          const identity = MonadIdentity.fromDomainRoot(roots.authentication);
+          return { identity, close: jest.fn().mockResolvedValue(undefined) };
+        }),
     })),
     installCanonicalDirectory: jest.fn(() => () => {}),
     loadMonadChainConfigFromEnv: jest.fn(() => ({
@@ -48,6 +48,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
 jest.mock("../src/directory-manager", () => ({
   DirectoryManager: {
     create: jest.fn(() => ({
+      network: "monad-testnet",
       publish: jest.fn().mockResolvedValue(undefined),
       publishWithRetry: jest.fn().mockResolvedValue(undefined),
       startHeartbeat: jest.fn(),
@@ -71,12 +72,26 @@ describe("FrankBotHost auto-healing", () => {
 
   let host: FrankBotHost;
 
+  let originalEnvironment: NodeJS.ProcessEnv;
   beforeEach(() => {
+    originalEnvironment = process.env;
+    process.env = { ...originalEnvironment };
+    for (const key of [
+      "E2E_DEMO_MAIN_WALLET_PRIVATE_KEY",
+      "FRANK_DEMO_FAUCET_WALLET_JSON",
+      "E2E_DEMO_MAIN_WALLET_JSON",
+    ])
+      delete process.env[key];
     jest.clearAllMocks();
     host = new FrankBotHost({
       relayBaseUrl: "http://127.0.0.1:8098",
       stateDir: "/tmp/test-bot-autoheal-" + Math.random().toString(36).slice(2),
     });
+  });
+
+  afterEach(async () => {
+    await host.stop();
+    process.env = originalEnvironment;
   });
 
   it("manually auto-heals directory entry and profile on autoHealBot call", async () => {

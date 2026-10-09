@@ -1,9 +1,19 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
-import { randomBytes, createHash } from "crypto";
-import { JsonRpcProvider, Wallet, type TransactionReceipt } from "ethers";
-import axios from "axios";
+import { randomBytes } from "crypto";
+import {
+  JsonRpcProvider,
+  Wallet,
+  getAddress,
+  type TransactionReceipt,
+} from "ethers";
 
 import { deriveDomainRoot } from "@frank/domain-roots";
 import type { ActiveChain } from "@frank/wallet/chain/active-chain";
@@ -11,28 +21,21 @@ import {
   createMonadChain,
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
-  serializeMessageItems,
   type MonadChainWalletHandle,
 } from "@frank/wallet/chain/monad-chain";
 import {
   fetchMonadProfilesSince,
   decodeProfileBytes,
-  fetchMonadIdentityPubKey,
   MONAD_IDENTITY_DERIVATION_PATH,
+  MonadIdentity,
 } from "@frank/wallet/monad-identity";
 import { bip32MasterFromDomainRoot } from "@frank/wallet/bip32-domain-root";
-import { buildEnvelope } from "@frank/cashweb/relay/monad-message-envelope";
+import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-transport";
 import {
   MonadMailboxAuthError,
   MonadMailboxRetryableError,
 } from "@frank/cashweb/relay/monad-mailbox-client";
 import type { MessageItem } from "@frank/cashweb/types/messages";
-import {
-  MonadStampClient,
-  quoteMonadStampPaymentGasReserve,
-} from "@frank/wallet/monad-stamp-client";
-import { MonadAccountTxSigner } from "@frank/wallet/monad-account-tx";
-import { MonadHttpClient } from "@frank/wallet/monad-http";
 import type { DirectMessageSendResult } from "@frank/wallet/chain/active-chain";
 
 import {
@@ -40,12 +43,17 @@ import {
   type BotContext,
   type BotHostOptions,
   type BotMessageContext,
-  type DirectoryPeerInfo,
   type FrankBotDefinition,
   type NewUserEvent,
 } from "./types";
 import { EVMNonceSequencer } from "./nonce-sequencer";
 import { LevelBotStateStore } from "./state-store";
+import {
+  InboundOperationStore,
+  inboundIdentity,
+  conversationIdentity,
+  type InboundIdentity,
+} from "./inbound-operation-store";
 import { DirectoryManager } from "./directory-manager";
 import { RelayProfileManager } from "./relay-profile-manager";
 import { LoopGuard } from "./loop-guard";
@@ -57,6 +65,8 @@ interface ActiveBotInstance {
   definition: FrankBotDefinition;
   wallet: MonadChainWalletHandle;
   state: LevelBotStateStore;
+  operations: InboundOperationStore;
+  tasks: Set<Promise<void>>;
   directory: DirectoryManager;
   uninstallDirectory: () => void;
   loopGuard: LoopGuard;
@@ -80,14 +90,11 @@ export class FrankBotHost {
   >();
 
   private running = false;
+  private closing = false;
   private pollTimer?: NodeJS.Timeout;
   private registrationTimer?: NodeJS.Timeout;
   private lastRegistrationPollMs = 0;
   private readonly scheduler = new BotScheduler();
-  private readonly walletSendQueues = new WeakMap<
-    MonadChainWalletHandle,
-    Promise<any>
-  >();
   private stopPromise?: Promise<void>;
   private resolveStop?: () => void;
 
@@ -169,10 +176,10 @@ export class FrankBotHost {
     }
 
     const rpcUrls = this.options.rpcUrl
-      .split(',')
+      .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    const primaryRpcUrl = rpcUrls[0] || 'https://testnet-rpc.monad.xyz';
+    const primaryRpcUrl = rpcUrls[0] || "https://testnet-rpc.monad.xyz";
 
     this.provider = new JsonRpcProvider(primaryRpcUrl);
     this.chain = createMonadChain({
@@ -199,6 +206,7 @@ export class FrankBotHost {
   }
 
   async register(definition: FrankBotDefinition): Promise<void> {
+    if (this.closing) throw new Error("Bot host is closed");
     if (this.instances.has(definition.id)) {
       throw new Error(`Bot with id "${definition.id}" is already registered`);
     }
@@ -206,378 +214,425 @@ export class FrankBotHost {
     const botStateDir = join(this.options.stateDir, "bots", definition.id);
     mkdirSync(botStateDir, { recursive: true, mode: 0o700 });
 
-    // 1. Load or generate bot account root (32 bytes secret)
+    // Admit before root adoption, wallet opening or registration effects. A new state path
+    // paired with a previously provisioned identity is not a fresh financial profile.
     const rootFile = join(botStateDir, "account-root.hex");
-    let rootHex: string;
-    if (existsSync(rootFile)) {
-      rootHex = readFileSync(rootFile, "utf8").trim();
-    } else if (
-      definition.defaultIdentityPath &&
-      existsSync(definition.defaultIdentityPath)
-    ) {
-      try {
-        const idData = JSON.parse(
-          readFileSync(definition.defaultIdentityPath, "utf8")
-        );
-        if (typeof idData.privateKeyHex === "string") {
-          rootHex = createHash("sha256")
-            .update(idData.privateKeyHex)
-            .digest("hex");
-          writeFileSync(rootFile, rootHex, { mode: 0o600 });
-          console.log(
-            `[bot-host] Migrated existing identity from ${definition.defaultIdentityPath} into durable account root`
-          );
-        } else {
-          rootHex = randomBytes(32).toString("hex");
-          writeFileSync(rootFile, rootHex, { mode: 0o600 });
-        }
-      } catch {
-        rootHex = randomBytes(32).toString("hex");
-        writeFileSync(rootFile, rootHex, { mode: 0o600 });
-      }
-    } else {
-      rootHex = randomBytes(32).toString("hex");
-      writeFileSync(rootFile, rootHex, { mode: 0o600 });
-    }
-    const accountRoot = Uint8Array.from(Buffer.from(rootHex, "hex"));
-
-    // 2. Open persistent typed wallet for canonical messaging
-    const wallet = (await this.chain.createWallet({
-      evm: deriveDomainRoot(accountRoot, "evm-wallet"),
-      authentication: deriveDomainRoot(accountRoot, "identity-authentication"),
-      messaging: deriveDomainRoot(accountRoot, "messaging-encryption"),
-    })) as MonadChainWalletHandle;
-
-    let evmMainPrivateKey: string | undefined;
-    try {
-      const evmRoot = deriveDomainRoot(accountRoot, "evm-wallet");
-      const evmMaster = bip32MasterFromDomainRoot(evmRoot, "evm-wallet");
-      evmMainPrivateKey = evmMaster.derivePath(MONAD_IDENTITY_DERIVATION_PATH).privateKey;
-    } catch {}
-
-    const botAddress = wallet.identity.address.raw;
-    const botSubject = Buffer.from(wallet.identity.compressedPubKey).toString(
-      "hex"
+    const hadRoot = existsSync(rootFile);
+    const hadIdentity =
+      !!definition.defaultIdentityPath &&
+      existsSync(definition.defaultIdentityPath);
+    const hadOtherFiles = readdirSync(botStateDir).some(
+      (name) => name !== "state"
     );
-
-    // 3. Open LevelDB state store
     const state = await LevelBotStateStore.open(join(botStateDir, "state"));
-
-    // 4. Open and publish Open Directory entry
-    const directory = DirectoryManager.create({
-      handle: wallet,
-      networkTag: this.options.networkTag,
-      relayBaseUrl: this.options.relayBaseUrl,
-      location: join(botStateDir, "directory"),
-    });
-
-    await directory.publishWithRetry(definition.id);
-    directory.startHeartbeat(this.options.heartbeatIntervalMs);
-
-    // Install canonical directory so chain.directMessages routes through canonical directory
-    const uninstallDirectory = installCanonicalDirectory(
-      wallet,
-      directory.rawDirectory
-    );
-
-    // 5. Register Frank metadata profile on relay
-    const profile = definition.getProfile();
-    await RelayProfileManager.registerProfile({
-      relayBaseUrl: this.options.relayBaseUrl,
-      identity: wallet.identity,
-      label: definition.id,
-      profile,
-    });
-
-    // 6. Fund bot identity if shared funding wallet is present
-    if (
-      this.fundingWallet &&
-      this.nonceSequencer &&
-      definition.id !== "faucet"
-    ) {
-      const receiveAddress = (await wallet.getReceiveAddress()).raw;
-      const targets = [
-        { addr: botAddress, label: "Identity address" },
-        { addr: receiveAddress, label: "EVM main account" },
-      ];
-      for (const target of targets) {
-        try {
-          const bal = await this.provider.getBalance(target.addr);
-          if (bal < 100_000_000_000_000_000n) {
-            const funderBal = await this.provider.getBalance(
-              this.fundingWallet.address
-            );
-            const fundAmount =
-              funderBal > 1_000_000_000_000_000_000n
-                ? 500_000_000_000_000_000n
-                : funderBal / 4n;
-            if (fundAmount > 10_000_000_000_000_000n) {
-              await this.nonceSequencer.withNonce(async (nonce) => {
-                const tx = await this.fundingWallet!.sendTransaction({
-                  to: target.addr,
-                  value: fundAmount,
-                  nonce,
-                });
-                await tx.wait();
-              });
-            }
-          }
-        } catch (fundErr) {
-          console.warn(
-            `[bot-host] Failed initial funding for ${target.label} (${target.addr}) of bot ${definition.id}:`,
-            fundErr
-          );
-        }
-      }
-    }
-
-    // 7. Wire up loop guard and peer queue
-    const loopGuard = new LoopGuard({
-      selfAddress: botAddress,
-    });
-    const peerQueue = new PeerLaneQueue();
-
-    // 8. Assemble BotContext
-    const subscriptions = new LevelSubscriptionManager(
-      state.sublevel("subscriptions"),
-      async (recipientAddress: string, items: MessageItem[]) => {
-        return this.sendMessageWithFallback(wallet, recipientAddress, items);
-      }
-    );
-
-    const context: BotContext = {
-      botId: definition.id,
-      address: botAddress,
-      subject: botSubject,
-      relayBaseUrl: this.options.relayBaseUrl,
-      networkTag: this.options.networkTag,
-      provider: this.provider,
-      state,
-      subscriptions,
-
-      lookupPeer: (addr: string) => directory.lookupPeer(addr),
-
-      sendMessage: async (
-        recipientAddress: string,
-        items,
-        conversationId?: string,
-        options?: { stampValueWei?: bigint }
-      ) => {
-        return this.sendMessageWithFallback(
-          wallet,
-          recipientAddress,
-          items,
-          conversationId,
-          options
-        );
-      },
-
-      sendDirectMessage: async (
-        recipientAddress: string,
-        items,
-        conversationId?: string,
-        options?: { stampValueWei?: bigint }
-      ) => {
-        return this.sendMessageWithFallback(
-          wallet,
-          recipientAddress,
-          items,
-          conversationId,
-          options
-        );
-      },
-
-      onNewUserRegistered: (cb) => {
-        this.registrationListeners.add(cb);
-      },
-
-      sendTransaction: async ({ to, data, valueWei = 0n }) => {
-        if (
-          definition.id === "faucet" &&
-          this.fundingWallet &&
-          this.nonceSequencer
-        ) {
-          return this.nonceSequencer.withNonce(async (nonce) => {
-            const tx = await this.fundingWallet!.sendTransaction({
-              to,
-              data: data ?? "0x",
-              value: valueWei,
-              nonce,
-            });
-            return { txHash: tx.hash };
-          });
-        }
-
-        const botWallet = new Wallet(
-          wallet.identity.toPrivateKeyHex(),
-          this.provider
-        );
-        const botBalance = await this.provider.getBalance(botAddress);
-        const feeData = await this.provider.getFeeData();
-        const gasPrice = feeData.gasPrice ?? 1_000_000_000n;
-        const gasLimit = data && data !== "0x" ? 250_000n : 21_000n;
-        const needed = valueWei + gasLimit * gasPrice;
-
-        if (botBalance < needed && this.fundingWallet && this.nonceSequencer) {
-          const topUp = needed - botBalance + 50_000_000_000_000_000n;
-          await this.nonceSequencer.withNonce(async (nonce) => {
-            const tx = await this.fundingWallet!.sendTransaction({
-              to: botAddress,
-              value: topUp,
-              nonce,
-            });
-            await tx.wait();
-          });
-        }
-
-        let tx: any;
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          try {
-            const nextNonce = await this.provider.getTransactionCount(botAddress, "pending");
-            tx = await botWallet.sendTransaction({
-              to,
-              data: data ?? "0x",
-              value: valueWei,
-              nonce: nextNonce,
-            });
-            break;
-          } catch (err: any) {
-            const isNonceError =
-              String(err).includes("nonce") ||
-              String(err).includes("NONCE_EXPIRED") ||
-              err?.code === "NONCE_EXPIRED";
-            if (isNonceError && attempt < 3) {
-              await new Promise((r) => setTimeout(r, 600 * attempt));
-              continue;
-            }
-            throw err;
-          }
-        }
-        return { txHash: tx.hash };
-      },
-
-      sendTransfer: async ({ to, valueWei }) => {
-        return context.sendTransaction({ to, data: "0x", valueWei });
-      },
-
-      buildAndSignTransfer: async ({ to, valueWei }) => {
-        if (
-          definition.id === "faucet" &&
-          this.fundingWallet &&
-          this.nonceSequencer
-        ) {
-          return this.nonceSequencer.withNonce(async (nonce) => {
-            const populated = await this.fundingWallet!.populateTransaction({
-              to,
-              value: valueWei,
-              nonce,
-            });
-            const rawTx = await this.fundingWallet!.signTransaction(populated);
-            const txHash = (await this.provider.broadcastTransaction(rawTx))
-              .hash;
-            return { rawTx, txHash };
-          });
-        }
-
-        const botWallet = new Wallet(
-          wallet.identity.toPrivateKeyHex(),
-          this.provider
-        );
-        const botBalance = await this.provider.getBalance(botAddress);
-        const feeData = await this.provider.getFeeData();
-        const gasPrice = feeData.gasPrice ?? 1_000_000_000n;
-        const gasLimit = 21_000n;
-        const needed = valueWei + gasLimit * gasPrice;
-
-        if (botBalance < needed && this.fundingWallet && this.nonceSequencer) {
-          const topUp = needed - botBalance + 50_000_000_000_000_000n;
-          await this.nonceSequencer.withNonce(async (nonce) => {
-            const tx = await this.fundingWallet!.sendTransaction({
-              to: botAddress,
-              value: topUp,
-              nonce,
-            });
-            await tx.wait();
-          });
-        }
-
-        const populated = await botWallet.populateTransaction({
-          to,
-          value: valueWei,
-        });
-        const rawTx = await botWallet.signTransaction(populated);
-        const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
-        return { rawTx, txHash };
-      },
-
-      waitForReceipt: async (
-        txHash: string,
-        timeoutMs = 60_000
-      ): Promise<TransactionReceipt | null> => {
-        return this.provider.waitForTransaction(txHash, 1, timeoutMs);
-      },
-
-      getBalance: async (address?: string): Promise<bigint> => {
-        if (address) {
-          return this.provider.getBalance(address);
-        }
-        if (definition.id === "faucet" && this.fundingWallet) {
-          return this.provider.getBalance(this.fundingWallet.address);
-        }
-        return this.provider.getBalance(botAddress);
-      },
-
-      publishTopicMessage: async ({ topic, entries, voteWeightWei }) => {
-        return this.chain.topics.post({
-          wallet,
-          topic,
-          entries,
-          direction: "up",
-          voteWeightWei: voteWeightWei ?? this.options.stampValueWei,
-        });
-      },
-    };
-
-    let savedCursor = 0;
+    let openedWallet: MonadChainWalletHandle | undefined;
+    let openedDirectory: DirectoryManager | undefined;
+    let uninstall: (() => void) | undefined;
+    let operations: InboundOperationStore | undefined;
     try {
-      const cursorStr = await state.get("cursor:lastPollTimestamp");
-      if (cursorStr) savedCursor = parseInt(cursorStr, 10);
-    } catch {
-      // ignore
-    }
+      const fresh = await InboundOperationStore.preflight(
+        state,
+        !hadRoot && !hadIdentity && !hadOtherFiles
+      );
+      if (!fresh && !hadRoot)
+        throw new Error("Bot admission root missing; preserve state");
+      const rootHex = hadRoot
+        ? readFileSync(rootFile, "utf8").trim()
+        : randomBytes(32).toString("hex");
+      if (!/^[0-9a-f]{64}$/i.test(rootHex))
+        throw new Error("Bot admission root invalid; preserve state");
+      if (!hadRoot)
+        writeFileSync(rootFile, rootHex, { mode: 0o600, flag: "wx" });
+      const accountRoot = Uint8Array.from(Buffer.from(rootHex, "hex"));
+      const roots = {
+        evm: deriveDomainRoot(accountRoot, "evm-wallet"),
+        authentication: deriveDomainRoot(
+          accountRoot,
+          "identity-authentication"
+        ),
+        messaging: deriveDomainRoot(accountRoot, "messaging-encryption"),
+      };
+      accountRoot.fill(0);
+      const expected = MonadIdentity.fromDomainRoot(roots.authentication);
+      const network = canonicalNetworkDescriptor(
+        this.options.networkTag
+      ).network;
+      if (this.chain.chainIdentifier !== network)
+        throw new Error("Bot canonical network mismatch");
+      operations = await InboundOperationStore.open(
+        state,
+        {
+          chainIdentifier: network,
+          botId: definition.id,
+          subject: expected.compressedPubKey.toString("hex"),
+          address: expected.address.raw.toLowerCase(),
+        },
+        fresh
+      );
+      const wallet = (await this.chain.createWallet(
+        roots
+      )) as MonadChainWalletHandle;
+      openedWallet = wallet;
+      if (
+        wallet.identity.address.raw.toLowerCase() !==
+          operations.owner.address ||
+        Buffer.from(wallet.identity.compressedPubKey).toString("hex") !==
+          operations.owner.subject
+      )
+        throw new Error("Bot wallet admission binding mismatch");
+      const botAddress = wallet.identity.address.raw;
+      const botSubject = operations.owner.subject;
+      const evmMainPrivateKey = bip32MasterFromDomainRoot(
+        roots.evm,
+        "evm-wallet"
+      ).derivePath(MONAD_IDENTITY_DERIVATION_PATH).privateKey;
 
-    const instance: ActiveBotInstance = {
-      definition,
-      wallet,
-      state,
-      directory,
-      uninstallDirectory,
-      loopGuard,
-      peerQueue,
-      context,
-      lastPollTimestamp:
-        savedCursor > 0 ? savedCursor : Date.now() - 24 * 3600_000,
-      inFlightDigests: new Set<string>(),
-      evmMainPrivateKey,
-    };
+      // 4. Open and publish Open Directory entry
+      const directory = DirectoryManager.create({
+        handle: wallet,
+        networkTag: this.options.networkTag,
+        relayBaseUrl: this.options.relayBaseUrl,
+        location: join(botStateDir, "directory"),
+      });
 
-    this.instances.set(definition.id, instance);
+      openedDirectory = directory;
+      if (directory.network !== operations.owner.chainIdentifier)
+        throw new Error("Bot directory network mismatch");
+      await directory.publishWithRetry(definition.id);
+      directory.startHeartbeat(this.options.heartbeatIntervalMs);
 
-    if (definition.schedules) {
-      for (const schedule of definition.schedules) {
-        this.scheduler.register(definition.id, schedule, context);
+      // Install canonical directory so chain.directMessages routes through canonical directory
+      const uninstallDirectory = installCanonicalDirectory(
+        wallet,
+        directory.rawDirectory
+      );
+      uninstall = uninstallDirectory;
+
+      // 5. Register Frank metadata profile on relay
+      const profile = definition.getProfile();
+      await RelayProfileManager.registerProfile({
+        relayBaseUrl: this.options.relayBaseUrl,
+        identity: wallet.identity,
+        label: definition.id,
+        profile,
+      });
+
+      // 6. Fund bot identity if shared funding wallet is present
+      if (
+        this.fundingWallet &&
+        this.nonceSequencer &&
+        definition.id !== "faucet"
+      ) {
+        const receiveAddress = (await wallet.getReceiveAddress()).raw;
+        const targets = [
+          { addr: botAddress, label: "Identity address" },
+          { addr: receiveAddress, label: "EVM main account" },
+        ];
+        for (const target of targets) {
+          try {
+            const bal = await this.provider.getBalance(target.addr);
+            if (bal < 100_000_000_000_000_000n) {
+              const funderBal = await this.provider.getBalance(
+                this.fundingWallet.address
+              );
+              const fundAmount =
+                funderBal > 1_000_000_000_000_000_000n
+                  ? 500_000_000_000_000_000n
+                  : funderBal / 4n;
+              if (fundAmount > 10_000_000_000_000_000n) {
+                await this.nonceSequencer.withNonce(async (nonce) => {
+                  const tx = await this.fundingWallet!.sendTransaction({
+                    to: target.addr,
+                    value: fundAmount,
+                    nonce,
+                  });
+                  await tx.wait();
+                });
+              }
+            }
+          } catch (fundErr) {
+            console.warn(
+              `[bot-host] Failed initial funding for ${target.label} (${target.addr}) of bot ${definition.id}:`,
+              fundErr
+            );
+          }
+        }
       }
-    }
 
-    if (definition.onStart) {
-      await definition.onStart(context);
+      // 7. Wire up loop guard and peer queue
+      const loopGuard = new LoopGuard({
+        selfAddress: botAddress,
+      });
+      const peerQueue = new PeerLaneQueue();
+
+      // 8. Assemble BotContext
+      const subscriptions = new LevelSubscriptionManager(
+        state.sublevel("subscriptions"),
+        async (recipientAddress: string, items: MessageItem[]) => {
+          return this.sendCanonicalMessage(wallet, recipientAddress, items);
+        }
+      );
+
+      const context: BotContext = {
+        botId: definition.id,
+        address: botAddress,
+        subject: botSubject,
+        relayBaseUrl: this.options.relayBaseUrl,
+        networkTag: this.options.networkTag,
+        provider: this.provider,
+        state,
+        subscriptions,
+
+        lookupPeer: (addr: string) => directory.lookupPeer(addr),
+
+        sendMessage: async (
+          recipientAddress: string,
+          items,
+          conversationId?: string,
+          options?: { stampValueWei?: bigint }
+        ) => {
+          return this.sendCanonicalMessage(
+            wallet,
+            recipientAddress,
+            items,
+            conversationId,
+            options
+          );
+        },
+
+        sendDirectMessage: async (
+          recipientAddress: string,
+          items,
+          conversationId?: string,
+          options?: { stampValueWei?: bigint }
+        ) => {
+          return this.sendCanonicalMessage(
+            wallet,
+            recipientAddress,
+            items,
+            conversationId,
+            options
+          );
+        },
+
+        onNewUserRegistered: (cb) => {
+          this.registrationListeners.add(cb);
+        },
+
+        sendTransaction: async ({ to, data, valueWei = 0n }) => {
+          if (
+            definition.id === "faucet" &&
+            this.fundingWallet &&
+            this.nonceSequencer
+          ) {
+            return this.nonceSequencer.withNonce(async (nonce) => {
+              const tx = await this.fundingWallet!.sendTransaction({
+                to,
+                data: data ?? "0x",
+                value: valueWei,
+                nonce,
+              });
+              return { txHash: tx.hash };
+            });
+          }
+
+          const botWallet = new Wallet(
+            wallet.identity.toPrivateKeyHex(),
+            this.provider
+          );
+          const botBalance = await this.provider.getBalance(botAddress);
+          const feeData = await this.provider.getFeeData();
+          const gasPrice = feeData.gasPrice ?? 1_000_000_000n;
+          const gasLimit = data && data !== "0x" ? 250_000n : 21_000n;
+          const needed = valueWei + gasLimit * gasPrice;
+
+          if (
+            botBalance < needed &&
+            this.fundingWallet &&
+            this.nonceSequencer
+          ) {
+            const topUp = needed - botBalance + 50_000_000_000_000_000n;
+            await this.nonceSequencer.withNonce(async (nonce) => {
+              const tx = await this.fundingWallet!.sendTransaction({
+                to: botAddress,
+                value: topUp,
+                nonce,
+              });
+              await tx.wait();
+            });
+          }
+
+          let tx: any;
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              const nextNonce = await this.provider.getTransactionCount(
+                botAddress,
+                "pending"
+              );
+              tx = await botWallet.sendTransaction({
+                to,
+                data: data ?? "0x",
+                value: valueWei,
+                nonce: nextNonce,
+              });
+              break;
+            } catch (err: any) {
+              const isNonceError =
+                String(err).includes("nonce") ||
+                String(err).includes("NONCE_EXPIRED") ||
+                err?.code === "NONCE_EXPIRED";
+              if (isNonceError && attempt < 3) {
+                await new Promise((r) => setTimeout(r, 600 * attempt));
+                continue;
+              }
+              throw err;
+            }
+          }
+          return { txHash: tx.hash };
+        },
+
+        sendTransfer: async ({ to, valueWei }) => {
+          return context.sendTransaction({ to, data: "0x", valueWei });
+        },
+
+        buildAndSignTransfer: async ({ to, valueWei }) => {
+          if (
+            definition.id === "faucet" &&
+            this.fundingWallet &&
+            this.nonceSequencer
+          ) {
+            return this.nonceSequencer.withNonce(async (nonce) => {
+              const populated = await this.fundingWallet!.populateTransaction({
+                to,
+                value: valueWei,
+                nonce,
+              });
+              const rawTx = await this.fundingWallet!.signTransaction(
+                populated
+              );
+              const txHash = (await this.provider.broadcastTransaction(rawTx))
+                .hash;
+              return { rawTx, txHash };
+            });
+          }
+
+          const botWallet = new Wallet(
+            wallet.identity.toPrivateKeyHex(),
+            this.provider
+          );
+          const botBalance = await this.provider.getBalance(botAddress);
+          const feeData = await this.provider.getFeeData();
+          const gasPrice = feeData.gasPrice ?? 1_000_000_000n;
+          const gasLimit = 21_000n;
+          const needed = valueWei + gasLimit * gasPrice;
+
+          if (
+            botBalance < needed &&
+            this.fundingWallet &&
+            this.nonceSequencer
+          ) {
+            const topUp = needed - botBalance + 50_000_000_000_000_000n;
+            await this.nonceSequencer.withNonce(async (nonce) => {
+              const tx = await this.fundingWallet!.sendTransaction({
+                to: botAddress,
+                value: topUp,
+                nonce,
+              });
+              await tx.wait();
+            });
+          }
+
+          const populated = await botWallet.populateTransaction({
+            to,
+            value: valueWei,
+          });
+          const rawTx = await botWallet.signTransaction(populated);
+          const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
+          return { rawTx, txHash };
+        },
+
+        waitForReceipt: async (
+          txHash: string,
+          timeoutMs = 60_000
+        ): Promise<TransactionReceipt | null> => {
+          return this.provider.waitForTransaction(txHash, 1, timeoutMs);
+        },
+
+        getBalance: async (address?: string): Promise<bigint> => {
+          if (address) {
+            return this.provider.getBalance(address);
+          }
+          if (definition.id === "faucet" && this.fundingWallet) {
+            return this.provider.getBalance(this.fundingWallet.address);
+          }
+          return this.provider.getBalance(botAddress);
+        },
+
+        publishTopicMessage: async ({ topic, entries, voteWeightWei }) => {
+          return this.chain.topics.post({
+            wallet,
+            topic,
+            entries,
+            direction: "up",
+            voteWeightWei: voteWeightWei ?? this.options.stampValueWei,
+          });
+        },
+      };
+
+      let savedCursor = 0;
+      try {
+        const cursorStr = await state.get("cursor:lastPollTimestamp");
+        if (cursorStr) savedCursor = parseInt(cursorStr, 10);
+      } catch {
+        // ignore
+      }
+
+      const instance: ActiveBotInstance = {
+        definition,
+        wallet,
+        state,
+        operations,
+        tasks: new Set(),
+        directory,
+        uninstallDirectory,
+        loopGuard,
+        peerQueue,
+        context,
+        lastPollTimestamp:
+          savedCursor > 0 ? savedCursor : Date.now() - 24 * 3600_000,
+        inFlightDigests: new Set<string>(),
+        evmMainPrivateKey,
+      };
+
+      this.instances.set(definition.id, instance);
+
+      if (definition.schedules) {
+        for (const schedule of definition.schedules) {
+          this.scheduler.register(definition.id, schedule, context);
+        }
+      }
+
+      if (definition.onStart) {
+        await definition.onStart(context);
+      }
+      console.log(
+        `[bot-host] Bot "${definition.id}" is ready at address ${botAddress}`
+      );
+    } catch (error) {
+      this.instances.delete(definition.id);
+      uninstall?.();
+      await Promise.allSettled([
+        operations?.close(),
+        openedDirectory?.close(),
+        openedWallet?.close(),
+      ]);
+      await state.close();
+      throw error;
     }
-    console.log(
-      `[bot-host] Bot "${definition.id}" is ready at address ${botAddress}`
-    );
   }
 
   async start(): Promise<void> {
+    if (this.closing) throw new Error("Bot host is closed");
     if (this.running) return;
     this.running = true;
 
@@ -635,155 +690,79 @@ export class FrankBotHost {
   private async pollAllBots(): Promise<void> {
     for (const [id, instance] of this.instances.entries()) {
       try {
+        if (this.closing) return;
+        instance.operations.assertOpen();
+        // Independently recover already linked operations, including rows behind the mailbox cursor.
+        for (const row of instance.operations.listIncomplete()) {
+          if (instance.inFlightDigests.has(row.digest)) continue;
+          const payloadDigests = row.replies.flatMap((call) =>
+            call.digest ? [call.digest] : []
+          );
+          if (!payloadDigests.length) continue;
+          try {
+            const observations =
+              await this.chain.directMessages.reconcileAttempts({
+                wallet: instance.wallet,
+                payloadDigests,
+              });
+            for (let index = 0; index < row.replies.length; index++) {
+              const digest = row.replies[index].digest;
+              if (digest)
+                await instance.operations.observe(
+                  row.digest,
+                  index,
+                  digest,
+                  observations[digest] ?? "unknown"
+                );
+            }
+          } catch {
+            instance.operations.assertOpen(); // a failed journal write faults admission, not just recovery
+            console.warn(
+              `[bot-host] [${id}] Original reply recovery held; preserve state`
+            );
+          }
+        }
         const messages = await this.chain.directMessages.fetchSince({
           wallet: instance.wallet,
-          sinceMs: instance.lastPollTimestamp,
+          sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
         });
-
-        if (messages.length > 0) {
-          console.log(
-            `[bot-host] [${id}] Polled ${messages.length} message(s)`
-          );
-        }
-
         for (const msg of messages) {
-          // 1. Idempotency check on payload digest (both in-flight and stored)
-          if (instance.inFlightDigests.has(msg.payloadDigest)) {
-            continue;
-          }
-          const digestKey = `digest:${msg.payloadDigest}`;
-          const alreadyProcessed = await instance.state.get(digestKey);
-          if (alreadyProcessed) {
-            instance.lastPollTimestamp = Math.max(
-              instance.lastPollTimestamp,
-              msg.receivedTime + 1
-            );
-            void instance.state.put(
-              "cursor:lastPollTimestamp",
-              String(instance.lastPollTimestamp)
+          let identity: InboundIdentity;
+          try {
+            identity = inboundIdentity(msg, instance.operations.owner);
+          } catch {
+            console.warn(
+              `[bot-host] [${id}] Unsupported inbound identity; no handler admitted`
             );
             continue;
           }
-
-          // 2. Loop guard check (echoes, denylists, bot peers)
-          const sender = msg.senderAddress.raw;
-          const dropReason = instance.loopGuard.shouldDrop(sender);
-          if (dropReason) {
-            console.log(
-              `[bot-host] [${id}] Dropped message from ${sender}: ${dropReason}`
-            );
-            instance.lastPollTimestamp = Math.max(
-              instance.lastPollTimestamp,
-              msg.receivedTime + 1
-            );
-            void instance.state.put(
-              "cursor:lastPollTimestamp",
-              String(instance.lastPollTimestamp)
-            );
-            continue;
-          }
-
-          console.log(
-            `[bot-host] [${id}] Enqueuing message from ${sender} (digest: ${msg.payloadDigest.slice(
-              0,
-              10
-            )}..., items: ${msg.items.map((i) => i.type).join(",")})`
-          );
-
-          instance.inFlightDigests.add(msg.payloadDigest);
-
-          // 3. Dispatch in per-peer serialized queue
-          void instance.peerQueue.enqueue(sender, async () => {
-            const msgCtx: BotMessageContext = {
-              conversationId: msg.conversationId || sender,
-              peerAddress: sender,
-              peerSubject: msg.payloadDigest,
-              timestampMs: msg.receivedTime,
-              payloadDigest: msg.payloadDigest,
-              items: msg.items,
-              reply: async (replyItems, options) => {
-                const res = await instance.context.sendMessage(
-                  sender,
-                  replyItems,
-                  msg.conversationId,
-                  options
-                );
-                instance.loopGuard.recordReply(sender);
-                return res;
-              },
-            };
-
-            try {
-              if (await instance.state.get(digestKey)) {
-                return;
-              }
-              let reply = await instance.definition.onMessage(
-                msgCtx,
-                instance.context
-              );
-              if (!reply || reply.length === 0) {
-                const subReply =
-                  await instance.context.subscriptions.handleSubscriptionCommand(
-                    msg.items,
-                    sender
-                  );
-                if (subReply) {
-                  reply = subReply;
-                }
-              }
-              if (Array.isArray(reply) && reply.length > 0) {
-                await instance.context.sendMessage(
-                  sender,
-                  reply,
-                  msg.conversationId
-                );
-                instance.loopGuard.recordReply(sender);
-              }
-              await instance.state.put(digestKey, String(Date.now()));
-              await instance.state.del(`fail:${msg.payloadDigest}`).catch(() => {});
-              instance.lastPollTimestamp = Math.max(
-                instance.lastPollTimestamp,
-                msg.receivedTime + 1
-              );
-              await instance.state.put(
-                "cursor:lastPollTimestamp",
-                String(instance.lastPollTimestamp)
-              );
-            } catch (err) {
-              console.error(`[bot-host] Error in bot ${id}.onMessage:`, err);
-              const failKey = `fail:${msg.payloadDigest}`;
-              let failCount = 0;
+          const capturedItems = structuredClone(msg.items);
+          if (instance.inFlightDigests.has(identity.digest)) continue;
+          if (instance.loopGuard.shouldDrop(identity.peerAddress)) continue;
+          instance.inFlightDigests.add(identity.digest);
+          const task = instance.peerQueue.enqueue(
+            identity.peerAddress,
+            async () => {
               try {
-                const prev = await instance.state.get(failKey);
-                failCount = (prev ? parseInt(prev, 10) : 0) + 1;
+                if (
+                  this.closing ||
+                  !(await instance.operations.admit(identity))
+                )
+                  return;
+                await this.dispatch(instance, identity, capturedItems);
               } catch {
-                failCount = 1;
-              }
-              const MAX_RETRIES = 3;
-              if (failCount >= MAX_RETRIES) {
+                // An interrupted handler may have generated content or paid. It is never retried,
+                // skipped as processed, or completed from a later wallet delivery observation.
                 console.warn(
-                  `[bot-host] Bot ${id} exceeded ${MAX_RETRIES} attempts for message ${msg.payloadDigest.slice(
-                    0,
-                    10
-                  )}... Skipping message to prevent poison loop.`
+                  `[bot-host] [${id}] Inbound invocation held; preserve original operation`
                 );
-                await instance.state.put(digestKey, String(Date.now()));
-                await instance.state.del(failKey).catch(() => {});
-                instance.lastPollTimestamp = Math.max(
-                  instance.lastPollTimestamp,
-                  msg.receivedTime + 1
-                );
-                await instance.state.put(
-                  "cursor:lastPollTimestamp",
-                  String(instance.lastPollTimestamp)
-                );
-              } else {
-                await instance.state.put(failKey, String(failCount)).catch(() => {});
+              } finally {
+                instance.inFlightDigests.delete(identity.digest);
               }
-            } finally {
-              instance.inFlightDigests.delete(msg.payloadDigest);
             }
-          });
+          );
+          instance.tasks.add(task);
+          void task.finally(() => instance.tasks.delete(task));
         }
       } catch (err: unknown) {
         console.warn(
@@ -961,7 +940,9 @@ export class FrankBotHost {
 
           try {
             if (id !== "faucet") {
-              await new Promise((r) => setTimeout(r, 1000 + Math.floor(Math.random() * 4000)));
+              await new Promise((r) =>
+                setTimeout(r, 1000 + Math.floor(Math.random() * 4000))
+              );
             }
             await instance.definition.onNewUser(event, instance.context);
           } catch (err) {
@@ -984,238 +965,150 @@ export class FrankBotHost {
     }
   }
 
-  private async sendMessageWithFallback(
+  private async dispatch(
+    instance: ActiveBotInstance,
+    identity: InboundIdentity,
+    items: MessageItem[]
+  ): Promise<void> {
+    const replies: Promise<DirectMessageSendResult>[] = [];
+    let accepting = true;
+    let failed = false;
+    const send: BotContext["sendMessage"] = (
+      recipient,
+      items,
+      conversationId,
+      options
+    ) => {
+      if (!accepting || failed || this.closing)
+        return Promise.reject(new Error("Bot invocation is no longer active"));
+      // Snapshot caller-owned values before any asynchronous journal work.
+      const captured = {
+        recipient: getAddress(recipient).toLowerCase(),
+        conversationId:
+          conversationId === undefined
+            ? undefined
+            : conversationIdentity(conversationId),
+        stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+        items: structuredClone(items),
+      };
+      const reply = (async () => {
+        const index = await instance.operations.beginReply(identity.digest, {
+          recipient: captured.recipient,
+          conversationId: captured.conversationId,
+          stampValue: captured.stampValue.toString(),
+        });
+        const result = await this.sendCanonicalMessage(
+          instance.wallet,
+          captured.recipient,
+          captured.items,
+          captured.conversationId,
+          { stampValueWei: captured.stampValue },
+          (digest) => instance.operations.link(identity.digest, index, digest)
+        );
+        // A send result cannot substitute for the durable pre-submission callback.
+        if (
+          instance.operations.get(identity.digest)?.replies[index].digest !==
+          result.payloadDigest
+        )
+          throw new Error("Bot reply has no matching durable attempt");
+        await instance.operations.observe(
+          identity.digest,
+          index,
+          result.payloadDigest,
+          "delivered"
+        );
+        return result;
+      })();
+      replies.push(reply);
+      void reply.catch(() => {
+        failed = true;
+      });
+      return reply;
+    };
+    const context: BotContext = {
+      ...instance.context,
+      sendMessage: send,
+      sendDirectMessage: send,
+    };
+    const msgCtx: BotMessageContext = {
+      conversationId: identity.conversationId,
+      peerAddress: identity.peerAddress,
+      peerSubject: identity.peerSubject,
+      payloadDigest: identity.digest,
+      timestampMs: identity.receivedTime,
+      items,
+      reply: async (items, options) => {
+        const result = await send(
+          identity.peerAddress,
+          items,
+          identity.conversationId,
+          options
+        );
+        instance.loopGuard.recordReply(identity.peerAddress);
+        return result;
+      },
+    };
+    try {
+      let reply = await instance.definition.onMessage(msgCtx, context);
+      if (!reply || !reply.length)
+        reply =
+          (await context.subscriptions.handleSubscriptionCommand(
+            items,
+            identity.peerAddress
+          )) ?? undefined;
+      if (reply?.length) await msgCtx.reply(reply);
+    } catch {
+      failed = true;
+    } finally {
+      accepting = false;
+      await Promise.allSettled(replies);
+    }
+    if (failed)
+      throw new Error("Bot invocation incomplete; preserve original operation");
+    const cursor = Math.max(
+      instance.lastPollTimestamp,
+      identity.receivedTime + 1
+    );
+    const committedCursor = await instance.operations.complete(
+      identity.digest,
+      cursor
+    );
+    instance.lastPollTimestamp = Math.max(
+      instance.lastPollTimestamp,
+      committedCursor
+    );
+  }
+
+  private async sendCanonicalMessage(
     wallet: MonadChainWalletHandle,
     recipientAddress: string,
     items: MessageItem[],
     conversationId?: string,
-    options?: { stampValueWei?: bigint }
+    options?: { stampValueWei?: bigint },
+    onAttemptCreated?: (digest: string) => Promise<void>
   ): Promise<DirectMessageSendResult> {
-    const stampValue = options?.stampValueWei ?? (items as any).stampValueWei;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const res = await this.chain.directMessages.send({
-          wallet,
-          recipient: toChainAddress(recipientAddress),
-          items,
-          conversationId,
-          ...(stampValue !== undefined ? { stampValue } : {}),
-        });
-        console.log(
-          `[bot-host] Canonical send to ${recipientAddress} succeeded (digest: ${res.payloadDigest.slice(
-            0,
-            10
-          )}...)`
-        );
-        return res;
-      } catch (err: any) {
-        const msg = err?.message || String(err);
-        const isTransient =
-          msg.includes("429") ||
-          msg.includes("limit reached") ||
-          msg.includes("502") ||
-          msg.includes("503") ||
-          msg.includes("SERVER_ERROR");
-        if (isTransient && attempt < 3) {
-          const delayMs = 1500 * attempt + Math.floor(Math.random() * 500);
-          console.warn(
-            `[bot-host] Canonical send transient error (attempt ${attempt}/3): ${msg}. Retrying in ${delayMs}ms...`
-          );
-          await new Promise((r) => setTimeout(r, delayMs));
-          continue;
-        }
-        console.warn(
-          `[bot-host] Canonical send to ${recipientAddress} failed, falling back to standard send:`,
-          err
-        );
-        return this.sendStandardDirectMessage(
-          wallet,
-          recipientAddress,
-          items,
-          options
-        );
-      }
-    }
-    return this.sendStandardDirectMessage(
+    const instance = [...this.instances.values()].find(
+      (value) => value.wallet === wallet
+    );
+    if (!instance || this.closing)
+      throw new Error("Bot send admission unavailable");
+    instance.operations.assertOpen();
+    return this.chain.directMessages.send({
       wallet,
-      recipientAddress,
+      recipient: toChainAddress(recipientAddress),
       items,
-      options
-    );
-  }
-
-  private async sendStandardDirectMessage(
-    wallet: MonadChainWalletHandle,
-    recipientAddress: string,
-    items: MessageItem[],
-    options?: { stampValueWei?: bigint }
-  ): Promise<DirectMessageSendResult> {
-    const prev = this.walletSendQueues.get(wallet) ?? Promise.resolve();
-    const run = prev.then(async () => {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          const toPubKey = await fetchMonadIdentityPubKey({
-            relayBaseUrl: this.options.relayBaseUrl,
-            address: recipientAddress,
-          });
-          if (!toPubKey) {
-            throw new Error(
-              `No registered profile or pubkey for ${recipientAddress}`
-            );
-          }
-
-          const instance = Array.from(this.instances.values()).find(
-            (i) => i.wallet === wallet
-          );
-          const candidateKeys = [
-            this.options.fundingPrivateKeyHex,
-            instance?.evmMainPrivateKey,
-            wallet.mainPrivateKey,
-            wallet.mainAccount?.privateKey,
-            wallet.identity.toPrivateKeyHex(),
-          ].filter(Boolean) as string[];
-
-          let bestKey: string | undefined;
-          let maxBal = -1n;
-          for (const key of candidateKeys) {
-            try {
-              const signerAddr = new Wallet(key).address;
-              const bal = await this.provider.getBalance(signerAddr);
-              if (bal > maxBal) {
-                maxBal = bal;
-                bestKey = key;
-              }
-            } catch {}
-          }
-          let fundingPrivateKeyHex =
-            bestKey && maxBal >= this.options.stampValueWei
-              ? bestKey
-              : this.options.fundingPrivateKeyHex ||
-                instance?.evmMainPrivateKey ||
-                wallet.mainPrivateKey ||
-                wallet.mainAccount?.privateKey ||
-                wallet.identity.toPrivateKeyHex();
-
-          const targetStampWei =
-            options?.stampValueWei ??
-            (items as any).stampValueWei ??
-            this.options.stampValueWei;
-
-          const botRpcUrls = this.options.rpcUrl
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean);
-          const botPrimaryRpcUrl =
-            botRpcUrls[0] || 'https://testnet-rpc.monad.xyz';
-
-          const mainAccountSigner = new MonadAccountTxSigner({
-            privateKey: fundingPrivateKeyHex,
-            provider: this.provider,
-            httpClient: new MonadHttpClient({
-              rpcUrl: botPrimaryRpcUrl,
-              rpcUrls: botRpcUrls,
-            }),
-          });
-
-          const gasReserveWei = await quoteMonadStampPaymentGasReserve({
-            signer: mainAccountSigner,
-            recipientPublicKey: toPubKey,
-          });
-
-          await wallet.pool.prepareStampInventory({
-            mainAccountSigner,
-            provider: this.provider,
-            stampValueWei: targetStampWei,
-            gasReserveWei,
-          });
-
-          const envelope = buildEnvelope({
-            fromAddress: wallet.identity.address.raw,
-            fromPrivateKey: wallet.identity.toNakamotoPrivateKey(),
-            toAddress: recipientAddress,
-            toPubKey,
-            plaintext: serializeMessageItems(items),
-            networkTag: this.options.networkTag,
-          });
-
-          const stampClient = new MonadStampClient({
-            pool: wallet.pool,
-            leaseManager: wallet.leaseManager,
-            provider: this.provider,
-            httpClient:
-              wallet.httpClient ??
-              new MonadHttpClient({
-                rpcUrl: botPrimaryRpcUrl,
-                rpcUrls: botRpcUrls,
-              }),
-            changePool: wallet.changePool,
-            relayBaseUrl: this.options.relayBaseUrl,
-          });
-
-          const res = await stampClient.submitStampedMessage({
-            encryptedPayload: envelope,
-            recipientPublicKey: toPubKey,
-            stampValueWei: targetStampWei,
-            waitForLease: {
-              timeoutMs: 30_000,
-              pollIntervalMs: 250,
-            },
-          });
-
-          console.log(
-            `[bot-host] Standard send to ${recipientAddress} succeeded (digest: ${res.payloadHashHex.slice(
-              0,
-              10
-            )}...)`
-          );
-          return {
-            payloadDigest: res.payloadHashHex,
-            stampValueWei: targetStampWei,
-            stampPayments: res.txHashes.map((h) => ({
-              txHash: h,
-              destinationAddress: recipientAddress,
-              valueWei: targetStampWei,
-            })),
-            preparationTxHashes: [],
-          };
-        } catch (err: any) {
-          const msg = err?.message || String(err);
-          const isTransient =
-            msg.includes("429") ||
-            msg.includes("limit reached") ||
-            msg.includes("502") ||
-            msg.includes("503") ||
-            msg.includes("SERVER_ERROR");
-          if (isTransient && attempt < 3) {
-            const delayMs = 1500 * attempt + Math.floor(Math.random() * 500);
-            console.warn(
-              `[bot-host] Standard send transient error (attempt ${attempt}/3): ${msg}. Retrying in ${delayMs}ms...`
-            );
-            await new Promise((r) => setTimeout(r, delayMs));
-            continue;
-          }
-          throw err;
-        }
-      }
-      throw new Error(
-        `sendStandardDirectMessage failed after retries for ${recipientAddress}`
-      );
+      conversationId:
+        conversationId === undefined
+          ? undefined
+          : conversationIdentity(conversationId),
+      stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+      onAttemptCreated,
     });
-    this.walletSendQueues.set(
-      wallet,
-      run.catch((err) => {
-        console.error(
-          `[bot-host] Standard send to ${recipientAddress} failed:`,
-          err
-        );
-      })
-    );
-    return run;
   }
 
   async stop(): Promise<void> {
     if (!this.running && this.instances.size === 0) return;
-    const wasRunning = this.running;
+    this.closing = true;
     this.running = false;
 
     if (this.resolveStop) {
@@ -1230,16 +1123,24 @@ export class FrankBotHost {
 
     for (const [id, instance] of this.instances.entries()) {
       try {
+        await Promise.allSettled([...instance.tasks]);
+        await instance.operations.close();
         if (instance.definition.onStop) {
           await instance.definition.onStop(instance.context);
         }
+      } catch {
+        console.warn(
+          `[bot-host] Stop hook failed for "${id}"; original operations remain retained`
+        );
+      } finally {
         instance.uninstallDirectory();
-        await instance.directory.close();
-        await instance.state.close();
-        await instance.wallet.close();
-        console.log(`[bot-host] stopped bot "${id}" cleanly`);
-      } catch (err) {
-        console.error(`[bot-host] error stopping bot "${id}":`, err);
+        const closed = await Promise.allSettled([
+          instance.directory.close(),
+          instance.state.close(),
+          instance.wallet.close(),
+        ]);
+        if (closed.some((result) => result.status === "rejected"))
+          console.warn(`[bot-host] Close failed for "${id}"; preserve state`);
       }
     }
     this.instances.clear();

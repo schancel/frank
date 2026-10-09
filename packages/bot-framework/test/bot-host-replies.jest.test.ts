@@ -10,6 +10,7 @@ import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
 import { directMessageNotAttempted } from "@frank/wallet/chain/active-chain";
 import { FrankBotHost } from "../src/bot-host";
+import { GAME_MAX_REPLIES_PER_PEER } from "../src/loop-guard";
 import type {
   BotHostOptions,
   BotMessageContext,
@@ -464,6 +465,163 @@ describe("FrankBotHost replies", () => {
       expect(row.phase).toBe("started");
       expect(row.replies).toHaveLength(1);
       expect(row.replies[0].digest).toBeUndefined();
+    });
+  });
+
+  // On a9ac2975 the budget is 20 for every bot, nothing configures it, and a peer past it is
+  // dropped without a word or a log line.
+  describe("the reply limit per peer", () => {
+    const answering = (extra: Partial<FrankBotDefinition> = {}) => {
+      const handled: string[] = [];
+      const definition = bot(
+        "limit-bot",
+        async (message) => {
+          handled.push((message.items[0] as { text: string }).text);
+          return [{ type: "text", text: "answer" }];
+        },
+        extra
+      );
+      return { handled, definition };
+    };
+    const limitOf = async (
+      extra: Partial<FrankBotDefinition>,
+      options: BotHostOptions = {}
+    ) =>
+      (await start(answering(extra).definition, options)).instance.loopGuard
+        .limit;
+
+    it("is twenty for a bot that declares nothing", async () => {
+      expect(await limitOf({})).toBe(20);
+    });
+
+    it("is what the bot declares, such as the game budget", async () => {
+      expect(
+        await limitOf({ maxRepliesPerPeer: GAME_MAX_REPLIES_PER_PEER })
+      ).toBe(300);
+    });
+
+    it("is the operator's FRANK_BOT_MAX_REPLIES_PER_PEER for every bot, whatever the bot declares", async () => {
+      process.env.FRANK_BOT_MAX_REPLIES_PER_PEER = "7";
+      expect(
+        await limitOf({ maxRepliesPerPeer: GAME_MAX_REPLIES_PER_PEER })
+      ).toBe(7);
+    });
+
+    it("is the host option before the environment and the bot", async () => {
+      process.env.FRANK_BOT_MAX_REPLIES_PER_PEER = "7";
+      expect(
+        await limitOf(
+          { maxRepliesPerPeer: GAME_MAX_REPLIES_PER_PEER },
+          { maxRepliesPerPeer: 3 }
+        )
+      ).toBe(3);
+    });
+
+    it.each(["-1", "1.5", "many", " "])(
+      "refuses to start with FRANK_BOT_MAX_REPLIES_PER_PEER=%p instead of using a default",
+      (value) => {
+        process.env.FRANK_BOT_MAX_REPLIES_PER_PEER = value;
+        expect(
+          () =>
+            new FrankBotHost({
+              relayBaseUrl: "http://127.0.0.1:8098",
+              stateDir,
+            })
+        ).toThrow(
+          "FRANK_BOT_MAX_REPLIES_PER_PEER must be a non-negative integer"
+        );
+      }
+    );
+
+    it("refuses to register a bot that declares a budget that is not a non-negative integer", async () => {
+      await expect(
+        start(answering({ maxRepliesPerPeer: 2.5 }).definition)
+      ).rejects.toThrow(
+        'Bot "limit-bot" maxRepliesPerPeer must be a non-negative integer'
+      );
+    });
+
+    it("stops answering a peer past the limit, and says so once: one log line and one notice", async () => {
+      const { handled, definition } = answering();
+      const { host, instance } = await start(definition, {
+        maxRepliesPerPeer: 2,
+      });
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      for (const text of ["one", "two", "three", "four"]) {
+        await poll(host, [inbound(text)]);
+        await drain(instance);
+      }
+      const late = inbound("five");
+      await poll(host, [late]);
+      await poll(host, [late]);
+      await drain(instance);
+      await poll(host, [inbound("from someone else", { from: otherPeer })]);
+      await drain(instance);
+
+      expect(handled).toEqual(["one", "two", "from someone else"]);
+      expect(textsSent()).toEqual([
+        "answer",
+        "answer",
+        expect.stringContaining("Slow down: you have had 2 replies"),
+        "answer",
+      ]);
+      const notice = mockSend.mock.calls[2][0];
+      expect(notice.recipient.raw).toBe(peer.address);
+      expect(notice.conversationId).toBe(
+        "01010101-0101-0101-0101-010101010101"
+      );
+      expect(
+        warn.mock.calls.filter(([line]) =>
+          String(line).includes("Reply limit reached for")
+        )
+      ).toEqual([
+        [
+          `[bot-host] [limit-bot] Reply limit reached for ${peer.address.toLowerCase()} (2 per hour); its messages are not handled until the hour's window frees`,
+        ],
+      ]);
+      // The unanswered messages were not consumed as handled.
+      expect(instance.operations.get(late.payloadDigest)).toBeUndefined();
+    });
+
+    it("does not repeat the notice when it could not be sent", async () => {
+      const { definition } = answering();
+      const { host, instance } = await start(definition, {
+        maxRepliesPerPeer: 1,
+      });
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      mockSend
+        .mockReset()
+        .mockImplementationOnce(accept)
+        .mockRejectedValue(new Error("relay timed out"));
+
+      for (const text of ["one", "two", "three", "four"]) {
+        await poll(host, [inbound(text)]);
+        await drain(instance);
+      }
+
+      expect(mockSend).toHaveBeenCalledTimes(2);
+    });
+
+    it("says nothing to the peer when the budget is zero: never reply means never", async () => {
+      const { handled, definition } = answering();
+      const { host, instance } = await start(definition, {
+        maxRepliesPerPeer: 0,
+      });
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+
+      for (const text of ["one", "two"]) {
+        await poll(host, [inbound(text)]);
+        await drain(instance);
+      }
+
+      expect(handled).toEqual([]);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(
+        warn.mock.calls.filter(([line]) =>
+          String(line).includes("Reply limit reached for")
+        )
+      ).toHaveLength(1);
     });
   });
 });

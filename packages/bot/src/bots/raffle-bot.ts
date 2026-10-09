@@ -6,6 +6,7 @@ import type {
   BotMessageContext,
   NewUserEvent,
 } from "@frank/bot-framework";
+import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { RaffleItem } from "@frank/cashweb/types/messages";
 import {
   buildRaffleDrawItem,
@@ -33,6 +34,8 @@ export interface RaffleRoundState {
 
 export class RaffleBot implements FrankBotDefinition {
   readonly id = "raffle";
+  /** A game is many replies to one player: see `GAME_MAX_REPLIES_PER_PEER`. */
+  readonly maxRepliesPerPeer = GAME_MAX_REPLIES_PER_PEER;
   readonly label = "Raffle";
   readonly defaultIdentityPath =
     process.env.RAFFLE_BOT_IDENTITY_JSON ?? "/tmp/raffle-bot-identity.json";

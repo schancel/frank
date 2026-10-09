@@ -6,6 +6,7 @@ import type {
   BotMessageContext,
   NewUserEvent,
 } from "@frank/bot-framework";
+import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { MessageItem, LiarsDiceItem } from "@frank/cashweb/types/messages";
 import { formatMon, parseMon } from "@frank/wallet/monad-amount";
 import { keccak256, toUtf8Bytes } from "ethers";
@@ -48,6 +49,8 @@ function normalizeEvmAddress(addr: string): string {
 
 export class LiarsDiceBot implements FrankBotDefinition {
   readonly id = "liars-dice";
+  /** A game is many replies to one player: see `GAME_MAX_REPLIES_PER_PEER`. */
+  readonly maxRepliesPerPeer = GAME_MAX_REPLIES_PER_PEER;
   readonly label = "Liar's Dice (Perudo)";
   readonly defaultIdentityPath =
     process.env.LIARS_DICE_BOT_IDENTITY_JSON ?? "/tmp/liars-dice-bot-identity.json";

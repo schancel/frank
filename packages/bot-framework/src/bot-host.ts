@@ -70,6 +70,23 @@ const UNMATCHED_WARN_MS = 60_000;
 // an earlier payment settling or a directory lookup recovering.
 const MAX_REPLY_SENDS = 5;
 
+/** A replies-per-peer budget as configured: unset, or a non-negative integer. Anything else is a
+ * configuration error, never silently the default. */
+function replyBudget(
+  value: number | string | undefined,
+  name: string
+): number | undefined {
+  if (value === undefined) return undefined;
+  const budget = typeof value === "number" ? value : Number(value);
+  if (
+    !Number.isSafeInteger(budget) ||
+    budget < 0 ||
+    String(value).trim() === ""
+  )
+    throw new Error(`${name} must be a non-negative integer, got "${value}"`);
+  return budget;
+}
+
 interface ActiveBotInstance {
   definition: FrankBotDefinition;
   wallet: EvmChainWalletHandle;
@@ -98,7 +115,10 @@ interface ActiveBotInstance {
 }
 
 export class FrankBotHost {
-  private readonly options: Required<BotHostOptions>;
+  private readonly options: Required<
+    Omit<BotHostOptions, "maxRepliesPerPeer">
+  > &
+    Pick<BotHostOptions, "maxRepliesPerPeer">;
   private readonly provider: JsonRpcProvider;
   private readonly chain: ActiveChain;
   private readonly fundingWallet?: Wallet;
@@ -181,6 +201,13 @@ export class FrankBotHost {
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30 * 60 * 1000,
       watchRegistrations: options.watchRegistrations ?? true,
       unrefTimers: options.unrefTimers ?? false,
+      maxRepliesPerPeer: replyBudget(
+        options.maxRepliesPerPeer ??
+          (process.env.FRANK_BOT_MAX_REPLIES_PER_PEER || undefined),
+        options.maxRepliesPerPeer === undefined
+          ? "FRANK_BOT_MAX_REPLIES_PER_PEER"
+          : "maxRepliesPerPeer"
+      ),
     };
 
     const cursorFile = join(this.options.stateDir, "registration-cursor.json");
@@ -337,8 +364,15 @@ export class FrankBotHost {
       }
 
       // 7. Wire up loop guard and peer queue
+      // The operator's setting first, then what the bot declares, then the guard's default.
       const loopGuard = new LoopGuard({
         selfAddress: botAddress,
+        maxRepliesPerPeer:
+          this.options.maxRepliesPerPeer ??
+          replyBudget(
+            definition.maxRepliesPerPeer,
+            `Bot "${definition.id}" maxRepliesPerPeer`
+          ),
       });
       const peerQueue = new PeerLaneQueue();
 
@@ -764,11 +798,13 @@ export class FrankBotHost {
         for (const entry of accepted) {
           const { identity } = entry;
           // At capacity nothing later is retained, but rows retained earlier are still matched.
-          if (
-            !instance.operations.get(identity.digest) &&
-            (full || instance.loopGuard.shouldDrop(identity.peerAddress))
-          )
-            continue;
+          if (!instance.operations.get(identity.digest)) {
+            if (full) continue;
+            const drop = instance.loopGuard.shouldDrop(identity.peerAddress);
+            if (drop === "rate-limited")
+              this.noticeRateLimited(instance, identity);
+            if (drop) continue;
+          }
           let outcome: "retained" | "known" | "full";
           try {
             outcome = await instance.operations.retain(identity);
@@ -919,6 +955,43 @@ export class FrankBotHost {
         if (this.closing) throw new Error("Bot invocation is no longer active");
       }
     }
+  }
+
+  /** Says, once per hour for each peer, that its messages are not being handled: one log line
+   * and one plain text to the peer, in the conversation it wrote in. The message itself is not
+   * retained or handled. The notice is outside the reply budget and is never repeated inside the
+   * window, whether or not it could be sent, so it cannot keep two bots answering each other:
+   * the guard still stops the exchange. A budget of zero means never reply, and says nothing. */
+  private noticeRateLimited(
+    instance: ActiveBotInstance,
+    identity: InboundIdentity
+  ): void {
+    if (!instance.loopGuard.noticeDue(identity.peerAddress)) return;
+    const id = instance.definition.id;
+    const limit = instance.loopGuard.limit;
+    console.warn(
+      `[bot-host] [${id}] Reply limit reached for ${identity.peerAddress} (${limit} per hour); its messages are not handled until the hour's window frees`
+    );
+    if (limit === 0 || this.closing) return;
+    const notice = this.sendCanonicalMessage(
+      instance.wallet,
+      identity.peerAddress,
+      [
+        {
+          type: "text",
+          text: `Slow down: you have had ${limit} replies from me in the last hour, which is my limit for one account. Messages you send now may go unanswered. Please try again later.`,
+        },
+      ],
+      identity.conversationId
+    ).then(
+      () => undefined,
+      () =>
+        console.warn(
+          `[bot-host] [${id}] Reply-limit notice to ${identity.peerAddress} was not sent`
+        )
+    );
+    instance.tasks.add(notice);
+    void notice.finally(() => instance.tasks.delete(notice));
   }
 
   /** Runs `work` as the one tracked task of an inbound digest, on its peer's lane. A second

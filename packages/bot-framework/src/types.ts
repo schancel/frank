@@ -169,6 +169,11 @@ export interface PreparedReply {
 export interface FrankBotDefinition {
   readonly id: string;
   readonly defaultIdentityPath?: string;
+  /** Replies this bot sends to one peer per hour before the host stops handling that peer's
+   * messages (the loop guard). Unset: `DEFAULT_MAX_REPLIES_PER_PEER`. A bot whose one exchange is
+   * many replies, such as a game, declares more (`GAME_MAX_REPLIES_PER_PEER`). The operator's
+   * `BotHostOptions.maxRepliesPerPeer` overrides it. */
+  readonly maxRepliesPerPeer?: number;
   readonly schedules?: BotScheduleDefinition[];
   getProfile(): BotProfile;
   onStart?(ctx: BotContext): Promise<void>;
@@ -191,4 +196,8 @@ export interface BotHostOptions {
   heartbeatIntervalMs?: number;
   watchRegistrations?: boolean;
   unrefTimers?: boolean;
+  /** Operator override of every bot's replies-per-peer-per-hour budget, a non-negative integer
+   * (0: never reply). Default: the `FRANK_BOT_MAX_REPLIES_PER_PEER` environment variable when
+   * set; otherwise each bot's own `maxRepliesPerPeer`. */
+  maxRepliesPerPeer?: number;
 }

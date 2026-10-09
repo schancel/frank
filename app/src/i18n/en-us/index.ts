@@ -931,7 +931,7 @@ export default {
     amount: 'Amount',
     estimatedFee: 'Estimated Fee',
     feeUnavailable: 'Unavailable',
-    maxTotal: 'Maximum Total',
+    maxTotal: 'Amount + network fee',
     maxTotalWithFee: '{amount} {unit} (+ network fee)',
     irreversibleWarning:
       'Blockchain transactions are irreversible. Verify recipient and network before confirming.',

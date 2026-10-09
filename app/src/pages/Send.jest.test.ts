@@ -219,7 +219,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     const fee = reviewCard.get('[data-test="review-fee"]')
     expect(fee.text()).toBe('Unavailable')
 
-    // Maximum total with fee notice
+    // Amount plus network fee notice
     const total = reviewCard.get('[data-test="review-total"]')
     expect(total.text()).toBe('2.5 MON (+ network fee)')
 
@@ -228,6 +228,81 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     expect(warning.attributes('role')).toBe('alert')
     expect(warning.text()).toContain('Blockchain transactions are irreversible')
   })
+
+  describe.each([
+    {
+      language: 'English',
+      messages: enUS,
+      label: 'Amount + network fee',
+      unavailable: 'Unavailable',
+      network: 'Monad Testnet',
+      total: '0.01 MON (+ network fee)',
+    },
+    {
+      language: 'French',
+      messages: frFR,
+      label: 'Montant + frais de réseau',
+      unavailable: 'Indisponible',
+      network: 'Testnet Monad',
+      total: '0.01 MON (+ frais de réseau)',
+    },
+  ])(
+    '$language fee disclosure (#1283)',
+    ({ messages, label, unavailable, network, total }) => {
+      it.each([true, false])(
+        'describes amount plus network fee without a maximum claim (estimate available: %s)',
+        async available => {
+          mockSelectedChain = {
+            ...activeChain,
+            nativeTransfers: {
+              ...activeChain.nativeTransfers,
+              ...(available
+                ? {
+                    estimateLegacyFee: jest.fn().mockResolvedValue({
+                      totalFee: 4_242_000_000_000_000n,
+                      deliveryFee: 4_242_000_000_000_000n,
+                      inputCount: 1,
+                    }),
+                  }
+                : {}),
+            },
+          }
+          const wrapper = mountSend(messages)
+          await wrapper
+            .get('[data-test="send-address-input"]')
+            .setValue('0x000000000000000000000000000000000000dead')
+          await wrapper.get('[data-test="send-amount-input"]').setValue('0.01')
+          await wrapper.get('[data-test="send-review-button"]').trigger('click')
+          await flushPromises()
+          const card = wrapper.get('[data-test="send-review-card"]')
+          expect(card.text()).toContain(label)
+          expect(card.text()).not.toMatch(/Maximum Total|Total maximal/)
+          expect(card.text()).toContain(messages.sendAddressDialog.estimatedFee)
+          expect(card.get('[data-test="review-fee"]').text()).toBe(
+            available ? '0.004242 MON' : unavailable,
+          )
+          expect(card.get('[data-test="review-total"]').text()).toBe(total)
+          expect(card.get('[data-test="review-amount"]').text()).toBe(
+            '0.01 MON',
+          )
+          expect(card.get('[data-test="review-recipient"]').text()).toBe(
+            '0x000000000000000000000000000000000000dEaD',
+          )
+          expect(card.get('[data-test="review-network"]').text()).toBe(network)
+          expect(mockSend).not.toHaveBeenCalled()
+          await wrapper
+            .get('[data-test="review-cancel-button"]')
+            .trigger('click')
+          await flushPromises()
+          expect(mockSend).not.toHaveBeenCalled()
+          expect(wrapper.find('[data-test="send-edit-card"]').exists()).toBe(
+            true,
+          )
+          wrapper.unmount()
+        },
+      )
+    },
+  )
 
   it('cancel returns to editing without network mutation and preserves draft', async () => {
     const wrapper = mountSend()

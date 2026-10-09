@@ -476,7 +476,9 @@ export default defineComponent({
             })
           } catch (error) {
             console.error('Failed to discard message:', error)
-            errorNotify(error instanceof Error ? error : new Error(String(error)))
+            errorNotify(
+              error instanceof Error ? error : new Error(String(error)),
+            )
           }
         })
     },

@@ -1761,10 +1761,13 @@ export const useChatStore = defineStore('chats', {
         if (wallet) {
           if (digestsToDiscard.size === 0) {
             try {
-              const orphans = await activeChain.directMessages?.unattributedAttempts?.({
-                wallet,
-                knownDigests: Object.keys(this.messages).filter(k => !k.startsWith('pending:')),
-              })
+              const orphans =
+                await activeChain.directMessages?.unattributedAttempts?.({
+                  wallet,
+                  knownDigests: Object.keys(this.messages).filter(
+                    k => !k.startsWith('pending:'),
+                  ),
+                })
               if (orphans && orphans.length === 1) {
                 digestsToDiscard.add(orphans[0])
               }
@@ -1779,7 +1782,10 @@ export const useChatStore = defineStore('chats', {
                 payloadDigest: d,
               })
             } catch (err) {
-              console.warn('could not discard attempt during deleteMessage:', err)
+              console.warn(
+                'could not discard attempt during deleteMessage:',
+                err,
+              )
             }
           }
         }
@@ -2472,9 +2478,17 @@ export const useChatStore = defineStore('chats', {
               recomputeChatAccounting(c, this.activeChatAddr)
             }
           }
-          if (this.activeConversation?.messages?.some(m => m.payloadDigest === id)) {
-            this.activeConversation.messages = this.activeConversation.messages.filter(m => m.payloadDigest !== id)
-            recomputeChatAccounting(this.activeConversation, this.activeChatAddr)
+          if (
+            this.activeConversation?.messages?.some(m => m.payloadDigest === id)
+          ) {
+            this.activeConversation.messages =
+              this.activeConversation.messages.filter(
+                m => m.payloadDigest !== id,
+              )
+            recomputeChatAccounting(
+              this.activeConversation,
+              this.activeChatAddr,
+            )
           }
           return 'gone'
         }

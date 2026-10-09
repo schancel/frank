@@ -95,7 +95,9 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     const checking = mountSuffix({ status: 'payment-pending' })
     expect(checking.text()).toContain('Checking payment status')
     expect(checking.text()).not.toContain('not be charged again')
-    expect(checking.find('[data-testid="outgoing-discard"]').exists()).toBe(true)
+    expect(checking.find('[data-testid="outgoing-discard"]').exists()).toBe(
+      true,
+    )
   })
 
   it('a message queued behind another one makes no payment claim', () => {

@@ -585,14 +585,16 @@ export function startOutgoingReconciliation({
     let pending = 0
     try {
       pending = (await chats.reconcileOutgoing({ wallet })).pending
-      // Native transfers this wallet broadcast and nothing has seen confirm: the wallet looks
-      // again, within its own request bound (none when nothing is pending). Not awaited, so a
-      // slow node never delays the next tick, and a handle without the method has nothing to do.
-      if (!stopped) reobserveNativeOperations(wallet)
     } catch (err) {
       console.warn('outgoing message reconciliation failed', err)
       pending = 1
     }
+    // Native transfers this wallet broadcast and nothing has seen confirm: the wallet looks
+    // again, within its own request bound (none when nothing is pending). It runs whether or
+    // not the reconciliation above succeeded: the relay being down says nothing about the node.
+    // Not awaited, so a slow node never delays the next tick, and a handle without the method
+    // has nothing to do.
+    if (!stopped) reobserveNativeOperations(wallet)
     ticking = false
     if (stopped) return
     knownPending = pendingIds()

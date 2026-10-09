@@ -415,14 +415,14 @@ describe('startOutgoingReconciliation (#270)', () => {
   })
 
   // #1235 Stage 3. On main dce4bedf the tick never calls the wallet's re-observation: the first
-  // three tests fail there (the mock is never called). The last two are pins, and pass there:
+  // four tests fail there (the mock is never called). The last two are pins, and pass there:
   // a stopped tick calls nothing, and a handle WITHOUT the method is tolerated (as in every
   // other test in this file, whose wallet has none).
   describe('native re-observation at the tick (#1235 Stage 3)', () => {
     const walletWith = (reobserveNativeOperations: unknown) =>
       ({ ...wallet, reobserveNativeOperations } as unknown as WalletHandle)
 
-    it('calls it once per tick, only after reconcileOutgoing has resolved, also when no message is pending', async () => {
+    it('calls it once per tick, only after reconcileOutgoing has settled, also when no message is pending', async () => {
       const { chats } = await pendingMessage()
       let release: (v: Record<string, 'live' | 'delivered'>) => void = () =>
         undefined
@@ -453,6 +453,29 @@ describe('startOutgoingReconciliation (#270)', () => {
       await jest.advanceTimersByTimeAsync(IDLE_OUTGOING_RECONCILE_INTERVAL_MS)
       expect(reconcile).toHaveBeenCalledTimes(2)
       expect(reobserve).toHaveBeenCalledTimes(3)
+      polling.stop()
+    })
+
+    // Review of 09d2624a, where the call sat inside the tick's `try`: fails there.
+    it('runs also when reconcileOutgoing rejects: the relay being down does not stop the wallet looking at the node', async () => {
+      const { chats } = await pendingMessage()
+      const reconcile = jest
+        .spyOn(chats, 'reconcileOutgoing')
+        .mockRejectedValue(new Error('fixture: relay unavailable'))
+      const reobserve = jest.fn(async () => undefined)
+      const polling = startOutgoingReconciliation({
+        wallet: walletWith(reobserve),
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reconcile).toHaveBeenCalledTimes(1)
+      expect(console.warn).toHaveBeenCalledWith(
+        'outgoing message reconciliation failed',
+        expect.anything(),
+      )
+      expect(reobserve).toHaveBeenCalledTimes(1)
+      await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile).toHaveBeenCalledTimes(2)
+      expect(reobserve).toHaveBeenCalledTimes(2)
       polling.stop()
     })
 

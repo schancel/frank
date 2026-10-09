@@ -2500,6 +2500,135 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
   })
 
+  // Review of 09d2624a. There the pass checked the member before the probe only, so after a
+  // slow probe it observed a member a send had recorded included meanwhile, and one failed read
+  // wrote `unknown` over `included-success` and cleared `syncApplied`. Fails on 09d2624a.
+  it('a send records the member included and transported while the probe is unanswered: when the probe then returns a receipt the pass does not observe it, so a failing read cannot overwrite the record, clear syncApplied or touch the row', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n, 50000n])
+    const r = reobserver(c)
+    const row = await broadcastLegacy(c, state, 100000n, r.executor)
+    const raw = row.members[0]!.signed!.rawTransaction
+    const landed = state.provider.getTransactionReceipt.getMockImplementation()!
+    let answer!: () => void
+    const held = new Promise<void>(resolve => {
+      answer = resolve
+    })
+    state.provider.getTransactionReceipt.mockImplementationOnce(async hash => {
+      await held
+      return landed(hash)
+    })
+    const tick = r.tick()
+    await settle()
+    expect(probed(state).slice(-1)).toEqual([hashOf(row)])
+    // Meanwhile: the transaction lands, a send from the other account observes it, that send's
+    // pass marks the row spent, and the item is transported.
+    state.mine(raw)
+    await r.executor.sendNative({ recipient: to, value: 1000n }, c.lifetime)
+    await r.executor.flushSync(row.operationId)
+    const recorded = journal.list()
+    expect(recorded[0]!.members[0]).toMatchObject({
+      observation: { state: 'included-success' },
+      syncApplied: true,
+    })
+    const rowRecord = c.pool.getRecord(0)
+    expect(rowRecord).toMatchObject(spent(raw))
+    // The next transaction read fails, once: what an observation begun now would hit.
+    state.provider.getTransaction.mockRejectedValueOnce(
+      new Error('fixture: one flaky read'),
+    )
+    const observe = jest.spyOn(r.executor, 'observe')
+    const capture = jest.spyOn(journal, 'beginCapture')
+    const before = providerCalls(state)
+    answer()
+    await tick
+    expect(observe).not.toHaveBeenCalled()
+    expect(capture).not.toHaveBeenCalled()
+    expect(providerCalls(state)).toBe(before)
+    expect(journal.list()).toEqual(recorded)
+    expect(c.pool.getRecord(0)).toEqual(rowRecord)
+    expect(r.applied).not.toHaveBeenCalled()
+    // It is terminal: never looked up again. (The send above left its own member unconfirmed;
+    // that one is looked up, and it is the one that meets the failing read.)
+    const seen = probed(state).length
+    r.advance(3600 * SECOND)
+    await r.tick()
+    expect(probed(state).slice(seen)).not.toContain(hashOf(row))
+    expect(observe.mock.calls.map(([id]) => id)).toEqual([
+      recorded[1]!.operationId,
+    ])
+    expect(journal.list()[0]).toEqual(recorded[0])
+    expect(c.pool.getRecord(0)).toEqual(rowRecord)
+  })
+
+  // Review of 09d2624a. There "owed" was cleared whenever the local pass returned, and the pass
+  // never throws, so a member it failed on or held waited for the next send or the next open.
+  // The first two cases fail on 09d2624a (the row is never marked); the third is a pin.
+  it.each(['apply throws', 'apply refused', 'held-terminal'] as const)(
+    'the local pass ran and left the included member unapplied (%s): it stays owed and a later tick applies it with no request and no restart, except a member that can never apply, which is not asked about again',
+    async mode => {
+      const state = chain([])
+      let failing = true
+      let real!: (id: string, i: number) => Promise<unknown>
+      const c = await composed(state, [121000n], {
+        applyLocalMember: async (id, i) => {
+          if (failing)
+            throw mode === 'apply refused'
+              ? new EvmInputAdmissionError('conflicting-authorization')
+              : new Error('fixture: untyped failure')
+          return real(id, i) as never
+        },
+        ...(mode === 'held-terminal'
+          ? { classifyLocalMember: () => 'held-terminal' as const }
+          : {}),
+      })
+      real = (id, i) =>
+        poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
+      const r = reobserver(c)
+      const row = await broadcastLegacy(c, state, 100000n)
+      const raw = row.members[0]!.signed!.rawTransaction
+      state.mine(raw)
+      await r.tick()
+      expect(journal.list()[0]!.members[0]!.observation.state).toBe(
+        'included-success',
+      )
+      expect(r.applied).toHaveBeenCalledTimes(1)
+      expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+      const before = providerCalls(state)
+      const evaluate = async () => {
+        r.advance(15 * SECOND)
+        await r.tick()
+      }
+      if (mode === 'held-terminal') {
+        for (let i = 0; i < 20; i++) await evaluate()
+        expect(r.applied).toHaveBeenCalledTimes(1)
+        expect(c.apply).not.toHaveBeenCalled()
+      } else {
+        // Still failing: asked again by every evaluation, never inside the floor.
+        await r.tick()
+        expect(r.applied).toHaveBeenCalledTimes(1)
+        await evaluate()
+        expect(r.applied).toHaveBeenCalledTimes(2)
+        expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+        failing = false
+        // An untyped failure is tried by the very next pass; a typed refusal is remembered
+        // as a hold and tried again after at most 16 skipped passes.
+        let evaluations = 0
+        while (c.pool.getRecord(0)!.status !== 'spent' && evaluations < 40) {
+          await evaluate()
+          evaluations++
+        }
+        expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
+        expect(evaluations).toBe(mode === 'apply throws' ? 1 : 16)
+        // Applied: nothing is owed any more.
+        const asked = r.applied.mock.calls.length
+        for (let i = 0; i < 5; i++) await evaluate()
+        expect(r.applied).toHaveBeenCalledTimes(asked)
+      }
+      expect(providerCalls(state)).toBe(before)
+    },
+  )
+
   it('an unreadable journal or a wallet lifetime that has ended: no request, nothing thrown', async () => {
     const state = chain([])
     const c = await composed(state, [100000n])

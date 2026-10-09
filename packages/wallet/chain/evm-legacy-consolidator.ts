@@ -187,8 +187,13 @@ export class EvmLegacyConsolidator {
     string,
     { probedAt: number; waitMs: number }
   >()
-  /** A pass recorded a successful inclusion and the local pass has not run for it yet. */
+  /** A pass recorded a successful inclusion and the local pass has not run for it yet, or ran
+   * and left an included member it may still apply (`localPassIncomplete`). */
   private localPassOwed = false
+  /** Set by each local pass: it left an included, unapplied member that a later pass may apply
+   * (held by the admission or by a remembered hold, refused, or failed), or could not read the
+   * journal. Not set for a member that can never apply (`held-terminal`). */
+  private localPassIncomplete = false
   private applyingRecorded = false
   private reobserveStopped = false
   private readonly reobserveStops = new Set<() => void>()
@@ -619,7 +624,9 @@ export class EvmLegacyConsolidator {
    * the send's own outcome.
    */
   private async localPass(lifetime?: WalletOperationLifetime): Promise<void> {
+    this.localPassIncomplete = true
     try {
+      let incomplete = false
       const { classifyLocalMember: classify, applyLocalMember: apply } =
         this.config
       const rows = this.config.journal.list()
@@ -668,8 +675,11 @@ export class EvmLegacyConsolidator {
           const remembered = this.holds.get(key)
           if (this.admissionHold) {
             /* The projection is not ready: nothing more is classified or applied in this pass. */
-          } else if (stillHeld(remembered, basis)) holds.set(key, remembered!)
-          else
+            incomplete = true
+          } else if (stillHeld(remembered, basis)) {
+            holds.set(key, remembered!)
+            incomplete = true
+          } else
             try {
               // With no local callback there is nothing to record on, and so no local result:
               // held, so transport and `markSyncApplied` cannot proceed without one.
@@ -683,14 +693,17 @@ export class EvmLegacyConsolidator {
               else if (kind === 'needs-apply' && apply) {
                 await apply(row.operationId, i, lifetime)
                 result = 'applied'
-              } else if (kind === 'not-eligible')
+              } else if (kind === 'not-eligible') {
                 // The snapshot says this member is eligible, so the refusal is the admission's.
                 this.admissionHold = {
                   reason: 'admission-not-ready',
                   basis: whole,
                   skipped: 0,
                 }
+                incomplete = true
+              }
             } catch (error) {
+              incomplete = true
               const reason = refusalReason(error)
               if (reason !== undefined)
                 holds.set(key, { reason, basis, skipped: 0 })
@@ -700,6 +713,7 @@ export class EvmLegacyConsolidator {
         }
       }
       this.holds = holds
+      this.localPassIncomplete = incomplete
     } catch {
       /* An unreadable journal leaves every result as it was. */
     }
@@ -823,6 +837,19 @@ export class EvmLegacyConsolidator {
       )
     })
   }
+  /** The member, read from the journal now, if it is still one to look up: its operation not
+   * cancelled, signed and exposed, recorded `unknown`, `missing` or `pending`. */
+  private reobservable(candidate: ReobserveCandidate) {
+    const row = this.config.journal.get(candidate.operationId)
+    const member = row.members[candidate.index]
+    const state = member?.observation.state
+    return !row.cancelled &&
+      member?.signed &&
+      member.exposed &&
+      (state === 'unknown' || state === 'missing' || state === 'pending')
+      ? member
+      : undefined
+  }
   /** One pass over `due`: one receipt request per member, and `observe` only for a member whose
    * receipt exists. Runs outside the executor queue; `observe` records through the journal's own
    * short mutation. */
@@ -834,14 +861,8 @@ export class EvmLegacyConsolidator {
     for (const candidate of due) {
       if (this.reobserveStopped) return
       // A send or an estimate may have observed it since the candidates were listed.
-      const member = journal.get(candidate.operationId).members[candidate.index]!
-      const before = member.observation.state
-      if (
-        !member.signed ||
-        !member.exposed ||
-        (before !== 'unknown' && before !== 'missing' && before !== 'pending')
-      )
-        continue
+      const member = this.reobservable(candidate)
+      if (!member?.signed) continue
       this.reobserveCursor = candidate
       let receipt: unknown = null
       try {
@@ -852,6 +873,15 @@ export class EvmLegacyConsolidator {
         /* A probe that failed learned nothing: nothing is written, and it waits like an empty one. */
       }
       if (receipt === REOBSERVE_STOPPED) return
+      // The probe took time. If a send, a resume or a fee estimate recorded this member included
+      // or reverted meanwhile (or it is otherwise no longer one to look up), that record stands:
+      // an observation begun now could, on one failed read, write `unknown` over it. Read again
+      // here, in the same step as the queue check below and the start of `observe`, and leave
+      // it. It carries no wait: it is not a candidate any more.
+      if (!this.reobservable(candidate)) {
+        this.reobserveBackoff.delete(candidate.key)
+        continue
+      }
       // The journal keeps the observation that began last. A send or resume in the executor
       // queue observes for itself and decides on what it recorded, so no observation is begun
       // here while one is queued: this pass never discards theirs, and the member is looked up
@@ -909,6 +939,10 @@ export class EvmLegacyConsolidator {
    *   resume is on the executor queue, whose own observation must stand;
    * - at most `REOBSERVE_MAX_PROBES` members per pass, oldest first, continuing after the member
    *   probed last so every candidate is reached;
+   * - so the hard ceiling per wallet is 8 receipt lookups per 15 s (1,920 an hour) plus seven
+   *   further reads for each lookup that finds a receipt: 64 requests per 15 s (15,360 an hour)
+   *   if every lookup of every pass found one. A member is observed once it is verified, so in
+   *   practice the seven reads are paid once per landed member. Zero when nothing is pending;
    * - at most one evaluation per `REOBSERVE_MIN_INTERVAL_MS`, measured from the end of the last
    *   pass, whatever the caller's tick rate; a call while a pass is in flight starts nothing;
    * - a member whose probe learned nothing waits `REOBSERVE_MIN_INTERVAL_MS`, doubling per such
@@ -917,8 +951,9 @@ export class EvmLegacyConsolidator {
    * Locks: the network reads run under the wallet lifetime only, outside the executor queue and
    * outside the wallet queue, so a slow node never delays a send. When a pass recorded a
    * successful inclusion, `applyRecorded` (composition: the local pass inside the wallet queue,
-   * local only) is called once; if it is refused it is owed and tried again by a later
-   * evaluation, and the observation stays recorded for the next send or the next open.
+   * local only) is called once; if it is refused, or the local pass left an included member it
+   * may still apply, it is owed and called again by a later evaluation (no request), and the
+   * observation stays recorded for the next send or the next open as well.
    *
    * It never signs, broadcasts, resubmits, replaces or cancels, never marks a member dropped and
    * has no timeout: a member that never lands stays pending and reserved. It never rejects.
@@ -960,8 +995,13 @@ export class EvmLegacyConsolidator {
         return
       this.applyingRecorded = true
       this.localPassOwed = false
+      this.localPassIncomplete = false
       try {
         await applyRecorded()
+        // The local pass never throws: it reports what it left. A member it held or failed on
+        // is tried again by the next evaluation (under the pass's own hold memory), not only
+        // by the next send or the next open.
+        if (this.localPassIncomplete) this.localPassOwed = true
       } catch {
         this.localPassOwed = true
       } finally {

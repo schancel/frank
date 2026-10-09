@@ -29,6 +29,30 @@
       "url": "https://github.com/schancel/frank/issues/1272",
       "publishedAt": "2026-10-09T09:22:50.188972+00:00",
       "bodyPath": "docs/plans/wallet-messaging-baseline/followups/app-typecheck-coverage.md"
+    },
+    "startup-failure": {
+      "title": "[bug] Show restoration failure without starting wallet runtime",
+      "url": "https://github.com/schancel/frank/issues/1278",
+      "publishedAt": "2026-10-09T10:42:44.341899+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/startup-failure.md"
+    },
+    "message-store-readonly": {
+      "title": "[bug] Keep message-store opening and timestamp queries read-only",
+      "url": "https://github.com/schancel/frank/issues/1279",
+      "publishedAt": "2026-10-09T10:42:46.559447+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/message-store-readonly.md"
+    }
+  },
+  "edges": {
+    "1279<-1278": {
+      "issue": 1279,
+      "blockedBy": 1278,
+      "checkedAt": "2026-10-09T10:46:29.334482+00:00"
+    },
+    "1237<-1279": {
+      "issue": 1237,
+      "blockedBy": 1279,
+      "checkedAt": "2026-10-09T10:46:32.775592+00:00"
     }
   }
 }

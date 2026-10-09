@@ -1,0 +1,9 @@
+Required application-store restoration can reject before Quasar mounts, leaving blank startup. Catching the rejection alone is insufficient: root lifecycle, router and messaging boot can initialize custody, while chat hydration can delete leftover rows or open the wallet. Source tracing at main1e8b652e confirmed these paths; no funded profile was mutated.
+
+Expected: a localized accessible failure screen, with rejected store promises preserved and no custody, messaging, route-driven mutation or application-record writes. Observe all started restorations before showing settled failure. Preserve healthy startup and current valid metadata. No reset, migration, historical attribution or generated-file edits.
+
+Accepted scope is app composition: small root/runtime separation and transient restoration result, boot/router guards, initial hydration subscription suppression, removal of hydration-time deletion and wallet lookup, prompt observation of eager message-store Open rejection, and focused EN/FR integrated tests. The exact accepted contract is retained with the repair execution artifacts.
+
+Acceptance must run actual source boot callbacks, real storage plugin and chat restore with disposable synthetic records, real router/root/messaging boot, immediate/deferred failures and both sibling settlement orders. Assert visible localized error, original rejected promise, byte preservation and zero account/runtime/write effects. Include healthy fresh startup and routing controls. Existing funded profiles remain preserved.
+
+This architectural predecessor relates to #1237. Package-level read-only opening is a separately owned successor; new rejection behavior may activate only with this visible boundary. Root owns profile archival and browser acceptance. Maintainer accepted the contract and bounded source amendments before implementation.

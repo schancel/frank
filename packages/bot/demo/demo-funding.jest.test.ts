@@ -57,9 +57,11 @@ describe('explicit simulated funding boundary', () => {
     rmSync(dir, { recursive: true, force: true })
   })
   async function balance(address: string): Promise<bigint> {
+    // `connection: close` so a pooled socket to a fake RPC that the test has
+    // since closed and restarted on the same port is never reused.
     const response = await fetch(fake.url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', connection: 'close' },
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
@@ -134,6 +136,10 @@ describe('explicit simulated funding boundary', () => {
         amountWei: AMOUNT.toString(),
       })
       fetchCalls.mockRestore()
+      // Out-of-band funding does not clear the wallet's primary balance cache,
+      // which still holds the earlier zero read.
+      expect(wallet.invalidateBalanceCache).toEqual(expect.any(Function))
+      wallet.invalidateBalanceCache?.()
       expect(await balance(AUTH)).toBe(0n)
       expect(wallet.identity.address.raw).toBe(AUTH)
       expect(await chain.nativeTransfers.getBalance({ wallet })).toBe(AMOUNT)

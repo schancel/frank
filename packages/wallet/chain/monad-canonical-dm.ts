@@ -55,7 +55,6 @@ import {
 import {
   installedCanonicalOrigin,
   type CanonicalFetch,
-  type CanonicalTerminalReason,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import {
   connectCanonicalMailboxStream,
@@ -214,7 +213,7 @@ interface StoredLink {
   consumerId: string
   prepared: Record<string, string>
   outcome?: 'delivered' | 'dead'
-  /** The relay's reason when the outcome is `dead`. */
+  /** A relay rejection reason; it does not prove the signed payments cannot execute. */
   reason?: string
   acknowledged?: boolean
   /** Saved once a message pointed at this delivered attempt, or the user answered for it. Until
@@ -473,7 +472,8 @@ export function consumePaymentTransferToStealth(
 
 /**
  * Correlate every durable wallet record with a saved link, finish frozen intents, re-send the same
- * bytes of live attempts and retire terminal ones. Never builds or signs a new payment.
+ * bytes of live attempts and finish delivered ones. A delivery rejection cannot settle the
+ * financial effect of bytes already exposed to a relay or recipient.
  */
 async function settle(
   owner: CanonicalMessagingOwner,
@@ -482,6 +482,7 @@ async function settle(
 ): Promise<void> {
   const client = owner.client()
   const submitted = new Map<string, number>()
+  const retained = new Set<string>()
   for (;;) {
     for (const row of owner.links.all()) {
       if (row.acknowledged) continue
@@ -499,60 +500,41 @@ async function settle(
         found = undefined
       }
       if (!found || found.record.attemptRef !== row.attemptRef) {
-        // Orphaned link: not in journal or cannot be reconciled. Mark acknowledged and dead.
-        await owner.links.put({
-          ...row,
-          acknowledged: true,
-          outcome: row.outcome ?? 'dead',
-          ...(row.outcome ? {} : { reason: 'orphaned' }),
-        })
+        // Missing evidence says nothing about whether previously signed payments can land.
+        throw new CanonicalMessagingHoldError()
       }
     }
     const rows = owner.links.all().filter(row => !row.acknowledged)
-    try {
-      await client.reapOrphanedAttempts(new Set(rows.map(r => r.attemptRef)))
-    } catch (err) {
-      console.warn('[monad-canonical-dm reapOrphanedAttempts error]:', err)
-    }
-    if (rows.length === 0) return
+    // Even an empty link store must be correlated: the wallet may still own an exact attempt.
     const states = client.reconcileWorkflowLinks(rows.map(restoreLink))
-    const held = states.filter(state => state.state === 'hold')
-    if (held.length > 0) {
-      for (const h of held) {
-        const row = rows.find(r => r.attemptRef === h.attemptRef)
-        if (row) {
-          await owner.links.put({
-            ...row,
-            acknowledged: true,
-            outcome: row.outcome ?? 'dead',
-            ...(row.outcome ? {} : { reason: 'unreconciled' }),
-          })
-        }
-      }
-      continue
-    }
-    const terminal = states.find(state => state.state === 'terminal')
+    if (states.some(state => state.state === 'hold'))
+      throw new CanonicalMessagingHoldError()
+    const terminal = states.find(
+      state => state.state === 'terminal' && !retained.has(state.attemptRef),
+    )
     if (terminal) {
       const row = rows.find(r => r.attemptRef === terminal.attemptRef)!
       const attempt = client
         .terminalOutcomes()
         .find(a => a.attemptRef === terminal.attemptRef)
       if (!attempt?.terminal) {
+        throw new CanonicalMessagingHoldError()
+      }
+      if (attempt.terminal.phase === 'dead') {
+        // The relay ended delivery, not the ability to broadcast this signed set. Keep its
+        // exact request and reservations until a financial recovery owner can resolve them.
         await owner.links.put({
           ...row,
-          acknowledged: true,
-          outcome: row.outcome ?? 'dead',
-          reason: 'terminal-outcome-missing',
+          outcome: undefined,
+          reason: attempt.terminal.reason,
         })
+        retained.add(row.attemptRef)
         continue
       }
       // The outcome is saved before the wallet forgets the attempt, so it is never lost.
       await owner.links.put({
         ...row,
-        outcome: attempt.terminal.phase === 'delivered' ? 'delivered' : 'dead',
-        ...(attempt.terminal.phase === 'dead'
-          ? { reason: attempt.terminal.reason }
-          : {}),
+        outcome: 'delivered',
       })
       await client.cleanupTerminal(row.attemptRef, row.consumerId)
       await client.acknowledgeWorkflow(row.attemptRef, row.consumerId)
@@ -592,34 +574,13 @@ async function settle(
       // Outcome unknown: the exact bytes stay journaled and are re-sent on a later pass.
     }
     if (submitError) {
-      const errStatus = (submitError as any)?.status
-      const isTerminalHttp =
-        errStatus === 400 ||
-        errStatus === 404 ||
-        errStatus === 409 ||
-        errStatus === 410 ||
-        errStatus === 413 ||
-        errStatus === 422
-      const putAttempts = (row.putAttempts ?? 0) + 1
+      // Retry policy is diagnostic only. Neither its budget nor a later HTTP rejection proves
+      // that an earlier request was not accepted, broadcast, or handed to the recipient.
       await owner.links.put({
         ...row,
-        putAttempts,
+        putAttempts: (row.putAttempts ?? 0) + 1,
         lastPutAttemptAt: Date.now(),
       })
-      if (isTerminalHttp || putAttempts >= 5) {
-        let reason: CanonicalTerminalReason = 'attempts_exhausted'
-        if (errStatus === 400 || errStatus === 409) reason = 'verification_failed'
-        else if (errStatus === 413) reason = 'corrupt_reference'
-        else if (errStatus === 422) reason = 'undeliverable'
-        try {
-          await client.markAttemptTerminal(ready.attemptRef, reason)
-        } catch (markErr) {
-          console.warn(
-            '[monad-canonical-dm markAttemptTerminal failed]:',
-            markErr,
-          )
-        }
-      }
     }
   }
 }
@@ -1228,39 +1189,14 @@ export function canonicalDirectMessages(
         const clean = (s?: string) =>
           s ? (s.startsWith('0x') ? s.slice(2).toLowerCase() : s.toLowerCase()) : ''
         const target = clean(params.payloadDigest)
-        const rows =
-          target === '*' || target === 'all'
-            ? owner.links.all().filter(r => !r.acknowledged)
-            : owner.links
-                .all()
-                .filter(
-                  r =>
-                    clean(r.digest) === target ||
-                    clean(r.attemptRef) === target,
-                )
-        for (const row of rows) {
-          try {
-            const client = owner.client()
-            try {
-              await client.markAttemptTerminal(
-                row.attemptRef,
-                'attempts_exhausted',
-              )
-            } catch {
-              // Ignore if already terminal or not found
-            }
-            await client.cleanupTerminal(row.attemptRef, row.consumerId)
-            await client.acknowledgeWorkflow(row.attemptRef, row.consumerId)
-          } catch {
-            // Best effort cleanup on discard
-          }
-          await owner.links.put({
-            ...row,
-            acknowledged: true,
-            outcome: row.outcome ?? 'dead',
-            reason: row.reason ?? 'discarded',
-          })
-        }
+        // Discard is presentation accounting, never cancellation of an exposed payment. A
+        // pending record remains recoverable, including an unsigned intent awaiting its owner.
+        await account(owner, row =>
+          target === '*' ||
+          target === 'all' ||
+          clean(row.digest) === target ||
+          clean(row.attemptRef) === target,
+        )
       }),
     unattributedAttempts: (
       params: Parameters<DirectMessageClient['unattributedAttempts']>[0],

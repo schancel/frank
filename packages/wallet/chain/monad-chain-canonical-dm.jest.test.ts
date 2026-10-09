@@ -7,7 +7,8 @@
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { JsonRpcProvider, computeAddress, getBytes } from 'ethers'
+import { JsonRpcProvider, Transaction, computeAddress, getBytes } from 'ethers'
+import level from 'level'
 import {
   channelStateDigest,
   decodeDiceGamePayload,
@@ -49,9 +50,7 @@ import {
   CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
-  CanonicalRecipientUndeliverableError,
   CanonicalRelayCannotForwardError,
-  CanonicalSenderUnpublishedError,
   createMonadChain,
   installCanonicalDirectory,
   canonicalMonadStampClient,
@@ -65,6 +64,7 @@ import {
 } from './monad-chain'
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
 import { LevelCanonicalLinkStore } from './monad-canonical-dm'
+import type { CanonicalJournalAttempt } from '../storage/stamp-attempt-journal'
 
 // Offline chain state: only these single-use sender accounts hold funds.
 const mockBalances = new Map<string, bigint>()
@@ -253,10 +253,24 @@ async function fixture(funded = true) {
     }
   }
   const requests: { body: Uint8Array; contentType: string }[] = []
+  const broadcastPayments = new Map<string, bigint>()
+  const broadcast = (requestIndex: number, members?: readonly number[]) => {
+    const request = restoreCanonicalRequest(requests[requestIndex])
+    for (const [index, raw] of request.parts.transactions.entries()) {
+      if (members && !members.includes(index)) continue
+      const tx = Transaction.from('0x' + toHex(raw))
+      if (broadcastPayments.has(tx.hash!)) continue
+      broadcastPayments.set(tx.hash!, tx.value)
+      const to = tx.to!.toLowerCase()
+      mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
+    }
+  }
   let phase:
     | 'delivered'
     | 'retained'
     | 'fail'
+    | 'lost'
+    | 'bad_request'
     | 'undeliverable'
     | 'sender_unpublished' = 'delivered'
   const fetch: CanonicalFetch = async (url, init) => {
@@ -268,6 +282,7 @@ async function fixture(funded = true) {
     if (phase === 'fail') throw new Error('relay unreachable')
     const body = new Uint8Array(init.body!)
     requests.push({ body, contentType: init.headers['Content-Type'] })
+    if (phase === 'lost') throw new Error('relay response lost after acceptance')
     const identity = restoreCanonicalRequest({
       body,
       contentType: init.headers['Content-Type'],
@@ -300,7 +315,7 @@ async function fixture(funded = true) {
     )
     let read = false
     return {
-      status: phase === 'retained' ? 202 : 200,
+      status: phase === 'bad_request' ? 400 : phase === 'retained' ? 202 : 200,
       url,
       headers: {
         get: name =>
@@ -351,6 +366,8 @@ async function fixture(funded = true) {
     root: directory,
     fetch,
     requests,
+    broadcast,
+    broadcastPayments,
     setPhase: (next: typeof phase) => (phase = next),
     directoryFor,
     close: async () => {
@@ -882,141 +899,263 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     knownDigests: string[] = [],
   ) => f.chain.directMessages.unattributedAttempts({ wallet, knownDigests })
 
-  it('auto-heals orphaned or unreconciled links in owner.links and allows new sends to proceed', async () => {
+  it('holds an uncorrelated link without declaring it dead or signing a new payment', async () => {
     const aliceAddr = (await f.alice.getReceiveAddress()).raw.toLowerCase()
     const storageLocation = `${join(f.root, 'wallet')}-evm-${aliceAddr}`
     const directory = await f.directoryFor('alice', f.alice, f.bob)
-    installCanonicalDirectory(f.alice, directory)
     await f.alice.close()
-
     const store = await LevelCanonicalLinkStore.open(storageLocation)
-    const orphanedDigest = 'ab'.repeat(32)
-    await store.put({
+    const digest = 'ab'.repeat(32)
+    const row = {
       attemptRef: 'orphaned-ref-999',
       consumerId: 'frank-dm:orphaned',
-      digest: orphanedDigest,
-      prepared: {
-        payload: '00',
-        context: '00',
-        stampValueWei: '1000',
-        economicBinding: '00',
-        walletBindingId: 'unknown',
-        network: 'monad-testnet',
-        chainId: 10143,
-        senderSubject: '00',
-        senderFingerprint: '00',
-      },
-      acknowledged: false,
-    })
+      digest,
+      prepared: { payload: '00', context: '00', economicBinding: '00' },
+    }
+    await store.put(row)
     await store.close()
-
-    ;(f as any).alice = await reopen(directory)
-
-    // Settle auto-heals the orphaned link; send proceeds cleanly with its own fresh payment intent:
-    const result = await f.chain.directMessages.send({
-      wallet: f.alice,
-      recipient: f.bob.identity.address,
-      items: text('message after orphaned link auto-healed'),
-    })
-    expect(result.payloadDigest).toBeDefined()
-    expect(result.stampPayments.length).toBeGreaterThan(0)
-
-    // Reconciling attempts marks the orphaned digest as dead without throwing
-    const statuses = await f.chain.directMessages.reconcileAttempts({
-      wallet: f.alice,
-      payloadDigests: [orphanedDigest, result.payloadDigest],
-    })
-    expect(statuses[orphanedDigest]).toBe('dead')
-    expect(statuses[result.payloadDigest]).toBe('delivered')
-    await f.alice.close()
-  })
-
-  it('discardAttempt marks a pending attempt dead and acknowledged, allowing subsequent sends to proceed', async () => {
-    const aliceAddr = (await f.alice.getReceiveAddress()).raw.toLowerCase()
-    const storageLocation = `${join(f.root, 'wallet')}-evm-${aliceAddr}`
-    const directory = await f.directoryFor('alice', f.alice, f.bob)
-    installCanonicalDirectory(f.alice, directory)
-    await f.alice.close()
-
-    const store = await LevelCanonicalLinkStore.open(storageLocation)
-    const pendingDigest = 'ef'.repeat(32)
-    await store.put({
-      attemptRef: 'pending-ref-discard',
-      consumerId: 'frank-dm:discard',
-      digest: pendingDigest,
-      prepared: {
-        payload: '00',
-        context: '00',
-        stampValueWei: '1000',
-        economicBinding: '00',
-        walletBindingId: 'unknown',
-        network: 'monad-testnet',
-        chainId: 10143,
-        senderSubject: '00',
-        senderFingerprint: '00',
-      },
-      acknowledged: false,
-    })
-    await store.close()
-
-    ;(f as any).alice = await reopen(directory)
-
-    // Discarding the pending attempt
-    await f.chain.directMessages.discardAttempt({
-      wallet: f.alice,
-      payloadDigest: pendingDigest,
-    })
-
-    // Now send proceeds cleanly without throwing MonadStampPendingAttemptError:
-    const result = await f.chain.directMessages.send({
-      wallet: f.alice,
-      recipient: f.bob.identity.address,
-      items: text('message after discardAttempt'),
-    })
-    expect(result.payloadDigest).toBeDefined()
-    expect(result.stampPayments.length).toBeGreaterThan(0)
-    await f.alice.close()
-  })
-
-  it('discardAttempt on a real journaled attempt cleans up journal and leases, unblocking future sends', async () => {
-    f.setPhase('fail')
-    const { directory, digest } = await interruptedSend('discard-real')
-    let wallet = await reopen(directory)
+    f.alice = await reopen(directory)
+    const prepare = jest.spyOn(
+      MonadCanonicalStampClient.prototype,
+      'prepareIntent',
+    )
     try {
-      for (const record of wallet.pool.ensureSize(4))
-        mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
-      await wallet.pool.flush()
-
-      // Initially, sending another message throws MonadStampPendingAttemptError because the attempt is live:
       await expect(
-        f.chain.directMessages.send({
-          wallet,
-          recipient: f.bob.identity.address,
-          items: text('blocked send'),
+        f.chain.directMessages.reconcileAttempts({
+          wallet: f.alice,
+          payloadDigests: [digest],
         }),
-      ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
-
-      // Discard the real journaled attempt:
+      ).rejects.toBeInstanceOf(CanonicalMessagingHoldError)
       await f.chain.directMessages.discardAttempt({
-        wallet,
+        wallet: f.alice,
         payloadDigest: digest,
       })
-
-      // Now send proceeds cleanly without throwing MonadStampPendingAttemptError or CanonicalMessagingHoldError:
-      f.setPhase('delivered')
-      const result = await f.chain.directMessages.send({
-        wallet,
-        recipient: f.bob.identity.address,
-        items: text('message after real discardAttempt'),
-      })
-      expect(result.payloadDigest).toBeDefined()
-      expect(result.stampPayments.length).toBeGreaterThan(0)
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('behind missing evidence'),
+        }),
+      ).rejects.toBeInstanceOf(CanonicalMessagingHoldError)
+      expect(prepare).not.toHaveBeenCalled()
+      expect(f.requests).toHaveLength(0)
+      await f.alice.close()
+      const retained = await LevelCanonicalLinkStore.open(storageLocation)
+      try {
+        expect(retained.all()).toEqual([row])
+      } finally {
+        await retained.close()
+      }
     } finally {
-      await wallet.close()
+      prepare.mockRestore()
     }
   })
 
-  it('handles sender_unpublished dead response from relay, marking attempt dead and throwing CanonicalSenderUnpublishedError', async () => {
+  // The public client lookup proves that the retained bytes, intended economics, and reservation
+  // ownership survive. No test reaches into the live wallet's private persistence owner.
+  async function exposedAttempt() {
+    for (const record of f.alice.pool.records())
+      mockBalances.set(record.address.toLowerCase(), 187_500n + 200_000n)
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    f.setPhase('lost')
+    const finish = jest.spyOn(MonadCanonicalStampClient.prototype, 'finishIntent')
+    let digest = ''
+    try {
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          stampValue: 400_000n,
+          items: text('original authorized operation'),
+          onAttemptCreated: value => void (digest = value),
+        }),
+      ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+      expect(finish).toHaveBeenCalledTimes(1)
+      const attempt: CanonicalJournalAttempt = await finish.mock.results[0].value
+      expect(attempt.request.parts.transactions).toHaveLength(2)
+      return { directory, digest, attempt }
+    } finally {
+      finish.mockRestore()
+    }
+  }
+
+  function retainedAttempt(
+    wallet: MonadChainWalletHandle,
+    original: CanonicalJournalAttempt,
+  ) {
+    const found = canonicalMonadStampClient(wallet).lookup(original.prepared)
+    expect(found?.kind).toBe('attempt')
+    if (!found || found.kind !== 'attempt')
+      throw new Error('expected retained attempt')
+    expect(found.record.request).toEqual(original.request)
+    expect(found.record.prepared).toEqual(original.prepared)
+    expect(found.record.reservations).toEqual(original.reservations)
+    expect(found.record.cleanupComplete).toBe(false)
+    expect(found.record.acknowledged).toBe(false)
+    for (const reservation of original.reservations)
+      expect(wallet.pool.getRecord(reservation.index)?.status).toBe('in-use')
+    return found.record
+  }
+
+  it.each(['lost', 'bad_request'] as const)(
+    'retains exact payments after %s responses, exhaustion, discard, partial broadcast and restart',
+    async response => {
+      const { directory, digest, attempt } = await exposedAttempt()
+      // A relay has the exact signed bytes, and one member lands before the response is known.
+      f.broadcast(0, [0])
+      expect(f.broadcastPayments.size).toBe(1)
+      f.setPhase(response)
+      for (let retry = 0; retry < 6; retry++)
+        expect(
+          await f.chain.directMessages.reconcileAttempts({
+            wallet: f.alice,
+            payloadDigests: [digest],
+          }),
+        ).toEqual({ [digest]: 'live' })
+      retainedAttempt(f.alice, attempt)
+      await f.chain.directMessages.discardAttempt({
+        wallet: f.alice,
+        payloadDigest: digest,
+      })
+      retainedAttempt(f.alice, attempt)
+      await f.alice.close()
+      f.alice = await reopen(directory)
+      retainedAttempt(f.alice, attempt)
+      expect(
+        await f.chain.directMessages.unattributedAttempts({
+          wallet: f.alice,
+          knownDigests: [],
+        }),
+      ).toEqual([digest])
+      // The recipient can broadcast the remaining original bytes after exhaustion/discard.
+      f.broadcast(0)
+      f.broadcast(0)
+      expect([...f.broadcastPayments.values()].reduce((a, b) => a + b, 0n)).toBe(
+        400_000n,
+      )
+      f.setPhase('delivered')
+      const finish = jest.spyOn(
+        MonadCanonicalStampClient.prototype,
+        'finishIntent',
+      )
+      try {
+        for (let pass = 0; pass < 2; pass++)
+          expect(
+            await f.chain.directMessages.reconcileAttempts({
+              wallet: f.alice,
+              payloadDigests: [digest],
+            }),
+          ).toEqual({ [digest]: 'delivered' })
+        expect(finish).not.toHaveBeenCalled()
+      } finally {
+        finish.mockRestore()
+      }
+      expect(new Set(f.requests.map(r => toHex(r.body))).size).toBe(1)
+      const client = canonicalMonadStampClient(f.alice)
+      expect(client.lookup(attempt.prepared)).toBeUndefined()
+      expect(client.wasAcknowledged(attempt.attemptRef)).toBe(true)
+      expect(f.alice.pool.records().map(r => r.status)).not.toContain('in-use')
+      await f.alice.close()
+      f.alice = await reopen(directory)
+      const count = f.requests.length
+      expect(
+        await f.chain.directMessages.reconcileAttempts({
+          wallet: f.alice,
+          payloadDigests: [digest],
+        }),
+      ).toEqual({ [digest]: 'delivered' })
+      expect(f.requests).toHaveLength(count)
+      expect(f.broadcastPayments.size).toBe(2)
+    },
+  )
+
+  it('retains a late relay rejection across discard, delayed broadcast and restart', async () => {
+    const { directory, digest, attempt } = await exposedAttempt()
+    f.setPhase('undeliverable')
+    expect(
+      await f.chain.directMessages.reconcileAttempts({
+        wallet: f.alice,
+        payloadDigests: [digest],
+      }),
+    ).toEqual({ [digest]: 'live' })
+    expect(retainedAttempt(f.alice, attempt).terminal).toMatchObject({
+      phase: 'dead',
+    })
+    await f.chain.directMessages.discardAttempt({
+      wallet: f.alice,
+      payloadDigest: 'all',
+    })
+    await f.alice.close()
+    f.alice = await reopen(directory)
+    // Rejection did not revoke bytes already held by the relay or recipient.
+    f.broadcast(0)
+    for (let pass = 0; pass < 2; pass++) {
+      expect(
+        await f.chain.directMessages.reconcileAttempts({
+          wallet: f.alice,
+          payloadDigests: [digest],
+        }),
+      ).toEqual({ [digest]: 'live' })
+      retainedAttempt(f.alice, attempt)
+    }
+    expect([...f.broadcastPayments.values()].reduce((a, b) => a + b, 0n)).toBe(
+      400_000n,
+    )
+    expect(f.requests).toHaveLength(2)
+    await expect(
+      f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('replacement prohibited'),
+      }),
+    ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+  })
+
+  it('holds a journaled payment with a missing workflow link over restart and discard', async () => {
+    const { directory, digest, attempt } = await exposedAttempt()
+    const aliceAddr = (await f.alice.getReceiveAddress()).raw.toLowerCase()
+    const storageLocation = `${join(f.root, 'wallet')}-evm-${aliceAddr}`
+    await f.alice.close()
+    // Only this fixture's synthetic link is removed; its authoritative journal stays intact.
+    const links = level(join(storageLocation, 'canonical-dm-workflow-links'))
+    await links.del(attempt.attemptRef)
+    await links.close()
+    f.alice = await reopen(directory)
+    const prepare = jest.spyOn(
+      MonadCanonicalStampClient.prototype,
+      'prepareIntent',
+    )
+    try {
+      await expect(
+        f.chain.directMessages.reconcileAttempts({
+          wallet: f.alice,
+          payloadDigests: [digest],
+        }),
+      ).rejects.toBeInstanceOf(CanonicalMessagingHoldError)
+      await f.chain.directMessages.discardAttempt({
+        wallet: f.alice,
+        payloadDigest: 'all',
+      })
+      retainedAttempt(f.alice, attempt)
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('behind missing link'),
+        }),
+      ).rejects.toBeInstanceOf(CanonicalMessagingHoldError)
+      expect(prepare).not.toHaveBeenCalled()
+      expect(f.requests).toHaveLength(1)
+      await f.alice.close()
+      f.alice = await reopen(directory)
+      retainedAttempt(f.alice, attempt)
+    } finally {
+      prepare.mockRestore()
+    }
+  })
+
+  it('keeps sender_unpublished payment evidence pending instead of claiming no financial effect', async () => {
     const directory = await f.directoryFor('alice', f.alice, f.bob)
     installCanonicalDirectory(f.alice, directory)
     f.setPhase('sender_unpublished')
@@ -1026,46 +1165,8 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         recipient: f.bob.identity.address,
         items: text('unpublished sender'),
       }),
-    ).rejects.toBeInstanceOf(CanonicalSenderUnpublishedError)
-  })
-
-  it('settle marks attempts dead with attempts_exhausted after repeated submit failures', async () => {
-    const directory = await f.directoryFor('alice', f.alice, f.bob)
-    installCanonicalDirectory(f.alice, directory)
-    f.setPhase('fail')
-    let digest = ''
-    await expect(
-      f.chain.directMessages.send({
-        wallet: f.alice,
-        recipient: f.bob.identity.address,
-        items: text('failing message'),
-        onAttemptCreated: d => void (digest = d),
-      }),
     ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
-
-    // Reconcile 4 more times (total 5 failures):
-    for (let i = 0; i < 4; i++) {
-      await f.chain.directMessages.reconcileAttempts({
-        wallet: f.alice,
-        payloadDigests: [digest],
-      })
-    }
-
-    // On 5th attempt, settle marks it terminal dead with attempts_exhausted:
-    const status = await f.chain.directMessages.reconcileAttempts({
-      wallet: f.alice,
-      payloadDigests: [digest],
-    })
-    expect(status[digest]).toBe('dead')
-
-    // Subsequent send now unblocked:
-    f.setPhase('delivered')
-    const result = await f.chain.directMessages.send({
-      wallet: f.alice,
-      recipient: f.bob.identity.address,
-      items: text('unblocked after exhausted'),
-    })
-    expect(result.payloadDigest).toBeDefined()
+    expect(f.alice.pool.records().map(r => r.status)).toContain('in-use')
   })
 
   it('keeps reporting a delivered attempt no message recorded across wallet reopens, and never pays for it twice', async () => {
@@ -1772,38 +1873,22 @@ describe('two typed wallets on the open directory', () => {
       expect(f.requests).toHaveLength(1)
     })
 
-    it('ends only that attempt when the relay finds it cannot deliver, and later sends go through', async () => {
+    it('retains a rejected cross-relay attempt as unresolved', async () => {
       relay.infoOverride = { forwarding: true }
       await online('alice', f.alice)
-      mockBalances.set(
-        (await f.alice.getReceiveAddress()).raw.toLowerCase(),
-        10n ** 18n,
-      )
       f.setPhase('undeliverable')
-      const failure = await f.chain.directMessages
-        .send({
-          wallet: f.alice,
-          recipient: f.bob.identity.address,
-          items: text('will not arrive'),
-        })
-        .catch(error => error)
-      expect(failure).toBeInstanceOf(CanonicalRecipientUndeliverableError)
-      // Nothing is left reserved or reported as possibly paid.
-      expect(f.alice.pool.records().map(r => r.status)).not.toContain('in-use')
-      expect(
-        await f.chain.directMessages.unattributedAttempts({
-          wallet: f.alice,
-          knownDigests: [],
-        }),
-      ).toEqual([])
-      f.setPhase('delivered')
-      const sent = await f.chain.directMessages.send({
+      let digest = ''
+      await expect(f.chain.directMessages.send({
         wallet: f.alice,
         recipient: f.bob.identity.address,
-        items: text('second try'),
-      })
-      expect(sent.stampPayments.length).toBeGreaterThan(0)
-      expect(f.requests).toHaveLength(2)
+        items: text('relay cannot deliver'),
+        onAttemptCreated: value => void (digest = value),
+      })).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+      expect(f.alice.pool.records().map(r => r.status)).toContain('in-use')
+      expect(await f.chain.directMessages.unattributedAttempts({
+        wallet: f.alice, knownDigests: [],
+      })).toEqual([digest])
+      expect(f.requests).toHaveLength(1)
     })
   })
 })

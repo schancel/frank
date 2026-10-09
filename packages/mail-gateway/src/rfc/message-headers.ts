@@ -13,9 +13,15 @@
  * - Outside bracket tokens, double-quoted phrases and parenthesised comments
  *   (nested, backslash escapes honoured) are skipped. An unbalanced quote or
  *   parenthesis swallows the rest of the value.
- * - Message-ID must be exactly one valid bracket token. In-Reply-To yields its
- *   first valid token; References yields every valid token in order. Invalid
- *   tokens and free text are skipped there.
+ * - Message-ID must be exactly one valid bracket token with nothing outside it
+ *   but spaces, tabs and balanced comments; any other text, quote, stray angle
+ *   bracket or unbalanced comment is `bad_message_id`. Under this strict rule two
+ *   distinct Message-IDs never compare equal. In-Reply-To yields its first valid
+ *   token; References yields every valid token in order. Invalid tokens and free
+ *   text are skipped there, and an unterminated `<` swallows the rest of the value.
+ * - Known residual (needs a full RFC parser): in In-Reply-To and References,
+ *   tokens found before an unbalanced point are kept, so `<"a> <b@c> "@d>`
+ *   yields `<b@c>`, the interior of one exotic RFC-valid ID.
  * - The header section ends at the first empty line (or one holding only
  *   whitespace or CR), or at the first non-continuation line without a colon.
  *   Nothing after that point is read. Continuation lines attach only to a header
@@ -130,6 +136,47 @@ function readHeaderFields(raw: Uint8Array): Array<[string, string]> {
   return fields;
 }
 
+/**
+ * The Message-ID header value must be exactly one valid bracket token, with
+ * only spaces, tabs and balanced parenthesised comments around it. Anything
+ * else outside the token (quotes, stray angle brackets, text) is rejected.
+ */
+function readSoleMessageId(value: string): string | undefined {
+  let found: string | undefined;
+  const n = value.length;
+  let i = 0;
+  while (i < n) {
+    const c = value[i];
+    if (c === ' ' || c === '\t') {
+      i++;
+    } else if (c === '(') {
+      let depth = 1;
+      let j = i + 1;
+      while (j < n && depth > 0) {
+        const d = value[j];
+        if (d === '\\') j += 2;
+        else {
+          if (d === '(') depth++;
+          else if (d === ')') depth--;
+          j++;
+        }
+      }
+      if (depth > 0) return undefined;
+      i = j;
+    } else if (c === '<') {
+      const close = value.indexOf('>', i + 1);
+      if (close < 0 || found !== undefined) return undefined;
+      const token = value.slice(i, close + 1);
+      if (!isMessageId(token)) return undefined;
+      found = token;
+      i = close + 1;
+    } else {
+      return undefined;
+    }
+  }
+  return found;
+}
+
 export function readThreadHeaders(raw: Uint8Array): ThreadHeadersReadResult {
   const fields = readHeaderFields(raw);
   const all = (name: string): string[] => fields.filter(([n]) => n === name).map(([, v]) => v);
@@ -144,12 +191,10 @@ export function readThreadHeaders(raw: Uint8Array): ThreadHeadersReadResult {
 
   const [messageIdValue] = all('message-id');
   if (messageIdValue !== undefined) {
-    // A Message-ID names exactly one message: one whole, valid, balanced token.
-    const scan = scanBracketTokens(messageIdValue);
-    const [only] = scan.tokens;
-    if (scan.unbalanced || scan.tokens.length !== 1 || only === undefined || !isMessageId(only)) {
-      return { ok: false, reason: 'bad_message_id' };
-    }
+    // A Message-ID names exactly one message: one whole valid token and nothing
+    // else but spaces, tabs and balanced comments.
+    const only = readSoleMessageId(messageIdValue);
+    if (only === undefined) return { ok: false, reason: 'bad_message_id' };
     result.messageId = only;
   }
   const [inReplyToValue] = all('in-reply-to');

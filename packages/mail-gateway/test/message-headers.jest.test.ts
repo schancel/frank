@@ -600,4 +600,42 @@ describe('message-headers (S1)', () => {
       expect(r.ok && r.references).toEqual([id]);
     });
   });
+
+  describe('Message-ID: nothing but one token and comments', () => {
+    const bad = { ok: false, reason: 'bad_message_id' };
+    it('must not merge two distinct RFC-valid IDs that share an early-closing prefix', () => {
+      expect(readThreadHeaders(enc('Message-ID: <"a@b>\\""@d>\r\n\r\n'))).toEqual(bad);
+      expect(readThreadHeaders(enc('Message-ID: <"a@b>\\""@e>\r\n\r\n'))).toEqual(bad);
+    });
+
+    it('rejects text after the token', () => {
+      expect(readThreadHeaders(enc('Message-ID: <a@b>c@d>\r\n\r\n'))).toEqual(bad);
+      expect(readThreadHeaders(enc('Message-ID: <a@b>junk\r\n\r\n'))).toEqual(bad);
+    });
+
+    it('rejects a quoted phrase or free text around the token', () => {
+      expect(readThreadHeaders(enc('Message-ID: "phrase" <a@b>\r\n\r\n'))).toEqual(bad);
+      expect(readThreadHeaders(enc('Message-ID: junk <a@b>\r\n\r\n'))).toEqual(bad);
+    });
+
+    it('still accepts balanced comments and spaces or tabs around the token', () => {
+      const ok = { ok: true, messageId: '<a@b>', references: [] };
+      expect(readThreadHeaders(enc('Message-ID: (comment) <a@b> (another)\r\n\r\n'))).toEqual(ok);
+      expect(readThreadHeaders(enc('Message-ID: \t  <a@b> \t \r\n\r\n'))).toEqual(ok);
+      expect(readThreadHeaders(enc('Message-ID: (a (nested) \\) c)<a@b>\r\n\r\n'))).toEqual(ok);
+    });
+
+    it('rejects an unbalanced comment around the token', () => {
+      expect(readThreadHeaders(enc('Message-ID: (open <a@b>\r\n\r\n'))).toEqual(bad);
+      expect(readThreadHeaders(enc('Message-ID: <a@b> (open\r\n\r\n'))).toEqual(bad);
+    });
+  });
+
+  describe('known residual in reference headers', () => {
+    it('keeps tokens before an unbalanced point (needs a full RFC parser to fix)', () => {
+      // KNOWN RESIDUAL: this is the interior of one exotic RFC-valid ID; pinned, not endorsed.
+      const r = readThreadHeaders(enc('In-Reply-To: <"a> <b@c> "@d>\r\n\r\n'));
+      expect(r).toEqual({ ok: true, inReplyTo: '<b@c>', references: [] });
+    });
+  });
 });

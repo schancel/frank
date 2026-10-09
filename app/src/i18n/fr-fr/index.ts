@@ -4,6 +4,12 @@
 import { fr as accountRecovery } from '../account-recovery'
 
 export default {
+  startupFailure: {
+    title: 'Impossible de charger les données enregistrées',
+    message:
+      'Le démarrage a été interrompu. Vos données enregistrées n’ont pas été réinitialisées.',
+    loading: 'Chargement des données enregistrées',
+  },
   accountRecovery,
   forum: {
     postsLabel: 'messages',

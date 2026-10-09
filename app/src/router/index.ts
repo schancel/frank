@@ -6,6 +6,7 @@ import {
 } from 'vue-router'
 import type { RouteLocationNormalized } from 'vue-router'
 import { createRoutes } from './routes'
+import { startupRestoration } from '../boot/startup-state'
 import { useContactStore } from 'src/stores/contacts'
 import { useChatStore } from 'src/stores/chats'
 import { isChainAddress } from 'src/utils/chain-address'
@@ -55,6 +56,7 @@ export default () => {
   // -- `next()` becomes `return` (undefined = allow navigation), `next('/setup')` becomes
   // `return '/setup'`. Purely mechanical; the actual gating logic is unchanged.
   async function redirectIfNoProfile(to: RouteLocationNormalized) {
+    if (startupRestoration.value.phase !== 'restored') return
     if (
       to.fullPath.startsWith('/chat') &&
       to.params.address &&

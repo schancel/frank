@@ -589,9 +589,8 @@ describe('outgoing direct messages (#269, #270)', () => {
       const restored = await reload()
       expect(only(restored)).toHaveLength(1)
       expect(only(restored)[0].status).toBe('confirmed')
-      // And the durable store keeps the confirmed record and drops the leftover local one.
-      await new Promise(resolve => setImmediate(resolve))
-      expect([...db.keys()]).toEqual([HASH])
+      // Hydration only rebuilds the view; both durable recovery records remain intact.
+      expect([...db.keys()]).toEqual([localId, HASH])
       expect(
         deserializeMessageWrapper(db.get(HASH) as string).message.status,
       ).toBe('confirmed')

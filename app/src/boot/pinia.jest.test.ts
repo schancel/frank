@@ -81,6 +81,23 @@ function persistentStore(save: () => Promise<void>) {
 }
 
 describe('Pinia persistence barrier', () => {
+  it('hydrates without saving and still persists later user changes', async () => {
+    const save = jest.fn(async () => undefined)
+    const { pinia } = installPinia()
+    const useTestStore = defineStore(`initial-hydration-${nextStoreId++}`, {
+      state: () => ({ value: 0 }),
+      storage: { save, restore: async () => ({ value: 7 }) },
+    })
+    const store = useTestStore(pinia)
+    await store.restored
+    await store.flushPersistence()
+    expect(store.value).toBe(7)
+    expect(save).not.toHaveBeenCalled()
+    store.value = 8
+    await store.flushPersistence()
+    expect(save).toHaveBeenCalledTimes(1)
+  })
+
   it.each([
     ['appearance', useAppearanceStore],
     ['chats', useChatStore],
@@ -163,7 +180,6 @@ describe('Pinia persistence barrier', () => {
     const second = deferred()
     const save = jest
       .fn<Promise<void>, []>()
-      .mockResolvedValueOnce()
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise)
     const store = persistentStore(save)
@@ -193,10 +209,7 @@ describe('Pinia persistence barrier', () => {
 
   it('surfaces a rejected write without an unhandled rejection window', async () => {
     const write = deferred()
-    const save = jest
-      .fn<Promise<void>, []>()
-      .mockResolvedValueOnce()
-      .mockReturnValue(write.promise)
+    const save = jest.fn<Promise<void>, []>().mockReturnValue(write.promise)
     const store = persistentStore(save)
     await store.restored
     await store.flushPersistence()
@@ -220,7 +233,6 @@ describe('Pinia persistence barrier', () => {
     const laterWrite = deferred()
     const save = jest
       .fn<Promise<void>, []>()
-      .mockResolvedValueOnce()
       .mockReturnValueOnce(failedWrite.promise)
       .mockReturnValueOnce(laterWrite.promise)
     const store = persistentStore(save)
@@ -254,10 +266,7 @@ describe('Pinia persistence barrier', () => {
 
   it('coalesces same-tick mutations and waits for the final-state write', async () => {
     const write = deferred()
-    const save = jest
-      .fn<Promise<void>, []>()
-      .mockResolvedValueOnce()
-      .mockReturnValueOnce(write.promise)
+    const save = jest.fn<Promise<void>, []>().mockReturnValueOnce(write.promise)
     const store = persistentStore(save)
     await store.restored
     await store.flushPersistence()
@@ -279,6 +288,35 @@ describe('Pinia persistence barrier', () => {
     write.resolve()
     await observedBarrier
   })
+
+  it.each(['initial restore', 'rehydrate'])(
+    'propagates an unsupported-format error from %s without patching or saving',
+    async phase => {
+      const { pinia } = installPinia()
+      const failure = new Error('Unsupported stored conversation format')
+      const save = jest.fn(async () => undefined)
+      const restore = jest.fn(async () => ({ value: 7 }))
+      if (phase === 'initial restore') restore.mockRejectedValueOnce(failure)
+      const useTestStore = defineStore(`restore-failure-${nextStoreId++}`, {
+        state: () => ({ value: 0 }),
+        storage: { save, restore },
+      })
+      const store = useTestStore(pinia)
+      if (phase === 'initial restore') {
+        await expect(store.restored).rejects.toBe(failure)
+        expect(store.value).toBe(0)
+      } else {
+        await store.restored
+        await store.flushPersistence()
+        save.mockClear()
+        restore.mockRejectedValueOnce(failure)
+        await expect(store.rehydrate()).rejects.toBe(failure)
+        expect(store.value).toBe(7)
+      }
+      await nextTick()
+      expect(save).not.toHaveBeenCalled()
+    },
+  )
 
   it('resolves immediately for stores without persistence', async () => {
     const { pinia } = installPinia()

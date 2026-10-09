@@ -1,5 +1,8 @@
 import { boot } from 'quasar/wrappers'
 import { reactive, watch } from 'vue'
+import { setStartupRestoration } from './startup-state'
+import { i18n } from './i18n'
+import { defaultLocale, messages } from '../i18n'
 import { useWalletStore } from '../stores/wallet'
 import { useProfileStore } from '../stores/my-profile'
 import { useContactStore } from '../stores/contacts'
@@ -11,18 +14,46 @@ import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import { accountSession, accountStatus } from '../accounts/session'
 
 export default boot(async ({ app }) => {
-  // The wallet plugin inspects old data read-only and never hydrates secrets.
-  await useWalletStore().restored
-  await Promise.all([
-    useProfileStore().restored,
-    useContactStore().restored,
-    useAppearanceStore().restored,
-    useForumStore().restored,
-    useChatStore().restored,
-    useTopicStore().restored,
-  ])
   const status = reactive({ loaded: false, setup: false })
   app.config.globalProperties.$status = status
+  i18n.global.locale = defaultLocale
+  try {
+    // Wallet inspection remains first and never hydrates secrets.
+    await useWalletStore().restored
+    // Observe every started restoration and wait for siblings to settle before showing failure.
+    // The original store promises remain rejected; this only contains the composition failure.
+    const results = await Promise.all(
+      [
+        useProfileStore,
+        useContactStore,
+        useAppearanceStore,
+        useForumStore,
+        useChatStore,
+        useTopicStore,
+      ].map(useStore =>
+        Promise.resolve()
+          .then(() => useStore().restored)
+          .then(
+            () => true,
+            () => false,
+          ),
+      ),
+    )
+    if (results[2]) {
+      const locale = useAppearanceStore().locale
+      if (Object.prototype.hasOwnProperty.call(messages, locale)) {
+        i18n.global.locale = locale as keyof typeof messages
+      }
+    }
+    if (results.some(success => !success)) {
+      setStartupRestoration({ phase: 'failed', reason: 'state-restore-failed' })
+      return
+    }
+  } catch {
+    setStartupRestoration({ phase: 'failed', reason: 'state-restore-failed' })
+    return
+  }
+  setStartupRestoration({ phase: 'restored' })
   watch(
     () => accountStatus.status,
     value => {

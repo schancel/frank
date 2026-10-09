@@ -3409,7 +3409,28 @@ describe('a stamp account a native send spends from (#1235)', () => {
       r.installRpc(f.alice)
       expect(bundles).toHaveLength(3)
       expect(await admission()).toMatchObject({ status: 'ready' })
-      expect(f.alice.pool.getRecord(r.x.index)!.status).toBe('available')
+      // Stage 1 of #1235 changed this assertion on purpose. It was `available` for both windows:
+      // nothing recorded the spend. The native send from main above now ends with the local pass,
+      // which records every member the journal has observed included, so in the `included` window
+      // the account is `spent` with that member's own transaction. Pending: nothing to record.
+      expect(f.alice.pool.getRecord(r.x.index)).toEqual(
+        window === 'included'
+          ? {
+              index: r.x.index,
+              address: r.x.address,
+              status: 'spent',
+              lifecycle: {
+                spend: {
+                  rawTx: r.operation.members[0]!.signed!.rawTransaction,
+                  txHash: r.operation.members[0]!.signed!.transactionHash,
+                  valueWei: Transaction.from(
+                    r.operation.members[0]!.signed!.rawTransaction,
+                  ).value.toString(),
+                },
+              },
+            }
+          : { index: r.x.index, address: r.x.address, status: 'available' },
+      )
       expect(f.alice.pool.isSpendReserved(r.x.index)).toBe(true)
       const again = await r.message(f.alice, 'after reopen')
       expect(again.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(

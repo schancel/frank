@@ -3,7 +3,10 @@ import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
-import { nativeAdmissionJournal } from "../evm-input-admission";
+import {
+  nativeAdmissionJournal,
+  poolSpendAdmission,
+} from "../evm-input-admission";
 import type {
   PublicRevisionZeroInput,
   PublicRevisionZeroExport,
@@ -108,7 +111,6 @@ import { MessageItem } from "@frank/cashweb/types/messages";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
-import { applyWalletSyncItem } from "../sync-dispatcher";
 
 import {
   createMonadWalletMaterial,
@@ -2193,6 +2195,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           pool.attachSpendReservation((index) =>
             topicOwner!.nativeJournal!.referencesSpendIndex(index)
           );
+          // Caller B, the sync boundary: a wallet sync item's signed transaction reaches the one
+          // writer only here, inside the wallet queue (whose guard refuses while a canonical
+          // pre-sign intent holds an available row) and under the input admission. Not
+          // re-entrant: `applyWalletSyncItem` must never be called from inside this queue.
+          // This handle has no address inventory and no UTXO store, so the pool branch is all the
+          // dispatcher does for it; its other branches log and swallow their failures, and
+          // nothing here relies on them.
+          pool.attachSpendApplier((rawTx, itemChainIdentifier) =>
+            runWalletExclusive(wallet, (admission) => {
+              if (admission === undefined)
+                throw new Error("Wallet sync lifetime is unavailable");
+              return poolSpendAdmission(
+                topicOwner!.inputAdmission,
+                admission
+              ).applySpend(rawTx, itemChainIdentifier);
+            })
+          );
           nativeOperationOwners.set(
             wallet,
             new EvmLegacyConsolidator({
@@ -2207,8 +2226,30 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   Transaction.from(unsignedTransaction)
                 );
               },
+              // Caller A, this device's own send. The consolidator calls these at the end of a
+              // native send or resume, INSIDE the wallet queue that call holds: they go to the
+              // admission directly. Routing them through `applyWalletSyncItem` would enter
+              // `runWalletExclusive` again, which is not re-entrant, and wait for itself.
+              applyLocalMember: (operationId, memberIndex, lifetime) => {
+                if (lifetime === undefined)
+                  throw new Error("Native operation lifetime is unavailable");
+                return poolSpendAdmission(
+                  topicOwner!.inputAdmission,
+                  lifetime
+                ).applyMember(operationId, memberIndex);
+              },
+              classifyLocalMember: (row, memberIndex, lifetime) => {
+                if (lifetime === undefined)
+                  throw new Error("Native operation lifetime is unavailable");
+                return poolSpendAdmission(
+                  topicOwner!.inputAdmission,
+                  lifetime
+                ).classifyMember(row, memberIndex);
+              },
+              // Transport only. The item now carries the member's signed transaction, so it is
+              // NOT dispatched locally here: that would commit through caller B, outside the send's
+              // queue hold. This device's own record is caller A's, above.
               onSyncTransaction: async (item) => {
-                await applyWalletSyncItem(wallet, item);
                 // This callback runs outside the native financial queue. Failure remains retryable.
                 await directMessages.send({
                   wallet,

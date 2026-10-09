@@ -514,9 +514,29 @@ export class MonadSubAccountPool {
    * down in a single put. It does not flush, never triggers warming, and never creates a row.
    * Throws `SubAccountSpendRefusedError` (nothing written) for unacceptable bytes or a row that
    * another owner or another transaction already holds.
+   *
+   * What the caller owes, because the pool cannot check it:
+   * - Inclusion. The signature proves this wallet's seed authorized the transaction, not that it
+   *   was mined. A row committed for a transaction that never lands is terminal all the same.
+   * - The chain. The pool does not know the wallet's native chain ID.
+   * - Other owners. A lease, a canonical or topic attempt, a funding attempt or another native
+   *   member that claims the account is visible only to the input admission.
+   * - Durability. The caller flushes, in the same turn as this call.
+   * `poolSpendAdmission` (`evm-input-admission.ts`) is the only production caller and owns the
+   * last three. Inclusion it takes from the native journal for this device's own sends; for a
+   * transaction that arrives in a sync item with no journal member it has only the signature.
+   *
+   * A partial spend leaves the account's remaining balance in a `spent` row. Nothing in the pool
+   * accounts for that residual: it is reachable only as a native source at the next nonce.
    */
   commitSpend(index: number, rawTx: string): SubAccountSpendOutcome {
     return this.applyClassifiedSpend(index, this.classifySpend(index, rawTx));
+  }
+
+  /** What `commitSpend(index, rawTx)` would do, without doing it: the same outcome, or the same
+   * `SubAccountSpendRefusedError`. Read-only; it grants nothing, and `commitSpend` decides again. */
+  classifySpendOutcome(index: number, rawTx: string): SubAccountSpendOutcome {
+    return this.classifySpend(index, rawTx).outcome;
   }
 
   private applyClassifiedSpend(
@@ -645,9 +665,11 @@ export class MonadSubAccountPool {
    * Resolves with no affected index, having changed nothing, for an item that does not concern
    * this pool: one that is not an outgoing `wallet-sync` (an incoming item or a `payment-transfer`
    * never spends a pool account), one with no transaction whose spent inputs name no row here,
-   * and a transaction not signed by a live row. Every other item that does not commit is REJECTED
+   * and a transaction not signed by a live row whose item names no row here either. Every other
+   * item that does not commit is REJECTED
    * with `SubAccountSpendRefusedError`, nothing written: a spent input naming a row with no
-   * transaction to prove it, any transaction while no applier is attached, a transaction that
+   * transaction to prove it or with a transaction some other key signed, any transaction while
+   * no applier is attached, a transaction that
    * does not parse or whose hash is not the item's, an item whose spent input, nonce, debit or
    * created output disagree with the transaction, and whatever the applier refuses. A matched row's capacity-cache entry is dropped before any rejection, so a drained
    * account is re-read before it is offered again. Repeating an applied item resolves with no
@@ -755,11 +777,19 @@ export class MonadSubAccountPool {
         "the signed transaction's hash is not the item's txHash"
       );
     }
-    // Check 6: a transaction no live row signed spends no pool account.
+    // Check 6: a transaction no live row signed spends no pool account. An item that names a row
+    // of this pool as its spent input while carrying some other key's transaction contradicts
+    // itself, exactly as it would without bytes: refused, not skipped.
     const row = this.store
       .getAll()
       .find((record) => sameAddress(record.address, signer));
-    if (row === undefined) return { affectedIndices: [] };
+    if (row === undefined) {
+      if (named.length === 0) return { affectedIndices: [] };
+      return refuse(
+        "inconsistent-item",
+        "the item names a pool row its transaction was not signed by"
+      );
+    }
     this.capacityCache.delete(row.index);
     // Check 7: the item's own account of the spend agrees with the transaction.
     const amount = (value: unknown): bigint | undefined =>

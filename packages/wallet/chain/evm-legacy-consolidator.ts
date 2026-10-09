@@ -4,6 +4,8 @@ import {
   type WalletOperationLifetime,
   type NativeExecutionJournal,
   type NativeJournalReader,
+  type PoolSpendApplication,
+  type PoolSpendMemberClass,
 } from '../evm-input-admission'
 import {
   getAddress,
@@ -52,6 +54,21 @@ export interface EvmLegacyConsolidatorConfig {
     source: EvmNativeSource,
     unsignedTransaction: string,
   ) => Promise<string>
+  /** Records one included member's spend on this device's own state (`poolSpendAdmission`). It is
+   * called from inside the wallet queue the send holds, so it must go to the admission directly:
+   * a route through `applyWalletSyncItem` re-enters that queue and waits for itself. */
+  applyLocalMember?: (
+    operationId: string,
+    memberIndex: number,
+    lifetime?: WalletOperationLifetime,
+  ) => Promise<PoolSpendApplication>
+  /** Read-only, from the pass's journal snapshot: whether `applyLocalMember` is worth calling. */
+  classifyLocalMember?: (
+    row: EvmNativeOperation,
+    memberIndex: number,
+    lifetime?: WalletOperationLifetime,
+  ) => PoolSpendMemberClass
+  /** Transport only. The item carries the member's complete signed transaction. */
   onSyncTransaction?: (item: WalletSyncItem) => Promise<void>
 }
 export class EvmNativeOperationPendingError extends NativeTransactionSubmissionError {
@@ -80,6 +97,9 @@ export class EvmLegacyConsolidator {
   private tail: Promise<unknown> = Promise.resolve()
   private syncTail: Promise<void> = Promise.resolve()
   private readonly active = new Map<string, Promise<EvmNativeOperation>>()
+  /** This session's local result per member (`operationId:memberIndex`), written only by the
+   * local pass. In memory on purpose: it gates transport, and the pool row is the record. */
+  private readonly localResults = new Map<string, 'applied' | 'held'>()
   constructor(private readonly config: EvmLegacyConsolidatorConfig) {}
   private run<T>(task: () => Promise<T>): Promise<T> {
     const run = this.tail.then(task)
@@ -487,7 +507,70 @@ export class EvmLegacyConsolidator {
     }
     return journal.get(id)
   }
-  /** Composition invokes this outside its financial queue; transport may itself need admission. */
+  /**
+   * The local pass: applies every included member of EVERY operation in the journal to this
+   * device's own state, from one journal snapshot. It runs at the end of each native send and
+   * resume, inside the wallet queue that call holds, so an operation whose inclusion was seen
+   * only later (by a later send's planning) is applied by that later send.
+   *
+   * It makes no network request and asks for no signature. A member that is applied, has no pool
+   * row, or can never apply costs one classification from the snapshot; only `needs-apply`
+   * enters the admission. It never throws: nothing here may replace the send's own outcome.
+   */
+  private async localPass(lifetime?: WalletOperationLifetime): Promise<void> {
+    try {
+      const { classifyLocalMember: classify, applyLocalMember: apply } =
+        this.config
+      for (const row of this.config.journal.list()) {
+        if (row.cancelled) continue
+        for (let i = 0; i < row.members.length; i++) {
+          const member = row.members[i]!
+          if (
+            !member.signed ||
+            member.observation.state !== 'included-success' ||
+            member.syncApplied
+          )
+            continue
+          let result: 'applied' | 'held' = 'held'
+          try {
+            // An executor composed with no local state has nothing to record on.
+            const kind = classify
+              ? classify(row, i, lifetime)
+              : apply
+              ? 'needs-apply'
+              : 'no-pool-row'
+            if (kind === 'applied' || kind === 'no-pool-row') result = 'applied'
+            else if (kind === 'needs-apply' && apply) {
+              await apply(row.operationId, i, lifetime)
+              result = 'applied'
+            }
+          } catch {
+            /* Held: retried by the next pass. */
+          }
+          this.localResults.set(`${row.operationId}:${i}`, result)
+        }
+      }
+    } catch {
+      /* An unreadable journal leaves every result as it was. */
+    }
+  }
+  /** Runs `body` on the executor queue and then the local pass, in the same hold. The pass runs
+   * whether `body` returned or threw and cannot change either. */
+  private runWithLocalPass<T>(
+    lifetime: WalletOperationLifetime | undefined,
+    body: () => Promise<T>,
+  ): Promise<T> {
+    return this.run(async () => {
+      try {
+        return await body()
+      } finally {
+        await this.localPass(lifetime).catch(() => undefined)
+      }
+    })
+  }
+  /** Composition invokes this outside its financial queue; transport may itself need admission.
+   * Transport only: a member is sent, and then marked sync-applied, only when this session's local
+   * pass recorded it applied. */
   flushSync(operationId?: string): Promise<void> {
     const run = this.syncTail.then(() =>
       this.config.runLifetime
@@ -505,6 +588,8 @@ export class EvmLegacyConsolidator {
   ): Promise<void> {
     const journal = this.journal(lifetime)
     if (!this.config.onSyncTransaction) return
+    // The first operation, in journal order, with a member the local pass has not applied.
+    let unapplied: string | undefined
     for (const row of journal
       .list()
       .filter(
@@ -520,6 +605,10 @@ export class EvmLegacyConsolidator {
           !member.syncApplied &&
           this.config.onSyncTransaction
         ) {
+          if (this.localResults.get(`${id}:${i}`) !== 'applied') {
+            unapplied ??= id
+            continue
+          }
           const tx = Transaction.from(member.signed!.rawTransaction)
           const observation = member.observation
           if (observation.state === 'included-success') {
@@ -529,6 +618,7 @@ export class EvmLegacyConsolidator {
                 direction: 'out',
                 chainIdentifier: journal.binding.chainIdentifier,
                 txHash: member.signed!.transactionHash,
+                rawTx: member.signed!.rawTransaction,
                 spentInputs: [
                   {
                     address: member.source.address,
@@ -550,6 +640,11 @@ export class EvmLegacyConsolidator {
           }
         }
       }
+    if (unapplied !== undefined)
+      throw new EvmNativeOperationPendingError(
+        journal.get(unapplied),
+        new Error('Native member has no local spend record in this session'),
+      )
   }
   resumeOperation(
     operationId: string,
@@ -557,7 +652,9 @@ export class EvmLegacyConsolidator {
   ): Promise<EvmNativeOperation> {
     const existing = this.active.get(operationId)
     if (existing) return existing
-    const run = this.run(() => this.execute(operationId, undefined, lifetime))
+    const run = this.runWithLocalPass(lifetime, () =>
+      this.execute(operationId, undefined, lifetime),
+    )
     this.active.set(operationId, run)
     void run
       .finally(() => {
@@ -572,7 +669,7 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<ChainTransaction> {
     params = { ...params, recipient: { ...params.recipient } }
-    return this.run(async () => {
+    return this.runWithLocalPass(lifetime, async () => {
       const row = await this.plan(params, 'native', lifetime)
       return this.transactionHandle(
         await this.execute(row.operationId, params.onSigned, lifetime),
@@ -584,7 +681,7 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<LegacySendResult> {
     params = { ...params, recipient: { ...params.recipient } }
-    return this.run(async () => {
+    return this.runWithLocalPass(lifetime, async () => {
       params.onProgress?.({ status: { stage: 'planning' } })
       const row = await this.plan(params, 'legacy', lifetime)
       const completed = await this.execute(

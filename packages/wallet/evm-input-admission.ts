@@ -963,6 +963,207 @@ export function nativeAdmissionJournal(
       mutation(() => journal.recordObservation(...args)),
   }
 }
+export type PoolSpendApplication =
+  | { readonly kind: 'committed'; readonly poolIndex: number }
+  | { readonly kind: 'already-applied'; readonly poolIndex: number }
+  | { readonly kind: 'no-pool-row' }
+/** `applied` and `no-pool-row` need nothing. `needs-apply` is worth one `applyMember`.
+ * `held-terminal` can never apply: the row's state is final and is not this member's.
+ * `not-eligible`: nothing may be applied for it now. */
+export type PoolSpendMemberClass =
+  | 'applied'
+  | 'no-pool-row'
+  | 'needs-apply'
+  | 'held-terminal'
+  | 'not-eligible'
+/**
+ * Records "pool account X was spent by transaction T" on the pool row, under the admission. The
+ * row is a derived copy of what the native journal (or, at the sync boundary, a transaction this
+ * wallet's seed signed) already says; it signs, submits, funds and reserves nothing.
+ *
+ * Refusals write nothing and do not fault the admission: `EvmInputAdmissionError`
+ * `invalid-provenance` for bytes or a chain that are not this wallet's,
+ * `conflicting-authorization` while another owner or the local journal holds the account, and the
+ * pool's own `SubAccountSpendRefusedError`.
+ */
+export function poolSpendAdmission(
+  admission: EvmInputAdmission,
+  lifetime: WalletOperationLifetime,
+): {
+  /** Caller B, the sync boundary: the complete signed transaction and the item's canonical chain. */
+  applySpend(
+    rawTx: string,
+    chainIdentifier: string,
+    expected?: { index: number; address: string },
+  ): Promise<PoolSpendApplication>
+  /** Caller A, this device's own send: the member is read from the bound journal, never passed. */
+  applyMember(
+    operationId: string,
+    memberIndex: number,
+  ): Promise<PoolSpendApplication>
+  /** Read-only, from the caller's journal snapshot. It grants nothing: `applyMember` reads again. */
+  classifyMember(
+    row: EvmNativeOperation,
+    memberIndex: number,
+  ): PoolSpendMemberClass
+} {
+  const owner = ownerOf(admission),
+    { pool, native: journal, binding } = owner.owners
+  if (!journal || !binding) throw new EvmInputAdmissionError('not-ready')
+  owner.owners.assertLifetime(lifetime)
+  type Staged =
+    | PoolSpendApplication
+    | { readonly committed: number; readonly flushed: Promise<void> }
+  // Everything up to and including the flush call is one synchronous turn: nothing can change
+  // between the checks and the put, and no other caller can take this put's pending write.
+  const stage = (
+    rawTx: string,
+    chainIdentifier: string,
+    expected?: { index: number; address: string },
+  ): Staged => {
+    // 1. Chain binding: the canonical identifier, exactly, and the transaction's own chain ID
+    // (which also refuses a legacy transaction with no chain ID).
+    if (chainIdentifier !== binding.chainIdentifier) invalid()
+    let tx: ValidatedFrozenTransaction
+    let expectedAddress: string | undefined
+    try {
+      if (typeof rawTx !== 'string') invalid()
+      // The class's own parser, so the bytes are read exactly as the projection will read them.
+      tx = owner['tx'](rawTx)
+      expectedAddress = expected && address(expected.address)
+    } catch {
+      invalid()
+    }
+    // 2. The row: the caller's, which the transaction must have been signed by, or the live row
+    // the signer owns.
+    if (expectedAddress !== undefined && expectedAddress !== tx.sender) invalid()
+    const index =
+      expected?.index ??
+      pool.records().find(record => address(record.address) === tx.sender)
+        ?.index
+    if (index === undefined) return { kind: 'no-pool-row' }
+    // 3. The writer's own decision, without the write. A refusal throws.
+    const outcome = pool.classifySpendOutcome(index, rawTx)
+    if (outcome === 'no-row') return { kind: 'no-pool-row' }
+    if (outcome === 'already-applied')
+      return { kind: 'already-applied', poolIndex: index }
+    // 4. Before any write. An uncertain, invalid or conflicting projection throws here.
+    const claims = owner.project()
+    // The local journal governs. If this device has a native claim for the same sender and nonce,
+    // the bytes must be that member's and the member must be included successfully, read from the
+    // member itself: `observedConsumed` is also true for a reverted member.
+    let own = `pool:${index}:spend`
+    const governing = claims.filter(
+      claim =>
+        claim.provenance.kind === 'native' &&
+        claim.transaction?.sender === tx.sender &&
+        claim.transaction.nonce === tx.nonce,
+    )
+    if (governing.length > 1) conflict()
+    for (const claim of governing) {
+      const evidence = claim.provenance
+      if (evidence.kind !== 'native') continue
+      const member = journal.get(evidence.operationId).members[evidence.member]
+      if (
+        evidence.source.kind !== 'spend' ||
+        evidence.source.index !== index ||
+        member?.signed?.rawTransaction !== rawTx ||
+        member.observation.state !== 'included-success'
+      )
+        conflict()
+      own = claim.authorization
+    }
+    // The hold rule: no other owner allocates this row. In production only the canonical kinds
+    // can get this far (the others keep the row `in-use` or `funding`, refused at step 3).
+    if (
+      claims.some(
+        claim =>
+          (claim.provenance.kind === 'canonical-intent' ||
+            claim.provenance.kind === 'canonical-attempt' ||
+            claim.provenance.kind === 'topic' ||
+            claim.provenance.kind === 'live-lease' ||
+            claim.provenance.kind === 'pool-funding') &&
+          claim.provenance.poolIndex === index,
+      )
+    )
+      conflict()
+    // The candidate check, against every other authorization's resources. It is stricter than
+    // the projection, in the safe direction: the projection lets an older observed pair coexist
+    // with a newer pending member's hold on the same address, this refuses until that member
+    // resolves. So whatever passes here projects without conflict once written.
+    owner['check'](
+      [{ kind: 'pair', address: tx.sender, nonce: tx.nonce }],
+      own,
+    )
+    // 5. One put, and the flush taken in the same turn.
+    if (pool.commitSpend(index, rawTx) !== 'committed') conflict()
+    return { committed: index, flushed: pool.flush() }
+  }
+  const finish = async (staged: Staged): Promise<PoolSpendApplication> => {
+    if (!('flushed' in staged)) return staged
+    try {
+      await staged.flushed
+      // 6. The written row must project. Nothing was found that passes step 4 and fails here;
+      // if something does, this session signs nothing more.
+      owner.project()
+    } catch (error) {
+      owner.faultUncertain()
+      throw error
+    }
+    return { kind: 'committed', poolIndex: staged.committed }
+  }
+  // `async`, so a stale lifetime is a rejection like every other refusal, never a throw.
+  return {
+    applySpend: async (rawTx, chainIdentifier, expected) =>
+      owner.mutate(lifetime, () =>
+        finish(stage(rawTx, chainIdentifier, expected)),
+      ),
+    applyMember: async (operationId, memberIndex) =>
+      owner.mutate(lifetime, () => {
+        const row = journal.get(operationId)
+        const member = row.members[memberIndex]
+        if (!member) invalid()
+        if (
+          row.cancelled ||
+          !member.signed ||
+          member.observation.state !== 'included-success'
+        )
+          conflict()
+        if (member.source.kind !== 'spend')
+          return Promise.resolve<PoolSpendApplication>({ kind: 'no-pool-row' })
+        return finish(
+          stage(member.signed.rawTransaction, binding.chainIdentifier, {
+            index: member.source.index,
+            address: member.source.address,
+          }),
+        )
+      }),
+    classifyMember: (row, memberIndex) => {
+      const member = row.members[memberIndex]
+      if (
+        owner['uncertain'] ||
+        !member ||
+        row.cancelled ||
+        !member.signed ||
+        member.observation.state !== 'included-success'
+      )
+        return 'not-eligible'
+      if (member.source.kind !== 'spend') return 'no-pool-row'
+      const index = member.source.index
+      const record = pool.getRecord(index)
+      if (!record)
+        return pool.terminalCheckpoints().some(entry => entry.index === index)
+          ? 'held-terminal'
+          : 'no-pool-row'
+      if (record.status === 'retired') return 'held-terminal'
+      if (record.status !== 'spent') return 'needs-apply'
+      return record.lifecycle?.spend?.rawTx === member.signed.rawTransaction &&
+        record.lifecycle.legacyTerminal === undefined
+        ? 'applied'
+        : 'held-terminal'
+    },
+  }
+}
 export type CanonicalExecutionJournal = CanonicalJournalReader &
   Pick<
     LevelCanonicalStampAttemptJournal,

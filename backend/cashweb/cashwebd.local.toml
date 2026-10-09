@@ -24,6 +24,7 @@ expected_chain_id = 10143
 [registry.evm_rpc]
 enabled = true
 capability_ttl_ms = 3600000
+anonymous_units_per_hour = 1000000
 
 [[registry.evm_rpc.chains]]
 id = "monad-testnet"
@@ -92,6 +93,7 @@ checkpoint_hash = "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d
 
 [registry.solana_proxy]
 enabled = true
+anonymous_units_per_hour = 1000000
 
 [[registry.solana_proxy.chains]]
 id = "solana-devnet"

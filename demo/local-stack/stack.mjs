@@ -200,6 +200,7 @@ expected_chain_id = ${NETWORK.chainId}
 [registry.evm_rpc]
 enabled = true
 capability_ttl_ms = 3600000
+anonymous_units_per_hour = 100000
 
 [[registry.evm_rpc.chains]]
 id = "${NETWORK.network}"
@@ -228,6 +229,8 @@ checkpoint_hash = "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d
 ${getSolanaDevnetUrl() ? `
 [registry.solana_proxy]
 enabled = true
+anonymous_units_per_hour = 100000
+
 
 [[registry.solana_proxy.chains]]
 id = "solana-devnet"

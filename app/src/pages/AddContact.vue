@@ -778,27 +778,17 @@ export default defineComponent({
       }
       const { resolvedAddress, contact } = this.acceptedLookup as AcceptedLookup
       this.addContactToStore({ address: resolvedAddress, contact })
-      const customTopic = this.topic.trim()
-      if (customTopic) {
-        try {
-          const chatStore = useChatStore()
-          if (typeof chatStore.createConversation === 'function') {
-            const conv = chatStore.createConversation({
-              kind: 'direct',
-              topic: customTopic,
-              name: customTopic,
-              participants: [resolvedAddress],
-              address: resolvedAddress,
-            })
-            if (typeof chatStore.setActiveConversation === 'function') {
-              chatStore.setActiveConversation(conv.id)
-            }
-            openChat(this.$router, conv.id)
-            return
-          }
-        } catch {
-          // Pinia not active in test environment
-        }
+      if (this.isConversationMode) {
+        const chatStore = useChatStore()
+        const conversation = chatStore.createConversation({
+          kind: 'direct',
+          name: this.topic.trim() || undefined,
+          participants: [resolvedAddress],
+          address: resolvedAddress,
+        })
+        chatStore.setActiveConversation(conversation.id)
+        openChat(this.$router, conversation.id)
+        return
       }
       openChat(this.$router, resolvedAddress)
     },

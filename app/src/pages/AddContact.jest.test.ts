@@ -25,7 +25,7 @@ const mockCreateOrOpenEmailConversation = jest.fn(
   }),
 )
 const mockCreateConversation = jest.fn((opts: any) => ({
-  id: 'conv-topic-' + (opts.topic || 'default'),
+  id: 'created-conversation-id',
   ...opts,
 }))
 const mockSetActiveConversation = jest.fn()
@@ -227,6 +227,7 @@ describe('AddContact latest lookup', () => {
     mockRouter.back.mockReset()
     mockCreateOrOpenEmailConversation.mockReset()
     mockSetActiveConversation.mockReset()
+    mockCreateConversation.mockClear()
     chain.parseAddress.mockReset()
     chain.formatAddress.mockReset()
     chain.fetchProfile.mockReset()
@@ -901,7 +902,7 @@ describe('AddContact latest lookup', () => {
       })
     })
 
-    it('creates topic-based conversation when topic is provided for peer contact', async () => {
+    it('creates an independent conversation with a presentation subject', async () => {
       wrapper.unmount()
       wrapper = mountPage({ query: { mode: 'conversation' } })
       chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
@@ -917,18 +918,32 @@ describe('AddContact latest lookup', () => {
 
       expect(mockCreateConversation).toHaveBeenCalledWith({
         kind: 'direct',
-        topic: 'Project Sprint',
         name: 'Project Sprint',
         participants: [ADDRESS_A],
         address: ADDRESS_A,
       })
       expect(mockSetActiveConversation).toHaveBeenCalledWith(
-        'conv-topic-Project Sprint',
+        'created-conversation-id',
       )
       expect(mockOpenChat).toHaveBeenCalledWith(
         mockRouter,
-        'conv-topic-Project Sprint',
+        'created-conversation-id',
       )
+    })
+
+    it('does not fall back to the default thread when explicit creation fails', async () => {
+      wrapper.unmount()
+      wrapper = mountPage({ query: { mode: 'conversation' } })
+      chain.fetchProfile.mockResolvedValue(profile(ADDRESS_A, 'Alice'))
+      await typeAndFire(wrapper, 'a')
+      mockOpenChat.mockClear()
+      mockCreateConversation.mockImplementationOnce(() => {
+        throw new Error('Conversation creation unavailable')
+      })
+      expect(() => wrapper.vm.addContactAndOpenChat()).toThrow(
+        'Conversation creation unavailable',
+      )
+      expect(mockOpenChat).not.toHaveBeenCalled()
     })
 
     it('in contact mode, hides topic input and uses address or email placeholder', () => {
@@ -979,7 +994,16 @@ describe('AddContact latest lookup', () => {
         address: ADDRESS_A,
         contact: expect.anything(),
       })
-      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+      expect(mockCreateConversation).toHaveBeenCalledWith({
+        kind: 'direct',
+        name: undefined,
+        participants: [ADDRESS_A],
+        address: ADDRESS_A,
+      })
+      expect(mockOpenChat).toHaveBeenCalledWith(
+        mockRouter,
+        'created-conversation-id',
+      )
     })
 
     it('in conversation mode, Enter key starts conversation and opens chat', async () => {
@@ -994,7 +1018,10 @@ describe('AddContact latest lookup', () => {
         address: ADDRESS_A,
         contact: expect.anything(),
       })
-      expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+      expect(mockOpenChat).toHaveBeenCalledWith(
+        mockRouter,
+        'created-conversation-id',
+      )
     })
 
     describe('existing contacts selection and thread starting', () => {
@@ -1054,7 +1081,10 @@ describe('AddContact latest lookup', () => {
           address: ADDRESS_A,
           contact: expect.anything(),
         })
-        expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+        expect(mockOpenChat).toHaveBeenCalledWith(
+          mockRouter,
+          'created-conversation-id',
+        )
       })
 
       it('typing existing contact username with @ resolves contact and starts topic thread', async () => {
@@ -1076,14 +1106,13 @@ describe('AddContact latest lookup', () => {
 
         expect(mockCreateConversation).toHaveBeenCalledWith({
           kind: 'direct',
-          topic: 'Roadmap Discussion',
           name: 'Roadmap Discussion',
           participants: [ADDRESS_A],
           address: ADDRESS_A,
         })
         expect(mockOpenChat).toHaveBeenCalledWith(
           mockRouter,
-          'conv-topic-Roadmap Discussion',
+          'created-conversation-id',
         )
       })
 
@@ -1116,7 +1145,10 @@ describe('AddContact latest lookup', () => {
 
         const startBtn = startConversationButton(wrapper)
         await startBtn.trigger('click')
-        expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_A)
+        expect(mockOpenChat).toHaveBeenCalledWith(
+          mockRouter,
+          'created-conversation-id',
+        )
       })
 
       it('in conversation mode, Enter key on partial match auto-selects contact and opens chat', async () => {
@@ -1127,7 +1159,10 @@ describe('AddContact latest lookup', () => {
         await wrapper.find('input').trigger('keydown.enter')
         await settle()
 
-        expect(mockOpenChat).toHaveBeenCalledWith(mockRouter, ADDRESS_B)
+        expect(mockOpenChat).toHaveBeenCalledWith(
+          mockRouter,
+          'created-conversation-id',
+        )
       })
 
       it('clearing selected contact resets input and selection', async () => {

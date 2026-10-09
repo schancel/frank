@@ -24,7 +24,7 @@
             dense
             flat
             icon="add"
-            :aria-label="$t('a11y.addContact')"
+            :aria-label="$t('newContactDialog.startConversation')"
             data-testid="start-conversation-btn"
             @click="openAddContact"
           />

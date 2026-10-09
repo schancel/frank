@@ -120,6 +120,18 @@
                       : $t('chatLayout.unmute')
                   }}</q-item-section>
                 </q-item>
+                <q-item
+                  v-if="activeConversation"
+                  clickable
+                  v-close-popup
+                  data-testid="edit-conversation-subject"
+                  @click="openSubjectEditor"
+                >
+                  <q-item-section avatar><q-icon name="edit" /></q-item-section>
+                  <q-item-section>{{
+                    $t('chatLayout.editSubject')
+                  }}</q-item-section>
+                </q-item>
                 <q-item clickable v-close-popup @click="selectMode = true">
                   <q-item-section avatar
                     ><q-icon name="checklist"
@@ -159,6 +171,36 @@
         </template>
       </q-toolbar>
     </q-header>
+
+    <q-dialog v-model="subjectEditorOpen" @hide="cancelSubjectEditor">
+      <q-card>
+        <q-card-section>
+          <div class="text-h6">{{ $t('chatLayout.editSubject') }}</div>
+          <q-input
+            v-model="subjectDraft"
+            :label="$t('chatLayout.subject')"
+            data-testid="conversation-subject-input"
+            autofocus
+            @keydown.enter.prevent="saveSubject"
+          />
+        </q-card-section>
+        <q-card-actions align="right">
+          <q-btn
+            flat
+            :label="$t('chatLayout.cancelSubject')"
+            data-testid="conversation-subject-cancel"
+            @click="cancelSubjectEditor"
+          />
+          <q-btn
+            color="primary"
+            :label="$t('chatLayout.saveSubject')"
+            :disable="!subjectDraft.trim()"
+            data-testid="conversation-subject-save"
+            @click="saveSubject"
+          />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
 
     <q-dialog v-model="confirmClearOpen">
       <clear-history-dialog :address="address" :name="contactName" />
@@ -249,6 +291,9 @@ export default defineComponent({
       // `router-view`/`chat-info-view` for why. Can be directly opened via ?info=true query param.
       infoOpen: this.$route.query?.info === 'true',
       chatMenuOpen: false,
+      subjectEditorOpen: false,
+      subjectEditorId: null as string | null,
+      subjectDraft: '',
       // See this file's `provide()` and ChatMessageSuffixButtons.vue's own header -- gates
       // per-message delete behind an explicit mode instead of it being an always-hoverable action.
       selectMode: false,
@@ -258,6 +303,9 @@ export default defineComponent({
     }
   },
   watch: {
+    '$route.fullPath'() {
+      this.cancelSubjectEditor()
+    },
     '$route.query.info'(val: string | undefined) {
       this.infoOpen = val === 'true'
     },
@@ -266,12 +314,38 @@ export default defineComponent({
     },
   },
   beforeRouteUpdate(to: RouteLocationNormalized) {
+    this.cancelSubjectEditor()
     this.address = (to?.params?.address as string) || ''
     // If navigating with ?info=true, show the info page; otherwise reset to plain chat view
     this.infoOpen = to?.query?.info === 'true'
     this.selectMode = false
   },
   methods: {
+    openSubjectEditor() {
+      const conversation = this.activeConversation
+      if (!conversation) return
+      this.subjectEditorId = conversation.id
+      this.subjectDraft = conversation.name ?? ''
+      this.subjectEditorOpen = true
+    },
+    cancelSubjectEditor() {
+      this.subjectEditorOpen = false
+      this.subjectEditorId = null
+      this.subjectDraft = ''
+    },
+    saveSubject() {
+      const id = this.subjectEditorId
+      const subject = this.subjectDraft.trim()
+      if (
+        !this.subjectEditorOpen ||
+        !id ||
+        id !== this.activeConversation?.id ||
+        !subject
+      )
+        return
+      useChatStore().renameConversation(id, subject)
+      this.cancelSubjectEditor()
+    },
     openInfo() {
       this.infoOpen = true
       if (this.$route.query?.info !== 'true') {
@@ -346,9 +420,9 @@ export default defineComponent({
         return ''
       }
       const conv = this.activeConversation
+      if (conv?.name) return conv.name
       if (conv?.kind === 'email') {
         return (
-          conv.name ||
           conv.emailRecipient ||
           conv.topic ||
           this.contactProfile?.name ||

@@ -269,6 +269,12 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     payloadDigests: string[];
   }): Promise<void>;
+  /** Durably marks an attempt as discarded/dead so it stops blocking subsequent sends.
+   * Call when the user explicitly discards or deletes a failed/pending message. */
+  discardAttempt?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+  }): Promise<void>;
   /** Returns messages at or after `sinceMs`, ordered by time. If a later inbox page could not be
    * fetched, the result is cut back to a prefix ending on a complete timestamp group and
    * `onTruncated` is called: advancing `sinceMs` to `lastReceivedTime + 1` is then safe and the

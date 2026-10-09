@@ -469,6 +469,7 @@ export default defineComponent({
           void this.deleteMessage({
             address: this.address,
             payloadDigest: this.payloadDigest,
+            attemptDigest: this.message.delivery?.attemptDigest,
           })
         })
     },

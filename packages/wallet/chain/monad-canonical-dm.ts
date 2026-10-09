@@ -1164,6 +1164,24 @@ export function canonicalDirectMessages(
           ]),
         )
       }),
+    discardAttempt: (params: { payloadDigest: string }) =>
+      serial(owner.links, async () => {
+        const row = owner.links
+          .all()
+          .find(
+            r =>
+              r.digest === params.payloadDigest ||
+              r.attemptRef === params.payloadDigest,
+          )
+        if (row && !row.outcome) {
+          await owner.links.put({
+            ...row,
+            acknowledged: true,
+            outcome: 'dead',
+            reason: 'discarded',
+          })
+        }
+      }),
     unattributedAttempts: (
       params: Parameters<DirectMessageClient['unattributedAttempts']>[0],
     ) =>

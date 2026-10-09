@@ -59,6 +59,7 @@ import {
 } from '@frank/wallet/monad-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
 import { routeWalletSyncItem } from '@frank/wallet/sync-router'
+import { messagingWallet } from '../utils/monad-identity-session'
 import { appMultiChainResolver } from '../accounts/sync-router'
 import type {
   Message,
@@ -1527,12 +1528,17 @@ export const useChatStore = defineStore('chats', {
     async deleteMessage({
       address,
       payloadDigest,
+      attemptDigest: explicitAttemptDigest,
+      wallet,
     }: {
       address: string
       payloadDigest: string
+      attemptDigest?: string
+      wallet?: WalletHandle
     }): Promise<void> {
       const message = this.messages[payloadDigest]
-      const attemptDigest = message?.delivery?.attemptDigest
+      const attemptDigest =
+        explicitAttemptDigest || message?.delivery?.attemptDigest
       // Relay inboxes are recipient-indexed. An ordinary outbound row can never return to the
       // sender's mailbox, so only a self-route needs a durable delayed-receipt suppression.
       const recipientAddress = message
@@ -1542,25 +1548,52 @@ export const useChatStore = defineStore('chats', {
             : null
           : messageDestinationAddress(message)
         : null
-      return serializeDeliveryMutation(() =>
+      await serializeDeliveryMutation(() =>
         this.deleteMessageExclusive({
           address,
           payloadDigest,
           recipientAddress,
           attemptDigest,
+          wallet,
         }),
       )
+      if (message?.outbound) {
+        const resolvedWallet = wallet || messagingWallet()
+        if (resolvedWallet) {
+          const hasQueued = Object.values(this.chats).some(c =>
+            c?.messages.some(
+              m =>
+                m.outbound &&
+                m.status === 'payment-pending' &&
+                m.delivery?.attemptDigest === undefined &&
+                walletOwnsMessage(resolvedWallet, m),
+            ),
+          )
+          if (hasQueued) {
+            try {
+              await this.reconcileOutgoing({ wallet: resolvedWallet })
+            } catch (err) {
+              console.warn(
+                'could not reconcile outgoing after deleteMessage:',
+                err,
+              )
+            }
+          }
+        }
+      }
     },
     async deleteMessageExclusive({
       address,
       payloadDigest,
       recipientAddress,
       attemptDigest,
+      wallet: explicitWallet,
     }: {
       address: string
       payloadDigest: string
       recipientAddress: string | null
       attemptDigest?: string
+      wallet?: WalletHandle
     }): Promise<void> {
       const messageStore = await store
       const message = this.messages[payloadDigest]
@@ -1639,6 +1672,22 @@ export const useChatStore = defineStore('chats', {
           )
           if (logRecord.revisions.length === 0) {
             delete this.logicalMessages[logicalId]
+          }
+        }
+      }
+      if (message?.outbound) {
+        const targetDigest =
+          attemptDigest ||
+          (!payloadDigest.startsWith('pending:') ? payloadDigest : undefined)
+        const wallet = explicitWallet || messagingWallet()
+        if (targetDigest && wallet) {
+          try {
+            await activeChain.directMessages?.discardAttempt?.({
+              wallet,
+              payloadDigest: targetDigest,
+            })
+          } catch (err) {
+            console.warn('could not discard attempt during deleteMessage:', err)
           }
         }
       }
@@ -2437,6 +2486,7 @@ export const useChatStore = defineStore('chats', {
             chat?.messages.some(
               m =>
                 m.outbound &&
+                m.payloadDigest !== id &&
                 m.status === 'payment-pending' &&
                 m.delivery?.attemptDigest === undefined &&
                 walletOwnsMessage(wallet, m),
@@ -2746,7 +2796,9 @@ export const useChatStore = defineStore('chats', {
         for (const message of chat.messages ?? []) {
           if (
             message.outbound &&
-            message.status === 'payment-pending' &&
+            (message.status === 'payment-pending' ||
+              (message.status === 'error' &&
+                message.delivery?.attemptDigest !== undefined)) &&
             walletOwnsMessage(wallet, message) &&
             !inflightOutgoing.has(message.payloadDigest)
           ) {

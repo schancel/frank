@@ -433,6 +433,118 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(send).toHaveBeenCalledTimes(2)
     })
 
+    it('discarding a failed message calls discardAttempt and immediately unblocks subsequent queued messages', async () => {
+      const discardSpy = jest.spyOn(activeChain.directMessages, 'discardAttempt')
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+
+      // First message fails after recording an attempt
+      send.mockImplementationOnce(async params => {
+        await params.onAttemptCreated?.(HASH)
+        throw new Error('relay connection refused')
+      })
+
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'first' }] })
+      const [first] = only(chats)
+      expect(first.status).toBe('error')
+
+      // Second message is queued behind the hold
+      send.mockImplementationOnce(async () => {
+        throw new MonadStampPendingAttemptError([HASH])
+      })
+      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'second' }] })
+      expect(only(chats)).toHaveLength(2)
+      expect(only(chats)[1].status).toBe('payment-pending')
+      expect(only(chats)[1].delivery?.attemptDigest).toBeUndefined()
+
+      // User discards the failed first message
+      send.mockResolvedValueOnce(okResult('cd'.repeat(32)))
+      await chats.deleteMessage({
+        address: PEER,
+        payloadDigest: first.payloadDigest,
+        attemptDigest: first.delivery?.attemptDigest,
+        wallet,
+      })
+
+      expect(discardSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ wallet, payloadDigest: HASH }),
+      )
+      // The second message was automatically unblocked and sent by reconcileOutgoing
+      expect(only(chats)).toHaveLength(1)
+      expect(only(chats)[0].status).toBe('confirmed')
+      expect(only(chats)[0].items).toEqual([{ type: 'text', text: 'second' }])
+    })
+
+    it('reconcileOutgoing settles an errored message with an attemptDigest as delivered, and sends the queued message behind it', async () => {
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+
+      // First message fails after recording an attempt
+      send.mockImplementationOnce(async params => {
+        await params.onAttemptCreated?.(HASH)
+        throw new Error('relay connection refused')
+      })
+
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'first' }] })
+      expect(only(chats)[0].status).toBe('error')
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+
+      // Second message is queued behind the hold
+      send.mockImplementationOnce(async () => {
+        throw new MonadStampPendingAttemptError([HASH])
+      })
+      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'second' }] })
+      expect(only(chats)[1].status).toBe('payment-pending')
+
+      // Background reconciliation queries HASH, finds it was delivered on-chain,
+      // confirms first message and drains second message
+      reconcileReturns({ [HASH]: 'delivered' })
+      send.mockResolvedValueOnce(okResult('cd'.repeat(32)))
+
+      await chats.reconcileOutgoing({ wallet })
+
+      expect(only(chats)[0].status).toBe('confirmed')
+      expect(only(chats)[0].payloadDigest).toBe(HASH)
+      expect(only(chats)[1].status).toBe('confirmed')
+      expect(only(chats)[1].items).toEqual([{ type: 'text', text: 'second' }])
+    })
+
+    it('reconcileOutgoing settles an errored message with an attemptDigest as dead, and sends the queued message behind it', async () => {
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+
+      // First message fails after recording an attempt
+      send.mockImplementationOnce(async params => {
+        await params.onAttemptCreated?.(HASH)
+        throw new Error('relay connection refused')
+      })
+
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'first' }] })
+      expect(only(chats)[0].status).toBe('error')
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+
+      // Second message is queued behind the hold
+      send.mockImplementationOnce(async () => {
+        throw new MonadStampPendingAttemptError([HASH])
+      })
+      await chats.sendMessage({ wallet, address: PEER, items: [{ type: 'text', text: 'second' }] })
+      expect(only(chats)[1].status).toBe('payment-pending')
+
+      // Background reconciliation queries HASH, finds it died on-chain,
+      // updates first message failureReason to rejected (clearing attemptDigest hold)
+      // and drains second message
+      reconcileReturns({ [HASH]: 'dead' })
+      send.mockResolvedValueOnce(okResult('cd'.repeat(32)))
+
+      await chats.reconcileOutgoing({ wallet })
+
+      expect(only(chats)[0].status).toBe('error')
+      expect(only(chats)[0].delivery?.failureReason).toBe('rejected')
+      expect(only(chats)[0].delivery?.attemptDigest).toBeUndefined()
+      expect(only(chats)[1].status).toBe('confirmed')
+      expect(only(chats)[1].items).toEqual([{ type: 'text', text: 'second' }])
+    })
+
     it('quarantines an old account unsettled message from automatic and manual spending', async () => {
       const oldSender = '0x3333333333333333333333333333333333333333'
       const db = await durable()

@@ -1049,6 +1049,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return canonical.reconcileAttempts(params);
     },
 
+    async discardAttempt(params) {
+      try {
+        const wallet = asMonadWallet(params.wallet, config.networkId);
+        const canonical = canonicalMessagingFor(wallet);
+        if (canonical && typeof (canonical as any).discardAttempt === "function") {
+          await (canonical as any).discardAttempt(params);
+        }
+      } catch {
+        // Discard is best-effort when wallet or canonical messaging is unavailable
+      }
+    },
+
     async fetchSince(params): Promise<DirectMessageReceived[]> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);

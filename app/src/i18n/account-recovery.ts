@@ -14,7 +14,7 @@ export const en = {
   retry_opening_account: 'Retry',
   reset_account_storage: 'Reset storage',
   reset_account_storage_confirm:
-    'Resetting damaged storage will clear the unopenable local account data. You can then restore your account from backup shares or import a seed. Proceed?',
+    'Resetting damaged storage will clear the unopenable local account data. You can then restore your account from backup shares. BIP39 import remains unavailable. Proceed?',
   a_saved_account_attempt_is_pending_it:
     'A saved account attempt is pending. It is not active until you choose Activate account.',
   activate_account: 'Activate',
@@ -34,9 +34,11 @@ export const en = {
   legacy_recovery_migration: 'Legacy recovery',
   return_to_wallet: 'Back',
   this_identifies_your_old_account_locally_you:
-    'This identifies your old account locally. You must then create and fully back up a fresh Codex32 identity. This does not transfer legacy funds or history, or rotate remote keys. Existing legacy data remains quarantined.',
+    'This identifies your BIP39 account locally without importing or activating it. Existing account and recovery data stays unchanged. BIP39 import is currently unavailable.',
   legacy_bip39_recovery_phrase: 'Legacy BIP39 recovery phrase',
   identify_legacy_account_locally: 'Identify account',
+  bip39_import_unavailable:
+    'BIP39 account identified. Importing this account is currently unavailable. No account was activated or replaced, and existing account and recovery data is unchanged.',
   old_account: 'Old account:',
   the_new_identity_is_different_no_funds:
     '. The new identity is different; no funds, history or remote keys are migrated.',
@@ -142,7 +144,7 @@ export const fr = {
   retry_opening_account: 'Réessayer',
   reset_account_storage: 'Réinitialiser le stockage',
   reset_account_storage_confirm:
-    'La réinitialisation effacera les données de compte local illisibles. Vous pourrez ensuite restaurer votre compte depuis vos clés de secours ou importer une phrase de récupération. Continuer ?',
+    'La réinitialisation effacera les données de compte local illisibles. Vous pourrez ensuite restaurer votre compte depuis vos clés de secours. L’importation BIP39 reste indisponible. Continuer ?',
   a_saved_account_attempt_is_pending_it:
     'Une tentative de création enregistrée est en attente. Le compte ne sera actif qu’après avoir choisi Activer le compte.',
   activate_account: 'Activer',
@@ -162,10 +164,12 @@ export const fr = {
   legacy_recovery_migration: 'Récupération',
   return_to_wallet: 'Retour',
   this_identifies_your_old_account_locally_you:
-    'Cette étape identifie votre ancien compte localement. Vous devez ensuite créer et sauvegarder intégralement une nouvelle identité Codex32. Aucun fonds ou historique n’est transféré et aucune clé distante n’est renouvelée. Les anciennes données restent en quarantaine.',
+    'Cette étape identifie votre compte BIP39 localement sans l’importer ni l’activer. Les données de compte et de récupération existantes restent inchangées. L’importation BIP39 est actuellement indisponible.',
   legacy_bip39_recovery_phrase:
     'Phrase de récupération BIP39 de l’ancien compte',
   identify_legacy_account_locally: 'Identifier le compte',
+  bip39_import_unavailable:
+    'Compte BIP39 identifié. L’importation de ce compte est actuellement indisponible. Aucun compte n’a été activé ou remplacé ; les données de compte et de récupération existantes sont inchangées.',
   old_account: 'Ancien compte :',
   the_new_identity_is_different_no_funds:
     '. La nouvelle identité est différente ; aucun fonds, historique ou clé distante n’est migré.',

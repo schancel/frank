@@ -449,8 +449,10 @@ describe('Setup page advanced relay configuration', () => {
     view.unmount()
   })
 
-  test('restoring account via BIP39 discovers and configures existing home relay', async () => {
+  test('BIP39 identification leaves the configured home relay unchanged', async () => {
     const discoveredRelay = 'https://legacy-discovered.example.com'
+    const existingRelay = 'https://existing.example.com'
+    setCustomRelayBaseUrl(existingRelay)
     const cashwebRelay = await import('@frank/cashweb/relay')
     const probeSpy = jest
       .spyOn(cashwebRelay, 'probeDirectoryRelay')
@@ -469,8 +471,10 @@ describe('Setup page advanced relay configuration', () => {
     await view.get('form').trigger('submit')
     await flushPromises()
 
-    expect(probeSpy).toHaveBeenCalled()
-    expect(getCustomRelayBaseUrl()).toBe(discoveredRelay)
+    expect(probeSpy).not.toHaveBeenCalled()
+    expect(getCustomRelayBaseUrl()).toBe(existingRelay)
+    expect(view.find('[data-test="custom-relay-input"]').exists()).toBe(false)
+    expect(mockPush).not.toHaveBeenCalled()
 
     probeSpy.mockRestore()
     view.unmount()

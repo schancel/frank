@@ -26,7 +26,7 @@
               tabCoordinator.otherTabActive || account.status === 'standby'
                 ? $t('accountRecovery.frank_is_open_in_another_tab')
                 : mode === 'legacy'
-                ? $t('accountRecovery.import_bip39_seed')
+                ? $t('accountRecovery.identify_legacy_account_locally')
                 : $t('accountRecovery.frank_account')
             }}
           </h1>
@@ -115,7 +115,7 @@
                 outline
                 color="primary"
                 no-caps
-                :label="$t('accountRecovery.import_bip39_seed')"
+                :label="$t('accountRecovery.identify_legacy_account_locally')"
                 data-test="legacy-locked-recovery"
                 :disable="busy"
                 @click="startLegacyLocked"
@@ -132,7 +132,7 @@
               />
             </div>
           </template>
-          <template v-else-if="account.pending">
+          <template v-else-if="account.pending && mode !== 'legacy'">
             <p
               v-if="account.pendingError"
               role="status"
@@ -313,9 +313,9 @@
                   outline
                   color="primary"
                   no-caps
-                  :label="$t('accountRecovery.import_bip39_seed')"
+                  :label="$t('accountRecovery.identify_legacy_account_locally')"
                   data-test="legacy-recovery"
-                  :disable="!mayBegin || busy"
+                  :disable="busy"
                   @click="changeMode('legacy')"
                 />
               </div>
@@ -360,64 +360,19 @@
                 {{ detectedAccount }}
               </p>
               <p
-                v-if="discoveredRelay"
+                v-if="legacyUnavailable"
                 role="status"
                 aria-live="polite"
-                class="q-mt-sm text-positive"
-                data-test="relay-discovered-status"
+                data-test="legacy-unavailable"
               >
-                {{
-                  $t('accountRecovery.relay_discovered', {
-                    url: discoveredRelay,
-                  })
-                }}
+                {{ $t('accountRecovery.bip39_import_unavailable') }}
               </p>
-              <q-expansion-item
-                class="q-mt-md"
-                icon="tune"
-                :label="$t('accountRecovery.advanced_options')"
-                :caption="$t('accountRecovery.relay_server')"
-                header-class="text-weight-medium text-grey-8"
-                data-test="advanced-relay-expansion"
-              >
-                <q-card class="bg-transparent q-pa-none">
-                  <q-card-section class="q-px-none q-pt-sm">
-                    <q-input
-                      v-model="customRelayUrl"
-                      outlined
-                      dense
-                      :label="$t('accountRecovery.relay_server_url')"
-                      :hint="$t('accountRecovery.relay_server_url_hint')"
-                      :placeholder="defaultRelayUrl"
-                      data-test="custom-relay-input"
-                      :rules="[validateRelayUrl]"
-                    >
-                      <template
-                        v-if="
-                          customRelayUrl && customRelayUrl !== defaultRelayUrl
-                        "
-                        #append
-                      >
-                        <q-btn
-                          flat
-                          dense
-                          round
-                          icon="restart_alt"
-                          :title="$t('accountRecovery.reset_to_default_relay')"
-                          data-test="reset-default-relay"
-                          @click="customRelayUrl = defaultRelayUrl"
-                        />
-                      </template>
-                    </q-input>
-                  </q-card-section>
-                </q-card>
-              </q-expansion-item>
               <div class="row q-gutter-sm q-mt-md items-center">
                 <q-btn
                   type="submit"
                   color="primary"
                   no-caps
-                  :label="$t('accountRecovery.import_bip39_seed')"
+                  :label="$t('accountRecovery.identify_legacy_account_locally')"
                   data-test="identify-legacy"
                   :disable="busy || !legacyPhrase"
                   :loading="busy"
@@ -713,6 +668,7 @@ import {
   accountSession,
   accountStatus as account,
   importBip39Wallet,
+  Bip39ImportUnavailableError,
 } from '../accounts/session'
 import {
   createAccountCeremony,
@@ -816,6 +772,7 @@ const displayName = ref('')
 const legacyPhrase = ref('')
 const legacyAddress = ref('')
 const detectedAccount = ref('')
+const legacyUnavailable = ref(false)
 const replaceAccepted = ref(false)
 let alive = true
 let request = 0
@@ -844,6 +801,7 @@ function clearSecrets(preserveLegacyPhrase = false) {
     legacyPhrase.value = ''
   }
   detectedAccount.value = ''
+  legacyUnavailable.value = false
 }
 function focus() {
   void nextTick(() => heading.value?.focus())
@@ -985,41 +943,25 @@ function confirm() {
 function submitLegacyPhrase() {
   return run(async () => {
     let phrase = legacyPhrase.value
+    const token = request
+    detectedAccount.value = ''
+    legacyUnavailable.value = false
     try {
       const { scanBip39Accounts } = await import('@frank/wallet/bip39-import')
-      let provider: any = undefined
+      const scanned = await scanBip39Accounts({ phrase })
+      if (!alive || token !== request || mode.value !== 'legacy') return
+      detectedAccount.value = `${scanned.address} (${scanned.path})`
       try {
-        const { activeChain } = await import('@frank/wallet/chain')
-        provider = (activeChain as any).provider
-      } catch {
-        // provider unavailable
+        await importBip39Wallet(phrase, scanned.path)
+      } catch (failure) {
+        if (!(failure instanceof Bip39ImportUnavailableError)) throw failure
+        if (alive && token === request) legacyUnavailable.value = true
       }
-      const scanned = await scanBip39Accounts({ phrase, provider })
-      const detectedInfo = `${scanned.address} (${scanned.label})`
-      detectedAccount.value = detectedInfo
-
-      try {
-        const discovered = await probeDirectoryRelay(scanned.address)
-        if (discovered) {
-          setCustomRelayBaseUrl(discovered)
-          customRelayUrl.value = discovered
-          discoveredRelay.value = discovered
-        }
-      } catch {
-        // probe failed or offline; gracefully keep default relay
-      }
-
-      await importBip39Wallet(phrase, scanned.path)
-      legacyPhrase.value = ''
-      void usePersistentStorageStore().afterActivation()
-      emit('setupCompleted')
-      await router.push('/wallet')
     } finally {
       phrase = ''
     }
   })
 }
-const identifyLegacy = submitLegacyPhrase
 
 function activate() {
   return run(async () => {
@@ -1060,13 +1002,10 @@ function startRestoreLocked() {
   return startRestore()
 }
 function startLegacyLocked() {
-  replaceAccepted.value = true
   changeMode('legacy')
 }
 function resetStorage() {
-  const confirmMsg =
-    (window as any)?.$t?.('accountRecovery.reset_account_storage_confirm') ||
-    'Resetting damaged storage will clear the unopenable local account data. You can then restore your account from backup shares or import a seed. Proceed?'
+  const confirmMsg = t('accountRecovery.reset_account_storage_confirm')
   if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
     if (!window.confirm(confirmMsg)) return
   }

@@ -126,6 +126,30 @@ describe("EvmLegacyConsolidator", () => {
   });
 
   describe("sendLegacy", () => {
+    it("does not expose a direct payment before its recovery checkpoint and callback", async () => {
+      const provider = createMockProvider({ [wallet1.address]: 10n ** 18n });
+      const journal = new InMemoryLegacySendJournalStore();
+      const consolidator = new EvmLegacyConsolidator({
+        provider,
+        journal,
+        chainIdentifier: "monad-testnet",
+        getFundingAccounts: async () => [{
+          address: wallet1.address,
+          balanceWei: 10n ** 18n,
+          privateKey: wallet1.privateKey,
+        }],
+      });
+      await expect(consolidator.sendLegacy({
+        recipient: { raw: recipientAddress },
+        value: 100_000n,
+        onSigned: async () => {
+          expect(journal.getPendingIntent()).toBeDefined();
+          throw new Error("caller checkpoint failed");
+        },
+      })).rejects.toThrow();
+      expect(provider.broadcastTransaction).not.toHaveBeenCalled();
+    });
+
     it("validates recipient address format", async () => {
       const mockProvider = createMockProvider();
       const consolidator = new EvmLegacyConsolidator({

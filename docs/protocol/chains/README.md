@@ -26,14 +26,34 @@ cannot name a network without creating a false uniqueness claim.
 `v1.json` owns protocol identifiers, identity requirements and permitted capabilities. The Rust
 configuration crate (`backend/cashweb/cashweb-config/src/lib.rs`) includes that file directly.
 
-`packages/wallet/chain/chains-registry.ts` is a separately declared client metadata table, not a
-generated copy of `v1.json`. It includes presentation metadata and public endpoint defaults;
-operator-specific or credential-bearing endpoints do not belong in those defaults. There is
-currently no generator or regeneration command for this TypeScript table. Its existing registry
-tests check agreement on shared protocol fields across chain families:
+`packages/wallet/chain/chains-registry.ts` imports `v1.json` directly through the pure
+`chain/protocol-chain-registry.ts` projection. The JSON owns canonical IDs, family, network,
+CAIP-2, native chain identity, permitted proxy capabilities and required identity probes.
+The projection validates consumed fields, duplicate IDs and client references, preserves the
+probes and capability limits, and returns deeply immutable derived entries. Native EVM IDs
+remain numbers within the safe integer range and exact decimal strings above it.
+
+`CLIENT_CHAIN_EXTENSIONS` selects the explicit client-supported subset and owns only
+presentation, units, curve/key selection, public endpoint defaults, deployments and feature
+settings. Its typed shape excludes protocol facts; the projection also rejects unknown or
+protocol-owned extension keys at runtime. Client metadata cannot broaden protocol capabilities.
+The subset currently omits `btc-regtest`, `bch-regtest`, `xec-regtest`, `xpi-mainnet`,
+`xpi-testnet` and `xpi-regtest`. These protocol networks are intentionally unavailable in the
+client registry. Ethereum Holesky is not a protocol row and is not exposed. Runtime chain
+registration is removed: supporting a network requires a protocol definition and an explicit
+client extension. Unknown direct lookups return `undefined`; existing alias/kind helpers are
+separate consumer seams and do not add networks.
+
+Operator-specific or credential-bearing endpoints do not belong in public defaults. There is
+no generated identity copy and no generator or regeneration command. Checks cover all three
+families, exact supported and omitted sets, source agreement, mutation through the same
+projection, validation and immutability:
 
 ```sh
-yarn --cwd packages/wallet test --runInBand --runTestsByPath chain/chains-registry.jest.test.ts
+yarn --cwd packages/wallet test --runInBand --runTestsByPath chain/chains-registry.jest.test.ts chain/protocol-chain-registry.jest.test.ts sync-router.jest.test.ts
+yarn typecheck:fast
+# Exercise the direct JSON import in the existing application bundler:
+cd app && ../node_modules/.bin/quasar build -m spa
 ```
 
 Relay operator upstreams belong to runtime configuration: EVM rows name server-only environment

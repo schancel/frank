@@ -3,14 +3,9 @@ import {
   type MultiChainWalletResolver,
 } from "./sync-router";
 import type { WalletSyncItem } from "@frank/cashweb/types/messages";
-import {
-  registerProtocolChain,
-  clearDynamicChains,
-} from "./chain/chains-registry";
 
 describe("routeWalletSyncItem (Issue #1126)", () => {
   afterEach(() => {
-    clearDynamicChains();
     jest.clearAllMocks();
   });
 
@@ -18,7 +13,9 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
     const resolver: MultiChainWalletResolver = {
       getWalletForChain: jest.fn(),
     };
-    expect(await routeWalletSyncItem(undefined as any, { resolver })).toEqual({});
+    expect(await routeWalletSyncItem(undefined as any, { resolver })).toEqual(
+      {}
+    );
     expect(await routeWalletSyncItem(null as any, { resolver })).toEqual({});
     expect(resolver.getWalletForChain).not.toHaveBeenCalled();
   });
@@ -211,7 +208,10 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
 
     expect(resolver.getWalletForChain).toHaveBeenCalledWith("solana-mainnet");
     expect(mockSolanaInventory.markSpent).toHaveBeenCalledWith("SolAddr123");
-    expect(mockSolanaInventory.consumeNonce).toHaveBeenCalledWith("SolAddr123", 10);
+    expect(mockSolanaInventory.consumeNonce).toHaveBeenCalledWith(
+      "SolAddr123",
+      10
+    );
     expect(res.affectedAccounts).toEqual(["SolAddr123"]);
   });
 
@@ -237,7 +237,9 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
       fallbackWallet,
     });
 
-    expect(resolver.getWalletForChain).toHaveBeenCalledWith("custom-unresolved-chain");
+    expect(resolver.getWalletForChain).toHaveBeenCalledWith(
+      "custom-unresolved-chain"
+    );
     expect(fallbackWallet.deleteUtxo).toHaveBeenCalledWith("outp:1");
     expect(res.deletedUtxos).toEqual(["outp:1"]);
   });
@@ -321,19 +323,7 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
     expect(deleted).toEqual(["repeat:0"]);
   });
 
-  it("supports dynamically registered protocol chains", async () => {
-    registerProtocolChain({
-      id: "my-rollup-devnet",
-      kind: "monad",
-      family: "evm",
-      curve: "secp256k1",
-      keyType: 1,
-      network: "testnet",
-      isTestnet: true,
-      name: "My Rollup Devnet",
-      unit: "MRD",
-    });
-
+  it("routes supported Sepolia without dynamic registration", async () => {
     const mockEvmWallet = {
       inventory: {
         markSpent: jest.fn(),
@@ -343,7 +333,7 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
 
     const resolver: MultiChainWalletResolver = {
       getWalletForChain: jest.fn(async (chainId: string) => {
-        if (chainId === "my-rollup-devnet") return mockEvmWallet;
+        if (chainId === "ethereum-sepolia") return mockEvmWallet;
         return undefined;
       }),
     };
@@ -351,16 +341,21 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
     const item: WalletSyncItem = {
       type: "wallet-sync",
       direction: "out",
-      chainIdentifier: "my-rollup-devnet",
+      chainIdentifier: "ethereum-sepolia",
       txHash: "0xrollup",
       spentInputs: [{ address: "0xrollupaddr", nonce: 5 }],
     };
 
     const res = await routeWalletSyncItem(item, { resolver });
 
-    expect(resolver.getWalletForChain).toHaveBeenCalledWith("my-rollup-devnet");
-    expect(mockEvmWallet.inventory.markSpent).toHaveBeenCalledWith("0xrollupaddr");
-    expect(mockEvmWallet.inventory.consumeNonce).toHaveBeenCalledWith("0xrollupaddr", 5);
+    expect(resolver.getWalletForChain).toHaveBeenCalledWith("ethereum-sepolia");
+    expect(mockEvmWallet.inventory.markSpent).toHaveBeenCalledWith(
+      "0xrollupaddr"
+    );
+    expect(mockEvmWallet.inventory.consumeNonce).toHaveBeenCalledWith(
+      "0xrollupaddr",
+      5
+    );
     expect(res.affectedAccounts).toEqual(["0xrollupaddr"]);
   });
 });

@@ -244,13 +244,63 @@ export const directMessageNotAttempted: unique symbol = Symbol(
  *   resolved, reported an attempt (`onAttemptCreated`) or was rejected without this label.
  * - Test the rejection object itself, when it is caught: never its `.cause`, a wrapper or a
  *   stored reference. For anything but a rejection of `send` the answer means nothing.
- * - Never persist the answer. */
+ * - Never persist the answer.
+ * - A caller that passed its own `messageId` may call again with that same ID after any
+ *   rejection, labelled or not: the wallet never makes a second attempt for an ID it already has
+ *   one for, and answers {@link DirectMessageAlreadyAttemptedError} or
+ *   {@link DirectMessageAttemptUnlinkedError} instead. Neither of those, nor
+ *   {@link DirectMessageArgumentError}, ever carries the label. */
 export function isDirectMessageNotAttempted(error: unknown): boolean {
   return (
     typeof error === "object" &&
     error !== null &&
     Reflect.get(error, directMessageNotAttempted) === true
   );
+}
+
+/** `send` was given a `conversationId` or `messageId` that is neither 16 bytes nor their
+ * lowercase `8-4-4-4-12` form. A permanent caller error: the same call can never succeed, so it is
+ * never labelled as not attempted (a labelled refusal invites a retry). The call did nothing. */
+export class DirectMessageArgumentError extends Error {
+  constructor(readonly argument: "conversationId" | "messageId") {
+    super(
+      `${argument} must be 16 bytes or their lowercase 8-4-4-4-12 hexadecimal form. Nothing was paid or sent.`
+    );
+    this.name = "DirectMessageArgumentError";
+  }
+}
+
+/** `send` was given a `messageId` this wallet already made an attempt for. This call created and
+ * re-sent nothing. Reconcile `payloadDigest` (the ORIGINAL attempt's); never send the message under
+ * a new ID. The wallet compares no content: `recipientSubject` is the compressed signing key (hex)
+ * the original attempt was sealed to, for the caller to compare with its own record. Never labelled
+ * as not attempted. */
+export class DirectMessageAlreadyAttemptedError extends Error {
+  constructor(
+    readonly messageId: string,
+    readonly payloadDigest: string,
+    readonly recipientSubject: string
+  ) {
+    super(
+      `This wallet already made an attempt for message ${messageId}. Nothing new was paid or sent.`
+    );
+    this.name = "DirectMessageAlreadyAttemptedError";
+  }
+}
+
+/** `send` was given a `messageId` for which this wallet's payment journal holds a record that no
+ * saved message link accounts for. This call created nothing. The wallet holds every send while
+ * that record stands, and no operation clears it yet (restoring the link from the journal record
+ * is wallet recovery work of its own): show the wallet as blocked. Calling again never pays; it
+ * gives this answer, or the original attempt if a restart finds the link after all. Never labelled
+ * as not attempted. */
+export class DirectMessageAttemptUnlinkedError extends Error {
+  constructor(readonly messageId: string) {
+    super(
+      `This wallet holds a payment record for message ${messageId} with no saved link. Sending is held so nothing is paid twice.`
+    );
+    this.name = "DirectMessageAttemptUnlinkedError";
+  }
 }
 
 export interface DirectMessageClient {
@@ -260,7 +310,15 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     recipient: ChainAddress;
     items: MessageItem[];
+    /** 16 bytes or their lowercase `8-4-4-4-12` form; anything else supplied rejects with
+     * {@link DirectMessageArgumentError}. Only `undefined` means omitted. */
     conversationId?: string | Uint8Array;
+    /** Sealed message identity chosen by the caller, in the same two forms and as strictly
+     * checked. The caller must have stored it durably before this call. A repeat of an ID this
+     * wallet already has an attempt for rejects with {@link DirectMessageAlreadyAttemptedError}
+     * (or {@link DirectMessageAttemptUnlinkedError}) before anything else is looked at.
+     * Omitted: the wallet draws a random one. */
+    messageId?: string | Uint8Array;
     /** Raw native-chain value attached as the mandatory stamp payment. */
     stampValue?: bigint;
     onPreparationProgress?: (

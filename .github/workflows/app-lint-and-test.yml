@@ -50,7 +50,7 @@ jobs:
           node-version: "26"
       - run: yarn install
       - name: Wallet Monad-chain regression
-        run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts chain/monad-canonical-link-store.jest.test.ts chain/monad-canonical-settle-rewrite.jest.test.ts monad-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts
+        run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts chain/monad-canonical-link-store.jest.test.ts chain/monad-canonical-settle-rewrite.jest.test.ts chain/monad-canonical-dm-message-id.jest.test.ts monad-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts
 
   bot-demo-suites:
     runs-on: ubuntu-latest

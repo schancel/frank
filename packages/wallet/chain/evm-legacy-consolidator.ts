@@ -71,6 +71,9 @@ export interface EvmLegacyConsolidatorConfig {
   ) => PoolSpendMemberClass
   /** Transport only. The item carries the member's complete signed transaction. */
   onSyncTransaction?: (item: WalletSyncItem) => Promise<void>
+  /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
+   * `Date.now`. */
+  now?: () => number
 }
 export class EvmNativeOperationPendingError extends NativeTransactionSubmissionError {
   constructor(readonly operation: EvmNativeOperation, reason: unknown) {
@@ -122,9 +125,25 @@ function refusalReason(error: unknown): string | undefined {
   return undefined
 }
 
+/** Re-observation (`reobservePending`): the most receipt probes one pass may make. */
+export const REOBSERVE_MAX_PROBES = 8
+/** Re-observation: the least time between the end of one evaluation and the next, and the wait
+ * after a member's first probe that learned nothing. */
+export const REOBSERVE_MIN_INTERVAL_MS = 15_000
+/** Re-observation: the longest wait between two probes of one member. */
+export const REOBSERVE_MAX_BACKOFF_MS = 600_000
+const REOBSERVE_STOPPED = Symbol('re-observation stopped')
+interface ReobserveCandidate {
+  readonly operationId: string
+  readonly index: number
+  readonly key: string
+}
+
 /** Wallet-lifetime native executor. Journal owns recovery; this module owns dependencies. */
 export class EvmLegacyConsolidator {
   private tail: Promise<unknown> = Promise.resolve()
+  /** Tasks on the executor queue that have not settled: a send, a resume or a local pass. */
+  private queued = 0
   private syncTail: Promise<void> = Promise.resolve()
   private readonly active = new Map<string, Promise<EvmNativeOperation>>()
   /** This session's local result per member (`operationId:memberIndex`), written only by the
@@ -153,9 +172,37 @@ export class EvmLegacyConsolidator {
    * uncertain), which holds every member alike. Its basis is the whole journal's state, because
    * a change to any operation (a cancelled plan, an observation) can make the projection ready. */
   private admissionHold?: RememberedHold
+  /**
+   * Re-observation state (`reobservePending`). All of it is process memory: nothing is persisted,
+   * and a reopened wallet starts with none of it.
+   */
+  /** The pass whose network reads are in flight, if any. Never rejects. */
+  private reobserving?: Promise<void>
+  /** When the last evaluation started or, after a pass, when that pass ended. */
+  private reobservedAt?: number
+  /** The member probed last: the next pass starts after it, so no member is starved. */
+  private reobserveCursor?: ReobserveCandidate
+  /** Per member, the last probe that learned nothing and the wait it must be followed by. */
+  private readonly reobserveBackoff = new Map<
+    string,
+    { probedAt: number; waitMs: number }
+  >()
+  /** A pass recorded a successful inclusion and the local pass has not run for it yet, or ran
+   * and left an included member it may still apply (`localPassIncomplete`). */
+  private localPassOwed = false
+  /** Set by each local pass: it left an included, unapplied member that a later pass may apply
+   * (held by the admission or by a remembered hold, refused, or failed), or could not read the
+   * journal. Not set for a member that can never apply (`held-terminal`). */
+  private localPassIncomplete = false
+  private applyingRecorded = false
+  private reobserveStopped = false
+  private readonly reobserveStops = new Set<() => void>()
   constructor(private readonly config: EvmLegacyConsolidatorConfig) {}
   private run<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.tail.then(task)
+    this.queued++
+    const run = this.tail.then(task).finally(() => {
+      this.queued--
+    })
     this.tail = run.catch(() => undefined)
     return run
   }
@@ -204,10 +251,13 @@ export class EvmLegacyConsolidator {
       balanceWei: balance.toString(),
     }
   }
+  /** `wanted`, when given, is asked once the reads are in and before anything is recorded: an
+   * observer that was stopped while it waited for the node records nothing. */
   async observe(
     operationId: string,
     index: number,
     lifetime?: WalletOperationLifetime,
+    wanted?: () => boolean,
   ): Promise<void> {
     const journal = this.journal(lifetime),
       { provider } = this.config
@@ -262,6 +312,7 @@ export class EvmLegacyConsolidator {
     } catch {
       /* Missing/unavailable/inconsistent evidence never proves nonexecution. */
     }
+    if (wanted && !wanted()) return
     await journal.recordObservation(capture, observation, account)
   }
   private async sources(
@@ -573,7 +624,9 @@ export class EvmLegacyConsolidator {
    * the send's own outcome.
    */
   private async localPass(lifetime?: WalletOperationLifetime): Promise<void> {
+    this.localPassIncomplete = true
     try {
+      let incomplete = false
       const { classifyLocalMember: classify, applyLocalMember: apply } =
         this.config
       const rows = this.config.journal.list()
@@ -622,8 +675,11 @@ export class EvmLegacyConsolidator {
           const remembered = this.holds.get(key)
           if (this.admissionHold) {
             /* The projection is not ready: nothing more is classified or applied in this pass. */
-          } else if (stillHeld(remembered, basis)) holds.set(key, remembered!)
-          else
+            incomplete = true
+          } else if (stillHeld(remembered, basis)) {
+            holds.set(key, remembered!)
+            incomplete = true
+          } else
             try {
               // With no local callback there is nothing to record on, and so no local result:
               // held, so transport and `markSyncApplied` cannot proceed without one.
@@ -637,14 +693,17 @@ export class EvmLegacyConsolidator {
               else if (kind === 'needs-apply' && apply) {
                 await apply(row.operationId, i, lifetime)
                 result = 'applied'
-              } else if (kind === 'not-eligible')
+              } else if (kind === 'not-eligible') {
                 // The snapshot says this member is eligible, so the refusal is the admission's.
                 this.admissionHold = {
                   reason: 'admission-not-ready',
                   basis: whole,
                   skipped: 0,
                 }
+                incomplete = true
+              }
             } catch (error) {
+              incomplete = true
               const reason = refusalReason(error)
               if (reason !== undefined)
                 holds.set(key, { reason, basis, skipped: 0 })
@@ -654,6 +713,7 @@ export class EvmLegacyConsolidator {
         }
       }
       this.holds = holds
+      this.localPassIncomplete = incomplete
     } catch {
       /* An unreadable journal leaves every result as it was. */
     }
@@ -703,6 +763,261 @@ export class EvmLegacyConsolidator {
    */
   applyRecordedEvidence(lifetime?: WalletOperationLifetime): Promise<void> {
     return this.run(() => this.localPass(lifetime))
+  }
+  private now(): number {
+    return (this.config.now ?? Date.now)()
+  }
+  /** The members worth looking up now, from the journal's memory alone: at most
+   * `REOBSERVE_MAX_PROBES`, oldest first, starting after the member probed last. */
+  private reobserveDue(now: number): ReobserveCandidate[] {
+    const candidates: ReobserveCandidate[] = []
+    for (const row of this.config.journal.list()) {
+      if (row.cancelled) continue
+      row.members.forEach((member, index) => {
+        const state = member.observation.state
+        if (
+          member.signed &&
+          member.exposed &&
+          (state === 'unknown' || state === 'missing' || state === 'pending')
+        )
+          candidates.push({
+            operationId: row.operationId,
+            index,
+            key: `${row.operationId}:${index}`,
+          })
+      })
+    }
+    const live = new Set(candidates.map(candidate => candidate.key))
+    for (const key of [...this.reobserveBackoff.keys()])
+      if (!live.has(key)) this.reobserveBackoff.delete(key)
+    const after = (a: ReobserveCandidate, b: ReobserveCandidate) =>
+      a.operationId === b.operationId
+        ? a.index > b.index
+        : a.operationId > b.operationId
+    const eligible = candidates
+      .filter(candidate => {
+        const waited = this.reobserveBackoff.get(candidate.key)
+        return (
+          !waited ||
+          now < waited.probedAt ||
+          now - waited.probedAt >= waited.waitMs
+        )
+      })
+      .sort((a, b) => (after(a, b) ? 1 : after(b, a) ? -1 : 0))
+    const cursor = this.reobserveCursor
+    const start = cursor
+      ? Math.max(
+          0,
+          eligible.findIndex(candidate => after(candidate, cursor)),
+        )
+      : 0
+    return [...eligible.slice(start), ...eligible.slice(0, start)].slice(
+      0,
+      REOBSERVE_MAX_PROBES,
+    )
+  }
+  /** `work`, or `REOBSERVE_STOPPED` as soon as re-observation is stopped. `work` is left to
+   * settle on its own; its rejection is always handled here. */
+  private untilStopped<T>(
+    work: Promise<T>,
+  ): Promise<T | typeof REOBSERVE_STOPPED> {
+    return new Promise((resolve, reject) => {
+      const stop = () => resolve(REOBSERVE_STOPPED)
+      if (this.reobserveStopped) stop()
+      else this.reobserveStops.add(stop)
+      work.then(
+        value => {
+          this.reobserveStops.delete(stop)
+          resolve(value)
+        },
+        error => {
+          this.reobserveStops.delete(stop)
+          reject(error)
+        },
+      )
+    })
+  }
+  /** The member, read from the journal now, if it is still one to look up: its operation not
+   * cancelled, signed and exposed, recorded `unknown`, `missing` or `pending`. */
+  private reobservable(candidate: ReobserveCandidate) {
+    const row = this.config.journal.get(candidate.operationId)
+    const member = row.members[candidate.index]
+    const state = member?.observation.state
+    return !row.cancelled &&
+      member?.signed &&
+      member.exposed &&
+      (state === 'unknown' || state === 'missing' || state === 'pending')
+      ? member
+      : undefined
+  }
+  /** One pass over `due`: one receipt request per member, and `observe` only for a member whose
+   * receipt exists. Runs outside the executor queue; `observe` records through the journal's own
+   * short mutation. */
+  private async reobservePass(
+    due: readonly ReobserveCandidate[],
+    lifetime?: WalletOperationLifetime,
+  ): Promise<void> {
+    const { provider, journal } = this.config
+    for (const candidate of due) {
+      if (this.reobserveStopped) return
+      // A send or an estimate may have observed it since the candidates were listed.
+      const member = this.reobservable(candidate)
+      if (!member?.signed) continue
+      this.reobserveCursor = candidate
+      let receipt: unknown = null
+      try {
+        receipt = await this.untilStopped(
+          provider.getTransactionReceipt(member.signed.transactionHash),
+        )
+      } catch {
+        /* A probe that failed learned nothing: nothing is written, and it waits like an empty one. */
+      }
+      if (receipt === REOBSERVE_STOPPED) return
+      // The probe took time. If a send, a resume or a fee estimate recorded this member included
+      // or reverted meanwhile (or it is otherwise no longer one to look up), that record stands:
+      // an observation begun now could, on one failed read, write `unknown` over it. Read again
+      // here, in the same step as the queue check below and the start of `observe`, and leave
+      // it. It carries no wait: it is not a candidate any more.
+      if (!this.reobservable(candidate)) {
+        this.reobserveBackoff.delete(candidate.key)
+        continue
+      }
+      // The journal keeps the observation that began last. A send or resume in the executor
+      // queue observes for itself and decides on what it recorded, so no observation is begun
+      // here while one is queued: this pass never discards theirs, and the member is looked up
+      // again by the next pass. One that starts afterwards discards this one instead.
+      if (receipt != null && this.queued > 0) continue
+      if (receipt != null)
+        try {
+          if (
+            (await this.untilStopped(
+              this.observe(
+                candidate.operationId,
+                candidate.index,
+                lifetime,
+                () => !this.reobserveStopped,
+              ),
+            )) === REOBSERVE_STOPPED
+          )
+            return
+        } catch {
+          /* Nothing recorded: the member stays as it was. */
+        }
+      if (this.reobserveStopped) return
+      const state = journal.get(candidate.operationId).members[candidate.index]!
+        .observation.state
+      if (state === 'included-success') this.localPassOwed = true
+      if (state === 'included-success' || state === 'included-revert')
+        this.reobserveBackoff.delete(candidate.key)
+      else {
+        const waited = this.reobserveBackoff.get(candidate.key)
+        this.reobserveBackoff.set(candidate.key, {
+          probedAt: this.now(),
+          waitMs: waited
+            ? Math.min(waited.waitMs * 2, REOBSERVE_MAX_BACKOFF_MS)
+            : REOBSERVE_MIN_INTERVAL_MS,
+        })
+      }
+    }
+  }
+  /**
+   * Looks again for members that were broadcast and whose inclusion nothing has observed: on a
+   * real network the observation made inside the send's own call usually reads pending, and no
+   * other caller looks unless a later native send is made. Meant to be called from a host's
+   * existing poll, as often as that poll ticks; the bounds are enforced here.
+   *
+   * Who is looked up: a member of a non-cancelled operation that is signed AND exposed and whose
+   * recorded observation is `unknown`, `missing` or `pending`. Nobody else, ever: not an unsigned
+   * or unexposed member, not a cancelled operation, not an included or reverted member.
+   *
+   * Bounds, all in process memory:
+   * - the candidates are computed from the journal's memory first, and with none this makes NO
+   *   request at all;
+   * - one `getTransactionReceipt` per member. No receipt, or a failed request: nothing is
+   *   written and nothing is downgraded. Only when a receipt exists does the existing `observe`
+   *   run for that member (seven reads) and record what it verifies, and not while a send or
+   *   resume is on the executor queue, whose own observation must stand;
+   * - at most `REOBSERVE_MAX_PROBES` members per pass, oldest first, continuing after the member
+   *   probed last so every candidate is reached;
+   * - so the hard ceiling per wallet is 8 receipt lookups per 15 s (1,920 an hour) plus seven
+   *   further reads for each lookup that finds a receipt: 64 requests per 15 s (15,360 an hour)
+   *   if every lookup of every pass found one. A member is observed once it is verified, so in
+   *   practice the seven reads are paid once per landed member. Zero when nothing is pending;
+   * - at most one evaluation per `REOBSERVE_MIN_INTERVAL_MS`, measured from the end of the last
+   *   pass, whatever the caller's tick rate; a call while a pass is in flight starts nothing;
+   * - a member whose probe learned nothing waits `REOBSERVE_MIN_INTERVAL_MS`, doubling per such
+   *   probe to `REOBSERVE_MAX_BACKOFF_MS`.
+   *
+   * Locks: the network reads run under the wallet lifetime only, outside the executor queue and
+   * outside the wallet queue, so a slow node never delays a send. When a pass recorded a
+   * successful inclusion, `applyRecorded` (composition: the local pass inside the wallet queue,
+   * local only) is called once; if it is refused, or the local pass left an included member it
+   * may still apply, it is owed and called again by a later evaluation (no request), and the
+   * observation stays recorded for the next send or the next open as well.
+   *
+   * It never signs, broadcasts, resubmits, replaces or cancels, never marks a member dropped and
+   * has no timeout: a member that never lands stays pending and reserved. It never rejects.
+   */
+  async reobservePending(applyRecorded?: () => Promise<void>): Promise<void> {
+    try {
+      if (this.reobserveStopped || this.reobserving) return
+      const now = this.now()
+      if (
+        this.reobservedAt !== undefined &&
+        now >= this.reobservedAt &&
+        now - this.reobservedAt < REOBSERVE_MIN_INTERVAL_MS
+      )
+        return
+      this.reobservedAt = now
+      const due = this.reobserveDue(now)
+      if (due.length) {
+        const { runLifetime } = this.config
+        this.reobserving = (async () => {
+          try {
+            await (runLifetime
+              ? runLifetime(lifetime => this.reobservePass(due, lifetime))
+              : this.reobservePass(due))
+          } catch {
+            /* A lifetime that ended or a journal that closed ends the pass. */
+          } finally {
+            this.reobservedAt = this.now()
+            this.reobserving = undefined
+          }
+        })()
+        await this.reobserving
+      }
+      if (
+        !this.localPassOwed ||
+        !applyRecorded ||
+        this.applyingRecorded ||
+        this.reobserveStopped
+      )
+        return
+      this.applyingRecorded = true
+      this.localPassOwed = false
+      this.localPassIncomplete = false
+      try {
+        await applyRecorded()
+        // The local pass never throws: it reports what it left. A member it held or failed on
+        // is tried again by the next evaluation (under the pass's own hold memory), not only
+        // by the next send or the next open.
+        if (this.localPassIncomplete) this.localPassOwed = true
+      } catch {
+        this.localPassOwed = true
+      } finally {
+        this.applyingRecorded = false
+      }
+    } catch {
+      /* Re-observation never fails its caller. */
+    }
+  }
+  /** Wallet close: ends re-observation for good. A pass in flight stops waiting for the node at
+   * once and records nothing more; resolves when it has returned. Never rejects. */
+  stopReobservation(): Promise<void> {
+    this.reobserveStopped = true
+    for (const stop of [...this.reobserveStops]) stop()
+    this.reobserveStops.clear()
+    return this.reobserving ?? Promise.resolve()
   }
   /** Runs `body` on the executor queue, then in the same hold: if `body` threw, cancels the
    * operation it names when that operation never signed; then the local pass. Neither can change

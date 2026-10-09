@@ -1914,6 +1914,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 ).cancelUnsigned(operationId);
               });
             },
+            // Bounded re-observation of broadcast members nothing has seen confirm. Called from
+            // the hosts' existing polls, never at open. The network reads run under the wallet
+            // lifetime only (inside the consolidator), outside this wallet's queue; only the
+            // local pass that follows a newly recorded inclusion enters the queue, where the
+            // queue's own guard may refuse it. A refusal leaves the observation recorded.
+            reobserveNativeOperations() {
+              const owner = nativeOperationOwners.get(wallet);
+              if (!owner || closedWallets.has(wallet)) return Promise.resolve();
+              return owner.reobservePending(() =>
+                runWalletExclusive(wallet, (admission) =>
+                  owner.applyRecordedEvidence(admission)
+                )
+              );
+            },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
               const unsupported = nativeAttemptStore.get(nativeAttemptKey);
@@ -2030,6 +2044,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (closing !== undefined) return closing;
               closedWallets.add(wallet);
               closing = (async () => {
+                // A re-observation pass in flight holds the wallet lifetime: end it first, or a
+                // node that never answers would hold the close.
+                await nativeOperationOwners.get(wallet)?.stopReobservation();
                 await walletSendQueues.get(wallet);
                 await nativeOperationOwners.get(wallet)?.drain();
                 try {

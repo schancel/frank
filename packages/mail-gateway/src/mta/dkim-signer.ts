@@ -60,10 +60,20 @@ export function loadPrivateKey(keyOrPath: string): string {
 }
 
 /**
+ * A line ending: CRLF, a lone LF, or a lone CR. The transport sends each of
+ * them as CRLF, so signing treats them alike and the bytes signed are the
+ * bytes sent.
+ */
+const LINE_ENDING = '(?:\\r\\n|\\r(?!\\n)|\\n)';
+const LINE_ENDING_PATTERN = new RegExp(LINE_ENDING, 'g');
+const BLANK_LINE_PATTERN = new RegExp(LINE_ENDING + LINE_ENDING);
+const FOLD_PATTERN = new RegExp(LINE_ENDING + '[ \\t]+', 'g');
+
+/**
  * Splits an RFC 5322 message into headers section and body section.
  */
 export function splitMessage(rawRfc822: string): { headers: string; body: string } {
-  const match = rawRfc822.match(/\r?\n\r?\n/);
+  const match = rawRfc822.match(BLANK_LINE_PATTERN);
   if (!match || match.index === undefined) {
     return { headers: rawRfc822, body: '' };
   }
@@ -79,7 +89,7 @@ export function canonicalizeBodyRelaxed(body: string): string {
   if (!body) {
     return '';
   }
-  const normalized = body.replace(/\r?\n/g, '\r\n');
+  const normalized = body.replace(LINE_ENDING_PATTERN, '\r\n');
   const lines = normalized.split('\r\n');
   const processed: string[] = [];
 
@@ -115,7 +125,7 @@ export function computeBodyHash(body: string): string {
 export function parseHeaderFields(
   headerSection: string
 ): Array<{ name: string; raw: string; value: string }> {
-  const lines = headerSection.split(/\r?\n/);
+  const lines = headerSection.split(LINE_ENDING_PATTERN);
   const fields: Array<{ name: string; raw: string; value: string }> = [];
 
   for (const line of lines) {
@@ -151,7 +161,7 @@ export function canonicalizeHeaderRelaxed(headerLine: string): string {
   let value = headerLine.slice(colonIndex + 1);
 
   // Unfold continuation lines
-  value = value.replace(/\r?\n[ \t]+/g, ' ');
+  value = value.replace(FOLD_PATTERN, ' ');
   // Convert sequences of [ \t]+ to single SP
   value = value.replace(/[ \t]+/g, ' ');
   // Delete leading whitespace after colon and trailing whitespace
@@ -216,8 +226,8 @@ export class DkimSigner {
     const formattedDkimHeader = `${dkimHeaderWithoutB}${signature}`;
 
     // Append formatted DKIM-Signature to the header section
-    const normalizedHeaders = headerSection ? headerSection.replace(/\r?\n/g, '\r\n') : '';
-    const normalizedBody = bodySection ? bodySection.replace(/\r?\n/g, '\r\n') : '';
+    const normalizedHeaders = headerSection ? headerSection.replace(LINE_ENDING_PATTERN, '\r\n') : '';
+    const normalizedBody = bodySection ? bodySection.replace(LINE_ENDING_PATTERN, '\r\n') : '';
 
     if (normalizedHeaders.length > 0) {
       return `${normalizedHeaders}\r\n${formattedDkimHeader}\r\n\r\n${normalizedBody}`;
@@ -267,7 +277,7 @@ export function verifyDkimSignature(
     }
 
     // Extract tags from dkim-signature value
-    const unfoldedDkim = dkimField.raw.replace(/\r?\n[ \t]+/g, ' ');
+    const unfoldedDkim = dkimField.raw.replace(FOLD_PATTERN, ' ');
     const tagMatches = unfoldedDkim.slice(unfoldedDkim.indexOf(':') + 1).split(';');
     const tags = new Map<string, string>();
     for (const tag of tagMatches) {

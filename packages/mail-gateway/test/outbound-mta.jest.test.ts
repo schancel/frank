@@ -1,4 +1,5 @@
 import * as net from 'node:net';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -119,6 +120,74 @@ describe('1. DKIM Signer & Verifier (RFC 6376)', () => {
     // Verify using standalone verifyDkimSignature
     const validStandalone = verifyDkimSignature(signed, keyPair.publicKey);
     expect(validStandalone).toBe(true);
+  });
+
+  it('signs CRLF and LF input into the same bytes: CRLF line endings, the body hash of the canonical body, and a signature over the canonical headers', () => {
+    const signer = new DkimSigner({
+      domain: 'frank.org',
+      selector: 'test',
+      privateKey: keyPair.privateKey,
+    });
+    const headerLines = [
+      'From: Alice <alice@frank.org>',
+      'To: Bob <bob@example.com>',
+      'Subject: Hello   from Frank',
+      'Date: Tue, 06 Oct 2026 12:00:00 GMT',
+      'Message-ID: <msg_pin@frank.org>',
+    ];
+    const bodyLines = ['first  line ', '.second line', '', 'last line', ''];
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_791_288_000_000);
+    let signedCrlf: string;
+    let signedLf: string;
+    try {
+      signedCrlf = signer.sign(`${headerLines.join('\r\n')}\r\n\r\n${bodyLines.join('\r\n')}`);
+      signedLf = signer.sign(`${headerLines.join('\n')}\n\n${bodyLines.join('\n')}`);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // Expected values are computed here with node:crypto, not with the signer's helpers.
+    const bodyHash = crypto
+      .createHash('sha256')
+      .update('first line\r\n.second line\r\n\r\nlast line\r\n', 'utf-8')
+      .digest('base64');
+    const dkimHeaderWithoutB =
+      'DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=frank.org; s=test; ' +
+      `t=1791288000; h=from:to:subject:date:message-id; bh=${bodyHash}; b=`;
+    const signedData =
+      'from:Alice <alice@frank.org>\r\n' +
+      'to:Bob <bob@example.com>\r\n' +
+      'subject:Hello from Frank\r\n' +
+      'date:Tue, 06 Oct 2026 12:00:00 GMT\r\n' +
+      'message-id:<msg_pin@frank.org>\r\n' +
+      `dkim-signature:${dkimHeaderWithoutB.slice('DKIM-Signature: '.length)}\r\n`;
+    const signature = crypto
+      .createSign('RSA-SHA256')
+      .update(signedData, 'utf-8')
+      .sign(keyPair.privateKey, 'base64');
+
+    const expected =
+      `${headerLines.join('\r\n')}\r\n${dkimHeaderWithoutB}${signature}\r\n\r\n${bodyLines.join('\r\n')}`;
+    expect(signedCrlf).toBe(expected);
+    expect(signedLf).toBe(expected);
+  });
+
+  it('treats a lone CR as a line ending when canonicalizing and signing a body', () => {
+    expect(canonicalizeBodyRelaxed('one \rtwo\r\rthree\r')).toBe('one\r\ntwo\r\n\r\nthree\r\n');
+    expect(computeBodyHash('one\rtwo\nthree\r\n')).toBe(computeBodyHash('one\r\ntwo\r\nthree\r\n'));
+
+    const signer = new DkimSigner({
+      domain: 'frank.org',
+      selector: 'test',
+      privateKey: keyPair.privateKey,
+    });
+    const signed = signer.sign(
+      'From: Alice <alice@frank.org>\r\nSubject: Endings\r\n\r\none\rtwo\nthree\r\n'
+    );
+
+    expect(signed.endsWith('\r\n\r\none\r\ntwo\r\nthree\r\n')).toBe(true);
+    expect(/\r(?!\n)/.test(signed)).toBe(false);
+    expect(signer.verify(signed)).toBe(true);
   });
 
   it('rejects tampered body or modified signed headers', () => {

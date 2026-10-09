@@ -1,7 +1,10 @@
 import { getAddress, hexlify, Transaction } from 'ethers'
 import type { MonadSubAccountPool } from './monad-account-pool'
 import type { MonadChangePool } from './monad-change-pool'
-import type { SubAccountLeaseManager } from './monad-account-lease'
+import type {
+  AccountLeaseHandle,
+  SubAccountLeaseManager,
+} from './monad-account-lease'
 import { PROTOCOL_CHAINS } from './chain/chains-registry'
 import {
   EvmNativeJournalError,
@@ -50,6 +53,7 @@ export type OwnerEvidence =
       readonly member: number
       readonly poolIndex: number
     }
+  | { readonly kind: 'live-lease'; readonly poolIndex: number }
   | {
       readonly kind: 'topic'
       readonly operationKey: string
@@ -214,6 +218,10 @@ class AdmissionOwner implements EvmInputAdmission {
     WalletOperationLifetime
   >()
   private revision = 0
+  private readonly canonicalLeases = new Map<
+    number,
+    { handle: AccountLeaseHandle; authorization: string }
+  >()
   private uncertain = false
   private invokingMutation = false
   constructor(readonly owners: Owners) {
@@ -479,9 +487,16 @@ class AdmissionOwner implements EvmInputAdmission {
           lifecycle.spend.txHash,
           row.address,
         )
-      const hasOwner = poolAuthorities.has(row.index)
+      const hasOwner = (poolAuthorities.get(row.index) ?? []).some(claim =>
+        claim.resources.some(
+          resource =>
+            resource.kind === 'allocation' || resource.kind === 'address',
+        ),
+      )
       if (
-        (row.status === 'in-use' && !hasOwner) ||
+        (row.status === 'in-use' &&
+          !hasOwner &&
+          !o.leases.isLeased(row.index)) ||
         ((row.status === 'spent' || row.status === 'retired') &&
           !lifecycle?.spend)
       )
@@ -495,6 +510,32 @@ class AdmissionOwner implements EvmInputAdmission {
             { kind: 'allocation', pool: 'spend', index: row.index },
           ],
         )
+    }
+    for (const index of o.leases.leasedIndices()) {
+      const record = o.pool.getRecord(index)
+      if (!record || record.status !== 'in-use') invalid()
+      const correlated = this.canonicalLeases.get(index)
+      const current =
+        correlated && o.leases.isCurrentLease(correlated.handle)
+          ? claims.find(
+              claim =>
+                claim.authorization === correlated.authorization &&
+                (claim.provenance.kind === 'canonical-intent' ||
+                  claim.provenance.kind === 'canonical-attempt') &&
+                claim.provenance.poolIndex === index,
+            )
+          : undefined
+      claims.push({
+        provenance: { kind: 'live-lease', poolIndex: index },
+        authorization: current?.authorization ?? `lease:${index}`,
+        binding,
+        transaction: current?.transaction ?? null,
+        observedConsumed: false,
+        resources: [
+          { kind: 'address', address: address(record.address) },
+          { kind: 'allocation', pool: 'spend', index },
+        ],
+      })
     }
     const change = o.change.pendingIntent()
     for (const row of [...o.change.records(), ...(change ? [change] : [])]) {
@@ -764,6 +805,23 @@ class AdmissionOwner implements EvmInputAdmission {
       return this.owners.canonical!.prepareIntent(snapshot)
     })
   }
+  acquireCanonicalLease(
+    index: number,
+    attemptRef?: string,
+  ): AccountLeaseHandle {
+    let authorization: string | undefined
+    if (attemptRef !== undefined) {
+      const intent = this.checkCanonical(attemptRef)
+      if (!intent.members.some(member => member.reservation.index === index))
+        invalid()
+      authorization = `canonical:${intent.prepared.walletBindingId}:${intent.attemptRef}`
+    }
+    const handle = this.owners.leases.acquireForIndex(index)
+    if (authorization)
+      this.canonicalLeases.set(index, { handle, authorization })
+    else this.canonicalLeases.delete(index)
+    return handle
+  }
   faultUncertain(): void {
     this.uncertain = true
   }
@@ -944,7 +1002,11 @@ export function canonicalAdmissionJournal(
         return journal.promoteIntent(ref, request)
       }),
     beginReplay: eligibility =>
-      mutation(() => journal.beginReplay(eligibility)),
+      mutation(() => {
+        // Promoted signed attempts still expose funds on replay; signing admission is not enough.
+        owner.project()
+        return journal.beginReplay(eligibility)
+      }),
     endReplay: eligibility => {
       owner.owners.assertLifetime(lifetime)
       journal.endReplay(eligibility)
@@ -979,9 +1041,9 @@ export function canonicalAdmissionPool(
     }
   }
   return {
-    acquire: (index: number) =>
+    acquire: (index: number, attemptRef?: string) =>
       owner.mutate(lifetime, async () => {
-        const handle = leases.acquireForIndex(index)
+        const handle = owner.acquireCanonicalLease(index, attemptRef)
         await flush()
         return handle
       }),

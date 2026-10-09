@@ -142,13 +142,14 @@ async function fixture(
   await journal.Open()
   const active = new Set<WalletOperationLifetime>()
   const topic = new InMemoryTopicOperationJournal()
+  const leases = new SubAccountLeaseManager(pool)
   const admission = createEvmInputAdmission({
     binding,
     native: journal,
     pool,
     change,
     topic,
-    leases: new SubAccountLeaseManager(pool),
+    leases,
     validate: () =>
       validateMonadWalletState({
         pool,
@@ -194,6 +195,7 @@ async function fixture(
   })
   return {
     admission,
+    leases,
     journal,
     active,
     lifetime,
@@ -500,6 +502,86 @@ describe('derived EVM input admission', () => {
       }
     },
   )
+  it('an independent current lease holds its own source without blocking a disjoint unsigned claim', async () => {
+    const f = await fixture(location)
+    try {
+      f.pool.setStatus(0, 'available')
+      f.leases.acquireForIndex(0)
+      const snapshot = f.admission.inspect(f.lifetime)
+      expect(snapshot.status).toBe('ready')
+      if (snapshot.status !== 'ready') throw new Error(snapshot.reason)
+      expect(snapshot.obligations.map(row => row.provenance.kind)).toEqual([
+        'live-lease',
+      ])
+      await expect(
+        f.admission.prepareNative(f.lifetime, snapshot.epoch, f.plan()),
+      ).rejects.toThrow('conflicting-authorization')
+      await f.admission.prepareNative(f.lifetime, snapshot.epoch, f.plan(1))
+      expect(f.journal.list()[0]!.members[0]!.source).toEqual(
+        f.plan(1).members[0]!.source,
+      )
+    } finally {
+      await f.close()
+    }
+  })
+  it('a current lease is not hidden by a historical included native member at the same index', async () => {
+    const f = await fixture(location)
+    try {
+      const row = await f.admission.prepareNative(
+        f.lifetime,
+        f.epoch(),
+        f.plan(),
+      )
+      const raw = await new Wallet(
+        f.keyring.deriveSubAccount(0).privateKey,
+      ).signTransaction(Transaction.from(row.members[0]!.unsignedTransaction))
+      const writer = nativeAdmissionJournal(f.admission, f.lifetime)
+      await writer.checkpointSigned(row.operationId, 0, raw)
+      await writer.recordObservation(
+        writer.beginCapture(row.operationId, 0),
+        {
+          state: 'included-success',
+          transactionHash: Transaction.from(raw).hash!,
+          blockHash: '0x' + 'ab'.repeat(32),
+          blockNumber: 10,
+          transactionIndex: 0,
+          feeWei: '21000',
+        },
+        null,
+      )
+      f.pool.setStatus(0, 'available')
+      const priorEpoch = f.epoch()
+      const lease = f.leases.acquireForIndex(0)
+      const executor = nativeExecutor(f, ['success'])
+      await expect(
+        executor.executor.sendNative(
+          { recipient: { raw: f.plan().recipient }, value: 32n },
+          f.lifetime,
+        ),
+      ).rejects.toThrow('conflicting-authorization')
+      await expect(
+        f.admission.prepareNative(f.lifetime, priorEpoch, f.plan(0, 1)),
+      ).rejects.toThrow('conflicting-authorization')
+      await expect(
+        f.admission.authorizeNativeSigning(f.lifetime, row.operationId),
+      ).rejects.toThrow('conflicting-authorization')
+      expect(executor.sign).not.toHaveBeenCalled()
+      f.leases.releaseLease(lease, 'unused')
+      expect(f.admission.inspect(f.lifetime).status).toBe('ready')
+      await expect(
+        f.admission.prepareNative(f.lifetime, f.epoch(), f.plan(0, 0)),
+      ).rejects.toThrow('conflicting-authorization')
+      await executor.executor.sendNative(
+        { recipient: { raw: f.plan().recipient }, value: 32n },
+        f.lifetime,
+      )
+      expect(executor.sign).toHaveBeenCalledTimes(1)
+      expect(Transaction.from(executor.sign.mock.calls[0]![1]).nonce).toBe(1)
+      expect(f.journal.list()).toHaveLength(2)
+    } finally {
+      await f.close()
+    }
+  })
   it('a native journal-derived pool checkpoint remains one authorization after real Level reopen', async () => {
     const f = await fixture(location)
     const row = await f.admission.prepareNative(f.lifetime, f.epoch(), f.plan())

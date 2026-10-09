@@ -36,13 +36,15 @@ jest.mock('../adapters/level-message-store', () => {
       saveMessage: jest.fn(async (wrapper: ReceivedMessageWrapper) => {
         retained.set(wrapper.index, JSON.stringify(wrapper))
       }),
-      deleteMessage: jest.fn(async () => {}),
+      deleteMessage: jest.fn(async () => undefined),
       relayCursor: jest.fn(async () => 10),
       mostRecentMessageTime: jest.fn(async () => 10),
-      quarantineRelayReceipts: jest.fn(async () => {}),
-      suppressAndDelete: jest.fn(async () => {}),
+      quarantineRelayReceipts: jest.fn(async () => undefined),
+      suppressAndDelete: jest.fn(async () => undefined),
       suppressedRelayReceipts: jest.fn(async () => new Set<string>()),
-      getIterator: jest.fn(async function* () {}),
+      getIterator: jest.fn(async function* () {
+        // This isolated fixture has no restored rows.
+      }),
     }),
   }
 })

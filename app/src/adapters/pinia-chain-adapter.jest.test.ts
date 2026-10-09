@@ -606,12 +606,10 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
         .spyOn(useChatStore(), 'receiveMessages')
         .mockResolvedValue({ suppressedReceipts: [], cancelled: false })
       jest.spyOn(console, 'error').mockImplementation(() => undefined)
-      jest
-        .spyOn(activeChain, 'fetchProfile')
-        .mockResolvedValue({
-          address: { raw: SENDER_ADDRESS },
-          pubKey: PUB_KEY_BYTES,
-        })
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
       const failure = Object.assign(
         new Error(
           'Unsupported incoming wallet sync; preserve retained records',

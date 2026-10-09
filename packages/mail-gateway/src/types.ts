@@ -94,7 +94,7 @@ export interface OutboundSpoolJob {
 }
 
 // ---------------------------------------------------------------------------
-// Mail journal records (#1237 G1). See src/ledger/mail-journal.ts.
+// Mail journal records (#1237 G1, format 2 from G1b). See src/ledger/mail-journal.ts.
 // ---------------------------------------------------------------------------
 
 /**
@@ -121,7 +121,16 @@ export interface MailMessageRecord {
   readonly rfcMessageId: string;
   /** Set only on a contested message: the identifier it claimed, which another message holds. */
   readonly claimedRfcId?: string;
-  readonly contentKey: string;
+  /**
+   * Identity of the RFC 5322 message: for an inbound message its `inbound_email`
+   * key, for an outbound message the key of the emitted mail. Never compared
+   * with an item key.
+   */
+  readonly mailKey: string;
+  /** Outbound only: identity of the authored email item, independent of the seal. */
+  readonly itemKey?: string;
+  /** Outbound only: the payload digest of the Frank message this email was bridged from. */
+  readonly payloadDigest?: string;
   readonly frankMessageId: string;
   readonly conversationId: string;
   readonly direction: MailDirection;
@@ -129,18 +138,21 @@ export interface MailMessageRecord {
   readonly createdAtMs: number;
 }
 
-export type InboundEmailDisposition = 'relay' | 'held' | 'released' | 'echo';
+export type InboundEmailDisposition = 'relay' | 'held' | 'released' | 'echo' | 'expired';
 
 export interface InboundEmailRecord {
   readonly scopeAccount: string;
-  readonly contentKey: string;
+  readonly mailKey: string;
   /** The identifier the mail claimed (its Message-ID, or the synthetic one). */
   readonly rfcMessageId: string;
   readonly senderEmail: string;
   readonly dataSha256: string;
-  readonly raw: StoredMailBytes;
+  /** Absent only on an `expired` row: the bytes of a mail that was never paid for are not kept. */
+  readonly raw?: StoredMailBytes;
   readonly disposition: InboundEmailDisposition;
   readonly heldMessageId?: string;
+  /** When a `held` mail may be expired. Absent once it is relayed, and on an echo. */
+  readonly expiresAtMs?: number;
   readonly createdAtMs: number;
 }
 
@@ -164,7 +176,7 @@ export interface FrankSendRecord {
   readonly createdAtMs: number;
 }
 
-export type FrankInboundDisposition = 'bridged' | 'rejected' | 'quarantined';
+export type FrankInboundDisposition = 'bridged' | 'rejected' | 'quarantined' | 'resealed';
 
 export const FRANK_INBOUND_REJECT_REASONS = [
   'no_email_item',
@@ -186,9 +198,13 @@ export interface FrankInboundRecord {
   readonly frankMessageId?: string;
   readonly conversationId?: string;
   readonly receivedTimeMs: number;
-  readonly stampValueWei: string;
-  readonly budgetWei: string;
-  readonly spentWei: string;
+  /**
+   * The stamp the message carried: decimal text in the smallest unit of the
+   * journal chain's native asset. `budget` and `spent` have the same form.
+   */
+  readonly stampValue: string;
+  readonly budget: string;
+  readonly spent: string;
   readonly disposition: FrankInboundDisposition;
   readonly reason?: string;
 }
@@ -198,9 +214,13 @@ export type OutboundJobState = 'pending' | 'sent' | 'failed' | 'bounced';
 export interface OutboundJobRecord {
   readonly jobId: number;
   readonly scopeAccount: string;
-  readonly frankMessageId: string;
+  /** The identifier the email goes out under; with the scope and the recipient, the job's key. */
+  readonly rfcMessageId: string;
   readonly recipientEmail: string;
+  /** Read from the job's `mail_message` row, as are `conversationId` and `payloadDigest`. */
+  readonly frankMessageId: string;
   readonly conversationId: string;
+  readonly payloadDigest: string;
   readonly bounceToken: string;
   readonly signedRfc822: StoredMailBytes;
   readonly state: OutboundJobState;

@@ -595,16 +595,6 @@ export class MonadSubAccountPool {
     }
     params.onProgress?.({ stage: "checking" });
 
-    if (!this.proactiveWarmingConfig) {
-      this.proactiveWarmingConfig = {
-        mainAccountSigner: params.mainAccountSigner,
-        provider: params.provider,
-        stampValueWei: params.stampValueWei,
-        gasReserveWei: params.gasReserveWei,
-        overrides: params.fundingOverrides,
-      };
-    }
-
     const fundingTxHashes = await this.reconcileBeforePreparation(params);
 
     let accounts = await this.fundedCapacities(
@@ -1423,7 +1413,11 @@ export class MonadSubAccountPool {
     this.capacityCache.set(index, { capacityWei, checkedAtMs, balanceWei });
   }
 
-  /** Configures default parameters for background proactive warming. */
+  /**
+   * Configures default parameters for background proactive warming. Nothing in production calls
+   * this while warming is off (#1235): until the pass records before it broadcasts, every trigger
+   * is a no-op because no configuration is set.
+   */
   configureProactiveWarming(config?: EnsureMinimumCapacityParams): void {
     this.proactiveWarmingConfig = config;
   }
@@ -1454,7 +1448,8 @@ export class MonadSubAccountPool {
    * Ensures that the pool has at least `minCount` (default 2) receipt-confirmed,
    * available funded sub-accounts ready for single-use spends. If the available
    * funded capacity falls below `minCount`, schedules a non-blocking background
-   * `fanOutFundSubAccounts` call so the pool is always replenished before the user hits Send.
+   * `fanOutFundSubAccounts` call. Warming is currently off (#1235): it runs only when a caller
+   * configures it explicitly or passes `params`, and no production caller does, so sends fund on demand.
    */
   ensureMinimumAvailableCapacity(
     params?: EnsureMinimumCapacityParams
@@ -1462,9 +1457,6 @@ export class MonadSubAccountPool {
     const config = params ?? this.proactiveWarmingConfig;
     if (!config) {
       return Promise.resolve();
-    }
-    if (!this.proactiveWarmingConfig && params) {
-      this.proactiveWarmingConfig = params;
     }
     if (this.activeWarmingPromise) {
       return this.activeWarmingPromise;

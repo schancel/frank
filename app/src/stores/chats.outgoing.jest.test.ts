@@ -182,6 +182,143 @@ describe('outgoing direct messages (#269, #270)', () => {
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
   })
 
+  describe('recorded attempt ownership survives rejection', () => {
+    it('keeps a dead-reported attempt across reload and later confirms the original message without paying again', async () => {
+      const send = sendJournalsThenPending()
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      const original = only(chats)[0]
+      const originalId = original.payloadDigest
+      const originalConversationId = original.conversationId
+      const originalLogicalId = original.logicalMessageId
+      reconcileReturns({ [HASH]: 'dead' })
+      await chats.reconcileOutgoing({ wallet })
+      expect(original.delivery).toMatchObject({
+        attemptDigest: HASH,
+        failureReason: 'rejected',
+      })
+      expect(original.conversationId).toBe(originalConversationId)
+      expect(original.logicalMessageId).toBe(originalLogicalId)
+      const restored = await reload()
+      expect(restored.messages[originalId]?.delivery?.attemptDigest).toBe(HASH)
+      reconcileReturns({ [HASH]: 'delivered' })
+      await restored.reconcileOutgoing({ wallet })
+      expect(only(restored)).toEqual([
+        expect.objectContaining({
+          payloadDigest: HASH,
+          status: 'confirmed',
+          items: TEXT,
+        }),
+      ])
+      expect(restored.messages[originalId]).toBeUndefined()
+      expect((await durable()).has(originalId)).toBe(false)
+      expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it.each([
+      ['dead', false],
+      ['dead', true],
+      ['unknown', false],
+      ['unknown', true],
+    ] as const)(
+      'does not replace a recorded %s attempt on Retry (confirmed=%s)',
+      async (status, confirmed) => {
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+        const message = only(chats)[0]
+        await chats.setOutgoingState(PEER, message.payloadDigest, 'error', {
+          attemptDigest: HASH,
+        })
+        reconcileReturns({ [HASH]: status })
+        const result = await chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: message.payloadDigest,
+          confirmed,
+        })
+        expect(result).toEqual({
+          state: 'failed',
+          reason: status === 'dead' ? 'rejected' : 'unverified',
+        })
+        expect(message.delivery?.attemptDigest).toBe(HASH)
+        expect(send).toHaveBeenCalledTimes(1)
+      },
+    )
+
+    it('retains the recorded digest on presentation updates and rejects a replacement before mutation', async () => {
+      sendJournalsThenPending()
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      const message = only(chats)[0]
+      const id = message.payloadDigest
+      await chats.setOutgoingState(PEER, id, 'error', {
+        failureReason: 'rejected',
+      })
+      expect(message.delivery).toEqual({
+        attemptDigest: HASH,
+        failureReason: 'rejected',
+      })
+      const persisted = (await durable()).get(id)
+      await expect(
+        chats.setOutgoingState(PEER, id, 'pending', {
+          attemptDigest: 'cd'.repeat(32),
+        }),
+      ).rejects.toThrow(/attempt/i)
+      expect(message.status).toBe('error')
+      expect(message.delivery).toEqual({
+        attemptDigest: HASH,
+        failureReason: 'rejected',
+      })
+      expect((await durable()).get(id)).toBe(persisted)
+    })
+
+    it('stops fresh send retries after a transient failure following attempt attribution', async () => {
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          await params.onAttemptCreated?.(HASH)
+          throw new Error('network unavailable after payment attribution')
+        })
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+    }, 5000)
+
+    it.each(['error', 'confirmed'])(
+      'safe-stops retry when the durable %s row conflicts with live attempt ownership',
+      async status => {
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+        const message = only(chats)[0]
+        await chats.setOutgoingState(PEER, message.payloadDigest, 'error', {
+          attemptDigest: HASH,
+        })
+        const db = await durable()
+        const row = deserializeMessageWrapper(db.get(message.payloadDigest)!)
+        row.message.status = status
+        row.message.delivery = { attemptDigest: 'cd'.repeat(32) }
+        db.set(message.payloadDigest, serializeMessageWrapper(row))
+        const reconcile = jest
+          .spyOn(activeChain.directMessages, 'reconcileAttempts')
+          .mockResolvedValue({})
+        expect(
+          await chats.retryOutgoing({
+            wallet,
+            address: PEER,
+            payloadDigest: message.payloadDigest,
+          }),
+        ).toEqual({ state: 'busy' })
+        expect(chats.messages[message.payloadDigest]).toBe(message)
+        expect(message.delivery?.attemptDigest).toBe(HASH)
+        expect(reconcile).not.toHaveBeenCalled()
+        expect(send).toHaveBeenCalledTimes(1)
+      },
+    )
+  })
+
   describe('#269: a failed message survives a reload with its Retry', () => {
     it('keeps the text and the failure reason across a reload', async () => {
       jest
@@ -557,9 +694,8 @@ describe('outgoing direct messages (#269, #270)', () => {
       })
       expect(only(chats)[1].status).toBe('payment-pending')
 
-      // Background reconciliation queries HASH, finds it died on-chain,
-      // updates first message failureReason to rejected (clearing attemptDigest hold)
-      // and drains second message
+      // A dead report changes presentation but retains the original attempt.
+      // The separately authorized queued message can still proceed.
       reconcileReturns({ [HASH]: 'dead' })
       send.mockResolvedValueOnce(okResult('cd'.repeat(32)))
 
@@ -567,7 +703,7 @@ describe('outgoing direct messages (#269, #270)', () => {
 
       expect(only(chats)[0].status).toBe('error')
       expect(only(chats)[0].delivery?.failureReason).toBe('rejected')
-      expect(only(chats)[0].delivery?.attemptDigest).toBeUndefined()
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
       expect(only(chats)[1].status).toBe('confirmed')
       expect(only(chats)[1].items).toEqual([{ type: 'text', text: 'second' }])
     })
@@ -616,7 +752,7 @@ describe('outgoing direct messages (#269, #270)', () => {
 
       expect(convMessages[0].status).toBe('error')
       expect(convMessages[0].delivery?.failureReason).toBe('rejected')
-      expect(convMessages[0].delivery?.attemptDigest).toBeUndefined()
+      expect(convMessages[0].delivery?.attemptDigest).toBe(HASH)
       expect(convMessages[1].status).toBe('confirmed')
       expect(convMessages[1].items).toEqual([{ type: 'text', text: 'second' }])
     })
@@ -730,18 +866,18 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(send).toHaveBeenCalledTimes(1)
     })
 
-    it('terminal attempt: Retry builds new payments exactly once', async () => {
+    it('terminal report: Retry preserves the original payment instead of replacing it', async () => {
       const { send, chats, id } = await failedWithAttempt()
       reconcileReturns({ [HASH]: 'dead' })
-      send.mockResolvedValueOnce(okResult('12'.repeat(32)))
       await expect(
         chats.retryOutgoing({ wallet, address: PEER, payloadDigest: id }),
-      ).resolves.toEqual({ state: 'sent', payloadDigest: '12'.repeat(32) })
-      expect(send).toHaveBeenCalledTimes(2)
+      ).resolves.toEqual({ state: 'failed', reason: 'rejected' })
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
       expect(only(chats)).toHaveLength(1)
     })
 
-    it('the background loop never builds a new payment for a dead attempt; it waits for the user', async () => {
+    it('the background loop retains a dead-reported attempt for later reconciliation', async () => {
       const { send, chats } = await failedWithAttempt()
       // Put it back to payment-pending like an in-progress pending message.
       const message = only(chats)[0]
@@ -757,15 +893,14 @@ describe('outgoing direct messages (#269, #270)', () => {
       )
     })
 
-    it('unknown fate: Retry asks for confirmation and sends nothing until it is given', async () => {
+    it('unknown fate: even confirmed Retry cannot replace the recorded payment', async () => {
       const { send, chats, id } = await failedWithAttempt()
       reconcileReturns({ [HASH]: 'unknown' }, { [HASH]: 'unknown' })
       await expect(
         chats.retryOutgoing({ wallet, address: PEER, payloadDigest: id }),
-      ).resolves.toEqual({ state: 'needs-confirmation', reason: 'unverified' })
+      ).resolves.toEqual({ state: 'failed', reason: 'unverified' })
       expect(send).toHaveBeenCalledTimes(1)
 
-      send.mockResolvedValueOnce(okResult('34'.repeat(32)))
       await expect(
         chats.retryOutgoing({
           wallet,
@@ -773,8 +908,9 @@ describe('outgoing direct messages (#269, #270)', () => {
           payloadDigest: id,
           confirmed: true,
         }),
-      ).resolves.toEqual({ state: 'sent', payloadDigest: '34'.repeat(32) })
-      expect(send).toHaveBeenCalledTimes(2)
+      ).resolves.toEqual({ state: 'failed', reason: 'unverified' })
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
     })
 
     it('an abandoned attempt (relay may own the bytes) is unverified, not freely retryable', async () => {
@@ -955,7 +1091,7 @@ describe('outgoing direct messages (#269, #270)', () => {
       }
     }
 
-    it('layer (a): the send aborts before the relay when the digest write fails, and nothing is left to re-pay', async () => {
+    it('layer (a): a failed attribution write aborts relay submission and retains the known attempt', async () => {
       const restore = await failDigestWrites()
       let reachedRelay = false
       const send = jest
@@ -975,18 +1111,19 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(reachedRelay).toBe(false)
       expect(outcome).toEqual(expect.objectContaining({ state: 'failed' }))
       restore()
-      // After a rolled-back attempt the wallet knows it is dead: Retry may pay once, exactly once.
+      // The dead status alone does not prove that the journaled payment cannot land.
       jest
         .spyOn(activeChain.directMessages, 'reconcileAttempts')
         .mockResolvedValue({ [HASH]: 'dead' })
-      send.mockResolvedValueOnce(okResult('56'.repeat(32)))
       await expect(
         chats.retryOutgoing({
           wallet,
           address: PEER,
           payloadDigest: only(chats)[0].payloadDigest,
         }),
-      ).resolves.toEqual({ state: 'sent', payloadDigest: '56'.repeat(32) })
+      ).resolves.toEqual({ state: 'failed', reason: 'rejected' })
+      expect(send).toHaveBeenCalledTimes(1)
+      expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
     })
 
     it('layer (b), the reviewer repro: a fail-open wallet plus a lost digest write still cannot re-pay an interrupted message without confirmation', async () => {
@@ -1870,7 +2007,7 @@ describe('outgoing direct messages (#269, #270)', () => {
         return { chats, id: message.payloadDigest }
       }
 
-      it('after the earlier payment died: no new payment, now or on a later automatic retry; a click still can', async () => {
+      it('after a dead report: neither automatic retries nor a click replace the earlier payment', async () => {
         const { chats, id } = await failedWithAttempt()
         const send = jest
           .spyOn(activeChain.directMessages, 'send')
@@ -1878,7 +2015,11 @@ describe('outgoing direct messages (#269, #270)', () => {
         jest
           .spyOn(activeChain.directMessages, 'unattributedAttempts')
           .mockResolvedValue([])
-        reconcileReturns({ [HASH]: 'dead' })
+        reconcileReturns(
+          { [HASH]: 'dead' },
+          { [HASH]: 'dead' },
+          { [HASH]: 'dead' },
+        )
         const retry = (automatic: boolean) =>
           chats.retryOutgoing({
             wallet,
@@ -1896,17 +2037,18 @@ describe('outgoing direct messages (#269, #270)', () => {
             delivery: expect.objectContaining({ failureReason: 'rejected' }),
           }),
         )
-        // The attempt is gone from the message now; still no payment without a click.
+        // The recorded attempt remains associated on every subsequent retry.
         await expect(retry(true)).resolves.toEqual({
           state: 'failed',
           reason: 'rejected',
         })
         expect(send).not.toHaveBeenCalled()
         await expect(retry(false)).resolves.toEqual({
-          state: 'sent',
-          payloadDigest: 'cd'.repeat(32),
+          state: 'failed',
+          reason: 'rejected',
         })
-        expect(send).toHaveBeenCalledTimes(1)
+        expect(send).not.toHaveBeenCalled()
+        expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
       })
 
       it('when the earlier payment cannot be accounted for: no new payment, even if `confirmed` is passed', async () => {
@@ -1921,7 +2063,7 @@ describe('outgoing direct messages (#269, #270)', () => {
             automatic: true,
             confirmed,
           })
-          expect(outcome.state).toBe('needs-confirmation')
+          expect(outcome).toEqual({ state: 'failed', reason: 'unverified' })
         }
         expect(send).not.toHaveBeenCalled()
         expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)

@@ -21,6 +21,8 @@ import {
   Wallet,
   SigningKey,
   Transaction,
+  TransactionResponse,
+  TransactionReceipt,
   computeAddress,
   getBytes,
   getAddress,
@@ -2893,4 +2895,270 @@ describe('canonical durable consumer barriers', () => {
       expect(feeDataCalls).toBe(1)
     })
   })
+})
+
+describe('canonical payment observation capture', () => {
+  async function funded(
+    f: Awaited<ReturnType<typeof makeCanonicalConsumerFixture>>,
+    count = 1,
+  ) {
+    f.pool.ensureSize(count)
+    await f.pool.flush()
+    if (count > 1)
+      f.providerCalls.mockImplementation(async req => {
+        if (req.method === 'getBalance')
+          return FEE_OVERRIDES.gasLimit * 2n + 16n
+        if (req.method === 'getTransactionCount') return 0
+        if (req.method === 'estimateGas') return 50000n
+        throw new Error(`unexpected canonical provider ${req.method}`)
+      })
+    let link!: CanonicalWorkflowLink
+    await f.prepare(1, async durable => {
+      link = durable
+    })
+    return f.client.finishIntent(
+      f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+    )
+  }
+  function response(
+    raw: Uint8Array,
+    provider: JsonRpcProvider,
+    status = 1,
+    txOverrides: Partial<
+      ConstructorParameters<typeof TransactionResponse>[0]
+    > = {},
+    receiptOverrides: Partial<
+      ConstructorParameters<typeof TransactionReceipt>[0]
+    > = {},
+  ) {
+    const tx = Transaction.from('0x' + Buffer.from(raw).toString('hex'))
+    const common = {
+      hash: tx.hash!,
+      from: tx.from!,
+      to: tx.to,
+      type: tx.type!,
+      blockHash: `0x${'12'.repeat(32)}`,
+      blockNumber: 42,
+      index: 0,
+    }
+    return {
+      transaction: new TransactionResponse(
+        {
+          ...common,
+          nonce: tx.nonce,
+          chainId: tx.chainId,
+          data: tx.data,
+          value: tx.value,
+          gasLimit: tx.gasLimit,
+          gasPrice: tx.gasPrice ?? 2n,
+          maxFeePerGas: tx.maxFeePerGas,
+          maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+          accessList: tx.accessList,
+          authorizationList: tx.authorizationList,
+          signature: tx.signature!,
+          ...txOverrides,
+        },
+        provider,
+      ),
+      receipt: new TransactionReceipt(
+        {
+          ...common,
+          contractAddress: null,
+          gasUsed: 21000n,
+          cumulativeGasUsed: 21000n,
+          gasPrice: 2n,
+          logs: [],
+          logsBloom: `0x${'00'.repeat(256)}`,
+          root: null,
+          status,
+          ...receiptOverrides,
+        },
+        provider,
+      ),
+    }
+  }
+
+  it('observes partial and late inclusion of the same independent members without releasing, signing or broadcasting', async () => {
+    await withCanonicalConsumer(async f => {
+      const attempt = await funded(f, 2)
+      expect(attempt.request.parts.transactions).toHaveLength(2)
+      const replies = attempt.request.parts.transactions.map(raw =>
+        response(raw, f.provider),
+      )
+      let late = false
+      jest
+        .spyOn(f.provider, 'getTransaction')
+        .mockImplementation(
+          async hash =>
+            replies.find(
+              (reply, i) =>
+                reply.transaction.hash === hash && (i === 0 || late),
+            )?.transaction ?? null,
+        )
+      jest
+        .spyOn(f.provider, 'getTransactionReceipt')
+        .mockImplementation(
+          async hash =>
+            replies.find(
+              (reply, i) => reply.receipt.hash === hash && (i === 0 || late),
+            )?.receipt ?? null,
+        )
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'signFrozenUnsigned',
+      )
+      try {
+        const partial = await f.client.capturePaymentObservations(
+          attempt.prepared,
+        )
+        expect(partial.kind).toBe('recorded')
+        if (partial.kind !== 'recorded')
+          throw new Error('expected current capture')
+        expect(
+          partial.observations.members.map(member => member.state),
+        ).toEqual(['observed', 'missing'])
+        late = true
+        const full = await f.client.capturePaymentObservations(attempt.prepared)
+        expect(full.kind).toBe('recorded')
+        if (full.kind !== 'recorded')
+          throw new Error('expected current capture')
+        expect(full.observations.members.map(member => member.state)).toEqual([
+          'observed',
+          'observed',
+        ])
+        expect(f.state.canonicalJournal!.getAll()).toEqual([attempt])
+        for (const reservation of attempt.reservations)
+          expect(f.pool.getRecord(reservation.index)!.status).toBe('in-use')
+        expect(sign).not.toHaveBeenCalled()
+        expect(f.httpClient.submitRawTransaction).not.toHaveBeenCalled()
+      } finally {
+        sign.mockRestore()
+      }
+    })
+  }, 20000)
+
+  it.each([
+    'reverted',
+    'missing',
+    'pending',
+    'rpc-error',
+    'wrong-chain',
+    'wrong-value',
+    'wrong-receipt-hash',
+    'wrong-block',
+    'missing-transaction',
+  ] as const)(
+    'distinguishes %s from successful inclusion and never grants cleanup',
+    async mode => {
+      await withCanonicalConsumer(async f => {
+        const attempt = await funded(f)
+        const reply = response(
+          attempt.request.parts.transactions[0],
+          f.provider,
+          mode === 'reverted' ? 0 : 1,
+          mode === 'wrong-chain'
+            ? { chainId: 1n }
+            : mode === 'wrong-value'
+            ? { value: 999n }
+            : {},
+          mode === 'wrong-receipt-hash'
+            ? { hash: `0x${'ff'.repeat(32)}` }
+            : mode === 'wrong-block'
+            ? { blockNumber: 100 }
+            : {},
+        )
+        jest
+          .spyOn(f.provider, 'getTransaction')
+          .mockImplementation(async () => {
+            if (mode === 'rpc-error') throw new Error('offline RPC unavailable')
+            return mode === 'missing' || mode === 'missing-transaction'
+              ? null
+              : reply.transaction
+          })
+        jest
+          .spyOn(f.provider, 'getTransactionReceipt')
+          .mockResolvedValue(
+            mode === 'missing' || mode === 'pending' ? null : reply.receipt,
+          )
+        const result = await f.client.capturePaymentObservations(
+          attempt.prepared,
+        )
+        if (result.kind !== 'recorded')
+          throw new Error('expected current capture')
+        expect(result.observations.members[0].state).toBe(
+          ['reverted', 'missing', 'pending'].includes(mode) ? mode : 'unknown',
+        )
+        expect(f.state.canonicalJournal!.getAll()).toEqual([attempt])
+        expect(f.pool.getRecord(0)!.status).toBe('in-use')
+      })
+    },
+    20000,
+  )
+
+  it('leaves admission free during RPC and prevents an older delayed response from overwriting newer evidence', async () => {
+    await withCanonicalConsumer(async f => {
+      const attempt = await funded(f)
+      const reply = response(attempt.request.parts.transactions[0], f.provider)
+      const entered = canonicalBarrier(),
+        gate = canonicalBarrier()
+      jest
+        .spyOn(f.provider, 'getTransaction')
+        .mockImplementationOnce(async () => {
+          entered.resolve()
+          await gate.promise
+          return null
+        })
+        .mockResolvedValue(reply.transaction)
+      jest
+        .spyOn(f.provider, 'getTransactionReceipt')
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(reply.receipt)
+      const older = f.client.capturePaymentObservations(attempt.prepared)
+      await entered.promise
+      await f.ordinaryOperation(async () => undefined)
+      const newer = await f.client.capturePaymentObservations(attempt.prepared)
+      expect(newer.kind).toBe('recorded')
+      gate.resolve()
+      expect(await older).toEqual({ kind: 'stale' })
+      expect(
+        f.state.canonicalJournal!.getPaymentObservations(attempt.attemptRef)!
+          .members[0].state,
+      ).toBe('observed')
+      expect(f.state.canonicalJournal!.getAll()).toEqual([attempt])
+    })
+  }, 20000)
+
+  it('rejects foreign wallet/network inputs before RPC and a response after owner close', async () => {
+    await withCanonicalConsumer(async f => {
+      const attempt = await funded(f)
+      const entered = canonicalBarrier(),
+        gate = canonicalBarrier()
+      const query = jest
+        .spyOn(f.provider, 'getTransaction')
+        .mockImplementation(async () => {
+          entered.resolve()
+          await gate.promise
+          return null
+        })
+      jest.spyOn(f.provider, 'getTransactionReceipt').mockResolvedValue(null)
+      for (const wrong of [
+        { walletBindingId: 'other' },
+        { network: 'ethereum-sepolia' },
+      ])
+        await expect(
+          f.client.capturePaymentObservations({
+            ...attempt.prepared,
+            ...wrong,
+          }),
+        ).rejects.toThrow('binding-mismatch')
+      expect(query).not.toHaveBeenCalled()
+      const capture = f.client.capturePaymentObservations(attempt.prepared)
+      const rejected = capture.catch(error => error)
+      await entered.promise
+      await f.state.close()
+      gate.resolve()
+      expect(await rejected).toBeInstanceOf(Error)
+      // The closed owner cannot commit a response into a subsequent wallet session.
+    })
+  }, 20000)
 })

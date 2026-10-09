@@ -1640,6 +1640,8 @@ import {
   type CanonicalPreparedAttempt,
   type CanonicalJournalIntent,
   type CanonicalJournalAttempt,
+  type CanonicalPaymentObservation,
+  type CanonicalPaymentObservations,
 } from './storage/stamp-attempt-journal'
 import {
   assertMonadWalletBundleProvenance,
@@ -1731,6 +1733,93 @@ export class MonadCanonicalStampClient {
     if (attempt) return { kind: 'attempt', record: attempt }
     const intent = this.journal.lookupIntent(prepared)
     return intent ? { kind: 'intent', record: intent } : undefined
+  }
+  /** Capture exact-set chain observations without signing, submitting or authorizing cleanup.
+   * The recovery consumer must separately establish finality before retiring reservations.
+   * Network reads do not hold the wallet's selection/admission lock. */
+  async capturePaymentObservations(
+    prepared: CanonicalPreparedAttempt,
+  ): Promise<
+    | { kind: 'recorded'; observations: CanonicalPaymentObservations }
+    | { kind: 'stale' }
+  > {
+    const preparedSnapshot = {
+      ...prepared,
+      payload: new Uint8Array(prepared.payload),
+      context: new Uint8Array(prepared.context),
+      economicBinding: new Uint8Array(prepared.economicBinding),
+    }
+    const capture = await this.wallet.runCanonicalExclusive(async () => {
+      this.assertPreparedOwner(preparedSnapshot)
+      const attempt = this.journal.lookup(preparedSnapshot)
+      if (!attempt) throw new Error('canonical-wallet:attempt-required')
+      return this.journal.beginObservation(attempt.attemptRef)
+    })
+    const members: CanonicalPaymentObservation[] = []
+    // Sequential reads bound RPC concurrency independently of the signed-set size.
+    for (const raw of capture.attempt.request.parts.transactions) {
+      const expected = Transaction.from(hexlify(raw))
+      const transactionHash = expected.hash!
+      let observation: CanonicalPaymentObservation = {
+        transactionHash,
+        state: 'unknown',
+      }
+      try {
+        const [transaction, receipt] = await Promise.all([
+          this.wallet.provider.getTransaction(transactionHash),
+          this.wallet.provider.getTransactionReceipt(transactionHash),
+        ])
+        if (transaction === null && receipt === null) {
+          observation = { transactionHash, state: 'missing' }
+        } else if (
+          transaction &&
+          transaction.hash.toLowerCase() === transactionHash &&
+          transaction.chainId === BigInt(capture.attempt.prepared.chainId) &&
+          transaction.from.toLowerCase() === expected.from!.toLowerCase() &&
+          Transaction.from(transaction).serialized === expected.serialized
+        ) {
+          if (receipt === null) {
+            observation = { transactionHash, state: 'pending' }
+          } else if (
+            receipt.hash.toLowerCase() === transactionHash &&
+            receipt.from.toLowerCase() === expected.from!.toLowerCase() &&
+            receipt.to?.toLowerCase() === expected.to?.toLowerCase() &&
+            typeof receipt.blockHash === 'string' &&
+            /^0x[0-9a-fA-F]{64}$/.test(receipt.blockHash) &&
+            Number.isSafeInteger(receipt.blockNumber) &&
+            receipt.blockNumber >= 0 &&
+            Number.isSafeInteger(receipt.index) &&
+            receipt.index >= 0 &&
+            transaction.blockHash?.toLowerCase() ===
+              receipt.blockHash.toLowerCase() &&
+            transaction.blockNumber === receipt.blockNumber &&
+            transaction.index === receipt.index &&
+            (receipt.status === 0 || receipt.status === 1)
+          ) {
+            observation = {
+              transactionHash,
+              state: receipt.status === 1 ? 'observed' : 'reverted',
+              blockHash: receipt.blockHash.toLowerCase(),
+              blockNumber: receipt.blockNumber,
+              transactionIndex: receipt.index,
+            }
+          }
+        }
+      } catch {
+        // Unavailable or inconsistent provider evidence is not a payment failure.
+      }
+      members.push(observation)
+    }
+    return this.wallet.runCanonicalExclusive(async () => {
+      this.assertPreparedOwner(capture.attempt.prepared)
+      const observations = await this.journal.recordObservations(
+        capture,
+        members,
+      )
+      return observations
+        ? { kind: 'recorded', observations }
+        : { kind: 'stale' }
+    })
   }
   /** Effect-free binding for the workflow's already sealed B bytes and intended economics. */
   bindPrepared(input: {

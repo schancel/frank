@@ -645,4 +645,206 @@ describe('Monad / EVM Stealth Direct Payment Engine (#897)', () => {
       expect(stealthRecord?.txHash).toBe('0x' + '99'.repeat(32))
     })
   })
+
+  describe('Stealth balance caching and zero-RPC reads (#1214)', () => {
+    it('caches getTotalBalance across repeated calls and only queries provider once within TTL', async () => {
+      const keyring = new MonadStealthKeyring()
+      await keyring.addAccount({
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+      })
+      await keyring.addAccount({
+        address: '0x2222222222222222222222222222222222222222',
+        privateKey: '0x' + '22'.repeat(32),
+        ephemeralPubKey: '0x02' + '22'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 200,
+      })
+
+      const mockBalances = new Map<string, bigint>([
+        ['0x1111111111111111111111111111111111111111', 5_000n],
+        ['0x2222222222222222222222222222222222222222', 15_000n],
+      ])
+
+      const getBalance = jest.fn(async (addr: string) => {
+        return mockBalances.get(addr.toLowerCase()) ?? 0n
+      })
+      const mockProvider = { getBalance } as any
+
+      // First query: populates cache
+      const total1 = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(total1).toBe(20_000n)
+      expect(getBalance).toHaveBeenCalledTimes(2)
+
+      // Repeated queries within TTL window: returned from cache with zero provider calls
+      const total2 = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(total2).toBe(20_000n)
+      expect(getBalance).toHaveBeenCalledTimes(2)
+
+      const total3 = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(total3).toBe(20_000n)
+      expect(getBalance).toHaveBeenCalledTimes(2)
+    })
+
+    it('invalidates cache upon explicit invalidateBalanceCache', async () => {
+      const keyring = new MonadStealthKeyring()
+      await keyring.addAccount({
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+      })
+
+      const getBalance = jest.fn(async () => 5_000n)
+      const mockProvider = { getBalance } as any
+
+      await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(getBalance).toHaveBeenCalledTimes(1)
+
+      // Cache hit
+      await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(getBalance).toHaveBeenCalledTimes(1)
+
+      // Invalidation for networkTag
+      keyring.invalidateBalanceCache('MONT')
+
+      // Re-queries provider
+      await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(getBalance).toHaveBeenCalledTimes(2)
+
+      // Invalidation for all networkTags
+      keyring.invalidateBalanceCache()
+      await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(getBalance).toHaveBeenCalledTimes(3)
+    })
+
+    it('invalidates cache upon updateBalance', async () => {
+      const keyring = new MonadStealthKeyring()
+      await keyring.addAccount({
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+      })
+
+      let currentBalance = 5_000n
+      const getBalance = jest.fn(async () => currentBalance)
+      const mockProvider = { getBalance } as any
+
+      const initial = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(initial).toBe(5_000n)
+      expect(getBalance).toHaveBeenCalledTimes(1)
+
+      // External balance update invalidates cache
+      currentBalance = 12_000n
+      await keyring.updateBalance('0x1111111111111111111111111111111111111111', 12_000n)
+
+      const updated = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(updated).toBe(12_000n)
+      expect(getBalance).toHaveBeenCalledTimes(2)
+    })
+
+    it('invalidates cache upon account additions (addAccount and registerFromStealthItem)', async () => {
+      const keyring = new MonadStealthKeyring()
+      await keyring.addAccount({
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+      })
+
+      const mockBalances = new Map<string, bigint>([
+        ['0x1111111111111111111111111111111111111111', 5_000n],
+        ['0x2222222222222222222222222222222222222222', 7_000n],
+      ])
+      const getBalance = jest.fn(async (addr: string) => {
+        return mockBalances.get(addr.toLowerCase()) ?? 0n
+      })
+      const mockProvider = { getBalance } as any
+
+      const total1 = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(total1).toBe(5_000n)
+      expect(getBalance).toHaveBeenCalledTimes(1)
+
+      // Adding an account invalidates cache
+      await keyring.addAccount({
+        address: '0x2222222222222222222222222222222222222222',
+        privateKey: '0x' + '22'.repeat(32),
+        ephemeralPubKey: '0x02' + '22'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 200,
+      })
+
+      const total2 = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(total2).toBe(12_000n)
+      expect(getBalance).toHaveBeenCalledTimes(3)
+    })
+
+    it('invalidates cache upon recordSpend', async () => {
+      const keyring = new MonadStealthKeyring()
+      await keyring.addAccount({
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+      })
+
+      const getBalance = jest.fn(async () => 5_000n)
+      const mockProvider = { getBalance } as any
+
+      await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(getBalance).toHaveBeenCalledTimes(1)
+
+      // Spending marks account as spent and clears cache
+      await keyring.recordSpend('0x1111111111111111111111111111111111111111', {
+        valueWei: 5_000n,
+        txHash: '0xabc',
+      })
+
+      // Spent account is skipped; returns 0n
+      const totalAfterSpend = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(totalAfterSpend).toBe(0n)
+    })
+
+    it('refetches from provider after TTL expiration', async () => {
+      const keyring = new MonadStealthKeyring(undefined, {
+        balanceCacheTtlMs: 40,
+      })
+      await keyring.addAccount({
+        address: '0x1111111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        ephemeralPubKey: '0x02' + '11'.repeat(32),
+        networkTag: 'MONT',
+        discoveredAtMs: 100,
+      })
+
+      let bal = 1_000n
+      const getBalance = jest.fn(async () => bal)
+      const mockProvider = { getBalance } as any
+
+      const res1 = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(res1).toBe(1_000n)
+      expect(getBalance).toHaveBeenCalledTimes(1)
+
+      // Within TTL: cached
+      const resCached = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(resCached).toBe(1_000n)
+      expect(getBalance).toHaveBeenCalledTimes(1)
+
+      // Wait for TTL expiration
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      bal = 2_000n
+      const res2 = await keyring.getTotalBalance(mockProvider, 'MONT')
+      expect(res2).toBe(2_000n)
+      expect(getBalance).toHaveBeenCalledTimes(2)
+    })
+  })
 })

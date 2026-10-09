@@ -2416,6 +2416,149 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         ).not.toThrow();
       }
     );
+
+    // #1235 Stage 1, from the review of Stage 0b. An item whose spent input names a row of this
+    // pool, carrying a valid transaction some OTHER key signed. On main 72631f36 this resolves as
+    // a quiet no-op (check 6 returns before check 7), although the same item without bytes is
+    // refused: fails there with "not refused".
+    it("rejects an item that names a pool row but carries a transaction a non-pool key signed", async () => {
+      const { keyring, pool, warming, writes } = setupSpendTest();
+      const applier = attachCommitApplier(pool);
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const outsider = await signSpend(keyring, 7);
+      expect(pool.getRecord(7)).toBeUndefined();
+      const before = pool.records();
+      pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
+      const written = writes();
+
+      const refusal = await refusalOf(pool, {
+        ...consolidatorItem(addr0, outsider),
+        rawTx: outsider.rawTx,
+      });
+
+      expect(refusal).toBeInstanceOf(SubAccountSpendRefusedError);
+      expect(refusal).toMatchObject({ code: "inconsistent-item", index: 0 });
+      expect(applier).not.toHaveBeenCalled();
+      expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
+      expect(pool.capacityCache.has(0)).toBe(false);
+      expect(warming).not.toHaveBeenCalled();
+      // Naming two rows of the pool is no better.
+      expect(
+        await refusalOf(pool, {
+          ...consolidatorItem(addr0, outsider),
+          rawTx: outsider.rawTx,
+          spentInputs: [
+            { address: addr0 },
+            { address: keyring.deriveSubAccount(1).address },
+          ],
+        })
+      ).toMatchObject({ code: "inconsistent-item", index: undefined });
+      expect(writes()).toBe(written);
+    });
+
+    // Pin, from the review of Stage 0b: the debit upper bound (check 7) was exercised for type 2
+    // only. A legacy or access-list transaction has no `maxFeePerGas`; its bound is the gas price.
+    it.each([0, 1, 2])(
+      "pin: a type %i item is accepted with a debit of value plus its maximum fee and rejected one wei above",
+      async (type) => {
+        const { keyring, pool, writes } = setupSpendTest();
+        const applier = attachCommitApplier(pool);
+        const addr0 = keyring.deriveSubAccount(0).address;
+        const rawTx = await new Wallet(
+          keyring.deriveSubAccount(0).privateKey
+        ).signTransaction({
+          type,
+          chainId: CHAIN_ID,
+          nonce: 0,
+          to: recipient,
+          value: 5_000n,
+          gasLimit: 21_000n,
+          ...(type === 2
+            ? { maxFeePerGas: 3n, maxPriorityFeePerGas: 1n }
+            : { gasPrice: 3n }),
+        });
+        const transaction = Transaction.from(rawTx);
+        expect(transaction.type).toBe(type);
+        const item = (valueWei: string) => ({
+          ...consolidatorItem(addr0, {
+            txHash: transaction.hash as string,
+            transaction,
+          }),
+          rawTx,
+          spentInputs: [{ address: addr0, nonce: 0, valueWei }],
+        });
+        const written = writes();
+        // 5000 + 21000 * 3
+        expect(await refusalOf(pool, item("68001"))).toMatchObject({
+          code: "inconsistent-item",
+          index: 0,
+        });
+        expect(await refusalOf(pool, item("4999"))).toMatchObject({
+          code: "inconsistent-item",
+        });
+        expect(applier).not.toHaveBeenCalled();
+        expect(writes()).toBe(written);
+        expect(await pool.processSyncTransaction(item("68000"))).toEqual({
+          affectedIndices: [0],
+        });
+        expect(pool.getRecord(0)?.lifecycle?.spend?.valueWei).toBe("5000");
+      }
+    );
+
+    // #1235 Stage 1: the read-only form the input admission asks before it writes. Fails on main
+    // 72631f36: `classifySpendOutcome` does not exist (the classification is private).
+    it("classifySpendOutcome answers what commitSpend would do, and writes nothing", async () => {
+      const { keyring, pool, warming, writes } = setupSpendTest();
+      const own = await signSpend(keyring, 0);
+      pool.setStatus(2, "in-use");
+      const before = pool.records();
+      pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
+      const written = writes();
+      const refused = (index: number, rawTx: string) => {
+        try {
+          return pool.classifySpendOutcome(index, rawTx);
+        } catch (error) {
+          expect(error).toBeInstanceOf(SubAccountSpendRefusedError);
+          return (error as SubAccountSpendRefusedError).code;
+        }
+      };
+
+      expect(pool.classifySpendOutcome(0, own.rawTx)).toBe("committed");
+      expect(pool.classifySpendOutcome(0, own.rawTx)).toBe("committed");
+      expect(refused(7, (await signSpend(keyring, 7)).rawTx)).toBe("no-row");
+      expect(refused(0, "0x1234")).toBe("invalid-transaction");
+      expect(refused(1, own.rawTx)).toBe("sender-mismatch");
+      expect(refused(2, (await signSpend(keyring, 2)).rawTx)).toBe("held");
+      expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
+      expect(pool.capacityCache.has(0)).toBe(true);
+      expect(warming).not.toHaveBeenCalled();
+
+      expect(pool.commitSpend(0, own.rawTx)).toBe("committed");
+      expect(pool.classifySpendOutcome(0, own.rawTx)).toBe("already-applied");
+      expect(refused(0, (await signSpend(keyring, 0, { value: 6n })).rawTx)).toBe(
+        "held"
+      );
+    });
+
+    // Pin: the applier is handed the item's own chain identifier, verbatim. The pool cannot judge
+    // it; the applier (the admission's chain binding) does.
+    it("pin: hands the applier the item's chain identifier exactly as the item states it", async () => {
+      const { keyring, pool } = setupSpendTest();
+      const applier = jest.fn(async () => ({ kind: "no-pool-row" as const }));
+      pool.attachSpendApplier(applier);
+      const spend = await signSpend(keyring, 0);
+      for (const chainIdentifier of ["ethereum-sepolia", "Monad-Testnet", "evm"]) {
+        await pool.processSyncTransaction({
+          ...consolidatorItem(keyring.deriveSubAccount(0).address, spend),
+          rawTx: spend.rawTx,
+          chainIdentifier,
+        });
+        expect(applier).toHaveBeenLastCalledWith(spend.rawTx, chainIdentifier);
+      }
+      expect(pool.getRecord(0)?.status).toBe("available");
+    });
   });
 
   describe("fundedCapacities and capacity caching (Issue #1179)", () => {

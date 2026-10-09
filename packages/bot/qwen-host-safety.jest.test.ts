@@ -1581,6 +1581,152 @@ describe("durable retention before dispatch", () => {
       expect(reply).toHaveBeenCalledTimes(2);
     });
 
+    // Pin P1 (#1310 item 3). Guards: re-checking `closing` after the reply-slot write, which would
+    // strand an unsent slot (held for ever) on every shutdown that races a first send.
+    it("still enters the wallet for a slot whose write was in progress when stop() landed, and persists the outcome", async () => {
+      const a1 = inbound(1, "A1", 1000);
+      mailbox = [a1];
+      await open();
+      let entered!: () => void;
+      const blocked = new Promise<void>((resolve) => (entered = resolve));
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const original = LevelBotStateStore.prototype.durableBatch;
+      const writes = jest
+        .spyOn(LevelBotStateStore.prototype, "durableBatch")
+        .mockImplementation(async function (ops) {
+          const op = ops.find(
+            (value) => value.key === rowKey(a1.payloadDigest)
+          );
+          if (op?.type === "put" && JSON.parse(op.value).replies.length === 1) {
+            entered();
+            await gate;
+          }
+          return original.call(this, ops);
+        });
+      const polling = pollAllBots();
+      await blocked;
+      expect(mockSend).not.toHaveBeenCalled();
+      // stop() sets `closing` synchronously, while the slot write is still held.
+      const stopping = host.stop();
+      release();
+      await stopping;
+      await polling;
+      writes.mockRestore();
+      expect(sends("re:A1")).toBe(1);
+      expect(intents("re:A1")).toBe(1);
+      await open();
+      expect(row(a1)?.phase).toBe("completed");
+      expect(await turns(threadA)).toEqual(["A1", "re:A1"]);
+      await pass(2);
+      expect(sends("re:A1")).toBe(1);
+      expect(reply).toHaveBeenCalledTimes(1);
+    });
+
+    // Pin P2 (#1310 item 3). Guards: a retry pass making a second wallet call after a refusal, or
+    // always restarting at the first waiting row so later rows never get a turn.
+    it("makes one wallet call per retry pass over several staged rows, ending at the first refusal, and rotates the row tried", async () => {
+      const crowd = Array.from(
+        { length: 4 },
+        (_, index) => new Wallet("0x" + (0x40 + index).toString(16).repeat(32))
+      );
+      mailbox = crowd.map((sender, index) =>
+        inbound(0x200 + index, "Q" + index, 1000 + index, sender)
+      );
+      await open();
+      await greet();
+      await pass(2);
+      expect(staged()).toHaveLength(4);
+      expect(intents("re:Q0") + intents("re:Q1")).toBe(0);
+      const tried: number[] = [];
+      for (let index = 0; index < 9; index++) {
+        mockSend.mockClear();
+        await pass();
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        const text = (mockSend.mock.calls[0][0] as Send).items[0] as {
+          text: string;
+        };
+        tried.push(Number(text.text.slice(4)));
+      }
+      // Handling order, each pass starting after the row the previous pass ended on.
+      for (let index = 1; index < tried.length; index++)
+        expect(tried[index]).toBe((tried[index - 1] + 1) % 4);
+      expect(new Set(tried)).toEqual(new Set([0, 1, 2, 3]));
+      // Every refusal was labelled: nothing but the greeting was ever attempted.
+      expect(attempts).toHaveLength(1);
+      expect(staged()).toHaveLength(4);
+    });
+
+    // Pin P3 (#1310 item 3). Guards: retracting a slot on the label alone, when the wallet had
+    // already reported an attempt during that call (the reported attempt must stay linked).
+    it("keeps the slot of a labelled rejection that also reported an attempt, and does not send that reply again", async () => {
+      const a1 = inbound(1, "A1", 1000);
+      mailbox = [a1];
+      mockSend.mockImplementation(async (params: Send) => {
+        const attempt = {
+          digest: (0xf000 + attempts.length).toString(16).padStart(64, "0"),
+          text: textOf(params),
+          delivered: false,
+        };
+        attempts.push(attempt);
+        await params.onAttemptCreated?.(attempt.digest);
+        throw notAttempted(new Error("labelled after reporting an attempt"));
+      });
+      await open();
+      // The host must not even ask the store to take the slot back (the store would refuse a
+      // linked slot, which hides a host that asks).
+      const retract = jest.spyOn(qwen().operations, "retractReply");
+      await pass(3);
+      expect(retract).not.toHaveBeenCalled();
+      expect(sends("re:A1")).toBe(1);
+      expect(intents("re:A1")).toBe(1);
+      expect(row(a1)).toMatchObject({
+        phase: "started",
+        replies: [{ digest: attempts[0].digest }],
+      });
+      expect(await stagedText(a1.payloadDigest)).toBe("re:A1");
+      await host.stop();
+      await open();
+      await pass(2);
+      expect(sends("re:A1")).toBe(1);
+      expect(intents("re:A1")).toBe(1);
+      expect(row(a1)?.replies).toHaveLength(1);
+      expect(reply).toHaveBeenCalledTimes(1);
+    });
+
+    // Pin P4 (#1310 item 3). Guards: reading the wallet's label from `.cause` or a wrapper, which
+    // the label's caller rules forbid; such a rejection must be treated as unlabelled.
+    it("holds the slot of an unlabelled rejection whose cause is labelled, and never sends that reply again", async () => {
+      const p1 = inbound(1, "P1", 1000);
+      mailbox = [p1];
+      const inner = notAttempted(new Error("inner refusal"));
+      expect(isDirectMessageNotAttempted(inner)).toBe(true);
+      const wrapper = Object.assign(new Error("wrapped refusal"), {
+        cause: inner,
+      });
+      expect(isDirectMessageNotAttempted(wrapper)).toBe(false);
+      mockSend.mockImplementation(async () => {
+        throw wrapper;
+      });
+      await open();
+      const retract = jest.spyOn(qwen().operations, "retractReply");
+      await pass(3);
+      expect(retract).not.toHaveBeenCalled();
+      expect(sends("re:P1")).toBe(1);
+      expect(row(p1)).toMatchObject({
+        phase: "started",
+        replies: [{ stampValue: "1" }],
+      });
+      expect(row(p1)?.replies[0].digest).toBeUndefined();
+      expect(await stagedText(p1.payloadDigest)).toBe("re:P1");
+      await host.stop();
+      await open();
+      await pass(2);
+      expect(sends("re:P1")).toBe(1);
+      expect(row(p1)?.replies).toHaveLength(1);
+      expect(reply).toHaveBeenCalledTimes(1);
+    });
+
     // T7. Reproduces: history was overwritten unconditionally after the reply.
     it("holds a delivered reply whose history key changed meanwhile, overwrites nothing, and keeps its conversation waiting", async () => {
       plan = (text) => (text === "re:A1" ? "pending" : "deliver");
@@ -2154,6 +2300,14 @@ describe("with the real canonical wallet", () => {
     ).toEqual([]);
     expect(await history(0)).toBeUndefined();
     expect(await history(1)).toBeUndefined();
+    // Pin (#1310 item 3). Guards: a refused reply leaving an intent or attempt in the wallet's
+    // link journal, which payment sets at the relay alone would not show: only the first exists.
+    expect(
+      await chain.directMessages.unattributedAttempts({
+        wallet: botWallet,
+        knownDigests: [],
+      })
+    ).toEqual([first]);
 
     // The relay delivers the first reply: it commits, and the second is sent, once.
     phase = "delivered";
@@ -2174,5 +2328,12 @@ describe("with the real canonical wallet", () => {
     expect(reply).toHaveBeenCalledTimes(2);
     await pass();
     expect(new Set(submitted)).toEqual(new Set([first, second]));
+    // The wallet's link journal agrees: no intent outside the two replies' own digests.
+    expect(
+      await chain.directMessages.unattributedAttempts({
+        wallet: botWallet,
+        knownDigests: [first, second],
+      })
+    ).toEqual([]);
   });
 });

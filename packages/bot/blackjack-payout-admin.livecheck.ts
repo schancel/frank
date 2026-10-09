@@ -158,7 +158,7 @@ export async function runAdminCli(
   return 2
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (require.main === module) {
   ;(async () => {
     const dir = resolve(process.cwd(), process.env.BLACKJACK_BOT_STATE_DIR ?? '/tmp/blackjack-bot-state')
     const state = new BlackjackBotStateStore(dir)

@@ -152,7 +152,9 @@ async function main() {
   throw new Error('No reply received within 5 minutes')
 }
 
-main().catch(err => {
-  console.error('\nUI VERIFY FAILED:', err)
-  process.exit(1)
-})
+if (require.main === module) {
+  main().catch(err => {
+    console.error('\nUI VERIFY FAILED:', err)
+    process.exit(1)
+  })
+}

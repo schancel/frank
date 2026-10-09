@@ -30,7 +30,9 @@ async function main() {
   await host.waitUntilStopped();
 }
 
-main().catch((err) => {
-  console.error("Blackjack bot failed:", err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("Blackjack bot failed:", err);
+    process.exit(1);
+  });
+}

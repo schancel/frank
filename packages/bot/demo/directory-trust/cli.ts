@@ -80,9 +80,11 @@ async function main(): Promise<void> {
     process.removeListener('SIGTERM', signal)
   }
 }
-void main().catch(error => {
-  console.error(
-    error instanceof Error ? error.message : 'Fixture operation failed',
-  )
-  process.exitCode = 1
-})
+if (require.main === module) {
+  void main().catch(error => {
+    console.error(
+      error instanceof Error ? error.message : 'Fixture operation failed',
+    )
+    process.exitCode = 1
+  })
+}

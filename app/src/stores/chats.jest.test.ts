@@ -2237,6 +2237,80 @@ describe('stores/chats.ts (ticket #42)', () => {
       },
     )
 
+    describe.each([false, true])(
+      'complete durable envelope (internal: %s)',
+      internal => {
+        it.each([
+          ['missing body', 'wrapper', 'message', undefined],
+          ['array body', 'wrapper', 'message', []],
+          ['scalar body', 'wrapper', 'message', 'invalid'],
+          ['missing status', 'message', 'status', undefined],
+          ['empty status', 'message', 'status', ''],
+          ['missing received time', 'message', 'receivedTime', undefined],
+          ['non-numeric received time', 'message', 'receivedTime', '100'],
+          ['missing server time', 'message', 'serverTime', undefined],
+          ['non-finite server time', 'message', 'serverTime', NaN],
+          ['missing items', 'message', 'items', undefined],
+          ['non-array items', 'message', 'items', {}],
+          ['missing outpoints', 'message', 'outpoints', undefined],
+          ['non-array outpoints', 'message', 'outpoints', {}],
+          ['missing coparty', 'wrapper', 'copartyAddress', undefined],
+          ['empty coparty', 'wrapper', 'copartyAddress', ''],
+        ])(
+          'rejects %s before any earlier row mutation',
+          async (_label, target, field, value) => {
+            const interrupted = row(
+              'interrupted',
+              [{ type: 'text', text: 'pending' }],
+              ownerId,
+            )
+            interrupted.message.status = 'pending'
+            const leftover = row(
+              'leftover',
+              [{ type: 'text', text: 'paid' }],
+              ownerId,
+            )
+            leftover.message.status = 'pending'
+            leftover.message.delivery = { attemptDigest: 'confirmed-digest' }
+            const confirmed = row(
+              'confirmed-digest',
+              [{ type: 'text', text: 'paid' }],
+              ownerId,
+            )
+            const malformed = row(
+              'malformed-last',
+              (internal
+                ? [{ type: 'wallet-sync' }]
+                : [
+                    { type: 'text', text: 'visible' },
+                  ]) as MessageWrapper['message']['items'],
+              ownerId,
+            )
+            Object.assign(
+              target === 'message' ? malformed.message : malformed,
+              { [field as string]: value },
+            )
+            const rows = [interrupted, leftover, confirmed, malformed]
+            const before = JSON.stringify(rows)
+            const metadata = { conversations: {}, lastReceived: 0 }
+            mockMessageStore.getIterator.mockResolvedValue(rows)
+            const failure = await rehydrateState(metadata).then(
+              () => null,
+              error => error as Error,
+            )
+            expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+            expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+            expect(interrupted.message.status).toBe('pending')
+            expect(failure).toMatchObject({
+              message: expect.stringMatching(/stored message envelope/),
+            })
+            expect(JSON.stringify(rows)).toBe(before)
+            expect(metadata).toEqual({ conversations: {}, lastReceived: 0 })
+          },
+        )
+      },
+    )
+
     it('preserves pure internal rows under the message owner without chat or logical indexes', async () => {
       const internal = row('internal-record', [
         { type: 'wallet-sync' },

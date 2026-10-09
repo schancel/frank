@@ -861,7 +861,16 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
   const messageIterator = await localStore.getIterator()
   const wrappers: MessageWrapper[] = []
   for await (const wrapper of messageIterator) {
-    if (wrapper.message) wrappers.push(wrapper)
+    if (
+      !wrapper ||
+      typeof wrapper !== 'object' ||
+      Array.isArray(wrapper) ||
+      !wrapper.message ||
+      typeof wrapper.message !== 'object' ||
+      Array.isArray(wrapper.message)
+    )
+      throw new Error('Invalid stored message envelope: message body required')
+    wrappers.push(wrapper)
   }
 
   // Validate the complete durable collection before normalizing statuses, pruning leftovers,
@@ -872,6 +881,14 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
       typeof index !== 'string' ||
       !index.trim() ||
       typeof message.outbound !== 'boolean' ||
+      typeof message.status !== 'string' ||
+      !message.status.trim() ||
+      !Number.isFinite(message.receivedTime) ||
+      !Number.isFinite(message.serverTime) ||
+      !Array.isArray(message.items) ||
+      !Array.isArray(message.outpoints) ||
+      typeof wrapper.copartyAddress !== 'string' ||
+      !wrapper.copartyAddress.trim() ||
       (wrapper.outbound !== undefined &&
         wrapper.outbound !== message.outbound) ||
       typeof wrapper.senderAddress !== 'string' ||
@@ -994,14 +1011,6 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         newMsg.delivery = { ...newMsg.delivery, failureReason: 'interrupted' }
       }
     }
-    assert(newMsg.outbound !== undefined, 'outbound is not defined')
-    assert(newMsg.status !== undefined, 'status is not defined')
-    assert(newMsg.receivedTime !== undefined, 'receivedTime is not defined')
-    assert(newMsg.serverTime !== undefined, 'serverTime is not defined')
-    assert(newMsg.items !== undefined, 'items is not defined')
-    assert(newMsg.outpoints !== undefined, 'outpoints is not defined')
-    assert(newMsg.senderAddress !== undefined, 'senderAddress is not defined')
-
     const message: ChatMessage = { payloadDigest: index, ...newMsg }
     const emailItem = message.items?.find(it => it.type === 'email') as
       | EmailItem

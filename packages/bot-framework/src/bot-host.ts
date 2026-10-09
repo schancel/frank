@@ -1,13 +1,6 @@
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-} from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { homedir } from "os";
-import { randomBytes } from "crypto";
 import {
   JsonRpcProvider,
   Wallet,
@@ -15,7 +8,6 @@ import {
   type TransactionReceipt,
 } from "ethers";
 
-import { deriveDomainRoot } from "@frank/domain-roots";
 import {
   isDirectMessageNotAttempted,
   type ActiveChain,
@@ -31,7 +23,6 @@ import {
   fetchMonadProfilesSince,
   decodeProfileBytes,
   MONAD_IDENTITY_DERIVATION_PATH,
-  MonadIdentity,
 } from "@frank/wallet/monad-identity";
 import { bip32MasterFromDomainRoot } from "@frank/wallet/bip32-domain-root";
 import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-transport";
@@ -60,6 +51,7 @@ import {
   conversationIdentity,
   type InboundIdentity,
 } from "./inbound-operation-store";
+import { admitBotProfile } from "./bot-profile-admission";
 import { DirectoryManager } from "./directory-manager";
 import { RelayProfileManager } from "./relay-profile-manager";
 import { LoopGuard } from "./loop-guard";
@@ -230,68 +222,21 @@ export class FrankBotHost {
       throw new Error(`Bot with id "${definition.id}" is already registered`);
     }
 
-    const botStateDir = join(this.options.stateDir, "bots", definition.id);
-    mkdirSync(botStateDir, { recursive: true, mode: 0o700 });
-
     // Admit before root adoption, wallet opening or registration effects. A new state path
     // paired with a previously provisioned identity is not a fresh financial profile.
-    const rootFile = join(botStateDir, "account-root.hex");
-    const hadRoot = existsSync(rootFile);
-    const hadIdentity =
-      !!definition.defaultIdentityPath &&
-      existsSync(definition.defaultIdentityPath);
-    const hadOtherFiles = readdirSync(botStateDir).some(
-      (name) => name !== "state"
-    );
-    const statePath = join(botStateDir, "state");
-    // An empty unversioned state path is still an existing profile. Opening Level
-    // creates this path, so capture its prior existence before opening it.
-    const hadState = existsSync(statePath);
-    const state = await LevelBotStateStore.open(statePath);
+    const network = canonicalNetworkDescriptor(this.options.networkTag).network;
+    if (this.chain.chainIdentifier !== network)
+      throw new Error("Bot canonical network mismatch");
+    const { botStateDir, state, operations, roots } = await admitBotProfile({
+      stateDir: this.options.stateDir,
+      botId: definition.id,
+      identityPath: definition.defaultIdentityPath,
+      network,
+    });
     let openedWallet: EvmChainWalletHandle | undefined;
     let openedDirectory: DirectoryManager | undefined;
     let uninstall: (() => void) | undefined;
-    let operations: InboundOperationStore | undefined;
     try {
-      const fresh = await InboundOperationStore.preflight(
-        state,
-        !hadRoot && !hadIdentity && !hadOtherFiles && !hadState
-      );
-      if (!fresh && !hadRoot)
-        throw new Error("Bot admission root missing; preserve state");
-      const rootHex = hadRoot
-        ? readFileSync(rootFile, "utf8").trim()
-        : randomBytes(32).toString("hex");
-      if (!/^[0-9a-f]{64}$/i.test(rootHex))
-        throw new Error("Bot admission root invalid; preserve state");
-      if (!hadRoot)
-        writeFileSync(rootFile, rootHex, { mode: 0o600, flag: "wx" });
-      const accountRoot = Uint8Array.from(Buffer.from(rootHex, "hex"));
-      const roots = {
-        evm: deriveDomainRoot(accountRoot, "evm-wallet"),
-        authentication: deriveDomainRoot(
-          accountRoot,
-          "identity-authentication"
-        ),
-        messaging: deriveDomainRoot(accountRoot, "messaging-encryption"),
-      };
-      accountRoot.fill(0);
-      const expected = MonadIdentity.fromDomainRoot(roots.authentication);
-      const network = canonicalNetworkDescriptor(
-        this.options.networkTag
-      ).network;
-      if (this.chain.chainIdentifier !== network)
-        throw new Error("Bot canonical network mismatch");
-      operations = await InboundOperationStore.open(
-        state,
-        {
-          chainIdentifier: network,
-          botId: definition.id,
-          subject: expected.compressedPubKey.toString("hex"),
-          address: expected.address.raw.toLowerCase(),
-        },
-        fresh
-      );
       const wallet = (await this.chain.createWallet(
         roots
       )) as EvmChainWalletHandle;
@@ -648,7 +593,7 @@ export class FrankBotHost {
       this.instances.delete(definition.id);
       uninstall?.();
       await Promise.allSettled([
-        operations?.close(),
+        operations.close(),
         openedDirectory?.close(),
         openedWallet?.close(),
       ]);

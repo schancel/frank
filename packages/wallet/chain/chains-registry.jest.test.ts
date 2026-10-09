@@ -22,6 +22,19 @@ import {
 } from "./chains-registry";
 
 describe("chains-registry", () => {
+  it("uses only the two existing public Sepolia defaults in order", () => {
+    const urls = PROTOCOL_CHAINS["ethereum-sepolia"].rpcUrls;
+    const publicDefaults = [
+      "https://ethereum-sepolia-rpc.publicnode.com",
+      "https://rpc.sepolia.org",
+    ];
+    // Counts and boolean comparison keep rejected operator URLs out of failure output.
+    expect(urls?.length).toBe(2);
+    expect(urls?.every((url, index) => url === publicDefaults[index])).toBe(
+      true
+    );
+  });
+
   it("defines all canonical mainnet and testnet chain configurations", () => {
     expect(PROTOCOL_CHAINS["monad-testnet"]).toEqual({
       id: "monad-testnet",
@@ -191,7 +204,6 @@ describe("chains-registry", () => {
       nativeChainId: 11155111,
       networkTag: "SEPO",
       rpcUrls: [
-        "https://magical-prettiest-mountain.ethereum-sepolia.quiknode.pro/c080e49e29466648ec94f6f18020b705be336ddf/",
         "https://ethereum-sepolia-rpc.publicnode.com",
         "https://rpc.sepolia.org",
       ],

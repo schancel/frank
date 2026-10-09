@@ -41,6 +41,9 @@ jest.mock('@frank/cashweb/legacy-wallet', () => ({
 jest.mock('../adapters/pinia-relay-adapter', () => ({
   getRelayClient: mockGetRelayClient,
 }))
+jest.mock('../adapters/level-message-store', () => ({
+  store: Promise.resolve({}),
+}))
 jest.mock('../adapters/level-utxo-store', () => ({
   store: Promise.resolve({}),
 }))

@@ -217,7 +217,10 @@ function assertNoWrites(snapshot: Map<string, string>[]) {
     expect(db.data).toEqual(snapshot[index])
   }
 }
-async function fixture(locale = 'en-us') {
+async function fixture(
+  locale = 'en-us',
+  metadata = { networkName: 'livenet', version: STORE_SCHEMA_VERSION },
+) {
   await messageStorePromise
   for (const db of mockDatabases.values()) db.data.clear()
   mockDatabase('MessageStore/metadata').data.set('schemaVersion', '2')
@@ -233,10 +236,7 @@ async function fixture(locale = 'en-us') {
   pinia.use(
     createStoragePlugin(
       storage as unknown as LevelDB,
-      NativePromise.resolve({
-        networkName: 'livenet',
-        version: STORE_SCHEMA_VERSION,
-      }),
+      NativePromise.resolve(metadata),
     ),
   )
   const app = createApp({}).use(pinia).use(i18n)
@@ -432,6 +432,113 @@ describe('visible read-only startup failure', () => {
       adapter.store = priorStore
     }
   })
+
+  it.each(['network mismatch', 'version mismatch', 'null chats'])(
+    'requires actual message-store admission when chat hydration skips Open via %s',
+    async route => {
+      const metadata = {
+        networkName: route === 'network mismatch' ? 'other-network' : 'livenet',
+        version:
+          route === 'version mismatch'
+            ? STORE_SCHEMA_VERSION - 1
+            : STORE_SCHEMA_VERSION,
+      }
+      const { app, pinia, storage, messages } = await fixture('en-us', metadata)
+      if (route === 'null chats') storage.data.set('chats', 'null')
+      messages.data.set(
+        'retained',
+        serializeMessageWrapper(message('retained')),
+      )
+      mockDatabase('MessageStore/metadata').data.set('schemaVersion', '1')
+      const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+      const unhandled = jest.fn()
+      process.on('unhandledRejection', unhandled)
+      const adapter = jest.requireActual('./adapters/level-message-store')
+      const priorStore = adapter.store
+      let wrapper: ReturnType<typeof mountedRoot> | undefined
+      try {
+        let failedOpen!: Promise<unknown>
+        jest.isolateModules(() => {
+          failedOpen = jest.requireActual(
+            './adapters/level-message-store',
+          ).store
+        })
+        // The real adapter observes eager failure before boot consumes the original promise.
+        await flushPromises()
+        const openFailure = await failedOpen.then(
+          () => undefined,
+          error => error,
+        )
+        expect(openFailure).toMatchObject({ code: 'unsupported-schema' })
+        adapter.store = failedOpen
+        const gate = deferred()
+        const started = deferred()
+        if (route === 'null chats') {
+          mockReadGates.set('myProfile', gate)
+          mockReadStarted.set('myProfile', started)
+        }
+        const boot = setupApis({ app })
+        if (route === 'null chats') {
+          await started.promise
+          await expect(useChatStore().restored).resolves.toBe(true)
+          expect(startupRestoration.value.phase).toBe('restoring')
+          expect(mockInitialize).not.toHaveBeenCalled()
+          gate.resolve()
+        }
+        await expect(boot).resolves.toBeUndefined()
+        // These chat paths intentionally keep their existing fresh-state policy. Database
+        // admission is independently required even when the chat promise resolves.
+        await expect(useChatStore().restored).resolves.toBe(true)
+        await expect(failedOpen).rejects.toBe(openFailure)
+        await messagingBoot({ app })
+        expect(startupRestoration.value.phase).toBe('failed')
+        expect(app.config.globalProperties.$status.setup).toBe(false)
+        const chats = useChatStore()
+        const select = jest.spyOn(chats, 'setActiveConversation')
+        const fetch = jest.spyOn(useContactStore(), 'fetchAndAddContact')
+        const router = createRouter()
+        await router.push('/wallet')
+        await router.isReady()
+        wrapper = mountedRoot(
+          pinia,
+          router,
+          app.config.globalProperties.$status,
+        )
+        for (const path of ['/setup', `/chat/${PEER}`, '/docs']) {
+          await router.push(path)
+          await flushPromises()
+          await nextTick()
+          expect(wrapper.get('h1').text()).toBe(
+            'Saved data could not be loaded',
+          )
+          expect(wrapper.get('[role="alert"]').text()).not.toContain(
+            'startupFailure.',
+          )
+          expect(wrapper.text()).not.toContain('PRIVATE')
+          expect(wrapper.find('[data-test="route-content"]').exists()).toBe(
+            false,
+          )
+        }
+        for (const effect of [
+          mockInitialize,
+          mockTabInit,
+          mockIdentity,
+          mockPersistent,
+          mockRouteSetup,
+          select,
+          fetch,
+          unhandled,
+        ]) {
+          expect(effect).not.toHaveBeenCalled()
+        }
+        assertNoWrites(snapshot)
+      } finally {
+        wrapper?.unmount()
+        adapter.store = priorStore
+        process.removeListener('unhandledRejection', unhandled)
+      }
+    },
+  )
 
   it('restores a fresh valid profile, starts normal services and mounts the unchanged runtime', async () => {
     const { app, pinia } = await fixture()

@@ -1,6 +1,7 @@
 import { boot } from 'quasar/wrappers'
 import { reactive, watch } from 'vue'
 import { setStartupRestoration } from './startup-state'
+import { store as messageStore } from '../adapters/level-message-store'
 import { i18n } from './i18n'
 import { defaultLocale, messages } from '../i18n'
 import { useWalletStore } from '../stores/wallet'
@@ -24,15 +25,19 @@ export default boot(async ({ app }) => {
     // The original store promises remain rejected; this only contains the composition failure.
     const results = await Promise.all(
       [
-        useProfileStore,
-        useContactStore,
-        useAppearanceStore,
-        useForumStore,
-        useChatStore,
-        useTopicStore,
-      ].map(useStore =>
+        () => useProfileStore().restored,
+        () => useContactStore().restored,
+        () => useAppearanceStore().restored,
+        () => useForumStore().restored,
+        () => useChatStore().restored,
+        () => useTopicStore().restored,
+        // Chat metadata may skip hydration; required database admission cannot be skipped.
+        () => messageStore,
+      ].map(restore =>
         Promise.resolve()
-          .then(() => useStore().restored)
+          .then(async () => {
+            await restore()
+          })
           .then(
             () => true,
             () => false,

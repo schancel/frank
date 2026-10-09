@@ -1541,7 +1541,11 @@ export const useChatStore = defineStore('chats', {
         if (this.conversations) {
           for (const conv of Object.values(this.conversations)) {
             const found = conv?.messages?.find(
-              m => m.payloadDigest === payloadDigest,
+              m =>
+                m.payloadDigest === payloadDigest ||
+                m.delivery?.attemptDigest === payloadDigest ||
+                m.messageHash === payloadDigest ||
+                (m as any).index === payloadDigest,
             )
             if (found) {
               message = found
@@ -1552,7 +1556,11 @@ export const useChatStore = defineStore('chats', {
         if (!message && this.chats) {
           for (const conv of Object.values(this.chats)) {
             const found = conv?.messages?.find(
-              m => m.payloadDigest === payloadDigest,
+              m =>
+                m.payloadDigest === payloadDigest ||
+                m.delivery?.attemptDigest === payloadDigest ||
+                m.messageHash === payloadDigest ||
+                (m as any).index === payloadDigest,
             )
             if (found) {
               message = found
@@ -1625,7 +1633,11 @@ export const useChatStore = defineStore('chats', {
         if (this.conversations) {
           for (const conv of Object.values(this.conversations)) {
             const found = conv?.messages?.find(
-              m => m.payloadDigest === payloadDigest,
+              m =>
+                m.payloadDigest === payloadDigest ||
+                m.delivery?.attemptDigest === payloadDigest ||
+                m.messageHash === payloadDigest ||
+                (m as any).index === payloadDigest,
             )
             if (found) {
               message = found
@@ -1636,7 +1648,11 @@ export const useChatStore = defineStore('chats', {
         if (!message && this.chats) {
           for (const conv of Object.values(this.chats)) {
             const found = conv?.messages?.find(
-              m => m.payloadDigest === payloadDigest,
+              m =>
+                m.payloadDigest === payloadDigest ||
+                m.delivery?.attemptDigest === payloadDigest ||
+                m.messageHash === payloadDigest ||
+                (m as any).index === payloadDigest,
             )
             if (found) {
               message = found
@@ -1651,6 +1667,18 @@ export const useChatStore = defineStore('chats', {
       const digests = new Set([payloadDigest, attemptDigest].filter(Boolean))
       if (message?.delivery?.attemptDigest) {
         digests.add(message.delivery.attemptDigest)
+      }
+      if (message?.messageHash) {
+        digests.add(message.messageHash)
+      }
+      if (message?.deliveryDigest) {
+        digests.add(message.deliveryDigest)
+      }
+      if (message?.revisionDigest) {
+        digests.add(message.revisionDigest)
+      }
+      if ((message as any)?.index) {
+        digests.add((message as any).index)
       }
       const suppressions: RelayDeliverySuppression[] = []
       if (attemptDigest) suppressions.push({ payloadDigest: attemptDigest })
@@ -1692,43 +1720,45 @@ export const useChatStore = defineStore('chats', {
       for (const digest of digests) {
         delete this.messages[digest as string]
       }
-      const matchedConvs = new Set<Conversation>()
-      if (this.conversations && address in this.conversations) {
-        matchedConvs.add(this.conversations[address])
-      }
-      try {
-        const displayAddress = toChainDisplayAddress(address)
-        if (this.chats && this.chats[displayAddress]) {
-          matchedConvs.add(this.chats[displayAddress])
-        }
-      } catch {
-        if (this.chats && this.chats[address]) {
-          matchedConvs.add(this.chats[address])
-        }
-      }
-      if (this.activeConversation) {
-        matchedConvs.add(this.activeConversation)
-      }
+      const allConvs = new Set<Conversation>()
       if (this.conversations) {
         for (const c of Object.values(this.conversations)) {
-          if (c?.messages?.some(m => digests.has(m.payloadDigest))) {
-            matchedConvs.add(c)
-          }
+          if (c) allConvs.add(c)
         }
       }
       if (this.chats) {
         for (const c of Object.values(this.chats)) {
-          if (c?.messages?.some(m => digests.has(m.payloadDigest))) {
-            matchedConvs.add(c)
-          }
+          if (c) allConvs.add(c)
         }
       }
-      for (const conv of matchedConvs) {
+      if (this.activeConversation) {
+        allConvs.add(this.activeConversation)
+      }
+      for (const conv of allConvs) {
         if (conv?.messages) {
-          conv.messages = conv.messages.filter(
-            message => !digests.has(message.payloadDigest),
+          const hasMatch = conv.messages.some(
+            m =>
+              digests.has(m.payloadDigest) ||
+              (m.delivery?.attemptDigest &&
+                digests.has(m.delivery.attemptDigest)) ||
+              (m.messageHash && digests.has(m.messageHash)) ||
+              Boolean((m as any).index && digests.has((m as any).index)),
           )
-          recomputeChatAccounting(conv, this.activeChatAddr)
+          if (hasMatch) {
+            const remaining = conv.messages.filter(
+              m =>
+                !digests.has(m.payloadDigest) &&
+                !(
+                  m.delivery?.attemptDigest &&
+                  digests.has(m.delivery.attemptDigest)
+                ) &&
+                !(m.messageHash && digests.has(m.messageHash)) &&
+                !((m as any).index && digests.has((m as any).index)),
+            )
+            conv.messages.splice(0, conv.messages.length, ...remaining)
+            conv.messages = remaining
+            recomputeChatAccounting(conv, this.activeChatAddr)
+          }
         }
       }
       if (message) {
@@ -1759,21 +1789,21 @@ export const useChatStore = defineStore('chats', {
         }
         const wallet = explicitWallet || messagingWallet()
         if (wallet) {
-          if (digestsToDiscard.size === 0) {
-            try {
-              const orphans =
-                await activeChain.directMessages?.unattributedAttempts?.({
-                  wallet,
-                  knownDigests: Object.keys(this.messages).filter(
-                    k => !k.startsWith('pending:'),
-                  ),
-                })
-              if (orphans && orphans.length === 1) {
-                digestsToDiscard.add(orphans[0])
+          try {
+            const orphans =
+              await activeChain.directMessages?.unattributedAttempts?.({
+                wallet,
+                knownDigests: Object.keys(this.messages).filter(
+                  k => !k.startsWith('pending:'),
+                ),
+              })
+            if (orphans && orphans.length > 0) {
+              for (const orphan of orphans) {
+                digestsToDiscard.add(orphan)
               }
-            } catch {
-              // ignore
             }
+          } catch {
+            // ignore
           }
           for (const d of digestsToDiscard) {
             try {

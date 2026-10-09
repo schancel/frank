@@ -49,6 +49,7 @@
         </q-item-section>
         <q-item-section>{{ $t('chatMessageMenu.resend') }}</q-item-section>
       </q-item>
+      <q-separator />
       <q-item
         v-if="canDiscard"
         clickable
@@ -57,12 +58,12 @@
         class="text-negative"
       >
         <q-item-section avatar>
-          <q-icon name="delete_forever" size="xs" color="negative" />
+          <q-icon name="delete" size="xs" color="negative" />
         </q-item-section>
-        <q-item-section>{{ $t('chatMessageMenu.discard') }}</q-item-section>
+        <q-item-section>{{ $t('chatMessageMenu.delete') }}</q-item-section>
       </q-item>
-      <q-separator />
       <q-item
+        v-else
         clickable
         v-close-popup
         @click="$emit('deleteClick')"

@@ -180,6 +180,7 @@ export {
   CanonicalRecipientNotPublishedError,
   CanonicalRecipientUndeliverableError,
   CanonicalRelayCannotForwardError,
+  CanonicalSenderUnpublishedError,
   type CanonicalDirectory,
 } from "./monad-canonical-dm";
 import {

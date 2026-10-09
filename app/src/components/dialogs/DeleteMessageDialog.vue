@@ -52,9 +52,20 @@ export default defineComponent({
   },
   methods: {
     async deleteMessageBoth() {
-      // 1. Sweep funds of message into ephemeral change accounts before deleting
-      const message = this.chatStore.messages[this.payloadDigest]
-      if (message) {
+      const message =
+        this.chatStore.messages[this.payloadDigest] ||
+        (typeof this.chatStore.getMessageByPayload === 'function'
+          ? this.chatStore.getMessageByPayload(this.payloadDigest)
+          : undefined) ||
+        Object.values(this.chatStore.conversations ?? {})
+          .flatMap(c => c?.messages ?? [])
+          .find(m => m?.payloadDigest === this.payloadDigest) ||
+        Object.values(this.chatStore.chats ?? {})
+          .flatMap(c => c?.messages ?? [])
+          .find(m => m?.payloadDigest === this.payloadDigest)
+
+      // 1. Sweep funds of message into ephemeral change accounts before deleting (inbound messages only)
+      if (message && !message.outbound) {
         try {
           await sweepMessageFundsOnDelete({
             message,
@@ -68,18 +79,21 @@ export default defineComponent({
         }
       }
 
-      // 2. Delete message from relay server if relay client is available
-      try {
-        if (
-          this.$relayClient &&
-          typeof this.$relayClient.deleteMessage === 'function'
-        ) {
+      // 2. Delete message from relay server if relay client is available and message is inbound
+      if (
+        message &&
+        !message.outbound &&
+        !this.payloadDigest.startsWith('pending:') &&
+        this.$relayClient &&
+        typeof this.$relayClient.deleteMessage === 'function'
+      ) {
+        try {
           await this.$relayClient.deleteMessage(this.payloadDigest)
-        }
-      } catch (err: any) {
-        console.error('Failed to delete message on relay:', err)
-        if (err.response) {
-          console.error(err.response)
+        } catch (err: any) {
+          console.error('Failed to delete message on relay:', err)
+          if (err.response) {
+            console.error(err.response)
+          }
         }
       }
 
@@ -88,6 +102,9 @@ export default defineComponent({
         await this.deleteMessage({
           address: this.address,
           payloadDigest: this.payloadDigest,
+          ...(message?.delivery?.attemptDigest
+            ? { attemptDigest: message.delivery.attemptDigest }
+            : {}),
         })
       } catch (err: any) {
         console.error('Failed to delete message locally:', err)

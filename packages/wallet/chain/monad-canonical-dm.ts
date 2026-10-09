@@ -55,6 +55,7 @@ import {
 import {
   installedCanonicalOrigin,
   type CanonicalFetch,
+  type CanonicalTerminalReason,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import {
   connectCanonicalMailboxStream,
@@ -176,6 +177,22 @@ export class CanonicalRecipientUndeliverableError extends MonadStampTerminalErro
   }
 }
 
+/** The relay rejected the submission because the sender's own directory entry is not published. */
+export class CanonicalSenderUnpublishedError extends MonadStampTerminalError {
+  constructor(
+    message = 'Your directory entry is not published on the relay. This message was not sent.',
+  ) {
+    super(
+      message,
+      422,
+      'mailbox_terminal',
+      false,
+      'sender_unpublished',
+    )
+    this.name = 'CanonicalSenderUnpublishedError'
+  }
+}
+
 /** A durable canonical payment record exists that no saved message accounts for. */
 export class CanonicalMessagingHoldError extends Error {
   /** The original failure, unchanged, when an earlier payment could not be finished. Callers
@@ -203,6 +220,9 @@ interface StoredLink {
   /** Saved once a message pointed at this delivered attempt, or the user answered for it. Until
    * then a delivered attempt is reported as unattributed in every session. */
   accounted?: boolean
+  putAttempts?: number
+  lastPutAttemptAt?: number
+  createdAt?: number
 }
 const PREPARED_BYTES = ['payload', 'context', 'economicBinding'] as const
 function storeLink(digest: string, link: CanonicalWorkflowLink): StoredLink {
@@ -215,6 +235,7 @@ function storeLink(digest: string, link: CanonicalWorkflowLink): StoredLink {
     attemptRef: link.attemptRef,
     consumerId: link.consumerId,
     prepared,
+    createdAt: Date.now(),
   }
 }
 function restoreLink(row: StoredLink): CanonicalWorkflowLink {
@@ -488,6 +509,11 @@ async function settle(
       }
     }
     const rows = owner.links.all().filter(row => !row.acknowledged)
+    try {
+      await client.reapOrphanedAttempts(new Set(rows.map(r => r.attemptRef)))
+    } catch (err) {
+      console.warn('[monad-canonical-dm reapOrphanedAttempts error]:', err)
+    }
     if (rows.length === 0) return
     const states = client.reconcileWorkflowLinks(rows.map(restoreLink))
     const held = states.filter(state => state.state === 'hold')
@@ -557,11 +583,43 @@ async function settle(
       continue
     }
     submitted.set(ready.attemptRef, (submitted.get(ready.attemptRef) ?? 0) + 1)
+    let submitError: unknown
     try {
       await client.submit(ready.eligibility, { fetch })
     } catch (err) {
+      submitError = err
       console.warn('[monad-canonical-dm settle submit failed]:', err)
       // Outcome unknown: the exact bytes stay journaled and are re-sent on a later pass.
+    }
+    if (submitError) {
+      const errStatus = (submitError as any)?.status
+      const isTerminalHttp =
+        errStatus === 400 ||
+        errStatus === 404 ||
+        errStatus === 409 ||
+        errStatus === 410 ||
+        errStatus === 413 ||
+        errStatus === 422
+      const putAttempts = (row.putAttempts ?? 0) + 1
+      await owner.links.put({
+        ...row,
+        putAttempts,
+        lastPutAttemptAt: Date.now(),
+      })
+      if (isTerminalHttp || putAttempts >= 5) {
+        let reason: CanonicalTerminalReason = 'attempts_exhausted'
+        if (errStatus === 400 || errStatus === 409) reason = 'verification_failed'
+        else if (errStatus === 413) reason = 'corrupt_reference'
+        else if (errStatus === 422) reason = 'undeliverable'
+        try {
+          await client.markAttemptTerminal(ready.attemptRef, reason)
+        } catch (markErr) {
+          console.warn(
+            '[monad-canonical-dm markAttemptTerminal failed]:',
+            markErr,
+          )
+        }
+      }
     }
   }
 }
@@ -710,13 +768,12 @@ async function send(
     throw new MonadStampPendingAttemptError([digest])
   }
   const status = statusOf(owner, digest)
-  if (
-    status === 'dead' &&
-    owner.links.all().find(row => row.digest === digest)?.reason ===
-      'undeliverable'
-  )
-    throw new CanonicalRecipientUndeliverableError()
-  if (status === 'dead')
+  if (status === 'dead') {
+    const reason = owner.links.all().find(row => row.digest === digest)?.reason
+    if (reason === 'undeliverable')
+      throw new CanonicalRecipientUndeliverableError()
+    if (reason === 'sender_unpublished')
+      throw new CanonicalSenderUnpublishedError()
     throw new MonadStampTerminalError(
       'The relay ended this payment set; it can never be delivered.',
       422,
@@ -724,6 +781,7 @@ async function send(
       undefined,
       undefined,
     )
+  }
   if (status !== 'delivered') throw new MonadStampPendingAttemptError([digest])
   return {
     payloadDigest: digest,
@@ -1170,27 +1228,38 @@ export function canonicalDirectMessages(
         const clean = (s?: string) =>
           s ? (s.startsWith('0x') ? s.slice(2).toLowerCase() : s.toLowerCase()) : ''
         const target = clean(params.payloadDigest)
-        const row = owner.links
-          .all()
-          .find(
-            r =>
-              clean(r.digest) === target ||
-              clean(r.attemptRef) === target,
-          )
-        if (row) {
+        const rows =
+          target === '*' || target === 'all'
+            ? owner.links.all().filter(r => !r.acknowledged)
+            : owner.links
+                .all()
+                .filter(
+                  r =>
+                    clean(r.digest) === target ||
+                    clean(r.attemptRef) === target,
+                )
+        for (const row of rows) {
+          try {
+            const client = owner.client()
+            try {
+              await client.markAttemptTerminal(
+                row.attemptRef,
+                'attempts_exhausted',
+              )
+            } catch {
+              // Ignore if already terminal or not found
+            }
+            await client.cleanupTerminal(row.attemptRef, row.consumerId)
+            await client.acknowledgeWorkflow(row.attemptRef, row.consumerId)
+          } catch {
+            // Best effort cleanup on discard
+          }
           await owner.links.put({
             ...row,
             acknowledged: true,
             outcome: row.outcome ?? 'dead',
             reason: row.reason ?? 'discarded',
           })
-          try {
-            const client = owner.client()
-            await client.cleanupTerminal(row.attemptRef, row.consumerId)
-            await client.acknowledgeWorkflow(row.attemptRef, row.consumerId)
-          } catch {
-            // Best effort cleanup on discard
-          }
         }
       }),
     unattributedAttempts: (

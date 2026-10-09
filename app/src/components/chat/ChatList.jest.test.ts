@@ -179,6 +179,9 @@ describe('ChatList compose email action', () => {
     })
     const startConvBtn = wrapper.find('[data-testid="start-conversation-btn"]')
     expect(startConvBtn.exists()).toBe(true)
+    expect(startConvBtn.attributes('aria-label')).toBe(
+      'newContactDialog.startConversation',
+    )
     await startConvBtn.trigger('click')
     expect(mockPush).toHaveBeenCalledWith('/add-contact?mode=conversation')
   })

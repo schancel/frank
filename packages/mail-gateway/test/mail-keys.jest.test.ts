@@ -273,13 +273,60 @@ describe('mailKey', () => {
       expect(body('a\r\n\t\r\n\r\n')).toBe(body('a\r\n\t\r\n'));
     });
 
-    it('keeps a lone CR as a byte of its line, as the header reader does', () => {
-      expect(body('a\rb\r\n')).not.toBe(body('a\r\nb\r\n'));
-      expect(body('a\r')).not.toBe(body('a'));
-      expect(body('a\r\r\n')).not.toBe(body('a\r\n'));
-      expect(body('a\rb')).toBe(
-        sha256('frank-mail-key/1', Buffer.from([0]), u32(0), u32(0), u32(0), u32(1), u32(1), 's', u32(0), u32(0), u32(0), u32(0), 'a\rb\r\n'),
-      );
+    it('reads a lone CR as a line ending, like CRLF and a lone LF', () => {
+      const crlf = body('a\r\nb\r\nc\r\n');
+      expect(body('a\rb\rc\r')).toBe(crlf);
+      expect(body('a\nb\nc\n')).toBe(crlf);
+      expect(body('a\rb\nc')).toBe(crlf);
+      expect(body('a\rb\r\nc\r\r\r')).toBe(crlf);
+      expect(body('\r\r')).toBe(body(''));
+      // LF CR is two line endings, not one.
+      expect(body('a\n\rb')).toBe(body('a\r\n\r\nb\r\n'));
+      expect(body('a\n\rb')).not.toBe(body('a\r\nb'));
+    });
+
+    it('reads CR CR LF as two line endings, exactly as the transport writes it', () => {
+      const preimage = (bodyBytes: string): string =>
+        sha256('frank-mail-key/1', Buffer.from([0]), u32(0), u32(0), u32(0), u32(1), u32(1), 's', u32(0), u32(0), u32(0), u32(0), bodyBytes);
+      // In the middle: the line, one empty line, the next line.
+      expect(body('a\r\r\nb')).toBe(preimage('a\r\n\r\nb\r\n'));
+      expect(body('a\r\r\nb')).toBe(body('a\r\n\r\nb\r\n'));
+      expect(body('a\r\r\nb')).not.toBe(body('a\r\nb\r\n'));
+      expect(Buffer.from(encodeMessageData(latin1('a\r\r\nb'))).toString('latin1')).toBe('a\r\n\r\nb\r\n');
+      // At the end: the empty line it makes is a trailing one and is removed.
+      expect(body('a\r\r\n')).toBe(preimage('a\r\n'));
+      expect(Buffer.from(encodeMessageData(latin1('a\r\r\n'))).toString('latin1')).toBe('a\r\n\r\n');
+    });
+
+    it('keys unsigned bytes with lone CRs in the body the same before and after the transport', () => {
+      const head = 'From: ann <ann@frank.org>\r\nTo: bob@x.example\r\nSubject: s\r\n\r\n';
+      const bodies = [
+        'one\rtwo\rthree',
+        'one\rtwo\nthree\r\nfour\r\rfive\n\rsix\r',
+        '\rleading',
+        'trailing\r\r\r',
+        '.dot\r.\r..\rend\r',
+        'a\r\r\nb\r\r\n',
+        '\r',
+      ];
+      for (const b of bodies) {
+        const queued = latin1(head + b);
+        expect({ b, key: mailKey(asReceived(queued)) }).toEqual({ b, key: mailKey(queued) });
+        expect({ b, key: mailKey(asReceived(queued, [])) }).toEqual({ b, key: mailKey(queued) });
+      }
+      // Random bodies over a small alphabet of line-ending bytes, dots and text.
+      const alphabet = ['\r', '\n', '\r\n', '.', 'a', ' ', '\r\r\n'];
+      let seed = 99;
+      const next = (n: number): number => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed % n;
+      };
+      for (let round = 0; round < 3000; round++) {
+        let b = '';
+        for (let i = next(12); i > 0; i--) b += alphabet[next(alphabet.length)];
+        const queued = latin1(head + b);
+        expect({ b, key: mailKey(asReceived(queued)) }).toEqual({ b, key: mailKey(queued) });
+      }
     });
 
     it('changes with any one visible body byte', () => {
@@ -334,8 +381,8 @@ describe('mailKey', () => {
       expect(verifyDkimSignature(received, publicKey)).toBe(true);
       const k = mailKey(queued);
       expect(mailKey(received)).toBe(k);
-      // The signer writes no lone CR, so the bytes it queues have none for the transport to rewrite.
-      expect(Buffer.from(queued).toString('latin1')).not.toMatch(/\r(?!\n)/);
+      // Signing does not change the key: the unsigned rendering keys alike.
+      expect(mailKey(utf8(rendered))).toBe(k);
       // Signature and trace headers are outside the key, wherever they stand.
       const text = Buffer.from(queued).toString('latin1');
       const signature = /^DKIM-Signature:.*\r\n/m.exec(text)![0];

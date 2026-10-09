@@ -24,10 +24,12 @@
  *   An absent header is count 0; a header present with an empty value is count
  *   1 and length 0. Every other header (trace, signature, MIME) is outside the
  *   key, and so is the position of a header among headers of other names.
- * - `body'` is the bytes from the body offset with each CRLF or lone LF
- *   written as CRLF, all trailing empty lines removed and exactly one CRLF at
- *   the end; an empty body is one CRLF. A lone CR is not a line ending here,
- *   as it is not one for the header reader: it is a byte of its line.
+ * - `body'` is the bytes from the body offset with each line ending (CRLF, a
+ *   lone LF, a lone CR) written as CRLF, all trailing empty lines removed and
+ *   exactly one CRLF at the end; an empty body is one CRLF. This is what the
+ *   signer and the outbound transport do to a body, so a message keys alike
+ *   before and after the gateway sends it. In the header section a lone CR
+ *   stays a byte of its line, as the header reader has it.
  *
  * Item key: identity of what a Frank user authored, independent of the seal.
  *
@@ -94,26 +96,36 @@ function trimHeaderValue(value: string): string {
 }
 
 /**
- * The body with each CRLF or lone LF written as CRLF, trailing empty lines
- * removed and one CRLF at the end. An empty body is one CRLF.
+ * The body with each line ending (CRLF, a lone LF, a lone CR) written as
+ * CRLF, trailing empty lines removed and one CRLF at the end. An empty body is
+ * one CRLF. CR CR LF is two line endings: a lone CR, then CRLF.
  */
 function normalisedBody(body: Buffer): Buffer {
-  // Each input byte gives at most two output bytes (a lone LF), plus a final CRLF.
+  // Each input byte gives at most two output bytes (a lone CR or LF), plus a final CRLF.
   const out = Buffer.allocUnsafe(body.length * 2 + 2);
   let written = 0;
   /** Length of the output up to and including the last non-empty line. */
   let kept = 0;
-  let lineStart = 0;
-  while (lineStart < body.length) {
-    const lf = body.indexOf(LF, lineStart);
-    const lineEnd =
-      lf < 0 ? body.length : lf > lineStart && body[lf - 1] === CR ? lf - 1 : lf;
-    written += body.copy(out, written, lineStart, lineEnd);
+  let lineHasBytes = false;
+  const endLine = (): void => {
     out[written++] = CR;
     out[written++] = LF;
-    if (lineEnd > lineStart) kept = written;
-    lineStart = lf < 0 ? body.length : lf + 1;
+    if (lineHasBytes) kept = written;
+    lineHasBytes = false;
+  };
+  for (let i = 0; i < body.length; i++) {
+    const byte = body[i];
+    if (byte === CR) {
+      if (body[i + 1] === LF) i++;
+      endLine();
+    } else if (byte === LF) {
+      endLine();
+    } else {
+      out[written++] = byte;
+      lineHasBytes = true;
+    }
   }
+  if (lineHasBytes) endLine();
   return kept === 0 ? CRLF : out.subarray(0, kept);
 }
 

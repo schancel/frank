@@ -747,7 +747,9 @@ test('a mismatched open leaves a retained canonical attempt and its pinned pool 
     const retained = await journal.prepare(await retainedCanonicalAttempt())
     await journal.Close()
     const journalBefore = await canonicalJournalEntries(storage)
-    expect(journalBefore).toHaveLength(3)
+    expect(journalBefore.map(([key]) => key)).toEqual([
+      'attempt:0000000000000001', 'manifest', 'metadata:binding', 'observations:0000000000000001',
+    ])
 
     const second = (await createMonadChain(cfg).createWallet({
       ...roots(),

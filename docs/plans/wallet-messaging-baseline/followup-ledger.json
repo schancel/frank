@@ -119,8 +119,9 @@
       "url": "https://github.com/schancel/frank/issues/1242#issuecomment-6080318397",
       "claimId": "88a76220-1a90-4481-aa56-442313424ef0"
     },
-    "startup-locale-typography": {
-      "url": "https://github.com/schancel/frank/issues/1278#issuecomment-6080324574"
+    "native-outcome": {
+      "url": "https://github.com/schancel/frank/issues/1289#issuecomment-6080535933",
+      "base": "fb371fe2beb07f754b3488fc111a32d569851990"
     }
   },
   "completedClaims": {
@@ -135,6 +136,10 @@
     "native-fee-copy": {
       "url": "https://github.com/schancel/frank/issues/1283#issuecomment-6080309543",
       "landed": "5c6a7efc65fb1e2b260e82952e9987901b88261b"
+    },
+    "startup-locale-typography": {
+      "url": "https://github.com/schancel/frank/issues/1278#issuecomment-6080579238",
+      "landed": "44998cebe8f879aa9e83126653563ec70bfaf5d6"
     }
   },
   "auditComments": {

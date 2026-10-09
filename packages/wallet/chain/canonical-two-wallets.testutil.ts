@@ -58,6 +58,15 @@ export const mockBalances = new Map<string, bigint>()
 export const mockFunded: { from: string; to: string; value: bigint }[] = []
 /** Every wallet's relay mailbox, by subject. */
 export const mailboxes = new Map<string, InboxRecord[]>()
+/**
+ * Every request the offline stand-ins served, in order: JSON-RPC methods the wallet's provider
+ * performed, and the calls its chain HTTP client made. A test that needs "zero requests" clears
+ * these, acts, and compares; it also makes one real call to show the counters can move.
+ */
+export const providerRequests: string[] = []
+export const chainHttpRequests: string[] = []
+/** Raw transactions the wallet's provider broadcast itself (a native send), mined at once. */
+export const providerBroadcasts: { from: string; to: string; value: bigint }[] = []
 
 export function offlineProviderModule() {
   const actual = jest.requireActual('../monad-provider')
@@ -78,8 +87,22 @@ export function offlineProviderModule() {
         method: string
         address?: string
       }) => {
+        providerRequests.push(request.method)
         if (request.method === 'getBalance')
           return mockBalances.get(request.address!.toLowerCase()) ?? 0n
+        if (request.method === 'broadcastTransaction') {
+          const tx = ethers.Transaction.from(
+            (request as unknown as { signedTransaction: string })
+              .signedTransaction,
+          )
+          const to = tx.to.toLowerCase(),
+            from = tx.from.toLowerCase()
+          mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
+          mockBalances.set(from, (mockBalances.get(from) ?? 0n) - tx.value)
+          providerBroadcasts.push({ from, to, value: tx.value })
+          return tx.hash
+        }
+        if (request.method === 'getBlockNumber') return 1
         if (request.method === 'getTransactionCount') return 0
         if (request.method === 'estimateGas') return 50_000n
         if (request.method === 'getGasPrice') return 2n
@@ -115,6 +138,7 @@ export function offlineHttpModule() {
     ...jest.requireActual('../monad-http'),
     MonadHttpClient: class {
       async submitRawTransaction(raw: string) {
+        chainHttpRequests.push('submitRawTransaction')
         const tx = ethers.Transaction.from(raw)
         const to = tx.to.toLowerCase()
         mockBalances.set(to, (mockBalances.get(to) ?? 0n) + tx.value)
@@ -125,6 +149,7 @@ export function offlineHttpModule() {
         return tx.hash
       }
       async getTransactionReceipt(hash: string) {
+        chainHttpRequests.push('getTransactionReceipt')
         return mined.has(hash) ? { status: 'success' } : undefined
       }
       destroy() {

@@ -313,17 +313,127 @@ describe('solana-balance', () => {
       expect(tokens[0].tokenAccountAddress).toBe('TokenAccountPubkey123')
     })
 
-    it('gracefully returns empty array on network or parse failure', async () => {
+    it('rejects exhausted endpoints without exposing provider diagnostics', async () => {
       const mockFetch = jest
         .fn()
-        .mockRejectedValue(new Error('Network offline'))
+        .mockRejectedValue(new Error('https://user:secret@rpc.example/key'))
+      await expect(
+        fetchSolanaTokenAccounts({
+          address: sampleAddress,
+          rpcUrls: ['https://rpc-one.example', 'https://rpc-two.example'],
+          fetchImpl: mockFetch as unknown as typeof fetch,
+        }),
+      ).rejects.toThrow(
+        'Unable to read Solana token accounts from any RPC endpoint',
+      )
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+    })
 
-      const tokens = await fetchSolanaTokenAccounts({
-        address: sampleAddress,
-        fetchImpl: mockFetch as unknown as typeof fetch,
+    it('accepts a successful empty response', async () => {
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ result: { value: [] } }),
       })
+      await expect(
+        fetchSolanaTokenAccounts({
+          address: sampleAddress,
+          fetchImpl: mockFetch as unknown as typeof fetch,
+        }),
+      ).resolves.toEqual([])
+    })
 
-      expect(tokens).toEqual([])
+    it.each([
+      { result: {} },
+      { result: { value: {} } },
+      { result: { value: [null] } },
+      { result: { value: [{ pubkey: 'account', account: { data: {} } }] } },
+      {
+        result: {
+          value: [
+            {
+              pubkey: 'account',
+              account: {
+                data: {
+                  parsed: {
+                    info: {
+                      mint: 'mint',
+                      tokenAmount: { amount: 'nope', decimals: 6 },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+      { error: { message: 'provider-secret' } },
+    ])(
+      'rejects unusable response %j instead of confirming empty holdings',
+      async data => {
+        const mockFetch = jest
+          .fn()
+          .mockResolvedValue({ ok: true, json: async () => data })
+        await expect(
+          fetchSolanaTokenAccounts({
+            address: sampleAddress,
+            fetchImpl: mockFetch as unknown as typeof fetch,
+          }),
+        ).rejects.toThrow(
+          'Unable to read Solana token accounts from any RPC endpoint',
+        )
+      },
+    )
+
+    it.each([
+      { amount: '50', decimals: -1 },
+      { amount: '50', decimals: 1.5 },
+      { amount: '50', decimals: 6, uiAmount: Infinity },
+      { amount: '50', decimals: 6, uiAmount: '50' },
+    ])('rejects unusable token amounts %j', async tokenAmount => {
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          result: {
+            value: [
+              {
+                pubkey: 'account',
+                account: {
+                  data: { parsed: { info: { mint: 'mint', tokenAmount } } },
+                },
+              },
+            ],
+          },
+        }),
+      })
+      await expect(
+        fetchSolanaTokenAccounts({
+          address: sampleAddress,
+          fetchImpl: mockFetch as unknown as typeof fetch,
+        }),
+      ).rejects.toThrow(
+        'Unable to read Solana token accounts from any RPC endpoint',
+      )
+    })
+
+    it('fails over from an unusable response to valid emptiness', async () => {
+      const mockFetch = jest
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ result: { value: [{}] } }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ result: { value: [] } }),
+        })
+      await expect(
+        fetchSolanaTokenAccounts({
+          address: sampleAddress,
+          rpcUrls: ['https://one.example', 'https://two.example'],
+          fetchImpl: mockFetch as unknown as typeof fetch,
+        }),
+      ).resolves.toEqual([])
+      expect(mockFetch).toHaveBeenCalledTimes(2)
     })
   })
 })

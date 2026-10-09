@@ -23,6 +23,7 @@ const mockEcashBalance = ref<string | undefined>(undefined)
 
 jest.mock('../../composables/useChainBalance', () => ({
   useMultichainBalance: () => ({
+    getTokenObservation: () => undefined,
     monad: {
       loaded: mockLoaded,
       hasError: mockError,

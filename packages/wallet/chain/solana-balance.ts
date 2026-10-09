@@ -263,7 +263,7 @@ export async function fetchSolanaTokenAccounts(
         }
       }
 
-      if (data.error || !data.result?.value) {
+      if (data?.error || !Array.isArray(data?.result?.value)) {
         continue
       }
 
@@ -271,15 +271,31 @@ export async function fetchSolanaTokenAccounts(
       const tokens: SolanaTokenAccount[] = []
 
       for (const item of rawAccounts) {
-        const info = item.account?.data?.parsed?.info
-        if (!info || !info.mint) continue
+        const info = item?.account?.data?.parsed?.info
+        const amount = info?.tokenAmount
+        if (
+          typeof item?.pubkey !== 'string' ||
+          !item.pubkey ||
+          typeof info?.mint !== 'string' ||
+          !info.mint ||
+          typeof amount?.amount !== 'string' ||
+          !/^\d+$/.test(amount.amount) ||
+          !Number.isInteger(amount.decimals) ||
+          amount.decimals < 0 ||
+          amount.decimals > 255 ||
+          (amount.uiAmount != null && typeof amount.uiAmount !== 'number')
+        ) {
+          throw new Error('Unusable Solana token account response')
+        }
 
         const mint = info.mint
-        const decimals = info.tokenAmount?.decimals ?? 6
-        const amountStr = info.tokenAmount?.amount ?? '0'
+        const decimals = amount.decimals
+        const amountStr = amount.amount
         const uiAmount =
-          info.tokenAmount?.uiAmount ??
-          (Number(amountStr) / Math.pow(10, decimals) || 0)
+          amount.uiAmount ?? Number(amountStr) / Math.pow(10, decimals)
+        if (!Number.isFinite(uiAmount) || uiAmount < 0) {
+          throw new Error('Unusable Solana token account amount')
+        }
 
         const known = KNOWN_SOLANA_DEVNET_TOKENS[mint]
         const symbol =
@@ -318,5 +334,6 @@ export async function fetchSolanaTokenAccounts(
     }
   }
 
-  return []
+  // Never attach endpoint URLs or provider errors: they may contain credentials.
+  throw new Error('Unable to read Solana token accounts from any RPC endpoint')
 }

@@ -264,6 +264,15 @@
                         </q-badge>
                       </div>
 
+                      <p
+                        v-if="tokenStatusKey"
+                        role="status"
+                        class="text-caption text-grey-7"
+                        data-testid="wallet-token-status"
+                      >
+                        {{ $t(tokenStatusKey) }}
+                      </p>
+
                       <q-list separator class="rounded-borders">
                         <q-item
                           v-for="token in activeTokens"
@@ -491,8 +500,20 @@ export default defineComponent({
     )
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
-    const { presentation: balancePresentation, tokens: activeTokens } =
-      useChainBalance(selectedWallet)
+    const {
+      presentation: balancePresentation,
+      tokens: activeTokens,
+      tokenObservation,
+    } = useChainBalance(selectedWallet)
+    const tokenStatusKey = computed(() => {
+      const observation = tokenObservation.value
+      if (!observation || observation.status === 'available') return ''
+      if (observation.status === 'loading')
+        return 'walletPanel.tokenBalancesLoading'
+      return observation.lastKnown
+        ? 'walletPanel.tokenBalancesStale'
+        : 'walletPanel.tokenBalancesUnavailable'
+    })
     const balanceObservation = computed(() => {
       const presentation = balancePresentation.value
       return presentation.status === 'available'
@@ -657,6 +678,7 @@ export default defineComponent({
         openPage(router, '/wallet')
       },
       activeTokens,
+      tokenStatusKey,
       recentSwaps,
       formatSwapTime,
       getExplorerLink,

@@ -555,27 +555,53 @@ describe('MxDirectTransport delivery to a local peer', () => {
     expect(peer.connections[0].messages[0].toString('utf-8')).toBe(`${HEADERS}final newline\r\n`);
   });
 
-  it('sends a message whose longest line is 998 bytes', async () => {
+  it('transmits a 5,000-byte body line and a 2,000-byte header line unchanged, as one message', async () => {
     peer = await startRecordingPeer();
-    const message = `${HEADERS}${'x'.repeat(998)}\r\n`;
+    const message =
+      `From: sender@frank.org\r\nSubject: ${'s'.repeat(2000 - 'Subject: '.length)}\r\n\r\n` +
+      `${'x'.repeat(5000)}\r\n.${'y'.repeat(4999)}\r\n`;
 
     const result = await send(transportTo(peer), message);
     await peer.allClosed();
 
     expect(result.outcome).toBe('accepted');
-    expect(peer.connections[0].messages[0].toString('utf-8')).toBe(message);
+    expect(peer.connections).toHaveLength(1);
+    expect(peer.connections[0].messages).toHaveLength(1);
+    expect(removeTransparency(peer.connections[0].messages[0])).toBe(message);
+    expect(peer.connections[0].commands.slice(-2)).toEqual(['DATA', 'QUIT']);
   });
 
-  it('refuses a message with a 999-byte line before connecting', async () => {
-    peer = await startRecordingPeer();
+  it.each([
+    ['a line with only a dot', `${HEADERS}before\r\n.\r\nafter\r\n`],
+    ['lines beginning with a dot', `${HEADERS}.one\r\n..two\r\n.\r\n...\r\nend`],
+    ['lone CR line endings around a dot', `${HEADERS}before\r.\rafter\r`],
+    ['lone LF line endings around a dot', `${HEADERS}before\n.\nafter\n`],
+    ['CR, LF and CRLF line endings mixed around dots', `${HEADERS}a\r.\n.\r\n.\n\r.\r\r\n.\n\n.b\r.`],
+  ])(
+    'sends %s so that a peer accepting any of CRLF, LF or CR as a line ending still reads one message',
+    async (_label, message) => {
+      peer = await startRecordingPeer();
 
-    const result = await send(transportTo(peer), `${HEADERS}${'x'.repeat(999)}\r\n`);
+      const result = await send(transportTo(peer), message);
+      await peer.allClosed();
 
-    expect(result.outcome).toBe('refused');
-    expect(result.success).toBe(false);
-    expect(result.responseCode).toBeUndefined();
-    expect(peer.connections).toHaveLength(0);
-  });
+      expect(result.outcome).toBe('accepted');
+      expect(peer.connections[0].messages).toHaveLength(1);
+      const received = peer.connections[0].received.toString('latin1');
+      const afterDataCommand = received.slice(received.indexOf('DATA\r\n') + 'DATA\r\n'.length);
+      // Split the way a lenient server would: every CRLF, lone LF and lone CR ends a line.
+      const lines = afterDataCommand.split(/\r\n|\r|\n/);
+      expect(lines.pop()).toBe('');
+      expect(lines.slice(-2)).toEqual(['.', 'QUIT']);
+      expect(lines.slice(0, -2)).not.toContain('.');
+      // Read the same way, the lines before the terminator are the message's own lines.
+      const expectedLines = message.split(/\r\n|\r|\n/);
+      if (expectedLines[expectedLines.length - 1] === '') expectedLines.pop();
+      expect(
+        lines.slice(0, -2).map((line) => (line.startsWith('.') ? line.slice(1) : line))
+      ).toEqual(expectedLines);
+    }
+  );
 
   it('reports accepted when the peer closes the connection right after its reply to the end of the data, without a second connection', async () => {
     peer = await startRecordingPeer([{ actions: { BODY: 'replyThenDrop' } }]);

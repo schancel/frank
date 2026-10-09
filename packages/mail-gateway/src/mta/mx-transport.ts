@@ -33,8 +33,6 @@ export interface MxDeliveryResult {
   readonly error?: string;
 }
 
-/** RFC 5322 section 2.1.1: a line is at most 998 bytes, excluding its CRLF. */
-const MAX_LINE_BYTES = 998;
 const MAX_ADDRESS_LENGTH = 254;
 const MAX_REPLY_LENGTH = 64 * 1024;
 
@@ -71,22 +69,19 @@ function isHeloName(name: string): boolean {
  *
  * Every line ending (CRLF, a lone LF, a lone CR) becomes CRLF, a line that
  * begins with a dot gains one more leading dot (RFC 5321 section 4.5.2), and
- * the result always ends with CRLF. The end-of-data line is not included; the
- * transport writes it.
- *
- * Returns undefined when a line is longer than 998 bytes excluding its line
- * ending.
+ * the result always ends with CRLF. Lines of any length are kept. The
+ * end-of-data line is not included; the transport writes it.
  */
-export function encodeMessageData(raw: Uint8Array): Buffer | undefined {
+export function encodeMessageData(raw: Uint8Array): Buffer {
   // Each input byte produces at most two output bytes, plus a final CRLF.
   const out = Buffer.allocUnsafe(raw.length * 2 + 2);
   let written = 0;
-  let lineLength = 0;
+  let atLineStart = true;
 
   const endLine = () => {
     out[written++] = CR;
     out[written++] = LF;
-    lineLength = 0;
+    atLineStart = true;
   };
 
   for (let i = 0; i < raw.length; i++) {
@@ -100,17 +95,14 @@ export function encodeMessageData(raw: Uint8Array): Buffer | undefined {
       endLine();
       continue;
     }
-    if (lineLength === 0 && byte === DOT) {
+    if (atLineStart && byte === DOT) {
       out[written++] = DOT;
     }
-    lineLength++;
-    if (lineLength > MAX_LINE_BYTES) {
-      return undefined;
-    }
+    atLineStart = false;
     out[written++] = byte;
   }
 
-  if (lineLength > 0 || written === 0) {
+  if (!atLineStart || written === 0) {
     endLine();
   }
   return out.subarray(0, written);
@@ -178,11 +170,6 @@ export class MxDirectTransport {
       );
     }
     const messageData = encodeMessageData(params.rawRfc822);
-    if (!messageData) {
-      return refusedBeforeConnecting(
-        `Message has a line longer than ${MAX_LINE_BYTES} bytes`
-      );
-    }
 
     const toDomain = params.toAddress.slice(params.toAddress.indexOf('@') + 1);
     const mxHosts = await this.resolveMxHosts(toDomain);

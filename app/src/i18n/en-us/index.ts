@@ -349,7 +349,7 @@ export default {
     showSeed: 'Show recovery phrase',
     confirmSeed: 'Confirm recovery phrase',
     balanceLoading: 'Loading balance…',
-    balanceUnavailable: 'Balance unavailable. Retrying.',
+    balanceUnavailable: 'Balance unavailable.',
     balanceStale: '{balance} (last known)',
     failedLoadAddress: 'Failed to load the Monad wallet address',
     unableCopyAddress: 'Unable to copy the Monad address',

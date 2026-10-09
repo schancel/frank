@@ -692,6 +692,18 @@ export class EvmLegacyConsolidator {
       }
     })
   }
+  /**
+   * Wallet open: the local pass, once, on the executor queue, for members whose successful
+   * inclusion is ALREADY recorded in the journal. Journal only: it reaches the journal snapshot
+   * and the two local callbacks (`classifyLocalMember`, `applyLocalMember`) and nothing else, so
+   * it makes no network request, never observes a member, asks for no signature and transports
+   * nothing. A member recorded pending, missing, unknown or reverted is left exactly as it is.
+   * A refused member is remembered as held like any other pass's; a member whose apply failed is
+   * left for the next pass. Never throws.
+   */
+  applyRecordedEvidence(lifetime?: WalletOperationLifetime): Promise<void> {
+    return this.run(() => this.localPass(lifetime))
+  }
   /** Runs `body` on the executor queue, then in the same hold: if `body` threw, cancels the
    * operation it names when that operation never signed; then the local pass. Neither can change
    * what `body` returned or threw. */

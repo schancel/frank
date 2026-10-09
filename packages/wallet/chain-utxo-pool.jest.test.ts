@@ -5,6 +5,9 @@ import {
   ChainUtxoPool,
   ChainUtxoView,
   ChainUtxoCoin,
+  ChainUtxoBatchOperation,
+  ChainUtxoBatchWriter,
+  ArchiveSpentCoinsParams,
   makeUtxoId,
   inferChainFamily,
   normalizeUtxoAddress,
@@ -863,6 +866,356 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(sel.selected.length).toBe(1)
       expect(sel.selected[0].address).toBe(childWallet.address)
       expect(sel.selected[0].requiresConfirmation).toBe(true)
+    })
+  })
+
+  describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', () => {
+    let archivePool: ChainUtxoPool
+    const walletA = Wallet.createRandom()
+    const walletB = Wallet.createRandom()
+    const walletC = Wallet.createRandom()
+    const walletD = Wallet.createRandom()
+
+    beforeEach(() => {
+      archivePool = new ChainUtxoPool()
+    })
+
+    it('moves fully drained ($0 wei) and spent coins older than maxAgeMs into archivedCoinsById', () => {
+      const twoHoursAgo = Date.now() - 7_200_000
+      const fiveMinutesAgo = Date.now() - 300_000
+
+      // 1. Clean active coin with balance
+      const cleanCoin = archivePool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletA.address,
+        privateKey: walletA.privateKey,
+        balanceWei: 100_000n,
+      })
+
+      // 2. Fully drained spent coin older than 1 hour (eligible for archive)
+      const oldSpentCoin = archivePool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletB.address,
+        privateKey: walletB.privateKey,
+        balanceWei: 10_000n,
+      })
+      archivePool.markSpent(oldSpentCoin.id)
+      oldSpentCoin.lastUpdatedMs = twoHoursAgo
+
+      // 3. Fully drained spent coin recent (< 1 hour, not yet eligible by default)
+      const recentSpentCoin = archivePool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletC.address,
+        privateKey: walletC.privateKey,
+        balanceWei: 20_000n,
+      })
+      archivePool.markSpent(recentSpentCoin.id)
+      recentSpentCoin.lastUpdatedMs = fiveMinutesAgo
+
+      // 4. Dirty spent account with positive balance remaining (not drained, should NOT archive)
+      const positiveBalanceSpentCoin = archivePool.evm.importPrivateKey({
+        chain: 'monad',
+        address: walletD.address,
+        privateKey: walletD.privateKey,
+        balanceWei: 50_000n,
+        nonce: 1, // status: 'spent'
+      })
+
+      expect(archivePool.getAllCoins('monad')).toHaveLength(4)
+      expect(archivePool.getArchivedCoins('monad')).toHaveLength(0)
+
+      // Run default archiveSpentCoins (default maxAgeMs: 1 hour)
+      const archived = archivePool.archiveSpentCoins()
+
+      expect(archived).toHaveLength(1)
+      expect(archived[0].id).toBe(oldSpentCoin.id)
+
+      // Active pool size is reduced from 4 to 3
+      const activeCoins = archivePool.getAllCoins('monad')
+      expect(activeCoins).toHaveLength(3)
+      const activeIds = activeCoins.map(c => c.id)
+      expect(activeIds).toContain(cleanCoin.id)
+      expect(activeIds).toContain(recentSpentCoin.id)
+      expect(activeIds).toContain(positiveBalanceSpentCoin.id)
+      expect(activeIds).not.toContain(oldSpentCoin.id)
+
+      // Active lookup returns undefined
+      expect(archivePool.getCoin(oldSpentCoin.id)).toBeUndefined()
+      // Querying with includeArchived returns it
+      expect(archivePool.getCoin(oldSpentCoin.id, { includeArchived: true })).toBeDefined()
+
+      // Querying cold archive preserves full queryability
+      const coldArchive = archivePool.getArchivedCoins('monad')
+      expect(coldArchive).toHaveLength(1)
+      expect(coldArchive[0].id).toBe(oldSpentCoin.id)
+      expect(archivePool.getArchivedCoin(oldSpentCoin.id)).toBeDefined()
+      expect(archivePool.getArchivedCoin(oldSpentCoin.id)?.address.toLowerCase()).toBe(walletB.address.toLowerCase())
+    })
+
+    it('supports custom maxAgeMs override such as 0 to archive all drained spent coins immediately', () => {
+      const coin = archivePool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletA.address,
+        privateKey: walletA.privateKey,
+        balanceWei: 50_000n,
+      })
+      archivePool.markSpent(coin.id)
+      // coin was just marked spent (0ms ago)
+
+      expect(archivePool.getAllCoins('monad')).toHaveLength(1)
+      expect(archivePool.getArchivedCoins('monad')).toHaveLength(0)
+
+      // With maxAgeMs = 0, immediately archives
+      const archived = archivePool.archiveSpentCoins({ maxAgeMs: 0 })
+      expect(archived).toHaveLength(1)
+      expect(archived[0].id).toBe(coin.id)
+
+      expect(archivePool.getAllCoins('monad')).toHaveLength(0)
+      expect(archivePool.getArchivedCoins('monad')).toHaveLength(1)
+    })
+
+    it('scopes cold storage archiving by chain parameter', () => {
+      const monadCoin = archivePool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletA.address,
+        privateKey: walletA.privateKey,
+        balanceWei: 10_000n,
+      })
+      archivePool.markSpent(monadCoin.id)
+
+      const solanaCoin = archivePool.solana.registerAccount({
+        chain: 'solana',
+        address: 'SolAddr111111111111111111111111111111111111',
+        privateKey: '0x' + '11'.repeat(32),
+        balanceWei: 50_000n,
+      })
+      archivePool.markSpent(solanaCoin.id)
+
+      expect(archivePool.getAllCoins()).toHaveLength(2)
+
+      // Archive only monad coins
+      const archivedMonad = archivePool.archiveSpentCoins({ chain: 'monad', maxAgeMs: 0 })
+      expect(archivedMonad).toHaveLength(1)
+      expect(archivedMonad[0].id).toBe(monadCoin.id)
+
+      // Solana coin remains in active pool
+      expect(archivePool.getAllCoins('monad')).toHaveLength(0)
+      expect(archivePool.getAllCoins('solana')).toHaveLength(1)
+
+      expect(archivePool.getArchivedCoins('monad')).toHaveLength(1)
+      expect(archivePool.getArchivedCoins('solana')).toHaveLength(0)
+      expect(archivePool.getArchivedCoins()).toHaveLength(1)
+
+      // Archive solana coins
+      const archivedSolana = archivePool.archiveSpentCoins({ chain: 'solana', maxAgeMs: 0 })
+      expect(archivedSolana).toHaveLength(1)
+      expect(archivePool.getAllCoins()).toHaveLength(0)
+      expect(archivePool.getArchivedCoins()).toHaveLength(2)
+      expect(archivePool.getArchivedCoins('solana')).toHaveLength(1)
+    })
+
+    it('removes coin from cold archive if re-registered into active pool', () => {
+      const coin = archivePool.evm.registerSubAccount({
+        chain: 'monad',
+        address: walletA.address,
+        privateKey: walletA.privateKey,
+        balanceWei: 10_000n,
+      })
+      archivePool.markSpent(coin.id)
+      archivePool.archiveSpentCoins({ maxAgeMs: 0 })
+
+      expect(archivePool.getArchivedCoins('monad')).toHaveLength(1)
+      expect(archivePool.getCoin(coin.id)).toBeUndefined()
+
+      // Re-register into active pool
+      archivePool.registerCoin({
+        id: coin.id,
+        chain: 'monad',
+        address: walletA.address,
+        privateKey: walletA.privateKey,
+        balanceWei: 500_000n,
+        status: 'clean',
+      })
+
+      expect(archivePool.getCoin(coin.id)).toBeDefined()
+      expect(archivePool.getCoin(coin.id)?.balanceWei).toBe(500_000n)
+      expect(archivePool.getArchivedCoins('monad')).toHaveLength(0)
+      expect(archivePool.getArchivedCoin(coin.id)).toBeUndefined()
+    })
+  })
+
+  describe('Atomic ACID Batch Commits in ChainUtxoView', () => {
+    let acidPool: ChainUtxoPool
+    const walletParent = Wallet.createRandom()
+    const walletChange = Wallet.createRandom()
+
+    beforeEach(() => {
+      acidPool = new ChainUtxoPool()
+      acidPool.utxo.registerOutpoint({
+        chain: 'ecash',
+        address: 'ecash:qzacidparent',
+        privateKey: walletParent.privateKey,
+        txid: 'tx_acid_001',
+        vout: 0,
+        balanceWei: 100_000n,
+      })
+    })
+
+    it('passes exact diff of deleted spent inputs and added change outputs to batchWriter', async () => {
+      const view = acidPool.createView()
+      const parentCoin = acidPool.getCleanCoins('ecash')[0]
+
+      // Select and spend parent coin
+      const selection = view.selectCoins({
+        chain: 'ecash',
+        targetAmountWei: 40_000n,
+        feeReserveWei: 500n,
+      })
+      expect(selection.selected[0].id).toBe(parentCoin.id)
+
+      view.applyTransaction({
+        chain: 'ecash',
+        inputs: selection.selected,
+        changeOutputs: [
+          {
+            address: 'ecash:qzacidchange1',
+            privateKey: walletChange.privateKey,
+            balanceWei: 59_500n,
+            outpoint: { txid: 'tx_acid_child', vout: 0 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      const capturedOperations: ChainUtxoBatchOperation[] = []
+      const batchWriter = jest.fn(async (ops: ChainUtxoBatchOperation[]) => {
+        capturedOperations.push(...ops)
+      })
+
+      await view.commit(batchWriter)
+
+      expect(batchWriter).toHaveBeenCalledTimes(1)
+      expect(capturedOperations).toHaveLength(2)
+
+      // 1. Exact delete diff for the spent parent coin
+      expect(capturedOperations[0]).toEqual({
+        type: 'del',
+        id: parentCoin.id,
+        coin: parentCoin,
+      })
+
+      // 2. Exact put diff for the newly staged change coin
+      expect(capturedOperations[1].type).toBe('put')
+      expect(capturedOperations[1].id).toBe(
+        makeUtxoId('ecash', 'ecash:qzacidchange1', { txid: 'tx_acid_child', vout: 0 }, 'utxo'),
+      )
+      expect(capturedOperations[1].coin?.balanceWei).toBe(59_500n)
+
+      // Base pool updated atomically
+      expect(acidPool.getPendingCoins('ecash')).toHaveLength(1)
+      expect(acidPool.getCleanCoins('ecash')).toHaveLength(1)
+      expect(acidPool.getCleanCoins('ecash')[0].balanceWei).toBe(59_500n)
+    })
+
+    it('emits exact del and put diff for EVM account nonce and balance updates', async () => {
+      const evmPool = new ChainUtxoPool()
+      const evmWallet = Wallet.createRandom()
+      const initialAccount = evmPool.evm.registerSubAccount({
+        chain: 'monad',
+        address: evmWallet.address,
+        privateKey: evmWallet.privateKey,
+        balanceWei: 100_000_000n,
+      })
+
+      const view = evmPool.createView()
+      view.applyTransaction({
+        chain: 'monad',
+        inputs: [initialAccount],
+        updatedAccounts: [
+          {
+            id: initialAccount.id,
+            remainingBalanceWei: 79_979_000n,
+            nextNonce: 1,
+          },
+        ],
+      })
+
+      const captured: ChainUtxoBatchOperation[] = []
+      await view.commit(async (ops) => {
+        captured.push(...ops)
+      })
+
+      expect(captured).toHaveLength(2)
+      expect(captured[0]).toEqual({
+        type: 'del',
+        id: initialAccount.id,
+        coin: initialAccount,
+      })
+      expect(captured[1].type).toBe('put')
+      expect(captured[1].coin?.nonce).toBe(1)
+      expect(captured[1].coin?.balanceWei).toBe(79_979_000n)
+
+      // Base pool reflects the updated nonce coin
+      expect(evmPool.getCleanCoins('monad')).toHaveLength(1)
+      expect(evmPool.getCleanCoins('monad')[0].nonce).toBe(1)
+    })
+
+    it('enforces ACID atomicity: aborts and preserves base pool untouched when batchWriter fails', async () => {
+      const view = acidPool.createView()
+      const parentCoin = acidPool.getCleanCoins('ecash')[0]
+
+      view.applyTransaction({
+        chain: 'ecash',
+        inputs: [parentCoin],
+        changeOutputs: [
+          {
+            address: 'ecash:qzabortchange',
+            privateKey: walletChange.privateKey,
+            balanceWei: 80_000n,
+            outpoint: { txid: 'tx_abort', vout: 0 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      const failingWriter = jest.fn(async () => {
+        throw new Error('ACID commit disk I/O failure')
+      })
+
+      await expect(view.commit(failingWriter)).rejects.toThrow('ACID commit disk I/O failure')
+
+      // Base pool is completely untouched!
+      expect(acidPool.getCleanCoins('ecash')).toHaveLength(1)
+      expect(acidPool.getCleanCoins('ecash')[0].id).toBe(parentCoin.id)
+      expect(acidPool.getCleanCoins('ecash')[0].status).toBe('clean')
+      expect(acidPool.getPendingCoins('ecash')).toHaveLength(0)
+      expect(acidPool.utxo.getOutpoint('tx_abort', 0, 'ecash')).toBeUndefined()
+    })
+
+    it('supports synchronous commit without batchWriter for backwards compatibility', () => {
+      const view = acidPool.createView()
+      const parentCoin = acidPool.getCleanCoins('ecash')[0]
+
+      view.applyTransaction({
+        chain: 'ecash',
+        inputs: [parentCoin],
+        changeOutputs: [
+          {
+            address: 'ecash:qzsyncchange',
+            privateKey: walletChange.privateKey,
+            balanceWei: 90_000n,
+            outpoint: { txid: 'tx_sync', vout: 0 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      // Call commit() synchronously with no arguments
+      view.commit()
+
+      expect(acidPool.getPendingCoins('ecash')).toHaveLength(1)
+      expect(acidPool.getCleanCoins('ecash')).toHaveLength(1)
+      expect(acidPool.getCleanCoins('ecash')[0].balanceWei).toBe(90_000n)
     })
   })
 })

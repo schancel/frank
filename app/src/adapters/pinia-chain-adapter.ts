@@ -530,10 +530,7 @@ export function startOutgoingReconciliation({
 
   const pendingIds = () => {
     const ids = new Set<string>()
-    const allChats = [
-      ...Object.values(chats.conversations ?? {}),
-      ...Object.values(chats.chats ?? {}),
-    ]
+    const allChats = [...Object.values(chats.conversations ?? {})]
     const seenChats = new Set<any>()
     for (const chat of allChats) {
       if (!chat || seenChats.has(chat)) continue

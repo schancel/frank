@@ -124,7 +124,7 @@ export default defineComponent({
     // from the listed entrants; see wallet raffle/draw.ts for what it does not prove.
     verification() {
       if (this.item.action !== 'draw') return null
-      const messages = useChatStore().chats[this.address]?.messages ?? []
+      const messages = useChatStore().activeConversation?.messages ?? []
       const me = toRaw(this.item)
       const at = messages.findIndex(m => m.items.some(i => toRaw(i) === me))
       if (at === -1 || messages[at].outbound) return null

@@ -179,6 +179,7 @@
     <chat-info-view
       v-else
       :address="effectiveAddress || address"
+      :conversation-id="activeConversation?.id"
       :contact="getContact(effectiveAddress || address)"
       @deleted="onChatDeleted"
       @chat="closeInfo"
@@ -197,7 +198,7 @@ import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import AccountBadge from '../components/contacts/AccountBadge.vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
-import { useChatStore } from 'src/stores/chats'
+import { useChatStore, type Conversation } from 'src/stores/chats'
 import { useProfileStore } from 'src/stores/my-profile'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { isChainAddress } from 'src/utils/chain-address'
@@ -300,7 +301,7 @@ export default defineComponent({
     },
   },
   computed: {
-    activeConversation(): any {
+    activeConversation(): Conversation | null {
       if (!this.address) return null
       try {
         const chatStore = useChatStore()

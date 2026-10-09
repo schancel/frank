@@ -84,6 +84,7 @@ const Blank = defineComponent({ render: () => h('i') })
 
 function storeFor() {
   return reactive({
+    conversations: {},
     chats: {
       [PEER]: { messages: [] },
       [OTHER]: { messages: [] },

@@ -233,6 +233,21 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
     expect(typeof vm.formattedTimestamp).toBe('string')
   })
 
+  it('does not highlight an independent thread merely because it shares the active peer', () => {
+    const isActive = (ChatListItem as any).computed.isActive
+    const context = {
+      chatStore: {
+        activeConversationId: 'selected',
+        activeChatAddr: OWN_ADDRESS,
+      },
+      effectiveId: 'independent',
+      effectiveAddress: OWN_ADDRESS,
+      $route: { params: { address: OWN_ADDRESS } },
+    }
+    expect(isActive.call(context)).toBe(false)
+    expect(isActive.call({ ...context, effectiveId: 'selected' })).toBe(true)
+  })
+
   it('marks item as active when matching route params address or id', () => {
     const wrapper = shallowMount(ChatListItem, {
       props: {

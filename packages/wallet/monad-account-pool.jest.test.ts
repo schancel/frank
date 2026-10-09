@@ -33,7 +33,11 @@ import {
 import { MonadChangeKeyring } from "./monad-change-keyring";
 import { MonadChangePool } from "./monad-change-pool";
 import { validateMonadWalletState } from "./storage/monad-wallet-state-validator";
-import { SubAccountLeaseManager } from "./monad-account-lease";
+import {
+  NoAvailableSubAccountError,
+  SubAccountLeaseManager,
+} from "./monad-account-lease";
+import { EvmNativeOperationJournal } from "./storage/evm-native-operation-journal";
 import { MonadAccountTxSigner, MonadTxSubmitter } from "./monad-account-tx";
 import { LevelSubAccountPoolStore } from "./storage/level-sub-account-pool-store";
 import {
@@ -2407,5 +2411,303 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       expect(result.selectedAccountCount).toBeGreaterThanOrEqual(1);
       expect(pool.getRecord(0)?.status).toBe("retired");
     });
+  });
+});
+
+/**
+ * #1235 Stage R. The predicate is the real native operation journal's `referencesSpendIndex`, as
+ * composition attaches it. Rows are hand-built here (`ensureUnfundedSize` / `setStatus` with a
+ * stubbed balance); the composed suites cover production-funded rows.
+ */
+describe("spend reservation: a sub-account a native member spends from (#1235)", () => {
+  const FUNDING = {
+    gasLimit: 21_000n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 1n,
+    chainId: BigInt(CHAIN_ID),
+  };
+  const RECIPIENT = "0x" + "42".repeat(20);
+  const journals: EvmNativeOperationJournal[] = [];
+  afterEach(async () => {
+    for (const journal of journals.splice(0)) await journal.Close();
+  });
+
+  async function setup() {
+    const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+    const pool = new MonadSubAccountPool({ keyring });
+    pool.ensureUnfundedSize(3);
+    const balances = new Map<string, bigint>();
+    let mainNonce = 0;
+    const httpClient = makeMockHttpClient();
+    httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+      const tx = Transaction.from(rawTx);
+      const to = tx.to!.toLowerCase();
+      balances.set(to, (balances.get(to) ?? 0n) + tx.value);
+      return tx.hash;
+    });
+    httpClient.getTransactionReceipt.mockImplementation(async (txHash) => ({
+      txHash,
+      blockNumber: 1,
+      blockHash: "0x" + "00".repeat(32),
+      status: "success",
+      gasUsed: 21_000n,
+      effectiveGasPrice: 1n,
+      logs: [],
+    }));
+    const mainWallet = Wallet.createRandom();
+    balances.set(mainWallet.address.toLowerCase(), 1_000_000n);
+    const balanceReads: string[] = [];
+    const provider = makeStubProvider(async (request) => {
+      const address = (
+        (request as unknown as { address?: string }).address ?? ""
+      ).toLowerCase();
+      if (request.method === "getTransactionCount") {
+        return address === mainWallet.address.toLowerCase() ? mainNonce++ : 0;
+      }
+      if (request.method === "getBalance") {
+        balanceReads.push(address);
+        return balances.get(address) ?? 0n;
+      }
+      throw new Error(`unexpected _perform: ${request.method}`);
+    });
+    const mainAccountSigner = new MonadAccountTxSigner({
+      privateKey: mainWallet.privateKey,
+      provider,
+      httpClient,
+    });
+    const journal = new EvmNativeOperationJournal({
+      binding: {
+        chainIdentifier: "monad-testnet",
+        nativeChainId: String(CHAIN_ID),
+        publicTuple: "pool-reservation-test",
+      },
+      testOnlyEphemeral: true,
+    });
+    await journal.Open();
+    journals.push(journal);
+    const address = (index: number) =>
+      pool.getRecord(index)!.address.toLowerCase();
+    /** Journals one native member spending from pool row `index`, as a native send does. */
+    const nativeSpend = (index: number) =>
+      journal.prepare({
+        kind: "native",
+        recipient: RECIPIENT,
+        intendedValueWei: "1",
+        members: [
+          {
+            source: { kind: "spend", address: address(index), index },
+            unsignedTransaction: Transaction.from({
+              type: 2,
+              chainId: CHAIN_ID,
+              nonce: 0,
+              to: RECIPIENT,
+              value: 1n,
+              gasLimit: 21_000n,
+              maxFeePerGas: 1n,
+              maxPriorityFeePerGas: 1n,
+            }).unsignedSerialized,
+            dependencies: [],
+          },
+        ],
+      });
+    /** Hand-built funded row: `available` with exactly one 1_000 wei burn of capacity. */
+    const handFund = (index: number) => {
+      pool.setStatus(index, "available");
+      balances.set(address(index), 1_010n);
+    };
+    const attach = () =>
+      pool.attachSpendReservation((index) =>
+        journal.referencesSpendIndex(index)
+      );
+    const prepareBurn = () =>
+      pool.prepareBurnAccount({
+        mainAccountSigner,
+        provider,
+        burnValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: FUNDING,
+        receipt: { maxAttempts: 0 },
+      });
+    const prepareStamp = () =>
+      pool.prepareStampInventory({
+        mainAccountSigner,
+        provider,
+        stampValueWei: 1_000n,
+        gasReserveWei: 10n,
+        fundingOverrides: FUNDING,
+        receipt: { maxAttempts: 0 },
+      });
+    const fundedTargets = () =>
+      httpClient.submitRawTransaction.mock.calls.map(([raw]) =>
+        Transaction.from(raw).to!.toLowerCase()
+      );
+    const statuses = () => pool.records().map((record) => record.status);
+    return {
+      address,
+      attach,
+      balanceReads,
+      fundedTargets,
+      handFund,
+      journal,
+      keyring,
+      nativeSpend,
+      pool,
+      prepareBurn,
+      prepareStamp,
+      provider,
+      statuses,
+    };
+  }
+
+  it("with no reservation attached, a row a native member references is offered, leased, reused and funded exactly as before", async () => {
+    const funded = await setup();
+    funded.handFund(0);
+    await funded.nativeSpend(0);
+    expect(funded.pool.isSpendReserved(0)).toBe(false);
+    expect(
+      await funded.pool.fundedCapacities(funded.provider, 10n)
+    ).toEqual([
+      { index: 0, address: funded.pool.getRecord(0)!.address, capacityWei: 1_000n },
+    ]);
+    expect(funded.pool.selectForStamp()?.index).toBe(0);
+    expect((await funded.prepareBurn()).index).toBe(0);
+    expect(funded.fundedTargets()).toEqual([]);
+
+    const unfunded = await setup();
+    await unfunded.nativeSpend(0);
+    expect((await unfunded.prepareBurn()).index).toBe(0);
+    expect(unfunded.fundedTargets()).toEqual([unfunded.address(0)]);
+    const stamp = await setup();
+    await stamp.nativeSpend(0);
+    await stamp.prepareStamp();
+    expect(stamp.fundedTargets()).toEqual([stamp.address(0), stamp.address(1)]);
+  });
+
+  it("refuses a second reservation", async () => {
+    const f = await setup();
+    f.attach();
+    expect(() => f.attach()).toThrow("already has a spend reservation");
+  });
+
+  it("does not offer, lease or reuse a hand-built funded row a native member references, and still uses an unreferenced one", async () => {
+    const f = await setup();
+    f.handFund(0);
+    f.handFund(1);
+    await f.nativeSpend(0);
+    f.attach();
+
+    expect(await f.pool.fundedCapacities(f.provider, 10n)).toEqual([
+      { index: 1, address: f.pool.getRecord(1)!.address, capacityWei: 1_000n },
+    ]);
+    // The reserved row is skipped before any balance read, not read and then dropped.
+    expect(f.balanceReads).toEqual([f.address(1)]);
+    expect([1, 2, 3].map(() => f.pool.selectForStamp()?.index)).toEqual([
+      1, 1, 1,
+    ]);
+    // A burn reuses the unreferenced funded row and funds nothing.
+    expect((await f.prepareBurn()).index).toBe(1);
+    expect(f.fundedTargets()).toEqual([]);
+
+    const leases = new SubAccountLeaseManager(f.pool);
+    expect(leases.acquireLease().index).toBe(1);
+    // Only the reserved row is left `available`: lease selection reports none, as for an empty pool.
+    expect(f.pool.selectForStamp()).toBeUndefined();
+    expect(() => leases.acquireLease()).toThrow(NoAvailableSubAccountError);
+    expect(f.statuses()).toEqual(["available", "in-use", "unfunded"]);
+  });
+
+  it("does not choose an unfunded row a native member references as an on-demand funding target", async () => {
+    const burn = await setup();
+    await burn.nativeSpend(0);
+    burn.attach();
+    expect((await burn.prepareBurn()).index).toBe(1);
+    expect(burn.fundedTargets()).toEqual([burn.address(1)]);
+    expect(burn.statuses()).toEqual(["unfunded", "available", "unfunded"]);
+
+    const stamp = await setup();
+    await stamp.nativeSpend(0);
+    stamp.attach();
+    await stamp.prepareStamp();
+    expect(stamp.fundedTargets()).toEqual([stamp.address(1), stamp.address(2)]);
+    expect(stamp.statuses()).toEqual(["unfunded", "available", "available"]);
+  });
+
+  it("a cancelled unsigned plan releases its row; a signed member keeps it, also once reverted", async () => {
+    const f = await setup();
+    f.attach();
+    const cancelled = await f.nativeSpend(0);
+    const kept = await f.nativeSpend(1);
+    expect([0, 1, 2].map((i) => f.pool.isSpendReserved(i))).toEqual([
+      true,
+      true,
+      false,
+    ]);
+    await f.journal.cancelUnsigned(cancelled.operationId);
+    expect(f.pool.isSpendReserved(0)).toBe(false);
+
+    const raw = await new Wallet(
+      f.keyring.deriveSubAccount(1).privateKey
+    ).signTransaction(Transaction.from(kept.members[0]!.unsignedTransaction));
+    const signed = await f.journal.checkpointSigned(kept.operationId, 0, raw);
+    await expect(f.journal.cancelUnsigned(kept.operationId)).rejects.toThrow(
+      "conflict"
+    );
+    expect(f.pool.isSpendReserved(1)).toBe(true);
+    await f.journal.recordObservation(
+      f.journal.beginCapture(kept.operationId, 0),
+      {
+        state: "included-revert",
+        transactionHash: signed.members[0]!.signed!.transactionHash,
+        blockHash: "0x" + "ab".repeat(32),
+        blockNumber: 1,
+        transactionIndex: 0,
+        feeWei: "21000",
+      },
+      null
+    );
+    expect(f.journal.list()[1]!.members[0]!.observation.state).toBe(
+      "included-revert"
+    );
+    expect(f.pool.isSpendReserved(1)).toBe(true);
+
+    // The released row is the next funding target again; the reverted member's row is not.
+    expect((await f.prepareBurn()).index).toBe(0);
+    await f.prepareStamp();
+    expect(f.fundedTargets()).toEqual([f.address(0), f.address(2)]);
+    expect(f.statuses().slice(0, 3)).toEqual([
+      "available",
+      "unfunded",
+      "available",
+    ]);
+  });
+
+  it("when every existing row is reserved, a burn and a stamp still prepare by funding freshly derived accounts", async () => {
+    const f = await setup();
+    f.handFund(0);
+    f.handFund(1);
+    for (const index of [0, 1, 2]) await f.nativeSpend(index);
+    f.attach();
+
+    expect(await f.pool.fundedCapacities(f.provider, 10n)).toEqual([]);
+    expect(f.pool.selectForStamp()).toBeUndefined();
+    const burn = await f.prepareBurn();
+    expect(burn.index).toBe(3);
+    const stamp = await f.prepareStamp();
+    expect(stamp.selectedAccountCount).toBeGreaterThanOrEqual(1);
+    // Every funding transfer went to an account derived after the reserved ones.
+    expect(f.fundedTargets().length).toBeGreaterThanOrEqual(2);
+    for (const target of f.fundedTargets())
+      expect([0, 1, 2].map(f.address)).not.toContain(target);
+    expect(f.statuses().slice(0, 3)).toEqual([
+      "available",
+      "available",
+      "unfunded",
+    ]);
+    expect(
+      f.pool
+        .records()
+        .slice(3)
+        .every((record) => record.status === "available")
+    ).toBe(true);
   });
 });

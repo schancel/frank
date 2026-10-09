@@ -19,7 +19,7 @@
  * across a restart, only a cheap extra network call the first time each sender is seen again.
  */
 import { mkdirSync } from 'fs'
-import level, { LevelDB } from 'level'
+import level, { LevelDB, type LevelBatchOperation } from 'level'
 import { join } from 'path'
 
 import { canonicalMonadEnvelopeAddress } from '@frank/cashweb/relay/monad-message-envelope'
@@ -665,9 +665,7 @@ export class QwenBotStateStore {
     return next
   }
 
-  private async synced(
-    operations: Array<{ type: string; key: string; value?: string }>,
-  ): Promise<void> {
+  private async synced(operations: LevelBatchOperation[]): Promise<void> {
     this.assertWritable()
     try {
       await this.db.batch(operations, { sync: true })
@@ -807,7 +805,7 @@ export class QwenBotStateStore {
       const scan = { ...this.scan!, revision: revision + 1, nextOrder, cursor }
       await this.synced([
         ...[...rows.values()].map(row => ({
-          type: 'put',
+          type: 'put' as const,
           key: INBOX_PREFIX + row.payloadHashHex,
           value: JSON.stringify(row),
         })),
@@ -925,7 +923,7 @@ export class QwenBotStateStore {
     const { row } = update
     if (this.responseWriteFailed)
       throw new Error('Qwen response storage unavailable; restart required')
-    const operations: Array<{ type: string; key: string; value?: string }> = [
+    const operations: LevelBatchOperation[] = [
       {
         type: 'put',
         key: RESPONSE_PREFIX + row.payloadHashHex,

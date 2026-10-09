@@ -62,7 +62,10 @@
     // Ticket #53 (package split): moved out of `src/types/bitcore-lib-xpi/` to live alongside
     // the now-standalone `bitcore-lib-xpi` workspace package itself, so `packages/cashweb` and
     // `packages/wallet` (which also use it directly) can share the same declaration file.
-    "../packages/bitcore-lib-xpi/types.d.ts"
+    "../packages/bitcore-lib-xpi/types.d.ts",
+    // The repository's single declaration of the bare `level` module (level 7 ships no types).
+    // Every project that type-checks code importing `level` includes this same file.
+    "../packages/wallet/level.d.ts"
   ],
   // Also found broken alongside the target bump above: with no `exclude`, the production
   // webpack build's type-checker swept in `*.jest.test.ts` files (matched by `src/**/*`) and

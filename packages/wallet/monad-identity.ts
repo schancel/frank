@@ -127,7 +127,7 @@ import {
   requireValidProfileDisplayName,
   validateProfileDisplayName,
 } from './profile-display-name'
-import { MonadDomainRoot, monadMasterFromDomainRoot } from './monad-domain-root'
+import { Bip32DomainRoot, bip32MasterFromDomainRoot } from './bip32-domain-root'
 
 /** Reserved BIP-44 path (account index `1'`) for the stable Frank identity key -- see this file's
  * header for why it's kept structurally separate from both `monad-hd-keyring.ts`'s burner
@@ -152,9 +152,9 @@ export class MonadIdentity implements FrankIdentityHandle {
 
   /** Builds the authentication identity from its already-separated registry output. */
   static fromDomainRoot(
-    domainRoot: MonadDomainRoot<'identity-authentication'>,
+    domainRoot: Bip32DomainRoot<'identity-authentication'>,
   ): MonadIdentity {
-    const node = monadMasterFromDomainRoot(
+    const node = bip32MasterFromDomainRoot(
       domainRoot,
       'identity-authentication',
     ).derivePath(MONAD_IDENTITY_DERIVATION_PATH)

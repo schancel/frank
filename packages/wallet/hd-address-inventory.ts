@@ -24,7 +24,7 @@ import {
   type Ed25519DerivedAccount,
 } from './ed25519-hd-keyring'
 import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
-import type { MonadDomainRoot } from './monad-domain-root'
+import type { Bip32DomainRoot } from './bip32-domain-root'
 import type { SolanaWalletConnection } from './solana-wallet'
 import type {
   SubAccountRecord,
@@ -495,7 +495,7 @@ export class EvmAddressInventory extends HdAddressInventory<DerivedSubAccount> {
   }
 
   static fromDomainRoot(
-    domainRoot: MonadDomainRoot<'evm-wallet'>,
+    domainRoot: Bip32DomainRoot<'evm-wallet'>,
     initialLookahead = 10,
   ): EvmAddressInventory {
     return new EvmAddressInventory({

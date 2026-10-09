@@ -1914,6 +1914,288 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
+  describe('ticket #1237: distinct recipient ownership', () => {
+    it('keeps addressless pairs separate in the list and unread total', () => {
+      const chats = useChatStore()
+      const first = chats.createConversation({
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+      })
+      const second = chats.createConversation({
+        participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+      })
+      first.totalUnreadMessages = 1
+      second.totalUnreadMessages = 2
+
+      expect(
+        chats.getSortedChatOrder.map(conversation => conversation.id).sort(),
+      ).toEqual([first.id, second.id].sort())
+      expect(chats.totalUnread).toBe(3)
+    })
+
+    it.each(['null', 'throws', 'known'] as const)(
+      'keeps addressless pairs owned through repeated hydration when own address is %s',
+      async mode => {
+        const chats = useChatStore()
+        const first = chats.createConversation({
+          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        })
+        const second = chats.createConversation({
+          participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+        })
+        for (const [conversation, senderAddress, digest] of [
+          [first, RECIPIENT_ADDRESS, 'first-addressless'],
+          [second, THIRD_ADDRESS, 'second-addressless'],
+        ] as const) {
+          conversation.messages.push({
+            payloadDigest: digest,
+            conversationId: conversation.id,
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: digest }],
+            serverTime: 100,
+            receivedTime: 100,
+            outpoints: [],
+            senderAddress,
+          })
+        }
+        if (mode === 'null') mockOwnAddress.mockResolvedValue(null)
+        if (mode === 'throws') {
+          mockOwnAddress.mockRejectedValue(new Error('identity unavailable'))
+        }
+
+        for (let reload = 0; reload < 2; reload += 1) {
+          const restored = await rehydrateState(chats.$state)
+          expect(Object.keys(restored.conversations).sort()).toEqual(
+            [first.id, second.id].sort(),
+          )
+          expect(restored.chats[SENDER_ADDRESS]).toBeUndefined()
+          for (const [id, digest] of [
+            [first.id, 'first-addressless'],
+            [second.id, 'second-addressless'],
+          ]) {
+            const conversation = restored.conversations[id]
+            expect(conversation.address).toBe(id)
+            expect(conversation.messages).toHaveLength(1)
+            expect(conversation.messages[0]).toMatchObject({
+              payloadDigest: digest,
+              conversationId: id,
+            })
+            expect(conversation.totalUnreadMessages).toBe(1)
+          }
+          chats.$patch(restored)
+        }
+      },
+    )
+
+    it.each([true, false])(
+      'does not reuse overlapping participant sets (explicit recipient: %s)',
+      explicitRecipient => {
+        const chats = useChatStore()
+        const first = chats.createConversation({
+          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+          address: explicitRecipient ? RECIPIENT_ADDRESS : undefined,
+        })
+        const second = chats.createConversation({
+          participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+          address: explicitRecipient ? THIRD_ADDRESS : undefined,
+        })
+
+        expect(second.id).not.toBe(first.id)
+        expect(first.participants).toEqual(
+          [SENDER_ADDRESS, RECIPIENT_ADDRESS].sort(),
+        )
+        expect(second.participants).toEqual(
+          [SENDER_ADDRESS, THIRD_ADDRESS].sort(),
+        )
+      },
+    )
+
+    it('keeps addressless pairs addressable by ID without guessing a recipient alias', () => {
+      const chats = useChatStore()
+      jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+      const conversation = chats.createConversation({
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        topic: 'explicit-thread',
+      })
+      chats.createConversation({
+        participants: [RECIPIENT_ADDRESS, SENDER_ADDRESS],
+        topic: 'explicit-thread',
+      })
+      chats.setActiveConversation(conversation.id)
+      chats.sendMessageLocal({
+        address: RECIPIENT_ADDRESS,
+        conversationId: conversation.id,
+        senderAddress: SENDER_ADDRESS,
+        index: 'id-routed',
+        items: [{ type: 'text', text: 'known conversation' }],
+        outpoints: [],
+        status: 'confirmed',
+        previousHash: null,
+        timestamp: 100,
+      })
+
+      expect(conversation.address).toBe(conversation.id)
+      expect(chats.chats[SENDER_ADDRESS]).toBeUndefined()
+      expect(chats.chats[RECIPIENT_ADDRESS]).toBeUndefined()
+      expect(chats.activeConversationId).toBe(conversation.id)
+      expect(chats.messages['id-routed'].conversationId).toBe(conversation.id)
+      expect(
+        conversation.messages.map(message => message.payloadDigest),
+      ).toEqual(['id-routed'])
+    })
+
+    it('reuses a recipient placeholder without publishing a self alias or redirecting self messages', () => {
+      const chats = useChatStore()
+      const placeholder = chats.createConversation({
+        participants: [RECIPIENT_ADDRESS],
+        address: RECIPIENT_ADDRESS,
+      })
+      for (let activation = 0; activation < 2; activation += 1) {
+        expect(
+          chats.createConversation({
+            participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS_LOWERCASE],
+            address: RECIPIENT_ADDRESS_LOWERCASE,
+          }).id,
+        ).toBe(placeholder.id)
+      }
+
+      chats.sendMessageLocal({
+        address: SENDER_ADDRESS,
+        senderAddress: SENDER_ADDRESS,
+        index: 'self-only',
+        items: [{ type: 'text', text: 'self message' }],
+        outpoints: [],
+        status: 'confirmed',
+        previousHash: null,
+        timestamp: 100,
+      })
+
+      expect(chats.chats[SENDER_ADDRESS]).toBeUndefined()
+      expect(placeholder.messages).toHaveLength(0)
+      expect(chats.messages['self-only']).toBeUndefined()
+      expect(chats.chats[RECIPIENT_ADDRESS]?.id).toBe(placeholder.id)
+    })
+
+    it.each(['setActiveChat', 'setActiveConversation'] as const)(
+      '%s on self cannot activate or rename a remote conversation',
+      activate => {
+        const chats = useChatStore()
+        jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+        const remote = chats.createConversation({
+          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+          address: RECIPIENT_ADDRESS,
+        })
+        chats.sendMessageLocal({
+          address: RECIPIENT_ADDRESS,
+          senderAddress: SENDER_ADDRESS,
+          index: 'remote-only',
+          items: [{ type: 'text', text: 'remote message' }],
+          outpoints: [],
+          status: 'confirmed',
+          previousHash: null,
+          timestamp: 100,
+        })
+
+        for (let activation = 0; activation < 2; activation += 1) {
+          chats[activate](SENDER_ADDRESS)
+          expect(chats.activeConversationId).not.toBe(remote.id)
+          expect(remote.address).toBe(RECIPIENT_ADDRESS)
+          expect(remote.messages.map(message => message.payloadDigest)).toEqual(
+            ['remote-only'],
+          )
+          chats[activate](RECIPIENT_ADDRESS)
+          expect(chats.activeConversationId).toBe(remote.id)
+        }
+      },
+    )
+
+    it('retains recipient ownership, unread state, tombstones and pending delivery links through repeated hydration', async () => {
+      const chats = useChatStore()
+      const first = chats.createConversation({
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        address: RECIPIENT_ADDRESS,
+      })
+      const second = chats.createConversation({
+        participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+        address: THIRD_ADDRESS,
+      })
+      first.deletedAt = 50
+      const wrappers: MessageWrapper[] = [
+        {
+          index: 'first-incoming',
+          outbound: false,
+          senderAddress: RECIPIENT_ADDRESS,
+          copartyAddress: RECIPIENT_ADDRESS,
+          message: {
+            conversationId: first.id,
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'first history' }],
+            serverTime: 40,
+            receivedTime: 40,
+            outpoints: [],
+            senderAddress: RECIPIENT_ADDRESS,
+          },
+        },
+        {
+          index: 'second-pending',
+          outbound: true,
+          senderAddress: SENDER_ADDRESS,
+          copartyAddress: THIRD_ADDRESS,
+          message: {
+            conversationId: second.id,
+            outbound: true,
+            status: 'pending',
+            items: [{ type: 'text', text: 'second pending' }],
+            serverTime: 60,
+            receivedTime: 60,
+            outpoints: [],
+            senderAddress: SENDER_ADDRESS,
+            delivery: { attemptDigest: 'second-attempt' },
+          },
+        },
+      ]
+      let state: RestorableState = {
+        ...chats.$state,
+        // An old participant alias is a derived lookup, not a self conversation.
+        chats: { ...chats.chats, [SENDER_ADDRESS]: first },
+      }
+      for (let reload = 0; reload < 2; reload += 1) {
+        mockMessageStore.getIterator.mockResolvedValueOnce(
+          (async function* () {
+            for (const wrapper of wrappers) yield wrapper
+          })(),
+        )
+        const restored = await rehydrateState(state)
+        expect(Object.keys(restored.conversations)).toHaveLength(2)
+        expect(restored.chats[SENDER_ADDRESS]).toBeUndefined()
+        expect(
+          restored.conversations[first.id].messages.map(m => m.payloadDigest),
+        ).toEqual(['first-incoming'])
+        expect(restored.conversations[first.id].totalUnreadMessages).toBe(1)
+        expect(restored.conversations[first.id].deletedAt).toBe(50)
+        expect(
+          restored.conversations[second.id].messages.map(m => m.payloadDigest),
+        ).toEqual(['second-pending'])
+        expect(restored.conversations[second.id].totalUnreadMessages).toBe(0)
+        expect(restored.conversations[second.id].deletedAt).toBeUndefined()
+        expect(restored.messages['second-pending'].status).toBe(
+          'payment-pending',
+        )
+        expect(
+          restored.messages['second-pending'].delivery?.attemptDigest,
+        ).toBe('second-attempt')
+        expect(restored.logicalMessages['first-incoming'].conversationId).toBe(
+          first.id,
+        )
+        expect(restored.logicalMessages['second-pending'].conversationId).toBe(
+          second.id,
+        )
+        state = restored
+      }
+    })
+  })
+
   describe('ticket #69: conversation-oriented and group-ready storage', () => {
     it('generates deterministic RFC 4122 UUIDv5 identifiers for conversations', () => {
       const uuidv5Regex =

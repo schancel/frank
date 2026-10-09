@@ -731,15 +731,13 @@ export function extractDirectPeerAddress(
       peer = conv.address
     } else if (conv.address && conv.address !== conv.id) {
       peer = conv.address
-    } else if (peers.length > 0) {
-      peer = peers[0]
     }
   } else if (conv.address && conv.address !== conv.id) {
     peer = conv.address
-  } else if (conv.address) {
-    peer = conv.address
   }
 
+  // Multiple participants without an explicit recipient or a resolved own identity
+  // do not identify a peer. Guessing one lets list/hydration dedup merge other owners.
   if (!peer) return null
   try {
     return toChainDisplayAddress(peer)
@@ -1079,6 +1077,14 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
           stampAmount: contact.stampAmount ?? defaultStampAmount,
         }
         conversations[convId] = conv
+      }
+      // Persisted participant aliases are derived lookups, not additional owners.
+      // In particular a self alias must not route loopback messages to a remote peer.
+      if (
+        conv.address !== displayAddress &&
+        !sameCanonicalAddress(conv.address, displayAddress)
+      ) {
+        continue
       }
       chats[displayAddress] = conv
       chats[contactAddress] = conv
@@ -3161,90 +3167,54 @@ export const useChatStore = defineStore('chats', {
         conversationId || makeConversationId(normalizedParticipants, topic)
       let conv = this.conversations[id]
       if (!conv && kind === 'direct' && !conversationId) {
-        if (address) {
-          let canonicalAddr = address
-          try {
-            canonicalAddr = toChainDisplayAddress(address)
-          } catch {
-            // ignore
+        const candidates = Object.values(this.conversations).filter(c => {
+          if (c.kind !== 'direct' || c.topic !== topic) return false
+          if (
+            address &&
+            c.address !== address &&
+            !sameCanonicalAddress(c.address, address)
+          ) {
+            return false
           }
-          const matchingConvs = Object.values(this.conversations).filter(
-            c =>
-              c.kind === 'direct' &&
-              (!topic || c.topic === topic) &&
-              (c.address === address ||
-                c.address === canonicalAddr ||
-                (c.participants &&
-                  c.participants.some(
-                    p =>
-                      sameCanonicalAddress(p, address) ||
-                      (canonicalAddr && sameCanonicalAddress(p, canonicalAddr)),
-                  ))),
+          const candidateParticipants = Array.from(
+            new Set(
+              (c.participants || []).map(p => {
+                try {
+                  return toChainDisplayAddress(p)
+                } catch {
+                  return p
+                }
+              }),
+            ),
+          ).sort()
+          if (
+            candidateParticipants.length === normalizedParticipants.length &&
+            candidateParticipants.every(
+              (p, i) => p === normalizedParticipants[i],
+            )
+          ) {
+            return true
+          }
+          // Opening a peer before the wallet identity is known creates a one-peer
+          // placeholder. Only that explicit recipient can connect it to a full pair;
+          // sharing a participant (particularly self) never establishes ownership.
+          return (
+            !!address &&
+            ((candidateParticipants.length === 1 &&
+              sameCanonicalAddress(candidateParticipants[0], address) &&
+              normalizedParticipants.length <= 2 &&
+              normalizedParticipants.some(p =>
+                sameCanonicalAddress(p, address),
+              )) ||
+              (normalizedParticipants.length === 1 &&
+                sameCanonicalAddress(normalizedParticipants[0], address) &&
+                candidateParticipants.length <= 2 &&
+                candidateParticipants.some(p =>
+                  sameCanonicalAddress(p, address),
+                )))
           )
-          const convWithMessages = matchingConvs.find(
-            c => (c.messages?.length ?? 0) > 0,
-          )
-          conv =
-            convWithMessages ||
-            matchingConvs[0] ||
-            this.chats[canonicalAddr] ||
-            this.chats[address]
-        }
-        if (!conv) {
-          for (const p of normalizedParticipants) {
-            const chatForP = this.chats[p]
-            if (
-              chatForP &&
-              chatForP.kind === 'direct' &&
-              (!topic || chatForP.topic === topic)
-            ) {
-              conv = chatForP
-              break
-            }
-          }
-        }
-        if (!conv) {
-          const directId = makeConversationId(normalizedParticipants, topic)
-          if (this.conversations[directId]) {
-            conv = this.conversations[directId]
-          } else {
-            const candidates = Object.values(this.conversations).filter(c => {
-              if (c.kind !== 'direct') return false
-              if (topic !== undefined && c.topic !== topic) return false
-              if (!topic && c.topic) return false
-              if (!c.participants || c.participants.length === 0) return false
-              const cNorm = c.participants
-                .map(p => {
-                  try {
-                    return toChainDisplayAddress(p)
-                  } catch {
-                    return p
-                  }
-                })
-                .sort()
-              if (
-                cNorm.length === normalizedParticipants.length &&
-                cNorm.every((p, idx) => p === normalizedParticipants[idx])
-              ) {
-                return true
-              }
-              const matchCount = cNorm.filter(p =>
-                normalizedParticipants.some(np => sameCanonicalAddress(p, np)),
-              ).length
-              if (
-                matchCount > 0 &&
-                cNorm.length <= 2 &&
-                normalizedParticipants.length <= 2
-              ) {
-                return true
-              }
-              return false
-            })
-            conv =
-              candidates.find(c => (c.messages?.length ?? 0) > 0) ||
-              candidates[0]
-          }
-        }
+        })
+        conv = candidates.find(c => c.messages.length > 0) || candidates[0]
       }
       if (conv) {
         if (name !== undefined) conv.name = name
@@ -3254,7 +3224,11 @@ export const useChatStore = defineStore('chats', {
         if (emailRecipient !== undefined) conv.emailRecipient = emailRecipient
         conv.deletedAt = undefined
         conv.updatedAt = Date.now()
-        if ((kind === 'direct' || kind === 'email') && conv.address) {
+        if (
+          (kind === 'direct' || kind === 'email') &&
+          conv.address &&
+          conv.address !== conv.id
+        ) {
           this.chats[conv.address] = conv
         }
         if (address) {
@@ -3264,9 +3238,6 @@ export const useChatStore = defineStore('chats', {
           } catch {
             // ignore
           }
-        }
-        for (const p of normalizedParticipants) {
-          this.chats[p] = conv
         }
         return conv
       }
@@ -3278,8 +3249,9 @@ export const useChatStore = defineStore('chats', {
 
       const displayAddress =
         address ||
-        (kind === 'direct' || kind === 'email'
-          ? normalizedParticipants[0] || id
+        ((kind === 'direct' || kind === 'email') &&
+        normalizedParticipants.length === 1
+          ? normalizedParticipants[0]
           : id)
 
       conv = {
@@ -3300,7 +3272,7 @@ export const useChatStore = defineStore('chats', {
       }
 
       this.conversations[id] = conv
-      if ((kind === 'direct' || kind === 'email') && displayAddress) {
+      if ((kind === 'direct' || kind === 'email') && displayAddress !== id) {
         try {
           const canonical = toChainDisplayAddress(displayAddress)
           this.chats[canonical] = conv
@@ -3478,7 +3450,10 @@ export const useChatStore = defineStore('chats', {
       }
       let conv = this.chats[displayAddress]
       const peerConvs = this.getConversationsForAddress(displayAddress).filter(
-        c => c.kind === 'direct' && !c.topic,
+        c =>
+          c.kind === 'direct' &&
+          !c.topic &&
+          sameCanonicalAddress(c.address, displayAddress),
       )
       const withMessages = peerConvs.find(c => (c.messages?.length ?? 0) > 0)
       if (withMessages) {
@@ -3511,7 +3486,12 @@ export const useChatStore = defineStore('chats', {
         activatedByContactAddress = displayAddress
         const peerConvs = this.getConversationsForAddress(
           displayAddress,
-        ).filter(c => c.kind === 'direct' && !c.topic)
+        ).filter(
+          c =>
+            c.kind === 'direct' &&
+            !c.topic &&
+            sameCanonicalAddress(c.address, displayAddress),
+        )
         const withMessages = peerConvs.find(c => (c.messages?.length ?? 0) > 0)
         if (withMessages) {
           conv = withMessages

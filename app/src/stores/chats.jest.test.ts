@@ -2218,10 +2218,12 @@ describe('stores/chats.ts (ticket #42)', () => {
         it.each(['conversation', 'logical message'])(
           'rejects conflicting %s ownership before any row normalization',
           async conflict => {
-            const { pending, confirmed } = twins(
-              'logical-pending',
-              'logical-confirmed',
-            )
+            // Omit both logical IDs for a conversation conflict so only the attempt's
+            // conversation-owner check can reject it, not either logical-owner check.
+            const { pending, confirmed } =
+              conflict === 'conversation'
+                ? twins()
+                : twins('logical-pending', 'logical-confirmed')
             if (conflict === 'conversation') {
               confirmed.message.conversationId =
                 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'

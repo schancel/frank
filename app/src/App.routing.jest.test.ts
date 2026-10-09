@@ -1,7 +1,7 @@
 /** @jest-environment jsdom */
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { nextTick } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 import { TextDecoder, TextEncoder } from 'util'
 
 Object.assign(globalThis, { TextEncoder, TextDecoder })
@@ -68,6 +68,8 @@ jest.mock('./stores/contacts', () => ({
     replaceCuratedDefaults: jest.fn(),
     clearCuratedDefaults: jest.fn(),
     isContact: () => true,
+    getNotify: () => true,
+    setNotify: jest.fn(),
     getContact: () => ({ notify: true, profile: { name: 'Peer' } }),
   }),
 }))
@@ -79,6 +81,8 @@ jest.mock('./utils/theme', () => ({ applyTheme: jest.fn() }))
 jest.mock('./utils/notifications', () => ({ desktopNotify: jest.fn() }))
 jest.mock('./utils/own-address', () => ({
   ...jest.requireActual('./utils/own-address'),
+  useReactiveOwnCanonicalAddress: () =>
+    jest.requireActual('vue').ref('0x1a1A1A1A1a1A1a1a1a1a1a1a1a1a1a1A1A1a1a1a'),
   getOwnCanonicalAddress: async () =>
     '0x1a1A1A1A1a1A1a1a1a1a1a1a1a1a1a1A1A1a1a1a',
 }))
@@ -90,6 +94,12 @@ jest.mock('./components/dialogs/ContactBookDialog.vue', () => ({
 /* eslint-disable @typescript-eslint/no-var-requires */
 const App = require('./App.vue').default
 const ChatPage = require('./pages/Chat.vue').default
+const ChatLayout = require('./layouts/ChatLayout.vue').default
+const ChatInfoView = require('./components/panels/ChatInfoView.vue').default
+const ClearHistoryDialog =
+  require('./components/dialogs/ClearHistoryDialog.vue').default
+const DeleteChatDialog =
+  require('./components/dialogs/DeleteChatDialog.vue').default
 const quasar = require('quasar')
 const { setStartupRestoration } = require('./boot/startup-state')
 const createAppRouter = require('./router').default
@@ -241,6 +251,107 @@ describe('App exact conversation route authority (#1237)', () => {
         page?.unmount()
         wrapper.unmount()
       }
+    },
+  )
+
+  describe.each(['lowercase peer', 'checksum peer', 'explicit ID'])(
+    'mounted info actions for a %s route',
+    destination => {
+      it.each(['clear', 'delete'])(
+        'passes the selected ID to %s confirmation',
+        async action => {
+          const { chats, first, second, defaultThread, router, wrapper } =
+            await mountedApp()
+          const selected =
+            destination === 'explicit ID' ? second : defaultThread
+          const routeAddress =
+            destination === 'lowercase peer'
+              ? PEER.toLowerCase()
+              : destination === 'checksum peer'
+              ? PEER
+              : selected.id
+          const clear = jest
+            .spyOn(chats, 'clearChat')
+            .mockResolvedValue(undefined)
+          const remove = jest
+            .spyOn(chats, 'deleteChat')
+            .mockResolvedValue(undefined)
+          const simple = { template: '<div><slot /></div>' }
+          const components = Object.fromEntries(
+            Object.keys(quasar)
+              .filter(name => /^Q[A-Z]/.test(name))
+              .map(name => [name, simple]),
+          )
+          components.QDialog = defineComponent({
+            props: { modelValue: Boolean },
+            setup:
+              (props, { slots }) =>
+              () =>
+                props.modelValue ? h('div', slots.default?.()) : null,
+          })
+          components.QItem = defineComponent({
+            props: { disable: Boolean },
+            setup:
+              (props, { slots }) =>
+              () =>
+                h('button', { disabled: props.disable }, slots.default?.()),
+          })
+          let layout: ReturnType<typeof mount> | undefined
+          try {
+            await openChat(router, first.id)
+            await settleNavigation()
+            await router.push({
+              path: `/chat/${routeAddress}`,
+              query: { info: 'true' },
+            })
+            await settleNavigation()
+            expect(router.currentRoute.value.params.address).toBe(routeAddress)
+            expect(router.currentRoute.value.query).toEqual({ info: 'true' })
+            expect(chats.activeConversationId).toBe(selected.id)
+            layout = mount(ChatLayout, {
+              global: {
+                plugins: [router],
+                components,
+                mocks: {
+                  $t: (key: string) => key,
+                  $q: { dark: { isActive: false } },
+                },
+              },
+            })
+            await flushPromises()
+            const info = layout.getComponent(ChatInfoView)
+            expect(info.props('conversationId')).toBe(selected.id)
+            expect(info.props('address')).toBe(PEER)
+            const actionKey =
+              action === 'clear'
+                ? 'chatRightDrawer.clearHistory'
+                : 'chatRightDrawer.deleteChat'
+            const actionButton = info
+              .findAll('button')
+              .find(button => button.text() === actionKey)!
+            expect(actionButton.element.disabled).toBe(false)
+            await actionButton.trigger('click')
+            const dialog = info.getComponent(
+              action === 'clear' ? ClearHistoryDialog : DeleteChatDialog,
+            )
+            expect(dialog.props('address')).toBe(selected.id)
+            const label =
+              action === 'clear'
+                ? 'clearHistoryDialog.clear'
+                : 'deleteChatDialog.delete'
+            await dialog.get(`[label="${label}"]`).trigger('click')
+            await flushPromises()
+            expect(action === 'clear' ? clear : remove).toHaveBeenCalledWith(
+              selected.id,
+            )
+            expect(action === 'clear' ? clear : remove).toHaveBeenCalledTimes(1)
+            expect(action === 'clear' ? remove : clear).not.toHaveBeenCalled()
+          } finally {
+            layout?.unmount()
+            wrapper.unmount()
+          }
+        },
+      )
     },
   )
 

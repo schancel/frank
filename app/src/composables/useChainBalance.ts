@@ -25,6 +25,7 @@ import {
 } from '@frank/wallet/chain'
 import { accountSession, accountStatus } from '../accounts/session'
 import { useBalance, APP_STATE_EVENT, BALANCE_POLL_MS } from './useBalance'
+import { useSafeOracleStore } from '../stores/oracle'
 
 export interface TokenItem {
   id: string
@@ -379,15 +380,6 @@ export function getChainTokens(chainName: string): TokenItem[] {
     const nativeNum = solanaState.value.balance
       ? Number(solanaState.value.balance) / 1e9
       : 0
-    const avuVal = nativeNum * 145.0 * 11.90476
-    const nativeAvu =
-      avuVal > 0
-        ? `≈ ${avuVal.toLocaleString('en-US', {
-            minimumFractionDigits: 1,
-            maximumFractionDigits: 1,
-          })} AVU`
-        : ''
-
     const items: TokenItem[] = [
       {
         id: 'solana-native',
@@ -396,7 +388,10 @@ export function getChainTokens(chainName: string): TokenItem[] {
         mintOrAddress: accountSession.getCachedChainAddress?.('solana') || '',
         balanceFormatted: nativeBal,
         numericBalance: nativeNum,
-        avuFormatted: nativeAvu,
+        avuFormatted: useSafeOracleStore().formatAvuAmount(
+          'solana',
+          solanaState.value.balance,
+        ),
         decimals: 9,
         isNative: true,
       },

@@ -92,6 +92,51 @@ describe('durable EVM native journal', () => {
       await db.close()
     }
   })
+  it.each(['exposed', 'middle', 'cancelled', 'zero-sequence'])(
+    'refuses incomplete retained history (%s) without changing durable bytes',
+    async problem => {
+      const rows = []
+      for (let i = 0; i < (problem === 'middle' ? 3 : 1); i++) {
+        const row = await journal.prepare(plan(i))
+        rows.push(row)
+        if (problem === 'exposed') {
+          await journal.checkpointSigned(
+            row.operationId,
+            0,
+            await wallet.signTransaction(
+              Transaction.from(row.members[0]!.unsignedTransaction),
+            ),
+          )
+          await journal.markExposed(row.operationId, 0)
+        } else await journal.cancelUnsigned(row.operationId)
+      }
+      await journal.Close()
+      const db = level(join(root, 'evm-native-operations-v1'))
+      const missing = rows[problem === 'middle' ? 1 : 0]!
+      await db.del(`operation:${missing.operationId}`)
+      if (problem === 'zero-sequence') {
+        const operationId = 'evm-native-v1:0000000000000000'
+        await db.put(
+          `operation:${operationId}`,
+          JSON.stringify({ ...missing, operationId }),
+        )
+      }
+      const before = []
+      for await (const entry of db.iterator()) before.push(entry.map(String))
+      await db.close()
+      await expect(journal.Open()).rejects.toThrow()
+      expect(() => journal.canSelect(address, 0)).toThrow()
+      const check = level(join(root, 'evm-native-operations-v1'))
+      try {
+        const after = []
+        for await (const entry of check.iterator())
+          after.push(entry.map(String))
+        expect(after).toEqual(before)
+      } finally {
+        await check.close()
+      }
+    },
+  )
   it('reserves maximum evidence growth before signing and refuses new admission at capacity', async () => {
     const row = await signed()
     await journal.Close()

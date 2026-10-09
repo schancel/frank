@@ -33,6 +33,8 @@ export interface EvmDrainParams {
  * attempt-journal, sub-account pool, and concurrency machinery.
  */
 export interface EvmTransactionBuilder {
+  /** Asset paying gas; omitted means native gas even for calldata transfers. */
+  readonly feeAsset?: "native" | "transfer";
   /** Explicit support for native-value fan-in accounting, not token-as-gas transfers. */
   readonly supportsNativeConsolidation?: boolean;
   getBalance(params: { address: string; provider: Provider }): Promise<bigint>;
@@ -149,6 +151,7 @@ export const TEMPO_PATH_USD_ADDRESS =
  * with native `value: 0n`.
  */
 export class Tip20TransactionBuilder implements EvmTransactionBuilder {
+  readonly feeAsset = "transfer";
   readonly tokenAddress: string;
 
   constructor(tokenAddress: string = TEMPO_PATH_USD_ADDRESS) {

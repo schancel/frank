@@ -1,5 +1,6 @@
 import {
   Mnemonic,
+  Network,
   Transaction,
   Wallet,
   getBytes,
@@ -626,6 +627,151 @@ test('cached callers serialize signing through the same durable native owner', a
     await first.close()
   }
 })
+
+test.each(['sendNative', 'sendLegacy'] as const)(
+  'snapshots %s authorization before the public wallet queue',
+  async method => {
+    const chain = createMonadChain(config)
+    const wallet = (await chain.createWallet(roots())) as MonadChainWalletHandle
+    const rpc = mockNativeRpc(wallet, { [expected[0].main]: 500000n })
+    jest
+      .spyOn(chain.directMessages, 'send')
+      .mockResolvedValue({ payloadDigest: 'aa' } as never)
+    let entered!: () => void
+    let release!: () => void
+    const started = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    const wait = new Promise<void>(resolve => {
+      release = resolve
+    })
+    try {
+      const first = wallet.sendNative({
+        recipient: { raw: expected[1].main },
+        value: 1000n,
+        onSigned: async () => {
+          entered()
+          await wait
+        },
+      })
+      await started
+      const params = { recipient: { raw: expected[1].main }, value: 100000n }
+      const second = wallet[method]!(params)
+      params.recipient.raw = expected[1].auth
+      params.value = 150000n
+      release()
+      await Promise.all([first, second])
+      const tx = Transaction.from(rpc.broadcast.mock.calls[1]![0])
+      expect(tx.to).toBe(expected[1].main)
+      expect(tx.value).toBe(100000n)
+      const row = wallet.getNativeOperations!()[1]!
+      expect(row.recipient).toBe(expected[1].main.toLowerCase())
+      expect(row.intendedValueWei).toBe('100000')
+    } finally {
+      release?.()
+      await wallet.close()
+    }
+  },
+)
+
+test.each(['main', 'identity'] as const)(
+  'retains the pending %s funding admission hold through timeout and reopen',
+  async origin => {
+    const dir = await mkdtemp(join(tmpdir(), 'frank-native-funding-hold-'))
+    const cfg = {
+      ...config,
+      walletStorageLocation: join(dir, 'wallet'),
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    }
+    let wallet: MonadChainWalletHandle | undefined
+    try {
+      wallet = (await createMonadChain(cfg).createWallet(
+        roots(),
+      )) as MonadChainWalletHandle
+      const source = origin === 'main' ? expected[0].main : expected[0].auth
+      mockNativeRpc(wallet, { [source]: 500000n })
+      // A cancelled native row still contributes source provenance on reopen.
+      // That reference must not bypass the separate pool funding hold.
+      const failedSignature = jest
+        .spyOn(Wallet.prototype, 'signTransaction')
+        .mockRejectedValueOnce(new Error('signer unavailable'))
+      await expect(
+        wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1n }),
+      ).rejects.toThrow('signer unavailable')
+      failedSignature.mockRestore()
+      await wallet.cancelUnsignedNativeOperation!(
+        wallet.getNativeOperations!()[0]!.operationId,
+      )
+      const originalOperations = wallet.getNativeOperations!()
+      jest
+        .spyOn(wallet.provider, 'getNetwork')
+        .mockResolvedValue(Network.from(10143))
+      const ActualSigner = jest.requireActual<
+        typeof import('../monad-account-tx')
+      >('../monad-account-tx').MonadAccountTxSigner
+      const submitted = jest.fn(async (raw: string) => keccak256(raw))
+      const signer = new ActualSigner({
+        privateKey:
+          origin === 'main'
+            ? expected[0].mainSecret
+            : wallet.identity.toPrivateKeyHex(),
+        provider: wallet.provider,
+        httpClient: {
+          submitRawTransaction: submitted,
+          getTransactionReceipt: async () => undefined,
+        },
+      })
+      await expect(
+        wallet.pool.topUpPool({
+          mainAccountSigner: signer,
+          burnValue: 1000n,
+          gasReserve: 21000n,
+          bufferSize: 1,
+          overrides: {
+            nonce: 0,
+            chainId: 10143n,
+            gasLimit: 21000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+          },
+          receipt: { maxAttempts: 0 },
+        }),
+      ).rejects.toThrow('still pending')
+      expect(submitted).toHaveBeenCalledTimes(1)
+      const funding = wallet.pool
+        .records()
+        .find(record => record.status === 'funding')!
+      expect(Transaction.from(funding.fundingAttempt!.rawTx).from).toBe(source)
+      for (const lifetime of ['current', 'reopened']) {
+        if (lifetime === 'reopened') {
+          await wallet.close()
+          wallet = (await createMonadChain(cfg).createWallet(
+            roots(),
+          )) as MonadChainWalletHandle
+        }
+        const rpc = mockNativeRpc(wallet, { [source]: 500000n })
+        const signed = jest.fn(async () => undefined)
+        for (const method of ['sendNative', 'sendLegacy'] as const)
+          await expect(
+            wallet[method]!({
+              recipient: { raw: expected[1].main },
+              value: 100000n,
+              onSigned: signed,
+            }),
+          ).rejects.toThrow('funding')
+        expect(signed).not.toHaveBeenCalled()
+        expect(rpc.broadcast).not.toHaveBeenCalled()
+        expect(wallet.getNativeOperations!()).toEqual(originalOperations)
+        expect(
+          wallet.pool.records().find(record => record.status === 'funding'),
+        ).toEqual(funding)
+      }
+    } finally {
+      await wallet?.close()
+      await rm(dir, { recursive: true, force: true })
+    }
+  },
+)
 
 test('reopens existing EVM inventory after close even when authentication changes', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-716-'))

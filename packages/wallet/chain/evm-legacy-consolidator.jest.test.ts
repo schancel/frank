@@ -1,12 +1,22 @@
-import { mkdtemp, rm } from 'fs/promises'
+import { mkdir, mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { Transaction, Wallet, keccak256, type Provider } from 'ethers'
+import {
+  Interface,
+  Transaction,
+  Wallet,
+  keccak256,
+  type Provider,
+} from 'ethers'
 import {
   EvmLegacyConsolidator,
   EvmNativeOperationPendingError,
 } from './evm-legacy-consolidator'
-import { NativeEvmTransactionBuilder } from './evm-transaction-builder'
+import {
+  NativeEvmTransactionBuilder,
+  Tip20TransactionBuilder,
+  type EvmTransactionBuilder,
+} from './evm-transaction-builder'
 import {
   EvmNativeOperationJournal,
   type EvmNativeSource,
@@ -81,6 +91,7 @@ function chain(initial: bigint[]) {
       gasPrice: 1n,
     })),
     estimateGas: jest.fn(async () => 21000n),
+    call: jest.fn(async () => '0x'),
     getTransaction: jest.fn(
       async (hash: string) => transactions.get(hash) ?? null,
     ),
@@ -130,7 +141,7 @@ describe('wallet-lifetime EVM native operations', () => {
     state: ReturnType<typeof chain>,
     options: {
       sources?: EvmNativeSource[]
-      builder?: NativeEvmTransactionBuilder
+      builder?: EvmTransactionBuilder
     } = {},
   ) {
     const sign = jest.fn(async (source: EvmNativeSource, raw: string) => {
@@ -375,15 +386,150 @@ describe('wallet-lifetime EVM native operations', () => {
     ).rejects.toThrow()
     const row = journal.list()[0]!
     state.mine(row.members[0]!.signed!.rawTransaction, 0)
-    await expect(
-      current.executor.resumeOperation(row.operationId),
-    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const first = current.executor.resumeOperation(row.operationId)
+    const second = current.executor.resumeOperation(row.operationId)
+    expect(second).toBe(first)
+    const resumed = await Promise.allSettled([first, second])
+    for (const result of resumed) {
+      expect(result.status).toBe('rejected')
+      if (result.status === 'rejected')
+        expect(result.reason).toBeInstanceOf(EvmNativeOperationPendingError)
+    }
+    expect(current.sign).toHaveBeenCalledTimes(1)
+    expect(state.raws).toHaveLength(1)
     expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
       'included-revert',
     )
     expect(journal.canSelect(row.members[0]!.source.address, 0)).toBe(false)
     expect(state.balances.get(recipient)).toBeUndefined()
   })
+  it('sends a TIP-20 direct payment using token fee balance with zero native balance', async () => {
+    const tempoJournal = {
+      location: join(location, 'tempo'),
+      binding: {
+        ...binding,
+        chainIdentifier: 'tempo-mainnet',
+        nativeChainId: '4217',
+      },
+    }
+    await journal.Close()
+    await mkdir(tempoJournal.location)
+    journal = new EvmNativeOperationJournal(tempoJournal)
+    await journal.Open()
+    const state = chain([0n])
+    state.setMode('retained')
+    const iface = new Interface([
+      'function balanceOf(address) view returns (uint256)',
+      'function transfer(address,uint256) returns (bool)',
+    ])
+    state.provider.call.mockResolvedValue(
+      iface.encodeFunctionResult('balanceOf', [165000n]),
+    )
+    const builder = new Tip20TransactionBuilder()
+    const current = owner(state, { builder, sources: [sources()[0]!] })
+    await expect(
+      current.executor.sendNative({
+        recipient: { raw: recipient },
+        value: 100000n,
+      }),
+    ).resolves.toHaveProperty('txHash')
+    const row = journal.list()[0]!
+    const tx = Transaction.from(row.members[0]!.signed!.rawTransaction)
+    expect(tx.chainId).toBe(4217n)
+    expect(tx.to!.toLowerCase()).toBe(builder.tokenAddress.toLowerCase())
+    expect(tx.value).toBe(0n)
+    expect(tx.data).toBe(
+      iface.encodeFunctionData('transfer', [recipient, 100000n]),
+    )
+    expect(row.intendedValueWei).toBe('100000')
+    expect(row.maximumFeeWei).toBe('65000')
+    await journal.Close()
+    journal = new EvmNativeOperationJournal(tempoJournal)
+    await journal.Open()
+    const recovered = owner(state, { builder, sources: [] })
+    await recovered.executor.resumeOperation(row.operationId)
+    expect(recovered.sign).not.toHaveBeenCalled()
+    expect(state.raws).toEqual([
+      row.members[0]!.signed!.rawTransaction,
+      row.members[0]!.signed!.rawTransaction,
+    ])
+  })
+  it.each(['native', 'token'])(
+    'refuses insufficient %s fee balance before signing',
+    async asset => {
+      const state = chain([asset === 'native' ? 120999n : 0n])
+      const iface = new Interface([
+        'function balanceOf(address) view returns (uint256)',
+      ])
+      state.provider.call.mockResolvedValue(
+        iface.encodeFunctionResult('balanceOf', [164999n]),
+      )
+      const current = owner(state, {
+        builder:
+          asset === 'native'
+            ? new NativeEvmTransactionBuilder()
+            : new Tip20TransactionBuilder(),
+        sources: [sources()[0]!],
+      })
+      await expect(
+        current.executor.sendNative({
+          recipient: { raw: recipient },
+          value: 100000n,
+        }),
+      ).rejects.toThrow('Insufficient')
+      expect(current.sign).not.toHaveBeenCalled()
+      expect(journal.list()).toEqual([])
+    },
+  )
+  it.each(
+    (['sendNative', 'sendLegacy'] as const).flatMap(method =>
+      ['queue', 'fee', 'builder'].map(boundary => ({ method, boundary })),
+    ),
+  )(
+    'snapshots $method authorization before $boundary await',
+    async ({ method, boundary }) => {
+      const state = chain([1000000n])
+      const builder = new NativeEvmTransactionBuilder()
+      let entered!: () => void
+      let release!: () => void
+      const started = new Promise<void>(resolve => {
+        entered = resolve
+      })
+      const wait = new Promise<void>(resolve => {
+        release = resolve
+      })
+      if (boundary === 'fee')
+        state.provider.getFeeData.mockImplementationOnce(async () => {
+          entered()
+          await wait
+          return { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, gasPrice: 1n }
+        })
+      if (boundary === 'builder') {
+        const build = builder.buildTransfer.bind(builder)
+        jest
+          .spyOn(builder, 'buildTransfer')
+          .mockImplementationOnce(async params => {
+            entered()
+            await wait
+            return build(params)
+          })
+      }
+      const current = owner(state, { builder })
+      const params = { recipient: { raw: recipient }, value: 100000n }
+      const send = current.executor[method](params)
+      if (boundary !== 'queue') await started
+      params.recipient.raw = wallets[2]!.address
+      params.value = 150000n
+      release?.()
+      await send
+      const row = journal.list()[journal.list().length - 1]!
+      expect(row.recipient).toBe(recipient)
+      expect(row.intendedValueWei).toBe('100000')
+      expect(
+        Transaction.from(row.members[0]!.signed!.rawTransaction).value,
+      ).toBe(100000n)
+    },
+  )
   it('does not broadcast when the durable exposure barrier fails', async () => {
     const state = chain([200000n])
     const current = owner(state)

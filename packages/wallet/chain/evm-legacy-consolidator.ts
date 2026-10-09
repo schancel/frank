@@ -292,7 +292,13 @@ export class EvmLegacyConsolidator {
       if (account.spendableValue < params.value) continue
       const raw = await this.transaction(account, recipient, params.value, fees)
       const tx = Transaction.from(raw)
-      if (BigInt(account.account.balanceWei) < tx.value + nativeMaximumFee(tx))
+      const maximumFee = nativeMaximumFee(tx)
+      if (
+        this.config.transactionBuilder.feeAsset === 'transfer'
+          ? BigInt(account.account.balanceWei) < tx.value ||
+            account.spendableValue < params.value + maximumFee
+          : BigInt(account.account.balanceWei) < tx.value + maximumFee
+      )
         continue
       return this.config.journal.prepare({
         kind,
@@ -508,6 +514,7 @@ export class EvmLegacyConsolidator {
     return run
   }
   sendNative(params: SendLegacyParams): Promise<ChainTransaction> {
+    params = { ...params, recipient: { ...params.recipient } }
     return this.run(async () => {
       const row = await this.plan(params, 'native')
       return this.transactionHandle(
@@ -516,6 +523,7 @@ export class EvmLegacyConsolidator {
     })
   }
   sendLegacy(params: SendLegacyParams): Promise<LegacySendResult> {
+    params = { ...params, recipient: { ...params.recipient } }
     return this.run(async () => {
       params.onProgress?.({ status: { stage: 'planning' } })
       const row = await this.plan(params, 'legacy')

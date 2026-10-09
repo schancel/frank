@@ -501,9 +501,12 @@ export class EvmNativeOperationJournal {
         if (m.nextSequence < 1) fail()
         this.nextSequence = m.nextSequence
       } else if (rows.size) fail()
+      // Rows are never deleted, including cancelled plans. The manifest therefore
+      // commits to every allocated sequence, not merely an upper bound.
+      if (rows.size !== this.nextSequence - 1) fail()
       for (const row of rows.values()) {
-        if (parseInt(row.operationId.split(':')[1]!, 16) >= this.nextSequence)
-          fail()
+        const sequence = parseInt(row.operationId.split(':')[1]!, 16)
+        if (sequence < 1 || sequence >= this.nextSequence) fail()
       }
       if (
         rows.size > this.maxRecords ||

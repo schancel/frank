@@ -1997,6 +1997,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return { txHash: row.members[0]!.signed!.transactionHash };
             },
             async sendNative(params) {
+              params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, () =>
                 runMainAccountExclusive(wallet, () =>
@@ -2017,6 +2018,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return result;
             },
             async sendLegacy(params) {
+              params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, () =>
                 runMainAccountExclusive(wallet, () =>
@@ -2135,6 +2137,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             return signer;
           };
           const getSources = async (): Promise<EvmNativeSource[]> => {
+            // Preserve the existing funding-source hold until P2 derives shared
+            // source claims. Filtering funding children alone cannot protect
+            // their main/identity sender or a retained journal source reference.
+            if (pool.records().some((record) => record.status === "funding"))
+              throw new Error(
+                "Native send is unavailable while pool funding remains pending"
+              );
             // This construction pool belongs to this bound wallet; indexes are derivation hints.
             const refs: EvmNativeSource[] = [
               { kind: "main", address: mainAccount.address.toLowerCase() },

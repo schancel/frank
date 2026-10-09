@@ -232,13 +232,10 @@ export default defineComponent({
     ChatBannerStack,
   },
   beforeRouteUpdate(to: RouteLocationNormalized) {
-    this.address = (to?.params?.address as string) || ''
+    const nextAddress = (to?.params?.address as string) || ''
     this.messagesToShow = 30
-    if (
-      this.address &&
-      typeof this.chatStore?.setActiveConversation === 'function'
-    ) {
-      this.chatStore.setActiveConversation(this.address)
+    if (this.address !== nextAddress) {
+      this.address = nextAddress
     }
   },
   beforeUnmount() {
@@ -900,6 +897,13 @@ export default defineComponent({
     // session; a failed send stays in the chat with its Retry.
     async runBlackjackDealer() {
       if (this.sendingMessage || this.resumingHand) return
+      if (
+        !this.messages?.some(m =>
+          m.items?.some(it => it.type === 'blackjack-hand'),
+        )
+      ) {
+        return
+      }
       const own = await getOwnCanonicalAddress()
       if (!own || this.sendingMessage || this.resumingHand) return
       // First finish what this user already decided: a hand message that was cut off (the

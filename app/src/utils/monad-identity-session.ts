@@ -31,7 +31,10 @@ import {
 } from '@frank/cashweb/relay/open-directory'
 import { toHex } from '@frank/codec'
 import { accountSession, accountStatus } from '../accounts/session'
-import { setDirectoryLookup } from './directory-peer'
+import {
+  cancelDirectoryLookupWaiters,
+  setDirectoryLookup,
+} from './directory-peer'
 import {
   messagingState,
   messagingStateOwner,
@@ -275,6 +278,7 @@ export async function stopMessaging(): Promise<void> {
   const previous = live
   live = undefined
   setDirectoryLookup(accountStatus.status === 'ready' ? 'pending' : null)
+  cancelDirectoryLookupWaiters()
   if (state.status !== 'pending') state.status = 'pending'
   if (!previous) return
   previous.polling.stop()
@@ -416,6 +420,7 @@ export async function startMessaging(): Promise<void> {
   attempt = undefined
   state.status = 'pending'
   state.reason = failure ?? 'account-unavailable'
+  cancelDirectoryLookupWaiters()
   if (d.session.state.status !== 'ready') return
   // An account change during the attempt is not a failure: start over at once for the new one.
   if (failure) failures += 1

@@ -567,6 +567,58 @@ describe('stores/contacts.ts (ticket #42)', () => {
       )
       expect(consoleErrorSpy).not.toHaveBeenCalled()
     })
+
+    it('does not refetch a warm contact missing avatar within updateInterval', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(60000)
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          lastUpdateTime: Date.now(),
+          profile: {
+            name: 'Alice',
+            signedName: 'Alice',
+            bio: '',
+            avatar: '',
+            pubKey: null,
+            isBot: false,
+          },
+        },
+      })
+      const fetchProfileSpy = jest.spyOn(activeChain, 'fetchProfile')
+
+      await contacts.refresh(ADDRESS)
+
+      expect(fetchProfileSpy).not.toHaveBeenCalled()
+    })
+
+    it('deduplicates concurrent refresh calls for the same address', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          profile: { name: 'Bob', bio: '', avatar: '', pubKey: null },
+        },
+      })
+      const fetchProfileSpy = jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockImplementation(async () => {
+          await new Promise(r => setTimeout(r, 10))
+          return {
+            address: { raw: ADDRESS },
+            pubKey: PUB_KEY_BYTES,
+          }
+        })
+
+      await Promise.all([
+        contacts.refresh(ADDRESS),
+        contacts.refresh(ADDRESS),
+        contacts.refresh(ADDRESS),
+      ])
+
+      expect(fetchProfileSpy).toHaveBeenCalledTimes(1)
+    })
   })
 
   describe('refreshContacts', () => {

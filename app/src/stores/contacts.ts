@@ -220,6 +220,8 @@ export async function rehydrateContacts(
   }
 }
 
+const inFlightRefreshes = new Map<string, Promise<void>>()
+
 export const useContactStore = defineStore('contacts', {
   state: (): State => freshContactsState(),
   getters: {
@@ -549,105 +551,120 @@ export const useContactStore = defineStore('contacts', {
       if (!isChainAddress(address)) {
         return
       }
-      const oldContactInfo = this.getContact(address)
-      const updateInterval = this.updateInterval
-      const now = moment()
-      const lastUpdateTime = oldContactInfo.lastUpdateTime ?? 0
-      const expired =
-        lastUpdateTime &&
-        moment(lastUpdateTime).add(updateInterval, 'milliseconds').isBefore(now)
-      const noPicture = oldContactInfo.profile && !oldContactInfo.profile.avatar
-      const botUnknown =
-        oldContactInfo.profile && oldContactInfo.profile.isBot === undefined
-      // A profile saved before signed-name provenance has a fresh picture and bot flag, so the
-      // hourly skip would leave it unknown forever. Unknown provenance must be fetched. A
-      // known blank signed name is not unknown and must not be refreshed just to fill it.
-      const signedNameUnknown =
-        oldContactInfo.profile &&
-        oldContactInfo.profile.signedName === undefined
-      if (!expired && !noPicture && !botUnknown && !signedNameUnknown) {
-        // Short circuit if we already updated this contact recently.
-        console.log('skipping contact update, checked recently')
-        return
-      }
-      console.log('Updating contact', address)
+      const canonical = safeToChainDisplayAddress(address) ?? address
+      const existing = inFlightRefreshes.get(canonical)
+      if (existing) return existing
 
-      try {
-        const chainAddress = activeChain.parseAddress(address)
-        if (!chainAddress) {
-          throw new Error(`Invalid ${activeChain.name} address: ${address}`)
-        }
-        const profileInfo = await fetchContactProfile(chainAddress)
-        if (!profileInfo) {
-          console.debug(`No registered profile found for ${address}`)
-          const displayAddress = safeToChainDisplayAddress(address) ?? address
-          const currentName = oldContactInfo.profile?.name
-          const name =
-            !isBlankName(currentName) &&
-            currentName !== pendingRelayData.profile.name
-              ? currentName
-              : `${shortAddressLabel(displayAddress)} (Unregistered)`
-          this.updateContact({
-            address,
-            profile: {
-              ...oldContactInfo.profile,
-              name,
-              signedName: oldContactInfo.profile.signedName ?? null,
-              isBot: oldContactInfo.profile.isBot ?? false,
-              accountType: oldContactInfo.profile.accountType ?? 0,
-              botRole: oldContactInfo.profile.botRole,
-            },
-            inbox: oldContactInfo.inbox,
-          })
+      const refreshOp = (async () => {
+        const oldContactInfo = this.getContact(address)
+        const updateInterval = this.updateInterval
+        const now = moment()
+        const lastUpdateTime = oldContactInfo.lastUpdateTime ?? 0
+        const isFresh =
+          lastUpdateTime > 0 &&
+          updateInterval > 0 &&
+          moment(now).diff(moment(lastUpdateTime), 'milliseconds') <
+            updateInterval
+        const botUnknown =
+          oldContactInfo.profile && oldContactInfo.profile.isBot === undefined
+        // A profile saved before signed-name provenance has a fresh picture and bot flag, so the
+        // hourly skip would leave it unknown forever. Unknown provenance must be fetched. A
+        // known blank signed name is not unknown and must not be refreshed just to fill it.
+        const signedNameUnknown =
+          oldContactInfo.profile &&
+          oldContactInfo.profile.signedName === undefined
+        if (isFresh && !botUnknown && !signedNameUnknown) {
+          // Short circuit if we already updated this contact recently.
+          console.log('skipping contact update, checked recently')
           return
         }
-        this.updateContact({
-          address,
-          profile: {
-            ...oldContactInfo.profile,
-            // A registered profile without a display name must not keep the "Loading..."
-            // placeholder (#317); a name the user already has for this contact is kept.
-            name: !isBlankName(profileInfo.name)
-              ? (profileInfo.name as string)
-              : !isBlankName(oldContactInfo.profile.name) &&
-                oldContactInfo.profile.name !== pendingRelayData.profile.name &&
-                !oldContactInfo.profile.name.endsWith('(Unregistered)')
-              ? oldContactInfo.profile.name
-              : shortAddressLabel(
-                  safeToChainDisplayAddress(address) ?? address,
-                ),
-            signedName: profileInfo.name ?? null,
-            username:
-              profileInfo.username ?? oldContactInfo.profile.username ?? null,
-            bio: profileInfo.bio ?? oldContactInfo.profile.bio,
-            avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
-            location:
-              profileInfo.location ?? oldContactInfo.profile.location ?? null,
-            links: profileInfo.links ?? oldContactInfo.profile.links ?? [],
-            isBot: profileInfo.bot === true,
-            accountType: profileInfo.accountType,
-            botRole: profileInfo.botRole,
-            pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
-          },
-          inbox: oldContactInfo.inbox,
-        })
-      } catch (err) {
-        console.error(err)
-        const displayAddress = safeToChainDisplayAddress(address) ?? address
-        const currentName = oldContactInfo.profile?.name
-        if (
-          isBlankName(currentName) ||
-          currentName === pendingRelayData.profile.name
-        ) {
+        console.log('Updating contact', address)
+
+        try {
+          const chainAddress = activeChain.parseAddress(address)
+          if (!chainAddress) {
+            throw new Error(`Invalid ${activeChain.name} address: ${address}`)
+          }
+          const profileInfo = await fetchContactProfile(chainAddress)
+          if (!profileInfo) {
+            console.debug(`No registered profile found for ${address}`)
+            const displayAddress = safeToChainDisplayAddress(address) ?? address
+            const currentName = oldContactInfo.profile?.name
+            const name =
+              !isBlankName(currentName) &&
+              currentName !== pendingRelayData.profile.name
+                ? currentName
+                : `${shortAddressLabel(displayAddress)} (Unregistered)`
+            this.updateContact({
+              address,
+              profile: {
+                ...oldContactInfo.profile,
+                name,
+                signedName: oldContactInfo.profile.signedName ?? null,
+                isBot: oldContactInfo.profile.isBot ?? false,
+                accountType: oldContactInfo.profile.accountType ?? 0,
+                botRole: oldContactInfo.profile.botRole,
+              },
+              inbox: oldContactInfo.inbox,
+            })
+            return
+          }
           this.updateContact({
             address,
             profile: {
               ...oldContactInfo.profile,
-              name: `${shortAddressLabel(displayAddress)} (Unregistered)`,
+              // A registered profile without a display name must not keep the "Loading..."
+              // placeholder (#317); a name the user already has for this contact is kept.
+              name: !isBlankName(profileInfo.name)
+                ? (profileInfo.name as string)
+                : !isBlankName(oldContactInfo.profile.name) &&
+                  oldContactInfo.profile.name !==
+                    pendingRelayData.profile.name &&
+                  !oldContactInfo.profile.name.endsWith('(Unregistered)')
+                ? oldContactInfo.profile.name
+                : shortAddressLabel(
+                    safeToChainDisplayAddress(address) ?? address,
+                  ),
+              signedName: profileInfo.name ?? null,
+              username:
+                profileInfo.username ?? oldContactInfo.profile.username ?? null,
+              bio: profileInfo.bio ?? oldContactInfo.profile.bio,
+              avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
+              location:
+                profileInfo.location ?? oldContactInfo.profile.location ?? null,
+              links: profileInfo.links ?? oldContactInfo.profile.links ?? [],
+              isBot: profileInfo.bot === true,
+              accountType: profileInfo.accountType,
+              botRole: profileInfo.botRole,
+              pubKey: markRaw(profilePubKeyFromBytes(profileInfo.pubKey)),
             },
             inbox: oldContactInfo.inbox,
           })
+        } catch (err) {
+          console.error(err)
+          const displayAddress = safeToChainDisplayAddress(address) ?? address
+          const currentName = oldContactInfo.profile?.name
+          if (
+            isBlankName(currentName) ||
+            currentName === pendingRelayData.profile.name
+          ) {
+            this.updateContact({
+              address,
+              profile: {
+                ...oldContactInfo.profile,
+                name: `${shortAddressLabel(displayAddress)} (Unregistered)`,
+              },
+              inbox: oldContactInfo.inbox,
+            })
+          }
         }
+      })()
+
+      inFlightRefreshes.set(canonical, refreshOp)
+      try {
+        await refreshOp
+      } finally {
+        inFlightRefreshes.delete(canonical)
       }
     },
   },

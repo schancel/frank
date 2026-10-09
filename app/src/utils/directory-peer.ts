@@ -20,12 +20,50 @@ export type DirectoryLookup = (address: string) => Promise<{ subject: string }>
  * `'pending'`: a typed account exists but its entry is not published yet; nothing is looked up.
  */
 let lookup: DirectoryLookup | 'pending' | null = null
+let pendingWaiters: Array<() => void> = []
 
 /** Set by the messaging session. */
 export function setDirectoryLookup(
   value: DirectoryLookup | 'pending' | null,
 ): void {
   lookup = value
+  if (lookup !== 'pending' && pendingWaiters.length > 0) {
+    const waiters = pendingWaiters
+    pendingWaiters = []
+    for (const w of waiters) w()
+  }
+}
+
+/** Wake up any pending lookup waiters when messaging initialization has failed or cancelled. */
+export function cancelDirectoryLookupWaiters(): void {
+  if (pendingWaiters.length > 0) {
+    const waiters = pendingWaiters
+    pendingWaiters = []
+    for (const w of waiters) w()
+  }
+}
+
+/** Resolves once directory lookup transitions away from 'pending', or after timeout. */
+export async function waitForDirectoryLookup(
+  timeoutMs = 3000,
+): Promise<DirectoryLookup | 'pending' | null> {
+  if (lookup !== 'pending') return lookup
+  return new Promise(resolve => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        resolve(lookup)
+      }
+    }, timeoutMs)
+    pendingWaiters.push(() => {
+      if (!settled) {
+        settled = true
+        clearTimeout(timer)
+        resolve(lookup)
+      }
+    })
+  })
 }
 
 /** Why the last directory lookup of an address found nothing, for a plain message to the user. */
@@ -48,6 +86,9 @@ export function contactLookupFailure(
 export async function fetchContactProfile(
   address: ChainAddress,
 ): Promise<ProfileInfo | undefined> {
+  if (lookup === 'pending') {
+    await waitForDirectoryLookup(3000)
+  }
   if (lookup === null) return activeChain.fetchProfile(address)
   const key = address.raw.toLowerCase()
   if (lookup === 'pending') {

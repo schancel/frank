@@ -1,0 +1,49 @@
+name: mail-gateway
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/mail-gateway/**"
+      - "packages/frank-codec/**"
+      - "packages/cashweb/**"
+      - "packages/wallet/**"
+      - "packages/crypto-box/**"
+      - "packages/nakamoto/**"
+      - "packages/directory-admission/**"
+      - "packages/domain-roots/**"
+      - "packages/role-keys/**"
+      - "docs/protocol/chains/v1.json"
+      - "package.json"
+      - "yarn.lock"
+      - ".github/workflows/mail-gateway.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/mail-gateway/**"
+      - "packages/frank-codec/**"
+      - "packages/cashweb/**"
+      - "packages/wallet/**"
+      - "packages/crypto-box/**"
+      - "packages/nakamoto/**"
+      - "packages/directory-admission/**"
+      - "packages/domain-roots/**"
+      - "packages/role-keys/**"
+      - "docs/protocol/chains/v1.json"
+      - "package.json"
+      - "yarn.lock"
+      - ".github/workflows/mail-gateway.yml"
+
+jobs:
+  mail-gateway-suites:
+    name: Mail gateway - Jest suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: "yarn"
+      - run: yarn install
+      - name: Mail gateway suites
+        run: yarn workspace @frank/mail-gateway test --ci --runInBand

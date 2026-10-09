@@ -89,6 +89,7 @@ jest.mock('src/composables/useChainBalance', () => ({
     loaded: ref(false),
     refresh: mockRefresh,
     presentation: ref({ status: 'loading' }),
+    tokenObservation: ref({ status: 'loading' }),
   }),
 }))
 jest.mock('src/composables/useSwapHistory', () => ({

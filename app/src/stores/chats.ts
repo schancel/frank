@@ -654,8 +654,7 @@ export function indexOutboundDeliveryOwners(
   const byAttempt = new Map<string, OutboundDeliveryOwner>()
   for (const [key, chat] of Object.entries(chats)) {
     if (!chat) continue
-    const chatAddress =
-      'address' in chat && chat.address ? chat.address : key
+    const chatAddress = 'address' in chat && chat.address ? chat.address : key
     for (const message of chat?.messages ?? []) {
       if (!message.outbound) continue
       const index =

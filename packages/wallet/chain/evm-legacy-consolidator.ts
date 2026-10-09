@@ -1,4 +1,11 @@
 import {
+  nativeAdmissionJournal,
+  type EvmInputAdmission,
+  type WalletOperationLifetime,
+  type NativeExecutionJournal,
+  type NativeJournalReader,
+} from '../evm-input-admission'
+import {
   getAddress,
   hexlify,
   resolveAddress,
@@ -34,7 +41,11 @@ export interface SendLegacyParams {
 }
 export interface EvmLegacyConsolidatorConfig {
   provider: Provider
-  journal: EvmNativeOperationJournal
+  journal: NativeJournalReader | EvmNativeOperationJournal
+  inputAdmission?: EvmInputAdmission
+  runLifetime?: <T>(
+    operation: (lifetime: WalletOperationLifetime) => Promise<T>,
+  ) => Promise<T>
   transactionBuilder: EvmTransactionBuilder
   getSources: () => Promise<EvmNativeSource[]>
   sign: (
@@ -79,6 +90,17 @@ export class EvmLegacyConsolidator {
     await this.tail
     await this.syncTail
   }
+  private journal(lifetime?: WalletOperationLifetime): NativeExecutionJournal {
+    if (this.config.inputAdmission) {
+      if (!lifetime)
+        throw new Error('Native operation requires its captured lifetime')
+      return nativeAdmissionJournal(this.config.inputAdmission, lifetime)
+    }
+    // An uncomposed executor may own an isolated journal. Composed wallets expose only readers.
+    if (!('prepare' in this.config.journal))
+      throw new Error('Native admission owner unavailable')
+    return this.config.journal
+  }
   listOperations(): EvmNativeOperation[] {
     return this.config.journal.list()
   }
@@ -109,8 +131,13 @@ export class EvmLegacyConsolidator {
       balanceWei: balance.toString(),
     }
   }
-  async observe(operationId: string, index: number): Promise<void> {
-    const { journal, provider } = this.config
+  async observe(
+    operationId: string,
+    index: number,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<void> {
+    const journal = this.journal(lifetime),
+      { provider } = this.config
     const member = journal.get(operationId).members[index]!
     if (!member.signed) return
     const capture = journal.beginCapture(operationId, index)
@@ -164,8 +191,10 @@ export class EvmLegacyConsolidator {
     }
     await journal.recordObservation(capture, observation, account)
   }
-  private async sources(): Promise<AvailableSource[]> {
-    const { journal } = this.config
+  private async sources(
+    lifetime?: WalletOperationLifetime,
+  ): Promise<AvailableSource[]> {
+    const journal = this.journal(lifetime)
     const sources = new Map<string, EvmNativeSource>()
     for (const source of [
       ...(await this.config.getSources()),
@@ -180,7 +209,7 @@ export class EvmLegacyConsolidator {
             row.members[i]!.signed &&
             sources.has(row.members[i]!.source.address)
           )
-            await this.observe(row.operationId, i)
+            await this.observe(row.operationId, i, lifetime)
         }
     const result: AvailableSource[] = []
     for (const source of sources.values()) {
@@ -262,6 +291,7 @@ export class EvmLegacyConsolidator {
   private async plan(
     params: SendLegacyParams,
     kind: 'native' | 'legacy',
+    lifetime?: WalletOperationLifetime,
   ): Promise<EvmNativeOperation> {
     const recipient = getAddress(params.recipient.raw).toLowerCase()
     if (params.value <= 0n)
@@ -271,7 +301,7 @@ export class EvmLegacyConsolidator {
       this.config.transactionBuilder.supportsNativeConsolidation !== true
     )
       throw new Error('Builder does not support native consolidation')
-    const accounts = await this.sources()
+    const accounts = await this.sources(lifetime)
     const fee = await this.config.provider.getFeeData()
     const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
     if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
@@ -300,7 +330,7 @@ export class EvmLegacyConsolidator {
           : BigInt(account.account.balanceWei) < tx.value + maximumFee
       )
         continue
-      return this.config.journal.prepare({
+      return this.journal(lifetime).prepare({
         kind,
         recipient,
         intendedValueWei: params.value.toString(),
@@ -364,18 +394,28 @@ export class EvmLegacyConsolidator {
       unsignedTransaction: drain,
       dependencies: members.map((_, i) => i),
     })
-    return this.config.journal.prepare({
+    return this.journal(lifetime).prepare({
       kind,
       recipient,
       intendedValueWei: params.value.toString(),
       members,
     })
   }
-  private async sign(row: EvmNativeOperation): Promise<EvmNativeOperation> {
+  private async sign(
+    row: EvmNativeOperation,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<EvmNativeOperation> {
+    if (this.config.inputAdmission) {
+      if (!lifetime) throw new Error('Native signing lifetime unavailable')
+      row = await this.config.inputAdmission.authorizeNativeSigning(
+        lifetime,
+        row.operationId,
+      )
+    }
     for (let i = 0; i < row.members.length; i++) {
       const member = this.config.journal.get(row.operationId).members[i]!
       if (!member.signed)
-        await this.config.journal.checkpointSigned(
+        await this.journal(lifetime).checkpointSigned(
           row.operationId,
           i,
           await this.config.sign(member.source, member.unsignedTransaction),
@@ -393,14 +433,16 @@ export class EvmLegacyConsolidator {
   private async execute(
     id: string,
     onSigned?: SendLegacyParams['onSigned'],
+    lifetime?: WalletOperationLifetime,
   ): Promise<EvmNativeOperation> {
-    const { journal, provider } = this.config
+    const journal = this.journal(lifetime),
+      { provider } = this.config
     let row = journal.get(id)
     if (row.cancelled) throw new Error('Native operation was cancelled')
-    row = await this.sign(row)
+    row = await this.sign(row, lifetime)
     await onSigned?.(this.transactionHandle(row))
     for (let i = 0; i < row.members.length; i++) {
-      await this.observe(id, i)
+      await this.observe(id, i, lifetime)
       row = journal.get(id)
       let member = row.members[i]!
       if (member.observation.state === 'included-revert')
@@ -431,7 +473,7 @@ export class EvmLegacyConsolidator {
           throw new EvmNativeOperationPendingError(journal.get(id), reason)
         }
         if (row.kind === 'native') return journal.get(id)
-        await this.observe(id, i)
+        await this.observe(id, i, lifetime)
         row = journal.get(id)
         member = row.members[i]!
         if (member.observation.state !== 'included-success')
@@ -447,12 +489,21 @@ export class EvmLegacyConsolidator {
   }
   /** Composition invokes this outside its financial queue; transport may itself need admission. */
   flushSync(operationId?: string): Promise<void> {
-    const run = this.syncTail.then(() => this.applySync(operationId))
+    const run = this.syncTail.then(() =>
+      this.config.runLifetime
+        ? this.config.runLifetime(lifetime =>
+            this.applySync(operationId, lifetime),
+          )
+        : this.applySync(operationId),
+    )
     this.syncTail = run.catch(() => undefined)
     return run
   }
-  private async applySync(operationId?: string): Promise<void> {
-    const { journal } = this.config
+  private async applySync(
+    operationId?: string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<void> {
+    const journal = this.journal(lifetime)
     if (!this.config.onSyncTransaction) return
     for (const row of journal
       .list()
@@ -500,10 +551,13 @@ export class EvmLegacyConsolidator {
         }
       }
   }
-  resumeOperation(operationId: string): Promise<EvmNativeOperation> {
+  resumeOperation(
+    operationId: string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<EvmNativeOperation> {
     const existing = this.active.get(operationId)
     if (existing) return existing
-    const run = this.run(() => this.execute(operationId))
+    const run = this.run(() => this.execute(operationId, undefined, lifetime))
     this.active.set(operationId, run)
     void run
       .finally(() => {
@@ -513,21 +567,31 @@ export class EvmLegacyConsolidator {
       .catch(() => undefined)
     return run
   }
-  sendNative(params: SendLegacyParams): Promise<ChainTransaction> {
+  sendNative(
+    params: SendLegacyParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<ChainTransaction> {
     params = { ...params, recipient: { ...params.recipient } }
     return this.run(async () => {
-      const row = await this.plan(params, 'native')
+      const row = await this.plan(params, 'native', lifetime)
       return this.transactionHandle(
-        await this.execute(row.operationId, params.onSigned),
+        await this.execute(row.operationId, params.onSigned, lifetime),
       )
     })
   }
-  sendLegacy(params: SendLegacyParams): Promise<LegacySendResult> {
+  sendLegacy(
+    params: SendLegacyParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<LegacySendResult> {
     params = { ...params, recipient: { ...params.recipient } }
     return this.run(async () => {
       params.onProgress?.({ status: { stage: 'planning' } })
-      const row = await this.plan(params, 'legacy')
-      const completed = await this.execute(row.operationId, params.onSigned)
+      const row = await this.plan(params, 'legacy', lifetime)
+      const completed = await this.execute(
+        row.operationId,
+        params.onSigned,
+        lifetime,
+      )
       const result = this.legacyResult(completed)
       params.onProgress?.({
         status: { stage: 'confirmed', txHash: result.txHash },
@@ -557,19 +621,30 @@ export class EvmLegacyConsolidator {
       ),
     }
   }
-  async resumeLegacySend(operationId: string): Promise<LegacySendResult> {
-    return this.legacyResult(await this.resumeOperation(operationId))
+  async resumeLegacySend(
+    operationId: string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<LegacySendResult> {
+    return this.legacyResult(await this.resumeOperation(operationId, lifetime))
   }
   async estimateLegacyFee(
     _recipient: ChainAddress,
     value: bigint,
+    lifetime?: WalletOperationLifetime,
   ): Promise<LegacyFeeEstimate> {
+    if (this.config.inputAdmission && !lifetime) {
+      if (!this.config.runLifetime)
+        throw new Error('Native lifetime owner unavailable')
+      return this.config.runLifetime(token =>
+        this.estimateLegacyFee(_recipient, value, token),
+      )
+    }
     if (
       value <= 0n ||
       this.config.transactionBuilder.supportsNativeConsolidation !== true
     )
       throw new Error('Native consolidation unavailable')
-    const accounts = await this.sources()
+    const accounts = await this.sources(lifetime)
     const fees = await this.config.provider.getFeeData()
     const price = fees.maxFeePerGas ?? fees.gasPrice
     if (price == null) throw new Error('Native fee quote unavailable')

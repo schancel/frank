@@ -1,3 +1,4 @@
+import { DERIVATION_REGISTRY_ID } from '../domain-roots/src'
 /**
  * Joined wallet -> transport -> native relay proof driver (#777).
  *
@@ -244,8 +245,31 @@ async function openWallet(
     )
     return result
   }
-  // Same owner composition as `chain/monad-chain.ts` createWallet's typed branch.
+  const branchDescriptor = (
+    ring: typeof material.keyring | typeof material.changeKeyring,
+  ) => {
+    const descriptor = ring.publicBranchDescriptor()
+    return {
+      path: descriptor.path,
+      publicKey: hexlify(descriptor.publicKey),
+      chainCode: hexlify(descriptor.chainCode),
+    }
+  }
+  // Same owner composition and existing economic binding as chain/monad-chain.ts.
   const state = await openExistingPoolMonadTopicOwner({
+    nativeBinding: {
+      chainIdentifier: NETWORK,
+      nativeChainId: String(CHAIN_ID),
+      publicTuple: JSON.stringify({
+        version: 1,
+        registry: DERIVATION_REGISTRY_ID,
+        chainIdentifier: NETWORK,
+        nativeChainId: String(CHAIN_ID),
+        mainAddress: material.mainAccount.address.toLowerCase(),
+        spend: branchDescriptor(material.keyring),
+        change: branchDescriptor(material.changeKeyring),
+      }),
+    },
     encloseFinancialOperation: operation => exclusive(operation, false),
     location,
     pool,
@@ -282,7 +306,8 @@ async function openWallet(
     canonicalRoles: material.canonicalRoles!,
     installedNetworkTag: NETWORK_TAG,
     relayBaseUrl: config.principals[1].endpoint,
-    runCanonicalExclusive: operation => exclusive(() => operation(), true),
+    runCanonicalExclusive: operation =>
+      exclusive(lifetime => operation(lifetime), true),
   })
   return {
     material,

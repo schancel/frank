@@ -2660,7 +2660,11 @@ export const useChatStore = defineStore('chats', {
             errorStr.includes('failed to fetch') ||
             errorStr.includes('Failed to fetch')
 
-          if (isTransientRpc && sendAttempt < maxSendAttempts && stillCurrent()) {
+          if (
+            isTransientRpc &&
+            sendAttempt < maxSendAttempts &&
+            stillCurrent()
+          ) {
             console.warn(
               `[sendDirectMessage transient rpc error (attempt ${sendAttempt}/${maxSendAttempts})]:`,
               error,

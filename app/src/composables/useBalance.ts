@@ -211,10 +211,7 @@ function acquire() {
           accountStatus.status,
           messagingState.status,
         ] as const,
-      (
-        [newRev, newAccStatus, newMsgStatus],
-        oldValue,
-      ) => {
+      ([newRev, newAccStatus, newMsgStatus], oldValue) => {
         const [oldRev, oldAccStatus, oldMsgStatus] = oldValue ?? []
         if (newRev !== oldRev || newAccStatus !== oldAccStatus) {
           balance.value = null

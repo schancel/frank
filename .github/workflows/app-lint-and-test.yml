@@ -61,7 +61,7 @@ jobs:
           node-version: "26"
       - run: yarn install
       - name: Bot demo suites
-        run: yarn workspace @frank/bot test --ci --runInBand demo/smoke.jest.test.ts demo/demo-funding.jest.test.ts qwen-host-safety.jest.test.ts
+        run: yarn workspace @frank/bot test --ci --runInBand demo/smoke.jest.test.ts demo/demo-funding.jest.test.ts qwen-host-safety.jest.test.ts qwen-bot-common.jest.test.ts
 
   cashweb-message-store:
     runs-on: ubuntu-latest

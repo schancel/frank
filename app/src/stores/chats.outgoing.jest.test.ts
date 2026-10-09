@@ -103,6 +103,7 @@ const wallet = {
 
 const TEXT = [{ type: 'text' as const, text: 'held two' }]
 const HASH = 'ab'.repeat(32)
+const STORED_CONVERSATION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
 const okResult = (payloadDigest: string): DirectMessageSendResult => ({
   payloadDigest,
@@ -133,14 +134,12 @@ function reconcileReturns(
 }
 
 async function reload() {
+  const metadata = useChatStore().$state
   setActivePinia(createPinia())
   const chats = useChatStore()
   chats.$patch(
     await rehydateChat({
-      activeChatAddr: null,
-      chats: {},
-      messages: {},
-      lastReceived: 0,
+      ...metadata,
     }),
   )
   return chats
@@ -158,6 +157,7 @@ async function seedInterrupted() {
       senderAddress: ME,
       copartyAddress: PEER,
       message: {
+        conversationId: STORED_CONVERSATION_ID,
         outbound: true,
         status: 'pending',
         receivedTime: 1,
@@ -172,7 +172,9 @@ async function seedInterrupted() {
 }
 
 const only = (chats: ReturnType<typeof useChatStore>) =>
-  chats.chats[PEER]?.messages ?? []
+  Object.values(chats.conversations)
+    .filter(c => c.address === PEER)
+    .flatMap(c => c.messages)
 
 describe('outgoing direct messages (#269, #270)', () => {
   beforeEach(async () => {
@@ -180,6 +182,174 @@ describe('outgoing direct messages (#269, #270)', () => {
     setActivePinia(createPinia())
     jest.restoreAllMocks()
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+  })
+
+  describe('#1237: outgoing conversation ownership', () => {
+    const FIRST = '11111111-1111-4111-8111-111111111111'
+    const SECOND = '22222222-2222-4222-8222-222222222222'
+
+    it.each(['conversation', 'recipient'] as const)(
+      'stops background recovery when durable %s ownership differs despite an equal attempt digest',
+      async field => {
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({
+          wallet,
+          address: PEER,
+          conversationId: FIRST,
+          items: TEXT,
+        })
+        const message = only(chats)[0]
+        const db = await durable()
+        const row = deserializeMessageWrapper(db.get(message.payloadDigest)!)
+        if (field === 'conversation') row.message.conversationId = SECOND
+        else row.copartyAddress = ME
+        const foreignRow = serializeMessageWrapper(row)
+        db.set(message.payloadDigest, foreignRow)
+        const reconcile = reconcileReturns({ [HASH]: 'delivered' })
+        await chats.reconcileOutgoing({ wallet })
+        expect(db.get(message.payloadDigest)).toBe(foreignRow)
+        expect(chats.messages[message.payloadDigest]).toBe(message)
+        expect(chats.messages[HASH]).toBeUndefined()
+        expect(message.status).toBe('payment-pending')
+        expect(send).toHaveBeenCalledTimes(1)
+        expect(reconcile).not.toHaveBeenCalled()
+      },
+    )
+
+    it('carries the selected conversation into authenticated send and the confirmed durable row', async () => {
+      const chats = useChatStore()
+      chats.createConversation({
+        participants: [ME, PEER],
+        address: PEER,
+        conversationId: FIRST,
+      })
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockResolvedValue(okResult(HASH))
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        conversationId: FIRST,
+        items: TEXT,
+      })
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: FIRST }),
+      )
+      const persisted = deserializeMessageWrapper((await durable()).get(HASH)!)
+      expect(persisted.message?.conversationId).toBe(FIRST)
+      expect(persisted.message?.logicalMessageId).toBe(
+        chats.messages[HASH]?.logicalMessageId,
+      )
+      expect(persisted.message?.logicalMessageId).toMatch(/^pending:/)
+    })
+
+    it.each(['send completion', 'mailbox echo'] as const)(
+      'keeps interleaved %s, logical IDs and attempt links on their original same-peer threads across reload',
+      async mode => {
+        const chats = useChatStore()
+        const entries = [
+          {
+            conversationId: FIRST,
+            localId: 'pending:first-owner',
+            digest: HASH,
+          },
+          {
+            conversationId: SECOND,
+            localId: 'pending:second-owner',
+            digest: 'cd'.repeat(32),
+          },
+        ]
+        for (const entry of entries) {
+          chats.createConversation({
+            participants: [ME, PEER],
+            address: PEER,
+            conversationId: entry.conversationId,
+            name: 'Equal subject',
+          })
+          chats.sendMessageLocal({
+            address: PEER,
+            senderAddress: ME,
+            conversationId: entry.conversationId,
+            index: entry.localId,
+            items: TEXT,
+            outpoints: [],
+            status: 'payment-pending',
+            delivery: { attemptDigest: entry.digest },
+            previousHash: null,
+            timestamp: 100,
+          })
+          await chats.saveOutgoing(PEER, entry.localId, { strict: true })
+        }
+        for (const entry of [...entries].reverse()) {
+          if (mode === 'send completion') {
+            await chats.confirmOutgoing({
+              address: PEER,
+              id: entry.localId,
+              payloadDigest: entry.digest,
+            })
+          } else {
+            await chats.receiveMessages(
+              [
+                {
+                  outbound: true,
+                  senderAddress: ME,
+                  copartyAddress: PEER,
+                  copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+                  index: entry.digest,
+                  stampValue: 0,
+                  conversationId: entry.conversationId,
+                  message: {
+                    outbound: true,
+                    status: 'confirmed',
+                    senderAddress: ME,
+                    destinationAddress: PEER,
+                    conversationId: entry.conversationId,
+                    items: TEXT,
+                    outpoints: [],
+                    serverTime: 200,
+                    receivedTime: 200,
+                  },
+                },
+              ],
+              ME,
+            )
+          }
+        }
+        for (const entry of entries) {
+          expect(chats.conversations[entry.conversationId].messages).toEqual([
+            expect.objectContaining({
+              payloadDigest: entry.digest,
+              conversationId: entry.conversationId,
+              logicalMessageId: entry.localId,
+              delivery: expect.objectContaining({
+                attemptDigest: entry.digest,
+              }),
+            }),
+          ])
+          expect(chats.logicalMessages[entry.localId]?.conversationId).toBe(
+            entry.conversationId,
+          )
+          expect((await durable()).has(entry.localId)).toBe(false)
+        }
+        const restored = await rehydateChat(chats.$state)
+        for (const entry of entries) {
+          expect(
+            restored.conversations[entry.conversationId].messages,
+          ).toHaveLength(1)
+          expect(
+            restored.conversations[entry.conversationId].messages[0],
+          ).toMatchObject({
+            payloadDigest: entry.digest,
+            conversationId: entry.conversationId,
+            logicalMessageId: entry.localId,
+          })
+          expect(restored.logicalMessages[entry.localId]?.conversationId).toBe(
+            entry.conversationId,
+          )
+        }
+      },
+    )
   })
 
   describe('background attempt ownership', () => {
@@ -813,6 +983,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           senderAddress: oldSender,
           copartyAddress: PEER,
           message: {
+            conversationId: STORED_CONVERSATION_ID,
             outbound: true,
             status: 'payment-pending',
             receivedTime: 1,
@@ -1449,6 +1620,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           senderAddress: ME,
           copartyAddress: PEER,
           message: {
+            conversationId: STORED_CONVERSATION_ID,
             outbound: true,
             status: 'pending',
             receivedTime: 1,
@@ -1465,7 +1637,7 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(message.delivery).toEqual({ attemptDigest: HASH })
     })
 
-    it('an old-format record (no delivery field) still loads unchanged', async () => {
+    it('an explicitly owned confirmed record may omit delivery state', async () => {
       const db = await durable()
       db.set(
         'old',
@@ -1475,6 +1647,7 @@ describe('outgoing direct messages (#269, #270)', () => {
           senderAddress: ME,
           copartyAddress: PEER,
           message: {
+            conversationId: STORED_CONVERSATION_ID,
             outbound: true,
             status: 'confirmed',
             receivedTime: 5,

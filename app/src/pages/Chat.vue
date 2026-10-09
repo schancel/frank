@@ -173,6 +173,7 @@ import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 import { openChat } from '../utils/routes'
+import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import {
@@ -285,7 +286,6 @@ export default defineComponent({
       getMessageByPayload: chats.getMessageByPayload,
       sendDirectMessage: chats.sendMessage,
       chatStore: chats,
-      chats: chats.chats,
       chatScroll: ref<QScrollArea | null>(null),
     }
   },
@@ -1032,44 +1032,13 @@ export default defineComponent({
         : undefined
     },
     conversation(): Conversation | null {
-      const store = this.chatStore as
-        | {
-            conversations?: Record<string, Conversation | undefined>
-            activeConversationId?: string | null
-            activeConversation?: Conversation | null
-          }
-        | undefined
-      if (
-        store?.activeConversationId &&
-        store.conversations?.[store.activeConversationId]
-      ) {
-        const active = store.conversations[store.activeConversationId]
-        if (
-          !this.address ||
-          store.activeConversationId === this.address ||
-          sameCanonicalAddress(active?.address, this.address) ||
-          active?.participants?.some(p => sameCanonicalAddress(p, this.address))
-        ) {
-          return active ?? null
-        }
-      }
-      if (this.chats && this.address in this.chats) {
-        const chatConv = this.chats[this.address] as Conversation
-        if (
-          chatConv &&
-          ((chatConv.messages?.length ?? 0) > 0 ||
-            !(store?.conversations && this.address in store.conversations))
-        ) {
-          return chatConv
-        }
-      }
-      if (store?.conversations && this.address in store.conversations) {
-        return store.conversations[this.address] ?? null
-      }
-      if (store?.activeConversation) {
-        return store.activeConversation
-      }
-      return null
+      return (
+        this.chatStore.conversations[this.address] ??
+        (isChainAddress(this.address)
+          ? this.chatStore.chats[toChainDisplayAddress(this.address)]
+          : null) ??
+        null
+      )
     },
     recipientAddress(): string {
       if (this.conversation?.address) {
@@ -1101,11 +1070,7 @@ export default defineComponent({
       return this.getContactVuex(this.recipientAddress)?.profile?.name ?? ''
     },
     messages(): ChatMessage[] {
-      if (this.conversation?.messages) {
-        return this.conversation.messages
-      }
-      const activeChat = this.chats ? this.chats[this.address] : undefined
-      return activeChat ? activeChat.messages : []
+      return this.conversation?.messages ?? []
     },
     chunkedMessages() {
       // TODO: Improve stacking logic e.g. long durations between messages prevent stacking
@@ -1174,19 +1139,7 @@ export default defineComponent({
           }
         }
 
-        this.setStampAmount({
-          address: this.recipientAddress,
-          stampAmount: Number(rawAmount),
-        })
-        if (
-          this.conversation?.id &&
-          this.conversation.id !== this.recipientAddress
-        ) {
-          this.setStampAmount({
-            address: this.conversation.id,
-            stampAmount: Number(rawAmount),
-          })
-        }
+        this.setStampAmount({ address: target, stampAmount: Number(rawAmount) })
       },
       get() {
         const target = this.conversation?.id || this.recipientAddress

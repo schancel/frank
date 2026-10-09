@@ -58,6 +58,7 @@ import { useChatStore } from 'src/stores/chats'
 import { usePersistentStorageStore } from 'src/stores/persistent-storage'
 import { applyTheme } from 'src/utils/theme'
 import { openChat } from 'src/utils/routes'
+import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
 import { useTabCoordinatorStore } from 'src/stores/tab-coordinator'
@@ -84,18 +85,28 @@ export default defineComponent({
     const {
       getLastReceived: lastReceived,
       totalUnread,
-      activeChatAddr,
+      activeConversationId,
     } = storeToRefs(chatStore)
 
     const router = useRouter()
 
-    watch(activeChatAddr, newAddress => {
-      // Only route to chat if address defined
-      // e.g. do *not* route when navigating to Forum
-      if (!newAddress) {
-        return
+    watch(activeConversationId, conversationId => {
+      // Selection, including notification clicks, routes to its exact thread owner.
+      // Clearing selection while leaving chat must not navigate back into a thread.
+      if (!conversationId) return
+      const routeAddress = router.currentRoute.value.params.address
+      const routedDefault =
+        typeof routeAddress === 'string' && isChainAddress(routeAddress)
+          ? chatStore.chats[toChainDisplayAddress(routeAddress)]
+          : undefined
+      // A committed peer route already identifies its default thread, including profile
+      // queries. Other selections (such as notifications) open their exact independent ID.
+      if (
+        routeAddress !== conversationId &&
+        routedDefault?.id !== conversationId
+      ) {
+        void openChat(router, conversationId)
       }
-      openChat(router, newAddress)
     })
 
     const contactClicked = (newAddress: string) => {

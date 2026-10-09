@@ -164,7 +164,7 @@
     <!-- Delete Chat Confirmation Dialog -->
     <q-dialog v-model="deleteDialogOpen">
       <delete-chat-dialog
-        :address="effectiveAddress || effectiveId"
+        :address="effectiveId"
         :name="subjectOrName"
         @deleted="onChatDeleted"
       />
@@ -215,18 +215,8 @@ export default defineComponent({
   },
   methods: {
     openConversation() {
-      const target =
-        this.conversation?.kind === 'direct' &&
-        !this.conversation.topic &&
-        !this.conversation.name &&
-        this.effectiveAddress
-          ? this.effectiveAddress
-          : this.effectiveId
-      if (typeof this.chatStore.setActiveConversation === 'function') {
-        this.chatStore.setActiveConversation(target)
-      } else if (typeof this.chatStore.setActiveChat === 'function') {
-        this.chatStore.setActiveChat(target)
-      }
+      const target = this.effectiveId
+      this.chatStore.setActiveConversation(target)
       if (this.$router) {
         openChat(this.$router, target)
       }
@@ -449,36 +439,9 @@ export default defineComponent({
       return this.contact?.avatar
     },
     isActive(): boolean {
-      const activeParam = this.$route?.params?.address
-      if (
-        activeParam &&
-        (activeParam === this.effectiveAddress ||
-          activeParam === this.effectiveId ||
-          sameCanonicalAddress(activeParam, this.effectiveAddress) ||
-          sameCanonicalAddress(activeParam, this.effectiveId))
-      ) {
-        return true
-      }
-      const store = this.chatStore as
-        | {
-            activeConversationId?: string | null
-            activeChatAddr?: string | null
-          }
-        | undefined
-      if (
-        store?.activeConversationId &&
-        store.activeConversationId === this.effectiveId
-      ) {
-        return true
-      }
-      if (
-        store?.activeChatAddr &&
-        (store.activeChatAddr === this.effectiveAddress ||
-          sameCanonicalAddress(store.activeChatAddr, this.effectiveAddress))
-      ) {
-        return true
-      }
-      return false
+      const activeId = this.chatStore.activeConversationId
+      if (activeId) return activeId === this.effectiveId
+      return this.$route?.params?.address === this.effectiveId
     },
   },
   props: {

@@ -378,7 +378,7 @@ export default defineComponent({
     } {
       if (!this.own)
         return { state: undefined, rejected: [], lastDigest: undefined }
-      const messages = useChatStore().chats[this.address]?.messages ?? []
+      const messages = useChatStore().activeConversation?.messages ?? []
       const events = chatHandEvents(
         messages,
         this.own,
@@ -405,7 +405,7 @@ export default defineComponent({
     },
     // Buttons are visibly disabled while any message of this chat is still being sent.
     busy(): boolean {
-      const messages = useChatStore().chats[this.address]?.messages ?? []
+      const messages = useChatStore().activeConversation?.messages ?? []
       return this.sending || messages.some(m => m.status === 'pending')
     },
     seed(): string | undefined {
@@ -606,14 +606,14 @@ export default defineComponent({
     // from the moment it is in the chat, so until it is delivered the hand has not moved on for
     // the other user, whatever the folded state says.
     undelivered(): 'sending' | 'failed' | undefined {
-      const messages = useChatStore().chats[this.address]?.messages ?? []
+      const messages = useChatStore().activeConversation?.messages ?? []
       const message = messages.find(m => m.payloadDigest === this.payloadDigest)
       if (!message || !message.outbound || message.status === 'confirmed')
         return undefined
       return message.status === 'error' ? 'failed' : 'sending'
     },
     undeliveredReason(): string {
-      const messages = useChatStore().chats[this.address]?.messages ?? []
+      const messages = useChatStore().activeConversation?.messages ?? []
       const reason = messages.find(m => m.payloadDigest === this.payloadDigest)
         ?.delivery?.failureReason
       const keys: Record<string, string> = {

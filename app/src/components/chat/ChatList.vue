@@ -107,20 +107,8 @@ export default defineComponent({
         openPage(router, target)
       },
       selectConversation(item: Conversation | string) {
-        const target =
-          typeof item === 'string'
-            ? item
-            : item.kind === 'direct' &&
-              !item.topic &&
-              !item.name &&
-              item.address
-            ? item.address
-            : item.id || item.address
-        if (typeof chatStore.setActiveConversation === 'function') {
-          chatStore.setActiveConversation(target)
-        } else if (typeof chatStore.setActiveChat === 'function') {
-          chatStore.setActiveChat(target)
-        }
+        const target = typeof item === 'string' ? item : item.id
+        chatStore.setActiveConversation(target)
         openChat(router, target)
         // Direct user feedback (2026-09-29, ticket #123): on a narrow/mobile viewport the
         // drawer this list lives in is an overlay covering the whole chat -- selecting a chat

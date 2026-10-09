@@ -48,6 +48,14 @@ jest.mock('../composables/useActiveWallet', () => ({
 }))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
+    parseAddress: (input: string) => {
+      try {
+        return { raw: jest.requireActual('ethers').getAddress(input) }
+      } catch {
+        return undefined
+      }
+    },
+    formatAddress: (address: { raw: string }) => address.raw,
     defaultStampValue: 1n,
     fromDisplayAmount: () => 1n,
     toDisplayAmount: () => '1',
@@ -178,6 +186,7 @@ async function mountFailed(monad: boolean) {
   mockOriginalMessage = message
   const messages = reactive([message])
   mockChatStore = reactive({
+    conversations: {},
     chats: { [PEER]: { messages } },
     messages: { failed: message },
     getAcceptancePrice: () => 0,

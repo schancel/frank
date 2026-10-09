@@ -7,6 +7,7 @@ import {
   displayNetwork,
 } from '../utils/constants'
 import { sha1 } from '@noble/hashes/sha1'
+import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
@@ -82,7 +83,6 @@ import { useProfileStore } from './my-profile'
 import { useSettingsStore } from './settings'
 import { useContactStore } from './contacts'
 import { useBalance } from '../composables/useBalance'
-import { mapObjIndexed, pathOr } from 'ramda'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import {
   getOwnCanonicalAddress,
@@ -108,6 +108,7 @@ export type ChatMessage = {
   senderAddress: string
   destinationAddress?: string
   payloadDigest: string
+  messageHash?: string
   /** Outgoing messages that are not yet confirmed (#269/#270); see `Message.delivery`. */
   delivery?: OutgoingDelivery
   /** Ticket #69: Conversation and logical message identifiers */
@@ -117,64 +118,10 @@ export type ChatMessage = {
   deliveryDigest?: string
 }
 
-/**
- * # Pinia Chat Store Schema (Ticket #69)
- *
- * Decouples chat storage from 1:1 contact address indexing to support group-ready,
- * conversation-oriented state.
- *
- * ## Entity Model:
- *
- * 1. Conversation (`Conversation`):
- *    - `id`: Stable identifier (string UUID). Deterministically derived via RFC 4122 UUIDv5
- *      from a null namespace UUID and sorted participants key (and optional topic identifier).
- *      For group chats: group UUID or topic identifier.
- *    - `kind`: `'direct' | 'group'`
- *    - `name`?: Display subject/title of the conversation.
- *    - `topic`?: Optional topic thread identifier.
- *    - `participants`: Sorted canonical addresses of all members.
- *    - `members`: Record<string, ConversationMember> (membership registry).
- *    - `epoch`?: ConversationEpoch (cryptographic epoch reference placeholder; no crypto claimed).
- *    - `messages`: ChatMessage[] (ordered message list for this conversation).
- *    - `totalUnreadMessages`: number
- *    - `totalUnreadValue`: number
- *    - `totalValue`: number
- *    - `lastReceived`: number
- *    - `lastRead`: number
- *    - `stampAmount`: number
- *    - `address`: string (for direct chats: the coparty address; for group: the conversation id).
- *    - `createdAt`?: number
- *    - `updatedAt`?: number
- *    - `deletedAt`?: number (tombstone timestamp for delete/reopen semantics).
- *
- * 2. Conversation Member (`ConversationMember`):
- *    - `address`: Canonical member address.
- *    - `role`: `'owner' | 'admin' | 'member'`
- *    - `joinedAt`?: Timestamp when member joined.
- *    - `alias`?: Local display nickname for the member.
- *
- * 3. Logical Message (`LogicalMessageRecord`):
- *    - `messageId`: Stable logical message identifier (UUID / type 6 message_id).
- *    - `conversationId`: Parent conversation identifier.
- *    - `senderAddress`: Author's canonical address.
- *    - `createdAt`: Creation timestamp.
- *    - `activeRevisionDigest`: Latest/active revision content digest.
- *    - `revisions`: RevisionRecord[]
- *
- * 4. Message Revision (`RevisionRecord`):
- *    - `revisionDigest`: Content digest (T1a / type 8 revision digest).
- *    - `items`: MessageItem[]
- *    - `timestamp`: Timestamp of revision.
- *    - `deliveries`: DeliveryRecord[]
- *
- * 5. Delivery Record (`DeliveryRecord`):
- *    - `deliveryDigest`: Recipient-specific payload digest (T3 / type 5 payload digest).
- *    - `recipientAddress`?: Recipient address.
- *    - `status`: Delivery status ('pending' | 'payment-pending' | 'confirmed' | 'error').
- *    - `attemptDigest`?: Outbound payment attempt digest.
- *    - `timestamp`: Timestamp of delivery receipt/send.
+/** Conversation metadata is owned by conversations[id]; messages are owned by the message store.
+ * Peer lookup, message membership/accounting and logical revision indexes are derived views.
+ * Stable 16-byte conversation IDs cross the authenticated wire unchanged. Subjects are presentation.
  */
-
 export type ConversationKind = 'direct' | 'group' | 'email'
 export type ConversationRole = 'owner' | 'admin' | 'member'
 
@@ -221,6 +168,8 @@ export interface Conversation {
   name?: string
   topic?: string
   emailRecipient?: string
+  /** Assigned only by default-peer opening; subjects and explicit IDs never select it. */
+  defaultDirect?: boolean
   participants: string[]
   members?: Record<string, ConversationMember>
   epoch?: ConversationEpoch
@@ -322,6 +271,11 @@ export function recordLogicalMessage(
   const deliveryDigest = message.deliveryDigest || message.payloadDigest
 
   let record = logicalMessages[logicalId]
+  if (record && record.conversationId !== conversationId) {
+    throw new Error(
+      `Logical message ${logicalId} already belongs to another conversation`,
+    )
+  }
   if (!record) {
     record = {
       messageId: logicalId,
@@ -437,11 +391,9 @@ const defaultContactObject = {
 }
 
 export interface State {
-  activeChatAddr: string | null
   activeConversationId: string | null
   conversations: Record<string, Conversation>
-  chats: Record<string, ChatState | undefined>
-  messages: Record<string, Message | undefined>
+  messages: Record<string, ChatMessage | undefined>
   logicalMessages: Record<string, LogicalMessageRecord | undefined>
   lastReceived: number | null
 }
@@ -461,12 +413,10 @@ export interface State {
  */
 function freshChatsState(): State {
   return {
-    chats: {},
     conversations: {},
     messages: {},
     logicalMessages: {},
     lastReceived: null,
-    activeChatAddr: null,
     activeConversationId: null,
   }
 }
@@ -512,15 +462,37 @@ async function serializeDeliveryMutation<T>(
   }
 }
 
+function matchesOutgoingOwner(
+  row: MessageWrapper,
+  message: Message,
+  address: string,
+): boolean {
+  return (
+    sameCanonicalAddress(row.senderAddress, message.senderAddress) &&
+    sameCanonicalAddress(row.copartyAddress, address) &&
+    (!row.message.conversationId ||
+      !message.conversationId ||
+      row.message.conversationId === message.conversationId) &&
+    (!row.message.logicalMessageId ||
+      !message.logicalMessageId ||
+      row.message.logicalMessageId === message.logicalMessageId)
+  )
+}
+
 /** Called inside the delivery mutation boundary, immediately before changing an attributed row. */
 async function assertDurableAttemptAssociation(
   id: string,
   expectedDigest: string | undefined,
+  message: Message,
+  address: string,
 ): Promise<void> {
   if (expectedDigest === undefined) return
   const messageStore = await store
   if (typeof messageStore.getMessage !== 'function') return
   const persisted = await messageStore.getMessage(id)
+  if (persisted && !matchesOutgoingOwner(persisted, message, address)) {
+    throw new Error(`conflicting stored conversation owner for ${id}`)
+  }
   const storedDigest = persisted?.message.delivery?.attemptDigest
   if (storedDigest !== undefined && storedDigest !== expectedDigest) {
     throw new Error(`conflicting stored payment attempt for ${id}`)
@@ -663,11 +635,13 @@ function classifySendFailure(
 type OutboundDeliveryMatch = {
   oldIndex: string
   chatAddress: string
+  conversationId: string
   message: Message & { destinationAddress?: string }
 }
 
 type OutboundDeliveryOwner = {
   chatAddress: string
+  conversationId: string
   index: string
   message: Message
 }
@@ -691,7 +665,12 @@ export function indexOutboundDeliveryOwners(
       const index =
         'payloadDigest' in message ? message.payloadDigest : undefined
       if (!index) continue
-      const owner = { chatAddress, index, message }
+      const owner = {
+        chatAddress,
+        conversationId: message.conversationId || key,
+        index,
+        message,
+      }
       byPayload.set(index, owner)
       const attempt = message.delivery?.attemptDigest
       if (attempt !== undefined) byAttempt.set(attempt, owner)
@@ -702,7 +681,7 @@ export function indexOutboundDeliveryOwners(
 
 function recomputeChatAccounting(
   chat: ChatState,
-  activeChatAddr: string | null,
+  activeConversationId: string | null,
 ): void {
   chat.totalValue = 0
   chat.totalUnreadMessages = 0
@@ -712,7 +691,7 @@ function recomputeChatAccounting(
     chat.totalValue += value
     if (
       !message.outbound &&
-      chat.address !== activeChatAddr &&
+      chat.id !== activeConversationId &&
       chat.lastRead < message.serverTime
     ) {
       chat.totalUnreadMessages += 1
@@ -732,416 +711,361 @@ export function walletOwnsMessage(
 }
 
 export type RestorableState = {
-  activeChatAddr: string | null
   activeConversationId?: string | null
   conversations?: Record<string, Conversation | undefined>
-  chats?: Record<string, ChatState | undefined>
   messages?: Record<string, Message | undefined>
   logicalMessages?: Record<string, LogicalMessageRecord | undefined>
   lastReceived: number | null
 }
 
-export function extractDirectPeerAddress(
-  conv: Conversation,
-  ownAddr: string | null,
-): string | null {
-  if (conv.kind !== 'direct' || conv.topic) return null
+/** The peer index is a derived view of explicitly marked default threads, never a writer. */
+function defaultChats(
+  conversations: Record<string, Conversation>,
+): Readonly<Record<string, Conversation | undefined>> {
+  return Object.fromEntries(
+    Object.values(conversations)
+      .filter(c => c.defaultDirect && c.address)
+      .map(c => [c.address, c]),
+  )
+}
 
-  let peer: string | null = null
-  if (conv.participants && conv.participants.length > 0) {
-    const peers = ownAddr
-      ? conv.participants.filter(p => !sameCanonicalAddress(p, ownAddr))
-      : conv.participants
-    if (peers.length === 1) {
-      peer = peers[0]
-    } else if (
-      peers.length > 1 &&
-      conv.address &&
-      peers.some(p => sameCanonicalAddress(p, conv.address))
+function canonicalConversationId(value: string): string {
+  const hex = value.replace(/-/g, '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(hex))
+    throw new Error('Conversation identity must contain exactly 16 bytes')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
+    12,
+    16,
+  )}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+function freshConversationId(): string {
+  const bytes = randomBytes(16)
+  bytes[6] = (bytes[6] & 15) | 64
+  bytes[8] = (bytes[8] & 63) | 128
+  return canonicalConversationId(
+    Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join(''),
+  )
+}
+
+function assertConversationPeer(
+  conversation: Conversation,
+  address: string,
+): void {
+  const explicitMember =
+    conversation.address === conversation.id &&
+    conversation.participants.some(p => sameCanonicalAddress(p, address))
+  const groupMember =
+    conversation.kind === 'group' &&
+    conversation.participants.some(p => sameCanonicalAddress(p, address))
+  if (
+    !explicitMember &&
+    !groupMember &&
+    conversation.address !== address &&
+    !sameCanonicalAddress(conversation.address, address)
+  ) {
+    throw new Error(
+      `Conversation ${conversation.id} belongs to a different recipient`,
+    )
+  }
+}
+
+function newConversation({
+  id,
+  participants,
+  address,
+  ...metadata
+}: Partial<Conversation> & {
+  id: string
+  participants: string[]
+  address: string
+}): Conversation {
+  const normalized = Array.from(
+    new Set(participants.map(p => safeChainDisplayAddress(p) || p)),
+  ).sort()
+  return {
+    ...defaultContactObject,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...metadata,
+    id: canonicalConversationId(id),
+    address: safeChainDisplayAddress(address) || address,
+    participants: normalized,
+    members:
+      metadata.members ??
+      Object.fromEntries(
+        normalized.map(p => [p, { address: p, role: 'member' as const }]),
+      ),
+    messages: [],
+  }
+}
+
+function openDefaultConversation(
+  conversations: Record<string, Conversation>,
+  address: string,
+  participants: string[],
+): Conversation {
+  const peer = toChainDisplayAddress(address)
+  const members = Array.from(
+    new Set(participants.map(toChainDisplayAddress)),
+  ).sort()
+  if (members.length > 2 || !members.includes(peer)) {
+    throw new Error(
+      'Default direct conversation requires the explicit recipient and at most one other participant',
+    )
+  }
+  const existing = defaultChats(conversations)[peer]
+  if (existing) {
+    if (
+      members.length === 2 &&
+      existing.participants.length === 2 &&
+      makeParticipantsKey(existing.participants) !==
+        makeParticipantsKey(members)
     ) {
-      peer = conv.address
-    } else if (conv.address && conv.address !== conv.id) {
-      peer = conv.address
+      throw new Error(`Conversation ${existing.id} has different participants`)
     }
-  } else if (conv.address && conv.address !== conv.id) {
-    peer = conv.address
-  }
-
-  // Multiple participants without an explicit recipient or a resolved own identity
-  // do not identify a peer. Guessing one lets list/hydration dedup merge other owners.
-  if (!peer) return null
-  try {
-    return toChainDisplayAddress(peer)
-  } catch {
-    return peer
-  }
-}
-
-export function autoHealDuplicateDirectConversations({
-  conversations,
-  chats,
-  ownAddress,
-  activeChatAddr = null,
-  activeConversationId = null,
-  messages,
-  logicalMessages,
-}: {
-  conversations: Record<string, Conversation>
-  chats: Record<string, ChatState>
-  ownAddress: string | null
-  activeChatAddr?: string | null
-  activeConversationId?: string | null
-  messages?: Record<string, Message>
-  logicalMessages?: Record<string, LogicalMessageRecord>
-}): void {
-  const directConvsByPeer = new Map<string, Conversation[]>()
-  for (const conv of Object.values(conversations)) {
-    const peer = extractDirectPeerAddress(conv, ownAddress)
-    if (!peer) continue
-    let list = directConvsByPeer.get(peer)
-    if (!list) {
-      list = []
-      directConvsByPeer.set(peer, list)
-    }
-    list.push(conv)
-  }
-
-  for (const [peer, list] of directConvsByPeer.entries()) {
-    if (list.length <= 1) continue
-
-    const canonicalParticipants = ownAddress
-      ? Array.from(new Set([ownAddress, peer])).sort()
-      : [peer]
-    const canonicalId = makeConversationId(canonicalParticipants)
-
-    const primary =
-      list.find(c => c.id === canonicalId) ||
-      list.find(c => (c.messages?.length ?? 0) > 0) ||
-      list.find(c => chats[peer] && chats[peer].id === c.id) ||
-      list[0]
-
-    for (const dup of list) {
-      if (dup === primary) continue
-
-      // Merge messages arrays, deduplicating by payloadDigest and sorting by serverTime / receivedTime
-      const msgMap = new Map<string, ChatMessage>()
-      for (const msg of primary.messages) {
-        const digest = msg.payloadDigest || (msg as any).index
-        if (digest) {
-          msgMap.set(digest, { ...msg, conversationId: primary.id })
-        }
-      }
-      for (const msg of dup.messages) {
-        const digest = msg.payloadDigest || (msg as any).index
-        if (!digest) continue
-        if (!msgMap.has(digest)) {
-          msgMap.set(digest, { ...msg, conversationId: primary.id })
-        } else {
-          const existing = msgMap.get(digest)!
-          msgMap.set(
-            digest,
-            Object.assign({}, existing, msg, { conversationId: primary.id }),
-          )
-        }
-      }
-      primary.messages = Array.from(msgMap.values()).sort((a, b) => {
-        const timeA = a.serverTime ?? a.receivedTime ?? 0
-        const timeB = b.serverTime ?? b.receivedTime ?? 0
-        return timeA - timeB
-      })
-
-      // Merge metadata
-      primary.lastRead = Math.max(primary.lastRead ?? 0, dup.lastRead ?? 0)
-      primary.lastReceived = Math.max(
-        primary.lastReceived ?? 0,
-        dup.lastReceived ?? 0,
+    if (existing.participants.length === 1 && members.length === 2) {
+      existing.participants = members
+      existing.members = Object.fromEntries(
+        members.map(member => [
+          member,
+          existing.members?.[member] ?? {
+            address: member,
+            role: 'member' as const,
+          },
+        ]),
       )
-      if (
-        dup.createdAt &&
-        (!primary.createdAt || dup.createdAt < primary.createdAt)
-      ) {
-        primary.createdAt = dup.createdAt
-      }
-      if (
-        dup.updatedAt &&
-        (!primary.updatedAt || dup.updatedAt > primary.updatedAt)
-      ) {
-        primary.updatedAt = dup.updatedAt
-      }
-      if (!primary.name && dup.name) {
-        primary.name = dup.name
-      }
-      if (primary.stampAmount === undefined && dup.stampAmount !== undefined) {
-        primary.stampAmount = dup.stampAmount
-      }
-
-      // Delete orphaned duplicate conversation key from conversations
-      delete conversations[dup.id]
-      if (dup.address) {
-        chats[dup.address] = primary
-        try {
-          chats[toChainDisplayAddress(dup.address)] = primary
-        } catch {
-          // ignore
-        }
-      }
     }
+    existing.deletedAt = undefined
+    return existing
+  }
+  const derivedId = makeConversationId(participants)
+  // An explicitly supplied ID never becomes the default merely because it equals this value.
+  const id = conversations[derivedId] ? freshConversationId() : derivedId
+  const conversation = newConversation({
+    id,
+    address: peer,
+    participants,
+    defaultDirect: true,
+  })
+  conversations[id] = conversation
+  return conversation
+}
 
-    if (ownAddress) {
-      primary.participants = canonicalParticipants
-    } else if (!primary.participants.includes(peer)) {
-      primary.participants = [peer]
-    }
-    primary.address = peer
+function isInternalMessage(items: unknown): boolean {
+  return (
+    Array.isArray(items) &&
+    items.length > 0 &&
+    items.every(
+      item =>
+        item !== null &&
+        typeof item === 'object' &&
+        !Array.isArray(item) &&
+        (item.type === 'swap-record' ||
+          item.type === 'wallet-sync' ||
+          item.type === 'payment-transfer'),
+    )
+  )
+}
 
-    // Recompute accounting: unread counts, total values, lastReceived, lastRead
-    for (const msg of primary.messages) {
-      const msgTime = msg.serverTime ?? msg.receivedTime ?? 0
-      primary.lastReceived = Math.max(primary.lastReceived, msgTime)
-    }
+export async function rehydateChat(
+  chatState: RestorableState,
+  metadataCompatible = true,
+): Promise<State> {
+  const localStore = await store
+  const messageIterator = await localStore.getIterator()
+  const wrappers: MessageWrapper[] = []
+  for await (const wrapper of messageIterator) {
+    if (
+      !wrapper ||
+      typeof wrapper !== 'object' ||
+      Array.isArray(wrapper) ||
+      !wrapper.message ||
+      typeof wrapper.message !== 'object' ||
+      Array.isArray(wrapper.message)
+    )
+      throw new Error('Invalid stored message envelope: message body required')
+    wrappers.push(wrapper)
+  }
 
-    primary.totalValue = 0
-    primary.totalUnreadMessages = 0
-    primary.totalUnreadValue = 0
-    for (const message of primary.messages) {
-      const value = accountedMessageValue(message)
-      primary.totalValue += value
-      const msgTime = message.serverTime ?? message.receivedTime ?? 0
-      if (
-        !message.outbound &&
-        primary.address !== activeChatAddr &&
-        primary.id !== activeConversationId &&
-        primary.lastRead < msgTime
-      ) {
-        primary.totalUnreadMessages += 1
-        primary.totalUnreadValue += value
-      }
-    }
-
-    // Update chats[copartyAddress] to point to the canonical conversation
-    chats[peer] = primary
-    try {
-      chats[toChainDisplayAddress(peer)] = primary
-    } catch {
-      // ignore
-    }
-    if (primary.address) {
-      chats[primary.address] = primary
+  // Validate the complete durable collection before normalizing statuses, excluding leftovers,
+  // or publishing any owner. Old ownerless conversational rows are not a default-thread hint.
+  const validatedRows = wrappers.map(wrapper => {
+    const { index, message } = wrapper
+    if (
+      typeof index !== 'string' ||
+      !index.trim() ||
+      typeof message.outbound !== 'boolean' ||
+      typeof message.status !== 'string' ||
+      !message.status.trim() ||
+      !Number.isFinite(message.receivedTime) ||
+      !Number.isFinite(message.serverTime) ||
+      !Array.isArray(message.items) ||
+      !Array.isArray(message.outpoints) ||
+      typeof wrapper.copartyAddress !== 'string' ||
+      !wrapper.copartyAddress.trim() ||
+      (wrapper.outbound !== undefined &&
+        wrapper.outbound !== message.outbound) ||
+      typeof wrapper.senderAddress !== 'string' ||
+      !wrapper.senderAddress ||
+      typeof message.senderAddress !== 'string' ||
+      !message.senderAddress ||
+      (wrapper.senderAddress !== message.senderAddress &&
+        !sameCanonicalAddress(wrapper.senderAddress, message.senderAddress))
+    )
+      throw new Error(`Invalid stored message envelope for ${index}`)
+    const internal = isInternalMessage(message.items)
+    let conversationId: string | undefined
+    if (message.conversationId !== undefined) {
       try {
-        chats[toChainDisplayAddress(primary.address)] = primary
+        if (typeof message.conversationId !== 'string')
+          throw new Error('Invalid ID')
+        conversationId = canonicalConversationId(message.conversationId)
       } catch {
-        // ignore
+        throw new Error(
+          `Unsupported stored conversation format for ${index}: valid conversation ID required`,
+        )
       }
     }
-
-    if (messages || logicalMessages) {
-      for (const msg of primary.messages) {
-        if (msg.payloadDigest) {
-          if (messages) {
-            messages[msg.payloadDigest] = msg
-          }
-          if (logicalMessages) {
-            recordLogicalMessage(logicalMessages, msg, primary.id)
-          }
-        }
-      }
+    if (!internal && !conversationId) {
+      throw new Error(
+        `Unsupported stored conversation format for ${index}: explicit conversation ID required`,
+      )
     }
-  }
-}
+    return { wrapper, conversationId, internal }
+  })
 
-/**
- * Deduplicates direct and email conversations sharing the same peer address.
- * Prioritizes conversations containing messages over empty placeholders.
- */
-export function deduplicateDirectConversations(
-  conversations: Iterable<Conversation>,
-): Conversation[] {
-  const result: Conversation[] = []
-  const directConvsByPeer = new Map<string, Conversation>()
-
-  for (const conv of conversations) {
-    if (!conv || conv.deletedAt) continue
-    const peer = extractDirectPeerAddress(conv, null)
-    if (peer && !conv.topic) {
-      const existing = directConvsByPeer.get(peer)
-      if (!existing) {
-        directConvsByPeer.set(peer, conv)
-      } else {
-        const existingMsgCount = existing.messages?.length ?? 0
-        const currentMsgCount = conv.messages?.length ?? 0
-
-        // If one has messages and the other is empty, the one with messages wins.
-        if (currentMsgCount > 0 && existingMsgCount === 0) {
-          directConvsByPeer.set(peer, conv)
-        } else if (currentMsgCount > 0 && existingMsgCount > 0) {
-          const existingTime =
-            existing.lastReceived ||
-            existing.updatedAt ||
-            existing.createdAt ||
-            0
-          const currentTime =
-            conv.lastReceived || conv.updatedAt || conv.createdAt || 0
-          if (currentTime > existingTime) {
-            directConvsByPeer.set(peer, conv)
-          }
-        } else if (currentMsgCount === 0 && existingMsgCount === 0) {
-          if (!existing.address && conv.address) {
-            directConvsByPeer.set(peer, conv)
-          }
-        }
-      }
-    } else {
-      result.push(conv)
-    }
-  }
-
-  for (const conv of directConvsByPeer.values()) {
-    result.push(conv)
-  }
-
-  return result
-}
-
-export async function rehydateChat(chatState: RestorableState): Promise<State> {
-  if (!chatState) {
-    return freshChatsState()
+  const hasChatMetadata =
+    chatState !== null &&
+    typeof chatState === 'object' &&
+    !Array.isArray(chatState)
+  const canReconstruct = metadataCompatible && hasChatMetadata
+  if (!canReconstruct && validatedRows.some(row => !row.internal)) {
+    throw new Error(
+      'Unsupported stored conversation format: conversational rows require compatible chat metadata',
+    )
   }
 
   const conversations: Record<string, Conversation> = {}
-  const chats: Record<string, ChatState> = {}
-  const messages: Record<string, Message> = {}
+  const messages: Record<string, ChatMessage> = {}
   const logicalMessages: Record<string, LogicalMessageRecord> = {}
-
-  // Restoration must not open custody. Preserve explicit public participants without
-  // inventing a self identity; unresolved records retain the existing unresolved-self path.
-  const ownAddress: string | null = null
-
-  // 1. Restore any explicit conversations
-  if (chatState.conversations) {
-    for (const [id, rawConv] of Object.entries(chatState.conversations)) {
-      if (!rawConv) continue
-      const conv: Conversation = {
-        id,
-        kind: rawConv.kind || 'direct',
-        name: rawConv.name,
-        topic: rawConv.topic,
-        emailRecipient: rawConv.emailRecipient,
-        participants: rawConv.participants || [],
-        members: rawConv.members || {},
-        epoch: rawConv.epoch,
-        address: rawConv.address || id,
-        messages: Array.isArray(rawConv.messages) ? [...rawConv.messages] : [],
-        totalUnreadMessages: 0,
-        totalUnreadValue: 0,
-        totalValue: 0,
-        lastReceived: rawConv.lastReceived ?? 0,
-        lastRead: rawConv.lastRead ?? 0,
-        stampAmount: rawConv.stampAmount ?? defaultStampAmount,
-        createdAt: rawConv.createdAt,
-        updatedAt: rawConv.updatedAt,
-        deletedAt: rawConv.deletedAt,
-        verifiedGateway: rawConv.verifiedGateway,
-      }
-      conversations[id] = conv
-      if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
-        try {
-          const displayAddress = toChainDisplayAddress(conv.address)
-          chats[displayAddress] = conv
-        } catch {
-          chats[conv.address] = conv
-        }
-      }
-    }
-
-    // Auto-heal duplicate direct conversations sharing the same peer address
-    autoHealDuplicateDirectConversations({
-      conversations,
-      chats,
-      ownAddress,
-      activeChatAddr: chatState.activeChatAddr,
-      activeConversationId: chatState.activeConversationId ?? null,
-      messages,
-      logicalMessages,
+  // Available metadata still constrains explicit internal owners even when this context
+  // cannot reconstruct conversations. Never substitute current metadata for a mismatch.
+  for (const [id, raw] of Object.entries(
+    hasChatMetadata ? chatState.conversations ?? {} : {},
+  )) {
+    if (!raw) continue
+    const conversation = newConversation({
+      ...raw,
+      id,
+      address: raw.address,
+      participants: raw.participants,
     })
+    conversations[conversation.id] = conversation
   }
 
-  // Exported alias for rehydateChat
+  const logicalOwners = new Map<string, string>()
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    const { message, copartyAddress, index } = wrapper
+    const peer = safeChainDisplayAddress(copartyAddress) || copartyAddress
+    const existing = conversationId ? conversations[conversationId] : undefined
+    // Internal records never reconstruct a chat or dispatch item effects. Check any explicit
+    // owner reference below, after all conversational owners have been prepared.
+    if (internal) continue
+    if (existing) assertConversationPeer(existing, peer)
+    const id = conversationId!
+    conversations[id] ??= newConversation({
+      id,
+      address: peer,
+      // Restore only persisted peer evidence; hydration must not open custody for self.
+      participants: [peer],
+      kind: message.items?.some(item => item.type === 'email')
+        ? 'email'
+        : 'direct',
+    })
+    const logicalId = message.logicalMessageId || index
+    const priorOwner = logicalOwners.get(logicalId)
+    if (priorOwner !== undefined && priorOwner !== id) {
+      throw new Error(
+        `Logical message ${logicalId} already belongs to another conversation`,
+      )
+    }
+    logicalOwners.set(logicalId, id)
+  }
 
-  // 2. Migrate legacy chats into conversations if not already restored
-  if (chatState.chats) {
-    for (const [contactAddress, contact] of Object.entries(chatState.chats)) {
-      if (!contact) continue
-      let displayAddress = contactAddress
-      try {
-        displayAddress = toChainDisplayAddress(contactAddress)
-      } catch {
-        //
-      }
-      const participants = ownAddress
-        ? Array.from(new Set([ownAddress, displayAddress])).sort()
-        : [displayAddress]
-      const convId = (contact as any).id || makeConversationId(participants)
+  // An internal row may precede the conversational row that establishes its explicit owner.
+  // Check that reference against the complete prepared owner set, independent of iterator order.
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    if (!internal || !conversationId) continue
+    const owner = conversations[conversationId]
+    if (owner) assertConversationPeer(owner, wrapper.copartyAddress)
+  }
 
-      let conv = conversations[convId]
-      if (!conv) {
-        const members: Record<string, ConversationMember> = {}
-        for (const p of participants) {
-          members[p] = { address: p, role: 'member' }
-        }
-        conv = {
-          id: convId,
-          kind: (contact as any).kind || 'direct',
-          name: (contact as any).name,
-          topic: (contact as any).topic,
-          address: displayAddress,
-          participants,
-          members,
-          messages: [],
-          totalUnreadMessages: 0,
-          totalUnreadValue: 0,
-          totalValue: 0,
-          lastReceived: contact.lastReceived ?? 0,
-          lastRead: contact.lastRead ?? 0,
-          stampAmount: contact.stampAmount ?? defaultStampAmount,
-        }
-        conversations[convId] = conv
-      }
-      // Persisted participant aliases are derived lookups, not additional owners.
-      // In particular a self alias must not route loopback messages to a remote peer.
-      if (
-        conv.address !== displayAddress &&
-        !sameCanonicalAddress(conv.address, displayAddress)
-      ) {
-        continue
-      }
-      chats[displayAddress] = conv
-      chats[contactAddress] = conv
+  // An attempt digest links an outgoing leftover to its confirmed row. Validate that
+  // association before deduplication can hide contradictory persisted ownership.
+  const confirmedOutboundRows = new Map(
+    validatedRows
+      .filter(
+        ({ wrapper, internal }) =>
+          !internal &&
+          wrapper.message.outbound &&
+          wrapper.message.status === 'confirmed',
+      )
+      .map(row => [row.wrapper.index, row]),
+  )
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    const { message, index, copartyAddress, senderAddress } = wrapper
+    const attemptDigest = message.delivery?.attemptDigest
+    if (
+      internal ||
+      !message.outbound ||
+      message.status === 'confirmed' ||
+      attemptDigest === undefined ||
+      attemptDigest === index
+    )
+      continue
+    const confirmed = confirmedOutboundRows.get(attemptDigest)
+    if (!confirmed) continue
+    const other = confirmed.wrapper
+    if (
+      (senderAddress !== other.senderAddress &&
+        !sameCanonicalAddress(senderAddress, other.senderAddress)) ||
+      (copartyAddress !== other.copartyAddress &&
+        !sameCanonicalAddress(copartyAddress, other.copartyAddress))
+    )
+      continue
+    if (
+      conversationId !== confirmed.conversationId ||
+      (message.logicalMessageId !== undefined &&
+        other.message.logicalMessageId !== undefined &&
+        message.logicalMessageId !== other.message.logicalMessageId)
+    ) {
+      throw new Error(`Conflicting stored attempt ownership for ${index}`)
     }
   }
 
-  const localStore = await store
+  // Only an admitted empty/internal-only collection may take a fresh-state exit.
+  // Raw internal records remain in MessageStore without conversation indexes or effects.
+  if (!canReconstruct) return freshChatsState()
 
-  const messageIterator = await localStore.getIterator()
   let lastReceived = Math.max(
     chatState.lastReceived ?? 0,
     await localStore.mostRecentMessageTime(),
   )
-
-  // Todo, this rehydrate stuff is common to receiveMessage
-  const wrappers: MessageWrapper[] = []
-  for await (const messageWrapper of messageIterator) {
-    if (messageWrapper.message) wrappers.push(messageWrapper)
-  }
   // A message that was delivered after being re-keyed from its local id to its payload hash can
   // leave its old local record behind if the app stopped between the two writes. The confirmed
-  // record wins (reconcile by payload hash: never show it twice); drop the leftover.
+  // record wins in the derived view; retain both durable records for recovery.
   const confirmedDigests = new Set(
     wrappers
       .filter(({ message }) => message.status === 'confirmed')
-      .map(({ index }) => index),
+      .map(row => row.index),
   )
-  for (const messageWrapper of wrappers) {
-    const { index, message: newMsg, copartyAddress } = messageWrapper
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    const { index, message: newMsg, copartyAddress } = wrapper
+    if (internal) {
+      messages[index] = { payloadDigest: index, ...newMsg }
+      continue
+    }
     const leftoverOf = newMsg.delivery?.attemptDigest
     if (
       newMsg.status !== 'confirmed' &&
@@ -1163,52 +1087,11 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
         newMsg.delivery = { ...newMsg.delivery, failureReason: 'interrupted' }
       }
     }
-    assert(newMsg.outbound !== undefined, 'outbound is not defined')
-    assert(newMsg.status !== undefined, 'status is not defined')
-    assert(newMsg.receivedTime !== undefined, 'receivedTime is not defined')
-    assert(newMsg.serverTime !== undefined, 'serverTime is not defined')
-    assert(newMsg.items !== undefined, 'items is not defined')
-    assert(newMsg.outpoints !== undefined, 'outpoints is not defined')
-    assert(newMsg.senderAddress !== undefined, 'senderAddress is not defined')
-
     const message: ChatMessage = { payloadDigest: index, ...newMsg }
     const emailItem = message.items?.find(it => it.type === 'email') as
       | EmailItem
       | undefined
-    const isEmail = !!emailItem
-    const displayAddress =
-      safeChainDisplayAddress(copartyAddress) || copartyAddress
-    const rawConvId =
-      (newMsg as any).conversationId || (messageWrapper as any).conversationId
-    const participants = ownAddress
-      ? Array.from(new Set([ownAddress, displayAddress])).sort()
-      : [displayAddress]
-    const convId = isEmail
-      ? rawConvId
-        ? makeConversationId(participants, rawConvId)
-        : makeConversationId(participants)
-      : makeConversationId(participants)
-
-    let conv =
-      chats[displayAddress] ||
-      (copartyAddress ? chats[copartyAddress] : undefined) ||
-      conversations[convId]
-    if (!conv) {
-      const members: Record<string, ConversationMember> = {}
-      for (const p of participants) members[p] = { address: p, role: 'member' }
-      conv = {
-        ...defaultContactObject,
-        id: convId,
-        kind: isEmail ? 'email' : 'direct',
-        address: displayAddress,
-        participants,
-        members,
-        messages: [],
-      }
-      conversations[convId] = conv
-    }
-    chats[displayAddress] = conv
-    chats[copartyAddress] = conv
+    const conv = conversations[conversationId!]
 
     message.conversationId = conv.id
     messages[index] = message
@@ -1233,7 +1116,6 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     const messageValue = accountedMessageValue(message)
     if (
       !newMsg.outbound &&
-      conv.address !== chatState.activeChatAddr &&
       conv.id !== chatState.activeConversationId &&
       conv.lastRead < message.serverTime
     ) {
@@ -1261,7 +1143,6 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
       conv.lastReceived = Math.max(conv.lastReceived ?? 0, msgTime)
       if (
         !msg.outbound &&
-        conv.address !== chatState.activeChatAddr &&
         conv.id !== chatState.activeConversationId &&
         conv.lastRead < msgTime
       ) {
@@ -1271,23 +1152,10 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     }
   }
 
-  // Auto-heal duplicate direct conversations across all hydration sources
-  autoHealDuplicateDirectConversations({
-    conversations,
-    chats,
-    ownAddress,
-    activeChatAddr: chatState.activeChatAddr,
-    activeConversationId: chatState.activeConversationId ?? null,
-    messages,
-    logicalMessages,
-  })
-
   return {
     conversations,
-    chats,
     messages,
     logicalMessages,
-    activeChatAddr: chatState.activeChatAddr,
     activeConversationId: chatState.activeConversationId ?? null,
     lastReceived,
   }
@@ -1317,23 +1185,16 @@ export const useChatStore = defineStore('chats', {
         return []
       }
     },
+    chats: state => defaultChats(state.conversations),
+    activeChatAddr(state): string | null {
+      return state.activeConversationId
+        ? state.conversations[state.activeConversationId]?.address ?? null
+        : null
+    },
     activeConversation(state): Conversation | null {
-      if (
-        state.activeConversationId &&
-        state.conversations?.[state.activeConversationId]
-      ) {
-        return state.conversations[state.activeConversationId]
-      }
-      if (state.activeChatAddr && state.chats?.[state.activeChatAddr]) {
-        return state.chats[state.activeChatAddr] ?? null
-      }
-      if (
-        state.activeConversationId &&
-        state.chats?.[state.activeConversationId]
-      ) {
-        return state.chats[state.activeConversationId] ?? null
-      }
-      return null
+      return state.activeConversationId
+        ? state.conversations[state.activeConversationId] ?? null
+        : null
     },
     getNumUnread: state => (addressOrId: string) => {
       if (state.conversations && addressOrId in state.conversations) {
@@ -1341,52 +1202,21 @@ export const useChatStore = defineStore('chats', {
       }
       try {
         const displayAddress = toChainDisplayAddress(addressOrId)
-        return state.chats[displayAddress]
-          ? state.chats[displayAddress]?.totalUnreadMessages ?? 0
+        return defaultChats(state.conversations)[displayAddress]
+          ? defaultChats(state.conversations)[displayAddress]
+              ?.totalUnreadMessages ?? 0
           : 0
       } catch {
         return 0
       }
     },
     totalUnread(state) {
-      const allConversations = new Map<string, Conversation>()
-      if (state.conversations) {
-        for (const [id, c] of Object.entries(state.conversations)) {
-          if (c && !c.deletedAt) allConversations.set(id, c)
-        }
-      }
-      if (state.chats) {
-        for (const [addr, c] of Object.entries(state.chats)) {
-          if (c && !c.deletedAt) {
-            const key = c.id || addr
-            if (!allConversations.has(key)) {
-              allConversations.set(key, c)
-            }
-          }
-        }
-      }
-      return deduplicateDirectConversations(allConversations.values())
-        .map(chat => chat?.totalUnreadMessages ?? 0)
-        .reduce((acc, val) => acc + val, 0)
+      return Object.values(state.conversations)
+        .filter(c => !c.deletedAt)
+        .reduce((total, c) => total + c.totalUnreadMessages, 0)
     },
     getSortedChatOrder(state) {
-      const allConversations = new Map<string, Conversation>()
-      if (state.conversations) {
-        for (const [id, c] of Object.entries(state.conversations)) {
-          if (c && !c.deletedAt) allConversations.set(id, c)
-        }
-      }
-      if (state.chats) {
-        for (const [addr, c] of Object.entries(state.chats)) {
-          if (c && !c.deletedAt) {
-            const key = c.id || addr
-            if (!allConversations.has(key)) {
-              allConversations.set(key, c)
-            }
-          }
-        }
-      }
-      const all = deduplicateDirectConversations(allConversations.values())
+      const all = Object.values(state.conversations).filter(c => !c.deletedAt)
       const sortedOrder = all.sort((contactA, contactB) => {
         assert(contactA && contactB, 'Make typescript happy')
         if (contactB.totalUnreadValue - contactA.totalUnreadValue !== 0) {
@@ -1424,7 +1254,7 @@ export const useChatStore = defineStore('chats', {
       }
       try {
         const displayAddress = toChainDisplayAddress(addressOrId)
-        return state.chats[displayAddress]?.lastRead ?? 0
+        return defaultChats(state.conversations)[displayAddress]?.lastRead ?? 0
       } catch {
         return 0
       }
@@ -1438,7 +1268,7 @@ export const useChatStore = defineStore('chats', {
         } else {
           try {
             const displayAddress = toChainDisplayAddress(addressOrId)
-            chat = state.chats[displayAddress]
+            chat = defaultChats(state.conversations)[displayAddress]
           } catch {
             // ignore
           }
@@ -1461,7 +1291,7 @@ export const useChatStore = defineStore('chats', {
         } else {
           try {
             const displayAddress = toChainDisplayAddress(addressOrId)
-            chat = state.chats[displayAddress]
+            chat = defaultChats(state.conversations)[displayAddress]
           } catch {
             // ignore
           }
@@ -1476,7 +1306,8 @@ export const useChatStore = defineStore('chats', {
         }
         try {
           const displayAddress = toChainDisplayAddress(addressOrId)
-          return state.chats[displayAddress]?.stampOverrideWei
+          return defaultChats(state.conversations)[displayAddress]
+            ?.stampOverrideWei
         } catch {
           return undefined
         }
@@ -1489,7 +1320,7 @@ export const useChatStore = defineStore('chats', {
       }
       try {
         const displayAddress = toChainDisplayAddress(addressOrId)
-        const chat = state.chats[displayAddress]
+        const chat = defaultChats(state.conversations)[displayAddress]
         if (!chat) {
           return defaultStampAmount
         }
@@ -1505,7 +1336,7 @@ export const useChatStore = defineStore('chats', {
       } else {
         try {
           const displayAddress = toChainDisplayAddress(addressOrId)
-          chat = state.chats[displayAddress]
+          chat = defaultChats(state.conversations)[displayAddress]
         } catch {
           chat = undefined
         }
@@ -1592,21 +1423,6 @@ export const useChatStore = defineStore('chats', {
             }
           }
         }
-        if (!message && this.chats) {
-          for (const conv of Object.values(this.chats)) {
-            const found = conv?.messages?.find(
-              m =>
-                m.payloadDigest === payloadDigest ||
-                m.delivery?.attemptDigest === payloadDigest ||
-                m.messageHash === payloadDigest ||
-                (m as any).index === payloadDigest,
-            )
-            if (found) {
-              message = found
-              break
-            }
-          }
-        }
       }
       const attemptDigest =
         explicitAttemptDigest || message?.delivery?.attemptDigest
@@ -1631,10 +1447,7 @@ export const useChatStore = defineStore('chats', {
       if (message?.outbound) {
         const resolvedWallet = wallet || messagingWallet()
         if (resolvedWallet) {
-          const allChats = [
-            ...Object.values(this.conversations ?? {}),
-            ...Object.values(this.chats ?? {}),
-          ]
+          const allChats = [...Object.values(this.conversations ?? {})]
           const hasQueued = allChats.some(c =>
             c?.messages?.some(
               m =>
@@ -1675,21 +1488,6 @@ export const useChatStore = defineStore('chats', {
       if (!message) {
         if (this.conversations) {
           for (const conv of Object.values(this.conversations)) {
-            const found = conv?.messages?.find(
-              m =>
-                m.payloadDigest === payloadDigest ||
-                m.delivery?.attemptDigest === payloadDigest ||
-                m.messageHash === payloadDigest ||
-                (m as any).index === payloadDigest,
-            )
-            if (found) {
-              message = found
-              break
-            }
-          }
-        }
-        if (!message && this.chats) {
-          for (const conv of Object.values(this.chats)) {
             const found = conv?.messages?.find(
               m =>
                 m.payloadDigest === payloadDigest ||
@@ -1769,11 +1567,6 @@ export const useChatStore = defineStore('chats', {
           if (c) allConvs.add(c)
         }
       }
-      if (this.chats) {
-        for (const c of Object.values(this.chats)) {
-          if (c) allConvs.add(c)
-        }
-      }
       if (this.activeConversation) {
         allConvs.add(this.activeConversation)
       }
@@ -1800,7 +1593,7 @@ export const useChatStore = defineStore('chats', {
             )
             conv.messages.splice(0, conv.messages.length, ...remaining)
             conv.messages = remaining
-            recomputeChatAccounting(conv, this.activeChatAddr)
+            recomputeChatAccounting(conv, this.activeConversationId)
           }
         }
       }
@@ -1894,21 +1687,6 @@ export const useChatStore = defineStore('chats', {
       chat.totalUnreadValue = 0
     },
     reset() {
-      this.chats = Object.fromEntries(
-        Object.entries(this.chats).map(([address, chatData]) => {
-          assert(chatData, 'Not possible')
-          return [
-            address,
-            {
-              ...chatData,
-              messages: [],
-              totalUnreadMessages: 0,
-              totalUnreadValue: 0,
-              totalValue: 0,
-            },
-          ]
-        }),
-      )
       this.conversations = Object.fromEntries(
         Object.entries(this.conversations).map(([id, convData]) => {
           return [
@@ -1927,7 +1705,6 @@ export const useChatStore = defineStore('chats', {
       this.logicalMessages = {}
       this.lastReceived = null
       this.activeConversationId = null
-      this.activeChatAddr = null
     },
     sendMessageLocal({
       address,
@@ -1973,12 +1750,10 @@ export const useChatStore = defineStore('chats', {
         //
       }
 
-      let conv: Conversation | undefined
-      if (conversationId && this.conversations[conversationId]) {
-        conv = this.conversations[conversationId]
-      } else if (this.chats[displayAddress]) {
-        conv = this.chats[displayAddress]
-      }
+      let conv = conversationId
+        ? this.conversations[canonicalConversationId(conversationId)]
+        : this.chats[displayAddress]
+      if (conv) assertConversationPeer(conv, displayAddress)
 
       const newMsg = {
         outbound: true,
@@ -1990,6 +1765,7 @@ export const useChatStore = defineStore('chats', {
         stampValueWei,
         stampPayments,
         senderAddress,
+        destinationAddress: displayAddress,
         messageHash: payloadDigest,
         delivery,
         conversationId: conv?.id || conversationId,
@@ -2012,22 +1788,13 @@ export const useChatStore = defineStore('chats', {
         // we have the message already, just need to update some fields and return
         this.messages[payloadDigest] = Object.assign(existingMessage, message)
         if (conv) {
-          recomputeChatAccounting(conv, this.activeChatAddr)
+          recomputeChatAccounting(conv, this.activeConversationId)
           recordLogicalMessage(this.logicalMessages, message, conv.id)
         }
         return
       }
 
-      const isInternalSyncOnly =
-        items.length > 0 &&
-        items.every(
-          it =>
-            it.type === 'swap-record' ||
-            it.type === 'wallet-sync' ||
-            it.type === 'payment-transfer',
-        )
-
-      if (isInternalSyncOnly) {
+      if (isInternalMessage(items)) {
         this.messages[payloadDigest] = message
         return
       }
@@ -2046,13 +1813,18 @@ export const useChatStore = defineStore('chats', {
           | undefined
         const trustedGateway = getTrustedEmailGatewayAddress()
         const isGateway = sameCanonicalAddress(displayAddress, trustedGateway)
-        conv = this.createConversation({
-          kind: emailItem ? 'email' : 'direct',
-          participants: [senderAddress, displayAddress],
-          conversationId,
-          address: displayAddress,
-          verifiedGateway: emailItem ? isGateway : undefined,
-        })
+        conv = conversationId
+          ? this.createConversation({
+              kind: emailItem ? 'email' : 'direct',
+              participants: [senderAddress, displayAddress],
+              conversationId,
+              address: displayAddress,
+              verifiedGateway: emailItem ? isGateway : undefined,
+            })
+          : this.openDirectConversation(displayAddress, [
+              senderAddress,
+              displayAddress,
+            ])
       }
 
       message.conversationId = conv.id
@@ -2087,7 +1859,7 @@ export const useChatStore = defineStore('chats', {
       }
       conv.lastRead = Date.now()
       conv.lastReceived = Math.max(conv.lastReceived, timestamp)
-      recomputeChatAccounting(conv, this.activeChatAddr)
+      recomputeChatAccounting(conv, this.activeConversationId)
       recordLogicalMessage(this.logicalMessages, message, conv.id)
     },
     /**
@@ -2104,10 +1876,15 @@ export const useChatStore = defineStore('chats', {
       type?: string
       meta?: Record<string, any>
     }): Promise<string> {
-      let ownAddress = await getOwnCanonicalAddress()
-      if (!ownAddress) {
-        ownAddress = 'self'
+      const internal = isInternalMessage(items)
+      const canonicalSelf = await getOwnCanonicalAddress()
+      if (!internal && (!canonicalSelf || !isChainAddress(canonicalSelf))) {
+        throw new Error('Canonical self identity is required for a saved note')
       }
+      const ownAddress = canonicalSelf || 'self'
+      const conversation = internal
+        ? undefined
+        : this.openDirectConversation(ownAddress)
       const messageId =
         'msg-self-' +
         Date.now() +
@@ -2129,6 +1906,7 @@ export const useChatStore = defineStore('chats', {
 
       this.sendMessageLocal({
         address: ownAddress,
+        conversationId: conversation?.id,
         senderAddress: ownAddress,
         index: messageId,
         items,
@@ -2139,21 +1917,7 @@ export const useChatStore = defineStore('chats', {
       })
 
       try {
-        const messageStore = await store
-        await messageStore.saveMessage({
-          index: messageId,
-          copartyAddress: ownAddress,
-          senderAddress: ownAddress,
-          message: {
-            outbound: true,
-            status: 'confirmed',
-            receivedTime: timestamp,
-            serverTime: timestamp,
-            items,
-            outpoints: [],
-            senderAddress: ownAddress,
-          },
-        })
+        await this.saveOutgoing(ownAddress, messageId, { strict: true })
       } catch (err) {
         console.warn('Failed to persist selfSendMessage to messageStore', err)
       }
@@ -2205,19 +1969,19 @@ export const useChatStore = defineStore('chats', {
       assert(recipient, `Invalid recipient address: ${address}`)
       const displayAddress = toChainDisplayAddress(address)
 
-      let conv: Conversation | undefined
-      if (conversationId && this.conversations[conversationId]) {
-        conv = this.conversations[conversationId]
-      } else if (this.chats[displayAddress]) {
-        conv = this.chats[displayAddress]
-      } else {
-        conv = this.createConversation({
-          kind: 'direct',
-          participants: [wallet.identity.displayAddress, displayAddress],
-          conversationId,
-          address: displayAddress,
-        })
-      }
+      const conv = conversationId
+        ? this.conversations[canonicalConversationId(conversationId)] ??
+          this.createConversation({
+            participants: [wallet.identity.displayAddress, displayAddress],
+            address: displayAddress,
+            conversationId,
+          })
+        : this.openDirectConversation(displayAddress, [
+            wallet.identity.displayAddress,
+            displayAddress,
+          ])
+      assertConversationPeer(conv, displayAddress)
+      if (conv.address === conv.id) conv.address = displayAddress
 
       const timestamp = Date.now()
       const pendingMessageId = nextPendingMessageId(timestamp)
@@ -2428,6 +2192,8 @@ export const useChatStore = defineStore('chats', {
       await assertDurableAttemptAssociation(
         id,
         recordedDigest ?? delivery.attemptDigest,
+        message,
+        address,
       )
       message.status = status
       // Presentation changes cannot revoke an already attributed signed payment.
@@ -2485,12 +2251,20 @@ export const useChatStore = defineStore('chats', {
       if (recordedDigest !== undefined && recordedDigest !== payloadDigest) {
         throw new Error(`cannot confirm a different payment attempt for ${id}`)
       }
-      await assertDurableAttemptAssociation(id, payloadDigest)
+      await assertDurableAttemptAssociation(id, payloadDigest, message, address)
       const { items, senderAddress, serverTime } = message
       const value = stampValueWei ?? message.stampValueWei
       const payments = stampPayments ?? message.stampPayments
+      const conversation = message.conversationId
+        ? this.conversations[message.conversationId]
+        : undefined
+      if (!conversation)
+        throw new Error(`Missing conversation owner for outgoing message ${id}`)
+      assertConversationPeer(conversation, address)
       this.sendMessageLocal({
         address,
+        conversationId: conversation.id,
+        logicalMessageId: message.logicalMessageId,
         senderAddress,
         index: payloadDigest,
         items,
@@ -2500,31 +2274,12 @@ export const useChatStore = defineStore('chats', {
         status: 'confirmed',
         previousHash: id,
         timestamp: serverTime,
+        delivery: message.delivery,
+        revisionDigest: message.revisionDigest,
       })
-      const chatKey = safeChainDisplayAddress(address) || address
-      const chat = this.chats[chatKey] || this.conversations[address]
-      if (chat) recomputeChatAccounting(chat, this.activeChatAddr)
+      recomputeChatAccounting(conversation, this.activeConversationId)
       const messageStore = await store
-      await messageStore.saveMessage(
-        {
-          message: {
-            outbound: true,
-            status: 'confirmed',
-            items,
-            serverTime,
-            receivedTime: serverTime,
-            outpoints: [],
-            stampValueWei: value,
-            stampPayments: payments,
-            senderAddress,
-          },
-          index: payloadDigest,
-          outbound: true,
-          senderAddress,
-          copartyAddress: address,
-        },
-        { advanceCursor: false },
-      )
+      await this.saveOutgoingExclusive(address, payloadDigest, { strict: true })
       if (id !== payloadDigest) {
         try {
           await messageStore.deleteMessage(id)
@@ -2558,6 +2313,13 @@ export const useChatStore = defineStore('chats', {
         }
         const message = this.messages[id]
         if (!message) return 'gone'
+        if (row && !matchesOutgoingOwner(row, message, address)) {
+          console.warn(
+            'conflicting conversation ownership for outgoing message',
+            id,
+          )
+          return 'unreadable'
+        }
         const stored = row?.message
         const storedDigest = stored?.delivery?.attemptDigest
         const localDigest = message.delivery?.attemptDigest
@@ -2577,13 +2339,7 @@ export const useChatStore = defineStore('chats', {
           for (const c of Object.values(this.conversations ?? {})) {
             if (c?.messages?.some(m => m.payloadDigest === id)) {
               c.messages = c.messages.filter(m => m.payloadDigest !== id)
-              recomputeChatAccounting(c, this.activeChatAddr)
-            }
-          }
-          for (const c of Object.values(this.chats ?? {})) {
-            if (c?.messages?.some(m => m.payloadDigest === id)) {
-              c.messages = c.messages.filter(m => m.payloadDigest !== id)
-              recomputeChatAccounting(c, this.activeChatAddr)
+              recomputeChatAccounting(c, this.activeConversationId)
             }
           }
           if (
@@ -2595,7 +2351,7 @@ export const useChatStore = defineStore('chats', {
               )
             recomputeChatAccounting(
               this.activeConversation,
-              this.activeChatAddr,
+              this.activeConversationId,
             )
           }
           return 'gone'
@@ -2705,10 +2461,7 @@ export const useChatStore = defineStore('chats', {
         recoveredOthers =
           outcome.state === 'failed' && outcome.reason === 'recovered'
         if (outcome.state === 'sent') {
-          const allChats = [
-            ...Object.values(this.conversations ?? {}),
-            ...Object.values(this.chats ?? {}),
-          ]
+          const allChats = [...Object.values(this.conversations ?? {})]
           const hasQueued = allChats.some(chat =>
             chat?.messages?.some(
               m =>
@@ -2883,6 +2636,7 @@ export const useChatStore = defineStore('chats', {
           result = await activeChain.directMessages.send({
             wallet,
             recipient,
+            conversationId: message.conversationId,
             items: message.items,
             ...(message.stampValueWei === undefined
               ? {}
@@ -3007,10 +2761,7 @@ export const useChatStore = defineStore('chats', {
       const waiting: Array<{ address: string; id: string; digest?: string }> =
         []
       const seenChats = new Set<ChatState>()
-      const allChats = [
-        ...Object.entries(this.conversations ?? {}),
-        ...Object.entries(this.chats ?? {}),
-      ]
+      const allChats = [...Object.entries(this.conversations ?? {})]
       for (const [key, chat] of allChats) {
         if (!chat || seenChats.has(chat)) continue
         seenChats.add(chat)
@@ -3024,7 +2775,7 @@ export const useChatStore = defineStore('chats', {
             !inflightOutgoing.has(message.payloadDigest)
           ) {
             const address =
-              chat.address ||
+              (isChainAddress(chat.address) ? chat.address : undefined) ||
               message.destinationAddress ||
               (activeChain.parseAddress(key) ? key : '')
             if (!address) continue
@@ -3088,10 +2839,7 @@ export const useChatStore = defineStore('chats', {
       }
       let pending = 0
       const countedChats = new Set<ChatState>()
-      const allChatValues = [
-        ...Object.values(this.conversations ?? {}),
-        ...Object.values(this.chats ?? {}),
-      ]
+      const allChatValues = [...Object.values(this.conversations ?? {})]
       for (const chat of allChatValues) {
         if (!chat || countedChats.has(chat)) continue
         countedChats.add(chat)
@@ -3141,7 +2889,7 @@ export const useChatStore = defineStore('chats', {
       for (const message of clearingMessages) {
         // As above, peer-directed outbound history has no receipt in our mailbox to suppress.
         const recipientAddress = message.outbound
-          ? sameCanonicalAddress(address, message.senderAddress)
+          ? sameCanonicalAddress(chat.address, message.senderAddress)
             ? message.senderAddress
             : null
           : messageDestinationAddress(message)
@@ -3192,7 +2940,18 @@ export const useChatStore = defineStore('chats', {
       chat.messages = chat.messages.filter(
         message => !clearedPayloads.has(message.payloadDigest),
       )
-      recomputeChatAccounting(chat, this.activeChatAddr)
+      recomputeChatAccounting(chat, this.activeConversationId)
+    },
+    openDirectConversation(
+      address: string,
+      participants: string[] = [address],
+    ): Conversation {
+      const conv = openDefaultConversation(
+        this.conversations,
+        address,
+        participants,
+      )
+      return this.conversations[conv.id]
     },
     createConversation({
       kind = 'direct',
@@ -3217,136 +2976,36 @@ export const useChatStore = defineStore('chats', {
       address?: string
       verifiedGateway?: boolean
     }): Conversation {
-      const normalizedParticipants = Array.from(
-        new Set(
-          participants.filter(Boolean).map(p => {
-            try {
-              return toChainDisplayAddress(p)
-            } catch {
-              return p
-            }
-          }),
-        ),
-      ).sort()
-
-      const id =
-        conversationId || makeConversationId(normalizedParticipants, topic)
-      let conv = this.conversations[id]
-      if (!conv && kind === 'direct' && !conversationId) {
-        const candidates = Object.values(this.conversations).filter(c => {
-          if (c.kind !== 'direct' || c.topic !== topic) return false
-          if (
-            address &&
-            c.address !== address &&
-            !sameCanonicalAddress(c.address, address)
-          ) {
-            return false
-          }
-          const candidateParticipants = Array.from(
-            new Set(
-              (c.participants || []).map(p => {
-                try {
-                  return toChainDisplayAddress(p)
-                } catch {
-                  return p
-                }
-              }),
-            ),
-          ).sort()
-          if (
-            candidateParticipants.length === normalizedParticipants.length &&
-            candidateParticipants.every(
-              (p, i) => p === normalizedParticipants[i],
-            )
-          ) {
-            return true
-          }
-          // Opening a peer before the wallet identity is known creates a one-peer
-          // placeholder. Only that explicit recipient can connect it to a full pair;
-          // sharing a participant (particularly self) never establishes ownership.
-          return (
-            !!address &&
-            ((candidateParticipants.length === 1 &&
-              sameCanonicalAddress(candidateParticipants[0], address) &&
-              normalizedParticipants.length <= 2 &&
-              normalizedParticipants.some(p =>
-                sameCanonicalAddress(p, address),
-              )) ||
-              (normalizedParticipants.length === 1 &&
-                sameCanonicalAddress(normalizedParticipants[0], address) &&
-                candidateParticipants.length <= 2 &&
-                candidateParticipants.some(p =>
-                  sameCanonicalAddress(p, address),
-                )))
-          )
-        })
-        conv = candidates.find(c => c.messages.length > 0) || candidates[0]
-      }
-      if (conv) {
-        if (name !== undefined) conv.name = name
-        if (topic !== undefined) conv.topic = topic
-        if (verifiedGateway !== undefined)
-          conv.verifiedGateway = verifiedGateway
-        if (emailRecipient !== undefined) conv.emailRecipient = emailRecipient
-        conv.deletedAt = undefined
-        conv.updatedAt = Date.now()
+      const id = conversationId
+        ? canonicalConversationId(conversationId)
+        : freshConversationId()
+      const peer = address || (participants.length === 1 ? participants[0] : id)
+      const existing = this.conversations[id]
+      if (existing) {
+        assertConversationPeer(existing, peer)
         if (
-          (kind === 'direct' || kind === 'email') &&
-          conv.address &&
-          conv.address !== conv.id
+          makeParticipantsKey(existing.participants) !==
+          makeParticipantsKey(participants)
         ) {
-          this.chats[conv.address] = conv
+          throw new Error(`Conversation ${id} has different participants`)
         }
-        if (address) {
-          this.chats[address] = conv
-          try {
-            this.chats[toChainDisplayAddress(address)] = conv
-          } catch {
-            // ignore
-          }
-        }
-        return conv
+        return existing
       }
-
-      const members: Record<string, ConversationMember> = {}
-      for (const p of normalizedParticipants) {
-        members[p] = { address: p, role: initialRole, joinedAt: Date.now() }
-      }
-
-      const displayAddress =
-        address ||
-        ((kind === 'direct' || kind === 'email') &&
-        normalizedParticipants.length === 1
-          ? normalizedParticipants[0]
-          : id)
-
-      conv = {
-        ...defaultContactObject,
+      const conv = newConversation({
         id,
         kind,
         name,
         topic,
         emailRecipient,
-        participants: normalizedParticipants,
-        members,
-        address: displayAddress,
-        messages: [],
+        participants,
+        address: peer,
         stampAmount,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
         verifiedGateway,
-      }
-
+      })
+      for (const member of Object.values(conv.members ?? {}))
+        member.role = initialRole
       this.conversations[id] = conv
-      if ((kind === 'direct' || kind === 'email') && displayAddress !== id) {
-        try {
-          const canonical = toChainDisplayAddress(displayAddress)
-          this.chats[canonical] = conv
-        } catch {
-          this.chats[displayAddress] = conv
-        }
-      }
-      return conv
+      return this.conversations[id]
     },
     createOrOpenEmailConversation({
       recipientEmail,
@@ -3371,10 +3030,8 @@ export const useChatStore = defineStore('chats', {
           c &&
           !c.deletedAt &&
           c.kind === 'email' &&
-          (c.emailRecipient?.toLowerCase().trim() === normalizedEmail ||
-            c.topic?.toLowerCase().trim() === normalizedEmail ||
-            (c.messages.length === 0 &&
-              c.name?.toLowerCase().trim() === normalizedEmail)),
+          sameCanonicalAddress(c.address, canonicalGateway) &&
+          c.emailRecipient?.toLowerCase().trim() === normalizedEmail,
       )
 
       if (existing) {
@@ -3408,42 +3065,22 @@ export const useChatStore = defineStore('chats', {
         verifiedGateway: true,
       })
     },
-    async deleteChat(address: string, deletedAt = Date.now()) {
-      let displayAddress = address
-      try {
-        displayAddress = toChainDisplayAddress(address)
-      } catch {
-        //
-      }
-      const chat = this.chats[displayAddress] || this.conversations[address]
-      await this.clearChat(displayAddress)
-      if (this.activeChatAddr === displayAddress) {
-        this.activeChatAddr = null
-      }
-      if (chat) {
-        if (this.activeConversationId === chat.id) {
-          this.activeConversationId = null
-        }
-        chat.deletedAt = deletedAt
-      }
-      delete this.chats[displayAddress]
+    async deleteChat(addressOrId: string, deletedAt = Date.now()) {
+      const conversation =
+        this.conversations[addressOrId] ??
+        this.chats[safeChainDisplayAddress(addressOrId) || addressOrId]
+      if (conversation)
+        await this.deleteConversation(conversation.id, deletedAt)
     },
     async deleteConversation(conversationId: string, deletedAt = Date.now()) {
-      const conv = this.conversations[conversationId]
-      if (!conv) return
-      conv.deletedAt = deletedAt
-      if (conv.address && this.chats[conv.address]) {
-        await this.clearChat(conv.address)
-        delete this.chats[conv.address]
-      } else {
-        await this.clearChat(conversationId)
-      }
-      if (this.activeConversationId === conversationId) {
-        this.activeConversationId = null
-      }
-      if (this.activeChatAddr === conv.address) {
-        this.activeChatAddr = null
-      }
+      return serializeDeliveryMutation(async () => {
+        const conv = this.conversations[conversationId]
+        if (!conv) return
+        await this.clearChatExclusive(conversationId)
+        conv.deletedAt = deletedAt
+        if (this.activeConversationId === conversationId)
+          this.activeConversationId = null
+      })
     },
     async clearConversation(conversationId: string): Promise<void> {
       return serializeDeliveryMutation(() =>
@@ -3482,119 +3119,26 @@ export const useChatStore = defineStore('chats', {
       }
       chat.stampAmount = Math.trunc(stampAmount)
     },
-    setActiveChat(address: string | null) {
-      // make sure address is defined, e.g. Forum is undefined
-      if (!address) {
-        this.activeChatAddr = null
-        this.activeConversationId = null
-        return
-      }
-
-      // If address is already a conversation ID in this.conversations:
-      if (this.conversations && address in this.conversations) {
-        this.activeConversationId = address
-        const conv = this.conversations[address]
-        this.activeChatAddr = conv?.address || null
-        this.readAll(address)
-        return
-      }
-
-      // make sure address is defined, e.g. Forum is undefined
-      if (address) {
-        if (isChainAddress(address)) {
-          const contacts = useContactStore()
-          contacts.refresh(address)
-        }
-        this.readAll(address)
-      }
-
-      let displayAddress: string
-      try {
-        displayAddress = toChainDisplayAddress(address)
-      } catch {
-        displayAddress = address
-      }
-      let conv = this.chats[displayAddress]
-      const peerConvs = this.getConversationsForAddress(displayAddress).filter(
-        c =>
-          c.kind === 'direct' &&
-          !c.topic &&
-          sameCanonicalAddress(c.address, displayAddress),
-      )
-      const withMessages = peerConvs.find(c => (c.messages?.length ?? 0) > 0)
-      if (withMessages) {
-        conv = withMessages
-        this.chats[displayAddress] = conv
-      } else if (!conv && peerConvs.length > 0) {
-        conv = peerConvs[0]
-        this.chats[displayAddress] = conv
-      }
-      if (!conv) {
-        conv = this.createConversation({
-          kind: 'direct',
-          participants: [displayAddress],
-          address: displayAddress,
-        })
-      }
-      this.activeChatAddr = displayAddress
-      this.activeConversationId = conv.id
+    setActiveChat(address: string | null): void {
+      if (!address) return this.setActiveConversation(null)
+      if (this.conversations[address])
+        return this.setActiveConversation(address)
+      const conv = this.openDirectConversation(address)
+      this.setActiveConversation(conv.id)
     },
-    setActiveConversation(conversationId: string | null) {
-      if (!conversationId) {
-        this.activeConversationId = null
-        this.activeChatAddr = null
-        return
+    setActiveConversation(conversationId: string | null): void {
+      if (conversationId && isChainAddress(conversationId)) {
+        return this.setActiveChat(conversationId)
       }
-      let conv = this.conversations[conversationId]
-      let activatedByContactAddress: string | null = null
-      try {
-        const displayAddress = toChainDisplayAddress(conversationId)
-        activatedByContactAddress = displayAddress
-        const peerConvs = this.getConversationsForAddress(
-          displayAddress,
-        ).filter(
-          c =>
-            c.kind === 'direct' &&
-            !c.topic &&
-            sameCanonicalAddress(c.address, displayAddress),
-        )
-        const withMessages = peerConvs.find(c => (c.messages?.length ?? 0) > 0)
-        if (withMessages) {
-          conv = withMessages
-          this.chats[displayAddress] = conv
-        } else if (!conv) {
-          conv = this.chats[displayAddress] || peerConvs[0]
-          if (!conv) {
-            conv = this.createConversation({
-              kind: 'direct',
-              participants: [displayAddress],
-              address: displayAddress,
-            })
-          }
-        }
-      } catch {
-        // not a valid chain address and not in conversations
-      }
-      if (!conv) {
-        this.activeConversationId = conversationId
-        this.activeChatAddr = null
-        return
-      }
-      this.activeConversationId = conv.id
-      if (
-        activatedByContactAddress &&
-        (conv.kind === 'direct' || conv.kind === 'email')
-      ) {
-        conv.address = activatedByContactAddress
-        this.chats[activatedByContactAddress] = conv
-      }
-      if ((conv.kind === 'direct' || conv.kind === 'email') && conv.address) {
-        this.activeChatAddr = conv.address
-        const contacts = useContactStore()
-        contacts.refresh(conv.address)
-        this.readAll(conv.address)
-      } else {
-        this.activeChatAddr = null
+      const conv = conversationId
+        ? this.conversations[conversationId]
+        : undefined
+      if (conversationId && !conv)
+        throw new Error(`Unknown conversation ${conversationId}`)
+      this.activeConversationId = conv?.id ?? null
+      if (conv) {
+        if (isChainAddress(conv.address))
+          useContactStore().refresh(conv.address)
         this.readAll(conv.id)
       }
     },
@@ -3699,19 +3243,23 @@ export const useChatStore = defineStore('chats', {
       const outboundMatches = new Map<string, OutboundDeliveryMatch>()
       const replacedAccountCollisions = new Map<
         string,
-        { chatAddress: string; oldIndex: string }
+        { conversationId: string; oldIndex: string }
       >()
 
       const owners = indexOutboundDeliveryOwners({
         ...(this.conversations ?? {}),
-        ...(this.chats ?? {}),
       })
 
       for (const wrapper of deliverableWrappers) {
         const confirmed = owners.byPayload.get(wrapper.index)
         const owner = confirmed ?? owners.byAttempt.get(wrapper.index)
         if (!owner) continue
-        const { chatAddress, index: oldIndex, message: existing } = owner
+        const {
+          chatAddress,
+          conversationId,
+          index: oldIndex,
+          message: existing,
+        } = owner
         const isCurrentSender =
           sameCanonicalAddress(existing.senderAddress, ownAddress) &&
           sameCanonicalAddress(wrapper.senderAddress, ownAddress)
@@ -3726,11 +3274,18 @@ export const useChatStore = defineStore('chats', {
           isCurrentSender && (isMatchingOutboxRoute || isCurrentSelfRoute)
 
         if (isSameIdentityAndRoute) {
+          await assertDurableAttemptAssociation(
+            oldIndex,
+            existing.delivery?.attemptDigest ?? wrapper.index,
+            existing,
+            chatAddress,
+          )
           // The local outbox owns content/direction. The relay owns only delivery time and the
           // observed stamp metadata; never spread an inbox wrapper over the outbound record.
           outboundMatches.set(wrapper.index, {
             oldIndex,
             chatAddress,
+            conversationId,
             message: {
               outbound: true,
               status: 'confirmed',
@@ -3744,18 +3299,80 @@ export const useChatStore = defineStore('chats', {
                 wrapper.message.stampPayments ?? existing.stampPayments,
               senderAddress: existing.senderAddress,
               destinationAddress: wrapper.message.destinationAddress,
-              delivery: undefined,
+              delivery: existing.delivery,
+              conversationId,
+              logicalMessageId: existing.logicalMessageId,
             },
           })
         } else {
           // A payload from an earlier account can legitimately arrive after Replace Account.
           // It is a new inbound record for the current identity, not the old account's outbox.
           replacedAccountCollisions.set(wrapper.index, {
-            chatAddress,
+            conversationId,
             oldIndex,
           })
           toNotify.add(wrapper.index)
         }
+      }
+
+      const receivedConversations = new Map<string, Conversation>()
+      const receivedLogicalOwners = new Map<string, string>()
+      const preparedConversations = { ...this.conversations }
+      for (const wrapper of deliverableWrappers) {
+        const peer = toChainDisplayAddress(wrapper.copartyAddress)
+        const rawId = wrapper.message.conversationId || wrapper.conversationId
+        const loopback = outboundMatches.get(wrapper.index)
+        const id = rawId
+          ? canonicalConversationId(rawId)
+          : loopback?.conversationId
+        if (loopback && id && id !== loopback.conversationId) {
+          throw new Error(
+            'Conversation identity differs from the original outgoing message',
+          )
+        }
+        let conv = id
+          ? preparedConversations[id]
+          : defaultChats(preparedConversations)[peer]
+        if (conv) assertConversationPeer(conv, peer)
+        const existing = this.messages[wrapper.index]
+        if (
+          existing?.conversationId &&
+          id &&
+          existing.conversationId !== id &&
+          !replacedAccountCollisions.has(wrapper.index)
+        ) {
+          throw new Error(
+            'Conversation identity differs from the existing message owner',
+          )
+        }
+        if (!conv) {
+          const participants = ownAddress ? [ownAddress, peer] : [peer]
+          conv = id
+            ? newConversation({ id, address: peer, participants })
+            : openDefaultConversation(preparedConversations, peer, participants)
+          preparedConversations[conv.id] = conv
+        }
+        const logicalId =
+          loopback?.message.logicalMessageId ||
+          wrapper.message.logicalMessageId ||
+          wrapper.index
+        const logicalOwner = this.logicalMessages[logicalId]
+        const batchOwner = receivedLogicalOwners.get(logicalId)
+        if (
+          (batchOwner !== undefined && batchOwner !== conv.id) ||
+          (logicalOwner &&
+            logicalOwner.conversationId !== conv.id &&
+            !replacedAccountCollisions.has(wrapper.index))
+        ) {
+          throw new Error(
+            `Logical message ${logicalId} already belongs to another conversation`,
+          )
+        }
+        receivedLogicalOwners.set(logicalId, conv.id)
+        receivedConversations.set(wrapper.index, conv)
+      }
+      for (const conv of receivedConversations.values()) {
+        this.conversations[conv.id] ??= conv
       }
 
       for (const wrapper of deliverableWrappers) {
@@ -3767,7 +3384,10 @@ export const useChatStore = defineStore('chats', {
         }
         const loopback = outboundMatches.get(wrapper.index)
         const persisted: MessageWrapper = {
-          message: loopback?.message ?? { ...wrapper.message },
+          message: loopback?.message ?? {
+            ...wrapper.message,
+            conversationId: receivedConversations.get(wrapper.index)!.id,
+          },
           index: wrapper.index,
           outbound: loopback ? true : wrapper.outbound,
           senderAddress:
@@ -3824,7 +3444,7 @@ export const useChatStore = defineStore('chats', {
           payloadDigest: index,
           ...loopback.message,
         }
-        const mutation = mutationFor(loopback.chatAddress)
+        const mutation = mutationFor(loopback.conversationId)
         mutation.replacements.set(loopback.oldIndex, reconciled)
         mutation.replacements.set(index, reconciled)
         delete this.messages[loopback.oldIndex]
@@ -3836,11 +3456,16 @@ export const useChatStore = defineStore('chats', {
       }
 
       for (const collision of replacedAccountCollisions.values()) {
-        mutationFor(collision.chatAddress).removals.add(collision.oldIndex)
+        const original = this.messages[collision.oldIndex]
+        if (original)
+          delete this.logicalMessages[
+            original.logicalMessageId || collision.oldIndex
+          ]
+        mutationFor(collision.conversationId).removals.add(collision.oldIndex)
         delete this.messages[collision.oldIndex]
       }
-      for (const [chatAddress, mutation] of chatMutations) {
-        const chat = this.chats[chatAddress]
+      for (const [conversationId, mutation] of chatMutations) {
+        const chat = this.conversations[conversationId]
         if (!chat) continue
         const installedReplacements = new Set<string>()
         chat.messages = chat.messages.flatMap(message => {
@@ -3860,7 +3485,7 @@ export const useChatStore = defineStore('chats', {
             ),
           )
         }
-        recomputeChatAccounting(chat, this.activeChatAddr)
+        recomputeChatAccounting(chat, this.activeConversationId)
         for (const replacement of mutation.replacements.values()) {
           recordLogicalMessage(this.logicalMessages, replacement, chat.id)
         }
@@ -3897,67 +3522,12 @@ export const useChatStore = defineStore('chats', {
         const emailItem = newMsg.items?.find(
           (it: any) => it.type === 'email',
         ) as EmailItem | undefined
-        const rawConvId =
-          (newMsg as any).conversationId ||
-          (wrapper as any).conversationId ||
-          (newMsg as any).topicId
-        const convName =
-          (newMsg as any).conversationName ||
-          (newMsg as any).subject ||
-          emailItem?.subject ||
-          (newMsg as any).name
-        const isEmail = !!emailItem
-        const kind = isEmail ? 'email' : 'direct'
-        const participants = ownAddress
-          ? Array.from(new Set([ownAddress, displayAddress])).sort()
-          : [displayAddress]
-
-        let conv: Conversation | undefined
-        if (rawConvId) {
-          const topicConvId = makeConversationId(participants, rawConvId)
-          if (this.conversations[rawConvId]) {
-            conv = this.conversations[rawConvId]
-          } else if (this.conversations[topicConvId]) {
-            conv = this.conversations[topicConvId]
-          }
-        }
-
-        const convId =
-          kind === 'direct'
-            ? makeConversationId(participants)
-            : rawConvId
-            ? makeConversationId(participants, rawConvId)
-            : makeConversationId(participants)
-
+        const conv = receivedConversations.get(index)!
+        const convName = emailItem?.subject
         const trustedGateway = getTrustedEmailGatewayAddress()
         const isVerifiedGateway = newMsg.outbound
-          ? sameCanonicalAddress(copartyAddress, trustedGateway) ||
-            sameCanonicalAddress(displayAddress, trustedGateway)
+          ? sameCanonicalAddress(copartyAddress, trustedGateway)
           : sameCanonicalAddress(newMsg.senderAddress, trustedGateway)
-
-        if (!conv) {
-          conv =
-            this.chats[displayAddress] ||
-            (copartyAddress ? this.chats[copartyAddress] : undefined) ||
-            this.conversations[convId]
-        }
-
-        if (!conv) {
-          conv = this.createConversation({
-            kind,
-            participants,
-            conversationId: convId,
-            name: convName,
-            address: displayAddress,
-            verifiedGateway: emailItem ? isVerifiedGateway : undefined,
-          })
-        }
-
-        this.conversations[conv.id] = conv
-        this.chats[displayAddress] = conv
-        if (copartyAddress) {
-          this.chats[copartyAddress] = conv
-        }
 
         // Tombstone check: ignore replayed/older messages for a deleted conversation
         if (conv.deletedAt !== undefined) {
@@ -3966,7 +3536,6 @@ export const useChatStore = defineStore('chats', {
           }
           // Newer message: reopen the conversation!
           conv.deletedAt = undefined
-          this.chats[displayAddress] = conv
         }
 
         // Renaming: update conversation name if provided
@@ -3979,7 +3548,6 @@ export const useChatStore = defineStore('chats', {
           conv.updatedAt = Date.now()
         }
 
-        ;(newMsg as any).conversationId = conv.id
         const message: ChatMessage = {
           ...newMsg,
           payloadDigest: index,
@@ -4044,7 +3612,6 @@ export const useChatStore = defineStore('chats', {
         }
 
         this.messages[index] = message
-        this.chats[displayAddress] = conv
         if (!conv.messages.some(m => m.payloadDigest === index)) {
           conv.messages.push(message)
           conv.messages.sort(
@@ -4066,16 +3633,12 @@ export const useChatStore = defineStore('chats', {
 
         const messageValue = accountedMessageValue(message)
         if (
-          displayAddress !== this.activeChatAddr &&
           conv.id !== this.activeConversationId &&
           conv.lastRead < message.serverTime
         ) {
           conv.totalUnreadValue += messageValue
           conv.totalUnreadMessages += 1
-        } else if (
-          displayAddress === this.activeChatAddr ||
-          conv.id === this.activeConversationId
-        ) {
+        } else if (conv.id === this.activeConversationId) {
           // The receipt was visible while this chat was active. Persist that read decision so
           // navigating elsewhere and reloading cannot reconstruct it as unread.
           conv.lastRead = Math.max(conv.lastRead, message.serverTime)
@@ -4142,7 +3705,7 @@ export const useChatStore = defineStore('chats', {
         if (
           document.hasFocus() ||
           stampValue < acceptancePrice ||
-          this.lastRead(copartyAddress) > newMsg.serverTime ||
+          this.lastRead(stored.conversationId!) > newMsg.serverTime ||
           messageWrappers.length !== 1
         ) {
           continue
@@ -4169,7 +3732,7 @@ export const useChatStore = defineStore('chats', {
             contact.profile.name ?? 'Unknown',
             body,
             contact.profile.avatar ?? '',
-            async () => (this.activeChatAddr = copartyAddress),
+            async () => this.setActiveConversation(stored.conversationId!),
             index,
           )
         }
@@ -4178,31 +3741,14 @@ export const useChatStore = defineStore('chats', {
   },
   storage: {
     save(storage, _mutation, state): Promise<void> {
-      const serializedConversations = state.conversations
-        ? mapObjIndexed((convData: Record<string, unknown>) => {
-            return {
-              ...convData,
-              messages: [],
-            }
-          }, state.conversations)
-        : {}
       const chats = {
-        activeChatAddr: pathOr(undefined, ['activeChatAddr'], state),
-        activeConversationId: pathOr(
-          undefined,
-          ['activeConversationId'],
-          state,
+        activeConversationId: state.activeConversationId,
+        conversations: Object.fromEntries(
+          Object.entries(state.conversations).map(([id, conv]) => [
+            id,
+            { ...conv, messages: [] },
+          ]),
         ),
-        conversations: serializedConversations,
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        chats: mapObjIndexed((addressData: Record<string, unknown>) => {
-          return {
-            ...addressData,
-            // Overwrite messages because storing them would be prohibitive.
-            messages: [],
-          }
-        }, state.chats),
-        messages: {},
         lastReceived: state.lastReceived ?? 0,
       }
       return storage.put('chats', JSON.stringify(chats))
@@ -4220,13 +3766,7 @@ export const useChatStore = defineStore('chats', {
       const invalidStore =
         metadata.networkName !== displayNetwork ||
         metadata.version !== STORE_SCHEMA_VERSION
-      if (invalidStore) {
-        return freshChatsState()
-      }
-
-      const rehydratedChat = await rehydateChat(deserializedChats)
-
-      return rehydratedChat
+      return rehydateChat(deserializedChats, !invalidStore)
     },
   },
 })

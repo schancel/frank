@@ -84,18 +84,18 @@ export default defineComponent({
     const {
       getLastReceived: lastReceived,
       totalUnread,
-      activeChatAddr,
+      activeConversationId,
     } = storeToRefs(chatStore)
 
     const router = useRouter()
 
-    watch(activeChatAddr, newAddress => {
-      // Only route to chat if address defined
-      // e.g. do *not* route when navigating to Forum
-      if (!newAddress) {
-        return
+    watch(activeConversationId, conversationId => {
+      // Selection, including notification clicks, routes to its exact thread owner.
+      // Clearing selection while leaving chat must not navigate back into a thread.
+      if (!conversationId) return
+      if (router.currentRoute.value.params.address !== conversationId) {
+        void openChat(router, conversationId)
       }
-      openChat(router, newAddress)
     })
 
     const contactClicked = (newAddress: string) => {

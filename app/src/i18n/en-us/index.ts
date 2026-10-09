@@ -436,6 +436,9 @@ export default {
     swapEnterAmount: 'Enter an amount to swap',
     swapInsufficientBalance: 'Insufficient {asset} balance',
     swapMaxBtn: 'MAX',
+    swapUnavailable: 'Instant Swap unavailable',
+    swapUnavailableDescription:
+      'Swaps are not supported yet. No quote or transaction is available.',
     swapExecute: 'Swap Now',
     swapSuccess:
       'Swap executed successfully! Funds delivered to your private stealth address.',

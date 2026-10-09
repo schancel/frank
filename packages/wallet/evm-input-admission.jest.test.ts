@@ -1093,10 +1093,15 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     const get = jest.spyOn(f.journal, 'get')
     const list = jest.spyOn(f.journal, 'list')
     const putMany = writes()
-    expect(spend(f).classifyMember(snapshot, 0)).toBe('needs-apply')
     expect(spend(f).classifyMember(snapshot, 5)).toBe('not-eligible')
-    expect(get).not.toHaveBeenCalled()
     expect(list).not.toHaveBeenCalled()
+    expect(spend(f).classifyMember(snapshot, 0)).toBe('needs-apply')
+    expect(get).not.toHaveBeenCalled()
+    // #1235 Stage C changed this assertion on purpose: it was `list` not called at all. The
+    // member itself is still read only from the snapshot (`get` is never called), but an answer
+    // of `needs-apply` now first asks whether the projection is ready, and the projection reads
+    // the journal once. Every other answer still reads nothing (see the not-ready test below).
+    expect(list).toHaveBeenCalledTimes(1)
     expect(putMany).not.toHaveBeenCalled()
   })
 
@@ -1741,5 +1746,248 @@ describe('pool spend admission (#1235 Stage 1)', () => {
         order === 'apply first' ? 'spent' : 'in-use',
       )
     }
+  })
+  // ---------------------------------------------------------------------------------------
+  // #1235 Stage C, the review follow-ups to Stage 1. Each test names what it reproduces on main
+  // e8d87c2d, or says it is a pin.
+  // ---------------------------------------------------------------------------------------
+
+  // Pin. The fixture's rows are the legacy `available` marker; production derives its rows
+  // `unfunded` (`ensureUnfundedSize`), and one of those becomes a native source when it is funded
+  // from outside the pool's own funding path. Stage 1 had no test from that status.
+  it('pin: an unfunded row goes to spent with the member checkpoint in one write, and reopens as one authorization', async () => {
+    const f = await start(location)
+    f.pool.ensureUnfundedSize(4)
+    await f.pool.flush()
+    const unfunded = {
+      index: 3,
+      address: f.keyring.deriveSubAccount(3).address,
+      status: 'unfunded',
+    }
+    expect(f.pool.getRecord(3)).toEqual(unfunded)
+    const { id, raw } = await member(f, 3)
+    const putMany = writes()
+    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('needs-apply')
+    expect(await spend(f).applyMember(id, 0)).toEqual({
+      kind: 'committed',
+      poolIndex: 3,
+    })
+    expect(putMany).toHaveBeenCalledTimes(1)
+    const spent = {
+      ...unfunded,
+      status: 'spent',
+      lifecycle: {
+        spend: { rawTx: raw, txHash: Transaction.from(raw).hash, valueWei: '32' },
+      },
+    }
+    expect(putMany.mock.calls[0]![0]).toEqual([spent])
+    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('applied')
+    const reopened = await reopen(f)
+    expect(kinds(reopened)).toEqual(['native', 'pool-retained'])
+    expect(reopened.pool.getRecord(3)).toEqual(spent)
+    expect(await spend(reopened).applyMember(id, 0)).toEqual({
+      kind: 'already-applied',
+      poolIndex: 3,
+    })
+  })
+
+  // On main e8d87c2d classification answers `needs-apply` under a conflicting or invalid
+  // projection (it looks only at the uncertain flag), so the pass enters the admission for every
+  // such member, every time.
+  it.each(['conflicting', 'invalid'] as const)(
+    'classifyMember answers not-eligible while the projection is %s, and needs-apply again once it is ready; only that answer costs a projection',
+    async kind => {
+      const f = await start(location)
+      let projected = 0
+      f.faults.validate = () => {
+        projected++
+      }
+      const wanted = await member(f, 0)
+      const applied = await member(f, 1)
+      await spend(f).applyMember(applied.id, 0)
+      const other = await member(f, 2, 0, 'unsigned')
+      const classify = (id: string) => {
+        const before = projected
+        const answer = spend(f).classifyMember(f.journal.get(id), 0)
+        return [answer, projected - before]
+      }
+      expect(classify(wanted.id)).toEqual(['needs-apply', 1])
+      let clear: () => Promise<void>
+      if (kind === 'conflicting') {
+        // Hand-built: row 2 goes terminal with no checkpoint while a never-signed plan spends
+        // from it. Cancelling that plan (what Stage C does) ends the conflict.
+        f.pool.setStatus(2, 'in-use')
+        f.pool.setStatus(2, 'spent')
+        clear = async () => {
+          await nativeAdmissionJournal(f.admission, f.lifetime).cancelUnsigned(
+            other.id,
+          )
+        }
+      } else {
+        f.faults.validate = () => {
+          projected++
+          throw new Error('hand-built: wallet state invalid')
+        }
+        clear = async () => {
+          f.faults.validate = () => {
+            projected++
+          }
+        }
+      }
+      expect(f.admission.inspect(f.lifetime)).toMatchObject({
+        status: 'unavailable',
+        reason:
+          kind === 'conflicting'
+            ? 'conflicting-authorization'
+            : 'invalid-provenance',
+      })
+      const putMany = writes()
+      expect(classify(wanted.id)).toEqual(['not-eligible', 1])
+      // Answers that need no apply are read from the snapshot and the row alone, as before.
+      expect(classify(applied.id)).toEqual(['applied', 0])
+      expect(classify(other.id)).toEqual(['not-eligible', 0])
+      // Classification writes nothing and does not fault the admission.
+      expect(putMany).not.toHaveBeenCalled()
+      await clear()
+      expect(f.admission.inspect(f.lifetime).status).toBe('ready')
+      expect(classify(wanted.id)).toEqual(['needs-apply', 1])
+      expect((await spend(f).applyMember(wanted.id, 0)).kind).toBe('committed')
+    },
+  )
+
+  // On main e8d87c2d the throw skips the flush and the fault: the call rejects, the admission
+  // stays `ready`, and the session goes on signing over a put nobody flushed.
+  it('a writer that fails after its put leaves the session uncertain: nothing signs until a real reopen, where the row is valid either way', async () => {
+    const f = await start(location)
+    const { id, raw } = await member(f)
+    const other = await member(f, 1, 0, 'unsigned')
+    const put = jest.spyOn(f.poolStore, 'put')
+    // The pool updates its derived account view after the put; that view fails.
+    f.pool.setAccountUtxoPool({
+      getCoinsByAddress: () => {
+        if (put.mock.calls.length > 0)
+          throw new Error('fixture: account view failed after the put')
+        return []
+      },
+      registerSubAccount: () => undefined,
+    } as never)
+    await expect(spend(f).applyMember(id, 0)).rejects.toThrow(
+      'fixture: account view failed after the put',
+    )
+    // What was put is exactly what a successful apply puts.
+    expect(put.mock.calls.map(([row]) => row)).toEqual([
+      {
+        index: 0,
+        address: f.keyring.deriveSubAccount(0).address,
+        status: 'spent',
+        lifecycle: {
+          spend: { rawTx: raw, txHash: Transaction.from(raw).hash, valueWei: '32' },
+        },
+      },
+    ])
+    expect(f.admission.inspect(f.lifetime)).toMatchObject({
+      status: 'unavailable',
+      reason: 'uncertain-owner',
+    })
+    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('not-eligible')
+    await expect(
+      f.admission.authorizeNativeSigning(f.lifetime, other.id),
+    ).rejects.toThrow('uncertain-owner')
+    await expect(spend(f).applyMember(id, 0)).rejects.toThrow('uncertain-owner')
+    const reopened = await reopen(f)
+    expect(reopened.admission.inspect(reopened.lifetime).status).toBe('ready')
+    const result = await spend(reopened).applyMember(id, 0)
+    expect(['committed', 'already-applied']).toContain(result.kind)
+    expect(reopened.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx: raw } },
+    })
+    expect(kinds(reopened)).toEqual(['native', 'native', 'pool-retained'])
+  })
+
+  // Pin: a typed refusal from the writer's own decision still faults nothing.
+  it('pin: a refusal before the put (the row is held by another transaction) does not fault the session', async () => {
+    const f = await start(location)
+    const first = await member(f, 0, 0)
+    await spend(f).applyMember(first.id, 0)
+    const rawTx = signFrom(f, 0, { nonce: 5 })
+    const putMany = writes()
+    await expect(
+      spend(f).applySpend(rawTx, 'monad-testnet'),
+    ).rejects.toBeInstanceOf(SubAccountSpendRefusedError)
+    expect(putMany).not.toHaveBeenCalled()
+    expect(f.admission.inspect(f.lifetime).status).toBe('ready')
+  })
+
+  // Pin (contract 3.5: a committed row is not undone when a later observation regresses).
+  it('pin: a member that regresses after its commit keeps its row spent and the admission ready, in the session and after a real reopen', async () => {
+    const f = await start(location)
+    const { id, raw } = await member(f)
+    expect((await spend(f).applyMember(id, 0)).kind).toBe('committed')
+    const putMany = writes()
+    await observe(f, id, 'pending')
+    expect(f.journal.get(id).members[0]!.observation.state).toBe('pending')
+    const check = async (current: Fixture) => {
+      expect(current.admission.inspect(current.lifetime).status).toBe('ready')
+      expect(kinds(current)).toEqual(['native', 'pool-retained'])
+      expect(current.pool.getRecord(0)).toMatchObject({
+        status: 'spent',
+        lifecycle: { spend: { rawTx: raw } },
+      })
+      // Not included as read now: nothing to apply, and an apply is refused without a write.
+      expect(spend(current).classifyMember(current.journal.get(id), 0)).toBe(
+        'not-eligible',
+      )
+      await expect(spend(current).applyMember(id, 0)).rejects.toThrow(
+        'conflicting-authorization',
+      )
+      // The pair is still claimed: the same pair cannot be planned again.
+      await expect(
+        current.admission.prepareNative(
+          current.lifetime,
+          current.epoch(),
+          current.plan(),
+        ),
+      ).rejects.toThrow('conflicting-authorization')
+    }
+    await check(f)
+    await check(await reopen(f))
+    expect(putMany).not.toHaveBeenCalled()
+  })
+
+  // On main e8d87c2d classification answers `needs-apply` for the leased row.
+  it('hand-built: a native member whose row is in-use under a live lease is not-eligible and cannot be applied; released unused, it applies', async () => {
+    const f = await start(location)
+    // Hand-built: the row is made `available` so a lease can be taken after the member exists.
+    f.pool.setStatus(0, 'available')
+    await f.pool.flush()
+    const { id, raw } = await member(f)
+    const leases = canonicalAdmissionPool(f.admission, f.lifetime)
+    const lease = await leases.acquire(0)
+    expect(f.pool.getRecord(0)?.status).toBe('in-use')
+    // An included member and a live lease on one account: the projection itself conflicts.
+    expect(f.admission.inspect(f.lifetime)).toMatchObject({
+      reason: 'conflicting-authorization',
+    })
+    const putMany = writes()
+    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('not-eligible')
+    const error = await refusal(spend(f).applyMember(id, 0))
+    // The pool's own decision comes first: the row is held.
+    expect(error).toBeInstanceOf(SubAccountSpendRefusedError)
+    expect(error).toMatchObject({ code: 'held', index: 0 })
+    expect(putMany).not.toHaveBeenCalled()
+    expect(f.pool.getRecord(0)?.lifecycle?.spend).toBeUndefined()
+    await leases.release(lease, 'unused')
+    expect(f.pool.getRecord(0)?.status).toBe('available')
+    expect(f.admission.inspect(f.lifetime).status).toBe('ready')
+    expect(spend(f).classifyMember(f.journal.get(id), 0)).toBe('needs-apply')
+    expect(await spend(f).applyMember(id, 0)).toEqual({
+      kind: 'committed',
+      poolIndex: 0,
+    })
+    expect(f.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx: raw } },
+    })
   })
 })

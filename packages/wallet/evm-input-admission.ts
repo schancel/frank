@@ -222,7 +222,7 @@ class AdmissionOwner implements EvmInputAdmission {
     number,
     { handle: AccountLeaseHandle; authorization: string }
   >()
-  private uncertain = false
+  uncertain = false
   private invokingMutation = false
   constructor(readonly owners: Owners) {
     internals.set(this, this)
@@ -230,7 +230,7 @@ class AdmissionOwner implements EvmInputAdmission {
   private assertLifetime(lifetime: WalletOperationLifetime): void {
     this.owners.assertLifetime(lifetime)
   }
-  private tx(bytes: string, sender?: string): ValidatedFrozenTransaction {
+  tx(bytes: string, sender?: string): ValidatedFrozenTransaction {
     const tx = Transaction.from(bytes)
     const binding = this.owners.binding
     if (
@@ -659,7 +659,7 @@ class AdmissionOwner implements EvmInputAdmission {
       throw new EvmInputAdmissionError('stale-epoch')
     // Epoch is provenance, not permission: every candidate is rechecked against current owners.
   }
-  private check(resources: readonly EvmHeldResource[], own?: string): void {
+  check(resources: readonly EvmHeldResource[], own?: string): void {
     for (const c of this.project())
       if (
         c.authorization !== own &&
@@ -1029,7 +1029,7 @@ export function poolSpendAdmission(
     try {
       if (typeof rawTx !== 'string') invalid()
       // The class's own parser, so the bytes are read exactly as the projection will read them.
-      tx = owner['tx'](rawTx)
+      tx = owner.tx(rawTx)
       expectedAddress = expected && address(expected.address)
     } catch {
       invalid()
@@ -1091,12 +1091,19 @@ export function poolSpendAdmission(
     // the projection, in the safe direction: the projection lets an older observed pair coexist
     // with a newer pending member's hold on the same address, this refuses until that member
     // resolves. So whatever passes here projects without conflict once written.
-    owner['check'](
-      [{ kind: 'pair', address: tx.sender, nonce: tx.nonce }],
-      own,
-    )
-    // 5. One put, and the flush taken in the same turn.
-    if (pool.commitSpend(index, rawTx) !== 'committed') conflict()
+    owner.check([{ kind: 'pair', address: tx.sender, nonce: tx.nonce }], own)
+    // 5. One put, and the flush taken in the same turn. Step 3 was the writer's own decision,
+    // made in this same turn on the same state, so a throw here is not a refusal: the writer
+    // failed, and it may have failed after its put (it updates derived views after it). That
+    // put would be pending with no flush taken for it, so this session signs nothing more.
+    let written: ReturnType<MonadSubAccountPool['commitSpend']>
+    try {
+      written = pool.commitSpend(index, rawTx)
+    } catch (error) {
+      owner.faultUncertain()
+      throw error
+    }
+    if (written !== 'committed') conflict()
     return { committed: index, flushed: pool.flush() }
   }
   const finish = async (staged: Staged): Promise<PoolSpendApplication> => {
@@ -1141,7 +1148,7 @@ export function poolSpendAdmission(
     classifyMember: (row, memberIndex) => {
       const member = row.members[memberIndex]
       if (
-        owner['uncertain'] ||
+        owner.uncertain ||
         !member ||
         row.cancelled ||
         !member.signed ||
@@ -1156,11 +1163,20 @@ export function poolSpendAdmission(
           ? 'held-terminal'
           : 'no-pool-row'
       if (record.status === 'retired') return 'held-terminal'
-      if (record.status !== 'spent') return 'needs-apply'
-      return record.lifecycle?.spend?.rawTx === member.signed.rawTransaction &&
-        record.lifecycle.legacyTerminal === undefined
-        ? 'applied'
-        : 'held-terminal'
+      if (record.status === 'spent')
+        return record.lifecycle?.spend?.rawTx === member.signed.rawTransaction &&
+          record.lifecycle.legacyTerminal === undefined
+          ? 'applied'
+          : 'held-terminal'
+      // Worth an apply only if the projection is ready: `applyMember` projects before it writes
+      // and would refuse every member alike under a conflicting or invalid one. Asked last, so
+      // only a member that would otherwise be applied costs a projection.
+      try {
+        owner.project()
+      } catch {
+        return 'not-eligible'
+      }
+      return 'needs-apply'
     },
   }
 }

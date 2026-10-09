@@ -50,8 +50,8 @@ import {
   type DirectMessageRoles,
 } from '@frank/cashweb/relay/canonical-dm'
 import type { ChannelUpdateItem, MessageItem } from '@frank/cashweb/types/messages'
-import { getMessageItemPreview, hydrateMessageItems } from '../message-item-plugins'
-import '../message-item-plugins/built-in'
+import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
+import { pluginCapabilitiesNotYetAvailable } from '../message-item-plugins/registry'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 
 describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
@@ -558,11 +558,13 @@ describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
         ],
       }
 
-      const preview = getMessageItemPreview(channelItem)
+      const preview = createDefaultMessageItemRegistry(
+        pluginCapabilitiesNotYetAvailable,
+      ).previewText(channelItem)
       expect(preview).toBe('State channel update: dice (seq 7)')
     })
 
-    it('hydrates channel-update items via hydrateMessageItems', async () => {
+    it('hydrates channel-update items through the registry', async () => {
       const channelItem: ChannelUpdateItem = {
         type: 'channel-update',
         channelId: sampleChannelId,
@@ -603,10 +605,15 @@ describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
       } as any
 
       const mockProvider = {} as any
-      const hydrated = await hydrateMessageItems(mockMessage, mockProvider)
+      const hydrated = await createDefaultMessageItemRegistry(
+        pluginCapabilitiesNotYetAvailable,
+      ).hydrateItems(mockMessage, mockProvider)
       expect(hydrated).toHaveLength(1)
       expect(hydrated[0].item).toEqual(channelItem)
-      expect(hydrated[0].hydrated).toEqual(channelItem)
+      expect(hydrated[0]).toMatchObject({
+        kind: 'hydrated',
+        hydrated: channelItem,
+      })
     })
   })
 

@@ -62,13 +62,9 @@ jest.mock('@frank/wallet/chain', () => ({
     unit: 'MON',
   },
 }))
-jest.mock('@frank/wallet/message-item-plugins', () => ({
-  getMessageItemPreview: () => '',
+jest.mock('../utils/message-items', () => ({
+  messageItems: { previewText: () => '' },
 }))
-jest.mock('@frank/wallet/message-item-plugins/built-in', () => ({}))
-jest.mock('@frank/wallet/message-item-plugins/blackjack/plugin', () => ({}))
-jest.mock('@frank/wallet/message-item-plugins/digital-goods/plugin', () => ({}))
-jest.mock('@frank/wallet/message-item-plugins/raffle/plugin', () => ({}))
 jest.mock('../utils/message-item-renderers', () => ({
   getMessageItemRenderer: () => undefined,
 }))

@@ -1,5 +1,5 @@
 /**
- * Registers the `raffle` message item type with the shared plugin registry (`../index.ts`). Mirrors
+ * The `raffle` message item type, installed by `initRafflePlugin`. Mirrors
  * `digital-goods/plugin.ts` almost exactly: an `enter`'s payment is that same message's own
  * stamp, already relay-verified before the message could ever be stored -- there's nothing left to
  * verify externally (contrast blackjack's wager, a *separate* transfer the relay knows nothing
@@ -7,7 +7,12 @@
  */
 import { RaffleItem } from '@frank/cashweb/types/messages'
 
-import { registerMessageItemPlugin } from '../index'
+import {
+  requirePluginCapabilities,
+  type MessageItemPluginCapabilities,
+  type MessageItemRegistry,
+} from '../registry'
+import { raffleCodec } from './codec'
 
 export interface HydratedRaffleItem extends RaffleItem {
   /** Only set for `enter` -- copied straight from the message's own relay-verified stamp value,
@@ -16,26 +21,34 @@ export interface HydratedRaffleItem extends RaffleItem {
   paidWei?: bigint
 }
 
-registerMessageItemPlugin<RaffleItem, HydratedRaffleItem>({
-  type: 'raffle',
-  hydrate(raw, context) {
-    return {
-      ...raw,
-      paidWei: raw.action === 'enter' ? context.message.stampValueWei : undefined,
-    }
-  },
-  previewText(raw) {
-    switch (raw.action) {
-      case 'announce':
-        return `Raffle open (${raw.entryCount ?? 0}/${raw.maxEntries ?? '?'} entered)`
-      case 'enter':
-        return 'Entered the raffle'
-      case 'joined':
-        return `Joined the raffle (${raw.entryCount ?? 0}/${raw.maxEntries ?? '?'})`
-      case 'draw':
-        return 'Raffle drawn'
-      case 'error':
-        return raw.message ?? 'Raffle error'
-    }
-  },
-})
+export function initRafflePlugin(
+  registry: MessageItemRegistry,
+  capabilities: MessageItemPluginCapabilities,
+): void {
+  requirePluginCapabilities('raffle', capabilities)
+  registry.register<RaffleItem, HydratedRaffleItem>({
+    type: 'raffle',
+    hydrate(raw, context) {
+      return {
+        ...raw,
+        paidWei: raw.action === 'enter' ? context.message.stampValueWei : undefined,
+      }
+    },
+    previewText(raw) {
+      switch (raw.action) {
+        case 'announce':
+          return `Raffle open (${raw.entryCount ?? 0}/${raw.maxEntries ?? '?'} entered)`
+        case 'enter':
+          return 'Entered the raffle'
+        case 'joined':
+          return `Joined the raffle (${raw.entryCount ?? 0}/${raw.maxEntries ?? '?'})`
+        case 'draw':
+          return 'Raffle drawn'
+        case 'error':
+          return raw.message ?? 'Raffle error'
+      }
+    },
+    encode: raffleCodec.encode,
+    decode: raffleCodec.decode,
+  })
+}

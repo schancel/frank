@@ -1,5 +1,5 @@
 /**
- * Registers the `blackjack-move` message item type with the shared plugin registry (`../index.ts`).
+ * The dealer-bot `blackjack-move` message item type, installed by `initBlackjackMovePlugin`.
  * `hydrate()` is the one place a `bet` move's wager gets verified against a real on-chain
  * transaction instead of trusting any self-reported amount -- there is no amount field on the wire
  * type at all (see `BlackjackMoveItem`'s own header on `@frank/cashweb/types/messages`), so the
@@ -19,10 +19,14 @@ import {
   HydratedBlackjackMove,
   parseBlackjackWelcome,
   reduceBlackjackState,
-} from './game'
-import { registerMessageItemPlugin, type MessageItemContext } from '../index'
-// The peer-to-peer hand item registers with the same import as the schema-1 move item.
-import './hand-plugin'
+} from '../blackjack/game'
+import {
+  requirePluginCapabilities,
+  type MessageItemContext,
+  type MessageItemPluginCapabilities,
+  type MessageItemRegistry,
+} from '../registry'
+import { decodeBlackjackMove, encodeBlackjackMove } from './codec'
 
 /** Looks up `wagerTxHash` on-chain and reports what it actually shows -- confirmed or not, real
  * sender/recipient/value -- without judging whether it's "enough" or "to the right place" (that's
@@ -163,35 +167,43 @@ async function hydrateBlackjackItem(
   }
 }
 
-registerMessageItemPlugin<
-  BlackjackMoveItem,
-  HydratedBlackjackMove,
-  BlackjackGameState
->({
-  type: 'blackjack-move',
-  hydrate: hydrateBlackjackItem,
-  previewText(raw) {
-    switch (raw.action) {
-      case 'bet':
-        return 'Placed a blackjack bet'
-      case 'deal':
-        return 'Blackjack hand dealt'
-      case 'hit':
-        return 'Hit'
-      case 'double':
-        return 'Doubled down'
-      case 'stand':
-        return 'Stood'
-      case 'reveal':
-        return 'Blackjack hand resolved'
-      case 'welcome':
-        return 'Blackjack table open'
-      default:
-        // An action a newer dealer added: still a string, so a chat-list preview never breaks.
-        return 'Blackjack'
-    }
-  },
-  threadKey: (raw) => raw.gameId,
-  reduceState: (prevState, hydrated) =>
-    reduceBlackjackState(prevState, hydrated),
-})
+export function initBlackjackMovePlugin(
+  registry: MessageItemRegistry,
+  capabilities: MessageItemPluginCapabilities,
+): void {
+  requirePluginCapabilities('blackjack-move', capabilities)
+  registry.register<
+    BlackjackMoveItem,
+    HydratedBlackjackMove,
+    BlackjackGameState
+  >({
+    type: 'blackjack-move',
+    hydrate: hydrateBlackjackItem,
+    previewText(raw) {
+      switch (raw.action) {
+        case 'bet':
+          return 'Placed a blackjack bet'
+        case 'deal':
+          return 'Blackjack hand dealt'
+        case 'hit':
+          return 'Hit'
+        case 'double':
+          return 'Doubled down'
+        case 'stand':
+          return 'Stood'
+        case 'reveal':
+          return 'Blackjack hand resolved'
+        case 'welcome':
+          return 'Blackjack table open'
+        default:
+          // An action a newer dealer added: still a string, so a chat-list preview never breaks.
+          return 'Blackjack'
+      }
+    },
+    threadKey: (raw) => raw.gameId,
+    reduceState: (prevState, hydrated) =>
+      reduceBlackjackState(prevState, hydrated),
+    encode: encodeBlackjackMove,
+    decode: decodeBlackjackMove,
+  })
+}

@@ -184,7 +184,7 @@ export interface BlackjackGameRecord {
   serverSeedHash: string
   wagerTxHash: string
   /** The on-chain-verified wager amount (see `hydrate()` in
-   * `@frank/wallet/message-item-plugins/blackjack/plugin.ts`) -- never a self-reported figure. Persisted
+   * `@frank/wallet/message-item-plugins/blackjack-move/plugin.ts`) -- never a self-reported figure. Persisted
    * here (not re-verified at payout time) since the bot already confirmed it once at `bet` time. */
   wagerWei: bigint
   /** Canonical Monad identity address verified as the wager transaction sender. Monad identities
@@ -203,7 +203,7 @@ export interface BlackjackGameRecord {
    * `PRE_DOUBLE_GAME_KEYS` migration path for rows written before this field existed. */
   doubled: boolean
   /** The on-chain-verified second wager a double-down required (see `hydrate()`'s
-   * `verifiedDoubleWager` in `@frank/wallet/message-item-plugins/blackjack/plugin.ts`) -- never a self-reported figure,
+   * `verifiedDoubleWager` in `@frank/wallet/message-item-plugins/blackjack-move/plugin.ts`) -- never a self-reported figure,
    * same trust rule as `wagerWei`. Only ever set together with `doubled: true`, in the same
    * `setGame` transition. */
   doubleWagerWei?: bigint

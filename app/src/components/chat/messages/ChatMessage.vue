@@ -203,15 +203,11 @@ import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { activeChain } from '@frank/wallet/chain'
-import { getMessageItemPreview } from '@frank/wallet/message-item-plugins'
-import '@frank/wallet/message-item-plugins/built-in'
-import '@frank/wallet/message-item-plugins/blackjack/plugin'
-import '@frank/wallet/message-item-plugins/digital-goods/plugin'
-import '@frank/wallet/message-item-plugins/raffle/plugin'
 import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
 import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
+import { messageItems } from '../../../utils/message-items'
 
 export default defineComponent({
   name: 'ChatMessage',
@@ -254,7 +250,8 @@ export default defineComponent({
       getStampAmount: chats.getStampAmount,
       sendDirectMessage: chats.sendMessage,
       retryOutgoing: chats.retryOutgoing,
-      getMessageItemPreview,
+      getMessageItemPreview: (item: MessageItem) =>
+        messageItems.previewText(item),
     }
   },
   props: {

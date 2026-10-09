@@ -1,10 +1,10 @@
 import type { SwapOfferItem } from '@frank/cashweb/types/messages'
-import { getMessageItemPlugin } from './index'
-import './built-in'
 import {
   deserializeMessageItems,
   serializeMessageItems,
-} from '../chain/monad-chain'
+} from '../../chain/monad-chain'
+import { registryWith } from '../shared/plugin-contract.testutil'
+import { initSwapOfferPlugin } from './plugin'
 
 describe('swap-offer message item plugin and serialization', () => {
   const sampleOffer: SwapOfferItem = {
@@ -23,7 +23,9 @@ describe('swap-offer message item plugin and serialization', () => {
   }
 
   it('registers swap-offer plugin with descriptive previewText and tallyValue', () => {
-    const plugin = getMessageItemPlugin('swap-offer')
+    const plugin = registryWith('swap-offer', initSwapOfferPlugin).get(
+      'swap-offer',
+    )
     expect(plugin).toBeDefined()
     expect(plugin!.previewText(sampleOffer)).toBe(
       'Atomic swap offer: 25.0 MON (monad-testnet) for 3.5 SOL (solana-testnet)',

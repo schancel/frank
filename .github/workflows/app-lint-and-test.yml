@@ -7,6 +7,8 @@ on:
       - "app/**"
       - "packages/wallet/**"
       - "packages/cashweb/**"
+      - "packages/bot/**"
+      - "packages/bot-framework/**"
       - "packages/bitcore-lib-xpi/**"
       - "package.json"
       - "yarn.lock"
@@ -17,6 +19,8 @@ on:
       - "app/**"
       - "packages/wallet/**"
       - "packages/cashweb/**"
+      - "packages/bot/**"
+      - "packages/bot-framework/**"
       - "packages/bitcore-lib-xpi/**"
       - "package.json"
       - "yarn.lock"
@@ -47,6 +51,17 @@ jobs:
       - run: yarn install
       - name: Wallet Monad-chain regression
         run: yarn workspace @frank/wallet test --ci --runInBand chain/monad-chain.jest.test.ts monad-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts
+
+  bot-demo-suites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: "26"
+      - run: yarn install
+      - name: Bot demo suites
+        run: yarn workspace @frank/bot test --ci --runInBand demo/smoke.jest.test.ts demo/demo-funding.jest.test.ts qwen-host-safety.jest.test.ts
 
   cashweb-message-store:
     runs-on: ubuntu-latest

@@ -82,8 +82,10 @@ test('real typed wallets discover the built-in fake transport and fund/send only
     expect(await sender.getBalance()).toBe(0n)
     expect(await recipient.getBalance()).toBe(0n)
     await ensureDemoBalance({ fakeChain: true, rpcUrl: fake.url }, from)
-    // Provider caches reads for 250 ms; allow the previous zero read to expire.
-    await new Promise(resolve => setTimeout(resolve, 300))
+    // The wallet's primary balance cache (multi-second TTL) still holds the
+    // zero read; out-of-band funding does not clear it, so clear it explicitly.
+    expect(sender.invalidateBalanceCache).toEqual(expect.any(Function))
+    sender.invalidateBalanceCache?.()
     expect(await sender.getBalance()).toBe(10n ** 18n)
     expect(await sender.provider.getBalance(sender.identity.address.raw)).toBe(
       0n,
@@ -100,6 +102,10 @@ test('real typed wallets discover the built-in fake transport and fund/send only
         valueWei: (10n ** 17n).toString(),
       }),
     ])
+    // The recipient's zero read above is still cached; the incoming transfer
+    // was not initiated by this wallet, so it never cleared that cache.
+    expect(recipient.invalidateBalanceCache).toEqual(expect.any(Function))
+    recipient.invalidateBalanceCache?.()
     expect(await recipient.getBalance()).toBe(10n ** 17n)
     expect(
       await recipient.provider.getBalance(recipient.identity.address.raw),

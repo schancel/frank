@@ -47,6 +47,9 @@ import * as materialModule from '../monad-wallet-material'
 import * as providerModule from '../monad-provider'
 import { MonadAccountTxSigner } from '../monad-account-tx'
 import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
+import { LevelChangePoolStore } from '../storage/level-change-pool-store'
+import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
+import { MonadSubAccountPool } from '../monad-account-pool'
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
 import { MonadStampClient } from '../monad-stamp-client'
 import * as topicModule from '../monad-topic-post-client'
@@ -110,6 +113,72 @@ const expected = [
 ]
 
 afterEach(() => jest.restoreAllMocks())
+
+test.each([
+  ['pool', LevelSubAccountPoolStore.prototype],
+  ['change', LevelChangePoolStore.prototype],
+  ['native', EvmNativeOperationJournal.prototype],
+  ['canonical', LevelCanonicalStampAttemptJournal.prototype],
+] as const)(
+  'actual wallet publication and warming wait for the %s owner; failure cannot publish',
+  async (_name, prototype) => {
+    const dir = await mkdtemp(join(tmpdir(), 'frank-admission-publication-'))
+    const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
+    let entered!: () => void, release!: () => void
+    const started = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    const paused = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const original = prototype.Open
+    const warm = jest
+      .spyOn(MonadSubAccountPool.prototype, 'triggerProactiveWarming')
+      .mockImplementation(() => undefined)
+    const open = jest
+      .spyOn(prototype, 'Open')
+      .mockImplementationOnce(async function (this: typeof prototype) {
+        entered()
+        await paused
+        return original.call(this)
+      })
+    let wallet:
+      | Awaited<ReturnType<ReturnType<typeof createMonadChain>['createWallet']>>
+      | undefined
+    let published = false
+    const opening = createMonadChain(cfg)
+      .createWallet(roots())
+      .then(value => {
+        wallet = value
+        published = true
+        return value
+      })
+    try {
+      await started
+      expect(published).toBe(false)
+      expect(warm).not.toHaveBeenCalled()
+      release()
+      await opening
+      expect(warm).toHaveBeenCalledTimes(1)
+      await wallet!.close()
+      wallet = undefined
+      warm.mockClear()
+      open.mockRejectedValueOnce(new Error('required owner failed'))
+      await expect(createMonadChain(cfg).createWallet(roots())).rejects.toThrow(
+        'required owner failed',
+      )
+      expect(warm).not.toHaveBeenCalled()
+      open.mockRestore()
+      wallet = await createMonadChain(cfg).createWallet(roots())
+      expect(warm).toHaveBeenCalledTimes(1)
+    } finally {
+      release()
+      await opening.catch(() => undefined)
+      await wallet?.close()
+      await rm(dir, { recursive: true, force: true })
+    }
+  },
+)
 
 test('rejects a second factory owner of the same EVM inventory until close', async () => {
   const firstChain = createMonadChain(config)
@@ -822,17 +891,25 @@ async function retainedCanonicalAttempt() {
   const parsed = parseFrame(payload)
   if (parsed.kind !== 'parsed' || parsed.typed?.type !== 5)
     throw new Error('fixture payload')
-  const raw = await new Wallet('0x' + '19'.repeat(32)).signTransaction({
-    chainId: 10143,
-    type: 2,
-    nonce: 0,
-    to: '0x' + wire.destination,
-    value: 1n,
-    gasLimit: 100000n,
-    maxFeePerGas: 2n,
-    maxPriorityFeePerGas: 1n,
-    data: '0x' + wire.t4,
-  })
+  const material = materialModule.createMonadWalletMaterial(roots())
+  let raw: string
+  try {
+    raw = await new Wallet(
+      material.keyring.deriveSubAccount(0).privateKey,
+    ).signTransaction({
+      chainId: 10143,
+      type: 2,
+      nonce: 0,
+      to: '0x' + wire.destination,
+      value: 1n,
+      gasLimit: 100000n,
+      maxFeePerGas: 2n,
+      maxPriorityFeePerGas: 1n,
+      data: '0x' + wire.t4,
+    })
+  } finally {
+    material.dispose()
+  }
   const delivery = encodeFrame(
     { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
     cborMap([
@@ -862,7 +939,7 @@ async function retainedCanonicalAttempt() {
   )
   const prepared: CanonicalPreparedAttempt = {
     walletBindingId: 'wallet-test',
-    accountId: 'account-test',
+    accountId: expected[0].main.toLowerCase(),
     chainId: '10143',
     network: wire.network,
     senderSubject: toHex(parsed.typed.sender.keyBytes),
@@ -1409,5 +1486,117 @@ test('close drains an admitted plan that has not reached signing yet', async () 
   } finally {
     release?.()
     await wallet.close()
+  }
+})
+
+test('conflicting recovered owners remain read-only without configuring or starting warming', async () => {
+  const bundleModule = jest.requireActual(
+    '../storage/monad-wallet-bundle',
+  ) as typeof import('../storage/monad-wallet-bundle')
+  const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+  let lastBundle: Awaited<ReturnType<typeof originalOpen>> | undefined
+  jest
+    .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+    .mockImplementation(async params => {
+      const result = await originalOpen(params)
+      lastBundle = result
+      return result
+    })
+  const warm = jest
+    .spyOn(MonadSubAccountPool.prototype, 'triggerProactiveWarming')
+    .mockImplementation(() => undefined)
+  const dir = await mkdtemp(join(tmpdir(), 'frank-stage-a-conflict-warm-'))
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  let wallet: MonadChainWalletHandle | undefined
+  try {
+    wallet = (await createMonadChain(cfg).createWallet(
+      roots(),
+    )) as MonadChainWalletHandle
+    mockNativeRpc(wallet, { [expected[0].main]: 500000n })
+    const sign = jest
+      .spyOn(Wallet.prototype, 'signTransaction')
+      .mockRejectedValueOnce(new Error('fixture unsigned native'))
+    await expect(
+      wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1n }),
+    ).rejects.toThrow('fixture unsigned native')
+    sign.mockRestore()
+    const nativeBefore = wallet.getNativeOperations!()
+    expect(nativeBefore).toHaveLength(1)
+    expect(nativeBefore[0].cancelled).toBe(false)
+    jest
+      .spyOn(wallet.provider, 'getNetwork')
+      .mockResolvedValue(Network.from(10143))
+    const ActualSigner = jest.requireActual(
+      '../monad-account-tx',
+    ).MonadAccountTxSigner
+    const signer = new ActualSigner({
+      privateKey: expected[0].mainSecret,
+      provider: wallet.provider,
+      httpClient: {
+        submitRawTransaction: async (raw: string) => keccak256(raw),
+        getTransactionReceipt: async () => undefined,
+      },
+    })
+    await expect(
+      wallet.pool.topUpPool({
+        mainAccountSigner: signer,
+        burnValue: 1000n,
+        gasReserve: 21000n,
+        bufferSize: 1,
+        overrides: {
+          nonce: 0,
+          chainId: 10143n,
+          gasLimit: 21000n,
+          maxFeePerGas: 1n,
+          maxPriorityFeePerGas: 1n,
+        },
+        receipt: { maxAttempts: 0 },
+      }),
+    ).rejects.toThrow('still pending')
+    const held = wallet.pool.records().find(row => row.status === 'funding')!
+    expect(held).toBeDefined()
+    expect(Transaction.from(held.fundingAttempt!.rawTx).nonce).toBe(0)
+    await wallet.close()
+    wallet = undefined
+    warm.mockRestore()
+    const built = jest.fn(async () => ({
+      rawTx: '0x1234',
+      txHash: '0x' + 'ab'.repeat(32),
+    }))
+    const submitted = jest.fn(async () => '0x' + 'ab'.repeat(32))
+    const configured = jest.spyOn(
+      MonadSubAccountPool.prototype,
+      'configureProactiveWarming',
+    )
+    jest
+      .mocked(MonadAccountTxSigner)
+      .mockImplementation(
+        () => ({ buildAndSignTransfer: built, submit: submitted } as never),
+      )
+    wallet = (await createMonadChain(cfg).createWallet(
+      roots(),
+    )) as MonadChainWalletHandle
+    await new Promise<void>(resolve => setImmediate(resolve))
+    const snapshot = await lastBundle!.runLifetime(lifetime =>
+      Promise.resolve(lastBundle!.inputAdmission.inspect(lifetime)),
+    )
+    expect(snapshot).toMatchObject({
+      status: 'unavailable',
+      reason: 'conflicting-authorization',
+    })
+    expect(wallet.getNativeOperations!()).toEqual(nativeBefore)
+    expect(wallet.pool.records().find(row => row.index === held.index)).toEqual(
+      held,
+    )
+    expect(built).not.toHaveBeenCalled()
+    expect(submitted).not.toHaveBeenCalled()
+    expect(configured).not.toHaveBeenCalled()
+  } finally {
+    await wallet?.close()
+    await rm(dir, { recursive: true, force: true })
   }
 })

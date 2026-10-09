@@ -1667,6 +1667,12 @@ const canonicalLiveLeases = new WeakMap<
   Map<number, AccountLeaseHandle>
 >()
 const canonicalFaultedOwners = new WeakSet<object>()
+import {
+  canonicalAdmissionJournal,
+  canonicalAdmissionPool,
+  EvmInputAdmissionError,
+  type WalletOperationLifetime,
+} from './evm-input-admission'
 export class MonadCanonicalStampClient {
   private readonly tokens = new WeakMap<
     CanonicalWalletEligibility,
@@ -1688,6 +1694,12 @@ export class MonadCanonicalStampClient {
   private get journal() {
     return this.wallet.walletState.canonicalJournal!
   }
+  private writer(lifetime: WalletOperationLifetime) {
+    return canonicalAdmissionJournal(
+      this.wallet.walletState.inputAdmission,
+      lifetime,
+    )
+  }
   private assertOwner(): void {
     if (canonicalFaultedOwners.has(this.wallet.walletState))
       throw new Error('canonical-wallet:storage-uncertain-reopen-required')
@@ -1695,8 +1707,15 @@ export class MonadCanonicalStampClient {
     assertMonadWalletBundleProvenance(this.wallet.walletState)
     this.wallet.walletState.assertSemanticallyValid()
   }
-  private acquireCanonicalLease(index: number): void {
-    const handle = this.wallet.leaseManager.acquireForIndex(index)
+  private async acquireCanonicalLease(
+    index: number,
+    attemptRef: string,
+    lifetime: WalletOperationLifetime,
+  ): Promise<void> {
+    const handle = await canonicalAdmissionPool(
+      this.wallet.walletState.inputAdmission,
+      lifetime,
+    ).acquire(index, attemptRef)
     let leases = canonicalLiveLeases.get(this.wallet.walletState)
     if (!leases) {
       leases = new Map()
@@ -1749,11 +1768,11 @@ export class MonadCanonicalStampClient {
       context: new Uint8Array(prepared.context),
       economicBinding: new Uint8Array(prepared.economicBinding),
     }
-    const capture = await this.wallet.runCanonicalExclusive(async () => {
+    const capture = await this.wallet.runCanonicalExclusive(async lifetime => {
       this.assertPreparedOwner(preparedSnapshot)
       const attempt = this.journal.lookup(preparedSnapshot)
       if (!attempt) throw new Error('canonical-wallet:attempt-required')
-      return this.journal.beginObservation(attempt.attemptRef)
+      return this.writer(lifetime).beginObservation(attempt.attemptRef)
     })
     const members: CanonicalPaymentObservation[] = []
     // Sequential reads bound RPC concurrency independently of the signed-set size.
@@ -1810,9 +1829,9 @@ export class MonadCanonicalStampClient {
       }
       members.push(observation)
     }
-    return this.wallet.runCanonicalExclusive(async () => {
+    return this.wallet.runCanonicalExclusive(async lifetime => {
       this.assertPreparedOwner(capture.attempt.prepared)
-      const observations = await this.journal.recordObservations(
+      const observations = await this.writer(lifetime).recordObservations(
         capture,
         members,
       )
@@ -1955,8 +1974,11 @@ export class MonadCanonicalStampClient {
       },
       overrides: { ...input.overrides },
     }
-    return this.wallet.runCanonicalExclusive(async () => {
+    return this.wallet.runCanonicalExclusive(async lifetime => {
       this.assertPreparedOwner(input.prepared)
+      const snapshot = this.wallet.walletState.inputAdmission.inspect(lifetime)
+      if (snapshot.status !== 'ready')
+        throw new EvmInputAdmissionError(snapshot.reason)
       const economics = decodeCanonical(input.prepared.economicBinding)
       if (
         !(economics instanceof Map) ||
@@ -2075,21 +2097,18 @@ export class MonadCanonicalStampClient {
 
       const candidateRecords = this.wallet.pool
         .records()
-        .filter(
-          r => r.status === 'available' && !protectedIndices.has(r.index),
-        )
+        .filter(r => r.status === 'available' && !protectedIndices.has(r.index))
 
       // Resolve base quote once outside the loop only if fee fields were not provided in overrides
       if (baseMaxFeePerGas === undefined && baseGasPrice === undefined) {
         try {
           const feeData = await this.wallet.provider.getFeeData()
           baseMaxFeePerGas = feeData.maxFeePerGas ?? undefined
-          baseMaxPriorityFeePerGas =
-            feeData.maxPriorityFeePerGas ?? undefined
+          baseMaxPriorityFeePerGas = feeData.maxPriorityFeePerGas ?? undefined
           baseGasPrice =
             baseMaxFeePerGas !== undefined
               ? undefined
-              : (feeData.gasPrice ?? undefined)
+              : feeData.gasPrice ?? undefined
         } catch {
           // Fall back to sample signer if feeData query fails
         }
@@ -2121,7 +2140,7 @@ export class MonadCanonicalStampClient {
             baseGasPrice =
               baseMaxFeePerGas !== undefined
                 ? undefined
-                : (sampleQuote.gasPrice ?? undefined)
+                : sampleQuote.gasPrice ?? undefined
           } catch {
             // Keep default fees
           }
@@ -2234,13 +2253,20 @@ export class MonadCanonicalStampClient {
           rawTx: null,
         })
       }
-      const intent = await this.journal.prepareIntent({
-        prepared: input.prepared,
-        consumerId: input.consumerId,
-        boundary: `frank-${toHex(canonicalRandomBytes(24))}`,
-        members,
-        construction: new TextEncoder().encode(input.stampValueWei.toString()),
-      })
+      const intent =
+        await this.wallet.walletState.inputAdmission.prepareCanonical(
+          lifetime,
+          snapshot.epoch,
+          {
+            prepared: input.prepared,
+            consumerId: input.consumerId,
+            boundary: `frank-${toHex(canonicalRandomBytes(24))}`,
+            members,
+            construction: new TextEncoder().encode(
+              input.stampValueWei.toString(),
+            ),
+          },
+        )
       await input.onIntentDurable({
         attemptRef: intent.attemptRef,
         consumerId: intent.consumerId,
@@ -2248,7 +2274,11 @@ export class MonadCanonicalStampClient {
       })
       // Durable intent and linked workflow are now authoritative; no pool write preceded them.
       for (const member of intent.members)
-        this.acquireCanonicalLease(member.reservation.index)
+        await this.acquireCanonicalLease(
+          member.reservation.index,
+          intent.attemptRef,
+          lifetime,
+        )
       await this.flushCanonicalReservations()
       return intent
     })
@@ -2258,7 +2288,7 @@ export class MonadCanonicalStampClient {
   finishIntent(
     eligibility: CanonicalWalletEligibility,
   ): Promise<CanonicalJournalAttempt> {
-    return this.wallet.runCanonicalExclusive(async () => {
+    return this.wallet.runCanonicalExclusive(async lifetime => {
       const token = this.tokens.get(eligibility)
       this.tokens.delete(eligibility)
       if (!token || token.snapshot !== this.snapshot())
@@ -2270,7 +2300,11 @@ export class MonadCanonicalStampClient {
         found.record.attemptRef !== token.link.attemptRef
       )
         throw new Error('canonical-wallet:intent-required')
-      let intent = found.record
+      let intent =
+        await this.wallet.walletState.inputAdmission.authorizeCanonicalSigning(
+          lifetime,
+          found.record.attemptRef,
+        )
       for (const member of intent.members) {
         const record = this.wallet.pool.getRecord(member.reservation.index)
         const signer = this.wallet.pool.getSigner(
@@ -2293,7 +2327,11 @@ export class MonadCanonicalStampClient {
         if (record.status === 'available') {
           if (this.wallet.leaseManager.isLeased(record.index))
             throw new Error('canonical-wallet:foreign-lease-hold')
-          this.acquireCanonicalLease(record.index)
+          await this.acquireCanonicalLease(
+            record.index,
+            intent.attemptRef,
+            lifetime,
+          )
         }
       }
       await this.flushCanonicalReservations()
@@ -2305,7 +2343,7 @@ export class MonadCanonicalStampClient {
           this.wallet,
         )
         const signed = await signer.signFrozenUnsigned(member)
-        intent = await this.journal.checkpointSignedMember(
+        intent = await this.writer(lifetime).checkpointSignedMember(
           intent.attemptRef,
           i,
           signed.rawTx,
@@ -2370,7 +2408,7 @@ export class MonadCanonicalStampClient {
         },
         intent.boundary,
       )
-      return this.journal.promoteIntent(intent.attemptRef, request)
+      return this.writer(lifetime).promoteIntent(intent.attemptRef, request)
     })
   }
 
@@ -2378,7 +2416,7 @@ export class MonadCanonicalStampClient {
     eligibility: CanonicalWalletEligibility,
     options: { fetch?: CanonicalFetch; signal?: AbortSignal } = {},
   ): Promise<CanonicalAcceptedBody> {
-    return this.wallet.runCanonicalExclusive(async () => {
+    return this.wallet.runCanonicalExclusive(async lifetime => {
       const token = this.tokens.get(eligibility)
       this.tokens.delete(eligibility)
       if (!token || token.snapshot !== this.snapshot())
@@ -2400,7 +2438,7 @@ export class MonadCanonicalStampClient {
       if (!result || result.state !== 'ready')
         throw new Error('canonical-wallet:replay-hold')
       // Admission must be durable-owner confirmed before any byte reaches the relay.
-      await this.journal.beginReplay(result.eligibility)
+      await this.writer(lifetime).beginReplay(result.eligibility)
       try {
         const accepted = await submitCanonicalRequest({
           installedRelayOrigin: this.wallet.relayBaseUrl,
@@ -2409,10 +2447,13 @@ export class MonadCanonicalStampClient {
           ...options,
         })
         if (accepted.phase !== 'retained')
-          await this.journal.recordTerminal(attempt.attemptRef, accepted)
+          await this.writer(lifetime).recordTerminal(
+            attempt.attemptRef,
+            accepted,
+          )
         return accepted
       } finally {
-        this.journal.endReplay(result.eligibility)
+        this.writer(lifetime).endReplay(result.eligibility)
       }
     })
   }
@@ -2420,14 +2461,14 @@ export class MonadCanonicalStampClient {
     attemptRef: string,
     reason: CanonicalTerminalReason = 'attempts_exhausted',
   ): Promise<CanonicalJournalAttempt> {
-    return this.wallet.runCanonicalExclusive(async () => {
+    return this.wallet.runCanonicalExclusive(async lifetime => {
       this.assertOwner()
       const attempt = this.journal
         .getAll()
         .find(a => a.attemptRef === attemptRef)
       if (!attempt) throw new Error('canonical-wallet:attempt-required')
       if (attempt.terminal !== null) return attempt
-      return this.journal.recordTerminal(attemptRef, {
+      return this.writer(lifetime).recordTerminal(attemptRef, {
         version: 1,
         phase: 'dead',
         identity: attempt.request.identity,
@@ -2437,7 +2478,7 @@ export class MonadCanonicalStampClient {
   }
 
   reapOrphanedAttempts(activeAttemptRefs: Set<string>): Promise<void> {
-    return this.wallet.runCanonicalExclusive(async () => {
+    return this.wallet.runCanonicalExclusive(async lifetime => {
       this.assertOwner()
       const attempts = this.journal
         .getAll()
@@ -2445,7 +2486,7 @@ export class MonadCanonicalStampClient {
       for (const attempt of attempts) {
         if (attempt.terminal === null) {
           try {
-            await this.journal.recordTerminal(attempt.attemptRef, {
+            await this.writer(lifetime).recordTerminal(attempt.attemptRef, {
               version: 1,
               phase: 'dead',
               identity: attempt.request.identity,
@@ -2456,12 +2497,19 @@ export class MonadCanonicalStampClient {
           }
         }
         try {
-          await this.cleanupTerminalOwned(attempt.attemptRef, attempt.consumerId)
+          await this.cleanupTerminalOwned(
+            attempt.attemptRef,
+            attempt.consumerId,
+            lifetime,
+          )
         } catch {
           // ignore
         }
         try {
-          await this.journal.acknowledge(attempt.attemptRef, attempt.consumerId)
+          await this.writer(lifetime).acknowledge(
+            attempt.attemptRef,
+            attempt.consumerId,
+          )
         } catch {
           // ignore
         }
@@ -2472,6 +2520,7 @@ export class MonadCanonicalStampClient {
   private async cleanupTerminalOwned(
     attemptRef: string,
     consumerId: string,
+    lifetime: WalletOperationLifetime,
   ): Promise<void> {
     this.assertOwner()
     const attempt = this.journal
@@ -2501,7 +2550,10 @@ export class MonadCanonicalStampClient {
           const tx = Transaction.from(rawTx)
           if (tx.from?.toLowerCase() !== record.address.toLowerCase())
             throw new Error('canonical-wallet:cleanup-hold')
-          this.wallet.pool.recordSpendTransaction(record.index, {
+          await canonicalAdmissionPool(
+            this.wallet.walletState.inputAdmission,
+            lifetime,
+          ).recordSpend(record.index, {
             rawTx,
             txHash: tx.hash!,
             valueWei: tx.value.toString(),
@@ -2514,17 +2566,21 @@ export class MonadCanonicalStampClient {
           .get(this.wallet.walletState)
           ?.get(record.index)
         if (live) {
-          this.wallet.leaseManager.releaseLease(
+          await canonicalAdmissionPool(
+            this.wallet.walletState.inputAdmission,
+            lifetime,
+          ).release(
             live,
             attempt.terminal.phase === 'delivered' ? 'confirmed' : 'failed',
           )
-          canonicalLiveLeases
-            .get(this.wallet.walletState)!
-            .delete(record.index)
+          canonicalLiveLeases.get(this.wallet.walletState)!.delete(record.index)
         } else {
           if (this.wallet.leaseManager.isLeased(record.index))
             throw new Error('canonical-wallet:foreign-lease-hold')
-          this.wallet.pool.setStatus(
+          await canonicalAdmissionPool(
+            this.wallet.walletState.inputAdmission,
+            lifetime,
+          ).setStatus(
             record.index,
             attempt.terminal.phase === 'delivered' ? 'spent' : 'retired',
           )
@@ -2532,17 +2588,17 @@ export class MonadCanonicalStampClient {
       }
     }
     await this.flushCanonicalReservations()
-    await this.journal.completeCleanup(attemptRef)
+    await this.writer(lifetime).completeCleanup(attemptRef)
   }
 
   cleanupTerminal(attemptRef: string, consumerId: string): Promise<void> {
-    return this.wallet.runCanonicalExclusive(() =>
-      this.cleanupTerminalOwned(attemptRef, consumerId),
+    return this.wallet.runCanonicalExclusive(lifetime =>
+      this.cleanupTerminalOwned(attemptRef, consumerId, lifetime),
     )
   }
   acknowledgeWorkflow(attemptRef: string, consumerId: string): Promise<void> {
-    return this.wallet.runCanonicalExclusive(() =>
-      this.journal.acknowledge(attemptRef, consumerId),
+    return this.wallet.runCanonicalExclusive(lifetime =>
+      this.writer(lifetime).acknowledge(attemptRef, consumerId),
     )
   }
   wasAcknowledged(attemptRef: string): boolean {
@@ -2654,9 +2710,9 @@ export class MonadCanonicalStampClient {
       lifecycle: record.lifecycle,
       stampGeneration,
     }
-    return this.wallet.runCanonicalExclusive(async () => {
+    return this.wallet.runCanonicalExclusive(async lifetime => {
       this.assertOwner()
-      const imported = await this.journal.importRecovery(frozen)
+      const imported = await this.writer(lifetime).importRecovery(frozen)
       this.wallet.canonicalRoles.verifyRetainedRecoveryCustody(
         this.journal.retainedRecoveryCustody(imported.obligationId),
       )
@@ -2678,7 +2734,7 @@ export class MonadCanonicalStampClient {
     obligationId: string,
     auth: CanonicalMailboxAuthParams,
   ): Promise<void> {
-    return this.wallet.runCanonicalExclusive(async () => {
+    return this.wallet.runCanonicalExclusive(async lifetime => {
       this.assertOwner()
       const imported = this.journal.importedRecovery(obligationId)
       const bound = JSON.parse(this.wallet.walletState.canonicalBinding!.tuple)
@@ -2698,7 +2754,7 @@ export class MonadCanonicalStampClient {
         payloadHashHex: imported.request.identity.payload_hash,
         obligationIdHex: obligationId,
       })
-      await this.journal.markRecoveryAcknowledged(obligationId)
+      await this.writer(lifetime).markRecoveryAcknowledged(obligationId)
     })
   }
 

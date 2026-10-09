@@ -1,6 +1,7 @@
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
+import { nativeAdmissionJournal } from "../evm-input-admission";
 import type {
   PublicRevisionZeroInput,
   PublicRevisionZeroExport,
@@ -1604,24 +1605,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             index: i,
           });
         }
-        for (const record of pool.records()) {
-          const derived = keyring.deriveSubAccount(record.index);
-          const cached = pool.capacityCache.get(record.index);
-          const bal = cached !== undefined ? cached.capacityWei : 0n;
-          const utxo = accountUtxoPool.registerSubAccount({
-            chain: "monad",
-            address: derived.address,
-            privateKey: derived.privateKey,
-            balanceWei: bal,
-            derivationPath: keyring.subAccountPath(record.index),
-            index: record.index,
-          });
-          if (record.status === "spent" || record.status === "retired") {
-            accountUtxoPool.markSpent(utxo.id);
-          } else if (record.status === "in-use") {
-            accountUtxoPool.markPending(utxo.id);
-          }
-        }
         // Populate initial HD change accounts with attached private keys
         for (let k = 0; k < 5; k++) {
           const derived = changeKeyring.deriveChangeAccount(k);
@@ -1654,6 +1637,40 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             };
           };
           topicOwner = await openExistingPoolMonadTopicOwner({
+            loadExistingState: async () => {
+              const opened = await Promise.allSettled([
+                subAccountStore?.Open(),
+                changeStore?.Open(),
+                stampPaymentJournal instanceof LevelStampPaymentJournal
+                  ? stampPaymentJournal.Open()
+                  : undefined,
+                stampAttemptJournal instanceof LevelStampAttemptJournal
+                  ? stampAttemptJournal.Open()
+                  : undefined,
+              ]);
+              const openFailure = opened.find(
+                (result) => result.status === "rejected"
+              );
+              if (openFailure?.status === "rejected") throw openFailure.reason;
+              for (const record of pool.records()) {
+                const derived = keyring.deriveSubAccount(record.index);
+                const cached = pool.capacityCache.get(record.index);
+                const bal = cached !== undefined ? cached.capacityWei : 0n;
+                const utxo = accountUtxoPool.registerSubAccount({
+                  chain: "monad",
+                  address: derived.address,
+                  privateKey: derived.privateKey,
+                  balanceWei: bal,
+                  derivationPath: keyring.subAccountPath(record.index),
+                  index: record.index,
+                });
+                if (record.status === "spent" || record.status === "retired") {
+                  accountUtxoPool.markSpent(utxo.id);
+                } else if (record.status === "in-use") {
+                  accountUtxoPool.markPending(utxo.id);
+                }
+              }
+            },
             nativeBinding: {
               chainIdentifier,
               nativeChainId: String(config.chainId),
@@ -1706,20 +1723,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
           });
           const demoRpcUrl = await discoverFakeDemoRpc(config);
-          const opened = await Promise.allSettled([
-            subAccountStore?.Open(),
-            changeStore?.Open(),
-            stampPaymentJournal instanceof LevelStampPaymentJournal
-              ? stampPaymentJournal.Open()
-              : undefined,
-            stampAttemptJournal instanceof LevelStampAttemptJournal
-              ? stampAttemptJournal.Open()
-              : undefined,
-          ]);
-          const openFailure = opened.find(
-            (result) => result.status === "rejected"
-          );
-          if (openFailure?.status === "rejected") throw openFailure.reason;
 
           const nativeAttemptStore =
             config.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
@@ -1952,9 +1955,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             async resumeNativeOperation(operationId) {
               const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, () =>
+              const result = await runWalletExclusive(wallet, (admission) =>
                 runMainAccountExclusive(wallet, () =>
-                  owner.resumeOperation(operationId)
+                  owner.resumeOperation(operationId, admission)
                 )
               );
               if (!closedWallets.has(wallet))
@@ -1962,9 +1965,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return result;
             },
             async cancelUnsignedNativeOperation(operationId) {
-              await runWalletExclusive(wallet, () =>
-                topicOwner!.nativeJournal!.cancelUnsigned(operationId)
-              );
+              await runWalletExclusive(wallet, (admission) => {
+                if (admission === undefined)
+                  throw new Error("Native operation lifetime is unavailable");
+                return nativeAdmissionJournal(
+                  topicOwner!.inputAdmission,
+                  admission
+                ).cancelUnsigned(operationId);
+              });
             },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
@@ -2009,9 +2017,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async sendNative(params) {
               params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, () =>
+              const result = await runWalletExclusive(wallet, (admission) =>
                 runMainAccountExclusive(wallet, () =>
-                  owner.sendNative(params)
+                  owner.sendNative(params, admission)
                 )
               );
               primaryBalanceCache = undefined;
@@ -2030,9 +2038,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             async sendLegacy(params) {
               params = { ...params, recipient: { ...params.recipient } };
               const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, () =>
+              const result = await runWalletExclusive(wallet, (admission) =>
                 runMainAccountExclusive(wallet, () =>
-                  owner.sendLegacy(params)
+                  owner.sendLegacy(params, admission)
                 )
               );
               primaryBalanceCache = undefined;
@@ -2057,9 +2065,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               nativeOperationOwner(wallet).getUnresolvedLegacySend(),
             async resumeLegacySend(operationId) {
               const owner = nativeOperationOwner(wallet);
-              const result = await runWalletExclusive(wallet, () =>
+              const result = await runWalletExclusive(wallet, (admission) =>
                 runMainAccountExclusive(wallet, () =>
-                  owner.resumeLegacySend(operationId)
+                  owner.resumeLegacySend(operationId, admission)
                 )
               );
               primaryBalanceCache = undefined;
@@ -2247,6 +2255,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             new EvmLegacyConsolidator({
               provider,
               journal: topicOwner.nativeJournal!,
+              inputAdmission: topicOwner.inputAdmission,
+              runLifetime: (operation) => topicOwner!.runLifetime(operation),
               transactionBuilder,
               getSources,
               sign: async (source, unsignedTransaction) => {
@@ -2301,7 +2311,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 canonicalRoles,
                 installedNetworkTag,
                 runCanonicalExclusive: (task) =>
-                  runWalletExclusive(wallet, () => task(), true),
+                  runWalletExclusive(wallet, (admission) => {
+                    if (admission === undefined)
+                      throw new Error("Canonical operation lifetime is unavailable");
+                    return task(admission);
+                  }, true),
               });
             });
             // Fast in-memory coin selection using ChainUtxoPool (< 1ms, zero network calls)
@@ -2382,18 +2396,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
             canonicalInventoryFunders.set(wallet, prepareInventory);
             if (config.subAccountPoolSize > 0) {
-              pool.configureProactiveWarming({
-                provider,
-                mainAccountSigner: new MonadAccountTxSigner({
-                  privateKey: mainAccount.privateKey,
+              await topicOwner.runLifetime(async (lifetime) => {
+                if (topicOwner!.inputAdmission.inspect(lifetime).status !== "ready")
+                  return;
+                pool.configureProactiveWarming({
                   provider,
-                  httpClient,
-                }),
-                stampValueWei: config.defaultStampValueWei,
-                gasReserveWei: BigInt(21_000) * BigInt(2_000_000_000),
-                minCount: Math.min(2, config.subAccountPoolSize),
+                  mainAccountSigner: new MonadAccountTxSigner({
+                    privateKey: mainAccount.privateKey,
+                    provider,
+                    httpClient,
+                  }),
+                  stampValueWei: config.defaultStampValueWei,
+                  gasReserveWei: BigInt(21_000) * BigInt(2_000_000_000),
+                  minCount: Math.min(2, config.subAccountPoolSize),
+                });
+                pool.triggerProactiveWarming();
               });
-              pool.triggerProactiveWarming();
             }
             const links =
               storageLocation !== undefined

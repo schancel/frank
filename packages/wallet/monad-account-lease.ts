@@ -142,6 +142,11 @@ export class SubAccountLeaseManager {
     return this.liveLeases.has(index)
   }
 
+  /** Read-only identity check; an older released handle cannot describe a successor lease. */
+  isCurrentLease(handle: AccountLeaseHandle): boolean {
+    return this.liveLeases.get(handle.index) === handle
+  }
+
   /** Every sub-account index currently leased through this manager instance. */
   leasedIndices(): number[] {
     return Array.from(this.liveLeases.keys()).sort((a, b) => a - b)
@@ -202,6 +207,7 @@ export class SubAccountLeaseManager {
   releaseLease(
     handle: AccountLeaseHandle,
     outcome: LeaseOutcome,
+    notifyWarming = true,
   ): SubAccountRecord {
     const live = this.liveLeases.get(handle.index)
     if (live === undefined || live !== handle) {
@@ -218,7 +224,7 @@ export class SubAccountLeaseManager {
         : outcome === 'unused'
         ? 'available'
         : 'retired'
-    return this.pool.setStatus(handle.index, nextStatus)
+    return this.pool.setStatus(handle.index, nextStatus, notifyWarming)
   }
 }
 

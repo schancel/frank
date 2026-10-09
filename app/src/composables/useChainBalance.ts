@@ -44,7 +44,6 @@ export interface ChainBalanceState {
   formattedBalance: string
   loaded: boolean
   hasError: boolean
-  tokens?: SolanaTokenAccount[]
 }
 
 export interface BalanceObservation {
@@ -60,6 +59,17 @@ export type BalancePresentation =
       reason: 'unsupported' | 'fetch-error'
       lastKnown?: BalanceObservation
     }
+
+export type TokenObservation =
+  | { status: 'loading'; lastKnown?: SolanaTokenAccount[] }
+  | { status: 'available'; tokens: SolanaTokenAccount[] }
+  | { status: 'unavailable'; lastKnown?: SolanaTokenAccount[] }
+
+function observedTokens(observation: TokenObservation) {
+  return observation.status === 'available'
+    ? observation.tokens
+    : observation.lastKnown
+}
 
 // Derived presentation only: the existing readers remain the observation owners.
 function getBalancePresentation(
@@ -107,8 +117,30 @@ const solanaState = ref<ChainBalanceState>({
   formattedBalance: '',
   loaded: false,
   hasError: false,
-  tokens: [],
 })
+
+// SPL observations have one owner and never share native SOL's success/failure state.
+const solanaTokenObservation = ref<TokenObservation>({ status: 'loading' })
+let solanaRequestGeneration = 0
+let solanaScope: { revision: number; networkId: string } | undefined
+
+function solanaNetworkId() {
+  return activeChain.isTestnet ? 'solana-devnet' : 'solana-mainnet'
+}
+
+function resetSolanaObservations() {
+  solanaState.value = {
+    balance: null,
+    formattedBalance: '',
+    loaded: false,
+    hasError: false,
+  }
+  solanaTokenObservation.value = { status: 'loading' }
+}
+
+function getTokenObservation(chain: string): TokenObservation | undefined {
+  return chain === 'solana' ? solanaTokenObservation.value : undefined
+}
 
 let multichainConsumers = 0
 let multichainTimer: ReturnType<typeof setTimeout> | undefined
@@ -193,57 +225,85 @@ export async function fetchChainBalance(
     }
   } else if (chain === 'solana') {
     if (solanaPending && !force) return
+    const generation = ++solanaRequestGeneration
+    const scope = {
+      revision: accountStatus.revision,
+      networkId: solanaNetworkId(),
+    }
+    const isCurrent = () =>
+      generation === solanaRequestGeneration &&
+      accountStatus.status === 'ready' &&
+      accountStatus.revision === scope.revision &&
+      solanaNetworkId() === scope.networkId
     solanaPending = true
     schedulePolling()
     try {
       if (accountStatus.status !== 'ready') {
-        solanaState.value = {
-          balance: null,
-          formattedBalance: '',
-          loaded: false,
-          hasError: false,
-        }
+        solanaScope = undefined
+        resetSolanaObservations()
         return
       }
+      if (
+        solanaScope?.revision !== scope.revision ||
+        solanaScope?.networkId !== scope.networkId
+      ) {
+        resetSolanaObservations()
+        solanaScope = scope
+      }
+      const lastKnown = observedTokens(solanaTokenObservation.value)
+      solanaTokenObservation.value = { status: 'loading', lastKnown }
       let address = accountSession.getCachedChainAddress?.('solana')
-      if (!address) {
-        address = await accountSession.getChainAddress?.('solana')
+      if (!address) address = await accountSession.getChainAddress?.('solana')
+      if (!isCurrent()) return
+      if (!address) throw new Error('Solana address unavailable')
+      const options = {
+        address,
+        networkId: scope.networkId,
+        relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
       }
-      if (!address) {
-        return
-      }
-      const relayBaseUrl = loadMonadChainConfigFromEnv().relayBaseUrl
-      const networkId = activeChain.isTestnet
-        ? 'solana-devnet'
-        : 'solana-mainnet'
-      const [result, tokensResult] = await Promise.all([
-        fetchSolanaBalance({
-          address,
-          networkId,
-          relayBaseUrl,
-        }),
-        fetchSolanaTokenAccounts({
-          address,
-          networkId,
-          relayBaseUrl,
-        }).catch(() => []),
+      // Each reader publishes independently; neither wait nor failure hides the other result.
+      await Promise.all([
+        fetchSolanaBalance(options).then(
+          result => {
+            if (!isCurrent()) return
+            solanaState.value = {
+              balance: result.lamports,
+              formattedBalance: result.formatted,
+              loaded: true,
+              hasError: false,
+            }
+          },
+          err => {
+            if (!isCurrent()) return
+            console.error('Failed to fetch Solana balance', err)
+            solanaState.value = { ...solanaState.value, hasError: true }
+          },
+        ),
+        fetchSolanaTokenAccounts(options).then(
+          tokens => {
+            if (isCurrent())
+              solanaTokenObservation.value = { status: 'available', tokens }
+          },
+          err => {
+            if (!isCurrent()) return
+            console.error('Failed to fetch Solana token accounts', err)
+            solanaTokenObservation.value = { status: 'unavailable', lastKnown }
+          },
+        ),
       ])
-      solanaState.value = {
-        balance: result.lamports,
-        formattedBalance: result.formatted,
-        loaded: true,
-        hasError: false,
-        tokens: tokensResult,
-      }
     } catch (err) {
-      console.error('Failed to fetch Solana balance', err)
-      solanaState.value = {
-        ...solanaState.value,
-        hasError: true,
+      if (!isCurrent()) return
+      console.error('Failed to acquire Solana balance address', err)
+      solanaState.value = { ...solanaState.value, hasError: true }
+      solanaTokenObservation.value = {
+        status: 'unavailable',
+        lastKnown: observedTokens(solanaTokenObservation.value),
       }
     } finally {
-      solanaPending = false
-      schedulePolling()
+      if (generation === solanaRequestGeneration) {
+        solanaPending = false
+        schedulePolling()
+      }
     }
   }
 }
@@ -354,6 +414,7 @@ export function useChainBalance(chainRef: Ref<string> | string) {
   )
 
   return {
+    tokenObservation: computed(() => getTokenObservation(chain.value)),
     presentation,
     balance,
     formattedBalance,
@@ -372,16 +433,15 @@ export function useChainBalance(chainRef: Ref<string> | string) {
  */
 export function getChainTokens(chainName: string): TokenItem[] {
   if (chainName === 'solana') {
-    if (!solanaState.value.loaded || solanaState.value.balance === null)
-      return []
-    const isTestnet = activeChain.isTestnet
-    const nativeSymbol = isTestnet ? 'tSOL' : 'SOL'
-    const nativeBal = solanaState.value.formattedBalance
-    const nativeNum = solanaState.value.balance
-      ? Number(solanaState.value.balance) / 1e9
-      : 0
-    const items: TokenItem[] = [
-      {
+    const items: TokenItem[] = []
+    if (solanaState.value.loaded && solanaState.value.balance !== null) {
+      const isTestnet = activeChain.isTestnet
+      const nativeSymbol = isTestnet ? 'tSOL' : 'SOL'
+      const nativeBal = solanaState.value.formattedBalance
+      const nativeNum = solanaState.value.balance
+        ? Number(solanaState.value.balance) / 1e9
+        : 0
+      items.push({
         id: 'solana-native',
         symbol: nativeSymbol,
         name: 'Solana',
@@ -394,10 +454,9 @@ export function getChainTokens(chainName: string): TokenItem[] {
         ),
         decimals: 9,
         isNative: true,
-      },
-    ]
-
-    const splTokens = solanaState.value.tokens || []
+      })
+    }
+    const splTokens = observedTokens(solanaTokenObservation.value) ?? []
     for (const t of splTokens) {
       items.push({
         id: t.mint,
@@ -430,6 +489,7 @@ export function useMultichainBalance() {
   }
 
   return {
+    getTokenObservation,
     getPresentation: (chain: string) => getBalancePresentation(chain, monad),
     monad,
     ecash: readonly(ecashState),

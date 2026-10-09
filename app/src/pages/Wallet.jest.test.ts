@@ -58,6 +58,7 @@ jest.mock('src/composables/useBalance', () => ({
 jest.mock('src/composables/useChainBalance', () => ({
   useChainBalance: (chain: any) => ({
     tokens: ref([]),
+    tokenObservation: ref(undefined),
     presentation: jest.requireActual('vue').computed(() => {
       const val = typeof chain === 'string' ? chain : chain.value
       if (!['monad', 'ecash', 'solana'].includes(val)) {

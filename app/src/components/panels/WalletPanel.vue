@@ -111,13 +111,22 @@
                   <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
                 </span>
               </q-item-label>
+              <q-item-label
+                v-if="getWalletTokenStatusKey(wallet)"
+                caption
+                role="status"
+                :data-test="`${wallet.id}-token-status`"
+              >
+                {{ $t(getWalletTokenStatusKey(wallet)) }}
+              </q-item-label>
             </q-item-section>
           </q-item>
 
-          <!-- Token Sublist when chain has multiple assets (e.g. SOL + tUSDC) -->
+          <!-- Show observed token holdings even before native balance is known. -->
           <div
             v-if="
-              selectedChain === wallet.id && getWalletTokens(wallet).length > 1
+              selectedChain === wallet.id &&
+              getWalletTokens(wallet).some(token => !token.isNative)
             "
             class="q-pl-xl q-pr-md q-py-xs bg-grey-2 dark:bg-grey-9 q-my-xs q-mx-sm rounded-borders"
             :data-test="`${wallet.id}-token-sublist`"
@@ -323,12 +332,27 @@ function selectWallet(wallet: string) {
   }
 }
 
-const { monad, getPresentation, getRawBalance, getTokens } =
-  useMultichainBalance()
+const {
+  monad,
+  getPresentation,
+  getRawBalance,
+  getTokens,
+  getTokenObservation,
+} = useMultichainBalance()
 const { loaded, balance } = monad
 
 function getWalletTokens(wallet: WalletItemConfig) {
   return getTokens?.(wallet.id) || []
+}
+
+function getWalletTokenStatusKey(wallet: WalletItemConfig): string {
+  const observation = getTokenObservation(wallet.id)
+  if (!observation || observation.status === 'available') return ''
+  if (observation.status === 'loading')
+    return 'walletPanel.tokenBalancesLoading'
+  return observation.lastKnown
+    ? 'walletPanel.tokenBalancesStale'
+    : 'walletPanel.tokenBalancesUnavailable'
 }
 
 const oracle = useSafeOracleStore()

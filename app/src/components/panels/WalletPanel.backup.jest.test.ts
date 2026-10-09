@@ -33,6 +33,7 @@ jest.mock('../../composables/useBalance', () => ({
 // Backup navigation does not need balance readers or RPC polling.
 jest.mock('../../composables/useChainBalance', () => ({
   useMultichainBalance: () => ({
+    getTokenObservation: () => undefined,
     monad: jest.requireMock('../../composables/useBalance').useBalance(),
     getPresentation: () => ({ status: 'loading' }),
     getRawBalance: () => null,

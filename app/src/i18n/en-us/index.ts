@@ -350,6 +350,10 @@ export default {
     confirmSeed: 'Confirm recovery phrase',
     balanceLoading: 'Loading balance…',
     balanceUnavailable: 'Balance unavailable.',
+    tokenBalancesLoading: 'Loading token balances…',
+    tokenBalancesUnavailable: 'Token balances unavailable.',
+    tokenBalancesStale:
+      'Token balances unavailable. Showing last known balances.',
     balanceStale: '{balance} (last known)',
     failedLoadAddress: 'Failed to load the Monad wallet address',
     unableCopyAddress: 'Unable to copy the Monad address',

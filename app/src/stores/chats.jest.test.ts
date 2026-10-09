@@ -557,6 +557,8 @@ describe('stores/chats.ts (ticket #42)', () => {
 
     it('reaccounts and resorts a rehydrated old-account digest collision as inbound', async () => {
       const chats = useChatStore()
+      chats.openDirectConversation(RECIPIENT_ADDRESS)
+      chats.openDirectConversation(THIRD_ADDRESS)
       const contacts = useContactStore()
       mockOwnAddress.mockResolvedValue(RECIPIENT_ADDRESS)
       contacts.addContact({
@@ -577,6 +579,7 @@ describe('stores/chats.ts (ticket #42)', () => {
               senderAddress: SENDER_ADDRESS,
               copartyAddress,
               message: {
+                conversationId: chats.chats[copartyAddress]!.id,
                 outbound: true,
                 status: 'confirmed',
                 items: [{ type: 'text', text: index }],
@@ -590,14 +593,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           }
         })(),
       )
-      chats.$patch(
-        await rehydateChat({
-          activeChatAddr: null,
-          chats: {},
-          messages: {},
-          lastReceived: 0,
-        }),
-      )
+      chats.$patch(await rehydateChat(chats.$state))
       expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(111)
       expect(chats.getSortedChatOrder.map(chat => chat?.address)).toEqual([
         THIRD_ADDRESS,
@@ -796,6 +792,7 @@ describe('stores/chats.ts (ticket #42)', () => {
             senderAddress: SENDER_ADDRESS,
             copartyAddress: RECIPIENT_ADDRESS,
             message: {
+              conversationId: chats.chats[RECIPIENT_ADDRESS]!.id,
               outbound: true,
               status: 'payment-pending',
               receivedTime: 1,
@@ -1393,6 +1390,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           senderAddress: outbound ? SENDER_ADDRESS : RECIPIENT_ADDRESS,
           copartyAddress,
           message: {
+            conversationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
             outbound,
             status: 'confirmed',
             receivedTime: Number(valueWei % 1000n),
@@ -2167,6 +2165,250 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
+  describe('#1237: explicit durable conversation format', () => {
+    const ownerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    function row(
+      index: string,
+      items: MessageWrapper['message']['items'],
+      conversationId?: string,
+    ): MessageWrapper {
+      return {
+        index,
+        outbound: true,
+        senderAddress: SENDER_ADDRESS,
+        copartyAddress: RECIPIENT_ADDRESS,
+        message: {
+          outbound: true,
+          senderAddress: SENDER_ADDRESS,
+          status: 'confirmed',
+          receivedTime: 100,
+          serverTime: 100,
+          outpoints: [],
+          items,
+          ...(conversationId === undefined ? {} : { conversationId }),
+        },
+      }
+    }
+
+    it.each([
+      ['missing', undefined, [{ type: 'text', text: 'old ownerless row' }]],
+      ['empty', '', [{ type: 'text', text: 'old ownerless row' }]],
+      ['malformed', 'not-an-id', [{ type: 'text', text: 'old ownerless row' }]],
+      [
+        'mixed',
+        undefined,
+        [{ type: 'wallet-sync' }, { type: 'text', text: 'visible' }],
+      ],
+      ['unknown', undefined, [{ type: 'future-internal-type' }]],
+      ['empty items', undefined, []],
+    ])(
+      'rejects %s ownership before normalization, pruning or metadata mutation',
+      async (_case, id, items) => {
+        const pending = row(
+          'local-pending',
+          [{ type: 'text', text: 'funded' }],
+          ownerId,
+        )
+        pending.message.status = 'pending'
+        pending.message.delivery = { attemptDigest: 'confirmed-digest' }
+        const confirmed = row(
+          'confirmed-digest',
+          [{ type: 'text', text: 'funded' }],
+          ownerId,
+        )
+        const invalid = row(
+          'unsupported-row',
+          items as MessageWrapper['message']['items'],
+          id as string | undefined,
+        )
+        const rows = [pending, confirmed, invalid]
+        const before = JSON.stringify(rows)
+        const metadata = { conversations: {}, lastReceived: 0 }
+        mockMessageStore.getIterator.mockResolvedValue(rows)
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await expect(rehydrateState(metadata)).rejects.toThrow(
+            /stored.*conversation|conversation.*format/i,
+          )
+          expect(JSON.stringify(rows)).toBe(before)
+          expect(metadata).toEqual({ conversations: {}, lastReceived: 0 })
+          expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+          expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+        }
+      },
+    )
+
+    it('preserves pure internal rows under the message owner without chat or logical indexes', async () => {
+      const internal = row('internal-record', [
+        { type: 'wallet-sync' },
+        { type: 'payment-transfer' },
+        { type: 'swap-record' },
+      ] as MessageWrapper['message']['items'])
+      const before = JSON.stringify(internal)
+      mockMessageStore.getIterator.mockResolvedValue([internal])
+      const restored = await rehydrateState({
+        conversations: {},
+        lastReceived: 0,
+      })
+      expect(restored.conversations).toEqual({})
+      expect(restored.logicalMessages).toEqual({})
+      expect(restored.messages[internal.index]).toEqual({
+        payloadDigest: internal.index,
+        ...internal.message,
+      })
+      expect(JSON.stringify(internal)).toBe(before)
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+    })
+
+    it.each([false, true])(
+      'persists the actual self row and reopens it (internal: %s)',
+      async internal => {
+        const chats = useChatStore()
+        const items = internal
+          ? [{ type: 'wallet-sync' }]
+          : [{ type: 'text', text: 'saved note' }]
+        const id = await chats.selfSendMessage({
+          items: items as MessageWrapper['message']['items'],
+        })
+        const persisted = mockMessageStore.saveMessage.mock.calls.at(
+          -1,
+        )[0] as MessageWrapper
+        expect(persisted).toMatchObject({
+          index: id,
+          outbound: true,
+          senderAddress: SENDER_ADDRESS,
+          copartyAddress: SENDER_ADDRESS,
+          message: { logicalMessageId: id, destinationAddress: SENDER_ADDRESS },
+        })
+        expect(persisted.message.conversationId).toBe(
+          chats.messages[id]?.conversationId,
+        )
+        mockMessageStore.getIterator.mockResolvedValue([persisted])
+        const reopened = await rehydrateState(chats.$state)
+        expect(reopened.messages[id]?.logicalMessageId).toBe(id)
+        if (internal) {
+          expect(chats.conversations).toEqual({})
+          expect(reopened.conversations).toEqual({})
+          expect(reopened.logicalMessages).toEqual({})
+        } else {
+          const owner = chats.messages[id]!.conversationId!
+          expect(owner).toBeTruthy()
+          expect(reopened.conversations[owner].messages[0].payloadDigest).toBe(
+            id,
+          )
+        }
+      },
+    )
+
+    it('does not invent a self-note owner when canonical identity is unavailable', async () => {
+      mockOwnAddress.mockResolvedValue(null)
+      const chats = useChatStore()
+      await expect(
+        chats.selfSendMessage({ items: [{ type: 'text', text: 'note' }] }),
+      ).rejects.toThrow(/canonical self/i)
+      expect(chats.conversations).toEqual({})
+      expect(chats.messages).toEqual({})
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      'direction',
+      'sender',
+      'index',
+      'malformed owner',
+      'foreign owner',
+    ])(
+      'does not let pure internal content hide %s corruption',
+      async corruption => {
+        const chats = useChatStore()
+        chats.createConversation({
+          conversationId: ownerId,
+          participants: [THIRD_ADDRESS],
+          address: THIRD_ADDRESS,
+        })
+        const internal = row('internal-record', [
+          { type: 'wallet-sync' },
+        ] as MessageWrapper['message']['items'])
+        if (corruption === 'direction') internal.outbound = false
+        if (corruption === 'sender') internal.senderAddress = THIRD_ADDRESS
+        if (corruption === 'index') internal.index = ''
+        if (corruption === 'malformed owner')
+          internal.message.conversationId = 'invalid'
+        if (corruption === 'foreign owner')
+          internal.message.conversationId = ownerId
+        mockMessageStore.getIterator.mockResolvedValue([internal])
+        await expect(rehydrateState(chats.$state)).rejects.toThrow()
+        expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      },
+    )
+
+    it('checks an internal explicit owner against later conversational rows before publishing', async () => {
+      const internal = row(
+        'internal-first',
+        [{ type: 'wallet-sync' }] as MessageWrapper['message']['items'],
+        ownerId,
+      )
+      const visible = row(
+        'visible-later',
+        [{ type: 'text', text: 'other peer' }],
+        ownerId,
+      )
+      visible.copartyAddress = THIRD_ADDRESS
+      mockMessageStore.getIterator.mockResolvedValue([internal, visible])
+      await expect(
+        rehydrateState({ conversations: {}, lastReceived: 0 }),
+      ).rejects.toThrow(/recipient/)
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+    })
+
+    it('preflights owner affinity and logical ownership before pruning a valid earlier row', async () => {
+      const chats = useChatStore()
+      chats.createConversation({
+        conversationId: ownerId,
+        address: RECIPIENT_ADDRESS,
+        participants: [RECIPIENT_ADDRESS],
+      })
+      const other = chats.createConversation({
+        address: THIRD_ADDRESS,
+        participants: [THIRD_ADDRESS],
+      })
+      const pending = row(
+        'local-pending',
+        [{ type: 'text', text: 'funded' }],
+        ownerId,
+      )
+      pending.message.status = 'pending'
+      pending.message.delivery = { attemptDigest: 'confirmed-digest' }
+      const confirmed = row(
+        'confirmed-digest',
+        [{ type: 'text', text: 'funded' }],
+        ownerId,
+      )
+      confirmed.message.logicalMessageId = 'same-logical'
+      const conflict = row(
+        'other-message',
+        [{ type: 'text', text: 'different owner' }],
+        other.id,
+      )
+      for (const mode of ['affinity', 'logical']) {
+        if (mode === 'logical') {
+          conflict.copartyAddress = THIRD_ADDRESS
+          conflict.message.logicalMessageId = 'same-logical'
+        }
+        mockMessageStore.getIterator.mockResolvedValue([
+          pending,
+          confirmed,
+          conflict,
+        ])
+        await expect(rehydrateState(chats.$state)).rejects.toThrow()
+        expect(pending.message.status).toBe('pending')
+        expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+      }
+    })
+  })
+
   describe('ticket #1237: distinct recipient ownership', () => {
     it('keeps addressless pairs separate in the list and unread total', () => {
       const chats = useChatStore()
@@ -2599,7 +2841,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.chats[THIRD_ADDRESS]).toBeUndefined()
     })
 
-    it('migrates legacy direct-message fixtures into conversations and logical messages', async () => {
+    it('rejects legacy ownerless rows without reconstructing ownership from peer aliases', async () => {
       const legacyState = {
         activeChatAddr: RECIPIENT_ADDRESS,
         chats: {
@@ -2639,30 +2881,11 @@ describe('stores/chats.ts (ticket #42)', () => {
         })(),
       )
 
-      const rehydrated = await rehydateChat(legacyState)
-      expect(rehydrated.conversations).toBeDefined()
-      const convs = Object.values(rehydrated.conversations)
-      expect(convs.length).toBeGreaterThanOrEqual(1)
-      const conv = convs[0]
-      expect(conv.kind).toBe('direct')
-      expect(conv.participants).toContain(RECIPIENT_ADDRESS)
-      expect(conv.messages).toHaveLength(1)
-      expect(conv.messages[0].payloadDigest).toBe('legacy-msg-1')
-      expect(conv.messages[0].conversationId).toBe(conv.id)
-
-      // Verified logical message indexing
-      expect(rehydrated.logicalMessages).toBeDefined()
-      expect(rehydrated.logicalMessages['legacy-msg-1']).toBeDefined()
-      expect(rehydrated.logicalMessages['legacy-msg-1']?.conversationId).toBe(
-        conv.id,
+      await expect(rehydateChat(legacyState)).rejects.toThrow(
+        /Unsupported stored conversation format/,
       )
-      expect(
-        rehydrated.logicalMessages['legacy-msg-1']?.revisions[0].deliveries[0]
-          .deliveryDigest,
-      ).toBe('legacy-msg-1')
-
-      // Chats map alias points to the same conversation
-      expect(conversationFor(rehydrated, RECIPIENT_ADDRESS)).toBe(conv)
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
     })
 
     it('enforces tombstone deletion semantics: ignores replayed messages and reopens on newer message', async () => {
@@ -3179,6 +3402,8 @@ describe('stores/chats.ts (ticket #42)', () => {
       mockMessageStore.getIterator.mockResolvedValue([
         {
           index: 'msg-stale-test',
+          senderAddress: peerAddress,
+          outbound: false,
           copartyAddress: peerAddress,
           message: singleMessage,
         },

@@ -52,7 +52,7 @@ pub enum CashwebdExeError {
     )]
     MissingRpcUrlEnv,
 
-    #[error("Invalid registry.monad_mailbox configuration: MONAD_TESTNET_HTTP_RPC_URL is not a valid URL")]
+    #[error("Invalid registry.monad_mailbox configuration: MONAD_TESTNET_HTTP_RPC_URL must be a comma-separated list of HTTP(S) URLs")]
     InvalidRpcUrlEnv,
 
     #[error(
@@ -97,7 +97,7 @@ fn read_conf_contents(conf_path: &str, stdin: &mut impl Read) -> Result<String> 
     Ok(conf_contents)
 }
 
-/// Environment variable that supplies the mailbox RPC URL when the configuration omits `rpc_url`.
+/// Shared endpoint list whose first URL supplies the mailbox when configuration omits `rpc_url`.
 const RPC_URL_ENV: &str = "MONAD_TESTNET_HTTP_RPC_URL";
 /// Environment variable naming the network every stored/admitted message must carry.
 const NETWORK_TAG_ENV: &str = "FRANK_NETWORK_TAG";
@@ -120,12 +120,24 @@ fn read_and_validate_conf_with_env(
     let mut conf =
         parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
     // The shipped configs enable the mailbox without a URL because the endpoint is secret-bearing:
-    // an explicit `rpc_url` wins, otherwise it comes from the environment.
+    // an explicit `rpc_url` wins, otherwise select the first configured endpoint. Validate the
+    // complete list while preserving the environment for proxy and topic fallback consumers.
     let mailbox = &mut conf.registry.monad_mailbox;
     if mailbox.enabled && mailbox.rpc_url.is_none() {
         let raw = env(RPC_URL_ENV).filter(|value| !value.trim().is_empty());
         let raw = raw.ok_or(MissingRpcUrlEnv)?;
-        mailbox.rpc_url = Some(raw.trim().parse().map_err(|_| InvalidRpcUrlEnv)?);
+        let urls = raw
+            .split(',')
+            .map(|token| token.trim().parse())
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|_| InvalidRpcUrlEnv)?;
+        mailbox.rpc_url = urls.first().cloned();
+        if urls
+            .iter()
+            .any(|url| !matches!(url.scheme(), "http" | "https") || url.host_str().is_none())
+        {
+            return Err(InvalidRpcUrlEnv.into());
+        }
     }
     // Validate the mailbox lifecycle before opening the database or binding a socket. The same
     // typed mode is the serialized seam the HTTP owner will use to omit admission when disabled.
@@ -559,7 +571,80 @@ mod tests {
                 read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
                     .unwrap_or_else(|err| panic!("{name}: {err:?}"));
             assert!(conf.registry.monad_mailbox.enabled, "{name}");
-            assert!(matches!(mode, MonadMailboxMode::Enabled { .. }), "{name}");
+            let MonadMailboxMode::Enabled { rpc_url, .. } = mode else {
+                panic!("{name}: mailbox must stay enabled");
+            };
+            assert_eq!(rpc_url.as_str(), "http://127.0.0.1:1/", "{name}");
+        }
+    }
+
+    #[test]
+    fn mailbox_selects_first_endpoint_without_changing_the_shared_environment() {
+        let raw = "  https://rpc.example/first-secret?key=first-secret , http://127.0.0.1:2/second-secret  ";
+        let vars = [
+            ("MONAD_TESTNET_HTTP_RPC_URL", raw),
+            ("FRANK_NETWORK_TAG", "MONT"),
+        ];
+        let shared_env = env(&vars);
+        for config in [LOCAL, DOCKER] {
+            let (conf, mode) =
+                read_and_validate_conf_with_env("-", &mut Cursor::new(config), &shared_env)
+                    .expect("a configured endpoint list must select its first endpoint");
+            let MonadMailboxMode::Enabled { rpc_url, .. } = mode else {
+                panic!("mailbox must stay enabled");
+            };
+            assert_eq!(
+                rpc_url.as_str(),
+                "https://rpc.example/first-secret?key=first-secret"
+            );
+            assert_eq!(conf.registry.monad_mailbox.rpc_url.as_ref(), Some(&rpc_url));
+            assert_eq!(
+                shared_env("MONAD_TESTNET_HTTP_RPC_URL").as_deref(),
+                Some(raw)
+            );
+            assert_eq!(
+                conf.registry.evm_rpc.chains[0].upstream_env,
+                "MONAD_TESTNET_HTTP_RPC_URL"
+            );
+        }
+    }
+
+    #[test]
+    fn mailbox_rejects_invalid_endpoint_lists_without_exposing_endpoint_secrets() {
+        for raw in [
+            "https://rpc.example/first-secret,https://:bad/second-secret",
+            "https://rpc.example/first-secret,",
+            ",https://rpc.example/second-secret",
+            "https://rpc.example/first-secret, ,https://rpc.example/second-secret",
+            "https://rpc.example/first-secret,file:///second-secret",
+            "https://rpc.example/first-secret,not-a-url-second-secret",
+            "https://user:password@rpc.example/first-secret,https://:bad/second-secret",
+            "",
+            "  ",
+        ] {
+            let vars = [
+                ("MONAD_TESTNET_HTTP_RPC_URL", raw),
+                ("FRANK_NETWORK_TAG", "MONT"),
+            ];
+            for config in [LOCAL, DOCKER] {
+                let error =
+                    read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(&vars))
+                        .expect_err("every configured endpoint must be valid");
+                let diagnostic = format!("{error:?}");
+                assert!(diagnostic.contains("MONAD_TESTNET_HTTP_RPC_URL"));
+                for secret in [
+                    "rpc.example",
+                    "first-secret",
+                    "second-secret",
+                    "user",
+                    "password",
+                ] {
+                    assert!(
+                        !diagnostic.contains(secret),
+                        "endpoint leaked in diagnostic"
+                    );
+                }
+            }
         }
     }
 
@@ -740,8 +825,16 @@ max_get_logs_range = 10\n\n\
     #[test]
     fn disabled_mailbox_needs_no_environment() {
         let disabled = LOCAL.replace("enabled = true", "enabled = false");
-        read_and_validate_conf_with_env("-", &mut Cursor::new(disabled), env(&[]))
-            .expect("a disabled mailbox must not require the RPC URL or tag");
+        for vars in [
+            &[][..],
+            &[("MONAD_TESTNET_HTTP_RPC_URL", "invalid-secret,")][..],
+        ] {
+            let (conf, mode) =
+                read_and_validate_conf_with_env("-", &mut Cursor::new(&disabled), env(vars))
+                    .expect("a disabled mailbox must not require or parse the RPC URL or tag");
+            assert!(matches!(mode, MonadMailboxMode::Disabled));
+            assert!(conf.registry.monad_mailbox.rpc_url.is_none());
+        }
     }
 
     #[test]
@@ -753,9 +846,15 @@ max_get_logs_range = 10\n\n\
         let (_, mode) = read_and_validate_conf_with_env(
             "-",
             &mut Cursor::new(explicit),
-            env(&[("FRANK_NETWORK_TAG", "MONT")]),
+            env(&[
+                ("FRANK_NETWORK_TAG", "MONT"),
+                ("MONAD_TESTNET_HTTP_RPC_URL", "invalid-secret,"),
+            ]),
         )
-        .expect("explicit rpc_url needs no RPC environment variable");
-        assert!(matches!(mode, MonadMailboxMode::Enabled { .. }));
+        .expect("explicit rpc_url overrides the RPC environment variable");
+        let MonadMailboxMode::Enabled { rpc_url, .. } = mode else {
+            panic!("mailbox must stay enabled");
+        };
+        assert_eq!(rpc_url.as_str(), "https://rpc.example/");
     }
 }

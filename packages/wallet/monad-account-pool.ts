@@ -69,6 +69,7 @@ import {
 import {
   InMemorySubAccountPoolStore,
   assertSubAccountStatusTransition,
+  SubAccountFundingAttempt,
   SubAccountPoolStore,
   SubAccountRecoveryDisposition,
   SubAccountRecord,
@@ -1065,6 +1066,32 @@ export class MonadSubAccountPool {
     }
   }
 
+  /**
+   * Makes a `funding` row durable before its recorded bytes are offered to the network again. A
+   * row that reads `funding` is not proof of a durable record: the store updates its cache before
+   * a write reaches disk and does not remember a failed flush, so the row survives in memory when
+   * `fundAccount`'s flush threw (and nothing was submitted). Writing the row again and awaiting
+   * that flush is the proof; a rejection propagates and the caller submits nothing. The row is
+   * rewritten only while the store still records this exact attempt, so the write changes nothing
+   * when the row was durable all along.
+   */
+  private async persistFundingAttemptBeforeResubmit(
+    index: number,
+    attempt: SubAccountFundingAttempt
+  ): Promise<void> {
+    const current = this.store.getByIndex(index);
+    if (
+      current?.status !== "funding" ||
+      current.fundingAttempt?.rawTx !== attempt.rawTx
+    ) {
+      throw new Error(
+        `Sub-account ${index} no longer records funding transaction ${attempt.txHash}`
+      );
+    }
+    this.store.put(current);
+    await this.store.flush();
+  }
+
   private async finishFundingAttempt(
     record: SubAccountRecord,
     signer: MonadAccountTxSigner,
@@ -1079,6 +1106,7 @@ export class MonadSubAccountPool {
     }
     let status = await signer.getStatus(attempt.txHash);
     if (status === "pending" && resubmit) {
+      await this.persistFundingAttemptBeforeResubmit(record.index, attempt);
       // An already-known/nonce-too-low response is compatible with a prior successful broadcast;
       // the receipt, never the resend response, decides eligibility.
       await signer
@@ -1103,6 +1131,9 @@ export class MonadSubAccountPool {
       status = await signer.getStatus(attempt.txHash);
     }
     if (status === "pending") {
+      // No receipt. A failed read proves nothing, so each one leaves the row `funding`. The nonce
+      // is read before the balance: a balance read that follows an advanced nonce cannot predate
+      // the transfer that advanced it.
       let isSuperceded = false;
       try {
         const parsed = Transaction.from(attempt.rawTx);
@@ -1114,17 +1145,25 @@ export class MonadSubAccountPool {
         }
       } catch {}
 
-      let balance = 0n;
+      let balance: bigint | undefined;
       try {
         balance = await signer.getBalance(record.address);
       } catch {}
       const { fundingAttempt: _fundingAttempt, ...base } = record;
-      if (balance > 0n) {
+      if (balance !== undefined && balance > 0n) {
         this.store.put({ ...base, status: "available" });
         await this.store.flush();
         return attempt.txHash;
       }
-      if (isSuperceded) {
+      if (!isSuperceded || balance === undefined) {
+        throw new Error(
+          `Funding transaction ${attempt.txHash} is still pending`
+        );
+      }
+      // The nonce and the receipt come from different backends, so the receipt may only have
+      // lagged the nonce: read it once more, and let a receipt that has arrived decide below.
+      status = await signer.getStatus(attempt.txHash);
+      if (status === "pending") {
         this.store.put({ ...base, status: "retired" });
         this.capacityCache.delete(record.index);
         await this.store.flush();
@@ -1132,7 +1171,6 @@ export class MonadSubAccountPool {
           `Funding transaction ${attempt.txHash} was superceded by a later nonce and sub-account ${record.index} was retired`
         );
       }
-      throw new Error(`Funding transaction ${attempt.txHash} is still pending`);
     }
     if (status === "failed") {
       const { fundingAttempt: _fundingAttempt, ...base } = record;

@@ -421,7 +421,10 @@ export interface DemoBot {
   /** Bot entry file, relative to packages/bot. */
   script: string
   env: Record<string, string>
-  /** Identity file (absent for the faucet, which has none). */
+  /** The state directory the bot's host is started with; its profile is `bots/<name>` inside. */
+  hostStateDir: string
+  /** The exported identity file, inside the state directory. The bot is told this path, so it
+   * never falls back to a default outside the state directory. */
   identityJson?: string
   /** Stdout pattern printed once the bot is running its loop. A profile that already exists on the
    * relay from an earlier run does not mean the bot has started, so this is always required. */
@@ -773,12 +776,17 @@ export function resolveDemoConfig(params: {
 
   const idPath = (bot: string) => join(stateDir, 'bots', bot, 'identity.json')
   const stateOf = (bot: string) => join(stateDir, 'bots', bot, 'state')
+  // The faucet's profile and its identity file sit beside the ledger on the fake chain, so
+  // deleting `fake-chain` resets all three together.
+  const faucetState = fakeChain ? join(fakeChainDir, 'faucet-state') : stateOf('faucet')
+  const faucetIdentity = fakeChain ? join(fakeChainDir, 'faucet-identity.json') : idPath('faucet')
 
   const bots: DemoBot[] = [
     {
       name: 'blackjack',
       script: 'blackjack-bot.livecheck.ts',
       identityJson: idPath('blackjack'),
+      hostStateDir: stateOf('blackjack'),
       readyLine: INBOX_POLLING,
       env: {
         ...common,
@@ -792,6 +800,7 @@ export function resolveDemoConfig(params: {
       name: 'raffle',
       script: 'raffle-bot.livecheck.ts',
       identityJson: idPath('raffle'),
+      hostStateDir: stateOf('raffle'),
       readyLine: INBOX_POLLING,
       env: {
         ...common,
@@ -806,6 +815,7 @@ export function resolveDemoConfig(params: {
       name: 'vendor',
       script: 'vendor-bot.livecheck.ts',
       identityJson: idPath('vendor'),
+      hostStateDir: stateOf('vendor'),
       readyLine: INBOX_POLLING,
       env: {
         ...common,
@@ -819,6 +829,7 @@ export function resolveDemoConfig(params: {
       name: 'qwen',
       script: 'qwen-bot.livecheck.ts',
       identityJson: idPath('qwen'),
+      hostStateDir: stateOf('qwen'),
       readyLine: INBOX_POLLING,
       env: {
         ...common,
@@ -853,13 +864,14 @@ export function resolveDemoConfig(params: {
           {
             name: 'faucet' as BotName,
             script: 'faucet-bot.livecheck.ts',
+            identityJson: faucetIdentity,
+            hostStateDir: faucetState,
             readyLine: /Faucet wallet:|Polling .*(inbox|\/message\/monad\/inbox)/,
             env: {
               ...common,
               E2E_DEMO_MAIN_WALLET_JSON: faucetWallet,
-              FAUCET_STATE_DIR: fakeChain
-                ? join(fakeChainDir, 'faucet-state')
-                : join(stateDir, 'bots', 'faucet', 'state'),
+              FAUCET_BOT_IDENTITY_JSON: faucetIdentity,
+              FAUCET_STATE_DIR: faucetState,
               FAUCET_AMOUNT_WEI: faucetAmountWei,
               FAUCET_MAX_PER_RUN: '1000',
             },
@@ -869,6 +881,7 @@ export function resolveDemoConfig(params: {
       name: 'lobby',
       script: 'targets/lobby.ts',
       identityJson: idPath('lobby'),
+      hostStateDir: stateOf('lobby'),
       readyLine: /\[lobby-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
       env: {
         ...common,
@@ -882,6 +895,7 @@ export function resolveDemoConfig(params: {
       name: 'rps',
       script: 'targets/rps.ts',
       identityJson: idPath('rps'),
+      hostStateDir: stateOf('rps'),
       readyLine: /\[rps-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
       env: {
         ...common,
@@ -895,6 +909,7 @@ export function resolveDemoConfig(params: {
       name: 'dice',
       script: 'targets/dice.ts',
       identityJson: idPath('dice'),
+      hostStateDir: stateOf('dice'),
       readyLine: /\[dice-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
       env: {
         ...common,
@@ -908,6 +923,7 @@ export function resolveDemoConfig(params: {
       name: 'liars-dice',
       script: 'targets/liars-dice.ts',
       identityJson: idPath('liars-dice'),
+      hostStateDir: stateOf('liars-dice'),
       readyLine: /\[liars-dice-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
       env: {
         ...common,
@@ -921,6 +937,7 @@ export function resolveDemoConfig(params: {
       name: 'poker',
       script: 'targets/poker.ts',
       identityJson: idPath('poker'),
+      hostStateDir: stateOf('poker'),
       readyLine: /\[poker-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
       env: {
         ...common,

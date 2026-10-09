@@ -1,6 +1,8 @@
 import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { FrankBotHost } from "../src/bot-host";
+import { provisionBotProfile } from "../src/bot-profile-admission";
 import type {
   FrankBotDefinition,
   BotMessageContext,
@@ -796,6 +798,100 @@ describe("FrankBotHost Reliability Features", () => {
       expect(instance.wallet.reobserveNativeOperations).toBeUndefined();
       await expect((host as any).pollAllBots()).resolves.toBeUndefined();
       expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(1);
+    });
+  });
+  // A launcher that must publish a bot's address before the bot runs creates the profile through
+  // `provisionBotProfile`. The host admits that profile, and keeps refusing one that something
+  // else wrote, which is what the demo launcher used to leave behind.
+  describe("Profile provisioning ahead of the host", () => {
+    const bot = (
+      id: string,
+      defaultIdentityPath?: string
+    ): FrankBotDefinition => ({
+      id,
+      defaultIdentityPath,
+      getProfile: () => ({ name: id, bot: true }),
+      onMessage: async () => [],
+    });
+    const held = /Bot invocation admission held/;
+    let root: string;
+    beforeEach(() => {
+      root = `${stateDir}/provision-${Math.random().toString(36).slice(2)}`;
+    });
+    const host = () =>
+      new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: root,
+        watchRegistrations: false,
+      });
+
+    it("registers a provisioned profile at the provisioned address, and again after a restart", async () => {
+      const identityPath = `${root}/identity.json`;
+      const location = {
+        stateDir: root,
+        botId: "provisioned",
+        identityPath,
+        networkTag: "MONT",
+      };
+      const identity = await provisionBotProfile(location);
+      // The launcher's exported copy, written after the profile exists.
+      writeFileSync(identityPath, "{}");
+      expect((await provisionBotProfile(location)).address.raw).toBe(
+        identity.address.raw
+      );
+
+      for (let start = 0; start < 2; start++) {
+        const running = host();
+        await running.register(bot("provisioned", identityPath));
+        expect(mockLocalAddress).toBe(identity.address.raw);
+        await running.stop();
+      }
+    });
+
+    it("refuses an identity file or an account root that it did not create, from the host and from provisioning alike", async () => {
+      const identityPath = `${root}/identity.json`;
+      mkdirSync(root, { recursive: true });
+      writeFileSync(identityPath, "{}");
+      await expect(
+        provisionBotProfile({
+          stateDir: root,
+          botId: "foreign-identity",
+          identityPath,
+          networkTag: "MONT",
+        })
+      ).rejects.toThrow(held);
+      await expect(
+        host().register(bot("foreign-identity-host", identityPath))
+      ).rejects.toThrow(held);
+
+      for (const id of ["foreign-root", "foreign-root-host"]) {
+        mkdirSync(`${root}/bots/${id}`, { recursive: true });
+        writeFileSync(`${root}/bots/${id}/account-root.hex`, "ab".repeat(32));
+      }
+      await expect(
+        provisionBotProfile({
+          stateDir: root,
+          botId: "foreign-root",
+          networkTag: "MONT",
+        })
+      ).rejects.toThrow(held);
+      await expect(
+        host().register(bot("foreign-root-host"))
+      ).rejects.toThrow(held);
+      expect(
+        readFileSync(`${root}/bots/foreign-root/account-root.hex`, "utf8")
+      ).toBe("ab".repeat(32));
+    });
+
+    it("refuses a network it does not know, before creating anything", async () => {
+      await expect(
+        provisionBotProfile({
+          stateDir: root,
+          botId: "unknown-network",
+          networkTag: "monad",
+        })
+      ).rejects.toThrow(/Unknown installed Monad network descriptor/);
+      expect(existsSync(root)).toBe(false);
     });
   });
 });

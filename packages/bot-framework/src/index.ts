@@ -8,3 +8,4 @@ export * from "./peer-queue";
 export * from "./subscription-manager";
 export * from "./scheduler";
 export * from "./bot-host";
+export * from "./bot-profile-admission";

@@ -114,6 +114,22 @@ export interface SelectCoinsParams {
    * Defaults to false (only selects immediately spendable coins without block confirmation gates).
    */
   readonly allowUnconfirmedDependencies?: boolean
+  /**
+   * Maximum unconfirmed mempool ancestor limit (e.g. 25 transactions, standard across Bitcoin Core / Chronik / Lotus).
+   * Spends exceeding this limit are rejected. Defaults to 25.
+   */
+  readonly maxAncestors?: number
+}
+
+/**
+ * Standard maximum unconfirmed mempool ancestor limit across Bitcoin Core, Chronik, and Lotus.
+ */
+export const MAX_UNCONFIRMED_MEMPOOL_ANCESTORS = 25
+
+export interface OutpointDependencyParams {
+  readonly outpoint: { txid: string; vout: number }
+  readonly parentTxHash: string | string[]
+  readonly chain?: string
 }
 
 export interface CoinSelectionResult {
@@ -188,6 +204,8 @@ export interface RegisterUtxoOutpointParams {
   readonly family?: ChainFamily
   readonly origin?: ChainUtxoOrigin
   readonly label?: string
+  readonly parentTxHash?: string
+  readonly requiresConfirmation?: boolean
 }
 
 export interface ArchiveSpentCoinsParams {
@@ -208,6 +226,8 @@ export function inferChainFamily(chain: string): ChainFamily {
     c.includes('btc') ||
     c.includes('bch') ||
     c.includes('doge') ||
+    c.includes('lotus') ||
+    c.includes('xpi') ||
     c === 'utxo'
   ) {
     return 'utxo'
@@ -228,6 +248,15 @@ export function normalizeUtxoAddress(
     return address.toLowerCase().trim()
   }
   if (fam === 'utxo') {
+    // Lotus addresses are base58 and case-sensitive (e.g. lotus_16PS..., lotusR16PS...)
+    if (
+      address.startsWith('lotus_') ||
+      address.startsWith('lotusR') ||
+      address.startsWith('lotusT') ||
+      (chain && chain.toLowerCase().includes('lotus'))
+    ) {
+      return address.trim()
+    }
     return address.toLowerCase().trim()
   }
   // Solana addresses are base58 and case-sensitive
@@ -591,6 +620,8 @@ export class UtxoChainFamilyAdapter {
     satoshis: bigint
     origin?: ChainUtxoOrigin
     label?: string
+    parentTxHash?: string
+    requiresConfirmation?: boolean
   }): ChainUtxoCoin {
     return this.registerOutpoint({
       chain: params.chain,
@@ -601,7 +632,104 @@ export class UtxoChainFamilyAdapter {
       balanceWei: params.satoshis,
       origin: params.origin,
       label: params.label,
+      parentTxHash: params.parentTxHash,
+      requiresConfirmation: params.requiresConfirmation,
     })
+  }
+
+  /**
+   * Registers a mempool DAG outpoint dependency where outpoint ({ txid, vout })
+   * depends on one or more parent transaction hashes (parentTxHash).
+   */
+  registerOutpointDependency(
+    outpointOrParams:
+      | { txid: string; vout: number }
+      | OutpointDependencyParams
+      | string,
+    parentTxHash?: string | string[],
+    chain?: string,
+  ): void {
+    if (typeof outpointOrParams === 'string') {
+      if (!parentTxHash) {
+        throw new Error('parentTxHash is required when registering transaction dependency')
+      }
+      const parents = Array.isArray(parentTxHash) ? parentTxHash : [parentTxHash]
+      for (const p of parents) {
+        this.pool.registerTxDependency(outpointOrParams, p)
+      }
+    } else if ('outpoint' in outpointOrParams) {
+      this.pool.registerOutpointDependency(outpointOrParams)
+    } else {
+      if (!parentTxHash) {
+        throw new Error('parentTxHash is required when passing outpoint directly')
+      }
+      this.pool.registerOutpointDependency({
+        outpoint: outpointOrParams,
+        parentTxHash,
+        chain,
+      })
+    }
+  }
+
+  /**
+   * Backwards-compatible alias for registerOutpointDependency.
+   */
+  registerDependency(
+    outpointOrParams:
+      | { txid: string; vout: number }
+      | OutpointDependencyParams
+      | string,
+    parentTxHash?: string | string[],
+    chain?: string,
+  ): void {
+    this.registerOutpointDependency(outpointOrParams, parentTxHash, chain)
+  }
+
+  /**
+   * Retrieves immediate parent tx hashes for a given outpoint or txid.
+   */
+  getOutpointDependencies(
+    txidOrOutpoint: { txid: string; vout: number } | string,
+    voutOrChain?: number | string,
+    chain?: string,
+  ): string[] {
+    return this.pool.getOutpointDependencies(txidOrOutpoint, voutOrChain, chain)
+  }
+
+  /**
+   * Traverses the mempool DAG to return the full set of transitive unconfirmed ancestor tx hashes.
+   */
+  getMempoolAncestors(
+    coinOrOutpointOrTxid: ChainUtxoCoin | { txid: string; vout: number } | string,
+    chain?: string,
+    vout?: number,
+  ): Set<string> {
+    return this.pool.getMempoolAncestors(coinOrOutpointOrTxid, chain, vout)
+  }
+
+  /**
+   * Returns the count of unconfirmed ancestors in the mempool DAG.
+   */
+  getAncestorCount(
+    coinOrOutpointOrTxid: ChainUtxoCoin | { txid: string; vout: number } | string,
+    chain?: string,
+    vout?: number,
+  ): number {
+    return this.pool.getAncestorCount(coinOrOutpointOrTxid, chain, vout)
+  }
+
+  /**
+   * Marks a transaction hash as confirmed on-chain, removing it from unconfirmed mempool DAG tracking.
+   */
+  markTransactionConfirmed(txHash: string): void {
+    this.pool.markTransactionConfirmed(txHash)
+  }
+
+  /**
+   * Checks whether a transaction hash has been confirmed.
+   */
+  isTransactionConfirmed(txHash: string): boolean {
+    return this.pool.isTransactionConfirmed(txHash)
   }
 
   markOutpointSpent(
@@ -647,6 +775,11 @@ export class ChainUtxoPool {
   private readonly coinsByOutpoint = new Map<string, string>()
   private readonly spentOutpointKeys = new Set<string>()
 
+  private readonly outpointDependencies = new Map<string, Set<string>>()
+  private readonly txDependencies = new Map<string, Set<string>>()
+  private readonly unconfirmedTxHashes = new Set<string>()
+  private readonly confirmedTxHashes = new Set<string>()
+
   readonly evm: EvmChainFamilyAdapter
   readonly solana: SolanaChainFamilyAdapter
   readonly utxo: UtxoChainFamilyAdapter
@@ -665,9 +798,244 @@ export class ChainUtxoPool {
     return chain.toLowerCase()
   }
 
-  private outpointKey(txid: string, vout: number, chain?: string): string {
+  outpointKey(txid: string, vout: number, chain?: string): string {
     const base = `${txid.toLowerCase()}:${vout}`
     return chain ? `${this.chainKey(chain)}:${base}` : base
+  }
+
+  /**
+   * Registers an outpoint dependency in the mempool DAG.
+   */
+  registerOutpointDependency(params: OutpointDependencyParams): void {
+    const { outpoint, parentTxHash, chain } = params
+    const parents = Array.isArray(parentTxHash) ? parentTxHash : [parentTxHash]
+    const opScoped = this.outpointKey(outpoint.txid, outpoint.vout, chain)
+    const opGlobal = this.outpointKey(outpoint.txid, outpoint.vout)
+    const childTx = outpoint.txid.toLowerCase()
+
+    this.markTxUnconfirmed(childTx)
+
+    for (const p of parents) {
+      const parentLower = p.toLowerCase()
+      this.markTxUnconfirmed(parentLower)
+
+      let setScoped = this.outpointDependencies.get(opScoped)
+      if (!setScoped) {
+        setScoped = new Set<string>()
+        this.outpointDependencies.set(opScoped, setScoped)
+      }
+      setScoped.add(parentLower)
+
+      let setGlobal = this.outpointDependencies.get(opGlobal)
+      if (!setGlobal) {
+        setGlobal = new Set<string>()
+        this.outpointDependencies.set(opGlobal, setGlobal)
+      }
+      setGlobal.add(parentLower)
+
+      let txSet = this.txDependencies.get(childTx)
+      if (!txSet) {
+        txSet = new Set<string>()
+        this.txDependencies.set(childTx, txSet)
+      }
+      txSet.add(parentLower)
+    }
+  }
+
+  /**
+   * Registers a direct transaction-level dependency in the mempool DAG.
+   */
+  registerTxDependency(txid: string, parentTxHash: string): void {
+    const childLower = txid.toLowerCase()
+    const parentLower = parentTxHash.toLowerCase()
+    this.markTxUnconfirmed(childLower)
+    this.markTxUnconfirmed(parentLower)
+
+    let txSet = this.txDependencies.get(childLower)
+    if (!txSet) {
+      txSet = new Set<string>()
+      this.txDependencies.set(childLower, txSet)
+    }
+    txSet.add(parentLower)
+  }
+
+  /**
+   * Retrieves immediate parent tx hashes for an outpoint or txid.
+   */
+  getOutpointDependencies(
+    txidOrOutpoint: { txid: string; vout: number } | string,
+    voutOrChain?: number | string,
+    chain?: string,
+  ): string[] {
+    let txid: string
+    let vout: number
+    let c: string | undefined
+
+    if (typeof txidOrOutpoint === 'object') {
+      txid = txidOrOutpoint.txid
+      vout = txidOrOutpoint.vout
+      c = typeof voutOrChain === 'string' ? voutOrChain : chain
+    } else {
+      txid = txidOrOutpoint
+      vout = typeof voutOrChain === 'number' ? voutOrChain : 0
+      c = chain
+    }
+
+    const opScoped = this.outpointKey(txid, vout, c)
+    const opGlobal = this.outpointKey(txid, vout)
+    const deps = new Set<string>()
+
+    const scoped = this.outpointDependencies.get(opScoped)
+    if (scoped) {
+      for (const d of scoped) deps.add(d)
+    }
+    const global = this.outpointDependencies.get(opGlobal)
+    if (global) {
+      for (const d of global) deps.add(d)
+    }
+    const txDeps = this.txDependencies.get(txid.toLowerCase())
+    if (txDeps) {
+      for (const d of txDeps) deps.add(d)
+    }
+
+    return Array.from(deps)
+  }
+
+  /**
+   * Retrieves immediate parent tx hashes registered for a transaction hash.
+   */
+  getTransactionDependencies(txHash: string): string[] {
+    const deps = this.txDependencies.get(txHash.toLowerCase())
+    return deps ? Array.from(deps) : []
+  }
+
+  /**
+   * Marks a transaction hash as confirmed on-chain, removing it from unconfirmed mempool tracking.
+   */
+  markTransactionConfirmed(txHash: string): void {
+    const lower = txHash.toLowerCase()
+    this.confirmedTxHashes.add(lower)
+    this.unconfirmedTxHashes.delete(lower)
+  }
+
+  /**
+   * Checks whether a transaction hash has been confirmed.
+   */
+  isTransactionConfirmed(txHash: string): boolean {
+    return this.confirmedTxHashes.has(txHash.toLowerCase())
+  }
+
+  /**
+   * Marks a transaction hash as an unconfirmed mempool transaction.
+   */
+  markTxUnconfirmed(txHash: string): void {
+    const lower = txHash.toLowerCase()
+    if (!this.confirmedTxHashes.has(lower)) {
+      this.unconfirmedTxHashes.add(lower)
+    }
+  }
+
+  /**
+   * Checks whether a transaction hash is considered unconfirmed in the mempool.
+   */
+  isUnconfirmedTx(txHash: string): boolean {
+    const lower = txHash.toLowerCase()
+    if (this.confirmedTxHashes.has(lower)) return false
+    return this.unconfirmedTxHashes.has(lower)
+  }
+
+  hasMempoolDependencies(): boolean {
+    return this.unconfirmedTxHashes.size > 0 || this.outpointDependencies.size > 0
+  }
+
+  /**
+   * Traverses the mempool DAG to return all unique transitive unconfirmed ancestor tx hashes.
+   */
+  getMempoolAncestors(
+    target: ChainUtxoCoin | { txid: string; vout: number } | string,
+    chain?: string,
+    vout?: number,
+  ): Set<string> {
+    const ancestors = new Set<string>()
+    if (!this.hasMempoolDependencies()) {
+      return ancestors
+    }
+    const visited = new Set<string>()
+    const queue: string[] = []
+
+    let targetTxid: string | undefined
+    let targetVout: number | undefined
+    let coinChain: string | undefined = chain
+
+    if (typeof target === 'object' && 'address' in target) {
+      coinChain = target.chain
+      if (target.outpoint) {
+        targetTxid = target.outpoint.txid.toLowerCase()
+        targetVout = target.outpoint.vout
+      }
+      if (target.parentTxHash) {
+        queue.push(target.parentTxHash.toLowerCase())
+      }
+    } else if (typeof target === 'object' && 'txid' in target) {
+      targetTxid = target.txid.toLowerCase()
+      targetVout = target.vout
+      coinChain = chain
+    } else if (typeof target === 'string') {
+      targetTxid = target.toLowerCase()
+      targetVout = typeof vout === 'number' ? vout : undefined
+      coinChain = chain
+    }
+
+    if (targetTxid !== undefined) {
+      if (targetVout !== undefined) {
+        const outDeps = this.getOutpointDependencies(targetTxid, targetVout, coinChain)
+        for (const p of outDeps) queue.push(p.toLowerCase())
+      }
+      const txDeps = this.txDependencies.get(targetTxid)
+      if (txDeps) {
+        for (const p of txDeps) queue.push(p.toLowerCase())
+      }
+      if (this.unconfirmedTxHashes.has(targetTxid) && !this.confirmedTxHashes.has(targetTxid)) {
+        ancestors.add(targetTxid)
+      }
+    }
+
+    while (queue.length > 0) {
+      const current = queue.shift()!
+      const currentLower = current.toLowerCase()
+
+      if (visited.has(currentLower)) continue
+      visited.add(currentLower)
+
+      if (this.confirmedTxHashes.has(currentLower)) continue
+
+      ancestors.add(currentLower)
+
+      const parentDeps = this.txDependencies.get(currentLower)
+      if (parentDeps) {
+        for (const p of parentDeps) {
+          if (!visited.has(p)) queue.push(p)
+        }
+      }
+
+      const matchedCoin = this.getUtxoByOutpoint(currentLower, 0, coinChain)
+      if (matchedCoin?.parentTxHash && !visited.has(matchedCoin.parentTxHash.toLowerCase())) {
+        queue.push(matchedCoin.parentTxHash.toLowerCase())
+      }
+    }
+
+    return ancestors
+  }
+
+  /**
+   * Returns the number of unconfirmed mempool ancestors for a given target coin, outpoint, or txid.
+   */
+  getAncestorCount(
+    target: ChainUtxoCoin | { txid: string; vout: number } | string,
+    chain?: string,
+    vout?: number,
+  ): number {
+    return this.getMempoolAncestors(target, chain, vout).size
   }
 
   /**
@@ -714,6 +1082,9 @@ export class ChainUtxoPool {
       derivationPath: coin.derivationPath,
       ephemeralPubKey: coin.ephemeralPubKey,
       txHash: coin.txHash,
+      parentTxHash: coin.parentTxHash,
+      requiresConfirmation: coin.requiresConfirmation,
+      index: coin.index,
     }
 
     // Clean up previous indices if overwriting
@@ -724,6 +1095,15 @@ export class ChainUtxoPool {
     this.archivedCoinsById.delete(id)
 
     this.coinsById.set(id, record)
+
+    // Register mempool DAG outpoint dependency if parentTxHash is attached
+    if (record.parentTxHash && record.outpoint) {
+      this.registerOutpointDependency({
+        outpoint: record.outpoint,
+        parentTxHash: record.parentTxHash,
+        chain: record.chain,
+      })
+    }
 
     // Index by address
     const addrKey = normalizeUtxoAddress(canonicalAddress, coin.chain, family)
@@ -824,6 +1204,8 @@ export class ChainUtxoPool {
       label: params.label ?? `UTXO ${params.txid.slice(0, 8)}:${params.vout}`,
       discoveredAt: Date.now(),
       lastUpdatedMs: Date.now(),
+      parentTxHash: params.parentTxHash,
+      requiresConfirmation: params.requiresConfirmation ?? false,
     })
   }
 
@@ -1373,7 +1755,13 @@ export class ChainUtxoPool {
     }
 
     if (!allowUnconfirmedDependencies) {
-      candidates = candidates.filter(u => !u.requiresConfirmation)
+      if (family === 'utxo') {
+        // Native UTXO mempools (Lotus, eCash, Bitcoin) allow selecting unconfirmed change outputs
+        // directly in the mempool where requiresConfirmation is not explicitly true.
+        candidates = candidates.filter(u => u.requiresConfirmation !== true)
+      } else {
+        candidates = candidates.filter(u => !u.requiresConfirmation)
+      }
     }
 
     if (explicitFamily) {
@@ -1391,6 +1779,37 @@ export class ChainUtxoPool {
       throw new Error(
         `Insufficient funds in AccountUtxoPool for ${chain}: no spendable coins found`,
       )
+    }
+
+    // Enforce mempool ancestor limit (e.g. 25 transactions, standard across Bitcoin Core / Chronik / Lotus)
+    const maxAncestors = params.maxAncestors ?? MAX_UNCONFIRMED_MEMPOOL_ANCESTORS
+    if (family === 'utxo' && this.hasMempoolDependencies()) {
+      let exceededAncestorCount = 0
+      let maxFoundAncestors = 0
+      const validCandidates: ChainUtxoCoin[] = []
+
+      for (const coin of candidates) {
+        const count = this.getAncestorCount(coin, chain)
+        if (count > maxAncestors) {
+          exceededAncestorCount++
+          if (count > maxFoundAncestors) maxFoundAncestors = count
+        } else {
+          validCandidates.push(coin)
+        }
+      }
+
+      if (validCandidates.length === 0) {
+        if (exceededAncestorCount > 0) {
+          throw new Error(
+            `Mempool ancestor limit exceeded: spend would have ${maxFoundAncestors} unconfirmed ancestors (limit: ${maxAncestors})`,
+          )
+        }
+        throw new Error(
+          `Insufficient funds in AccountUtxoPool for ${chain}: no spendable coins found within ancestor limit`,
+        )
+      }
+
+      candidates = validCandidates
     }
 
     // 1. Single coin best-fit: smallest coin >= neededWei
@@ -1423,6 +1842,21 @@ export class ChainUtxoPool {
       if (totalSelectedWei < neededWei) {
         throw new Error(
           `Insufficient funds in AccountUtxoPool for ${chain}: needed ${neededWei} wei, available ${totalSelectedWei} wei across ${candidates.length} coins`,
+        )
+      }
+    }
+
+    // Verify combined selected coins do not exceed maxAncestors package limit
+    if (family === 'utxo' && this.hasMempoolDependencies()) {
+      const combinedAncestors = new Set<string>()
+      for (const coin of selected) {
+        for (const anc of this.getMempoolAncestors(coin, chain)) {
+          combinedAncestors.add(anc)
+        }
+      }
+      if (combinedAncestors.size > maxAncestors) {
+        throw new Error(
+          `Mempool ancestor limit exceeded: selected coins combine to ${combinedAncestors.size} unconfirmed ancestors (limit: ${maxAncestors})`,
         )
       }
     }
@@ -1716,8 +2150,260 @@ export interface ApplyTransactionParams {
 export class ChainUtxoView {
   private readonly spentCoinIds: Set<string> = new Set()
   private readonly stagedCoinsById: Map<string, ChainUtxoCoin> = new Map()
+  private readonly stagedOutpointDependencies = new Map<string, Set<string>>()
+  private readonly stagedTxDependencies = new Map<string, Set<string>>()
+  private readonly stagedUnconfirmedTxHashes = new Set<string>()
 
   constructor(private readonly basePool: ChainUtxoPool) {}
+
+  get utxo(): UtxoChainFamilyAdapter {
+    return this.basePool.utxo
+  }
+
+  private registerStagedDependency(
+    outpoint: { txid: string; vout: number },
+    parentTxHash: string,
+    chain?: string,
+  ): void {
+    const parentLower = parentTxHash.toLowerCase()
+    const opScoped = this.basePool.outpointKey(outpoint.txid, outpoint.vout, chain)
+    const opGlobal = this.basePool.outpointKey(outpoint.txid, outpoint.vout)
+    const childTx = outpoint.txid.toLowerCase()
+
+    this.stagedUnconfirmedTxHashes.add(childTx)
+    this.stagedUnconfirmedTxHashes.add(parentLower)
+
+    let setScoped = this.stagedOutpointDependencies.get(opScoped)
+    if (!setScoped) {
+      setScoped = new Set<string>()
+      this.stagedOutpointDependencies.set(opScoped, setScoped)
+    }
+    setScoped.add(parentLower)
+
+    let setGlobal = this.stagedOutpointDependencies.get(opGlobal)
+    if (!setGlobal) {
+      setGlobal = new Set<string>()
+      this.stagedOutpointDependencies.set(opGlobal, setGlobal)
+    }
+    setGlobal.add(parentLower)
+
+    let txSet = this.stagedTxDependencies.get(childTx)
+    if (!txSet) {
+      txSet = new Set<string>()
+      this.stagedTxDependencies.set(childTx, txSet)
+    }
+    txSet.add(parentLower)
+  }
+
+  /**
+   * Registers a mempool DAG outpoint dependency in this view.
+   */
+  registerOutpointDependency(
+    outpointOrParams:
+      | { txid: string; vout: number }
+      | OutpointDependencyParams
+      | string,
+    parentTxHash?: string | string[],
+    chain?: string,
+  ): void {
+    if (typeof outpointOrParams === 'string') {
+      if (!parentTxHash) {
+        throw new Error('parentTxHash is required when registering transaction dependency')
+      }
+      const parents = Array.isArray(parentTxHash) ? parentTxHash : [parentTxHash]
+      for (const p of parents) {
+        this.registerStagedDependency({ txid: outpointOrParams, vout: 0 }, p, chain)
+      }
+    } else if ('outpoint' in outpointOrParams) {
+      const parents = Array.isArray(outpointOrParams.parentTxHash)
+        ? outpointOrParams.parentTxHash
+        : [outpointOrParams.parentTxHash]
+      for (const p of parents) {
+        this.registerStagedDependency(outpointOrParams.outpoint, p, outpointOrParams.chain)
+      }
+    } else {
+      if (!parentTxHash) {
+        throw new Error('parentTxHash is required when passing outpoint directly')
+      }
+      const parents = Array.isArray(parentTxHash) ? parentTxHash : [parentTxHash]
+      for (const p of parents) {
+        this.registerStagedDependency(outpointOrParams, p, chain)
+      }
+    }
+  }
+
+  /**
+   * Backwards-compatible alias for registerOutpointDependency.
+   */
+  registerDependency(
+    outpointOrParams:
+      | { txid: string; vout: number }
+      | OutpointDependencyParams
+      | string,
+    parentTxHash?: string | string[],
+    chain?: string,
+  ): void {
+    this.registerOutpointDependency(outpointOrParams, parentTxHash, chain)
+  }
+
+  /**
+   * Retrieves immediate parent tx hashes for an outpoint or txid within this view (and base pool).
+   */
+  getOutpointDependencies(
+    txidOrOutpoint: { txid: string; vout: number } | string,
+    voutOrChain?: number | string,
+    chain?: string,
+  ): string[] {
+    let txid: string
+    let vout: number
+    let c: string | undefined
+
+    if (typeof txidOrOutpoint === 'object') {
+      txid = txidOrOutpoint.txid
+      vout = txidOrOutpoint.vout
+      c = typeof voutOrChain === 'string' ? voutOrChain : chain
+    } else {
+      txid = txidOrOutpoint
+      vout = typeof voutOrChain === 'number' ? voutOrChain : 0
+      c = chain
+    }
+
+    const opScoped = this.basePool.outpointKey(txid, vout, c)
+    const opGlobal = this.basePool.outpointKey(txid, vout)
+    const deps = new Set<string>()
+
+    const stagedScoped = this.stagedOutpointDependencies.get(opScoped)
+    if (stagedScoped) for (const d of stagedScoped) deps.add(d)
+
+    const stagedGlobal = this.stagedOutpointDependencies.get(opGlobal)
+    if (stagedGlobal) for (const d of stagedGlobal) deps.add(d)
+
+    const stagedTx = this.stagedTxDependencies.get(txid.toLowerCase())
+    if (stagedTx) for (const d of stagedTx) deps.add(d)
+
+    for (const d of this.basePool.getOutpointDependencies(txid, vout, c)) {
+      deps.add(d)
+    }
+
+    return Array.from(deps)
+  }
+
+  hasMempoolDependencies(): boolean {
+    return (
+      this.stagedCoinsById.size > 0 ||
+      this.stagedUnconfirmedTxHashes.size > 0 ||
+      this.stagedOutpointDependencies.size > 0 ||
+      this.basePool.hasMempoolDependencies()
+    )
+  }
+
+  /**
+   * Traverses the mempool DAG in this view and underlying base pool to return all unconfirmed ancestors.
+   */
+  getMempoolAncestors(
+    target: ChainUtxoCoin | { txid: string; vout: number } | string,
+    chain?: string,
+    vout?: number,
+  ): Set<string> {
+    const ancestors = new Set<string>()
+    if (!this.hasMempoolDependencies()) {
+      return ancestors
+    }
+    const visited = new Set<string>()
+    const queue: string[] = []
+
+    let targetTxid: string | undefined
+    let targetVout: number | undefined
+    let coinChain: string | undefined = chain
+
+    if (typeof target === 'object' && 'address' in target) {
+      coinChain = target.chain
+      if (target.outpoint) {
+        targetTxid = target.outpoint.txid.toLowerCase()
+        targetVout = target.outpoint.vout
+      }
+      if (target.parentTxHash) {
+        queue.push(target.parentTxHash.toLowerCase())
+      }
+    } else if (typeof target === 'object' && 'txid' in target) {
+      targetTxid = target.txid.toLowerCase()
+      targetVout = target.vout
+      coinChain = chain
+    } else if (typeof target === 'string') {
+      targetTxid = target.toLowerCase()
+      targetVout = typeof vout === 'number' ? vout : undefined
+      coinChain = chain
+    }
+
+    if (targetTxid !== undefined) {
+      if (targetVout !== undefined) {
+        const outDeps = this.getOutpointDependencies(targetTxid, targetVout, coinChain)
+        for (const p of outDeps) queue.push(p.toLowerCase())
+      }
+      const txDeps = this.stagedTxDependencies.get(targetTxid)
+      if (txDeps) {
+        for (const p of txDeps) queue.push(p.toLowerCase())
+      }
+      const baseTxDeps = this.basePool.getTransactionDependencies(targetTxid)
+      for (const p of baseTxDeps) queue.push(p.toLowerCase())
+
+      if (
+        this.stagedUnconfirmedTxHashes.has(targetTxid) ||
+        this.basePool.isUnconfirmedTx(targetTxid)
+      ) {
+        if (!this.basePool.isTransactionConfirmed(targetTxid)) {
+          ancestors.add(targetTxid)
+        }
+      }
+    }
+
+    while (queue.length > 0) {
+      const current = queue.shift()!.toLowerCase()
+      if (visited.has(current)) continue
+      visited.add(current)
+
+      if (this.basePool.isTransactionConfirmed(current)) continue
+      ancestors.add(current)
+
+      const stagedParents = this.stagedTxDependencies.get(current)
+      if (stagedParents) {
+        for (const p of stagedParents) {
+          if (!visited.has(p)) queue.push(p)
+        }
+      }
+
+      const baseParents = this.basePool.getTransactionDependencies(current)
+      for (const p of baseParents) {
+        if (!visited.has(p)) queue.push(p)
+      }
+
+      for (const coin of this.stagedCoinsById.values()) {
+        if (coin.outpoint && coin.outpoint.txid.toLowerCase() === current && coin.parentTxHash) {
+          if (!visited.has(coin.parentTxHash.toLowerCase())) {
+            queue.push(coin.parentTxHash.toLowerCase())
+          }
+        }
+      }
+
+      const matched = this.basePool.getUtxoByOutpoint(current, 0, coinChain)
+      if (matched?.parentTxHash && !visited.has(matched.parentTxHash.toLowerCase())) {
+        queue.push(matched.parentTxHash.toLowerCase())
+      }
+    }
+
+    return ancestors
+  }
+
+  /**
+   * Returns the count of unconfirmed ancestors for a given coin, outpoint, or txid in this view.
+   */
+  getAncestorCount(
+    target: ChainUtxoCoin | { txid: string; vout: number } | string,
+    chain?: string,
+    vout?: number,
+  ): number {
+    return this.getMempoolAncestors(target, chain, vout).size
+  }
 
   /**
    * Returns all clean coins available in this view:
@@ -1798,7 +2484,13 @@ export class ChainUtxoView {
     }
 
     if (!allowUnconfirmedDependencies) {
-      candidates = candidates.filter(u => !u.requiresConfirmation)
+      if (family === 'utxo') {
+        // Native UTXO mempools (Lotus, eCash, Bitcoin) allow selecting unconfirmed change outputs
+        // directly in the mempool where requiresConfirmation is not explicitly true.
+        candidates = candidates.filter(u => u.requiresConfirmation !== true)
+      } else {
+        candidates = candidates.filter(u => !u.requiresConfirmation)
+      }
     }
 
     if (explicitFamily) {
@@ -1816,6 +2508,37 @@ export class ChainUtxoView {
       throw new Error(
         `Insufficient funds in ChainUtxoView for ${chain}: no spendable coins found`,
       )
+    }
+
+    // Enforce mempool ancestor limit (e.g. 25 transactions, standard across Bitcoin Core / Chronik / Lotus)
+    const maxAncestors = params.maxAncestors ?? MAX_UNCONFIRMED_MEMPOOL_ANCESTORS
+    if (family === 'utxo' && this.hasMempoolDependencies()) {
+      let exceededAncestorCount = 0
+      let maxFoundAncestors = 0
+      const validCandidates: ChainUtxoCoin[] = []
+
+      for (const coin of candidates) {
+        const count = this.getAncestorCount(coin, chain)
+        if (count > maxAncestors) {
+          exceededAncestorCount++
+          if (count > maxFoundAncestors) maxFoundAncestors = count
+        } else {
+          validCandidates.push(coin)
+        }
+      }
+
+      if (validCandidates.length === 0) {
+        if (exceededAncestorCount > 0) {
+          throw new Error(
+            `Mempool ancestor limit exceeded: available unconfirmed change outputs exceed maximum ancestor limit of ${maxAncestors} (found ${maxFoundAncestors} unconfirmed ancestors)`,
+          )
+        }
+        throw new Error(
+          `Insufficient funds in ChainUtxoView for ${chain}: no spendable coins found within ancestor limit`,
+        )
+      }
+
+      candidates = validCandidates
     }
 
     // 1. Single coin best-fit: smallest coin >= neededWei
@@ -1852,6 +2575,21 @@ export class ChainUtxoView {
       }
     }
 
+    // Verify combined selected coins do not exceed maxAncestors package limit
+    if (family === 'utxo' && this.hasMempoolDependencies()) {
+      const combinedAncestors = new Set<string>()
+      for (const coin of selected) {
+        for (const anc of this.getMempoolAncestors(coin, chain)) {
+          combinedAncestors.add(anc)
+        }
+      }
+      if (combinedAncestors.size > maxAncestors) {
+        throw new Error(
+          `Mempool ancestor limit exceeded: selected coins combine to ${combinedAncestors.size} unconfirmed ancestors (limit: ${maxAncestors})`,
+        )
+      }
+    }
+
     const changeWei = totalSelectedWei - neededWei
     let suggestedChangeSplits: bigint[] = []
 
@@ -1882,14 +2620,36 @@ export class ChainUtxoView {
   applyTransaction(params: ApplyTransactionParams): void {
     const { chain, inputs, changeOutputs = [], updatedAccounts = [] } = params
 
-    // 1. Mark inputs as spent in this view
+    // 1. Mark inputs as spent in this view and record unconfirmed parent transactions
+    const unconfirmedParentTxIds = new Set<string>()
     for (const input of inputs) {
       const id = typeof input === 'string' ? input : input.id
+      const coin = typeof input === 'string' ? this.getCoin(input) : input
+
+      if (coin) {
+        if (coin.outpoint) {
+          const txidLower = coin.outpoint.txid.toLowerCase()
+          const isUnconfirmed =
+            this.stagedCoinsById.has(coin.id) ||
+            this.stagedUnconfirmedTxHashes.has(txidLower) ||
+            this.basePool.isUnconfirmedTx(txidLower) ||
+            coin.parentTxHash !== undefined ||
+            coin.origin === 'change'
+
+          if (isUnconfirmed) {
+            unconfirmedParentTxIds.add(txidLower)
+          }
+        }
+        if (coin.parentTxHash) {
+          unconfirmedParentTxIds.add(coin.parentTxHash.toLowerCase())
+        }
+      }
+
       this.spentCoinIds.add(id)
       this.stagedCoinsById.delete(id)
     }
 
-    // 2. Register fresh change outputs into stagedCoinsById
+    // 2. Register fresh change outputs into stagedCoinsById & track DAG dependencies
     for (const change of changeOutputs) {
       const family = change.family ?? inferChainFamily(chain)
       const formattedAddress = formatUtxoAddress(change.address, chain, family)
@@ -1906,6 +2666,10 @@ export class ChainUtxoView {
           ? true
           : true)
 
+      const parentTxHash =
+        change.parentTxHash ??
+        (unconfirmedParentTxIds.size > 0 ? Array.from(unconfirmedParentTxIds)[0] : undefined)
+
       const coin: ChainUtxoCoin = {
         id,
         chain,
@@ -1920,10 +2684,24 @@ export class ChainUtxoView {
         label: change.label ?? 'Chained Transaction Change Output',
         discoveredAt: Date.now(),
         lastUpdatedMs: Date.now(),
-        parentTxHash: change.parentTxHash,
+        parentTxHash,
         requiresConfirmation,
       }
       this.stagedCoinsById.set(id, coin)
+
+      if (change.outpoint) {
+        const childTx = change.outpoint.txid.toLowerCase()
+        this.stagedUnconfirmedTxHashes.add(childTx)
+
+        const allParents = new Set(unconfirmedParentTxIds)
+        if (change.parentTxHash) {
+          allParents.add(change.parentTxHash.toLowerCase())
+        }
+
+        for (const p of allParents) {
+          this.registerStagedDependency(change.outpoint, p, chain)
+        }
+      }
     }
 
     // 3. For EVM accounts whose balance was partially spent: update nonce & remaining balance
@@ -1993,6 +2771,29 @@ export class ChainUtxoView {
       for (const stagedCoin of this.stagedCoinsById.values()) {
         this.basePool.registerCoin(stagedCoin)
       }
+
+      // Commit staged DAG dependencies
+      for (const [opKey, parentSet] of this.stagedOutpointDependencies) {
+        const parts = opKey.split(':')
+        const txid = parts.length === 3 ? parts[1] : parts[0]
+        const vout = parseInt(parts.length === 3 ? parts[2] : parts[1], 10)
+        const chain = parts.length === 3 ? parts[0] : undefined
+        for (const parent of parentSet) {
+          this.basePool.registerOutpointDependency({
+            outpoint: { txid, vout },
+            parentTxHash: parent,
+            chain,
+          })
+        }
+      }
+      for (const [txid, parentSet] of this.stagedTxDependencies) {
+        for (const parent of parentSet) {
+          this.basePool.registerTxDependency(txid, parent)
+        }
+      }
+      for (const tx of this.stagedUnconfirmedTxHashes) {
+        this.basePool.markTxUnconfirmed(tx)
+      }
     }
 
     if (batchWriter) {
@@ -2015,6 +2816,9 @@ export class ChainUtxoView {
   rollback(): void {
     this.spentCoinIds.clear()
     this.stagedCoinsById.clear()
+    this.stagedOutpointDependencies.clear()
+    this.stagedTxDependencies.clear()
+    this.stagedUnconfirmedTxHashes.clear()
   }
 
   /**

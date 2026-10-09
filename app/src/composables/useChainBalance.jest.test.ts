@@ -576,6 +576,84 @@ describe('native Solana AVU presentation', () => {
 })
 
 describe('Solana token availability in both views', () => {
+  it.each(['loading', 'unavailable'])(
+    'shows one SPL holding while native SOL is %s and retains it after token failure',
+    async nativeStatus => {
+      mockAccountStatus.status = 'loading'
+      await fetchChainBalance('solana', true)
+      mockAccountStatus.status = 'ready'
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      const oracle = useOracleStore()
+      jest
+        .spyOn(oracle, 'startBackgroundWorker')
+        .mockImplementation(() => undefined)
+      const error = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      let resolveNative!: (value: {
+        lamports: bigint
+        formatted: string
+      }) => void
+      const nativeRead = new Promise<{ lamports: bigint; formatted: string }>(
+        resolve => {
+          resolveNative = resolve
+        },
+      )
+      if (nativeStatus === 'loading')
+        mockFetchSolanaBalance.mockReturnValueOnce(nativeRead)
+      else
+        mockFetchSolanaBalance.mockRejectedValueOnce(
+          new Error('native offline'),
+        )
+      const { detail, drawer } = mountSolanaViews(pinia)
+      try {
+        await flushPromises()
+        expect(useChainBalance('solana').presentation.value.status).toBe(
+          nativeStatus,
+        )
+        expect(getChainTokens('solana')).toHaveLength(1)
+        expect(getChainTokens('solana')[0].isNative).toBe(false)
+        expect(
+          detail.get('[data-testid="wallet-token-item-tusdc"]').text(),
+        ).toContain('100.00 tUSDC')
+        expect(drawer.get('[data-test="subtoken-tusdc"]').text()).toContain(
+          '100.00 tUSDC',
+        )
+        expect(drawer.find('[data-test="solana-token-status"]').exists()).toBe(
+          false,
+        )
+
+        mockFetchSolanaBalance.mockRejectedValueOnce(
+          new Error('native still offline'),
+        )
+        mockFetchSolanaTokenAccounts.mockRejectedValueOnce(
+          new Error('tokens offline'),
+        )
+        await fetchChainBalance('solana', true)
+        await nextTick()
+        expect(getChainTokens('solana')).toHaveLength(1)
+        expect(drawer.get('[data-test="subtoken-tusdc"]').text()).toContain(
+          '100.00 tUSDC',
+        )
+        expect(drawer.get('[data-test="solana-token-status"]').text()).toBe(
+          'walletPanel.tokenBalancesStale',
+        )
+        expect(detail.get('[data-testid="wallet-token-status"]').text()).toBe(
+          'walletPanel.tokenBalancesStale',
+        )
+      } finally {
+        resolveNative({ lamports: 0n, formatted: '0 tSOL' })
+        await flushPromises()
+        detail.unmount()
+        drawer.unmount()
+        oracle.stopBackgroundWorker()
+        setActivePinia(undefined)
+        error.mockRestore()
+      }
+    },
+  )
+
   it('shows unknown, recovery and stale tokens independently from native SOL', async () => {
     mockAccountStatus.status = 'loading'
     await fetchChainBalance('solana', true)

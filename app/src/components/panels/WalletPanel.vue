@@ -122,10 +122,11 @@
             </q-item-section>
           </q-item>
 
-          <!-- Token Sublist when chain has multiple assets (e.g. SOL + tUSDC) -->
+          <!-- Show observed token holdings even before native balance is known. -->
           <div
             v-if="
-              selectedChain === wallet.id && getWalletTokens(wallet).length > 1
+              selectedChain === wallet.id &&
+              getWalletTokens(wallet).some(token => !token.isNative)
             "
             class="q-pl-xl q-pr-md q-py-xs bg-grey-2 dark:bg-grey-9 q-my-xs q-mx-sm rounded-borders"
             :data-test="`${wallet.id}-token-sublist`"

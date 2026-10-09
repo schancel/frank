@@ -642,14 +642,20 @@ type OutboundDeliveryOwner = {
 }
 
 export function indexOutboundDeliveryOwners(
-  chats: Record<string, { messages: Array<ChatMessage | Message> } | undefined>,
+  chats: Record<
+    string,
+    { messages: Array<ChatMessage | Message>; address?: string } | undefined
+  >,
 ): {
   byPayload: Map<string, OutboundDeliveryOwner>
   byAttempt: Map<string, OutboundDeliveryOwner>
 } {
   const byPayload = new Map<string, OutboundDeliveryOwner>()
   const byAttempt = new Map<string, OutboundDeliveryOwner>()
-  for (const [chatAddress, chat] of Object.entries(chats)) {
+  for (const [key, chat] of Object.entries(chats)) {
+    if (!chat) continue
+    const chatAddress =
+      'address' in chat && chat.address ? chat.address : key
     for (const message of chat?.messages ?? []) {
       if (!message.outbound) continue
       const index =
@@ -1592,8 +1598,12 @@ export const useChatStore = defineStore('chats', {
       if (message?.outbound) {
         const resolvedWallet = wallet || messagingWallet()
         if (resolvedWallet) {
-          const hasQueued = Object.values(this.chats).some(c =>
-            c?.messages.some(
+          const allChats = [
+            ...Object.values(this.conversations ?? {}),
+            ...Object.values(this.chats ?? {}),
+          ]
+          const hasQueued = allChats.some(c =>
+            c?.messages?.some(
               m =>
                 m.outbound &&
                 m.status === 'payment-pending' &&
@@ -2629,8 +2639,12 @@ export const useChatStore = defineStore('chats', {
         recoveredOthers =
           outcome.state === 'failed' && outcome.reason === 'recovered'
         if (outcome.state === 'sent') {
-          const hasQueued = Object.values(this.chats).some(chat =>
-            chat?.messages.some(
+          const allChats = [
+            ...Object.values(this.conversations ?? {}),
+            ...Object.values(this.chats ?? {}),
+          ]
+          const hasQueued = allChats.some(chat =>
+            chat?.messages?.some(
               m =>
                 m.outbound &&
                 m.payloadDigest !== id &&
@@ -2937,7 +2951,11 @@ export const useChatStore = defineStore('chats', {
       const waiting: Array<{ address: string; id: string; digest?: string }> =
         []
       const seenChats = new Set<ChatState>()
-      for (const [address, chat] of Object.entries(this.chats)) {
+      const allChats = [
+        ...Object.entries(this.conversations ?? {}),
+        ...Object.entries(this.chats ?? {}),
+      ]
+      for (const [key, chat] of allChats) {
         if (!chat || seenChats.has(chat)) continue
         seenChats.add(chat)
         for (const message of chat.messages ?? []) {
@@ -2949,6 +2967,11 @@ export const useChatStore = defineStore('chats', {
             walletOwnsMessage(wallet, message) &&
             !inflightOutgoing.has(message.payloadDigest)
           ) {
+            const address =
+              chat.address ||
+              message.destinationAddress ||
+              (activeChain.parseAddress(key) ? key : '')
+            if (!address) continue
             waiting.push({
               address,
               id: message.payloadDigest,
@@ -2994,11 +3017,15 @@ export const useChatStore = defineStore('chats', {
       }
       let pending = 0
       const countedChats = new Set<ChatState>()
-      for (const chat of Object.values(this.chats)) {
+      const allChatValues = [
+        ...Object.values(this.conversations ?? {}),
+        ...Object.values(this.chats ?? {}),
+      ]
+      for (const chat of allChatValues) {
         if (!chat || countedChats.has(chat)) continue
         countedChats.add(chat)
         pending +=
-          chat.messages.filter(
+          chat.messages?.filter(
             message =>
               message.outbound &&
               message.status === 'payment-pending' &&
@@ -3628,7 +3655,10 @@ export const useChatStore = defineStore('chats', {
         { chatAddress: string; oldIndex: string }
       >()
 
-      const owners = indexOutboundDeliveryOwners(this.chats)
+      const owners = indexOutboundDeliveryOwners({
+        ...(this.conversations ?? {}),
+        ...(this.chats ?? {}),
+      })
 
       for (const wrapper of deliverableWrappers) {
         const confirmed = owners.byPayload.get(wrapper.index)

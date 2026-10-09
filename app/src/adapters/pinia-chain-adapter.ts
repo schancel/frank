@@ -530,8 +530,15 @@ export function startOutgoingReconciliation({
 
   const pendingIds = () => {
     const ids = new Set<string>()
-    for (const chat of Object.values(chats.chats)) {
-      for (const message of chat?.messages ?? []) {
+    const allChats = [
+      ...Object.values(chats.conversations ?? {}),
+      ...Object.values(chats.chats ?? {}),
+    ]
+    const seenChats = new Set<any>()
+    for (const chat of allChats) {
+      if (!chat || seenChats.has(chat)) continue
+      seenChats.add(chat)
+      for (const message of chat.messages ?? []) {
         if (
           message.outbound &&
           message.status === 'payment-pending' &&

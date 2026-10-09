@@ -572,6 +572,55 @@ describe('outgoing direct messages (#269, #270)', () => {
       expect(only(chats)[1].items).toEqual([{ type: 'text', text: 'second' }])
     })
 
+    it('reconciles pending outgoing messages stored under conversations (UUID key) and drains queued messages', async () => {
+      const chats = useChatStore()
+      const convId = 'f74c6536-a36c-4860-91fb-145c22824cf4'
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      send.mockImplementationOnce(async params => {
+        await params.onAttemptCreated?.(HASH)
+        throw new Error('relay connection refused')
+      })
+
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'first' }],
+      })
+
+      // Move chat to conversations under UUID key
+      const chat = chats.chats[PEER]!
+      delete chats.chats[PEER]
+      chats.conversations[convId] = {
+        ...chat,
+        id: convId,
+        address: PEER,
+      }
+
+      send.mockImplementationOnce(async () => {
+        throw new MonadStampPendingAttemptError([HASH])
+      })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'second' }],
+      })
+
+      const convMessages = chats.conversations[convId].messages
+      expect(convMessages.length).toBe(2)
+      expect(convMessages[1].status).toBe('payment-pending')
+
+      reconcileReturns({ [HASH]: 'dead' })
+      send.mockResolvedValueOnce(okResult('cd'.repeat(32)))
+
+      await chats.reconcileOutgoing({ wallet })
+
+      expect(convMessages[0].status).toBe('error')
+      expect(convMessages[0].delivery?.failureReason).toBe('rejected')
+      expect(convMessages[0].delivery?.attemptDigest).toBeUndefined()
+      expect(convMessages[1].status).toBe('confirmed')
+      expect(convMessages[1].items).toEqual([{ type: 'text', text: 'second' }])
+    })
+
     it('quarantines an old account unsettled message from automatic and manual spending', async () => {
       const oldSender = '0x3333333333333333333333333333333333333333'
       const db = await durable()

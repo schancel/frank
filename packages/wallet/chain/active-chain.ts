@@ -227,7 +227,35 @@ export type DirectMessageAttemptStatus =
   | "dead"
   | "unknown";
 
+/** Set by the wallet on the error of a refused `DirectMessageClient.send` call; read it only
+ * through {@link isDirectMessageNotAttempted}. */
+export const directMessageNotAttempted: unique symbol = Symbol(
+  "frank.directMessageNotAttempted"
+);
+
+/** The wallet's statement about ONE rejected `DirectMessageClient.send` call: that call created
+ * nothing of its own -- no payment intent, link, reservation, funding or submission. The call may
+ * still have finished or re-sent EARLIER attempts. It says nothing about them or about any other
+ * call for the same message: the wallet does not know which calls carry one message. False means
+ * the call may have had an effect and must be reconciled, not repeated.
+ *
+ * Rules for the caller:
+ * - Repeat a message only if no earlier call for that same message, in any process lifetime,
+ *   resolved, reported an attempt (`onAttemptCreated`) or was rejected without this label.
+ * - Test the rejection object itself, when it is caught: never its `.cause`, a wrapper or a
+ *   stored reference. For anything but a rejection of `send` the answer means nothing.
+ * - Never persist the answer. */
+export function isDirectMessageNotAttempted(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    Reflect.get(error, directMessageNotAttempted) === true
+  );
+}
+
 export interface DirectMessageClient {
+  /** A rejection may carry the wallet's not-attempted label for this one call; see
+   * {@link isDirectMessageNotAttempted}. Without it, assume the call may have had an effect. */
   send(params: {
     wallet: WalletHandle;
     recipient: ChainAddress;

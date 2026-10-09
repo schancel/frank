@@ -74,6 +74,7 @@ import type {
   StealthItem,
 } from '@frank/cashweb/types/messages'
 export { applyWalletSyncItem } from '../sync-dispatcher'
+import { directMessageNotAttempted } from './active-chain'
 import type {
   ChainAddress,
   DirectMessageAttemptStatus,
@@ -606,154 +607,198 @@ function statusOf(
   return row.outcome ?? 'live'
 }
 
+/** Errors that left a `send` at or after inventory preparation. Error objects get reused (a
+ * directory or the wallet may throw one it kept), so such an object is never reported as not
+ * attempted afterwards, by any send, whichever refusal it comes from. */
+const possiblyAttemptedErrors = new WeakSet<object>()
+
+/** Labels the error of one `send` call refused before inventory preparation and returns the same
+ * object. The label is about that call only: it created no intent, link, reservation, funding or
+ * submission of its own. `settle` may have finished or re-sent earlier attempts inside it, and an
+ * earlier call may have paid for the same content; the label says nothing about either. Only the
+ * labelled object itself answers, not one that inherits from it or wraps it. An error that cannot
+ * carry the label is returned as it is. */
+function notAttempted(error: unknown): unknown {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    !possiblyAttemptedErrors.has(error)
+  ) {
+    try {
+      Object.defineProperty(error, directMessageNotAttempted, {
+        get(this: unknown) {
+          return this === error && !possiblyAttemptedErrors.has(error)
+        },
+      })
+    } catch {
+      // Already labelled, frozen or sealed: the refusal is unchanged either way.
+    }
+  }
+  return error
+}
+
+/** Withdraws any label from an error leaving a send that may have had an effect. */
+function possiblyAttempted(error: unknown): unknown {
+  if (typeof error === 'object' && error !== null)
+    possiblyAttemptedErrors.add(error)
+  return error
+}
+
 async function send(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['send']>[0],
   defaultStampValueWei: bigint,
 ): Promise<DirectMessageSendResult> {
-  const directory = requireDirectory(owner)
-  const items = textItems(params.items)
-  const stampValueWei = params.stampValue ?? defaultStampValueWei
-  const peer = await directory.peerCurrent({ address: params.recipient.raw })
-  if (!peer) throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
-  // The recipient may live on any relay: this wallet always submits to its own relay, which
-  // forwards. A relay that does not say it forwards is not handed a payment for another relay.
-  let elsewhere = true
+  let attempted = false
   try {
-    if (typeof directory.isHomeRelay === 'function') {
-      elsewhere = !(await directory.isHomeRelay(peer.endpoint))
-    } else {
-      const peerOrigin = new URL(peer.endpoint).origin
-      const homeOrigin = new URL(directory.homeEndpoint).origin
-      const peerIsLoopback =
-        new URL(peer.endpoint).hostname === '127.0.0.1' ||
-        new URL(peer.endpoint).hostname === 'localhost'
-      const homeIsLoopback =
-        new URL(directory.homeEndpoint).hostname === '127.0.0.1' ||
-        new URL(directory.homeEndpoint).hostname === 'localhost'
-      elsewhere =
-        peerOrigin !== homeOrigin && !(peerIsLoopback && homeIsLoopback)
-    }
-  } catch {
-    // An endpoint that is not a URL is certainly not this relay.
-  }
-  if (elsewhere && !(await directory.forwarding?.()))
-    throw new CanonicalRelayCannotForwardError(
-      params.recipient.raw,
-      peer.endpoint,
-    )
-  // Earlier attempts first: a live one is re-sent as-is, and an unmatched record holds everything.
-  await settle(owner, directory.fetch, 1)
-  const live = owner.links.all().filter(row => !row.outcome && !row.acknowledged)
-  if (live.length > 0)
-    throw new MonadStampPendingAttemptError(live.map(row => row.digest))
-  const preparationTxHashes = await owner.prepareInventory({
-    stampValueWei,
-    recipientStampKey: peer.current.stampKey.keyBytes,
-    onProgress: params.onPreparationProgress,
-  })
-  // Fresh snapshots after funding: sealing and payment intent must see the same Current pair.
-  const senderCurrent = await directory.selfCurrent()
-  const recipient = await directory.peerCurrent({ subject: peer.subject })
-  if (!recipient)
-    throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
-  const messageId = randomBytes(16)
-  let conversationIdBytes: Uint8Array | undefined
-  if (params.conversationId) {
-    if (typeof params.conversationId === 'string') {
-      const clean = params.conversationId.replace(/-/g, '')
-      if (clean.length === 32) {
-        conversationIdBytes = Uint8Array.from(Buffer.from(clean, 'hex'))
+    const directory = requireDirectory(owner)
+    const items = textItems(params.items)
+    const stampValueWei = params.stampValue ?? defaultStampValueWei
+    const peer = await directory.peerCurrent({ address: params.recipient.raw })
+    if (!peer) throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
+    // The recipient may live on any relay: this wallet always submits to its own relay, which
+    // forwards. A relay that does not say it forwards is not handed a payment for another relay.
+    let elsewhere = true
+    try {
+      if (typeof directory.isHomeRelay === 'function') {
+        elsewhere = !(await directory.isHomeRelay(peer.endpoint))
+      } else {
+        const peerOrigin = new URL(peer.endpoint).origin
+        const homeOrigin = new URL(directory.homeEndpoint).origin
+        const peerIsLoopback =
+          new URL(peer.endpoint).hostname === '127.0.0.1' ||
+          new URL(peer.endpoint).hostname === 'localhost'
+        const homeIsLoopback =
+          new URL(directory.homeEndpoint).hostname === '127.0.0.1' ||
+          new URL(directory.homeEndpoint).hostname === 'localhost'
+        elsewhere =
+          peerOrigin !== homeOrigin && !(peerIsLoopback && homeIsLoopback)
       }
-    } else if (params.conversationId.length === 16) {
-      conversationIdBytes = params.conversationId
+    } catch {
+      // An endpoint that is not a URL is certainly not this relay.
     }
-  }
-  const roles = owner.roles.create(directory.network, senderCurrent)
-  let sealed
-  try {
-    sealed = prepareDirectMessage({
-      network: directory.network,
+    if (elsewhere && !(await directory.forwarding?.()))
+      throw new CanonicalRelayCannotForwardError(
+        params.recipient.raw,
+        peer.endpoint,
+      )
+    // Earlier attempts first: a live one is re-sent as-is, and an unmatched record holds everything.
+    await settle(owner, directory.fetch, 1)
+    const live = owner.links.all().filter(row => !row.outcome && !row.acknowledged)
+    if (live.length > 0)
+      throw new MonadStampPendingAttemptError(live.map(row => row.digest))
+    // Inventory funding can broadcast, so from here a rejection is never labelled.
+    attempted = true
+    const preparationTxHashes = await owner.prepareInventory({
+      stampValueWei,
+      recipientStampKey: peer.current.stampKey.keyBytes,
+      onProgress: params.onPreparationProgress,
+    })
+    // Fresh snapshots after funding: sealing and payment intent must see the same Current pair.
+    const senderCurrent = await directory.selfCurrent()
+    const recipient = await directory.peerCurrent({ subject: peer.subject })
+    if (!recipient)
+      throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
+    const messageId = randomBytes(16)
+    let conversationIdBytes: Uint8Array | undefined
+    if (params.conversationId) {
+      if (typeof params.conversationId === 'string') {
+        const clean = params.conversationId.replace(/-/g, '')
+        if (clean.length === 32) {
+          conversationIdBytes = Uint8Array.from(Buffer.from(clean, 'hex'))
+        }
+      } else if (params.conversationId.length === 16) {
+        conversationIdBytes = params.conversationId
+      }
+    }
+    const roles = owner.roles.create(directory.network, senderCurrent)
+    let sealed
+    try {
+      sealed = prepareDirectMessage({
+        network: directory.network,
+        senderCurrent,
+        recipientCurrent: recipient.current,
+        messageId,
+        conversationId: conversationIdBytes,
+        items,
+        roles,
+      })
+    } finally {
+      roles.dispose()
+    }
+    const digest = toHex(
+      recipientPayloadDigest(directory.network, sealed.payload),
+    )
+    const client = owner.client()
+    const prepared = client.bindPrepared({
+      payload: sealed.payload,
+      context: sealed.context,
+      stampValueWei,
+      economicBinding: messageId,
+    })
+    let own: CanonicalWorkflowLink | undefined
+    await client.prepareIntent({
+      prepared,
+      consumerId: `frank-dm:${toHex(messageId)}`,
+      stampValueWei,
       senderCurrent,
       recipientCurrent: recipient.current,
-      messageId,
-      conversationId: conversationIdBytes,
-      items,
-      roles,
+      onIntentDurable: async link => {
+        await owner.links.put(storeLink(digest, link))
+        own = link
+        await params.onAttemptCreated?.(digest)
+      },
     })
-  } finally {
-    roles.dispose()
-  }
-  const digest = toHex(
-    recipientPayloadDigest(directory.network, sealed.payload),
-  )
-  const client = owner.client()
-  const prepared = client.bindPrepared({
-    payload: sealed.payload,
-    context: sealed.context,
-    stampValueWei,
-    economicBinding: messageId,
-  })
-  let own: CanonicalWorkflowLink | undefined
-  await client.prepareIntent({
-    prepared,
-    consumerId: `frank-dm:${toHex(messageId)}`,
-    stampValueWei,
-    senderCurrent,
-    recipientCurrent: recipient.current,
-    onIntentDurable: async link => {
-      await owner.links.put(storeLink(digest, link))
-      own = link
-      await params.onAttemptCreated?.(digest)
-    },
-  })
-  if (!own) throw new CanonicalMessagingHoldError()
-  const attemptRef = own.attemptRef
-  // From here a durable payment intent exists: only the same bytes may ever be sent for it.
-  let transactions: readonly Uint8Array[]
-  try {
-    const ready = client
-      .reconcileWorkflowLinks(
-        owner.links
-          .all()
-          .filter(row => !row.acknowledged)
-          .map(restoreLink),
+    if (!own) throw new CanonicalMessagingHoldError()
+    const attemptRef = own.attemptRef
+    // From here a durable payment intent exists: only the same bytes may ever be sent for it.
+    let transactions: readonly Uint8Array[]
+    try {
+      const ready = client
+        .reconcileWorkflowLinks(
+          owner.links
+            .all()
+            .filter(row => !row.acknowledged)
+            .map(restoreLink),
+        )
+        .find(state => state.attemptRef === attemptRef)
+      if (ready?.state !== 'ready' || !ready.eligibility)
+        throw new CanonicalMessagingHoldError()
+      transactions = (await client.finishIntent(ready.eligibility)).request.parts
+        .transactions
+      await settle(owner, directory.fetch, 1)
+    } catch (error) {
+      if (error instanceof CanonicalMessagingHoldError) throw error
+      throw new MonadStampPendingAttemptError([digest])
+    }
+    const status = statusOf(owner, digest)
+    if (status === 'dead') {
+      const reason = owner.links.all().find(row => row.digest === digest)?.reason
+      if (reason === 'undeliverable')
+        throw new CanonicalRecipientUndeliverableError()
+      if (reason === 'sender_unpublished')
+        throw new CanonicalSenderUnpublishedError()
+      throw new MonadStampTerminalError(
+        'The relay ended this payment set; it can never be delivered.',
+        422,
+        'mailbox_terminal',
+        undefined,
+        undefined,
       )
-      .find(state => state.attemptRef === attemptRef)
-    if (ready?.state !== 'ready' || !ready.eligibility)
-      throw new CanonicalMessagingHoldError()
-    transactions = (await client.finishIntent(ready.eligibility)).request.parts
-      .transactions
-    await settle(owner, directory.fetch, 1)
+    }
+    if (status !== 'delivered') throw new MonadStampPendingAttemptError([digest])
+    return {
+      payloadDigest: digest,
+      stampValueWei,
+      stampPayments: payments(transactions),
+      paymentTransfers: constructStampPaymentTransfers({
+        networkTag: directory.network,
+        transactions,
+      }),
+      preparationTxHashes,
+    }
   } catch (error) {
-    if (error instanceof CanonicalMessagingHoldError) throw error
-    throw new MonadStampPendingAttemptError([digest])
-  }
-  const status = statusOf(owner, digest)
-  if (status === 'dead') {
-    const reason = owner.links.all().find(row => row.digest === digest)?.reason
-    if (reason === 'undeliverable')
-      throw new CanonicalRecipientUndeliverableError()
-    if (reason === 'sender_unpublished')
-      throw new CanonicalSenderUnpublishedError()
-    throw new MonadStampTerminalError(
-      'The relay ended this payment set; it can never be delivered.',
-      422,
-      'mailbox_terminal',
-      undefined,
-      undefined,
-    )
-  }
-  if (status !== 'delivered') throw new MonadStampPendingAttemptError([digest])
-  return {
-    payloadDigest: digest,
-    stampValueWei,
-    stampPayments: payments(transactions),
-    paymentTransfers: constructStampPaymentTransfers({
-      networkTag: directory.network,
-      transactions,
-    }),
-    preparationTxHashes,
+    throw attempted ? possiblyAttempted(error) : notAttempted(error)
   }
 }
 

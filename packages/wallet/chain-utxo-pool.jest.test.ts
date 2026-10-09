@@ -12,6 +12,7 @@ import {
   inferChainFamily,
   normalizeUtxoAddress,
   formatUtxoAddress,
+  MAX_UNCONFIRMED_MEMPOOL_ANCESTORS,
 } from './chain-utxo-pool'
 import { orderOfMagnitude2 } from './monad-change-distribution'
 import { SolanaWallet } from './solana-wallet'
@@ -34,6 +35,9 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(inferChainFamily('xec-testnet')).toBe('utxo')
       expect(inferChainFamily('bitcoin')).toBe('utxo')
       expect(inferChainFamily('btc')).toBe('utxo')
+      expect(inferChainFamily('lotus')).toBe('utxo')
+      expect(inferChainFamily('lotus-mainnet')).toBe('utxo')
+      expect(inferChainFamily('xpi')).toBe('utxo')
     })
 
     it('formats and normalizes addresses per family', () => {
@@ -47,6 +51,10 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
       const utxoAddr = 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5'
       expect(normalizeUtxoAddress(utxoAddr, 'ecash')).toBe(utxoAddr)
+
+      const lotusAddr = 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi'
+      expect(normalizeUtxoAddress(lotusAddr, 'lotus')).toBe(lotusAddr)
+      expect(formatUtxoAddress(lotusAddr, 'lotus')).toBe(lotusAddr)
     })
 
     it('formats canonical UTXO id for account and native UTXO', () => {
@@ -58,6 +66,9 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
 
       const utxoId = makeUtxoId('ecash', 'ecash:qztest', { txid: 'abc1234', vout: 1 }, 'utxo')
       expect(utxoId).toBe('ecash:utxo:ecash:qztest:abc1234:1')
+
+      const lotusId = makeUtxoId('lotus', 'lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi', { txid: 'tx_lotus_1', vout: 0 }, 'utxo')
+      expect(lotusId).toBe('lotus:utxo:lotus_16PSJNf1EDEfGvaYzaXJCJZrXH4pgiTo7kyW61iGi:tx_lotus_1:0')
     })
   })
 
@@ -869,7 +880,7 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
     })
   })
 
-  describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', () => {
+describe('Two-Tier Storage Archiving (archiveSpentCoins & getArchivedCoins)', () => {
     let archivePool: ChainUtxoPool
     const walletA = Wallet.createRandom()
     const walletB = Wallet.createRandom()
@@ -1218,5 +1229,382 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(acidPool.getCleanCoins('ecash')[0].balanceWei).toBe(90_000n)
     })
   })
-})
 
+
+  describe('Native UTXO Mempool DAG Streaming & Ancestor Limits (Lotus & eCash, Issue #1219)', () => {
+    let pool: ChainUtxoPool
+
+    beforeEach(() => {
+      pool = new ChainUtxoPool()
+    })
+
+    it('allows child transactions to select unconfirmed change outpoints in ChainUtxoView for Lotus and eCash', () => {
+      const view = pool.createView()
+      const lotusAddr = 'lotus_16234567890abcdef1234567890abcdef1234567'
+      const ecashAddr = 'ecash:qz725unh49h2v2x24qg9e9j2y3r6r6a6sqn69v6x5w'
+
+      // 1. Initial confirmed UTXO on Lotus registered in pool
+      pool.registerUtxoOutpoint({
+        chain: 'lotus',
+        address: lotusAddr,
+        txid: 'lotus_parent_0',
+        vout: 0,
+        balanceWei: 100_000_000n,
+        requiresConfirmation: false,
+      })
+
+      // Select initial coin and spend in Tx 1 -> produces unconfirmed change output
+      const selTx1 = view.selectCoins({
+        chain: 'lotus',
+        targetAmountWei: 20_000_000n,
+      })
+      expect(selTx1.selected.length).toBe(1)
+      expect(selTx1.selected[0].outpoint?.txid).toBe('lotus_parent_0')
+
+      view.applyTransaction({
+        chain: 'lotus',
+        inputs: selTx1.selected,
+        changeOutputs: [
+          {
+            address: lotusAddr,
+            balanceWei: 79_999_500n,
+            outpoint: { txid: 'lotus_tx1', vout: 0 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      // Verify unconfirmed change has requiresConfirmation = false and origin = 'change'
+      const unconf1 = view.getCoin(
+        makeUtxoId('lotus', lotusAddr, { txid: 'lotus_tx1', vout: 0 }, 'utxo'),
+      )
+      expect(unconf1).toBeDefined()
+      expect(unconf1?.requiresConfirmation).toBe(false)
+      expect(unconf1?.origin).toBe('change')
+
+      // Select coins for Child Tx 2 without explicitly allowing unconfirmed dependencies (default behavior)
+      // Native UTXO mempools (Lotus & eCash) allow chaining unconfirmed change outpoints
+      const selTx2 = view.selectCoins({
+        chain: 'lotus',
+        targetAmountWei: 30_000_000n,
+        allowUnconfirmedDependencies: false,
+      })
+      expect(selTx2.selected.length).toBe(1)
+      expect(selTx2.selected[0].outpoint?.txid).toBe('lotus_tx1')
+      expect(selTx2.selected[0].outpoint?.vout).toBe(0)
+
+      // Apply Child Tx 2 chaining off lotus_tx1:0 -> produces lotus_tx2:0
+      view.applyTransaction({
+        chain: 'lotus',
+        inputs: selTx2.selected,
+        changeOutputs: [
+          {
+            address: lotusAddr,
+            balanceWei: 49_999_000n,
+            outpoint: { txid: 'lotus_tx2', vout: 0 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      // Select coins for Child Tx 3 chaining off lotus_tx2:0
+      const selTx3 = view.selectCoins({
+        chain: 'lotus',
+        targetAmountWei: 10_000_000n,
+        allowUnconfirmedDependencies: false,
+      })
+      expect(selTx3.selected.length).toBe(1)
+      expect(selTx3.selected[0].outpoint?.txid).toBe('lotus_tx2')
+
+      // Commit to base pool and verify DAG propagation
+      view.commit()
+
+      const baseCoin = pool.getCoin(
+        makeUtxoId('lotus', lotusAddr, { txid: 'lotus_tx2', vout: 0 }, 'utxo'),
+      )
+      expect(baseCoin).toBeDefined()
+      expect(baseCoin?.requiresConfirmation).toBe(false)
+      expect(pool.getMempoolAncestors('lotus_tx2', 'lotus').has('lotus_tx1')).toBe(true)
+
+      // Verify similarly for eCash
+      pool.registerUtxoOutpoint({
+        chain: 'ecash',
+        address: ecashAddr,
+        txid: 'ecash_parent_0',
+        vout: 0,
+        balanceWei: 50_000_000n,
+        requiresConfirmation: false,
+      })
+
+      const ecashView = pool.createView()
+      const ecashSel1 = ecashView.selectCoins({
+        chain: 'ecash',
+        targetAmountWei: 10_000_000n,
+      })
+      expect(ecashSel1.selected.length).toBe(1)
+
+      ecashView.applyTransaction({
+        chain: 'ecash',
+        inputs: ecashSel1.selected,
+        changeOutputs: [
+          {
+            address: ecashAddr,
+            balanceWei: 39_999_500n,
+            outpoint: { txid: 'ecash_tx1', vout: 0 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      const ecashSel2 = ecashView.selectCoins({
+        chain: 'ecash',
+        targetAmountWei: 20_000_000n,
+        allowUnconfirmedDependencies: false,
+      })
+      expect(ecashSel2.selected.length).toBe(1)
+      expect(ecashSel2.selected[0].outpoint?.txid).toBe('ecash_tx1')
+    })
+
+    it('tracks DAG outpoint dependencies and dynamic ancestor counts across confirmation states', () => {
+      // Register DAG dependencies: txA -> txB -> txC -> txD
+      pool.utxo.registerOutpointDependency({
+        parentTxHash: 'txA',
+        outpoint: { txid: 'txB', vout: 0 },
+        chain: 'lotus',
+      })
+      pool.utxo.registerOutpointDependency({
+        parentTxHash: 'txB',
+        outpoint: { txid: 'txC', vout: 1 },
+        chain: 'lotus',
+      })
+      pool.utxo.registerDependency('txD', 'txC', 'lotus')
+
+      // Outpoint dependency lookup
+      const bDeps = pool.utxo.getOutpointDependencies('txB', 0, 'lotus')
+      expect(bDeps).toEqual(['txa'])
+
+      // Ancestor sets
+      const cAncestors = pool.utxo.getMempoolAncestors('txC', 'lotus')
+      expect(cAncestors.size).toBe(3)
+      expect(cAncestors.has('txa')).toBe(true)
+      expect(cAncestors.has('txb')).toBe(true)
+      expect(cAncestors.has('txc')).toBe(true)
+
+      const dAncestors = pool.utxo.getMempoolAncestors('txD', 'lotus')
+      expect(dAncestors.size).toBe(4)
+      expect(dAncestors.has('txa')).toBe(true)
+      expect(dAncestors.has('txb')).toBe(true)
+      expect(dAncestors.has('txc')).toBe(true)
+      expect(dAncestors.has('txd')).toBe(true)
+      expect(pool.utxo.getAncestorCount('txD', 'lotus')).toBe(4)
+
+      // Mark txA as confirmed -> ancestors of txD become [txB, txC, txD]
+      pool.utxo.markTransactionConfirmed('txA', 'lotus')
+      expect(pool.utxo.isTransactionConfirmed('txA', 'lotus')).toBe(true)
+
+      const dAncestorsAfterA = pool.utxo.getMempoolAncestors('txD', 'lotus')
+      expect(dAncestorsAfterA.size).toBe(3)
+      expect(dAncestorsAfterA.has('txa')).toBe(false)
+      expect(dAncestorsAfterA.has('txb')).toBe(true)
+      expect(dAncestorsAfterA.has('txc')).toBe(true)
+      expect(dAncestorsAfterA.has('txd')).toBe(true)
+      expect(pool.utxo.getAncestorCount('txD', 'lotus')).toBe(3)
+
+      // Mark txB as confirmed -> only txC and txD remain unconfirmed
+      pool.utxo.markTransactionConfirmed('txB', 'lotus')
+      expect(pool.utxo.getAncestorCount('txD', 'lotus')).toBe(2)
+    })
+
+    it('enforces standard maximum unconfirmed mempool ancestor limit (25 ancestors) on UTXO chains', () => {
+      const view = pool.createView()
+      const lotusAddr = 'lotus_16234567890abcdef1234567890abcdef1234567'
+
+      // Initial confirmed coin in pool
+      pool.registerUtxoOutpoint({
+        chain: 'lotus',
+        address: lotusAddr,
+        txid: 'tx_root',
+        vout: 0,
+        balanceWei: 1_000_000_000n,
+        requiresConfirmation: false,
+      })
+
+      // Select initial coin and start chain
+      const initSel = view.selectCoins({
+        chain: 'lotus',
+        targetAmountWei: 10_000n,
+      })
+      let currentInputs = initSel.selected
+
+      // Chain 25 unconfirmed transactions: tx_1 to tx_25
+      // tx_1 spends tx_root (confirmed) -> tx_1 has 1 ancestor (tx_1)
+      // tx_k spends tx_(k-1) -> tx_k has k ancestors (tx_1 ... tx_k)
+      for (let i = 1; i <= 25; i++) {
+        const txHash = `tx_${i}`
+        view.applyTransaction({
+          chain: 'lotus',
+          inputs: currentInputs,
+          changeOutputs: [
+            {
+              address: lotusAddr,
+              balanceWei: 1_000_000_000n - BigInt(i * 10_000),
+              outpoint: { txid: txHash, vout: 0 },
+              family: 'utxo',
+            },
+          ],
+        })
+
+        if (i < 25) {
+          const nextSel = view.selectCoins({
+            chain: 'lotus',
+            targetAmountWei: 10_000n,
+          })
+          currentInputs = nextSel.selected
+        }
+      }
+
+      // At this point, the unconfirmed coin tx_25:0 has 25 ancestors (tx_1..tx_25)
+      expect(view.getAncestorCount('tx_25', 'lotus')).toBe(25)
+
+      // Tx 26 spends tx_25:0:
+      // Since MAX_UNCONFIRMED_MEMPOOL_ANCESTORS = 25, spending a coin with 25 ancestors is permitted (25 <= 25).
+      const sel26 = view.selectCoins({
+        chain: 'lotus',
+        targetAmountWei: 10_000n,
+      })
+      expect(sel26.selected.length).toBe(1)
+      expect(sel26.selected[0].outpoint?.txid).toBe('tx_25')
+
+      // Now apply Tx 26
+      view.applyTransaction({
+        chain: 'lotus',
+        inputs: sel26.selected,
+        changeOutputs: [
+          {
+            address: lotusAddr,
+            balanceWei: 700_000_000n,
+            outpoint: { txid: 'tx_26', vout: 0 },
+            family: 'utxo',
+          },
+        ],
+      })
+
+      // Now tx_26:0 has 26 unconfirmed ancestors (tx_1..tx_26)
+      expect(view.getAncestorCount('tx_26', 'lotus')).toBe(26)
+
+      // Tx 27 attempting to spend tx_26:0 would result in 26 ancestors > 25 limit.
+      // selectCoins must reject it with "Mempool ancestor limit exceeded"
+      expect(() => {
+        view.selectCoins({
+          chain: 'lotus',
+          targetAmountWei: 10_000n,
+        })
+      }).toThrow(/Mempool ancestor limit exceeded/i)
+
+      // Allowing custom maxAncestors: 30 allows selection of tx_26:0
+      const selCustom = view.selectCoins({
+        chain: 'lotus',
+        targetAmountWei: 10_000n,
+        maxAncestors: 30,
+      })
+      expect(selCustom.selected.length).toBe(1)
+      expect(selCustom.selected[0].outpoint?.txid).toBe('tx_26')
+
+      // With maxAncestors: 20, it throws because 26 > 20
+      expect(() => {
+        view.selectCoins({
+          chain: 'lotus',
+          targetAmountWei: 10_000n,
+          maxAncestors: 20,
+        })
+      }).toThrow(/Mempool ancestor limit exceeded/i)
+    })
+
+    it('enforces package ancestor limits across combined multi-input spends', () => {
+      const view = pool.createView()
+      const lotusAddr = 'lotus_16234567890abcdef1234567890abcdef1234567'
+
+      // Root coins for two independent branches
+      pool.registerUtxoOutpoint({
+        chain: 'lotus',
+        address: lotusAddr,
+        txid: 'tx_root_a',
+        vout: 0,
+        balanceWei: 100_000n,
+        requiresConfirmation: false,
+      })
+      pool.registerUtxoOutpoint({
+        chain: 'lotus',
+        address: lotusAddr,
+        txid: 'tx_root_b',
+        vout: 0,
+        balanceWei: 100_000n,
+        requiresConfirmation: false,
+      })
+
+      // Build Branch A: chain of 15 unconfirmed transactions
+      let inputsA = view.selectCoins({
+        chain: 'lotus',
+        targetAmountWei: 50_000n,
+      }).selected
+      for (let i = 1; i <= 15; i++) {
+        const txHash = `tx_a_${i}`
+        view.applyTransaction({
+          chain: 'lotus',
+          inputs: inputsA,
+          changeOutputs: [
+            {
+              address: lotusAddr,
+              balanceWei: 100_000n - BigInt(i * 1000),
+              outpoint: { txid: txHash, vout: 0 },
+              family: 'utxo',
+            },
+          ],
+        })
+        if (i < 15) {
+          inputsA = view.selectCoins({
+            chain: 'lotus',
+            targetAmountWei: 50_000n,
+          }).selected
+        }
+      }
+
+      // Build Branch B: chain of 15 unconfirmed transactions
+      // To select tx_root_b specifically:
+      const coinB = view.getCleanCoins('lotus').find(c => c.outpoint?.txid.startsWith('tx_root_b') || c.outpoint?.txid.startsWith('tx_b_'))!
+      let inputsB = [coinB]
+      for (let i = 1; i <= 15; i++) {
+        const txHash = `tx_b_${i}`
+        view.applyTransaction({
+          chain: 'lotus',
+          inputs: inputsB,
+          changeOutputs: [
+            {
+              address: lotusAddr,
+              balanceWei: 100_000n - BigInt(i * 1000),
+              outpoint: { txid: txHash, vout: 0 },
+              family: 'utxo',
+            },
+          ],
+        })
+        if (i < 15) {
+          const nextB = view.getCleanCoins('lotus').find(c => c.outpoint?.txid === txHash)!
+          inputsB = [nextB]
+        }
+      }
+
+      // tx_a_15 has 15 ancestors, tx_b_15 has 15 ancestors. Both individual coins are <= 25.
+      expect(view.getAncestorCount('tx_a_15', 'lotus')).toBe(15)
+      expect(view.getAncestorCount('tx_b_15', 'lotus')).toBe(15)
+
+      // An operation needing 150_000n requires combining BOTH tx_a_15 (balance ~85_000) and tx_b_15 (balance ~85_000).
+      // Combined unconfirmed ancestors = 15 + 15 = 30 > 25.
+      expect(() => {
+        view.selectCoins({
+          chain: 'lotus',
+          targetAmountWei: 150_000n,
+        })
+      }).toThrow(/Mempool ancestor limit exceeded: selected coins combine to 30 unconfirmed ancestors/i)
+    })
+  })
+})

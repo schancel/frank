@@ -63,6 +63,13 @@ import { BotScheduler } from "./scheduler";
 // default poll intervals is past any brief relay or directory lapse and soon enough to act on.
 const UNMATCHED_WARN_MS = 60_000;
 
+// A direct reply the wallet refused without attempting is sent again on later polls: this many
+// sends in all, then it is held. A waiting reply keeps its handler suspended and its peer's lane
+// occupied, and the wallet puts the same label on refusals that never clear (an item type it
+// cannot carry, a recipient with no directory entry), so the bound is short. Five polls is past
+// an earlier payment settling or a directory lookup recovering.
+const MAX_REPLY_SENDS = 5;
+
 interface ActiveBotInstance {
   definition: FrankBotDefinition;
   wallet: EvmChainWalletHandle;
@@ -85,6 +92,8 @@ interface ActiveBotInstance {
   retrying: boolean;
   /** The row whose first send the last retry pass ended on; the next pass starts after it. */
   refused?: string;
+  /** Direct replies waiting for this bot's next poll pass before they are sent again. */
+  pollWaiters: Set<() => void>;
   evmMainPrivateKey?: string;
 }
 
@@ -572,6 +581,7 @@ export class FrankBotHost {
         unmatched: new Map(),
         held: new Set<string>(),
         retrying: false,
+        pollWaiters: new Set(),
         evmMainPrivateKey,
       };
 
@@ -842,6 +852,71 @@ export class FrankBotHost {
             await this.autoHealBotRegistration(id, instance, err);
           }
         }
+      } finally {
+        this.wakeReplies(instance);
+      }
+    }
+  }
+
+  /** Resolves once this bot's next poll pass has ended, or at once when the host is stopping. */
+  private nextPoll(instance: ActiveBotInstance): Promise<void> {
+    if (this.closing) return Promise.resolve();
+    return new Promise((resolve) => instance.pollWaiters.add(resolve));
+  }
+
+  private wakeReplies(instance: ActiveBotInstance): void {
+    const waiters = [...instance.pollWaiters];
+    instance.pollWaiters.clear();
+    for (const wake of waiters) wake();
+  }
+
+  /** Sends one journaled direct reply of a running invocation. A send the wallet refused with
+   * its not-attempted label, having reported no attempt, created nothing: the same reply, in the
+   * same slot, is sent again after the next poll pass. The handler stays suspended in its
+   * `reply()` meanwhile, so nothing it did before runs twice and what it does with the result
+   * runs once. Every other rejection, and the last of `MAX_REPLY_SENDS` refusals, rejects as
+   * before: the slot stays as it is, the invocation is held and nothing is sent again. The wait
+   * is process memory: a host that stops meanwhile leaves the invocation held. */
+  private async sendReply(
+    instance: ActiveBotInstance,
+    inbound: string,
+    index: number,
+    captured: {
+      recipient: string;
+      conversationId?: string;
+      stampValue: bigint;
+      items: MessageItem[];
+    }
+  ): Promise<DirectMessageSendResult> {
+    for (let sends = 1; ; sends++) {
+      let reported = false;
+      try {
+        return await this.sendCanonicalMessage(
+          instance.wallet,
+          captured.recipient,
+          captured.items,
+          captured.conversationId,
+          { stampValueWei: captured.stampValue },
+          (digest) => {
+            reported = true;
+            return instance.operations.link(inbound, index, digest);
+          }
+        );
+      } catch (error) {
+        // The wallet's label is about this one call and is read from this rejection, here.
+        if (!isDirectMessageNotAttempted(error) || reported) throw error;
+        if (sends >= MAX_REPLY_SENDS) {
+          console.error(
+            `[bot-host] [${instance.definition.id}] Reply to ${inbound} refused ${sends} times without an attempt; the message is held and will not be answered`
+          );
+          throw error;
+        }
+        if (sends === 1)
+          console.warn(
+            `[bot-host] [${instance.definition.id}] Reply to ${inbound} refused before any attempt; sending it again on later polls`
+          );
+        await this.nextPoll(instance);
+        if (this.closing) throw new Error("Bot invocation is no longer active");
       }
     }
   }
@@ -1224,13 +1299,11 @@ export class FrankBotHost {
           conversationId: captured.conversationId,
           stampValue: captured.stampValue.toString(),
         });
-        const result = await this.sendCanonicalMessage(
-          instance.wallet,
-          captured.recipient,
-          captured.items,
-          captured.conversationId,
-          { stampValueWei: captured.stampValue },
-          (digest) => instance.operations.link(identity.digest, index, digest)
+        const result = await this.sendReply(
+          instance,
+          identity.digest,
+          index,
+          captured
         );
         // A send result cannot substitute for the durable pre-submission callback.
         if (
@@ -1380,6 +1453,8 @@ export class FrankBotHost {
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);
     this.scheduler.stop();
+    // A reply waiting for a poll that will not come is released, and its invocation held.
+    for (const instance of this.instances.values()) this.wakeReplies(instance);
 
     // No time bound: an in-flight relay, wallet or model call is waited for, never abandoned.
     await this.polling?.catch(() => undefined);

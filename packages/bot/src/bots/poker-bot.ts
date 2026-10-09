@@ -6,6 +6,7 @@ import type {
   BotMessageContext,
   NewUserEvent,
 } from "@frank/bot-framework";
+import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { PokerItem, PokerPlayerView, PokerActionType } from "@frank/cashweb/types/messages";
 import { formatMon, parseMon } from "@frank/wallet/monad-amount";
 import { keccak256, toUtf8Bytes } from "ethers";
@@ -46,6 +47,8 @@ function normalizeEvmAddress(addr: string): string {
 
 export class PokerBot implements FrankBotDefinition {
   readonly id = "poker";
+  /** A game is many replies to one player: see `GAME_MAX_REPLIES_PER_PEER`. */
+  readonly maxRepliesPerPeer = GAME_MAX_REPLIES_PER_PEER;
   readonly label = "Texas Hold'em Poker";
   readonly defaultIdentityPath =
     process.env.POKER_BOT_IDENTITY_JSON ?? "/tmp/poker-bot-identity.json";

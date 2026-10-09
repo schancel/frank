@@ -73,7 +73,8 @@ export default defineComponent({
     return { balance }
   },
   data() {
-    return { role: 'dealer' as HandRole, maxBet: '' }
+    // The player role first: it is the one the hosted dealer bot can answer.
+    return { role: 'player' as HandRole, maxBet: '' }
   },
   computed: {
     unit(): string {

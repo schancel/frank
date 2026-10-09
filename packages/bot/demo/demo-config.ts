@@ -370,8 +370,9 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'FRANK_BOT_MAX_REPLIES_PER_PEER',
     scope: 'bots',
-    default: '20',
-    description: 'Per-peer reply budget per window.',
+    default: '20; 300 for the game bots',
+    description:
+      'Replies a hosted bot sends to one account per hour; past that it stops answering that account and tells it so once. Setting it overrides every bot, the game bots included. 0 means never reply.',
   },
 ]
 

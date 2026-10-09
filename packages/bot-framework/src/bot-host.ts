@@ -63,6 +63,30 @@ import { BotScheduler } from "./scheduler";
 // default poll intervals is past any brief relay or directory lapse and soon enough to act on.
 const UNMATCHED_WARN_MS = 60_000;
 
+// A direct reply the wallet refused without attempting is sent again on later polls: this many
+// sends in all, then it is held. A waiting reply keeps its handler suspended and its peer's lane
+// occupied, and the wallet puts the same label on refusals that never clear (an item type it
+// cannot carry, a recipient with no directory entry), so the bound is short. Five polls is past
+// an earlier payment settling or a directory lookup recovering.
+const MAX_REPLY_SENDS = 5;
+
+/** A replies-per-peer budget as configured: unset, or a non-negative integer. Anything else is a
+ * configuration error, never silently the default. */
+function replyBudget(
+  value: number | string | undefined,
+  name: string
+): number | undefined {
+  if (value === undefined) return undefined;
+  const budget = typeof value === "number" ? value : Number(value);
+  if (
+    !Number.isSafeInteger(budget) ||
+    budget < 0 ||
+    String(value).trim() === ""
+  )
+    throw new Error(`${name} must be a non-negative integer, got "${value}"`);
+  return budget;
+}
+
 interface ActiveBotInstance {
   definition: FrankBotDefinition;
   wallet: EvmChainWalletHandle;
@@ -85,11 +109,16 @@ interface ActiveBotInstance {
   retrying: boolean;
   /** The row whose first send the last retry pass ended on; the next pass starts after it. */
   refused?: string;
+  /** Direct replies waiting for this bot's next poll pass before they are sent again. */
+  pollWaiters: Set<() => void>;
   evmMainPrivateKey?: string;
 }
 
 export class FrankBotHost {
-  private readonly options: Required<BotHostOptions>;
+  private readonly options: Required<
+    Omit<BotHostOptions, "maxRepliesPerPeer">
+  > &
+    Pick<BotHostOptions, "maxRepliesPerPeer">;
   private readonly provider: JsonRpcProvider;
   private readonly chain: ActiveChain;
   private readonly fundingWallet?: Wallet;
@@ -172,6 +201,13 @@ export class FrankBotHost {
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30 * 60 * 1000,
       watchRegistrations: options.watchRegistrations ?? true,
       unrefTimers: options.unrefTimers ?? false,
+      maxRepliesPerPeer: replyBudget(
+        options.maxRepliesPerPeer ??
+          (process.env.FRANK_BOT_MAX_REPLIES_PER_PEER || undefined),
+        options.maxRepliesPerPeer === undefined
+          ? "FRANK_BOT_MAX_REPLIES_PER_PEER"
+          : "maxRepliesPerPeer"
+      ),
     };
 
     const cursorFile = join(this.options.stateDir, "registration-cursor.json");
@@ -328,8 +364,15 @@ export class FrankBotHost {
       }
 
       // 7. Wire up loop guard and peer queue
+      // The operator's setting first, then what the bot declares, then the guard's default.
       const loopGuard = new LoopGuard({
         selfAddress: botAddress,
+        maxRepliesPerPeer:
+          this.options.maxRepliesPerPeer ??
+          replyBudget(
+            definition.maxRepliesPerPeer,
+            `Bot "${definition.id}" maxRepliesPerPeer`
+          ),
       });
       const peerQueue = new PeerLaneQueue();
 
@@ -572,6 +615,7 @@ export class FrankBotHost {
         unmatched: new Map(),
         held: new Set<string>(),
         retrying: false,
+        pollWaiters: new Set(),
         evmMainPrivateKey,
       };
 
@@ -723,13 +767,22 @@ export class FrankBotHost {
           wallet: instance.wallet,
           sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
         });
-        const accepted: { identity: InboundIdentity; items: MessageItem[] }[] =
-          [];
+        const accepted: {
+          identity: InboundIdentity;
+          items: MessageItem[];
+          stampValueWei: bigint;
+        }[] = [];
         for (const msg of messages) {
           try {
             accepted.push({
               identity: inboundIdentity(msg, instance.operations.owner),
               items: structuredClone(msg.items),
+              // Only what the wallet read from the delivered stamp payments; anything else is
+              // "nothing was paid", never a value taken from the message's own content.
+              stampValueWei:
+                typeof msg.stampValueWei === "bigint" && msg.stampValueWei > 0n
+                  ? msg.stampValueWei
+                  : 0n,
             });
           } catch {
             console.warn(
@@ -745,11 +798,13 @@ export class FrankBotHost {
         for (const entry of accepted) {
           const { identity } = entry;
           // At capacity nothing later is retained, but rows retained earlier are still matched.
-          if (
-            !instance.operations.get(identity.digest) &&
-            (full || instance.loopGuard.shouldDrop(identity.peerAddress))
-          )
-            continue;
+          if (!instance.operations.get(identity.digest)) {
+            if (full) continue;
+            const drop = instance.loopGuard.shouldDrop(identity.peerAddress);
+            if (drop === "rate-limited")
+              this.noticeRateLimited(instance, identity);
+            if (drop) continue;
+          }
           let outcome: "retained" | "known" | "full";
           try {
             outcome = await instance.operations.retain(identity);
@@ -800,7 +855,7 @@ export class FrankBotHost {
             )
               return;
             // The retained identity, not this fetch's relay time, is the invocation's.
-            await this.dispatch(instance, row, match.items);
+            await this.dispatch(instance, row, match);
           });
         }
         this.retryFirstSends(instance);
@@ -833,8 +888,110 @@ export class FrankBotHost {
             await this.autoHealBotRegistration(id, instance, err);
           }
         }
+      } finally {
+        this.wakeReplies(instance);
       }
     }
+  }
+
+  /** Resolves once this bot's next poll pass has ended, or at once when the host is stopping. */
+  private nextPoll(instance: ActiveBotInstance): Promise<void> {
+    if (this.closing) return Promise.resolve();
+    return new Promise((resolve) => instance.pollWaiters.add(resolve));
+  }
+
+  private wakeReplies(instance: ActiveBotInstance): void {
+    const waiters = [...instance.pollWaiters];
+    instance.pollWaiters.clear();
+    for (const wake of waiters) wake();
+  }
+
+  /** Sends one journaled direct reply of a running invocation. A send the wallet refused with
+   * its not-attempted label, having reported no attempt, created nothing: the same reply, in the
+   * same slot, is sent again after the next poll pass. The handler stays suspended in its
+   * `reply()` meanwhile, so nothing it did before runs twice and what it does with the result
+   * runs once. Every other rejection, and the last of `MAX_REPLY_SENDS` refusals, rejects as
+   * before: the slot stays as it is, the invocation is held and nothing is sent again. The wait
+   * is process memory: a host that stops meanwhile leaves the invocation held. */
+  private async sendReply(
+    instance: ActiveBotInstance,
+    inbound: string,
+    index: number,
+    captured: {
+      recipient: string;
+      conversationId?: string;
+      stampValue: bigint;
+      items: MessageItem[];
+    }
+  ): Promise<DirectMessageSendResult> {
+    for (let sends = 1; ; sends++) {
+      let reported = false;
+      try {
+        return await this.sendCanonicalMessage(
+          instance.wallet,
+          captured.recipient,
+          captured.items,
+          captured.conversationId,
+          { stampValueWei: captured.stampValue },
+          (digest) => {
+            reported = true;
+            return instance.operations.link(inbound, index, digest);
+          }
+        );
+      } catch (error) {
+        // The wallet's label is about this one call and is read from this rejection, here.
+        if (!isDirectMessageNotAttempted(error) || reported) throw error;
+        if (sends >= MAX_REPLY_SENDS) {
+          console.error(
+            `[bot-host] [${instance.definition.id}] Reply to ${inbound} refused ${sends} times without an attempt; the message is held and will not be answered`
+          );
+          throw error;
+        }
+        if (sends === 1)
+          console.warn(
+            `[bot-host] [${instance.definition.id}] Reply to ${inbound} refused before any attempt; sending it again on later polls`
+          );
+        await this.nextPoll(instance);
+        if (this.closing) throw new Error("Bot invocation is no longer active");
+      }
+    }
+  }
+
+  /** Says, once per hour for each peer, that its messages are not being handled: one log line
+   * and one plain text to the peer, in the conversation it wrote in. The message itself is not
+   * retained or handled. The notice is outside the reply budget and is never repeated inside the
+   * window, whether or not it could be sent, so it cannot keep two bots answering each other:
+   * the guard still stops the exchange. A budget of zero means never reply, and says nothing. */
+  private noticeRateLimited(
+    instance: ActiveBotInstance,
+    identity: InboundIdentity
+  ): void {
+    if (!instance.loopGuard.noticeDue(identity.peerAddress)) return;
+    const id = instance.definition.id;
+    const limit = instance.loopGuard.limit;
+    console.warn(
+      `[bot-host] [${id}] Reply limit reached for ${identity.peerAddress} (${limit} per hour); its messages are not handled until the hour's window frees`
+    );
+    if (limit === 0 || this.closing) return;
+    const notice = this.sendCanonicalMessage(
+      instance.wallet,
+      identity.peerAddress,
+      [
+        {
+          type: "text",
+          text: `Slow down: you have had ${limit} replies from me in the last hour, which is my limit for one account. Messages you send now may go unanswered. Please try again later.`,
+        },
+      ],
+      identity.conversationId
+    ).then(
+      () => undefined,
+      () =>
+        console.warn(
+          `[bot-host] [${id}] Reply-limit notice to ${identity.peerAddress} was not sent`
+        )
+    );
+    instance.tasks.add(notice);
+    void notice.finally(() => instance.tasks.delete(notice));
   }
 
   /** Runs `work` as the one tracked task of an inbound digest, on its peer's lane. A second
@@ -1186,7 +1343,7 @@ export class FrankBotHost {
   private async dispatch(
     instance: ActiveBotInstance,
     identity: InboundIdentity,
-    items: MessageItem[]
+    { items, stampValueWei }: { items: MessageItem[]; stampValueWei: bigint }
   ): Promise<void> {
     const replies: Promise<DirectMessageSendResult>[] = [];
     let accepting = true;
@@ -1215,13 +1372,11 @@ export class FrankBotHost {
           conversationId: captured.conversationId,
           stampValue: captured.stampValue.toString(),
         });
-        const result = await this.sendCanonicalMessage(
-          instance.wallet,
-          captured.recipient,
-          captured.items,
-          captured.conversationId,
-          { stampValueWei: captured.stampValue },
-          (digest) => instance.operations.link(identity.digest, index, digest)
+        const result = await this.sendReply(
+          instance,
+          identity.digest,
+          index,
+          captured
         );
         // A send result cannot substitute for the durable pre-submission callback.
         if (
@@ -1276,6 +1431,7 @@ export class FrankBotHost {
       payloadDigest: identity.digest,
       timestampMs: identity.receivedTime,
       items,
+      stampValueWei,
       reply: boundReply,
     });
     let prepared: PreparedReply | undefined;
@@ -1370,6 +1526,8 @@ export class FrankBotHost {
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);
     this.scheduler.stop();
+    // A reply waiting for a poll that will not come is released, and its invocation held.
+    for (const instance of this.instances.values()) this.wakeReplies(instance);
 
     // No time bound: an in-flight relay, wallet or model call is waited for, never abandoned.
     await this.polling?.catch(() => undefined);

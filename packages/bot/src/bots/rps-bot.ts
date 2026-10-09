@@ -6,6 +6,7 @@ import type {
   BotMessageContext,
   NewUserEvent,
 } from "@frank/bot-framework";
+import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import { formatMon, parseMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
@@ -59,6 +60,8 @@ export function moveEmoji(move: RpsMove): string {
 
 export class RpsBot implements FrankBotDefinition {
   readonly id = "rps";
+  /** A game is many replies to one player: see `GAME_MAX_REPLIES_PER_PEER`. */
+  readonly maxRepliesPerPeer = GAME_MAX_REPLIES_PER_PEER;
   readonly label = "RPS Arena";
   readonly defaultIdentityPath =
     process.env.RPS_BOT_IDENTITY_JSON ?? "/tmp/rps-bot-identity.json";

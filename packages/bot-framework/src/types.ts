@@ -59,6 +59,10 @@ export interface BotMessageContext {
   readonly timestampMs: number;
   readonly payloadDigest: string;
   readonly items: MessageItem[];
+  /** Wei paid to this bot with the message: the wallet's `DirectMessageReceived.stampValueWei`,
+   * read from the stamp payments delivered with it, never a number the message's content states.
+   * `0n` when the wallet reported no payment. It is not proof the transfers have confirmed. */
+  readonly stampValueWei: bigint;
   reply(
     items: MessageItem[],
     options?: { stampValueWei?: bigint }
@@ -165,6 +169,11 @@ export interface PreparedReply {
 export interface FrankBotDefinition {
   readonly id: string;
   readonly defaultIdentityPath?: string;
+  /** Replies this bot sends to one peer per hour before the host stops handling that peer's
+   * messages (the loop guard). Unset: `DEFAULT_MAX_REPLIES_PER_PEER`. A bot whose one exchange is
+   * many replies, such as a game, declares more (`GAME_MAX_REPLIES_PER_PEER`). The operator's
+   * `BotHostOptions.maxRepliesPerPeer` overrides it. */
+  readonly maxRepliesPerPeer?: number;
   readonly schedules?: BotScheduleDefinition[];
   getProfile(): BotProfile;
   onStart?(ctx: BotContext): Promise<void>;
@@ -187,4 +196,8 @@ export interface BotHostOptions {
   heartbeatIntervalMs?: number;
   watchRegistrations?: boolean;
   unrefTimers?: boolean;
+  /** Operator override of every bot's replies-per-peer-per-hour budget, a non-negative integer
+   * (0: never reply). Default: the `FRANK_BOT_MAX_REPLIES_PER_PEER` environment variable when
+   * set; otherwise each bot's own `maxRepliesPerPeer`. */
+  maxRepliesPerPeer?: number;
 }

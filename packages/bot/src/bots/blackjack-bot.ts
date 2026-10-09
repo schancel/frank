@@ -7,6 +7,7 @@ import type {
   BotStateStore,
   NewUserEvent,
 } from "@frank/bot-framework";
+import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import {
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
@@ -108,6 +109,8 @@ async function putStoredGame(
 
 export class BlackjackDealerBot implements FrankBotDefinition {
   readonly id = "blackjack";
+  /** A game is many replies to one player: see `GAME_MAX_REPLIES_PER_PEER`. */
+  readonly maxRepliesPerPeer = GAME_MAX_REPLIES_PER_PEER;
   readonly label = "Blackjack Dealer";
   readonly defaultIdentityPath =
     process.env.BLACKJACK_BOT_IDENTITY_JSON ??
@@ -375,7 +378,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       item: handItem,
       from: msgCtx.peerAddress,
       to: ctx.address,
-      stampWei: (msgCtx as any).stampValueWei ?? 0n,
+      stampWei: msgCtx.stampValueWei,
       digest: msgCtx.payloadDigest,
     };
     events.push(incomingEvent);

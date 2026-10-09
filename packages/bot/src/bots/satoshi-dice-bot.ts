@@ -8,6 +8,7 @@ import type {
   BotMessageContext,
   NewUserEvent,
 } from "@frank/bot-framework";
+import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import { formatMon } from "@frank/wallet/monad-amount";
 import {
@@ -104,6 +105,8 @@ export interface DiceStats {
 
 export class SatoshiDiceBot implements FrankBotDefinition {
   readonly id = "dice";
+  /** A game is many replies to one player: see `GAME_MAX_REPLIES_PER_PEER`. */
+  readonly maxRepliesPerPeer = GAME_MAX_REPLIES_PER_PEER;
   readonly label = "Satoshi Dice";
   readonly defaultIdentityPath =
     process.env.DICE_BOT_IDENTITY_JSON ?? "/tmp/dice-bot-identity.json";

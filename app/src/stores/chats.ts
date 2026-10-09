@@ -3197,6 +3197,7 @@ export const useChatStore = defineStore('chats', {
       }
 
       const receivedConversations = new Map<string, Conversation>()
+      const receivedLogicalOwners = new Map<string, string>()
       const preparedConversations = { ...this.conversations }
       for (const wrapper of deliverableWrappers) {
         const peer = toChainDisplayAddress(wrapper.copartyAddress)
@@ -3237,15 +3238,18 @@ export const useChatStore = defineStore('chats', {
           wrapper.message.logicalMessageId ||
           wrapper.index
         const logicalOwner = this.logicalMessages[logicalId]
+        const batchOwner = receivedLogicalOwners.get(logicalId)
         if (
-          logicalOwner &&
-          logicalOwner.conversationId !== conv.id &&
-          !replacedAccountCollisions.has(wrapper.index)
+          (batchOwner !== undefined && batchOwner !== conv.id) ||
+          (logicalOwner &&
+            logicalOwner.conversationId !== conv.id &&
+            !replacedAccountCollisions.has(wrapper.index))
         ) {
           throw new Error(
             `Logical message ${logicalId} already belongs to another conversation`,
           )
         }
+        receivedLogicalOwners.set(logicalId, conv.id)
         receivedConversations.set(wrapper.index, conv)
       }
       for (const conv of receivedConversations.values()) {

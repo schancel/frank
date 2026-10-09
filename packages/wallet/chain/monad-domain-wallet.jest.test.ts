@@ -135,6 +135,10 @@ test.each([
     const warm = jest
       .spyOn(MonadSubAccountPool.prototype, 'triggerProactiveWarming')
       .mockImplementation(() => undefined)
+    const configure = jest.spyOn(
+      MonadSubAccountPool.prototype,
+      'configureProactiveWarming',
+    )
     const open = jest
       .spyOn(prototype, 'Open')
       .mockImplementationOnce(async function (this: typeof prototype) {
@@ -157,20 +161,25 @@ test.each([
       await started
       expect(published).toBe(false)
       expect(warm).not.toHaveBeenCalled()
+      expect(configure).not.toHaveBeenCalled()
       release()
       await opening
-      expect(warm).toHaveBeenCalledTimes(1)
+      expect(configure).toHaveBeenCalledTimes(1)
+      expect(warm).not.toHaveBeenCalled()
       await wallet!.close()
       wallet = undefined
       warm.mockClear()
+      configure.mockClear()
       open.mockRejectedValueOnce(new Error('required owner failed'))
       await expect(createEvmChain(cfg).createWallet(roots())).rejects.toThrow(
         'required owner failed',
       )
       expect(warm).not.toHaveBeenCalled()
+      expect(configure).not.toHaveBeenCalled()
       open.mockRestore()
       wallet = await createEvmChain(cfg).createWallet(roots())
-      expect(warm).toHaveBeenCalledTimes(1)
+      expect(configure).toHaveBeenCalledTimes(1)
+      expect(warm).not.toHaveBeenCalled()
     } finally {
       release()
       await opening.catch(() => undefined)

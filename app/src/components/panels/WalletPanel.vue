@@ -149,9 +149,11 @@
           </div>
 
           <p
-            v-if="wallet.isMain && loaded && hasError"
+            v-if="getWalletHasStaleBalance(wallet)"
             role="status"
-            data-test="balance-stale"
+            :data-test="
+              wallet.isMain ? 'balance-stale' : `${wallet.id}-balance-stale`
+            "
             class="q-px-md text-caption text-negative"
           >
             {{ $t('accountRecovery.balance_stale') }}
@@ -199,7 +201,6 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 import { activeChain } from '@frank/wallet/chain'
 import { accountSession, accountStatus } from '../../accounts/session'
-import { useBalance } from '../../composables/useBalance'
 import { useMultichainBalance } from '../../composables/useChainBalance'
 import { useWalletNames } from '../../composables/useWalletNames'
 import { openPage } from '../../utils/routes'
@@ -244,28 +245,25 @@ function getWalletChainLabel(wallet: WalletItemConfig): string {
 }
 
 function getWalletBalance(wallet: WalletItemConfig): string {
-  let balance = ''
-  if (wallet.isMain) {
-    balance = loaded.value
-      ? formattedBalance.value
-      : getTranslation(
-          hasError.value
-            ? 'walletPanel.balanceUnavailable'
-            : 'walletPanel.balanceLoading',
-        )
-  } else {
-    const chainBalance = getFormattedBalance(wallet.id)
-    if (chainBalance) {
-      balance = chainBalance
-    } else if (isTestnet.value && wallet.testnetBalanceZeroKey) {
-      balance = getTranslation(wallet.testnetBalanceZeroKey)
-    } else {
-      balance = wallet.balanceZeroKey
-        ? getTranslation(wallet.balanceZeroKey)
-        : '0'
-    }
-  }
-  return formatCompactCryptoBalance(balance)
+  const presentation = getPresentation(wallet.id)
+  const observation =
+    presentation.status === 'available'
+      ? presentation.observation
+      : presentation.status === 'unavailable'
+      ? presentation.lastKnown
+      : undefined
+  return observation
+    ? formatCompactCryptoBalance(observation.formattedBalance)
+    : getTranslation(
+        presentation.status === 'loading'
+          ? 'walletPanel.balanceLoading'
+          : 'walletPanel.balanceUnavailable',
+      )
+}
+
+function getWalletHasStaleBalance(wallet: WalletItemConfig): boolean {
+  const presentation = getPresentation(wallet.id)
+  return presentation.status === 'unavailable' && !!presentation.lastKnown
 }
 
 const prewarmChains = () => {
@@ -325,8 +323,9 @@ function selectWallet(wallet: string) {
   }
 }
 
-const { loaded, hasError, formattedBalance, balance } = useBalance()
-const { getFormattedBalance, getRawBalance, getTokens } = useMultichainBalance()
+const { monad, getPresentation, getRawBalance, getTokens } =
+  useMultichainBalance()
+const { loaded, balance } = monad
 
 function getWalletTokens(wallet: WalletItemConfig) {
   return getTokens?.(wallet.id) || []

@@ -18,26 +18,49 @@ jest.mock('vue-router', () => ({
   useRoute: () => mockRoute.value,
 }))
 
+const mockEcashError = ref(false)
 const mockEcashBalance = ref<string | undefined>(undefined)
-
-jest.mock('../../composables/useBalance', () => ({
-  useBalance: () => ({
-    loaded: mockLoaded,
-    hasError: mockError,
-    formattedBalance: mockFormattedBalance,
-    refresh: jest.fn(),
-  }),
-}))
 
 jest.mock('../../composables/useChainBalance', () => ({
   useMultichainBalance: () => ({
-    getFormattedBalance: (chain: string) =>
-      chain === 'ecash' ? mockEcashBalance.value : undefined,
+    monad: {
+      loaded: mockLoaded,
+      hasError: mockError,
+      formattedBalance: mockFormattedBalance,
+      balance: ref(0n),
+    },
+    getPresentation: (chain: string) => {
+      if (!['monad', 'ecash', 'solana'].includes(chain)) {
+        return { status: 'unavailable', reason: 'unsupported' }
+      }
+      const formatted =
+        chain === 'monad'
+          ? mockLoaded.value
+            ? mockFormattedBalance.value
+            : undefined
+          : chain === 'ecash'
+          ? mockEcashBalance.value
+          : undefined
+      const observation =
+        formatted === undefined
+          ? undefined
+          : { balance: 0n, formattedBalance: formatted }
+      if (
+        chain === 'monad'
+          ? mockError.value
+          : chain === 'ecash' && mockEcashError.value
+      ) {
+        return {
+          status: 'unavailable',
+          reason: 'fetch-error',
+          lastKnown: observation,
+        }
+      }
+      return observation
+        ? { status: 'available', observation }
+        : { status: 'loading' }
+    },
     getRawBalance: () => null,
-    isChainLoaded: (chain: string) =>
-      chain === 'ecash' ? Boolean(mockEcashBalance.value) : false,
-    hasChainError: () => false,
-    refreshAll: jest.fn(),
   }),
 }))
 
@@ -109,6 +132,7 @@ afterEach(() => {
   mockError.value = false
   mockFormattedBalance.value = '0 MON'
   mockEcashBalance.value = undefined
+  mockEcashError.value = false
   const { clearAllCustomNames } = useWalletNames()
   clearAllCustomNames()
 })
@@ -139,11 +163,16 @@ test('renders list of wallets without recovery banners or demo buttons', () => {
   expect(view.find('[data-test="dogecoin-testnet-badge"]').exists()).toBe(true)
   expect(view.find('[data-test="ecash-testnet-badge"]').exists()).toBe(true)
   expect(view.find('[data-test="solana-testnet-badge"]').exists()).toBe(true)
-  expect(view.text()).toContain('0 tBTC')
-  expect(view.text()).toContain('0 tBCH')
-  expect(view.text()).toContain('0 tDOGE')
-  expect(view.text()).toContain('0 tXEC')
-  expect(view.text()).toContain('0 tSOL')
+  for (const chain of ['bitcoin', 'bitcoincash', 'dogecoin']) {
+    expect(view.get(`[data-test="${chain}-wallet-balance"]`).text()).toBe(
+      t('walletPanel.balanceUnavailable'),
+    )
+  }
+  for (const chain of ['ecash', 'solana']) {
+    expect(view.get(`[data-test="${chain}-wallet-balance"]`).text()).toBe(
+      t('walletPanel.balanceLoading'),
+    )
+  }
 })
 
 test('displays formatted live balance and handles loading and stale states', async () => {
@@ -173,6 +202,29 @@ test('displays fetched non-zero eCash balance when loaded', async () => {
   mockEcashBalance.value = '10000 tXEC'
   const view = render()
   expect(view.get('[data-test="ecash-wallet-balance"]').text()).toBe('10 ktXEC')
+})
+
+test('shows secondary loading, initial failure, observed zero and stale value', async () => {
+  const view = render()
+  const region = view.get('[data-test="ecash-wallet-balance"]')
+  expect(region.text()).toBe(t('walletPanel.balanceLoading'))
+  mockEcashError.value = true
+  await flushPromises()
+  expect(region.text()).toBe(t('walletPanel.balanceUnavailable'))
+  mockEcashError.value = false
+  mockEcashBalance.value = '0 tXEC'
+  await flushPromises()
+  expect(region.text()).toBe('0 tXEC')
+  expect(view.find('[data-test="ecash-balance-stale"]').exists()).toBe(false)
+  mockEcashBalance.value = '25 tXEC'
+  await flushPromises()
+  expect(region.text()).toBe('25 tXEC')
+  mockEcashError.value = true
+  await flushPromises()
+  expect(region.text()).toBe('25 tXEC')
+  expect(view.get('[data-test="ecash-balance-stale"]').text()).toBe(
+    t('accountRecovery.balance_stale'),
+  )
 })
 
 test('clicking wallet rows navigates to the respective chain', async () => {

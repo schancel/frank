@@ -46,6 +46,53 @@ export interface ChainBalanceState {
   tokens?: SolanaTokenAccount[]
 }
 
+export interface BalanceObservation {
+  balance: bigint
+  formattedBalance: string
+}
+
+export type BalancePresentation =
+  | { status: 'loading' }
+  | { status: 'available'; observation: BalanceObservation }
+  | {
+      status: 'unavailable'
+      reason: 'unsupported' | 'fetch-error'
+      lastKnown?: BalanceObservation
+    }
+
+// Derived presentation only: the existing readers remain the observation owners.
+function getBalancePresentation(
+  chain: string,
+  monad: ReturnType<typeof useBalance>,
+): BalancePresentation {
+  let state: ChainBalanceState
+  if (chain === 'monad') {
+    state = {
+      balance: monad.balance.value,
+      formattedBalance: monad.formattedBalance.value,
+      loaded: monad.loaded.value,
+      hasError: monad.hasError.value,
+    }
+  } else if (chain === 'ecash') state = ecashState.value
+  else if (chain === 'solana') state = solanaState.value
+  else return { status: 'unavailable', reason: 'unsupported' }
+
+  const observation =
+    state.loaded && state.balance !== null
+      ? { balance: state.balance, formattedBalance: state.formattedBalance }
+      : undefined
+  if (state.hasError) {
+    return {
+      status: 'unavailable',
+      reason: 'fetch-error',
+      lastKnown: observation,
+    }
+  }
+  return observation
+    ? { status: 'available', observation }
+    : { status: 'loading' }
+}
+
 // Reactive store for non-monad chain balances
 const ecashState = ref<ChainBalanceState>({
   balance: null,
@@ -301,7 +348,12 @@ export function useChainBalance(chainRef: Ref<string> | string) {
 
   const tokens = computed<TokenItem[]>(() => getChainTokens(chain.value))
 
+  const presentation = computed(() =>
+    getBalancePresentation(chain.value, monad),
+  )
+
   return {
+    presentation,
     balance,
     formattedBalance,
     tokens,
@@ -319,11 +371,11 @@ export function useChainBalance(chainRef: Ref<string> | string) {
  */
 export function getChainTokens(chainName: string): TokenItem[] {
   if (chainName === 'solana') {
+    if (!solanaState.value.loaded || solanaState.value.balance === null)
+      return []
     const isTestnet = activeChain.isTestnet
     const nativeSymbol = isTestnet ? 'tSOL' : 'SOL'
-    const nativeBal =
-      solanaState.value.formattedBalance ||
-      (isTestnet ? '0.00 tSOL' : '0.00 SOL')
+    const nativeBal = solanaState.value.formattedBalance
     const nativeNum = solanaState.value.balance
       ? Number(solanaState.value.balance) / 1e9
       : 0
@@ -383,6 +435,7 @@ export function useMultichainBalance() {
   }
 
   return {
+    getPresentation: (chain: string) => getBalancePresentation(chain, monad),
     monad,
     ecash: readonly(ecashState),
     solana: readonly(solanaState),

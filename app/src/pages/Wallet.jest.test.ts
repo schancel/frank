@@ -45,6 +45,7 @@ const mockRoute = ref<{ query: Record<string, string>; path: string }>({
 
 const mockChainBalance = {
   formattedBalance: ref(''),
+  balance: ref(0n),
   loaded: ref(false),
   hasError: ref(false),
   refresh: jest.fn(),
@@ -55,23 +56,32 @@ jest.mock('src/composables/useBalance', () => ({
 }))
 
 jest.mock('src/composables/useChainBalance', () => ({
-  useChainBalance: (chain: any) => {
-    const val = typeof chain === 'string' ? chain : chain.value
-    if (val === 'monad') return balance
-    return mockChainBalance
-  },
-  getChainTokens: (chain: string) => [
-    {
-      id: `${chain}-native`,
-      symbol: chain.toUpperCase(),
-      name: `${chain} Native`,
-      mintOrAddress: '',
-      balanceFormatted: '1.0',
-      numericBalance: 1.0,
-      avuFormatted: '≈ 100 AVU',
-      isNative: true,
-    },
-  ],
+  useChainBalance: (chain: any) => ({
+    tokens: ref([]),
+    presentation: jest.requireActual('vue').computed(() => {
+      const val = typeof chain === 'string' ? chain : chain.value
+      if (!['monad', 'ecash', 'solana'].includes(val)) {
+        return { status: 'unavailable', reason: 'unsupported' }
+      }
+      const state = val === 'monad' ? balance : mockChainBalance
+      const observation = state.loaded.value
+        ? {
+            balance: state.balance.value,
+            formattedBalance: state.formattedBalance.value,
+          }
+        : undefined
+      if (state.hasError.value) {
+        return {
+          status: 'unavailable',
+          reason: 'fetch-error',
+          lastKnown: observation,
+        }
+      }
+      return observation
+        ? { status: 'available', observation }
+        : { status: 'loading' }
+    }),
+  }),
 }))
 jest.mock('src/stores/oracle', () => ({
   useSafeOracleStore: () => ({
@@ -210,13 +220,13 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it('shows a dash, not 0, until the balance loads, and an inline error on failure', async () => {
+  it('shows loading until the balance loads, and an inline error on failure', async () => {
     balance.loaded.value = false
     balance.hasError.value = false
     const wrapper = mountWallet()
     await nextTick()
     const region = wrapper.get('[data-testid="wallet-balance"]')
-    expect(region.text()).toBe('\u2014')
+    expect(region.text()).toBe('walletPanel.balanceLoading')
     balance.loaded.value = true
     await nextTick()
     expect(region.text()).toBe('1 MON') // a real zero or value is shown as such
@@ -361,7 +371,7 @@ describe('Wallet detail page (#570)', () => {
       'walletPanel.ecashTestnet',
     )
     expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
-      'walletPanel.zeroTxec',
+      'walletPanel.balanceLoading',
     )
     expect(
       (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
@@ -376,6 +386,49 @@ describe('Wallet detail page (#570)', () => {
 
     wrapper.unmount()
   })
+
+  it.each(['bitcoin', 'bitcoincash', 'dogecoin'])(
+    'keeps unsupported %s details isolated from a funded Monad wallet',
+    async chain => {
+      mockRoute.value = { query: {}, path: `/wallet/${chain}` }
+      const wrapper = mountWallet()
+      await flush()
+      expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
+        'walletPanel.balanceUnavailable',
+      )
+      expect(wrapper.text()).not.toContain('1 MON')
+    },
+  )
+
+  it.each(['ecash', 'solana'])(
+    'distinguishes %s loading, initial failure, real zero and stale observations',
+    async chain => {
+      mockRoute.value = { query: {}, path: `/wallet/${chain}` }
+      const wrapper = mountWallet()
+      const region = wrapper.get('[data-testid="wallet-balance"]')
+      expect(region.text()).toBe('walletPanel.balanceLoading')
+      mockChainBalance.hasError.value = true
+      await nextTick()
+      expect(region.text()).toBe('walletPanel.balanceUnavailable')
+      mockChainBalance.hasError.value = false
+      mockChainBalance.loaded.value = true
+      mockChainBalance.formattedBalance.value =
+        chain === 'ecash' ? '0 tXEC' : '0 tSOL'
+      await nextTick()
+      expect(region.text()).toBe(mockChainBalance.formattedBalance.value)
+      expect(
+        wrapper.find('[data-testid="wallet-balance-error"]').exists(),
+      ).toBe(false)
+      mockChainBalance.formattedBalance.value =
+        chain === 'ecash' ? '25 tXEC' : '2 tSOL'
+      mockChainBalance.hasError.value = true
+      await nextTick()
+      expect(region.text()).toBe(mockChainBalance.formattedBalance.value)
+      expect(wrapper.get('[data-testid="wallet-balance-error"]').text()).toBe(
+        'walletPanel.balanceUnavailable',
+      )
+    },
+  )
 
   it('renders fetched non-zero eCash balance when loaded', async () => {
     mockChainBalance.loaded.value = true

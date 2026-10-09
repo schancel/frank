@@ -109,31 +109,13 @@
                       data-testid="wallet-balance"
                     >
                       {{
-                        selectedWallet === 'monad'
-                          ? balanceText
-                          : chainLoaded && chainFormattedBalance
-                          ? chainFormattedBalance
-                          : selectedWallet === 'ecash'
-                          ? isTestnet
-                            ? $t('walletPanel.zeroTxec')
-                            : $t('walletPanel.zeroXec')
-                          : selectedWallet === 'solana'
-                          ? isTestnet
-                            ? $t('walletPanel.zeroTsol')
-                            : $t('walletPanel.zeroSol')
-                          : selectedWallet === 'tempo'
-                          ? isTestnet
-                            ? $t('walletPanel.zeroTusd')
-                            : $t('walletPanel.zeroUsd')
-                          : selectedWallet === 'ethereum'
-                          ? isTestnet
-                            ? $t('walletPanel.zeroSep')
-                            : $t('walletPanel.zeroEth')
-                          : selectedWallet === 'hyperliquid'
-                          ? isTestnet
-                            ? $t('walletPanel.zeroThype')
-                            : $t('walletPanel.zeroHype')
-                          : balanceText
+                        balanceObservation
+                          ? balanceObservation.formattedBalance
+                          : $t(
+                              balancePresentation.status === 'loading'
+                                ? 'walletPanel.balanceLoading'
+                                : 'walletPanel.balanceUnavailable',
+                            )
                       }}
                     </div>
                     <div
@@ -450,7 +432,6 @@ import AvuParityChart from 'src/components/wallet/AvuParityChart.vue'
 import DAppSwapView from 'src/components/wallet/DAppSwapView.vue'
 import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
-import { useBalance } from 'src/composables/useBalance'
 import { useChainBalance } from 'src/composables/useChainBalance'
 import { useMyDrawerOpen } from 'src/composables/useMyDrawerOpen'
 import { useWalletNames } from 'src/composables/useWalletNames'
@@ -460,7 +441,6 @@ import { accountSession, accountStatus } from '../accounts/session'
 import { activeChain } from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
-import { getChainTokens, type TokenItem } from 'src/composables/useChainBalance'
 import { getExplorerUrl } from 'src/utils/explorer'
 import type { SwapRecord } from 'src/stores/swaps'
 import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
@@ -511,24 +491,19 @@ export default defineComponent({
     )
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
-    const {
-      formattedBalance,
-      balance: monadBalance,
-      loaded,
-      hasError,
-    } = useBalance()
-    const {
-      formattedBalance: chainFormattedBalance,
-      balance: chainBalance,
-      loaded: chainLoaded,
-      hasError: chainHasError,
-    } = useChainBalance(selectedWallet)
-
-    const currentWalletHasError = computed(() => {
-      return selectedWallet.value === 'monad'
-        ? hasError.value
-        : chainHasError.value
+    const { presentation: balancePresentation, tokens: activeTokens } =
+      useChainBalance(selectedWallet)
+    const balanceObservation = computed(() => {
+      const presentation = balancePresentation.value
+      return presentation.status === 'available'
+        ? presentation.observation
+        : presentation.status === 'unavailable'
+        ? presentation.lastKnown
+        : undefined
     })
+    const currentWalletHasError = computed(
+      () => balancePresentation.value.status === 'unavailable',
+    )
 
     const currentUnitRateAvu = computed(() => {
       const asset = selectedWallet.value as any
@@ -536,24 +511,17 @@ export default defineComponent({
     })
 
     const currentWalletAvu = computed(() => {
-      if (selectedWallet.value === 'monad') {
-        if (!loaded.value || !monadBalance?.value) return ''
-        return oracle.formatAvuAmount('monad', monadBalance.value)
-      }
-      if (!chainLoaded.value || !chainBalance?.value) return ''
+      const observation = balanceObservation.value
+      if (!observation?.balance) return ''
       return oracle.formatAvuAmount(
         selectedWallet.value as any,
-        chainBalance.value,
+        observation.balance,
       )
     })
 
     const swapHistory = useSwapHistory()
     const recentSwaps = computed(() => {
       return swapHistory.getSwapsForChain(selectedWallet.value).value
-    })
-
-    const activeTokens = computed<TokenItem[]>(() => {
-      return getChainTokens(selectedWallet.value)
     })
 
     const formatSwapTime = (timestamp: number) => {
@@ -575,11 +543,6 @@ export default defineComponent({
       })
     }
 
-    // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
-    // not look like a real zero.
-    const balanceText = computed(() =>
-      loaded.value ? formattedBalance.value : '\u2014',
-    )
     const displayAddress = ref(
       accountSession.getCachedChainAddress?.(selectedWallet.value) ?? '',
     )
@@ -666,13 +629,11 @@ export default defineComponent({
       currentWalletConfig,
       isTestnet,
       displayAddress,
-      balanceText,
-      chainFormattedBalance,
-      chainLoaded,
+      balancePresentation,
+      balanceObservation,
       currentWalletHasError,
       currentWalletAvu,
       currentUnitRateAvu,
-      hasError,
       getCustomName,
       showAvuDialog,
       async copyAddress() {

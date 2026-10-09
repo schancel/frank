@@ -1,3 +1,4 @@
+import type { EvmNativeOperation } from "../storage/evm-native-operation-journal";
 /** Canonical address value passed across the application/chain boundary. */
 export interface ChainAddress {
   readonly raw: string;
@@ -226,8 +227,12 @@ export interface NativeWalletHandle {
   }): Promise<LegacyFeeEstimate>;
 
   /** Recovers or resumes any in-flight staging intent interrupted by an app/browser crash. */
-  getUnresolvedLegacySend?(): unknown;
-  resumeLegacySend?(): Promise<LegacySendResult>;
+  getUnresolvedLegacySend?(): readonly EvmNativeOperation[];
+  resumeLegacySend?(operationId: string): Promise<LegacySendResult>;
+  /** EVM operation evidence; delivery and inclusion do not release its input claims. */
+  getNativeOperations?(): readonly EvmNativeOperation[];
+  resumeNativeOperation?(operationId: string): Promise<EvmNativeOperation>;
+  cancelUnsignedNativeOperation?(operationId: string): Promise<void>;
 }
 
 export type LegacySendStage =

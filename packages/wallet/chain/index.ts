@@ -75,14 +75,14 @@ export type {
 } from "./solana-balance";
 export {
   EvmLegacyConsolidator,
-  InMemoryLegacySendJournalStore,
+  EvmNativeOperationPendingError
 } from "./evm-legacy-consolidator";
+export type { EvmLegacyConsolidatorConfig } from "./evm-legacy-consolidator";
+export { EvmNativeOperationJournal } from "../storage/evm-native-operation-journal";
 export type {
-  EvmLegacyConsolidatorConfig,
-  FundingAccount,
-  LegacySendIntent,
-  LegacySendJournalStore,
-} from "./evm-legacy-consolidator";
+  EvmNativeOperation,
+  EvmNativeSource
+} from "../storage/evm-native-operation-journal";
 
 let currentActiveChain: ActiveChain = MonadChain;
 const activeChainListeners = new Set<(chain: ActiveChain) => void>();

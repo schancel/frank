@@ -535,11 +535,17 @@ async function settle(
       if (attempt.terminal.phase === 'dead') {
         // The relay ended delivery, not the ability to broadcast this signed set. Keep its
         // exact request and reservations until a financial recovery owner can resolve them.
-        await owner.links.put({
-          ...row,
-          outcome: undefined,
-          reason: attempt.terminal.reason,
-        })
+        // The row stays unacknowledged, so every settle reaches it again: write it only when
+        // what is stored differs from what this would write.
+        if (
+          row.outcome !== undefined ||
+          row.reason !== attempt.terminal.reason
+        )
+          await owner.links.put({
+            ...row,
+            outcome: undefined,
+            reason: attempt.terminal.reason,
+          })
         retained.add(row.attemptRef)
         continue
       }

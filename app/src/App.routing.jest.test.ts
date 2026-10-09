@@ -92,7 +92,7 @@ const App = require('./App.vue').default
 const createAppRouter = require('./router').default
 const { useChatStore } = require('./stores/chats')
 const { desktopNotify } = require('./utils/notifications')
-const { openChat } = require('./utils/routes')
+const { openChat, openContactProfile } = require('./utils/routes')
 /* eslint-enable @typescript-eslint/no-var-requires */
 const PEER = '0x2b2B2B2b2B2b2B2b2B2b2b2b2B2B2b2b2B2b2B2B'
 const OTHER = '0x3333333333333333333333333333333333333333'
@@ -219,13 +219,102 @@ describe('App exact conversation route authority (#1237)', () => {
     }
   })
 
-  it('opens the explicit default flow by peer and then keeps its selected ID', async () => {
+  it.each([PEER, OTHER])(
+    'preserves the committed profile query for %s when leaving an explicit thread',
+    async peer => {
+      const { chats, first, router, wrapper } = await mountedApp()
+      try {
+        await openChat(router, first.id)
+        await settleNavigation()
+        openContactProfile(router, peer)
+        await settleNavigation()
+        expect(router.currentRoute.value.query).toEqual({ info: 'true' })
+        expect(router.currentRoute.value.params.address).toBe(peer)
+        expect(chats.activeConversationId).toBe(chats.chats[peer]?.id)
+
+        // A later selection is a new navigation, not an instruction to copy profile state.
+        chats.setActiveConversation(first.id)
+        await settleNavigation()
+        expect(router.currentRoute.value.params.address).toBe(first.id)
+        expect(router.currentRoute.value.query).toEqual({})
+      } finally {
+        wrapper.unmount()
+      }
+    },
+  )
+
+  it.each(['other conversation', 'profile', 'Forum'])(
+    'does not publish selection or read state for canceled %s navigation',
+    async destination => {
+      const { chats, first, other, defaultThread, router, wrapper } =
+        await mountedApp()
+      try {
+        await openChat(router, first.id)
+        await settleNavigation()
+        other.totalUnreadMessages = 2
+        defaultThread.totalUnreadMessages = 3
+        const before = JSON.parse(JSON.stringify(chats.$state))
+        const target =
+          destination === 'profile'
+            ? `/chat/${PEER}?info=true`
+            : destination === 'Forum'
+            ? '/forum'
+            : `/chat/${other.id}`
+        router.beforeEach(to => (to.fullPath === target ? false : undefined))
+        await router.push(target)
+        await settleNavigation()
+        expect(router.currentRoute.value.params.address).toBe(first.id)
+        expect(chats.$state).toEqual(before)
+      } finally {
+        wrapper.unmount()
+      }
+    },
+  )
+
+  it('does not publish an earlier navigation after a later route commits', async () => {
+    const { chats, first, other, router, wrapper } = await mountedApp()
+    let release!: () => void
+    let entered!: () => void
+    const blocked = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const reached = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    try {
+      await openChat(router, first.id)
+      await settleNavigation()
+      other.totalUnreadMessages = 2
+      router.beforeEach(async to => {
+        if (to.params.address === other.id) {
+          entered()
+          await blocked
+        }
+      })
+      const earlierNavigation = router.push(`/chat/${other.id}`)
+      await reached
+      expect(chats.activeConversationId).toBe(first.id)
+      expect(other.totalUnreadMessages).toBe(2)
+      await router.push('/forum')
+      release()
+      await earlierNavigation
+      await settleNavigation()
+      expect(router.currentRoute.value.path).toBe('/forum')
+      expect(chats.activeConversationId).toBeNull()
+      expect(other.totalUnreadMessages).toBe(2)
+    } finally {
+      release()
+      wrapper.unmount()
+    }
+  })
+
+  it('opens the peer route as its default without an extra navigation', async () => {
     const { chats, defaultThread, router, wrapper } = await mountedApp()
     try {
       await openChat(router, PEER)
       await settleNavigation()
       expect(chats.activeConversationId).toBe(defaultThread.id)
-      expect(router.currentRoute.value.params.address).toBe(defaultThread.id)
+      expect(router.currentRoute.value.params.address).toBe(PEER)
     } finally {
       wrapper.unmount()
     }

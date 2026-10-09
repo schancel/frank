@@ -1,4 +1,8 @@
 import {
+  EvmNativeOperationJournal,
+  type EvmNativeBinding,
+} from './evm-native-operation-journal'
+import {
   CanonicalAttemptJournalError,
   LevelCanonicalStampAttemptJournal,
   type CanonicalJournalAttempt,
@@ -115,6 +119,7 @@ export interface MonadWalletPersistenceBundle {
   readonly changePool: MonadChangePool
   /** Unified HD address inventory tracking spend and change branches (Ticket #924). */
   readonly inventory?: MonadAddressInventory
+  readonly nativeJournal?: EvmNativeOperationJournal
   readonly topicOperationJournal: TopicOperationJournal
   readonly canonicalJournal?: LevelCanonicalStampAttemptJournal
   readonly canonicalBinding?: { readonly tuple: string; readonly id: string }
@@ -277,6 +282,7 @@ function makeBundle(params: {
   attachSharedPoolGates?: boolean
   assertEnclosingAdmission?: () => void
   ownerToken?: object
+  nativeJournal?: EvmNativeOperationJournal
   canonicalJournal?: LevelCanonicalStampAttemptJournal
   canonicalBinding?: { readonly tuple: string; readonly id: string }
   canonicalUnavailable?: CanonicalWalletBindingMismatchError
@@ -412,6 +418,7 @@ function makeBundle(params: {
         changeKeyring: params.changeKeyring,
       }),
     topicOperationJournal: params.topicJournal,
+    nativeJournal: params.nativeJournal,
     canonicalJournal: params.canonicalJournal,
     canonicalBinding: params.canonicalBinding,
     canonicalUnavailable: params.canonicalUnavailable,
@@ -526,6 +533,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
   subKeyring: MonadHdKeyring
   changeKeyring: MonadChangeKeyring
   stampReferencesLeaseIndex: (index: number) => boolean
+  nativeBinding?: EvmNativeBinding
   canonicalBinding?: { readonly tuple: string; readonly id: string }
   encloseFinancialOperation?: <T>(
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
@@ -539,6 +547,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
   let database: LevelDB | undefined
   let manifestClaim: ReturnType<typeof claimManifest> | undefined
   let journalOpen = true
+  let nativeJournal: EvmNativeOperationJournal | undefined
   let canonicalJournal: LevelCanonicalStampAttemptJournal | undefined
   let canonicalUnavailable: CanonicalWalletBindingMismatchError | undefined
   let canonicalRetained: CanonicalRetainedObligations | undefined
@@ -577,6 +586,14 @@ export async function openExistingPoolMonadTopicOwner(params: {
         assertJournalMutation,
       )
       await (topicJournal as LevelTopicOperationJournal).Open()
+    }
+    if (params.nativeBinding) {
+      nativeJournal = new EvmNativeOperationJournal({
+        binding: params.nativeBinding,
+        location: params.location,
+        testOnlyEphemeral: params.location === undefined,
+      })
+      await nativeJournal.Open()
     }
     if (
       params.canonicalBinding !== undefined &&
@@ -620,6 +637,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
       topicJournal,
       subKeyring: params.subKeyring,
       changeKeyring: params.changeKeyring,
+      nativeJournal,
       canonicalJournal,
       canonicalUnavailable,
       canonicalRetained,
@@ -627,6 +645,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
       canonicalBinding:
         canonicalJournal === undefined ? undefined : params.canonicalBinding,
       additionalLeaseReference: index =>
+        (nativeJournal?.referencesSpendIndex(index) ?? false) ||
         params.stampReferencesLeaseIndex(index) ||
         ((canonicalRetained ?? canonicalJournal)
           ?.getIntents()
@@ -646,6 +665,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
       assertEnclosingAdmission: params.assertEnclosingAdmission,
       ownerToken,
       close: async () => {
+        await nativeJournal?.Close()
         await canonicalJournal?.Close()
         await database?.close()
         journalOpen = false
@@ -655,6 +675,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
   } catch (error) {
     // Never close another owner's handles. These were all created by this invocation.
     try {
+      await nativeJournal?.Close()
       await canonicalJournal?.Close()
       await database?.close()
       manifestClaim?.release()

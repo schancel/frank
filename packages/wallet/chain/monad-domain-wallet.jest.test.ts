@@ -1,4 +1,13 @@
-import { Mnemonic, Transaction, Wallet, getBytes } from 'ethers'
+import {
+  Mnemonic,
+  Transaction,
+  Wallet,
+  getBytes,
+  keccak256,
+  type Block,
+  type TransactionResponse,
+  type TransactionReceipt,
+} from 'ethers'
 import { mkdtemp, mkdir, readdir, rm } from 'fs/promises'
 import level from 'level'
 import {
@@ -352,53 +361,117 @@ test('typed DM entrypoints stay pending without a verified directory, before pla
   await wallet.close()
 })
 
-test('native signing and recovered pending attempts belong to EVM main across auth changes', async () => {
+function mockNativeRpc(
+  wallet: MonadChainWalletHandle,
+  initial: Record<string, bigint>,
+) {
+  const balances = new Map(
+    Object.entries(initial).map(([key, value]) => [key.toLowerCase(), value]),
+  )
+  const nonces = new Map<string, number>()
+  const transactions = new Map<string, TransactionResponse>()
+  const receipts = new Map<string, TransactionReceipt>()
+  const blockHash = '0x' + 'ab'.repeat(32)
+  jest
+    .spyOn(wallet.provider, 'getBlock')
+    .mockResolvedValue({ hash: blockHash, number: 1 } as Block)
+  jest
+    .spyOn(wallet.provider, 'getBalance')
+    .mockImplementation(async a => balances.get(String(a).toLowerCase()) ?? 0n)
+  jest
+    .spyOn(wallet.provider, 'getTransactionCount')
+    .mockImplementation(async a => nonces.get(String(a).toLowerCase()) ?? 0)
+  jest.spyOn(wallet.provider, 'getFeeData').mockResolvedValue({
+    gasPrice: 1n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 1n,
+  } as never)
+  jest.spyOn(wallet.provider, 'estimateGas').mockResolvedValue(21000n)
+  jest
+    .spyOn(wallet.provider, 'getTransaction')
+    .mockImplementation(async hash => transactions.get(hash) ?? null)
+  jest
+    .spyOn(wallet.provider, 'getTransactionReceipt')
+    .mockImplementation(async hash => receipts.get(hash) ?? null)
+  const broadcast = jest
+    .spyOn(wallet.provider, 'broadcastTransaction')
+    .mockImplementation(async raw => {
+      const tx = Transaction.from(raw)
+      const from = tx.from!.toLowerCase()
+      nonces.set(from, tx.nonce + 1)
+      balances.set(from, (balances.get(from) ?? 0n) - tx.value - 21000n)
+      transactions.set(
+        tx.hash!,
+        Object.assign(tx, {
+          blockHash,
+          blockNumber: 1,
+          index: 0,
+        }) as unknown as TransactionResponse,
+      )
+      receipts.set(tx.hash!, {
+        hash: tx.hash,
+        from: tx.from,
+        to: tx.to,
+        blockHash,
+        blockNumber: 1,
+        index: 0,
+        status: 1,
+        gasPrice: 1n,
+        gasUsed: 21000n,
+      } as TransactionReceipt)
+      return { hash: keccak256(raw) } as TransactionResponse
+    })
+  return { broadcast, balances }
+}
+
+test('native signed bytes survive restart and authentication changes without an EVM hash-only writer', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-native-composition-'))
   const store = new InMemoryNativeTransactionAttemptStore()
-  const chain = createMonadChain({ ...config, nativeAttemptStore: store })
-  const wallet = await chain.createWallet(roots())
-  const signed = { txHash: `0x${'44'.repeat(32)}` }
-  const submit = jest.fn().mockRejectedValue(new Error('reply lost'))
-  const build = jest.fn().mockResolvedValue(signed)
-  const signer = MonadAccountTxSigner as jest.MockedClass<
-    typeof MonadAccountTxSigner
-  >
-  signer.mockImplementation(
-    () =>
-      ({
-        buildAndSignTransfer: build,
-        submit,
-      } as unknown as MonadAccountTxSigner),
-  )
-  await expect(
-    wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1n }),
-  ).rejects.toThrow('unknown')
-  expect(signer).toHaveBeenLastCalledWith(
-    expect.objectContaining({ privateKey: expected[0].mainSecret }),
-  )
-  expect(
-    store.get(
-      nativeTransactionAttemptKey({
-        family: 'evm',
-        chainIdentifier: 'monad-testnet',
-        address: expected[0].main.toLowerCase(),
-      }),
-    ),
-  ).toEqual(signed)
-  await wallet.close()
-  const restored = (await createMonadChain({
+  const cfg = {
     ...config,
+    walletStorageLocation: join(dir, 'wallet'),
     nativeAttemptStore: store,
-  }).createWallet({
-    ...roots(),
-    authentication: roots(1).authentication,
-  })) as MonadChainWalletHandle
-  expect(restored.getUnresolvedNativeTransaction!()).toEqual(signed)
-  jest.spyOn(restored.provider, 'getTransactionReceipt').mockResolvedValue(null)
-  await expect(
-    restored.sendNative({ recipient: { raw: expected[1].main }, value: 2n }),
-  ).rejects.toThrow('unknown')
-  expect(build).toHaveBeenCalledTimes(1)
-  await restored.close()
+  }
+  const first = (await createMonadChain(cfg).createWallet(
+    roots(),
+  )) as MonadChainWalletHandle
+  let restored: MonadChainWalletHandle | undefined
+  try {
+    const rpc = mockNativeRpc(first, { [expected[0].main]: 100000n })
+    rpc.broadcast.mockRejectedValueOnce(new Error('reply lost'))
+    await expect(
+      first.sendNative({ recipient: { raw: expected[1].main }, value: 1000n }),
+    ).rejects.toThrow('unknown')
+    const row = first.getNativeOperations!()[0]!
+    expect(Transaction.from(row.members[0]!.signed!.rawTransaction).from).toBe(
+      expected[0].main,
+    )
+    expect(
+      store.get(
+        nativeTransactionAttemptKey({
+          family: 'evm',
+          chainIdentifier: 'monad-testnet',
+          address: expected[0].main.toLowerCase(),
+        }),
+      ),
+    ).toBeUndefined()
+    await first.close()
+    restored = (await createMonadChain(cfg).createWallet({
+      ...roots(),
+      authentication: roots(1).authentication,
+    })) as MonadChainWalletHandle
+    const next = mockNativeRpc(restored, { [expected[0].main]: 100000n })
+    const tx = await restored.retryUnresolvedNativeTransaction!()
+    expect(tx.txHash).toBe(row.members[0]!.signed!.transactionHash)
+    expect(next.broadcast).toHaveBeenCalledWith(
+      row.members[0]!.signed!.rawTransaction,
+    )
+    expect(restored.getNativeOperations!()).toHaveLength(1)
+  } finally {
+    await restored?.close()
+    await first.close()
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test.each([false, true])(
@@ -468,26 +541,19 @@ test.each([false, true])(
     })
     const wallet = await chain.createWallet(roots())
     const destroyHttp = jest.spyOn(MonadHttpClient.prototype, 'destroy')
-    const signed = { txHash: `0x${'55'.repeat(32)}` }
+    const rpc = mockNativeRpc(wallet as MonadChainWalletHandle, {
+      [expected[0].main]: 100000n,
+    })
+    let signedHash = ''
     let release!: () => void
     let started!: () => void
     const signing = new Promise<void>(resolve => (started = resolve))
     const wait = new Promise<void>(resolve => (release = resolve))
-    const signer = MonadAccountTxSigner as jest.MockedClass<
-      typeof MonadAccountTxSigner
-    >
-    const submit = jest.fn().mockResolvedValue(signed.txHash)
-    signer.mockImplementation(
-      () =>
-        ({
-          buildAndSignTransfer: jest.fn().mockResolvedValue(signed),
-          submit,
-        } as unknown as MonadAccountTxSigner),
-    )
     const send = wallet.sendNative({
       recipient: { raw: expected[1].main },
       value: 1n,
-      onSigned: async () => {
+      onSigned: async signed => {
+        signedHash = signed.txHash
         started()
         await wait
       },
@@ -498,17 +564,17 @@ test.each([false, true])(
     await expect(
       wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1n }),
     ).rejects.toThrow('closed')
-    expect(submit).not.toHaveBeenCalled()
+    expect(rpc.broadcast).not.toHaveBeenCalled()
     expect(destroyHttp).not.toHaveBeenCalled()
     release()
-    await expect(send).resolves.toEqual(signed)
+    await expect(send).resolves.toEqual({ txHash: signedHash })
     await close
-    expect(submit).toHaveBeenCalledTimes(1)
+    expect(rpc.broadcast).toHaveBeenCalledTimes(1)
     expect(destroyHttp).toHaveBeenCalledTimes(1)
   },
 )
 
-test('cached callers serialize native sends through the same economic owner', async () => {
+test('cached callers serialize signing through the same durable native owner', async () => {
   const chain = createMonadChain({
     ...config,
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
@@ -517,44 +583,48 @@ test('cached callers serialize native sends through the same economic owner', as
     chain.createWallet(roots()),
     chain.createWallet(roots()),
   ])
-  expect(second).toBe(first)
+  expect(first).toBe(second)
+  const rpc = mockNativeRpc(first as MonadChainWalletHandle, {
+    [expected[0].main]: 100000n,
+  })
+  jest
+    .spyOn(chain.directMessages, 'send')
+    .mockResolvedValue({ payloadDigest: 'aa' } as never)
   let release!: () => void
   let started!: () => void
-  const signing = new Promise<void>(resolve => (started = resolve))
-  const wait = new Promise<void>(resolve => (release = resolve))
-  const signer = MonadAccountTxSigner as jest.MockedClass<
-    typeof MonadAccountTxSigner
-  >
-  const build = jest
-    .fn()
-    .mockResolvedValueOnce({ txHash: `0x${'66'.repeat(32)}` })
-    .mockResolvedValueOnce({ txHash: `0x${'77'.repeat(32)}` })
-  signer.mockImplementation(
-    () =>
-      ({
-        buildAndSignTransfer: build,
-        submit: jest.fn(async signed => signed.txHash),
-      } as unknown as MonadAccountTxSigner),
-  )
-  const a = first.sendNative({
-    recipient: { raw: expected[1].main },
-    value: 1n,
-    onSigned: async () => {
-      started()
-      await wait
-    },
+  const entered = new Promise<void>(resolve => {
+    started = resolve
   })
-  await signing
-  const b = second.sendNative({
-    recipient: { raw: expected[1].main },
-    value: 2n,
+  const gate = new Promise<void>(resolve => {
+    release = resolve
   })
-  await Promise.resolve()
-  expect(build).toHaveBeenCalledTimes(1)
-  release()
-  await Promise.all([a, b])
-  expect(build).toHaveBeenCalledTimes(2)
-  await first.close()
+  try {
+    const a = first.sendNative({
+      recipient: { raw: expected[1].main },
+      value: 1n,
+      onSigned: async () => {
+        started()
+        await gate
+      },
+    })
+    await entered
+    const b = second.sendNative({
+      recipient: { raw: expected[1].main },
+      value: 2n,
+    })
+    await Promise.resolve()
+    expect(first.getNativeOperations!()).toHaveLength(1)
+    expect(rpc.broadcast).not.toHaveBeenCalled()
+    release()
+    await Promise.all([a, b])
+    expect(first.getNativeOperations!()).toHaveLength(2)
+    expect(
+      rpc.broadcast.mock.calls.map(([raw]) => Transaction.from(raw).nonce),
+    ).toEqual([0, 1])
+  } finally {
+    release?.()
+    await first.close()
+  }
 })
 
 test('reopens existing EVM inventory after close even when authentication changes', async () => {
@@ -748,7 +818,10 @@ test('a mismatched open leaves a retained canonical attempt and its pinned pool 
     await journal.Close()
     const journalBefore = await canonicalJournalEntries(storage)
     expect(journalBefore.map(([key]) => key)).toEqual([
-      'attempt:0000000000000001', 'manifest', 'metadata:binding', 'observations:0000000000000001',
+      'attempt:0000000000000001',
+      'manifest',
+      'metadata:binding',
+      'observations:0000000000000001',
     ])
 
     const second = (await createMonadChain(cfg).createWallet({
@@ -1000,3 +1073,195 @@ test.each([undefined, false])(
     }
   },
 )
+
+test.each([
+  'main',
+  'identity',
+  'spend',
+  'change',
+  'identity-stealth-v1',
+] as const)(
+  'reopens canceled unsigned %s provenance and signs only through owned custody',
+  async kind => {
+    const dir = await mkdtemp(join(tmpdir(), 'frank-native-custody-'))
+    const cfg = {
+      ...config,
+      walletStorageLocation: join(dir, 'wallet'),
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    }
+    let first: MonadChainWalletHandle | undefined
+    let second: MonadChainWalletHandle | undefined
+    try {
+      first = (await createMonadChain(cfg).createWallet(
+        roots(),
+      )) as MonadChainWalletHandle
+      let sourceAddress =
+        kind === 'main'
+          ? expected[0].main
+          : kind === 'identity'
+          ? expected[0].auth
+          : kind === 'spend'
+          ? expected[0].pool
+          : expected[0].change
+      if (kind === 'identity-stealth-v1') {
+        const { deriveEvmStealthPrivateKey } = await import('../monad-stealth')
+        const ephemeral = new Wallet('0x' + '55'.repeat(32)).signingKey
+          .compressedPublicKey
+        const derived = deriveEvmStealthPrivateKey({
+          recipientSpendSecret: first.identity.toPrivateKeyHex(),
+          ephemeralPubKey: getBytes(ephemeral),
+        })
+        sourceAddress = derived.stealthAddress
+        await first.stealthKeyring!.addAccount({
+          address: sourceAddress,
+          // Deliberately wrong attached secret: provenance, not the construction view, owns signing.
+          privateKey: '0x' + '56'.repeat(32),
+          ephemeralPubKey: ephemeral,
+          networkTag: 'MONT',
+          discoveredAtMs: 1,
+          balanceWei: 100000n,
+        })
+      }
+      const rpc = mockNativeRpc(first, { [sourceAddress]: 100000n })
+      const cannotSign = jest
+        .spyOn(Wallet.prototype, 'signTransaction')
+        .mockRejectedValueOnce(new Error('interrupted before signature'))
+      await expect(
+        first.sendNative({
+          recipient: { raw: expected[1].main },
+          value: 1000n,
+        }),
+      ).rejects.toThrow('interrupted before signature')
+      cannotSign.mockRestore()
+      const row = first.getNativeOperations!()[0]!
+      expect(row.members[0]!.source.kind).toBe(kind)
+      expect(row.members[0]!.signed).toBeNull()
+      expect(rpc.broadcast).not.toHaveBeenCalled()
+      await first.cancelUnsignedNativeOperation!(row.operationId)
+      await first.close()
+      second = (await createMonadChain(cfg).createWallet(
+        roots(),
+      )) as MonadChainWalletHandle
+      if (kind === 'identity-stealth-v1')
+        expect(
+          second
+            .stealthKeyring!.getAccounts('MONT')
+            .some(a => a.address === sourceAddress),
+        ).toBe(true)
+      const recovered = mockNativeRpc(second, { [sourceAddress]: 100000n })
+      await second.sendNative({
+        recipient: { raw: expected[1].main },
+        value: 1000n,
+      })
+      expect(Transaction.from(recovered.broadcast.mock.calls[0]![0]).from).toBe(
+        sourceAddress,
+      )
+      expect(second.getNativeOperations!()[0]!.cancelled).toBe(true)
+      expect(second.getNativeOperations!()[0]!.members[0]!.source).toEqual(
+        row.members[0]!.source,
+      )
+    } finally {
+      await second?.close()
+      await first?.close()
+      await rm(dir, { recursive: true, force: true })
+    }
+  },
+)
+
+test('a funded key-only imported account cannot become native custody authority', async () => {
+  const wallet = (await createMonadChain(config).createWallet(
+    roots(),
+  )) as MonadChainWalletHandle
+  try {
+    const stranger = new Wallet('0x' + '67'.repeat(32))
+    const coin = wallet.accountUtxoPool!.registerSubAccount({
+      chain: 'monad',
+      address: stranger.address,
+      privateKey: stranger.privateKey,
+      balanceWei: 100000n,
+    })
+    const rpc = mockNativeRpc(wallet, { [stranger.address]: 100000n })
+    await expect(
+      wallet.sendNative({ recipient: { raw: expected[1].main }, value: 1000n }),
+    ).rejects.toThrow('no recoverable custody reference')
+    expect(rpc.broadcast).not.toHaveBeenCalled()
+    expect(wallet.accountUtxoPool!.getCoin(coin.id)?.balanceWei).toBe(100000n)
+    expect(wallet.getNativeOperations!()).toEqual([])
+  } finally {
+    await wallet.close()
+  }
+})
+
+test('native recovery references load before startup orphan retirement', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-native-lease-'))
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  let first: MonadChainWalletHandle | undefined
+  let second: MonadChainWalletHandle | undefined
+  try {
+    first = (await createMonadChain(cfg).createWallet(
+      roots(),
+    )) as MonadChainWalletHandle
+    const rpc = mockNativeRpc(first, { [expected[0].pool]: 100000n })
+    rpc.broadcast.mockRejectedValueOnce(new Error('lost response'))
+    await expect(
+      first.sendNative({ recipient: { raw: expected[1].main }, value: 1000n }),
+    ).rejects.toThrow('unknown')
+    const row = first.getNativeOperations!()[0]!
+    first.pool.setStatus(0, 'in-use')
+    await first.pool.flush()
+    await first.close()
+    second = (await createMonadChain(cfg).createWallet(
+      roots(),
+    )) as MonadChainWalletHandle
+    expect(second.pool.getRecord(0)!.status).toBe('in-use')
+    const recovered = mockNativeRpc(second, { [expected[0].pool]: 100000n })
+    await second.resumeNativeOperation!(row.operationId)
+    expect(recovered.broadcast).toHaveBeenCalledWith(
+      row.members[0]!.signed!.rawTransaction,
+    )
+  } finally {
+    await second?.close()
+    await first?.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('close drains an admitted plan that has not reached signing yet', async () => {
+  const wallet = (await createMonadChain(config).createWallet(
+    roots(),
+  )) as MonadChainWalletHandle
+  const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n })
+  let entered!: () => void
+  let release!: () => void
+  const started = new Promise<void>(resolve => {
+    entered = resolve
+  })
+  const wait = new Promise<void>(resolve => {
+    release = resolve
+  })
+  jest.spyOn(wallet.provider, 'getFeeData').mockImplementation(async () => {
+    entered()
+    await wait
+    return { gasPrice: 1n, maxFeePerGas: 1n, maxPriorityFeePerGas: 1n } as never
+  })
+  try {
+    const send = wallet.sendNative({
+      recipient: { raw: expected[1].main },
+      value: 1000n,
+    })
+    await started
+    const close = wallet.close()
+    expect(rpc.broadcast).not.toHaveBeenCalled()
+    release()
+    await expect(send).resolves.toHaveProperty('txHash')
+    await close
+    expect(rpc.broadcast).toHaveBeenCalledTimes(1)
+  } finally {
+    release?.()
+    await wallet.close()
+  }
+})

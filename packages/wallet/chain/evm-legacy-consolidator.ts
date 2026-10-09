@@ -1,738 +1,586 @@
-import { Provider, Wallet, isAddress, keccak256 } from "ethers";
-import type { ChainAddress, ChainTransaction } from "./chain-wallet";
+import {
+  getAddress,
+  hexlify,
+  resolveAddress,
+  Transaction,
+  type Provider,
+  type TransactionRequest,
+} from 'ethers'
 import type {
+  ChainAddress,
+  ChainTransaction,
   LegacyFeeEstimate,
   LegacySendProgress,
   LegacySendResult,
-} from "./active-chain";
-import type { EvmAddressInventory, InventoryAccountRecord } from "../hd-address-inventory";
-import type { EvmTransactionBuilder } from "./evm-transaction-builder";
-import type { WalletSyncItem } from "@frank/cashweb/types/messages";
-
-export interface LegacySendIntent {
-  readonly id: string;
-  readonly recipientAddress: string;
-  readonly targetValueWei: string;
-  readonly stagingAddress: string;
-  readonly stagingPrivateKey: string;
-  readonly inputAddresses: string[];
-  phase: "consolidating" | "consolidated" | "draining" | "confirmed" | "completed" | "failed";
-  consolidationTxHashes: string[];
-  drainTxHash?: string;
-  readonly createdAtMs: number;
-  updatedAtMs: number;
-}
-
-export interface LegacySendJournalStore {
-  getPendingIntent(): LegacySendIntent | undefined;
-  setPendingIntent(intent: LegacySendIntent): Promise<void>;
-  clearPendingIntent(): Promise<void>;
-}
-
-export class InMemoryLegacySendJournalStore implements LegacySendJournalStore {
-  private pendingIntent?: LegacySendIntent;
-
-  getPendingIntent(): LegacySendIntent | undefined {
-    return this.pendingIntent;
-  }
-
-  async setPendingIntent(intent: LegacySendIntent): Promise<void> {
-    this.pendingIntent = { ...intent, consolidationTxHashes: [...intent.consolidationTxHashes] };
-  }
-
-  async clearPendingIntent(): Promise<void> {
-    this.pendingIntent = undefined;
-  }
-}
-
-export interface FundingAccount {
-  readonly address: string;
-  readonly balanceWei: bigint;
-  readonly privateKey: string;
-}
+} from './chain-wallet'
+import { NativeTransactionSubmissionError } from './chain-wallet'
+import type { EvmTransactionBuilder } from './evm-transaction-builder'
+import type { WalletSyncItem } from '@frank/cashweb/types/messages'
+import {
+  EvmNativeOperationJournal,
+  nativeMaximumFee,
+  type EvmNativeSource,
+  type EvmNativeMemberPlan,
+  type EvmNativeOperation,
+  type EvmNativeAccountObservation,
+  type EvmNativeObservation,
+} from '../storage/evm-native-operation-journal'
 
 export interface SendLegacyParams {
-  recipient: ChainAddress;
-  value: bigint;
-  onProgress?: (progress: LegacySendProgress) => void;
-  onSigned?: (signed: ChainTransaction) => Promise<void>;
-  /**
-   * When true or when waitForDrain is false, broadcasts peer fan-ins into the mempool,
-   * stores the intent as 'consolidating', and returns an optimistic tracking handle
-   * immediately without waiting for on-chain block mining. A background reconciliation
-   * loop monitors fan-in confirmations and completes recipient delivery.
-   */
-  async?: boolean;
-  waitForDrain?: boolean;
+  recipient: ChainAddress
+  value: bigint
+  onProgress?: (progress: LegacySendProgress) => void
+  onSigned?: (signed: ChainTransaction) => Promise<void>
 }
-
 export interface EvmLegacyConsolidatorConfig {
-  provider: Provider;
-  inventory?: EvmAddressInventory;
-  getFundingAccounts?: () => Promise<FundingAccount[]>;
-  chainIdentifier?: string;
-  /** @deprecated Use chainIdentifier instead. */
-  chainId?: number | bigint | string;
-  transactionBuilder?: EvmTransactionBuilder;
-  journal?: LegacySendJournalStore;
-  standardGasLimit?: bigint;
-  onSyncTransaction?: (item: WalletSyncItem) => Promise<void>;
-  asyncConsolidation?: boolean;
-  pollIntervalMs?: number;
-  pollTimeoutMs?: number;
+  provider: Provider
+  journal: EvmNativeOperationJournal
+  transactionBuilder: EvmTransactionBuilder
+  getSources: () => Promise<EvmNativeSource[]>
+  sign: (
+    source: EvmNativeSource,
+    unsignedTransaction: string,
+  ) => Promise<string>
+  onSyncTransaction?: (item: WalletSyncItem) => Promise<void>
+}
+export class EvmNativeOperationPendingError extends NativeTransactionSubmissionError {
+  constructor(readonly operation: EvmNativeOperation, reason: unknown) {
+    const signed = operation.members.flatMap(m =>
+      m.signed ? [m.signed.transactionHash] : [],
+    )
+    super({
+      transaction: {
+        txHash: signed[signed.length - 1] ?? '',
+        relatedTxHashes: signed.slice(0, -1),
+      },
+      reason,
+    })
+    this.name = 'EvmNativeOperationPendingError'
+  }
+}
+interface AvailableSource {
+  source: EvmNativeSource
+  account: EvmNativeAccountObservation
+  spendableValue: bigint
 }
 
-const DEFAULT_STANDARD_TRANSFER_GAS = 21_000n;
-
-interface ActiveTrackingEntry {
-  promise: Promise<LegacySendResult>;
-  callbacks: Set<{
-    onProgress?: (progress: LegacySendProgress) => void;
-    onSigned?: (signed: ChainTransaction) => Promise<void>;
-  }>;
-}
-
+/** Wallet-lifetime native executor. Journal owns recovery; this module owns dependencies. */
 export class EvmLegacyConsolidator {
-  private readonly provider: Provider;
-  private readonly inventory?: EvmAddressInventory;
-  private readonly getFundingAccounts?: () => Promise<FundingAccount[]>;
-  private readonly chainIdentifier: string;
-  private readonly journal: LegacySendJournalStore;
-  private readonly standardGasLimit: bigint;
-  private readonly onSyncTransaction?: (item: WalletSyncItem) => Promise<void>;
-  private readonly asyncConsolidation: boolean;
-  private readonly pollIntervalMs: number;
-  private readonly pollTimeoutMs: number;
-  private readonly activeTrackingTasks = new Map<string, ActiveTrackingEntry>();
-
-  constructor(config: EvmLegacyConsolidatorConfig) {
-    this.provider = config.provider;
-    this.inventory = config.inventory;
-    this.getFundingAccounts = config.getFundingAccounts;
-    this.chainIdentifier =
-      config.chainIdentifier ??
-      (config.chainId !== undefined ? String(config.chainId) : "monad-testnet");
-    this.journal = config.journal ?? new InMemoryLegacySendJournalStore();
-    this.standardGasLimit = config.standardGasLimit ?? DEFAULT_STANDARD_TRANSFER_GAS;
-    this.onSyncTransaction = config.onSyncTransaction;
-    this.asyncConsolidation = config.asyncConsolidation ?? false;
-    this.pollIntervalMs = config.pollIntervalMs ?? 50;
-    this.pollTimeoutMs = config.pollTimeoutMs ?? 60_000;
+  private tail: Promise<unknown> = Promise.resolve()
+  private syncTail: Promise<void> = Promise.resolve()
+  private readonly active = new Map<string, Promise<EvmNativeOperation>>()
+  constructor(private readonly config: EvmLegacyConsolidatorConfig) {}
+  private run<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.tail.then(task)
+    this.tail = run.catch(() => undefined)
+    return run
   }
-
-  private async getGasPrice(): Promise<bigint> {
+  async drain(): Promise<void> {
+    await this.tail
+    await this.syncTail
+  }
+  listOperations(): EvmNativeOperation[] {
+    return this.config.journal.list()
+  }
+  getUnresolvedLegacySend(): EvmNativeOperation[] {
+    return this.listOperations().filter(
+      r =>
+        r.kind === 'legacy' &&
+        !r.cancelled &&
+        r.members[r.members.length - 1]!.observation.state !==
+          'included-success',
+    )
+  }
+  private async account(address: string): Promise<EvmNativeAccountObservation> {
+    const { provider } = this.config
+    const block = await provider.getBlock('latest')
+    if (!block?.hash) throw new Error('Native account block unavailable')
+    const [balance, nonce, checked] = await Promise.all([
+      provider.getBalance(address, block.number),
+      provider.getTransactionCount(address, block.number),
+      provider.getBlock(block.number),
+    ])
+    if (checked?.hash !== block.hash)
+      throw new Error('Native account block changed')
+    return {
+      blockHash: block.hash.toLowerCase(),
+      blockNumber: block.number,
+      nonce,
+      balanceWei: balance.toString(),
+    }
+  }
+  async observe(operationId: string, index: number): Promise<void> {
+    const { journal, provider } = this.config
+    const member = journal.get(operationId).members[index]!
+    if (!member.signed) return
+    const capture = journal.beginCapture(operationId, index)
+    let observation: EvmNativeObservation = { state: 'unknown' }
+    let account: EvmNativeAccountObservation | null = null
     try {
-      const feeData = await this.provider.getFeeData();
-      return feeData.maxFeePerGas ?? feeData.gasPrice ?? 1_000_000_000n;
+      const expected = Transaction.from(member.signed.rawTransaction)
+      const [transaction, receipt, state] = await Promise.all([
+        provider.getTransaction(member.signed.transactionHash),
+        provider.getTransactionReceipt(member.signed.transactionHash),
+        this.account(member.source.address),
+      ])
+      account = state
+      if (transaction === null && receipt === null)
+        observation = { state: 'missing' }
+      else if (
+        transaction &&
+        transaction.hash.toLowerCase() === expected.hash &&
+        transaction.from.toLowerCase() === member.source.address &&
+        Transaction.from(transaction).serialized === expected.serialized
+      ) {
+        if (receipt === null) observation = { state: 'pending' }
+        else if (
+          receipt.hash.toLowerCase() === expected.hash &&
+          receipt.from.toLowerCase() === member.source.address &&
+          receipt.to?.toLowerCase() === expected.to?.toLowerCase() &&
+          transaction.blockHash?.toLowerCase() ===
+            receipt.blockHash.toLowerCase() &&
+          transaction.blockNumber === receipt.blockNumber &&
+          transaction.index === receipt.index &&
+          (receipt.status === 0 || receipt.status === 1)
+        ) {
+          const block = await provider.getBlock(receipt.blockNumber)
+          if (
+            block?.hash?.toLowerCase() === receipt.blockHash.toLowerCase() &&
+            receipt.blockNumber <= account.blockNumber
+          )
+            observation = {
+              state:
+                receipt.status === 1 ? 'included-success' : 'included-revert',
+              transactionHash: member.signed.transactionHash,
+              blockHash: receipt.blockHash.toLowerCase(),
+              blockNumber: receipt.blockNumber,
+              transactionIndex: receipt.index,
+              feeWei: (receipt.gasUsed * receipt.gasPrice).toString(),
+            }
+        }
+      }
     } catch {
-      return 1_000_000_000n;
+      /* Missing/unavailable/inconsistent evidence never proves nonexecution. */
+    }
+    await journal.recordObservation(capture, observation, account)
+  }
+  private async sources(): Promise<AvailableSource[]> {
+    const { journal } = this.config
+    const sources = new Map<string, EvmNativeSource>()
+    for (const source of [
+      ...(await this.config.getSources()),
+      ...journal.sourceReferences(),
+    ])
+      sources.set(source.address, source)
+    // Revalidate evidence used for source/dependent eligibility; observations do not release rows.
+    for (const row of journal.list())
+      if (!row.cancelled)
+        for (let i = 0; i < row.members.length; i++) {
+          if (
+            row.members[i]!.signed &&
+            sources.has(row.members[i]!.source.address)
+          )
+            await this.observe(row.operationId, i)
+        }
+    const result: AvailableSource[] = []
+    for (const source of sources.values()) {
+      const account = await this.account(source.address)
+      if (!journal.canSelect(source.address, account.nonce)) continue
+      const spendableValue =
+        this.config.transactionBuilder.supportsNativeConsolidation === true
+          ? BigInt(account.balanceWei)
+          : await this.config.transactionBuilder.getBalance({
+              address: source.address,
+              provider: this.config.provider,
+            })
+      if (spendableValue > 0n) result.push({ source, account, spendableValue })
+    }
+    return result
+  }
+  private async transaction(
+    source: AvailableSource,
+    recipient: string,
+    amount: bigint,
+    fees: { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint },
+  ): Promise<string> {
+    const request = await this.config.transactionBuilder.buildTransfer({
+      from: source.source.address,
+      recipient,
+      amount,
+      overrides: { nonce: source.account.nonce, ...fees },
+    })
+    if (
+      request.from &&
+      getAddress(String(request.from)).toLowerCase() !== source.source.address
+    )
+      throw new Error('Builder changed native source')
+    if (request.nonce != null && request.nonce !== source.account.nonce)
+      throw new Error('Builder changed native nonce')
+    if (
+      request.chainId != null &&
+      BigInt(request.chainId) !==
+        BigInt(this.config.journal.binding.nativeChainId)
+    )
+      throw new Error('Builder changed native chain')
+    const unsigned: TransactionRequest = {
+      ...request,
+      from: source.source.address,
+      nonce: source.account.nonce,
+      chainId: BigInt(this.config.journal.binding.nativeChainId),
+      type: request.type ?? 2,
+    }
+    if (unsigned.type === 0 || unsigned.type === 1) {
+      unsigned.gasPrice ??= fees.maxFeePerGas
+      delete unsigned.maxFeePerGas
+      delete unsigned.maxPriorityFeePerGas
+    } else {
+      unsigned.maxFeePerGas ??= fees.maxFeePerGas
+      unsigned.maxPriorityFeePerGas ??= fees.maxPriorityFeePerGas
+    }
+    unsigned.gasLimit ??= await this.config.provider.estimateGas(unsigned)
+    // Transaction.from deliberately excludes the custody-only `from` request property.
+    if (
+      unsigned.authorizationList?.length ||
+      unsigned.blobs?.length ||
+      unsigned.blobVersionedHashes?.length
+    )
+      throw new Error('Unsupported native transaction envelope')
+    return Transaction.from({
+      type: unsigned.type,
+      to: await resolveAddress(unsigned.to ?? recipient),
+      chainId: unsigned.chainId,
+      nonce: unsigned.nonce,
+      value: unsigned.value,
+      data: hexlify(unsigned.data ?? '0x'),
+      gasLimit: unsigned.gasLimit,
+      gasPrice: unsigned.gasPrice,
+      maxFeePerGas: unsigned.maxFeePerGas,
+      maxPriorityFeePerGas: unsigned.maxPriorityFeePerGas,
+      accessList: unsigned.accessList,
+    }).unsignedSerialized
+  }
+  private async plan(
+    params: SendLegacyParams,
+    kind: 'native' | 'legacy',
+  ): Promise<EvmNativeOperation> {
+    const recipient = getAddress(params.recipient.raw).toLowerCase()
+    if (params.value <= 0n)
+      throw new RangeError('Transfer value must be positive')
+    if (
+      kind === 'legacy' &&
+      this.config.transactionBuilder.supportsNativeConsolidation !== true
+    )
+      throw new Error('Builder does not support native consolidation')
+    const accounts = await this.sources()
+    const fee = await this.config.provider.getFeeData()
+    const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
+    if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
+    const fees = {
+      maxFeePerGas,
+      maxPriorityFeePerGas: fee.maxPriorityFeePerGas ?? maxFeePerGas,
+    }
+    if (fees.maxPriorityFeePerGas > maxFeePerGas)
+      throw new Error('Invalid native fee quote')
+    accounts.sort((a, b) =>
+      a.spendableValue === b.spendableValue
+        ? a.source.address.localeCompare(b.source.address)
+        : a.spendableValue > b.spendableValue
+        ? -1
+        : 1,
+    )
+    for (const account of accounts) {
+      if (account.spendableValue < params.value) continue
+      const raw = await this.transaction(account, recipient, params.value, fees)
+      const tx = Transaction.from(raw)
+      if (BigInt(account.account.balanceWei) < tx.value + nativeMaximumFee(tx))
+        continue
+      return this.config.journal.prepare({
+        kind,
+        recipient,
+        intendedValueWei: params.value.toString(),
+        members: [
+          {
+            source: account.source,
+            unsignedTransaction: raw,
+            dependencies: [],
+          },
+        ],
+      })
+    }
+    if (kind === 'native' || accounts.length < 2)
+      throw new RangeError('Insufficient unreserved native funds')
+    const leader = accounts[0]!
+    const drain = await this.transaction(leader, recipient, params.value, fees)
+    const drainTx = Transaction.from(drain)
+    let funded = BigInt(leader.account.balanceWei)
+    const members: EvmNativeMemberPlan[] = []
+    for (const peer of accounts.slice(1)) {
+      if (funded >= params.value + nativeMaximumFee(drainTx)) break
+      const quote = Transaction.from(
+        await this.transaction(peer, leader.source.address, 0n, fees),
+      )
+      const available =
+        BigInt(peer.account.balanceWei) - nativeMaximumFee(quote)
+      if (available <= 0n) continue
+      const raw = await this.transaction(
+        peer,
+        leader.source.address,
+        available,
+        fees,
+      )
+      const tx = Transaction.from(raw)
+      if (
+        tx.to?.toLowerCase() !== leader.source.address ||
+        tx.value !== available ||
+        tx.data !== '0x' ||
+        tx.value + nativeMaximumFee(tx) > BigInt(peer.account.balanceWei)
+      )
+        throw new Error('Unsupported native consolidation economics')
+      members.push({
+        source: peer.source,
+        unsignedTransaction: raw,
+        dependencies: [],
+      })
+      funded += available
+      if (members.length >= 64)
+        throw new Error('Native operation member capacity')
+    }
+    if (funded < params.value + nativeMaximumFee(drainTx))
+      throw new RangeError('Insufficient unreserved native funds')
+    if (
+      drainTx.to?.toLowerCase() !== recipient ||
+      drainTx.value !== params.value ||
+      drainTx.data !== '0x'
+    )
+      throw new Error('Unsupported native drain economics')
+    members.push({
+      source: leader.source,
+      unsignedTransaction: drain,
+      dependencies: members.map((_, i) => i),
+    })
+    return this.config.journal.prepare({
+      kind,
+      recipient,
+      intendedValueWei: params.value.toString(),
+      members,
+    })
+  }
+  private async sign(row: EvmNativeOperation): Promise<EvmNativeOperation> {
+    for (let i = 0; i < row.members.length; i++) {
+      const member = this.config.journal.get(row.operationId).members[i]!
+      if (!member.signed)
+        await this.config.journal.checkpointSigned(
+          row.operationId,
+          i,
+          await this.config.sign(member.source, member.unsignedTransaction),
+        )
+    }
+    return this.config.journal.get(row.operationId)
+  }
+  private transactionHandle(row: EvmNativeOperation): ChainTransaction {
+    const hashes = row.members.map(m => m.signed!.transactionHash)
+    return {
+      txHash: hashes[hashes.length - 1]!,
+      ...(hashes.length > 1 ? { relatedTxHashes: hashes.slice(0, -1) } : {}),
     }
   }
-
-  private async collectAvailableFundingAccounts(): Promise<FundingAccount[]> {
-    if (this.getFundingAccounts) {
-      return await this.getFundingAccounts();
+  private async execute(
+    id: string,
+    onSigned?: SendLegacyParams['onSigned'],
+  ): Promise<EvmNativeOperation> {
+    const { journal, provider } = this.config
+    let row = journal.get(id)
+    if (row.cancelled) throw new Error('Native operation was cancelled')
+    row = await this.sign(row)
+    await onSigned?.(this.transactionHandle(row))
+    for (let i = 0; i < row.members.length; i++) {
+      await this.observe(id, i)
+      row = journal.get(id)
+      let member = row.members[i]!
+      if (member.observation.state === 'included-revert')
+        throw new EvmNativeOperationPendingError(
+          row,
+          new Error(
+            'Original native member reverted; retained for disposition',
+          ),
+        )
+      if (
+        member.dependencies.some(
+          d => row.members[d]!.observation.state !== 'included-success',
+        )
+      )
+        throw new EvmNativeOperationPendingError(
+          row,
+          new Error('Original native prerequisites are pending'),
+        )
+      if (member.observation.state !== 'included-success') {
+        await journal.markExposed(id, i)
+        try {
+          const response = await provider.broadcastTransaction(
+            member.signed!.rawTransaction,
+          )
+          if (response.hash.toLowerCase() !== member.signed!.transactionHash)
+            throw new Error('Unexpected native transaction hash')
+        } catch (reason) {
+          throw new EvmNativeOperationPendingError(journal.get(id), reason)
+        }
+        if (row.kind === 'native') return journal.get(id)
+        await this.observe(id, i)
+        row = journal.get(id)
+        member = row.members[i]!
+        if (member.observation.state !== 'included-success')
+          throw new EvmNativeOperationPendingError(
+            row,
+            new Error(
+              'Original native member has not been observed successful',
+            ),
+          )
+      }
     }
-    if (this.inventory) {
-      const cleanAccounts = this.inventory
-        .getAllAccounts()
-        .filter((acc) => acc.isClean && acc.nonce === 0 && acc.balanceWei > 0n);
-
-      return cleanAccounts.map((record) => {
-        const privateKey =
-          record.branch === "spend"
-            ? this.inventory!.spendKeyring.deriveSubAccount(record.index).privateKey
-            : this.inventory!.changeKeyring.deriveChangeAccount(record.index).privateKey;
-
-        return {
-          address: record.address,
-          balanceWei: record.balanceWei,
-          privateKey,
-        };
-      });
-    }
-    return [];
+    return journal.get(id)
   }
-
-  /**
-   * Estimates the network fee required to consolidate multiple sub-accounts and execute
-   * the single drain transfer to the legacy recipient.
-   */
+  /** Composition invokes this outside its financial queue; transport may itself need admission. */
+  flushSync(operationId?: string): Promise<void> {
+    const run = this.syncTail.then(() => this.applySync(operationId))
+    this.syncTail = run.catch(() => undefined)
+    return run
+  }
+  private async applySync(operationId?: string): Promise<void> {
+    const { journal } = this.config
+    if (!this.config.onSyncTransaction) return
+    for (const row of journal
+      .list()
+      .filter(
+        row => operationId === undefined || row.operationId === operationId,
+      ))
+      for (let i = 0; i < row.members.length; i++) {
+        const member = row.members[i]!
+        const id = row.operationId
+        if (
+          !row.cancelled &&
+          member.signed &&
+          member.observation.state === 'included-success' &&
+          !member.syncApplied &&
+          this.config.onSyncTransaction
+        ) {
+          const tx = Transaction.from(member.signed!.rawTransaction)
+          const observation = member.observation
+          if (observation.state === 'included-success') {
+            try {
+              await this.config.onSyncTransaction({
+                type: 'wallet-sync',
+                direction: 'out',
+                chainIdentifier: journal.binding.chainIdentifier,
+                txHash: member.signed!.transactionHash,
+                spentInputs: [
+                  {
+                    address: member.source.address,
+                    nonce: tx.nonce,
+                    valueWei: (
+                      tx.value + BigInt(observation.feeWei)
+                    ).toString(),
+                  },
+                ],
+                createdOutputs: [
+                  { address: tx.to!, valueWei: tx.value.toString() },
+                ],
+                timestamp: Date.now(),
+              })
+            } catch (reason) {
+              throw new EvmNativeOperationPendingError(journal.get(id), reason)
+            }
+            await journal.markSyncApplied(id, i)
+          }
+        }
+      }
+  }
+  resumeOperation(operationId: string): Promise<EvmNativeOperation> {
+    const existing = this.active.get(operationId)
+    if (existing) return existing
+    const run = this.run(() => this.execute(operationId))
+    this.active.set(operationId, run)
+    void run
+      .finally(() => {
+        if (this.active.get(operationId) === run)
+          this.active.delete(operationId)
+      })
+      .catch(() => undefined)
+    return run
+  }
+  sendNative(params: SendLegacyParams): Promise<ChainTransaction> {
+    return this.run(async () => {
+      const row = await this.plan(params, 'native')
+      return this.transactionHandle(
+        await this.execute(row.operationId, params.onSigned),
+      )
+    })
+  }
+  sendLegacy(params: SendLegacyParams): Promise<LegacySendResult> {
+    return this.run(async () => {
+      params.onProgress?.({ status: { stage: 'planning' } })
+      const row = await this.plan(params, 'legacy')
+      const completed = await this.execute(row.operationId, params.onSigned)
+      const result = this.legacyResult(completed)
+      params.onProgress?.({
+        status: { stage: 'confirmed', txHash: result.txHash },
+      })
+      return result
+    })
+  }
+  private legacyResult(row: EvmNativeOperation): LegacySendResult {
+    if (
+      row.kind !== 'legacy' ||
+      row.members.some(m => m.observation.state !== 'included-success')
+    )
+      throw new EvmNativeOperationPendingError(
+        row,
+        new Error('Original legacy payment pending'),
+      )
+    return {
+      txHash: row.members[row.members.length - 1]!.signed!.transactionHash,
+      intermediateTxHashes: row.members
+        .slice(0, -1)
+        .map(m => m.signed!.transactionHash),
+      totalValueSent: BigInt(row.intendedValueWei),
+      totalFeePaid: row.members.reduce(
+        (sum, m) =>
+          sum + BigInt('feeWei' in m.observation ? m.observation.feeWei : '0'),
+        0n,
+      ),
+    }
+  }
+  async resumeLegacySend(operationId: string): Promise<LegacySendResult> {
+    return this.legacyResult(await this.resumeOperation(operationId))
+  }
   async estimateLegacyFee(
-    recipient: ChainAddress,
-    value: bigint
+    _recipient: ChainAddress,
+    value: bigint,
   ): Promise<LegacyFeeEstimate> {
-    const gasPrice = await this.getGasPrice();
-    const singleTransferFee = this.standardGasLimit * gasPrice;
-    const deliveryFee = singleTransferFee;
-
-    const available = await this.collectAvailableFundingAccounts();
-    available.sort((a, b) =>
-      b.balanceWei > a.balanceWei ? 1 : b.balanceWei < a.balanceWei ? -1 : 0
-    );
-
-    let covered = 0n;
-    let inputCount = 0;
-    let consolidationFee = 0n;
-
-    for (const acc of available) {
-      if (acc.balanceWei <= singleTransferFee) continue;
-      const netContribution = acc.balanceWei - singleTransferFee;
-      covered += netContribution;
-      inputCount++;
-      consolidationFee += singleTransferFee;
-
-      if (covered >= value + deliveryFee) {
-        break;
-      }
+    if (
+      value <= 0n ||
+      this.config.transactionBuilder.supportsNativeConsolidation !== true
+    )
+      throw new Error('Native consolidation unavailable')
+    const accounts = await this.sources()
+    const fees = await this.config.provider.getFeeData()
+    const price = fees.maxFeePerGas ?? fees.gasPrice
+    if (price == null) throw new Error('Native fee quote unavailable')
+    const fee = 21000n * price
+    accounts.sort((a, b) => (a.spendableValue > b.spendableValue ? -1 : 1))
+    let balance = 0n
+    let count = 0
+    for (const a of accounts) {
+      balance += a.spendableValue
+      count++
+      if (balance >= value + BigInt(count) * fee) break
     }
-
-    if (inputCount === 0) {
-      inputCount = 1;
-    }
-
+    if (!count || count > 64 || balance < value + BigInt(count) * fee)
+      throw new RangeError('Insufficient native funds')
     return {
-      totalFee: consolidationFee + deliveryFee,
-      inputCount,
-      consolidationFee,
-      deliveryFee,
-    };
-  }
-
-  /**
-   * Executes the legacy send:
-   * - Fast-Path Direct Execution: If a single account covers the target amount (balanceWei >= value + deliveryFee),
-   *   funds are sent directly to the destination address with zero intermediate staging account or hops.
-   * - In-Set Leader Selection: If multi-account fan-in is required, the account with the largest balance
-   *   is designated as the leader. Peer accounts send fan-in transfers directly into the leader address,
-   *   and the leader executes the final delivery transfer to the legacy recipient.
-   */
-  async sendLegacy(params: SendLegacyParams): Promise<LegacySendResult> {
-    const { recipient, value, onProgress, onSigned } = params;
-
-    if (!isAddress(recipient.raw)) {
-      throw new TypeError(`Invalid EVM recipient address: ${recipient.raw}`);
+      inputCount: count,
+      deliveryFee: fee,
+      consolidationFee: BigInt(count - 1) * fee,
+      totalFee: BigInt(count) * fee,
     }
-    if (value <= 0n) {
-      throw new RangeError("Legacy send amount must be positive");
-    }
-
-    const gasPrice = await this.getGasPrice();
-    const singleTransferFee = this.standardGasLimit * gasPrice;
-    const deliveryFee = singleTransferFee;
-
-    const available = await this.collectAvailableFundingAccounts();
-    available.sort((a, b) =>
-      b.balanceWei > a.balanceWei ? 1 : b.balanceWei < a.balanceWei ? -1 : 0
-    );
-
-    const selected: FundingAccount[] = [];
-    let netAggregated = 0n;
-
-    for (const acc of available) {
-      if (acc.balanceWei <= singleTransferFee) continue;
-      selected.push(acc);
-      if (selected.length === 1 && selected[0].balanceWei >= value + deliveryFee) {
-        break;
-      }
-      netAggregated += acc.balanceWei - singleTransferFee;
-      if (netAggregated >= value + deliveryFee) {
-        break;
-      }
-    }
-
-    if (selected.length === 0) {
-      throw new RangeError(
-        `No spendable clean accounts available for legacy consolidation`
-      );
-    }
-
-    if (selected.length === 1 && selected[0].balanceWei < value + deliveryFee) {
-      throw new RangeError(
-        `Insufficient clean balance across accounts to fulfill legacy send of ${value} plus consolidation gas fees`
-      );
-    }
-
-    if (selected.length > 1 && netAggregated < value + deliveryFee) {
-      // If we don't have enough to cover value + delivery fee, check if we can cover at least value
-      if (netAggregated < value) {
-        throw new RangeError(
-          `Insufficient clean balance across accounts to fulfill legacy send of ${value} plus consolidation gas fees`
-        );
-      }
-    }
-
-    // Fast-Path Direct Execution:
-    // If a single account covers the target amount, send directly to recipient.raw
-    if (selected.length === 1 && selected[0].balanceWei >= value + deliveryFee) {
-      const funder = selected[0];
-      const funderWallet = new Wallet(funder.privateKey, this.provider);
-
-      onProgress?.({
-        status: {
-          stage: "broadcasting",
-        },
-        message: `Broadcasting direct transfer to destination address`,
-      });
-
-      const txResponse = await funderWallet.sendTransaction({
-        to: recipient.raw,
-        value,
-        gasLimit: this.standardGasLimit,
-      });
-
-      if (onSigned) {
-        await onSigned({ txHash: txResponse.hash });
-      }
-
-      onProgress?.({
-        status: {
-          stage: "broadcasting",
-          txHash: txResponse.hash,
-        },
-        message: `Broadcasting direct transfer to destination address`,
-      });
-
-      onProgress?.({
-        status: {
-          stage: "confirmed",
-          txHash: txResponse.hash,
-        },
-        message: `Legacy transfer confirmed on-chain`,
-      });
-
-      const directSyncItem: WalletSyncItem = {
-        type: "wallet-sync",
-        direction: "out",
-        chainIdentifier: this.chainIdentifier,
-        txHash: txResponse.hash,
-        spentInputs: [
-          {
-            address: funder.address,
-            valueWei: (value + deliveryFee).toString(),
-          },
-        ],
-        createdOutputs: [
-          {
-            address: recipient.raw,
-            valueWei: value.toString(),
-          },
-        ],
-        timestamp: Date.now(),
-      };
-
-      if (this.inventory) {
-        this.inventory.processSyncTransaction(directSyncItem);
-      }
-
-      if (this.onSyncTransaction) {
-        try {
-          await this.onSyncTransaction(directSyncItem);
-        } catch (err) {
-          console.warn("Could not dispatch direct sync item:", err);
-        }
-      }
-
-      return {
-        txHash: txResponse.hash,
-        intermediateTxHashes: [],
-        totalValueSent: value,
-        totalFeePaid: deliveryFee,
-      };
-    }
-
-    // In-Set Leader Selection:
-    // Sort selected descending by balanceWei
-    selected.sort((a, b) =>
-      b.balanceWei > a.balanceWei ? 1 : b.balanceWei < a.balanceWei ? -1 : 0
-    );
-
-    const leader = selected[0];
-    const peers = selected.slice(1);
-
-    // Step 2: Persist intent to journal using leader as staging/leader address
-    const intentId = `legacy-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const intent: LegacySendIntent = {
-      id: intentId,
-      recipientAddress: recipient.raw,
-      targetValueWei: value.toString(),
-      stagingAddress: leader.address,
-      stagingPrivateKey: leader.privateKey,
-      inputAddresses: selected.map((a) => a.address),
-      phase: "consolidating",
-      consolidationTxHashes: [],
-      createdAtMs: Date.now(),
-      updatedAtMs: Date.now(),
-    };
-
-    await this.journal.setPendingIntent(intent);
-
-    onProgress?.({
-      status: {
-        stage: "consolidating",
-        completed: 0,
-        total: peers.length,
-        stagingTxHashes: [],
-      },
-      message: `Consolidating funds from ${peers.length} accounts to leader account`,
-    });
-
-    // Step 3: Phase 1 Fan-in consolidation into leader: broadcast peer fan-in transactions into mempool
-    let neededInLeader =
-      value + deliveryFee > leader.balanceWei
-        ? value + deliveryFee - leader.balanceWei
-        : 0n;
-    let totalConsolidationFeePaid = 0n;
-
-    for (let i = 0; i < peers.length; i++) {
-      const funder = peers[i];
-      const maxFunderNet = funder.balanceWei - singleTransferFee;
-      const transferAmount =
-        maxFunderNet >= neededInLeader ? neededInLeader : maxFunderNet;
-
-      if (transferAmount <= 0n) continue;
-
-      const funderSigner = new Wallet(funder.privateKey, this.provider);
-      const txResponse = await funderSigner.sendTransaction({
-        to: leader.address,
-        value: transferAmount,
-        gasLimit: this.standardGasLimit,
-      });
-
-      intent.consolidationTxHashes.push(txResponse.hash);
-      intent.updatedAtMs = Date.now();
-      await this.journal.setPendingIntent(intent);
-      totalConsolidationFeePaid += singleTransferFee;
-
-      const syncItem: WalletSyncItem = {
-        type: "wallet-sync",
-        direction: "out",
-        chainIdentifier: this.chainIdentifier,
-        txHash: txResponse.hash,
-        spentInputs: [
-          {
-            address: funder.address,
-            valueWei: (transferAmount + singleTransferFee).toString(),
-          },
-        ],
-        createdOutputs: [
-          {
-            address: leader.address,
-            valueWei: transferAmount.toString(),
-            branch: "staging",
-          },
-        ],
-        timestamp: Date.now(),
-      };
-
-      // Update inventory record if inventory is present
-      if (this.inventory) {
-        this.inventory.processSyncTransaction(syncItem);
-      }
-
-      if (this.onSyncTransaction) {
-        try {
-          await this.onSyncTransaction(syncItem);
-        } catch (err) {
-          console.warn("Could not dispatch consolidation sync item:", err);
-        }
-      }
-
-      onProgress?.({
-        status: {
-          stage: "consolidating",
-          completed: i + 1,
-          total: peers.length,
-          stagingTxHashes: [...intent.consolidationTxHashes],
-        },
-        message: `Funded leader account (${i + 1}/${peers.length})`,
-      });
-
-      neededInLeader -= transferAmount;
-      if (neededInLeader <= 0n) break;
-    }
-
-    intent.phase = "consolidating";
-    intent.updatedAtMs = Date.now();
-    await this.journal.setPendingIntent(intent);
-
-    const isAsync =
-      params.async === true ||
-      params.waitForDrain === false ||
-      (this.asyncConsolidation && params.waitForDrain !== true);
-
-    if (isAsync) {
-      // Start background tracking reconciliation loop without blocking caller
-      this.resumeConsolidation(intent.id, {
-        onProgress,
-        onSigned,
-      }).catch((err) => {
-        console.warn("Background consolidation error:", err);
-      });
-
-      return {
-        txHash: intent.consolidationTxHashes[0],
-        intermediateTxHashes: intent.consolidationTxHashes,
-        totalValueSent: value,
-        totalFeePaid: totalConsolidationFeePaid + deliveryFee,
-      };
-    }
-
-    return await this.resumeConsolidation(intent.id, {
-      onProgress,
-      onSigned,
-    });
-  }
-
-  /**
-   * Resumes or monitors an in-flight consolidation intent:
-   * - Monitors/awaits peer fan-in transaction receipts without holding wallet locks.
-   * - Once peer fan-ins confirm, leader signs and broadcasts the final transfer to recipient.raw and sets phase: 'completed'.
-   */
-  async resumeConsolidation(
-    intentId: string,
-    callbacks?: {
-      onProgress?: (progress: LegacySendProgress) => void;
-      onSigned?: (signed: ChainTransaction) => Promise<void>;
-    }
-  ): Promise<LegacySendResult> {
-    const existing = this.activeTrackingTasks.get(intentId);
-    if (existing) {
-      if (callbacks) {
-        existing.callbacks.add(callbacks);
-      }
-      return existing.promise;
-    }
-
-    const callbacksSet = new Set<{
-      onProgress?: (progress: LegacySendProgress) => void;
-      onSigned?: (signed: ChainTransaction) => Promise<void>;
-    }>();
-    if (callbacks) {
-      callbacksSet.add(callbacks);
-    }
-
-    const entry: ActiveTrackingEntry = {
-      promise: Promise.resolve() as any,
-      callbacks: callbacksSet,
-    };
-
-    entry.promise = this.executeResumeConsolidation(intentId, entry);
-    this.activeTrackingTasks.set(intentId, entry);
-    try {
-      return await entry.promise;
-    } finally {
-      this.activeTrackingTasks.delete(intentId);
-    }
-  }
-
-  private async executeResumeConsolidation(
-    intentId: string,
-    entry: ActiveTrackingEntry
-  ): Promise<LegacySendResult> {
-    const notifySigned = async (signed: ChainTransaction) => {
-      for (const cb of entry.callbacks) {
-        if (cb.onSigned) {
-          await cb.onSigned(signed);
-        }
-      }
-    };
-
-    const notifyProgress = (progress: LegacySendProgress) => {
-      for (const cb of entry.callbacks) {
-        if (cb.onProgress) {
-          cb.onProgress(progress);
-        }
-      }
-    };
-
-    const intent = this.journal.getPendingIntent();
-    if (!intent || intent.id !== intentId) {
-      throw new Error(`No pending legacy send intent found matching id ${intentId}`);
-    }
-
-    if (intent.phase === "failed") {
-      throw new Error(`Consolidation intent ${intentId} has failed`);
-    }
-
-    const gasPrice = await this.getGasPrice();
-    const singleTransferFee = this.standardGasLimit * gasPrice;
-    const deliveryGas = this.standardGasLimit * gasPrice;
-    const totalConsolidationFeePaid =
-      BigInt(intent.consolidationTxHashes.length) * singleTransferFee;
-
-    // Check if the drain transaction was already broadcasted and mined
-    if (intent.drainTxHash) {
-      try {
-        const receipt = await this.provider.getTransactionReceipt(intent.drainTxHash);
-        if (receipt && receipt.status !== 0) {
-          intent.phase = "completed";
-          intent.updatedAtMs = Date.now();
-          await this.journal.setPendingIntent(intent);
-          await this.journal.clearPendingIntent();
-          return {
-            txHash: intent.drainTxHash,
-            intermediateTxHashes: intent.consolidationTxHashes,
-            totalValueSent: BigInt(intent.targetValueWei),
-            totalFeePaid: totalConsolidationFeePaid + deliveryGas,
-          };
-        }
-      } catch {
-        // Fall through to re-checking balance
-      }
-    }
-
-    const startTime = Date.now();
-    if (intent.phase === "consolidating") {
-      for (const txHash of intent.consolidationTxHashes) {
-        let receipt: any = null;
-        while (!receipt) {
-          if (Date.now() - startTime > this.pollTimeoutMs) {
-            intent.phase = "failed";
-            intent.updatedAtMs = Date.now();
-            await this.journal.setPendingIntent(intent);
-            throw new Error(`Consolidation transaction ${txHash} timed out waiting for confirmation`);
-          }
-          try {
-            receipt = await this.provider.getTransactionReceipt(txHash);
-          } catch {
-            receipt = null;
-          }
-          if (!receipt) {
-            await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-          }
-        }
-        if (receipt.status === 0) {
-          intent.phase = "failed";
-          intent.updatedAtMs = Date.now();
-          await this.journal.setPendingIntent(intent);
-          throw new Error(`Consolidation transaction ${txHash} reverted on-chain`);
-        }
-      }
-
-      intent.phase = "consolidated";
-      intent.updatedAtMs = Date.now();
-      await this.journal.setPendingIntent(intent);
-    }
-
-    // Phase 2 Drain from leader/staging account to recipient
-    const stagingWallet = new Wallet(intent.stagingPrivateKey, this.provider);
-    const stagingBalance = await this.provider.getBalance(stagingWallet.address);
-
-    if (stagingBalance <= deliveryGas) {
-      throw new Error(
-        `Staging account ${stagingWallet.address} has insufficient balance (${stagingBalance}) to drain`
-      );
-    }
-
-    const targetValue = BigInt(intent.targetValueWei);
-    const actualDrainValue =
-      stagingBalance >= targetValue + deliveryGas
-        ? targetValue
-        : stagingBalance - deliveryGas;
-
-    if (actualDrainValue <= 0n) {
-      throw new Error("Leader account balance is insufficient to cover delivery gas fee");
-    }
-
-    const drainTxRequest = {
-      to: intent.recipientAddress,
-      value: actualDrainValue,
-      gasLimit: this.standardGasLimit,
-    };
-
-    const populated = await stagingWallet.populateTransaction(drainTxRequest);
-    const signedRaw = await stagingWallet.signTransaction(populated);
-    const drainTxHash = keccak256(signedRaw);
-
-    await notifySigned({ txHash: drainTxHash });
-
-    intent.phase = "draining";
-    intent.drainTxHash = drainTxHash;
-    intent.updatedAtMs = Date.now();
-    await this.journal.setPendingIntent(intent);
-
-    notifyProgress({
-      status: {
-        stage: "draining",
-        stagingAddress: stagingWallet.address,
-        drainTxHash,
-      },
-      message: `Broadcasting final transfer to destination address`,
-    });
-
-    const drainResponse = await this.provider.broadcastTransaction(signedRaw);
-    await drainResponse.wait?.();
-
-    const drainSyncItem: WalletSyncItem = {
-      type: "wallet-sync",
-      direction: "out",
-      chainIdentifier: this.chainIdentifier,
-      txHash: drainTxHash,
-      spentInputs: [
-        {
-          address: stagingWallet.address,
-          valueWei: actualDrainValue.toString(),
-        },
-      ],
-      createdOutputs: [
-        {
-          address: intent.recipientAddress,
-          valueWei: actualDrainValue.toString(),
-        },
-      ],
-      timestamp: Date.now(),
-    };
-
-    if (this.inventory) {
-      this.inventory.processSyncTransaction(drainSyncItem);
-    }
-
-    if (this.onSyncTransaction) {
-      try {
-        await this.onSyncTransaction(drainSyncItem);
-      } catch (err) {
-        console.warn("Could not dispatch drain sync item:", err);
-      }
-    }
-
-    intent.phase = "completed";
-    intent.updatedAtMs = Date.now();
-    await this.journal.setPendingIntent(intent);
-
-    notifyProgress({
-      status: {
-        stage: "confirmed",
-        txHash: drainTxHash,
-      },
-      message: `Legacy transfer confirmed on-chain`,
-    });
-
-    await this.journal.clearPendingIntent();
-
-    return {
-      txHash: drainTxHash,
-      intermediateTxHashes: intent.consolidationTxHashes,
-      totalValueSent: actualDrainValue,
-      totalFeePaid: totalConsolidationFeePaid + deliveryGas,
-    };
-  }
-
-  /**
-   * Returns any pending legacy send intent interrupted mid-flight.
-   */
-  getUnresolvedLegacySend(): LegacySendIntent | undefined {
-    return this.journal.getPendingIntent();
-  }
-
-  /**
-   * Resumes an interrupted legacy send to ensure funds in staging are drained to destination.
-   */
-  async resumeLegacySend(): Promise<LegacySendResult> {
-    const pending = this.journal.getPendingIntent();
-    if (!pending) {
-      throw new Error("No pending legacy send intent to resume");
-    }
-    return this.resumeConsolidation(pending.id);
   }
 }

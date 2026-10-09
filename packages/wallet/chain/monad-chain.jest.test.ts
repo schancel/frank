@@ -60,7 +60,8 @@ import { deriveMonadStampChildPublic } from "../monad-stamp-stealth";
 import { InMemoryStampPaymentJournal } from "../storage/stamp-payment-journal";
 import {
   InMemoryNativeTransactionAttemptStore,
-  NativeTransactionSubmissionError,
+  nativeTransactionAttemptKey,
+  NativeTransactionSubmissionError
 } from "./chain-wallet";
 
 jest.mock("../monad-stamp-client", () => {
@@ -424,40 +425,33 @@ describe("createMonadChain: createWallet", () => {
     expect(getBalance).toHaveBeenCalledTimes(2);
   });
 
-  it("reconciles a restored successful native attempt before a later send", async () => {
+  it("preserves old hash-only evidence even when a receipt exists", async () => {
     const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore();
-    const isolatedConfig = { ...TEST_CONFIG, nativeAttemptStore };
-    const firstChain = createMonadChain(isolatedConfig);
-    const signed = { txHash: `0x${"44".repeat(32)}` };
-    MonadAccountTxSigner.mockImplementation(() => ({
-      buildAndSignTransfer: jest.fn().mockResolvedValue(signed),
-      submit: jest.fn().mockResolvedValue(signed.txHash),
-    }));
-    const firstWallet = await firstChain.createWallet(seed);
-
-    await expect(
-      firstWallet.sendNative({
-        recipient: firstWallet.identity.address,
-        value: 1n,
-      })
-    ).resolves.toEqual({ txHash: signed.txHash });
-
-    const restoredWallet = await createMonadChain(isolatedConfig).createWallet(
-      seed
-    );
-    expect(restoredWallet.getUnresolvedNativeTransaction?.()).toEqual({
-      txHash: signed.txHash,
-    });
-    const restoredMonadWallet = restoredWallet as MonadChainWalletHandle;
-    restoredMonadWallet.provider.getTransactionReceipt = jest
-      .fn()
-      .mockResolvedValue({ status: 1 });
-    await expect(
-      restoredWallet.sendNative({
-        recipient: restoredWallet.identity.address,
-        value: 2n,
-      })
-    ).resolves.toEqual({ txHash: signed.txHash });
+    const chain = createMonadChain({ ...TEST_CONFIG, nativeAttemptStore });
+    const wallet = await chain.createWallet(seed);
+    try {
+      const key = nativeTransactionAttemptKey({
+        family: "evm",
+        chainIdentifier: wallet.chainIdentifier,
+        address: (await wallet.getReceiveAddress()).raw.toLowerCase()
+      });
+      const retained = { txHash: "0x" + "44".repeat(32) };
+      nativeAttemptStore.put(key, retained);
+      const receipt = jest
+        .spyOn(
+          (wallet as MonadChainWalletHandle).provider,
+          "getTransactionReceipt"
+        )
+        .mockResolvedValue({ status: 1 } as never);
+      await expect(
+        wallet.sendNative({ recipient: wallet.identity.address, value: 1n })
+      ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+      expect(nativeAttemptStore.get(key)).toEqual(retained);
+      expect(receipt).not.toHaveBeenCalled();
+      expect(wallet.resolveUnresolvedNativeTransaction).toBeUndefined();
+    } finally {
+      await wallet.close();
+    }
   });
 });
 
@@ -607,135 +601,40 @@ describe("createMonadChain: nativeTransfers", () => {
     expect(sendNative).toHaveBeenCalled();
   });
 
-  it("estimateLegacyFee utilizes in-memory accountUtxoPool for zero-RPC coin selection", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
-    const wallet = makeWallet(identity);
-
-    const getBalance = jest.fn();
-    const getFeeData = jest.fn().mockResolvedValue({
-      maxFeePerGas: 1_000_000_000n,
-      gasPrice: 1_000_000_000n,
-    });
-    wallet.provider = {
-      getBalance,
-      getFeeData,
-    } as unknown as MonadChainWalletHandle["provider"];
-
-    const pool = new ChainUtxoPool();
-    const subWallet = Wallet.createRandom();
-    pool.registerSubAccount({
-      chain: "monad",
-      address: subWallet.address,
-      privateKey: subWallet.privateKey,
-      balanceWei: 100_000_000_000_000_000n, // 0.1 ETH
-    });
-    wallet.accountUtxoPool = pool;
-
-    const estimate = await chain.nativeTransfers.estimateLegacyFee!({
-      wallet,
-      recipient: { raw: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" },
-      value: 10_000_000_000_000_000n, // 0.01 ETH
-    });
-
-    expect(estimate.inputCount).toBe(1);
-    expect(estimate.totalFee).toBeGreaterThan(0n);
-    // Verifies zero sequential RPC getBalance calls were issued for coin selection
-    expect(getBalance).not.toHaveBeenCalled();
-  });
-
-  it("sendLegacy utilizes in-memory accountUtxoPool for zero-RPC coin selection and syncs spent coins", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
-    const wallet = makeWallet(identity);
-
-    const subWallet = Wallet.createRandom();
-    const recipientAddr = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
-    const balances = new Map<string, bigint>([
-      [subWallet.address.toLowerCase(), 100_000_000_000_000_000n],
-    ]);
-    const nonces = new Map<string, number>();
-
-    const getBalance = jest.fn().mockImplementation(async (addr: string) => {
-      return balances.get(addr.toLowerCase()) ?? 100_000_000_000_000_000n;
-    });
-
-    wallet.provider = {
-      getBalance,
-      getFeeData: jest.fn().mockResolvedValue({
-        gasPrice: 1_000_000_000n,
-        maxFeePerGas: 1_000_000_000n,
-        maxPriorityFeePerGas: 100_000_000n,
-      }),
-      getTransactionCount: jest.fn().mockImplementation(async (addr: string) => {
-        return nonces.get(addr.toLowerCase()) ?? 0;
-      }),
-      getNetwork: jest.fn().mockResolvedValue({
-        chainId: 10143n,
-        name: "monad-testnet",
-      }),
-      estimateGas: jest.fn().mockResolvedValue(21_000n),
-      broadcastTransaction: jest.fn().mockImplementation(async (rawTx: string) => {
-        const txHash = "0x" + "aa".repeat(32);
-        return {
-          hash: txHash,
-          wait: jest.fn().mockResolvedValue({ status: 1, hash: txHash }),
-        };
-      }),
-    } as unknown as MonadChainWalletHandle["provider"];
-
-    const pool = new ChainUtxoPool();
-    const registered = pool.registerSubAccount({
-      chain: "monad",
-      address: subWallet.address,
-      privateKey: subWallet.privateKey,
-      balanceWei: 100_000_000_000_000_000n,
-    });
-    wallet.accountUtxoPool = pool;
-
-    const onSigned = jest.fn().mockResolvedValue(undefined);
-    const onProgress = jest.fn();
-
-    const result = await chain.nativeTransfers.sendLegacy!({
-      wallet,
-      recipient: { raw: recipientAddr },
-      value: 10_000_000_000_000_000n,
-      onProgress,
-      onSigned,
-    });
-
-    expect(result.txHash).toBeDefined();
-    expect(result.totalValueSent).toBe(10_000_000_000_000_000n);
-    expect(onSigned).toHaveBeenCalled();
-    // Sub-account coin was used and marked spent in the pool
-    expect(pool.getCoin(registered.id)?.status).toBe("spent");
-  });
-
-  it("collectWalletFundingAccounts falls back to existing logic when accountUtxoPool is not present", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
-    const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
-    const wallet = makeWallet(identity);
-    delete (wallet as any).accountUtxoPool;
-
-    const getBalance = jest.fn().mockResolvedValue(50_000_000_000_000_000n);
-    wallet.provider = {
-      getBalance,
-      getFeeData: jest.fn().mockResolvedValue({
-        maxFeePerGas: 1_000_000_000n,
-        gasPrice: 1_000_000_000n,
-      }),
-    } as unknown as MonadChainWalletHandle["provider"];
-
-    const estimate = await chain.nativeTransfers.estimateLegacyFee!({
-      wallet,
-      recipient: { raw: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8" },
-      value: 10_000_000_000_000_000n,
-    });
-
-    expect(estimate.inputCount).toBe(1);
-    // Verifies sequential provider getBalance was called as fallback
-    expect(getBalance).toHaveBeenCalled();
-  });
+  it.each(["estimate", "send"] as const)(
+    "requires a lifetime custody owner for %s instead of trusting attached private keys",
+    async (action) => {
+      const chain = createMonadChain(TEST_CONFIG);
+      const wallet = makeWallet(
+        MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
+      );
+      const pool = new ChainUtxoPool();
+      const stranger = Wallet.createRandom();
+      const coin = pool.registerSubAccount({
+        chain: "monad",
+        address: stranger.address,
+        privateKey: stranger.privateKey,
+        balanceWei: 10n ** 18n
+      });
+      wallet.accountUtxoPool = pool;
+      const getBalance = jest.fn();
+      wallet.provider = {
+        getBalance
+      } as unknown as MonadChainWalletHandle["provider"];
+      const params = {
+        wallet,
+        recipient: { raw: stranger.address },
+        value: 1000n
+      };
+      await expect(
+        action === "estimate"
+          ? chain.nativeTransfers.estimateLegacyFee!(params)
+          : chain.nativeTransfers.sendLegacy!(params)
+      ).rejects.toThrow("durable native-operation owner");
+      expect(getBalance).not.toHaveBeenCalled();
+      expect(pool.getCoin(coin.id)?.balanceWei).toBe(10n ** 18n);
+    }
+  );
 });
 
 describe("serializeMessageItems / deserializeMessageItems", () => {

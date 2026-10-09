@@ -1,3 +1,5 @@
+import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
+import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
 import type {
   PublicRevisionZeroInput,
@@ -5,11 +7,12 @@ import type {
   PublicNextRevisionInput,
   PublicNextRevisionExport,
 } from "../monad-wallet-handle";
-import { MonadStealthKeyring, buildEvmStealthPayment } from "../monad-stealth";
 import {
-  EvmLegacyConsolidator,
-  FundingAccount,
-} from "./evm-legacy-consolidator";
+  MonadStealthKeyring,
+  buildEvmStealthPayment,
+  deriveEvmStealthPrivateKey
+} from "../monad-stealth";
+import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,
@@ -127,10 +130,7 @@ import {
   DEFAULT_MONAD_CHAIN_ID,
   monadProtocolIdentity,
 } from "../monad-provider";
-import {
-  MonadAccountTxSigner,
-  type MonadTxOverrides,
-} from "../monad-account-tx";
+import { MonadAccountTxSigner } from "../monad-account-tx";
 import { MonadWalletHandle } from "../monad-wallet-handle";
 import {
   openExistingPoolMonadTopicOwner,
@@ -189,8 +189,7 @@ import {
   nativeTransactionAttemptKey,
   NativeTransactionAttemptStore,
   NativeTransactionSubmissionError,
-  runNativeTransactionExclusive,
-  sameChainTransaction,
+  runNativeTransactionExclusive
 } from "./chain-wallet";
 import { LevelSubAccountPoolStore } from "../storage/level-sub-account-pool-store";
 import { LevelChangePoolStore } from "../storage/level-change-pool-store";
@@ -646,61 +645,37 @@ function canonicalMessagingFor(wallet: MonadChainWalletHandle) {
   return canonical;
 }
 const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
-type SignedNativeTransfer = Awaited<
-  ReturnType<MonadAccountTxSigner["buildAndSignTransfer"]>
->;
 interface MainAccountAdmission {
   key: string;
   store: NativeTransactionAttemptStore;
-  unresolved?: {
-    signed?: SignedNativeTransfer;
-    error: NativeTransactionSubmissionError;
-  };
-  lastSubmitted?: ChainTransaction;
 }
-// The native attempt owner travels with the handle, including across chain facades.
 const mainAccountAdmissions = new WeakMap<
   MonadChainWalletHandle,
   MainAccountAdmission
 >();
-
+const nativeOperationOwners = new WeakMap<
+  MonadChainWalletHandle,
+  EvmLegacyConsolidator
+>();
+function nativeOperationOwner(
+  wallet: MonadChainWalletHandle
+): EvmLegacyConsolidator {
+  requireOpenWallet(wallet);
+  const owner = nativeOperationOwners.get(wallet);
+  if (!owner) throw new Error("Wallet has no durable native-operation owner");
+  return owner;
+}
 async function reconcileNativeAdmission(
-  admission: MainAccountAdmission,
-  provider: MonadChainWalletHandle["provider"]
+  admission: MainAccountAdmission
 ): Promise<void> {
   const persisted = admission.store.get(admission.key);
-  if (persisted === undefined) {
-    admission.unresolved = undefined;
-    return;
-  }
-  if (
-    admission.lastSubmitted !== undefined &&
-    sameChainTransaction(persisted, admission.lastSubmitted)
-  ) {
-    // Preserve the existing policy: this owner already received submission acknowledgment.
-    // A later submission of identical bytes can still have lost its acknowledgment.
-    if (admission.unresolved !== undefined) throw admission.unresolved.error;
-    return;
-  }
-  if (
-    admission.unresolved?.signed !== undefined &&
-    sameChainTransaction(persisted, admission.unresolved.error.transaction)
-  ) {
-    // An in-memory unknown attempt keeps its exact retry/explicit-resolution authority.
-    throw admission.unresolved.error;
-  }
-  admission.unresolved = {
-    error: new NativeTransactionSubmissionError({
+  if (persisted !== undefined)
+    throw new NativeTransactionSubmissionError({
       transaction: persisted,
-      reason: new Error("Recovered unresolved native transaction"),
-    }),
-  };
-  const receipt = await provider.getTransactionReceipt(persisted.txHash);
-  if (receipt === null || receipt === undefined) {
-    throw admission.unresolved.error;
-  }
-  admission.store.delete(admission.key);
-  admission.unresolved = undefined;
+      reason: new Error(
+        "Unsupported retained hash-only native evidence; preserve and reconcile before native admission"
+      )
+    });
 }
 // One typed economic owner per EVM account/network in this runtime, across chain factories.
 // Repeated callers on the same factory share its handle; another auth/factory must first close it.
@@ -960,7 +935,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       owner.key,
       owner.store.coordinationScope,
       async () => {
-        await reconcileNativeAdmission(owner, wallet.provider);
+        await reconcileNativeAdmission(owner);
         return task();
       }
     );
@@ -1207,118 +1182,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
   };
 
-  async function collectWalletFundingAccounts(
-    wallet: MonadChainWalletHandle
-  ): Promise<FundingAccount[]> {
-    const monadWallet = asMonadWallet(wallet, config.networkId);
-    if (monadWallet.accountUtxoPool) {
-      const coins = monadWallet.accountUtxoPool
-        .getAllCoins("monad")
-        .filter(
-          (c) =>
-            c.balanceWei > 0n &&
-            c.status !== "pending" &&
-            Boolean(c.privateKey)
-        );
-      const accountsByAddress = new Map<string, FundingAccount>();
-      for (const coin of coins) {
-        const key = coin.address.toLowerCase();
-        const existing = accountsByAddress.get(key);
-        if (!existing || coin.balanceWei > existing.balanceWei) {
-          accountsByAddress.set(key, {
-            address: coin.address,
-            balanceWei: coin.balanceWei,
-            privateKey: coin.privateKey,
-          });
-        }
-      }
-      if (accountsByAddress.size > 0) {
-        return Array.from(accountsByAddress.values());
-      }
-    }
-
-    const accounts: FundingAccount[] = [];
-    const material = walletMaterial.get(monadWallet);
-
-    const mainKey =
-      material?.mainAccount.privateKey ?? mainPrivateKey(monadWallet);
-    const mainAddress =
-      material?.mainAccount.address ?? monadWallet.identity.address.raw;
-    try {
-      const mainBal = await monadWallet.provider.getBalance(mainAddress);
-      if (mainBal > 0n) {
-        accounts.push({
-          address: mainAddress,
-          balanceWei: mainBal,
-          privateKey: mainKey,
-        });
-      }
-    } catch {}
-
-    if (monadWallet.identity?.address?.raw) {
-      const identAddr = monadWallet.identity.address.raw;
-      if (identAddr.toLowerCase() !== mainAddress.toLowerCase()) {
-        try {
-          const identBal = await monadWallet.provider.getBalance(identAddr);
-          if (identBal > 0n) {
-            accounts.push({
-              address: identAddr,
-              balanceWei: identBal,
-              privateKey: monadWallet.identity.toPrivateKeyHex(),
-            });
-          }
-        } catch {}
-      }
-    }
-
-    try {
-      const candidateStealth = (
-        monadWallet.stealthKeyring?.getAccounts() ?? []
-      ).filter((st) => !st.isSpent);
-      const stealthBalances = await Promise.all(
-        candidateStealth.map(async (st) => {
-          try {
-            const bal = await monadWallet.provider.getBalance(st.address);
-            if (bal > 0n) {
-              await monadWallet.stealthKeyring?.updateBalance(st.address, bal);
-              return {
-                address: st.address,
-                balanceWei: bal,
-                privateKey: st.privateKey,
-              };
-            }
-          } catch {}
-          return undefined;
-        })
-      );
-      for (const acc of stealthBalances) {
-        if (acc) {
-          accounts.push(acc);
-        }
-      }
-    } catch {}
-
-    if (material) {
-      try {
-        for (const record of monadWallet.pool.records()) {
-          if (record.status === "available" || record.status === "unfunded") {
-            const bal = await monadWallet.provider.getBalance(record.address);
-            if (bal > 0n) {
-              const derived = material.keyring.deriveSubAccount(record.index);
-              accounts.push({
-                address: record.address,
-                balanceWei: bal,
-                privateKey: derived.privateKey,
-              });
-            }
-          }
-        }
-      } catch {}
-    }
-
-    return accounts;
-  }
-
   const nativeTransfers: ActiveChain["nativeTransfers"] = {
     async getBalance({ wallet }): Promise<bigint> {
       asMonadWallet(wallet, config.networkId);
@@ -1348,56 +1211,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
 
     async sendLegacy({ wallet, recipient, value, onProgress, onSigned }) {
-      const monadWallet = asMonadWallet(wallet, config.networkId);
-      const consolidator = new EvmLegacyConsolidator({
-        provider: monadWallet.provider,
-        getFundingAccounts: () => collectWalletFundingAccounts(monadWallet),
-        chainIdentifier,
-        transactionBuilder,
-        onSyncTransaction: async (syncItem) => {
-          applyWalletSyncItem(wallet, syncItem);
-          if (monadWallet.accountUtxoPool && syncItem.spentInputs) {
-            for (const input of syncItem.spentInputs) {
-              const coins = monadWallet.accountUtxoPool.getCoinsByAddress(
-                input.address,
-                "monad"
-              );
-              for (const c of coins) {
-                try {
-                  monadWallet.accountUtxoPool.markSpent(c.id);
-                } catch {}
-              }
-            }
-          }
-          try {
-            await directMessages.send({
-              wallet,
-              recipient: toChainAddress(wallet.identity.address.raw),
-              items: [syncItem],
-              stampValue: 0n,
-            });
-          } catch (err) {
-            console.warn("could not broadcast self-send sync item:", err);
-          }
-        },
-      });
-      return consolidator.sendLegacy({
-        recipient,
-        value,
-        onProgress,
-        onSigned,
-      });
+      const owned = asMonadWallet(wallet, config.networkId);
+      nativeOperationOwner(owned);
+      return owned.sendLegacy!({ recipient, value, onProgress, onSigned });
     },
-
     async estimateLegacyFee({ wallet, recipient, value }) {
-      const monadWallet = asMonadWallet(wallet, config.networkId);
-      const consolidator = new EvmLegacyConsolidator({
-        provider: monadWallet.provider,
-        getFundingAccounts: () => collectWalletFundingAccounts(monadWallet),
-        chainId: config.chainId,
-        transactionBuilder,
-      });
-      return consolidator.estimateLegacyFee(recipient, value);
+      return nativeOperationOwner(
+        asMonadWallet(wallet, config.networkId)
+      ).estimateLegacyFee(recipient, value);
     },
 
     async sendToContact({ wallet, recipient, value, memo, onProgress }) {
@@ -1810,7 +1631,32 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
         try {
+          const branchDescriptor = (
+            ring:
+              | MonadWalletMaterial["keyring"]
+              | MonadWalletMaterial["changeKeyring"]
+          ) => {
+            const descriptor = ring.publicBranchDescriptor();
+            return {
+              path: descriptor.path,
+              publicKey: hexlify(descriptor.publicKey),
+              chainCode: hexlify(descriptor.chainCode)
+            };
+          };
           topicOwner = await openExistingPoolMonadTopicOwner({
+            nativeBinding: {
+              chainIdentifier,
+              nativeChainId: String(config.chainId),
+              publicTuple: JSON.stringify({
+                version: 1,
+                registry: DERIVATION_REGISTRY_ID,
+                chainIdentifier,
+                nativeChainId: String(config.chainId),
+                mainAddress: mainAccount.address.toLowerCase(),
+                spend: branchDescriptor(keyring),
+                change: branchDescriptor(changeKeyring)
+              })
+            },
             location: storageLocation,
             encloseFinancialOperation: (operation) => {
               if (topicOwnerWallet === undefined)
@@ -1876,19 +1722,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             key: nativeAttemptKey,
             store: nativeAttemptStore,
           };
-          const persistedNative = nativeAttemptStore.get(nativeAttemptKey);
-          if (persistedNative !== undefined) {
-            admission.unresolved = {
-              error: new NativeTransactionSubmissionError({
-                transaction: persistedNative,
-                reason: new Error("Recovered unresolved native transaction"),
-              }),
-            };
-          }
 
           pool.ensureUnfundedSize(config.subAccountPoolSize);
           // Classification is deliberately irrelevant here: every old obligation pins its lease.
           const pendingLeaseIndices = new Set([
+            ...topicOwner
+              .nativeJournal!.list()
+              .filter((row) => !row.cancelled)
+              .flatMap((row) =>
+                row.members.flatMap((m) =>
+                  m.source.kind === "spend" ? [m.source.index] : []
+                )
+              ),
             ...(topicOwner.canonicalRetained
               ?.getIntents()
               .flatMap((intent) =>
@@ -1953,41 +1798,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               : { demoOnlyAbortOnDestroy: true }),
           });
           destroyHttpClient = () => httpClient.destroy();
-          const submitNative = async (
-            signed: SignedNativeTransfer,
-            onSigned?: (transaction: ChainTransaction) => Promise<void>
-          ): Promise<ChainTransaction> => {
-            const transaction = { txHash: signed.txHash };
-            if (onSigned !== undefined) await onSigned(transaction);
-            nativeAttemptStore.put(nativeAttemptKey, transaction);
-            admission.unresolved = {
-              signed,
-              error: new NativeTransactionSubmissionError({
-                transaction,
-                reason: new Error(
-                  "Native transaction submission is in progress"
-                ),
-              }),
-            };
-            const signer = new MonadAccountTxSigner({
-              privateKey: mainAccount.privateKey,
-              provider,
-              httpClient,
-            });
-            try {
-              const submitted = { txHash: await signer.submit(signed) };
-              admission.lastSubmitted = submitted;
-              admission.unresolved = undefined;
-              return submitted;
-            } catch (reason) {
-              const error = new NativeTransactionSubmissionError({
-                transaction,
-                reason,
-              });
-              admission.unresolved = { signed, error };
-              throw error;
-            }
-          };
           const stealthKeyring = new MonadStealthKeyring(undefined, {
             onAccountAdded: (s) => {
               accountUtxoPool.registerStealthAccount({
@@ -2127,234 +1937,123 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               );
               return mainBalance + identityBalance + stealthBalance;
             },
+            getNativeOperations() {
+              return nativeOperationOwner(wallet).listOperations();
+            },
+            async resumeNativeOperation(operationId) {
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, () =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.resumeOperation(operationId)
+                )
+              );
+              if (!closedWallets.has(wallet))
+                await owner.flushSync(operationId);
+              return result;
+            },
+            async cancelUnsignedNativeOperation(operationId) {
+              await runWalletExclusive(wallet, () =>
+                topicOwner!.nativeJournal!.cancelUnsigned(operationId)
+              );
+            },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
-              return admission.unresolved?.error.transaction;
+              const unsupported = nativeAttemptStore.get(nativeAttemptKey);
+              if (unsupported) return unsupported;
+              const row = nativeOperationOwner(wallet)
+                .listOperations()
+                .find(
+                  (r) =>
+                    r.kind === "native" &&
+                    !r.cancelled &&
+                    r.members.some(
+                      (m) =>
+                        m.signed && m.observation.state !== "included-success"
+                    )
+                );
+              return row?.members[0]?.signed
+                ? { txHash: row.members[0].signed.transactionHash }
+                : undefined;
             },
             async retryUnresolvedNativeTransaction() {
-              return runWalletExclusive(wallet, () =>
-                runNativeTransactionExclusive(
-                  nativeAttemptKey,
-                  nativeAttemptStore.coordinationScope,
-                  async () => {
-                    const unresolved = admission.unresolved;
-                    if (unresolved === undefined) {
-                      throw new Error(
-                        "No unresolved native transaction to retry"
-                      );
-                    }
-                    if (unresolved.signed === undefined) {
-                      throw new Error(
-                        "Recovered unresolved transaction must be reconciled by id before sending again"
-                      );
-                    }
-                    const persisted = nativeAttemptStore.get(nativeAttemptKey);
-                    if (
-                      persisted === undefined ||
-                      !sameChainTransaction(
-                        persisted,
-                        unresolved.error.transaction
-                      )
-                    ) {
-                      admission.unresolved =
-                        persisted === undefined
-                          ? undefined
-                          : {
-                              error: new NativeTransactionSubmissionError({
-                                transaction: persisted,
-                                reason: new Error(
-                                  "Recovered unresolved native transaction"
-                                ),
-                              }),
-                            };
-                      throw new Error(
-                        "Unresolved native transaction changed before retry"
-                      );
-                    }
-                    return submitNative(unresolved.signed);
-                  }
+              const rows = nativeOperationOwner(wallet)
+                .listOperations()
+                .filter(
+                  (r) =>
+                    r.kind === "native" &&
+                    !r.cancelled &&
+                    r.members.some(
+                      (m) =>
+                        m.signed && m.observation.state !== "included-success"
+                    )
+                );
+              if (rows.length !== 1)
+                throw new Error(
+                  "Select the original native operation by operationId"
+                );
+              const row = await wallet.resumeNativeOperation!(
+                rows[0]!.operationId
+              );
+              return { txHash: row.members[0]!.signed!.transactionHash };
+            },
+            async sendNative(params) {
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, () =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.sendNative(params)
                 )
               );
+              primaryBalanceCache = undefined;
+              if (!closedWallets.has(wallet))
+                await owner.flushSync(
+                  owner
+                    .listOperations()
+                    .find(
+                      (row) =>
+                        row.members[row.members.length - 1]?.signed
+                          ?.transactionHash === result.txHash
+                    )!.operationId
+                );
+              return result;
             },
-            async resolveUnresolvedNativeTransaction({ transaction }) {
-              await runWalletExclusive(wallet, () =>
-                runNativeTransactionExclusive(
-                  nativeAttemptKey,
-                  nativeAttemptStore.coordinationScope,
-                  async () => {
-                    const expected =
-                      admission.unresolved?.error.transaction ??
-                      admission.lastSubmitted;
-                    const persisted = nativeAttemptStore.get(nativeAttemptKey);
-                    if (
-                      expected === undefined ||
-                      !sameChainTransaction(expected, transaction) ||
-                      persisted === undefined ||
-                      !sameChainTransaction(persisted, transaction)
-                    ) {
-                      throw new Error(
-                        "Transaction does not match the unresolved native attempt"
-                      );
-                    }
-                    nativeAttemptStore.delete(nativeAttemptKey);
-                    admission.unresolved = undefined;
-                    admission.lastSubmitted = undefined;
-                  }
+            async sendLegacy(params) {
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, () =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.sendLegacy(params)
                 )
               );
-            },
-            async sendNative({ recipient, value, onSigned }) {
-              return runWalletExclusive(wallet, () =>
-                runMainAccountExclusive(wallet, async () => {
-                  if (value <= 0n) {
-                    throw new Error("Transfer value must be greater than zero");
-                  }
-                  if (
-                    pool.records().some((record) => record.status === "funding")
-                  ) {
-                    throw new Error(
-                      "Resolve pending Monad account funding before sending a native transfer"
-                    );
-                  }
-                  let spendingPrivateKey = mainAccount.privateKey;
-                  let selectedStealthAddress: string | undefined;
-                  try {
-                    const mainBalance = await provider.getBalance(
-                      mainAccount.address
-                    );
-                    if (mainBalance < value) {
-                      const identAddr = identity.address.raw;
-                      const identBal =
-                        identAddr.toLowerCase() !==
-                        mainAccount.address.toLowerCase()
-                          ? await provider.getBalance(identAddr)
-                          : 0n;
-                      if (identBal >= value) {
-                        spendingPrivateKey = identity.toPrivateKeyHex();
-                      } else {
-                        const selected =
-                          await stealthKeyring.selectAccountForSpend(
-                            value,
-                            provider,
-                            config.networkTag
-                          );
-                        if (selected) {
-                          spendingPrivateKey = selected.privateKey;
-                          selectedStealthAddress = selected.address;
-                        }
-                      }
-                    }
-                  } catch {
-                    // Fall back to main account if provider balance check cannot complete
-                  }
-                  const signer = new MonadAccountTxSigner({
-                    privateKey: spendingPrivateKey,
-                    provider,
-                    httpClient,
-                  });
-                  const txRequest = await transactionBuilder.buildTransfer({
-                    from: signer.address,
-                    recipient: recipient.raw,
-                    amount: value,
-                  });
-                  const overrides: MonadTxOverrides = {
-                    ...(txRequest.gasLimit != null && {
-                      gasLimit: BigInt(txRequest.gasLimit.toString()),
-                    }),
-                    ...(txRequest.maxFeePerGas != null && {
-                      maxFeePerGas: BigInt(txRequest.maxFeePerGas.toString()),
-                    }),
-                    ...(txRequest.maxPriorityFeePerGas != null && {
-                      maxPriorityFeePerGas: BigInt(
-                        txRequest.maxPriorityFeePerGas.toString()
-                      ),
-                    }),
-                    ...(txRequest.gasPrice != null && {
-                      gasPrice: BigInt(txRequest.gasPrice.toString()),
-                    }),
-                    ...(txRequest.nonce != null && {
-                      nonce: Number(txRequest.nonce),
-                    }),
-                  };
-                  const data = txRequest.data ? String(txRequest.data) : "0x";
-                  const to = txRequest.to
-                    ? String(txRequest.to)
-                    : recipient.raw;
-                  const txValue =
-                    txRequest.value != null
-                      ? BigInt(txRequest.value.toString())
-                      : value;
-                  const signed =
-                    data !== "0x" && data !== ""
-                      ? await signer.buildAndSignCall(
-                          to,
-                          txValue,
-                          data,
-                          overrides
-                        )
-                      : await signer.buildAndSignTransfer(
-                          to,
-                          txValue,
-                          overrides
-                        );
-                  const submitted = await submitNative(signed, onSigned);
-                  primaryBalanceCache = undefined;
-                  if (selectedStealthAddress) {
-                    await stealthKeyring.recordSpend(selectedStealthAddress, {
-                      valueWei: value,
-                      txHash: submitted.txHash,
-                    });
-                  }
-                  return submitted;
-                })
-              );
-            },
-            sendLegacy: async (params) => {
-              try {
-                const res = await nativeTransfers.sendLegacy!({ wallet, ...params });
-                primaryBalanceCache = undefined;
-                stealthKeyring.invalidateBalanceCache(config.networkTag);
-                return res;
-              } catch (err) {
-                primaryBalanceCache = undefined;
-                throw err;
-              }
+              primaryBalanceCache = undefined;
+              if (!closedWallets.has(wallet))
+                await owner.flushSync(
+                  owner
+                    .listOperations()
+                    .find(
+                      (row) =>
+                        row.members[row.members.length - 1]?.signed
+                          ?.transactionHash === result.txHash
+                    )!.operationId
+                );
+              return result;
             },
             estimateLegacyFee: (params) =>
-              nativeTransfers.estimateLegacyFee!({ wallet, ...params }),
-            getUnresolvedLegacySend: () => {
-              const consolidator = new EvmLegacyConsolidator({
-                provider,
-                getFundingAccounts: () => collectWalletFundingAccounts(wallet),
-                chainIdentifier,
-                transactionBuilder,
-              });
-              return consolidator.getUnresolvedLegacySend();
-            },
-            resumeLegacySend: () => {
-              const consolidator = new EvmLegacyConsolidator({
-                provider,
-                getFundingAccounts: () => collectWalletFundingAccounts(wallet),
-                chainIdentifier,
-                transactionBuilder,
-                onSyncTransaction: async (syncItem: WalletSyncItem) => {
-                  applyWalletSyncItem(wallet, syncItem);
-                  try {
-                    await directMessages.send({
-                      wallet,
-                      recipient: toChainAddress(wallet.identity.address.raw),
-                      items: [syncItem],
-                      stampValue: 0n,
-                    });
-                  } catch (err) {
-                    console.warn(
-                      "resumeLegacySend: could not broadcast self-send sync item:",
-                      err
-                    );
-                  }
-                },
-              });
-              return consolidator.resumeLegacySend();
+              nativeOperationOwner(wallet).estimateLegacyFee(
+                params.recipient,
+                params.value
+              ),
+            getUnresolvedLegacySend: () =>
+              nativeOperationOwner(wallet).getUnresolvedLegacySend(),
+            async resumeLegacySend(operationId) {
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, () =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.resumeLegacySend(operationId)
+                )
+              );
+              primaryBalanceCache = undefined;
+              if (!closedWallets.has(wallet))
+                await owner.flushSync(operationId);
+              return result;
             },
             pool,
             leaseManager,
@@ -2372,6 +2071,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               closedWallets.add(wallet);
               closing = (async () => {
                 await walletSendQueues.get(wallet);
+                await nativeOperationOwners.get(wallet)?.drain();
                 try {
                   await topicOwner!.close();
                   await canonicalLinks?.close();
@@ -2395,12 +2095,158 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   installedCanonicalWalletDescriptors.delete(wallet);
                   privateTopicWallets.delete(wallet);
                   walletMaterial.delete(wallet);
+                  nativeOperationOwners.delete(wallet);
                 }
               })();
               return closing;
             },
           };
           let closing: Promise<void> | undefined;
+          const identityPublicKey = hexlify(
+            identity.compressedPubKey
+          ).toLowerCase();
+          const resolveSource = (source: EvmNativeSource): Wallet => {
+            let signer: Wallet;
+            if (source.kind === "main") signer = material.mainAccount;
+            else if (source.kind === "spend")
+              signer = new Wallet(
+                material.keyring.deriveSubAccount(source.index).privateKey
+              );
+            else if (source.kind === "change")
+              signer = new Wallet(
+                material.changeKeyring.deriveChangeAccount(
+                  source.index
+                ).privateKey
+              );
+            else {
+              if (source.identityPublicKey !== identityPublicKey)
+                throw new Error("Native source belongs to another identity");
+              signer = new Wallet(
+                source.kind === "identity"
+                  ? identity.toPrivateKeyHex()
+                  : deriveEvmStealthPrivateKey({
+                      recipientSpendSecret: identity.toPrivateKeyHex(),
+                      ephemeralPubKey: getBytes(source.ephemeralPublicKey)
+                    }).stealthPrivateKey
+              );
+            }
+            if (signer.address.toLowerCase() !== source.address)
+              throw new Error("Native custody source address mismatch");
+            return signer;
+          };
+          const getSources = async (): Promise<EvmNativeSource[]> => {
+            // This construction pool belongs to this bound wallet; indexes are derivation hints.
+            const refs: EvmNativeSource[] = [
+              { kind: "main", address: mainAccount.address.toLowerCase() },
+              {
+                kind: "identity",
+                address: identity.address.raw.toLowerCase(),
+                identityPublicKey
+              },
+              ...pool
+                .records()
+                .filter((r) => r.status !== "in-use" && r.status !== "funding")
+                .map((r) => ({
+                  kind: "spend" as const,
+                  address: r.address.toLowerCase(),
+                  index: r.index
+                })),
+              ...changePool
+                .records()
+                .map((r) => ({
+                  kind: "change" as const,
+                  address: r.address.toLowerCase(),
+                  index: r.index
+                })),
+              ...changePool
+                .recoveredAccounts()
+                .map((r) => ({
+                  kind: "change" as const,
+                  address: r.address.toLowerCase(),
+                  index: r.index
+                })),
+              ...accountUtxoPool
+                .getAllCoins()
+                .flatMap((coin) =>
+                  coin.index !== undefined &&
+                  (coin.origin === "change" || coin.origin === "subaccount") &&
+                  coin.status !== "pending"
+                    ? [
+                        {
+                          kind:
+                            coin.origin === "change"
+                              ? ("change" as const)
+                              : ("spend" as const),
+                          address: coin.address.toLowerCase(),
+                          index: coin.index
+                        }
+                      ]
+                    : []
+                ),
+              ...stealthKeyring
+                .getAccounts(config.networkTag)
+                .map((r) => ({
+                  kind: "identity-stealth-v1" as const,
+                  address: r.address.toLowerCase(),
+                  identityPublicKey,
+                  ephemeralPublicKey: hexlify(r.ephemeralPubKey).toLowerCase()
+                })),
+              ...topicOwner!.nativeJournal!.sourceReferences()
+            ];
+            // Resolve public provenance before selection; attached coin secrets are not authority.
+            for (const ref of refs) resolveSource(ref);
+            const known = new Set(refs.map((r) => r.address));
+            for (const coin of accountUtxoPool.getAllCoins()) {
+              if (
+                coin.balanceWei > 0n &&
+                coin.status !== "pending" &&
+                !known.has(coin.address.toLowerCase())
+              )
+                throw new Error(
+                  "Funded native source has no recoverable custody reference"
+                );
+            }
+            return refs;
+          };
+          for (const source of topicOwner.nativeJournal!.sourceReferences()) {
+            if (
+              source.kind === "identity-stealth-v1" &&
+              source.identityPublicKey === identityPublicKey
+            ) {
+              const signer = resolveSource(source);
+              await stealthKeyring.addAccount({
+                address: signer.address,
+                privateKey: signer.privateKey,
+                ephemeralPubKey: source.ephemeralPublicKey,
+                networkTag: config.networkTag,
+                discoveredAtMs: Date.now()
+              });
+            }
+          }
+          nativeOperationOwners.set(
+            wallet,
+            new EvmLegacyConsolidator({
+              provider,
+              journal: topicOwner.nativeJournal!,
+              transactionBuilder,
+              getSources,
+              sign: async (source, unsignedTransaction) => {
+                return resolveSource(source).signTransaction(
+                  Transaction.from(unsignedTransaction)
+                );
+              },
+              onSyncTransaction: async (item) => {
+                applyWalletSyncItem(wallet, item);
+                // This callback runs outside the native financial queue. Failure remains retryable.
+                await directMessages.send({
+                  wallet,
+                  recipient: toChainAddress(identity.address.raw),
+                  items: [item],
+                  stampValue: 0n
+                });
+              }
+            })
+          );
           topicOwnerWallet = wallet;
           privateTopicWallets.set(wallet, {
             ...wallet,

@@ -1,876 +1,472 @@
-import { Wallet, id, keccak256 } from "ethers";
+import { mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import { Transaction, Wallet, keccak256, type Provider } from 'ethers'
 import {
   EvmLegacyConsolidator,
-  InMemoryLegacySendJournalStore,
-  type FundingAccount,
-  type LegacySendIntent,
-} from "./evm-legacy-consolidator";
-import type { LegacySendProgress } from "./active-chain";
+  EvmNativeOperationPendingError,
+} from './evm-legacy-consolidator'
+import { NativeEvmTransactionBuilder } from './evm-transaction-builder'
+import {
+  EvmNativeOperationJournal,
+  type EvmNativeSource,
+} from '../storage/evm-native-operation-journal'
 
-describe("EvmLegacyConsolidator", () => {
-  const wallet1 = Wallet.createRandom();
-  const wallet2 = Wallet.createRandom();
-  const wallet3 = Wallet.createRandom();
-  const recipientAddress = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+const recipient = new Wallet('0x' + '11'.repeat(32)).address.toLowerCase()
+const wallets = [1, 2, 3].map(
+  n => new Wallet('0x' + n.toString(16).padStart(64, '0')),
+)
+const fee = 21000n
+const binding = {
+  chainIdentifier: 'monad-testnet',
+  nativeChainId: '10143',
+  publicTuple: 'test-owned-public-branches',
+}
 
-  const standardGasLimit = 21_000n;
-  const gasPrice = 1_000_000_000n; // 1 gwei
-  const singleTransferFee = standardGasLimit * gasPrice; // 21_000 * 1 gwei = 21_000_000_000_000 wei
-
-  function createMockProvider(initialBalances: Record<string, bigint> = {}) {
-    const balances = new Map<string, bigint>(
-      Object.entries(initialBalances).map(([k, v]) => [k.toLowerCase(), v])
-    );
-    const nonces = new Map<string, number>();
-
-    const mockProvider = {
-      getFeeData: jest.fn().mockResolvedValue({
-        gasPrice,
-        maxFeePerGas: gasPrice,
-        maxPriorityFeePerGas: 100_000_000n,
-      }),
-      getBalance: jest.fn().mockImplementation(async (address: string) => {
-        return balances.get(address.toLowerCase()) ?? 0n;
-      }),
-      getTransactionCount: jest.fn().mockImplementation(async (address: string) => {
-        return nonces.get(address.toLowerCase()) ?? 0;
-      }),
-      getNetwork: jest.fn().mockResolvedValue({
-        chainId: 10143n,
-        name: "monad-testnet",
-      }),
-      estimateGas: jest.fn().mockResolvedValue(standardGasLimit),
-      broadcastTransaction: jest.fn().mockImplementation(async (rawTx: string) => {
-        const txHash = keccak256(rawTx);
-        return {
-          hash: txHash,
-          wait: jest.fn().mockResolvedValue({
-            status: 1,
-            hash: txHash,
-          }),
-        };
-      }),
-      getTransactionReceipt: jest.fn().mockResolvedValue({
-        status: 1,
-      }),
-      // Helper to mutate mock balance during test
-      _setBalance: (address: string, bal: bigint) => {
-        balances.set(address.toLowerCase(), bal);
-      },
-    };
-
-    return mockProvider as any;
+function chain(initial: bigint[]) {
+  const balances = new Map(
+    wallets.map((w, i) => [w.address.toLowerCase(), initial[i] ?? 0n]),
+  )
+  const nonces = new Map<string, number>()
+  const transactions = new Map<
+    string,
+    ReturnType<typeof Transaction.from> & {
+      blockHash: string
+      blockNumber: number
+      index: number
+    }
+  >()
+  const receipts = new Map<string, object>()
+  const raws: string[] = []
+  const blockHash = '0x' + 'ab'.repeat(32)
+  let mode: 'mine' | 'lost' | 'retained' = 'mine'
+  const mine = (raw: string, status = 1) => {
+    const tx = Transaction.from(raw)
+    const from = tx.from!.toLowerCase()
+    const to = tx.to!.toLowerCase()
+    if (receipts.has(tx.hash!)) return
+    nonces.set(from, tx.nonce + 1)
+    balances.set(
+      from,
+      (balances.get(from) ?? 0n) - fee - (status === 1 ? tx.value : 0n),
+    )
+    if (status === 1) balances.set(to, (balances.get(to) ?? 0n) + tx.value)
+    transactions.set(
+      tx.hash!,
+      Object.assign(tx, { blockHash, blockNumber: 1, index: 0 }),
+    )
+    receipts.set(tx.hash!, {
+      hash: tx.hash,
+      from: tx.from,
+      to: tx.to,
+      status,
+      blockHash,
+      blockNumber: 1,
+      index: 0,
+      gasUsed: 21000n,
+      gasPrice: 1n,
+    })
   }
+  const provider = {
+    getBlock: jest.fn(async () => ({ hash: blockHash, number: 1 })),
+    getBalance: jest.fn(
+      async (address: string) => balances.get(address.toLowerCase()) ?? 0n,
+    ),
+    getTransactionCount: jest.fn(
+      async (address: string) => nonces.get(address.toLowerCase()) ?? 0,
+    ),
+    getFeeData: jest.fn(async () => ({
+      maxFeePerGas: 1n,
+      maxPriorityFeePerGas: 1n,
+      gasPrice: 1n,
+    })),
+    estimateGas: jest.fn(async () => 21000n),
+    getTransaction: jest.fn(
+      async (hash: string) => transactions.get(hash) ?? null,
+    ),
+    getTransactionReceipt: jest.fn(
+      async (hash: string) => receipts.get(hash) ?? null,
+    ),
+    broadcastTransaction: jest.fn(async (raw: string) => {
+      raws.push(raw)
+      if (mode === 'lost') throw new Error('lost response')
+      if (mode === 'mine') mine(raw)
+      return { hash: keccak256(raw) }
+    }),
+  }
+  return {
+    provider,
+    balances,
+    nonces,
+    receipts,
+    transactions,
+    raws,
+    mine,
+    setMode: (value: typeof mode) => {
+      mode = value
+    },
+  }
+}
 
-  describe("estimateLegacyFee", () => {
-    it("estimates fee for a single funding account covering the entire amount", async () => {
-      const mockProvider = createMockProvider({
-        [wallet1.address]: 5_000_000_000_000_000_000n, // 5 ETH
-      });
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        standardGasLimit,
-        getFundingAccounts: async () => [
-          {
-            address: wallet1.address,
-            balanceWei: 5_000_000_000_000_000_000n,
-            privateKey: wallet1.privateKey,
-          },
-        ],
-      });
-
-      const estimate = await consolidator.estimateLegacyFee(
-        { raw: recipientAddress },
-        1_000_000_000_000_000_000n // 1 ETH
-      );
-
-      // Single input -> inputCount: 1, consolidationFee: 21_000_000_000_000, deliveryFee: 21_000_000_000_000
-      expect(estimate.inputCount).toBe(1);
-      expect(estimate.deliveryFee).toBe(singleTransferFee);
-      expect(estimate.consolidationFee).toBe(singleTransferFee);
-      expect(estimate.totalFee).toBe(singleTransferFee * 2n);
-    });
-
-    it("estimates fees across multiple fragmented funding accounts", async () => {
-      const mockProvider = createMockProvider();
-      const accounts: FundingAccount[] = [
-        {
-          address: wallet1.address,
-          balanceWei: 500_000_000_000_000n, // 0.0005 ETH
-          privateKey: wallet1.privateKey,
+describe('wallet-lifetime EVM native operations', () => {
+  let location: string
+  let journal: EvmNativeOperationJournal
+  beforeEach(async () => {
+    location = await mkdtemp(join(tmpdir(), 'frank-native-owner-'))
+    journal = new EvmNativeOperationJournal({ location, binding })
+    await journal.Open()
+  })
+  afterEach(async () => {
+    await journal.Close()
+    await rm(location, { recursive: true, force: true })
+  })
+  const sources = (): EvmNativeSource[] =>
+    wallets.map((w, index) => ({
+      kind: 'spend',
+      index,
+      address: w.address.toLowerCase(),
+    }))
+  function owner(
+    state: ReturnType<typeof chain>,
+    options: {
+      sources?: EvmNativeSource[]
+      builder?: NativeEvmTransactionBuilder
+    } = {},
+  ) {
+    const sign = jest.fn(async (source: EvmNativeSource, raw: string) => {
+      const wallet = wallets.find(
+        w => w.address.toLowerCase() === source.address,
+      )!
+      return wallet.signTransaction(Transaction.from(raw))
+    })
+    const sync = jest.fn(async () => undefined)
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider as unknown as Provider,
+      transactionBuilder: options.builder ?? new NativeEvmTransactionBuilder(),
+      getSources: async () => options.sources ?? sources(),
+      sign,
+      onSyncTransaction: sync,
+    })
+    return { executor, sign, sync }
+  }
+  async function reopen() {
+    await journal.Close()
+    journal = new EvmNativeOperationJournal({ location, binding })
+    await journal.Open()
+  }
+  it('does not expose a direct payment before its recovery checkpoint and callback', async () => {
+    const state = chain([200000n])
+    const { executor } = owner(state)
+    await expect(
+      executor.sendLegacy({
+        recipient: { raw: recipient },
+        value: 100000n,
+        onSigned: async transaction => {
+          const record = journal.list()[0]!
+          expect(record.members[0]!.signed!.transactionHash).toBe(
+            transaction.txHash,
+          )
+          expect(record.members[0]!.exposed).toBe(false)
+          throw new Error('caller checkpoint failed')
         },
-        {
-          address: wallet2.address,
-          balanceWei: 600_000_000_000_000n, // 0.0006 ETH
-          privateKey: wallet2.privateKey,
-        },
-      ];
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        standardGasLimit,
-        getFundingAccounts: async () => accounts,
-      });
-
-      const estimate = await consolidator.estimateLegacyFee(
-        { raw: recipientAddress },
-        800_000_000_000_000n // 0.0008 ETH (needs both accounts)
-      );
-
-      expect(estimate.inputCount).toBe(2);
-      expect(estimate.consolidationFee).toBe(singleTransferFee * 2n);
-      expect(estimate.deliveryFee).toBe(singleTransferFee);
-      expect(estimate.totalFee).toBe(singleTransferFee * 3n);
-    });
-  });
-
-  describe("sendLegacy", () => {
-    it("does not expose a direct payment before its recovery checkpoint and callback", async () => {
-      const provider = createMockProvider({ [wallet1.address]: 10n ** 18n });
-      const journal = new InMemoryLegacySendJournalStore();
-      const consolidator = new EvmLegacyConsolidator({
-        provider,
-        journal,
-        chainIdentifier: "monad-testnet",
-        getFundingAccounts: async () => [{
-          address: wallet1.address,
-          balanceWei: 10n ** 18n,
-          privateKey: wallet1.privateKey,
-        }],
-      });
-      await expect(consolidator.sendLegacy({
-        recipient: { raw: recipientAddress },
-        value: 100_000n,
-        onSigned: async () => {
-          expect(journal.getPendingIntent()).toBeDefined();
-          throw new Error("caller checkpoint failed");
-        },
-      })).rejects.toThrow();
-      expect(provider.broadcastTransaction).not.toHaveBeenCalled();
-    });
-
-    it("validates recipient address format", async () => {
-      const mockProvider = createMockProvider();
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        getFundingAccounts: async () => [],
-      });
-
+      }),
+    ).rejects.toThrow('caller checkpoint failed')
+    expect(state.provider.broadcastTransaction.mock.calls.length).toBe(0)
+    await reopen()
+    expect(journal.list()[0]!.members[0]!.signed).not.toBeNull()
+  })
+  it('replays direct lost-response bytes after Level reopen without a fresh payment', async () => {
+    const state = chain([200000n])
+    state.setMode('lost')
+    const first = owner(state)
+    await expect(
+      first.executor.sendLegacy({
+        recipient: { raw: recipient },
+        value: 100000n,
+      }),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const original = journal.list()[0]!
+    expect(original.members[0]!.exposed).toBe(true)
+    await reopen()
+    const second = owner(state, { sources: [] })
+    state.setMode('mine')
+    const result = await second.executor.resumeLegacySend(original.operationId)
+    await second.executor.resumeLegacySend(original.operationId)
+    await second.executor.flushSync()
+    await second.executor.flushSync()
+    expect(result.totalValueSent).toBe(100000n)
+    expect(state.raws).toEqual([
+      original.members[0]!.signed!.rawTransaction,
+      original.members[0]!.signed!.rawTransaction,
+    ])
+    expect(second.sign).not.toHaveBeenCalled()
+    expect(second.sync).toHaveBeenCalledTimes(1)
+    expect(state.balances.get(recipient)).toBe(100000n)
+    expect(journal.list()).toHaveLength(1)
+    expect(journal.canSelect(wallets[0]!.address.toLowerCase(), 0)).toBe(false)
+  })
+  it('retains partial fan-in and finishes the exact original drain once after restart', async () => {
+    const state = chain([80000n, 70000n])
+    state.setMode('lost')
+    await expect(
+      owner(state).executor.sendLegacy({
+        recipient: { raw: recipient },
+        value: 100000n,
+      }),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const row = journal.list()[0]!
+    expect(row.members).toHaveLength(2)
+    expect(row.members.every(m => m.signed !== null)).toBe(true)
+    state.mine(row.members[0]!.signed!.rawTransaction)
+    await reopen()
+    state.provider.getFeeData.mockResolvedValue({
+      maxFeePerGas: 999n,
+      maxPriorityFeePerGas: 999n,
+      gasPrice: 999n,
+    })
+    state.setMode('mine')
+    const recovered = owner(state, { sources: [] })
+    const result = await recovered.executor.resumeLegacySend(row.operationId)
+    await recovered.executor.resumeLegacySend(row.operationId)
+    expect(result.totalValueSent).toBe(100000n)
+    expect(state.raws).toEqual([
+      row.members[0]!.signed!.rawTransaction,
+      row.members[1]!.signed!.rawTransaction,
+    ])
+    expect(recovered.sign).not.toHaveBeenCalled()
+    expect(state.balances.get(recipient)).toBe(100000n)
+  })
+  it.each(['missing', 'mismatched'] as const)(
+    'holds provisional leader funds across foreign nonce advance with %s drain',
+    async kind => {
+      const state = chain([80000n, 70000n])
+      state.setMode('lost')
       await expect(
-        consolidator.sendLegacy({
-          recipient: { raw: "invalid-not-an-evm-address" },
+        owner(state).executor.sendLegacy({
+          recipient: { raw: recipient },
+          value: 100000n,
+        }),
+      ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+      const row = journal.list()[0]!
+      state.mine(row.members[0]!.signed!.rawTransaction)
+      const leader = row.members[1]!.source.address
+      state.nonces.set(leader, 1)
+      if (kind === 'mismatched')
+        state.receipts.set(row.members[1]!.signed!.transactionHash, {
+          hash: '0x' + '00'.repeat(32),
+          status: 1,
+        })
+      await reopen()
+      const recovered = owner(state)
+      await expect(
+        recovered.executor.sendNative({
+          recipient: { raw: recipient },
           value: 1000n,
-        })
-      ).rejects.toThrow(TypeError);
-    });
-
-    it("rejects non-positive send amounts", async () => {
-      const mockProvider = createMockProvider();
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        getFundingAccounts: async () => [],
-      });
-
-      await expect(
-        consolidator.sendLegacy({
-          recipient: { raw: recipientAddress },
-          value: 0n,
-        })
-      ).rejects.toThrow(RangeError);
-    });
-
-    it("rejects when available funds cannot cover value plus delivery gas", async () => {
-      const mockProvider = createMockProvider({
-        [wallet1.address]: 500_000_000_000_000n,
-      });
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        standardGasLimit,
-        getFundingAccounts: async () => [
-          {
-            address: wallet1.address,
-            balanceWei: 500_000_000_000_000n,
-            privateKey: wallet1.privateKey,
-          },
-        ],
-      });
-
-      await expect(
-        consolidator.sendLegacy({
-          recipient: { raw: recipientAddress },
-          value: 1_000_000_000_000_000n, // More than balance
-        })
-      ).rejects.toThrow(RangeError);
-    });
-
-    it("executes two-phase consolidation and drain to recipient with journal tracking", async () => {
-      const valueToSend = 1_000_000_000_000_000n; // 0.001 ETH
-      const account1Balance = 700_000_000_000_000n; // 0.0007 ETH
-      const account2Balance = 800_000_000_000_000n; // 0.0008 ETH
-
-      const mockProvider = createMockProvider({
-        [wallet1.address]: account1Balance,
-        [wallet2.address]: account2Balance,
-      });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const progressUpdates: LegacySendProgress[] = [];
-      const onSignedMock = jest.fn();
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        standardGasLimit,
-        journal,
-        getFundingAccounts: async () => [
-          {
-            address: wallet1.address,
-            balanceWei: account1Balance,
-            privateKey: wallet1.privateKey,
-          },
-          {
-            address: wallet2.address,
-            balanceWei: account2Balance,
-            privateKey: wallet2.privateKey,
-          },
-        ],
-      });
-
-      // Track whenever setPendingIntent is called to ensure staging wallet receives funds in mock
-      const originalSetPendingIntent = journal.setPendingIntent.bind(journal);
-      journal.setPendingIntent = async (intent: LegacySendIntent) => {
-        await originalSetPendingIntent(intent);
-        if (intent.stagingAddress) {
-          // Provide mock balance in the staging wallet to allow phase 2 drain
-          mockProvider._setBalance(
-            intent.stagingAddress,
-            valueToSend + singleTransferFee
-          );
-        }
-      };
-
-      const result = await consolidator.sendLegacy({
-        recipient: { raw: recipientAddress },
-        value: valueToSend,
-        onProgress: (p) => progressUpdates.push(p),
-        onSigned: onSignedMock,
-      });
-
-      // Verification
-      expect(result.txHash).toBeDefined();
-      expect(result.totalValueSent).toBe(valueToSend);
-      expect(result.intermediateTxHashes?.length).toBeGreaterThan(0);
-      expect(onSignedMock).toHaveBeenCalledWith(
-        expect.objectContaining({ txHash: result.txHash })
-      );
-
-      // Journal should be cleared after completion
-      expect(journal.getPendingIntent()).toBeUndefined();
-
-      // Progress updates should contain consolidating and confirmed stages
-      const stages = progressUpdates.map((p) => p.status.stage);
-      expect(stages).toContain("consolidating");
-      expect(stages).toContain("draining");
-      expect(stages).toContain("confirmed");
-    });
-
-    it("dispatches generic WalletSyncItem callbacks for Phase 1 and Phase 2 (Ticket #1115)", async () => {
-      const funderBalance1 = 400_000_000_000_000n;
-      const funderBalance2 = 300_000_000_000_000n;
-      const targetValue = 500_000_000_000_000n;
-      const mockProvider = createMockProvider({
-        [wallet1.address]: funderBalance1,
-        [wallet2.address]: funderBalance2,
-      });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const originalSetPendingIntent = journal.setPendingIntent.bind(journal);
-      journal.setPendingIntent = async (intent: LegacySendIntent) => {
-        await originalSetPendingIntent(intent);
-        if (intent.stagingAddress) {
-          mockProvider._setBalance(
-            intent.stagingAddress,
-            targetValue + singleTransferFee
-          );
-        }
-      };
-
-      const syncItems: any[] = [];
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        getFundingAccounts: async () => [
-          {
-            address: wallet1.address,
-            balanceWei: funderBalance1,
-            privateKey: wallet1.privateKey,
-          },
-          {
-            address: wallet2.address,
-            balanceWei: funderBalance2,
-            privateKey: wallet2.privateKey,
-          },
-        ],
-        standardGasLimit,
-        chainIdentifier: "monad-testnet",
-        onSyncTransaction: async (item) => {
-          syncItems.push(item);
-        },
-      });
-
-      const result = await consolidator.sendLegacy({
-        recipient: { raw: recipientAddress },
-        value: targetValue,
-      });
-
-      expect(result.txHash).toBeDefined();
-      // Should have 2 sync items: 1 consolidation, 1 drain
-      expect(syncItems.length).toBe(2);
-
-      // Phase 1 Consolidation sync item: peer (wallet2) sends to leader (wallet1)
-      const phase1 = syncItems[0];
-      expect(phase1.type).toBe("wallet-sync");
-      expect(phase1.direction).toBe("out");
-      expect(phase1.chainIdentifier).toBe("monad-testnet");
-      expect(phase1.spentInputs[0].address).toBe(wallet2.address);
-      expect(phase1.createdOutputs[0].address).toBe(wallet1.address);
-      expect(phase1.createdOutputs[0].branch).toBe("staging");
-
-      // Phase 2 Drain sync item: leader (wallet1) sends to recipient
-      const phase2 = syncItems[1];
-      expect(phase2.type).toBe("wallet-sync");
-      expect(phase2.direction).toBe("out");
-      expect(phase2.chainIdentifier).toBe("monad-testnet");
-      expect(phase2.txHash).toBe(result.txHash);
-      expect(phase2.spentInputs[0].address).toBe(wallet1.address);
-      expect(phase2.createdOutputs[0].address).toBe(recipientAddress);
-    });
-
-    it("executes single-account direct send on fast-path (Ticket #1203)", async () => {
-      const funderBalance = 2_000_000_000_000_000n; // 0.002 ETH
-      const targetValue = 1_000_000_000_000_000n; // 0.001 ETH
-      const mockProvider = createMockProvider({
-        [wallet1.address]: funderBalance,
-      });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const progressUpdates: LegacySendProgress[] = [];
-      const onSignedMock = jest.fn();
-      const syncItems: any[] = [];
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        standardGasLimit,
-        chainIdentifier: "monad-testnet",
-        getFundingAccounts: async () => [
-          {
-            address: wallet1.address,
-            balanceWei: funderBalance,
-            privateKey: wallet1.privateKey,
-          },
-        ],
-        onSyncTransaction: async (item) => {
-          syncItems.push(item);
-        },
-      });
-
-      const result = await consolidator.sendLegacy({
-        recipient: { raw: recipientAddress },
-        value: targetValue,
-        onProgress: (p) => progressUpdates.push(p),
-        onSigned: onSignedMock,
-      });
-
-      // Verification: 1 direct transaction to recipient, 0 consolidation transactions
-      expect(result.txHash).toBeDefined();
-      expect(result.intermediateTxHashes).toEqual([]);
-      expect(result.totalValueSent).toBe(targetValue);
-      expect(result.totalFeePaid).toBe(singleTransferFee);
-
-      // Provider broadcastTransaction should be called exactly once
-      expect(mockProvider.broadcastTransaction).toHaveBeenCalledTimes(1);
-
-      // onSigned invoked with direct tx hash
-      expect(onSignedMock).toHaveBeenCalledWith(
-        expect.objectContaining({ txHash: result.txHash })
-      );
-
-      // Journal has no pending intent (zero intermediate staging)
-      expect(journal.getPendingIntent()).toBeUndefined();
-
-      // Progress updates should contain broadcasting and confirmed (zero intermediate hops)
-      const stages = progressUpdates.map((p) => p.status.stage);
-      expect(stages).toContain("broadcasting");
-      expect(stages).toContain("confirmed");
-      expect(stages).not.toContain("consolidating");
-      expect(stages).not.toContain("draining");
-
-      // Exactly 1 sync item directly to recipient
-      expect(syncItems.length).toBe(1);
-      expect(syncItems[0].type).toBe("wallet-sync");
-      expect(syncItems[0].direction).toBe("out");
-      expect(syncItems[0].chainIdentifier).toBe("monad-testnet");
-      expect(syncItems[0].txHash).toBe(result.txHash);
-      expect(syncItems[0].spentInputs[0].address).toBe(wallet1.address);
-      expect(syncItems[0].createdOutputs[0].address).toBe(recipientAddress);
-    });
-
-    it("executes multi-account in-set leader selection (Ticket #1203)", async () => {
-      const balancePeer1 = 400_000_000_000_000n; // 0.0004 ETH
-      const balanceLeader = 500_000_000_000_000n; // 0.0005 ETH (largest, will be leader)
-      const balancePeer2 = 300_000_000_000_000n; // 0.0003 ETH
-      const targetValue = 1_000_000_000_000_000n; // 0.0010 ETH
-
-      const mockProvider = createMockProvider({
-        [wallet1.address]: balancePeer1,
-        [wallet2.address]: balanceLeader,
-        [wallet3.address]: balancePeer2,
-      });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const recordedIntents: LegacySendIntent[] = [];
-      const originalSetPendingIntent = journal.setPendingIntent.bind(journal);
-      journal.setPendingIntent = async (intent: LegacySendIntent) => {
-        recordedIntents.push({ ...intent, consolidationTxHashes: [...intent.consolidationTxHashes] });
-        await originalSetPendingIntent(intent);
-        if (intent.stagingAddress) {
-          // Provide mock balance in the leader wallet to allow phase 2 drain
-          mockProvider._setBalance(
-            intent.stagingAddress,
-            targetValue + singleTransferFee
-          );
-        }
-      };
-
-      const syncItems: any[] = [];
-      const progressUpdates: LegacySendProgress[] = [];
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        standardGasLimit,
-        chainIdentifier: "monad-testnet",
-        getFundingAccounts: async () => [
-          {
-            address: wallet1.address,
-            balanceWei: balancePeer1,
-            privateKey: wallet1.privateKey,
-          },
-          {
-            address: wallet2.address,
-            balanceWei: balanceLeader,
-            privateKey: wallet2.privateKey,
-          },
-          {
-            address: wallet3.address,
-            balanceWei: balancePeer2,
-            privateKey: wallet3.privateKey,
-          },
-        ],
-        onSyncTransaction: async (item) => {
-          syncItems.push(item);
-        },
-      });
-
-      const result = await consolidator.sendLegacy({
-        recipient: { raw: recipientAddress },
-        value: targetValue,
-        onProgress: (p) => progressUpdates.push(p),
-      });
-
-      expect(result.txHash).toBeDefined();
-      // Intermediate consolidation tx hashes should have 2 peer fan-in transfers
-      expect(result.intermediateTxHashes?.length).toBe(2);
-      expect(result.totalValueSent).toBe(targetValue);
-
-      // Verify leader was designated as wallet2 (largest balance)
-      expect(recordedIntents.length).toBeGreaterThan(0);
-      expect(recordedIntents[0].stagingAddress).toBe(wallet2.address);
-      expect(recordedIntents[0].stagingPrivateKey).toBe(wallet2.privateKey);
-
-      // 3 sync items total: 2 peer transfers to leader + 1 leader drain to recipient
-      expect(syncItems.length).toBe(3);
-
-      // Peer 1 fan-in to leader
-      expect(syncItems[0].spentInputs[0].address).toBe(wallet1.address);
-      expect(syncItems[0].createdOutputs[0].address).toBe(wallet2.address);
-      expect(syncItems[0].createdOutputs[0].branch).toBe("staging");
-
-      // Peer 2 fan-in to leader
-      expect(syncItems[1].spentInputs[0].address).toBe(wallet3.address);
-      expect(syncItems[1].createdOutputs[0].address).toBe(wallet2.address);
-      expect(syncItems[1].createdOutputs[0].branch).toBe("staging");
-
-      // Leader final transfer to recipient
-      expect(syncItems[2].spentInputs[0].address).toBe(wallet2.address);
-      expect(syncItems[2].createdOutputs[0].address).toBe(recipientAddress);
-      expect(syncItems[2].txHash).toBe(result.txHash);
-
-      // Progress updates should contain consolidating, draining, and confirmed
-      const stages = progressUpdates.map((p) => p.status.stage);
-      expect(stages).toContain("consolidating");
-      expect(stages).toContain("draining");
-      expect(stages).toContain("confirmed");
-    });
-  });
-
-  describe("resumeLegacySend", () => {
-    it("throws when there is no pending intent to resume", async () => {
-      const mockProvider = createMockProvider();
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-      });
-
-      await expect(consolidator.resumeLegacySend()).rejects.toThrow(
-        "No pending legacy send intent to resume"
-      );
-    });
-
-    it("resumes already-mined drain transaction and cleans journal", async () => {
-      const mockProvider = createMockProvider();
-      const journal = new InMemoryLegacySendJournalStore();
-      const stagingWallet = Wallet.createRandom();
-
-      await journal.setPendingIntent({
-        id: "intent-1",
-        recipientAddress,
-        targetValueWei: "500000000000000",
-        stagingAddress: stagingWallet.address,
-        stagingPrivateKey: stagingWallet.privateKey,
-        inputAddresses: [wallet1.address],
-        phase: "draining",
-        consolidationTxHashes: ["0xaaa"],
-        drainTxHash: "0xbbb",
-        createdAtMs: Date.now(),
-        updatedAtMs: Date.now(),
-      });
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-      });
-
-      const result = await consolidator.resumeLegacySend();
-      expect(result.txHash).toBe("0xbbb");
-      expect(result.totalValueSent).toBe(500000000000000n);
-      expect(journal.getPendingIntent()).toBeUndefined();
-    });
-
-    it("broadcasts drain transaction from staging wallet when pending intent is consolidated", async () => {
-      const stagingWallet = Wallet.createRandom();
-      const stagingBalance = 600_000_000_000_000n;
-      const targetValue = 500_000_000_000_000n;
-
-      const mockProvider = createMockProvider({
-        [stagingWallet.address]: stagingBalance,
-      });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      await journal.setPendingIntent({
-        id: "intent-2",
-        recipientAddress,
-        targetValueWei: targetValue.toString(),
-        stagingAddress: stagingWallet.address,
-        stagingPrivateKey: stagingWallet.privateKey,
-        inputAddresses: [wallet1.address],
-        phase: "consolidated",
-        consolidationTxHashes: ["0xaaa"],
-        createdAtMs: Date.now(),
-        updatedAtMs: Date.now(),
-      });
-
-      const resumedSyncItems: any[] = [];
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        standardGasLimit,
-        chainIdentifier: "monad-testnet",
-        onSyncTransaction: async (item) => {
-          resumedSyncItems.push(item);
-        },
-      });
-
-      const result = await consolidator.resumeLegacySend();
-      expect(result.txHash).toBeDefined();
-      expect(result.totalValueSent).toBe(targetValue);
-      expect(journal.getPendingIntent()).toBeUndefined();
-      expect(resumedSyncItems.length).toBe(1);
-      expect(resumedSyncItems[0].chainIdentifier).toBe("monad-testnet");
-      expect(resumedSyncItems[0].type).toBe("wallet-sync");
-    });
-  });
-
-  describe("asynchronous multi-account consolidation pipeline (Issue #1217)", () => {
-    it("dispatches non-blocking peer fan-ins and returns optimistic handle without freezing caller", async () => {
-      const balancePeer = 400_000_000_000_000n;
-      const balanceLeader = 800_000_000_000_000n;
-      const targetValue = 1_000_000_000_000_000n;
-
-      const mockProvider = createMockProvider({
-        [wallet1.address]: balancePeer,
-        [wallet2.address]: balanceLeader,
-      });
-
-      // Initially receipts are not mined (null)
-      mockProvider.getTransactionReceipt = jest.fn().mockResolvedValue(null);
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const progressUpdates: LegacySendProgress[] = [];
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        standardGasLimit,
-        pollIntervalMs: 10,
-        pollTimeoutMs: 100,
-        chainIdentifier: "monad-testnet",
-        getFundingAccounts: async () => [
-          {
-            address: wallet1.address,
-            balanceWei: balancePeer,
-            privateKey: wallet1.privateKey,
-          },
-          {
-            address: wallet2.address,
-            balanceWei: balanceLeader,
-            privateKey: wallet2.privateKey,
-          },
-        ],
-      });
-
-      // Call sendLegacy with waitForDrain: false (non-blocking)
-      const result = await consolidator.sendLegacy({
-        recipient: { raw: recipientAddress },
-        value: targetValue,
-        onProgress: (p) => progressUpdates.push(p),
-        waitForDrain: false,
-      });
-
-      // Caller is NOT frozen: returns immediately with optimistic handle
-      expect(result.txHash).toBeDefined();
-      expect(result.intermediateTxHashes?.length).toBe(1);
-      expect(result.totalValueSent).toBe(targetValue);
-
-      // Peer fan-in was broadcast to the mempool
-      expect(mockProvider.broadcastTransaction).toHaveBeenCalledTimes(1);
-
-      // Journal has the pending intent saved as phase 'consolidating'
-      const pending = journal.getPendingIntent();
-      expect(pending).toBeDefined();
-      expect(pending?.phase).toBe("consolidating");
-      expect(pending?.stagingAddress).toBe(wallet2.address);
-      expect(pending?.consolidationTxHashes).toEqual(result.intermediateTxHashes);
-
-      // Drain transaction has NOT occurred yet
-      expect(pending?.drainTxHash).toBeUndefined();
-      const stages = progressUpdates.map((p) => p.status.stage);
-      expect(stages).toContain("consolidating");
-      expect(stages).not.toContain("draining");
-      expect(stages).not.toContain("confirmed");
-    });
-
-    it("resumes consolidation and delivers final transfer once fan-in transactions confirm", async () => {
-      const balancePeer = 400_000_000_000_000n;
-      const balanceLeader = 800_000_000_000_000n;
-      const targetValue = 1_000_000_000_000_000n;
-
-      const mockProvider = createMockProvider({
-        [wallet1.address]: balancePeer,
-        [wallet2.address]: balanceLeader,
-      });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const progressUpdates: LegacySendProgress[] = [];
-      const onSignedMock = jest.fn();
-      const syncItems: any[] = [];
-
-      // Start with pending fan-in tx in mempool
-      let fanInMined = false;
-      mockProvider.getTransactionReceipt = jest.fn().mockImplementation(async (hash: string) => {
-        if (!fanInMined) return null;
-        return { status: 1, hash };
-      });
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        standardGasLimit,
-        pollIntervalMs: 10,
-        chainIdentifier: "monad-testnet",
-        getFundingAccounts: async () => [
-          {
-            address: wallet1.address,
-            balanceWei: balancePeer,
-            privateKey: wallet1.privateKey,
-          },
-          {
-            address: wallet2.address,
-            balanceWei: balanceLeader,
-            privateKey: wallet2.privateKey,
-          },
-        ],
-        onSyncTransaction: async (item) => {
-          syncItems.push(item);
-        },
-      });
-
-      // 1. Non-blocking dispatch
-      const dispatchResult = await consolidator.sendLegacy({
-        recipient: { raw: recipientAddress },
-        value: targetValue,
-        onProgress: (p) => progressUpdates.push(p),
-        async: true,
-      });
-
-      expect(dispatchResult.intermediateTxHashes?.length).toBe(1);
-      const pendingIntent = journal.getPendingIntent()!;
-      expect(pendingIntent.phase).toBe("consolidating");
-
-      // 2. Peer fan-in confirms on-chain
-      fanInMined = true;
-      mockProvider._setBalance(wallet2.address, targetValue + singleTransferFee);
-
-      // 3. Resume consolidation
-      const finalResult = await consolidator.resumeConsolidation(pendingIntent.id, {
-        onProgress: (p) => progressUpdates.push(p),
-        onSigned: onSignedMock,
-      });
-
-      // Final delivery executed by leader
-      expect(finalResult.txHash).toBeDefined();
-      expect(finalResult.totalValueSent).toBe(targetValue);
-      expect(onSignedMock).toHaveBeenCalledWith(
-        expect.objectContaining({ txHash: finalResult.txHash })
-      );
-
-      // Journal is cleared after completion
-      expect(journal.getPendingIntent()).toBeUndefined();
-
-      // Drain sync item was emitted
-      expect(syncItems.length).toBe(2);
-      expect(syncItems[1].txHash).toBe(finalResult.txHash);
-      expect(syncItems[1].spentInputs[0].address).toBe(wallet2.address);
-      expect(syncItems[1].createdOutputs[0].address).toBe(recipientAddress);
-
-      // All progress stages observed
-      const stages = progressUpdates.map((p) => p.status.stage);
-      expect(stages).toContain("consolidating");
-      expect(stages).toContain("draining");
-      expect(stages).toContain("confirmed");
-    });
-
-    it("resumes an interrupted consolidating intent via resumeLegacySend", async () => {
-      const targetValue = 600_000_000_000_000n;
-      const stagingWallet = Wallet.createRandom();
-
-      const mockProvider = createMockProvider({
-        [stagingWallet.address]: targetValue + singleTransferFee,
-      });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const intentId = "intent-consolidating-interrupt";
-      await journal.setPendingIntent({
-        id: intentId,
-        recipientAddress,
-        targetValueWei: targetValue.toString(),
-        stagingAddress: stagingWallet.address,
-        stagingPrivateKey: stagingWallet.privateKey,
-        inputAddresses: [wallet1.address, stagingWallet.address],
-        phase: "consolidating",
-        consolidationTxHashes: ["0xconsolidation123"],
-        createdAtMs: Date.now(),
-        updatedAtMs: Date.now(),
-      });
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        standardGasLimit,
-        pollIntervalMs: 10,
-        chainIdentifier: "monad-testnet",
-      });
-
-      const result = await consolidator.resumeLegacySend();
-      expect(result.txHash).toBeDefined();
-      expect(result.totalValueSent).toBe(targetValue);
-      expect(journal.getPendingIntent()).toBeUndefined();
-    });
-
-    it("marks intent as failed and throws error when peer fan-in transaction reverts on-chain", async () => {
-      const stagingWallet = Wallet.createRandom();
-      const mockProvider = createMockProvider();
-      // Reverted transaction receipt
-      mockProvider.getTransactionReceipt = jest.fn().mockResolvedValue({ status: 0 });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const intentId = "intent-failed-revert";
-      await journal.setPendingIntent({
-        id: intentId,
-        recipientAddress,
-        targetValueWei: "500000000000000",
-        stagingAddress: stagingWallet.address,
-        stagingPrivateKey: stagingWallet.privateKey,
-        inputAddresses: [wallet1.address, stagingWallet.address],
-        phase: "consolidating",
-        consolidationTxHashes: ["0xfailed_tx"],
-        createdAtMs: Date.now(),
-        updatedAtMs: Date.now(),
-      });
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        pollIntervalMs: 10,
-      });
-
-      await expect(consolidator.resumeConsolidation(intentId)).rejects.toThrow(
-        "Consolidation transaction 0xfailed_tx reverted on-chain"
-      );
-
-      const pending = journal.getPendingIntent();
-      expect(pending?.phase).toBe("failed");
-    });
-
-    it("deduplicates concurrent calls to resumeConsolidation for the same intent", async () => {
-      const stagingWallet = Wallet.createRandom();
-      const targetValue = 500_000_000_000_000n;
-      const mockProvider = createMockProvider({
-        [stagingWallet.address]: targetValue + singleTransferFee,
-      });
-
-      const journal = new InMemoryLegacySendJournalStore();
-      const intentId = "intent-concurrent-dedup";
-      await journal.setPendingIntent({
-        id: intentId,
-        recipientAddress,
-        targetValueWei: targetValue.toString(),
-        stagingAddress: stagingWallet.address,
-        stagingPrivateKey: stagingWallet.privateKey,
-        inputAddresses: [wallet1.address],
-        phase: "consolidated",
-        consolidationTxHashes: ["0xaaa"],
-        createdAtMs: Date.now(),
-        updatedAtMs: Date.now(),
-      });
-
-      const consolidator = new EvmLegacyConsolidator({
-        provider: mockProvider,
-        journal,
-        standardGasLimit,
-      });
-
-      // Run two resumeConsolidation calls concurrently
-      const [res1, res2] = await Promise.all([
-        consolidator.resumeConsolidation(intentId),
-        consolidator.resumeConsolidation(intentId),
-      ]);
-
-      expect(res1.txHash).toBe(res2.txHash);
-      expect(res1.totalValueSent).toBe(targetValue);
-      // Ensure provider broadcastTransaction was called only once for the drain
-      expect(mockProvider.broadcastTransaction).toHaveBeenCalledTimes(1);
-      expect(journal.getPendingIntent()).toBeUndefined();
-    });
-  });
-});
+        }),
+      ).rejects.toThrow('Insufficient')
+      expect(recovered.sign).not.toHaveBeenCalled()
+      state.balances.set(wallets[2]!.address.toLowerCase(), 100000n)
+      state.setMode('mine')
+      await recovered.executor.sendNative({
+        recipient: { raw: recipient },
+        value: 1000n,
+      })
+      expect(
+        recovered.sign.mock.calls.every(
+          ([source]) => source.address === wallets[2]!.address.toLowerCase(),
+        ),
+      ).toBe(true)
+    },
+  )
+  it('permits observed residual at next nonce but never reuses the retained old pair', async () => {
+    const state = chain([300000n])
+    const current = owner(state)
+    await current.executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 100000n,
+    })
+    await current.executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 50000n,
+    })
+    expect(state.raws.map(raw => Transaction.from(raw).nonce)).toEqual([0, 1])
+    expect(state.balances.get(wallets[0]!.address.toLowerCase())).toBe(108000n)
+    state.nonces.set(wallets[0]!.address.toLowerCase(), 0)
+    await expect(
+      current.executor.sendLegacy({
+        recipient: { raw: recipient },
+        value: 1000n,
+      }),
+    ).rejects.toThrow('Insufficient')
+    expect(journal.list()).toHaveLength(2)
+  })
+  it('keeps disjoint operations while serializing conflicting selection', async () => {
+    const state = chain([200000n, 200000n])
+    state.setMode('lost')
+    const current = owner(state)
+    await Promise.allSettled(
+      [1, 2].map(() =>
+        current.executor.sendNative({
+          recipient: { raw: recipient },
+          value: 100000n,
+        }),
+      ),
+    )
+    expect(journal.list()).toHaveLength(2)
+    expect(
+      new Set(journal.list().map(r => r.members[0]!.source.address)).size,
+    ).toBe(2)
+    await reopen()
+    expect(journal.list()).toHaveLength(2)
+  })
+  it('freezes calldata builder semantics and rejects unsupported consolidation before signing', async () => {
+    const state = chain([200000n])
+    state.setMode('lost')
+    const builder = new NativeEvmTransactionBuilder()
+    Object.defineProperty(builder, 'supportsNativeConsolidation', {
+      value: false,
+    })
+    const destination = wallets[2]!.address
+    jest.spyOn(builder, 'buildTransfer').mockImplementation(async params => ({
+      to: destination,
+      data: '0x12345678',
+      value: 0n,
+      nonce: params.overrides!.nonce,
+      gasLimit: 21000n,
+    }))
+    const current = owner(state, { builder })
+    await expect(
+      current.executor.sendLegacy({
+        recipient: { raw: recipient },
+        value: 100000n,
+      }),
+    ).rejects.toThrow('does not support')
+    expect(current.sign).not.toHaveBeenCalled()
+    await expect(
+      current.executor.sendNative({
+        recipient: { raw: recipient },
+        value: 100000n,
+      }),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const row = journal.list()[0]!
+    const tx = Transaction.from(row.members[0]!.signed!.rawTransaction)
+    expect(tx.to).toBe(destination)
+    expect(tx.value).toBe(0n)
+    expect(tx.data).toBe('0x12345678')
+    expect(row.recipient).toBe(recipient)
+    expect(row.intendedValueWei).toBe('100000')
+    await reopen()
+    state.setMode('mine')
+    const recovered = owner(state, { builder, sources: [] })
+    await recovered.executor.resumeOperation(row.operationId)
+    expect(recovered.sign).not.toHaveBeenCalled()
+    expect(state.raws[1]).toBe(state.raws[0])
+  })
+  it('deduplicates concurrent resume and retains reverted evidence without releasing claims', async () => {
+    const state = chain([200000n])
+    state.setMode('lost')
+    const current = owner(state)
+    await expect(
+      current.executor.sendNative({
+        recipient: { raw: recipient },
+        value: 100000n,
+      }),
+    ).rejects.toThrow()
+    const row = journal.list()[0]!
+    state.mine(row.members[0]!.signed!.rawTransaction, 0)
+    await expect(
+      current.executor.resumeOperation(row.operationId),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+      'included-revert',
+    )
+    expect(journal.canSelect(row.members[0]!.source.address, 0)).toBe(false)
+    expect(state.balances.get(recipient)).toBeUndefined()
+  })
+  it('does not broadcast when the durable exposure barrier fails', async () => {
+    const state = chain([200000n])
+    const current = owner(state)
+    jest
+      .spyOn(journal, 'markExposed')
+      .mockRejectedValueOnce(new Error('storage barrier unavailable'))
+    await expect(
+      current.executor.sendNative({
+        recipient: { raw: recipient },
+        value: 1000n,
+      }),
+    ).rejects.toThrow('storage barrier unavailable')
+    expect(state.raws).toEqual([])
+    expect(journal.list()[0]!.members[0]!.signed).not.toBeNull()
+    expect(journal.list()[0]!.members[0]!.exposed).toBe(false)
+  })
+  it('refuses capacity before custody signs any member', async () => {
+    await journal.Close()
+    journal = new EvmNativeOperationJournal({ location, binding, maxBytes: 1 })
+    await journal.Open()
+    const state = chain([200000n])
+    const current = owner(state)
+    await expect(
+      current.executor.sendNative({
+        recipient: { raw: recipient },
+        value: 1000n,
+      }),
+    ).rejects.toMatchObject({ code: 'capacity' })
+    expect(current.sign).not.toHaveBeenCalled()
+    expect(state.raws).toEqual([])
+  })
+  it('keeps sync failure tied to the fulfilled original operation without another payment', async () => {
+    const state = chain([200000n])
+    const current = owner(state)
+    await current.executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 1000n,
+    })
+    const row = journal.list()[0]!
+    current.sync.mockRejectedValueOnce(new Error('sync transport unavailable'))
+    await expect(
+      current.executor.flushSync(row.operationId),
+    ).rejects.toMatchObject({ operation: { operationId: row.operationId } })
+    expect(journal.get(row.operationId).members[0]!.syncApplied).toBe(false)
+    await current.executor.resumeLegacySend(row.operationId)
+    await current.executor.flushSync(row.operationId)
+    await current.executor.flushSync(row.operationId)
+    expect(current.sync).toHaveBeenCalledTimes(2)
+    expect(state.raws).toHaveLength(1)
+    expect(state.balances.get(recipient)).toBe(1000n)
+  })
+  it('discards delayed provider responses after a newer observation completes', async () => {
+    const state = chain([200000n])
+    state.setMode('lost')
+    const current = owner(state)
+    await expect(
+      current.executor.sendNative({
+        recipient: { raw: recipient },
+        value: 1000n,
+      }),
+    ).rejects.toThrow()
+    const row = journal.list()[0]!
+    let release!: () => void
+    let entered!: () => void
+    const started = new Promise<void>(resolve => {
+      entered = resolve
+    })
+    const wait = new Promise<void>(resolve => {
+      release = resolve
+    })
+    state.provider.getTransaction.mockImplementationOnce(async () => {
+      entered()
+      await wait
+      return null
+    })
+    const delayed = current.executor.observe(row.operationId, 0)
+    await started
+    state.mine(row.members[0]!.signed!.rawTransaction)
+    await current.executor.observe(row.operationId, 0)
+    release()
+    await delayed
+    expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+      'included-success',
+    )
+  })
+})

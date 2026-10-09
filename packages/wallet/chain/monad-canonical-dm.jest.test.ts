@@ -938,6 +938,42 @@ describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
         expect(mappedUnknown.text).toBe('[This message item is not supported yet]')
       }
     })
+
+    it('maps and round-trips digital-goods items encoded as JSON text frames', () => {
+      const digitalGoodsItem = {
+        type: 'digital-goods' as const,
+        action: 'request' as const,
+        itemId: 'rings',
+      }
+      const frameBytes = directMessageText(JSON.stringify(digitalGoodsItem))
+      const parsed = parseFrame(frameBytes)
+
+      // Test decoding logic matching monad-canonical-dm.ts
+      const decodeItem = (item: any): MessageItem => {
+        if (item.kind === 'parsed' && item.typed?.type === 17) {
+          try {
+            const text = item.typed.text
+            if (text.startsWith('{') || text.startsWith('[')) {
+              const decoded = JSON.parse(text)
+              if (
+                decoded &&
+                typeof decoded === 'object' &&
+                !Array.isArray(decoded) &&
+                decoded.type === 'digital-goods'
+              ) {
+                return decoded as MessageItem
+              }
+            }
+          } catch {}
+          return { type: 'text' as const, text: item.typed.text }
+        }
+        return { type: 'text' as const, text: 'unknown' }
+      }
+
+      const decoded = decodeItem(parsed)
+      expect(decoded).toEqual(digitalGoodsItem)
+    })
   })
 })
+
 

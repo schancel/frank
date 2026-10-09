@@ -370,6 +370,9 @@ function textItems(items: readonly MessageItem[]): Uint8Array[] {
         memo: item.memo,
       })
     }
+    if (item.type === 'digital-goods') {
+      return directMessageText(JSON.stringify(item))
+    }
     if (item.type !== 'text')
       throw new Error(
         `Canonical direct messages cannot carry '${item.type}' items yet; nothing was paid or sent.`,
@@ -1054,6 +1057,14 @@ async function fetchSince(
                         processSyncItemIfPresent(params.wallet, s)
                       }
                     }
+                    if (
+                      parsed &&
+                      typeof parsed === 'object' &&
+                      !Array.isArray(parsed) &&
+                      parsed.type === 'digital-goods'
+                    ) {
+                      return parsed as MessageItem
+                    }
                   }
                 } catch {}
                 return { type: 'text' as const, text: item.typed.text }
@@ -1270,6 +1281,14 @@ export function canonicalDirectMessages(
                                 if (s && (s.type === 'wallet-sync' || s.type === 'payment-transfer')) {
                                   processSyncItemIfPresent(params.wallet, s)
                                 }
+                              }
+                              if (
+                                parsed &&
+                                typeof parsed === 'object' &&
+                                !Array.isArray(parsed) &&
+                                parsed.type === 'digital-goods'
+                              ) {
+                                return parsed as MessageItem
                               }
                             }
                           } catch {}

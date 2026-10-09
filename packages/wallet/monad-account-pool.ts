@@ -68,6 +68,7 @@ import {
 } from "./monad-account-tx";
 import {
   InMemorySubAccountPoolStore,
+  assertSubAccountLifecycleMatrix,
   assertSubAccountStatusTransition,
   SubAccountFundingAttempt,
   SubAccountPoolStore,
@@ -142,6 +143,34 @@ export interface FundingReceiptOptions {
   intervalMs?: number;
   maxAttempts?: number;
   sleep?: (ms: number) => Promise<void>;
+}
+
+/** The native journal's bound on a signed transaction's hex string: its unsigned bound plus the
+ * signature allowance (`storage/evm-native-operation-journal.ts`). */
+const MAX_SPEND_RAW_TX_LENGTH = 64 * 1024 + 256;
+
+/** `committed`: this call wrote the checkpoint and `spent`. `already-applied`: the row already
+ * carries exactly this transaction. `no-row`: the pool has no row at that index. */
+export type SubAccountSpendOutcome = "committed" | "already-applied" | "no-row";
+
+interface ClassifiedSubAccountSpend {
+  outcome: SubAccountSpendOutcome;
+  /** The transaction's own hash, derived from the bytes. */
+  txHash: string;
+  candidate?: SubAccountRecord;
+}
+
+/** `commitSpend` wrote nothing: the bytes are not an acceptable signed transaction, they were not
+ * signed by that sub-account, or the row is held by another owner or another transaction. */
+export class SubAccountSpendRefusedError extends Error {
+  constructor(
+    readonly code: "invalid-transaction" | "sender-mismatch" | "held",
+    readonly index: number,
+    detail: string
+  ) {
+    super(`Sub-account ${index} spend refused (${code}): ${detail}`);
+    this.name = "SubAccountSpendRefusedError";
+  }
 }
 
 /**
@@ -412,8 +441,134 @@ export class MonadSubAccountPool {
   }
 
   /**
-   * Ingests a generic transaction sync item (Ticket #1115), recording spends and retiring
-   * spent pool sub-accounts immediately to avoid multi-device desync.
+   * The one place that records "sub-account `index` was spent by this transaction" from evidence
+   * that is not a lease outcome. It trusts nothing but the signed bytes: the sender must be the
+   * keyring's address for `index`, and the stored hash and value are the transaction's own, so the
+   * row it writes is what `validateMonadWalletState` recomputes. Checkpoint and terminal status go
+   * down in a single put. It does not flush, never triggers warming, and never creates a row.
+   * Throws `SubAccountSpendRefusedError` (nothing written) for unacceptable bytes or a row that
+   * another owner or another transaction already holds.
+   */
+  commitSpend(index: number, rawTx: string): SubAccountSpendOutcome {
+    return this.applyClassifiedSpend(index, this.classifySpend(index, rawTx));
+  }
+
+  private applyClassifiedSpend(
+    index: number,
+    classified: ClassifiedSubAccountSpend
+  ): SubAccountSpendOutcome {
+    if (classified.candidate !== undefined) {
+      this.store.put(classified.candidate);
+      this.capacityCache.delete(index);
+    }
+    if (classified.outcome !== "no-row") this.syncUtxo(index, "spent");
+    return classified.outcome;
+  }
+
+  /** Decides what `commitSpend` does with these bytes, without writing. `candidate` is the one
+   * row to put when the outcome is `committed`. */
+  private classifySpend(index: number, rawTx: string): ClassifiedSubAccountSpend {
+    const refuse = (
+      code: SubAccountSpendRefusedError["code"],
+      detail: string
+    ): never => {
+      throw new SubAccountSpendRefusedError(code, index, detail);
+    };
+    if (!Number.isSafeInteger(index) || index < 0) {
+      return refuse("invalid-transaction", "index is not a sub-account index");
+    }
+    // Same acceptance as the wallet-state validator's signed-transaction parse, plus the native
+    // journal's size and envelope bounds, so nothing accepted here is rejected there.
+    if (
+      typeof rawTx !== "string" ||
+      rawTx.length > MAX_SPEND_RAW_TX_LENGTH ||
+      !/^0x[0-9a-f]+$/.test(rawTx)
+    ) {
+      return refuse("invalid-transaction", "raw transaction is not bounded hex");
+    }
+    let transaction: Transaction;
+    try {
+      transaction = Transaction.from(rawTx);
+    } catch {
+      return refuse("invalid-transaction", "raw transaction does not parse");
+    }
+    const { hash, from } = transaction;
+    if (hash === null || from === null) {
+      return refuse("invalid-transaction", "transaction is unsigned");
+    }
+    if (
+      transaction.serialized !== rawTx ||
+      (transaction.type !== 0 &&
+        transaction.type !== 1 &&
+        transaction.type !== 2)
+    ) {
+      return refuse(
+        "invalid-transaction",
+        "transaction is not a canonical legacy, access-list or fee-market encoding"
+      );
+    }
+    const derivedAddress = this.keyring.deriveSubAccount(index).address;
+    if (getAddress(from) !== getAddress(derivedAddress)) {
+      return refuse("sender-mismatch", "transaction was not signed by it");
+    }
+
+    const row = this.store.getByIndex(index);
+    if (row === undefined) {
+      if (this.store.getCheckpoints().some((entry) => entry.index === index)) {
+        return refuse("held", "only a compacted terminal checkpoint remains");
+      }
+      return { outcome: "no-row", txHash: hash };
+    }
+    if (getAddress(row.address) !== getAddress(derivedAddress)) {
+      return refuse("sender-mismatch", "stored address is not its derivation");
+    }
+    const spend: SubAccountTransactionCheckpoint = {
+      rawTx,
+      txHash: hash,
+      valueWei: transaction.value.toString(),
+    };
+    const existing = row.lifecycle?.spend;
+    if (
+      (row.status === "unfunded" || row.status === "available") &&
+      existing === undefined
+    ) {
+      const candidate: SubAccountRecord = {
+        ...row,
+        status: "spent",
+        lifecycle: { ...row.lifecycle, spend },
+      };
+      try {
+        assertSubAccountLifecycleMatrix(candidate);
+      } catch {
+        return refuse("held", "its lifecycle cannot take a spend checkpoint");
+      }
+      return { outcome: "committed", txHash: hash, candidate };
+    }
+    if (
+      row.status === "spent" &&
+      existing !== undefined &&
+      row.lifecycle?.legacyTerminal === undefined &&
+      existing.rawTx === spend.rawTx &&
+      existing.txHash === spend.txHash &&
+      existing.valueWei === spend.valueWei
+    ) {
+      return { outcome: "already-applied", txHash: hash };
+    }
+    return refuse(
+      "held",
+      `row is ${row.status}${
+        existing === undefined ? "" : " with another spend checkpoint"
+      }`
+    );
+  }
+
+  /**
+   * Pool entry for a generic transaction sync item (Ticket #1115). It records a spend only through
+   * `commitSpend`, and only when the item carries the complete signed transaction whose hash is
+   * the item's `txHash` and whose sender is the matched row. The item's own `valueWei` is never
+   * stored. Anything less changes no durable state: the matched row only loses its capacity-cache
+   * entry, so a drained account is re-read before it is offered again, and no index is reported.
+   * A refused item is not an error to the caller.
    */
   processSyncTransaction(item: {
     direction: "in" | "out";
@@ -429,42 +584,35 @@ export class MonadSubAccountPool {
     const affectedIndices: number[] = [];
     if (
       item.direction !== "out" ||
-      !item.spentInputs ||
+      !Array.isArray(item.spentInputs) ||
       item.spentInputs.length === 0
     ) {
       return { affectedIndices };
     }
 
-    const spentMap = new Map<string, { valueWei?: string | bigint }>();
+    const spentAddresses = new Set<string>();
     for (const input of item.spentInputs) {
-      spentMap.set(input.address.toLowerCase(), input);
+      if (typeof input?.address === "string") {
+        spentAddresses.add(input.address.toLowerCase());
+      }
     }
+    const { rawTx, txHash } = item;
+    const hashOf = (value: string) => value.toLowerCase().replace(/^0x/, "");
 
     for (const record of this.store.getAll()) {
-      const input = spentMap.get(record.address.toLowerCase());
-      if (input !== undefined) {
-        let changed = false;
-        if (!record.lifecycle?.spend && item.txHash) {
-          const valueStr =
-            input.valueWei !== undefined ? input.valueWei.toString() : "0";
-          this.recordSpendTransaction(record.index, {
-            rawTx: item.rawTx ?? "",
-            txHash: item.txHash,
-            valueWei: valueStr,
-          });
-          changed = true;
-        }
-        const currentRecord = this.store.getByIndex(record.index) ?? record;
+      if (!spentAddresses.has(record.address.toLowerCase())) continue;
+      this.capacityCache.delete(record.index);
+      if (typeof rawTx !== "string" || typeof txHash !== "string") continue;
+      try {
+        const classified = this.classifySpend(record.index, rawTx);
+        if (hashOf(classified.txHash) !== hashOf(txHash)) continue;
         if (
-          currentRecord.status !== "spent" &&
-          currentRecord.status !== "retired"
+          this.applyClassifiedSpend(record.index, classified) === "committed"
         ) {
-          this.setStatus(record.index, "spent");
-          changed = true;
-        }
-        if (changed) {
           affectedIndices.push(record.index);
         }
+      } catch (error) {
+        if (!(error instanceof SubAccountSpendRefusedError)) throw error;
       }
     }
 

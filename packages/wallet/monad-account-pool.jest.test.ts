@@ -28,7 +28,11 @@ import {
   DEFAULT_TOPUP_BUFFER_SIZE,
   fanOutFundSubAccounts,
   MonadSubAccountPool,
+  SubAccountSpendRefusedError,
 } from "./monad-account-pool";
+import { MonadChangeKeyring } from "./monad-change-keyring";
+import { MonadChangePool } from "./monad-change-pool";
+import { validateMonadWalletState } from "./storage/monad-wallet-state-validator";
 import { SubAccountLeaseManager } from "./monad-account-lease";
 import { MonadAccountTxSigner, MonadTxSubmitter } from "./monad-account-tx";
 import { LevelSubAccountPoolStore } from "./storage/level-sub-account-pool-store";
@@ -1578,36 +1582,451 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
   });
 
   describe("MonadSubAccountPool.processSyncTransaction (Ticket #1115)", () => {
-    it("records spend checkpoint and marks status spent when matching spent input address", () => {
+    const FEE_WEI = 21_000n;
+    const recipient = "0x" + "12".repeat(20);
+
+    function setupSpendTest(store: SubAccountPoolStore = new InMemorySubAccountPoolStore()) {
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
-      const pool = new MonadSubAccountPool({ keyring });
+      const pool = new MonadSubAccountPool({ keyring, store });
       pool.ensureSize(3);
+      const putMany = jest.spyOn(store, "putMany");
+      const put = jest.spyOn(store, "put");
+      const warming = jest.spyOn(pool, "triggerProactiveWarming");
+      const writes = () => put.mock.calls.length + putMany.mock.calls.length;
+      return { keyring, pool, store, warming, writes };
+    }
 
-      const addr0 = keyring.deriveSubAccount(0).address;
-      const addr1 = keyring.deriveSubAccount(1).address;
+    async function signSpend(
+      keyring: MonadHdKeyring,
+      index: number,
+      fields: { value?: bigint; nonce?: number } = {}
+    ) {
+      const rawTx = await new Wallet(
+        keyring.deriveSubAccount(index).privateKey
+      ).signTransaction({
+        type: 2,
+        chainId: CHAIN_ID,
+        nonce: fields.nonce ?? 0,
+        to: recipient,
+        value: fields.value ?? 5_000n,
+        gasLimit: 21_000n,
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+      });
+      const transaction = Transaction.from(rawTx);
+      return { rawTx, txHash: transaction.hash as string, transaction };
+    }
 
-      expect(pool.getRecord(0)?.status).toBe("available");
-      expect(pool.getRecord(0)?.lifecycle?.spend).toBeUndefined();
-
-      const res = pool.processSyncTransaction({
-        direction: "out",
-        txHash: "0xdeadbeef",
+    /** The item `EvmLegacyConsolidator.applySync` emits: no raw bytes, value plus actual fee. */
+    function consolidatorItem(
+      address: string,
+      spend: { txHash: string; transaction: Transaction }
+    ) {
+      return {
+        type: "wallet-sync" as const,
+        direction: "out" as const,
+        chainIdentifier: "monad-testnet",
+        txHash: spend.txHash,
         spentInputs: [
           {
-            address: addr0.toLowerCase(),
-            valueWei: "5000000000000",
+            address: address.toLowerCase(),
+            nonce: spend.transaction.nonce,
+            valueWei: (spend.transaction.value + FEE_WEI).toString(),
           },
         ],
-      });
+        createdOutputs: [
+          {
+            address: spend.transaction.to as string,
+            valueWei: spend.transaction.value.toString(),
+          },
+        ],
+        timestamp: 1,
+      };
+    }
 
-      expect(res.affectedIndices).toEqual([0]);
-      expect(pool.getRecord(0)?.status).toBe("spent");
-      expect(pool.getRecord(0)?.lifecycle?.spend?.txHash).toBe("0xdeadbeef");
+    function walletStateOf(
+      pool: MonadSubAccountPool,
+      keyring: MonadHdKeyring
+    ): Parameters<typeof validateMonadWalletState>[0] {
+      const changeKeyring = MonadChangeKeyring.fromMnemonic(TEST_MNEMONIC);
+      return {
+        pool,
+        changePool: new MonadChangePool({ keyring: changeKeyring }),
+        subKeyring: keyring,
+        changeKeyring,
+      };
+    }
+
+    // Before #1235 this test expected `affectedIndices` [0], status `spent` and a checkpoint with
+    // only the item's hash. Those three expectations were the defect: a spend record without its
+    // signed transaction is the row the wallet-state validator rejects at the next open.
+    it("writes nothing for the consolidator's item without raw bytes; only the capacity entry is dropped", async () => {
+      const { keyring, pool, warming, writes } = setupSpendTest();
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const before = pool.records();
+      pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
+      pool.capacityCache.set(1, { capacityWei: 9n, checkedAtMs: Date.now() });
+      const written = writes();
+
+      const res = pool.processSyncTransaction(
+        consolidatorItem(addr0, await signSpend(keyring, 0))
+      );
+
+      expect(res.affectedIndices).toEqual([]);
+      expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
+      expect(pool.getRecord(0)?.status).toBe("available");
+      expect(pool.getRecord(0)?.lifecycle?.spend).toBeUndefined();
+      expect(pool.capacityCache.has(0)).toBe(false);
+      expect(warming).not.toHaveBeenCalled();
 
       // Record 1 should remain untouched
       expect(pool.getRecord(1)?.status).toBe("available");
       expect(pool.getRecord(1)?.lifecycle?.spend).toBeUndefined();
+      expect(pool.capacityCache.has(1)).toBe(true);
+      expect(() =>
+        validateMonadWalletState(walletStateOf(pool, keyring))
+      ).not.toThrow();
     });
+
+    it("records the complete signed transaction and spent in one put, from the transaction's own fields, durably", async () => {
+      const os = await import("os");
+      const path = await import("path");
+      const fs = await import("fs");
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frank-1235-spend-"));
+      const levelStore = new LevelSubAccountPoolStore(dir);
+      await levelStore.Open();
+      let reopened: LevelSubAccountPoolStore | undefined;
+      try {
+        const { keyring, pool, warming, writes } = setupSpendTest(levelStore);
+        const putMany = jest.spyOn(levelStore, "putMany");
+        const addr0 = keyring.deriveSubAccount(0).address;
+        const spend = await signSpend(keyring, 0);
+        pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
+        putMany.mockClear();
+        const written = writes();
+
+        const item = { ...consolidatorItem(addr0, spend), rawTx: spend.rawTx };
+        expect(item.spentInputs[0].valueWei).toBe("26000");
+        const res = pool.processSyncTransaction(item);
+
+        const expectedRow = {
+          index: 0,
+          address: addr0,
+          status: "spent",
+          lifecycle: {
+            spend: { rawTx: spend.rawTx, txHash: spend.txHash, valueWei: "5000" },
+          },
+        };
+        expect(res.affectedIndices).toEqual([0]);
+        expect(putMany).toHaveBeenCalledTimes(1);
+        expect(putMany).toHaveBeenCalledWith([expectedRow]);
+        expect(writes() - written).toBe(2); // the one `put` and its `putMany`
+        expect(pool.getRecord(0)).toEqual(expectedRow);
+        expect(pool.capacityCache.has(0)).toBe(false);
+        expect(warming).not.toHaveBeenCalled();
+        expect(() =>
+          validateMonadWalletState(walletStateOf(pool, keyring))
+        ).not.toThrow();
+
+        // Repeating the same item is a no-op.
+        putMany.mockClear();
+        expect(pool.processSyncTransaction(item).affectedIndices).toEqual([]);
+        expect(putMany).not.toHaveBeenCalled();
+
+        await pool.flush();
+        await levelStore.Close();
+        reopened = new LevelSubAccountPoolStore(dir);
+        await reopened.Open();
+        const poolB = new MonadSubAccountPool({ keyring, store: reopened });
+        expect(poolB.getRecord(0)).toEqual(expectedRow);
+        expect(poolB.getRecord(1)).toEqual({
+          index: 1,
+          address: keyring.deriveSubAccount(1).address,
+          status: "available",
+        });
+        expect(() =>
+          validateMonadWalletState(walletStateOf(poolB, keyring))
+        ).not.toThrow();
+      } finally {
+        await (reopened ?? levelStore).Close().catch(() => undefined);
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("marks an unfunded row and keeps a hand-built funding checkpoint beside the spend", async () => {
+      const store = new InMemorySubAccountPoolStore();
+      const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
+      const pool = new MonadSubAccountPool({ keyring, store });
+      pool.ensureUnfundedSize(1);
+      pool.ensureSize(2);
+      // Hand-built: no production path writes `lifecycle.funding`.
+      const fundingRaw = await new Wallet(
+        keyring.deriveSubAccount(2).privateKey
+      ).signTransaction({
+        type: 2,
+        chainId: CHAIN_ID,
+        nonce: 0,
+        to: keyring.deriveSubAccount(1).address,
+        value: 7n,
+        gasLimit: 21_000n,
+        maxFeePerGas: 1n,
+        maxPriorityFeePerGas: 1n,
+      });
+      const fundingCheckpoint = {
+        rawTx: fundingRaw,
+        txHash: Transaction.from(fundingRaw).hash as string,
+        valueWei: "7",
+      };
+      pool.recordFundingTransaction(1, fundingCheckpoint);
+
+      for (const index of [0, 1]) {
+        const spend = await signSpend(keyring, index);
+        const address = keyring.deriveSubAccount(index).address;
+        expect(
+          pool.processSyncTransaction({
+            ...consolidatorItem(address, spend),
+            rawTx: spend.rawTx,
+          }).affectedIndices
+        ).toEqual([index]);
+        expect(pool.getRecord(index)).toEqual({
+          index,
+          address,
+          status: "spent",
+          lifecycle: {
+            ...(index === 1 ? { funding: fundingCheckpoint } : {}),
+            spend: { rawTx: spend.rawTx, txHash: spend.txHash, valueWei: "5000" },
+          },
+        });
+      }
+      expect(() =>
+        validateMonadWalletState(walletStateOf(pool, keyring))
+      ).not.toThrow();
+    });
+
+    it.each([
+      "another sender",
+      "hash mismatch",
+      "missing hash",
+      "malformed bytes",
+      "empty bytes",
+      "unsigned bytes",
+      "non-canonical bytes",
+      "oversize bytes",
+      "non-string bytes",
+    ])("writes nothing and does not throw for %s", async (kind) => {
+      const { keyring, pool, warming, writes } = setupSpendTest();
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const own = await signSpend(keyring, 0);
+      const other = await signSpend(keyring, 1);
+      const base = consolidatorItem(addr0, own);
+      const item: Record<string, unknown> =
+        kind === "another sender"
+          ? { ...base, txHash: other.txHash, rawTx: other.rawTx }
+          : kind === "hash mismatch"
+          ? { ...base, txHash: other.txHash, rawTx: own.rawTx }
+          : kind === "missing hash"
+          ? { ...base, txHash: undefined, rawTx: own.rawTx }
+          : kind === "malformed bytes"
+          ? { ...base, rawTx: "0x1234" }
+          : kind === "empty bytes"
+          ? { ...base, rawTx: "" }
+          : kind === "unsigned bytes"
+          ? { ...base, rawTx: own.transaction.unsignedSerialized }
+          : kind === "non-canonical bytes"
+          ? { ...base, rawTx: "0x" + own.rawTx.slice(2).toUpperCase() }
+          : kind === "oversize bytes"
+          ? { ...base, rawTx: own.rawTx + "00".repeat(64 * 1024) }
+          : { ...base, rawTx: { toString: () => own.rawTx } };
+      const before = pool.records();
+      pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
+      const written = writes();
+
+      const res = pool.processSyncTransaction(
+        item as unknown as Parameters<typeof pool.processSyncTransaction>[0]
+      );
+
+      expect(res.affectedIndices).toEqual([]);
+      expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
+      expect(pool.capacityCache.has(0)).toBe(false);
+      expect(warming).not.toHaveBeenCalled();
+    });
+
+    it("does not throw for an item whose spent inputs are malformed", () => {
+      const { pool, writes } = setupSpendTest();
+      const written = writes();
+      for (const spentInputs of [[null], [{}], [{ address: 7 }], "0xabc"]) {
+        expect(
+          pool.processSyncTransaction({
+            direction: "out",
+            txHash: "0xdeadbeef",
+            rawTx: "0x1234",
+            spentInputs,
+          } as unknown as Parameters<typeof pool.processSyncTransaction>[0])
+        ).toEqual({ affectedIndices: [] });
+      }
+      expect(writes()).toBe(written);
+    });
+
+    it.each([
+      "in-use",
+      "retired",
+      "funding",
+      "spent without a checkpoint",
+      "spent with another checkpoint",
+      "spent with the identical checkpoint",
+    ])("leaves a row that is %s unchanged for a complete item", async (state) => {
+      const { keyring, pool, store, warming, writes } = setupSpendTest();
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const spend = await signSpend(keyring, 0);
+      if (state === "in-use" || state === "retired") pool.setStatus(0, state);
+      else if (state === "funding") {
+        // Hand-built: the funding path needs a main-account signer this fixture does not have.
+        const attempt = await signSpend(keyring, 2);
+        store.put({
+          index: 0,
+          address: addr0,
+          status: "funding",
+          fundingAttempt: { rawTx: attempt.rawTx, txHash: attempt.txHash },
+        });
+      } else if (state === "spent without a checkpoint") {
+        pool.setStatus(0, "spent");
+      } else if (state === "spent with another checkpoint") {
+        const earlier = await signSpend(keyring, 0, { nonce: 1, value: 1n });
+        expect(pool.commitSpend(0, earlier.rawTx)).toBe("committed");
+      } else {
+        expect(pool.commitSpend(0, spend.rawTx)).toBe("committed");
+      }
+      const before = pool.records();
+      warming.mockClear();
+      const written = writes();
+
+      const res = pool.processSyncTransaction({
+        ...consolidatorItem(addr0, spend),
+        rawTx: spend.rawTx,
+      });
+
+      expect(res.affectedIndices).toEqual([]);
+      expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
+      expect(warming).not.toHaveBeenCalled();
+    });
+
+    it("never re-malforms a committed row when the item without raw bytes arrives afterwards", async () => {
+      const { keyring, pool, writes } = setupSpendTest();
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const spend = await signSpend(keyring, 0);
+      expect(pool.commitSpend(0, spend.rawTx)).toBe("committed");
+      const committed = pool.getRecord(0);
+      const written = writes();
+
+      expect(
+        pool.processSyncTransaction(consolidatorItem(addr0, spend))
+      ).toEqual({ affectedIndices: [] });
+
+      expect(writes()).toBe(written);
+      expect(pool.getRecord(0)).toEqual(committed);
+      expect(committed?.lifecycle?.spend?.rawTx).toBe(spend.rawTx);
+      expect(() =>
+        validateMonadWalletState(walletStateOf(pool, keyring))
+      ).not.toThrow();
+    });
+
+    it("lets the complete transaction commit after the item without raw bytes was applied first", async () => {
+      const { keyring, pool, writes } = setupSpendTest();
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const spend = await signSpend(keyring, 0);
+      const written = writes();
+      pool.processSyncTransaction(consolidatorItem(addr0, spend));
+      expect(writes()).toBe(written);
+
+      expect(pool.commitSpend(0, spend.rawTx)).toBe("committed");
+      expect(pool.getRecord(0)).toEqual({
+        index: 0,
+        address: addr0,
+        status: "spent",
+        lifecycle: {
+          spend: { rawTx: spend.rawTx, txHash: spend.txHash, valueWei: "5000" },
+        },
+      });
+      expect(pool.commitSpend(0, spend.rawTx)).toBe("already-applied");
+      expect(() =>
+        validateMonadWalletState(walletStateOf(pool, keyring))
+      ).not.toThrow();
+    });
+
+    it("commitSpend refuses without writing, and creates no row", async () => {
+      const { keyring, pool, store, writes } = setupSpendTest();
+      const own = await signSpend(keyring, 0);
+      const other = await signSpend(keyring, 1);
+      pool.setStatus(2, "in-use");
+      const before = pool.records();
+      const written = writes();
+      const refused = (index: number, rawTx: string) => {
+        try {
+          pool.commitSpend(index, rawTx);
+        } catch (error) {
+          expect(error).toBeInstanceOf(SubAccountSpendRefusedError);
+          return (error as SubAccountSpendRefusedError).code;
+        }
+        return "not refused";
+      };
+
+      expect(refused(0, "")).toBe("invalid-transaction");
+      expect(refused(0, "0x1234")).toBe("invalid-transaction");
+      expect(refused(0, own.transaction.unsignedSerialized)).toBe(
+        "invalid-transaction"
+      );
+      expect(refused(0, "0x" + own.rawTx.slice(2).toUpperCase())).toBe(
+        "invalid-transaction"
+      );
+      expect(refused(-1, own.rawTx)).toBe("invalid-transaction");
+      expect(refused(0, other.rawTx)).toBe("sender-mismatch");
+      expect(refused(2, (await signSpend(keyring, 2)).rawTx)).toBe("held");
+      // Index 7 is derivable but the pool has no row for it: reported, never created.
+      expect(pool.commitSpend(7, (await signSpend(keyring, 7)).rawTx)).toBe(
+        "no-row"
+      );
+      expect(pool.getRecord(7)).toBeUndefined();
+      // A row whose stored address is not its derivation is refused although the bytes are valid.
+      store.put({
+        index: 1,
+        address: keyring.deriveSubAccount(0).address,
+        status: "available",
+      });
+      const afterHandBuilt = writes();
+      expect(refused(1, other.rawTx)).toBe("sender-mismatch");
+      expect(writes()).toBe(afterHandBuilt);
+      expect(afterHandBuilt - written).toBe(1);
+      expect(pool.getRecord(0)).toEqual(before[0]);
+      expect(pool.getRecord(2)).toEqual(before[2]);
+    });
+
+    it.each([0, 1, 2])(
+      "commitSpend accepts a type %i transaction the validator accepts",
+      async (type) => {
+        const { keyring, pool } = setupSpendTest();
+        const wallet = new Wallet(keyring.deriveSubAccount(0).privateKey);
+        const rawTx = await wallet.signTransaction({
+          type,
+          chainId: CHAIN_ID,
+          nonce: 0,
+          to: recipient,
+          value: 3n,
+          gasLimit: 21_000n,
+          ...(type === 2
+            ? { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n }
+            : { gasPrice: 1n }),
+        });
+        expect(Transaction.from(rawTx).type).toBe(type);
+        expect(pool.commitSpend(0, rawTx)).toBe("committed");
+        expect(pool.getRecord(0)?.lifecycle?.spend?.valueWei).toBe("3");
+        expect(() =>
+          validateMonadWalletState(walletStateOf(pool, keyring))
+        ).not.toThrow();
+      }
+    );
   });
 
   describe("fundedCapacities and capacity caching (Issue #1179)", () => {

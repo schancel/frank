@@ -173,6 +173,7 @@ import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 import { openChat } from '../utils/routes'
+import { isChainAddress, toChainDisplayAddress } from '../utils/chain-address'
 
 import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import {
@@ -1033,7 +1034,9 @@ export default defineComponent({
     conversation(): Conversation | null {
       return (
         this.chatStore.conversations[this.address] ??
-        this.chatStore.chats[this.address] ??
+        (isChainAddress(this.address)
+          ? this.chatStore.chats[toChainDisplayAddress(this.address)]
+          : null) ??
         null
       )
     },

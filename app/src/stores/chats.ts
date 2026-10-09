@@ -1001,6 +1001,49 @@ export async function rehydateChat(
     if (owner) assertConversationPeer(owner, wrapper.copartyAddress)
   }
 
+  // An attempt digest links an outgoing leftover to its confirmed row. Validate that
+  // association before deduplication can hide contradictory persisted ownership.
+  const confirmedOutboundRows = new Map(
+    validatedRows
+      .filter(
+        ({ wrapper, internal }) =>
+          !internal &&
+          wrapper.message.outbound &&
+          wrapper.message.status === 'confirmed',
+      )
+      .map(row => [row.wrapper.index, row]),
+  )
+  for (const { wrapper, conversationId, internal } of validatedRows) {
+    const { message, index, copartyAddress, senderAddress } = wrapper
+    const attemptDigest = message.delivery?.attemptDigest
+    if (
+      internal ||
+      !message.outbound ||
+      message.status === 'confirmed' ||
+      attemptDigest === undefined ||
+      attemptDigest === index
+    )
+      continue
+    const confirmed = confirmedOutboundRows.get(attemptDigest)
+    if (!confirmed) continue
+    const other = confirmed.wrapper
+    if (
+      (senderAddress !== other.senderAddress &&
+        !sameCanonicalAddress(senderAddress, other.senderAddress)) ||
+      (copartyAddress !== other.copartyAddress &&
+        !sameCanonicalAddress(copartyAddress, other.copartyAddress))
+    )
+      continue
+    if (
+      conversationId !== confirmed.conversationId ||
+      (message.logicalMessageId !== undefined &&
+        other.message.logicalMessageId !== undefined &&
+        message.logicalMessageId !== other.message.logicalMessageId)
+    ) {
+      throw new Error(`Conflicting stored attempt ownership for ${index}`)
+    }
+  }
+
   // Only an admitted empty/internal-only collection may take a fresh-state exit.
   // Raw internal records remain in MessageStore without conversation indexes or effects.
   if (!canReconstruct) return freshChatsState()

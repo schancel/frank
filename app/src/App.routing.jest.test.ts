@@ -89,6 +89,8 @@ jest.mock('./components/dialogs/ContactBookDialog.vue', () => ({
 // Import after installing the encoding globals required by the real chat store.
 /* eslint-disable @typescript-eslint/no-var-requires */
 const App = require('./App.vue').default
+const ChatPage = require('./pages/Chat.vue').default
+const quasar = require('quasar')
 const { setStartupRestoration } = require('./boot/startup-state')
 const createAppRouter = require('./router').default
 const { useChatStore } = require('./stores/chats')
@@ -154,6 +156,93 @@ describe('App exact conversation route authority (#1237)', () => {
     jest.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
   })
   afterEach(() => jest.restoreAllMocks())
+
+  it.each([
+    'lowercase peer',
+    'checksum peer',
+    'first ID',
+    'second ID',
+    'other peer ID',
+  ])(
+    'renders only the selected conversation for a %s route',
+    async destination => {
+      const { chats, first, second, other, defaultThread, router, wrapper } =
+        await mountedApp()
+      const selected =
+        destination === 'first ID'
+          ? first
+          : destination === 'second ID'
+          ? second
+          : destination === 'other peer ID'
+          ? other
+          : defaultThread
+      const routeAddress =
+        destination === 'lowercase peer'
+          ? PEER.toLowerCase()
+          : destination === 'checksum peer'
+          ? PEER
+          : selected.id
+      for (const owner of [first, second, other, defaultThread]) {
+        owner.messages = [
+          {
+            payloadDigest: `visible-${owner.id}`,
+            outbound: false,
+            receivedTime: 1,
+            items: [],
+            senderAddress: owner.address,
+          },
+        ]
+      }
+      const simple = { template: '<div><slot /></div>' }
+      const components = Object.fromEntries(
+        Object.keys(quasar)
+          .filter(name => /^Q[A-Z]/.test(name))
+          .map(name => [name, simple]),
+      )
+      components.QScrollArea = {
+        methods: {
+          getScrollTarget: () => ({ scrollTop: 0 }),
+          setScrollPosition: () => undefined,
+        },
+        template: '<div><slot /></div>',
+      }
+      let page: ReturnType<typeof mount> | undefined
+      try {
+        await openChat(router, routeAddress)
+        await settleNavigation()
+        expect(router.currentRoute.value.params.address).toBe(routeAddress)
+        expect(chats.activeConversationId).toBe(selected.id)
+        expect(chats.chats[PEER].id).toBe(defaultThread.id)
+        expect(chats.chats[PEER.toLowerCase()]).toBeUndefined()
+        page = mount(ChatPage, {
+          global: {
+            plugins: [router],
+            components,
+            stubs: {
+              ChatInput: simple,
+              ChatMessageComponent: simple,
+              ChatMessageReply: simple,
+              ChatBannerStack: simple,
+              QResizeObserver: simple,
+            },
+            mocks: {
+              $q: { dark: { isActive: false } },
+              $t: (key: string) => key,
+            },
+          },
+        })
+        await flushPromises()
+        expect(page.vm.address).toBe(routeAddress)
+        expect(page.vm.conversation?.id).toBe(selected.id)
+        expect(page.vm.messages.map(message => message.payloadDigest)).toEqual([
+          `visible-${selected.id}`,
+        ])
+      } finally {
+        page?.unmount()
+        wrapper.unmount()
+      }
+    },
+  )
 
   it.each(['sidebar', 'direct URL'])(
     'keeps the explicit conversation selected after %s navigation',

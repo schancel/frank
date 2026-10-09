@@ -201,7 +201,7 @@ import { useContactStore } from 'src/stores/contacts'
 import { useChatStore, type Conversation } from 'src/stores/chats'
 import { useProfileStore } from 'src/stores/my-profile'
 import { pubKeyToColor } from 'src/utils/formatting'
-import { isChainAddress } from 'src/utils/chain-address'
+import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import { profileAvatar } from 'src/utils/avatar'
 import {
   sameCanonicalAddress,
@@ -311,8 +311,8 @@ export default defineComponent({
         ) {
           return chatStore.conversations[this.address] ?? null
         }
-        if (chatStore.chats && this.address in chatStore.chats) {
-          return chatStore.chats[this.address] ?? null
+        if (isChainAddress(this.address)) {
+          return chatStore.chats[toChainDisplayAddress(this.address)] ?? null
         }
       } catch {
         //

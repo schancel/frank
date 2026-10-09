@@ -1,4 +1,7 @@
-/** @jest-environment jsdom */
+/**
+ * @jest-environment jsdom
+ * @jest-environment-options {"customExportConditions": ["node", "node-addons"]}
+ */
 
 const mockRelayClient = { setToken: jest.fn() }
 const mockGetRelayClient = jest.fn(async () => ({
@@ -74,8 +77,19 @@ jest.mock('src/stores/chats', () => ({ useChatStore: restoredStore }))
 jest.mock('src/stores/topics', () => ({ useTopicStore: restoredStore }))
 
 import setupApis from './setup-apis'
+import { accountSession } from '../accounts/session'
+import { startupRestoration } from './startup-state'
 
 describe('setup-apis in Monad mode', () => {
+  it('propagates account initialization errors after successful restoration', async () => {
+    const failure = new Error('account initialization failed')
+    jest.mocked(accountSession.initialize).mockRejectedValueOnce(failure)
+    await expect(
+      setupApis({ app: { config: { globalProperties: {} } } } as never),
+    ).rejects.toBe(failure)
+    expect(startupRestoration.value.phase).toBe('restored')
+  })
+
   it('restores shared state without constructing or exposing the Lotus stack', async () => {
     const globalProperties: Record<string, unknown> = {}
 

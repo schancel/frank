@@ -4,6 +4,11 @@
 import { en as accountRecovery } from '../account-recovery'
 
 export default {
+  startupFailure: {
+    title: 'Saved data could not be loaded',
+    message: 'Startup has stopped. Your saved data has not been reset.',
+    loading: 'Loading saved data',
+  },
   accountRecovery,
   agree: 'Agree',
   chat: {

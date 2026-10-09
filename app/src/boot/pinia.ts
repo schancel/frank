@@ -63,15 +63,21 @@ export function createStoragePlugin(
     }
     const { save, restore } = options.storage
 
-    const restored = metadataPromise.then(
-      metadata =>
-        new Promise<boolean>(resolve => {
-          restore(storage, metadata, store.$state).then(partialState => {
-            store.$patch(partialState)
-            resolve(true)
-          })
-        }),
-    )
+    let isRehydrating = false
+    async function hydrate(metadata: StoreMetadata) {
+      const partialState = await restore(storage, metadata, store.$state)
+      isRehydrating = true
+      try {
+        store.$patch(partialState)
+        await nextTick()
+      } finally {
+        isRehydrating = false
+      }
+    }
+    const restored = metadataPromise.then(async metadata => {
+      await hydrate(metadata)
+      return true
+    })
 
     // Count mutations synchronously without changing the existing batched save
     // behavior. flushPersistence() snapshots this counter before yielding to
@@ -79,7 +85,6 @@ export function createStoragePlugin(
     // cannot slip through before its save has even been started.
     let issuedMutation = 0
     let processedMutation = 0
-    let isRehydrating = false
     store.$subscribe(
       () => {
         if (isRehydrating) return
@@ -126,14 +131,7 @@ export function createStoragePlugin(
       },
       async rehydrate() {
         const metadata = await metadataPromise
-        const partialState = await restore(storage, metadata, store.$state)
-        isRehydrating = true
-        try {
-          store.$patch(partialState)
-          await nextTick()
-        } finally {
-          isRehydrating = false
-        }
+        await hydrate(metadata)
       },
     }
   }

@@ -22,7 +22,9 @@ jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({ fetchAndAddContact: jest.fn() }),
 }))
 import router from './index'
+import { setStartupRestoration } from '../boot/startup-state'
 beforeEach(() => {
+  setStartupRestoration({ phase: 'restored' })
   router()
 })
 test.each(['fresh', 'pending', 'locked', 'unavailable', 'loading'])(

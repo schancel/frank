@@ -996,12 +996,9 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
   const messages: Record<string, Message> = {}
   const logicalMessages: Record<string, LogicalMessageRecord> = {}
 
-  let ownAddress: string | null = null
-  try {
-    ownAddress = await getOwnCanonicalAddress()
-  } catch {
-    //
-  }
+  // Restoration must not open custody. Preserve explicit public participants without
+  // inventing a self identity; unresolved records retain the existing unresolved-self path.
+  const ownAddress: string | null = null
 
   // 1. Restore any explicit conversations
   if (chatState.conversations) {
@@ -1136,7 +1133,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
       index !== leftoverOf &&
       confirmedDigests.has(leftoverOf)
     ) {
-      void localStore.deleteMessage(index).catch(err => console.warn(err))
+      // Rebuild the deduplicated view without deleting durable recovery evidence.
       continue
     }
     if (newMsg.outbound && newMsg.status === 'pending') {

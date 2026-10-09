@@ -14,3 +14,7 @@ async function createStore(): Promise<LevelMessageStore> {
 }
 
 export const store = createStore()
+
+// Opening starts at module import, before setup-apis can await chat restoration. Observe an
+// early failure immediately, while preserving the original rejection for the startup boundary.
+void store.catch(() => undefined)

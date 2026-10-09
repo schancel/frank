@@ -3189,7 +3189,9 @@ export const useChatStore = defineStore('chats', {
           ).sort()
           if (
             candidateParticipants.length === normalizedParticipants.length &&
-            candidateParticipants.every((p, i) => p === normalizedParticipants[i])
+            candidateParticipants.every(
+              (p, i) => p === normalizedParticipants[i],
+            )
           ) {
             return true
           }
@@ -3201,11 +3203,15 @@ export const useChatStore = defineStore('chats', {
             ((candidateParticipants.length === 1 &&
               sameCanonicalAddress(candidateParticipants[0], address) &&
               normalizedParticipants.length <= 2 &&
-              normalizedParticipants.some(p => sameCanonicalAddress(p, address))) ||
+              normalizedParticipants.some(p =>
+                sameCanonicalAddress(p, address),
+              )) ||
               (normalizedParticipants.length === 1 &&
                 sameCanonicalAddress(normalizedParticipants[0], address) &&
                 candidateParticipants.length <= 2 &&
-                candidateParticipants.some(p => sameCanonicalAddress(p, address))))
+                candidateParticipants.some(p =>
+                  sameCanonicalAddress(p, address),
+                )))
           )
         })
         conv = candidates.find(c => c.messages.length > 0) || candidates[0]
@@ -3266,10 +3272,7 @@ export const useChatStore = defineStore('chats', {
       }
 
       this.conversations[id] = conv
-      if (
-        (kind === 'direct' || kind === 'email') &&
-        displayAddress !== id
-      ) {
+      if ((kind === 'direct' || kind === 'email') && displayAddress !== id) {
         try {
           const canonical = toChainDisplayAddress(displayAddress)
           this.chats[canonical] = conv

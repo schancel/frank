@@ -2039,9 +2039,9 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.chats[RECIPIENT_ADDRESS]).toBeUndefined()
       expect(chats.activeConversationId).toBe(conversation.id)
       expect(chats.messages['id-routed'].conversationId).toBe(conversation.id)
-      expect(conversation.messages.map(message => message.payloadDigest)).toEqual([
-        'id-routed',
-      ])
+      expect(
+        conversation.messages.map(message => message.payloadDigest),
+      ).toEqual(['id-routed'])
     })
 
     it('reuses a recipient placeholder without publishing a self alias or redirecting self messages', () => {
@@ -2100,9 +2100,9 @@ describe('stores/chats.ts (ticket #42)', () => {
           chats[activate](SENDER_ADDRESS)
           expect(chats.activeConversationId).not.toBe(remote.id)
           expect(remote.address).toBe(RECIPIENT_ADDRESS)
-          expect(remote.messages.map(message => message.payloadDigest)).toEqual([
-            'remote-only',
-          ])
+          expect(remote.messages.map(message => message.payloadDigest)).toEqual(
+            ['remote-only'],
+          )
           chats[activate](RECIPIENT_ADDRESS)
           expect(chats.activeConversationId).toBe(remote.id)
         }
@@ -2179,10 +2179,12 @@ describe('stores/chats.ts (ticket #42)', () => {
         ).toEqual(['second-pending'])
         expect(restored.conversations[second.id].totalUnreadMessages).toBe(0)
         expect(restored.conversations[second.id].deletedAt).toBeUndefined()
-        expect(restored.messages['second-pending'].status).toBe('payment-pending')
-        expect(restored.messages['second-pending'].delivery?.attemptDigest).toBe(
-          'second-attempt',
+        expect(restored.messages['second-pending'].status).toBe(
+          'payment-pending',
         )
+        expect(
+          restored.messages['second-pending'].delivery?.attemptDigest,
+        ).toBe('second-attempt')
         expect(restored.logicalMessages['first-incoming'].conversationId).toBe(
           first.id,
         )

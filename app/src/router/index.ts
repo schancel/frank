@@ -15,20 +15,13 @@ import { accountSession, accountStatus } from '../accounts/session'
 async function ensureChatState(address?: string) {
   const chatStore = useChatStore()
   if (!address) {
-    if (typeof chatStore.setActiveConversation === 'function') {
-      chatStore.setActiveConversation(null)
-    } else {
-      chatStore.setActiveChat(null)
-    }
+    chatStore.setActiveConversation(null)
     return
   }
-
   try {
-    if (chatStore.conversations && address in chatStore.conversations) {
-      if (typeof chatStore.setActiveConversation === 'function') {
-        chatStore.setActiveConversation(address)
-        return
-      }
+    if (chatStore.conversations[address]) {
+      chatStore.setActiveConversation(address)
+      return
     }
     if (isChainAddress(address)) {
       const contactsStore = useContactStore()
@@ -37,10 +30,6 @@ async function ensureChatState(address?: string) {
         .catch(err => {
           console.debug('fetchAndAddContact suppressed error:', err)
         })
-    }
-    if (typeof chatStore.setActiveConversation === 'function') {
-      chatStore.setActiveConversation(address)
-    } else {
       chatStore.setActiveChat(address)
     }
   } catch (ex) {

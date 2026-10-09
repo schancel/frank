@@ -110,7 +110,7 @@ function message(payloadDigest: string) {
 async function mountChat(messages: ReturnType<typeof message>[] = []) {
   const pinia = createPinia()
   setActivePinia(pinia)
-  useChatStore().chats[DEALER] = { messages } as never
+  useChatStore().openDirectConversation(DEALER).messages = messages
   const wrapper = mount(ChatPage as never, {
     global: {
       plugins: [pinia],

@@ -101,7 +101,12 @@
 
         <q-separator spaced inset />
 
-        <q-item clickable v-ripple @click="confirmClearOpen = true">
+        <q-item
+          clickable
+          v-ripple
+          :disable="!conversationId"
+          @click="confirmClearOpen = !!conversationId"
+        >
           <q-item-section avatar>
             <q-icon name="clear_all" />
           </q-item-section>
@@ -110,7 +115,12 @@
           }}</q-item-section>
         </q-item>
 
-        <q-item clickable v-ripple @click="confirmDeleteOpen = true">
+        <q-item
+          clickable
+          v-ripple
+          :disable="!conversationId"
+          @click="confirmDeleteOpen = !!conversationId"
+        >
           <q-item-section avatar>
             <q-icon name="delete" color="negative" />
           </q-item-section>
@@ -122,13 +132,13 @@
 
       <q-dialog v-model="confirmClearOpen">
         <clear-history-dialog
-          :address="address"
+          :address="conversationId"
           :name="contact?.profile?.name ?? ''"
         />
       </q-dialog>
       <q-dialog v-model="confirmDeleteOpen">
         <delete-chat-dialog
-          :address="address"
+          :address="conversationId"
           :name="contact?.profile?.name ?? ''"
           @deleted="$emit('deleted')"
         />
@@ -172,6 +182,7 @@ export default defineComponent({
     }
   },
   props: {
+    conversationId: { type: String, default: '' },
     address: {
       type: String,
       default: () => '',

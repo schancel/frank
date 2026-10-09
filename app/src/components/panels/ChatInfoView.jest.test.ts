@@ -37,8 +37,14 @@ jest.mock('src/utils/formatting', () => ({
   pubKeyToColor: () => '#123456',
 }))
 
-jest.mock('../dialogs/ClearHistoryDialog.vue', () => ({ template: '<div />' }))
-jest.mock('../dialogs/DeleteChatDialog.vue', () => ({ template: '<div />' }))
+jest.mock('../dialogs/ClearHistoryDialog.vue', () => ({
+  name: 'ClearHistoryDialog',
+  template: '<div />',
+}))
+jest.mock('../dialogs/DeleteChatDialog.vue', () => ({
+  name: 'DeleteChatDialog',
+  template: '<div />',
+}))
 
 const passthrough = defineComponent({
   setup(_props, { slots }) {
@@ -119,6 +125,18 @@ describe('ChatInfoView contact profile display and actions', () => {
       },
     })
   }
+
+  it('targets the selected thread for clearing and deletion while displaying the peer address', () => {
+    const id = '11111111-1111-4111-8111-111111111111'
+    const wrapper = mountView({ conversationId: id })
+    const clear = wrapper.findComponent({ name: 'ClearHistoryDialog' })
+    const remove = wrapper.findComponent({ name: 'DeleteChatDialog' })
+    expect(clear.attributes('address')).toBe(id)
+    expect(remove.attributes('address')).toBe(id)
+    expect(wrapper.get('[data-test="info-contact-address"]').text()).toContain(
+      'formatted-0x1111',
+    )
+  })
 
   it('renders avatar, name, username, formatted address, bio, and links', async () => {
     const wrapper = mountView()

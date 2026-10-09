@@ -16,7 +16,11 @@ jest.mock('vue-router', () => ({
 }))
 jest.mock('./routes', () => ({ createRoutes: () => [] }))
 jest.mock('src/stores/chats', () => ({
-  useChatStore: () => ({ setActiveChat: jest.fn() }),
+  useChatStore: () => ({
+    conversations: {},
+    setActiveConversation: jest.fn(),
+    setActiveChat: jest.fn(),
+  }),
 }))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({ fetchAndAddContact: jest.fn() }),

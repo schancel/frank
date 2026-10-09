@@ -426,11 +426,17 @@ export interface WalletSyncSpentInput {
   address: string
   nonce?: number
   outpoint?: string
+  /**
+   * Invariant SYNC-ITEM-DEBIT: the TOTAL DEBIT from this account, the value sent plus the fee
+   * paid. The HD address inventory subtracts it as such. The sub-account pool never stores it:
+   * its spend checkpoint value is derived from the signed transaction in `rawTx`.
+   */
   valueWei?: string
 }
 
 export interface WalletSyncCreatedOutput {
   address: string
+  /** Invariant SYNC-ITEM-DEBIT: what the recipient receives, the value alone, with no fee. */
   valueWei?: string
   branch?: 'spend' | 'change' | 'staging'
   index?: number
@@ -444,6 +450,12 @@ export interface WalletSyncItem {
   /** @deprecated Use chainIdentifier instead. */
   chainId?: string
   txHash: string
+  /**
+   * The complete signed transaction, as canonical lowercase hex, whose hash is `txHash`. Required
+   * for an item to record a sub-account pool spend: the pool refuses an outgoing item without it
+   * and trusts nothing but these bytes. Optional in the type because UTXO and `payment-transfer`
+   * items share this shape.
+   */
   rawTx?: string
   spentInputs?: WalletSyncSpentInput[]
   createdOutputs?: WalletSyncCreatedOutput[]

@@ -730,7 +730,7 @@ describe("createEvmChain: directMessages", () => {
       const put = jest.spyOn(wallet.stampPaymentJournal, "put");
       const dispatch = jest
         .spyOn(syncDispatch, "applyWalletSyncItem")
-        .mockReturnValue({});
+        .mockResolvedValue({});
       const recovery = jest
         .spyOn(
           jest.requireMock<typeof import("../monad-stamp-client")>(

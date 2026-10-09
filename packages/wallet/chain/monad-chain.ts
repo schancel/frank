@@ -2208,7 +2208,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 );
               },
               onSyncTransaction: async (item) => {
-                applyWalletSyncItem(wallet, item);
+                await applyWalletSyncItem(wallet, item);
                 // This callback runs outside the native financial queue. Failure remains retryable.
                 await directMessages.send({
                   wallet,

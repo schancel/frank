@@ -160,18 +160,41 @@ interface ClassifiedSubAccountSpend {
   candidate?: SubAccountRecord;
 }
 
-/** `commitSpend` wrote nothing: the bytes are not an acceptable signed transaction, they were not
- * signed by that sub-account, or the row is held by another owner or another transaction. */
+/** Nothing was written. From `commitSpend`: the bytes are not an acceptable signed transaction
+ * (`invalid-transaction`), they were not signed by that sub-account (`sender-mismatch`), or the
+ * row is held by another owner or another transaction (`held`). From `processSyncTransaction`
+ * also: the item carries no signed transaction (`missing-transaction`), this pool has no spend
+ * applier to check one (`no-applier`), or the item disagrees with its own transaction
+ * (`inconsistent-item`). `index` is the sub-account concerned, when one was identified. */
 export class SubAccountSpendRefusedError extends Error {
   constructor(
-    readonly code: "invalid-transaction" | "sender-mismatch" | "held",
-    readonly index: number,
+    readonly code:
+      | "invalid-transaction"
+      | "sender-mismatch"
+      | "held"
+      | "missing-transaction"
+      | "no-applier"
+      | "inconsistent-item",
+    readonly index: number | undefined,
     detail: string
   ) {
-    super(`Sub-account ${index} spend refused (${code}): ${detail}`);
+    super(
+      `Sub-account ${index === undefined ? "sync" : index} spend refused (${code}): ${detail}`
+    );
     this.name = "SubAccountSpendRefusedError";
   }
 }
+
+/** What a composition-attached spend applier reports (see `attachSpendApplier`). */
+export type SubAccountSpendApplication =
+  | { readonly kind: "committed"; readonly poolIndex: number }
+  | { readonly kind: "already-applied"; readonly poolIndex: number }
+  | { readonly kind: "no-pool-row" };
+
+export type SubAccountSpendApplier = (
+  rawTx: string,
+  chainIdentifier: string
+) => Promise<SubAccountSpendApplication>;
 
 /**
  * @deprecated Use `MonadAddressInventory` (`./monad-address-inventory.ts`, Ticket #924), which
@@ -204,6 +227,7 @@ export class MonadSubAccountPool {
     admission?: MonadWalletOperationAdmission
   ) => Promise<T>;
   private spendReservation?: (index: number) => boolean;
+  private spendApplier?: SubAccountSpendApplier;
   accountUtxoPool?: ChainUtxoPool;
 
   setAccountUtxoPool(pool: ChainUtxoPool): void {
@@ -298,6 +322,23 @@ export class MonadSubAccountPool {
   /** True while an attached reservation claims sub-account `index` (see `attachSpendReservation`). */
   isSpendReserved(index: number): boolean {
     return this.spendReservation?.(index) ?? false;
+  }
+
+  /**
+   * Composition-attached applier: the only way a wallet sync item can record a spend on this pool.
+   * `processSyncTransaction` hands it the item's signed transaction and chain identifier once the
+   * item is consistent with those bytes; the applier owns everything the pool cannot check by
+   * itself (that the transaction is for this wallet's chain, that no other owner claims the
+   * account) and the commit and its flush. A pool with nothing attached REFUSES every item that
+   * carries a transaction, so a pool opened without composition has no route from an item to a
+   * spend record. The applier may enter the wallet's operation queue: never dispatch a sync item
+   * from inside that queue.
+   */
+  attachSpendApplier(apply: SubAccountSpendApplier): void {
+    if (this.spendApplier !== undefined) {
+      throw new Error("Sub-account pool already has a spend applier");
+    }
+    this.spendApplier = apply;
   }
 
   /**
@@ -517,7 +558,15 @@ export class MonadSubAccountPool {
     } catch {
       return refuse("invalid-transaction", "raw transaction does not parse");
     }
-    const { hash, from } = transaction;
+    // Reading the sender recovers the public key, which throws for a signature that recovers to
+    // nothing: a refusal like any other unacceptable bytes, not an untyped failure.
+    let hash: string | null;
+    let from: string | null;
+    try {
+      ({ hash, from } = transaction);
+    } catch {
+      return refuse("invalid-transaction", "transaction signature does not recover");
+    }
     if (hash === null || from === null) {
       return refuse("invalid-transaction", "transaction is unsigned");
     }
@@ -588,15 +637,26 @@ export class MonadSubAccountPool {
   }
 
   /**
-   * Pool entry for a generic transaction sync item (Ticket #1115). It records a spend only through
-   * `commitSpend`, and only when the item carries the complete signed transaction whose hash is
-   * the item's `txHash` and whose sender is the matched row. The item's own `valueWei` is never
-   * stored. Anything less changes no durable state: the matched row only loses its capacity-cache
-   * entry, so a drained account is re-read before it is offered again, and no index is reported.
-   * A refused item is not an error to the caller.
+   * Pool entry for a wallet sync item (Ticket #1115, #1235). It never writes: a spend is recorded
+   * only by the attached applier (`attachSpendApplier`), which is handed the item's complete
+   * signed transaction after the item has been checked against it. The item's own `valueWei` is
+   * never stored.
+   *
+   * Resolves with no affected index, having changed nothing, for an item that does not concern
+   * this pool: one that is not an outgoing `wallet-sync` (an incoming item or a `payment-transfer`
+   * never spends a pool account), one with no transaction whose spent inputs name no row here,
+   * and a transaction not signed by a live row. Every other item that does not commit is REJECTED
+   * with `SubAccountSpendRefusedError`, nothing written: a spent input naming a row with no
+   * transaction to prove it, any transaction while no applier is attached, a transaction that
+   * does not parse or whose hash is not the item's, an item whose spent input, nonce, debit or
+   * created output disagree with the transaction, and whatever the applier refuses. A matched row's capacity-cache entry is dropped before any rejection, so a drained
+   * account is re-read before it is offered again. Repeating an applied item resolves with no
+   * affected index.
    */
-  processSyncTransaction(item: {
+  async processSyncTransaction(item: {
+    type?: string;
     direction: "in" | "out";
+    chainIdentifier?: string;
     txHash?: string;
     rawTx?: string;
     spentInputs?: ReadonlyArray<{
@@ -604,44 +664,163 @@ export class MonadSubAccountPool {
       nonce?: number;
       valueWei?: string | bigint;
     }>;
+    createdOutputs?: ReadonlyArray<{
+      address: string;
+      valueWei?: string | bigint;
+    }>;
     timestamp?: number;
-  }): { affectedIndices: number[] } {
-    const affectedIndices: number[] = [];
-    if (
-      item.direction !== "out" ||
-      !Array.isArray(item.spentInputs) ||
-      item.spentInputs.length === 0
-    ) {
-      return { affectedIndices };
+  }): Promise<{ affectedIndices: number[] }> {
+    // Check 1: only an outgoing wallet-sync item can spend a pool account.
+    if (item.type !== "wallet-sync" || item.direction !== "out") {
+      return { affectedIndices: [] };
     }
+    const sameAddress = (left: unknown, right: string) =>
+      typeof left === "string" && left.toLowerCase() === right.toLowerCase();
+    const spentInputs: ReadonlyArray<unknown> = Array.isArray(item.spentInputs)
+      ? item.spentInputs
+      : [];
+    const named = this.store
+      .getAll()
+      .filter((record) =>
+        spentInputs.some((input) =>
+          sameAddress(
+            (input as { address?: unknown } | null)?.address,
+            record.address
+          )
+        )
+      );
+    // Before any rejection: whatever the item turns out to be, an account it names is re-read.
+    for (const record of named) this.capacityCache.delete(record.index);
+    const refuse = (
+      code: SubAccountSpendRefusedError["code"],
+      detail: string,
+      index: number | undefined = named.length === 1 ? named[0]!.index : undefined
+    ): never => {
+      throw new SubAccountSpendRefusedError(code, index, detail);
+    };
 
-    const spentAddresses = new Set<string>();
-    for (const input of item.spentInputs) {
-      if (typeof input?.address === "string") {
-        spentAddresses.add(input.address.toLowerCase());
-      }
-    }
+    // Check 3 (presence): without the complete signed transaction there is nothing to record. An
+    // item that carries none and names no row of this pool is not about the pool at all (a native
+    // send from the main account, say): nothing to refuse, nothing to write.
     const { rawTx, txHash } = item;
+    if (rawTx === undefined || rawTx === null) {
+      if (named.length === 0) return { affectedIndices: [] };
+      return refuse(
+        "missing-transaction",
+        "the sync item carries no signed transaction (rawTx)"
+      );
+    }
+    // No applier, no bytes: this pool cannot check the transaction's chain, so it commits nothing.
+    const apply = this.spendApplier;
+    if (apply === undefined) {
+      return refuse(
+        "no-applier",
+        "this pool has no spend applier to check a signed transaction"
+      );
+    }
+    if (
+      typeof item.chainIdentifier !== "string" ||
+      item.chainIdentifier.length === 0
+    ) {
+      return refuse("inconsistent-item", "the sync item names no chain");
+    }
+    if (
+      typeof rawTx !== "string" ||
+      rawTx.length > MAX_SPEND_RAW_TX_LENGTH ||
+      !/^0x[0-9a-f]+$/.test(rawTx)
+    ) {
+      return refuse("invalid-transaction", "raw transaction is not bounded hex");
+    }
+    let transaction: Transaction;
+    let hash: string | null;
+    let from: string | null;
+    try {
+      transaction = Transaction.from(rawTx);
+      ({ hash, from } = transaction);
+    } catch {
+      return refuse(
+        "invalid-transaction",
+        "raw transaction does not parse or its signature does not recover"
+      );
+    }
+    if (hash === null || from === null) {
+      return refuse("invalid-transaction", "transaction is unsigned");
+    }
+    const signer = from;
+    // Check 5: the bytes are the transaction the item names.
     const hashOf = (value: string) => value.toLowerCase().replace(/^0x/, "");
-
-    for (const record of this.store.getAll()) {
-      if (!spentAddresses.has(record.address.toLowerCase())) continue;
-      this.capacityCache.delete(record.index);
-      if (typeof rawTx !== "string" || typeof txHash !== "string") continue;
-      try {
-        const classified = this.classifySpend(record.index, rawTx);
-        if (hashOf(classified.txHash) !== hashOf(txHash)) continue;
-        if (
-          this.applyClassifiedSpend(record.index, classified) === "committed"
-        ) {
-          affectedIndices.push(record.index);
-        }
-      } catch (error) {
-        if (!(error instanceof SubAccountSpendRefusedError)) throw error;
+    if (typeof txHash !== "string" || hashOf(txHash) !== hashOf(hash)) {
+      return refuse(
+        "inconsistent-item",
+        "the signed transaction's hash is not the item's txHash"
+      );
+    }
+    // Check 6: a transaction no live row signed spends no pool account.
+    const row = this.store
+      .getAll()
+      .find((record) => sameAddress(record.address, signer));
+    if (row === undefined) return { affectedIndices: [] };
+    this.capacityCache.delete(row.index);
+    // Check 7: the item's own account of the spend agrees with the transaction.
+    const amount = (value: unknown): bigint | undefined =>
+      typeof value === "bigint" && value >= 0n
+        ? value
+        : typeof value === "string" && /^[0-9]{1,78}$/.test(value)
+        ? BigInt(value)
+        : undefined;
+    const inconsistent = (detail: string) =>
+      refuse("inconsistent-item", detail, row.index);
+    const input = spentInputs[0] as
+      | { address?: unknown; nonce?: unknown; valueWei?: unknown }
+      | null
+      | undefined;
+    if (spentInputs.length !== 1 || !sameAddress(input?.address, signer)) {
+      return inconsistent(
+        "spentInputs is not exactly one entry for the transaction's signer"
+      );
+    }
+    if (input!.nonce !== undefined && input!.nonce !== transaction.nonce) {
+      return inconsistent("the spent input's nonce is not the transaction's");
+    }
+    if (input!.valueWei !== undefined) {
+      const debit = amount(input!.valueWei);
+      const maximumFee =
+        transaction.gasLimit *
+        (transaction.maxFeePerGas ?? transaction.gasPrice ?? 0n);
+      if (
+        debit === undefined ||
+        debit < transaction.value ||
+        debit > transaction.value + maximumFee
+      ) {
+        return inconsistent(
+          "the spent input's valueWei is not the transaction's value plus a fee it could have paid"
+        );
+      }
+    }
+    if (item.createdOutputs !== undefined) {
+      const outputs: ReadonlyArray<unknown> = Array.isArray(item.createdOutputs)
+        ? item.createdOutputs
+        : [];
+      const output = outputs[0] as
+        | { address?: unknown; valueWei?: unknown }
+        | null
+        | undefined;
+      if (
+        outputs.length !== 1 ||
+        transaction.to === null ||
+        !sameAddress(output?.address, transaction.to) ||
+        amount(output?.valueWei) !== transaction.value
+      ) {
+        return inconsistent(
+          "createdOutputs is not exactly one entry to the transaction's recipient for its value"
+        );
       }
     }
 
-    return { affectedIndices };
+    const applied = await apply(rawTx, item.chainIdentifier);
+    return {
+      affectedIndices: applied.kind === "committed" ? [applied.poolIndex] : [],
+    };
   }
 
   recordRecoveryDisposition(

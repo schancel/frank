@@ -249,7 +249,7 @@
                             : $t('walletPanel.send')
                         "
                         color="primary"
-                        :disable="selectedWallet !== 'monad'"
+                        :disable="!sendChainIdentifier"
                         data-testid="wallet-send-action"
                         data-test="wallet-legacy-send-action"
                         @click="openSend"
@@ -464,6 +464,7 @@ import { getChainTokens, type TokenItem } from 'src/composables/useChainBalance'
 import { getExplorerUrl } from 'src/utils/explorer'
 import type { SwapRecord } from 'src/stores/swaps'
 import { WALLET_CONFIGS } from 'src/utils/wallet-configs'
+import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 
 // One wallet's detail view in the main pane (#570): the Wallet rail tab's drawer shows the
 // wallet list; picking a row lands here for that wallet's info and actions. Stealth payment
@@ -504,6 +505,9 @@ export default defineComponent({
 
     const currentWalletConfig = computed(() =>
       WALLET_CONFIGS.find(w => w.id === selectedWallet.value),
+    )
+    const sendChainIdentifier = computed(() =>
+      nativeSendChainIdentifier(selectedWallet.value, isTestnet.value),
     )
 
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
@@ -657,6 +661,7 @@ export default defineComponent({
       myDrawerOpen,
       activeTab,
       selectedWallet,
+      sendChainIdentifier,
       selectedChain: selectedWallet,
       currentWalletConfig,
       isTestnet,
@@ -680,7 +685,9 @@ export default defineComponent({
         }
       },
       openSend() {
-        openPage(router, '/send')
+        if (sendChainIdentifier.value) {
+          openPage(router, `/send?chainIdentifier=${sendChainIdentifier.value}`)
+        }
       },
       openSendContact() {
         openPage(router, '/send-contact')

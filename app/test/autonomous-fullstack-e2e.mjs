@@ -1,12 +1,20 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtemp, writeFile, readFile, readdir, open, stat } from 'node:fs/promises'
+import {
+  mkdtemp,
+  writeFile,
+  readFile,
+  readdir,
+  open,
+  stat,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const origin = process.env.ACCOUNT_APP_ORIGIN ?? 'http://localhost:8080'
 const directory = await mkdtemp(join(tmpdir(), 'frank-e2e-run-'))
-const screenshotDir = '/Users/shammah/.gemini/antigravity/brain/c14f27e3-3a56-4261-89af-3d2fef900992/e2e_screenshots'
+const screenshotDir =
+  '/Users/shammah/.gemini/antigravity/brain/c14f27e3-3a56-4261-89af-3d2fef900992/e2e_screenshots'
 const executable =
   process.env.CUSTODY_CHROME ??
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -92,12 +100,16 @@ async function launch() {
 
 function handleEvent(event) {
   if (event.method === 'Runtime.exceptionThrown') {
-    const desc = event.params.exceptionDetails?.exception?.description || event.params.exceptionDetails?.text
+    const desc =
+      event.params.exceptionDetails?.exception?.description ||
+      event.params.exceptionDetails?.text
     frontendErrors.push(`[EXCEPTION] ${desc}`)
     console.error(`🔴 FRONTEND EXCEPTION:`, desc)
   } else if (event.method === 'Runtime.consoleAPICalled') {
     const type = event.params.type
-    const args = event.params.args.map(a => a.value ?? a.description ?? JSON.stringify(a)).join(' ')
+    const args = event.params.args
+      .map(a => a.value ?? a.description ?? JSON.stringify(a))
+      .join(' ')
     consoleLogs.push(`[${type}] ${args}`)
     if (type === 'error') {
       frontendErrors.push(`[CONSOLE_ERROR] ${args}`)
@@ -107,11 +119,11 @@ function handleEvent(event) {
     }
   } else if (event.method === 'Network.responseReceived') {
     const { status, url } = event.params.response
-    const isExpected404 = status === 404 && (
-      url.includes('/metadata/') ||
-      url.includes('/directory/v1/') ||
-      url.includes('/favicon.ico')
-    )
+    const isExpected404 =
+      status === 404 &&
+      (url.includes('/metadata/') ||
+        url.includes('/directory/v1/') ||
+        url.includes('/favicon.ico'))
     const isExpected401 = status === 401 && url.includes('/capability')
     if (status >= 400 && !isExpected404 && !isExpected401) {
       networkFailures.push(`[HTTP ${status}] ${url}`)
@@ -121,8 +133,14 @@ function handleEvent(event) {
 }
 
 async function openTab() {
-  const { targetId } = await call('Target.createTarget', { url: 'about:blank' }, undefined)
-  sessionId = (await call('Target.attachToTarget', { targetId, flatten: true }, undefined)).sessionId
+  const { targetId } = await call(
+    'Target.createTarget',
+    { url: 'about:blank' },
+    undefined,
+  )
+  sessionId = (
+    await call('Target.attachToTarget', { targetId, flatten: true }, undefined)
+  ).sessionId
   await call('Runtime.enable')
   await call('Page.enable')
   await call('DOM.enable')
@@ -159,15 +177,27 @@ async function until(expression, timeoutMs = 25000, description = '') {
     } catch {}
     await new Promise(r => setTimeout(r, 200))
   }
-  const pageText = await evaluate('document.body.innerText.slice(0, 1000)').catch(() => 'unknown')
-  throw new Error(`Timeout waiting for [${description || expression}] after ${timeoutMs}ms. Page text:\n${pageText}`)
+  const pageText = await evaluate(
+    'document.body.innerText.slice(0, 1000)',
+  ).catch(() => 'unknown')
+  throw new Error(
+    `Timeout waiting for [${
+      description || expression
+    }] after ${timeoutMs}ms. Page text:\n${pageText}`,
+  )
 }
 
 async function click(selector) {
-  await until(`document.querySelector(${JSON.stringify(selector)})`, 10000, `element exists: ${selector}`)
+  await until(
+    `document.querySelector(${JSON.stringify(selector)})`,
+    10000,
+    `element exists: ${selector}`,
+  )
   await evaluate(`(() => {
     const el = document.querySelector(${JSON.stringify(selector)});
-    if (!el) throw new Error("Element not found: " + ${JSON.stringify(selector)});
+    if (!el) throw new Error("Element not found: " + ${JSON.stringify(
+      selector,
+    )});
     el.scrollIntoView({ behavior: 'instant', block: 'center' });
     el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
     el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
@@ -192,11 +222,17 @@ async function key(k, code, windowsVirtualKeyCode) {
 }
 
 async function typeInput(selector, value) {
-  await until(`document.querySelector(${JSON.stringify(selector)})`, 10000, `input exists: ${selector}`)
+  await until(
+    `document.querySelector(${JSON.stringify(selector)})`,
+    10000,
+    `input exists: ${selector}`,
+  )
   await evaluate(`(() => {
     const root = document.querySelector(${JSON.stringify(selector)});
     const el = root.matches('input,textarea') ? root : root.querySelector('input,textarea');
-    if (!el) throw new Error("Input not found in: " + ${JSON.stringify(selector)});
+    if (!el) throw new Error("Input not found in: " + ${JSON.stringify(
+      selector,
+    )});
     const setter = Object.getOwnPropertyDescriptor(el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set;
     setter.call(el, ${JSON.stringify(value)});
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -266,7 +302,11 @@ async function inspectBackendLogs(startOffsets = new Map()) {
     const content = buffer.toString('utf8')
     const lines = content.split('\n')
     for (const line of lines) {
-      if (line.includes('ERROR') || line.includes('panic') || line.includes('unhandledRejection')) {
+      if (
+        line.includes('ERROR') ||
+        line.includes('panic') ||
+        line.includes('unhandledRejection')
+      ) {
         backendErrors.push(`[${file}] ${line}`)
       }
     }
@@ -286,7 +326,9 @@ async function stop() {
 // ---------------------- TEST SUITE EXECUTION ----------------------
 
 async function run() {
-  console.log('🚀 Starting Autonomous Full-Stack E2E Browser Testing against http://localhost:8080')
+  console.log(
+    '🚀 Starting Autonomous Full-Stack E2E Browser Testing against http://localhost:8080',
+  )
   const startTime = Date.now()
   const logOffsets = await getLogOffsets()
 
@@ -296,18 +338,32 @@ async function run() {
     // SCENARIO 1: ONBOARDING & ACCOUNT CREATION
     console.log('\n--- SCENARIO 1: Onboarding & Account Creation ---')
     await call('Page.navigate', { url: origin + '/#/setup' })
-    await until(`document.querySelector('[data-test="new-account"]')`, 20000, 'setup page loaded')
+    await until(
+      `document.querySelector('[data-test="new-account"]')`,
+      20000,
+      'setup page loaded',
+    )
     console.log('✅ Setup page mounted')
 
     // Click New Account
     await click('[data-test="new-account"]')
-    await until(`document.querySelector('[data-test="backup-policy"]')`, 10000, 'backup policy choice')
+    await until(
+      `document.querySelector('[data-test="backup-policy"]')`,
+      10000,
+      'backup policy choice',
+    )
 
     // Focus radio and press Space to select default policy
-    await evaluate(`document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`)
+    await evaluate(
+      `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
+    )
     await key(' ', 'Space', 32)
-    await until(`!document.querySelector('[data-test="generate-backups"]').disabled`, 5000, 'generate button enabled')
-    
+    await until(
+      `!document.querySelector('[data-test="generate-backups"]').disabled`,
+      5000,
+      'generate button enabled',
+    )
+
     // Double click to trigger form submit
     await evaluate(`(() => {
       document.querySelector('[data-test="generate-backups"]').click();
@@ -315,7 +371,11 @@ async function run() {
     })()`)
 
     // Collect 3 shares
-    await until(`document.querySelector('[data-test="backup-share"]')`, 10000, 'backup shares presented')
+    await until(
+      `document.querySelector('[data-test="backup-share"]')`,
+      10000,
+      'backup shares presented',
+    )
     const shares = []
     for (let i = 0; i < 3; i++) {
       const shareVal = await getValue('[data-test="backup-share"]')
@@ -325,17 +385,34 @@ async function run() {
     console.log(`✅ Generated ${shares.length} Codex32 backup shares`)
 
     // Confirm shares and enter display name
-    await until(`document.querySelector('[data-test="confirm-shares"]')`, 10000, 'confirm shares view')
-    await typeInput('[data-test="confirm-shares"]', shares.slice(0, 2).join('\n'))
+    await until(
+      `document.querySelector('[data-test="confirm-shares"]')`,
+      10000,
+      'confirm shares view',
+    )
+    await typeInput(
+      '[data-test="confirm-shares"]',
+      shares.slice(0, 2).join('\n'),
+    )
     await typeInput('[data-test="display-name"]', 'Autonomous Tester')
     await click('[data-test="verify-backups"]')
 
-    await until(`document.querySelector('[data-test="activate-account"]')`, 15000, 'activate account ready')
+    await until(
+      `document.querySelector('[data-test="activate-account"]')`,
+      15000,
+      'activate account ready',
+    )
     console.log('✅ Backups verified successfully. Activating account...')
     await click('[data-test="activate-account"]')
 
-    await until(`location.hash !== '#/setup'`, 15000, 'navigated away from setup')
-    console.log(`✅ Account activated! Landed on ${await evaluate('location.hash')}`)
+    await until(
+      `location.hash !== '#/setup'`,
+      15000,
+      'navigated away from setup',
+    )
+    console.log(
+      `✅ Account activated! Landed on ${await evaluate('location.hash')}`,
+    )
     await new Promise(r => setTimeout(r, 2000))
     await captureScreenshot('01_account_created.png')
 
@@ -352,7 +429,7 @@ async function run() {
         return false;
       })()`,
       60000,
-      'faucet balance arrival in wallet-balance element'
+      'faucet balance arrival in wallet-balance element',
     )
     const balanceText = await evaluate(`(() => {
       const balanceEl = document.querySelector('[data-testid="wallet-balance"]') || document.querySelector('[data-test="wallet-balance"]');
@@ -376,8 +453,12 @@ async function run() {
     await new Promise(r => setTimeout(r, 2000))
     await captureScreenshot('03_contacts_view.png')
 
-    const hasContacts = await evaluate(`document.body.innerText.includes('Picture') || document.body.innerText.includes('Vendor') || document.body.innerText.includes('Blackjack') || document.body.innerText.includes('Qwen')`)
-    console.log(`✅ Contacts page rendered. Bot entries present: ${hasContacts}`)
+    const hasContacts = await evaluate(
+      `document.body.innerText.includes('Picture') || document.body.innerText.includes('Vendor') || document.body.innerText.includes('Blackjack') || document.body.innerText.includes('Qwen')`,
+    )
+    console.log(
+      `✅ Contacts page rendered. Bot entries present: ${hasContacts}`,
+    )
 
     // Check Wallet view
     await evaluate(`(() => {
@@ -393,7 +474,11 @@ async function run() {
     console.log('\n--- SCENARIO 4: Picture Shop Bot (Vendor) Interaction ---')
     const vendorAddress = '0x35dD121885Edd839Ed8D6f69d8E63d6E87bC20eA'
     await evaluate(`location.hash = '#/chat/${vendorAddress}'`)
-    await until(`document.querySelector('.chat-input-field')`, 15000, 'chat page loaded')
+    await until(
+      `document.querySelector('.chat-input-field')`,
+      15000,
+      'chat page loaded',
+    )
     await new Promise(r => setTimeout(r, 2000))
 
     // Send "hello" to Picture Shop
@@ -410,7 +495,7 @@ async function run() {
           return list && (list.innerText.includes('Welcome') || list.innerText.includes('Catalog') || list.querySelector('.digital-goods') || list.children.length >= 2);
         })()`,
         30000,
-        'picture shop catalog or reply'
+        'picture shop catalog or reply',
       )
       console.log('✅ Picture Shop response arrived in chat message list!')
     } catch (e) {
@@ -419,14 +504,18 @@ async function run() {
     await captureScreenshot('04_picture_shop_chat.png')
 
     // Check if buy button is present
-    const buyButtonExists = await evaluate(`!!document.querySelector('[data-testid="goods-buy"]')`)
+    const buyButtonExists = await evaluate(
+      `!!document.querySelector('[data-testid="goods-buy"]')`,
+    )
     console.log(`Digital goods buy button present: ${buyButtonExists}`)
     if (buyButtonExists) {
       console.log('Testing "Buy" flow click...')
       await click('[data-testid="goods-buy"]')
       await new Promise(r => setTimeout(r, 1000))
       await captureScreenshot('04_picture_shop_confirm_buy.png')
-      const confirmButtonExists = await evaluate(`!!document.querySelector('[data-testid="goods-confirm-buy"]')`)
+      const confirmButtonExists = await evaluate(
+        `!!document.querySelector('[data-testid="goods-confirm-buy"]')`,
+      )
       console.log(`Confirm Buy button present: ${confirmButtonExists}`)
     }
     // Allow prior on-chain transaction to settle
@@ -436,7 +525,11 @@ async function run() {
     console.log('\n--- SCENARIO 5: Qwen AI Assistant Interaction ---')
     const qwenAddress = '0xD9a3FDb466b1FE5C2623B853218C8f955daEaeF6'
     await evaluate(`location.hash = '#/chat/${qwenAddress}'`)
-    await until(`document.querySelector('.chat-input-field')`, 15000, 'qwen chat loaded')
+    await until(
+      `document.querySelector('.chat-input-field')`,
+      15000,
+      'qwen chat loaded',
+    )
     await new Promise(r => setTimeout(r, 2000))
 
     console.log('Sending prompt to Qwen...')
@@ -450,7 +543,7 @@ async function run() {
           return list && list.children.length >= 2;
         })()`,
         25000,
-        'qwen reply'
+        'qwen reply',
       )
       console.log('✅ Qwen AI response received!')
     } catch (e) {
@@ -464,7 +557,11 @@ async function run() {
     console.log('\n--- SCENARIO 6: Blackjack Bot Interaction ---')
     const blackjackAddress = '0xF478E879D51F1725b1C1819d0c30026fC1B84EA1'
     await evaluate(`location.hash = '#/chat/${blackjackAddress}'`)
-    await until(`document.querySelector('.chat-input-field')`, 15000, 'blackjack chat loaded')
+    await until(
+      `document.querySelector('.chat-input-field')`,
+      15000,
+      'blackjack chat loaded',
+    )
     await new Promise(r => setTimeout(r, 2000))
 
     console.log('Sending "deal" to Blackjack Bot...')
@@ -478,7 +575,7 @@ async function run() {
           return list && (list.innerText.includes('Blackjack') || list.innerText.includes('Dealer') || list.querySelector('.blackjack-table') || list.children.length >= 2);
         })()`,
         25000,
-        'blackjack reply'
+        'blackjack reply',
       )
       console.log('✅ Blackjack reply received!')
     } catch (e) {
@@ -492,7 +589,11 @@ async function run() {
     console.log('\n--- SCENARIO 7: Lobby Bot Interaction ---')
     const lobbyAddress = '0x68F337100cc690feb06e822218C7d77d62FBb607'
     await evaluate(`location.hash = '#/chat/${lobbyAddress}'`)
-    await until(`document.querySelector('.chat-input-field')`, 15000, 'lobby chat loaded')
+    await until(
+      `document.querySelector('.chat-input-field')`,
+      15000,
+      'lobby chat loaded',
+    )
     await new Promise(r => setTimeout(r, 2000))
 
     console.log('Sending "/help" to Lobby Bot...')
@@ -506,7 +607,7 @@ async function run() {
           return list && (list.innerText.includes('Lobby') || list.innerText.includes('/join') || list.children.length >= 2);
         })()`,
         25000,
-        'lobby reply'
+        'lobby reply',
       )
       console.log('✅ Lobby reply received!')
     } catch (e) {
@@ -515,8 +616,12 @@ async function run() {
     await captureScreenshot('07_lobby_chat.png')
 
     // ZERO ERROR TOLERANCE AUDIT
-    console.log('\n================ ZERO ERROR TOLERANCE AUDIT ================')
-    console.log(`Frontend Unhandled Exceptions / Console Errors: ${frontendErrors.length}`)
+    console.log(
+      '\n================ ZERO ERROR TOLERANCE AUDIT ================',
+    )
+    console.log(
+      `Frontend Unhandled Exceptions / Console Errors: ${frontendErrors.length}`,
+    )
     if (frontendErrors.length > 0) {
       console.error('Frontend Errors:\n', frontendErrors.join('\n'))
     }
@@ -538,7 +643,9 @@ async function run() {
     if (frontendErrors.length === 0) {
       console.log('🏆 ZERO FRONTEND ERRORS: PASS')
     } else {
-      console.error('❌ ZERO ERROR POLICY FAILED: Encountered frontend exceptions/errors')
+      console.error(
+        '❌ ZERO ERROR POLICY FAILED: Encountered frontend exceptions/errors',
+      )
     }
 
     if (networkFailures.length === 0) {
@@ -552,11 +659,11 @@ async function run() {
     } else {
       console.error('❌ ZERO ERROR POLICY FAILED: Encountered backend errors')
     }
-
   } catch (err) {
     console.error('❌ E2E TEST RUNNER ERROR:', err)
     if (frontendErrors.length) console.error('Frontend errors:', frontendErrors)
-    if (networkFailures.length) console.error('Network failures:', networkFailures)
+    if (networkFailures.length)
+      console.error('Network failures:', networkFailures)
     try {
       await captureScreenshot('failure_state.png')
     } catch {}

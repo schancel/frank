@@ -509,8 +509,10 @@ export interface OutgoingReconciliation {
  * one. Never awaited and never throws: its failure is not the caller's. */
 function reobserveNativeOperations(wallet: WalletHandle): void {
   try {
-    void (wallet as WalletHandle &
-      Pick<NativeWalletHandle, 'reobserveNativeOperations'>)
+    void (
+      wallet as WalletHandle &
+        Pick<NativeWalletHandle, 'reobserveNativeOperations'>
+    )
       .reobserveNativeOperations?.()
       .catch(() => undefined)
   } catch {

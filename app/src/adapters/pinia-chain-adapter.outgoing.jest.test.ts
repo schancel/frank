@@ -535,11 +535,13 @@ describe('startOutgoingReconciliation (#270)', () => {
     it('pin: is not called by a tick that was stopped while reconciling', async () => {
       await pendingMessage()
       let release: (v: Record<string, 'live'>) => void = () => undefined
-      jest.spyOn(activeChain.directMessages, 'reconcileAttempts').mockReturnValue(
-        new Promise(resolve => {
-          release = resolve
-        }),
-      )
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockReturnValue(
+          new Promise(resolve => {
+            release = resolve
+          }),
+        )
       const reobserve = jest.fn(async () => undefined)
       const polling = startOutgoingReconciliation({
         wallet: walletWith(reobserve),
@@ -547,7 +549,9 @@ describe('startOutgoingReconciliation (#270)', () => {
       await jest.advanceTimersByTimeAsync(0)
       polling.stop()
       release({ [HASH]: 'live' })
-      await jest.advanceTimersByTimeAsync(10 * MAX_OUTGOING_RECONCILE_INTERVAL_MS)
+      await jest.advanceTimersByTimeAsync(
+        10 * MAX_OUTGOING_RECONCILE_INTERVAL_MS,
+      )
       expect(reobserve).not.toHaveBeenCalled()
     })
 

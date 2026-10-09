@@ -81,7 +81,22 @@ function mockDatabase(path: string) {
   }
   return db
 }
-jest.mock('level', () => (path: string) => mockDatabase(path))
+jest.mock(
+  'level',
+  () =>
+    (
+      path: string,
+      optionsOrCallback?: unknown,
+      callback?: (error: null, db: ReturnType<typeof mockDatabase>) => void,
+    ) => {
+      const db = mockDatabase(path)
+      const opened =
+        typeof optionsOrCallback === 'function' ? optionsOrCallback : callback
+      // Match level-packager/LevelUP construction while keeping real Open validation.
+      void NativePromise.resolve().then(() => opened?.(null, db))
+      return db
+    },
+)
 jest.mock('quasar/wrappers', () => ({ boot: (callback: unknown) => callback }))
 const mockInitialize = jest.fn(async () => undefined)
 jest.mock('./accounts/session', () => ({

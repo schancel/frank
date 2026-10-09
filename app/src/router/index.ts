@@ -46,16 +46,6 @@ export default () => {
   // `return '/setup'`. Purely mechanical; the actual gating logic is unchanged.
   async function redirectIfNoProfile(to: RouteLocationNormalized) {
     if (startupRestoration.value.phase !== 'restored') return
-    if (
-      to.fullPath.startsWith('/chat') &&
-      to.params.address &&
-      typeof to.params.address === 'string'
-    ) {
-      ensureChatState(to.params.address as string)
-    } else {
-      ensureChatState()
-    }
-
     await accountSession.initialize()
     // Release notes, documentation, and legal notices are readable without an account.
     if (
@@ -96,6 +86,16 @@ export default () => {
     ),
   })
   Router.beforeEach(redirectIfNoProfile)
+  Router.afterEach((to, _from, failure) => {
+    // Only a committed route owns selection/read state. Publishing from beforeEach lets
+    // selection observers replace in-flight query navigation or mark canceled targets read.
+    if (failure || startupRestoration.value.phase !== 'restored') return
+    const address =
+      to.path.startsWith('/chat/') && typeof to.params.address === 'string'
+        ? to.params.address
+        : undefined
+    void ensureChatState(address)
+  })
 
   return Router
 }

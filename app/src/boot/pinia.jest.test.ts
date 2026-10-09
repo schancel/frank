@@ -11,7 +11,7 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 jest.mock('../adapters/level-message-store', () => ({
-  store: Promise.resolve({}),
+  store: Promise.resolve({ getIterator: async () => [] }),
 }))
 jest.mock('../adapters/level-utxo-store', () => ({
   store: Promise.resolve({}),

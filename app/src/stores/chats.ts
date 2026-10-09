@@ -852,11 +852,10 @@ function isInternalMessage(items: unknown): boolean {
   )
 }
 
-export async function rehydateChat(chatState: RestorableState): Promise<State> {
-  if (!chatState) {
-    return freshChatsState()
-  }
-
+export async function rehydateChat(
+  chatState: RestorableState,
+  metadataCompatible = true,
+): Promise<State> {
   const localStore = await store
   const messageIterator = await localStore.getIterator()
   const wrappers: MessageWrapper[] = []
@@ -920,10 +919,25 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     return { wrapper, conversationId, internal }
   })
 
+  const hasChatMetadata =
+    chatState !== null &&
+    typeof chatState === 'object' &&
+    !Array.isArray(chatState)
+  const canReconstruct = metadataCompatible && hasChatMetadata
+  if (!canReconstruct && validatedRows.some(row => !row.internal)) {
+    throw new Error(
+      'Unsupported stored conversation format: conversational rows require compatible chat metadata',
+    )
+  }
+
   const conversations: Record<string, Conversation> = {}
   const messages: Record<string, ChatMessage> = {}
   const logicalMessages: Record<string, LogicalMessageRecord> = {}
-  for (const [id, raw] of Object.entries(chatState.conversations ?? {})) {
+  // Available metadata still constrains explicit internal owners even when this context
+  // cannot reconstruct conversations. Never substitute current metadata for a mismatch.
+  for (const [id, raw] of Object.entries(
+    hasChatMetadata ? chatState.conversations ?? {} : {},
+  )) {
     if (!raw) continue
     const conversation = newConversation({
       ...raw,
@@ -970,6 +984,10 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     const owner = conversations[conversationId]
     if (owner) assertConversationPeer(owner, wrapper.copartyAddress)
   }
+
+  // Only an admitted empty/internal-only collection may take a fresh-state exit.
+  // Raw internal records remain in MessageStore without conversation indexes or effects.
+  if (!canReconstruct) return freshChatsState()
 
   let lastReceived = Math.max(
     chatState.lastReceived ?? 0,
@@ -3700,13 +3718,7 @@ export const useChatStore = defineStore('chats', {
       const invalidStore =
         metadata.networkName !== displayNetwork ||
         metadata.version !== STORE_SCHEMA_VERSION
-      if (invalidStore) {
-        return freshChatsState()
-      }
-
-      const rehydratedChat = await rehydateChat(deserializedChats)
-
-      return rehydratedChat
+      return rehydateChat(deserializedChats, !invalidStore)
     },
   },
 })

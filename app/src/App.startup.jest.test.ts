@@ -445,7 +445,7 @@ describe('visible read-only startup failure', () => {
   })
 
   it.each(['network mismatch', 'version mismatch', 'null chats'])(
-    'requires actual message-store admission when chat hydration skips Open via %s',
+    'retains actual message-store rejection across %s metadata',
     async route => {
       const metadata = {
         networkName: route === 'network mismatch' ? 'other-network' : 'livenet',
@@ -491,15 +491,15 @@ describe('visible read-only startup failure', () => {
         const boot = setupApis({ app })
         if (route === 'null chats') {
           await started.promise
-          await expect(useChatStore().restored).resolves.toBe(true)
+          await expect(useChatStore().restored).rejects.toBe(openFailure)
           expect(startupRestoration.value.phase).toBe('restoring')
           expect(mockInitialize).not.toHaveBeenCalled()
           gate.resolve()
         }
         await expect(boot).resolves.toBeUndefined()
-        // These chat paths intentionally keep their existing fresh-state policy. Database
-        // admission is independently required even when the chat promise resolves.
-        await expect(useChatStore().restored).resolves.toBe(true)
+        // Strict chat admission now also observes Open before considering a fresh state.
+        // The independent startup dependency and original rejection remain intact.
+        await expect(useChatStore().restored).rejects.toBe(openFailure)
         await expect(failedOpen).rejects.toBe(openFailure)
         await messagingBoot({ app })
         expect(startupRestoration.value.phase).toBe('failed')
@@ -548,6 +548,155 @@ describe('visible read-only startup failure', () => {
         adapter.store = priorStore
         process.removeListener('unhandledRejection', unhandled)
       }
+    },
+  )
+
+  const freshContexts = [
+    'network mismatch',
+    'version mismatch',
+    'null chats',
+  ] as const
+  async function freshContext(context: (typeof freshContexts)[number]) {
+    const f = await fixture('en-us', {
+      networkName: context === 'network mismatch' ? 'other-network' : 'livenet',
+      version:
+        context === 'version mismatch'
+          ? STORE_SCHEMA_VERSION - 1
+          : STORE_SCHEMA_VERSION,
+    })
+    if (context === 'null chats') f.storage.data.set('chats', 'null')
+    return f
+  }
+  async function expectRejectedOwnership(
+    f: Awaited<ReturnType<typeof fixture>>,
+    reason: RegExp,
+  ) {
+    const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+    await expect(messageStorePromise).resolves.toBeDefined()
+    await expect(setupApis({ app: f.app })).resolves.toBeUndefined()
+    await expect(useChatStore().restored).rejects.toThrow(reason)
+    expect(startupRestoration.value.phase).toBe('failed')
+    expect(useChatStore().messages).toEqual({})
+    expect(useChatStore().conversations).toEqual({})
+    await messagingBoot({ app: f.app })
+    const router = createRouter()
+    await router.push(`/chat/${PEER}`)
+    await router.isReady()
+    const wrapper = mountedRoot(
+      f.pinia,
+      router,
+      f.app.config.globalProperties.$status,
+    )
+    try {
+      await flushPromises()
+      expect(wrapper.get('h1').text()).toBe('Saved data could not be loaded')
+      expect(wrapper.find('[data-test="route-content"]').exists()).toBe(false)
+      for (const effect of [
+        mockInitialize,
+        mockTabInit,
+        mockIdentity,
+        mockPersistent,
+        mockRouteSetup,
+      ])
+        expect(effect).not.toHaveBeenCalled()
+      assertNoWrites(snapshot)
+    } finally {
+      wrapper.unmount()
+    }
+  }
+
+  it.each(
+    freshContexts.flatMap(context =>
+      Object.entries({
+        'ownerless ordinary': /explicit conversation ID required/,
+        'owned ordinary':
+          /conversational rows require compatible chat metadata/,
+        'mixed internal': /explicit conversation ID required/,
+        'invalid internal envelope': /Invalid stored message envelope/,
+        'invalid internal ID': /valid conversation ID required/,
+      }).map(([kind, reason]) => [context, kind, reason] as const),
+    ),
+  )(
+    'admits every durable row before the %s fresh exit: %s',
+    async (context, kind, reason) => {
+      const f = await freshContext(context)
+      const preceding = message('preceding-internal')
+      Object.assign(preceding.message, {
+        conversationId: undefined,
+        status: 'pending',
+        items: [{ type: 'wallet-sync' }],
+        delivery: { attemptDigest: 'retained-attempt' },
+      })
+      f.messages.data.set(preceding.index, serializeMessageWrapper(preceding))
+      const row = message('last-row')
+      if (kind !== 'owned ordinary') delete row.message.conversationId
+      if (kind === 'mixed internal')
+        Object.assign(row.message, {
+          items: [{ type: 'wallet-sync' }, { type: 'text', text: 'ordinary' }],
+        })
+      if (kind.startsWith('invalid internal')) {
+        Object.assign(row.message, { items: [{ type: 'payment-transfer' }] })
+        if (kind === 'invalid internal envelope')
+          Object.assign(row.message, { receivedTime: undefined })
+        else row.message.conversationId = 'invalid-owner'
+      }
+      f.messages.data.set(row.index, serializeMessageWrapper(row))
+      await expectRejectedOwnership(f, reason)
+    },
+  )
+
+  it.each(['network mismatch', 'version mismatch'] as const)(
+    'checks available internal owner affinity before the %s fresh exit',
+    async context => {
+      const f = await freshContext(context)
+      const row = message('conflicting-internal')
+      Object.assign(row.message, { items: [{ type: 'swap-record' }] })
+      f.messages.data.set(row.index, serializeMessageWrapper(row))
+      f.storage.data.set(
+        'chats',
+        JSON.stringify({
+          conversations: {
+            [row.message.conversationId!]: {
+              id: row.message.conversationId,
+              address: '0x3333333333333333333333333333333333333333',
+              participants: ['0x3333333333333333333333333333333333333333'],
+            },
+          },
+        }),
+      )
+      await expectRejectedOwnership(f, /belongs to a different recipient/)
+    },
+  )
+
+  it.each(
+    freshContexts.flatMap(context =>
+      ['empty', 'internal-only'].map(kind => [context, kind] as const),
+    ),
+  )(
+    'retains validated %s fresh behavior for %s storage',
+    async (context, kind) => {
+      const f = await freshContext(context)
+      if (kind === 'internal-only') {
+        const row = message('internal-records')
+        Object.assign(row.message, {
+          conversationId: undefined,
+          items: [
+            { type: 'swap-record' },
+            { type: 'wallet-sync' },
+            { type: 'payment-transfer' },
+          ],
+        })
+        f.messages.data.set(row.index, serializeMessageWrapper(row))
+      }
+      const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+      await setupApis({ app: f.app })
+      await expect(useChatStore().restored).resolves.toBe(true)
+      expect(startupRestoration.value.phase).toBe('restored')
+      expect(useChatStore().conversations).toEqual({})
+      expect(useChatStore().messages).toEqual({})
+      expect(useChatStore().logicalMessages).toEqual({})
+      expect(mockInitialize).toHaveBeenCalledTimes(1)
+      assertNoWrites(snapshot)
     },
   )
 

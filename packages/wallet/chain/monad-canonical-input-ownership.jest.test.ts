@@ -37,6 +37,7 @@ import {
   mockFunded,
   providerBroadcasts,
   providerRequests,
+  useProviderStandIns,
   type Fixture,
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
@@ -46,6 +47,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   Transaction,
+  Wallet,
   getBytes,
   hexlify,
   sha256,
@@ -70,7 +72,13 @@ import {
 import { MonadAccountTxSigner } from '../monad-account-tx'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import { LevelCanonicalStampAttemptJournal } from '../storage/stamp-attempt-journal'
-import type { CanonicalDirectory } from './monad-canonical-dm'
+import {
+  CanonicalMessagingHoldError,
+  LevelCanonicalLinkStore,
+  type CanonicalDirectory,
+} from './monad-canonical-dm'
+import { applyWalletSyncItem } from '../sync-dispatcher'
+import type { WalletSyncItem } from '@frank/cashweb/types/messages'
 import {
   canonicalMonadStampClient,
   installCanonicalDirectory,
@@ -168,6 +176,8 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
     providerRequests.length = 0
     chainHttpRequests.length = 0
     providerBroadcasts.length = 0
+    // This suite sends native transactions through the wallet's own provider.
+    useProviderStandIns()
     topicRelay.mockReset()
     relayBodies = []
     relayCalls = []
@@ -274,6 +284,19 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
         .flatMap(attempt => attempt.reservations.map(r => r.index)),
     ])
   const status = (index: number) => alice.pool.getRecord(index)!.status
+  /** Lets `count` macrotask turns pass, so everything that can run without a pending promise did. */
+  const turns = async (count: number) => {
+    for (let i = 0; i < count; i++) await new Promise(resolve => setImmediate(resolve))
+  }
+  /** Follows a promise without awaiting it, so a test can ask whether it has settled yet. */
+  function watch<T>(promise: Promise<T>) {
+    const seen: { settled: boolean; value?: T; error?: unknown } = { settled: false }
+    const done = promise.then(
+      value => void ((seen.settled = true), (seen.value = value)),
+      error => void ((seen.settled = true), (seen.error = error)),
+    )
+    return { seen, done }
+  }
 
   /** One `send` from Alice to Bob and what it did. */
   async function send(text: string, extra: { onAttemptCreated?: (d: string) => void } = {}) {
@@ -403,6 +426,75 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
     })
   }
 
+  /** A separate journal bound to the wallet's tuple and seeded with A's real attempt refuses an
+   * intent that reserves an index A holds, and accepts one on a free index. */
+  async function journalRefusesHeldIndex(
+    attemptA: ReturnType<ClientInternals['journal']['getAll']>[number],
+    inputB: PrepareInput,
+  ) {
+    const location = await mkdtemp(join(tmpdir(), 'ownership-journal-'))
+    const own = new LevelCanonicalStampAttemptJournal(location)
+    await own.Open()
+    try {
+      const { prepared } = attemptA
+      const { tuple } = internals().wallet.walletState.canonicalBinding
+      // The tuple is the wallet's own, so the journal accepts the wallet's real records.
+      expect(sha256(toUtf8Bytes(tuple)).slice(2)).toBe(prepared.walletBindingId)
+      await own.bindPublicTuple(tuple)
+      await own.prepare({
+        prepared: attemptA.prepared,
+        request: attemptA.request as never,
+        reservations: attemptA.reservations,
+        consumerId: attemptA.consumerId,
+      })
+      expect(own.getAll().map(a => a.cleanupComplete)).toEqual([false])
+      const held = attemptA.reservations[0]
+      const member = (reservation: { id: string; index: number }, nonce = 0) => {
+        const tx = Transaction.from({
+          type: 2,
+          chainId: 10143,
+          nonce,
+          to: f.bob.identity.address.raw,
+          value: 1n,
+          gasLimit: 21_000n,
+          maxFeePerGas: 2n,
+          maxPriorityFeePerGas: 1n,
+        })
+        return {
+          reservation,
+          from: '0x' + '22'.repeat(20),
+          unsignedSerialized: tx.unsignedSerialized,
+          rawTx: null,
+        }
+      }
+      const intentFor = (reservation: { id: string; index: number }) => ({
+        prepared: inputB.prepared,
+        consumerId: inputB.consumerId,
+        boundary: 'ownership-boundary-0001',
+        construction: Uint8Array.of(1),
+        members: [member(reservation)],
+      })
+
+      // The same index under another id, and the same id under another index, are both refused.
+      await expect(
+        own.prepareIntent(intentFor({ id: 'canonical:other', index: held.index })),
+      ).rejects.toThrow('conflict')
+      await expect(
+        own.prepareIntent(intentFor({ id: held.id, index: held.index + 100 })),
+      ).rejects.toThrow('conflict')
+      expect(own.getIntents()).toHaveLength(0)
+      // Positive control: the same intent on an unheld index is accepted.
+      const accepted = await own.prepareIntent(
+        intentFor({ id: 'canonical:free', index: held.index + 100 }),
+      )
+      expect(accepted.members[0].reservation.index).toBe(held.index + 100)
+      expect(own.getIntents()).toHaveLength(1)
+    } finally {
+      await own.Close()
+      await rm(location, { recursive: true, force: true })
+    }
+  }
+
   // ---- the five checks, each isolated ----------------------------------------------------------
 
   // CHECK 1 (and amendment A0.2): the intent is durable and its pool rows are still `available`,
@@ -524,67 +616,7 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
     const { digest } = await pendingA()
     const [attemptA] = journal().getAll()
     expect(attemptA.cleanupComplete).toBe(false)
-    const location = await mkdtemp(join(tmpdir(), 'ownership-journal-'))
-    const own = new LevelCanonicalStampAttemptJournal(location)
-    await own.Open()
-    try {
-      const { prepared } = attemptA
-      const { tuple } = internals().wallet.walletState.canonicalBinding
-      // The tuple is the wallet's own, so the journal accepts the wallet's real records.
-      expect(sha256(toUtf8Bytes(tuple)).slice(2)).toBe(prepared.walletBindingId)
-      await own.bindPublicTuple(tuple)
-      await own.prepare({
-        prepared: attemptA.prepared,
-        request: attemptA.request as never,
-        reservations: attemptA.reservations,
-        consumerId: attemptA.consumerId,
-      })
-      expect(own.getAll().map(a => a.cleanupComplete)).toEqual([false])
-      const held = attemptA.reservations[0]
-      const member = (reservation: { id: string; index: number }, nonce = 0) => {
-        const tx = Transaction.from({
-          type: 2,
-          chainId: 10143,
-          nonce,
-          to: f.bob.identity.address.raw,
-          value: 1n,
-          gasLimit: 21_000n,
-          maxFeePerGas: 2n,
-          maxPriorityFeePerGas: 1n,
-        })
-        return {
-          reservation,
-          from: '0x' + '22'.repeat(20),
-          unsignedSerialized: tx.unsignedSerialized,
-          rawTx: null,
-        }
-      }
-      const intentFor = (reservation: { id: string; index: number }) => ({
-        prepared: inputB.prepared,
-        consumerId: inputB.consumerId,
-        boundary: 'ownership-boundary-0001',
-        construction: Uint8Array.of(1),
-        members: [member(reservation)],
-      })
-
-      // The same index under another id, and the same id under another index, are both refused.
-      await expect(
-        own.prepareIntent(intentFor({ id: 'canonical:other', index: held.index })),
-      ).rejects.toThrow('conflict')
-      await expect(
-        own.prepareIntent(intentFor({ id: held.id, index: held.index + 100 })),
-      ).rejects.toThrow('conflict')
-      expect(own.getIntents()).toHaveLength(0)
-      // Positive control: the same intent on an unheld index is accepted.
-      const accepted = await own.prepareIntent(
-        intentFor({ id: 'canonical:free', index: held.index + 100 }),
-      )
-      expect(accepted.members[0].reservation.index).toBe(held.index + 100)
-      expect(own.getIntents()).toHaveLength(1)
-    } finally {
-      await own.Close()
-      await rm(location, { recursive: true, force: true })
-    }
+    await journalRefusesHeldIndex(attemptA, inputB)
     // The wallet's own record of A was never touched, and no second payment set exists.
     expect(counts()).toMatchObject({ intents: 0, attempts: 1, paymentSets: 1 })
     expect(digest).toHaveLength(64)
@@ -891,7 +923,9 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
     alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
     installCanonicalDirectory(alice, directory)
 
-    // Open, install the directory, and read the payment journal: nothing reached any network.
+    // Open, install the directory, and read the payment journal: nothing reached any network. A
+    // few macrotask turns first, so a request the open scheduled for later would have been made.
+    await turns(5)
     expect(requests()).toEqual(quiet)
     expect(counts()).toMatchObject({ intents: 0, attempts: 1, relayRequests: 0 })
     expect(requests()).toEqual(quiet)
@@ -955,6 +989,223 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
     expect(prepareIntent).toHaveBeenCalledTimes(2)
     expect(counts()).toMatchObject({ intents: 0, attempts: 0, paymentSets: 2 })
     expect(bobInbox).toHaveLength(2)
+  })
+
+  // ---- restart: A's inputs stay owned across a real close and reopen --------------------------------
+
+  // PROOF, contract row 0.6 (must keep passing through every stage): after a real close and reopen
+  // with A unresolved, the admission's obligations list A's inputs, and a plan naming those
+  // accounts is refused before any signature, at the admission and at the journal separately.
+  it('0.6: after a restart the admission still lists A as owning its inputs, and a plan over them is refused at the admission and at the journal, with nothing signed', async () => {
+    const inputB = await sealed('message B')
+    const { digest } = await pendingA()
+    const heldByA = heldIndices()
+    const [attemptA] = journal().getAll()
+    expect(heldByA.size).toBeGreaterThan(0)
+
+    await reopen()
+
+    const snapshot = await internals().wallet.walletState.runLifetime(
+      async lifetime =>
+        internals().wallet.walletState.inputAdmission.inspect(lifetime) as unknown as {
+          status: string
+          obligations: { provenance: { kind: string; attemptRef: string; poolIndex: number } }[]
+        },
+    )
+    expect(snapshot.status).toBe('ready')
+    const owned = snapshot.obligations
+      .map(claim => claim.provenance)
+      .filter(provenance => provenance.kind === 'canonical-attempt')
+    expect(new Set(owned.map(p => p.attemptRef))).toEqual(new Set([attemptA.attemptRef]))
+    expect(new Set(owned.map(p => p.poolIndex))).toEqual(heldByA)
+    expect(counts()).toMatchObject({ intents: 0, attempts: 1 })
+    sign.mockClear()
+    relayBodies.length = 0
+    relayCalls.length = 0
+    const bytes = journalBytes()
+
+    // At the admission: a native plan spending a row A holds. Nothing durable, nothing signed.
+    const [heldRow] = [...heldByA]
+    await expect(pendingNativeFrom(heldRow)).rejects.toThrow('conflicting-authorization')
+    expect(journalBytes()).toBe(bytes)
+    expect(alice.getNativeOperations?.() ?? []).toHaveLength(0)
+
+    // At the journal: a separate journal seeded with A's real (reopened) attempt refuses an intent
+    // over an index A holds, with no selection or admission step in front of it.
+    const [reopenedA] = journal().getAll()
+    await journalRefusesHeldIndex(reopenedA, inputB)
+
+    expect(sign).not.toHaveBeenCalled()
+    expect(relayBodies).toHaveLength(0)
+    expect(relayCalls).toHaveLength(0)
+    expect(journalBytes()).toBe(bytes)
+    expect(digest).toHaveLength(64)
+  })
+
+  // PROOF, contract row 0.7 (must keep passing through every stage): with an uncorrelated record
+  // (a link whose attempt the wallet's journal does not know), nothing is signed and no relay
+  // request is made, whether the caller reconciles or sends.
+  it('0.7: with an uncorrelated link record a reconcile and a send are held, nothing is signed and no relay request is made', async () => {
+    const address = (await alice.getReceiveAddress()).raw.toLowerCase()
+    const storageLocation = `${join(f.root, 'wallet')}-evm-${address}`
+    await alice.close()
+    const digest = 'ab'.repeat(32)
+    const row = {
+      attemptRef: 'orphaned-ref-999',
+      consumerId: 'frank-dm:orphaned',
+      digest,
+      prepared: { payload: '00', context: '00', economicBinding: '00' },
+    }
+    const store = await LevelCanonicalLinkStore.open(storageLocation)
+    await store.put(row)
+    await store.close()
+    alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    installCanonicalDirectory(alice, directory)
+    relayBodies.length = 0
+    relayCalls.length = 0
+
+    await expect(
+      f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [digest] }),
+    ).rejects.toBeInstanceOf(CanonicalMessagingHoldError)
+    const refused = await send('behind missing evidence')
+    expect(refused.error).toBeInstanceOf(CanonicalMessagingHoldError)
+
+    expect(sign).not.toHaveBeenCalled()
+    expect(prepareIntent).not.toHaveBeenCalled()
+    expect(relayBodies).toHaveLength(0)
+    expect(relayCalls).toHaveLength(0)
+    expect(providerBroadcasts).toHaveLength(0)
+    expect(counts()).toMatchObject({ intents: 0, attempts: 0 })
+  })
+
+  // ---- pins: an unanswered relay request, and what waits behind it ----------------------------------
+
+  /** A signed spend of pool row `index`, as the item another device of this wallet would sync. */
+  async function syncSpendOf(index: number): Promise<WalletSyncItem> {
+    const record = alice.pool.getRecord(index)!
+    const key = (
+      alice.pool as unknown as {
+        keyring: { deriveSubAccount(i: number): { privateKey: string } }
+      }
+    ).keyring.deriveSubAccount(index).privateKey
+    const rawTx = await new Wallet(key).signTransaction({
+      type: 2,
+      chainId: 10143,
+      nonce: 0,
+      to: f.bob.identity.address.raw,
+      value: 1_000n,
+      gasLimit: 21_000n,
+      maxFeePerGas: 2n,
+      maxPriorityFeePerGas: 1n,
+    })
+    return {
+      type: 'wallet-sync',
+      direction: 'out',
+      chainIdentifier: alice.chainIdentifier,
+      txHash: Transaction.from(rawTx).hash!,
+      rawTx,
+      spentInputs: [{ address: record.address, nonce: 0, valueWei: '1000' }],
+      createdOutputs: [{ address: f.bob.identity.address.raw, valueWei: '1000' }],
+      timestamp: 1,
+    } as WalletSyncItem
+  }
+
+  // PIN, contract row 0.1 - Stage 1 of #1236 inverts this: while paid message A's relay request is
+  // entered and unanswered, a native send and an incoming sync spend do not start; after the relay
+  // answers both complete. "Not started" is shown by the operation's own first observable effect
+  // (the signing callback, the chain reads, the broadcast, the pool row's write) not having
+  // happened after many macrotask turns, while the held request is provably the thing in flight.
+  it('pin (Stage 1 of #1236 inverts this): with A\'s relay request unanswered, a native send and a sync spend do not start until it answers', async () => {
+    const hold = f.holdNextRelayRequest()
+    const a = watch(send('message A'))
+    await hold.entered
+    expect(hold.hasEntered()).toBe(true)
+    // A's payments are signed and journaled; its relay request is in flight and unanswered.
+    expect(counts()).toMatchObject({ intents: 0, attempts: 1, relayRequests: 1 })
+    expect(a.seen.settled).toBe(false)
+    // A row A does not hold, for the sync item to spend.
+    const [spare] = extraRows(1)
+    expect(heldIndices().has(spare)).toBe(false)
+    const item = await syncSpendOf(spare)
+    expect(status(spare)).toBe('available')
+    const rpcBefore = providerRequests.length
+    let nativeSigned = false
+
+    const native = watch(
+      alice.sendNative({
+        recipient: f.bob.identity.address,
+        value: 1_000n,
+        onSigned: async () => void (nativeSigned = true),
+      }),
+    )
+    const synced = watch(applyWalletSyncItem(alice, item))
+    await turns(10)
+
+    // Neither has taken a first step: no signature, no chain read, no broadcast, no pool write.
+    expect(nativeSigned).toBe(false)
+    expect(providerRequests.length).toBe(rpcBefore)
+    expect(providerBroadcasts).toHaveLength(0)
+    expect(status(spare)).toBe('available')
+    expect(native.seen.settled).toBe(false)
+    expect(synced.seen.settled).toBe(false)
+    expect(a.seen.settled).toBe(false)
+    expect(relayBodies).toHaveLength(1)
+
+    hold.release('delivered')
+    await Promise.all([a.done, native.done, synced.done])
+
+    expect(a.seen.value?.error).toBeUndefined()
+    expect(a.seen.value?.result).toBeDefined()
+    expect(native.seen.error).toBeUndefined()
+    expect(synced.seen.error).toBeUndefined()
+    expect(nativeSigned).toBe(true)
+    expect(providerBroadcasts).toHaveLength(1)
+    expect(status(spare)).toBe('spent')
+    expect(synced.seen.value).toEqual({ affectedIndices: [spare] })
+    expect(counts()).toMatchObject({ intents: 0, attempts: 0, paymentSets: 1 })
+  })
+
+  // PIN, contract row 0.2 - Stage 2 of #1236 inverts this: with A's relay request unanswered inside
+  // a `reconcileAttempts` call, a second message's send (which is refused) and a `discardAttempt`
+  // do not return until the relay answers. The second message's first effect would be its own
+  // replay of A (a relay request); discard's would be a write to the link store.
+  it('pin (Stage 2 of #1236 inverts this): with A\'s relay request unanswered inside a reconcile, a second send and a discard do not return until it answers', async () => {
+    const { digest } = await pendingA()
+    const linkWrites = jest.spyOn(LevelCanonicalLinkStore.prototype, 'put')
+    prepareIntent.mockClear()
+    const before = counts()
+    const hold = f.holdNextRelayRequest()
+    const reconcile = watch(
+      f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [digest] }),
+    )
+    await hold.entered
+    expect(hold.hasEntered()).toBe(true)
+    expect(relayBodies).toHaveLength(before.relayRequests + 1)
+
+    const second = watch(send('message B'))
+    const discarded = watch(
+      f.chain.directMessages.discardAttempt({ wallet: alice, payloadDigest: digest }),
+    )
+    await turns(10)
+
+    expect(second.seen.settled).toBe(false)
+    expect(discarded.seen.settled).toBe(false)
+    expect(reconcile.seen.settled).toBe(false)
+    // Neither took a step: no further relay request, no intent, no link write.
+    expect(relayBodies).toHaveLength(before.relayRequests + 1)
+    expect(prepareIntent).not.toHaveBeenCalled()
+    expect(linkWrites).not.toHaveBeenCalled()
+
+    hold.release('retained')
+    await Promise.all([reconcile.done, second.done, discarded.done])
+
+    expect(reconcile.seen.error).toBeUndefined()
+    expect(reconcile.seen.value).toEqual({ [digest]: expect.any(String) })
+    // `send` reports its error in its result.
+    expect(second.seen.value?.error).toBeInstanceOf(MonadStampPendingAttemptError)
+    expect(discarded.seen.error).toBeUndefined()
+    expect(counts().intents).toBe(0)
+    expect(counts().paymentSets).toBe(1)
   })
 
   // ---- pins: today's blocking, each inverted by the stage named ----------------------------------------

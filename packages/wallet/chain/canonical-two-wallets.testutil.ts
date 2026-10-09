@@ -67,6 +67,16 @@ export const providerRequests: string[] = []
 export const chainHttpRequests: string[] = []
 /** Raw transactions the wallet's provider broadcast itself (a native send), mined at once. */
 export const providerBroadcasts: { from: string; to: string; value: bigint }[] = []
+/**
+ * OPT-IN provider stand-ins. A suite that sends native transactions through the wallet's own
+ * provider calls `useProviderStandIns()` (in `beforeEach`) so `broadcastTransaction` and
+ * `getBlockNumber` are answered. Without it those two calls throw "unexpected provider call",
+ * which is what every other importer of this fixture relied on before they were added.
+ */
+const providerStandIns = { enabled: false }
+export function useProviderStandIns(enabled = true) {
+  providerStandIns.enabled = enabled
+}
 
 export function offlineProviderModule() {
   const actual = jest.requireActual('../monad-provider')
@@ -90,7 +100,10 @@ export function offlineProviderModule() {
         providerRequests.push(request.method)
         if (request.method === 'getBalance')
           return mockBalances.get(request.address!.toLowerCase()) ?? 0n
-        if (request.method === 'broadcastTransaction') {
+        if (
+          providerStandIns.enabled &&
+          request.method === 'broadcastTransaction'
+        ) {
           const tx = ethers.Transaction.from(
             (request as unknown as { signedTransaction: string })
               .signedTransaction,
@@ -102,7 +115,8 @@ export function offlineProviderModule() {
           providerBroadcasts.push({ from, to, value: tx.value })
           return tx.hash
         }
-        if (request.method === 'getBlockNumber') return 1
+        if (providerStandIns.enabled && request.method === 'getBlockNumber')
+          return 1
         if (request.method === 'getTransactionCount') return 0
         if (request.method === 'estimateGas') return 50_000n
         if (request.method === 'getGasPrice') return 2n
@@ -269,7 +283,15 @@ export async function fixture() {
   let deliverTo: InboxRecord[] | undefined
   let clock = 1_000
   let phase: 'delivered' | 'retained' | 'fail' = 'delivered'
+  /** Opt-in barrier armed by `holdNextRelayRequest`: the next request waits here. */
+  let gate: { entered: () => void; opened: Promise<void> } | undefined
   const fetch: CanonicalFetch = async (url, init) => {
+    if (gate && (init.method === 'POST' || init.method === 'PUT')) {
+      const held = gate
+      gate = undefined
+      held.entered()
+      await held.opened
+    }
     if (
       (url !== RELAY + '/message' && url !== RELAY + '/message/monad/cbor') ||
       (init.method !== 'POST' && init.method !== 'PUT')
@@ -355,8 +377,36 @@ export async function fixture() {
     chain,
     alice,
     bob,
+    /** The temp directory holding the wallets' storage (`<root>/wallet-evm-<address>`). */
+    root: directory,
     requests,
     setPhase: (next: typeof phase) => (phase = next),
+    /**
+     * Makes the NEXT message relay request (a POST or PUT) stay unanswered until the test lets it
+     * go: the request is in flight from the wallet's point of view. `entered` resolves when the
+     * relay stand-in has been asked; `release(answer)` lets that one request proceed and answer
+     * as `answer` (the phase it should see; default: the phase in force at release). No timers.
+     * Nothing changes for a test that never calls this.
+     */
+    holdNextRelayRequest: () => {
+      let entered!: () => void
+      let open!: () => void
+      const hold = {
+        entered: new Promise<void>(resolve => (entered = resolve)),
+        opened: new Promise<void>(resolve => (open = resolve)),
+        isEntered: false,
+      }
+      void hold.entered.then(() => (hold.isEntered = true))
+      gate = { entered, opened: hold.opened }
+      return {
+        entered: hold.entered,
+        hasEntered: () => hold.isEntered,
+        release: (answer?: typeof phase) => {
+          if (answer) phase = answer
+          open()
+        },
+      }
+    },
     setMailbox: (next: InboxRecord[] | undefined) => (deliverTo = next),
     directoryFor,
     close: async () => {

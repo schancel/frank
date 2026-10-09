@@ -1592,6 +1592,7 @@ import {
 } from './storage/monad-wallet-bundle'
 import { LevelSubAccountPoolStore } from './storage/level-sub-account-pool-store'
 import { LevelChangePoolStore } from './storage/level-change-pool-store'
+import { EvmNativeOperationJournal } from './storage/evm-native-operation-journal'
 import {
   MonadCanonicalStampClient,
   type CanonicalWorkflowLink,
@@ -1652,7 +1653,9 @@ async function withCanonicalConsumer(
     await fixture.close()
   }
 }
-async function makeCanonicalConsumerFixture() {
+async function makeCanonicalConsumerFixture(options: {
+  beforeOwnerOpen?: (journal: EvmNativeOperationJournal, material: ReturnType<typeof createMonadWalletMaterial>) => Promise<void>
+} = {}) {
   const location = await mkdtemp(join(tmpdir(), 'canonical-consumer-'))
   const material = createMonadWalletMaterial(canonicalTestRoots(0)),
     recipient = createMonadWalletMaterial(canonicalTestRoots(1))
@@ -1922,7 +1925,19 @@ async function makeCanonicalConsumerFixture() {
   const leaseManager = new SubAccountLeaseManager(pool)
   let enclosed = false
   let queue = Promise.resolve()
+  const nativeBinding = {
+    chainIdentifier: 'monad-testnet',
+    nativeChainId: '10143',
+    publicTuple: JSON.stringify({ mainAddress: material.mainAccount.address.toLowerCase() }),
+  }
+  if (options.beforeOwnerOpen) {
+    const journal = new EvmNativeOperationJournal({ location, binding: nativeBinding })
+    await journal.Open()
+    try { await options.beforeOwnerOpen(journal, material) }
+    finally { await journal.Close() }
+  }
   const state = await openExistingPoolMonadTopicOwner({
+    nativeBinding,
     encloseFinancialOperation: operation => exclusive(operation, false),
     location,
     pool,
@@ -2058,6 +2073,37 @@ function makeMockHttpClientForCanonical(): jest.Mocked<MonadTxSubmitter> {
 }
 
 describe('canonical durable consumer barriers', () => {
+  it('native_prepare_blocks_canonical_same_pair before another durable authorization or signature', async () => {
+    const f = await makeCanonicalConsumerFixture({
+      beforeOwnerOpen: async (journal, material) => {
+        const address = material.keyring.deriveSubAccount(0).address.toLowerCase()
+        await journal.prepare({
+          kind: 'native', recipient: '0x' + '12'.repeat(20), intendedValueWei: '32',
+          members: [{
+            source: { kind: 'spend', index: 0, address }, dependencies: [],
+            unsignedTransaction: Transaction.from({ type: 2, chainId: 10143n,
+              nonce: 0, to: '0x' + '12'.repeat(20), value: 32n,
+              gasLimit: 50000n, maxFeePerGas: 2n, maxPriorityFeePerGas: 1n,
+            }).unsignedSerialized,
+          }],
+        })
+      },
+    })
+    const sign = jest.spyOn(MonadAccountTxSigner.prototype, 'signFrozenUnsigned')
+    const linked = jest.fn(async () => undefined)
+    try {
+      await expect(f.prepare(1, linked)).rejects.toThrow()
+      expect(f.state.nativeJournal!.list()).toHaveLength(1)
+      expect(f.state.canonicalJournal!.getIntents()).toEqual([])
+      expect(sign).not.toHaveBeenCalled()
+      expect(linked).not.toHaveBeenCalled()
+      expect(f.pool.getRecord(0)!.status).toBe('available')
+    } finally {
+      sign.mockRestore()
+      await f.close()
+    }
+  }, 20000)
+
   it.each(['release', 'reject'] as const)(
     'starts no actual pool write, signature or callback before Level intent completion: %s',
     async outcome => {

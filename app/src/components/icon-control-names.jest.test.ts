@@ -227,9 +227,11 @@ describe.each(Object.keys(locales) as (keyof typeof locales)[])(
       ])
     })
 
-    it('names the Direct Messages add-contact control', () => {
+    it('names the Direct Messages start-conversation control', () => {
       const wrapper = render(locale, ChatList, { props: { compact: false } })
-      expectNamedAndDistinct(buttonNames(wrapper), [t('a11y.addContact')])
+      expectNamedAndDistinct(buttonNames(wrapper), [
+        t('newContactDialog.startConversation'),
+      ])
     })
 
     it('names the message composer send and attachment controls distinctly', () => {

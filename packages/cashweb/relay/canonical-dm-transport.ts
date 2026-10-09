@@ -190,6 +190,7 @@ export function parseCanonicalMultipart(
           'content-type',
           'x-frank-submission-identity',
           'x-frank-mailbox-timestamp-ms',
+          'x-frank-mailbox-direction',
         ].includes(key)
       )
         invalid('Duplicate or unsupported multipart header')

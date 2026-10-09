@@ -1544,8 +1544,11 @@ export async function fetchCanonicalMailboxPage(
         delivery: parts[0].bytes,
         context: parts[1].bytes,
       });
-      const directionHeader = outer.headers["x-frank-mailbox-direction"];
-      const direction: "in" | "out" = directionHeader === "out" ? "out" : "in";
+      const direction = outer.headers["x-frank-mailbox-direction"];
+      if (direction !== "in" && direction !== "out")
+        canonicalProtocol(
+          "Combined mailbox requires explicit in/out direction"
+        );
       const expectedNetwork = canonicalNetworkDescriptor(
         params.expectedNetworkTag
       ).network;

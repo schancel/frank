@@ -2,6 +2,7 @@ import {
   assertHeaderValue,
   parseMessageId,
   parseMessageIdList,
+  readHeaderSection,
   readThreadHeaders,
   renderThreadHeaders,
 } from '../src/rfc/message-headers';
@@ -636,6 +637,144 @@ describe('message-headers (S1)', () => {
       // KNOWN RESIDUAL: this is the interior of one exotic RFC-valid ID; pinned, not endorsed.
       const r = readThreadHeaders(enc('In-Reply-To: <"a> <b@c> "@d>\r\n\r\n'));
       expect(r).toEqual({ ok: true, inReplyTo: '<b@c>', references: [] });
+    });
+  });
+
+  describe('readHeaderSection', () => {
+    const section = (s: string) => readHeaderSection(Buffer.from(s, 'latin1'));
+
+    it('returns every field in order with the offset just after the empty line', () => {
+      expect(section('From: a@b\r\nSubject: hi\r\n\r\nbody')).toEqual({
+        fields: [
+          ['from', ' a@b'],
+          ['subject', ' hi'],
+        ],
+        bodyOffset: 26,
+      });
+      expect(section('From: a@b\nSubject: hi\n\nbody')).toEqual({
+        fields: [
+          ['from', ' a@b'],
+          ['subject', ' hi'],
+        ],
+        bodyOffset: 23,
+      });
+    });
+
+    it('lowercases names, drops spaces and tabs before the colon and keeps values as written', () => {
+      expect(section('SUBJECT \t:  Hi There \r\nX-a:b:c\r\nEmpty:\r\n\r\n').fields).toEqual([
+        ['subject', '  Hi There '],
+        ['x-a', 'b:c'],
+        ['empty', ''],
+      ]);
+    });
+
+    it('appends continuation lines as written, with no separator', () => {
+      expect(section('Subject: Hi\r\n there\r\n\tagain\r\nMessage-ID:\n <a@b>\n\n').fields).toEqual([
+        ['subject', ' Hi there\tagain'],
+        ['message-id', ' <a@b>'],
+      ]);
+    });
+
+    it('returns each occurrence of a repeated header', () => {
+      expect(section('To: a\r\nReceived: x\r\nTo: b\r\nto: c\r\n\r\n').fields).toEqual([
+        ['to', ' a'],
+        ['received', ' x'],
+        ['to', ' b'],
+        ['to', ' c'],
+      ]);
+    });
+
+    it('ends at a whitespace-only or CR-only line, with the offset after that line', () => {
+      for (const blank of [' ', '\t', ' \t ', '\r', ' \r\t']) {
+        const text = `A: b\r\n${blank}\r\nC: d\r\n`;
+        expect(section(text)).toEqual({ fields: [['a', ' b']], bodyOffset: 6 + blank.length + 2 });
+        expect(section(`A: b\n${blank}\nC: d\n`).bodyOffset).toBe(5 + blank.length + 1);
+      }
+    });
+
+    it('ends at a line with no colon, or with a colon first, which is itself body text', () => {
+      expect(section('A: b\r\nno colon\r\nC: d\r\n')).toEqual({ fields: [['a', ' b']], bodyOffset: 6 });
+      expect(section('A: b\n: x\n')).toEqual({ fields: [['a', ' b']], bodyOffset: 5 });
+      expect(section('no colon at all')).toEqual({ fields: [], bodyOffset: 0 });
+    });
+
+    it('ends at a continuation line with no field before it, which is itself body text', () => {
+      expect(section(' x: y\r\nA: b\r\n')).toEqual({ fields: [], bodyOffset: 0 });
+      expect(section('\tx\r\n')).toEqual({ fields: [], bodyOffset: 0 });
+    });
+
+    it('gives the input length when the input ends inside the headers', () => {
+      expect(section('A: b\r\n')).toEqual({ fields: [['a', ' b']], bodyOffset: 6 });
+      expect(section('A: b')).toEqual({ fields: [['a', ' b']], bodyOffset: 4 });
+      expect(section('A: b\r\n c')).toEqual({ fields: [['a', ' b c']], bodyOffset: 8 });
+      expect(section('A: b\r\n  ')).toEqual({ fields: [['a', ' b']], bodyOffset: 8 });
+      expect(section('')).toEqual({ fields: [], bodyOffset: 0 });
+      expect(section('\r\n')).toEqual({ fields: [], bodyOffset: 2 });
+      expect(section('\n\nbody')).toEqual({ fields: [], bodyOffset: 1 });
+    });
+
+    it('keeps a lone CR and a CR before CRLF inside the line', () => {
+      expect(section('A: b\rC: d\r\n\r\n').fields).toEqual([['a', ' b\rC: d']]);
+      expect(section('A: b\r\r\nC: d\r\n\r\n').fields).toEqual([
+        ['a', ' b\r'],
+        ['c', ' d'],
+      ]);
+      // A CR that ends the input is not a line ending.
+      expect(section('A: b\r')).toEqual({ fields: [['a', ' b\r']], bodyOffset: 5 });
+    });
+
+    it('keeps bytes one-to-one and reads a view by its own bounds', () => {
+      const whole = Buffer.from([0x58, 0x58, 0x41, 0x3a, 0xc3, 0xa9, 0xff, 0x0a, 0x0a, 0x62, 0x58]);
+      const view = new Uint8Array(whole.buffer, whole.byteOffset + 2, 8);
+      expect(readHeaderSection(view)).toEqual({ fields: [['a', 'Ã©ÿ']], bodyOffset: 7 });
+    });
+
+    it('agrees with a split-based reading of the same bytes, and the offset lands on the boundary', () => {
+      // The reader as it was before it reported an offset.
+      const bySplit = (text: string): Array<[string, string]> => {
+        const fields: Array<[string, string]> = [];
+        for (const line of text.split(/\r\n|\n/)) {
+          if (/^[ \t\r]*$/.test(line)) break;
+          if (line[0] === ' ' || line[0] === '\t') {
+            const last = fields[fields.length - 1];
+            if (!last) break;
+            last[1] += line;
+            continue;
+          }
+          const colon = line.indexOf(':');
+          if (colon <= 0) break;
+          fields.push([line.slice(0, colon).replace(/[ \t]+$/, '').toLowerCase(), line.slice(colon + 1)]);
+        }
+        return fields;
+      };
+      const alphabet = ['A', 'b', ':', ' ', '\t', '\r', '\n', '\r\n', 'X-y: z', '\n ', '\r\n\r\n'];
+      let seed = 12345;
+      const next = (n: number): number => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed % n;
+      };
+      for (let round = 0; round < 5000; round++) {
+        let text = '';
+        for (let i = next(14); i > 0; i--) text += alphabet[next(alphabet.length)];
+        const { fields, bodyOffset } = section(text);
+        expect(fields).toEqual(bySplit(text));
+        expect(bodyOffset).toBeGreaterThanOrEqual(0);
+        expect(bodyOffset).toBeLessThanOrEqual(text.length);
+        // The offset is the start of the input, its end, or the start of a line.
+        expect(bodyOffset === 0 || bodyOffset === text.length || text[bodyOffset - 1] === '\n').toBe(true);
+        // Nothing after the offset was read as a header: the bytes before it give the same fields.
+        expect(section(text.slice(0, bodyOffset)).fields).toEqual(fields);
+      }
+    });
+
+    it('reads a long run of spaces before a colon in linear time', () => {
+      const raw = Buffer.concat([Buffer.from('x'), Buffer.alloc(2 * 1024 * 1024, 0x20), Buffer.from('y:v\r\n\r\n')]);
+      const started = process.hrtime.bigint();
+      const { fields, bodyOffset } = readHeaderSection(raw);
+      expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(2000);
+      expect(fields).toHaveLength(1);
+      expect(fields[0][1]).toBe('v');
+      expect(bodyOffset).toBe(raw.length);
     });
   });
 });

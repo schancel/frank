@@ -23,6 +23,12 @@
       "url": "https://github.com/schancel/frank/issues/1267",
       "publishedAt": "2026-10-09T08:41:05.544907+00:00",
       "bodyPath": "docs/plans/wallet-messaging-baseline/followups/relay-canonical-read-cost.md"
+    },
+    "app-typecheck-coverage": {
+      "title": "[bug] Cover frontend TypeScript and Vue in the compiler gate",
+      "url": "https://github.com/schancel/frank/issues/1272",
+      "publishedAt": "2026-10-09T09:22:50.188972+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/app-typecheck-coverage.md"
     }
   }
 }

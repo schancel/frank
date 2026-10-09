@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
+import level from "level";
 
 import type { Message, MessageWrapper } from "../../types/messages";
 import {
@@ -109,6 +110,38 @@ const rawDb = (store: LevelMessageStore, name: "db" | "metadataDb") =>
   Reflect.get(store, name) as unknown as RawDb;
 
 describe("LevelMessageStore", () => {
+  it("opens pristine storage without writing an application schema marker", async () => {
+    const location = await mkdtemp(join(tmpdir(), "frank-pristine-read-"));
+    const store = new LevelMessageStore(location);
+    try {
+      await store.Open();
+      expect(await store.mostRecentMessageTime()).toBe(0);
+      await expect(rawDb(store, "metadataDb").get("schemaVersion")).rejects.toMatchObject({ type: "NotFoundError" });
+    } finally {
+      await store.Close();
+      await rm(location, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the valid zero timestamp without dispatching a repair write", async () => {
+    const location = await mkdtemp(join(tmpdir(), "frank-zero-read-"));
+    const db = level(join(location, "messages"));
+    const metadata = level(join(location, "metadata"));
+    await db.put("lastServerTime", "0");
+    await metadata.put("schemaVersion", "2");
+    await Promise.all([db.close(), metadata.close()]);
+    const store = new LevelMessageStore(location);
+    try {
+      await store.Open();
+      const put = jest.spyOn(rawDb(store, "db"), "put");
+      expect(await store.mostRecentMessageTime()).toBe(0);
+      expect(put).not.toHaveBeenCalled();
+      expect(await rawDb(store, "db").get("lastServerTime")).toBe("0");
+    } finally {
+      await store.Close();
+      await rm(location, { recursive: true, force: true });
+    }
+  });
   it("round-trips financial integers beyond Number.MAX_SAFE_INTEGER exactly", () => {
     const encoded = serializeMessageWrapper(wrapper());
 

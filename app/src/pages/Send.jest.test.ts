@@ -1,6 +1,8 @@
 /** @jest-environment jsdom */
 
-import { flushPromises, mount } from '@vue/test-utils'
+import { reactive, ref } from 'vue'
+import { includedNativeTransfer } from '../../test/jest/utils/native-operation'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 
 import Send from './Send.vue'
@@ -17,15 +19,21 @@ import enUS from '../i18n/en-us'
 import frFR from '../i18n/fr-fr'
 
 import { getAddress } from 'ethers'
+enableAutoUnmount(afterEach)
 const mockSend = jest.fn()
 const mockCaptureWallet = jest.fn()
 const mockAssertCurrent = jest.fn()
-const mockRoute = { query: {} as Record<string, string | string[] | null> }
+const mockRoute = reactive({
+  fullPath: '/send',
+  query: {} as Record<string, string | string[] | null>,
+})
+const mockCurrent = ref(true)
 let mockSelectedChain: NativeAssetChain | undefined
 const mockGetBalance = jest.fn()
 const mockGetTransactionStatus = jest.fn()
 
 jest.mock('@frank/wallet/chain', () => ({
+  ...jest.requireActual('@frank/wallet/chain/evm-native-operation-status'),
   NativeTransactionSubmissionError: jest.requireActual(
     '@frank/wallet/chain/chain-wallet',
   ).NativeTransactionSubmissionError,
@@ -58,7 +66,9 @@ jest.mock('@frank/wallet/chain', () => ({
   },
 }))
 
+jest.mock('src/accounts/session', () => ({ accountSession: {} }))
 jest.mock('src/accounts/native-transfer', () => ({
+  ...jest.requireActual('src/accounts/native-transfer'),
   createNativeTransferContext: jest.fn(async (id: string) => {
     const chain = mockSelectedChain ?? activeChain
     if (id !== chain.chainIdentifier)
@@ -153,10 +163,13 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     setActivePinia(createPinia())
     jest.clearAllMocks()
     mockRoute.query = {}
+    mockRoute.fullPath = '/send'
+    mockCurrent.value = true
     mockSelectedChain = undefined
     mockCaptureWallet.mockReset().mockResolvedValue({
       wallet: mockWallet,
       assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
     })
     mockAssertCurrent.mockReset().mockResolvedValue(undefined)
   })
@@ -426,11 +439,16 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
     await flushPromises()
 
-    // Must notify potentially broadcast with txHash
-    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
-      safeMessage:
-        'Transaction was signed (0xsignedtx999) and may have been broadcast. Check your balance or transaction status before retrying.',
-    })
+    expect(
+      wrapper.get('[data-test="native-operation-outcome"]').text(),
+    ).toContain('0xsignedtx999')
+    expect(
+      wrapper.get('[data-test="native-operation-outcome"]').text(),
+    ).toContain('Funds may have moved')
+    expect(wrapper.find('[data-test="review-confirm-button"]').exists()).toBe(
+      false,
+    )
+    expect(errorNotify).not.toHaveBeenCalled()
   })
 
   it('renders review state and warnings in French (fr-FR parity)', async () => {
@@ -533,6 +551,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     mockCaptureWallet.mockResolvedValue({
       wallet,
       assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
     })
     return wallet
   }
@@ -561,7 +580,7 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     })
     await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
     await flushPromises()
-    expect(mockAssertCurrent).toHaveBeenCalledTimes(1)
+    expect(mockAssertCurrent).toHaveBeenCalledTimes(2)
     expect(mockSend).toHaveBeenCalledWith({
       recipient: { raw: recipient },
       value: 1_000_000n,
@@ -645,10 +664,327 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     await flushPromises()
     await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
     await flushPromises()
-    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
-      safeMessage: expect.stringContaining('original-solana-signature'),
-    })
+    expect(
+      wrapper.get('[data-test="native-operation-outcome"]').text(),
+    ).toContain('original-solana-signature')
+    expect(wrapper.find('[data-test="review-confirm-button"]').exists()).toBe(
+      false,
+    )
     expect(sentTransactionNotify).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+  async function reviewNative(wrapper: ReturnType<typeof mountSend>) {
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.01')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+  }
+
+  it.each([enUS, frFR])(
+    'holds the original included payment after sync rejection with localized public evidence',
+    async messages => {
+      const fixture = await includedNativeTransfer()
+      const getNativeOperations = jest.fn(() => fixture.journal.list())
+      mockCaptureWallet.mockResolvedValue({
+        wallet: {
+          family: 'evm',
+          chainIdentifier: 'monad-testnet',
+          getNativeOperations,
+        },
+        assertCurrent: mockAssertCurrent,
+        isCurrent: () => mockCurrent.value,
+      })
+      mockSend.mockImplementation(async ({ onSigned }) => {
+        await onSigned({ txHash: fixture.hash })
+        throw new Error('private internal callback failure')
+      })
+      const wrapper = mountSend(messages)
+      try {
+        await reviewNative(wrapper)
+        await wrapper
+          .get('[data-test="review-confirm-button"]')
+          .trigger('click')
+        await flushPromises()
+        const outcome = wrapper.get('[data-test="native-operation-outcome"]')
+        expect(outcome.text()).toContain(
+          t(messages, 'nativeOperation.included', {
+            network: messages.setup.networkTitle,
+          }),
+        )
+        expect(outcome.text()).toContain(fixture.hash)
+        expect(outcome.text()).toContain(fixture.operationId)
+        expect(outcome.text()).toContain('69526794')
+        expect(outcome.text()).toContain('0.002142 MON')
+        expect(outcome.text()).toContain(
+          messages.nativeOperation.syncUnrecorded,
+        )
+        expect(outcome.text()).toContain(
+          messages.nativeOperation.recoveryUnavailable,
+        )
+        expect(outcome.text()).not.toContain('private internal')
+        expect(wrapper.get('[data-test="review-amount"]').text()).toBe(
+          '0.01 MON',
+        )
+        expect(
+          wrapper.find('[data-test="review-confirm-button"]').exists(),
+        ).toBe(false)
+        const vm = wrapper.vm as unknown as {
+          confirmSend(): Promise<void>
+          cancelReview(): void
+          reviewTransfer(): Promise<void>
+        }
+        vm.cancelReview()
+        await vm.reviewTransfer()
+        await vm.confirmSend()
+        expect(mockSend).toHaveBeenCalledTimes(1)
+        expect(navigateBack).not.toHaveBeenCalled()
+        expect(errorNotify).not.toHaveBeenCalled()
+        expect(
+          JSON.stringify(
+            (wrapper.vm as unknown as { operation: unknown }).operation,
+          ),
+        ).not.toContain('rawTransaction')
+      } finally {
+        wrapper.unmount()
+        await fixture.close()
+      }
+    },
+  )
+
+  it.each(['no-hash', 'unmatched', 'ambiguous', 'wrong-chain'])(
+    'keeps a dispatched %s outcome held without recipient/amount association',
+    async mode => {
+      const fixture = await includedNativeTransfer()
+      const rows = fixture.journal.list()
+      const getNativeOperations = jest.fn(() =>
+        mode === 'ambiguous'
+          ? [...rows, ...rows]
+          : mode === 'wrong-chain'
+          ? rows.map(row => ({
+              ...row,
+              binding: { ...row.binding, chainIdentifier: 'monad-mainnet' },
+            }))
+          : rows,
+      )
+      mockCaptureWallet.mockResolvedValue({
+        wallet: {
+          family: 'evm',
+          chainIdentifier: 'monad-testnet',
+          getNativeOperations,
+        },
+        assertCurrent: mockAssertCurrent,
+        isCurrent: () => true,
+      })
+      mockSend.mockImplementation(async ({ onSigned }) => {
+        if (mode !== 'no-hash')
+          await onSigned({
+            txHash:
+              mode === 'unmatched' ? '0x' + 'ab'.repeat(32) : fixture.hash,
+          })
+        throw new Error('dispatch failed')
+      })
+      const wrapper = mountSend()
+      try {
+        await reviewNative(wrapper)
+        await wrapper
+          .get('[data-test="review-confirm-button"]')
+          .trigger('click')
+        await flushPromises()
+        expect(
+          wrapper.get('[data-test="native-operation-outcome"]').text(),
+        ).toContain('Payment outcome is unresolved')
+        expect(wrapper.find('[data-test="native-operation-id"]').exists()).toBe(
+          false,
+        )
+        expect(
+          wrapper.find('[data-test="review-confirm-button"]').exists(),
+        ).toBe(false)
+        await (
+          wrapper.vm as unknown as { confirmSend(): Promise<void> }
+        ).confirmSend()
+        expect(mockSend).toHaveBeenCalledTimes(1)
+        expect(errorNotify).not.toHaveBeenCalled()
+      } finally {
+        wrapper.unmount()
+        await fixture.close()
+      }
+    },
+  )
+
+  it.each(['unmount', 'route', 'account', 'wallet'])(
+    'ignores completion after %s replacement',
+    async change => {
+      let finish!: (result: { txHash: string }) => void
+      mockSend.mockImplementation(
+        () =>
+          new Promise(resolve => {
+            finish = resolve
+          }),
+      )
+      const wrapper = mountSend()
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      if (change === 'unmount') wrapper.unmount()
+      if (change === 'route')
+        mockRoute.fullPath = '/send?chainIdentifier=solana-devnet'
+      if (change === 'account') mockCurrent.value = false
+      if (change === 'wallet')
+        mockAssertCurrent.mockRejectedValueOnce(new Error('wallet replaced'))
+      finish({ txHash: 'original-result' })
+      await flushPromises()
+      expect(sentTransactionNotify).not.toHaveBeenCalled()
+      expect(navigateBack).not.toHaveBeenCalled()
+      expect(errorNotify).not.toHaveBeenCalled()
+      if (change !== 'unmount') {
+        expect(wrapper.find('[data-test="send-stale-card"]').exists()).toBe(
+          true,
+        )
+        expect(
+          wrapper.find('[data-test="review-confirm-button"]').exists(),
+        ).toBe(false)
+        wrapper.unmount()
+      }
+    },
+  )
+  describe.each([enUS, frFR])('localized unsettled outcomes', messages => {
+    it.each([
+      'unknown',
+      'missing',
+      'pending',
+      'included-revert',
+      'partial',
+    ] as const)(
+      'keeps %s recipient evidence and fees distinct',
+      async state => {
+        const fixture = await includedNativeTransfer(state === 'partial')
+        const index = state === 'partial' ? 1 : 0
+        await fixture.journal.recordObservation(
+          fixture.journal.beginCapture(fixture.operationId, index),
+          state === 'included-revert'
+            ? {
+                state,
+                transactionHash: fixture.hash,
+                blockHash: '0x' + '12'.repeat(32),
+                blockNumber: 69526794,
+                transactionIndex: index,
+                feeWei: '2142000000000000',
+              }
+            : { state: state === 'partial' ? 'missing' : state },
+          null,
+        )
+        mockCaptureWallet.mockResolvedValue({
+          wallet: {
+            family: 'evm',
+            chainIdentifier: 'monad-testnet',
+            getNativeOperations: () => fixture.journal.list(),
+          },
+          assertCurrent: mockAssertCurrent,
+          isCurrent: () => true,
+        })
+        mockSend.mockImplementation(async ({ onSigned }) => {
+          await onSigned({ txHash: fixture.hash })
+          throw new Error('outcome unresolved')
+        })
+        const wrapper = mountSend(messages)
+        try {
+          await reviewNative(wrapper)
+          await wrapper
+            .get('[data-test="review-confirm-button"]')
+            .trigger('click')
+          await flushPromises()
+          const outcome = wrapper.get('[data-test="native-operation-outcome"]')
+          const payment =
+            state === 'included-revert'
+              ? 'reverted'
+              : state === 'missing'
+              ? 'unknown'
+              : state
+          expect(outcome.text()).toContain(
+            t(messages, `nativeOperation.${payment}`, {
+              network: messages.setup.networkTitle,
+            }),
+          )
+          expect(outcome.text()).not.toContain(
+            t(messages, 'nativeOperation.included', {
+              network: messages.setup.networkTitle,
+            }),
+          )
+          const coverage =
+            state === 'partial'
+              ? 'partial'
+              : state === 'included-revert'
+              ? 'complete'
+              : 'unknown'
+          expect(wrapper.get('[data-test="native-operation-fee"]').text()).toBe(
+            t(messages, `nativeOperation.fee${coverage}`, {
+              amount: '0.002142',
+              unit: 'MON',
+            }),
+          )
+          expect(
+            wrapper.find('[data-test="review-confirm-button"]').exists(),
+          ).toBe(false)
+        } finally {
+          wrapper.unmount()
+          await fixture.close()
+        }
+      },
+    )
+  })
+  it.each(['complete', 'unrecorded', 'unmatched', 'ambiguous', 'unavailable'])(
+    'checks original owner evidence before treating a returned EVM result as successful (%s)',
+    async evidence => {
+      const fixture = await includedNativeTransfer()
+      if (evidence === 'complete')
+        await fixture.journal.markSyncApplied(fixture.operationId, 0)
+      mockCaptureWallet.mockResolvedValue({
+        wallet: {
+          family: 'evm',
+          chainIdentifier: 'monad-testnet',
+          getNativeOperations: () => {
+            if (evidence === 'unavailable') throw new Error('owner closed')
+            const rows = fixture.journal.list()
+            return evidence === 'ambiguous' ? [...rows, ...rows] : rows
+          },
+        },
+        assertCurrent: mockAssertCurrent,
+        isCurrent: () => true,
+      })
+      mockSend.mockResolvedValue({
+        txHash:
+          evidence === 'unmatched' ? '0x' + 'ab'.repeat(32) : fixture.hash,
+      })
+      const wrapper = mountSend()
+      try {
+        await reviewNative(wrapper)
+        await wrapper
+          .get('[data-test="review-confirm-button"]')
+          .trigger('click')
+        await flushPromises()
+        expect(
+          wrapper.find('[data-test="review-confirm-button"]').exists(),
+        ).toBe(false)
+        if (evidence === 'complete') {
+          expect(sentTransactionNotify).toHaveBeenCalledWith(fixture.hash)
+          expect(navigateBack).toHaveBeenCalledTimes(1)
+        } else {
+          expect(sentTransactionNotify).not.toHaveBeenCalled()
+          expect(navigateBack).not.toHaveBeenCalled()
+          expect(
+            wrapper.get('[data-test="native-operation-outcome"]').text(),
+          ).toContain(enUS.nativeOperation.recoveryUnavailable)
+        }
+        await (
+          wrapper.vm as unknown as { confirmSend(): Promise<void> }
+        ).confirmSend()
+        expect(mockSend).toHaveBeenCalledTimes(1)
+      } finally {
+        wrapper.unmount()
+        await fixture.close()
+      }
+    },
+  )
 })

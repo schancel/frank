@@ -75,13 +75,13 @@ export type {
 } from "./solana-balance";
 export {
   EvmLegacyConsolidator,
-  EvmNativeOperationPendingError
+  EvmNativeOperationPendingError,
 } from "./evm-legacy-consolidator";
 export type { EvmLegacyConsolidatorConfig } from "./evm-legacy-consolidator";
 export { EvmNativeOperationJournal } from "../storage/evm-native-operation-journal";
 export type {
   EvmNativeOperation,
-  EvmNativeSource
+  EvmNativeSource,
 } from "../storage/evm-native-operation-journal";
 
 let currentActiveChain: ActiveChain = MonadChain;
@@ -255,3 +255,9 @@ export type {
   UtxoIndexer,
   CreateUtxoIndexerOptions,
 } from "./utxo-indexer";
+
+export {
+  summarizeEvmNativeOperation,
+  findEvmNativeOperationStatus,
+} from "./evm-native-operation-status";
+export type { EvmNativeOperationStatus } from "./evm-native-operation-status";

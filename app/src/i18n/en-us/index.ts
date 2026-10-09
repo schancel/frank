@@ -918,6 +918,37 @@ export default {
     failedLoadBalance: 'Failed to load Monad wallet balance',
     unableCopyAddress: 'Unable to copy the Monad address',
   },
+  nativeOperation: {
+    title: 'Transfer outcome',
+    listTitle: 'Native transfers',
+    intendedAmount: 'Intended recipient amount',
+    processing: 'Checking the original transfer outcome…',
+    included: 'Payment included on {network}.',
+    reverted:
+      'Recipient transaction reverted on {network}. Network fees may have been paid.',
+    partial:
+      'Some funding transactions are included on {network}; recipient payment is not recorded as included.',
+    pending: 'Recipient payment is pending on {network}.',
+    unknown:
+      'Payment outcome is unresolved on {network}. Funds may have moved.',
+    cancelled: 'Unsigned transfer cancelled.',
+    feecomplete: 'Observed network fees: {amount} {unit}',
+    feepartial: 'Observed fees so far (partial): {amount} {unit}',
+    feeunknown: 'Observed network fees unavailable.',
+    block: 'Block {block}',
+    syncUnrecorded: 'Wallet synchronization is not recorded as complete.',
+    syncRecorded:
+      'Sync callback completion recorded. This does not confirm synchronization on other devices.',
+    recoveryUnavailable: 'Recovery is currently unavailable.',
+    reviewHeld: 'This review cannot send another payment.',
+    unsupported: 'Native transfer history is unavailable for this wallet.',
+    unavailable: 'Native transfer evidence is unavailable.',
+    empty: 'No retained native transfers.',
+    viewTransfer: 'View transfer',
+    back: 'Back',
+    stale:
+      'The account or page changed. View the original transfer from its wallet.',
+  },
   sendAddressDialog: {
     sendToAddress: 'Send to Address',
     enterBitcoinCashAddress: 'Enter address (0x...)',

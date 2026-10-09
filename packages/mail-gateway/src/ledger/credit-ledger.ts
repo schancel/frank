@@ -16,6 +16,18 @@ export { BLOB_OFFLOAD_THRESHOLD_BYTES };
 
 export type CreditLedgerInit = string | LedgerDbConfig | Kysely<GatewayDatabase>;
 
+/**
+ * An `atomic()` callback returned a promise on this ledger instance. That unit
+ * was rolled back, and no later `atomic()` on the instance will run: the
+ * promise's continuation would otherwise write outside the unit it belonged to.
+ */
+export class LedgerPoisonedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LedgerPoisonedError';
+  }
+}
+
 export class CreditLedger {
   public readonly db: Kysely<GatewayDatabase>;
   public readonly kysely: Kysely<GatewayDatabase>;
@@ -60,34 +72,67 @@ export class CreditLedger {
     }
   }
 
-  /** The ledger's SQLite connection, or undefined on Postgres. The ledger keeps ownership of it. */
+  /**
+   * The ledger's SQLite connection, or undefined on Postgres. The ledger keeps
+   * ownership of it.
+   *
+   * It is writable: `node:sqlite` has no read-only view of an open connection,
+   * and a second connection is locked out once a mail journal is open. It is
+   * for `MailJournal` and tests only, and every write made through it must run
+   * inside `atomic()`.
+   */
   get sqlite(): DatabaseSync | undefined {
     return this.rawDb;
   }
 
   private atomicDepth = 0;
   private atomicFailed = false;
+  private atomicPoisoned = false;
 
   /**
    * Runs `fn` as one SQLite write transaction (`BEGIN IMMEDIATE` … `COMMIT`).
    *
    * - Any throw, including one from `COMMIT`, rolls the whole unit back.
-   * - `fn` must be synchronous. A returned promise is refused and rolled back:
-   *   a later `await` would otherwise run after the commit, outside the unit.
+   * - `fn` must be synchronous, and the type refuses a callback that returns a
+   *   promise. A native `async` function is refused before `BEGIN` without
+   *   being called, so nothing of it ever runs.
+   * - A synchronous `fn` that returns a thenable is rolled back and **poisons
+   *   this ledger**: this call and every later `atomic()` on the instance throw
+   *   `LedgerPoisonedError`. The thenable's continuation cannot be cancelled,
+   *   but it can no longer write through `atomic()`, which is the only way the
+   *   mail journal writes.
+   * - Poisoning does not stop ledger methods that write outside `atomic()`
+   *   (`consumeCredit`, `addCredits` and the rest). A poisoned ledger is a
+   *   programming error and composition must stop the process.
    * - A call made inside `fn` joins the enclosing unit; it does not commit on
    *   its own. If a joined call throws, the enclosing unit can no longer
    *   commit, even if the caller catches the error.
    * - Every value a decision rests on must be read inside `fn`.
    */
-  atomic<T>(fn: () => T): T {
+  atomic<T>(fn: () => T extends PromiseLike<unknown> ? never : T): T {
     const db = this.rawDb;
     if (!db) throw new Error('atomic() is only supported on SQLite DatabaseSync');
+    if (this.atomicPoisoned) {
+      throw new LedgerPoisonedError(
+        'The ledger is poisoned: an earlier atomic() callback returned a promise. Stop the process.'
+      );
+    }
 
+    // Refused without being called: nothing of an async callback ever runs.
+    const refuseAsyncFunction = (): void => {
+      const tag = Object.prototype.toString.call(fn);
+      if (tag === '[object AsyncFunction]' || tag === '[object AsyncGeneratorFunction]') {
+        throw new Error('atomic() callback is an async function; the unit must be synchronous. It was not called.');
+      }
+    };
     const run = (): T => {
-      const result = fn();
+      const result = fn() as T;
       if (result !== null && typeof (result as { then?: unknown } | undefined)?.then === 'function') {
+        this.atomicPoisoned = true;
         Promise.resolve(result).catch(() => undefined);
-        throw new Error('atomic() callback returned a promise; the unit must be synchronous');
+        throw new LedgerPoisonedError(
+          'atomic() callback returned a promise; the unit was rolled back and the ledger is poisoned. Stop the process.'
+        );
       }
       return result;
     };
@@ -95,6 +140,7 @@ export class CreditLedger {
     if (this.atomicDepth > 0) {
       this.atomicDepth++;
       try {
+        refuseAsyncFunction();
         return run();
       } catch (err) {
         this.atomicFailed = true;
@@ -104,6 +150,7 @@ export class CreditLedger {
       }
     }
 
+    refuseAsyncFunction();
     db.exec('BEGIN IMMEDIATE');
     this.atomicDepth = 1;
     this.atomicFailed = false;
@@ -125,6 +172,22 @@ export class CreditLedger {
       this.atomicDepth = 0;
       this.atomicFailed = false;
     }
+  }
+
+  /**
+   * Marks one held message expired: `held` → `expired`. Synchronous, one
+   * statement on the SQLite connection, so inside `atomic()` it is part of that
+   * unit. Returns false, and changes nothing, when the row is absent or is not
+   * `held`.
+   */
+  expireHeldMessage(id: string): boolean {
+    if (!this.rawDb) {
+      throw new Error('Synchronous query execution is only supported on SQLite DatabaseSync');
+    }
+    const result = this.rawDb
+      .prepare("UPDATE held_messages SET status = 'expired' WHERE id = ? AND status = 'held'")
+      .run(id);
+    return Number(result.changes) === 1;
   }
 
   private executeGet<T = unknown>(compiled: CompiledQuery): T | undefined {

@@ -77,7 +77,7 @@ export interface GatewayDatabase {
 }
 
 /**
- * Rows of the mail journal tables (`MAIL_JOURNAL_DDL` in `database.ts`), as
+ * Rows of the mail journal tables (format 2; the DDL is private to `mail-journal.ts`), as
  * `node:sqlite` returns them. SQLite only, so they are not part of
  * `GatewayDatabase`: Kysely must not offer them on Postgres.
  */
@@ -101,7 +101,12 @@ export interface MailMessageRow {
   scope_account: string;
   rfc_message_id: string;
   claimed_rfc_id: string | null;
-  content_key: string;
+  /** For an inbound row, its `inbound_email` key; for an outbound row, the key of the emitted mail. */
+  mail_key: string;
+  /** Set on every `frank_to_email` row, null on every `email_to_frank` row. Never compared with a mail key. */
+  item_key: string | null;
+  /** Set on every `frank_to_email` row (the `frank_inbound` row it was bridged from), null otherwise. */
+  payload_digest: string | null;
   frank_message_id: string;
   conversation_id: string;
   direction: 'email_to_frank' | 'frank_to_email';
@@ -111,14 +116,16 @@ export interface MailMessageRow {
 
 export interface InboundEmailRow {
   scope_account: string;
-  content_key: string;
+  mail_key: string;
   rfc_message_id: string;
   sender_email: string;
   data_sha256: string;
-  raw: Uint8Array | string;
-  disposition: 'relay' | 'held' | 'released' | 'echo';
+  /** Null only when the row is `expired`. */
+  raw: Uint8Array | string | null;
+  disposition: 'relay' | 'held' | 'released' | 'echo' | 'expired';
   held_message_id: string | null;
-  duplicate_mismatches: number;
+  /** Set on every `held` row; cleared when the mail is relayed. */
+  expires_at: number | null;
   created_at: number;
 }
 
@@ -145,19 +152,20 @@ export interface FrankInboundRow {
   frank_message_id: string | null;
   conversation_id: string | null;
   received_time: number;
-  stamp_value_wei: string;
-  budget_wei: string;
-  spent_wei: string;
-  disposition: 'bridged' | 'rejected' | 'quarantined';
+  /** Decimal text in the smallest unit of the journal chain's native asset, as are `budget` and `spent`. */
+  stamp_value: string;
+  budget: string;
+  spent: string;
+  disposition: 'bridged' | 'rejected' | 'quarantined' | 'resealed';
   reason: string | null;
 }
 
 export interface OutboundJobRow {
   job_id: number;
   scope_account: string;
-  frank_message_id: string;
+  /** The identifier the email goes out under: the key of its `mail_message` row. */
+  rfc_message_id: string;
   recipient_email: string;
-  conversation_id: string;
   bounce_token: string;
   signed_rfc822: Uint8Array | string;
   state: 'pending' | 'sent' | 'failed' | 'bounced';

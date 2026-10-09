@@ -2991,6 +2991,19 @@ export const useChatStore = defineStore('chats', {
       this.conversations[id] = conv
       return this.conversations[id]
     },
+    renameConversation(id: string, subject: string): void {
+      const conversation = Object.prototype.hasOwnProperty.call(
+        this.conversations,
+        id,
+      )
+        ? this.conversations[id]
+        : undefined
+      if (!conversation) throw new Error(`Unknown conversation ${id}`)
+      const name = subject.trim()
+      if (!name) throw new Error('Conversation subject must not be empty')
+      conversation.name = name
+      conversation.updatedAt = Date.now()
+    },
     createOrOpenEmailConversation({
       recipientEmail,
       subject,

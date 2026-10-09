@@ -1982,6 +1982,39 @@ describe('stores/chats.ts (ticket #42)', () => {
       return { chats, first: create(firstId), second: create(secondId) }
     }
 
+    it('renames only the exact owner metadata and refuses empty or unknown subjects', async () => {
+      const { chats, first, second } = independentPair()
+      const defaultThread = chats.openDirectConversation(RECIPIENT_ADDRESS)
+      await chats.receiveMessages([incoming(first.id, 'rename-receipt', 100)])
+      const before = JSON.parse(JSON.stringify(chats.$state))
+      const now = jest.spyOn(Date, 'now').mockReturnValue(123456789)
+      try {
+        chats.renameConversation(first.id, '  Updated subject  ')
+        expect(first.name).toBe('Updated subject')
+        expect(first.updatedAt).toBe(123456789)
+        const after = JSON.parse(JSON.stringify(chats.$state))
+        after.conversations[first.id].name = before.conversations[first.id].name
+        after.conversations[first.id].updatedAt =
+          before.conversations[first.id].updatedAt
+        expect(after).toEqual(before)
+        chats.renameConversation(first.id, second.name!)
+        expect(first.name).toBe(second.name)
+        expect(chats.chats[RECIPIENT_ADDRESS].id).toBe(defaultThread.id)
+        const unchanged = JSON.stringify(chats.$state)
+        for (const id of ['missing-id', '__proto__', 'constructor']) {
+          expect(() => chats.renameConversation(id, 'Subject')).toThrow(
+            /conversation/i,
+          )
+        }
+        expect(() => chats.renameConversation(first.id, '  ')).toThrow(
+          /subject/i,
+        )
+        expect(JSON.stringify(chats.$state)).toBe(unchanged)
+      } finally {
+        now.mockRestore()
+      }
+    })
+
     it('persists only the conversation metadata owner and reconstructs its default index on reopen', async () => {
       let persistence: {
         save(

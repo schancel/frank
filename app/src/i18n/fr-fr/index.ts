@@ -287,7 +287,6 @@ export default {
     formatLink: 'Insérer un lien',
     attachPostImage: 'Attacher une image au message',
     formatting: 'Mise en forme',
-    switchAssets: 'Intervertir les actifs',
   },
   leftDrawer: {
     noForums: 'Aucun forum découvert pour le moment.',

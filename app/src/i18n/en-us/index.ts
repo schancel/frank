@@ -281,7 +281,6 @@ export default {
     formatLink: 'Insert link',
     attachPostImage: 'Attach image to post',
     formatting: 'Formatting',
-    switchAssets: 'Switch assets',
   },
   leftDrawer: {
     noForums: 'No forums discovered yet.',

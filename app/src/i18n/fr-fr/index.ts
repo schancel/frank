@@ -287,7 +287,6 @@ export default {
     formatLink: 'Insérer un lien',
     attachPostImage: 'Attacher une image au message',
     formatting: 'Mise en forme',
-    switchAssets: 'Intervertir les actifs',
   },
   leftDrawer: {
     noForums: 'Aucun forum découvert pour le moment.',
@@ -442,6 +441,9 @@ export default {
     swapEnterAmount: 'Saisissez un montant à échanger',
     swapInsufficientBalance: 'Solde insuffisant en {asset}',
     swapMaxBtn: 'MAX',
+    swapUnavailable: 'Échange instantané indisponible',
+    swapUnavailableDescription:
+      'Les échanges ne sont pas encore pris en charge. Aucun devis ni aucune transaction ne sont disponibles.',
     swapExecute: 'Échanger maintenant',
     swapSuccess:
       'Échange exécuté avec succès ! Fonds versés sur votre adresse furtive privée.',

@@ -1,234 +1,340 @@
 /** @jest-environment jsdom */
-import { mount } from '@vue/test-utils'
-import DAppSwapView from './DAppSwapView.vue'
+import {
+  enableAutoUnmount,
+  flushPromises,
+  mount,
+  shallowMount,
+} from '@vue/test-utils'
+import { nextTick, ref } from 'vue'
 import en from '../../i18n/en-us'
+import fr from '../../i18n/fr-fr'
+import { WALLET_CONFIGS } from '../../utils/wallet-configs'
 
-const t = (key: string, params?: Record<string, any>) => {
-  let val =
-    key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
-  if (typeof val === 'string' && params) {
-    for (const [k, v] of Object.entries(params)) {
-      val = val.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v))
-    }
-  }
-  return val
+enableAutoUnmount(afterEach)
+const mockReadRoot = jest.fn().mockResolvedValue(new Uint8Array(32))
+const mockSign = jest.fn().mockReturnValue({ publicKey: 'test-public-key' })
+const mockTransfer = jest.fn()
+const mockBroadcast = jest.fn().mockResolvedValue('forbidden-test-receipt')
+const mockProvider = jest.fn().mockImplementation(() => ({
+  getLatestBlockhash: jest
+    .fn()
+    .mockResolvedValue({ blockhash: 'test-blockhash' }),
+}))
+const mockSelfMessage = jest.fn()
+const mockLogSwap = jest.fn()
+const mockRefresh = jest.fn()
+const mockHistory = ref([
+  {
+    id: 'existing-record',
+    chain: 'solana',
+    fromAsset: 'SOL',
+    toAsset: 'USDC',
+    fromAmount: '2',
+    toAmount: '50',
+    txHash: 'existing-receipt',
+    route: 'Existing route',
+    timestamp: 1,
+    status: 'confirmed',
+  },
+])
+const mockRoute = ref({ path: '/wallet/solana', query: {}, params: {} })
+
+jest.mock('@frank/wallet/chain', () => ({
+  activeChain: { isTestnet: true },
+  getChainExchangeConfig: () => undefined,
+}))
+jest.mock('@frank/wallet/plugins', () => ({
+  defaultPluginRegistry: { get: () => undefined },
+}))
+jest.mock('@frank/wallet/plugins/jupiter-plugin', () => ({
+  JUPITER_PROGRAM_ID: 'test-program',
+}))
+jest.mock('@solana/web3.js', () => ({
+  Keypair: { fromSeed: (...args: unknown[]) => mockSign(...args) },
+  Connection: function (...args: unknown[]) {
+    return mockProvider(...args)
+  },
+  Transaction: function () {
+    return { add: () => ({}) }
+  },
+  SystemProgram: { transfer: (...args: unknown[]) => mockTransfer(...args) },
+  PublicKey: function () {
+    return {}
+  },
+  LAMPORTS_PER_SOL: 1_000_000_000,
+  sendAndConfirmTransaction: (...args: unknown[]) => mockBroadcast(...args),
+}))
+jest.mock('@solana/codecs-strings', () => ({
+  getBase58Decoder: () => ({ decode: () => 'fabricated-test-receipt' }),
+}))
+jest.mock('src/accounts/session', () => ({
+  accountStatus: { status: 'ready', revision: 1 },
+  accountSession: {
+    getActiveDomainRoot: (...args: unknown[]) => mockReadRoot(...args),
+    getCachedChainAddress: () => 'test-address',
+    getChainAddress: async () => 'test-address',
+  },
+}))
+jest.mock('src/composables/useBalance', () => ({
+  useBalance: () => ({
+    balance: ref(null),
+    loaded: ref(false),
+    refresh: mockRefresh,
+  }),
+}))
+jest.mock('src/composables/useChainBalance', () => ({
+  useChainBalance: () => ({
+    tokens: ref([]),
+    balance: ref(null),
+    loaded: ref(false),
+    refresh: mockRefresh,
+    presentation: ref({ status: 'loading' }),
+    tokenObservation: ref({ status: 'loading' }),
+  }),
+}))
+jest.mock('src/composables/useSwapHistory', () => ({
+  useSwapHistory: () => ({
+    getSwapsForChain: () => mockHistory,
+    logSwap: (...args: unknown[]) => mockLogSwap(...args),
+  }),
+}))
+jest.mock('src/composables/useActiveWallet', () => ({
+  useActiveWallet: async () => ({
+    identity: { displayAddress: 'test-address' },
+    sendSelfDirectMessage: mockSelfMessage,
+  }),
+}))
+jest.mock('src/stores/oracle', () => ({
+  useSafeOracleStore: () => ({
+    formatUnitRate: () => '',
+    snapshot: { constituents: [] },
+  }),
+}))
+jest.mock('vue-router', () => ({
+  useRoute: () => ({
+    get path() {
+      return mockRoute.value.path
+    },
+    get query() {
+      return mockRoute.value.query
+    },
+    get params() {
+      return mockRoute.value.params
+    },
+  }),
+  useRouter: () => ({ push: jest.fn() }),
+}))
+jest.mock('src/utils/routes', () => ({ openPage: jest.fn() }))
+jest.mock('src/utils/native-transfer', () => ({
+  nativeSendChainIdentifier: () => undefined,
+}))
+jest.mock('src/utils/explorer', () => ({ getExplorerUrl: () => undefined }))
+jest.mock('src/utils/notifications', () => ({
+  addressCopiedNotify: jest.fn(),
+  errorNotify: jest.fn(),
+}))
+jest.mock('quasar', () => ({ copyToClipboard: jest.fn() }))
+
+import DAppSwapView from './DAppSwapView.vue'
+import Wallet from '../../pages/Wallet.vue'
+
+type LegacySwap = {
+  executeSwap?: () => Promise<void>
+  fromAmount?: string
+  lastTxHash?: string | null
 }
-
-function mountSwapView(props = {}) {
+const translate = (locale: typeof en | typeof fr) => (key: string) =>
+  key
+    .split('.')
+    .reduce<unknown>(
+      (value, part) =>
+        value && typeof value === 'object'
+          ? (value as Record<string, unknown>)[part]
+          : undefined,
+      locale,
+    ) ?? key
+const stubs = {
+  QBtn: {
+    props: ['disable', 'label'],
+    template: '<button :disabled="disable">{{ label }}<slot /></button>',
+  },
+  ...Object.fromEntries(
+    [
+      'q-header',
+      'q-toolbar',
+      'q-toolbar-title',
+      'q-page-container',
+      'q-page',
+      'q-scroll-area',
+      'q-card',
+      'q-card-section',
+      'q-card-actions',
+      'q-separator',
+      'q-badge',
+      'q-skeleton',
+      'q-tabs',
+      'q-tab',
+      'q-tab-panels',
+      'q-tab-panel',
+      'q-icon',
+      'q-list',
+      'q-item',
+      'q-item-section',
+      'q-item-label',
+    ].map(name => [name, { template: '<div><slot /></div>' }]),
+  ),
+  QTooltip: true,
+  QInput: {
+    props: ['modelValue'],
+    template:
+      '<input :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+  },
+  QSelect: true,
+  QrcodeVue: true,
+  AvuParityChart: true,
+  AvuExplainerDialog: true,
+}
+function mountSwap(wallet: string, locale: typeof en | typeof fr = en) {
   return mount(DAppSwapView, {
-    props: {
-      selectedWallet: 'monad',
-      ...props,
-    },
+    props: { selectedWallet: wallet },
+    global: { mocks: { $t: translate(locale) }, stubs },
+  })
+}
+function mountWallet() {
+  return shallowMount(Wallet, {
     global: {
-      mocks: {
-        $t: t,
-      },
-      stubs: {
-        QCard: { template: '<div class="q-card-stub"><slot /></div>' },
-        QCardSection: {
-          template: '<div class="q-card-section-stub"><slot /></div>',
-        },
-        QSeparator: { template: '<hr />' },
-        QIcon: { template: '<i class="icon-stub" />' },
-        QBadge: { template: '<span class="badge-stub"><slot /></span>' },
-        QInput: {
-          props: ['modelValue', 'readonly', 'type', 'placeholder'],
-          template:
-            '<input :value="modelValue" :readonly="readonly" @input="$emit(\'update:modelValue\', $event.target.value)" />',
-        },
-        QSelect: {
-          props: ['modelValue', 'options'],
-          template:
-            '<select :value="modelValue" @change="$emit(\'update:modelValue\', $event.target.value)"><option v-for="opt in options" :key="opt.value" :value="opt.value">{{ opt.label }}</option></select>',
-        },
-        QBtn: {
-          props: ['label', 'disable', 'loading'],
-          template: '<button :disabled="disable">{{ label }}<slot /></button>',
-        },
-      },
+      mocks: { $t: translate(en) },
+      stubs: { ...stubs, DAppSwapView: false },
     },
   })
 }
+function expectNoEffects() {
+  for (const effect of [
+    mockReadRoot,
+    mockSign,
+    mockProvider,
+    mockTransfer,
+    mockBroadcast,
+    mockLogSwap,
+    mockSelfMessage,
+    mockRefresh,
+  ]) {
+    expect(effect).not.toHaveBeenCalled()
+  }
+}
+function expectUnavailable(
+  view: ReturnType<typeof mountSwap>,
+  locale: typeof en | typeof fr = en,
+) {
+  expect(
+    view.get('[data-testid="swap-execute-btn"]').attributes('disabled'),
+  ).toBeDefined()
+  expect(view.text()).toContain(locale.walletPanel.swapUnavailable)
+  expect(view.text()).toContain(locale.walletPanel.swapUnavailableDescription)
+  for (const id of [
+    'swap-from-amount',
+    'swap-to-amount',
+    'swap-max-balance',
+    'swap-protocol-fee',
+    'swap-router-name',
+    'swap-success-banner',
+  ]) {
+    expect(view.find(`[data-testid="${id}"]`).exists()).toBe(false)
+  }
+}
 
-describe('DAppSwapView component', () => {
-  test('renders swap interface and default token pair', () => {
-    const wrapper = mountSwapView()
-    expect(wrapper.find('[data-testid="dapp-swap-view"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="swap-from-amount"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="swap-to-amount"]').exists()).toBe(true)
+beforeEach(() => {
+  jest.clearAllMocks()
+  mockReadRoot.mockResolvedValue(new Uint8Array(32))
+})
+
+describe('Instant Swap containment', () => {
+  it.each(WALLET_CONFIGS.map(wallet => wallet.id))(
+    'shows unavailable capability through mounted /wallet/%s',
+    async wallet => {
+      mockRoute.value = { path: `/wallet/${wallet}`, query: {}, params: {} }
+      const page = mountWallet()
+      await flushPromises()
+      const swap = page.getComponent(DAppSwapView)
+      expect(swap.props('selectedWallet')).toBe(wallet)
+      expectUnavailable(swap)
+      expectNoEffects()
+    },
+  )
+
+  it.each(['query', 'params'])(
+    'contains the existing wallet %s route and reactive selection changes',
+    async kind => {
+      mockRoute.value =
+        kind === 'query'
+          ? { path: '/wallet', query: { chain: 'solana' }, params: {} }
+          : { path: '/wallet', query: {}, params: { wallet: 'solana' } }
+      const page = mountWallet()
+      const swap = page.getComponent(DAppSwapView)
+      expect(swap.props('selectedWallet')).toBe('solana')
+      expectUnavailable(swap)
+      mockRoute.value = { path: '/wallet/ecash', query: {}, params: {} }
+      await nextTick()
+      expect(swap.props('selectedWallet')).toBe('ecash')
+      expectUnavailable(swap)
+      expectNoEffects()
+    },
+  )
+
+  it.each([
+    ['English', en],
+    ['French', fr],
+  ] as const)('localizes the unavailable capability in %s', (_name, locale) => {
+    expectUnavailable(mountSwap('solana', locale), locale)
   })
 
-  test('displays protocol convenience fee of 0.0875% and 10x savings badge', () => {
-    const wrapper = mountSwapView()
-    const feeElem = wrapper.find('[data-testid="swap-protocol-fee"]')
-    expect(feeElem.exists()).toBe(true)
-    expect(feeElem.text()).toContain('0.0875%')
-    expect(wrapper.text()).toContain('10x Cheaper than MetaMask')
-  })
+  it.each([
+    ['monad', true],
+    ['ecash', true],
+    ['solana', true],
+    ['solana', false],
+  ] as const)(
+    'cannot execute or fabricate a receipt for %s (root available: %s)',
+    async (wallet, rootAvailable) => {
+      mockReadRoot.mockResolvedValue(
+        rootAvailable ? new Uint8Array(32) : undefined,
+      )
+      const view = mountSwap(wallet)
+      const vm = view.vm as unknown as LegacySwap
+      // Exercise the old callable boundary with a valid amount, as well as a UI attempt.
+      // All custody and network dependencies above are isolated spies; no live RPC is possible.
+      if (vm.executeSwap) {
+        vm.fromAmount = '1'
+        await nextTick()
+        await vm.executeSwap()
+      }
+      await view.get('[data-testid="swap-execute-btn"]').trigger('click')
+      if (vm.executeSwap) await new Promise(resolve => setTimeout(resolve, 850))
+      await flushPromises()
+      expectNoEffects()
+      expect(vm.lastTxHash == null).toBe(true)
+      expect(view.find('[data-testid="swap-success-banner"]').exists()).toBe(
+        false,
+      )
+      expect(vm.executeSwap).toBeUndefined()
+    },
+  )
 
-  test('displays HD change address notice for privacy and seed recovery', () => {
-    const wrapper = mountSwapView()
-    const destElem = wrapper.find('[data-testid="swap-destination-address"]')
-    expect(destElem.exists()).toBe(true)
-    expect(destElem.text()).toContain(
-      'Direct settlement to private stealth address',
+  it('keeps existing history visible without modifying it', async () => {
+    mockRoute.value = { path: '/wallet/solana', query: {}, params: {} }
+    const before = JSON.stringify(mockHistory.value)
+    const page = mountWallet()
+    await flushPromises()
+    expect(page.text()).toContain('Existing route')
+    await page
+      .getComponent(DAppSwapView)
+      .get('[data-testid="swap-execute-btn"]')
+      .trigger('click')
+    if (
+      (page.getComponent(DAppSwapView).vm as unknown as LegacySwap).executeSwap
     )
-  })
-
-  test('flips from and to assets when flip button is clicked', async () => {
-    const wrapper = mountSwapView()
-    expect((wrapper.vm as any).fromAsset).toBe('MON')
-    expect((wrapper.vm as any).toAsset).toBe('USDC')
-
-    const flipBtn = wrapper.find('[data-testid="swap-flip-btn"]')
-    await flipBtn.trigger('click')
-
-    expect((wrapper.vm as any).fromAsset).toBe('USDC')
-    expect((wrapper.vm as any).toAsset).toBe('MON')
-  })
-
-  test('displays AVU thermodynamic energy equivalents for input and output', () => {
-    const wrapper = mountSwapView()
-    const fromAvu = wrapper.find('[data-testid="swap-from-avu"]')
-    const toAvu = wrapper.find('[data-testid="swap-to-avu"]')
-    expect(fromAvu.exists()).toBe(true)
-    expect(fromAvu.text()).toContain('AVU (kWh)')
-    expect(toAvu.exists()).toBe(true)
-    expect(toAvu.text()).toContain('AVU (kWh)')
-  })
-
-  test('calculates estimated output deducting protocol fee', async () => {
-    const wrapper = mountSwapView()
-    const fromInput = wrapper.find('[data-testid="swap-from-amount"]')
-    await fromInput.setValue('1000')
-
-    const toInput = wrapper.find('[data-testid="swap-to-amount"]')
-    // 1000 USDC minus 0.0875% = 999.125 USD / 0.123 ≈ 8,122.97 AVU
-    expect((toInput.element as HTMLInputElement).value).not.toBe('0.00')
-  })
-
-  test('simulates swap execution on button click', async () => {
-    const wrapper = mountSwapView()
-    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
-    expect(executeBtn.attributes('disabled')).toBeUndefined()
-
-    await executeBtn.trigger('click')
-    expect((wrapper.vm as any).isExecuting).toBe(true)
-
-    // Wait for async execution resolution
-    const start = Date.now()
-    while ((wrapper.vm as any).isExecuting && Date.now() - start < 3000) {
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-    expect((wrapper.vm as any).isExecuting).toBe(false)
-    expect((wrapper.vm as any).lastTxHash).toBeTruthy()
-    expect(wrapper.find('[data-testid="swap-success-banner"]').exists()).toBe(
-      true,
-    )
-  })
-
-  test('contextualizes swap pair and router for Solana wallet', () => {
-    const wrapper = mountSwapView({ selectedWallet: 'solana' })
-    expect((wrapper.vm as any).fromAsset).toBe('SOL')
-    expect((wrapper.vm as any).toAsset).toBe('USDC')
-    const routerElem = wrapper.find('[data-testid="swap-router-name"]')
-    expect(routerElem.text()).toContain('Jupiter Aggregator')
-  })
-
-  test('contextualizes swap pair and router for eCash wallet', () => {
-    const wrapper = mountSwapView({ selectedWallet: 'ecash' })
-    expect(['XEC', 'tXEC']).toContain((wrapper.vm as any).fromAsset)
-    expect((wrapper.vm as any).toAsset).toBe('USDC')
-    const routerElem = wrapper.find('[data-testid="swap-router-name"]')
-    expect(routerElem.text()).toBe('eCash Atomic Swap Router')
-    expect(routerElem.text()).not.toContain('Uniswap')
-    const balanceElem = wrapper.find('[data-testid="swap-max-balance"]')
-    expect(balanceElem.text()).toContain('XEC')
-  })
-
-  test('contextualizes router for Hyperliquid and Tempo chains', () => {
-    const hlWrapper = mountSwapView({ selectedWallet: 'hyperliquid' })
-    expect(hlWrapper.find('[data-testid="swap-router-name"]').text()).toBe(
-      'Hyperliquid L1 Orderbook Router',
-    )
-
-    const tempoWrapper = mountSwapView({ selectedWallet: 'tempo' })
-    expect(tempoWrapper.find('[data-testid="swap-router-name"]').text()).toBe(
-      'Tempo Settlement Engine',
-    )
-  })
-
-  test('validates balance: shows error and disables swap button when input exceeds balance', async () => {
-    const wrapper = mountSwapView({ selectedWallet: 'solana' })
-    // Solana available is 5.20 SOL
-    const fromInput = wrapper.find('[data-testid="swap-from-amount"]')
-    await fromInput.setValue('10000')
-
-    const errorMsg = wrapper.find('[data-testid="swap-error-message"]')
-    expect(errorMsg.exists()).toBe(true)
-    expect(errorMsg.text()).toContain('Insufficient SOL balance')
-
-    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
-    expect(executeBtn.attributes('disabled')).toBeDefined()
-    expect(executeBtn.text()).toContain('Insufficient SOL balance')
-  })
-
-  test('clicking MAX sets the available balance and clears insufficient balance error', async () => {
-    const wrapper = mountSwapView({ selectedWallet: 'solana' })
-    const fromInput = wrapper.find('[data-testid="swap-from-amount"]')
-    await fromInput.setValue('999')
-
-    expect(wrapper.find('[data-testid="swap-error-message"]').exists()).toBe(
-      true,
-    )
-
-    const maxBtn = wrapper.find('[data-testid="swap-max-btn"]')
-    await maxBtn.trigger('click')
-
-    expect((wrapper.vm as any).fromAmount).toBe('5.2')
-    expect(wrapper.find('[data-testid="swap-error-message"]').exists()).toBe(
-      false,
-    )
-
-    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
-    expect(executeBtn.attributes('disabled')).toBeUndefined()
-  })
-
-  test('executing Solana swap produces a base58 transaction signature without 0x prefix', async () => {
-    const wrapper = mountSwapView({ selectedWallet: 'solana' })
-    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
-    await executeBtn.trigger('click')
-
-    // Wait for async execution resolution
-    const start = Date.now()
-    while ((wrapper.vm as any).isExecuting && Date.now() - start < 3000) {
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-
-    const txHash = (wrapper.vm as any).lastTxHash
-    expect(txHash).toBeTruthy()
-    // Solana tx hashes must NEVER be 0x-prefixed hex!
-    expect(txHash.startsWith('0x')).toBe(false)
-    // Solana base58 signatures are ~88 characters using base58 characters
-    expect(/^[1-9A-HJ-NP-Za-km-z]{40,90}$/.test(txHash)).toBe(true)
-  })
-
-  test('swapping tSOL executes cleanly under Jupiter router', async () => {
-    const wrapper = mountSwapView({ selectedWallet: 'solana' })
-    ;(wrapper.vm as any).fromAsset = 'tSOL'
-    ;(wrapper.vm as any).fromAmount = '1'
-
-    const executeBtn = wrapper.find('[data-testid="swap-execute-btn"]')
-    await executeBtn.trigger('click')
-
-    const start = Date.now()
-    while ((wrapper.vm as any).isExecuting && Date.now() - start < 3000) {
-      await new Promise(resolve => setTimeout(resolve, 50))
-    }
-
-    const txHash = (wrapper.vm as any).lastTxHash
-    expect(txHash).toBeTruthy()
-    expect(txHash.startsWith('0x')).toBe(false)
+      await new Promise(resolve => setTimeout(resolve, 850))
+    expect(JSON.stringify(mockHistory.value)).toBe(before)
+    expectNoEffects()
   })
 })

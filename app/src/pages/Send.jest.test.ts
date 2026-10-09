@@ -934,7 +934,14 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       },
     )
   })
-  it.each(['complete', 'unrecorded', 'unmatched', 'ambiguous', 'unavailable'])(
+  it.each([
+    'complete',
+    'unrecorded',
+    'unmatched',
+    'ambiguous',
+    'unavailable',
+    'unsupported',
+  ])(
     'checks original owner evidence before treating a returned EVM result as successful (%s)',
     async evidence => {
       const fixture = await includedNativeTransfer()
@@ -944,11 +951,15 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         wallet: {
           family: 'evm',
           chainIdentifier: 'monad-testnet',
-          getNativeOperations: () => {
-            if (evidence === 'unavailable') throw new Error('owner closed')
-            const rows = fixture.journal.list()
-            return evidence === 'ambiguous' ? [...rows, ...rows] : rows
-          },
+          getNativeOperations:
+            evidence === 'unsupported'
+              ? undefined
+              : () => {
+                  if (evidence === 'unavailable')
+                    throw new Error('owner closed')
+                  const rows = fixture.journal.list()
+                  return evidence === 'ambiguous' ? [...rows, ...rows] : rows
+                },
         },
         assertCurrent: mockAssertCurrent,
         isCurrent: () => true,

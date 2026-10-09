@@ -498,7 +498,14 @@
 </template>
 
 <script lang="ts">
-import { computed, defineComponent, ref, shallowRef, watch } from 'vue'
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  ref,
+  shallowRef,
+  watch,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import QrcodeVue from 'qrcode.vue'
@@ -517,7 +524,7 @@ import {
   inspectNativeTransferOperations,
   type NativeOperationInspection,
 } from 'src/accounts/native-transfer'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { getExplorerUrl } from 'src/utils/explorer'
@@ -541,7 +548,15 @@ export default defineComponent({
     const myDrawerOpen = useMyDrawerOpen()
     const route = useRoute()
     const router = useRouter()
-    const isTestnet = computed(() => activeChain.isTestnet ?? false)
+    // The global adapter is a plain object; subscribe to its owner instead of
+    // expecting Vue to observe in-place network replacement.
+    const network = shallowRef({ ...activeChain })
+    onBeforeUnmount(
+      onActiveChainChange(chain => {
+        network.value = { ...chain }
+      }),
+    )
+    const isTestnet = computed(() => network.value.isTestnet ?? false)
     const { getCustomName } = useWalletNames()
     const oracle = useSafeOracleStore()
     const showAvuDialog = ref(false)
@@ -676,13 +691,13 @@ export default defineComponent({
         accountStatus.status,
         accountStatus.revision,
         selectedWallet.value,
-        activeChain.chainIdentifier,
+        network.value.chainIdentifier,
       ],
       async ([status, , chain], _previous, onCleanup) => {
         nativeOperations.value = {
           status: chain === 'monad' ? 'unavailable' : 'unsupported',
         }
-        const capturedChain = { ...activeChain }
+        const capturedChain = network.value
         if (status !== 'ready') {
           displayAddress.value = ''
           return
@@ -717,9 +732,9 @@ export default defineComponent({
               displayAddress.value =
                 typeof address === 'string'
                   ? address
-                  : activeChain.addressToString(
+                  : capturedChain.addressToString(
                       address as Parameters<
-                        typeof activeChain.addressToString
+                        typeof capturedChain.addressToString
                       >[0],
                     )
             }

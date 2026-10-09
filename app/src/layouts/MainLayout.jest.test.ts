@@ -29,11 +29,16 @@ jest.mock('vue-router', () => ({
   useRouter: () => mockRouterRef.current,
 }))
 const mockUnread = { value: 3 }
+const mockConversationId = '11111111-1111-4111-8111-111111111111'
+const mockSetActiveConversation = jest.fn()
 jest.mock('src/stores/chats', () => ({
   useChatStore: () =>
     jest.requireActual('vue').reactive({
       totalUnread: mockUnread.value,
-      getSortedChatOrder: [{ address: 'addr1', totalUnreadMessages: 0 }],
+      getSortedChatOrder: [
+        { id: mockConversationId, address: 'addr1', totalUnreadMessages: 0 },
+      ],
+      setActiveConversation: mockSetActiveConversation,
       activeChatAddr: undefined,
     }),
 }))
@@ -204,6 +209,7 @@ async function mountLayout(
   attachTo?: HTMLElement,
   setup = true,
 ) {
+  mockSetActiveConversation.mockClear()
   const $q = { screen: { width } }
   const router = createFakeRouter()
   mockRouterRef.current = router
@@ -274,7 +280,7 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     expect(open(wrapper)).toBe('true')
     await wrapper.get('#rail-tab-chats').trigger('click')
     await flushPromises()
-    expect(router.push).toHaveBeenCalledWith('/chat/addr1')
+    expect(router.push).toHaveBeenCalledWith(`/chat/${mockConversationId}`)
     expect(open(wrapper)).toBe('true')
     // The marker does not leak: the next real destination still closes the overlay.
     await byText(wrapper, 'Profile')[0].trigger('click')
@@ -326,7 +332,8 @@ describe('MainLayout closes the mobile overlay on navigation', () => {
     await openDrawer(wrapper)
     await wrapper.find('[data-testid="chat-item"]').trigger('click')
     await flushPromises()
-    expect(router.push).toHaveBeenCalledWith('/chat/addr1')
+    expect(mockSetActiveConversation).toHaveBeenCalledWith(mockConversationId)
+    expect(router.push).toHaveBeenCalledWith(`/chat/${mockConversationId}`)
     expect(open(wrapper)).toBe('false')
   })
 

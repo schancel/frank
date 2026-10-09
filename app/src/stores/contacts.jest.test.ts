@@ -734,12 +734,18 @@ describe('stores/contacts.ts (ticket #42)', () => {
       const contacts = useContactStore()
       const chats = useChatStore()
       await addAll(contacts)
-      chats.activeChatAddr = DEFAULTS[1].address
+      jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined)
+      const selected = chats.createConversation({
+        address: DEFAULTS[1].address,
+        participants: [DEFAULTS[1].address],
+      })
+      chats.setActiveConversation(selected.id)
       await contacts.addDefaultContact({
         address: `0x${'05'.repeat(20)}`,
         name: 'Fifth',
       })
       expect(chats.activeChatAddr).toBe(DEFAULTS[1].address)
+      expect(chats.activeConversationId).toBe(selected.id)
       expect(Object.keys(contacts.getContacts)).toHaveLength(5)
     })
 

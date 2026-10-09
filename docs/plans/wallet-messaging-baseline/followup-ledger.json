@@ -112,16 +112,19 @@
     },
     "stage-a-joined-driver": {
       "url": "https://github.com/schancel/frank/issues/1235#issuecomment-6080299633"
+    },
+    "stage-a-lifecycle": {
+      "url": "https://github.com/schancel/frank/issues/1235#issuecomment-6081211429"
     }
   },
   "activeClaims": {
-    "incoming-sync-containment": {
-      "url": "https://github.com/schancel/frank/issues/1242#issuecomment-6080318397",
-      "claimId": "88a76220-1a90-4481-aa56-442313424ef0"
-    },
     "native-outcome": {
       "url": "https://github.com/schancel/frank/issues/1289#issuecomment-6080535933",
       "base": "fb371fe2beb07f754b3488fc111a32d569851990"
+    },
+    "conversation-ui": {
+      "url": "https://github.com/schancel/frank/issues/1237#issuecomment-6080697258",
+      "claimId": "9a094f3f-9ad0-4a6d-8416-2712a4f405b5"
     }
   },
   "completedClaims": {
@@ -140,11 +143,20 @@
     "startup-locale-typography": {
       "url": "https://github.com/schancel/frank/issues/1278#issuecomment-6080579238",
       "landed": "44998cebe8f879aa9e83126653563ec70bfaf5d6"
+    },
+    "incoming-sync-containment": {
+      "url": "https://github.com/schancel/frank/issues/1242#issuecomment-6080891869",
+      "landed": "e2fd90f3568cf1fe7c720c74c9761a27f25c263b"
+    },
+    "conversation-owner": {
+      "url": "https://github.com/schancel/frank/issues/1237#issuecomment-6081307140",
+      "landed": "3a5e3cbcb4235890cded5eb4a3510f45945c52f4"
     }
   },
   "auditComments": {
     "registry-source": "https://github.com/schancel/frank/issues/1238#issuecomment-6080381156",
     "evm-boundaries": "https://github.com/schancel/frank/issues/1240#issuecomment-6080382559",
-    "vendor-codec": "https://github.com/schancel/frank/issues/784#issuecomment-6080385274"
+    "vendor-codec": "https://github.com/schancel/frank/issues/784#issuecomment-6080385274",
+    "session-network-affinity": "https://github.com/schancel/frank/issues/1238#issuecomment-6081306774"
   }
 }

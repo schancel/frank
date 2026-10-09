@@ -30,6 +30,11 @@ jest.mock('../accounts/session', () => ({
   },
 }))
 import { accountStatus } from '../accounts/session'
+import {
+  activeChain,
+  getActiveChain,
+  setActiveChain,
+} from '@frank/wallet/chain'
 const session = accountStatus as { status: string; revision: number }
 
 const balance = {
@@ -792,4 +797,84 @@ describe('Wallet detail page (#570)', () => {
       await fixture.close()
     }
   })
+  it.each(['visible', 'acquiring'] as const)(
+    'clears %s history on the real active-chain setter with the same account and route',
+    async phase => {
+      const fixture = await includedNativeTransfer()
+      const original = getActiveChain()
+      const previousRevision = session.revision
+      const previousRoute = mockRoute.value
+      const oldOwner = {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        identity: { displayAddress: 'old-address' },
+        getNativeOperations: jest.fn(() => fixture.journal.list()),
+      }
+      let releaseOld!: (wallet: unknown) => void
+      if (phase === 'acquiring') {
+        mockUseActiveWallet.mockImplementationOnce(
+          () =>
+            new Promise(resolve => {
+              releaseOld = resolve
+            }),
+        )
+      } else mockUseActiveWallet.mockResolvedValueOnce(oldOwner)
+      const wrapper = mountWallet()
+      try {
+        await flush()
+        if (phase === 'visible')
+          expect(
+            wrapper.get('[data-testid="wallet-native-operations"]').text(),
+          ).toContain(fixture.hash)
+        // A pending replacement prevents a new row from disguising a stale old row.
+        let releaseNew!: (wallet: unknown) => void
+        mockUseActiveWallet.mockImplementationOnce(
+          () =>
+            new Promise(resolve => {
+              releaseNew = resolve
+            }),
+        )
+        setActiveChain({
+          ...activeChain,
+          chainIdentifier: 'monad-mainnet',
+          isTestnet: false,
+          unit: 'MON',
+        })
+        expect(session.revision).toBe(previousRevision)
+        expect(mockRoute.value).toBe(previousRoute)
+        await flush()
+        expect(
+          wrapper.get('[data-testid="wallet-native-operations"]').text(),
+        ).not.toContain(fixture.hash)
+        if (phase === 'acquiring') releaseOld(oldOwner)
+        await flush()
+        expect(
+          wrapper.get('[data-testid="wallet-native-operations"]').text(),
+        ).not.toContain(fixture.hash)
+        if (phase === 'acquiring')
+          expect(oldOwner.getNativeOperations).not.toHaveBeenCalled()
+        expect(mockUseActiveWallet).toHaveBeenCalledTimes(2)
+        releaseNew({
+          family: 'evm',
+          chainIdentifier: 'monad-mainnet',
+          identity: { displayAddress: 'new-address' },
+          getNativeOperations: () => [],
+        })
+        await flush()
+        expect(
+          wrapper.get('[data-testid="wallet-native-operations"]').text(),
+        ).not.toContain(fixture.hash)
+        expect(
+          wrapper.find('[data-testid="wallet-testnet-badge"]').exists(),
+        ).toBe(false)
+      } finally {
+        wrapper.unmount()
+        const calls = mockUseActiveWallet.mock.calls.length
+        setActiveChain(original)
+        await flush()
+        expect(mockUseActiveWallet).toHaveBeenCalledTimes(calls)
+        await fixture.close()
+      }
+    },
+  )
 })

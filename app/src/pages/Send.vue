@@ -495,10 +495,9 @@ export default defineComponent({
             : await client.send(params)
           signedTxHash = result.txHash
           if (!(await current())) return
-          const evidence = inspect()
+          inspect()
           if (
             reviewed.binding.wallet.family === 'evm' &&
-            evidence.status !== 'unsupported' &&
             (!operation.value ||
               operation.value.payment !== 'included' ||
               !operation.value.syncCallbackComplete)

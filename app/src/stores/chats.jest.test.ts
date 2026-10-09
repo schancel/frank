@@ -2190,6 +2190,101 @@ describe('stores/chats.ts (ticket #42)', () => {
       }
     }
 
+    describe.each([false, true])(
+      'outbound durable twins (reversed: %s)',
+      reversed => {
+        function twins(logicalPending?: string, logicalConfirmed?: string) {
+          const pending = row(
+            'local-storage-key',
+            [{ type: 'text', text: 'paid' }],
+            ownerId,
+          )
+          pending.message.status = 'pending'
+          pending.message.logicalMessageId = logicalPending
+          pending.message.delivery = { attemptDigest: 'confirmed-digest' }
+          const confirmed = row(
+            'confirmed-digest',
+            [{ type: 'text', text: 'paid' }],
+            ownerId,
+          )
+          confirmed.message.logicalMessageId = logicalConfirmed
+          // Equivalent address spellings must not evade association validation.
+          confirmed.senderAddress = SENDER_ADDRESS.toLowerCase()
+          confirmed.message.senderAddress = SENDER_ADDRESS.toLowerCase()
+          confirmed.copartyAddress = RECIPIENT_ADDRESS.toLowerCase()
+          return { pending, confirmed }
+        }
+
+        it.each(['conversation', 'logical message'])(
+          'rejects conflicting %s ownership before any row normalization',
+          async conflict => {
+            const { pending, confirmed } = twins(
+              'logical-pending',
+              'logical-confirmed',
+            )
+            if (conflict === 'conversation') {
+              confirmed.message.conversationId =
+                'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+            }
+            const interrupted = row(
+              'earlier-pending',
+              [{ type: 'text', text: 'queued' }],
+              ownerId,
+            )
+            interrupted.message.status = 'pending'
+            const pair = reversed ? [confirmed, pending] : [pending, confirmed]
+            const rows = [interrupted, ...pair]
+            const before = JSON.stringify(rows)
+            const metadata = { conversations: {}, lastReceived: 0 }
+            const chats = useChatStore()
+            const stateBefore = JSON.stringify(chats.$state)
+            mockMessageStore.getIterator.mockResolvedValue(rows)
+            for (let attempt = 0; attempt < 2; attempt++) {
+              await expect(rehydrateState(metadata)).rejects.toThrow(
+                /stored.*attempt.*ownership/i,
+              )
+              expect(JSON.stringify(rows)).toBe(before)
+              expect(metadata).toEqual({ conversations: {}, lastReceived: 0 })
+              expect(JSON.stringify(chats.$state)).toBe(stateBefore)
+              expect(
+                mockMessageStore.mostRecentMessageTime,
+              ).not.toHaveBeenCalled()
+              expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+              expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+            }
+          },
+        )
+
+        it.each([
+          ['logical-message', 'logical-message'],
+          [undefined, 'logical-message'],
+          ['logical-message', undefined],
+          [undefined, undefined],
+        ])(
+          'retains same-owner twins with logical IDs %s / %s',
+          async (pendingId, confirmedId) => {
+            const { pending, confirmed } = twins(pendingId, confirmedId)
+            const rows = reversed ? [confirmed, pending] : [pending, confirmed]
+            const before = JSON.stringify(rows)
+            mockMessageStore.getIterator.mockResolvedValue(rows)
+            const restored = await rehydrateState({
+              conversations: {},
+              lastReceived: 0,
+            })
+            expect(Object.keys(restored.messages)).toEqual(['confirmed-digest'])
+            expect(
+              restored.conversations[ownerId].messages.map(
+                message => message.payloadDigest,
+              ),
+            ).toEqual(['confirmed-digest'])
+            expect(JSON.stringify(rows)).toBe(before)
+            expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+            expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
+          },
+        )
+      },
+    )
+
     it.each([
       ['missing', undefined, [{ type: 'text', text: 'old ownerless row' }]],
       ['empty', '', [{ type: 'text', text: 'old ownerless row' }]],

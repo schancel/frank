@@ -2342,7 +2342,13 @@ describe('canonical durable consumer barriers', () => {
           }
           expect(nativeSign).not.toHaveBeenCalled()
           expect(canonicalSign).not.toHaveBeenCalled()
-          expect(f.state.nativeJournal!.list()).toEqual(originalNative)
+          // A refused native resume cancels its own never-signed plan (#1235); the canonical
+          // path leaves the native plan alone. Nothing else in either journal moves.
+          expect(f.state.nativeJournal!.list()).toEqual(
+            kind === 'canonical'
+              ? originalNative
+              : originalNative.map(row => ({ ...row, cancelled: true })),
+          )
           expect(f.canonicalJournal.getIntents()).toEqual(originalCanonical)
         } finally {
           canonicalSign.mockRestore()

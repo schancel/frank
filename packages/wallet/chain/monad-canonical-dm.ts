@@ -559,7 +559,8 @@ async function settle(
     submitted.set(ready.attemptRef, (submitted.get(ready.attemptRef) ?? 0) + 1)
     try {
       await client.submit(ready.eligibility, { fetch })
-    } catch {
+    } catch (err) {
+      console.warn('[monad-canonical-dm settle submit failed]:', err)
       // Outcome unknown: the exact bytes stay journaled and are re-sent on a later pass.
     }
   }
@@ -623,7 +624,7 @@ async function send(
     )
   // Earlier attempts first: a live one is re-sent as-is, and an unmatched record holds everything.
   await settle(owner, directory.fetch, 1)
-  const live = owner.links.all().filter(row => !row.outcome)
+  const live = owner.links.all().filter(row => !row.outcome && !row.acknowledged)
   if (live.length > 0)
     throw new MonadStampPendingAttemptError(live.map(row => row.digest))
   const preparationTxHashes = await owner.prepareInventory({

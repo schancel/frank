@@ -332,6 +332,10 @@ export function getDefaultRelayBaseUrl(): string {
       window.location.hostname === "127.0.0.1" ||
       window.location.hostname === "localhost";
     if (isLoopback) {
+      const port = readEnv("FRANK_DEMO_RELAY_PORT") ?? "8098";
+      if (window.location.port && window.location.port !== port) {
+        return window.location.origin;
+      }
       if (configured) {
         try {
           const parsed = new URL(configured);
@@ -344,10 +348,6 @@ export function getDefaultRelayBaseUrl(): string {
         } catch {
           // ignore
         }
-      }
-      const port = readEnv("FRANK_DEMO_RELAY_PORT") ?? "8098";
-      if (window.location.port !== port) {
-        return window.location.origin;
       }
       return `http://127.0.0.1:${port}`;
     }

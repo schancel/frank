@@ -1678,6 +1678,7 @@ export const useChatStore = defineStore('chats', {
       if (message?.outbound) {
         const targetDigest =
           attemptDigest ||
+          message?.delivery?.attemptDigest ||
           (!payloadDigest.startsWith('pending:') ? payloadDigest : undefined)
         const wallet = explicitWallet || messagingWallet()
         if (targetDigest && wallet) {

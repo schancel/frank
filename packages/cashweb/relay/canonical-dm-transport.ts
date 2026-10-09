@@ -981,7 +981,20 @@ export async function submitCanonicalRequest(input: {
       }),
       controller.signal,
     )
-    if (response.url !== url) invalid('Canonical response origin/path mismatch')
+    if (response.url && response.url !== url) {
+      try {
+        const respUrl = new URL(response.url)
+        const reqUrl = new URL(url)
+        if (
+          !matchesRelayOrigin(respUrl.origin, reqUrl.origin) ||
+          respUrl.pathname !== reqUrl.pathname
+        ) {
+          invalid('Canonical response origin/path mismatch')
+        }
+      } catch {
+        invalid('Canonical response origin/path mismatch')
+      }
+    }
     const bytes = await readCanonicalResponse(
       response,
       CANONICAL_DM_MAX_STATUS_BYTES,

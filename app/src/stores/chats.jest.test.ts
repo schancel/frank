@@ -24,6 +24,7 @@
  * the whole jest process with an unhandled LevelUP lock error.
  */
 import { createPinia, setActivePinia } from 'pinia'
+import { createApp } from 'vue'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ;(global as any).document = { hasFocus: () => true }
@@ -34,13 +35,13 @@ import {
   rehydrateState,
   useChatStore,
   makeConversationId,
+  type Conversation,
   uuidv5,
   NULL_CONVERSATION_NAMESPACE,
   getTrustedEmailGatewayAddress,
   type RestorableState,
   type ChatMessage,
 } from './chats'
-import { defaultEmailGatewayAddress } from '../utils/constants'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
@@ -115,6 +116,24 @@ function makeWallet(address: string): WalletHandle {
   }
 }
 
+function conversationFor(
+  state: { conversations: Record<string, Conversation> },
+  address: string,
+): Conversation | undefined {
+  return Object.values(state.conversations).find(c => c.address === address)
+}
+
+function seedConversation(
+  chats: ReturnType<typeof useChatStore>,
+  address: string,
+  fields: Partial<Conversation>,
+) {
+  const conv = chats.openDirectConversation(address)
+  Object.assign(conv, fields)
+  for (const message of conv.messages) message.conversationId = conv.id
+  return conv
+}
+
 describe('stores/chats.ts (ticket #42)', () => {
   beforeEach(async () => {
     setActivePinia(createPinia())
@@ -132,6 +151,7 @@ describe('stores/chats.ts (ticket #42)', () => {
     jest.mocked(desktopNotify).mockClear()
     mockOwnAddress.mockReset()
     mockOwnAddress.mockResolvedValue(SENDER_ADDRESS)
+    jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
   })
 
   it('indexes outbound payload and attempt ownership in one history pass', () => {
@@ -190,7 +210,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         chats.messages[message.payloadDigest] = message as never
         return message as never
       })
-      chats.chats[SENDER_ADDRESS] = {
+      seedConversation(chats, SENDER_ADDRESS, {
         address: SENDER_ADDRESS,
         messages: history,
         totalUnreadMessages: 0,
@@ -199,7 +219,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         lastReceived: historySize,
         lastRead: 0,
         stampAmount: 1,
-      }
+      })
       const wrappers = Array.from({ length: batchSize }, (_, index) => ({
         outbound: false,
         senderAddress: SENDER_ADDRESS,
@@ -334,14 +354,14 @@ describe('stores/chats.ts (ticket #42)', () => {
         messages: {},
         lastReceived: loopbackTime,
       })
-      expect(restored.chats[SENDER_ADDRESS]?.messages).toEqual([
+      expect(conversationFor(restored, SENDER_ADDRESS)?.messages).toEqual([
         expect.objectContaining({
           payloadDigest: 'self-digest',
           outbound: true,
           stampValueWei: 7000n,
         }),
       ])
-      expect(restored.chats[SENDER_ADDRESS]?.totalValue).toBe(7000)
+      expect(conversationFor(restored, SENDER_ADDRESS)?.totalValue).toBe(7000)
     })
 
     it('serializes an overlapping relay save with send completion and reloads one relay-authored record', async () => {
@@ -512,18 +532,22 @@ describe('stores/chats.ts (ticket #42)', () => {
         messages: {},
         lastReceived: loopbackTime,
       })
-      expect(restored.chats[SENDER_ADDRESS]?.messages).toEqual([
+      expect(conversationFor(restored, SENDER_ADDRESS)?.messages).toEqual([
         expect.objectContaining({
           payloadDigest: 'race-digest',
           outbound: true,
           stampValueWei: 9000n,
         }),
       ])
-      expect(restored.chats[SENDER_ADDRESS]?.totalUnreadMessages).toBe(0)
-      expect(restored.chats[SENDER_ADDRESS]?.totalUnreadValue).toBe(0)
-      expect(restored.chats[SENDER_ADDRESS]?.totalValue).toBe(9000)
+      expect(
+        conversationFor(restored, SENDER_ADDRESS)?.totalUnreadMessages,
+      ).toBe(0)
+      expect(conversationFor(restored, SENDER_ADDRESS)?.totalUnreadValue).toBe(
+        0,
+      )
+      expect(conversationFor(restored, SENDER_ADDRESS)?.totalValue).toBe(9000)
       expect(restored.messages['race-digest']).toBe(
-        restored.chats[SENDER_ADDRESS]?.messages[0],
+        conversationFor(restored, SENDER_ADDRESS)?.messages[0],
       )
       expect(restored.messages[pendingIndex]).toBeUndefined()
       mockMessageStore.deleteMessage.mockResolvedValue(undefined)
@@ -638,7 +662,7 @@ describe('stores/chats.ts (ticket #42)', () => {
 
     it('matches the current outbox route canonically without inbound accounting', async () => {
       const chats = useChatStore()
-      chats.chats[RECIPIENT_ADDRESS] = {
+      seedConversation(chats, RECIPIENT_ADDRESS, {
         address: RECIPIENT_ADDRESS,
         messages: [],
         totalUnreadMessages: 0,
@@ -647,7 +671,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         lastReceived: 0,
         lastRead: 0,
         stampAmount: 1,
-      }
+      })
       chats.sendMessageLocal({
         address: RECIPIENT_ADDRESS,
         senderAddress: SENDER_ADDRESS,
@@ -704,7 +728,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           profile: { name: 'Old account', bio: '', avatar: '', pubKey: null },
         },
       })
-      chats.chats[RECIPIENT_ADDRESS] = {
+      seedConversation(chats, RECIPIENT_ADDRESS, {
         address: RECIPIENT_ADDRESS,
         messages: [],
         totalUnreadMessages: 0,
@@ -713,7 +737,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         lastReceived: 0,
         lastRead: 0,
         stampAmount: 1,
-      }
+      })
       chats.sendMessageLocal({
         address: RECIPIENT_ADDRESS,
         senderAddress: SENDER_ADDRESS,
@@ -793,7 +817,9 @@ describe('stores/chats.ts (ticket #42)', () => {
         lastReceived: 0,
       })
       expect(restored.messages['pending:old-attempt']).toBeUndefined()
-      expect(restored.chats[SENDER_ADDRESS]?.messages).toHaveLength(1)
+      expect(conversationFor(restored, SENDER_ADDRESS)?.messages).toHaveLength(
+        1,
+      )
     })
 
     it.each(['discard', 'clear'] as const)(
@@ -807,7 +833,7 @@ describe('stores/chats.ts (ticket #42)', () => {
             profile: { name: 'Alice', bio: '', avatar: '', pubKey: null },
           },
         })
-        chats.chats[SENDER_ADDRESS] = {
+        seedConversation(chats, SENDER_ADDRESS, {
           address: SENDER_ADDRESS,
           messages: [],
           totalUnreadMessages: 0,
@@ -816,7 +842,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           lastReceived: 0,
           lastRead: 0,
           stampAmount: 1,
-        }
+        })
         chats.sendMessageLocal({
           address: SENDER_ADDRESS,
           senderAddress: SENDER_ADDRESS,
@@ -897,7 +923,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       'keeps %s authoritative when a started loopback is waiting for identity',
       async operation => {
         const chats = useChatStore()
-        chats.chats[SENDER_ADDRESS] = {
+        seedConversation(chats, SENDER_ADDRESS, {
           address: SENDER_ADDRESS,
           messages: [],
           totalUnreadMessages: 0,
@@ -906,7 +932,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           lastReceived: 0,
           lastRead: 0,
           stampAmount: 1,
-        }
+        })
         chats.sendMessageLocal({
           address: SENDER_ADDRESS,
           senderAddress: SENDER_ADDRESS,
@@ -1014,7 +1040,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       ])
       while (!refresh.mock.calls.length) await Promise.resolve()
 
-      chats.chats[RECIPIENT_ADDRESS] = {
+      seedConversation(chats, RECIPIENT_ADDRESS, {
         address: RECIPIENT_ADDRESS,
         messages: [],
         totalUnreadMessages: 0,
@@ -1023,7 +1049,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         lastReceived: 0,
         lastRead: 0,
         stampAmount: 1,
-      }
+      })
       chats.sendMessageLocal({
         address: RECIPIENT_ADDRESS,
         senderAddress: wallet.identity.displayAddress,
@@ -1123,6 +1149,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(sendSpy).toHaveBeenCalledWith({
         wallet,
         recipient: { raw: RECIPIENT_ADDRESS },
+        conversationId: expect.any(String),
         items: [{ type: 'text', text: 'hello' }],
         onPreparationProgress,
         onAttemptCreated: expect.any(Function),
@@ -1394,7 +1421,9 @@ describe('stores/chats.ts (ticket #42)', () => {
       lastReceived: 0,
     })
 
-    expect(restored.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(2)
+    expect(conversationFor(restored, RECIPIENT_ADDRESS)?.messages).toHaveLength(
+      2,
+    )
     expect(restored.messages.inbox?.stampValueWei).toBe(10_000_000_000_000_001n)
     expect(restored.messages.outbox?.stampPayments?.[0]?.valueWei).toBe(
       20_000_000_000_000_002n,
@@ -1519,8 +1548,12 @@ describe('stores/chats.ts (ticket #42)', () => {
         messages: {},
         lastReceived: 0,
       })
-      expect(restored.chats[RECIPIENT_ADDRESS]?.totalUnreadMessages).toBe(1)
-      expect(restored.chats[RECIPIENT_ADDRESS]?.totalUnreadValue).toBe(5000)
+      expect(
+        conversationFor(restored, RECIPIENT_ADDRESS)?.totalUnreadMessages,
+      ).toBe(1)
+      expect(
+        conversationFor(restored, RECIPIENT_ADDRESS)?.totalUnreadValue,
+      ).toBe(5000)
     })
 
     it('persists an active-chat receipt as read across navigation and reload', async () => {
@@ -1531,7 +1564,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           profile: { name: 'Bob', bio: '', avatar: '', pubKey: null },
         },
       })
-      chats.activeChatAddr = RECIPIENT_ADDRESS
+      chats.setActiveChat(RECIPIENT_ADDRESS)
       const wrapper = makeWrapper()
 
       await chats.receiveMessages([wrapper])
@@ -1539,7 +1572,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.chats[RECIPIENT_ADDRESS]?.lastRead).toBe(
         wrapper.message.serverTime,
       )
-      chats.activeChatAddr = THIRD_ADDRESS
+      chats.setActiveChat(THIRD_ADDRESS)
 
       const persisted = mockMessageStore.saveMessage.mock.calls.at(-1)?.[0]
       mockMessageStore.getIterator.mockResolvedValueOnce(
@@ -1547,20 +1580,14 @@ describe('stores/chats.ts (ticket #42)', () => {
           yield persisted
         })(),
       )
-      const restored = await rehydateChat({
-        activeChatAddr: THIRD_ADDRESS,
-        chats: {
-          [RECIPIENT_ADDRESS]: {
-            ...chats.chats[RECIPIENT_ADDRESS]!,
-            messages: [],
-          },
-        },
-        messages: {},
-        lastReceived: chats.lastReceived,
-      })
+      const restored = await rehydateChat(chats.$state)
 
-      expect(restored.chats[RECIPIENT_ADDRESS]?.totalUnreadMessages).toBe(0)
-      expect(restored.chats[RECIPIENT_ADDRESS]?.totalUnreadValue).toBe(0)
+      expect(
+        conversationFor(restored, RECIPIENT_ADDRESS)?.totalUnreadMessages,
+      ).toBe(0)
+      expect(
+        conversationFor(restored, RECIPIENT_ADDRESS)?.totalUnreadValue,
+      ).toBe(0)
     })
 
     it('still falls back to stampPrice(outpoints) when stampValueWei is absent (Lotus-origin)', async () => {
@@ -1760,7 +1787,7 @@ describe('stores/chats.ts (ticket #42)', () => {
 
   it('deletes an ordinary non-self outbound without an impossible sender-mailbox tombstone', async () => {
     const chats = useChatStore()
-    chats.chats[RECIPIENT_ADDRESS] = {
+    seedConversation(chats, RECIPIENT_ADDRESS, {
       address: RECIPIENT_ADDRESS,
       messages: [],
       totalUnreadMessages: 0,
@@ -1769,7 +1796,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       lastReceived: 0,
       lastRead: 0,
       stampAmount: 0,
-    }
+    })
     chats.sendMessageLocal({
       address: RECIPIENT_ADDRESS,
       senderAddress: SENDER_ADDRESS,
@@ -1796,7 +1823,7 @@ describe('stores/chats.ts (ticket #42)', () => {
 
   it('deletes message from a conversation keyed by UUID in chats.conversations', async () => {
     const chats = useChatStore()
-    const convId = 'conv-uuid-123'
+    const convId = '33333333-3333-4333-8333-000000000001'
     chats.conversations[convId] = {
       id: convId,
       address: RECIPIENT_ADDRESS,
@@ -1833,7 +1860,7 @@ describe('stores/chats.ts (ticket #42)', () => {
 
   it('keeps durable receipt suppression for an outbound self-route', async () => {
     const chats = useChatStore()
-    chats.chats[SENDER_ADDRESS] = {
+    seedConversation(chats, SENDER_ADDRESS, {
       address: SENDER_ADDRESS,
       messages: [],
       totalUnreadMessages: 0,
@@ -1842,7 +1869,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       lastReceived: 0,
       lastRead: 0,
       stampAmount: 0,
-    }
+    })
     chats.sendMessageLocal({
       address: SENDER_ADDRESS,
       senderAddress: SENDER_ADDRESS,
@@ -1862,14 +1889,14 @@ describe('stores/chats.ts (ticket #42)', () => {
     expect(mockMessageStore.suppressAndDelete).toHaveBeenCalledWith(
       SENDER_ADDRESS,
       ['delete-self'],
-      [{ payloadDigest: 'delete-self' }],
+      [{ payloadDigest: 'delete-self', receivedTime: expect.any(Number) }],
     )
     expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
   })
 
   it('clears ordinary outbound history without growing sender-mailbox suppression', async () => {
     const chats = useChatStore()
-    chats.chats[RECIPIENT_ADDRESS] = {
+    seedConversation(chats, RECIPIENT_ADDRESS, {
       address: RECIPIENT_ADDRESS,
       messages: [],
       totalUnreadMessages: 0,
@@ -1878,7 +1905,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       lastReceived: 0,
       lastRead: 0,
       stampAmount: 0,
-    }
+    })
     for (const digest of ['clear-one', 'clear-two']) {
       chats.sendMessageLocal({
         address: RECIPIENT_ADDRESS,
@@ -1911,6 +1938,182 @@ describe('stores/chats.ts (ticket #42)', () => {
       chats.readAll(RECIPIENT_ADDRESS)
 
       expect(errorSpy).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('ticket #1237: sole conversation owner', () => {
+    const firstId = '11111111-1111-4111-8111-111111111111'
+    const secondId = '22222222-2222-4222-8222-222222222222'
+
+    function incoming(
+      conversationId: string,
+      index: string,
+      time: number,
+    ): ReceivedMessageWrapper {
+      return {
+        conversationId,
+        outbound: false,
+        senderAddress: RECIPIENT_ADDRESS,
+        copartyAddress: RECIPIENT_ADDRESS,
+        copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+        index,
+        stampValue: 0,
+        message: {
+          conversationId,
+          outbound: false,
+          status: 'confirmed',
+          senderAddress: RECIPIENT_ADDRESS,
+          destinationAddress: SENDER_ADDRESS,
+          items: [{ type: 'text', text: index }],
+          serverTime: time,
+          receivedTime: time,
+          outpoints: [],
+        },
+      }
+    }
+
+    function independentPair() {
+      const chats = useChatStore()
+      const create = (conversationId: string) =>
+        chats.createConversation({
+          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+          address: RECIPIENT_ADDRESS,
+          conversationId,
+          name: 'Equal subject',
+        })
+      return { chats, first: create(firstId), second: create(secondId) }
+    }
+
+    it('persists only the conversation metadata owner and reconstructs its default index on reopen', async () => {
+      let persistence: {
+        save(
+          storage: { put: jest.Mock },
+          mutation: unknown,
+          state: unknown,
+        ): Promise<void>
+      }
+      const pinia = createPinia()
+      pinia.use(({ options, store }) => {
+        if (store.$id === 'chats')
+          persistence = options.storage as typeof persistence
+      })
+      createApp({}).use(pinia)
+      setActivePinia(pinia)
+      const chats = useChatStore()
+      const defaultThread = chats.openDirectConversation(RECIPIENT_ADDRESS)
+      const independent = chats.createConversation({
+        address: RECIPIENT_ADDRESS,
+        participants: [RECIPIENT_ADDRESS],
+        name: 'Equal',
+      })
+      defaultThread.name = 'Equal'
+      independent.deletedAt = 50
+      chats.activeConversationId = defaultThread.id
+      const put = jest.fn(async () => undefined)
+      await persistence!.save({ put }, {}, chats.$state)
+      const raw = JSON.parse(put.mock.calls[0][1])
+      expect(raw.chats).toBeUndefined()
+      expect(raw.activeChatAddr).toBeUndefined()
+      expect(raw.logicalMessages).toBeUndefined()
+      expect(Object.keys(raw.conversations).sort()).toEqual(
+        [defaultThread.id, independent.id].sort(),
+      )
+      mockMessageStore.getIterator.mockResolvedValueOnce([])
+      const restored = await rehydrateState(raw)
+      setActivePinia(createPinia())
+      const reopened = useChatStore()
+      reopened.$patch(restored)
+      expect(reopened.chats[RECIPIENT_ADDRESS]?.id).toBe(defaultThread.id)
+      expect(reopened.conversations[independent.id].deletedAt).toBe(50)
+      expect(reopened.conversations[independent.id].name).toBe('Equal')
+      expect(reopened.activeConversationId).toBe(defaultThread.id)
+    })
+
+    it('keeps same-peer subjects, listing, unread and ID activation independent', async () => {
+      const { chats, first, second } = independentPair()
+      await chats.receiveMessages([
+        incoming(first.id, 'first-owned', 100),
+        incoming(second.id, 'second-owned', 200),
+      ])
+      expect(chats.getSortedChatOrder.map(c => c.id).sort()).toEqual([
+        firstId,
+        secondId,
+      ])
+      first.name = 'Renamed subject'
+      chats.setActiveConversation(first.id)
+      expect(first.totalUnreadMessages).toBe(0)
+      expect(second.totalUnreadMessages).toBe(1)
+      expect(second.name).toBe('Equal subject')
+      expect(first.messages.map(m => m.payloadDigest)).toEqual(['first-owned'])
+      expect(second.messages.map(m => m.payloadDigest)).toEqual([
+        'second-owned',
+      ])
+    })
+
+    it('rebuilds membership from persisted conversation IDs without peer reparenting', async () => {
+      const { chats, first, second } = independentPair()
+      const wrappers = [
+        incoming(first.id, 'first-restored', 100),
+        incoming(second.id, 'second-restored', 200),
+      ]
+      first.name = 'Renamed subject'
+      first.lastRead = 100
+      for (let reload = 0; reload < 2; reload += 1) {
+        mockMessageStore.getIterator.mockResolvedValueOnce(
+          (async function* () {
+            for (const wrapper of wrappers) yield wrapper
+          })(),
+        )
+        const restored = await rehydrateState(chats.$state)
+        expect(Object.keys(restored.conversations).sort()).toEqual([
+          firstId,
+          secondId,
+        ])
+        expect(
+          restored.conversations[firstId].messages.map(m => m.payloadDigest),
+        ).toEqual(['first-restored'])
+        expect(
+          restored.conversations[secondId].messages.map(m => m.payloadDigest),
+        ).toEqual(['second-restored'])
+        expect(restored.conversations[firstId].totalUnreadMessages).toBe(0)
+        expect(restored.conversations[secondId].totalUnreadMessages).toBe(1)
+        expect(restored.logicalMessages['first-restored']?.conversationId).toBe(
+          firstId,
+        )
+        expect(
+          restored.logicalMessages['second-restored']?.conversationId,
+        ).toBe(secondId)
+        chats.$patch(restored)
+      }
+    })
+
+    it('deletes only the addressed same-peer conversation', async () => {
+      const { chats, first, second } = independentPair()
+      await chats.receiveMessages([
+        incoming(first.id, 'first-delete', 100),
+        incoming(second.id, 'second-keep', 200),
+      ])
+      await chats.deleteConversation(first.id, 300)
+      expect(first.messages).toHaveLength(0)
+      expect(first.deletedAt).toBe(300)
+      expect(second.messages.map(m => m.payloadDigest)).toEqual(['second-keep'])
+      expect(second.deletedAt).toBeUndefined()
+      expect(chats.messages['second-keep']).toBeDefined()
+    })
+
+    it('rejects a conversation ID belonging to another peer before durable receipt or mutation', async () => {
+      const chats = useChatStore()
+      const foreign = chats.createConversation({
+        participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+        address: THIRD_ADDRESS,
+        conversationId: firstId,
+      })
+      await expect(
+        chats.receiveMessages([incoming(firstId, 'foreign-id', 100)]),
+      ).rejects.toThrow(/conversation.*(peer|recipient|participant)/i)
+      expect(foreign.messages).toHaveLength(0)
+      expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      expect(chats.messages['foreign-id']).toBeUndefined()
     })
   })
 
@@ -1963,12 +2166,22 @@ describe('stores/chats.ts (ticket #42)', () => {
           mockOwnAddress.mockRejectedValue(new Error('identity unavailable'))
         }
 
+        const durableRows = [first, second].flatMap(conv =>
+          conv.messages.map(message => ({
+            index: message.payloadDigest,
+            copartyAddress: message.senderAddress,
+            senderAddress: message.senderAddress,
+            outbound: message.outbound,
+            message,
+          })),
+        )
         for (let reload = 0; reload < 2; reload += 1) {
+          mockMessageStore.getIterator.mockResolvedValueOnce(durableRows)
           const restored = await rehydrateState(chats.$state)
           expect(Object.keys(restored.conversations).sort()).toEqual(
             [first.id, second.id].sort(),
           )
-          expect(restored.chats[SENDER_ADDRESS]).toBeUndefined()
+          expect(conversationFor(restored, SENDER_ADDRESS)).toBeUndefined()
           for (const [id, digest] of [
             [first.id, 'first-addressless'],
             [second.id, 'second-addressless'],
@@ -2046,16 +2259,13 @@ describe('stores/chats.ts (ticket #42)', () => {
 
     it('reuses a recipient placeholder without publishing a self alias or redirecting self messages', () => {
       const chats = useChatStore()
-      const placeholder = chats.createConversation({
-        participants: [RECIPIENT_ADDRESS],
-        address: RECIPIENT_ADDRESS,
-      })
+      const placeholder = chats.openDirectConversation(RECIPIENT_ADDRESS)
       for (let activation = 0; activation < 2; activation += 1) {
         expect(
-          chats.createConversation({
-            participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS_LOWERCASE],
-            address: RECIPIENT_ADDRESS_LOWERCASE,
-          }).id,
+          chats.openDirectConversation(RECIPIENT_ADDRESS_LOWERCASE, [
+            SENDER_ADDRESS,
+            RECIPIENT_ADDRESS_LOWERCASE,
+          ]).id,
         ).toBe(placeholder.id)
       }
 
@@ -2081,10 +2291,10 @@ describe('stores/chats.ts (ticket #42)', () => {
       activate => {
         const chats = useChatStore()
         jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
-        const remote = chats.createConversation({
-          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
-          address: RECIPIENT_ADDRESS,
-        })
+        const remote = chats.openDirectConversation(RECIPIENT_ADDRESS, [
+          SENDER_ADDRESS,
+          RECIPIENT_ADDRESS,
+        ])
         chats.sendMessageLocal({
           address: RECIPIENT_ADDRESS,
           senderAddress: SENDER_ADDRESS,
@@ -2168,7 +2378,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         )
         const restored = await rehydrateState(state)
         expect(Object.keys(restored.conversations)).toHaveLength(2)
-        expect(restored.chats[SENDER_ADDRESS]).toBeUndefined()
+        expect(conversationFor(restored, SENDER_ADDRESS)).toBeUndefined()
         expect(
           restored.conversations[first.id].messages.map(m => m.payloadDigest),
         ).toEqual(['first-incoming'])
@@ -2306,7 +2516,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS, THIRD_ADDRESS],
         name: 'Team Frank',
         initialRole: 'member',
-        conversationId: 'group-team-frank',
+        conversationId: '4d3fd7ea-0618-5dff-ae44-03c33ae8d0c0',
       })
 
       expect(groupConv.kind).toBe('group')
@@ -2335,8 +2545,8 @@ describe('stores/chats.ts (ticket #42)', () => {
       // Direct chats with Bob and Carol remain empty
       expect(chats.conversations[directBob.id]?.messages).toHaveLength(0)
       expect(chats.conversations[directCarol.id]?.messages).toHaveLength(0)
-      expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
-      expect(chats.chats[THIRD_ADDRESS]?.messages).toHaveLength(0)
+      expect(chats.chats[RECIPIENT_ADDRESS]).toBeUndefined()
+      expect(chats.chats[THIRD_ADDRESS]).toBeUndefined()
     })
 
     it('migrates legacy direct-message fixtures into conversations and logical messages', async () => {
@@ -2402,7 +2612,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       ).toBe('legacy-msg-1')
 
       // Chats map alias points to the same conversation
-      expect(rehydrated.chats[RECIPIENT_ADDRESS]).toBe(conv)
+      expect(conversationFor(rehydrated, RECIPIENT_ADDRESS)).toBe(conv)
     })
 
     it('enforces tombstone deletion semantics: ignores replayed messages and reopens on newer message', async () => {
@@ -2410,7 +2620,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       const conv = chats.createConversation({
         kind: 'direct',
         participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
-        topic: 'thread-delete',
+        topic: 'f1dab84f-56ba-5cd2-908a-5468b6e3012b',
         name: 'Temporary Thread',
       })
 
@@ -2443,7 +2653,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           index: 'm1-replayed',
           stampValue: 10,
           message: {
-            conversationId: 'thread-delete',
+            conversationId: conv.id,
             outbound: false,
             status: 'confirmed',
             items: [{ type: 'text', text: 'replayed message' }],
@@ -2467,8 +2677,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           index: 'm2-fresh',
           stampValue: 10,
           message: {
-            conversationId: 'thread-delete',
-            conversationName: 'Reopened Thread',
+            conversationId: conv.id,
             outbound: false,
             status: 'confirmed',
             items: [{ type: 'text', text: 'fresh message after delete' }],
@@ -2484,43 +2693,21 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.conversations[conv.id]?.messages[0].payloadDigest).toBe(
         'm2-fresh',
       )
-      expect(chats.conversations[conv.id]?.name).toBe('Reopened Thread')
+      expect(chats.conversations[conv.id]?.name).toBe('Temporary Thread')
     })
 
-    it('updates conversation name when newer message carries a new conversation name (rename semantics)', async () => {
+    it('edits the local subject without changing identity or participant routing', () => {
       const chats = useChatStore()
       const conv = chats.createConversation({
-        kind: 'direct',
+        address: RECIPIENT_ADDRESS,
         participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
-        topic: 'topic-rename',
-        name: 'Initial Name',
+        name: 'Initial',
       })
-      expect(chats.conversations[conv.id]?.name).toBe('Initial Name')
-
-      // Receive message with a new conversation name
-      await chats.receiveMessages([
-        {
-          outbound: false,
-          senderAddress: RECIPIENT_ADDRESS,
-          copartyAddress: RECIPIENT_ADDRESS,
-          copartyPubKey: {} as any,
-          index: 'rename-msg',
-          stampValue: 10,
-          message: {
-            conversationId: 'topic-rename',
-            conversationName: 'Renamed Topic',
-            outbound: false,
-            status: 'confirmed',
-            items: [{ type: 'text', text: 'Renaming this' }],
-            serverTime: 150,
-            receivedTime: 150,
-            outpoints: [],
-            senderAddress: RECIPIENT_ADDRESS,
-          } as any,
-        },
-      ])
-
-      expect(chats.conversations[conv.id]?.name).toBe('Renamed Topic')
+      const id = conv.id
+      conv.name = 'Renamed'
+      expect(chats.conversations[id].name).toBe('Renamed')
+      expect(chats.conversations[id].address).toBe(RECIPIENT_ADDRESS)
+      expect(chats.getSortedChatOrder.map(c => c.id)).toEqual([id])
     })
 
     it('activates conversation by ID and updates activeConversationId and activeConversation (ticket #943)', () => {
@@ -2618,7 +2805,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           index: 'gateway-email-msg-1',
           stampValue: 10,
           message: {
-            conversationId: 'email-thread-gw-1',
+            conversationId: 'ca3a65f8-c175-5e7c-ba37-0274014f305c',
             outbound: false,
             status: 'confirmed',
             items: [emailPayload],
@@ -2651,7 +2838,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           index: 'peer-email-msg-1',
           stampValue: 10,
           message: {
-            conversationId: 'email-thread-peer-1',
+            conversationId: 'cb9b1cf0-e016-5012-893c-7d85a32f93c8',
             outbound: false,
             status: 'confirmed',
             items: [emailPayload],
@@ -2689,7 +2876,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           index: 'custom-gw-email-1',
           stampValue: 10,
           message: {
-            conversationId: 'email-custom-gw-1',
+            conversationId: 'ff550e12-2d7a-5de0-8276-c513f6bd0dc5',
             outbound: false,
             status: 'confirmed',
             items: [emailPayload],
@@ -2717,7 +2904,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           index: 'old-default-email-1',
           stampValue: 10,
           message: {
-            conversationId: 'email-old-default-1',
+            conversationId: 'cda8ca34-fb07-514d-99c0-9767653bf827',
             outbound: false,
             status: 'confirmed',
             items: [emailPayload],
@@ -2753,7 +2940,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           index: 'plain-direct-1',
           stampValue: 10,
           message: {
-            conversationId: 'plain-direct-conv',
+            conversationId: 'f3f37104-782d-57da-b376-d8c85f880515',
             outbound: false,
             status: 'confirmed',
             items: [{ type: 'text', text: 'Hey there' }],
@@ -2780,7 +2967,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           index: 'peer-email-in-direct-2',
           stampValue: 10,
           message: {
-            conversationId: 'plain-direct-conv',
+            conversationId: 'f3f37104-782d-57da-b376-d8c85f880515',
             outbound: false,
             status: 'confirmed',
             items: [emailPayload],
@@ -2800,456 +2987,72 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
-  describe('ticket #1178: collapse 1-on-1 direct messages into canonical peer conversation thread', () => {
-    it('collapses multiple incoming direct messages with different conversationId UUIDs from the same sender into a single canonical thread (fixes #1178)', async () => {
+  describe('default opening and independent creation (#1237 supersedes #1178/#1186)', () => {
+    it('opens one default and creates fresh equal-subject threads without collapsing them', () => {
       const chats = useChatStore()
-      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
-
-      const peerAddress = RECIPIENT_ADDRESS
-      const uuid1 = '11111111-1111-4111-8111-111111111111'
-      const uuid2 = '22222222-2222-4222-8222-222222222222'
-      const uuid3 = '33333333-3333-4333-8333-333333333333'
-
-      // First incoming message with UUID-1
-      await chats.receiveMessages([
-        {
-          outbound: false,
-          senderAddress: peerAddress,
-          copartyAddress: peerAddress,
-          copartyPubKey: {} as any,
-          index: 'msg-uuid-1',
-          stampValue: 10,
-          message: {
-            conversationId: uuid1,
-            outbound: false,
-            status: 'confirmed',
-            items: [{ type: 'text', text: 'Hello from Qwen (message 1)' }],
-            serverTime: 1000,
-            receivedTime: 1000,
-            outpoints: [],
-            senderAddress: peerAddress,
-          } as any,
-        },
-      ])
-
-      // Second incoming message from same sender with UUID-2
-      await chats.receiveMessages([
-        {
-          outbound: false,
-          senderAddress: peerAddress,
-          copartyAddress: peerAddress,
-          copartyPubKey: {} as any,
-          index: 'msg-uuid-2',
-          stampValue: 10,
-          message: {
-            conversationId: uuid2,
-            outbound: false,
-            status: 'confirmed',
-            items: [{ type: 'text', text: 'Hello from Qwen (message 2)' }],
-            serverTime: 2000,
-            receivedTime: 2000,
-            outpoints: [],
-            senderAddress: peerAddress,
-          } as any,
-        },
-      ])
-
-      // Third incoming message from same sender with UUID-3
-      await chats.receiveMessages([
-        {
-          outbound: false,
-          senderAddress: peerAddress,
-          copartyAddress: peerAddress,
-          copartyPubKey: {} as any,
-          index: 'msg-uuid-3',
-          stampValue: 10,
-          message: {
-            conversationId: uuid3,
-            outbound: false,
-            status: 'confirmed',
-            items: [{ type: 'text', text: 'Hello from Qwen (message 3)' }],
-            serverTime: 3000,
-            receivedTime: 3000,
-            outpoints: [],
-            senderAddress: peerAddress,
-          } as any,
-        },
-      ])
-
-      // Verify only ONE direct conversation exists for this peer
-      const peerConversations = Object.values(chats.conversations).filter(
-        c =>
-          c.kind === 'direct' &&
-          c.participants.some(p => sameCanonicalAddress(p, peerAddress)),
-      )
-      expect(peerConversations).toHaveLength(1)
-
-      const canonicalConv = peerConversations[0]
-      expect(chats.chats[peerAddress]).toBe(canonicalConv)
-      expect(canonicalConv.messages).toHaveLength(3)
-      expect(canonicalConv.messages.map(m => m.payloadDigest)).toEqual([
-        'msg-uuid-1',
-        'msg-uuid-2',
-        'msg-uuid-3',
-      ])
-      // All messages should have conversationId assigned to the canonical conversation id
-      for (const msg of canonicalConv.messages) {
-        expect(msg.conversationId).toBe(canonicalConv.id)
-      }
+      const first = chats.openDirectConversation(RECIPIENT_ADDRESS)
+      const second = chats.createConversation({
+        address: RECIPIENT_ADDRESS,
+        participants: [RECIPIENT_ADDRESS],
+        name: 'Equal',
+      })
+      const third = chats.createConversation({
+        address: RECIPIENT_ADDRESS,
+        participants: [RECIPIENT_ADDRESS],
+        name: 'Equal',
+      })
+      first.name = 'Equal'
+      expect(chats.openDirectConversation(RECIPIENT_ADDRESS)).toBe(first)
+      expect(new Set([first.id, second.id, third.id]).size).toBe(3)
+      expect(chats.getSortedChatOrder).toHaveLength(3)
+      expect(chats.chats[RECIPIENT_ADDRESS]).toBe(first)
+      expect(chats.chats[second.id]).toBeUndefined()
+      chats.setActiveConversation(second.id)
+      expect(chats.activeConversation).toBe(second)
+      chats.setActiveChat(RECIPIENT_ADDRESS)
+      expect(chats.activeConversation).toBe(first)
     })
 
-    it('rehydrateState auto-heals pre-existing duplicate direct conversation records with the same peer into a single consolidated thread with all messages preserved (fixes #1178)', async () => {
-      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
-      const peerAddress = RECIPIENT_ADDRESS
-
-      const dupId1 = 'dup-thread-1'
-      const dupId2 = 'dup-thread-2'
-      const canonicalParticipants = [SENDER_ADDRESS, peerAddress].sort()
-
-      const msg1: ChatMessage = {
-        payloadDigest: 'dup-msg-1',
-        conversationId: dupId1,
-        senderAddress: peerAddress,
-        outbound: false,
-        status: 'confirmed',
-        items: [{ type: 'text', text: 'Message in thread 1' }],
-        serverTime: 100,
-        receivedTime: 100,
-        outpoints: [],
-        stampValueWei: 100n,
-      } as any
-
-      const msg2: ChatMessage = {
-        payloadDigest: 'dup-msg-2',
-        conversationId: dupId2,
-        senderAddress: peerAddress,
-        outbound: false,
-        status: 'confirmed',
-        items: [{ type: 'text', text: 'Message in thread 2' }],
-        serverTime: 200,
-        receivedTime: 200,
-        outpoints: [],
-        stampValueWei: 200n,
-      } as any
-
-      const duplicateState: RestorableState = {
-        activeChatAddr: null,
-        activeConversationId: null,
-        conversations: {
-          [dupId1]: {
-            id: dupId1,
-            kind: 'direct',
-            address: peerAddress,
-            participants: canonicalParticipants,
-            messages: [msg1],
-            lastReceived: 100,
-            lastRead: 50,
-            totalUnreadMessages: 1,
-            totalUnreadValue: 100,
-            totalValue: 100,
-          } as any,
-          [dupId2]: {
-            id: dupId2,
-            kind: 'direct',
-            address: peerAddress,
-            participants: canonicalParticipants,
-            messages: [msg2],
-            lastReceived: 200,
-            lastRead: 150,
-            totalUnreadMessages: 1,
-            totalUnreadValue: 200,
-            totalValue: 200,
-          } as any,
-        },
-        chats: {
-          [peerAddress]: {
-            id: dupId2,
-            address: peerAddress,
-            messages: [],
-          } as any,
-        },
-        lastReceived: 200,
-      }
-
-      const rehydrated = await rehydrateState(duplicateState)
-
-      // Duplicate conversation keys should be collapsed into a single thread
-      const peerConvs = Object.values(rehydrated.conversations).filter(
-        c =>
-          c.kind === 'direct' &&
-          c.participants.some(p => sameCanonicalAddress(p, peerAddress)),
+    it('keeps a default placeholder stable while rejecting a different full participant pair', () => {
+      const chats = useChatStore()
+      const placeholder = chats.openDirectConversation(RECIPIENT_ADDRESS)
+      expect(
+        chats.openDirectConversation(RECIPIENT_ADDRESS, [
+          SENDER_ADDRESS,
+          RECIPIENT_ADDRESS,
+        ]).id,
+      ).toBe(placeholder.id)
+      expect(placeholder.participants).toEqual(
+        [SENDER_ADDRESS, RECIPIENT_ADDRESS].sort(),
       )
-      expect(peerConvs).toHaveLength(1)
+      expect(() =>
+        chats.openDirectConversation(RECIPIENT_ADDRESS, [
+          THIRD_ADDRESS,
+          RECIPIENT_ADDRESS,
+        ]),
+      ).toThrow(/different participants/)
+      expect(chats.getSortedChatOrder).toHaveLength(1)
+    })
 
-      const consolidatedConv = peerConvs[0]
-      // chats[peerAddress] must point to consolidated conversation
-      expect(rehydrated.chats[peerAddress]).toBe(consolidatedConv)
-
-      // The orphaned duplicate conversation key must be deleted
-      const orphanedKey = consolidatedConv.id === dupId1 ? dupId2 : dupId1
-      expect(rehydrated.conversations[orphanedKey]).toBeUndefined()
-
-      // All messages must be preserved, sorted, and re-keyed to the consolidated conversation
-      expect(consolidatedConv.messages).toHaveLength(2)
-      expect(consolidatedConv.messages[0].payloadDigest).toBe('dup-msg-1')
-      expect(consolidatedConv.messages[1].payloadDigest).toBe('dup-msg-2')
-      expect(consolidatedConv.messages[0].conversationId).toBe(
-        consolidatedConv.id,
-      )
-      expect(consolidatedConv.messages[1].conversationId).toBe(
-        consolidatedConv.id,
-      )
-
-      // Accounting must be recomputed
-      expect(consolidatedConv.lastReceived).toBe(200)
-      expect(consolidatedConv.lastRead).toBe(150)
-      // msg1 (serverTime 100) <= lastRead 150 -> read; msg2 (serverTime 200) > lastRead 150 -> unread
-      expect(consolidatedConv.totalUnreadMessages).toBe(1)
-      expect(consolidatedConv.totalUnreadValue).toBe(200)
-      expect(consolidatedConv.totalValue).toBe(300)
+    it('does not designate an explicit ID as default merely because it equals a derived peer ID', () => {
+      const chats = useChatStore()
+      const explicit = chats.createConversation({
+        address: RECIPIENT_ADDRESS,
+        participants: [RECIPIENT_ADDRESS],
+        conversationId: makeConversationId([RECIPIENT_ADDRESS]),
+      })
+      const defaultThread = chats.openDirectConversation(RECIPIENT_ADDRESS)
+      expect(defaultThread.id).not.toBe(explicit.id)
+      expect(chats.chats[RECIPIENT_ADDRESS]).toBe(defaultThread)
+      expect(explicit.defaultDirect).toBeUndefined()
     })
   })
 
-  describe('ticket #1186: deduplicate direct chats and suppress empty peer placeholders', () => {
-    it('getSortedChatOrder suppresses empty placeholder when an active conversation with messages exists for the same direct peer (fixes #1186)', () => {
-      const chats = useChatStore()
-      const peerAddress = RECIPIENT_ADDRESS
-      const emptyId = peerAddress
-      const canonicalId = 'canonical-conv-123'
-
-      const msg1: ChatMessage = {
-        payloadDigest: 'msg-1',
-        conversationId: canonicalId,
-        senderAddress: peerAddress,
-        outbound: false,
-        status: 'confirmed',
-        items: [{ type: 'text', text: 'You alive?' }],
-        serverTime: 500,
-        receivedTime: 500,
-        outpoints: [],
-        stampValueWei: 1000n,
-      } as any
-
-      // Two entries exist in state: an empty placeholder and the active conversation with messages
-      chats.conversations[emptyId] = {
-        id: emptyId,
-        kind: 'direct',
-        address: peerAddress,
-        participants: [peerAddress],
-        messages: [],
-        totalUnreadMessages: 0,
-        totalUnreadValue: 0,
-        totalValue: 0,
-        createdAt: 100,
-      } as any
-
-      chats.conversations[canonicalId] = {
-        id: canonicalId,
-        kind: 'direct',
-        address: peerAddress,
-        participants: [SENDER_ADDRESS, peerAddress],
-        messages: [msg1],
-        totalUnreadMessages: 1,
-        totalUnreadValue: 1000,
-        totalValue: 1000,
-        lastReceived: 500,
-        createdAt: 200,
-      } as any
-
-      chats.chats[peerAddress] = chats.conversations[emptyId] as any
-
-      // getSortedChatOrder should deduplicate by peer and suppress the empty placeholder
-      const sorted = chats.getSortedChatOrder
-      const peerEntries = sorted.filter(
-        c =>
-          c.kind === 'direct' &&
-          c.participants?.some(p => sameCanonicalAddress(p, peerAddress)),
-      )
-      expect(peerEntries).toHaveLength(1)
-      expect(peerEntries[0].id).toBe(canonicalId)
-      expect(peerEntries[0].messages).toHaveLength(1)
-
-      // totalUnread should also not double count
-      expect(chats.totalUnread).toBe(1)
-    })
-
-    it('getSortedChatOrder retains a freshly opened direct chat when no conversation with messages exists yet', () => {
-      const chats = useChatStore()
-      const peerAddress = THIRD_ADDRESS
-
-      chats.conversations['fresh-conv'] = {
-        id: 'fresh-conv',
-        kind: 'direct',
-        address: peerAddress,
-        participants: [peerAddress],
-        messages: [],
-        totalUnreadMessages: 0,
-        totalUnreadValue: 0,
-        totalValue: 0,
-        createdAt: 100,
-      } as any
-
-      const sorted = chats.getSortedChatOrder
-      const peerEntries = sorted.filter(
-        c =>
-          c.kind === 'direct' &&
-          c.participants?.some(p => sameCanonicalAddress(p, peerAddress)),
-      )
-      expect(peerEntries).toHaveLength(1)
-      expect(peerEntries[0].id).toBe('fresh-conv')
-    })
-
-    it('setActiveChat reuses existing conversation with messages instead of creating an empty duplicate (fixes #1186)', () => {
-      const chats = useChatStore()
-      const contacts = useContactStore()
-      jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined as any)
-      const peerAddress = RECIPIENT_ADDRESS
-      const canonicalId = 'canonical-conv-reuse'
-
-      const msg: ChatMessage = {
-        payloadDigest: 'msg-reuse',
-        conversationId: canonicalId,
-        senderAddress: peerAddress,
-        outbound: false,
-        status: 'confirmed',
-        items: [{ type: 'text', text: 'Hello' }],
-        serverTime: 100,
-        receivedTime: 100,
-        outpoints: [],
-      } as any
-
-      chats.conversations[canonicalId] = {
-        id: canonicalId,
-        kind: 'direct',
-        address: peerAddress,
-        participants: [SENDER_ADDRESS, peerAddress],
-        messages: [msg],
-        totalUnreadMessages: 0,
-        totalUnreadValue: 0,
-        totalValue: 0,
-      } as any
-
-      // chats[peerAddress] is not set yet
-      expect(chats.chats[peerAddress]).toBeUndefined()
-
-      chats.setActiveChat(peerAddress)
-
-      expect(chats.activeConversationId).toBe(canonicalId)
-      expect(chats.chats[peerAddress]).toBe(chats.conversations[canonicalId])
-      // No extra conversation should be created in conversations
-      expect(Object.keys(chats.conversations)).toHaveLength(1)
-    })
-
-    it('setActiveConversation reuses conversation with messages when passed peer address instead of an empty placeholder (fixes #1186)', () => {
-      const chats = useChatStore()
-      const contacts = useContactStore()
-      jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined as any)
-      const peerAddress = RECIPIENT_ADDRESS
-      const canonicalId = 'canonical-conv-nav'
-
-      const msg: ChatMessage = {
-        payloadDigest: 'msg-nav',
-        conversationId: canonicalId,
-        senderAddress: peerAddress,
-        outbound: false,
-        status: 'confirmed',
-        items: [{ type: 'text', text: 'Active message' }],
-        serverTime: 100,
-        receivedTime: 100,
-        outpoints: [],
-      } as any
-
-      // Placeholder exists at peerAddress key, but canonicalId has the actual messages
-      chats.conversations[peerAddress] = {
-        id: peerAddress,
-        kind: 'direct',
-        address: peerAddress,
-        participants: [peerAddress],
-        messages: [],
-      } as any
-
-      chats.conversations[canonicalId] = {
-        id: canonicalId,
-        kind: 'direct',
-        address: peerAddress,
-        participants: [SENDER_ADDRESS, peerAddress],
-        messages: [msg],
-      } as any
-
-      chats.setActiveConversation(peerAddress)
-
-      expect(chats.activeConversationId).toBe(canonicalId)
-      expect(chats.chats[peerAddress]).toBe(chats.conversations[canonicalId])
-    })
-
-    it('rehydrateState auto-heals when chatState.chats has an empty contact and conversations has the active thread (fixes #1186)', async () => {
-      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
-      const peerAddress = RECIPIENT_ADDRESS
-      const canonicalId = 'canonical-conv-rehydrate'
-
-      const msg: ChatMessage = {
-        payloadDigest: 'msg-rehydrate',
-        conversationId: canonicalId,
-        senderAddress: peerAddress,
-        outbound: false,
-        status: 'confirmed',
-        items: [{ type: 'text', text: 'Rehydrated message' }],
-        serverTime: 300,
-        receivedTime: 300,
-        outpoints: [],
-        stampValueWei: 500n,
-      } as any
-
-      const stateWithEmptyChatAndActiveConv: RestorableState = {
-        activeChatAddr: null,
-        activeConversationId: null,
-        conversations: {
-          [canonicalId]: {
-            id: canonicalId,
-            kind: 'direct',
-            address: peerAddress,
-            participants: [SENDER_ADDRESS, peerAddress],
-            messages: [msg],
-            lastReceived: 300,
-            lastRead: 100,
-            totalUnreadMessages: 1,
-            totalUnreadValue: 500,
-            totalValue: 500,
-          } as any,
-        },
-        chats: {
-          [peerAddress]: {
-            id: peerAddress,
-            address: peerAddress,
-            messages: [],
-          } as any,
-        },
-        lastReceived: 300,
-      }
-
-      const rehydrated = await rehydrateState(stateWithEmptyChatAndActiveConv)
-
-      // Only ONE conversation for this peer should exist in rehydrated.conversations
-      const peerConvs = Object.values(rehydrated.conversations).filter(
-        c =>
-          c.kind === 'direct' &&
-          c.participants?.some(p => sameCanonicalAddress(p, peerAddress)),
-      )
-      expect(peerConvs).toHaveLength(1)
-      expect(peerConvs[0].id).toBe(canonicalId)
-      expect(peerConvs[0].messages).toHaveLength(1)
-
-      // The placeholder peerAddress key should not exist in conversations
-      expect(rehydrated.conversations[peerAddress]).toBeUndefined()
-      // chats[peerAddress] should point to the active conversation
-      expect(rehydrated.chats[peerAddress]).toBe(peerConvs[0])
-    })
-  })
   describe('ticket #819 / #820: converging geometric stamp suggestion and override lifecycle', () => {
     it('computes geometric stamp suggestion from conversation messages and handles override lifecycle', () => {
       const store = useChatStore()
       const peerAddress = '0x1111111111111111111111111111111111111111'
-      const convId = 'conv-geometric-test'
+      const convId = '33333333-3333-4333-8333-000000000002'
       const ONE_MON = 1_000_000_000_000_000_000n
 
       store.conversations[convId] = {
@@ -3309,9 +3112,10 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
 
     it('heals corrupted or stale accumulated unread counts and values during hydration', async () => {
-      const convId = 'conv-stale-counts'
+      const convId = '33333333-3333-4333-8333-000000000003'
       const peerAddress = '0x4444444444444444444444444444444444444444'
       const singleMessage = {
+        conversationId: convId,
         outbound: false,
         status: 'confirmed',
         items: [{ type: 'text' as const, text: 'Hello!' }],

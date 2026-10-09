@@ -38,8 +38,8 @@ const RESERVE = HAND_FEE_RESERVE_WEI
 jest.mock('../../../utils/own-address', () => ({
   getOwnCanonicalAddress: async () => '0xMe',
 }))
-const store: { chats: Record<string, { messages: any[] }> } = reactive({
-  chats: {},
+const store: { activeConversation: { messages: any[] } } = reactive({
+  activeConversation: { messages: [] },
 }) as any
 jest.mock('../../../stores/chats', () => ({ useChatStore: () => store }))
 const mockBalance = ref<bigint | null>(null)
@@ -243,7 +243,7 @@ async function mountLast(
   messages: ReturnType<typeof toMessage>[],
   index = messages.length - 1,
 ) {
-  store.chats[PEER] = { messages }
+  store.activeConversation = { messages }
   const wrapper = mount(ChatMessageBlackjack as never, {
     props: {
       item: messages[index].items[0],
@@ -261,7 +261,7 @@ const button = (wrapper: Awaited<ReturnType<typeof mountLast>>, id: string) =>
   wrapper.find(`[data-testid="blackjack-${id}"]`)
 
 beforeEach(() => {
-  store.chats = {}
+  store.activeConversation = { messages: [] }
   mockBalance.value = RESERVE + 100_000n
 })
 
@@ -429,7 +429,7 @@ describe('the player', () => {
   it('has its buttons disabled while a message of the chat is still sending', async () => {
     const messages = hand(false, WIN, 400n, [])
     const wrapper = await mountLast(messages)
-    store.chats[PEER].messages.push({
+    store.activeConversation.messages.push({
       outbound: true,
       status: 'pending',
       items: [{ type: 'text', text: 'hi' }],

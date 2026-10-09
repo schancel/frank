@@ -59,9 +59,6 @@ export default defineComponent({
           : undefined) ||
         Object.values(this.chatStore.conversations ?? {})
           .flatMap(c => c?.messages ?? [])
-          .find(m => m?.payloadDigest === this.payloadDigest) ||
-        Object.values(this.chatStore.chats ?? {})
-          .flatMap(c => c?.messages ?? [])
           .find(m => m?.payloadDigest === this.payloadDigest)
 
       // 1. Sweep funds of message into ephemeral change accounts before deleting (inbound messages only)

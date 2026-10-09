@@ -110,30 +110,66 @@ export type ThreadHeadersReadResult =
   | { ok: true; messageId?: string; inReplyTo?: string; references: string[] }
   | { ok: false; reason: 'duplicate_header' | 'bad_message_id' };
 
-/** Header section as unfolded `[lowercased name, value]` pairs. */
-function readHeaderFields(raw: Uint8Array): Array<[string, string]> {
-  // Latin-1 keeps bytes one-to-one; non-ASCII bytes can never be part of an ID.
-  const text = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength).toString('latin1');
+export interface HeaderSection {
+  /** Unfolded `[lowercased name, value as written]` pairs, in section order. */
+  readonly fields: ReadonlyArray<readonly [name: string, value: string]>;
+  /** Byte index in the input at which the body starts. */
+  readonly bodyOffset: number;
+}
+
+const LF = 0x0a;
+const CR = 0x0d;
+
+/**
+ * Reads the header section of a message and reports where its body starts.
+ * This is the one place that decides the header/body boundary; every reader
+ * of headers or of the body goes through it. It accepts any bytes and never
+ * throws.
+ *
+ * - Bytes are read as Latin-1, one byte per character. A line ends at CRLF or
+ *   at a lone LF; a lone CR is an ordinary character of its line.
+ * - The section ends at the first line that is empty or holds only spaces,
+ *   tabs or CRs, or that is not a continuation and has no colon after at least
+ *   one character.
+ * - A line starting with a space or tab continues the field before it and is
+ *   appended to that field's value as written, with no separator. With no
+ *   field before it, the section ends there.
+ * - Names lose trailing spaces and tabs and are lowercased. Values are kept as
+ *   written, leading whitespace included. Repeated headers are all returned.
+ * - `bodyOffset` is the index just after the line separator of the terminating
+ *   empty, whitespace-only or CR-only line; the index of the terminating line
+ *   itself when that line is body text (no colon, or a continuation with no
+ *   field before it); and the input length when the input ends inside the
+ *   headers or on a terminating line that has no separator.
+ */
+export function readHeaderSection(raw: Uint8Array): HeaderSection {
+  const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
   const fields: Array<[string, string]> = [];
-  for (const line of text.split(/\r\n|\n/)) {
-    if (/^[ \t\r]*$/.test(line)) break;
+  let lineStart = 0;
+  for (;;) {
+    const lf = bytes.indexOf(LF, lineStart);
+    const afterLine = lf < 0 ? bytes.length : lf + 1;
+    // A CR directly before the LF belongs to the separator, not to the line.
+    const lineEnd = lf < 0 ? bytes.length : lf > lineStart && bytes[lf - 1] === CR ? lf - 1 : lf;
+    // Latin-1 keeps bytes one-to-one; non-ASCII bytes can never be part of an ID.
+    const line = bytes.toString('latin1', lineStart, lineEnd);
+    if (/^[ \t\r]*$/.test(line)) return { fields, bodyOffset: afterLine };
     if (line[0] === ' ' || line[0] === '\t') {
       const last = fields[fields.length - 1];
-      if (!last) break;
+      if (!last) return { fields, bodyOffset: lineStart };
       last[1] += line;
-      continue;
+    } else {
+      const colon = line.indexOf(':');
+      if (colon <= 0) return { fields, bodyOffset: lineStart };
+      // The name loses trailing spaces and tabs. A loop, because a pattern
+      // anchored at the end takes quadratic time on a long run of spaces.
+      let nameEnd = colon;
+      while (nameEnd > 0 && (line[nameEnd - 1] === ' ' || line[nameEnd - 1] === '\t')) nameEnd--;
+      fields.push([line.slice(0, nameEnd).toLowerCase(), line.slice(colon + 1)]);
     }
-    const colon = line.indexOf(':');
-    if (colon <= 0) break;
-    fields.push([
-      line
-        .slice(0, colon)
-        .replace(/[ \t]+$/, '')
-        .toLowerCase(),
-      line.slice(colon + 1),
-    ]);
+    if (lf < 0) return { fields, bodyOffset: bytes.length };
+    lineStart = afterLine;
   }
-  return fields;
 }
 
 /**
@@ -178,7 +214,7 @@ function readSoleMessageId(value: string): string | undefined {
 }
 
 export function readThreadHeaders(raw: Uint8Array): ThreadHeadersReadResult {
-  const fields = readHeaderFields(raw);
+  const { fields } = readHeaderSection(raw);
   const all = (name: string): string[] => fields.filter(([n]) => n === name).map(([, v]) => v);
   for (const name of ['message-id', 'in-reply-to', 'references']) {
     if (all(name).length > 1) return { ok: false, reason: 'duplicate_header' };

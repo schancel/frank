@@ -190,6 +190,11 @@ export interface RegisterUtxoOutpointParams {
   readonly label?: string
 }
 
+export interface ArchiveSpentCoinsParams {
+  readonly maxAgeMs?: number
+  readonly chain?: string
+}
+
 /**
  * Infers the ChainFamily from a chain identifier string.
  */
@@ -635,6 +640,7 @@ export class UtxoChainFamilyAdapter {
  */
 export class ChainUtxoPool {
   private readonly coinsById = new Map<string, ChainUtxoCoin>()
+  private readonly archivedCoinsById = new Map<string, ChainUtxoCoin>()
   private readonly coinsByAddress = new Map<string, Set<string>>()
   private readonly cleanCoinIdsByChain = new Map<string, Set<string>>()
   private readonly pendingCoinIdsByChain = new Map<string, Set<string>>()
@@ -715,6 +721,7 @@ export class ChainUtxoPool {
     if (existing) {
       this.removeFromIndices(existing)
     }
+    this.archivedCoinsById.delete(id)
 
     this.coinsById.set(id, record)
 
@@ -951,15 +958,65 @@ export class ChainUtxoPool {
   /**
    * Retrieves a coin by its unique composite id.
    */
-  getCoin(id: string): ChainUtxoCoin | undefined {
-    return this.coinsById.get(id)
+  getCoin(id: string, options?: { includeArchived?: boolean }): ChainUtxoCoin | undefined {
+    const coin = this.coinsById.get(id)
+    if (coin || !options?.includeArchived) return coin
+    return this.archivedCoinsById.get(id)
   }
 
   /**
    * Backwards-compatible alias for getCoin.
    */
-  getUtxo(id: string): ChainUtxoCoin | undefined {
-    return this.getCoin(id)
+  getUtxo(id: string, options?: { includeArchived?: boolean }): ChainUtxoCoin | undefined {
+    return this.getCoin(id, options)
+  }
+
+  /**
+   * Queries cold archived spent coins on demand, optionally filtered by chain.
+   */
+  getArchivedCoins(chain?: string): ChainUtxoCoin[] {
+    const all = Array.from(this.archivedCoinsById.values())
+    if (!chain) return all
+    const cKey = this.chainKey(chain)
+    return all.filter(u => this.chainKey(u.chain) === cKey)
+  }
+
+  /**
+   * Retrieves a specific archived coin by its composite id.
+   */
+  getArchivedCoin(id: string): ChainUtxoCoin | undefined {
+    return this.archivedCoinsById.get(id)
+  }
+
+  /**
+   * Two-tier storage archiving:
+   * Moves fully drained ($0 wei) and spent coins older than maxAgeMs (default 1 hour)
+   * from the active coinsById map into an archived map/collection archivedCoinsById,
+   * keeping the hot active memory index small.
+   */
+  archiveSpentCoins(params?: ArchiveSpentCoinsParams): ChainUtxoCoin[] {
+    const maxAgeMs = params?.maxAgeMs ?? 3_600_000
+    const now = Date.now()
+    const archived: ChainUtxoCoin[] = []
+    const coins = Array.from(this.coinsById.values())
+
+    for (const coin of coins) {
+      if (params?.chain && this.chainKey(coin.chain) !== this.chainKey(params.chain)) {
+        continue
+      }
+      if (
+        coin.status === 'spent' &&
+        coin.balanceWei === 0n &&
+        now - coin.lastUpdatedMs >= maxAgeMs
+      ) {
+        this.coinsById.delete(coin.id)
+        this.removeFromIndices(coin)
+        this.archivedCoinsById.set(coin.id, coin)
+        archived.push(coin)
+      }
+    }
+
+    return archived
   }
 
   /**
@@ -1613,6 +1670,16 @@ export class ChainUtxoPool {
   }
 }
 
+export interface ChainUtxoBatchOperation {
+  readonly type: 'put' | 'del'
+  readonly id: string
+  readonly coin?: ChainUtxoCoin
+}
+
+export type ChainUtxoBatchWriter = (
+  operations: Array<{ type: 'put' | 'del'; id: string; coin?: ChainUtxoCoin }>,
+) => Promise<void> | void
+
 export interface ApplyTransactionParams {
   readonly chain: string
   readonly inputs: Array<ChainUtxoCoin | string>
@@ -1883,17 +1950,63 @@ export class ChainUtxoView {
 
   /**
    * Commits all changes staged in this view into the underlying ChainUtxoPool.
+   * If a batchWriter callback is provided, all staged coin additions and spent coin updates
+   * commit atomically in 1 transaction before modifying the in-memory pool.
    * Consumed coins become 'pending', and created change outputs are registered.
    */
-  commit(): void {
+  commit(): void
+  commit(
+    batchWriter: (
+      operations: Array<{ type: 'put' | 'del'; id: string; coin?: ChainUtxoCoin }>,
+    ) => Promise<void>,
+  ): Promise<void>
+  commit(batchWriter?: ChainUtxoBatchWriter): Promise<void> | void {
+    const operations: Array<{
+      type: 'put' | 'del'
+      id: string
+      coin?: ChainUtxoCoin
+    }> = []
+
     for (const spentId of this.spentCoinIds) {
-      if (this.basePool.getCoin(spentId)) {
-        this.basePool.markPending(spentId)
+      const coin = this.basePool.getCoin(spentId)
+      operations.push({
+        type: 'del',
+        id: spentId,
+        ...(coin ? { coin } : {}),
+      })
+    }
+
+    for (const stagedCoin of this.stagedCoinsById.values()) {
+      operations.push({
+        type: 'put',
+        id: stagedCoin.id,
+        coin: stagedCoin,
+      })
+    }
+
+    const applyToBasePool = () => {
+      for (const spentId of this.spentCoinIds) {
+        if (this.basePool.getCoin(spentId)) {
+          this.basePool.markPending(spentId)
+        }
+      }
+      for (const stagedCoin of this.stagedCoinsById.values()) {
+        this.basePool.registerCoin(stagedCoin)
       }
     }
-    for (const stagedCoin of this.stagedCoinsById.values()) {
-      this.basePool.registerCoin(stagedCoin)
+
+    if (batchWriter) {
+      const result = batchWriter(operations)
+      if (result && typeof (result as any).then === 'function') {
+        return (result as Promise<void>).then(() => {
+          applyToBasePool()
+        })
+      }
+      applyToBasePool()
+      return
     }
+
+    applyToBasePool()
   }
 
   /**

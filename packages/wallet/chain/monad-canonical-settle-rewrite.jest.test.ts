@@ -393,21 +393,22 @@ describe('settle and a link whose relay ended delivery (#1322)', () => {
   afterEach(() => f.close())
 
   it('writes a link once when it first becomes dead and never again while nothing changes', async () => {
-    expect(await reconcile()).toEqual({ [digest]: 'live' })
+    expect(await reconcile()).toEqual({ [digest]: 'dead' })
     const written = linkWrites()
     expect(written).toHaveLength(1)
     const first = JSON.parse(written[0]) as StoredRow
     expect(first).toMatchObject({
       attemptRef: attempt.attemptRef,
       digest,
+      // The final status and the relay's reason are saved in the same write (#1323).
+      outcome: 'dead',
       reason: 'undeliverable',
     })
-    expect(first).not.toHaveProperty('outcome')
     expect(first).not.toHaveProperty('acknowledged')
     expectRetained()
 
     // Later reconciles in the same session reach the same dead row and change nothing.
-    expect(await reconcile()).toEqual({ [digest]: 'live' })
+    expect(await reconcile()).toEqual({ [digest]: 'dead' })
     expect(
       await f.chain.directMessages.unattributedAttempts({
         wallet: f.alice,
@@ -424,7 +425,7 @@ describe('settle and a link whose relay ended delivery (#1322)', () => {
     })
     expect(afterOne).toBe(written[0])
     for (let pass = 0; pass < 3; pass++)
-      expect(await reconcile()).toEqual({ [digest]: 'live' })
+      expect(await reconcile()).toEqual({ [digest]: 'dead' })
     expect(linkWrites()).toEqual(written)
     expectRetained()
     let afterMany: string | undefined
@@ -437,16 +438,9 @@ describe('settle and a link whose relay ended delivery (#1322)', () => {
     expect(f.requests).toHaveLength(2)
     expect(new Set(f.requests.map(toHex)).size).toBe(1)
     expectRetained()
-    // It still blocks a replacement payment exactly as before.
-    await expect(
-      f.chain.directMessages.send({
-        wallet: f.alice,
-        recipient: f.bob.identity.address,
-        items: [{ type: 'text', text: 'replacement prohibited' }],
-      }),
-    ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+    // That it no longer holds a later message, which is sent from other accounts, is proved in
+    // `monad-canonical-ended-attempt.jest.test.ts` (#1323).
     expect(linkWrites()).toEqual(written)
-    expect(f.requests).toHaveLength(2)
   })
 
   it.each([
@@ -459,13 +453,13 @@ describe('settle and a link whose relay ended delivery (#1322)', () => {
       (row: StoredRow): StoredRow => ({ ...row, reason: undefined }),
     ],
     [
-      'a dead outcome',
-      (row: StoredRow): StoredRow => ({ ...row, outcome: 'dead' }),
+      'no outcome, as written before the final status existed (#1323)',
+      (row: StoredRow): StoredRow => ({ ...row, outcome: undefined }),
     ],
   ])(
     'rewrites a stored link holding %s to the terminal record, once',
     async (_name, change) => {
-      expect(await reconcile()).toEqual({ [digest]: 'live' })
+      expect(await reconcile()).toEqual({ [digest]: 'dead' })
       const settled = linkWrites()
       expect(settled).toHaveLength(1)
       await f.restart(() => rewriteStoredLink(change))
@@ -473,18 +467,20 @@ describe('settle and a link whose relay ended delivery (#1322)', () => {
       expect(stale).not.toBe(settled[0])
       durablePut.mockClear()
 
-      expect(await reconcile()).toEqual({ [digest]: 'live' })
-      // The row is written again, and what is written is the terminal record's own reason.
-      expect(linkWrites()).toEqual(settled)
-      expect(await reconcile()).toEqual({ [digest]: 'live' })
-      expect(linkWrites()).toEqual(settled)
+      expect(await reconcile()).toEqual({ [digest]: 'dead' })
+      // The row is written again, once, and what is written is the terminal record's own
+      // status and reason. Compared as rows: a removed key is written back in another position.
+      const rows = (writes: string[]) => writes.map(value => JSON.parse(value))
+      expect(rows(linkWrites())).toEqual(rows(settled))
+      expect(await reconcile()).toEqual({ [digest]: 'dead' })
+      expect(rows(linkWrites())).toEqual(rows(settled))
       expectRetained()
       expect(f.requests).toHaveLength(2)
     },
   )
 
   it('still holds, without writing, when the dead attempt loses its link', async () => {
-    expect(await reconcile()).toEqual({ [digest]: 'live' })
+    expect(await reconcile()).toEqual({ [digest]: 'dead' })
     await f.restart(async () => {
       // Only this fixture's link is removed; the authoritative journal stays intact.
       const links = level(join(f.storageLocation, LINK_NAMESPACE))

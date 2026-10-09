@@ -170,11 +170,12 @@ export class CanonicalRelayCannotForwardError extends Error {
 }
 
 /** The relay accepted the submission for checking and then ended it because it cannot deliver to
- * the recipient's relay. It broadcast no payment. This attempt is over; later sends are free. */
+ * the recipient's relay. The relay decides that before it broadcasts anything. This attempt is over
+ * and later sends proceed; the wallet still keeps its signed set and its reserved accounts. */
 export class CanonicalRecipientUndeliverableError extends MonadStampTerminalError {
   constructor() {
     super(
-      'Your relay could not deliver to the relay this address lives on. This message was not sent and its payment was not broadcast.',
+      'Your relay could not deliver to the relay this address lives on. This message was not sent. The relay reports that it broadcast no payment; the payment stays reserved in your wallet.',
       422,
       'mailbox_terminal',
       false,
@@ -220,8 +221,11 @@ interface StoredLink {
   attemptRef: string
   consumerId: string
   prepared: Record<string, string>
+  /** `dead`: the relay answered that it ended delivery of this exact set for good (`reason`).
+   * Final for delivery only. The attempt's journal record and reserved accounts are kept, and
+   * later sends, which use other accounts, are not held behind it. */
   outcome?: 'delivered' | 'dead'
-  /** A relay rejection reason; it does not prove the signed payments cannot execute. */
+  /** The relay's terminal reason; it does not prove the signed payments cannot execute. */
   reason?: string
   acknowledged?: boolean
   /** Saved once a message pointed at this delivered attempt, or the user answered for it. Until
@@ -488,6 +492,27 @@ export function consumePaymentTransferToStealth(
 }
 
 /**
+ * The links the wallet's journal must be correlated with: every unfinished one, and a finished one
+ * whose journal record is still held. The journal drops finished records only in order, so a
+ * message delivered after an attempt the relay ended stays in it behind that kept attempt. Without
+ * its link the wallet would see a payment record no message accounts for and hold everything.
+ */
+function correlatedLinks(
+  owner: CanonicalMessagingOwner,
+  client: MonadCanonicalStampClient,
+): StoredLink[] {
+  const held = new Set(
+    client
+      .terminalOutcomes()
+      .filter(attempt => attempt.acknowledged)
+      .map(attempt => attempt.attemptRef),
+  )
+  return owner.links
+    .all()
+    .filter(row => !row.acknowledged || held.has(row.attemptRef))
+}
+
+/**
  * Correlate every durable wallet record with a saved link, finish frozen intents, re-send the same
  * bytes of live attempts and finish delivered ones. A delivery rejection cannot settle the
  * financial effect of bytes already exposed to a relay or recipient.
@@ -521,13 +546,18 @@ async function settle(
         throw new CanonicalMessagingHoldError()
       }
     }
-    const rows = owner.links.all().filter(row => !row.acknowledged)
+    const correlated = correlatedLinks(owner, client)
     // Even an empty link store must be correlated: the wallet may still own an exact attempt.
-    const states = client.reconcileWorkflowLinks(rows.map(restoreLink))
+    const states = client.reconcileWorkflowLinks(correlated.map(restoreLink))
     if (states.some(state => state.state === 'hold'))
       throw new CanonicalMessagingHoldError()
+    // A finished link is correlated above and needs nothing more.
+    const rows = correlated.filter(row => !row.acknowledged)
     const terminal = states.find(
-      state => state.state === 'terminal' && !retained.has(state.attemptRef),
+      state =>
+        state.state === 'terminal' &&
+        !retained.has(state.attemptRef) &&
+        rows.some(row => row.attemptRef === state.attemptRef),
     )
     if (terminal) {
       const row = rows.find(r => r.attemptRef === terminal.attemptRef)!
@@ -539,16 +569,21 @@ async function settle(
       }
       if (attempt.terminal.phase === 'dead') {
         // The relay ended delivery, not the ability to broadcast this signed set. Keep its
-        // exact request and reservations until a financial recovery owner can resolve them.
+        // exact request and reservations until a financial recovery owner can resolve them:
+        // nothing is cleaned up or acknowledged here. The final status is saved with the relay's
+        // reason so the attempt stops reading as live and stops holding later sends, which use
+        // other accounts. Only the journal's terminal record, written from the relay's own
+        // answer, leads here; a timeout or a failed request never does. A row written before
+        // this status existed (a reason and no outcome) is completed here the same way.
         // The row stays unacknowledged, so every settle reaches it again: write it only when
         // what is stored differs from what this would write.
         if (
-          row.outcome !== undefined ||
+          row.outcome !== 'dead' ||
           row.reason !== attempt.terminal.reason
         )
           await owner.links.put({
             ...row,
-            outcome: undefined,
+            outcome: 'dead',
             reason: attempt.terminal.reason,
           })
         retained.add(row.attemptRef)
@@ -609,7 +644,8 @@ async function settle(
 }
 
 /** Durably marks delivered attempts as accounted for. An attempt with no outcome is never marked:
- * it may still be delivered, so it has to stay reported. */
+ * it may still be delivered, so it has to stay reported. One the relay ended is never marked
+ * either: its signed payments are still kept. */
 async function account(
   owner: CanonicalMessagingOwner,
   matches: (row: StoredLink) => boolean,
@@ -751,6 +787,8 @@ async function send(
         peer.endpoint,
       )
     // Earlier attempts first: a live one is re-sent as-is, and an unmatched record holds everything.
+    // An attempt the relay ended has an outcome and does not hold this send; its accounts stay
+    // reserved, so this send is built from other accounts.
     await settle(owner, directory.fetch, 1)
     const live = owner.links.all().filter(row => !row.outcome && !row.acknowledged)
     if (live.length > 0)
@@ -813,10 +851,7 @@ async function send(
     try {
       const ready = client
         .reconcileWorkflowLinks(
-          owner.links
-            .all()
-            .filter(row => !row.acknowledged)
-            .map(restoreLink),
+          correlatedLinks(owner, client).map(restoreLink),
         )
         .find(state => state.attemptRef === attemptRef)
       if (ready?.state !== 'ready' || !ready.eligibility)
@@ -836,11 +871,11 @@ async function send(
       if (reason === 'sender_unpublished')
         throw new CanonicalSenderUnpublishedError()
       throw new MonadStampTerminalError(
-        'The relay ended this payment set; it can never be delivered.',
+        `The relay ended this payment set (${reason ?? 'no reason given'}); it can never be delivered. Its payments are kept reserved.`,
         422,
         'mailbox_terminal',
         undefined,
-        undefined,
+        reason,
       )
     }
     if (status !== 'delivered') throw new MonadStampPendingAttemptError([digest])
@@ -1525,7 +1560,8 @@ export function canonicalDirectMessages(
           .filter(
             row =>
               !known.has(row.digest) &&
-              (!row.outcome || (row.outcome === 'delivered' && !row.accounted)),
+              // Unresolved and relay-ended attempts are always reported; see `account`.
+              (row.outcome !== 'delivered' || !row.accounted),
           )
           .map(row => row.digest)
       }),

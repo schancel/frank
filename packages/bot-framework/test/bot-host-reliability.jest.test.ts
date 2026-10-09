@@ -571,6 +571,95 @@ describe("FrankBotHost Reliability Features", () => {
       expect(await instance.state.readEntries("host-prepared:")).toEqual([]);
       await host.stop();
     });
+
+    // #1323. The wallet now answers `dead` for an attempt its relay ended (before, such an
+    // attempt read `live` for good and every later reply was refused behind it). Pins what the
+    // host does with that answer: the reply keeps its slot, so it is never sent again as a fresh
+    // payment and never taken back, its staged answer and commit stay uncommitted, and a later
+    // reply is sent.
+    it("pin: records a relay-ended reply as dead, never sends it again or takes it back, and sends a later reply", async () => {
+      const endedDigest = "ee".repeat(32);
+      mockDirectMessagesSend.mockImplementationOnce(
+        async (params: {
+          onAttemptCreated?: (digest: string) => Promise<void>;
+        }) => {
+          await params.onAttemptCreated?.(endedDigest);
+          // The wallet's rejection for an ended attempt carries no not-attempted label.
+          throw new Error("The relay ended this payment set");
+        }
+      );
+      const dummyBot: FrankBotDefinition = {
+        id: "ended-reply-bot",
+        getProfile: () => ({ name: "EndedReplyBot", bot: true }),
+        onMessage: async (msg) => {
+          const text = (msg.items[0] as any).text;
+          return prepared("answer " + text, "plugin:" + text);
+        },
+      };
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/ended-reply`,
+      });
+      await host.register(dummyBot);
+      const instance = (host as any).instances.get("ended-reply-bot");
+      const reconcile = jest.fn(
+        async ({ payloadDigests }: { payloadDigests: string[] }) =>
+          Object.fromEntries(
+            payloadDigests.map((digest) => [
+              digest,
+              digest === endedDigest ? "dead" : "delivered",
+            ])
+          )
+      );
+      (host as any).chain.directMessages.reconcileAttempts = reconcile;
+      const retract = jest.spyOn(instance.operations, "retractReply");
+      const first = incoming("7", mockPeer);
+      mockDirectMessagesFetchSince.mockResolvedValue([first]);
+      for (let pass = 0; pass < 4; pass++) {
+        await (host as any).pollAllBots();
+        await drain(instance);
+      }
+      expect(mockDirectMessagesSend).toHaveBeenCalledTimes(1);
+      expect(reconcile).toHaveBeenCalledWith(
+        expect.objectContaining({ payloadDigests: [endedDigest] })
+      );
+      expect(instance.operations.get(first.payloadDigest)).toMatchObject({
+        phase: "started",
+        prepared: { stateKey: "plugin:7" },
+        replies: [{ digest: endedDigest, observation: "dead" }],
+      });
+      expect(await instance.state.get("plugin:7")).toBeUndefined();
+      // Its staged text and value are both kept.
+      expect(await instance.state.readEntries("host-prepared:")).toHaveLength(
+        2
+      );
+
+      const second = incoming("8", other);
+      mockDirectMessagesFetchSince.mockResolvedValue([first, second]);
+      for (let pass = 0; pass < 4; pass++) {
+        await (host as any).pollAllBots();
+        await drain(instance);
+      }
+      expect(mockDirectMessagesSend).toHaveBeenCalledTimes(2);
+      expect(mockDirectMessagesSend.mock.calls[1][0].items).toEqual([
+        { type: "text", text: "answer 8" },
+      ]);
+      expect(instance.operations.get(second.payloadDigest).phase).toBe(
+        "completed"
+      );
+      expect(await instance.state.get("plugin:8")).toBe("value of answer 8");
+      // The ended reply is exactly as it was.
+      expect(instance.operations.get(first.payloadDigest)).toMatchObject({
+        phase: "started",
+        replies: [{ digest: endedDigest, observation: "dead" }],
+      });
+      expect(await instance.state.get("plugin:7")).toBeUndefined();
+      expect(await instance.state.readEntries("host-prepared:")).toHaveLength(
+        2
+      );
+      expect(retract).not.toHaveBeenCalled();
+      await host.stop();
+    });
   });
 
   describe("Dual-address funding", () => {

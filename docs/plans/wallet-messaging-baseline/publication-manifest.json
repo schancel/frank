@@ -2,7 +2,7 @@
   "repository": "schancel/frank",
   "base_revision": "f2231d2ff3d244ea5641e5444722271023c2fa2f",
   "policy_overlay_sha256": "4a8ac562d291454726b8606db9312616dc9c50e3d33d1a64c00302334f1a69b1",
-  "publication_status": "DRAFT_NOT_PUBLISHED",
+  "publication_status": "PUBLISHED",
   "labels": [],
   "assignees": [],
   "new_issues": [
@@ -557,5 +557,6 @@
       "blocked": "baseline",
       "blocking": "queue-readiness"
     }
-  ]
+  ],
+  "publication_ledger": "docs/plans/wallet-messaging-baseline/publication-ledger.json"
 }

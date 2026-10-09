@@ -1,0 +1,170 @@
+{
+  "repository": "schancel/frank",
+  "base_revision": "3620a49f12c491ddf9e618f9dec76a894e64943a",
+  "issues": {
+    "payment-recovery": {
+      "number": 1230,
+      "url": "https://github.com/schancel/frank/issues/1230",
+      "source_sha256": "7d72beaf95fce1ab7e2d2d68781732abaa2680cca5d1c13b921805596ad4aa10",
+      "links_resolved": true
+    },
+    "session-generation": {
+      "number": 1231,
+      "url": "https://github.com/schancel/frank/issues/1231",
+      "source_sha256": "e7361d369fb364d0765e4474e5505022b8d546e636de607a342b7b2514750537",
+      "links_resolved": true
+    },
+    "queue-readiness": {
+      "number": 1232,
+      "url": "https://github.com/schancel/frank/issues/1232",
+      "source_sha256": "29b8de2c21a25dd0bd2c5641e1cb8fdcabf3ad267cd5c9cc621ec55c461e5f2b",
+      "links_resolved": true
+    },
+    "baseline": {
+      "number": 1233,
+      "url": "https://github.com/schancel/frank/issues/1233",
+      "source_sha256": "97ab848b02ef48888f3432a4c492170157605c5ddc0681d7fcc1fe20254cedad",
+      "links_resolved": true
+    },
+    "chrome-baseline": {
+      "number": 1234,
+      "url": "https://github.com/schancel/frank/issues/1234",
+      "source_sha256": "23a21f668d42b56923a27b324ed02ab3848f2df8e2a2fc45faaa231ddce4963b",
+      "links_resolved": true
+    },
+    "input-reservations": {
+      "number": 1235,
+      "url": "https://github.com/schancel/frank/issues/1235",
+      "source_sha256": "8df838d2b347de4d429483aa5ca3bcc3a30eebc7e1e81342cf455438e344aa6e",
+      "links_resolved": true
+    },
+    "disjoint-sends": {
+      "number": 1236,
+      "url": "https://github.com/schancel/frank/issues/1236",
+      "source_sha256": "83c8ced4cd97c70bc25299525feab035d5f1e1579763ca9271c0e06647db5ecd",
+      "links_resolved": true
+    },
+    "conversation-identity": {
+      "number": 1237,
+      "url": "https://github.com/schancel/frank/issues/1237",
+      "source_sha256": "b401327373dd919bd6acf476de63e5b4c339768996501261bdc6b3e978cea51b",
+      "links_resolved": true
+    },
+    "chain-config": {
+      "number": 1238,
+      "url": "https://github.com/schancel/frank/issues/1238",
+      "source_sha256": "f755e97083a64c38d09ed9e6ec1154cfc13d568b1b51bc0c059442e937debd75",
+      "links_resolved": true
+    },
+    "evm-boundaries": {
+      "number": 1240,
+      "url": "https://github.com/schancel/frank/issues/1240",
+      "source_sha256": "17622c9ae358c303e4baee2e3ad4d1ec1c42a540fd4a99c0f9cc596d99f9fac4",
+      "links_resolved": true
+    },
+    "messaging-boundaries": {
+      "number": 1242,
+      "url": "https://github.com/schancel/frank/issues/1242",
+      "source_sha256": "0431d804a2456f1b5db68af6886964de761d6a302945017a5e81869615218c48",
+      "links_resolved": true
+    },
+    "codec-composition": {
+      "number": 1245,
+      "url": "https://github.com/schancel/frank/issues/1245",
+      "source_sha256": "763695d5c11ea0316d0dc64f062b029ae3ea064d20be117d99457d19b372b1ac",
+      "links_resolved": true
+    },
+    "blackjack-slice": {
+      "number": 1246,
+      "url": "https://github.com/schancel/frank/issues/1246",
+      "source_sha256": "20118629fc4596def87d6439d6ba177b74ba772f851126ebce94f6332036cf59",
+      "links_resolved": true
+    },
+    "transport-backedges": {
+      "number": 1247,
+      "url": "https://github.com/schancel/frank/issues/1247",
+      "source_sha256": "d003143e07897ebec0b3d3a0250cef18fc31e5bc844e9fc82ac4e25109fbdac4",
+      "links_resolved": true
+    },
+    "maintenance-reachability": {
+      "number": 1248,
+      "url": "https://github.com/schancel/frank/issues/1248",
+      "source_sha256": "bf8f2183a43f46c727bf2cf525c13cca7cf08b441b57582429255dee8ae169c3",
+      "links_resolved": true
+    },
+    "payment-reporting": {
+      "number": 1249,
+      "url": "https://github.com/schancel/frank/issues/1249",
+      "source_sha256": "f73155f38378803376cb5400cbf4fc67babe01fd94c0dfdfddd92d1f02af0f69",
+      "links_resolved": true
+    }
+  },
+  "comments": {
+    "1218": {
+      "url": "https://github.com/schancel/frank/issues/1218#issuecomment-6075718328"
+    },
+    "1217": {
+      "url": "https://github.com/schancel/frank/issues/1217#issuecomment-6075718789"
+    },
+    "1214": {
+      "url": "https://github.com/schancel/frank/issues/1214#issuecomment-6075719299"
+    },
+    "1215": {
+      "url": "https://github.com/schancel/frank/issues/1215#issuecomment-6075719865"
+    },
+    "1216": {
+      "url": "https://github.com/schancel/frank/issues/1216#issuecomment-6075720250"
+    },
+    "784": {
+      "url": "https://github.com/schancel/frank/issues/784#issuecomment-6075720645"
+    },
+    "785": {
+      "url": "https://github.com/schancel/frank/issues/785#issuecomment-6075721104"
+    },
+    "821": {
+      "url": "https://github.com/schancel/frank/issues/821#issuecomment-6075721604"
+    }
+  },
+  "edges": [
+    "1233<-1234",
+    "1233<-1230",
+    "1233<-1235",
+    "1236<-1230",
+    "1233<-1236",
+    "1233<-1231",
+    "1233<-1237",
+    "1233<-1238",
+    "1240<-1238",
+    "1240<-1236",
+    "1233<-1240",
+    "1242<-1236",
+    "1242<-1237",
+    "1242<-1231",
+    "1242<-1240",
+    "1233<-1242",
+    "1233<-1245",
+    "1246<-1245",
+    "1246<-1242",
+    "1233<-1246",
+    "1247<-1230",
+    "1233<-1247",
+    "1233<-1248",
+    "1249<-1230",
+    "1233<-1249",
+    "1214<-1234",
+    "1215<-1234",
+    "1216<-1234",
+    "1218<-1235",
+    "821<-1237",
+    "1233<-1232"
+  ],
+  "status": "PUBLISHED",
+  "updated_at": "2026-10-09T06:31:20.208182+00:00",
+  "duplicate_publication_recovery": {
+    "1239": 1234,
+    "1241": 1235,
+    "1243": 1236,
+    "1244": 1237
+  },
+  "graph_validated_nodes": 84
+}

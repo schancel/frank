@@ -413,4 +413,132 @@ describe('startOutgoingReconciliation (#270)', () => {
       expect(jest.getTimerCount()).toBe(0)
     })
   })
+
+  // #1235 Stage 3. On main dce4bedf the tick never calls the wallet's re-observation: the first
+  // three tests fail there (the mock is never called). The last two are pins, and pass there:
+  // a stopped tick calls nothing, and a handle WITHOUT the method is tolerated (as in every
+  // other test in this file, whose wallet has none).
+  describe('native re-observation at the tick (#1235 Stage 3)', () => {
+    const walletWith = (reobserveNativeOperations: unknown) =>
+      ({ ...wallet, reobserveNativeOperations } as unknown as WalletHandle)
+
+    it('calls it once per tick, only after reconcileOutgoing has resolved, also when no message is pending', async () => {
+      const { chats } = await pendingMessage()
+      let release: (v: Record<string, 'live' | 'delivered'>) => void = () =>
+        undefined
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockReturnValueOnce(
+          new Promise(resolve => {
+            release = resolve
+          }),
+        )
+        .mockResolvedValue({ [HASH]: 'delivered' })
+      const reobserve = jest.fn(async () => undefined)
+      const polling = startOutgoingReconciliation({
+        wallet: walletWith(reobserve),
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reconcile).toHaveBeenCalledTimes(1)
+      expect(reobserve).not.toHaveBeenCalled()
+      release({ [HASH]: 'live' })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reobserve).toHaveBeenCalledTimes(1)
+      expect(reobserve).toHaveBeenCalledWith()
+      await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile).toHaveBeenCalledTimes(2)
+      expect(reobserve).toHaveBeenCalledTimes(2)
+      // Nothing is pending any more: the idle tick still asks the wallet to look.
+      expect(chats.chats[PEER]?.messages[0].status).toBe('confirmed')
+      await jest.advanceTimersByTimeAsync(IDLE_OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile).toHaveBeenCalledTimes(2)
+      expect(reobserve).toHaveBeenCalledTimes(3)
+      polling.stop()
+    })
+
+    it('does not wait for it: a re-observation that never settles does not hold the next tick', async () => {
+      await pendingMessage()
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({ [HASH]: 'live' })
+      const reobserve = jest.fn(() => new Promise<void>(() => undefined))
+      const polling = startOutgoingReconciliation({
+        wallet: walletWith(reobserve),
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+      await jest.advanceTimersByTimeAsync(4 * OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile).toHaveBeenCalledTimes(3)
+      expect(reobserve).toHaveBeenCalledTimes(3)
+      polling.stop()
+    })
+
+    it('survives its failure: a rejection or a synchronous throw is not a failed reconciliation, does not break the tick and does not go unhandled', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        await pendingMessage()
+        const reconcile = jest
+          .spyOn(activeChain.directMessages, 'reconcileAttempts')
+          .mockResolvedValue({ [HASH]: 'live' })
+        const reobserve = jest
+          .fn()
+          .mockRejectedValueOnce(new Error('fixture: node unavailable'))
+          .mockImplementationOnce(() => {
+            throw new Error('fixture: wallet closed')
+          })
+          .mockResolvedValue(undefined)
+        const polling = startOutgoingReconciliation({
+          wallet: walletWith(reobserve),
+        })
+        await jest.advanceTimersByTimeAsync(0)
+        await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+        await jest.advanceTimersByTimeAsync(4 * OUTGOING_RECONCILE_INTERVAL_MS)
+        expect(reconcile).toHaveBeenCalledTimes(3)
+        expect(reobserve).toHaveBeenCalledTimes(3)
+        expect(console.warn).not.toHaveBeenCalledWith(
+          'outgoing message reconciliation failed',
+          expect.anything(),
+        )
+        polling.stop()
+        await new Promise(resolve => setImmediate(resolve))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+
+    it('pin: is not called by a tick that was stopped while reconciling', async () => {
+      await pendingMessage()
+      let release: (v: Record<string, 'live'>) => void = () => undefined
+      jest.spyOn(activeChain.directMessages, 'reconcileAttempts').mockReturnValue(
+        new Promise(resolve => {
+          release = resolve
+        }),
+      )
+      const reobserve = jest.fn(async () => undefined)
+      const polling = startOutgoingReconciliation({
+        wallet: walletWith(reobserve),
+      })
+      await jest.advanceTimersByTimeAsync(0)
+      polling.stop()
+      release({ [HASH]: 'live' })
+      await jest.advanceTimersByTimeAsync(10 * MAX_OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reobserve).not.toHaveBeenCalled()
+    })
+
+    it('pin: a wallet handle without the method has nothing to do', async () => {
+      await pendingMessage()
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({ [HASH]: 'live' })
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile).toHaveBeenCalledTimes(2)
+      expect(console.warn).not.toHaveBeenCalled()
+      polling.stop()
+    })
+  })
 })

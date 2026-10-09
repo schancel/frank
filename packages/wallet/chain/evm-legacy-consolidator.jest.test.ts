@@ -190,6 +190,14 @@ describe('wallet-lifetime EVM native operations', () => {
     journal = new EvmNativeOperationJournal({ location, binding })
     await journal.Open()
   }
+  /** A fresh, empty journal and storage location inside one test. */
+  async function reset() {
+    await journal.Close()
+    await rm(location, { recursive: true, force: true })
+    location = await mkdtemp(join(tmpdir(), 'frank-native-owner-'))
+    journal = new EvmNativeOperationJournal({ location, binding })
+    await journal.Open()
+  }
   it('does not expose a direct payment before its recovery checkpoint and callback', async () => {
     const state = chain([200000n])
     const { executor } = owner(state)
@@ -737,7 +745,11 @@ describe('wallet-lifetime EVM native operations', () => {
           token?: WalletOperationLifetime,
         ) => poolSpendAdmission(admission, token!).classifyMember(row, i)),
     )
-    const executor = () =>
+    const executor = (
+      extra: Partial<
+        ConstructorParameters<typeof EvmLegacyConsolidator>[0]
+      > = {},
+    ) =>
       new EvmLegacyConsolidator({
         journal: nativeJournalReader(journal),
         inputAdmission: admission,
@@ -754,6 +766,7 @@ describe('wallet-lifetime EVM native operations', () => {
         applyLocalMember: apply,
         classifyLocalMember: classify,
         onSyncTransaction: sync,
+        ...extra,
       })
     const inspect = () => admission.inspect(lifetime)
     return {
@@ -1915,5 +1928,596 @@ describe('wallet-lifetime EVM native operations', () => {
     // The send's own pass applied the member; the queued one found it applied.
     expect(calls(c)).toEqual({ classify: 2, apply: 1 })
     expect(c.classify).toHaveLastReturnedWith('applied')
+  })
+
+  // ---------------------------------------------------------------------------------------
+  // Stage 3 of #1235: bounded re-observation of broadcast members nothing has seen confirm.
+  //
+  // On main dce4bedf `reobservePending` and `stopReobservation` do not exist, so every test here
+  // fails there at its first tick. What main does instead is pinned by the Stage 2 tests above
+  // and in `monad-domain-wallet`: a pending member is looked up only by a later native send.
+  // Time is the executor's injected clock; nothing here sleeps.
+  // ---------------------------------------------------------------------------------------
+  const SECOND = 1000
+  type Composed = Awaited<ReturnType<typeof composed>>
+  /** A session with its own clock, whose local pass is called the way composition calls it. */
+  const reobserver = (
+    c: Composed,
+    extra: Partial<ConstructorParameters<typeof EvmLegacyConsolidator>[0]> = {},
+  ) => {
+    let now = 1_700_000_000_000
+    const executor = c.another({ now: () => now, ...extra })
+    const applied = jest.fn(() => executor.applyRecordedEvidence(c.lifetime))
+    return {
+      executor,
+      applied,
+      advance: (ms: number) => void (now += ms),
+      tick: () => executor.reobservePending(applied),
+    }
+  }
+  /** One send the node keeps without a receipt. Native: returned as soon as it is broadcast. */
+  const broadcastNative = async (
+    c: Composed,
+    state: ReturnType<typeof chain>,
+    executor = c.executor,
+  ) => {
+    state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
+      announce(state, raw),
+    )
+    await executor.sendNative({ recipient: to, value: 1000n }, c.lifetime)
+    return journal.list().slice(-1)[0]!
+  }
+  /** One legacy send the node keeps without a receipt: observed `pending` in its own call. */
+  const broadcastLegacy = async (
+    c: Composed,
+    state: ReturnType<typeof chain>,
+    value: bigint,
+    executor = c.executor,
+  ) => {
+    state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
+      announce(state, raw),
+    )
+    const error = await pending(
+      executor.sendLegacy({ recipient: to, value }, c.lifetime),
+    )
+    const row = journal.get(error.operation.operationId)
+    expect(row.members[0]).toMatchObject({
+      exposed: true,
+      observation: { state: 'pending' },
+    })
+    return row
+  }
+  const probed = (state: ReturnType<typeof chain>) =>
+    state.provider.getTransactionReceipt.mock.calls.map(([hash]) => hash)
+  const hashOf = (row: { members: { signed: { transactionHash: string } | null }[] }) =>
+    row.members[0]!.signed!.transactionHash
+  const settle = () => new Promise(resolve => setImmediate(resolve))
+  const spent = (raw: string) => ({
+    status: 'spent',
+    lifecycle: { spend: { rawTx: raw } },
+  })
+
+  it('nothing to look up means no request at all: an empty journal, then unsigned, cancelled, signed-but-unexposed, included and reverted members, over many ticks; one broadcast member then costs exactly one receipt request', async () => {
+    const state = chain([])
+    const c = await composed(state, Array.from({ length: 6 }, () => 121000n))
+    const r = reobserver(c)
+    const ticks = async (count: number) => {
+      for (let i = 0; i < count; i++) {
+        r.advance(15 * SECOND)
+        await r.tick()
+      }
+    }
+    const untouched = providerCalls(state)
+    await ticks(50)
+    expect(providerCalls(state)).toBe(untouched)
+
+    // Included in its own call.
+    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
+    // Broadcast, then reverted, and recorded so by a fee estimate.
+    const reverted = await broadcastLegacy(c, state, 50000n)
+    state.mine(reverted.members[0]!.signed!.rawTransaction, 0)
+    await c.executor.estimateLegacyFee(to, 1n, c.lifetime)
+    // Signed, and never exposed: the recovery callback refused before any broadcast.
+    await expect(
+      c.executor.sendLegacy(
+        {
+          recipient: to,
+          value: 1000n,
+          onSigned: async () => {
+            throw new Error('fixture: checkpoint refused')
+          },
+        },
+        c.lifetime,
+      ),
+    ).rejects.toThrow('fixture: checkpoint refused')
+    // Two plans that never signed, on rows no send used; the first is cancelled.
+    const used = new Set(
+      journal
+        .list()
+        .flatMap(row =>
+          row.members.map(m => (m.source as { index: number }).index),
+        ),
+    )
+    const free = [0, 1, 2, 3, 4, 5].filter(index => !used.has(index))
+    await crashedPlan(c, free[0]!)
+    await c.executor.cancelUnsignedOperations(c.lifetime)
+    await crashedPlan(c, free[1]!)
+    const shape = () =>
+      journal.list().flatMap(row =>
+        row.members.map(m => ({
+          cancelled: row.cancelled,
+          signed: m.signed !== null,
+          exposed: m.exposed,
+          state: m.observation.state,
+        })),
+      )
+    const settledShape = [
+      { cancelled: false, signed: true, exposed: true, state: 'included-success' },
+      { cancelled: false, signed: true, exposed: true, state: 'included-revert' },
+      { cancelled: false, signed: true, exposed: false, state: 'unknown' },
+      { cancelled: true, signed: false, exposed: false, state: 'unknown' },
+      { cancelled: false, signed: false, exposed: false, state: 'unknown' },
+    ]
+    expect(shape()).toEqual(settledShape)
+    const recorded = journal.list()
+    const before = providerCalls(state)
+    await ticks(50)
+    await Promise.all(Array.from({ length: 20 }, () => r.tick()))
+    expect(providerCalls(state)).toBe(before)
+    expect(journal.list()).toEqual(recorded)
+    expect(r.applied).not.toHaveBeenCalled()
+
+    // The positive control: the same counter moves, by one, for one broadcast member.
+    const live = await broadcastNative(c, state)
+    expect(live.members[0]).toMatchObject({
+      exposed: true,
+      observation: { state: 'missing' },
+    })
+    const control = providerCalls(state)
+    const receipts = probed(state).length
+    const signatures = c.sign.mock.calls.length
+    const broadcasts = state.provider.broadcastTransaction.mock.calls.length
+    await ticks(1)
+    expect(providerCalls(state)).toBe(control + 1)
+    expect(probed(state).slice(receipts)).toEqual([hashOf(live)])
+    // That send's planning observed the signed, unexposed member too (`missing`): it is still
+    // not a candidate, and the one request above was not for it.
+    expect(shape()).toEqual([
+      ...settledShape.map(member =>
+        member.signed && !member.exposed
+          ? { ...member, state: 'missing' }
+          : member,
+      ),
+      { cancelled: false, signed: true, exposed: true, state: 'missing' },
+    ])
+    expect(c.sign.mock.calls.length).toBe(signatures)
+    expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(broadcasts)
+  })
+
+  it.each(['no receipt', 'request rejects', 'request throws'] as const)(
+    'one broadcast member, %s: each probe is exactly one receipt request, nothing is written and `pending` is not downgraded; the wait doubles from 15 s to 10 min, and at that ceiling the member costs 6 requests an hour',
+    async mode => {
+      const state = chain([])
+      const c = await composed(state, [121000n])
+      const r = reobserver(c)
+      const row = await broadcastLegacy(c, state, 100000n)
+      if (mode === 'request rejects')
+        state.provider.getTransactionReceipt.mockRejectedValue(
+          new Error('fixture: node unavailable'),
+        )
+      if (mode === 'request throws')
+        state.provider.getTransactionReceipt.mockImplementation(() => {
+          throw new Error('fixture: provider destroyed')
+        })
+      const recorded = journal.list()
+      const capture = jest.spyOn(journal, 'beginCapture')
+      const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+      const before = providerCalls(state)
+      const receipts = probed(state).length
+      // A caller ticking every 5 s for two hours.
+      const at: number[] = []
+      for (let t = 0; t <= 7200; t += 5) {
+        const seen = probed(state).length
+        await expect(r.tick()).resolves.toBeUndefined()
+        if (probed(state).length > seen) at.push(t)
+        r.advance(5 * SECOND)
+      }
+      expect(at).toEqual([
+        0, 15, 45, 105, 225, 465, 945, 1545, 2145, 2745, 3345, 3945, 4545, 5145,
+        5745, 6345, 6945,
+      ])
+      expect(at.filter(t => t > 3600)).toHaveLength(6)
+      // Every request was the one receipt probe for this member, and nothing else was asked.
+      expect(providerCalls(state) - before).toBe(at.length)
+      expect(probed(state).slice(receipts)).toEqual(at.map(() => hashOf(row)))
+      expect(journal.list()).toEqual(recorded)
+      expect(journal.list()[0]!.members[0]!.observation.state).toBe('pending')
+      expect(capture).not.toHaveBeenCalled()
+      expect(putMany).not.toHaveBeenCalled()
+      expect(r.applied).not.toHaveBeenCalled()
+      expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+      expect(c.sign).toHaveBeenCalledTimes(1)
+      expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(1)
+      expect(c.sync).not.toHaveBeenCalled()
+    },
+  )
+
+  it('the receipt appears: the next due probe runs the existing observation (one probe and seven reads), records the inclusion, and the local pass marks the pool row spent with the member bytes; nothing is signed, broadcast or transported, and later ticks cost nothing', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n, 50000n])
+    const r = reobserver(c)
+    const row = await broadcastLegacy(c, state, 100000n)
+    const raw = row.members[0]!.signed!.rawTransaction
+    await r.tick()
+    expect(journal.list()[0]!.members[0]!.observation.state).toBe('pending')
+    state.mine(raw)
+    // Not yet due: the floor and the member's own wait.
+    let before = providerCalls(state)
+    r.advance(15 * SECOND - 1)
+    await r.tick()
+    expect(providerCalls(state)).toBe(before)
+    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    r.advance(1)
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    await r.tick()
+    expect(providerCalls(state) - before).toBe(8)
+    expect(journal.list()[0]!.members[0]!.observation).toMatchObject({
+      state: 'included-success',
+      transactionHash: hashOf(row),
+      feeWei: '21000',
+    })
+    expect(r.applied).toHaveBeenCalledTimes(1)
+    expect(c.apply.mock.calls).toEqual([[row.operationId, 0, c.lifetime]])
+    expect(c.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: {
+        spend: { rawTx: raw, txHash: hashOf(row), valueWei: '100000' },
+      },
+    })
+    expect(putMany).toHaveBeenCalledTimes(1)
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+    // Terminal: never looked up again, and the local pass is not run again.
+    before = providerCalls(state)
+    for (let i = 0; i < 50; i++) {
+      r.advance(600 * SECOND)
+      await r.tick()
+    }
+    expect(providerCalls(state)).toBe(before)
+    expect(r.applied).toHaveBeenCalledTimes(1)
+    expect(putMany).toHaveBeenCalledTimes(1)
+    expect(c.sign).toHaveBeenCalledTimes(1)
+    expect(state.provider.broadcastTransaction.mock.calls).toEqual([[raw]])
+    expect(c.sync).not.toHaveBeenCalled()
+    expect(journal.list()[0]!.members[0]!.syncApplied).toBe(false)
+  })
+
+  it('a reverted receipt is recorded as the existing observation records it, the pool row is left exactly as it was, no local pass runs, and the member is never looked up again', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c)
+    const row = await broadcastLegacy(c, state, 100000n)
+    const rowBefore = c.pool.getRecord(0)
+    state.mine(row.members[0]!.signed!.rawTransaction, 0)
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    await r.tick()
+    expect(journal.list()[0]!.members[0]!.observation).toMatchObject({
+      state: 'included-revert',
+      transactionHash: hashOf(row),
+    })
+    expect(c.pool.getRecord(0)).toEqual(rowBefore)
+    expect(r.applied).not.toHaveBeenCalled()
+    expect(calls(c)).toEqual({ classify: 0, apply: 0 })
+    expect(putMany).not.toHaveBeenCalled()
+    const before = providerCalls(state)
+    for (let i = 0; i < 20; i++) {
+      r.advance(600 * SECOND)
+      await r.tick()
+    }
+    expect(providerCalls(state)).toBe(before)
+    expect(c.sign).toHaveBeenCalledTimes(1)
+    expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(1)
+  })
+
+  it('20 broadcast members: a pass probes at most 8, oldest first, the next pass continues after the last one probed so all 20 are reached, and concurrent callers do not add a request', async () => {
+    const state = chain([])
+    const c = await composed(state, Array.from({ length: 20 }, () => 100000n))
+    const r = reobserver(c)
+    for (let i = 0; i < 20; i++) await broadcastNative(c, state)
+    const hashes = journal.list().map(hashOf)
+    expect(new Set(hashes).size).toBe(20)
+    const recorded = journal.list()
+    const pass = async () => {
+      const calls = providerCalls(state)
+      const seen = probed(state).length
+      await Promise.all(Array.from({ length: 25 }, () => r.tick()))
+      await r.tick()
+      // Receipt probes only: with nothing landed a pass asks nothing else.
+      expect(providerCalls(state) - calls).toBe(probed(state).length - seen)
+      return probed(state).slice(seen)
+    }
+    expect(await pass()).toEqual(hashes.slice(0, 8))
+    r.advance(15 * SECOND)
+    expect(await pass()).toEqual(hashes.slice(8, 16))
+    r.advance(15 * SECOND)
+    expect(await pass()).toEqual([...hashes.slice(16), ...hashes.slice(0, 4)])
+    r.advance(15 * SECOND)
+    expect(await pass()).toEqual(hashes.slice(4, 12))
+    // One landed member among them: recorded when its turn comes, without starving the rest.
+    state.mine(recorded[12]!.members[0]!.signed!.rawTransaction)
+    r.advance(15 * SECOND)
+    const calls = providerCalls(state)
+    const seen = probed(state).length
+    await r.tick()
+    // Eight probes, plus the observation's seven reads (one of them a receipt) for the one.
+    expect(providerCalls(state) - calls).toBe(8 + 7)
+    expect(new Set(probed(state).slice(seen))).toEqual(
+      new Set(hashes.slice(12, 20)),
+    )
+    expect(journal.list().map(row => row.members[0]!.observation.state)).toEqual(
+      recorded.map((row, i) =>
+        i === 12 ? 'included-success' : row.members[0]!.observation.state,
+      ),
+    )
+    expect(c.pool.getRecord(
+      (recorded[12]!.members[0]!.source as { index: number }).index,
+    )).toMatchObject(spent(recorded[12]!.members[0]!.signed!.rawTransaction))
+    expect(c.sign).toHaveBeenCalledTimes(20)
+    expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(20)
+  }, 60_000)
+
+  it('a probe the node never answers: ticks while it is in flight start nothing, a native send from another account completes meanwhile, and the 15 s floor counts from the end of the pass', async () => {
+    const state = chain([])
+    const c = await composed(state, [100000n, 100000n])
+    const r = reobserver(c)
+    const first = await broadcastNative(c, state, r.executor)
+    let answer!: (receipt: null) => void
+    state.provider.getTransactionReceipt.mockImplementationOnce(
+      () =>
+        new Promise<null>(resolve => {
+          answer = resolve
+        }),
+    )
+    let seen = probed(state).length
+    let returned = false
+    const hanging = r.tick().then(() => {
+      returned = true
+    })
+    await settle()
+    expect(probed(state).slice(seen)).toEqual([hashOf(first)])
+    seen = probed(state).length
+    // However long it hangs and however many callers arrive: no second pass.
+    r.advance(3600 * SECOND)
+    await Promise.all(Array.from({ length: 10 }, () => r.tick()))
+    expect(probed(state).length).toBe(seen)
+    expect(returned).toBe(false)
+    // The same executor sends from the other account while the probe is still unanswered.
+    const second = await broadcastNative(c, state, r.executor)
+    expect(second.operationId).not.toBe(first.operationId)
+    expect(second.members[0]).toMatchObject({ exposed: true })
+    expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(2)
+    expect(returned).toBe(false)
+    answer(null)
+    await hanging
+    // The floor is measured from the end of that pass.
+    seen = probed(state).length
+    r.advance(15 * SECOND - 1)
+    await r.tick()
+    expect(probed(state).length).toBe(seen)
+    r.advance(1)
+    await r.tick()
+    // Both are due; the pass starts after the member probed last.
+    expect(probed(state).slice(seen)).toEqual([hashOf(second), hashOf(first)])
+  })
+
+  it('stopped mid-pass, as wallet close does: the pass returns without the node answering, an answer that arrives afterwards records nothing (during the probe and during the observation), later ticks do nothing, and nothing rejects unhandled', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => void unhandled.push(reason)
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      for (const during of ['probe', 'observation', 'probe rejects'] as const) {
+        const state = chain([])
+        const c = await composed(state, [121000n])
+        const r = reobserver(c)
+        const row = await broadcastLegacy(c, state, 100000n)
+        const raw = row.members[0]!.signed!.rawTransaction
+        state.mine(raw)
+        let answer!: () => void
+        const held = new Promise<void>(resolve => {
+          answer = resolve
+        })
+        const receipt =
+          state.provider.getTransactionReceipt.getMockImplementation()!
+        const transaction =
+          state.provider.getTransaction.getMockImplementation()!
+        if (during === 'observation')
+          state.provider.getTransaction.mockImplementationOnce(async hash => {
+            await held
+            return transaction(hash)
+          })
+        else
+          state.provider.getTransactionReceipt.mockImplementationOnce(
+            async hash => {
+              await held
+              if (during === 'probe rejects')
+                throw new Error('fixture: provider destroyed')
+              return receipt(hash)
+            },
+          )
+        const record = jest.spyOn(journal, 'recordObservation')
+        const tick = r.tick()
+        await settle()
+        const recorded = journal.list()
+        await r.executor.stopReobservation()
+        await tick
+        answer()
+        await settle()
+        await settle()
+        // The journal was not asked to record anything, so nothing can still be on its way.
+        expect(record).not.toHaveBeenCalled()
+        expect(journal.list()).toEqual(recorded)
+        expect(journal.list()[0]!.members[0]!.observation.state).toBe('pending')
+        expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+        expect(r.applied).not.toHaveBeenCalled()
+        const before = providerCalls(state)
+        r.advance(3600 * SECOND)
+        await r.tick()
+        expect(providerCalls(state)).toBe(before)
+        expect(journal.list()).toEqual(recorded)
+        // This fixture's journal and pool store are per test: release them for the next round.
+        await stores.pop()!.Close()
+        await reset()
+      }
+      await settle()
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
+
+  it('the local pass refused, as the wallet queue refuses it while a canonical pre-sign intent holds a row: nothing is thrown, the observation stays recorded, and a later tick applies it with no request', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n])
+    const r = reobserver(c)
+    const row = await broadcastLegacy(c, state, 100000n)
+    const raw = row.members[0]!.signed!.rawTransaction
+    state.mine(raw)
+    const refusal = new Error(
+      'Canonical pre-sign intent requires explicit correlation before ordinary pool operations',
+    )
+    r.applied.mockRejectedValueOnce(refusal).mockImplementationOnce(() => {
+      throw refusal
+    })
+    await expect(r.tick()).resolves.toBeUndefined()
+    expect(r.applied).toHaveBeenCalledTimes(1)
+    const recorded = journal.list()
+    expect(recorded[0]!.members[0]!.observation.state).toBe('included-success')
+    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    const before = providerCalls(state)
+    // Inside the floor it is not tried again.
+    await r.tick()
+    expect(r.applied).toHaveBeenCalledTimes(1)
+    // Refused again, this time by a synchronous throw (a closed wallet).
+    r.advance(15 * SECOND)
+    await expect(r.tick()).resolves.toBeUndefined()
+    expect(r.applied).toHaveBeenCalledTimes(2)
+    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    r.advance(15 * SECOND)
+    await r.tick()
+    expect(r.applied).toHaveBeenCalledTimes(3)
+    expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
+    // Applied once: nothing is owed after it.
+    r.advance(15 * SECOND)
+    await r.tick()
+    expect(r.applied).toHaveBeenCalledTimes(3)
+    expect(providerCalls(state)).toBe(before)
+    expect(journal.list()).toEqual(recorded)
+    // Left unapplied instead, the open-time pass of the next session applies it.
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+  })
+
+  it('a send that observes the same member while a re-observation is mid-observation: the later observer records, the earlier one is discarded, and the pool row is written once', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n, 50000n])
+    const r = reobserver(c)
+    const row = await broadcastLegacy(c, state, 100000n, r.executor)
+    const raw = row.members[0]!.signed!.rawTransaction
+    state.mine(raw)
+    let answer!: () => void
+    const held = new Promise<void>(resolve => {
+      answer = resolve
+    })
+    const transaction = state.provider.getTransaction.getMockImplementation()!
+    state.provider.getTransaction.mockImplementationOnce(async hash => {
+      await held
+      return transaction(hash)
+    })
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    const record = jest.spyOn(journal, 'recordObservation')
+    const tick = r.tick()
+    await settle()
+    // The send plans, observes the member included, and its own pass records the row.
+    await r.executor.sendNative({ recipient: to, value: 1000n }, c.lifetime)
+    expect(journal.list()[0]!.members[0]!.observation.state).toBe(
+      'included-success',
+    )
+    expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
+    const recorded = journal.list()
+    answer()
+    await tick
+    // The re-observation's own result was discarded by the journal's capture rule.
+    expect(await record.mock.results.slice(-1)[0]!.value).toBe(false)
+    expect(journal.list()).toEqual(recorded)
+    expect(c.apply.mock.calls.filter(([id]) => id === row.operationId)).toHaveLength(1)
+    expect(putMany).toHaveBeenCalledTimes(1)
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+  })
+
+  it('while a send is on the executor queue a landed member is probed but not observed, so the send\'s own observations are never discarded; the next pass records it', async () => {
+    const state = chain([])
+    const c = await composed(state, [121000n, 50000n])
+    const r = reobserver(c)
+    const row = await broadcastLegacy(c, state, 100000n, r.executor)
+    const raw = row.members[0]!.signed!.rawTransaction
+    // A send that has finished observing its sources and now waits for a fee quote.
+    let quote!: () => void
+    const held = new Promise<void>(resolve => {
+      quote = resolve
+    })
+    let asked!: () => void
+    const waiting = new Promise<void>(resolve => {
+      asked = resolve
+    })
+    const fees = state.provider.getFeeData.getMockImplementation()!
+    state.provider.getFeeData.mockImplementationOnce(async () => {
+      asked()
+      await held
+      return fees()
+    })
+    const sending = r.executor.sendNative(
+      { recipient: to, value: 1000n },
+      c.lifetime,
+    )
+    await waiting
+    state.mine(raw)
+    const capture = jest.spyOn(journal, 'beginCapture')
+    const before = providerCalls(state)
+    await r.tick()
+    // The one probe, which found the receipt, and nothing after it.
+    expect(providerCalls(state) - before).toBe(1)
+    expect(probed(state).slice(-1)).toEqual([hashOf(row)])
+    expect(capture).not.toHaveBeenCalled()
+    expect(journal.list()[0]!.members[0]!.observation.state).toBe('pending')
+    quote()
+    await sending
+    expect(journal.list()[0]!.members[0]!.observation.state).toBe('pending')
+    expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    // Not counted as an empty probe: due again as soon as the floor allows.
+    r.advance(15 * SECOND)
+    await r.tick()
+    expect(journal.list()[0]!.members[0]!.observation.state).toBe(
+      'included-success',
+    )
+    expect(c.pool.getRecord(0)).toMatchObject(spent(raw))
+  })
+
+  it('an unreadable journal or a wallet lifetime that has ended: no request, nothing thrown', async () => {
+    const state = chain([])
+    const c = await composed(state, [100000n])
+    await broadcastNative(c, state)
+    const before = providerCalls(state)
+    const unreadable = reobserver(c)
+    jest.spyOn(journal, 'list').mockImplementationOnce(() => {
+      throw new Error('fixture: journal unreadable')
+    })
+    await expect(unreadable.tick()).resolves.toBeUndefined()
+    const ended = reobserver(c, {
+      runLifetime: async () => {
+        throw new Error('Monad wallet bundle is closing or closed')
+      },
+    })
+    await expect(ended.tick()).resolves.toBeUndefined()
+    expect(providerCalls(state)).toBe(before)
+    expect(unreadable.applied).not.toHaveBeenCalled()
+    expect(ended.applied).not.toHaveBeenCalled()
   })
 })

@@ -33,7 +33,11 @@
  *   ticket) has no cheaper way to ask "what pubkey did you just use to decrypt this."
  */
 import { activeChain } from '@frank/wallet/chain'
-import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
+import type {
+  DirectMessageReceived,
+  NativeWalletHandle,
+  WalletHandle,
+} from '@frank/wallet/chain'
 import {
   MonadMailboxAuthError,
   MonadMailboxChallengeCapacityError,
@@ -501,6 +505,19 @@ export interface OutgoingReconciliation {
   stop: () => void
 }
 
+/** Starts the wallet's bounded re-observation of its own broadcast transfers, if the handle has
+ * one. Never awaited and never throws: its failure is not the caller's. */
+function reobserveNativeOperations(wallet: WalletHandle): void {
+  try {
+    void (wallet as WalletHandle &
+      Pick<NativeWalletHandle, 'reobserveNativeOperations'>)
+      .reobserveNativeOperations?.()
+      .catch(() => undefined)
+  } catch {
+    /* Nothing to do. */
+  }
+}
+
 /**
  * Keeps settling outgoing messages whose stamp payment is still pending (#270). Every tick asks
  * the wallet to re-send the SAME exact bytes of each live payment attempt (free and idempotent,
@@ -568,6 +585,10 @@ export function startOutgoingReconciliation({
     let pending = 0
     try {
       pending = (await chats.reconcileOutgoing({ wallet })).pending
+      // Native transfers this wallet broadcast and nothing has seen confirm: the wallet looks
+      // again, within its own request bound (none when nothing is pending). Not awaited, so a
+      // slow node never delays the next tick, and a handle without the method has nothing to do.
+      if (!stopped) reobserveNativeOperations(wallet)
     } catch (err) {
       console.warn('outgoing message reconciliation failed', err)
       pending = 1

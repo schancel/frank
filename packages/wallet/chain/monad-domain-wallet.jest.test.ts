@@ -3411,6 +3411,8 @@ describe('recorded native spend evidence is applied once at wallet open, with no
         EvmNativeOperationJournal.prototype,
         'beginCapture',
       ),
+      // Stage 3: open never starts a re-observation, whatever is pending in the journal.
+      reobserve: jest.spyOn(EvmLegacyConsolidator.prototype, 'reobservePending'),
     }
     jest.mocked(MonadAccountTxSigner).mockClear()
     const counts = () =>
@@ -3882,5 +3884,273 @@ describe('recorded native spend evidence is applied once at wallet open, with no
     expect(await third.admission()).toMatchObject({ status: 'ready' })
     expect(third.wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
     expectNoSpendRecordWithoutItsTransaction(third.wallet)
+  })
+
+  // -----------------------------------------------------------------------------------------
+  // Stage 3 of #1235, on the composed wallet: `reobserveNativeOperations`, the one method the
+  // hosts' polls call. On main dce4bedf the handle has no such method, so each test fails there
+  // at its first tick; what main does with a pending member is the `pin` above (only a native
+  // send looks). That open neither calls it nor makes a request is asserted by every open in
+  // this block through `watchOpen` (`reobserve: 0`), the pending pin included.
+  // -----------------------------------------------------------------------------------------
+  describe('bounded re-observation of a broadcast member (#1235 Stage 3)', () => {
+    /** The consolidator's clock is `Date.now` in composition: moved here, never slept on. */
+    const clock = () => {
+      const real = Date.now.bind(Date)
+      let ahead = 0
+      jest.spyOn(Date, 'now').mockImplementation(() => real() + ahead)
+      return { advance: (ms: number) => void (ahead += ms) }
+    }
+    const pendingMember = (wallet: EvmChainWalletHandle) =>
+      wallet.getNativeOperations!().slice(-1)[0]!.members[0]!
+
+    test('nothing pending: any number of ticks makes no request at any JSON-RPC layer and observes nothing; with unconfirmed members a tick makes exactly one request each, the receipt request, and writes nothing when it fails', async () => {
+      const f = await composedWithProductionFundedPoolRow(dir)
+      const { wallet } = f
+      const time = clock()
+      // A main-sourced send, recorded included: a terminal member, which is never looked up.
+      await f.sendFromMain()
+      await wallet.estimateLegacyFee!({ recipient: { raw: recipient }, value: 1n })
+      expect(
+        wallet.getNativeOperations!().map(row => row.members[0]!.observation.state),
+      ).toEqual(['included-success'])
+      const network = watchOpen()
+      const ticks = async (count: number) => {
+        for (let i = 0; i < count; i++) {
+          time.advance(15_000)
+          await expect(wallet.reobserveNativeOperations!()).resolves.toBeUndefined()
+        }
+      }
+      await ticks(100)
+      await Promise.all(
+        Array.from({ length: 20 }, () => wallet.reobserveNativeOperations!()),
+      )
+      await settle()
+      expect(network.counts()).toEqual({ ...network.untouched, reobserve: 120 })
+
+      // One pool-sourced send the node keeps without a receipt.
+      jest.mocked(FetchRequest.prototype.send).mockRestore()
+      f.rpc.balances.set(f.main, 40000n)
+      const { operations } = await poolSendThenObserved(f, 'pending')
+      // The node of that send returned no receipt at all, so its planning recorded the main
+      // member `pending` again (the existing observation records what the node says): two
+      // members are now unconfirmed, the main one first.
+      expect(operations.map(row => row.members[0]!.observation.state)).toEqual([
+        'pending',
+        'pending',
+      ])
+      const probes = operations.map(row => [
+        'eth_getTransactionReceipt',
+        [row.members[0]!.signed!.transactionHash],
+      ])
+      // From here the receipt request is the provider's real one: it reaches the JSON-RPC
+      // layers, where the transport refuses it. This is the positive control for the zero above.
+      jest.mocked(wallet.provider.getTransactionReceipt).mockRestore()
+      const layers = {
+        send: jest.spyOn(JsonRpcProvider.prototype, 'send'),
+        batch: jest.spyOn(JsonRpcProvider.prototype, '_send'),
+        transport: jest
+          .spyOn(FetchRequest.prototype, 'send')
+          .mockRejectedValue(new Error('fixture: network touched')),
+        observe: jest.spyOn(EvmLegacyConsolidator.prototype, 'observe'),
+        capture: jest.spyOn(EvmNativeOperationJournal.prototype, 'beginCapture'),
+      }
+      // These are the spies the zero above was read from; the send in between used two of them.
+      Object.values(layers).forEach(spy => spy.mockClear())
+      const writes = watchWrites()
+      await ticks(1)
+      expect(layers.send.mock.calls).toEqual(probes)
+      expect(layers.batch).toHaveBeenCalledTimes(2)
+      expect(layers.transport).toHaveBeenCalledTimes(2)
+      expect(layers.observe).not.toHaveBeenCalled()
+      expect(layers.capture).not.toHaveBeenCalled()
+      expect(writes.counts()).toEqual({ pass: 0, commit: 0, putMany: 0 })
+      expect(wallet.getNativeOperations!()).toEqual(operations)
+      expect(wallet.pool.getRecord(0)).toEqual(availableRow)
+      // Inside the member's 15 s wait and the pass floor: nothing more, however many ticks.
+      await Promise.all(
+        Array.from({ length: 20 }, () => wallet.reobserveNativeOperations!()),
+      )
+      time.advance(14_000)
+      await wallet.reobserveNativeOperations!()
+      expect(layers.send).toHaveBeenCalledTimes(2)
+      time.advance(1_000)
+      await wallet.reobserveNativeOperations!()
+      expect(layers.send.mock.calls).toEqual([...probes, ...probes])
+      expect(wallet.getNativeOperations!()).toEqual(operations)
+    })
+
+    test('the receipt appears: a tick records the inclusion and marks the pool row spent with the member bytes, in the wallet queue; nothing is signed, broadcast or transported, the row leaves every selection, and the next open has nothing left to write', async () => {
+      const f = await composedWithProductionFundedPoolRow(dir)
+      const { wallet } = f
+      const time = clock()
+      const { operations } = await poolSendThenObserved(f, 'pending')
+      const writes = watchWrites()
+      const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+      const flushSync = jest.spyOn(EvmLegacyConsolidator.prototype, 'flushSync')
+      f.rpc.broadcast.mockClear()
+      // No receipt yet: one probe, nothing written.
+      const receipt = jest.mocked(wallet.provider.getTransactionReceipt)
+      receipt.mockClear()
+      await wallet.reobserveNativeOperations!()
+      expect(receipt).toHaveBeenCalledTimes(1)
+      expect(wallet.getNativeOperations!()).toEqual(operations)
+      expect(wallet.pool.getRecord(0)).toEqual(availableRow)
+      expect(wallet.pool.isSpendReserved(0)).toBe(true)
+      expect(writes.counts()).toEqual({ pass: 0, commit: 0, putMany: 0 })
+
+      f.withholdReceipts(false)
+      time.advance(15_000)
+      await wallet.reobserveNativeOperations!()
+      const [operation] = wallet.getNativeOperations!()
+      expect(operation!.members[0]!.observation).toMatchObject({
+        state: 'included-success',
+        transactionHash: operation!.members[0]!.signed!.transactionHash,
+      })
+      expect(wallet.pool.getRecord(0)).toEqual(spentByMember(operation!))
+      expect(writes.counts()).toEqual({ pass: 1, commit: 1, putMany: 1 })
+      expect(writes.commit).toHaveBeenCalledWith(
+        0,
+        operation!.members[0]!.signed!.rawTransaction,
+      )
+      expectNoSpendRecordWithoutItsTransaction(wallet)
+      // The account is no longer an available row held back by a reservation: it is terminal,
+      // out of every selection, and its claim and the member's are one authorization.
+      expect(wallet.pool.capacityCache.has(0)).toBe(false)
+      expect(wallet.pool.selectForStamp()).toBeUndefined()
+      expect(() => wallet.leaseManager.acquireLease()).toThrow(
+        NoAvailableSubAccountError,
+      )
+      const obligations = await f.obligations()
+      expect(obligations.map(claim => claim.provenance.kind).sort()).toEqual([
+        'native',
+        'pool-retained',
+      ])
+      expect(
+        obligations.find(claim => claim.provenance.kind === 'pool-retained')!
+          .transaction!.transactionHash,
+      ).toBe(operation!.members[0]!.signed!.transactionHash)
+      // Read-only on chain, and no transport step.
+      expect(sign).not.toHaveBeenCalled()
+      expect(f.rpc.broadcast).not.toHaveBeenCalled()
+      expect(flushSync).not.toHaveBeenCalled()
+      expect(f.transport).not.toHaveBeenCalled()
+      expect(operation!.members[0]!.syncApplied).toBe(false)
+      // Terminal: later ticks ask nothing.
+      receipt.mockClear()
+      for (let i = 0; i < 20; i++) {
+        time.advance(600_000)
+        await wallet.reobserveNativeOperations!()
+      }
+      expect(receipt).not.toHaveBeenCalled()
+      expect(writes.counts()).toEqual({ pass: 1, commit: 1, putMany: 1 })
+
+      await wallet.close()
+      writes.clear()
+      const second = await f.open()
+      expect(writes.counts()).toEqual({ pass: 1, commit: 0, putMany: 0 })
+      expect(second.wallet.pool.getRecord(0)).toEqual(spentByMember(operation!))
+      expect(await second.admission()).toMatchObject({ status: 'ready' })
+    })
+
+    test('a node that never answers the probe: a native send completes meanwhile, the wallet queues are free, the wallet closes without waiting for the node, and an answer after close records nothing and rejects nothing', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const f = await composedWithProductionFundedPoolRow(dir)
+        const { wallet } = f
+        clock()
+        const { operations } = await poolSendThenObserved(f, 'pending')
+        const hash = pendingMember(wallet).signed!.transactionHash
+        const landed = f.rpc.receipts.get(hash)!
+        let answer!: (receipt: typeof landed) => void
+        jest.mocked(wallet.provider.getTransactionReceipt).mockImplementationOnce(
+          () =>
+            new Promise(resolve => {
+              answer = resolve
+            }),
+        )
+        let returned = false
+        const tick = wallet.reobserveNativeOperations!().then(() => {
+          returned = true
+        })
+        await settle()
+        expect(answer).toBeDefined()
+        // A second tick while the first is in flight starts nothing and returns at once.
+        await wallet.reobserveNativeOperations!()
+        // The whole native send path: the wallet queue, the bundle's operation queue, the main
+        // account queue and the executor queue. A canonical send waits on the first two.
+        const sent = await f.sendFromMain()
+        expect(wallet.getNativeOperations!().slice(-1)[0]!.members[0]).toMatchObject({
+          source: { kind: 'main' },
+          exposed: true,
+          signed: { transactionHash: sent.txHash },
+        })
+        expect(returned).toBe(false)
+        await wallet.close()
+        await tick
+        answer(landed)
+        await settle()
+        await settle()
+        const second = await f.open()
+        expect(second.wallet.getNativeOperations!()[0]).toEqual(operations[0])
+        expect(second.wallet.pool.getRecord(0)).toEqual(availableRow)
+        expect(second.wallet.pool.isSpendReserved(0)).toBe(true)
+        expect(await second.admission()).toMatchObject({ status: 'ready' })
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+
+    test('hand-built: while a retained canonical pre-sign intent holds an available row the wallet queue refuses the local pass; the tick does not throw, the observation stays recorded, and a later tick applies it without a request once the intent is gone', async () => {
+      const f = await composedWithProductionFundedPoolRow(dir)
+      const { wallet } = f
+      const time = clock()
+      await poolSendThenObserved(f, 'pending')
+      f.withholdReceipts(false)
+      const writes = watchWrites()
+      const intents = jest
+        .spyOn(LevelCanonicalStampAttemptJournal.prototype, 'getIntents')
+        .mockReturnValue([
+          { members: [{ reservation: { id: 'r', index: 0 } }] } as never,
+        ])
+      await expect(wallet.reobserveNativeOperations!()).resolves.toBeUndefined()
+      const [operation] = wallet.getNativeOperations!()
+      expect(operation!.members[0]!.observation.state).toBe('included-success')
+      expect(writes.counts()).toEqual({ pass: 0, commit: 0, putMany: 0 })
+      expect(wallet.pool.getRecord(0)).toEqual(availableRow)
+      // Still refused 15 s later; the guard is the wallet queue's own.
+      time.advance(15_000)
+      await expect(wallet.reobserveNativeOperations!()).resolves.toBeUndefined()
+      expect(writes.counts()).toEqual({ pass: 0, commit: 0, putMany: 0 })
+      await expect(f.sendFromMain()).rejects.toThrow(
+        'Canonical pre-sign intent requires explicit correlation',
+      )
+      intents.mockRestore()
+      const receipt = jest.mocked(wallet.provider.getTransactionReceipt)
+      receipt.mockClear()
+      time.advance(15_000)
+      await wallet.reobserveNativeOperations!()
+      expect(writes.counts()).toEqual({ pass: 1, commit: 1, putMany: 1 })
+      expect(wallet.pool.getRecord(0)).toEqual(spentByMember(operation!))
+      expect(receipt).not.toHaveBeenCalled()
+      expect(await f.admission()).toMatchObject({ status: 'ready' })
+    })
+
+    test('a closed wallet: the method resolves, asks nothing and writes nothing', async () => {
+      const f = await composedWithProductionFundedPoolRow(dir)
+      const { wallet } = f
+      await poolSendThenObserved(f, 'pending')
+      f.withholdReceipts(false)
+      const receipt = jest.mocked(wallet.provider.getTransactionReceipt)
+      await wallet.close()
+      receipt.mockClear()
+      const writes = watchWrites()
+      await expect(wallet.reobserveNativeOperations!()).resolves.toBeUndefined()
+      expect(receipt).not.toHaveBeenCalled()
+      expect(writes.counts()).toEqual({ pass: 0, commit: 0, putMany: 0 })
+    })
   })
 })

@@ -696,4 +696,106 @@ describe("FrankBotHost Reliability Features", () => {
       await host.stop();
     });
   });
+
+  // #1235 Stage 3. On main dce4bedf `pollOnce` never calls the wallet's re-observation: the
+  // first three tests fail there (the mock is never called). The last is a pin: every other
+  // test in this file already polls with a wallet handle that has no such method.
+  describe("Native re-observation at the poll", () => {
+    const bot: FrankBotDefinition = {
+      id: "reobserve-bot",
+      getProfile: () => ({ name: "ReobserveBot", bot: true }),
+      onMessage: async () => undefined,
+    };
+    const registered = async (name: string) => {
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/${name}`,
+      });
+      await host.register(bot);
+      const instance = (host as any).instances.get("reobserve-bot");
+      mockDirectMessagesFetchSince.mockResolvedValue([]);
+      return { host, instance };
+    };
+
+    it("calls it once per poll, after the recovery loop and before the mailbox fetch", async () => {
+      const { host, instance } = await registered("reobserve-order");
+      const order: string[] = [];
+      // One incomplete operation with a linked reply, so the recovery loop has work.
+      jest.spyOn(instance.operations, "listIncomplete").mockReturnValue([
+        {
+          digest: "aa".repeat(32),
+          replies: [{ digest: "bb".repeat(32), observation: "unknown" }],
+        },
+      ]);
+      jest
+        .spyOn(instance.operations, "observe")
+        .mockImplementation(async () => void order.push("recovery recorded"));
+      (host as any).chain.directMessages.reconcileAttempts = jest.fn(
+        async () => {
+          order.push("recovery read");
+          return {};
+        }
+      );
+      instance.wallet.reobserveNativeOperations = jest.fn(async () => {
+        order.push("reobserve");
+      });
+      mockDirectMessagesFetchSince.mockImplementation(async () => {
+        order.push("fetch");
+        return [];
+      });
+      await (host as any).pollAllBots();
+      expect(order).toEqual([
+        "recovery read",
+        "recovery recorded",
+        "reobserve",
+        "fetch",
+      ]);
+      await (host as any).pollAllBots();
+      expect(instance.wallet.reobserveNativeOperations).toHaveBeenCalledTimes(2);
+      expect(instance.wallet.reobserveNativeOperations).toHaveBeenCalledWith();
+    });
+
+    it("does not wait for it: a re-observation that never settles does not hold the poll", async () => {
+      const { host, instance } = await registered("reobserve-unawaited");
+      instance.wallet.reobserveNativeOperations = jest.fn(
+        () => new Promise<void>(() => undefined)
+      );
+      await (host as any).pollAllBots();
+      await (host as any).pollAllBots();
+      expect(instance.wallet.reobserveNativeOperations).toHaveBeenCalledTimes(2);
+      expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(2);
+    });
+
+    it("survives its failure: a rejection or a synchronous throw neither breaks the poll nor goes unhandled", async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const { host, instance } = await registered("reobserve-failure");
+        instance.wallet.reobserveNativeOperations = jest
+          .fn()
+          .mockRejectedValueOnce(new Error("fixture: node unavailable"))
+          .mockImplementationOnce(() => {
+            throw new Error("fixture: wallet closed");
+          });
+        await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+        await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(instance.wallet.reobserveNativeOperations).toHaveBeenCalledTimes(
+          2
+        );
+        expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(2);
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+    });
+
+    it("pin: a wallet handle without the method has nothing to do, and the poll fetches as before", async () => {
+      const { host, instance } = await registered("reobserve-absent");
+      expect(instance.wallet.reobserveNativeOperations).toBeUndefined();
+      await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+      expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(1);
+    });
+  });
 });

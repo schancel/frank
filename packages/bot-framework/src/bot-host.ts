@@ -764,6 +764,16 @@ export class FrankBotHost {
             void this.track(instance, row, () =>
               this.completePrepared(instance, row.digest)
             );
+        // Native transfers this wallet broadcast and nothing has seen confirm: the wallet looks
+        // again, within its own request bound (none when nothing is pending). Not awaited, and
+        // its failure is not this poll's; a handle without the method has nothing to do.
+        try {
+          void instance.wallet
+            .reobserveNativeOperations?.()
+            .catch(() => undefined);
+        } catch {
+          /* Nothing to do. */
+        }
         const messages = await this.chain.directMessages.fetchSince({
           wallet: instance.wallet,
           sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),

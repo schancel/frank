@@ -233,6 +233,13 @@ export interface NativeWalletHandle {
   getNativeOperations?(): readonly EvmNativeOperation[];
   resumeNativeOperation?(operationId: string): Promise<EvmNativeOperation>;
   cancelUnsignedNativeOperation?(operationId: string): Promise<void>;
+  /**
+   * Looks again, within a hard request bound the wallet enforces, for this wallet's own broadcast
+   * transfers whose inclusion nothing has observed. Safe to call on every poll tick: it makes no
+   * request when nothing is pending, never signs or submits anything, and never rejects. Absent
+   * on a handle with nothing to look up; callers treat absence as nothing to do.
+   */
+  reobserveNativeOperations?(): Promise<void>;
 }
 
 export type LegacySendStage =

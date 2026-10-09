@@ -1952,14 +1952,16 @@ async function makeCanonicalConsumerFixture(
       await journal.Close()
     }
   }
-  let canonicalJournal!: LevelCanonicalStampAttemptJournal
-  let nativeJournal!: EvmNativeOperationJournal
+  const captured: {
+    canonical?: LevelCanonicalStampAttemptJournal
+    native?: EvmNativeOperationJournal
+  } = {}
   const openOwner = async (canonicalEnabled = true) => {
     const originalNativeOpen = EvmNativeOperationJournal.prototype.Open
     const captureNative = jest
       .spyOn(EvmNativeOperationJournal.prototype, 'Open')
       .mockImplementation(function (this: EvmNativeOperationJournal) {
-        nativeJournal = this
+        captured.native = this
         return originalNativeOpen.call(this)
       })
     const originalCanonicalOpen =
@@ -1967,7 +1969,7 @@ async function makeCanonicalConsumerFixture(
     const captureCanonical = jest
       .spyOn(LevelCanonicalStampAttemptJournal.prototype, 'Open')
       .mockImplementation(function (this: LevelCanonicalStampAttemptJournal) {
-        canonicalJournal = this
+        captured.canonical = this
         return originalCanonicalOpen.call(this)
       })
     return openExistingPoolMonadTopicOwner({
@@ -2075,10 +2077,10 @@ async function makeCanonicalConsumerFixture(
       return state
     },
     get canonicalJournal() {
-      return canonicalJournal
+      return captured.canonical!
     },
     get nativeJournal() {
-      return nativeJournal
+      return captured.native!
     },
     reopenOwner: async (canonicalEnabled = true) => {
       await queue

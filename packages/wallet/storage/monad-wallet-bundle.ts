@@ -586,6 +586,8 @@ export async function openExistingPoolMonadTopicOwner(params: {
   stampReferencesLeaseIndex: (index: number) => boolean
   nativeBinding?: EvmNativeBinding
   canonicalBinding?: { readonly tuple: string; readonly id: string }
+  /** Composition loads its existing inventories after namespace ownership, before projections. */
+  loadExistingState?: () => Promise<void>
   encloseFinancialOperation?: <T>(
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
   ) => Promise<T>
@@ -609,6 +611,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
       params.assertEnclosingAdmission()
     }
     if (params.location === undefined) {
+      await params.loadExistingState?.()
       const memory = new InMemoryTopicOperationJournal()
       topicJournal = {
         put: async operation => {
@@ -630,6 +633,7 @@ export async function openExistingPoolMonadTopicOwner(params: {
       } catch {
         /* browser runtimes have no filesystem */
       }
+      await params.loadExistingState?.()
       database = level(join(params.location, 'wallet-manifest'))
       await openDurableLevel(database!, params.location, 'wallet-manifest')
       topicJournal = new LevelTopicOperationJournal(

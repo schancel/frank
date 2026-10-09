@@ -371,6 +371,11 @@ class AdmissionOwner implements EvmInputAdmission {
       })
     }
     for (const row of o.topic.getAll()) {
+      const record =
+        o.pool.getRecord(row.leaseIndex) ??
+        o.pool.terminalCheckpoints().find(r => r.index === row.leaseIndex)
+      if (!record || address(record.address) !== address(row.senderAddress))
+        invalid()
       const key = topicOperationKey(row)
       const tx = this.tx(row.rawTx, row.senderAddress)
       if (tx.transactionHash !== row.txHash.toLowerCase()) invalid()
@@ -705,6 +710,8 @@ class AdmissionOwner implements EvmInputAdmission {
     return this.mutate(lifetime, async () => {
       this.checkEpoch(epoch, lifetime)
       this.check(this.nativeResources(snapshot))
+      // Owned HD accounts can receive funds without a pool allocation row. The native
+      // executor verifies current account state and custody; any existing row must agree.
       for (const { source } of snapshot.members) {
         if (source.kind === 'spend') {
           const record =
@@ -713,10 +720,9 @@ class AdmissionOwner implements EvmInputAdmission {
               .terminalCheckpoints()
               .find(r => r.index === source.index)
           if (
-            !record ||
-            record.address.toLowerCase() !== source.address ||
-            record.status === 'unfunded' ||
-            record.status === 'funding'
+            record &&
+            (record.address.toLowerCase() !== source.address ||
+              record.status === 'funding')
           )
             invalid()
         }
@@ -726,7 +732,7 @@ class AdmissionOwner implements EvmInputAdmission {
             this.owners.change
               .recoveredAccounts()
               .find(r => r.index === source.index)
-          if (!record || record.address.toLowerCase() !== source.address)
+          if (record && record.address.toLowerCase() !== source.address)
             invalid()
         }
       }
@@ -987,22 +993,29 @@ export function canonicalAdmissionPool(
         pool.recordSpendTransaction(index, checkpoint)
         await flush()
       }),
-    release: (
+    release: async (
       handle: Parameters<SubAccountLeaseManager['releaseLease']>[0],
       outcome: Parameters<SubAccountLeaseManager['releaseLease']>[1],
-    ) =>
-      owner.mutate(lifetime, async () => {
-        leases.releaseLease(handle, outcome)
+    ) => {
+      await owner.mutate(lifetime, async () => {
+        leases.releaseLease(handle, outcome, false)
         await flush()
-      }),
-    setStatus: (
+      })
+      owner.owners.assertLifetime(lifetime)
+      if (outcome !== 'unused') pool.triggerProactiveWarming()
+    },
+    setStatus: async (
       index: number,
       status: Parameters<MonadSubAccountPool['setStatus']>[1],
-    ) =>
-      owner.mutate(lifetime, async () => {
-        pool.setStatus(index, status)
+    ) => {
+      await owner.mutate(lifetime, async () => {
+        pool.setStatus(index, status, false)
         await flush()
-      }),
+      })
+      owner.owners.assertLifetime(lifetime)
+      if (status === 'spent' || status === 'retired')
+        pool.triggerProactiveWarming()
+    },
   }
 }
 

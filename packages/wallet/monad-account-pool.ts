@@ -356,7 +356,11 @@ export class MonadSubAccountPool {
    * itself (except from `topUpPool()`, to mark a freshly-funded index `'available'`); it exists so
    * #18 has a slot to write through without needing to touch the storage layer directly. Throws if
    * `index` isn't a known sub-account. */
-  setStatus(index: number, status: SubAccountStatus): SubAccountRecord {
+  setStatus(
+    index: number,
+    status: SubAccountStatus,
+    notifyWarming = true
+  ): SubAccountRecord {
     const existing = this.store.getByIndex(index);
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
@@ -369,7 +373,7 @@ export class MonadSubAccountPool {
     const updated: SubAccountRecord = { ...base, status };
     this.store.put(updated);
     this.syncUtxo(index, status);
-    if (status === "spent" || status === "retired") {
+    if (notifyWarming && (status === "spent" || status === "retired")) {
       this.triggerProactiveWarming();
     }
     return updated;

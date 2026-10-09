@@ -1184,6 +1184,15 @@ describe("canonical topic owner production composition", () => {
       await wallet.close();
       const database = level(join(location, "wallet-manifest"));
       const journal = new LevelTopicOperationJournal(database, () => {});
+      const material = createMonadWalletMaterial(seed);
+      const signed = await Promise.all(original.slice(0, 3).map(async (record, index) => {
+        const signer = new Wallet(material.keyring.deriveSubAccount(index).privateKey);
+        expect(signer.address).toBe(record.address);
+        return signer.signTransaction({ chainId: BigInt(config.chainId), nonce: 0,
+          to: config.stampBurnAddress, value: 7n, gasLimit: 21000n,
+          maxFeePerGas: 2n, maxPriorityFeePerGas: 1n, type: 2 });
+      }));
+      material.dispose();
       const rows: OutgoingTopicOperation[] = [
         undefined,
         "protobuf",
@@ -1195,8 +1204,8 @@ describe("canonical topic owner production composition", () => {
         ...(format ? { writeFormat: format as "protobuf" | "cbor" } : {}),
         leaseIndex: index,
         senderAddress: original[index].address,
-        rawTx: "immutable old authority",
-        txHash: "0x" + String(index).padStart(64, "0"),
+        rawTx: signed[index],
+        txHash: Transaction.from(signed[index]).hash!,
         valueWei: "7",
         direction: "up",
         payloadHashHex: "ab".repeat(32),

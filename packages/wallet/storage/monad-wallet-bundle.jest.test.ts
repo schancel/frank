@@ -510,6 +510,89 @@ describe('existing-pool private topic owner', () => {
       await recovered.close()
     }
   })
+  it.each(['pool', 'change'] as const)(
+    'omitting the loader cannot publish an unopened persistent %s as empty',
+    async component => {
+      const location = mkdtempSync(join(tmpdir(), 'admission-unopened-owner-'))
+      const params = { ...readyParams(), location }
+      const store =
+        component === 'pool'
+          ? new LevelSubAccountPoolStore(location)
+          : new LevelChangePoolStore(location)
+      if (component === 'pool') {
+        params.pool = new MonadSubAccountPool({
+          keyring: params.subKeyring,
+          store: store as LevelSubAccountPoolStore,
+        })
+        params.leaseManager = new SubAccountLeaseManager(params.pool)
+      } else {
+        params.changePool = new MonadChangePool({
+          keyring: params.changeKeyring,
+          store: store as LevelChangePoolStore,
+        })
+      }
+      let owner: MonadWalletPersistenceBundle | undefined
+      try {
+        await expect(
+          openExistingPoolMonadTopicOwner(params).then(value => {
+            owner = value
+            return value
+          }),
+        ).rejects.toThrow('not open')
+      } finally {
+        await owner?.close()
+        rmSync(location, { recursive: true, force: true })
+      }
+    },
+  )
+  it.each(['pool', 'change'] as const)(
+    'persistent %s projections stay closed after partial load failure and from close entry',
+    async component => {
+      const location = mkdtempSync(join(tmpdir(), 'admission-load-failure-'))
+      const path = join(
+        location,
+        component === 'pool' ? 'sub-account-pool' : 'change-pool',
+      )
+      const make = () =>
+        component === 'pool'
+          ? new LevelSubAccountPoolStore(location)
+          : new LevelChangePoolStore(location)
+      const record =
+        component === 'pool'
+          ? { index: 0, address: '0x' + '11'.repeat(20), status: 'available' }
+          : {
+              index: 0,
+              address: '0x' + '11'.repeat(20),
+              sourceBurnIndex: 1,
+              txHash: '0x' + '22'.repeat(32),
+            }
+      const seed = level(path)
+      await seed.put('0', JSON.stringify(record))
+      await seed.put('z-corrupt', 'malformed preserved row')
+      await seed.close()
+      const failed = make()
+      try {
+        await expect(failed.Open()).rejects.toThrow()
+        expect(() => failed.getAll()).toThrow('not open')
+        await failed.Close()
+        const check = level(path)
+        expect(String(await check.get('z-corrupt'))).toBe(
+          'malformed preserved row',
+        )
+        await check.del('z-corrupt') // Only repair this synthetic fixture to exercise successful close.
+        await check.close()
+        const loaded = make()
+        await loaded.Open()
+        expect(loaded.getAll()).toHaveLength(1)
+        const closing = loaded.Close()
+        expect(() => loaded.getAll()).toThrow('not open')
+        await closing
+        expect(() => loaded.getNextIndex()).toThrow('not open')
+      } finally {
+        rmSync(location, { recursive: true, force: true })
+      }
+    },
+  )
   it('a real rejected canonical open preserves its bytes and releases only the failed bundle handles', async () => {
     const location = mkdtempSync(join(tmpdir(), 'admission-corrupt-owner-'))
     const params = { ...readyParams(), location }

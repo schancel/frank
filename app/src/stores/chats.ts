@@ -873,7 +873,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     wrappers.push(wrapper)
   }
 
-  // Validate the complete durable collection before normalizing statuses, pruning leftovers,
+  // Validate the complete durable collection before normalizing statuses, excluding leftovers,
   // or publishing any owner. Old ownerless conversational rows are not a default-thread hint.
   const validatedRows = wrappers.map(wrapper => {
     const { index, message } = wrapper
@@ -923,8 +923,6 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
   const conversations: Record<string, Conversation> = {}
   const messages: Record<string, ChatMessage> = {}
   const logicalMessages: Record<string, LogicalMessageRecord> = {}
-  // Restoration must not open custody or invent a self identity.
-  const ownAddress: string | null = null
   for (const [id, raw] of Object.entries(chatState.conversations ?? {})) {
     if (!raw) continue
     const conversation = newConversation({
@@ -949,7 +947,8 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
     conversations[id] ??= newConversation({
       id,
       address: peer,
-      participants: ownAddress ? [ownAddress, peer] : [peer],
+      // Restore only persisted peer evidence; hydration must not open custody for self.
+      participants: [peer],
       kind: message.items?.some(item => item.type === 'email')
         ? 'email'
         : 'direct',
@@ -978,7 +977,7 @@ export async function rehydateChat(chatState: RestorableState): Promise<State> {
   )
   // A message that was delivered after being re-keyed from its local id to its payload hash can
   // leave its old local record behind if the app stopped between the two writes. The confirmed
-  // record wins (reconcile by payload hash: never show it twice); drop the leftover.
+  // record wins in the derived view; retain both durable records for recovery.
   const confirmedDigests = new Set(
     wrappers
       .filter(({ message }) => message.status === 'confirmed')

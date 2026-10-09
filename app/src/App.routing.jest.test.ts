@@ -89,6 +89,7 @@ jest.mock('./components/dialogs/ContactBookDialog.vue', () => ({
 // Import after installing the encoding globals required by the real chat store.
 /* eslint-disable @typescript-eslint/no-var-requires */
 const App = require('./App.vue').default
+const { setStartupRestoration } = require('./boot/startup-state')
 const createAppRouter = require('./router').default
 const { useChatStore } = require('./stores/chats')
 const { desktopNotify } = require('./utils/notifications')
@@ -149,6 +150,7 @@ async function settleNavigation() {
 describe('App exact conversation route authority (#1237)', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    setStartupRestoration({ phase: 'restored' })
     jest.spyOn(window, 'scrollTo').mockImplementation(() => undefined)
   })
   afterEach(() => jest.restoreAllMocks())

@@ -255,3 +255,12 @@ export function assertHeaderValue(value: string): void {
     }
   }
 }
+
+/**
+ * Returns the text as one header line: every run of code units below 0x20 or
+ * equal to 0x7f becomes a single space, and the result is trimmed. Text with
+ * no such code unit and no outer whitespace is returned unchanged.
+ */
+export function singleLineHeaderText(value: string): string {
+  return value.replace(/[\x00-\x1f\x7f]+/g, ' ').trim();
+}

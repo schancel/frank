@@ -1,5 +1,7 @@
 import { CreditLedger } from '../ledger/credit-ledger';
 import { OutboundMtaWorker } from '../mta/outbound-worker';
+import { canonicalEmailAddress } from '../mta/outbound-delivery';
+import { singleLineHeaderText } from '../rfc/message-headers';
 import { extractEmailAddress, extractEmailParty } from '../smtp/smtp-listener';
 import type {
   ActiveChain,
@@ -142,9 +144,9 @@ export class RelayMailboxListener {
 
     if (emailItem && emailItem.to && emailItem.to.length > 0) {
       // User explicitly specified To / Cc in their rich EmailItem composer
-      primaryRecipient = emailItem.to[0].address.toLowerCase().trim();
-      const restTo = emailItem.to.slice(1).map((p) => p.address.toLowerCase().trim());
-      const rawCc = emailItem.cc ? emailItem.cc.map((p) => p.address.toLowerCase().trim()) : [];
+      primaryRecipient = emailItem.to[0].address;
+      const restTo = emailItem.to.slice(1).map((p) => p.address);
+      const rawCc = emailItem.cc ? emailItem.cc.map((p) => p.address) : [];
       ccRecipients = [...restTo, ...rawCc];
     } else {
       // Standard email semantics based on thread mapping:
@@ -191,15 +193,19 @@ export class RelayMailboxListener {
       );
     }
 
-    if (!primaryRecipient || !primaryRecipient.includes('@')) {
+    const recipientEmail = canonicalEmailAddress(primaryRecipient);
+    if (!recipientEmail) {
       console.warn(
         `[RelayMailboxListener] Could not determine valid primary recipient for thread ${conversationId}`
       );
       return;
     }
+    ccRecipients = this.validCcRecipients(ccRecipients, frankMessageId);
 
     const bodyText = emailItem?.textBody || textItem?.text || '';
-    let subject = emailItem?.subject || thread.subject || 'Re: Frank Message';
+    let subject =
+      this.singleLineSubject(emailItem?.subject || thread.subject || '', frankMessageId) ||
+      'Re: Frank Message';
     if (!subject.toLowerCase().startsWith('re:')) {
       subject = `Re: ${subject}`;
     }
@@ -208,7 +214,7 @@ export class RelayMailboxListener {
       conversationId,
       frankMessageId,
       senderFrankAddress,
-      recipientEmail: primaryRecipient,
+      recipientEmail,
       ccRecipients: ccRecipients.length > 0 ? ccRecipients : undefined,
       bodyText,
       htmlBody: emailItem?.htmlBody,
@@ -245,9 +251,9 @@ export class RelayMailboxListener {
 
     if (emailItem) {
       if (emailItem.to && emailItem.to.length > 0) {
-        primaryRecipient = emailItem.to[0].address.toLowerCase().trim();
-        const otherTo = emailItem.to.slice(1).map((p) => p.address.toLowerCase().trim());
-        const otherCc = emailItem.cc ? emailItem.cc.map((p) => p.address.toLowerCase().trim()) : [];
+        primaryRecipient = emailItem.to[0].address;
+        const otherTo = emailItem.to.slice(1).map((p) => p.address);
+        const otherCc = emailItem.cc ? emailItem.cc.map((p) => p.address) : [];
         ccRecipients = [...otherTo, ...otherCc];
       }
       subject = emailItem.subject || subject;
@@ -301,22 +307,53 @@ export class RelayMailboxListener {
       bodyText = bodyLines.join('\n').trim();
     }
 
-    if (!primaryRecipient || !primaryRecipient.includes('@')) {
+    const recipientEmail = canonicalEmailAddress(primaryRecipient);
+    if (!recipientEmail) {
       console.warn(
         `[RelayMailboxListener] Could not parse destination email address from DM by ${senderFrankAddress}`
       );
       return;
     }
+    ccRecipients = this.validCcRecipients(ccRecipients, frankMessageId);
+    subject = this.singleLineSubject(subject, frankMessageId) || 'Message from Frank';
 
     await this.outboundWorker.dispatchMessage({
       conversationId,
       frankMessageId,
       senderFrankAddress,
-      recipientEmail: primaryRecipient,
+      recipientEmail,
       ccRecipients: ccRecipients.length > 0 ? ccRecipients : undefined,
       bodyText,
       htmlBody: emailItem?.htmlBody,
       subject,
     });
+  }
+
+  /** Keeps the Cc entries that are email addresses; the others are left out of the message. */
+  private validCcRecipients(entries: readonly unknown[], frankMessageId: string): string[] {
+    const valid: string[] = [];
+    for (const entry of entries) {
+      const address = canonicalEmailAddress(entry);
+      if (address) {
+        valid.push(address);
+      } else {
+        console.warn(
+          `[RelayMailboxListener] Left out a Cc entry of message ${frankMessageId} that is not an email address`
+        );
+      }
+    }
+    return valid;
+  }
+
+  /** Returns the subject as one line of text, as it will be written in the email. */
+  private singleLineSubject(subject: unknown, frankMessageId: string): string {
+    const text = typeof subject === 'string' ? subject : '';
+    const singleLine = singleLineHeaderText(text);
+    if (singleLine !== text.trim()) {
+      console.warn(
+        `[RelayMailboxListener] Subject of message ${frankMessageId} was written as a single line`
+      );
+    }
+    return singleLine;
   }
 }

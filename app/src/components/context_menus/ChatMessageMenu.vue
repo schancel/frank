@@ -50,7 +50,7 @@
         <q-item-section>{{ $t('chatMessageMenu.resend') }}</q-item-section>
       </q-item>
       <q-item
-        v-if="isError"
+        v-if="canDiscard"
         clickable
         v-close-popup
         @click="$emit('discardClick')"
@@ -144,6 +144,14 @@ export default defineComponent({
     },
     isError(): boolean {
       return this.message.status === 'error' && Boolean(this.message.outbound)
+    },
+    canDiscard(): boolean {
+      return (
+        Boolean(this.message.outbound) &&
+        (this.message.status === 'error' ||
+          this.message.status === 'payment-pending' ||
+          this.message.status === 'pending')
+      )
     },
   },
   methods: {

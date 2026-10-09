@@ -1794,6 +1794,43 @@ describe('stores/chats.ts (ticket #42)', () => {
     expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(0)
   })
 
+  it('deletes message from a conversation keyed by UUID in chats.conversations', async () => {
+    const chats = useChatStore()
+    const convId = 'conv-uuid-123'
+    chats.conversations[convId] = {
+      id: convId,
+      address: RECIPIENT_ADDRESS,
+      kind: 'direct',
+      messages: [],
+      totalUnreadMessages: 0,
+      totalUnreadValue: 0,
+      totalValue: 0,
+      lastReceived: 0,
+      lastRead: 0,
+      stampAmount: 0,
+    } as any
+    chats.sendMessageLocal({
+      address: RECIPIENT_ADDRESS,
+      senderAddress: SENDER_ADDRESS,
+      index: 'conv-delete-me',
+      items: [{ type: 'text', text: 'delete me from conv' }],
+      outpoints: [],
+      stampValueWei: 10n,
+      status: 'confirmed',
+      previousHash: null,
+      conversationId: convId,
+    })
+    expect(chats.conversations[convId]?.messages).toHaveLength(1)
+
+    await chats.deleteMessage({
+      address: RECIPIENT_ADDRESS,
+      payloadDigest: 'conv-delete-me',
+    })
+
+    expect(chats.messages['conv-delete-me']).toBeUndefined()
+    expect(chats.conversations[convId]?.messages).toHaveLength(0)
+  })
+
   it('keeps durable receipt suppression for an outbound self-route', async () => {
     const chats = useChatStore()
     chats.chats[SENDER_ADDRESS] = {

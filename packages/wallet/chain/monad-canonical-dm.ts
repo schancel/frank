@@ -1167,20 +1167,30 @@ export function canonicalDirectMessages(
       }),
     discardAttempt: (params: { payloadDigest: string }) =>
       serial(owner.links, async () => {
+        const clean = (s?: string) =>
+          s ? (s.startsWith('0x') ? s.slice(2).toLowerCase() : s.toLowerCase()) : ''
+        const target = clean(params.payloadDigest)
         const row = owner.links
           .all()
           .find(
             r =>
-              r.digest === params.payloadDigest ||
-              r.attemptRef === params.payloadDigest,
+              clean(r.digest) === target ||
+              clean(r.attemptRef) === target,
           )
-        if (row && !row.outcome) {
+        if (row) {
           await owner.links.put({
             ...row,
             acknowledged: true,
-            outcome: 'dead',
-            reason: 'discarded',
+            outcome: row.outcome ?? 'dead',
+            reason: row.reason ?? 'discarded',
           })
+          try {
+            const client = owner.client()
+            await client.cleanupTerminal(row.attemptRef, row.consumerId)
+            await client.acknowledgeWorkflow(row.attemptRef, row.consumerId)
+          } catch {
+            // Best effort cleanup on discard
+          }
         }
       }),
     unattributedAttempts: (

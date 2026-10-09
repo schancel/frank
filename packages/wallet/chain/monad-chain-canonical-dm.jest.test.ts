@@ -918,6 +918,53 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     await f.alice.close()
   })
 
+  it('discardAttempt marks a pending attempt dead and acknowledged, allowing subsequent sends to proceed', async () => {
+    const aliceAddr = (await f.alice.getReceiveAddress()).raw.toLowerCase()
+    const storageLocation = `${join(f.root, 'wallet')}-evm-${aliceAddr}`
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    await f.alice.close()
+
+    const store = await LevelCanonicalLinkStore.open(storageLocation)
+    const pendingDigest = 'ef'.repeat(32)
+    await store.put({
+      attemptRef: 'pending-ref-discard',
+      consumerId: 'frank-dm:discard',
+      digest: pendingDigest,
+      prepared: {
+        payload: '00',
+        context: '00',
+        stampValueWei: '1000',
+        economicBinding: '00',
+        walletBindingId: 'unknown',
+        network: 'monad-testnet',
+        chainId: 10143,
+        senderSubject: '00',
+        senderFingerprint: '00',
+      },
+      acknowledged: false,
+    })
+    await store.close()
+
+    ;(f as any).alice = await reopen(directory)
+
+    // Discarding the pending attempt
+    await f.chain.directMessages.discardAttempt({
+      wallet: f.alice,
+      payloadDigest: pendingDigest,
+    })
+
+    // Now send proceeds cleanly without throwing MonadStampPendingAttemptError:
+    const result = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('message after discardAttempt'),
+    })
+    expect(result.payloadDigest).toBeDefined()
+    expect(result.stampPayments.length).toBeGreaterThan(0)
+    await f.alice.close()
+  })
+
   it('keeps reporting a delivered attempt no message recorded across wallet reopens, and never pays for it twice', async () => {
     const { directory, digest } = await interruptedSend('orphan')
     expect(f.requests).toHaveLength(0)

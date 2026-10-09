@@ -113,10 +113,10 @@ import {
 import type { MonadTxOverrides } from '@frank/wallet/monad-account-tx'
 import {
   canonicalMonadStampClient,
-  createMonadChain,
+  createEvmChain,
   loadMonadChainConfigFromEnv,
-  type MonadChainConfig,
-} from '@frank/wallet/chain/monad-chain'
+} from "@frank/wallet/chain/monad-chain";
+import type { EvmChainConfig } from "@frank/wallet/chain/evm-chain-config";
 import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
 import type { QwenCanonicalSender } from './qwen-response-workflow'
 import type { QwenCanonicalInbound } from './qwen-inbound-workflow'
@@ -138,9 +138,8 @@ import {
 import {
   createCanonicalMessageRoles,
   prepareCanonicalStampInventory,
-  type MonadChainWalletHandle,
-} from '@frank/wallet/chain/monad-chain'
-
+} from "@frank/wallet/chain/monad-chain";
+import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 export function requiredEnv(name: string): string {
   const value = process.env[name]
   if (!value) {
@@ -710,7 +709,7 @@ export interface QwenCanonicalDirectory {
 /** The one live typed wallet owner, opened through the public chain factory. Opening signs,
  * funds, replays and sends nothing. */
 export interface QwenCanonicalWallet {
-  readonly handle: MonadChainWalletHandle
+  readonly handle: EvmChainWalletHandle
   /** The typed economic account that funds and pays reply stamps. Public; safe to log. */
   readonly accountAddress: string
   /** The bot's compressed identity point P and the mailbox address derived from it. */
@@ -733,7 +732,7 @@ export function qwenCanonicalChainConfig(params: {
   relayBaseUrl: string
   walletStorageLocation: string
   stampValueWei: bigint
-}): MonadChainConfig {
+}): EvmChainConfig {
   return {
     ...loadMonadChainConfigFromEnv(),
     relayBaseUrl: params.relayBaseUrl,
@@ -850,16 +849,16 @@ export class QwenStartRefusal extends Error {
 const hexOf = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
 
 export async function openQwenCanonicalWallet(params: {
-  chain: MonadChainConfig
+  chain: EvmChainConfig
   roots: MonadRootBundle
 }): Promise<QwenCanonicalWallet> {
   if (params.chain.networkTag !== 'MONT' && params.chain.networkTag !== 'MON1')
     throw new QwenStartRefusal('network-not-monad')
   if (params.chain.walletStorageLocation === false)
     throw new QwenStartRefusal('wallet-storage-not-durable')
-  const handle = (await createMonadChain(params.chain).createWallet(
+  const handle = (await createEvmChain(params.chain).createWallet(
     params.roots,
-  )) as unknown as MonadChainWalletHandle
+  )) as unknown as EvmChainWalletHandle
   try {
     const subject = hexOf(handle.identity.compressedPubKey)
     return {

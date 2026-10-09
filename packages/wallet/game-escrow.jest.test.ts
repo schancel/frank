@@ -13,8 +13,7 @@ import {
 } from './game-escrow'
 import { MonadIdentity } from './monad-identity'
 import { MonadStealthKeyring } from './monad-stealth'
-import type { MonadChainWalletHandle } from './chain/monad-chain'
-
+import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
   const dummyVault = '0xB0ae4A94A7616029CD99Cf3Ab9Bf417be1DfD9E9'
   const chainId = 10143n // Monad testnet
@@ -116,7 +115,7 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
       identity: winnerIdentity,
       stealthKeyring: keyring,
       provider: mockProvider,
-    } as unknown as MonadChainWalletHandle
+    } as unknown as EvmChainWalletHandle
 
     // Escrow payout derived by counterparty or host
     const payout = deriveEscrowStealthPayout({
@@ -214,7 +213,7 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     const mockWallet = {
       identity: winnerIdentity,
       stealthKeyring: new MonadStealthKeyring(),
-    } as unknown as MonadChainWalletHandle
+    } as unknown as EvmChainWalletHandle
 
     const payout = deriveEscrowStealthPayout({
       recipientSpendPubKey: winnerIdentity.compressedPubKey,

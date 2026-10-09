@@ -5,7 +5,7 @@ import * as legacyFeed from "@frank/cashweb/relay/monad-message-feed";
 import * as legacyProfile from "../monad-identity";
 import * as legacyStamp from "../monad-stamp-client";
 /**
- * #778: typed wallets created through the normal `createMonadChain().createWallet` composition send
+ * #778: typed wallets created through the normal `createEvmChain().createWallet` composition send
  * and receive direct messages only through the canonical wallet client. Real typed custody, real
  * Level journals, real directory admission and real sealing/opening. The chain RPC and the relay's
  * HTTP surface are offline stand-ins: this proves the composition and wire bytes, not finality.
@@ -64,7 +64,7 @@ import {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
   CanonicalRelayCannotForwardError,
-  createMonadChain,
+  createEvmChain,
   installCanonicalDirectory,
   canonicalMonadStampClient,
   createCanonicalMessageRoles,
@@ -72,9 +72,9 @@ import {
   prepareMonadRevisionZeroExport,
   prepareMonadNextRevisionExport,
   type CanonicalDirectory,
-  type MonadChainConfig,
-  type MonadChainWalletHandle,
-} from './monad-chain'
+} from "./monad-chain";
+import type { EvmChainConfig } from "./evm-chain-config";
+import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
 import { LevelCanonicalLinkStore } from './monad-canonical-dm'
 import type { CanonicalJournalAttempt } from '../storage/stamp-attempt-journal'
@@ -207,7 +207,7 @@ function roots(index: number): MonadRootBundle {
 
 async function fixture(funded = true) {
   const directory = mkdtempSync(join(tmpdir(), 'chain-canonical-dm-'))
-  const config: MonadChainConfig = {
+  const config: EvmChainConfig = {
     networkId: 'monad-testnet',
     rpcChain: 'monad-testnet',
     chainId: 10143,
@@ -220,9 +220,9 @@ async function fixture(funded = true) {
     subAccountPoolSize: 0,
     walletStorageLocation: join(directory, 'wallet'),
   }
-  const chain = createMonadChain(config)
-  const alice = (await chain.createWallet(roots(0))) as MonadChainWalletHandle,
-    bob = (await chain.createWallet(roots(1))) as MonadChainWalletHandle
+  const chain = createEvmChain(config)
+  const alice = (await chain.createWallet(roots(0))) as EvmChainWalletHandle,
+    bob = (await chain.createWallet(roots(1))) as EvmChainWalletHandle
   // Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded.
   // Each covers its own fee reserve plus 600 wei, so a 1000 wei stamp needs both.
   if (funded) {
@@ -249,7 +249,7 @@ async function fixture(funded = true) {
   }
   const stores: DirectoryStore[] = []
   // Each wallet admits both subjects through its own independent public store.
-  const admit = async (owner: string, wallet: MonadChainWalletHandle) => {
+  const admit = async (owner: string, wallet: EvmChainWalletHandle) => {
     const exported = prepareMonadRevisionZeroExport(wallet, input)
     const store = await openNodeDirectoryStore({
       location: join(directory, `directory-${owner}-${toHex(exported.t1)}`),
@@ -353,8 +353,8 @@ async function fixture(funded = true) {
   }
   const directoryFor = async (
     owner: string,
-    self: MonadChainWalletHandle,
-    peer: MonadChainWalletHandle,
+    self: EvmChainWalletHandle,
+    peer: EvmChainWalletHandle,
   ): Promise<CanonicalDirectory> => {
     const own = await admit(owner, self),
       other = await admit(owner, peer)
@@ -941,12 +941,12 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   async function reopen(directory: CanonicalDirectory) {
     const wallet = (await f.chain.createWallet(
       roots(0),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     installCanonicalDirectory(wallet, directory)
     return wallet
   }
   const orphans = (
-    wallet: MonadChainWalletHandle,
+    wallet: EvmChainWalletHandle,
     knownDigests: string[] = [],
   ) => f.chain.directMessages.unattributedAttempts({ wallet, knownDigests })
 
@@ -1071,7 +1071,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     return { ...original, row, record, storageLocation }
   }
 
-  function noHistoricalExecution(wallet: MonadChainWalletHandle) {
+  function noHistoricalExecution(wallet: EvmChainWalletHandle) {
     const calls = [
       jest.spyOn(MonadCanonicalStampClient.prototype, 'prepareIntent'),
       jest.spyOn(MonadCanonicalStampClient.prototype, 'finishIntent'),
@@ -1707,7 +1707,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
   })
 
   function retainedAttempt(
-    wallet: MonadChainWalletHandle,
+    wallet: EvmChainWalletHandle,
     original: CanonicalJournalAttempt,
   ) {
     const found = canonicalMonadStampClient(wallet).lookup(original.prepared)
@@ -2126,7 +2126,7 @@ describe('two typed wallets on the open directory', () => {
   /** One wallet's own directory: its own stores and pins, signing with its own typed custody. */
   function open(
     name: string,
-    wallet: MonadChainWalletHandle,
+    wallet: EvmChainWalletHandle,
     on: ReturnType<typeof createFakeRelay> = relay,
   ) {
     const descriptor = {
@@ -2153,7 +2153,7 @@ describe('two typed wallets on the open directory', () => {
     directories.push(directory)
     return directory
   }
-  async function online(name: string, wallet: MonadChainWalletHandle) {
+  async function online(name: string, wallet: EvmChainWalletHandle) {
     const directory = open(name, wallet)
     await directory.publish()
     installCanonicalDirectory(wallet, { ...directory, fetch: f.fetch })
@@ -2180,7 +2180,7 @@ describe('two typed wallets on the open directory', () => {
       timestampMs,
     }
   }
-  const fund = async (wallet: MonadChainWalletHandle) => {
+  const fund = async (wallet: EvmChainWalletHandle) => {
     for (const record of wallet.pool.ensureSize(2))
       mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
     await wallet.pool.flush()

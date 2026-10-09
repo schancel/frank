@@ -66,8 +66,8 @@ describe('ActiveChain contract address helpers', () => {
   })
 
   it('throws a clear error if network does not support the requested contract', async () => {
-    const { createMonadChain } = await import('./monad-chain')
-    const unsupportedChain = createMonadChain({
+    const { createEvmChain } = await import('./monad-chain')
+    const unsupportedChain = createEvmChain({
       relayBaseUrl: 'http://127.0.0.1:8098',
       rpcUrl: 'http://127.0.0.1:8545',
       chainId: 99999,

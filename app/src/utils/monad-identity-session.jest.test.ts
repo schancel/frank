@@ -14,8 +14,8 @@ import { getBytes } from 'ethers'
 import { toHex } from '@frank/codec'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import * as monadChain from '@frank/wallet/chain/monad-chain'
-import { createMonadChain } from '@frank/wallet/chain/monad-chain'
-import type { MonadChainWalletHandle } from '@frank/wallet/chain/monad-chain'
+import { createEvmChain } from '@frank/wallet/chain/monad-chain'
+import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { activeChain } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
 import {
@@ -95,9 +95,9 @@ function roots(index: number): MonadRootBundle {
 
 let dir: string
 let relay: FakeRelay
-const wallets: MonadChainWalletHandle[] = []
+const wallets: EvmChainWalletHandle[] = []
 async function wallet(index: number, name: string) {
-  const chain = createMonadChain({
+  const chain = createEvmChain({
     networkId: 'monad-testnet',
     rpcChain: 'monad-testnet',
     chainId: 10143,
@@ -111,12 +111,12 @@ async function wallet(index: number, name: string) {
   })
   const created = (await chain.createWallet(
     roots(index),
-  )) as MonadChainWalletHandle
+  )) as EvmChainWalletHandle
   wallets.push(created)
   return created
 }
 /** One device: its own IndexedDB and its own local storage. */
-function device(live: MonadChainWalletHandle) {
+function device(live: EvmChainWalletHandle) {
   globalThis.indexedDB = new IDBFactory()
   const saved = new Map<string, string>()
   const uninstall = jest.fn()
@@ -168,7 +168,7 @@ const until = async (condition: () => boolean, what: string) => {
   }
   throw new Error(`timed out waiting for ${what}`)
 }
-const subjectOf = (w: MonadChainWalletHandle) =>
+const subjectOf = (w: EvmChainWalletHandle) =>
   toHex(w.identity.compressedPubKey)
 
 beforeEach(async () => {

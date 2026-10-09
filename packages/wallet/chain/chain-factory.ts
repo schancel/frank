@@ -1,7 +1,9 @@
 import { ActiveChain, NativeAssetChain } from "./active-chain";
 import type { EcashChain, EcashChainConfig } from "./ecash-chain";
 import { defaultTempoTransactionBuilder } from "./evm-transaction-builder";
-import { createEvmChain, EvmChainConfig } from "./monad-chain";
+import { createEvmChain } from "./monad-chain";
+import type { EvmChainConfig } from "./evm-chain-config";
+
 import type { SolanaChainConfig } from "./solana-chain";
 
 export type ChainFactoryConfig =

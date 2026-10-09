@@ -4,7 +4,7 @@ import { hexlify } from 'ethers'
 import type { TopicVoteDirection } from './monad-topic-post-client'
 import type { AcquireLeaseWhenAvailableOptions } from './monad-account-lease'
 import type { MonadTxOverrides } from './monad-account-tx'
-import type { MonadWalletHandle } from './monad-wallet-handle'
+import type { EvmWalletHandle } from "./evm-wallet-handle";
 import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import {
   assertForumAmount,
@@ -49,7 +49,7 @@ export interface CastTopicVoteResult {
   status: MatchedForumStatus
 }
 export class MonadTopicVoteClient {
-  constructor(private readonly wallet: MonadWalletHandle) {}
+  constructor(private readonly wallet: EvmWalletHandle) {}
   async castVote(
     params: CastTopicVoteParams,
     admission?: MonadWalletOperationAdmission,

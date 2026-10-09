@@ -10,7 +10,7 @@ import {
   matchForumOperation,
 } from '@frank/codec'
 import type { ForumOperationStatus, ParsedFrame } from '@frank/codec'
-import type { MonadWalletHandle } from './monad-wallet-handle'
+import type { EvmWalletHandle } from "./evm-wallet-handle";
 import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import type { OutgoingTopicOperation } from './storage/topic-operation-journal'
 import {
@@ -42,7 +42,7 @@ const bare = (b: Uint8Array) => hexlify(b).slice(2)
 const addressEqual = (a: string | null | undefined, b: string) =>
   !!a && getAddress(a) === getAddress(b)
 
-export function requireForumWallet(wallet: MonadWalletHandle): void {
+export function requireForumWallet(wallet: EvmWalletHandle): void {
   if (
     !wallet.walletState ||
     !wallet.topicOperationJournal ||
@@ -62,7 +62,7 @@ export function requireForumWallet(wallet: MonadWalletHandle): void {
 
 /** Must be called before any transport or spend checkpoint repair. */
 export function bindForumAuthority(
-  wallet: MonadWalletHandle,
+  wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
 ) {
   if (classifyForumOperation(operation) !== 'canonical')
@@ -135,7 +135,7 @@ export function bindForumAuthority(
 export class ForumOperationPendingError extends Error {}
 
 async function exchange(
-  wallet: MonadWalletHandle,
+  wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
   method: 'put' | 'post',
 ): Promise<MatchedForumStatus> {
@@ -206,7 +206,7 @@ async function exchange(
 }
 
 async function settle(
-  wallet: MonadWalletHandle,
+  wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation,
   admission?: MonadWalletOperationAdmission,
   handle?: AccountLeaseHandle,
@@ -227,7 +227,7 @@ async function settle(
 }
 
 export async function reconcileForumOperations(
-  wallet: MonadWalletHandle,
+  wallet: EvmWalletHandle,
   kind: 'post' | 'vote',
   admission?: MonadWalletOperationAdmission,
 ): Promise<void> {
@@ -278,7 +278,7 @@ interface ForumSubmissionParams {
 }
 
 async function submitForumOperationAdmitted(
-  wallet: MonadWalletHandle,
+  wallet: EvmWalletHandle,
   params: ForumSubmissionParams,
   admission?: MonadWalletOperationAdmission,
 ): Promise<{ operation: OutgoingTopicOperation; status: MatchedForumStatus }> {
@@ -378,7 +378,7 @@ async function submitForumOperationAdmitted(
 
 /** All mutations use the same wallet admission, including direct helper callers. */
 export async function submitForumOperation(
-  wallet: MonadWalletHandle,
+  wallet: EvmWalletHandle,
   params: ForumSubmissionParams,
   admission?: MonadWalletOperationAdmission,
 ): Promise<{ operation: OutgoingTopicOperation; status: MatchedForumStatus }> {

@@ -12,7 +12,7 @@ import type { AccountRef } from '@frank/codec'
 import type { ForumMessageEntry } from './forum-model'
 import type { MonadAccountTxSigner, MonadTxOverrides } from './monad-account-tx'
 import type { AcquireLeaseWhenAvailableOptions } from './monad-account-lease'
-import type { MonadWalletHandle } from './monad-wallet-handle'
+import type { EvmWalletHandle } from "./evm-wallet-handle";
 import type { MonadIdentity } from './monad-identity'
 import type { MonadWalletOperationAdmission } from './storage/monad-wallet-bundle'
 import {
@@ -85,7 +85,7 @@ export interface SubmitTopicPostResult {
 }
 
 export class MonadTopicPostClient {
-  constructor(private readonly wallet: MonadWalletHandle) {}
+  constructor(private readonly wallet: EvmWalletHandle) {}
   async submitTopicPost(
     params: SubmitTopicPostParams,
     admission?: MonadWalletOperationAdmission,

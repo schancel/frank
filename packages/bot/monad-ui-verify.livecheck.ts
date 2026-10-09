@@ -2,7 +2,7 @@
  * Autonomous overnight session (2026-09-27): verifies a real Frank UI wallet can discover and
  * exchange messages with the Monad-native Qwen bot (`qwen-bot.livecheck.ts`, ported off
  * `lotus-identity.ts` tonight) through the *exact* code path the real app uses --
- * `cashweb/chain/index.ts`'s `activeChain` (`createMonadChain`/`MonadChain`,
+ * `cashweb/chain/index.ts`'s `activeChain` (`createEvmChain`/`MonadChain`,
  * `directMessages.send`/`fetchSince`) -- not a hand-rolled equivalent. This is the strongest
  * verification available without a real browser: every function call here is one the app's own
  * `stores/chats.ts`/`useActiveWallet.ts`/`boot/monad-direct-messages.ts` also make.
@@ -31,9 +31,9 @@ import { readFileSync } from 'fs'
 import { generateMnemonic } from 'bip39'
 
 import {
-  createMonadChain,
+  createEvmChain,
   loadMonadChainConfigFromEnv,
-} from '@frank/wallet/chain/monad-chain'
+} from "@frank/wallet/chain/monad-chain";
 import {
   registerMonadIdentityCbor,
   MonadIdentity,
@@ -47,7 +47,7 @@ function sleep(ms: number): Promise<void> {
 
 async function main() {
   const config = loadMonadChainConfigFromEnv()
-  const activeChain = createMonadChain(config)
+  const activeChain = createEvmChain(config)
 
   const handoffJsonPath =
     process.env.QWEN_BOT_HANDOFF_JSON ?? '/tmp/qwen-bot-handoff.json'
@@ -95,7 +95,7 @@ async function main() {
     label: 'ui-verify',
   })
   // Graft only the funded pool and lease manager onto the ActiveChain wallet handle so
-  // `activeChain.directMessages.send` (which expects `MonadChainWalletHandle`'s bundle) uses the
+  // `activeChain.directMessages.send` (which expects `EvmChainWalletHandle`'s bundle) uses the
   // already-funded pool instead of its own freshly-derived, unfunded one.
   const monadWallet = wallet as unknown as {
     pool: unknown

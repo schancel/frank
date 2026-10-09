@@ -24,9 +24,9 @@
  *    `.vote` all need a *sender-specific* signing/leasing/HTTP bundle to actually build and submit
  *    a stamp transaction (`MonadStampClient`/`MonadTopicPostClient`/`MonadTopicVoteClient` all take
  *    the same `{ pool, leaseManager, provider, httpClient, relayBaseUrl }` shape, formalized as
- *    `MonadWalletHandle` in `../wallet/monad-wallet-handle.ts`). The generic `WalletHandle` below
- *    still only *promises* `identity` -- it's `MonadChain`'s own concrete `MonadChainWalletHandle`
- *    (`./monad-chain.ts`) that adds the rest. This is safe under the compile-time seam: in a
+ *    `EvmWalletHandle` in `../evm-wallet-handle.ts`). The generic `WalletHandle` below
+ *    still only *promises* `identity` -- it's `MonadChain`'s own concrete `EvmChainWalletHandle`
+ *    (`../evm-wallet-handle.ts`) that adds the rest. This is safe under the compile-time seam: in a
  *    Monad-only build, `MonadChain.createWallet` is the only producer of `WalletHandle` values, so
  *    every handle reaching `MonadChain`'s other methods already carries the extra fields (see
  *    `./monad-chain.ts`'s `asMonadWallet`).

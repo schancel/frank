@@ -26,11 +26,11 @@ import { join, resolve } from 'path'
 
 import { deriveDomainRoot } from '../domain-roots/src'
 import {
-  createMonadChain,
+  createEvmChain,
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
-  type MonadChainWalletHandle,
-} from '@frank/wallet/chain/monad-chain'
+} from "@frank/wallet/chain/monad-chain";
+import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 import { BET_MESSAGE_FEE_RESERVE_WEI } from '@frank/wallet/message-item-plugins/blackjack/game'
 
 import {
@@ -187,12 +187,12 @@ export async function openBlackjackBotWallet() {
     ...loadMonadChainConfigFromEnv(),
     walletStorageLocation: join(stateDir, 'wallet'),
   }
-  const chain = createMonadChain(config)
+  const chain = createEvmChain(config)
   const wallet = (await chain.createWallet({
     evm: deriveDomainRoot(accountRoot, 'evm-wallet'),
     authentication: deriveDomainRoot(accountRoot, 'identity-authentication'),
     messaging: deriveDomainRoot(accountRoot, 'messaging-encryption'),
-  })) as MonadChainWalletHandle
+  })) as EvmChainWalletHandle
   return { stateDir, config, chain, wallet }
 }
 

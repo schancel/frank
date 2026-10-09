@@ -28,13 +28,13 @@ import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { MonadRootBundle } from '../monad-wallet-material'
 import type { PublicRevisionZeroInput } from '../monad-wallet-handle'
 import {
-  createMonadChain,
+  createEvmChain,
   installCanonicalDirectory,
   prepareMonadRevisionZeroExport,
   type CanonicalDirectory,
-  type MonadChainConfig,
-  type MonadChainWalletHandle,
-} from './monad-chain'
+} from "./monad-chain";
+import type { EvmChainConfig } from "./evm-chain-config";
+import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
 import {
   foldHand,
@@ -177,7 +177,7 @@ function roots(index: number): MonadRootBundle {
 
 export async function fixture() {
   const directory = mkdtempSync(join(tmpdir(), 'chain-blackjack-'))
-  const config: MonadChainConfig = {
+  const config: EvmChainConfig = {
     networkId: 'monad-testnet',
     rpcChain: 'monad-testnet',
     chainId: 10143,
@@ -190,9 +190,9 @@ export async function fixture() {
     subAccountPoolSize: 0,
     walletStorageLocation: join(directory, 'wallet'),
   }
-  const chain = createMonadChain(config)
-  const alice = (await chain.createWallet(roots(0))) as MonadChainWalletHandle,
-    bob = (await chain.createWallet(roots(1))) as MonadChainWalletHandle
+  const chain = createEvmChain(config)
+  const alice = (await chain.createWallet(roots(0))) as EvmChainWalletHandle,
+    bob = (await chain.createWallet(roots(1))) as EvmChainWalletHandle
   // Both players hold spendable money in their own account; stamps are funded from it.
   for (const wallet of [alice, bob])
     mockBalances.set(
@@ -218,7 +218,7 @@ export async function fixture() {
   }
   const stores: DirectoryStore[] = []
   // Each wallet admits both subjects through its own independent public store.
-  const admit = async (owner: string, wallet: MonadChainWalletHandle) => {
+  const admit = async (owner: string, wallet: EvmChainWalletHandle) => {
     const exported = prepareMonadRevisionZeroExport(wallet, input)
     const store = await openNodeDirectoryStore({
       location: join(directory, `directory-${owner}-${toHex(exported.t1)}`),
@@ -302,8 +302,8 @@ export async function fixture() {
   }
   const directoryFor = async (
     owner: string,
-    self: MonadChainWalletHandle,
-    peer: MonadChainWalletHandle,
+    self: EvmChainWalletHandle,
+    peer: EvmChainWalletHandle,
   ): Promise<CanonicalDirectory> => {
     const own = await admit(owner, self),
       other = await admit(owner, peer)
@@ -359,7 +359,7 @@ export class Seat {
   readonly received = new Map<string, bigint>()
   constructor(
     private readonly f: Fixture,
-    readonly wallet: MonadChainWalletHandle,
+    readonly wallet: EvmChainWalletHandle,
   ) {
     mailboxes.set(toHex(wallet.identity.compressedPubKey), this.mailbox)
   }

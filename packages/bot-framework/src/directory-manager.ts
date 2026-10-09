@@ -9,8 +9,9 @@ import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-tr
 import {
   prepareMonadNextRevisionExport,
   prepareMonadRevisionZeroExport,
-  type MonadChainWalletHandle,
 } from "@frank/wallet/chain/monad-chain";
+import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
+
 import { fetchMonadProfile } from "@frank/wallet/monad-identity";
 import { toChainAddress, type DirectoryPeerInfo } from "./types";
 import type { DirectoryFetch } from "@frank/cashweb/relay/directory-client";
@@ -26,7 +27,7 @@ export class DirectoryManager {
   }
 
   static create(params: {
-    handle: MonadChainWalletHandle;
+    handle: EvmChainWalletHandle;
     networkTag: "MONT" | "MON1";
     relayBaseUrl: string;
     location: string;

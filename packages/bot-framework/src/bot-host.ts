@@ -18,11 +18,12 @@ import {
 import { deriveDomainRoot } from "@frank/domain-roots";
 import type { ActiveChain } from "@frank/wallet/chain/active-chain";
 import {
-  createMonadChain,
+  createEvmChain,
   installCanonicalDirectory,
   loadMonadChainConfigFromEnv,
-  type MonadChainWalletHandle,
 } from "@frank/wallet/chain/monad-chain";
+import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
+
 import {
   fetchMonadProfilesSince,
   decodeProfileBytes,
@@ -63,7 +64,7 @@ import { BotScheduler } from "./scheduler";
 
 interface ActiveBotInstance {
   definition: FrankBotDefinition;
-  wallet: MonadChainWalletHandle;
+  wallet: EvmChainWalletHandle;
   state: LevelBotStateStore;
   operations: InboundOperationStore;
   tasks: Set<Promise<void>>;
@@ -182,7 +183,7 @@ export class FrankBotHost {
     const primaryRpcUrl = rpcUrls[0] || "https://testnet-rpc.monad.xyz";
 
     this.provider = new JsonRpcProvider(primaryRpcUrl);
-    this.chain = createMonadChain({
+    this.chain = createEvmChain({
       ...envConfig,
       relayBaseUrl: this.options.relayBaseUrl,
       networkTag: this.options.networkTag,
@@ -229,7 +230,7 @@ export class FrankBotHost {
     // creates this path, so capture its prior existence before opening it.
     const hadState = existsSync(statePath);
     const state = await LevelBotStateStore.open(statePath);
-    let openedWallet: MonadChainWalletHandle | undefined;
+    let openedWallet: EvmChainWalletHandle | undefined;
     let openedDirectory: DirectoryManager | undefined;
     let uninstall: (() => void) | undefined;
     let operations: InboundOperationStore | undefined;
@@ -275,7 +276,7 @@ export class FrankBotHost {
       );
       const wallet = (await this.chain.createWallet(
         roots
-      )) as MonadChainWalletHandle;
+      )) as EvmChainWalletHandle;
       openedWallet = wallet;
       if (
         wallet.identity.address.raw.toLowerCase() !==
@@ -1096,7 +1097,7 @@ export class FrankBotHost {
   }
 
   private async sendCanonicalMessage(
-    wallet: MonadChainWalletHandle,
+    wallet: EvmChainWalletHandle,
     recipientAddress: string,
     items: MessageItem[],
     conversationId?: string,

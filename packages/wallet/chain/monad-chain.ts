@@ -1,3 +1,5 @@
+import type { EvmChainConfig } from "./evm-chain-config";
+import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { DERIVATION_REGISTRY_ID } from "../../domain-roots/src";
 import type { EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type { MonadWalletOperationAdmission } from "../storage/monad-wallet-bundle";
@@ -38,8 +40,8 @@ import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
  * defaults (matching `qwen-bot.livecheck.ts`'s own `E2E_DEMO_RELAY_URL ?? 'http://127.0.0.1:8098'`
  * precedent) rather than hard-failing on a missing var, so importing this module (e.g. from a jest
  * test, or from `chain/index.ts` in a dev environment with no `.env` configured yet) never throws
- * at import time. `createMonadChain` itself is a pure factory taking an explicit
- * `MonadChainConfig` -- this ticket's own tests build chains against a fixed test config, never
+ * at import time. `createEvmChain` itself is a pure factory taking an explicit
+ * `EvmChainConfig` -- this ticket's own tests build chains against a fixed test config, never
  * against env, and mock every wallet client `MonadChain` composes rather than hitting real HTTP.
  *
  * ## `directMessages`: wiring `monad-message-envelope.ts` for real
@@ -48,7 +50,7 @@ import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
  * `fetchMonadProfile` (itself `GET /metadata/:addr` -- see that file's header for the live
  * Lotus-address-only backend gap this inherits), builds a real encrypted envelope
  * (`buildEnvelope`) keyed on both parties' addresses, and submits it via a fresh `MonadStampClient`
- * built from the sending wallet's own `MonadWalletHandle` bundle. `items: MessageItem[]` is
+ * built from the sending wallet's own `EvmWalletHandle` bundle. `items: MessageItem[]` is
  * JSON-serialized into the envelope's plaintext (`serializeMessageItems` below) -- deliberately
  * only for the item kinds that have a real Monad-side meaning (`text`/`reply`/`image`);
  * `stealth`/`p2pkh` (Lotus on-chain-payment-embedded-in-message kinds) have no Monad equivalent to
@@ -125,14 +127,15 @@ import {
   SubAccountLeaseManager,
 } from "../monad-account-lease";
 import { MonadHttpClient } from "../monad-http";
-import { discoverFakeDemoRpc, FakeDemoRpcConfig } from "../monad-demo-rpc";
+import { discoverFakeDemoRpc } from "../monad-demo-rpc";
 import {
   createMonadJsonRpcProvider,
   DEFAULT_MONAD_CHAIN_ID,
   monadProtocolIdentity,
 } from "../monad-provider";
 import { MonadAccountTxSigner } from "../monad-account-tx";
-import { MonadWalletHandle } from "../monad-wallet-handle";
+import type { EvmWalletHandle } from "../evm-wallet-handle";
+
 import {
   openExistingPoolMonadTopicOwner,
   type CanonicalWalletBindingMismatchError,
@@ -202,50 +205,7 @@ import {
   InMemoryStampAttemptJournal,
   LevelStampAttemptJournal,
 } from "../storage/stamp-attempt-journal";
-import {
-  EvmTransactionBuilder,
-  defaultNativeEvmTransactionBuilder,
-} from "./evm-transaction-builder";
-
-export interface EvmChainConfig extends MonadChainConfig {
-  /** Unique chain identifier, e.g. "monad-testnet", "monad-mainnet", "hyperliquid-mainnet", "tempo-mainnet". */
-  readonly chainIdentifier?: string;
-  /** Human-readable chain display name, e.g. "Base", "HyperEVM". */
-  readonly name?: string;
-  /** Primary display unit symbol, e.g. "ETH", "HYPE". */
-  readonly unit?: string;
-  /** Custom transaction builder strategy for native gas vs token-as-gas (TIP-20/ERC-20). */
-  readonly transactionBuilder?: EvmTransactionBuilder;
-}
-
-export interface MonadChainConfig {
-  /** Stable chain/deployment identifier used for wallet affinity checks. */
-  networkId: string;
-  /** Shared protocol chain identifier used by the relay family route. */
-  rpcChain: string;
-  /** Expected EVM chain ID, e.g. 10143 for Monad testnet. */
-  chainId: number | bigint;
-  /** Base URL of the `cashweb-registry` relay. */
-  relayBaseUrl: string;
-  /** Frank network tag included in every DM envelope before hashing. */
-  networkTag: string;
-  /** `0x`-prefixed Monad burn address Stamp/topic-vote burns are sent to (see
-   * `frank/.env.example`'s `MONAD_STAMP_BURN_ADDRESS`). */
-  stampBurnAddress: string;
-  /** Default aggregate value, in wei, `directMessages.send` pays per Stamp message. */
-  defaultStampValueWei: bigint;
-  /** Default value, in wei, burned for a topic post or vote. */
-  defaultTopicVoteValueWei: bigint;
-  /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */
-  subAccountPoolSize: number;
-  /** Parent LevelDB location for durable sender-account and change state. `false` is reserved for
-   * isolated tests; production must persist these records so recreating a wallet cannot reuse a
-   * sender account or rewind the change derivation path. */
-  walletStorageLocation: string | false;
-  nativeAttemptStore?: NativeTransactionAttemptStore;
-  /** Explicit disposable fake-service opt-in; never selected by a relay failure. */
-  fakeDemo?: FakeDemoRpcConfig;
-}
+import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
 
 // Ticket #54 (found live doing real end-to-end GUI testing against a real relay + real Alchemy
 // RPC -- the app silently fell back to `http://127.0.0.1:8545`, breaking every real chain call):
@@ -365,13 +325,13 @@ export function getDefaultRelayBaseUrl(): string {
   return configured ?? "http://127.0.0.1:8098";
 }
 
-/** Reads `MonadChainConfig` from the environment (see `readEnv` just above for exactly where
+/** Reads `EvmChainConfig` from the environment (see `readEnv` just above for exactly where
  * from, and why two places), with permissive fallbacks -- see this file's header,
  * "Configuration", for why this (unlike the wallet client modules it configures) reads env
  * directly, and why it never throws on a missing var. */
 export function loadMonadChainConfigFromEnv(overrides?: {
   isTestnet?: boolean;
-}): MonadChainConfig {
+}): EvmChainConfig {
   const rpcChain =
     overrides?.isTestnet !== undefined
       ? overrides.isTestnet
@@ -437,41 +397,19 @@ export function loadMonadChainConfigFromEnv(overrides?: {
   };
 }
 
-/** Concrete Monad `WalletHandle`: the formalized wallet-client bundle (`MonadWalletHandle`,
- * `../wallet/monad-wallet-handle.ts`) plus the `identity` the generic `ActiveChain` interface
- * requires. See `./active-chain.ts`'s header, deviation 1, for why `WalletHandle` itself stays
- * `{ identity }`-only while this concrete type carries more. */
-export interface MonadChainWalletHandle
-  extends MonadWalletHandle,
-    WalletHandle,
-    NativeWalletHandle {
-  readonly family: "evm";
-  readonly chainIdentifier: string;
-  readonly networkId: string;
-  readonly identity: MonadIdentity;
-  readonly stealthKeyring: MonadStealthKeyring;
-  readonly mainAccount?: Wallet;
-  readonly mainPrivateKey?: string;
-  readonly chainUtxoPool?: ChainUtxoPool;
-  invalidateBalanceCache?(networkTag?: string): void;
-  close(): Promise<void>;
-}
-
-export type EvmChainWalletHandle = MonadChainWalletHandle;
-
-const closedWallets = new WeakSet<MonadChainWalletHandle>();
-const typedWallets = new WeakSet<MonadChainWalletHandle>();
+const closedWallets = new WeakSet<EvmChainWalletHandle>();
+const typedWallets = new WeakSet<EvmChainWalletHandle>();
 const walletMaterial = new WeakMap<
-  MonadChainWalletHandle,
+  EvmChainWalletHandle,
   MonadWalletMaterial
 >();
 // Facades may receive a handle created by another factory on the same configured network.
 // Its key ownership and send queue travel with that handle, not with the receiving facade.
-const walletSendQueues = new WeakMap<MonadChainWalletHandle, Promise<void>>();
+const walletSendQueues = new WeakMap<EvmChainWalletHandle, Promise<void>>();
 // The private topic owner and enclosing admission travel with the creator's wallet too.
 const privateTopicWallets = new WeakMap<
-  MonadChainWalletHandle,
-  MonadWalletHandle
+  EvmChainWalletHandle,
+  EvmWalletHandle
 >();
 const installedCanonicalWalletDescriptors = new WeakMap<
   object,
@@ -482,7 +420,7 @@ export function prepareMonadRevisionZeroExport(
   wallet: NativeWalletHandle,
   input: PublicRevisionZeroInput
 ): PublicRevisionZeroExport {
-  const live = wallet as MonadChainWalletHandle;
+  const live = wallet as EvmChainWalletHandle;
   const material = walletMaterial.get(live);
   if (
     !material?.canonicalRoles ||
@@ -510,7 +448,7 @@ export function prepareMonadNextRevisionExport(
   wallet: NativeWalletHandle,
   input: PublicNextRevisionInput
 ): PublicNextRevisionExport {
-  const live = wallet as MonadChainWalletHandle;
+  const live = wallet as EvmChainWalletHandle;
   const material = walletMaterial.get(live);
   if (
     !material?.canonicalRoles ||
@@ -570,7 +508,7 @@ export function installCanonicalDirectory(
   if (
     !installed ||
     !canonicalMessaging.has(wallet) ||
-    closedWallets.has(wallet as MonadChainWalletHandle)
+    closedWallets.has(wallet as EvmChainWalletHandle)
   )
     throw new Error(
       "Canonical directory requires live typed persistent custody"
@@ -605,7 +543,7 @@ export function prepareCanonicalStampInventory(
   input: Parameters<CanonicalInventoryFunder>[0]
 ): Promise<string[]> {
   const fund = canonicalInventoryFunders.get(wallet);
-  if (!fund || closedWallets.has(wallet as MonadChainWalletHandle))
+  if (!fund || closedWallets.has(wallet as EvmChainWalletHandle))
     throw new Error(
       "Canonical inventory requires live typed persistent custody"
     );
@@ -622,7 +560,7 @@ export function createCanonicalMessageRoles(
   wallet: NativeWalletHandle,
   current: import("../../directory-admission/src").Current
 ) {
-  const live = wallet as MonadChainWalletHandle;
+  const live = wallet as EvmChainWalletHandle;
   const material = walletMaterial.get(live),
     installed = installedCanonicalWalletDescriptors.get(wallet);
   if (
@@ -635,7 +573,7 @@ export function createCanonicalMessageRoles(
   return material.canonicalRoles.create(installed.network, current);
 }
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
-function canonicalMessagingFor(wallet: MonadChainWalletHandle) {
+function canonicalMessagingFor(wallet: EvmChainWalletHandle) {
   requireOpenWallet(wallet);
   if (!typedWallets.has(wallet)) return undefined;
   const canonical = canonicalMessaging.get(wallet);
@@ -645,21 +583,21 @@ function canonicalMessagingFor(wallet: MonadChainWalletHandle) {
     );
   return canonical;
 }
-const enclosingTopicAdmissions = new WeakSet<MonadChainWalletHandle>();
+const enclosingTopicAdmissions = new WeakSet<EvmChainWalletHandle>();
 interface MainAccountAdmission {
   key: string;
   store: NativeTransactionAttemptStore;
 }
 const mainAccountAdmissions = new WeakMap<
-  MonadChainWalletHandle,
+  EvmChainWalletHandle,
   MainAccountAdmission
 >();
 const nativeOperationOwners = new WeakMap<
-  MonadChainWalletHandle,
+  EvmChainWalletHandle,
   EvmLegacyConsolidator
 >();
 function nativeOperationOwner(
-  wallet: MonadChainWalletHandle
+  wallet: EvmChainWalletHandle
 ): EvmLegacyConsolidator {
   requireOpenWallet(wallet);
   const owner = nativeOperationOwners.get(wallet);
@@ -682,11 +620,11 @@ async function reconcileNativeAdmission(
 // Repeated callers on the same factory share its handle; another auth/factory must first close it.
 const openTypedEvmAccounts = new Set<string>();
 
-function requireOpenWallet(wallet: MonadChainWalletHandle): void {
+function requireOpenWallet(wallet: EvmChainWalletHandle): void {
   if (closedWallets.has(wallet)) throw new Error("Monad wallet is closed");
 }
 
-function requireLegacyMessaging(wallet: MonadChainWalletHandle): void {
+function requireLegacyMessaging(wallet: EvmChainWalletHandle): void {
   requireOpenWallet(wallet);
   if (typedWallets.has(wallet)) {
     throw new Error(
@@ -695,7 +633,7 @@ function requireLegacyMessaging(wallet: MonadChainWalletHandle): void {
   }
 }
 
-/** Narrows a generic `WalletHandle` to `MonadChainWalletHandle`. Safe under this ticket's
+/** Narrows a generic `WalletHandle` to `EvmChainWalletHandle`. Safe under this ticket's
  * compile-time single-chain seam (see `./active-chain.ts`'s header) -- `MonadChain.createWallet`
  * is the only producer of `WalletHandle` values in a Monad-only build, so every handle reaching
  * `MonadChain`'s other methods already is one; this throws instead of silently misbehaving if that
@@ -703,9 +641,9 @@ function requireLegacyMessaging(wallet: MonadChainWalletHandle): void {
 function asMonadWallet(
   wallet: WalletHandle,
   expectedNetworkId?: string
-): MonadChainWalletHandle {
-  const candidate = wallet as Partial<MonadChainWalletHandle>;
-  requireOpenWallet(wallet as MonadChainWalletHandle);
+): EvmChainWalletHandle {
+  const candidate = wallet as Partial<EvmChainWalletHandle>;
+  requireOpenWallet(wallet as EvmChainWalletHandle);
   if (
     (candidate.family !== undefined && candidate.family !== "evm") ||
     candidate.pool === undefined ||
@@ -715,7 +653,7 @@ function asMonadWallet(
     candidate.relayBaseUrl === undefined
   ) {
     throw new Error(
-      "Expected a MonadChainWalletHandle (produced by MonadChain.createWallet), got a " +
+      "Expected an EvmChainWalletHandle (produced by MonadChain.createWallet), got a " +
         "WalletHandle missing the Monad wallet-client bundle"
     );
   }
@@ -728,7 +666,7 @@ function asMonadWallet(
       `Expected Monad network ${expectedNetworkId}, got ${candidate.networkId}`
     );
   }
-  return candidate as MonadChainWalletHandle;
+  return candidate as EvmChainWalletHandle;
 }
 
 function toChainAddress(raw: string): ChainAddress {
@@ -848,7 +786,7 @@ function asNothingSent(err: unknown): never {
   throw err;
 }
 
-/** Pure factory: builds an `ActiveChain` from an explicit `MonadChainConfig`. See this file's
+/** Pure factory: builds an `ActiveChain` from an explicit `EvmChainConfig`. See this file's
  * header, "Configuration", for why config is a param here (unlike the `MonadChain` singleton
  * below, which reads it from env). */
 export function createEvmChain(config: EvmChainConfig): ActiveChain {
@@ -867,16 +805,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     config.transactionBuilder ?? defaultNativeEvmTransactionBuilder;
   const walletsByIdentity = new Map<
     string,
-    { fingerprint: string; pending: Promise<MonadChainWalletHandle> }
+    { fingerprint: string; pending: Promise<EvmChainWalletHandle> }
   >();
-  const mainPrivateKey = (wallet: MonadChainWalletHandle) =>
+  const mainPrivateKey = (wallet: EvmChainWalletHandle) =>
     walletMaterial.get(wallet)?.mainAccount.privateKey ??
     wallet.identity.toPrivateKeyHex();
   // One queue per wallet for everything that prepares and spends sub-accounts (direct messages,
   // topic posts, votes): a burn account prepared for a topic post must not be picked up by a
   // concurrent stamp selection between preparation and lease.
   const runWalletExclusive = <T>(
-    wallet: MonadChainWalletHandle,
+    wallet: EvmChainWalletHandle,
     task: (admission?: MonadWalletOperationAdmission) => Promise<T>,
     canonical = false
   ): Promise<T> => {
@@ -920,7 +858,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     return run;
   };
   const runMainAccountExclusive = <T>(
-    wallet: MonadChainWalletHandle,
+    wallet: EvmChainWalletHandle,
     task: () => Promise<T>
   ): Promise<T> => {
     let admission = mainAccountAdmissions.get(wallet);
@@ -953,7 +891,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
    * returns its pool index for the caller to lease. Admission conservatively holds reuse too:
    * even its fee quote signs with the main account. See `MonadSubAccountPool.prepareBurnAccount`. */
   const prepareTopicBurnAccount = async (
-    wallet: MonadChainWalletHandle,
+    wallet: EvmChainWalletHandle,
     voteWeightWei: bigint,
     onProgress:
       | ((progress: DirectMessagePreparationProgress) => void)
@@ -1277,8 +1215,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
   // The normal handle stays unchanged for DM callers. Only topic code receives this owner.
   const runTopicExclusive = <T>(
-    wallet: MonadChainWalletHandle,
-    task: (topicWallet: MonadWalletHandle) => Promise<T>
+    wallet: EvmChainWalletHandle,
+    task: (topicWallet: EvmWalletHandle) => Promise<T>
   ): Promise<T> =>
     runWalletExclusive(wallet, async (admission) => {
       enclosingTopicAdmissions.add(wallet);
@@ -1312,13 +1250,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     chainId: BigInt(config.chainId),
     burnAddress: config.stampBurnAddress,
   };
-  const creatorForumPolicy = (wallet: MonadWalletHandle): ForumReadPolicy => ({
+  const creatorForumPolicy = (wallet: EvmWalletHandle): ForumReadPolicy => ({
     network: wallet.cborNetwork ?? forumPolicy.network,
     chainId: wallet.forumChainId ?? forumPolicy.chainId,
     burnAddress: wallet.forumBurnAddress ?? forumPolicy.burnAddress,
   });
   const reconcileTopicOperations = async (
-    wallet: MonadWalletHandle,
+    wallet: EvmWalletHandle,
     admission?: import("../storage/monad-wallet-bundle").MonadWalletOperationAdmission
   ) => {
     await new MonadTopicPostClient(wallet).resumePendingOperations(admission);
@@ -1512,7 +1450,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
     async createWallet(
       seed: HDSeed | MonadRootBundle
-    ): Promise<MonadChainWalletHandle> {
+    ): Promise<EvmChainWalletHandle> {
       const material = createMonadWalletMaterial(seed);
       const { identity, mainAccount, keyring, changeKeyring } = material;
       const identityKey = identity.address.raw.toLowerCase();
@@ -1544,7 +1482,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (economicOwnerKey !== undefined)
         openTypedEvmAccounts.add(economicOwnerKey);
 
-      const pending = (async (): Promise<MonadChainWalletHandle> => {
+      const pending = (async (): Promise<EvmChainWalletHandle> => {
         const storageKey =
           material.messagingRoot === undefined
             ? identityKey
@@ -1620,7 +1558,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         const leaseManager = new SubAccountLeaseManager(pool);
         let topicOwner: MonadWalletPersistenceBundle | undefined;
         let canonicalLinks: CanonicalLinkStore | undefined;
-        let topicOwnerWallet: MonadChainWalletHandle | undefined;
+        let topicOwnerWallet: EvmChainWalletHandle | undefined;
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
         try {
@@ -1864,7 +1802,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             | undefined;
           const PRIMARY_BALANCE_CACHE_TTL_MS = 4_000;
 
-          const wallet: MonadChainWalletHandle = {
+          const wallet: EvmChainWalletHandle = {
             family: "evm",
             chainIdentifier,
             networkId: config.networkId,
@@ -2530,13 +2468,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   };
 }
 
-export function createMonadChain(config: MonadChainConfig): ActiveChain {
-  return createEvmChain(config);
-}
-
 /** The default, env-configured `MonadChain` singleton -- `./index.ts`'s `activeChain` is exactly
  * this. See this file's header, "Configuration", for why reading env here (rather than in every
  * wallet client) is the right composition point. */
-export const MonadChain: ActiveChain = createMonadChain(
+export const MonadChain: ActiveChain = createEvmChain(
   loadMonadChainConfigFromEnv()
 );

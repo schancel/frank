@@ -892,6 +892,21 @@ export class CreditLedger {
     return this.mapThreadMappingRow(row);
   }
 
+  /**
+   * True when a thread mapping exists for this Frank message from this sender,
+   * in any conversation. Read-only. The sender address is compared as stored.
+   */
+  hasThreadMappingForFrankMessage(senderAddress: string, frankMessageId: string): boolean {
+    const compiled = this.db
+      .selectFrom('thread_mappings')
+      .select('frank_message_id')
+      .where('frank_message_id', '=', frankMessageId)
+      .where('sender_address', '=', senderAddress)
+      .limit(1)
+      .compile();
+    return this.executeGet(compiled) !== undefined;
+  }
+
   getThreadMappingByRfc822Id(rfc822MessageId: string): ThreadMappingRecord | undefined {
     const compiled = this.db
       .selectFrom('thread_mappings')

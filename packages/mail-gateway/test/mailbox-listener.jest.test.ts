@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { RelayMailboxListener } from '../src/relay/mailbox-listener';
 import { CreditLedger } from '../src/ledger/credit-ledger';
 import { OutboundEmailDelivery } from '../src/mta/outbound-delivery';
@@ -245,5 +248,390 @@ describe('RelayMailboxListener', () => {
     // 3rd initiation -> exceeds quota (2 max) -> blocked!
     await listener.processDirectMessage(makeDm(3));
     expect(dispatchedEmails).toHaveLength(2);
+  });
+});
+
+describe('RelayMailboxListener polling', () => {
+  const gatewayDomain = 'frank.org';
+  const SENDER = '0x1111111111111111111111111111111111111111';
+  const T = 1_791_288_000_000;
+  const CONTENT_MARKER = 'PRIVATE-CONTENT-MARKER';
+
+  let warn: jest.SpyInstance;
+  let error: jest.SpyInstance;
+  let tmpDirs: string[] = [];
+  let openLedgers: CreditLedger[] = [];
+
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    for (const ledger of openLedgers) ledger.sqlite?.close();
+    openLedgers = [];
+    for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
+    tmpDirs = [];
+  });
+
+  function openLedger(file = ':memory:'): CreditLedger {
+    const ledger = new CreditLedger(file);
+    openLedgers.push(ledger);
+    return ledger;
+  }
+
+  function ledgerFile(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mailbox-listener-'));
+    tmpDirs.push(dir);
+    return path.join(dir, 'ledger.sqlite');
+  }
+
+  interface Sent {
+    to: string;
+    raw: string;
+  }
+
+  /**
+   * A listener over `inbox` with a fetch that, like the relay client, returns
+   * every message at or after the cursor, so the newest ones come back on
+   * every poll.
+   */
+  function makeGateway(
+    ledger: CreditLedger,
+    inbox: DirectMessageReceived[],
+    options: { sent?: Sent[]; maxNewThreadsPerDay?: number } = {}
+  ) {
+    const sent = options.sent ?? [];
+    const cursors: number[] = [];
+    const mxTransport = new MxDirectTransport({
+      heloDomain: gatewayDomain,
+      resolveMxFn: async () => [{ exchange: 'mx.example.com', priority: 10 }],
+    });
+    const deliver = jest.spyOn(mxTransport, 'deliver').mockImplementation(async (params) => {
+      sent.push({ to: params.toAddress, raw: new TextDecoder().decode(params.rawRfc822) });
+      return { success: true, responseCode: 250, responseMessage: 'OK' } as MxDeliveryResult;
+    });
+    const worker = new OutboundMtaWorker({
+      gatewayDomain,
+      ledger,
+      delivery: new OutboundEmailDelivery({ gatewayDomain, ledger }),
+      dkimSigner: new DkimSigner({
+        domain: gatewayDomain,
+        selector: 'test',
+        privateKey: generateDkimKeyPair().privateKey,
+      }),
+      mxTransport,
+    });
+    const listener = new RelayMailboxListener({
+      gatewayDomain,
+      activeChain: {
+        directMessages: {
+          fetchSince: async (params: { sinceMs: number }) => {
+            cursors.push(params.sinceMs);
+            return inbox
+              .filter((m) => m.receivedTime >= params.sinceMs)
+              .sort((a, b) => a.receivedTime - b.receivedTime);
+          },
+        },
+      } as unknown as ActiveChain,
+      wallet: {} as WalletHandle,
+      ledger,
+      outboundWorker: worker,
+      maxNewThreadsPerDay: options.maxNewThreadsPerDay,
+    });
+    return { listener, worker, deliver, sent, cursors };
+  }
+
+  function dm(
+    id: string,
+    receivedTime: number,
+    items: unknown,
+    overrides: Partial<DirectMessageReceived> = {}
+  ): DirectMessageReceived {
+    return {
+      senderAddress: { raw: SENDER },
+      recipientAddress: { raw: '0xgateway' },
+      conversationId: `conv_${id}`,
+      messageId: id,
+      payloadDigest: `digest_${id}`,
+      stampValueWei: 1000n,
+      stampPayments: [],
+      receivedTime,
+      items,
+      ...overrides,
+    } as DirectMessageReceived;
+  }
+
+  function emailTo(address: string, extra: Record<string, unknown> = {}) {
+    return [
+      {
+        type: 'email',
+        messageId: '<draft@frank>',
+        from: { address: 'alice@frank.org' },
+        to: [{ address }],
+        subject: 'Greeting',
+        textBody: `Hello. ${CONTENT_MARKER}`,
+        ...extra,
+      },
+    ];
+  }
+
+  function mappingCount(ledger: CreditLedger): number {
+    const row = ledger.sqlite!.prepare('SELECT COUNT(*) AS total FROM thread_mappings').get() as {
+      total: number;
+    };
+    return Number(row.total);
+  }
+
+  async function pollTimes(listener: RelayMailboxListener, times: number): Promise<void> {
+    for (let i = 0; i < times; i++) await listener.pollOnce();
+  }
+
+  function logged(spy: jest.SpyInstance): string {
+    return spy.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
+  }
+
+  it.each([
+    ['with a conversation', {}],
+    ['without a conversation', { conversationId: undefined }],
+  ])('handles a message %s once however often it is fetched', async (_name, overrides) => {
+    const ledger = openLedger();
+    const { listener, sent } = makeGateway(ledger, [dm('m1', T, emailTo('bob@remote.com'), overrides)]);
+
+    await pollTimes(listener, 6);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].to).toBe('bob@remote.com');
+    expect(ledger.getThreadAllowance('bob@remote.com', SENDER)).toBe(3);
+    expect(mappingCount(ledger)).toBe(1);
+    expect(ledger.countInitiatedThreadsInPast24Hours(SENDER)).toBe(1);
+  });
+
+  it('does not handle a bridged message again after a restart', async () => {
+    const file = ledgerFile();
+    const inbox = [dm('m1', T, emailTo('bob@remote.com'))];
+    const sent: Sent[] = [];
+
+    const before = openLedger(file);
+    await pollTimes(makeGateway(before, inbox, { sent }).listener, 2);
+    expect(sent).toHaveLength(1);
+    before.sqlite?.close();
+    openLedgers = [];
+
+    // A new process: nothing in memory, the cursor starts again, the same ledger file.
+    const after = openLedger(file);
+    await pollTimes(makeGateway(after, inbox, { sent }).listener, 3);
+
+    expect(sent).toHaveLength(1);
+    expect(after.getThreadAllowance('bob@remote.com', SENDER)).toBe(3);
+    expect(mappingCount(after)).toBe(1);
+    expect(after.countInitiatedThreadsInPast24Hours(SENDER)).toBe(1);
+  });
+
+  it('handles two messages received at the same time, each once', async () => {
+    const ledger = openLedger();
+    const { listener, sent } = makeGateway(ledger, [
+      dm('m1', T, emailTo('bob@remote.com')),
+      dm('m2', T, emailTo('carol@remote.com')),
+    ]);
+
+    await pollTimes(listener, 5);
+
+    expect(sent.map((s) => s.to).sort()).toEqual(['bob@remote.com', 'carol@remote.com']);
+    expect(mappingCount(ledger)).toBe(2);
+    expect(ledger.getThreadAllowance('bob@remote.com', SENDER)).toBe(3);
+    expect(ledger.getThreadAllowance('carol@remote.com', SENDER)).toBe(3);
+  });
+
+  it('handles the same message identifier from two senders as two messages', async () => {
+    const ledger = openLedger();
+    const other = '0x2222222222222222222222222222222222222222';
+    const { listener, sent } = makeGateway(ledger, [
+      dm('m1', T, emailTo('bob@remote.com')),
+      dm('m1', T + 1, emailTo('carol@remote.com'), { senderAddress: { raw: other }, conversationId: 'conv_other' }),
+    ]);
+
+    await pollTimes(listener, 4);
+
+    expect(sent.map((s) => s.to)).toEqual(['bob@remote.com', 'carol@remote.com']);
+  });
+
+  it.each<[string, DirectMessageReceived, { maxNewThreadsPerDay?: number }]>([
+    ['has no recipient', dm('m1', T, emailTo('bob@remote.com', { to: [] })), {}],
+    ['is over the sender quota', dm('m1', T, emailTo('bob@remote.com')), { maxNewThreadsPerDay: 0 }],
+    ['has no email or text item', dm('m1', T, [{ type: 'reaction', emoji: CONTENT_MARKER }]), {}],
+    [
+      'cannot be rendered',
+      dm('m1', T, emailTo('bob@remote.com'), { senderAddress: { raw: 'not a sender' } }),
+      {},
+    ],
+  ])('sends nothing and warns once for a message that %s', async (_name, message, options) => {
+    const ledger = openLedger();
+    const { listener, deliver } = makeGateway(ledger, [message], options);
+
+    await pollTimes(listener, 5);
+
+    expect(deliver).not.toHaveBeenCalled();
+    expect(mappingCount(ledger)).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(logged(warn)).not.toContain(CONTENT_MARKER);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, unknown]>([
+    ['a To list holding an empty entry', emailTo('x', { to: [null] })],
+    ['a To field that is not a list', emailTo('x', { to: `x@remote.com ${CONTENT_MARKER}` })],
+    ['no To field', emailTo('x', { to: undefined })],
+    ['a Cc field that is not a list', emailTo('bob@remote.com', { cc: `c@remote.com ${CONTENT_MARKER}` })],
+    ['a Cc list holding an empty entry', emailTo('bob@remote.com', { cc: [null] })],
+    ['a subject that is not text', emailTo('bob@remote.com', { subject: { text: CONTENT_MARKER } })],
+    ['a body that is not text', emailTo('bob@remote.com', { textBody: [CONTENT_MARKER] })],
+    ['text that is not text', [{ type: 'text', text: { value: CONTENT_MARKER } }]],
+    ['an empty item', [null]],
+    ['items that are not a list', { type: 'text', text: CONTENT_MARKER }],
+  ])('skips a message with %s and delivers the messages after it', async (_name, items) => {
+    const ledger = openLedger();
+    const { listener, sent, cursors } = makeGateway(ledger, [
+      dm('odd', T, items),
+      dm('good', T + 1, emailTo('carol@remote.com')),
+    ]);
+
+    await expect(pollTimes(listener, 3)).resolves.toBeUndefined();
+
+    expect(sent.map((s) => s.to)).toEqual(['carol@remote.com']);
+    expect(mappingCount(ledger)).toBe(1);
+    expect(cursors).toEqual([0, T + 1, T + 1]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(logged(warn)).toContain('odd');
+    expect(logged(warn)).not.toContain(CONTENT_MARKER);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('warns once for a malformed message that every poll returns', async () => {
+    const ledger = openLedger();
+    const { listener, deliver } = makeGateway(ledger, [dm('odd', T, emailTo('x', { to: [null] }))]);
+
+    await pollTimes(listener, 5);
+
+    expect(deliver).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles the rest of a batch when one message fails before sending, and tries that message again', async () => {
+    const ledger = openLedger();
+    const { listener, sent, cursors } = makeGateway(ledger, [
+      dm('first', T, emailTo('bob@remote.com')),
+      dm('second', T + 1, emailTo('carol@remote.com')),
+    ]);
+    const lookup = ledger.getLatestThreadMappingByConversationId.bind(ledger);
+    let failures = 1;
+    jest.spyOn(ledger, 'getLatestThreadMappingByConversationId').mockImplementation((conversationId) => {
+      if (conversationId === 'conv_first' && failures-- > 0) throw new Error(`lookup failed ${CONTENT_MARKER}`);
+      return lookup(conversationId);
+    });
+
+    await listener.pollOnce();
+    expect(sent.map((s) => s.to)).toEqual(['carol@remote.com']);
+    expect(listener.unexpectedFailureCount).toBe(1);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(logged(error)).toContain('first');
+    expect(logged(error)).not.toContain(CONTENT_MARKER);
+
+    await pollTimes(listener, 3);
+    expect(sent.map((s) => s.to)).toEqual(['carol@remote.com', 'bob@remote.com']);
+    // The cursor waits at the message being tried again, then passes it.
+    expect(cursors).toEqual([0, T, T + 1, T + 1]);
+    expect(listener.unexpectedFailureCount).toBe(1);
+    expect(ledger.getThreadAllowance('carol@remote.com', SENDER)).toBe(3);
+    expect(ledger.getThreadAllowance('bob@remote.com', SENDER)).toBe(3);
+  });
+
+  it('stops trying a message that keeps failing before sending, and moves past it', async () => {
+    const ledger = openLedger();
+    const { listener, sent, cursors } = makeGateway(ledger, [
+      dm('first', T, emailTo('bob@remote.com')),
+      dm('second', T + 1, emailTo('carol@remote.com')),
+    ]);
+    const lookup = ledger.getLatestThreadMappingByConversationId.bind(ledger);
+    let attempts = 0;
+    jest.spyOn(ledger, 'getLatestThreadMappingByConversationId').mockImplementation((conversationId) => {
+      if (conversationId === 'conv_first') {
+        attempts++;
+        throw new Error('lookup failed');
+      }
+      return lookup(conversationId);
+    });
+
+    await pollTimes(listener, 6);
+
+    expect(attempts).toBe(3);
+    expect(listener.unexpectedFailureCount).toBe(3);
+    expect(error).toHaveBeenCalledTimes(3);
+    expect(sent.map((s) => s.to)).toEqual(['carol@remote.com']);
+    expect(cursors).toEqual([0, T, T, T + 1, T + 1, T + 1]);
+  });
+
+  it.each([
+    ['is the newest', T + 1, T],
+    ['has a message after it', T, T + 1],
+  ])('does not send again when sending a message that %s fails unexpectedly', async (_name, failingAt, otherAt) => {
+    const ledger = openLedger();
+    const { listener, deliver, sent, cursors } = makeGateway(ledger, [
+      dm('failing', failingAt, emailTo('bob@remote.com')),
+      dm('other', otherAt, emailTo('carol@remote.com')),
+    ]);
+    deliver.mockImplementation(async (params) => {
+      sent.push({ to: params.toAddress, raw: new TextDecoder().decode(params.rawRfc822) });
+      // The email has reached the transport when the failure is raised.
+      if (params.toAddress === 'bob@remote.com') throw new Error(`connection lost ${CONTENT_MARKER}`);
+      return { success: true, responseCode: 250, responseMessage: 'OK' } as MxDeliveryResult;
+    });
+
+    await pollTimes(listener, 5);
+
+    expect(sent.filter((s) => s.to === 'bob@remote.com')).toHaveLength(1);
+    expect(sent.filter((s) => s.to === 'carol@remote.com')).toHaveLength(1);
+    expect(ledger.getThreadAllowance('bob@remote.com', SENDER)).toBe(3);
+    expect(listener.unexpectedFailureCount).toBe(1);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(logged(error)).toContain('failing');
+    expect(logged(error)).not.toContain(CONTENT_MARKER);
+    expect(cursors.slice(1)).toEqual([T + 1, T + 1, T + 1, T + 1]);
+  });
+
+  it('does not send again after a restart when sending failed unexpectedly', async () => {
+    const file = ledgerFile();
+    const inbox = [dm('failing', T, emailTo('bob@remote.com'))];
+    const sent: Sent[] = [];
+
+    const before = openLedger(file);
+    const first = makeGateway(before, inbox, { sent });
+    first.deliver.mockImplementation(async (params) => {
+      sent.push({ to: params.toAddress, raw: '' });
+      throw new Error('connection lost');
+    });
+    await first.listener.pollOnce();
+    before.sqlite?.close();
+    openLedgers = [];
+
+    const after = openLedger(file);
+    await pollTimes(makeGateway(after, inbox, { sent }).listener, 2);
+
+    expect(sent).toHaveLength(1);
+    expect(after.getThreadAllowance('bob@remote.com', SENDER)).toBe(3);
+  });
+
+  it('keeps no more in memory than the messages the fetch can return again', async () => {
+    const ledger = openLedger();
+    const inbox: DirectMessageReceived[] = [];
+    const { listener } = makeGateway(ledger, inbox);
+
+    for (let i = 0; i < 300; i++) {
+      inbox.push(dm(`m${i}`, T + i, [{ type: 'reaction' }]));
+      await listener.pollOnce();
+      expect(listener.rememberedMessageCount).toBeLessThanOrEqual(1);
+    }
+    expect(warn).toHaveBeenCalledTimes(300);
   });
 });

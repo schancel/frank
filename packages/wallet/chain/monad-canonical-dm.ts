@@ -90,6 +90,7 @@ import {
   type MonadCanonicalStampClient,
 } from '../monad-stamp-client'
 import type { MonadCanonicalRoleOwner } from '../monad-wallet-material'
+import { durablePut, openDurableLevel } from '../storage/level-durability'
 import { deriveEvmStealthPrivateKey } from '../monad-stealth'
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import type { NativeWalletHandle, WalletHandle } from './active-chain'
@@ -267,25 +268,34 @@ export class MemoryCanonicalLinkStore implements CanonicalLinkStore {
     return undefined
   }
 }
+const CANONICAL_LINK_NAMESPACE = 'canonical-dm-workflow-links'
+/** The link ties a durable payment intent to the message it pays for, so it is a wallet authority
+ * record: it opens and writes through the durable Level helpers, and an awaited `put` means the
+ * link is on stable storage before anything is signed. */
 export class LevelCanonicalLinkStore implements CanonicalLinkStore {
   private readonly rows = new Map<string, StoredLink>()
   private constructor(private readonly db: LevelDB) {}
   static async open(location: string): Promise<LevelCanonicalLinkStore> {
-    const store = new LevelCanonicalLinkStore(
-      level(join(location, 'canonical-dm-workflow-links')),
-    )
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for await (const [, value] of store.db.iterator({}) as any) {
-      const row = JSON.parse(value) as StoredLink
-      store.rows.set(row.attemptRef, row)
+    const database = level(join(location, CANONICAL_LINK_NAMESPACE))
+    try {
+      await openDurableLevel(database, location, CANONICAL_LINK_NAMESPACE)
+      const store = new LevelCanonicalLinkStore(database)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for await (const [, value] of store.db.iterator({}) as any) {
+        const row = JSON.parse(value) as StoredLink
+        store.rows.set(row.attemptRef, row)
+      }
+      return store
+    } catch (error) {
+      await database.close()
+      throw error
     }
-    return store
   }
   all(): StoredLink[] {
     return [...this.rows.values()]
   }
   async put(row: StoredLink): Promise<void> {
-    await this.db.put(row.attemptRef, JSON.stringify(row))
+    await durablePut(this.db, row.attemptRef, JSON.stringify(row))
     this.rows.set(row.attemptRef, { ...row })
   }
   async close(): Promise<void> {

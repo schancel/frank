@@ -127,8 +127,6 @@ export function setNetworkMode(mode: "testnet" | "mainnet"): ActiveChain {
 
 export {
   PROTOCOL_CHAINS,
-  registerProtocolChain,
-  clearDynamicChains,
   getAllChainsByKind,
   getChainsByFamily,
   getChainRegistryEntry,

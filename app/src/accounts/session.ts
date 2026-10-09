@@ -833,123 +833,20 @@ export const accountSession = createAccountSession({
 })
 export const accountStatus = accountSession.state
 
-/**
- * Directly constructs the wallet session from the BIP39 seed and the chosen candidate path,
- * stages it via accountSession.stage(...), and activates it without quarantine or new Codex32 identity.
- */
+/** Standard-account activation needs its own identity-preserving custody contract. */
+export class Bip39ImportUnavailableError extends Error {
+  readonly code = 'bip39-import-unavailable'
+
+  constructor() {
+    super('BIP39 account import is currently unavailable')
+    this.name = 'Bip39ImportUnavailableError'
+  }
+}
+
+/** Identification is available separately; this unsupported capability never changes custody. */
 export async function importBip39Wallet(
-  phrase: string,
-  chosenPath?: string,
-): Promise<{
-  path: string
-  address: string
-  label: string
-  wallet?: RuntimeWallet
-}> {
-  const cleanPhrase = phrase.trim().toLowerCase().replace(/\s+/g, ' ')
-  const { validateMnemonic } = await import('bip39')
-  if (!validateMnemonic(cleanPhrase)) {
-    throw new Error('Invalid BIP-39 mnemonic')
-  }
-
-  const { CANONICAL_FRANK_PATH, deriveCandidateAccounts } = await import(
-    '@frank/wallet/bip39-import'
-  )
-
-  const path = chosenPath ?? CANONICAL_FRANK_PATH
-  const candidates = deriveCandidateAccounts(cleanPhrase)
-  const candidate = candidates.find(c => c.path === path) ??
-    candidates[0] ?? {
-      path,
-      label: 'Imported BIP39',
-      address: '',
-      privateKey: '',
-    }
-
-  // Stage via accountSession.stage(...)
-  const { DOMAIN_PURPOSES, deriveDomainRoot } = await import(
-    '@frank/domain-roots'
-  )
-  const { createMasterPayload } = await import('@frank/codex32')
-  const { deriveRecoveryPublicMetadata } = await import(
-    '@frank/account-recovery'
-  )
-  const { sha256 } = await import('@noble/hashes/sha256.js')
-  const { getBytes } = await import('ethers')
-
-  const seedBytes = getBytes(
-    sha256(new TextEncoder().encode(cleanPhrase + ':' + path)),
-  )
-  const masterPayload = createMasterPayload(seedBytes)
-  if (!masterPayload.ok) {
-    throw new Error('Failed to create account master payload')
-  }
-  const metadata = deriveRecoveryPublicMetadata(masterPayload.value)
-  const roots = DOMAIN_PURPOSES.map(purpose =>
-    deriveDomainRoot(seedBytes, purpose),
-  )
-
-  let snapshot: CustodySnapshot
-  let autoHealed = false
-  try {
-    if (
-      accountSession.state.status === 'locked' ||
-      accountSession.state.status === 'unavailable'
-    ) {
-      await accountSession.reset()
-      autoHealed = true
-    }
-    snapshot = await accountSession.snapshot()
-    if (
-      !autoHealed &&
-      (accountSession.state.status === 'locked' ||
-        accountSession.state.status === 'unavailable')
-    ) {
-      await accountSession.reset()
-      autoHealed = true
-      snapshot = await accountSession.snapshot()
-    }
-  } catch (error) {
-    if (!autoHealed) {
-      await accountSession.reset()
-      autoHealed = true
-      snapshot = await accountSession.snapshot()
-    } else {
-      throw error
-    }
-  }
-
-  const attemptId = crypto.randomUUID()
-  const accountId = crypto.randomUUID()
-  const expectedActive = {
-    revision: snapshot.revision,
-    accountId: snapshot.active?.receipt.context.accountId ?? null,
-  }
-
-  await accountSession.stage({
-    attemptId,
-    accountId,
-    expectedActive,
-    displayName: candidate.label || 'Imported BIP39',
-    custodyEpoch: 1,
-    metadata,
-    roots,
-  })
-
-  // Activate it
-  await accountSession.activatePending(attemptId, expectedActive)
-
-  let wallet: RuntimeWallet | undefined
-  try {
-    wallet = await accountSession.getWallet()
-  } catch {
-    // Session status not ready or mock
-  }
-
-  return {
-    path,
-    address: candidate.address || wallet?.identity?.address?.raw || '',
-    label: candidate.label || 'Imported BIP39',
-    wallet,
-  }
+  _phrase: string,
+  _chosenPath?: string,
+): Promise<never> {
+  throw new Bip39ImportUnavailableError()
 }

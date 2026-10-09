@@ -1709,12 +1709,13 @@ export class MonadCanonicalStampClient {
   }
   private async acquireCanonicalLease(
     index: number,
+    attemptRef: string,
     lifetime: WalletOperationLifetime,
   ): Promise<void> {
     const handle = await canonicalAdmissionPool(
       this.wallet.walletState.inputAdmission,
       lifetime,
-    ).acquire(index)
+    ).acquire(index, attemptRef)
     let leases = canonicalLiveLeases.get(this.wallet.walletState)
     if (!leases) {
       leases = new Map()
@@ -2273,7 +2274,11 @@ export class MonadCanonicalStampClient {
       })
       // Durable intent and linked workflow are now authoritative; no pool write preceded them.
       for (const member of intent.members)
-        await this.acquireCanonicalLease(member.reservation.index, lifetime)
+        await this.acquireCanonicalLease(
+          member.reservation.index,
+          intent.attemptRef,
+          lifetime,
+        )
       await this.flushCanonicalReservations()
       return intent
     })
@@ -2322,7 +2327,11 @@ export class MonadCanonicalStampClient {
         if (record.status === 'available') {
           if (this.wallet.leaseManager.isLeased(record.index))
             throw new Error('canonical-wallet:foreign-lease-hold')
-          await this.acquireCanonicalLease(record.index, lifetime)
+          await this.acquireCanonicalLease(
+            record.index,
+            intent.attemptRef,
+            lifetime,
+          )
         }
       }
       await this.flushCanonicalReservations()

@@ -2396,18 +2396,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
             canonicalInventoryFunders.set(wallet, prepareInventory);
             if (config.subAccountPoolSize > 0) {
-              pool.configureProactiveWarming({
-                provider,
-                mainAccountSigner: new MonadAccountTxSigner({
-                  privateKey: mainAccount.privateKey,
+              await topicOwner.runLifetime(async (lifetime) => {
+                if (topicOwner!.inputAdmission.inspect(lifetime).status !== "ready")
+                  return;
+                pool.configureProactiveWarming({
                   provider,
-                  httpClient,
-                }),
-                stampValueWei: config.defaultStampValueWei,
-                gasReserveWei: BigInt(21_000) * BigInt(2_000_000_000),
-                minCount: Math.min(2, config.subAccountPoolSize),
+                  mainAccountSigner: new MonadAccountTxSigner({
+                    privateKey: mainAccount.privateKey,
+                    provider,
+                    httpClient,
+                  }),
+                  stampValueWei: config.defaultStampValueWei,
+                  gasReserveWei: BigInt(21_000) * BigInt(2_000_000_000),
+                  minCount: Math.min(2, config.subAccountPoolSize),
+                });
+                pool.triggerProactiveWarming();
               });
-              pool.triggerProactiveWarming();
             }
             const links =
               storageLocation !== undefined

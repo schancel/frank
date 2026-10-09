@@ -1,6 +1,7 @@
 import { deriveRoleLeaves } from '../role-keys/src'
+import { canonicalAdmissionPool } from './evm-input-admission'
 import * as canonicalMailboxModule from '@frank/cashweb/relay/monad-mailbox-client'
-import { freezeCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import { freezeCanonicalRequest, type CanonicalFetch } from '@frank/cashweb/relay/canonical-dm-transport'
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
 import { inspectCanonicalPreparedEnvelope } from './monad-stamp-stealth'
 /**
@@ -25,6 +26,7 @@ import {
   TransactionReceipt,
   computeAddress,
   getBytes,
+  hexlify,
   getAddress,
   sha256,
 } from 'ethers'
@@ -1930,7 +1932,7 @@ async function makeCanonicalConsumerFixture(
     })
   pool.ensureSize(1)
   await pool.flush()
-  const leaseManager = new SubAccountLeaseManager(pool)
+  let leaseManager = new SubAccountLeaseManager(pool)
   let enclosed = false
   let queue = Promise.resolve()
   const nativeBinding = {
@@ -2082,9 +2084,14 @@ async function makeCanonicalConsumerFixture(
     get nativeJournal() {
       return captured.native!
     },
-    reopenOwner: async (canonicalEnabled = true) => {
+    reopenOwner: async (
+      canonicalEnabled = true,
+      preserveLiveLeaseManager = false,
+    ) => {
       await queue
       await state.close()
+      if (!preserveLiveLeaseManager)
+        leaseManager = new SubAccountLeaseManager(pool)
       state = await openOwner(canonicalEnabled)
       if (canonicalEnabled) client = createClient()
     },
@@ -2095,7 +2102,9 @@ async function makeCanonicalConsumerFixture(
     senderExport,
     subStore,
     pool,
-    leaseManager,
+    get leaseManager() {
+      return leaseManager
+    },
     providerCalls,
     provider,
     httpClient,
@@ -2201,10 +2210,10 @@ describe('canonical durable consumer barriers', () => {
         expect(snapshot.status).toBe('ready')
         if (snapshot.status !== 'ready') throw new Error(snapshot.reason)
         expect(
-          snapshot.obligations.filter(
-            o => o.transaction?.transactionHash === tx.hash,
-          ),
-        ).toHaveLength(2)
+          snapshot.obligations
+            .filter(o => o.transaction?.transactionHash === tx.hash)
+            .map(o => o.provenance.kind),
+        ).toEqual(['canonical-attempt', 'pool-retained', 'live-lease'])
       })
     })
   })
@@ -2549,6 +2558,154 @@ describe('canonical durable consumer barriers', () => {
       )
     })
   }, 20000)
+  it('only the issued current lease can correlate with its bound canonical intent', async () => {
+    await withCanonicalConsumer(async f => {
+      let link!: CanonicalWorkflowLink
+      const acquire = jest.spyOn(f.leaseManager, 'acquireForIndex')
+      await f.prepare(1, async value => {
+        link = value
+      })
+      const handle = acquire.mock.results[0]!.value
+      const forged = { ...handle }
+      expect(f.leaseManager.isCurrentLease(forged)).toBe(false)
+      expect(() => f.leaseManager.releaseLease(forged, 'unused')).toThrow()
+      f.pool.ensureSize(2)
+      f.pool.setStatus(1, 'available')
+      await f.state.runLifetime(async lifetime => {
+        const pool = canonicalAdmissionPool(f.state.inputAdmission, lifetime)
+        await expect(pool.acquire(1, link.attemptRef)).rejects.toThrow(
+          'invalid-provenance',
+        )
+        await expect(pool.acquire(1, 'fabricated-attempt')).rejects.toThrow(
+          'invalid-provenance',
+        )
+      })
+      expect(f.leaseManager.isLeased(1)).toBe(false)
+      // The intent is still unsigned, so explicit unused release is valid in this fixture.
+      expect(
+        f.canonicalJournal
+          .getIntents()[0]!
+          .members.every(member => member.rawTx === null),
+      ).toBe(true)
+      f.leaseManager.releaseLease(handle, 'unused')
+      const foreign = f.leaseManager.acquireForIndex(0)
+      expect(f.leaseManager.isCurrentLease(handle)).toBe(false)
+      expect(f.leaseManager.isCurrentLease(foreign)).toBe(true)
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'signFrozenUnsigned',
+      )
+      await expect(
+        f.client.finishIntent(
+          f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+        ),
+      ).rejects.toThrow('conflicting-authorization')
+      expect(sign).not.toHaveBeenCalled()
+      expect(f.canonicalJournal.getIntents()).toHaveLength(1)
+      sign.mockRestore()
+    })
+  }, 20000)
+  it('a reopened admission does not inherit the prior live lease correlation', async () => {
+    await withCanonicalConsumer(async f => {
+      let link!: CanonicalWorkflowLink
+      await f.prepare(1, async value => {
+        link = value
+      })
+      await f.reopenOwner(true, true)
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'signFrozenUnsigned',
+      )
+      await expect(
+        f.client.finishIntent(
+          f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+        ),
+      ).rejects.toThrow('conflicting-authorization')
+      expect(sign).not.toHaveBeenCalled()
+      expect(f.canonicalJournal.getIntents()).toHaveLength(1)
+      sign.mockRestore()
+    })
+  }, 20000)
+  it('healthy promoted replay after restart sends the original exact bytes without resigning', async () => {
+    await withCanonicalConsumer(async f => {
+      let link!: CanonicalWorkflowLink
+      await f.prepare(1, async value => {
+        link = value
+      })
+      const attempt = await f.client.finishIntent(
+        f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+      )
+      await f.reopenOwner()
+      const sign = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'signFrozenUnsigned',
+      )
+      const fetch = jest.fn<
+        ReturnType<CanonicalFetch>,
+        Parameters<CanonicalFetch>
+      >(async () => {
+        throw new Error('lost relay response')
+      })
+      await expect(
+        f.client.submit(
+          f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+          { fetch },
+        ),
+      ).rejects.toThrow('Canonical submission outcome is unknown')
+      expect(fetch).toHaveBeenCalledTimes(1)
+      expect(fetch.mock.calls[0]![1].body).toEqual(attempt.request.body)
+      expect(f.canonicalJournal.getAll()[0]!.request.body).toEqual(
+        attempt.request.body,
+      )
+      expect(sign).not.toHaveBeenCalled()
+      sign.mockRestore()
+    })
+  }, 20000)
+  it('promoted replay rechecks foreign durable claims before any relay exposure', async () => {
+    await withCanonicalConsumer(async f => {
+      let link!: CanonicalWorkflowLink
+      await f.prepare(1, async value => {
+        link = value
+      })
+      const attempt = await f.client.finishIntent(
+        f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+      )
+      const tx = Transaction.from(
+        hexlify(attempt.request.parts.transactions[0]),
+      )
+      await f.nativeJournal.prepare({
+        kind: 'native',
+        recipient: tx.to!.toLowerCase(),
+        intendedValueWei: tx.value.toString(),
+        members: [
+          {
+            source: {
+              kind: 'spend',
+              index: 0,
+              address: tx.from!.toLowerCase(),
+            },
+            dependencies: [],
+            unsignedTransaction: tx.unsignedSerialized,
+          },
+        ],
+      })
+      await f.reopenOwner()
+      const originalNative = f.nativeJournal.list(),
+        originalCanonical = f.canonicalJournal.getAll()
+      const fetch = jest.fn(async () => {
+        throw new Error('unexpected relay exposure')
+      })
+      await expect(
+        f.client.submit(
+          f.client.reconcileWorkflowLinks([link])[0].eligibility!,
+          { fetch },
+        ),
+      ).rejects.toThrow('conflicting-authorization')
+      expect(fetch).not.toHaveBeenCalled()
+      expect(f.nativeJournal.list()).toEqual(originalNative)
+      expect(f.canonicalJournal.getAll()).toEqual(originalCanonical)
+    })
+  }, 20000)
   it('sends nothing to the relay when the journal refuses replay admission', async () => {
     await withCanonicalConsumer(async f => {
       let link!: CanonicalWorkflowLink
@@ -2706,7 +2863,7 @@ describe('canonical durable consumer barriers', () => {
         'signFrozenUnsigned',
       )
       await expect(f.client.finishIntent(eligibility)).rejects.toThrow(
-        'foreign-lease-hold',
+        'conflicting-authorization',
       )
       expect(sign).not.toHaveBeenCalled()
       sign.mockRestore()

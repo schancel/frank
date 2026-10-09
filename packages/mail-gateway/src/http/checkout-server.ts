@@ -3,7 +3,7 @@ import * as crypto from 'node:crypto';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { GatewayStampProvider } from '../stamps/stamp-provider.interface';
 import { parseRawRfc822 } from '../smtp/smtp-listener';
-import { OutboundEmailDelivery } from '../mta/outbound-delivery';
+import { OutboundEmailDelivery, OutboundRenderRefusal } from '../mta/outbound-delivery';
 
 export interface CheckoutServerOptions {
   readonly port: number;
@@ -169,7 +169,9 @@ export class CheckoutServer {
         );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
+        // A request whose values cannot be written as headers is a bad request.
+        const status = err instanceof OutboundRenderRefusal ? 400 : 500;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: msg }));
       }
     });

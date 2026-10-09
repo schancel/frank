@@ -1,5 +1,10 @@
 import { CreditLedger } from '../ledger/credit-ledger';
-import { OutboundEmailDelivery, OutboundDirectMessage } from './outbound-delivery';
+import {
+  OutboundEmailDelivery,
+  OutboundDirectMessage,
+  OutboundDeliveryResult,
+  OutboundRenderRefusal,
+} from './outbound-delivery';
 import { DkimSigner } from './dkim-signer';
 import { MxDirectTransport, MxDeliveryResult } from './mx-transport';
 import { BlobStore } from '../storage/blob-store';
@@ -94,9 +99,18 @@ export class OutboundMtaWorker {
    * 2. Signs with DkimSigner.
    * 3. Attempts direct delivery via MxDirectTransport.deliver.
    * 4. If temporary failure, enqueues to outbound_spool with exponential backoff.
+   * A message the renderer refuses is reported as a permanent failure and is not spooled.
    */
   async dispatchMessage(dm: OutboundDirectMessage): Promise<OutboundDispatchResult> {
-    const deliveryResult = await this.delivery.processOutboundDirectMessage(dm);
+    let deliveryResult: OutboundDeliveryResult;
+    try {
+      deliveryResult = await this.delivery.processOutboundDirectMessage(dm);
+    } catch (err: unknown) {
+      if (!(err instanceof OutboundRenderRefusal)) throw err;
+      // The message cannot be rendered now or later: permanent, never spooled.
+      console.warn(`[outbound-worker] Message ${dm.frankMessageId} was not rendered: ${err.message}`);
+      return { success: false, rfc822MessageId: '', spooled: false, error: err.message };
+    }
     const signedEmail = this.dkimSigner.sign(deliveryResult.renderedEmail);
     const fromAddress = `${dm.senderFrankAddress}@${this.gatewayDomain}`;
 

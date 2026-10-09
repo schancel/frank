@@ -4,6 +4,7 @@ import type {
   BotContext,
   BotMessageContext,
   NewUserEvent,
+  PreparedReply,
 } from "@frank/bot-framework";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import {
@@ -12,6 +13,7 @@ import {
   MAX_TEXT_STRING_BYTES,
   MAX_DIRECT_MESSAGE_FRAME_BYTES,
 } from "@frank/codec";
+import { createHash } from "crypto";
 import { computeAddress, getAddress } from "ethers";
 import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-transport";
 import { generateAvatarPng } from "../../bot-directory";
@@ -241,7 +243,10 @@ export class QwenBot implements FrankBotDefinition {
     }
   }
 
-  async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {
+  async onMessage(
+    msgCtx: BotMessageContext,
+    ctx: BotContext
+  ): Promise<PreparedReply | void> {
     const scope = historyScope(msgCtx, ctx);
     const state = ctx.state;
     const reply = msgCtx.reply;
@@ -274,7 +279,8 @@ export class QwenBot implements FrankBotDefinition {
       return;
     }
 
-    const history = readHistory(await state.get(historyKey), scope);
+    const stored = await state.get(historyKey);
+    const history = readHistory(stored, scope);
     const promptHistory: HistoryMessage[] = [
       ...history,
       { role: "user", content: userText },
@@ -294,12 +300,20 @@ export class QwenBot implements FrankBotDefinition {
       },
       scope
     );
-    // Prepare the exact bounded representation before any reply payment, then retain these bytes.
-    const prepared = boundedText(
-      JSON.stringify(completed),
-      MAX_HISTORY_RECORD_BYTES
-    );
-    await reply([{ type: "text", text: content }]);
-    await state.put(historyKey, prepared);
+    // The host stages the answer and these exact bounded bytes before the reply is first sent,
+    // and writes them at the history key only when that reply is delivered, provided the key
+    // still holds what was read above. Qwen does not write the key itself.
+    return {
+      kind: "prepared-reply",
+      text: content,
+      commit: {
+        key: historyKey,
+        expectedSha256:
+          stored === undefined
+            ? null
+            : createHash("sha256").update(stored, "utf8").digest("hex"),
+        value: boundedText(JSON.stringify(completed), MAX_HISTORY_RECORD_BYTES),
+      },
+    };
   }
 }

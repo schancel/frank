@@ -16,7 +16,10 @@ import {
 } from "ethers";
 
 import { deriveDomainRoot } from "@frank/domain-roots";
-import type { ActiveChain } from "@frank/wallet/chain/active-chain";
+import {
+  isDirectMessageNotAttempted,
+  type ActiveChain,
+} from "@frank/wallet/chain/active-chain";
 import {
   createEvmChain,
   installCanonicalDirectory,
@@ -46,6 +49,7 @@ import {
   type BotMessageContext,
   type FrankBotDefinition,
   type NewUserEvent,
+  type PreparedReply,
 } from "./types";
 import { EVMNonceSequencer } from "./nonce-sequencer";
 import { LevelBotStateStore } from "./state-store";
@@ -72,7 +76,7 @@ interface ActiveBotInstance {
   wallet: EvmChainWalletHandle;
   state: LevelBotStateStore;
   operations: InboundOperationStore;
-  tasks: Set<Promise<void>>;
+  tasks: Set<Promise<unknown>>;
   directory: DirectoryManager;
   uninstallDirectory: () => void;
   loopGuard: LoopGuard;
@@ -83,6 +87,12 @@ interface ActiveBotInstance {
   inFlightDigests: Set<string>;
   /** Deferred digests no fetch has returned: when first missed, and when last warned. Log only. */
   unmatched: Map<string, { since: number; warned: number }>;
+  /** Prepared replies this process found held (changed plugin key, unreadable staged content). */
+  held: Set<string>;
+  /** A retry pass over refused first sends is running. */
+  retrying: boolean;
+  /** The row whose first send the last retry pass ended on; the next pass starts after it. */
+  refused?: string;
   evmMainPrivateKey?: string;
 }
 
@@ -615,6 +625,8 @@ export class FrankBotHost {
           savedCursor > 0 ? savedCursor : Date.now() - 24 * 3600_000,
         inFlightDigests: new Set<string>(),
         unmatched: new Map(),
+        held: new Set<string>(),
+        retrying: false,
         evmMainPrivateKey,
       };
 
@@ -746,6 +758,12 @@ export class FrankBotHost {
           }
         }
         if (this.closing) return;
+        // A prepared reply observed delivered commits its plugin value and completes.
+        for (const row of instance.operations.listIncomplete())
+          if (row.prepared && row.replies[0]?.observation === "delivered")
+            void this.track(instance, row, () =>
+              this.completePrepared(instance, row.digest)
+            );
         const messages = await this.chain.directMessages.fetchSince({
           wallet: instance.wallet,
           sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
@@ -818,30 +836,19 @@ export class FrankBotHost {
             continue;
           }
           instance.unmatched.delete(row.digest);
-          if (instance.inFlightDigests.has(row.digest)) continue;
-          instance.inFlightDigests.add(row.digest);
-          const task = instance.peerQueue.enqueue(row.peerAddress, async () => {
-            try {
-              if (
-                this.closing ||
-                !(await instance.operations.start(match.identity))
-              )
-                return;
-              // The retained identity, not this fetch's relay time, is the invocation's.
-              await this.dispatch(instance, row, match.items);
-            } catch {
-              // An interrupted handler may have generated content or paid. It is never retried,
-              // skipped as processed, or completed from a later wallet delivery observation.
-              console.warn(
-                `[bot-host] [${id}] Inbound invocation held; preserve original operation`
-              );
-            } finally {
-              instance.inFlightDigests.delete(row.digest);
-            }
+          // Start, handler, prepare and first send are one task. Once the start write has
+          // committed the handler runs, even if stop() landed meanwhile: stop() drains it.
+          void this.track(instance, row, async () => {
+            if (
+              this.closing ||
+              !(await instance.operations.start(match.identity))
+            )
+              return;
+            // The retained identity, not this fetch's relay time, is the invocation's.
+            await this.dispatch(instance, row, match.items);
           });
-          instance.tasks.add(task);
-          void task.finally(() => instance.tasks.delete(task));
         }
+        this.retryFirstSends(instance);
       } catch (err: unknown) {
         console.warn(
           `[bot-host] Failed polling messages for bot "${id}":`,
@@ -873,6 +880,184 @@ export class FrankBotHost {
         }
       }
     }
+  }
+
+  /** Runs `work` as the one tracked task of an inbound digest, on its peer's lane. A second
+   * request for a digest is dropped while one runs; stop() drains every task. */
+  private track<T>(
+    instance: ActiveBotInstance,
+    row: { digest: string; peerAddress: string },
+    work: () => Promise<T>
+  ): Promise<T | undefined> | undefined {
+    if (instance.inFlightDigests.has(row.digest)) return undefined;
+    instance.inFlightDigests.add(row.digest);
+    const task = instance.peerQueue.enqueue(row.peerAddress, async () => {
+      try {
+        return await work();
+      } catch {
+        // An interrupted handler may have generated content or paid. It is never retried,
+        // skipped as processed, or completed from a later wallet delivery observation.
+        console.warn(
+          `[bot-host] [${instance.definition.id}] Inbound invocation held; preserve original operation`
+        );
+        return undefined;
+      } finally {
+        instance.inFlightDigests.delete(row.digest);
+      }
+    });
+    instance.tasks.add(task);
+    void task.finally(() => instance.tasks.delete(task));
+    return task;
+  }
+
+  /** Sends a prepared reply that has no slot: the only state a send starts from. The slot is
+   * persisted first, so a crash inside the wallet can never lead to a second send. It is taken
+   * back, leaving the staged answer to be sent later, only when the wallet labelled this very
+   * call as not attempted and reported no attempt during it. */
+  private async sendPrepared(
+    instance: ActiveBotInstance,
+    digest: string
+  ): Promise<"refused" | undefined> {
+    const row = instance.operations.get(digest);
+    if (
+      this.closing ||
+      instance.held.has(digest) ||
+      row?.phase !== "started" ||
+      !row.prepared ||
+      row.replies.length
+    )
+      return undefined;
+    // Everything that can refuse runs before the slot is persisted. Between that write and the
+    // wallet call nothing may throw: an unlabelled refusal there would hold the reply for good.
+    const recipient = toChainAddress(row.peerAddress);
+    const stampValue = BigInt(row.prepared.stampValue);
+    let text: string;
+    try {
+      text = await instance.operations.beginPreparedReply(digest);
+    } catch {
+      instance.operations.assertOpen(); // a failed journal write holds everything
+      instance.held.add(digest);
+      console.warn(
+        `[bot-host] [${instance.definition.id}] Prepared reply for ${digest} held before sending; its commit key changed or its staged content is unreadable`
+      );
+      return undefined;
+    }
+    let reported = false;
+    let result: DirectMessageSendResult;
+    try {
+      result = await this.chain.directMessages.send({
+        wallet: instance.wallet,
+        recipient,
+        items: [{ type: "text", text }],
+        conversationId: row.conversationId,
+        stampValue,
+        onAttemptCreated: (outbound) => {
+          reported = true;
+          return instance.operations.link(digest, 0, outbound);
+        },
+      });
+    } catch (error) {
+      // The wallet's label is about this one call and is read from this rejection, here.
+      const notAttempted = isDirectMessageNotAttempted(error);
+      if (!notAttempted || reported) {
+        // Linked: reconciled on later polls. Unlinked: held, never sent again.
+        console.warn(
+          `[bot-host] [${instance.definition.id}] Prepared reply for ${digest} not delivered yet; preserve original operation`
+        );
+        return undefined;
+      }
+      await instance.operations.retractReply(digest);
+      return "refused";
+    }
+    // A send result cannot substitute for the durable pre-submission callback.
+    if (
+      instance.operations.get(digest)?.replies[0]?.digest !==
+      result.payloadDigest
+    )
+      throw new Error("Bot reply has no matching durable attempt");
+    await instance.operations.observe(
+      digest,
+      0,
+      result.payloadDigest,
+      "delivered"
+    );
+    await this.completePrepared(instance, digest);
+    return undefined;
+  }
+
+  /** Commits the plugin value and completes the row, once its own reply is recorded delivered. */
+  private async completePrepared(
+    instance: ActiveBotInstance,
+    digest: string
+  ): Promise<void> {
+    const row = instance.operations.get(digest);
+    if (
+      instance.held.has(digest) ||
+      row?.phase !== "started" ||
+      !row.prepared ||
+      row.replies[0]?.observation !== "delivered"
+    )
+      return;
+    let committedCursor: number;
+    try {
+      committedCursor = await instance.operations.complete(
+        digest,
+        Math.max(instance.lastPollTimestamp, row.receivedTime + 1)
+      );
+    } catch {
+      instance.operations.assertOpen(); // a failed journal write holds everything
+      instance.held.add(digest);
+      console.warn(
+        `[bot-host] [${instance.definition.id}] Reply for ${digest} delivered but its commit is held; the commit key changed or the staged value is unreadable, nothing was overwritten`
+      );
+      return;
+    }
+    instance.lastPollTimestamp = Math.max(
+      instance.lastPollTimestamp,
+      committedCursor
+    );
+    instance.loopGuard.recordReply(row.peerAddress);
+  }
+
+  /** Retries first sends the wallet refused. One tracked pass at a time, in handling order
+   * starting after the row the previous pass ended on, each send on its peer's lane, ending at
+   * the first refusal: one extra wallet call per poll, and a row refused for its own recipient
+   * is overtaken. No lock and no queue: while the wallet refuses, the answers stay staged. */
+  private retryFirstSends(instance: ActiveBotInstance): void {
+    if (instance.retrying) return;
+    const waiting = instance.operations
+      .listIncomplete()
+      .filter(
+        (row) =>
+          row.prepared && !row.replies.length && !instance.held.has(row.digest)
+      )
+      .sort(inboundOrder);
+    if (!waiting.length) return;
+    const next =
+      waiting.findIndex((row) => row.digest === instance.refused) + 1;
+    instance.retrying = true;
+    const pass = (async () => {
+      try {
+        for (const row of [...waiting.slice(next), ...waiting.slice(0, next)]) {
+          if (this.closing) return;
+          instance.operations.assertOpen();
+          const outcome = await this.track(instance, row, () =>
+            this.sendPrepared(instance, row.digest)
+          );
+          if (outcome === "refused") {
+            instance.refused = row.digest;
+            return;
+          }
+        }
+        instance.refused = undefined;
+      } catch {
+        // A faulted journal: nothing further is sent by this process.
+      } finally {
+        instance.retrying = false;
+      }
+    })();
+    instance.tasks.add(pass);
+    void pass.finally(() => instance.tasks.delete(pass));
   }
 
   /**
@@ -1138,15 +1323,24 @@ export class FrankBotHost {
       items,
       reply: boundReply,
     });
+    let prepared: PreparedReply | undefined;
     try {
-      let reply = await instance.definition.onMessage(msgCtx, context);
-      if (!reply || !reply.length)
-        reply =
-          (await context.subscriptions.handleSubscriptionCommand(
-            items,
-            identity.peerAddress
-          )) ?? undefined;
-      if (reply?.length) await boundReply(reply);
+      const returned = await instance.definition.onMessage(msgCtx, context);
+      if (returned && !Array.isArray(returned)) {
+        // A prepared reply is the invocation's only reply; it gets no subscription fallback.
+        if (replies.length)
+          throw new Error("Prepared reply returned after a direct reply");
+        prepared = returned;
+      } else {
+        let reply = returned || undefined;
+        if (!reply || !reply.length)
+          reply =
+            (await context.subscriptions.handleSubscriptionCommand(
+              items,
+              identity.peerAddress
+            )) ?? undefined;
+        if (reply?.length) await boundReply(reply);
+      }
     } catch {
       failed = true;
     } finally {
@@ -1155,6 +1349,17 @@ export class FrankBotHost {
     }
     if (failed)
       throw new Error("Bot invocation incomplete; preserve original operation");
+    if (prepared) {
+      // Durable before it is first sent; the stamp is authorised once, here. The row completes
+      // and the loop guard counts the reply when the commit lands, now or on a later poll.
+      await instance.operations.prepare(
+        identity.digest,
+        prepared,
+        this.options.stampValueWei.toString()
+      );
+      await this.sendPrepared(instance, identity.digest);
+      return;
+    }
     const cursor = Math.max(
       instance.lastPollTimestamp,
       identity.receivedTime + 1

@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { Wallet } from "ethers";
 import {
   MAX_TEXT_STRING_BYTES,
@@ -7,6 +8,7 @@ import type {
   BotContext,
   BotMessageContext,
   BotStateStore,
+  PreparedReply,
 } from "@frank/bot-framework";
 import type { QwenChatMessage } from "../../qwen-client";
 import { QwenBot } from "./qwen-bot";
@@ -46,7 +48,21 @@ const record = (messages = pair()) => ({
   scope: scope(ctx, msg),
   messages,
 });
-const saved = () => JSON.parse(rows.get(key(ctx, msg))!);
+const sha = (value: string) =>
+  createHash("sha256").update(value, "utf8").digest("hex");
+/** The model path's whole effect: a reply for the host to stage, never a send or a write. */
+async function answer(
+  message = msg,
+  context = ctx,
+  sender = message.reply
+): Promise<PreparedReply> {
+  const result = await bot.onMessage(message, context);
+  if (!result) throw new Error("no prepared reply returned");
+  expect(sender).not.toHaveBeenCalled();
+  expect(context.state.put).not.toHaveBeenCalled();
+  expect(context.state.batch).not.toHaveBeenCalled();
+  return result;
+}
 
 beforeEach(() => {
   rows = new Map();
@@ -121,28 +137,44 @@ it("keeps profile, subscription, greeting and newsletter behavior", async () => 
   expect(await bot.sendDailyNewsletter(ctx)).toEqual({ sent: 1, failed: 0 });
 });
 
-it("writes exact scoped completed turns and retains only the latest ten pairs", async () => {
-  rows.set(
-    key(ctx, msg),
-    JSON.stringify(
-      record(Array.from({ length: 10 }, (_, i) => pair(String(i))).flat())
-    )
+// T9. Was: the handler sent the reply and then wrote history itself, so a reply that was paid
+// and reported pending left no history. It now returns both for the host to stage and commit.
+it("returns the exact reply and scoped next history for the host to commit, retaining the latest ten pairs", async () => {
+  const stored = JSON.stringify(
+    record(Array.from({ length: 10 }, (_, i) => pair(String(i))).flat())
   );
-  await bot.onMessage(msg, ctx);
+  rows.set(key(ctx, msg), stored);
+  const prepared = await answer();
   expect(generator.mock.calls[0][0]).toHaveLength(21);
-  expect(saved()).toEqual(
-    record([
-      ...Array.from({ length: 9 }, (_, i) => pair(String(i + 1))).flat(),
-      ...pair("hello"),
-    ])
-  );
-  expect(rows.has(`history:${peer.address.toLowerCase()}`)).toBe(false);
+  expect(prepared).toEqual({
+    kind: "prepared-reply",
+    text: "answer",
+    commit: {
+      key: key(ctx, msg),
+      expectedSha256: sha(stored),
+      value: JSON.stringify(
+        record([
+          ...Array.from({ length: 9 }, (_, i) => pair(String(i + 1))).flat(),
+          ...pair("hello"),
+        ])
+      ),
+    },
+  });
+  expect(ctx.state.get).toHaveBeenCalledTimes(1);
+  expect(rows.get(key(ctx, msg))).toBe(stored);
+  expect([...rows.keys()]).toEqual([key(ctx, msg)]);
+});
+it("expects an absent key when the conversation has no history yet", async () => {
+  const prepared = await answer();
+  expect(prepared.commit.expectedSha256).toBeNull();
+  expect(JSON.parse(prepared.commit.value)).toEqual(record(pair("hello")));
+  expect(rows.size).toBe(0);
 });
 
 it.each(["thread", "peer", "local", "network"])(
   "isolates history by %s in the same store",
   async (dimension) => {
-    await bot.onMessage(msg, ctx);
+    const first = await answer();
     const next = { ...msg };
     const nextContext = { ...ctx };
     if (dimension === "thread") next.conversationId = threadB;
@@ -155,15 +187,15 @@ it.each(["thread", "peer", "local", "network"])(
       nextContext.subject = subject(other);
     }
     if (dimension === "network") nextContext.networkTag = "MON1";
-    await bot.onMessage(next, nextContext);
+    const second = await answer(next, nextContext);
     expect(generator.mock.calls[1][0]).toEqual([
       { role: "user", content: "hello" },
     ]);
-    expect(rows.size).toBe(2);
+    const keys = [first.commit.key, second.commit.key];
+    expect(keys).toEqual([key(ctx, msg), key(nextContext, next)]);
+    expect(new Set(keys).size).toBe(2);
     expect(
-      [...rows.keys()].every(
-        (k) => !k.includes('"MONT"') && !k.includes('"MON1"')
-      )
+      keys.every((k) => !k.includes('"MONT"') && !k.includes('"MON1"'))
     ).toBe(true);
   }
 );
@@ -298,8 +330,8 @@ it.each(["input", "output", "loaded"])(
     if (where === "output") generator.mockResolvedValue({ content: text });
     if (where === "loaded")
       rows.set(key(ctx, msg), JSON.stringify(record(pair(text))));
-    await bot.onMessage(msg, ctx);
-    expect(msg.reply).toHaveBeenCalledTimes(1);
+    const prepared = await answer();
+    expect(prepared.text).toBe(where === "output" ? text : "answer");
   }
 );
 it.each(["é".repeat(MAX_TEXT_STRING_BYTES / 2) + "a", "\ud800"])(
@@ -339,7 +371,7 @@ it("counts JSON escaping and validates completed record before reply payment", a
   expect(ctx.state.put).not.toHaveBeenCalled();
   expect(rows.get(key(ctx, msg))).toBe(previous);
 });
-it("detaches generator-owned input and captures result once before awaiting reply", async () => {
+it("detaches generator-owned input and captures the result once", async () => {
   rows.set(key(ctx, msg), JSON.stringify(record()));
   let ownedPrompt: QwenChatMessage[] = [];
   let content = "captured";
@@ -355,17 +387,12 @@ it("detaches generator-owned input and captures result once before awaiting repl
       },
     };
   });
-  jest.mocked(msg.reply).mockImplementation(async (items) => {
-    expect(ctx.state.put).not.toHaveBeenCalled();
-    expect(items).toEqual([{ type: "text", text: "captured" }]);
-    content = "mutated after send";
-    ownedPrompt[0].content = "later mutation";
-    await Promise.resolve();
-    return receipt;
-  });
-  await bot.onMessage(msg, ctx);
+  const prepared = await answer();
+  content = "mutated after return";
+  ownedPrompt[0].content = "later mutation";
   expect(getter).toHaveBeenCalledTimes(1);
-  expect(saved()).toEqual(
+  expect(prepared.text).toBe("captured");
+  expect(JSON.parse(prepared.commit.value)).toEqual(
     record([
       ...pair(),
       { role: "user", content: "hello" },
@@ -373,37 +400,52 @@ it("detaches generator-owned input and captures result once before awaiting repl
     ])
   );
 });
-it("captures scope and reply before asynchronous plugin work", async () => {
-  const originalKey = key(ctx, msg);
-  const originalReply = msg.reply;
-  const substituted = jest.fn();
-  jest
-    .mocked(ctx.subscriptions.handleSubscriptionCommand)
-    .mockImplementation(async () => {
-      Object.assign(msg, {
-        conversationId: threadB,
-        peerSubject: subject(other),
-        reply: substituted,
+it.each(["model", "greeting"])(
+  "captures scope and reply before asynchronous plugin work (%s path)",
+  async (path) => {
+    if (path === "greeting") msg.items = [];
+    const originalKey = key(ctx, msg);
+    const originalReply = msg.reply;
+    const substituted = jest.fn();
+    jest
+      .mocked(ctx.subscriptions.handleSubscriptionCommand)
+      .mockImplementation(async () => {
+        Object.assign(msg, {
+          conversationId: threadB,
+          peerSubject: subject(other),
+          reply: substituted,
+        });
+        Object.assign(ctx, { networkTag: "MON1", subject: subject(other) });
+        return null;
       });
-      Object.assign(ctx, { networkTag: "MON1", subject: subject(other) });
-      return null;
-    });
-  await bot.onMessage(msg, ctx);
-  expect(originalReply).toHaveBeenCalledTimes(1);
-  expect(substituted).not.toHaveBeenCalled();
-  expect([...rows.keys()]).toEqual([originalKey]);
-});
-it("does not commit prepared history when reply fails", async () => {
+    const result = await bot.onMessage(msg, ctx);
+    expect(substituted).not.toHaveBeenCalled();
+    if (path === "greeting") {
+      expect(result).toBeUndefined();
+      expect(originalReply).toHaveBeenCalledTimes(1);
+    } else {
+      expect(originalReply).not.toHaveBeenCalled();
+      expect(result?.commit.key).toBe(originalKey);
+    }
+    expect(rows.size).toBe(0);
+  }
+);
+// Was "does not commit prepared history when reply fails": the handler awaited its own send and
+// dropped the history update when that send reported pending, although the reply could still
+// be delivered. That was the defect. The handler no longer sends, so no send outcome can
+// reach it; the host commits the update when the reply is delivered.
+it("neither sends nor writes on the model path, so a pending send cannot cost the history update", async () => {
   const raw = JSON.stringify(record());
   rows.set(key(ctx, msg), raw);
   jest
     .mocked(msg.reply)
     .mockRejectedValue(new Error("original attempt pending"));
-  await expect(bot.onMessage(msg, ctx)).rejects.toThrow(
-    "original attempt pending"
+  const prepared = await answer();
+  expect(prepared.commit.expectedSha256).toBe(sha(raw));
+  expect(JSON.parse(prepared.commit.value)).toEqual(
+    record([...pair(), ...pair("hello")])
   );
   expect(rows.get(key(ctx, msg))).toBe(raw);
-  expect(ctx.state.put).not.toHaveBeenCalled();
 });
 
 it.each([undefined, null, {}])(

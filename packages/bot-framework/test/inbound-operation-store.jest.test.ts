@@ -2,10 +2,13 @@ import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { spawnSync } from "child_process";
+import { createHash } from "crypto";
 import { Wallet, getBytes } from "ethers";
 import { LevelBotStateStore } from "../src/state-store";
+import type { PreparedReply } from "../src/types";
 import {
   InboundOperationStore,
+  MAX_STAGED_UNSENT,
   inboundIdentity,
   type InboundOwner,
   type InboundIdentity,
@@ -591,5 +594,520 @@ describe("retained, deferred rows", () => {
     for (const [row, value] of rows)
       expect(await state.get(rowKey(row.digest))).toBe(value);
     expect(await state.get("cursor:lastPollTimestamp")).toBe("107");
+  });
+});
+
+describe("prepared replies", () => {
+  const rowKey = (digest: string) => "host-inbound:v1:dispatch:" + digest;
+  const staged = (digest: string, part: "text" | "value") =>
+    `host-prepared:v1:${digest}:${part}`;
+  const sha = (value: string) =>
+    createHash("sha256").update(value, "utf8").digest("hex");
+  const other = new Wallet("0x" + "13".repeat(32));
+  const numbered = (index: number, change: Partial<InboundIdentity> = {}) => ({
+    ...input,
+    digest: index.toString(16).padStart(64, "0"),
+    receivedTime: 100 + index,
+    ...change,
+  });
+  const threadB = "03030303-0303-0303-0303-030303030303";
+  const reply = (
+    change: Partial<PreparedReply["commit"]> = {},
+    text = "the answer"
+  ): PreparedReply => ({
+    kind: "prepared-reply",
+    text,
+    commit: { key: "plugin:a", expectedSha256: null, value: "next", ...change },
+  });
+  const slot = {
+    recipient: input.peerAddress,
+    conversationId: input.conversationId,
+    stampValue: "5",
+  };
+  /** Starts `identity` and stages a reply for it. */
+  async function prepared(identity: InboundIdentity, staging = reply()) {
+    expect(await retainThenStart(identity)).toBe(true);
+    await store.prepare(identity.digest, staging, "5");
+  }
+  /** Stages, sends, links and records delivery: everything but the completion. */
+  async function delivered(identity: InboundIdentity, staging = reply()) {
+    await prepared(identity, staging);
+    await store.beginPreparedReply(identity.digest);
+    await store.link(identity.digest, 0, identity.digest.replace(/^0/, "f"));
+    await store.observe(
+      identity.digest,
+      0,
+      identity.digest.replace(/^0/, "f"),
+      "delivered"
+    );
+  }
+
+  // T10. Reproduces: nothing recorded a generated answer before it was sent.
+  it("stages the answer and commit value in one batch with the row, and keeps content out of the row", async () => {
+    await retainThenStart(input);
+    const writes = jest.spyOn(state, "durableBatch");
+    await store.prepare(
+      input.digest,
+      reply({ expectedSha256: sha("old") }),
+      "5"
+    );
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(writes.mock.calls[0][0].map((op) => op.key)).toEqual([
+      rowKey(input.digest),
+      staged(input.digest, "text"),
+      staged(input.digest, "value"),
+    ]);
+    await reopen();
+    expect(store.get(input.digest)).toEqual({
+      version: 1,
+      ...input,
+      phase: "started",
+      replies: [],
+      prepared: {
+        stampValue: "5",
+        textSha256: sha("the answer"),
+        valueSha256: sha("next"),
+        stateKey: "plugin:a",
+        expectedSha256: sha("old"),
+      },
+    });
+    expect(await state.get(staged(input.digest, "text"))).toBe("the answer");
+    expect(await state.get(staged(input.digest, "value"))).toBe("next");
+    expect(await state.get(rowKey(input.digest))).not.toContain("the answer");
+    // Once per invocation, and never beside a direct reply slot.
+    await expect(store.prepare(input.digest, reply(), "5")).rejects.toThrow(
+      /held/
+    );
+    const direct = numbered(2, { conversationId: threadB });
+    await retainThenStart(direct);
+    await store.beginReply(direct.digest, { ...call, conversationId: threadB });
+    await expect(
+      store.prepare(direct.digest, reply({ key: "plugin:b" }), "5")
+    ).rejects.toThrow(/held/);
+    expect(store.get(direct.digest)?.prepared).toBeUndefined();
+    await expect(store.beginReply(input.digest, call)).rejects.toThrow(/held/);
+  });
+
+  // T10. Reproduces: a plugin value had no structural, key or size bound at the host.
+  it("refuses a malformed, mis-keyed or oversized reply without writing or faulting", async () => {
+    await retainThenStart(input);
+    const writes = jest.spyOn(state, "durableBatch");
+    const text = "a".repeat(262_144);
+    const value = "b".repeat(1_048_576);
+    const refused: unknown[] = [
+      { ...reply(), kind: "reply" },
+      { ...reply(), extra: 1 },
+      { ...reply(), commit: { ...reply().commit, extra: 1 } },
+      { kind: "prepared-reply", text: "x" },
+      reply({}, 42 as unknown as string),
+      reply({}, text + "a"),
+      reply({}, "é".repeat(131_072) + "a"),
+      reply({}, "\ud800"),
+      reply({ value: value + "b" }),
+      reply({ value: "\udc00x" }),
+      reply({ value: undefined as unknown as string }),
+      reply({ expectedSha256: "AA".repeat(32) }),
+      reply({ expectedSha256: undefined as unknown as null }),
+      reply({ key: "" }),
+      reply({ key: "a".repeat(513) }),
+      reply({ key: "sub!key" }),
+      reply({ key: "line\nbreak" }),
+      reply({ key: "café" }),
+      ...[
+        "host-inbound:",
+        "host-prepared:",
+        "digest:",
+        "cursor:",
+        "greeted:",
+      ].map((prefix) => reply({ key: prefix + "x" })),
+    ];
+    for (const bad of refused)
+      await expect(
+        store.prepare(input.digest, bad as PreparedReply, "5")
+      ).rejects.toThrow(/held/);
+    await expect(store.prepare(input.digest, reply(), "05")).rejects.toThrow(
+      /held/
+    );
+    expect(writes).not.toHaveBeenCalled();
+    expect(store.get(input.digest)?.prepared).toBeUndefined();
+    expect(await state.readEntries("host-prepared:")).toEqual([]);
+    // Exactly at each limit is accepted, and the journal was never faulted.
+    await store.prepare(
+      input.digest,
+      reply({ key: "k".repeat(512), value }, text),
+      "5"
+    );
+    await reopen();
+    expect(await state.get(staged(input.digest, "text"))).toBe(text);
+    expect(await state.get(staged(input.digest, "value"))).toBe(value);
+    expect(await store.beginPreparedReply(input.digest)).toBe(text);
+  });
+
+  // T10/T7. Reproduces: a reply was sent whatever the plugin key held by then.
+  it("begins a send only from prepared-no-slot, with the plugin key and staged text unchanged", async () => {
+    await prepared(input, reply({ expectedSha256: sha("old") }));
+    await expect(store.beginPreparedReply(input.digest)).rejects.toThrow(
+      /held/
+    );
+    await state.put("plugin:a", "other");
+    await expect(store.beginPreparedReply(input.digest)).rejects.toThrow(
+      /held/
+    );
+    await state.put("plugin:a", "old");
+    await state.put(staged(input.digest, "text"), "tampered");
+    await expect(store.beginPreparedReply(input.digest)).rejects.toThrow(
+      /held/
+    );
+    await state.del(staged(input.digest, "text"));
+    await expect(store.beginPreparedReply(input.digest)).rejects.toThrow(
+      /held/
+    );
+    expect(store.get(input.digest)?.replies).toEqual([]);
+    await state.put(staged(input.digest, "text"), "the answer");
+    expect(await store.beginPreparedReply(input.digest)).toBe("the answer");
+    expect(store.get(input.digest)?.replies).toEqual([slot]);
+    await expect(store.beginPreparedReply(input.digest)).rejects.toThrow(
+      /held/
+    );
+    // A row without a staged reply has no such transition.
+    const plain = numbered(2);
+    await retainThenStart(plain);
+    await expect(store.beginPreparedReply(plain.digest)).rejects.toThrow(
+      /held/
+    );
+  });
+
+  // T10. Reproduces: a slot without a digest was held forever, even when nothing was attempted.
+  it("retracts only an unlinked slot it persisted itself, never one found at open", async () => {
+    await prepared(input);
+    await expect(store.retractReply(input.digest)).rejects.toThrow(/held/);
+    await store.beginPreparedReply(input.digest);
+    await store.retractReply(input.digest);
+    expect(store.get(input.digest)?.replies).toEqual([]);
+    await expect(store.retractReply(input.digest)).rejects.toThrow(/held/);
+    expect(await state.get(staged(input.digest, "text"))).toBe("the answer");
+    // Sent again, and this time the wallet reported an attempt: the slot stays for good.
+    await store.beginPreparedReply(input.digest);
+    await store.link(input.digest, 0, outbound);
+    await expect(store.retractReply(input.digest)).rejects.toThrow(/held/);
+    // An unlinked slot that survives a restart is evidence of a call nobody can account for.
+    const second = numbered(2, { conversationId: threadB });
+    await prepared(second, reply({ key: "plugin:b" }));
+    await store.beginPreparedReply(second.digest);
+    await reopen();
+    await expect(store.retractReply(second.digest)).rejects.toThrow(/held/);
+    await expect(store.beginPreparedReply(second.digest)).rejects.toThrow(
+      /held/
+    );
+    expect(store.get(second.digest)?.replies).toEqual([
+      { ...slot, conversationId: threadB },
+    ]);
+    // A direct reply slot is never retracted either.
+    const direct = numbered(3, { conversationId: threadB });
+    await retainThenStart(direct);
+    await store.beginReply(direct.digest, call);
+    await expect(store.retractReply(direct.digest)).rejects.toThrow(/held/);
+  });
+
+  // T10. Reproduces: history was a separate, later, unconditional plugin write.
+  it("commits the value, completes the row and deletes the staged content in one batch, only once delivered and unchanged", async () => {
+    await state.put("plugin:a", "old");
+    await prepared(input, reply({ expectedSha256: sha("old") }));
+    await expect(store.complete(input.digest, 201)).rejects.toThrow(/held/);
+    await store.beginPreparedReply(input.digest);
+    await expect(store.complete(input.digest, 201)).rejects.toThrow(/held/);
+    await store.link(input.digest, 0, outbound);
+    await store.observe(input.digest, 0, outbound, "live");
+    await expect(store.complete(input.digest, 201)).rejects.toThrow(/held/);
+    await store.observe(input.digest, 0, outbound, "delivered");
+    // Conflict, tampered value: nothing is written and the journal is not faulted.
+    const writes = jest.spyOn(state, "durableBatch");
+    await state.put("plugin:a", "written by the plugin");
+    await expect(store.complete(input.digest, 201)).rejects.toThrow(/held/);
+    await state.put("plugin:a", "old");
+    await state.put(staged(input.digest, "value"), "tampered");
+    await expect(store.complete(input.digest, 201)).rejects.toThrow(/held/);
+    expect(writes).not.toHaveBeenCalled();
+    expect(await state.get("plugin:a")).toBe("old");
+    expect(await state.get("digest:" + input.digest)).toBeUndefined();
+    await state.put(staged(input.digest, "value"), "next");
+    expect(await store.complete(input.digest, 201)).toBe(201);
+    expect(writes).toHaveBeenCalledTimes(1);
+    expect(writes.mock.calls[0][0]).toEqual([
+      { type: "put", key: "plugin:a", value: "next" },
+      expect.objectContaining({ type: "put", key: rowKey(input.digest) }),
+      { type: "put", key: "digest:" + input.digest, value: "completed" },
+      { type: "put", key: "cursor:lastPollTimestamp", value: "201" },
+      { type: "del", key: staged(input.digest, "text") },
+      { type: "del", key: staged(input.digest, "value") },
+    ]);
+    await reopen();
+    expect(store.get(input.digest)).toMatchObject({
+      phase: "completed",
+      prepared: { stateKey: "plugin:a" },
+      replies: [{ digest: outbound, observation: "delivered" }],
+    });
+    expect(await state.get("plugin:a")).toBe("next");
+    expect(await state.readEntries("host-prepared:")).toEqual([]);
+    await expect(store.complete(input.digest, 301)).rejects.toThrow(/held/);
+    expect(await state.get("plugin:a")).toBe("next");
+  });
+
+  // T2 at the store. Reproduces: no transition existed between "generated" and "history written".
+  it.each([
+    ["prepare", false],
+    ["prepare", true],
+    ["slot", false],
+    ["slot", true],
+    ["retract", false],
+    ["retract", true],
+    ["complete", false],
+    ["complete", true],
+  ] as const)(
+    "recovers disk truth after a cut %s write (committed=%s)",
+    async (step, committed) => {
+      await retainThenStart(input);
+      if (step !== "prepare") await store.prepare(input.digest, reply(), "5");
+      if (step === "retract" || step === "complete")
+        await store.beginPreparedReply(input.digest);
+      if (step === "complete") {
+        await store.link(input.digest, 0, outbound);
+        await store.observe(input.digest, 0, outbound, "delivered");
+      }
+      const original = state.durableBatch.bind(state);
+      jest.spyOn(state, "durableBatch").mockImplementationOnce(async (ops) => {
+        if (committed) await original(ops);
+        throw new Error("uncertain write");
+      });
+      await expect(
+        step === "prepare"
+          ? store.prepare(input.digest, reply(), "5")
+          : step === "slot"
+          ? store.beginPreparedReply(input.digest)
+          : step === "retract"
+          ? store.retractReply(input.digest)
+          : store.complete(input.digest, 201)
+      ).rejects.toThrow(/held/);
+      // Faulted until reopen: nothing more can be staged, sent or committed by this process.
+      await expect(store.beginPreparedReply(input.digest)).rejects.toThrow(
+        /held/
+      );
+      await reopen();
+      const row = store.get(input.digest);
+      const after = step === "retract" ? !committed : committed;
+      if (step === "prepare") {
+        expect(row?.prepared === undefined).toBe(!committed);
+        expect(await state.readEntries("host-prepared:")).toHaveLength(
+          committed ? 2 : 0
+        );
+      } else if (step === "complete") {
+        expect(row?.phase).toBe(committed ? "completed" : "started");
+        expect(await state.get("plugin:a")).toBe(
+          committed ? "next" : undefined
+        );
+        expect(await state.readEntries("host-prepared:")).toHaveLength(
+          committed ? 0 : 2
+        );
+        if (!committed)
+          expect(await store.complete(input.digest, 201)).toBe(201);
+        expect(await state.get("plugin:a")).toBe("next");
+      } else {
+        // A slot on disk after a restart is held; without one the reply is sent, once.
+        expect(row?.replies).toEqual(after ? [slot] : []);
+        if (after)
+          await expect(store.retractReply(input.digest)).rejects.toThrow(
+            /held/
+          );
+        await (after
+          ? expect(store.beginPreparedReply(input.digest)).rejects.toThrow(
+              /held/
+            )
+          : expect(store.beginPreparedReply(input.digest)).resolves.toBe(
+              "the answer"
+            ));
+      }
+    }
+  );
+
+  // T10 (b). Reproduces: a later prompt was answered against history still waiting to land.
+  it("keeps a conversation's later prompt deferred while an earlier reply's commit is owed", async () => {
+    const first = numbered(1);
+    const second = numbered(2);
+    const elsewhere = numbered(3, { conversationId: threadB });
+    const stranger = numbered(4, {
+      peerAddress: other.address.toLowerCase(),
+      peerSubject: other.signingKey.compressedPublicKey.slice(2),
+    });
+    for (const row of [second, elsewhere, stranger]) await store.retain(row);
+    await prepared(first);
+    expect(await store.start(second)).toBe(false);
+    expect(await store.start(elsewhere)).toBe(true);
+    expect(await store.start(stranger)).toBe(true);
+    const sent = first.digest.replace(/^0/, "f");
+    await store.beginPreparedReply(first.digest);
+    await store.link(first.digest, 0, sent);
+    await reopen();
+    expect(await store.start(second)).toBe(false);
+    await store.observe(first.digest, 0, sent, "delivered");
+    expect(await store.start(second)).toBe(false);
+    expect(store.scanFloor(900)).toBe(second.receivedTime);
+    await store.complete(first.digest, 102);
+    expect(await store.start(second)).toBe(true);
+  });
+
+  // Revision 5 / OD-1. Reproduces the contract defect: the conversation behind a reply held on
+  // an unlinked slot was started, generated, and then had its own reply refused, for ever.
+  it("lets a conversation go on past a reply held on an unlinked slot, and stage its next reply on the same key", async () => {
+    const first = numbered(1);
+    const second = numbered(2);
+    const third = numbered(3);
+    await prepared(first);
+    await store.beginPreparedReply(first.digest);
+    await store.retain(second);
+    await store.retain(third);
+    expect(await store.start(second)).toBe(true);
+    await store.prepare(second.digest, reply(), "5");
+    // The second reply can still commit, so the third prompt waits for it.
+    expect(await store.start(third)).toBe(false);
+    await reopen();
+    expect(store.get(first.digest)).toMatchObject({
+      phase: "started",
+      replies: [slot],
+    });
+    expect(store.get(second.digest)?.prepared?.stateKey).toBe("plugin:a");
+    await expect(store.beginPreparedReply(first.digest)).rejects.toThrow(
+      /held/
+    );
+    const sent = second.digest.replace(/^0/, "f");
+    await store.beginPreparedReply(second.digest);
+    await store.link(second.digest, 0, sent);
+    await store.observe(second.digest, 0, sent, "delivered");
+    await store.complete(second.digest, 103);
+    expect(await state.get("plugin:a")).toBe("next");
+    expect(await store.start(third)).toBe(true);
+  });
+
+  // T18 at the store. Reproduces: two conversations could stage commits to one key.
+  it("refuses a second owed reply on one key from another conversation, whatever state the first is in", async () => {
+    const first = numbered(1);
+    const elsewhere = numbered(2, { conversationId: threadB });
+    await prepared(first);
+    await retainThenStart(elsewhere);
+    await expect(store.prepare(elsewhere.digest, reply(), "5")).rejects.toThrow(
+      /held/
+    );
+    // Even an unlinked slot: across peers nothing says its send is not still in flight.
+    await store.beginPreparedReply(first.digest);
+    await expect(store.prepare(elsewhere.digest, reply(), "5")).rejects.toThrow(
+      /held/
+    );
+    expect(store.get(elsewhere.digest)?.prepared).toBeUndefined();
+    await store.prepare(elsewhere.digest, reply({ key: "plugin:b" }), "5");
+    // Once the first has committed the key is free again.
+    const later = numbered(3, { conversationId: threadB });
+    await store.link(first.digest, 0, outbound);
+    await store.observe(first.digest, 0, outbound, "delivered");
+    await store.complete(first.digest, 102);
+    const third = numbered(4, {
+      conversationId: "04040404-0404-0404-0404-040404040404",
+    });
+    await retainThenStart(third);
+    await store.prepare(
+      third.digest,
+      reply({ expectedSha256: sha("next"), value: "after" }),
+      "5"
+    );
+    await store.retain(later);
+    expect(await store.start(later)).toBe(false);
+  });
+
+  // T10 (d), OD-6. Reproduces: every prompt called the model while sends were being refused.
+  it("stops starting handlers bot-wide at the bound of answers staged with no slot", async () => {
+    const conversation = (index: number) =>
+      index.toString(16).padStart(8, "0") + "-0000-0000-0000-000000000000";
+    const rows = Array.from({ length: MAX_STAGED_UNSENT + 2 }, (_, index) =>
+      numbered(index + 1, { conversationId: conversation(index + 1) })
+    );
+    expect(MAX_STAGED_UNSENT).toBe(16);
+    for (const row of rows.slice(0, MAX_STAGED_UNSENT))
+      await prepared(row, reply({ key: "plugin:" + row.digest }));
+    const [waiting, running] = rows.slice(MAX_STAGED_UNSENT);
+    await store.retain(waiting);
+    await store.retain(running);
+    expect(await store.start(waiting)).toBe(false);
+    await reopen();
+    expect(await store.start(waiting)).toBe(false);
+    expect(store.listDeferred().map((row) => row.digest)).toEqual([
+      waiting.digest,
+      running.digest,
+    ]);
+    // A slot, linked or not, is no longer "staged ahead of a send".
+    await store.beginPreparedReply(rows[0].digest);
+    expect(await store.start(waiting)).toBe(true);
+    // The handler now running is not counted until it stages: the bound is of staged answers.
+    expect(await store.start(running)).toBe(true);
+    await store.prepare(waiting.digest, reply({ key: "plugin:w" }), "5");
+    await store.prepare(running.digest, reply({ key: "plugin:r" }), "5");
+    await store.retractReply(rows[0].digest);
+    const late = numbered(99, { conversationId: conversation(99) });
+    await store.retain(late);
+    expect(await store.start(late)).toBe(false);
+  });
+
+  // T10. Reproduces the upgrade and corruption risk: impossible prepared shapes must not load.
+  it("rejects impossible prepared rows at open without rewriting them", async () => {
+    await delivered(input);
+    const good = store.get(input.digest)!;
+    const twin = numbered(2, { conversationId: threadB });
+    const shapes: object[] = [
+      { ...good, prepared: { ...good.prepared, extra: 1 } },
+      { ...good, prepared: { ...good.prepared, stateKey: "a!b" } },
+      { ...good, prepared: { ...good.prepared, stateKey: "digest:x" } },
+      { ...good, prepared: { ...good.prepared, textSha256: "zz" } },
+      { ...good, prepared: { ...good.prepared, stampValue: "6" } },
+      { ...good, prepared: { ...good.prepared, expectedSha256: undefined } },
+      { ...good, replies: [good.replies[0], good.replies[0]] },
+      { ...good, replies: [{ ...good.replies[0], recipient: owner.address }] },
+      { ...good, replies: [{ ...good.replies[0], conversationId: threadB }] },
+      { ...good, phase: "deferred", replies: [] },
+    ];
+    for (const shape of shapes) {
+      const raw = JSON.stringify(shape);
+      await state.put(rowKey(input.digest), raw);
+      await expect(
+        InboundOperationStore.open(state, owner, false)
+      ).rejects.toThrow(/held/);
+      expect(await state.get(rowKey(input.digest))).toBe(raw);
+    }
+    // Two replies that can both still commit to one key.
+    await state.put(rowKey(input.digest), JSON.stringify(good));
+    const raw = JSON.stringify({
+      ...good,
+      ...twin,
+      replies: [],
+    });
+    await state.put(rowKey(twin.digest), raw);
+    await expect(
+      InboundOperationStore.open(state, owner, false)
+    ).rejects.toThrow(/held/);
+    // One of them held on an unlinked slot is the state Revision 5 allows.
+    await state.put(
+      rowKey(twin.digest),
+      JSON.stringify({
+        ...good,
+        ...twin,
+        replies: [{ ...slot, conversationId: threadB }],
+      })
+    );
+    await reopen();
+    expect(store.listIncomplete()).toHaveLength(2);
+    // A completed prepared row must carry its one delivered slot.
+    await store.complete(input.digest, 201);
+    const done = JSON.stringify({ ...store.get(input.digest), replies: [] });
+    await state.put(rowKey(input.digest), done);
+    await expect(
+      InboundOperationStore.open(state, owner, false)
+    ).rejects.toThrow(/held/);
+    expect(await state.get(rowKey(input.digest))).toBe(done);
   });
 });

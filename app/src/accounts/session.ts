@@ -99,6 +99,7 @@ export function createAccountSession(deps: {
   const curveKeyCache = new Map<SupportedCurve, Uint8Array>()
   const curveKeyInFlight = new Map<SupportedCurve, Promise<Uint8Array>>()
   let generation = 0
+  let walletGeneration = 0
   let tail = Promise.resolve()
   let initialized: Promise<void> | undefined
   let unlisten: (() => void) | undefined
@@ -131,6 +132,8 @@ export function createAccountSession(deps: {
     return next
   }
   const release = async () => {
+    // Refresh can discover a replacement without an explicit invalidation event.
+    if (wallet) ++walletGeneration
     chainAddressCache.clear()
     chainAddressInFlight.clear()
     curveKeyCache.clear()
@@ -141,6 +144,14 @@ export function createAccountSession(deps: {
   }
   const check = (token: number) => {
     if (closed || token !== generation) throw new CustodyError('closed')
+  }
+  const captureDerivation = () => {
+    const token = generation
+    const walletToken = walletGeneration
+    return () => {
+      check(token)
+      if (walletToken !== walletGeneration) throw new CustodyError('closed')
+    }
   }
   async function refresh(token: number) {
     check(token)
@@ -331,12 +342,17 @@ export function createAccountSession(deps: {
     async getActiveDomainRoot<P extends DomainRoot['purpose']>(
       purpose: P,
     ): Promise<Uint8Array> {
+      const checkCurrent = captureDerivation()
       await session.initialize()
+      checkCurrent()
       if (!custody || closed || state.status !== 'ready')
         throw new CustodyError('locked')
       const capability = await custody.openActive()
       let roots: readonly DomainRoot[] = []
       try {
+        checkCurrent()
+        if (capability.account.receipt.context.accountId !== walletAccount)
+          throw new CustodyError('conflict')
         roots = capability.takeRoots()
         const found = roots.find(r => r.purpose === purpose)
         if (!found) throw new CustodyError('locked')
@@ -378,18 +394,22 @@ export function createAccountSession(deps: {
       )
     },
     async getChainAddress(chain: string): Promise<string> {
+      const checkCurrent = captureDerivation()
+      checkCurrent()
       const fallbackTestnet = activeChain.isTestnet ?? false
       const netId = resolveNetworkId(chain, fallbackTestnet)
       const entry = getChainRegistryEntry(netId)
       const isTestnet = entry?.isTestnet ?? fallbackTestnet
       if (chain === 'monad' || netId.startsWith('monad-')) {
         const wallet = await session.getWallet()
+        checkCurrent()
         let address: unknown
         if (typeof (wallet as any).getReceiveAddress === 'function') {
           address = await (wallet as any).getReceiveAddress()
         } else if (wallet.identity?.displayAddress) {
           address = wallet.identity.displayAddress
         }
+        checkCurrent()
         const formatted =
           typeof address === 'string'
             ? address
@@ -436,7 +456,6 @@ export function createAccountSession(deps: {
             const hash160 = ripemd160(sha256(pubKeyBytes))
             const prefix = isTestnet ? 'ectest' : 'ecash'
             const addr = encodeCashAddress(prefix, 'p2pkh', hash160)
-            chainAddressCache.set(netId, addr)
             return addr
           } else if (chain === 'bitcoin' || netId.startsWith('btc-')) {
             const { HDNodeWallet } = await import('ethers')
@@ -465,7 +484,6 @@ export function createAccountSession(deps: {
                 'bech32',
               )
               if (res.ok) {
-                chainAddressCache.set(netId, res.value)
                 return res.value
               }
             }
@@ -497,7 +515,6 @@ export function createAccountSession(deps: {
                 'cashaddr',
               )
               if (res.ok) {
-                chainAddressCache.set(netId, res.value)
                 return res.value
               }
             }
@@ -521,33 +538,34 @@ export function createAccountSession(deps: {
             payload[0] = version
             payload.set(hash160, 1)
             const addr = encodeBase58Check(payload)
-            chainAddressCache.set(netId, addr)
             return addr
           } else if (chain === 'solana' || netId.startsWith('solana-')) {
             const { Keypair } = await import('@solana/web3.js')
             const kp = await Keypair.fromSeed(root)
             const addr = kp.publicKey.toBase58()
-            chainAddressCache.set(netId, addr)
             return addr
           } else {
             const { HDNodeWallet } = await import('ethers')
             const hdNode =
               HDNodeWallet.fromSeed(root).derivePath("m/44'/60'/0'/0/0")
             const addr = hdNode.address
-            chainAddressCache.set(netId, addr)
             return addr
           }
         } finally {
           root.fill(0)
-          chainAddressInFlight.delete(netId)
         }
       })()
+        .then(address => {
+          checkCurrent()
+          chainAddressCache.set(netId, address)
+          return address
+        })
+        .finally(() => {
+          if (chainAddressInFlight.get(netId) === promise) {
+            chainAddressInFlight.delete(netId)
+          }
+        })
       chainAddressInFlight.set(netId, promise)
-      promise.catch(() => {
-        if (chainAddressInFlight.get(netId) === promise) {
-          chainAddressInFlight.delete(netId)
-        }
-      })
       return promise
     },
     getCachedCurvePublicKey(curve: SupportedCurve): Uint8Array | undefined {
@@ -564,10 +582,13 @@ export function createAccountSession(deps: {
       return curveKeyCache.get(curve)
     },
     async getCurvePublicKey(curve: SupportedCurve): Promise<Uint8Array> {
+      const checkCurrent = captureDerivation()
+      checkCurrent()
       if (curve === 'secp256k1') {
         const cached = session.getCachedCurvePublicKey('secp256k1')
         if (cached) return cached
         const currentWallet = await session.getWallet()
+        checkCurrent()
         if (!currentWallet.identity?.compressedPubKey) {
           throw new Error(
             'No identity compressedPubKey available for secp256k1',
@@ -588,21 +609,24 @@ export function createAccountSession(deps: {
             const { Keypair } = await import('@solana/web3.js')
             const kp = await Keypair.fromSeed(root)
             const pubKeyBytes = new Uint8Array(kp.publicKey.toBytes())
-            curveKeyCache.set('ed25519', pubKeyBytes)
             return pubKeyBytes
           } finally {
             root.fill(0)
-            curveKeyInFlight.delete(curve)
           }
         }
         throw new Error(`Unsupported curve: ${curve}`)
       })()
+        .then(key => {
+          checkCurrent()
+          curveKeyCache.set(curve, key)
+          return key
+        })
+        .finally(() => {
+          if (curveKeyInFlight.get(curve) === promise) {
+            curveKeyInFlight.delete(curve)
+          }
+        })
       curveKeyInFlight.set(curve, promise)
-      promise.catch(() => {
-        if (curveKeyInFlight.get(curve) === promise) {
-          curveKeyInFlight.delete(curve)
-        }
-      })
       return promise
     },
     async backupCodex32(threshold = 2, count = 3): Promise<string[]> {

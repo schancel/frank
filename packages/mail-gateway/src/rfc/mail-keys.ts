@@ -6,9 +6,9 @@
  * are durable keys: changing what either function hashes changes its tag and
  * the journal format in the same change.
  *
- * Mail key: identity of one RFC 5322 message, computed over its bytes (the
- * SMTP `DATA` bytes after dot-unstuffing, or the exact signed bytes a job
- * stores).
+ * Mail key: identity of one RFC 5322 message by eight of its headers and its
+ * body, computed over its bytes (the SMTP `DATA` bytes after dot-unstuffing,
+ * or the exact signed bytes a job stores).
  *
  *   SHA-256( "frank-mail-key/1" 0x00
  *            H(from) H(to) H(cc) H(subject) H(date)
@@ -19,17 +19,35 @@
  *
  * - Headers and the body offset come from `readHeaderSection` and nowhere
  *   else. `value'` is that reader's value (name matched lowercased,
- *   continuation lines appended as written) with leading and trailing space,
- *   tab and CR removed, as Latin-1 bytes, which are the bytes of the input.
- *   An absent header is count 0; a header present with an empty value is count
- *   1 and length 0. Every other header (trace, signature, MIME) is outside the
- *   key, and so is the position of a header among headers of other names.
- * - `body'` is the bytes from the body offset with each line ending (CRLF, a
- *   lone LF, a lone CR) written as CRLF, all trailing empty lines removed and
- *   exactly one CRLF at the end; an empty body is one CRLF. This is what the
- *   signer and the outbound transport do to a body, so a message keys alike
- *   before and after the gateway sends it. In the header section a lone CR
- *   stays a byte of its line, as the header reader has it.
+ *   continuation lines appended, so the line break of a fold is gone and its
+ *   whitespace stays) with every run of spaces and tabs written as one space,
+ *   then spaces, tabs and CRs removed from both ends. Letter case and every
+ *   other byte are kept; the bytes hashed are the bytes of the input (the
+ *   reader's Latin-1 text, one byte per character). An absent header is count
+ *   0; a header present with an empty value is count 1 and length 0.
+ * - `body'` is the bytes from the body offset, line by line. Each line ending
+ *   (CRLF, a lone LF, a lone CR) is written as CRLF. On each line, spaces and
+ *   tabs at the end are removed and every other run of spaces and tabs is
+ *   written as one space. Then all trailing empty lines are removed, a line
+ *   left empty by the step before included, and the body ends with exactly one
+ *   CRLF; an empty body is one CRLF. This is the relaxed body canonicalisation
+ *   of RFC 6376 section 3.4.4, except that an empty body is one CRLF. In the
+ *   header section a lone CR stays a byte of its line, as the header reader
+ *   has it.
+ * - Stable under what relaxed/relaxed DKIM canonicalisation tolerates (RFC
+ *   6376 sections 3.4.2 and 3.4.4): the gateway signs that way, so a relay may
+ *   refold a header at whitespace, change the length of a whitespace run or
+ *   strip trailing whitespace from a body line without breaking the signature,
+ *   and the key does not change either. A fold put where there was no
+ *   whitespace, whitespace removed entirely between two words, and any other
+ *   changed byte give another key.
+ * - Deliberately outside the key: every header other than the eight. That
+ *   includes Content-Type, Content-Transfer-Encoding, MIME-Version, Reply-To,
+ *   Sender, Bcc, Received and DKIM-Signature, and the position of a header
+ *   among headers of other names. Two emails with the same eight headers and
+ *   the same body bytes therefore have the same key even when their Reply-To,
+ *   charset or transfer encoding differ, and so may read differently to a
+ *   person. The key compares bytes; it decodes nothing.
  *
  * Item key: identity of what a Frank user authored, independent of the seal.
  *
@@ -82,23 +100,39 @@ function tagged(tag: string): Hash {
   return createHash('sha256').update(tag, 'latin1').update(Buffer.from([0x00]));
 }
 
-function isOuterWhitespace(code: number): boolean {
-  return code === SPACE || code === TAB || code === CR;
-}
-
-/** The value without leading and trailing spaces, tabs and CRs. */
-function trimHeaderValue(value: string): string {
+/**
+ * The bytes of a header value with every run of spaces and tabs written as
+ * one space, then spaces, tabs and CRs removed from both ends.
+ */
+function canonicalHeaderValue(value: string): Buffer {
+  // Latin-1 gives back the bytes the reader decoded, one per character.
+  const bytes = Buffer.from(value, 'latin1');
+  const out = Buffer.allocUnsafe(bytes.length);
+  let written = 0;
+  let inRun = false;
+  for (let i = 0; i < bytes.length; i++) {
+    const byte = bytes[i];
+    if (byte === SPACE || byte === TAB) {
+      if (!inRun) out[written++] = SPACE;
+      inRun = true;
+    } else {
+      out[written++] = byte;
+      inRun = false;
+    }
+  }
   let start = 0;
-  let end = value.length;
-  while (start < end && isOuterWhitespace(value.charCodeAt(start))) start++;
-  while (end > start && isOuterWhitespace(value.charCodeAt(end - 1))) end--;
-  return value.slice(start, end);
+  let end = written;
+  while (start < end && (out[start] === SPACE || out[start] === CR)) start++;
+  while (end > start && (out[end - 1] === SPACE || out[end - 1] === CR)) end--;
+  return out.subarray(start, end);
 }
 
 /**
- * The body with each line ending (CRLF, a lone LF, a lone CR) written as
- * CRLF, trailing empty lines removed and one CRLF at the end. An empty body is
- * one CRLF. CR CR LF is two line endings: a lone CR, then CRLF.
+ * The body in the relaxed form of RFC 6376 section 3.4.4: each line ending
+ * (CRLF, a lone LF, a lone CR) written as CRLF; on each line, spaces and tabs
+ * at the end removed and every other run of them written as one space; then
+ * trailing empty lines removed and one CRLF at the end. An empty body is one
+ * CRLF. CR CR LF is two line endings: a lone CR, then CRLF.
  */
 function normalisedBody(body: Buffer): Buffer {
   // Each input byte gives at most two output bytes (a lone CR or LF), plus a final CRLF.
@@ -107,11 +141,14 @@ function normalisedBody(body: Buffer): Buffer {
   /** Length of the output up to and including the last non-empty line. */
   let kept = 0;
   let lineHasBytes = false;
+  /** Spaces or tabs were read and no other byte of the line has followed yet. */
+  let pendingSpace = false;
   const endLine = (): void => {
     out[written++] = CR;
     out[written++] = LF;
     if (lineHasBytes) kept = written;
     lineHasBytes = false;
+    pendingSpace = false;
   };
   for (let i = 0; i < body.length; i++) {
     const byte = body[i];
@@ -120,7 +157,11 @@ function normalisedBody(body: Buffer): Buffer {
       endLine();
     } else if (byte === LF) {
       endLine();
+    } else if (byte === SPACE || byte === TAB) {
+      pendingSpace = true;
     } else {
+      if (pendingSpace) out[written++] = SPACE;
+      pendingSpace = false;
       out[written++] = byte;
       lineHasBytes = true;
     }
@@ -137,12 +178,9 @@ export function mailKey(raw: Uint8Array): string {
   const { fields, bodyOffset } = readHeaderSection(raw);
   const hash = tagged(MAIL_KEY_TAG);
   for (const name of MAIL_KEY_HEADERS) {
-    const values = fields.filter(([n]) => n === name).map(([, v]) => trimHeaderValue(v));
+    const values = fields.filter(([n]) => n === name).map(([, v]) => canonicalHeaderValue(v));
     hash.update(u32be(values.length));
-    for (const value of values) {
-      const bytes = Buffer.from(value, 'latin1');
-      hash.update(u32be(bytes.length)).update(bytes);
-    }
+    for (const bytes of values) hash.update(u32be(bytes.length)).update(bytes);
   }
   const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
   hash.update(normalisedBody(bytes.subarray(bodyOffset)));
@@ -187,6 +225,19 @@ function hashStringList(hash: Hash, label: string, values: readonly string[] | u
   values.forEach((value, i) => hashString(hash, `${label}[${i}]`, value));
 }
 
+/** The addresses of a party list; undefined stays undefined, anything but an array is refused. */
+function addresses(
+  label: string,
+  parties: ReadonlyArray<{ readonly address: string }> | undefined,
+): string[] | undefined {
+  if (parties === undefined) return undefined;
+  if (!Array.isArray(parties)) throw new TypeError(`${label} must be an array`);
+  return parties.map((party, i) => {
+    if (party === null || typeof party !== 'object') throw new TypeError(`${label}[${i}] must be an object`);
+    return party.address;
+  });
+}
+
 /**
  * The item key of an authored email item: 64 lower-case hex characters. The
  * item must be the decoded item of a message that passed validation; a field
@@ -198,8 +249,8 @@ export function emailItemKey(item: EmailItemKeyInput): string {
   hashString(hash, 'messageId', item.messageId);
   hashOptionalString(hash, 'inReplyTo', item.inReplyTo);
   hashStringList(hash, 'references', item.references);
-  hashStringList(hash, 'to', item.to?.map((party) => party.address));
-  hashStringList(hash, 'cc', item.cc?.map((party) => party.address));
+  hashStringList(hash, 'to', addresses('to', item.to));
+  hashStringList(hash, 'cc', addresses('cc', item.cc));
   hashString(hash, 'subject', item.subject);
   hashString(hash, 'textBody', item.textBody);
   hashOptionalString(hash, 'htmlBody', item.htmlBody);

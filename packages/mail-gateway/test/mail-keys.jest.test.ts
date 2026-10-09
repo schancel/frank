@@ -1,7 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import { CreditLedger } from '../src/ledger/credit-ledger';
-import { DkimSigner, generateDkimKeyPair, verifyDkimSignature } from '../src/mta/dkim-signer';
+import {
+  DkimSigner,
+  canonicalizeBodyRelaxed,
+  canonicalizeHeaderRelaxed,
+  generateDkimKeyPair,
+  verifyDkimSignature,
+} from '../src/mta/dkim-signer';
 import { encodeMessageData } from '../src/mta/mx-transport';
 import { OutboundEmailDelivery } from '../src/mta/outbound-delivery';
 import { emailItemKey, mailKey, type EmailItemKeyInput } from '../src/rfc/mail-keys';
@@ -169,11 +175,55 @@ describe('mailKey', () => {
       expect(key(mail(FULL).replace('Hi there\r\n', 'Hi there\r\r\n'))).toBe(base);
     });
 
-    it('keeps inner whitespace and letter case of values as written', () => {
-      expect(key(mail({ ...FULL, Subject: 'Hi  there' }))).not.toBe(base);
-      expect(key(mail({ ...FULL, Subject: 'Hi\tthere' }))).not.toBe(base);
-      expect(key(mail({ ...FULL, Subject: 'Hi\r\n\tthere' }))).not.toBe(base);
+    it('ignores what relaxed header canonicalisation allows: refolding at whitespace and the length of whitespace runs', () => {
+      // A single space refolded as CRLF + TAB.
+      expect(key(mail({ ...FULL, Subject: 'Hi\r\n\tthere' }))).toBe(base);
+      expect(key(mail({ ...FULL, From: 'Ann\r\n\t<ann@x.example>' }))).toBe(base);
+      expect(key(mail({ ...FULL, References: '<r1@gw.example>\r\n\t<p1@gw.example>' }))).toBe(base);
+      // A run expanded, and a tab for a space.
+      expect(key(mail({ ...FULL, Subject: 'Hi  there' }))).toBe(base);
+      expect(key(mail({ ...FULL, Subject: 'Hi\tthere' }))).toBe(base);
+      expect(key(mail({ ...FULL, Subject: 'Hi \t \r\n \t there' }))).toBe(base);
+      expect(key(mail({ ...FULL, Date: 'Fri,  09 Oct 2026\t10:00:00   +0000' }))).toBe(base);
+      // A run collapsed.
+      const wide = key(mail({ ...FULL, Subject: 'a   b \t c' }));
+      expect(key(mail({ ...FULL, Subject: 'a b c' }))).toBe(wide);
+    });
+
+    it('still changes for a fold where there was no whitespace, whitespace removed between words, a changed byte or letter case', () => {
+      // An unfolded fold keeps its whitespace: "Hi th" + " ere" is "Hi th ere".
+      expect(key(mail({ ...FULL, Subject: 'Hi th\r\n ere' }))).not.toBe(base);
+      expect(key(mail({ ...FULL, 'Message-ID': '<m1@\r\n x.example>' }))).not.toBe(base);
+      expect(key(mail({ ...FULL, Subject: 'Hithere' }))).not.toBe(base);
+      expect(key(mail({ ...FULL, From: 'Ann<ann@x.example>' }))).not.toBe(base);
+      expect(key(mail({ ...FULL, Subject: 'Hi_there' }))).not.toBe(base);
+      expect(key(mail({ ...FULL, Subject: 'Hi There' }))).not.toBe(base);
       expect(key(mail({ ...FULL, To: 'Bob@gw.example' }))).not.toBe(base);
+      // A CR inside a value is a byte, not whitespace to collapse.
+      expect(key(mail({ ...FULL, Subject: 'Hi\rthere' }))).not.toBe(base);
+    });
+
+    it('gives the value that the signer\'s relaxed header canonicalisation gives, on ASCII values', () => {
+      // Each fold is followed by a visible character: a continuation line of only
+      // whitespace ends the header section for the reader, which is not what is compared here.
+      const alphabet = ['a', 'B', ':', '<', ' ', '\t', '  ', '\r\n a', '\r\n\tB', ' \r\n  <', '\t\r\n \t:'];
+      let seed = 7;
+      const next = (n: number): number => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed % n;
+      };
+      for (let round = 0; round < 3000; round++) {
+        let value = '';
+        for (let i = next(12); i > 0; i--) value += alphabet[next(alphabet.length)];
+        const line = `Subject:${value}`;
+        const oracle = canonicalizeHeaderRelaxed(line).slice('subject:'.length, -2);
+        const expected = sha256(
+          'frank-mail-key/1', Buffer.from([0]), u32(0), u32(0), u32(0),
+          u32(1), u32(oracle.length), oracle,
+          u32(0), u32(0), u32(0), u32(0), 'B\r\n',
+        );
+        expect({ value, key: key(`${line}\r\n\r\nB\r\n`) }).toEqual({ value, key: expected });
+      }
     });
 
     it('covers every occurrence of a repeated header, in order', () => {
@@ -267,10 +317,71 @@ describe('mailKey', () => {
       );
     });
 
-    it('keeps trailing spaces and whitespace-only lines: only empty lines are removed', () => {
-      expect(body('a \r\n')).not.toBe(body('a\r\n'));
-      expect(body('a\r\n \r\n')).not.toBe(body('a\r\n'));
-      expect(body('a\r\n\t\r\n\r\n')).toBe(body('a\r\n\t\r\n'));
+    it('ignores what relaxed body canonicalisation allows (RFC 6376 section 3.4.4)', () => {
+      const plain = body('one two\r\nthree\r\n');
+      // Trailing spaces and tabs added to lines, or stripped from them.
+      expect(body('one two \r\nthree\t \t\r\n')).toBe(plain);
+      expect(body('one two\t\nthree ')).toBe(plain);
+      // Runs inside a line collapsed or expanded, and a tab for a space.
+      expect(body('one   two\r\nthree\r\n')).toBe(plain);
+      expect(body('one\ttwo\r\nthree\r\n')).toBe(plain);
+      expect(body('one \t \ttwo\r\nthree\r\n')).toBe(plain);
+      // A trailing line of only whitespace is an empty line and is removed.
+      expect(body('one two\r\nthree\r\n \t\r\n\r\n  \r\n')).toBe(plain);
+      expect(body(' \r\n\t\r\n')).toBe(body(''));
+      // Whitespace before a lone CR is trailing whitespace of that line.
+      expect(body('one two \rthree \r')).toBe(plain);
+    });
+
+    it('still changes for a changed byte, whitespace removed between words, and whitespace at the start of a line', () => {
+      const plain = body('one two\r\nthree\r\n');
+      expect(body('one twp\r\nthree\r\n')).not.toBe(plain);
+      expect(body('onetwo\r\nthree\r\n')).not.toBe(plain);
+      expect(body('one two\r\n three\r\n')).not.toBe(plain);
+      expect(body('one two\r\n\r\nthree\r\n')).not.toBe(plain);
+      // A whitespace-only line inside the body is an empty line there, and is kept as one.
+      expect(body('one two\r\n \t\r\nthree\r\n')).toBe(body('one two\r\n\r\nthree\r\n'));
+      // Leading whitespace is a run like any other: it becomes one space.
+      expect(body('one two\r\n \t three\r\n')).toBe(body('one two\r\n three\r\n'));
+      expect(body('a b')).toBe(
+        sha256('frank-mail-key/1', Buffer.from([0]), u32(0), u32(0), u32(0), u32(1), u32(1), 's', u32(0), u32(0), u32(0), u32(0), 'a b\r\n'),
+      );
+      expect(body(' \ta \t b\t \r\n \r\n')).toBe(
+        sha256('frank-mail-key/1', Buffer.from([0]), u32(0), u32(0), u32(0), u32(1), u32(1), 's', u32(0), u32(0), u32(0), u32(0), ' a b\r\n'),
+      );
+    });
+
+    it('agrees with the signer\'s relaxed body canonicalisation on ASCII bodies, both ways', () => {
+      const preimage = (bodyBytes: string): string =>
+        sha256('frank-mail-key/1', Buffer.from([0]), u32(0), u32(0), u32(0), u32(1), u32(1), 's', u32(0), u32(0), u32(0), u32(0), bodyBytes);
+      const alphabet = ['a', 'b', '.', ' ', '\t', '  ', '\r', '\n', '\r\n', ' \r\n', '\r\r\n'];
+      let seed = 4242;
+      const next = (n: number): number => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed % n;
+      };
+      const generate = (): string => {
+        let b = '';
+        for (let i = next(9); i > 0; i--) b += alphabet[next(alphabet.length)];
+        return b;
+      };
+      let equalPairs = 0;
+      let unequalPairs = 0;
+      for (let round = 0; round < 6000; round++) {
+        const a = generate();
+        const b = generate();
+        // The oracle writes an empty body as nothing; the key writes it as one CRLF.
+        const canonA = canonicalizeBodyRelaxed(a);
+        const canonB = canonicalizeBodyRelaxed(b);
+        expect(canonA).not.toBe('\r\n');
+        expect({ a, key: body(a) }).toEqual({ a, key: preimage(canonA || '\r\n') });
+        expect({ a, b, same: body(a) === body(b) }).toEqual({ a, b, same: canonA === canonB });
+        if (canonA === canonB) equalPairs++;
+        else unequalPairs++;
+      }
+      // The generator must exercise both directions.
+      expect(equalPairs).toBeGreaterThan(100);
+      expect(unequalPairs).toBeGreaterThan(100);
     });
 
     it('reads a lone CR as a line ending, like CRLF and a lone LF', () => {
@@ -663,6 +774,12 @@ describe('emailItemKey', () => {
     expect(() => emailItemKey(bad({ textBody: undefined }))).toThrow(TypeError);
     expect(() => emailItemKey(bad({ htmlBody: null }))).toThrow(TypeError);
     expect(() => emailItemKey(bad({ references: '<r1@x.example>' }))).toThrow(TypeError);
+    expect(() => emailItemKey(bad({ references: null }))).toThrow(TypeError);
+    expect(() => emailItemKey(bad({ to: null }))).toThrow(TypeError);
+    expect(() => emailItemKey(bad({ cc: null }))).toThrow(TypeError);
+    expect(() => emailItemKey(bad({ to: 'ann@x.example' }))).toThrow(TypeError);
+    expect(() => emailItemKey(bad({ cc: [null] }))).toThrow(TypeError);
+    expect(() => emailItemKey(bad({ to: ['ann@x.example'] }))).toThrow(TypeError);
     expect(() => emailItemKey(bad({ to: [{ address: [1, 2] }] }))).toThrow(TypeError);
     expect(() => emailItemKey(bad({ messageId: Buffer.from('x') }))).toThrow(TypeError);
   });

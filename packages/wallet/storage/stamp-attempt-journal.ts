@@ -124,6 +124,137 @@ export interface CanonicalJournalAttempt {
   readonly acknowledged: boolean
 }
 
+/** Provider observations only: missing is not nonexecution; inclusion is not finality. */
+export type CanonicalPaymentObservation = {
+  readonly transactionHash: string
+} & (
+  | { readonly state: 'unknown' | 'missing' | 'pending' }
+  | {
+      readonly state: 'observed' | 'reverted'
+      readonly blockHash: string
+      readonly blockNumber: number
+      readonly transactionIndex: number
+    }
+)
+export interface CanonicalPaymentObservations {
+  readonly version: 1
+  readonly attemptRef: string
+  readonly walletBindingId: string
+  readonly chainIdentifier: string
+  readonly submissionIdentity: string
+  readonly capturedAt: number | null
+  readonly members: readonly CanonicalPaymentObservation[]
+}
+/** Opaque live-journal token. Creating a newer capture invalidates an older response. */
+export interface CanonicalObservationCapture {
+  readonly attempt: CanonicalJournalAttempt
+}
+
+function observationKey(sequence: number): string {
+  return `observations:${sequence.toString().padStart(16, '0')}`
+}
+function observationCapacity(members: number): number {
+  // Charged separately from the existing terminal-response reservation.
+  return 1024 + 512 * members
+}
+function initialObservations(
+  attempt: CanonicalJournalAttempt,
+): CanonicalPaymentObservations {
+  return {
+    version: 1,
+    attemptRef: attempt.attemptRef,
+    walletBindingId: attempt.prepared.walletBindingId,
+    chainIdentifier: attempt.prepared.network,
+    submissionIdentity: attempt.request.identity.submission_identity,
+    capturedAt: null,
+    members: attempt.request.parts.transactions.map(raw => ({
+      transactionHash: keccak256(raw),
+      state: 'unknown',
+    })),
+  }
+}
+function copyObservations(
+  value: CanonicalPaymentObservations,
+): CanonicalPaymentObservations {
+  return { ...value, members: value.members.map(member => ({ ...member })) }
+}
+function validateObservations(
+  value: unknown,
+  attempt: CanonicalJournalAttempt,
+): CanonicalPaymentObservations {
+  exactObject(value, [
+    'version',
+    'attemptRef',
+    'walletBindingId',
+    'chainIdentifier',
+    'submissionIdentity',
+    'capturedAt',
+    'members',
+  ])
+  const expected = initialObservations(attempt)
+  for (const key of [
+    'version',
+    'attemptRef',
+    'walletBindingId',
+    'chainIdentifier',
+    'submissionIdentity',
+  ] as const)
+    if (value[key] !== expected[key]) canonicalFail('conflict')
+  if (
+    value.capturedAt !== null &&
+    (!Number.isSafeInteger(value.capturedAt) ||
+      (value.capturedAt as number) < 0)
+  )
+    canonicalFail('invalid')
+  if (
+    !Array.isArray(value.members) ||
+    value.members.length !== expected.members.length
+  )
+    canonicalFail('invalid')
+  value.members.forEach((member: unknown, index: number) => {
+    if (typeof member !== 'object' || member === null) canonicalFail('invalid')
+    const included =
+      'state' in member &&
+      (member.state === 'observed' || member.state === 'reverted')
+    exactObject(
+      member,
+      included
+        ? [
+            'transactionHash',
+            'state',
+            'blockHash',
+            'blockNumber',
+            'transactionIndex',
+          ]
+        : ['transactionHash', 'state'],
+    )
+    if (member.transactionHash !== expected.members[index].transactionHash)
+      canonicalFail('conflict')
+    if (included) {
+      if (
+        typeof member.blockHash !== 'string' ||
+        !/^0x[0-9a-f]{64}$/.test(member.blockHash) ||
+        !Number.isSafeInteger(member.blockNumber) ||
+        (member.blockNumber as number) < 0 ||
+        !Number.isSafeInteger(member.transactionIndex) ||
+        (member.transactionIndex as number) < 0
+      )
+        canonicalFail('invalid')
+    } else if (
+      !['unknown', 'missing', 'pending'].includes(member.state as string)
+    )
+      canonicalFail('invalid')
+    if (value.capturedAt === null && member.state !== 'unknown')
+      canonicalFail('invalid')
+  })
+  if (
+    Buffer.byteLength(JSON.stringify(value)) >
+    observationCapacity(expected.members.length)
+  )
+    canonicalFail('capacity')
+  return copyObservations(value as unknown as CanonicalPaymentObservations)
+}
+
 /** Durable pre-sign owner. These public bytes confer neither custody nor admission. */
 export interface CanonicalUnsignedMember {
   readonly reservation: CanonicalAttemptReservation
@@ -753,6 +884,18 @@ export class LevelCanonicalStampAttemptJournal {
   private readonly rows = new Map<string, StoredCanonicalAttempt>()
   private readonly intents = new Map<string, StoredCanonicalIntent>()
   private readonly recoveries = new Map<string, StoredCanonicalRecovery>()
+  private readonly observations = new Map<
+    string,
+    CanonicalPaymentObservations
+  >()
+  private readonly observationTokens = new WeakMap<
+    CanonicalObservationCapture,
+    { generation: number; ref: string }
+  >()
+  private readonly latestObservation = new Map<
+    string,
+    CanonicalObservationCapture
+  >()
   private publicBinding: string | undefined
   private readonly eligibility = new WeakMap<
     CanonicalReplayEligibility,
@@ -793,6 +936,7 @@ export class LevelCanonicalStampAttemptJournal {
       const rows = new Map<string, StoredCanonicalAttempt>()
       const intents = new Map<string, StoredCanonicalIntent>()
       const recoveries = new Map<string, StoredCanonicalRecovery>()
+      const observations = new Map<string, unknown>()
       let publicBinding: string | undefined
       for await (const [key, encoded] of database.iterator({}) as any) {
         if (
@@ -810,6 +954,8 @@ export class LevelCanonicalStampAttemptJournal {
           )
             canonicalFail('corrupt')
           publicBinding = value.tuple
+        } else if (typeof key === 'string' && key.startsWith('observations:')) {
+          observations.set(key, value)
         } else if (typeof key === 'string' && key.startsWith('recovery:')) {
           const row = validateRecovery(value)
           if (
@@ -847,7 +993,12 @@ export class LevelCanonicalStampAttemptJournal {
         }
       }
       if (manifest === undefined) {
-        if (rows.size !== 0 || intents.size !== 0 || recoveries.size !== 0)
+        if (
+          rows.size !== 0 ||
+          intents.size !== 0 ||
+          recoveries.size !== 0 ||
+          observations.size !== 0
+        )
           canonicalFail('corrupt')
         manifest = { version: 1, nextSequence: 1, acknowledgedThrough: 0 }
         await durablePut(database, CANONICAL_MANIFEST, JSON.stringify(manifest))
@@ -914,6 +1065,20 @@ export class LevelCanonicalStampAttemptJournal {
       }
       for (const row of recoveries.values())
         this.assertRecoveryBinding(row, publicBinding)
+      const validatedObservations = new Map<
+        string,
+        CanonicalPaymentObservations
+      >()
+      for (const [key, value] of observations) {
+        const row = [...rows.values()].find(
+          row => observationKey(row.sequence) === key,
+        )
+        if (!row) canonicalFail('corrupt')
+        validatedObservations.set(
+          row.attemptRef,
+          validateObservations(value, this.publicRow(row)),
+        )
+      }
       const retainedBytes =
         [...rows.values()].reduce(
           (n, row) =>
@@ -923,13 +1088,21 @@ export class LevelCanonicalStampAttemptJournal {
           0,
         ) +
         [...intents.values()].reduce((n, row) => n + row.reservedBytes, 0) +
-        [...recoveries.values()].reduce((n, row) => n + row.reservedBytes, 0)
+        [...recoveries.values()].reduce((n, row) => n + row.reservedBytes, 0) +
+        [...validatedObservations.values()].reduce(
+          (n, row) => n + observationCapacity(row.members.length),
+          0,
+        )
       if (
         rows.size + intents.size + recoveries.size > this.maxRecords ||
         retainedBytes > this.maxBytes
       )
         canonicalFail('corrupt')
       this.recoveries.clear()
+      this.observations.clear()
+      for (const [ref, row] of validatedObservations)
+        this.observations.set(ref, row)
+      this.latestObservation.clear()
       for (const [id, row] of recoveries) this.recoveries.set(id, row)
       this.database = database
       this.manifest = manifest
@@ -967,6 +1140,8 @@ export class LevelCanonicalStampAttemptJournal {
       this.rows.clear()
       this.intents.clear()
       this.recoveries.clear()
+      this.observations.clear()
+      this.latestObservation.clear()
       this.publicBinding = undefined
       this.replaying.clear()
       this.epoch++
@@ -1417,7 +1592,8 @@ export class LevelCanonicalStampAttemptJournal {
           0,
         ) +
         this.intentBytes() +
-        this.recoveryBytes() -
+        this.recoveryBytes() +
+        this.observationBytes() -
         (prior ? prior.reservedBytes : 0) +
         row.reservedBytes
       if (
@@ -1460,6 +1636,102 @@ export class LevelCanonicalStampAttemptJournal {
       (n, row) => n + row.reservedBytes,
       0,
     )
+  }
+
+  private observationBytes(): number {
+    return [...this.observations.values()].reduce(
+      (sum, row) => sum + observationCapacity(row.members.length),
+      0,
+    )
+  }
+
+  getPaymentObservations(
+    attemptRef: string,
+  ): CanonicalPaymentObservations | undefined {
+    this.assertOpen()
+    const row = this.observations.get(attemptRef)
+    return row && copyObservations(row)
+  }
+
+  /** Reserve bounded evidence storage before querying. Existing funded records are never rewritten. */
+  beginObservation(attemptRef: string): Promise<CanonicalObservationCapture> {
+    return this.serialize(async () => {
+      const row = this.rows.get(attemptRef)
+      if (!row || row.cleanupComplete) canonicalFail('conflict')
+      const attempt = this.publicRow(row)
+      if (!this.observations.has(attemptRef)) {
+        const evidence = initialObservations(attempt)
+        const bytes = [...this.rows.values()].reduce(
+          (sum, item) =>
+            sum +
+            Buffer.byteLength(JSON.stringify(item)) +
+            (item.terminal === null ? 16384 : 0),
+          0,
+        )
+        if (
+          bytes +
+            this.intentBytes() +
+            this.recoveryBytes() +
+            this.observationBytes() +
+            observationCapacity(evidence.members.length) >
+          this.maxBytes
+        )
+          canonicalFail('capacity')
+        await this.persist(() =>
+          durablePut(
+            this.database!,
+            observationKey(row.sequence),
+            JSON.stringify(evidence),
+          ),
+        )
+        this.observations.set(attemptRef, evidence)
+      }
+      const token = { attempt }
+      this.observationTokens.set(token, {
+        generation: this.generation,
+        ref: attemptRef,
+      })
+      this.latestObservation.set(attemptRef, token)
+      return token
+    })
+  }
+
+  /** A stale capture cannot replace a newer response. This never changes financial or delivery authority. */
+  recordObservations(
+    token: CanonicalObservationCapture,
+    members: readonly CanonicalPaymentObservation[],
+  ): Promise<CanonicalPaymentObservations | undefined> {
+    const snapshot = members.map(member => ({ ...member }))
+    return this.serialize(async () => {
+      const capture = this.observationTokens.get(token)
+      if (!capture) canonicalFail('conflict')
+      const row = this.rows.get(capture.ref)
+      if (
+        capture.generation !== this.generation ||
+        this.latestObservation.get(capture.ref) !== token ||
+        !row ||
+        row.cleanupComplete
+      )
+        return undefined
+      const evidence = validateObservations(
+        {
+          ...initialObservations(this.publicRow(row)),
+          capturedAt: Date.now(),
+          members: snapshot,
+        },
+        this.publicRow(row),
+      )
+      await this.persist(() =>
+        durablePut(
+          this.database!,
+          observationKey(row.sequence),
+          JSON.stringify(evidence),
+        ),
+      )
+      this.observations.set(capture.ref, evidence)
+      this.latestObservation.delete(capture.ref)
+      return copyObservations(evidence)
+    })
   }
   getIntents(): CanonicalJournalIntent[] {
     this.assertOpen()
@@ -1506,7 +1778,8 @@ export class LevelCanonicalStampAttemptJournal {
     snapshot.reservedBytes = Math.ceil(
       Buffer.byteLength(JSON.stringify(snapshot)) +
         (CANONICAL_MAX_BODY * 4) / 3 +
-        131072,
+        131072 +
+        observationCapacity(snapshot.members.length),
     )
     this.validateIntent(snapshot)
     const prepared = this.publicIntent(snapshot).prepared
@@ -1561,6 +1834,7 @@ export class LevelCanonicalStampAttemptJournal {
         bytes +
           this.intentBytes() +
           this.recoveryBytes() +
+          this.observationBytes() +
           snapshot.reservedBytes >
           this.maxBytes ||
         this.manifest.nextSequence >= Number.MAX_SAFE_INTEGER
@@ -1672,7 +1946,13 @@ export class LevelCanonicalStampAttemptJournal {
         acknowledged: false,
       }
       this.validateRow(row)
-      if (Buffer.byteLength(JSON.stringify(row)) + 16384 > old.reservedBytes)
+      const evidence = initialObservations(this.publicRow(row))
+      if (
+        Buffer.byteLength(JSON.stringify(row)) +
+          16384 +
+          observationCapacity(evidence.members.length) >
+        old.reservedBytes
+      )
         canonicalFail('capacity')
       await this.persist(() =>
         durableBatch(this.database!, [
@@ -1682,12 +1962,18 @@ export class LevelCanonicalStampAttemptJournal {
             value: JSON.stringify(row),
           },
           {
+            type: 'put',
+            key: observationKey(row.sequence),
+            value: JSON.stringify(evidence),
+          },
+          {
             type: 'del',
             key: `intent:${old.sequence.toString().padStart(16, '0')}`,
           },
         ]),
       )
       this.intents.delete(attemptRef)
+      this.observations.set(attemptRef, evidence)
       this.rows.set(attemptRef, row)
       this.epoch++
       return this.publicRow(row)
@@ -1800,6 +2086,7 @@ export class LevelCanonicalStampAttemptJournal {
         cleanupComplete: false,
         acknowledged: false,
       }
+      const evidence = initialObservations(this.publicRow(row))
       // Reserve the bounded terminal response now, so a full journal can still record outcomes.
       const retainedBytes = (item: StoredCanonicalAttempt) =>
         Buffer.byteLength(JSON.stringify(item)) +
@@ -1813,7 +2100,12 @@ export class LevelCanonicalStampAttemptJournal {
       if (
         this.rows.size + this.intents.size + this.recoveries.size >=
           this.maxRecords ||
-        bytes + this.intentBytes() + this.recoveryBytes() > this.maxBytes
+        bytes +
+          this.intentBytes() +
+          this.recoveryBytes() +
+          this.observationBytes() +
+          observationCapacity(evidence.members.length) >
+          this.maxBytes
       )
         canonicalFail('capacity')
       const manifest = { ...this.manifest, nextSequence: sequence + 1 }
@@ -1826,12 +2118,18 @@ export class LevelCanonicalStampAttemptJournal {
           },
           {
             type: 'put',
+            key: observationKey(sequence),
+            value: JSON.stringify(evidence),
+          },
+          {
+            type: 'put',
             key: CANONICAL_MANIFEST,
             value: JSON.stringify(manifest),
           },
         ]),
       )
       this.rows.set(row.attemptRef, row)
+      this.observations.set(row.attemptRef, evidence)
       this.manifest = manifest
       this.epoch++
       return this.publicRow(row)
@@ -2023,10 +2321,10 @@ export class LevelCanonicalStampAttemptJournal {
             key: attemptKey(row.sequence),
             value: JSON.stringify(row),
           },
-          ...removed.map(item => ({
-            type: 'del' as const,
-            key: attemptKey(item.sequence),
-          })),
+          ...removed.flatMap(item => [
+            { type: 'del' as const, key: attemptKey(item.sequence) },
+            { type: 'del' as const, key: observationKey(item.sequence) },
+          ]),
           {
             type: 'put',
             key: CANONICAL_MANIFEST,
@@ -2035,7 +2333,11 @@ export class LevelCanonicalStampAttemptJournal {
         ]),
       )
       this.rows.set(attemptRef, row)
-      for (const item of removed) this.rows.delete(item.attemptRef)
+      for (const item of removed) {
+        this.rows.delete(item.attemptRef)
+        this.observations.delete(item.attemptRef)
+        this.latestObservation.delete(item.attemptRef)
+      }
       this.manifest = manifest
       this.epoch++
     })

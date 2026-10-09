@@ -73,7 +73,7 @@ it('C0 retains the other exact obligation when one owner is deleted and disk is 
 
 import level, { type LevelDB } from 'level'
 import { durablePut } from './level-durability'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -1444,4 +1444,256 @@ describe('retained canonical recovery durability', () => {
       await rm(location, { recursive: true, force: true })
     }
   }, 60000)
+})
+
+describe('canonical payment observations', () => {
+  const included = (transactionHash: string) => ({
+    transactionHash,
+    state: 'observed' as const,
+    blockHash: `0x${'12'.repeat(32)}`,
+    blockNumber: 42,
+    transactionIndex: 0,
+  })
+
+  it('persists bounded latest evidence across restart without changing the exact operation or cleanup authority', async () => {
+    await withCanonicalJournal(
+      async journal => {
+        const attempt = await journal.prepare(await canonicalFixture())
+        await journal.Close()
+        await journal.Open()
+        // Uses only the pre-existing preparation/reopen API and actual Level bytes.
+        // The predecessor accepted the signed attempt without retaining this evidence capacity.
+        const durable = JSON.parse(
+          await database(journal).get('observations:0000000000000001'),
+        )
+        expect(durable).toMatchObject({
+          version: 1,
+          attemptRef: attempt.attemptRef,
+          walletBindingId: attempt.prepared.walletBindingId,
+          chainIdentifier: attempt.prepared.network,
+          submissionIdentity: attempt.request.identity.submission_identity,
+          capturedAt: null,
+          members: [{ state: 'unknown' }],
+        })
+        const initial = journal.getPaymentObservations(attempt.attemptRef)!
+        expect(initial.members[0].state).toBe('unknown')
+        expect(initial.capturedAt).toBeNull()
+        const hash = initial.members[0].transactionHash
+        for (const member of [
+          included(hash),
+          { transactionHash: hash, state: 'missing' as const },
+          included(hash),
+        ]) {
+          await journal.recordObservations(
+            await journal.beginObservation(attempt.attemptRef),
+            [member],
+          )
+        }
+        const evidence = journal.getPaymentObservations(attempt.attemptRef)!
+        expect(evidence.members).toEqual([included(hash)])
+        expect(evidence.capturedAt).not.toBeNull()
+        expect(journal.getAll()).toEqual([attempt])
+        await expect(
+          journal.acknowledge(attempt.attemptRef, attempt.consumerId),
+        ).rejects.toThrow('cleanup')
+        await journal.Close()
+        await journal.Open()
+        expect(journal.getAll()).toEqual([attempt])
+        expect(journal.getPaymentObservations(attempt.attemptRef)).toEqual(
+          evidence,
+        )
+        const keys: string[] = []
+        for await (const [key] of database(journal).iterator(
+          {},
+        ) as AsyncIterable<[string, string]>)
+          keys.push(key)
+        expect(
+          keys.filter(key => key.startsWith('observations:')),
+        ).toHaveLength(1)
+        // The existing explicit cleanup path still removes the sidecar atomically at its frontier.
+        await journal.recordTerminal(
+          attempt.attemptRef,
+          delivered(attempt.request),
+        )
+        await journal.completeCleanup(attempt.attemptRef)
+        await journal.acknowledge(attempt.attemptRef, attempt.consumerId)
+        await journal.Close()
+        await journal.Open()
+        expect(journal.getAll()).toEqual([])
+        expect(
+          journal.getPaymentObservations(attempt.attemptRef),
+        ).toBeUndefined()
+      },
+      { maxRecords: 1 },
+    )
+  })
+
+  it('rejects stale, forged and cross-member captures, including a prior journal lifetime', async () => {
+    await withCanonicalJournal(async journal => {
+      const attempt = await journal.prepare(await canonicalFixture())
+      const first = await journal.beginObservation(attempt.attemptRef)
+      const second = await journal.beginObservation(attempt.attemptRef)
+      const hash = journal.getPaymentObservations(attempt.attemptRef)!
+        .members[0].transactionHash
+      await expect(
+        journal.recordObservations(second, [included(`0x${'ff'.repeat(32)}`)]),
+      ).rejects.toThrow('conflict')
+      await expect(
+        journal.recordObservations({ attempt }, [included(hash)]),
+      ).rejects.toThrow('conflict')
+      await journal.recordObservations(second, [included(hash)])
+      await expect(
+        journal.recordObservations(first, [
+          { transactionHash: hash, state: 'missing' },
+        ]),
+      ).resolves.toBeUndefined()
+      const evidence = journal.getPaymentObservations(attempt.attemptRef)
+      const priorLifetime = await journal.beginObservation(attempt.attemptRef)
+      await journal.Close()
+      await journal.Open()
+      await expect(
+        journal.recordObservations(priorLifetime, [
+          { transactionHash: hash, state: 'missing' },
+        ]),
+      ).resolves.toBeUndefined()
+      expect(journal.getPaymentObservations(attempt.attemptRef)).toEqual(
+        evidence,
+      )
+    })
+  })
+
+  it.each([false, true])(
+    'preserves funded bytes when an observation write fails (committed: %s)',
+    async committed => {
+      await withCanonicalJournal(async journal => {
+        const attempt = await journal.prepare(await canonicalFixture())
+        const capture = await journal.beginObservation(attempt.attemptRef)
+        const member = included(
+          journal.getPaymentObservations(attempt.attemptRef)!.members[0]
+            .transactionHash,
+        )
+        const db = database(journal),
+          original = db.put.bind(db)
+        const write = jest.spyOn(db, 'put').mockImplementation((async (
+          ...args: unknown[]
+        ) => {
+          if (committed)
+            await (original as (...args: unknown[]) => Promise<unknown>)(
+              ...args,
+            )
+          throw new Error('observation completion uncertain')
+        }) as never)
+        await expect(
+          journal.recordObservations(capture, [member]),
+        ).rejects.toThrow('observation completion uncertain')
+        write.mockRestore()
+        expect(() => journal.getAll()).toThrow('corrupt')
+        await journal.Close()
+        await journal.Open()
+        expect(
+          journal.getPaymentObservations(attempt.attemptRef)!.members,
+        ).toEqual([
+          committed
+            ? member
+            : { transactionHash: member.transactionHash, state: 'unknown' },
+        ])
+        expect(journal.getAll()).toEqual([attempt])
+      })
+    },
+  )
+
+  it('opens an existing funded record without evidence and refuses new evidence if its byte reservation cannot fit', async () => {
+    await withCanonicalJournal(async (journal, location) => {
+      const attempt = await journal.prepare(await canonicalFixture())
+      const key = 'observations:0000000000000001'
+      const encoded = await database(journal).get('attempt:0000000000000001')
+      const attemptCharge = Buffer.byteLength(encoded) + 16384
+      await mkdir(join(location, 'fresh'))
+      const fresh = new LevelCanonicalStampAttemptJournal(
+        join(location, 'fresh'),
+        {
+          maxBytes: attemptCharge + 1535,
+        },
+      )
+      await fresh.Open()
+      try {
+        // New attempts must reserve evidence before their signed bytes can be exposed.
+        await expect(fresh.prepare(await canonicalFixture())).rejects.toThrow(
+          'capacity',
+        )
+        expect(fresh.getAll()).toEqual([])
+      } finally {
+        await fresh.Close()
+      }
+      // A funded v1 row from before observations remains an authoritative request.
+      await database(journal).del(key)
+      await journal.Close()
+      const limited = new LevelCanonicalStampAttemptJournal(location, {
+        maxBytes: attemptCharge + 1535,
+      })
+      await limited.Open()
+      try {
+        expect(limited.getAll()).toEqual([attempt])
+        expect(
+          limited.getPaymentObservations(attempt.attemptRef),
+        ).toBeUndefined()
+        await expect(
+          limited.beginObservation(attempt.attemptRef),
+        ).rejects.toThrow('capacity')
+        expect(limited.getAll()).toEqual([attempt])
+      } finally {
+        await limited.Close()
+      }
+      const exact = new LevelCanonicalStampAttemptJournal(location, {
+        maxBytes: attemptCharge + 1536,
+      })
+      await exact.Open()
+      try {
+        const capture = await exact.beginObservation(attempt.attemptRef)
+        const hash = exact.getPaymentObservations(attempt.attemptRef)!
+          .members[0].transactionHash
+        await exact.recordObservations(capture, [included(hash)])
+        await exact.Close()
+        await exact.Open()
+        expect(
+          exact.getPaymentObservations(attempt.attemptRef)!.members,
+        ).toEqual([included(hash)])
+      } finally {
+        await exact.Close()
+      }
+      await journal.Open()
+    })
+  })
+
+  it.each([
+    'walletBindingId',
+    'chainIdentifier',
+    'submissionIdentity',
+    'attemptRef',
+    'members',
+  ] as const)(
+    'fails closed on an observation sidecar with a mismatched %s',
+    async field => {
+      await withCanonicalJournal(async (journal, location) => {
+        const attempt = await journal.prepare(await canonicalFixture())
+        const evidence = journal.getPaymentObservations(attempt.attemptRef)!
+        await database(journal).put(
+          'observations:0000000000000001',
+          JSON.stringify({
+            ...evidence,
+            [field]: field === 'members' ? [] : 'wrong',
+          }),
+        )
+        await journal.Close()
+        const reopened = new LevelCanonicalStampAttemptJournal(location)
+        await expect(reopened.Open()).rejects.toThrow('corrupt')
+        // Repair only this synthetic test record so the harness can close its own owner.
+        const db = level(join(location, 'canonical-stamp-attempts-v1'))
+        await db.put('observations:0000000000000001', JSON.stringify(evidence))
+        await db.close()
+        await journal.Open()
+        expect(journal.getAll()).toEqual([attempt])
+      })
+    },
+  )
 })

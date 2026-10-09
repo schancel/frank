@@ -494,6 +494,45 @@ describe('a paid message the relay has ended (#1323)', () => {
     expect(relayBodies).toHaveLength(3)
   })
 
+  // The new steady state: every message delivered after an ended one stays in the journal behind
+  // it until the ended attempt is resolved, and its link is correlated on every settle. That is
+  // local work only: no finished record is ever handed to the relay again. The local work is not
+  // small: each settle looks every held record up by scanning the journal, so a send gets slower
+  // with every message delivered behind the ended attempt (this test's own timeout reflects it).
+  it('after one ended attempt and 25 delivered messages, a send makes one relay request, for its own payment set only', async () => {
+    const a = await messageA({ kind: 'ended', reason: 'expired' })
+    const elapsed: number[] = []
+    for (let n = 1; n <= 25; n++) {
+      const before = relayBodies.length
+      const started = Date.now()
+      const sent = await send(`message ${n}`)
+      elapsed.push(Date.now() - started)
+      expect(sent.error).toBeUndefined()
+      // Exactly one request, and it carries this message's own payment set.
+      expect(relayBodies).toHaveLength(before + 1)
+      expect(
+        relayBodies.filter(
+          r => identityOf(r) === identityOf(relayBodies[before]),
+        ),
+      ).toHaveLength(1)
+    }
+    expect(bobInbox).toHaveLength(25)
+    expect(journal().getAll()).toHaveLength(26)
+    expectAKept(a)
+
+    // Reconciling and one more send, with 25 finished records held: still nothing for them.
+    const before = relayBodies.length
+    expect(await reconcile(a.digest)).toBe('dead')
+    expect(relayBodies).toHaveLength(before)
+    await expectLaterMessageDelivered(a, 'message 26')
+    expect(relayBodies).toHaveLength(before + 1)
+    expect(new Set(relayBodies.map(identityOf)).size).toBe(relayBodies.length)
+    expectAKept(a)
+    // Measured when written: 1.1 s for the first send, rising steadily to 29.8 s for the 25th
+    // (without an ended attempt the same sends take 0.8 s rising to about 4 s).
+    expect(elapsed).toHaveLength(25)
+  }, 900_000)
+
   // ---- pins: what the fix must not loosen ------------------------------------------------------
 
   // PIN: with no terminal answer (the relay retained the set and has not decided), A still blocks.

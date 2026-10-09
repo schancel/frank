@@ -1,0 +1,561 @@
+{
+  "repository": "schancel/frank",
+  "base_revision": "f2231d2ff3d244ea5641e5444722271023c2fa2f",
+  "policy_overlay_sha256": "4a8ac562d291454726b8606db9312616dc9c50e3d33d1a64c00302334f1a69b1",
+  "publication_status": "DRAFT_NOT_PUBLISHED",
+  "labels": [],
+  "assignees": [],
+  "new_issues": [
+    {
+      "key": "baseline",
+      "title": "[epic] Restore reliable wallet messaging and establish maintainable subsystem boundaries",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/baseline.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        68,
+        681,
+        1218,
+        1217,
+        784,
+        785
+      ],
+      "depends_on": [
+        "chrome-baseline",
+        "payment-recovery",
+        "input-reservations",
+        "disjoint-sends",
+        "session-generation",
+        "conversation-identity",
+        "chain-config",
+        "evm-boundaries",
+        "messaging-boundaries",
+        "codec-composition",
+        "blackjack-slice",
+        "transport-backedges",
+        "maintenance-reachability",
+        "payment-reporting",
+        "queue-readiness"
+      ],
+      "mutexes": [],
+      "scores": {
+        "value": 5,
+        "cost": 5,
+        "certainty": 3,
+        "unblocking": 5
+      }
+    },
+    {
+      "key": "chrome-baseline",
+      "title": "[investigation] Reproduce wallet failures and capture an isolated Chrome performance baseline",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/chrome-baseline.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        1214,
+        1215,
+        1216
+      ],
+      "depends_on": [],
+      "mutexes": [
+        "browser-profile-and-demo-fixture",
+        "quiet-performance-measurement"
+      ],
+      "scores": {
+        "value": 5,
+        "cost": 2,
+        "certainty": 4,
+        "unblocking": 5
+      }
+    },
+    {
+      "key": "payment-recovery",
+      "title": "[bug] Preserve payment and message recovery across retry exhaustion and discard",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/payment-recovery.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        68
+      ],
+      "depends_on": [],
+      "mutexes": [
+        "canonical-attempt-lifecycle",
+        "canonical-stamp-client"
+      ],
+      "scores": {
+        "value": 5,
+        "cost": 4,
+        "certainty": 4,
+        "unblocking": 5
+      }
+    },
+    {
+      "key": "input-reservations",
+      "title": "[bug] Enforce exclusive input ownership and private provisional state in construction views",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/input-reservations.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        1218,
+        1184
+      ],
+      "depends_on": [],
+      "mutexes": [
+        "chain-inventory-reservations",
+        "inventory-durable-state"
+      ],
+      "scores": {
+        "value": 5,
+        "cost": 4,
+        "certainty": 4,
+        "unblocking": 5
+      }
+    },
+    {
+      "key": "disjoint-sends",
+      "title": "[bug] Let disjoint payments progress while another canonical send is pending",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/disjoint-sends.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [],
+      "depends_on": [
+        "payment-recovery"
+      ],
+      "mutexes": [
+        "canonical-attempt-lifecycle",
+        "canonical-stamp-client",
+        "chain-composition"
+      ],
+      "scores": {
+        "value": 5,
+        "cost": 4,
+        "certainty": 4,
+        "unblocking": 4
+      }
+    },
+    {
+      "key": "session-generation",
+      "title": "[bug] Prevent old account derivations from publishing into a replacement session",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/session-generation.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [],
+      "depends_on": [],
+      "mutexes": [
+        "account-session-generation"
+      ],
+      "scores": {
+        "value": 5,
+        "cost": 2,
+        "certainty": 4,
+        "unblocking": 3
+      }
+    },
+    {
+      "key": "conversation-identity",
+      "title": "[bug] Preserve conversation identity through activation and hydration",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/conversation-identity.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        1178,
+        818,
+        407,
+        68,
+        821
+      ],
+      "depends_on": [],
+      "mutexes": [
+        "chat-store-and-outbox-ui"
+      ],
+      "scores": {
+        "value": 5,
+        "cost": 4,
+        "certainty": 4,
+        "unblocking": 3
+      }
+    },
+    {
+      "key": "chain-config",
+      "title": "[refactor] Derive shared chain identity from the protocol registry",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/chain-config.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        1118,
+        681
+      ],
+      "depends_on": [],
+      "mutexes": [
+        "chain-registry-schema"
+      ],
+      "scores": {
+        "value": 4,
+        "cost": 3,
+        "certainty": 4,
+        "unblocking": 3
+      }
+    },
+    {
+      "key": "evm-boundaries",
+      "title": "[refactor] Make EVM contracts generic and move network choices to configuration and adapters",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/evm-boundaries.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        681
+      ],
+      "depends_on": [
+        "chain-config",
+        "disjoint-sends"
+      ],
+      "mutexes": [
+        "chain-composition",
+        "canonical-stamp-client",
+        "chain-inventory-reservations",
+        "chain-registry-schema"
+      ],
+      "scores": {
+        "value": 4,
+        "cost": 4,
+        "certainty": 3,
+        "unblocking": 3
+      }
+    },
+    {
+      "key": "messaging-boundaries",
+      "title": "[refactor] Separate stable-session delivery execution from UI and chain composition",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/messaging-boundaries.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [],
+      "depends_on": [
+        "disjoint-sends",
+        "conversation-identity",
+        "session-generation",
+        "evm-boundaries"
+      ],
+      "mutexes": [
+        "chat-store-and-outbox-ui",
+        "canonical-attempt-lifecycle",
+        "chain-composition"
+      ],
+      "scores": {
+        "value": 4,
+        "cost": 4,
+        "certainty": 3,
+        "unblocking": 4
+      }
+    },
+    {
+      "key": "codec-composition",
+      "title": "[refactor] Compose feature schemas while preserving core codec validation boundaries",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/codec-composition.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        950,
+        64
+      ],
+      "depends_on": [],
+      "mutexes": [
+        "codec-schema-and-validation"
+      ],
+      "scores": {
+        "value": 3,
+        "cost": 4,
+        "certainty": 3,
+        "unblocking": 3
+      }
+    },
+    {
+      "key": "blackjack-slice",
+      "title": "[refactor] Move blackjack into a feature-owned codec runtime and UI slice",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/blackjack-slice.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        950,
+        780
+      ],
+      "depends_on": [
+        "codec-composition",
+        "messaging-boundaries"
+      ],
+      "mutexes": [
+        "codec-schema-and-validation",
+        "chat-store-and-outbox-ui",
+        "canonical-attempt-lifecycle",
+        "bot-composition"
+      ],
+      "scores": {
+        "value": 3,
+        "cost": 4,
+        "certainty": 3,
+        "unblocking": 2
+      }
+    },
+    {
+      "key": "transport-backedges",
+      "title": "[refactor] Remove cashweb imports of wallet transport implementation types",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/transport-backedges.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [],
+      "depends_on": [
+        "payment-recovery"
+      ],
+      "mutexes": [
+        "canonical-stamp-client",
+        "cashweb-mailbox-feed"
+      ],
+      "scores": {
+        "value": 3,
+        "cost": 2,
+        "certainty": 3,
+        "unblocking": 2
+      }
+    },
+    {
+      "key": "maintenance-reachability",
+      "title": "[investigation] Establish the active maintenance worker and reservation eligibility policy",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/maintenance-reachability.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        925,
+        1180,
+        1217
+      ],
+      "depends_on": [],
+      "mutexes": [
+        "maintenance-selection"
+      ],
+      "scores": {
+        "value": 4,
+        "cost": 2,
+        "certainty": 3,
+        "unblocking": 3
+      }
+    },
+    {
+      "key": "payment-reporting",
+      "title": "[bug] Distinguish intended value from verified partial payment on received messages",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/payment-reporting.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [
+        71,
+        681
+      ],
+      "depends_on": [
+        "payment-recovery"
+      ],
+      "mutexes": [
+        "canonical-attempt-lifecycle",
+        "chat-store-and-outbox-ui",
+        "payment-receipt-accounting"
+      ],
+      "scores": {
+        "value": 5,
+        "cost": 3,
+        "certainty": 3,
+        "unblocking": 3
+      }
+    },
+    {
+      "key": "queue-readiness",
+      "title": "[bug] Keep explicitly unaccepted proposals out of the worker ready queue",
+      "body_file": "docs/plans/wallet-messaging-baseline/tickets/queue-readiness.md",
+      "body_excludes_first_heading": true,
+      "labels": [],
+      "assignees": [],
+      "related": [],
+      "depends_on": [],
+      "mutexes": [
+        "queue-readiness-reporting"
+      ],
+      "scores": {
+        "value": 4,
+        "cost": 2,
+        "certainty": 5,
+        "unblocking": 4
+      }
+    }
+  ],
+  "existing_issue_comments": [
+    {
+      "issue_number": 1218,
+      "body_file": "docs/plans/wallet-messaging-baseline/existing-issue-comments/1218.md"
+    },
+    {
+      "issue_number": 1217,
+      "body_file": "docs/plans/wallet-messaging-baseline/existing-issue-comments/1217.md"
+    },
+    {
+      "issue_number": 1214,
+      "body_file": "docs/plans/wallet-messaging-baseline/existing-issue-comments/1214.md"
+    },
+    {
+      "issue_number": 1215,
+      "body_file": "docs/plans/wallet-messaging-baseline/existing-issue-comments/1215.md"
+    },
+    {
+      "issue_number": 1216,
+      "body_file": "docs/plans/wallet-messaging-baseline/existing-issue-comments/1216.md"
+    },
+    {
+      "issue_number": 784,
+      "body_file": "docs/plans/wallet-messaging-baseline/existing-issue-comments/784.md"
+    },
+    {
+      "issue_number": 785,
+      "body_file": "docs/plans/wallet-messaging-baseline/existing-issue-comments/785.md"
+    },
+    {
+      "issue_number": 821,
+      "body_file": "docs/plans/wallet-messaging-baseline/existing-issue-comments/821.md"
+    }
+  ],
+  "native_blocked_by_edges": [
+    {
+      "blocked": "baseline",
+      "blocking": "chrome-baseline"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "payment-recovery"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "input-reservations"
+    },
+    {
+      "blocked": "disjoint-sends",
+      "blocking": "payment-recovery"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "disjoint-sends"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "session-generation"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "conversation-identity"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "chain-config"
+    },
+    {
+      "blocked": "evm-boundaries",
+      "blocking": "chain-config"
+    },
+    {
+      "blocked": "evm-boundaries",
+      "blocking": "disjoint-sends"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "evm-boundaries"
+    },
+    {
+      "blocked": "messaging-boundaries",
+      "blocking": "disjoint-sends"
+    },
+    {
+      "blocked": "messaging-boundaries",
+      "blocking": "conversation-identity"
+    },
+    {
+      "blocked": "messaging-boundaries",
+      "blocking": "session-generation"
+    },
+    {
+      "blocked": "messaging-boundaries",
+      "blocking": "evm-boundaries"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "messaging-boundaries"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "codec-composition"
+    },
+    {
+      "blocked": "blackjack-slice",
+      "blocking": "codec-composition"
+    },
+    {
+      "blocked": "blackjack-slice",
+      "blocking": "messaging-boundaries"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "blackjack-slice"
+    },
+    {
+      "blocked": "transport-backedges",
+      "blocking": "payment-recovery"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "transport-backedges"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "maintenance-reachability"
+    },
+    {
+      "blocked": "payment-reporting",
+      "blocking": "payment-recovery"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "payment-reporting"
+    },
+    {
+      "blocked": "issue:1214",
+      "blocking": "chrome-baseline"
+    },
+    {
+      "blocked": "issue:1215",
+      "blocking": "chrome-baseline"
+    },
+    {
+      "blocked": "issue:1216",
+      "blocking": "chrome-baseline"
+    },
+    {
+      "blocked": "issue:1218",
+      "blocking": "input-reservations"
+    },
+    {
+      "blocked": "issue:821",
+      "blocking": "conversation-identity"
+    },
+    {
+      "blocked": "baseline",
+      "blocking": "queue-readiness"
+    }
+  ]
+}

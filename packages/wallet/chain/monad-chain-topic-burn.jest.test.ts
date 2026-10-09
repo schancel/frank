@@ -9,20 +9,18 @@
  * and pin the money-safety properties of the fix: one funding transaction per burn account, no
  * spend when the RPC is down, and no second funding when a failed attempt left a usable account.
  */
-import { JsonRpcProvider, Network, Transaction, Wallet, getBytes } from 'ethers'
-import axios from 'axios'
 import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  mkdirSync,
-  mkdtempSync,
-  openSync,
-  readFileSync,
-  rmSync,
-  unlinkSync,
-  writeFileSync,
-} from 'fs'
+  JsonRpcProvider,
+  Network,
+  Transaction,
+  Wallet,
+  getBytes,
+  type Block,
+  type TransactionResponse,
+  type TransactionReceipt,
+} from 'ethers'
+import axios from 'axios'
+import { mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
@@ -35,14 +33,12 @@ import {
 } from '@frank/codec'
 
 import { MonadIdentity } from '../monad-identity'
-import * as identityModule from '../monad-identity'
 import { MonadHdKeyring } from '../monad-hd-keyring'
 import { MonadSubAccountPool } from '../monad-account-pool'
 import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadTxSubmitter } from '../monad-account-tx'
 import { TopicPostOutcomeUnknownError } from './active-chain'
 import {
-  CanonicalMessagingPendingError,
   MonadChainConfig,
   MonadChainWalletHandle,
   TopicBurnPreparationError,
@@ -51,12 +47,11 @@ import {
 import { DirectMessagePreparationProgress } from './active-chain'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
 import type { MonadWalletPersistenceBundle } from '../storage/monad-wallet-bundle'
+import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import {
   InMemoryNativeTransactionAttemptStore,
-  NativeTransactionAttemptStore,
   NativeTransactionSubmissionError,
   nativeTransactionAttemptKey,
-  runNativeTransactionExclusive,
 } from './chain-wallet'
 
 jest.mock('axios')
@@ -612,8 +607,9 @@ describe('RPC failing between funding and signing (#273 review F1)', () => {
   )
 })
 
-describe('main-account native attempt admission (#724)', () => {
+describe('durable EVM native operation ownership (#1230 P1)', () => {
   const recipient = { raw: '0x' + '42'.repeat(20) }
+  const blockHash = '0x' + 'ab'.repeat(32)
   const opened: MonadChainWalletHandle[] = []
   const directories: string[] = []
 
@@ -630,434 +626,360 @@ describe('main-account native attempt admission (#724)', () => {
     jest.restoreAllMocks()
   })
 
-  // A host-supplied attempt store, reopened from disk independently of wallet and pool objects.
-  // This fixture has the same single-realm coordination boundary as the production interface.
-  function diskStore(directory: string): NativeTransactionAttemptStore {
-    const file = (key: string) => join(directory, encodeURIComponent(key))
-    return {
-      coordinationScope: 'single-realm',
-      get: key =>
-        existsSync(file(key))
-          ? JSON.parse(readFileSync(file(key), 'utf8'))
-          : undefined,
-      put: (key, transaction) => {
-        const descriptor = openSync(file(key), 'w')
-        try {
-          writeFileSync(descriptor, JSON.stringify(transaction))
-          fsyncSync(descriptor)
-        } finally {
-          closeSync(descriptor)
-        }
-      },
-      delete: key => unlinkSync(file(key)),
-    }
+  function persistentLocation() {
+    const directory = mkdtempSync(join(tmpdir(), 'frank-native-topic-cutover-'))
+    directories.push(directory)
+    const location = join(directory, 'wallet')
+    const identity = MonadIdentity.fromSeed({ mnemonic: TEST_MNEMONIC })
+    mkdirSync(`${location}-${identity.address.raw.toLowerCase()}`)
+    return location
   }
 
-  async function open(
-    nativeAttemptStore: NativeTransactionAttemptStore = new InMemoryNativeTransactionAttemptStore(),
-    walletStorageLocation: string | false = false,
-  ) {
-    const config = { ...CONFIG, nativeAttemptStore, walletStorageLocation }
-    const chain = createMonadChain(config)
-    const wallet = (await chain.createWallet({
-      mnemonic: TEST_MNEMONIC,
-    })) as MonadChainWalletHandle
-    opened.push(wallet)
-    const fake = makeFakeChain(10n ** 18n, wallet)
-    const key = nativeTransactionAttemptKey({
-      family: 'evm',
-      chainIdentifier: config.rpcChain ?? 'monad-testnet',
-      address: fake.mainAddress.toLowerCase(),
+  async function open(walletStorageLocation: string | false = false) {
+    const oldStore = new InMemoryNativeTransactionAttemptStore()
+    const chain = createMonadChain({
+      ...CONFIG,
+      walletStorageLocation,
+      nativeAttemptStore: oldStore,
     })
-    const broadcast = wallet.httpClient.submitRawTransaction.bind(
-      wallet.httpClient,
-    )
+    // Observe the real journal's public open boundary; the wallet deliberately keeps its
+    // persistence bundle private. Opening delegates to the real implementation; no durable behavior is stubbed.
+    let journal!: EvmNativeOperationJournal
+    const realOpen = EvmNativeOperationJournal.prototype.Open
+    const capture = jest
+      .spyOn(EvmNativeOperationJournal.prototype, 'Open')
+      .mockImplementationOnce(async function (this: EvmNativeOperationJournal) {
+        journal = this
+        await realOpen.call(this)
+      })
+    let wallet: MonadChainWalletHandle
+    try {
+      wallet = (await chain.createWallet({
+        mnemonic: TEST_MNEMONIC,
+      })) as MonadChainWalletHandle
+    } finally {
+      capture.mockRestore()
+    }
+    opened.push(wallet)
+    const address = (await wallet.getReceiveAddress()).raw.toLowerCase()
     const rawAttempts: string[] = []
     let unknown = true
-    wallet.httpClient.submitRawTransaction = async raw => {
-      rawAttempts.push(raw)
-      if (
-        Transaction.from(raw).to?.toLowerCase() === recipient.raw &&
-        unknown
-      ) {
-        throw new Error('Submission acknowledgment lost (test)')
-      }
-      return broadcast(raw)
-    }
+    let nonce = 0
+    let included: Transaction | undefined
+    const provider = wallet.provider
+    jest
+      .spyOn(provider, 'getBlock')
+      .mockResolvedValue({ number: 1, hash: blockHash } as Block)
+    jest
+      .spyOn(provider, 'getBalance')
+      .mockImplementation(async a =>
+        String(a).toLowerCase() === address ? 10n ** 18n : 0n,
+      )
+    jest
+      .spyOn(provider, 'getTransactionCount')
+      .mockImplementation(async () => nonce)
+    jest.spyOn(provider, 'getFeeData').mockResolvedValue({
+      gasPrice: GAS_PRICE,
+      maxFeePerGas: GAS_PRICE,
+      maxPriorityFeePerGas: 1n,
+    } as never)
+    jest.spyOn(provider, 'estimateGas').mockResolvedValue(GAS_LIMIT)
+    jest.spyOn(provider, 'getTransaction').mockImplementation(async hash =>
+      included?.hash === hash
+        ? (Object.assign(Transaction.from(included.serialized), {
+            blockHash,
+            blockNumber: 1,
+            index: 0,
+          }) as unknown as TransactionResponse)
+        : null,
+    )
+    jest
+      .spyOn(provider, 'getTransactionReceipt')
+      .mockImplementation(async hash =>
+        included?.hash === hash
+          ? ({
+              hash,
+              from: included.from,
+              to: included.to,
+              blockHash,
+              blockNumber: 1,
+              index: 0,
+              status: 1,
+              gasPrice: GAS_PRICE,
+              gasUsed: GAS_LIMIT,
+            } as TransactionReceipt)
+          : null,
+      )
+    jest
+      .spyOn(provider, 'broadcastTransaction')
+      .mockImplementation(async raw => {
+        rawAttempts.push(raw)
+        if (unknown) throw new Error('Submission acknowledgment lost (test)')
+        const tx = Transaction.from(raw)
+        nonce = tx.nonce + 1
+        return { hash: tx.hash! } as TransactionResponse
+      })
     return {
-      ...fake,
       chain,
-      key,
-      nativeAttemptStore,
+      wallet,
+      journal,
+      address,
+      oldStore,
       rawAttempts,
       acknowledge: () => {
         unknown = false
       },
-      loseAcknowledgment: () => {
-        unknown = true
+      observe: (raw: string) => {
+        included = Transaction.from(raw)
+        nonce = included.nonce + 1
+      },
+      staleNonce: () => {
+        nonce = 0
       },
       send: () =>
         chain.nativeTransfers.send({ wallet, recipient, value: WEIGHT }),
     }
   }
 
-  function relay() {
-    const puts: Uint8Array[] = []
-    mockedAxios.mockImplementation(async (req: Record<string, unknown>) => {
-      const body = req.data as Uint8Array
-      puts.push(body)
-      return {
-        data: confirmedStatus(body),
-        headers: { 'content-type': 'application/cbor' },
-      }
-    })
-    return puts
-  }
-
-  const actions = [
-    [
-      'post',
-      (
-        chain: ReturnType<typeof createMonadChain>,
-        wallet: MonadChainWalletHandle,
-      ) =>
-        chain.topics.post({
-          wallet,
-          topic: 'help',
-          entries: [ENTRY],
-          direction: 'up',
-          voteWeightWei: WEIGHT,
-        }),
-    ],
-    [
-      'vote',
-      (
-        chain: ReturnType<typeof createMonadChain>,
-        wallet: MonadChainWalletHandle,
-      ) =>
-        chain.topics.vote({
-          wallet,
-          payloadDigest: 'ab'.repeat(32),
-          direction: 'up',
-          voteWeightWei: WEIGHT,
-        }),
-    ],
-  ] as const
-
-  it.each(actions)(
-    '%s holds before signing after a submission-unknown native transfer',
-    async (_name, act) => {
-      const f = await open()
-      const puts = relay()
-      const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
-      await expect(f.send()).rejects.toBeInstanceOf(
-        NativeTransactionSubmissionError,
-      )
-      const attempt = f.nativeAttemptStore.get(f.key)
-      const poolBefore = f.pool.records()
-      const result = await act(f.chain, f.wallet).catch(error => error)
-      expect(f.rawAttempts).toHaveLength(1)
-      expect(sign).toHaveBeenCalledTimes(1)
-      expect(puts).toHaveLength(0)
-      expect(result).toBeInstanceOf(TopicBurnPreparationError)
-      expect(result.cause).toBeInstanceOf(NativeTransactionSubmissionError)
-      expect(f.nativeAttemptStore.get(f.key)).toEqual(attempt)
-      expect(f.wallet.getUnresolvedNativeTransaction!()).toEqual(attempt)
-      expect(f.pool.records()).toEqual(poolBefore)
-      await expect(f.wallet.getBalance()).resolves.toBe(10n ** 18n)
-    },
-  )
-
-  it.each(['missing receipt', 'unavailable RPC'])(
-    'reopening retains the hold with %s',
-    async mode => {
-      const directory = mkdtempSync(join(tmpdir(), 'frank-admission-'))
-      directories.push(directory)
-      const poolLocation = join(directory, 'pool')
-      const identity = MonadIdentity.fromSeed({ mnemonic: TEST_MNEMONIC })
-      mkdirSync(`${poolLocation}-${identity.address.raw.toLowerCase()}`)
-      const original = await open(diskStore(directory), poolLocation)
-      await expect(original.send()).rejects.toBeInstanceOf(
-        NativeTransactionSubmissionError,
-      )
-      const attempt = original.nativeAttemptStore.get(original.key)
-      const poolBefore = original.pool.records()
-      await original.wallet.close()
-      const restored = await open(diskStore(directory), poolLocation)
-      expect(restored.nativeAttemptStore).not.toBe(original.nativeAttemptStore)
-      expect(restored.pool.records()).toEqual(poolBefore)
-      if (mode === 'unavailable RPC') {
-        restored.wallet.provider.getTransactionReceipt = jest
-          .fn()
-          .mockRejectedValue(new Error('RPC unavailable'))
-      }
-      const puts = relay()
-      for (const [, act] of actions) {
-        await expect(
-          act(restored.chain, restored.wallet),
-        ).rejects.toBeInstanceOf(TopicBurnPreparationError)
-      }
-      expect(restored.rawAttempts).toHaveLength(0)
-      expect(puts).toHaveLength(0)
-      expect(original.nativeAttemptStore.get(original.key)).toEqual(attempt)
-      expect(
-        restored.wallet.provider.getTransactionReceipt,
-      ).toHaveBeenCalledWith(attempt!.txHash)
-    },
-  )
-
-  it('guards legacy DM inventory and its signing fee quote', async () => {
-    const f = await open()
-    fakeRelay('reject-500')
-    const receiver = MonadIdentity.fromPrivateKeyHex(IDENTITY_KEY)
-    jest.spyOn(identityModule, 'fetchMonadProfile').mockResolvedValue({
-      address: receiver.address,
-      pubKey: new Uint8Array(receiver.compressedPubKey),
-    })
-    const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+  it('checkpoints exact signed authorization and exposure in the durable owner without writing the old EVM hash-only store', async () => {
+    const f = await open(persistentLocation())
     await expect(f.send()).rejects.toBeInstanceOf(
       NativeTransactionSubmissionError,
     )
-    const result = await f.chain.directMessages
-      .send({
-        wallet: f.wallet,
-        recipient: receiver.address,
-        items: [{ type: 'text', text: 'held inventory' }],
-        stampValue: WEIGHT,
-      })
-      .catch(error => error)
-    expect(sign).toHaveBeenCalledTimes(1)
-    expect(f.rawAttempts).toHaveLength(1)
-    expect(result).toBeInstanceOf(CanonicalMessagingPendingError)
-    expect(f.pool.records().every(record => record.status === 'unfunded')).toBe(
-      true,
-    )
+    const rows = f.wallet.getNativeOperations!()
+    expect(rows).toHaveLength(1)
+    const row = rows[0]!
+    expect(row).toMatchObject({
+      kind: 'native',
+      cancelled: false,
+      recipient: recipient.raw,
+      intendedValueWei: WEIGHT.toString(),
+      binding: {
+        chainIdentifier: 'monad-testnet',
+        nativeChainId: String(CHAIN_ID),
+      },
+    })
+    expect(row.members[0]).toMatchObject({
+      exposed: true,
+      signed: { rawTransaction: f.rawAttempts[0] },
+    })
+    const tx = Transaction.from(f.rawAttempts[0])
+    expect(tx).toMatchObject({
+      from: (await f.wallet.getReceiveAddress()).raw,
+      to: recipient.raw,
+      value: WEIGHT,
+      nonce: 0,
+      chainId: BigInt(CHAIN_ID),
+    })
+    expect(row.members[0]!.signed!.transactionHash).toBe(tx.hash)
+    expect(f.journal.canSelect(f.address, 0)).toBe(false)
+    expect(
+      f.oldStore.get(
+        nativeTransactionAttemptKey({
+          family: 'evm',
+          chainIdentifier: 'monad-testnet',
+          address: f.address,
+        }),
+      ),
+    ).toBeUndefined()
   })
 
-  it('keeps the wallet creator admission store when used through another facade', async () => {
+  it.each(['missing receipt', 'unavailable RPC'])(
+    'real persistent reopen retains original bytes and claims with %s',
+    async mode => {
+      const location = persistentLocation()
+      const first = await open(location)
+      await expect(first.send()).rejects.toBeInstanceOf(
+        NativeTransactionSubmissionError,
+      )
+      const original = first.wallet.getNativeOperations!()[0]!
+      await first.wallet.close()
+      const restored = await open(location)
+      expect(restored.journal).not.toBe(first.journal)
+      expect(restored.wallet.getNativeOperations!()).toEqual([original])
+      if (mode === 'unavailable RPC')
+        jest
+          .spyOn(restored.wallet.provider, 'getTransactionReceipt')
+          .mockRejectedValue(new Error('RPC unavailable'))
+      const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+      await expect(restored.send()).rejects.toThrow(
+        'Insufficient unreserved native funds',
+      )
+      expect(restored.rawAttempts).toEqual([])
+      expect(sign).not.toHaveBeenCalled()
+      expect(restored.journal.canSelect(restored.address, 0)).toBe(false)
+      expect(
+        restored.wallet.getNativeOperations!()[0]!.members[0]!.signed,
+      ).toEqual(original.members[0]!.signed)
+      restored.acknowledge()
+      await restored.wallet.resumeNativeOperation!(original.operationId)
+      expect(restored.rawAttempts).toEqual([
+        original.members[0]!.signed!.rawTransaction,
+      ])
+      expect(sign).not.toHaveBeenCalled()
+      expect(restored.wallet.getNativeOperations!()).toHaveLength(1)
+    },
+  )
+
+  it('another facade cannot replace the creator wallet native-operation owner', async () => {
     const f = await open()
     await expect(f.send()).rejects.toBeInstanceOf(
       NativeTransactionSubmissionError,
     )
-    const puts = relay()
+    const original = f.wallet.getNativeOperations!()[0]!
     const otherStore = new InMemoryNativeTransactionAttemptStore()
     const other = createMonadChain({
       ...CONFIG,
       nativeAttemptStore: otherStore,
     })
-    const creatorAttempt = f.nativeAttemptStore.get(f.key)
     const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
-    const failure = await actions[1][1](other, f.wallet).catch(error => error)
-    expect(failure).toBeInstanceOf(TopicBurnPreparationError)
-    expect(failure.cause).toBeInstanceOf(NativeTransactionSubmissionError)
-    expect(f.nativeAttemptStore.get(f.key)).toEqual(creatorAttempt)
-    expect(otherStore.get(f.key)).toBeUndefined()
-    expect(sign).not.toHaveBeenCalled()
-    expect(puts).toHaveLength(0)
-    expect(f.rpcSubmissions).toHaveLength(0)
-    expect(f.rawAttempts).toHaveLength(1)
-  })
-
-  it('reads a coordinated attempt written after construction before admitting funding', async () => {
-    const first = await open()
-    const second = await open(first.nativeAttemptStore)
-    const puts = relay()
-    let entered!: () => void
-    const entering = new Promise<void>(resolve => {
-      entered = resolve
-    })
-    let release!: () => void
-    const releasing = new Promise<void>(resolve => {
-      release = resolve
-    })
-    const submit = first.wallet.httpClient.submitRawTransaction.bind(
-      first.wallet.httpClient,
-    )
-    first.wallet.httpClient.submitRawTransaction = async raw => {
-      entered()
-      await releasing
-      return submit(raw)
-    }
-    const sending = first.send().catch(error => error)
-    await entering
-    const voting = actions[1][1](second.chain, second.wallet).catch(
-      error => error,
-    )
-    // An independent owner uses the same durable-attempt coordination key.
-    let barrierEntered = false
-    const barrier = runNativeTransactionExclusive(
-      first.key,
-      'single-realm',
-      async () => {
-        barrierEntered = true
-      },
-    )
-    await new Promise(resolve => setImmediate(resolve))
-    const passedBeforeRelease = barrierEntered
-    const submissionsBeforeRelease = second.rawAttempts.length
-    release()
-    expect(await sending).toBeInstanceOf(NativeTransactionSubmissionError)
-    const voteResult = await voting
-    await barrier
-    expect(passedBeforeRelease).toBe(false)
-    expect(submissionsBeforeRelease).toBe(0)
-    expect(voteResult).toBeInstanceOf(TopicBurnPreparationError)
-    expect(second.rawAttempts).toHaveLength(0)
-    expect(puts).toHaveLength(0)
-    expect(second.wallet.provider.getTransactionReceipt).toHaveBeenCalledWith(
-      first.nativeAttemptStore.get(first.key)!.txHash,
-    )
-  })
-
-  it('retains exact retry bytes, then admits funding after acknowledgment', async () => {
-    const f = await open()
-    const puts = relay()
-    await expect(f.send()).rejects.toBeInstanceOf(
-      NativeTransactionSubmissionError,
-    )
-    const raw = f.rawAttempts[0]
-    f.acknowledge()
-    await f.wallet.retryUnresolvedNativeTransaction!()
-    expect(f.rawAttempts).toEqual([raw, raw])
-    await actions[0][1](f.chain, f.wallet)
-    expect(f.rawAttempts).toHaveLength(3)
-    expect(Transaction.from(f.rawAttempts[2]).nonce).toBe(1)
-    expect(puts).toHaveLength(1)
-  })
-
-  it('keeps a later unknown attempt held when its hash was previously acknowledged', async () => {
-    const f = await open()
-    relay()
-    f.acknowledge()
-    await f.send()
-    // A stale pending-nonce response produces identical bytes for the next same-value send.
-    f.wallet.provider.getTransactionCount = async () => 0
-    f.loseAcknowledgment()
-    await expect(f.send()).rejects.toBeInstanceOf(
-      NativeTransactionSubmissionError,
-    )
-    expect(f.rawAttempts[1]).toBe(f.rawAttempts[0])
-    await expect(f.send()).rejects.toBeInstanceOf(
-      NativeTransactionSubmissionError,
-    )
-    await expect(actions[0][1](f.chain, f.wallet)).rejects.toBeInstanceOf(
-      TopicBurnPreparationError,
-    )
-    expect(f.rawAttempts).toHaveLength(2)
-  })
-
-  it('holds concurrent native admission until funding releases the shared account lock', async () => {
-    const funding = await open()
-    const native = await open(funding.nativeAttemptStore)
-    // Both owners observe the same chain nonce once the funding transaction is acknowledged.
-    native.wallet.provider.getTransactionCount =
-      funding.wallet.provider.getTransactionCount
-    relay()
-    let entered!: () => void
-    const entering = new Promise<void>(resolve => {
-      entered = resolve
-    })
-    let release!: () => void
-    const releasing = new Promise<void>(resolve => {
-      release = resolve
-    })
-    const prepare = funding.pool.prepareBurnAccount.bind(funding.pool)
-    funding.pool.prepareBurnAccount = async params => {
-      entered()
-      await releasing
-      return prepare(params)
-    }
-    const posting = actions[0][1](funding.chain, funding.wallet)
-    await entering
-    const sending = native.send().catch(error => error)
-    await new Promise(resolve => setImmediate(resolve))
-    const nativeSubmissionsBeforeRelease = native.rawAttempts.length
-    release()
-    await posting
-    expect(await sending).toBeInstanceOf(NativeTransactionSubmissionError)
-    expect(nativeSubmissionsBeforeRelease).toBe(0)
-    expect(Transaction.from(funding.rawAttempts[0]).nonce).toBe(0)
-    expect(Transaction.from(native.rawAttempts[0]).nonce).toBe(1)
-  })
-
-  it('conservatively holds preparation even for a funded account, then reuses it after resolution', async () => {
-    const f = await open()
-    relay()
-    // Leave a confirmed funded account available by interrupting only its burn signing.
-    f.setSigningDown(true)
-    await expect(actions[0][1](f.chain, f.wallet)).rejects.toBeInstanceOf(
-      TopicBurnPreparationError,
-    )
-    expect(f.pool.records().some(record => record.status === 'available')).toBe(
-      true,
-    )
-    f.setSigningDown(false)
-    await expect(f.send()).rejects.toBeInstanceOf(
-      NativeTransactionSubmissionError,
-    )
-    const count = f.rawAttempts.length
-    await expect(actions[1][1](f.chain, f.wallet)).rejects.toBeInstanceOf(
-      TopicBurnPreparationError,
-    )
-    await f.wallet.resolveUnresolvedNativeTransaction!({
-      transaction: f.nativeAttemptStore.get(f.key)!,
-      outcome: 'not-submitted',
-    })
-    await actions[1][1](f.chain, f.wallet)
-    expect(f.rawAttempts).toHaveLength(count)
-  })
-
-  it('admits funding after matching explicit native resolution', async () => {
-    const f = await open()
-    relay()
-    await expect(f.send()).rejects.toBeInstanceOf(
-      NativeTransactionSubmissionError,
-    )
     await expect(
-      f.wallet.resolveUnresolvedNativeTransaction!({
-        transaction: { txHash: 'wrong' },
-        outcome: 'not-submitted',
+      other.nativeTransfers.send({
+        wallet: f.wallet,
+        recipient,
+        value: WEIGHT,
       }),
-    ).rejects.toThrow('does not match')
-    await f.wallet.resolveUnresolvedNativeTransaction!({
-      transaction: f.nativeAttemptStore.get(f.key)!,
-      outcome: 'not-submitted',
-    })
-    await actions[1][1](f.chain, f.wallet)
-    expect(f.rawAttempts).toHaveLength(2)
-    expect(f.nativeAttemptStore.get(f.key)).toBeUndefined()
+    ).rejects.toThrow('Insufficient unreserved native funds')
+    expect(sign).not.toHaveBeenCalled()
+    expect(f.rawAttempts).toHaveLength(1)
+    expect(f.wallet.getNativeOperations!()[0]!.operationId).toBe(
+      original.operationId,
+    )
+    expect(f.wallet.getNativeOperations!()[0]!.binding).toEqual(
+      original.binding,
+    )
   })
 
-  it('reconciles the exact restored receipt before funding', async () => {
-    const original = await open()
-    await expect(original.send()).rejects.toBeInstanceOf(
+  it('repeated replay uses only the original exact signed bytes without fresh signing or payment', async () => {
+    const f = await open()
+    await expect(f.send()).rejects.toBeInstanceOf(
       NativeTransactionSubmissionError,
     )
-    const attempt = original.nativeAttemptStore.get(original.key)!
-    await original.wallet.close()
-    const restored = await open(original.nativeAttemptStore)
-    restored.wallet.provider.getTransactionReceipt = jest
-      .fn()
-      .mockImplementation(async (hash: string) => {
-        if (hash === attempt.txHash) return { hash, status: 1 }
-        const tx = observedBurns.get(hash.toLowerCase())
-        return tx
-          ? {
-              hash: tx.hash,
-              from: tx.from,
-              to: tx.to,
-              status: 1,
-              blockNumber: 1,
-              index: 0,
-            }
-          : null
-      })
-    relay()
-    await actions[0][1](restored.chain, restored.wallet)
-    expect(restored.wallet.provider.getTransactionReceipt).toHaveBeenCalledWith(
-      attempt.txHash,
+    const original = f.wallet.getNativeOperations!()[0]!
+    const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+    f.acknowledge()
+    await f.wallet.resumeNativeOperation!(original.operationId)
+    await f.wallet.resumeNativeOperation!(original.operationId)
+    expect(f.rawAttempts).toEqual(
+      Array(3).fill(original.members[0]!.signed!.rawTransaction),
     )
-    expect(restored.rawAttempts).toHaveLength(1)
-    expect(restored.nativeAttemptStore.get(restored.key)).toBeUndefined()
+    expect(sign).not.toHaveBeenCalled()
+    expect(f.wallet.getNativeOperations!()).toHaveLength(1)
+    expect(f.journal.canSelect(f.address, 0)).toBe(false)
   })
+
+  it('matching inclusion retains signed history and its old pair across persistent reopen and a stale nonce rollback', async () => {
+    const location = persistentLocation()
+    const f = await open(location)
+    await expect(f.send()).rejects.toBeInstanceOf(
+      NativeTransactionSubmissionError,
+    )
+    const original = f.wallet.getNativeOperations!()[0]!
+    f.observe(original.members[0]!.signed!.rawTransaction)
+    // The native owner commits its observation before trying its separately composed sync callback.
+    await f.wallet.resumeNativeOperation!(original.operationId).catch(error => {
+      expect(error).toBeInstanceOf(NativeTransactionSubmissionError)
+    })
+    const observed = f.wallet.getNativeOperations!()[0]!
+    expect(observed.members[0]!.observation).toMatchObject({
+      state: 'included-success',
+      transactionHash: original.members[0]!.signed!.transactionHash,
+      blockHash,
+    })
+    expect(observed.members[0]!.signed).toEqual(original.members[0]!.signed)
+    expect(observed.cancelled).toBe(false)
+    expect(f.journal.canSelect(f.address, 0)).toBe(false)
+    await f.wallet.close()
+    const restored = await open(location)
+    expect(restored.wallet.getNativeOperations!()).toEqual([observed])
+    restored.staleNonce()
+    const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+    await expect(restored.send()).rejects.toThrow(
+      'Insufficient unreserved native funds',
+    )
+    expect(sign).not.toHaveBeenCalled()
+    expect(restored.rawAttempts).toHaveLength(0)
+    expect(restored.wallet.getNativeOperations!()).toHaveLength(1)
+    expect(restored.journal.canSelect(restored.address, 0)).toBe(false)
+  })
+
+  it('signed and exposed operations cannot be canceled or discarded as not submitted', async () => {
+    const location = persistentLocation()
+    const f = await open(location)
+    await expect(f.send()).rejects.toBeInstanceOf(
+      NativeTransactionSubmissionError,
+    )
+    const original = f.wallet.getNativeOperations!()[0]!
+    await expect(
+      f.wallet.cancelUnsignedNativeOperation!(original.operationId),
+    ).rejects.toThrow('conflict')
+    expect(f.wallet.getNativeOperations!()).toEqual([original])
+    await f.wallet.close()
+    const restored = await open(location)
+    expect(restored.wallet.getNativeOperations!()).toEqual([original])
+    expect(restored.journal.canSelect(restored.address, 0)).toBe(false)
+  })
+
+  it('unsigned unexposed cancellation releases only its claim and durably retains public provenance', async () => {
+    const location = persistentLocation()
+    const f = await open(location)
+    const unsignedTransaction = Transaction.from({
+      type: 2,
+      chainId: CHAIN_ID,
+      nonce: 0,
+      to: recipient.raw,
+      value: WEIGHT,
+      gasLimit: GAS_LIMIT,
+      maxFeePerGas: GAS_PRICE,
+      maxPriorityFeePerGas: 1n,
+    }).unsignedSerialized
+    const original = await f.journal.prepare({
+      kind: 'native',
+      recipient: recipient.raw,
+      intendedValueWei: WEIGHT.toString(),
+      members: [
+        {
+          source: { kind: 'main', address: f.address },
+          unsignedTransaction,
+          dependencies: [],
+        },
+      ],
+    })
+    const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+    expect(f.journal.canSelect(f.address, 0)).toBe(false)
+    await f.wallet.cancelUnsignedNativeOperation!(original.operationId)
+    const cancelled = { ...original, cancelled: true }
+    expect(f.wallet.getNativeOperations!()).toEqual([cancelled])
+    expect(f.journal.canSelect(f.address, 0)).toBe(true)
+    expect(f.journal.sourceReferences()).toEqual([
+      { kind: 'main', address: f.address },
+    ])
+    expect(sign).not.toHaveBeenCalled()
+    expect(f.rawAttempts).toEqual([])
+    await f.wallet.close()
+    const restored = await open(location)
+    expect(restored.wallet.getNativeOperations!()).toEqual([cancelled])
+    expect(restored.journal.canSelect(restored.address, 0)).toBe(true)
+    expect(restored.journal.sourceReferences()).toEqual([
+      { kind: 'main', address: f.address },
+    ])
+  })
+
+  // P1 does not claim cross-consumer exclusion. These obsolete hash-only/global-hold
+  // assertions belong to the accepted P2 shared-input owner, including actual topic and DM paths.
+  it.todo(
+    'P2: topic post/vote exclude inputs reserved by an uncertain native operation',
+  )
+  it.todo(
+    'P2: legacy/canonical DM selection and signing fee quotes share native claims',
+  )
+  it.todo(
+    'P2: independently composed owners coordinate shared native and topic inputs',
+  )
+  it.todo(
+    'P2: concurrent topic funding and native admission reserve exact account/nonce inputs',
+  )
+  it.todo(
+    'P2: a funded topic account remains usable when disjoint native inputs are uncertain',
+  )
 })

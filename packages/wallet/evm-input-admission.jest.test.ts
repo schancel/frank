@@ -5,6 +5,7 @@ import { Transaction, Wallet, type Provider } from 'ethers'
 import level from 'level'
 import {
   createEvmInputAdmission,
+  canonicalAdmissionPool,
   nativeAdmissionJournal,
   type WalletOperationLifetime,
 } from './evm-input-admission'
@@ -393,6 +394,112 @@ describe('derived EVM input admission', () => {
       await f.close()
     }
   })
+  it('a topic lease index cannot stand in for a different signed source', async () => {
+    const f = await fixture(location)
+    try {
+      const raw = await new Wallet(
+        f.keyring.deriveSubAccount(1).privateKey,
+      ).signTransaction(
+        Transaction.from(f.plan(1).members[0]!.unsignedTransaction),
+      )
+      await f.topic.put({
+        version: 1,
+        kind: 'post',
+        requestBytes: [255],
+        leaseIndex: 0,
+        senderAddress: f.plan(1).members[0]!.source.address,
+        rawTx: raw,
+        txHash: Transaction.from(raw).hash!,
+        valueWei: '32',
+        direction: 'up',
+        payloadHashHex: 'ab'.repeat(32),
+      })
+      expect(f.admission.inspect(f.lifetime)).toEqual({
+        status: 'unavailable',
+        reason: 'invalid-provenance',
+        held: 'binding',
+      })
+      expect(f.journal.list()).toEqual([])
+      expect(f.topic.getAll()[0]!.rawTx).toBe(raw)
+    } finally {
+      await f.close()
+    }
+  })
+  it.each(
+    (['release', 'setStatus'] as const).flatMap(transition =>
+      (['success', 'write-failed', 'expired'] as const).map(
+        mode => [transition, mode] as const,
+      ),
+    ),
+  )(
+    'canonical %s notifies warming only after a successful live commit: %s',
+    async (transition, mode) => {
+      const f = await fixture(location)
+      const row = await f.admission.prepareNative(
+        f.lifetime,
+        f.epoch(),
+        f.plan(),
+      )
+      const raw = await new Wallet(
+        f.keyring.deriveSubAccount(0).privateKey,
+      ).signTransaction(Transaction.from(row.members[0]!.unsignedTransaction))
+      await nativeAdmissionJournal(f.admission, f.lifetime).checkpointSigned(
+        row.operationId,
+        0,
+        raw,
+      )
+      const transitions = canonicalAdmissionPool(f.admission, f.lifetime)
+      const handle = await transitions.acquire(0)
+      await transitions.recordSpend(0, {
+        rawTx: raw,
+        txHash: Transaction.from(raw).hash!,
+        valueWei: '32',
+      })
+      const entered = barrier(),
+        release = barrier(),
+        original = f.pool.flush.bind(f.pool)
+      const warm = jest
+        .spyOn(f.pool, 'triggerProactiveWarming')
+        .mockImplementation(() => undefined)
+      const flush = jest.spyOn(f.pool, 'flush').mockImplementation(async () => {
+        entered.resolve()
+        await release.promise
+        await original()
+        if (mode === 'write-failed') throw new Error('commit response lost')
+        if (mode === 'expired') f.active.clear()
+      })
+      const outcome = (
+        transition === 'release'
+          ? transitions.release(handle, 'confirmed')
+          : transitions.setStatus(0, 'spent')
+      ).then(
+        () => 'success',
+        error => String(error),
+      )
+      try {
+        await entered.promise
+        expect(warm).not.toHaveBeenCalled()
+        release.resolve()
+        const result = await outcome
+        if (mode === 'success') {
+          expect(result).toBe('success')
+          expect(warm).toHaveBeenCalledTimes(1)
+        } else {
+          expect(result).toContain(
+            mode === 'expired' ? 'foreign lifetime' : 'commit response lost',
+          )
+          expect(warm).not.toHaveBeenCalled()
+        }
+        expect(f.pool.getRecord(0)?.lifecycle?.spend?.rawTx).toBe(raw)
+      } finally {
+        release.resolve()
+        await outcome
+        flush.mockRestore()
+        warm.mockRestore()
+        await f.close()
+      }
+    },
+  )
   it('a native journal-derived pool checkpoint remains one authorization after real Level reopen', async () => {
     const f = await fixture(location)
     const row = await f.admission.prepareNative(f.lifetime, f.epoch(), f.plan())

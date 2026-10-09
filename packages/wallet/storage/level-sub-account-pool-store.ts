@@ -35,6 +35,7 @@ const WALLET_BINDING_KEY = '__wallet_binding__'
 export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   private readonly dbLocation: string
   private openedDb?: LevelDB
+  private loaded = false
   private cache: Map<number, SubAccountRecord>
   private sortedRecordIndices: number[] = []
   private checkpoints = new Map<number, TerminalSubAccountCheckpoint>()
@@ -61,6 +62,10 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
     this.rootLocation = location
   }
 
+  private assertLoaded(): void {
+    if (!this.loaded) throw new Error('Persistent pool store is not open')
+  }
+
   private get db() {
     if (!this.openedDb) {
       throw new Error('No db opened')
@@ -72,12 +77,19 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
    * called (and awaited) before using the store — same lifecycle as `LevelUtxoStore.Open()`. */
   async Open(): Promise<void> {
     this.assertMutationAllowed()
+    this.loaded = false
     this.openedDb = level(this.dbLocation)
-    await openDurableLevel(this.openedDb!, this.rootLocation, 'sub-account-pool')
+    await openDurableLevel(
+      this.openedDb!,
+      this.rootLocation,
+      'sub-account-pool',
+    )
     await this.loadData()
+    this.loaded = true
   }
 
   async Close(): Promise<void> {
+    this.loaded = false
     await this.flush()
     await this.db.close()
   }
@@ -165,6 +177,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   bindingId(): string | undefined {
+    this.assertLoaded()
     return this.loadedBindingId
   }
 
@@ -188,6 +201,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   getByIndex(index: number): SubAccountRecord | undefined {
+    this.assertLoaded()
     const record = this.cache.get(index)
     return record === undefined ? undefined : cloneSubAccountRecord(record)
   }
@@ -233,12 +247,14 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   getAll(): SubAccountRecord[] {
+    this.assertLoaded()
     return Array.from(this.cache.values())
       .sort((a, b) => a.index - b.index)
       .map(cloneSubAccountRecord)
   }
 
   scanRecords(afterIndex: number, limit: number): SubAccountRecord[] {
+    this.assertLoaded()
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new Error('Sub-account scan limit must be non-negative')
     }
@@ -252,6 +268,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   getNextIndex(): number {
+    this.assertLoaded()
     return this.nextIndex
   }
 
@@ -289,6 +306,7 @@ export class LevelSubAccountPoolStore implements SubAccountPoolStore {
   }
 
   getCheckpoints(): TerminalSubAccountCheckpoint[] {
+    this.assertLoaded()
     return Array.from(this.checkpoints.values())
       .sort((a, b) => a.index - b.index)
       .map(cloneCheckpoint)

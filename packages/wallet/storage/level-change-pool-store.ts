@@ -40,6 +40,7 @@ const RECOVERED_PREFIX = '__recovered_change__:'
 export class LevelChangePoolStore implements ChangePoolStore {
   private readonly dbLocation: string
   private openedDb?: LevelDB
+  private loaded = false
   private cache: Map<number, ChangeAccountRecord>
   private bySourceBurnIndex = new Map<number, ChangeAccountRecord>()
   private nextIndex = 0
@@ -66,6 +67,10 @@ export class LevelChangePoolStore implements ChangePoolStore {
     this.rootLocation = location
   }
 
+  private assertLoaded(): void {
+    if (!this.loaded) throw new Error('Persistent pool store is not open')
+  }
+
   private get db() {
     if (!this.openedDb) {
       throw new Error('No db opened')
@@ -78,12 +83,15 @@ export class LevelChangePoolStore implements ChangePoolStore {
    * Open()`. */
   async Open(): Promise<void> {
     this.assertMutationAllowed()
+    this.loaded = false
     this.openedDb = level(this.dbLocation)
     await openDurableLevel(this.openedDb!, this.rootLocation, 'change-pool')
     await this.loadData()
+    this.loaded = true
   }
 
   async Close(): Promise<void> {
+    this.loaded = false
     await this.flush()
     await this.db.close()
   }
@@ -163,6 +171,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   }
 
   bindingId(): string | undefined {
+    this.assertLoaded()
     return this.loadedBindingId
   }
 
@@ -205,6 +214,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   }
 
   getNextIndex(): number {
+    this.assertLoaded()
     return this.nextIndex
   }
 
@@ -249,16 +259,19 @@ export class LevelChangePoolStore implements ChangePoolStore {
   }
 
   getRecord(index: number): ChangeAccountRecord | undefined {
+    this.assertLoaded()
     const record = this.cache.get(index)
     return record === undefined ? undefined : { ...record }
   }
 
   getBySourceBurnIndex(index: number): ChangeAccountRecord | undefined {
+    this.assertLoaded()
     const record = this.bySourceBurnIndex.get(index)
     return record === undefined ? undefined : { ...record }
   }
 
   getAll(): ChangeAccountRecord[] {
+    this.assertLoaded()
     return Array.from(this.cache.values())
       .sort((a, b) => a.index - b.index)
       .map(record => ({ ...record }))
@@ -284,12 +297,14 @@ export class LevelChangePoolStore implements ChangePoolStore {
   }
 
   getRecoveredAccounts(): RecoveredChangeAccount[] {
+    this.assertLoaded()
     return Array.from(this.recoveredAccountsByIndex.values())
       .sort((left, right) => left.index - right.index)
       .map(record => ({ ...record }))
   }
 
   getPendingIntent(): ChangeSweepIntent | undefined {
+    this.assertLoaded()
     return this.pendingIntent === undefined
       ? undefined
       : { ...this.pendingIntent }

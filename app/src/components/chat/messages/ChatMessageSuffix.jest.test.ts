@@ -26,8 +26,7 @@ function mountSuffix(props: Record<string, unknown>, messages: unknown = enUS) {
       mocks: { $t: translator(messages) },
       stubs: {
         QIcon: { template: '<i />' },
-        QBtn: { template: '<button>{{ $attrs.label }}<slot /></button>' },
-        QTooltip: { template: '<!-- tooltip -->' },
+        QBtn: { template: '<button><slot /></button>' },
       },
     },
   })
@@ -46,12 +45,8 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
     expect(wrapper.find('[data-testid="outgoing-retry-hint"]').exists()).toBe(
       false,
     )
-    expect(wrapper.get('[data-testid="outgoing-failed"]').text()).toContain(
+    expect(wrapper.get('[data-testid="outgoing-failed"]').text()).toBe(
       'Failed to send This relay does not offer messaging.',
-    )
-    expect(wrapper.get('[data-testid="outgoing-retry"]').text()).toBe('Retry')
-    expect(wrapper.get('[data-testid="outgoing-discard"]').text()).toBe(
-      'Discard',
     )
 
     await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
@@ -152,8 +147,7 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
         mocks: { $t: translator(enUS) },
         stubs: {
           QIcon: { template: '<i />' },
-          QBtn: { template: '<button>{{ $attrs.label }}<slot /></button>' },
-          QTooltip: { template: '<!-- tooltip -->' },
+          QBtn: { template: '<button><slot /></button>' },
         },
       },
     })

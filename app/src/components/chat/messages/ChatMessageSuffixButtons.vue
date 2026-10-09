@@ -3,39 +3,28 @@
     v-if="
       status === 'error' || status === 'payment-pending' || status === 'pending'
     "
-    class="row items-center no-wrap q-gutter-xs"
   >
     <q-btn
       v-if="status === 'error'"
       icon="replay"
-      :label="$t('outgoing.retry')"
       dense
-      outline
-      no-caps
-      size="sm"
-      class="q-btn text-white q-px-xs"
-      style="background: rgba(255, 255, 255, 0.15); border-color: rgba(255, 255, 255, 0.4);"
+      flat
+      padding="xs"
+      class="q-btn"
       :aria-label="$t('a11y.resendMessage')"
       data-testid="outgoing-retry"
       @click="$emit('resendClick')"
-    >
-      <q-tooltip>{{ $t('outgoing.retry') }}</q-tooltip>
-    </q-btn>
+    />
     <q-btn
       icon="delete"
-      :label="$t('outgoing.discard')"
       dense
-      outline
-      no-caps
-      size="sm"
-      class="q-btn text-white q-px-xs"
-      style="background: rgba(255, 255, 255, 0.15); border-color: rgba(255, 255, 255, 0.4);"
+      flat
+      padding="xs"
+      class="q-btn"
       :aria-label="$t('outgoing.discard')"
       data-testid="outgoing-discard"
       @click="$emit('discardClick')"
-    >
-      <q-tooltip>{{ $t('outgoing.discard') }}</q-tooltip>
-    </q-btn>
+    />
   </div>
   <!-- Select mode (see this file's script header): a message has exactly one action while
   selecting -- delete -- shown plainly rather than behind a hover/tap reveal, since select mode

@@ -2627,7 +2627,7 @@ describe('two typed wallets on the open directory', () => {
         }));
       const dispatch = jest
         .spyOn(syncDispatch, "applyWalletSyncItem")
-        .mockReturnValue({});
+        .mockResolvedValue({});
       const wallet = direction === "out" ? f.alice : f.bob;
       const record =
         direction === "out"
@@ -2714,7 +2714,7 @@ describe('two typed wallets on the open directory', () => {
         .mockReturnValue([]);
       const dispatch = jest
         .spyOn(syncDispatch, "applyWalletSyncItem")
-        .mockReturnValue({});
+        .mockResolvedValue({});
       const before = f.alice.stampPaymentJournal?.getAll();
       try {
         await expect(

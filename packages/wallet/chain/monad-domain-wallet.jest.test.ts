@@ -49,9 +49,13 @@ import { MonadAccountTxSigner } from '../monad-account-tx'
 import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-store'
 import { LevelChangePoolStore } from '../storage/level-change-pool-store'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
-import { MonadSubAccountPool } from '../monad-account-pool'
+import {
+  MonadSubAccountPool,
+  SubAccountSpendRefusedError,
+} from '../monad-account-pool'
 import { NoAvailableSubAccountError } from '../monad-account-lease'
 import { applyWalletSyncItem } from '../sync-dispatcher'
+import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
 import { MonadStampClient } from '../monad-stamp-client'
 import * as topicModule from '../monad-topic-post-client'
@@ -1656,56 +1660,109 @@ test('a pool-sourced legacy send included in-call keeps admission ready in the s
   }
 })
 
-test('the same item carrying the journal member\'s signed transaction is a spend record admission accepts across reopen (#1235)', async () => {
+// Stage 0b of #1235. Until this stage the test here was "the same item carrying the journal
+// member's signed transaction is a spend record admission accepts across reopen": it called the
+// dispatcher synchronously, expected `{ affectedIndices: [0] }` and one putMany, and expected the
+// row `spent`. Those assertions pinned the defect this stage closes: a signed transaction committed
+// through the sync boundary on a composed wallet outside the wallet queue and the admission, with
+// no chain check, the write not awaited. No applier is attached yet, so the item is refused; the
+// next stage attaches one that runs under the admission and restores the commit. On the base this
+// fails: the call returns a result instead of rejecting, and the row is committed.
+test('a complete item for a composed wallet is refused at the sync boundary until an applier checks it; the wallet reopens (#1235)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-bytes-'))
   let wallet: EvmChainWalletHandle | undefined
   try {
     const first = await sendLegacyFromProductionFundedPoolRow(dir)
     wallet = first.wallet
     const signed = first.operation.members[0]!.signed!
-    const committed = {
+    const untouched = {
       index: 0,
       address: expected[0].pool,
-      status: 'spent',
-      lifecycle: {
-        spend: {
-          rawTx: signed.rawTransaction,
-          txHash: signed.transactionHash,
-          // The transaction's value, not the item's value plus fee (121000).
-          valueWei: '100000',
-        },
-      },
+      status: 'available',
     }
     const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
-    expect(
+    const complete = { ...first.item, rawTx: signed.rawTransaction }
+    const refused = await Promise.resolve()
+      .then(() => applyWalletSyncItem(wallet, complete as never))
+      .then(
+        value => ({ value }),
+        (error: unknown) => ({ error }),
+      )
+    expect(refused).toEqual({ error: expect.any(SubAccountSpendRefusedError) })
+    expect(refused).toMatchObject({ error: { code: 'no-applier', index: 0 } })
+    // Another chain's item does not reach the pool at all.
+    await expect(
       applyWalletSyncItem(wallet, {
-        ...first.item,
-        rawTx: signed.rawTransaction,
+        ...complete,
+        chainIdentifier: 'ethereum-sepolia',
       } as never),
-    ).toEqual({ affectedIndices: [0] })
-    expect(putMany).toHaveBeenCalledTimes(1)
-    expect(wallet.pool.getRecord(0)).toEqual(committed)
+    ).rejects.toMatchObject({ code: 'chain-mismatch' })
+    await wallet.pool.flush()
+    expect(putMany).not.toHaveBeenCalled()
+    expect(wallet.pool.getRecord(0)).toEqual(untouched)
     const retained = (snapshot: Awaited<ReturnType<typeof first.admission>>) =>
       snapshot.status === 'ready'
         ? snapshot.obligations
             .filter(claim => claim.provenance.kind === 'pool-retained')
             .map(claim => [claim.provenance, claim.transaction?.transactionHash])
         : snapshot
-    const claim = [
-      [
-        { kind: 'pool-retained', poolIndex: 0, role: 'spend' },
-        signed.transactionHash,
-      ],
-    ]
-    expect(retained(await first.admission())).toEqual(claim)
-    await wallet.pool.flush()
+    expect(retained(await first.admission())).toEqual([])
     await wallet.close()
     wallet = undefined
     const second = await first.open()
     wallet = second.wallet
-    expect(retained(await second.admission())).toEqual(claim)
-    expect(wallet.pool.getRecord(0)).toEqual(committed)
+    expect(retained(await second.admission())).toEqual([])
+    expect(wallet.pool.getRecord(0)).toEqual(untouched)
+    expectNoSpendRecordWithoutItsTransaction(wallet)
   } finally {
+    await wallet?.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+// Stage 0b of #1235: the native callback now awaits the dispatch, and its own item (still without
+// the signed transaction) is refused by the pool. The send ends in the same error class as before,
+// `EvmNativeOperationPendingError`; only its reason changes, from the transport's refusal to the
+// pool's. On the base this fails at the reason: the dispatch result is dropped and the callback
+// goes on to the transport step, whose refusal is what the pending error carries.
+test('a pool-sourced legacy send still ends in the pending error, now from the refused sync item, with admission ready and the wallet reopenable (#1235)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-1235-spend-record-pending-'))
+  let wallet: EvmChainWalletHandle | undefined
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown) => unhandled.push(reason)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const first = await sendLegacyFromProductionFundedPoolRow(dir)
+    wallet = first.wallet
+    expect(first.sent.value).toBeUndefined()
+    expect(first.sent.error).toBeInstanceOf(EvmNativeOperationPendingError)
+    const pending = first.sent.error as EvmNativeOperationPendingError
+    expect(pending.name).toBe('EvmNativeOperationPendingError')
+    expect(pending.transaction.txHash).toBe(
+      first.operation.members[0]!.signed!.transactionHash,
+    )
+    expect(pending.reason).toBeInstanceOf(SubAccountSpendRefusedError)
+    expect(pending.reason).toMatchObject({
+      code: 'missing-transaction',
+      index: 0,
+    })
+    expect(first.operation.members[0]!.syncApplied).toBe(false)
+    expect(await first.admission()).toMatchObject({ status: 'ready' })
+    expect(wallet.pool.getRecord(0)).toEqual({
+      index: 0,
+      address: expected[0].pool,
+      status: 'available',
+    })
+    await wallet.close()
+    wallet = undefined
+    const second = await first.open()
+    wallet = second.wallet
+    expect(await second.admission()).toMatchObject({ status: 'ready' })
+    expect(wallet.getNativeOperations!()).toEqual([first.operation])
+    await new Promise(resolve => setImmediate(resolve))
+    expect(unhandled).toEqual([])
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
     await wallet?.close()
     await rm(dir, { recursive: true, force: true })
   }

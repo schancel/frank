@@ -358,4 +358,59 @@ describe("routeWalletSyncItem (Issue #1126)", () => {
     );
     expect(res.affectedAccounts).toEqual(["0xrollupaddr"]);
   });
+  // On the base the dispatcher catches the pool's error and the route resolves as if applied.
+  it("surfaces the pool's refusal to the caller that awaits the route (#1235)", async () => {
+    class PoolRefusal extends Error {
+      readonly code = "no-applier";
+    }
+    const refusal = new PoolRefusal("refused");
+    const inventory = { processSyncTransaction: jest.fn() };
+    const evmWallet = {
+      chainIdentifier: "monad-testnet",
+      pool: { processSyncTransaction: jest.fn().mockRejectedValue(refusal) },
+      inventory,
+    };
+    const resolver: MultiChainWalletResolver = {
+      getWalletForChain: jest.fn().mockResolvedValue(evmWallet),
+    };
+    const item: WalletSyncItem = {
+      type: "wallet-sync",
+      direction: "out",
+      chainIdentifier: "monad-testnet",
+      txHash: "0xevmtx",
+      rawTx: "0x02",
+      spentInputs: [{ address: "0x123", nonce: 4 }],
+    };
+
+    await expect(routeWalletSyncItem(item, { resolver })).rejects.toBe(refusal);
+    expect(inventory.processSyncTransaction).not.toHaveBeenCalled();
+  });
+
+  // On the base a Sepolia item routed to the one EVM wallet is applied to it.
+  it("rejects an item routed to a wallet bound to another chain (#1235)", async () => {
+    const evmWallet = {
+      chainIdentifier: "monad-testnet",
+      pool: { processSyncTransaction: jest.fn() },
+      inventory: { processSyncTransaction: jest.fn() },
+    };
+    const resolver: MultiChainWalletResolver = {
+      getWalletForChain: jest.fn().mockResolvedValue(evmWallet),
+    };
+    const item: WalletSyncItem = {
+      type: "wallet-sync",
+      direction: "out",
+      chainIdentifier: "ethereum-sepolia",
+      txHash: "0xevmtx",
+      spentInputs: [{ address: "0x123", nonce: 4 }],
+    };
+
+    await expect(routeWalletSyncItem(item, { resolver })).rejects.toMatchObject(
+      {
+        name: "WalletSyncItemRejectedError",
+        code: "chain-mismatch",
+      }
+    );
+    expect(evmWallet.pool.processSyncTransaction).not.toHaveBeenCalled();
+    expect(evmWallet.inventory.processSyncTransaction).not.toHaveBeenCalled();
+  });
 });

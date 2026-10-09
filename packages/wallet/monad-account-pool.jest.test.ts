@@ -20,7 +20,7 @@
  *     `monad-account-pool.livecheck.ts` in this same directory (run via `tsc`+`node`) — see that
  *     file's header for how to run it; it was run for this handoff and all assertions passed.
  */
-import { JsonRpcProvider, Transaction, Wallet } from "ethers";
+import { JsonRpcProvider, Signature, Transaction, Wallet } from "ethers";
 
 import { MonadHdKeyring, subAccountPath } from "./monad-hd-keyring";
 import {
@@ -31,6 +31,9 @@ import {
   SubAccountSpendRefusedError,
 } from "./monad-account-pool";
 import { MonadChangeKeyring } from "./monad-change-keyring";
+import { EvmAddressInventory } from "./hd-address-inventory";
+import { applyWalletSyncItem } from "./sync-dispatcher";
+import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
 import { MonadChangePool } from "./monad-change-pool";
 import { validateMonadWalletState } from "./storage/monad-wallet-state-validator";
 import {
@@ -1661,22 +1664,68 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       };
     }
 
-    // Before #1235 this test expected `affectedIndices` [0], status `spent` and a checkpoint with
-    // only the item's hash. Those three expectations were the defect: a spend record without its
-    // signed transaction is the row the wallet-state validator rejects at the next open.
-    it("writes nothing for the consolidator's item without raw bytes; only the capacity entry is dropped", async () => {
+    /** A trivial applier for these tests: resolves the row the transaction's signer owns, commits
+     * through the one writer and flushes in the same turn as the put. Composition's real applier
+     * (the next stage) also checks the chain and runs under the admission. */
+    function attachCommitApplier(pool: MonadSubAccountPool) {
+      const applier = jest.fn(async (rawTx: string, _chainIdentifier: string) => {
+        const signer = Transaction.from(rawTx).from;
+        const row = pool
+          .records()
+          .find((record) => record.address === signer);
+        if (row === undefined) return { kind: "no-pool-row" as const };
+        const outcome = pool.commitSpend(row.index, rawTx);
+        const flushed = pool.flush(); // no await between the put and the flush call
+        await flushed;
+        return outcome === "no-row"
+          ? { kind: "no-pool-row" as const }
+          : { kind: outcome, poolIndex: row.index };
+      });
+      pool.attachSpendApplier(applier);
+      return applier;
+    }
+
+    type SyncItem = Parameters<MonadSubAccountPool["processSyncTransaction"]>[0];
+
+    /** The rejection of `pool.processSyncTransaction(item)`, or "not refused". */
+    async function refusalOf(pool: MonadSubAccountPool, item: unknown) {
+      let outcome: unknown;
+      try {
+        outcome = pool.processSyncTransaction(item as SyncItem);
+      } catch (error) {
+        // A synchronous throw is never the adapter's contract: every refusal is a rejection.
+        return { synchronous: error };
+      }
+      return Promise.resolve(outcome).then(
+        () => "not refused" as const,
+        (error: unknown) => error
+      );
+    }
+
+    // Before #1313 this test expected `affectedIndices` [0], status `spent` and a checkpoint with
+    // only the item's hash: a spend record without its signed transaction. #1313 made the item a
+    // silent no-op, and the test then asserted `res.affectedIndices` equal to [] read synchronously
+    // from a plain return value. That assertion encoded "a refused item is not an error to the
+    // caller": the consolidator's item was reported exactly like an applied one. Fails on the base
+    // because nothing is rejected.
+    it("rejects the consolidator's item without raw bytes, naming the missing transaction, after dropping the capacity entry", async () => {
       const { keyring, pool, warming, writes } = setupSpendTest();
+      const applier = attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const before = pool.records();
       pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
       pool.capacityCache.set(1, { capacityWei: 9n, checkedAtMs: Date.now() });
       const written = writes();
 
-      const res = pool.processSyncTransaction(
+      const refusal = await refusalOf(
+        pool,
         consolidatorItem(addr0, await signSpend(keyring, 0))
       );
 
-      expect(res.affectedIndices).toEqual([]);
+      expect(refusal).toBeInstanceOf(SubAccountSpendRefusedError);
+      expect(refusal).toMatchObject({ code: "missing-transaction", index: 0 });
+      expect((refusal as Error).message).toMatch(/no signed transaction \(rawTx\)/);
+      expect(applier).not.toHaveBeenCalled();
       expect(writes()).toBe(written);
       expect(pool.records()).toEqual(before);
       expect(pool.getRecord(0)?.status).toBe("available");
@@ -1693,7 +1742,97 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ).not.toThrow();
     });
 
-    it("records the complete signed transaction and spent in one put, from the transaction's own fields, durably", async () => {
+    // THE KEY RULE of #1235 Stage 0b. On the base this fails: the complete item commits row 0 as
+    // `spent` with one putMany, on a pool nothing has composed, with no chain check at all.
+    it("refuses a complete item on a pool with no applier: nothing written, typed rejection, capacity entry dropped", async () => {
+      const os = await import("os");
+      const path = await import("path");
+      const fs = await import("fs");
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "frank-1235-no-applier-"));
+      const levelStore = new LevelSubAccountPoolStore(dir);
+      await levelStore.Open();
+      try {
+        const { keyring, pool, warming, writes } = setupSpendTest(levelStore);
+        await pool.flush();
+        const putMany = jest.spyOn(levelStore, "putMany");
+        const addr0 = keyring.deriveSubAccount(0).address;
+        const spend = await signSpend(keyring, 0);
+        pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
+        const before = pool.records();
+        putMany.mockClear();
+        const written = writes();
+
+        const refusal = await refusalOf(pool, {
+          ...consolidatorItem(addr0, spend),
+          rawTx: spend.rawTx,
+        });
+
+        expect(refusal).toBeInstanceOf(SubAccountSpendRefusedError);
+        expect(refusal).toMatchObject({ code: "no-applier", index: 0 });
+        await pool.flush();
+        expect(putMany).not.toHaveBeenCalled();
+        expect(writes()).toBe(written);
+        expect(pool.records()).toEqual(before);
+        expect(pool.getRecord(0)).toEqual({
+          index: 0,
+          address: addr0,
+          status: "available",
+        });
+        expect(pool.capacityCache.has(0)).toBe(false);
+        expect(warming).not.toHaveBeenCalled();
+      } finally {
+        await levelStore.Close().catch(() => undefined);
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    // The same refusal is what the caller awaiting the dispatcher sees, and a chain-mismatched
+    // item never reaches the pool or the inventory. On the base the first commits and resolves;
+    // the second is dispatched to the pool, which commits it, and to the inventory, which debits.
+    it("at the dispatcher: the pool's refusal reaches the awaiting caller, and a chain mismatch mutates neither pool nor inventory", async () => {
+      const { keyring, pool, writes } = setupSpendTest();
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const spend = await signSpend(keyring, 0);
+      const inventory = EvmAddressInventory.fromMnemonic(TEST_MNEMONIC, "", 2);
+      inventory.updateBalance(addr0, 100_000n);
+      const account = { ...inventory.getAccount(addr0)! };
+      expect(account.balanceWei).toBe(100_000n);
+      const wallet = { chainIdentifier: "monad-testnet", pool, inventory };
+      const complete = { ...consolidatorItem(addr0, spend), rawTx: spend.rawTx };
+      const before = pool.records();
+      const written = writes();
+
+      const dispatched = async (item: unknown) => {
+        try {
+          await applyWalletSyncItem(wallet, item as never);
+        } catch (error) {
+          return error;
+        }
+        return "not refused";
+      };
+      const refused = await dispatched(complete);
+      expect(refused).toBeInstanceOf(SubAccountSpendRefusedError);
+      expect(refused).toMatchObject({ code: "no-applier" });
+      expect(inventory.getAccount(addr0)).toEqual(account);
+
+      // With an applier that would commit, another chain's item is stopped before the pool.
+      const applier = attachCommitApplier(pool);
+      for (const chainIdentifier of ["ethereum-sepolia", "evm", undefined]) {
+        const mismatch = await dispatched({ ...complete, chainIdentifier });
+        expect(mismatch).toBeInstanceOf(WalletSyncItemRejectedError);
+      }
+      expect(applier).not.toHaveBeenCalled();
+      expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
+      expect(inventory.getAccount(addr0)).toEqual(account);
+    });
+
+    // With an applier the adapter routes to it and reports what it committed. Before #1235 Stage
+    // 0b this test called the adapter synchronously on a pool with no applier and expected the
+    // commit; that route is the defect (see the test above). The row, the single put and the
+    // reopen expectations are unchanged. The explicit `pool.flush()` before close is gone on
+    // purpose: the awaited adapter must already have made the row durable.
+    it("with an applier attached, records the complete signed transaction and spent in one put, from the transaction's own fields, durably", async () => {
       const os = await import("os");
       const path = await import("path");
       const fs = await import("fs");
@@ -1703,6 +1842,8 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       let reopened: LevelSubAccountPoolStore | undefined;
       try {
         const { keyring, pool, warming, writes } = setupSpendTest(levelStore);
+        await pool.flush();
+        const applier = attachCommitApplier(pool);
         const putMany = jest.spyOn(levelStore, "putMany");
         const addr0 = keyring.deriveSubAccount(0).address;
         const spend = await signSpend(keyring, 0);
@@ -1712,7 +1853,7 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
 
         const item = { ...consolidatorItem(addr0, spend), rawTx: spend.rawTx };
         expect(item.spentInputs[0].valueWei).toBe("26000");
-        const res = pool.processSyncTransaction(item);
+        const res = await pool.processSyncTransaction(item);
 
         const expectedRow = {
           index: 0,
@@ -1723,6 +1864,8 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
           },
         };
         expect(res.affectedIndices).toEqual([0]);
+        expect(applier).toHaveBeenCalledTimes(1);
+        expect(applier).toHaveBeenCalledWith(spend.rawTx, "monad-testnet");
         expect(putMany).toHaveBeenCalledTimes(1);
         expect(putMany).toHaveBeenCalledWith([expectedRow]);
         expect(writes() - written).toBe(2); // the one `put` and its `putMany`
@@ -1735,10 +1878,11 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
 
         // Repeating the same item is a no-op.
         putMany.mockClear();
-        expect(pool.processSyncTransaction(item).affectedIndices).toEqual([]);
+        expect(
+          (await pool.processSyncTransaction(item)).affectedIndices
+        ).toEqual([]);
         expect(putMany).not.toHaveBeenCalled();
 
-        await pool.flush();
         await levelStore.Close();
         reopened = new LevelSubAccountPoolStore(dir);
         await reopened.Open();
@@ -1758,10 +1902,45 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       }
     });
 
+    it("hands the applier's own rejection to the caller, and takes one applier only", async () => {
+      const { keyring, pool, writes } = setupSpendTest();
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const spend = await signSpend(keyring, 0);
+      const failure = new Error("admission refused");
+      const applier = jest.fn().mockRejectedValue(failure);
+      pool.attachSpendApplier(applier);
+      expect(() => pool.attachSpendApplier(applier)).toThrow(
+        "Sub-account pool already has a spend applier"
+      );
+      const written = writes();
+
+      expect(
+        await refusalOf(pool, {
+          ...consolidatorItem(addr0, spend),
+          rawTx: spend.rawTx,
+        })
+      ).toBe(failure);
+      expect(applier).toHaveBeenCalledWith(spend.rawTx, "monad-testnet");
+      expect(writes()).toBe(written);
+
+      // What the applier reports decides the affected index; only a commit is one.
+      applier.mockResolvedValueOnce({ kind: "already-applied", poolIndex: 0 });
+      applier.mockResolvedValueOnce({ kind: "no-pool-row" });
+      for (let i = 0; i < 2; i++) {
+        expect(
+          await pool.processSyncTransaction({
+            ...consolidatorItem(addr0, spend),
+            rawTx: spend.rawTx,
+          })
+        ).toEqual({ affectedIndices: [] });
+      }
+    });
+
     it("marks an unfunded row and keeps a hand-built funding checkpoint beside the spend", async () => {
       const store = new InMemorySubAccountPoolStore();
       const keyring = MonadHdKeyring.fromMnemonic(TEST_MNEMONIC);
       const pool = new MonadSubAccountPool({ keyring, store });
+      attachCommitApplier(pool);
       pool.ensureUnfundedSize(1);
       pool.ensureSize(2);
       // Hand-built: no production path writes `lifecycle.funding`.
@@ -1788,10 +1967,12 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
         const spend = await signSpend(keyring, index);
         const address = keyring.deriveSubAccount(index).address;
         expect(
-          pool.processSyncTransaction({
-            ...consolidatorItem(address, spend),
-            rawTx: spend.rawTx,
-          }).affectedIndices
+          (
+            await pool.processSyncTransaction({
+              ...consolidatorItem(address, spend),
+              rawTx: spend.rawTx,
+            })
+          ).affectedIndices
         ).toEqual([index]);
         expect(pool.getRecord(index)).toEqual({
           index,
@@ -1808,21 +1989,127 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ).not.toThrow();
     });
 
+    // Check 1. An incoming item and a `payment-transfer` never spend a pool account: they resolve
+    // having changed nothing, with or without an applier, whatever bytes they carry. The incoming
+    // case pins the rule (the base returns the same, synchronously). The `payment-transfer` case
+    // fails on the base: the base ignores the item's kind and commits the row.
     it.each([
-      "another sender",
-      "hash mismatch",
-      "missing hash",
-      "malformed bytes",
-      "empty bytes",
-      "unsigned bytes",
-      "non-canonical bytes",
-      "oversize bytes",
-      "non-string bytes",
-    ])("writes nothing and does not throw for %s", async (kind) => {
+      ["an incoming wallet-sync item", { direction: "in" }],
+      ["an outgoing payment-transfer item", { type: "payment-transfer" }],
+      ["an incoming payment-transfer item", { type: "payment-transfer", direction: "in" }],
+    ])("is a no-op for %s, with and without an applier", async (_label, kind) => {
       const { keyring, pool, warming, writes } = setupSpendTest();
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const spend = await signSpend(keyring, 0);
+      const before = pool.records();
+      pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
+      const written = writes();
+      const complete = { ...consolidatorItem(addr0, spend), rawTx: spend.rawTx, ...kind };
+      const withoutBytes = { ...consolidatorItem(addr0, spend), ...kind };
+
+      for (const item of [complete, withoutBytes]) {
+        expect(await pool.processSyncTransaction(item as SyncItem)).toEqual({
+          affectedIndices: [],
+        });
+      }
+      const applier = attachCommitApplier(pool);
+      for (const item of [complete, withoutBytes]) {
+        expect(await pool.processSyncTransaction(item as SyncItem)).toEqual({
+          affectedIndices: [],
+        });
+      }
+
+      expect(applier).not.toHaveBeenCalled();
+      expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
+      expect(pool.capacityCache.has(0)).toBe(true);
+      expect(warming).not.toHaveBeenCalled();
+    });
+
+    // An item with no transaction that names no row of this pool is the consolidator's item for a
+    // send from the main account: not the pool's to refuse. Pins the boundary of the rejection
+    // above; the base resolves the same way. A composed test relies on it
+    // (`snapshots sendLegacy authorization before the public wallet queue`).
+    it("is a no-op for an item without raw bytes that names no row of this pool", async () => {
+      const { keyring, pool, writes } = setupSpendTest();
+      const applier = attachCommitApplier(pool);
+      const outside = await signSpend(keyring, 7);
+      pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
+      const written = writes();
+
+      for (const item of [
+        consolidatorItem(keyring.deriveSubAccount(7).address, outside),
+        { ...consolidatorItem("0x" + "34".repeat(20), outside), spentInputs: [] },
+      ]) {
+        expect(await pool.processSyncTransaction(item)).toEqual({
+          affectedIndices: [],
+        });
+      }
+      expect(applier).not.toHaveBeenCalled();
+      expect(writes()).toBe(written);
+      expect(pool.capacityCache.has(0)).toBe(true);
+    });
+
+    // Check 6: a transaction no live row signed spends no pool account. Not a rejection.
+    it("is a no-op for a consistent item whose signer is not a live row of this pool", async () => {
+      const { keyring, pool, writes } = setupSpendTest();
+      const applier = attachCommitApplier(pool);
+      const outside = await signSpend(keyring, 7);
+      const written = writes();
+
+      expect(
+        await pool.processSyncTransaction({
+          ...consolidatorItem(keyring.deriveSubAccount(7).address, outside),
+          rawTx: outside.rawTx,
+        })
+      ).toEqual({ affectedIndices: [] });
+
+      expect(applier).not.toHaveBeenCalled();
+      expect(writes()).toBe(written);
+      expect(pool.getRecord(7)).toBeUndefined();
+    });
+
+    /** Bytes that parse and carry a signature, but whose signature recovers to no public key. */
+    function unrecoverable(spend: { transaction: Transaction }) {
+      const transaction = spend.transaction.clone();
+      transaction.signature = Signature.from({
+        r: "0x" + "5".padStart(64, "0"),
+        s: "0x" + "1".padStart(64, "0"),
+        yParity: 0,
+      });
+      const rawTx = transaction.serialized;
+      const parsed = Transaction.from(rawTx);
+      expect(() => parsed.from).toThrow();
+      return { rawTx, txHash: parsed.hash as string };
+    }
+
+    // Before #1235 Stage 0b this table was "writes nothing and does not throw for %s" and asserted
+    // `res.affectedIndices` equal to [] for every row: the refusal was caught inside the adapter
+    // and the caller was told nothing. Each row is now a typed rejection with an applier attached
+    // (so it is the adapter or the writer refusing, not the missing applier), and the applier is
+    // never reached with bytes the adapter can see are wrong. Fails on the base for every row:
+    // nothing is rejected. "unrecoverable signature" also fails on the base as an UNTYPED throw
+    // out of `classifySpend`.
+    it.each([
+      ["another sender", "inconsistent-item"],
+      ["hash mismatch", "inconsistent-item"],
+      ["missing hash", "inconsistent-item"],
+      ["malformed bytes", "invalid-transaction"],
+      ["empty bytes", "invalid-transaction"],
+      ["unsigned bytes", "invalid-transaction"],
+      ["non-canonical bytes", "invalid-transaction"],
+      ["oversize bytes", "invalid-transaction"],
+      ["non-string bytes", "invalid-transaction"],
+      ["unrecoverable signature", "invalid-transaction"],
+      ["null bytes", "missing-transaction"],
+      ["no chain identifier", "inconsistent-item"],
+    ])("rejects %s with a typed refusal and writes nothing", async (kind, code) => {
+      const { keyring, pool, warming, writes } = setupSpendTest();
+      const applier = attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const own = await signSpend(keyring, 0);
       const other = await signSpend(keyring, 1);
+      const broken = unrecoverable(own);
       const base = consolidatorItem(addr0, own);
       const item: Record<string, unknown> =
         kind === "another sender"
@@ -1841,47 +2128,118 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
           ? { ...base, rawTx: "0x" + own.rawTx.slice(2).toUpperCase() }
           : kind === "oversize bytes"
           ? { ...base, rawTx: own.rawTx + "00".repeat(64 * 1024) }
-          : { ...base, rawTx: { toString: () => own.rawTx } };
+          : kind === "non-string bytes"
+          ? { ...base, rawTx: { toString: () => own.rawTx } }
+          : kind === "unrecoverable signature"
+          ? { ...base, txHash: broken.txHash, rawTx: broken.rawTx }
+          : kind === "null bytes"
+          ? { ...base, rawTx: null }
+          : { ...base, rawTx: own.rawTx, chainIdentifier: undefined };
       const before = pool.records();
       pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
       const written = writes();
 
-      const res = pool.processSyncTransaction(
-        item as unknown as Parameters<typeof pool.processSyncTransaction>[0]
-      );
+      const refusal = await refusalOf(pool, item);
 
-      expect(res.affectedIndices).toEqual([]);
+      expect(refusal).toBeInstanceOf(SubAccountSpendRefusedError);
+      expect(refusal).toMatchObject({ code });
+      expect(applier).not.toHaveBeenCalled();
       expect(writes()).toBe(written);
       expect(pool.records()).toEqual(before);
       expect(pool.capacityCache.has(0)).toBe(false);
       expect(warming).not.toHaveBeenCalled();
     });
 
-    it("does not throw for an item whose spent inputs are malformed", () => {
-      const { pool, writes } = setupSpendTest();
+    // Check 7. Before #1235 Stage 0b this test was "does not throw for an item whose spent inputs
+    // are malformed" and asserted that `[null]`, `[{}]`, `[{ address: 7 }]` and a string each
+    // returned `{ affectedIndices: [] }`: the item's own account of the spend was never compared
+    // with the transaction, and a malformed one was indistinguishable from an applied one. Those
+    // four shapes are kept below and now reject. On the base every row here fails: the complete
+    // item commits (or, for the shapes that name no row, resolves) and nothing is rejected.
+    it.each<[string, (item: ReturnType<typeof consolidatorItem>) => unknown]>([
+      ["no spent input", (item) => ({ ...item, spentInputs: [] })],
+      ["spentInputs absent", (item) => ({ ...item, spentInputs: undefined })],
+      ["a null spent input", (item) => ({ ...item, spentInputs: [null] })],
+      ["a spent input with no address", (item) => ({ ...item, spentInputs: [{}] })],
+      ["a spent input with a numeric address", (item) => ({ ...item, spentInputs: [{ address: 7 }] })],
+      ["spentInputs that is a string", (item) => ({ ...item, spentInputs: "0xabc" })],
+      ["two spent inputs", (item) => ({ ...item, spentInputs: [item.spentInputs[0], item.spentInputs[0]] })],
+      ["a spent input for another address", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], address: "0x" + "34".repeat(20) }] })],
+      ["a spent input for another pool row", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], address: "ROW1" }] })],
+      ["the wrong nonce", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], nonce: 1 }] })],
+      ["a debit below the transaction value", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], valueWei: "4999" }] })],
+      ["a debit above value plus the maximum fee", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], valueWei: "26001" }] })],
+      ["a debit that is not a decimal amount", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], valueWei: "0x1388" }] })],
+      ["a created output to another address", (item) => ({ ...item, createdOutputs: [{ ...item.createdOutputs[0], address: "0x" + "34".repeat(20) }] })],
+      ["a created output for another value", (item) => ({ ...item, createdOutputs: [{ ...item.createdOutputs[0], valueWei: "26000" }] })],
+      ["a created output with no value", (item) => ({ ...item, createdOutputs: [{ address: item.createdOutputs[0].address }] })],
+      ["two created outputs", (item) => ({ ...item, createdOutputs: [item.createdOutputs[0], item.createdOutputs[0]] })],
+      ["no created output where the field is present", (item) => ({ ...item, createdOutputs: [] })],
+    ])("rejects a complete item with %s, nothing written", async (_label, mutate) => {
+      const { keyring, pool, warming, writes } = setupSpendTest();
+      const applier = attachCommitApplier(pool);
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const spend = await signSpend(keyring, 0);
+      const mutated = JSON.parse(
+        JSON.stringify(
+          mutate({ ...consolidatorItem(addr0, spend), rawTx: spend.rawTx } as never)
+        ).replace("ROW1", keyring.deriveSubAccount(1).address)
+      );
+      const before = pool.records();
+      pool.capacityCache.set(0, { capacityWei: 9n, checkedAtMs: Date.now() });
       const written = writes();
-      for (const spentInputs of [[null], [{}], [{ address: 7 }], "0xabc"]) {
-        expect(
-          pool.processSyncTransaction({
-            direction: "out",
-            txHash: "0xdeadbeef",
-            rawTx: "0x1234",
-            spentInputs,
-          } as unknown as Parameters<typeof pool.processSyncTransaction>[0])
-        ).toEqual({ affectedIndices: [] });
-      }
+
+      const refusal = await refusalOf(pool, mutated);
+
+      expect(refusal).toBeInstanceOf(SubAccountSpendRefusedError);
+      expect(refusal).toMatchObject({ code: "inconsistent-item", index: 0 });
+      expect(applier).not.toHaveBeenCalled();
       expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
+      expect(pool.capacityCache.has(0)).toBe(false);
+      expect(warming).not.toHaveBeenCalled();
     });
 
+    // The other side of check 7: what the emitter may legitimately say is accepted, so the bound
+    // is the contract's and not merely "equal to what this fixture sends".
+    it.each<[string, (item: ReturnType<typeof consolidatorItem>) => unknown]>([
+      ["a debit equal to the transaction value", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], valueWei: "5000" }] })],
+      ["a debit equal to value plus the maximum fee", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], valueWei: "26000" }] })],
+      ["no nonce and no debit", (item) => ({ ...item, spentInputs: [{ address: item.spentInputs[0].address }] })],
+      ["no createdOutputs", (item) => ({ ...item, createdOutputs: undefined })],
+      ["a checksummed input address", (item) => ({ ...item, spentInputs: [{ ...item.spentInputs[0], address: "CHECKSUM0" }] })],
+    ])("accepts a complete item with %s", async (_label, mutate) => {
+      const { keyring, pool } = setupSpendTest();
+      const applier = attachCommitApplier(pool);
+      const addr0 = keyring.deriveSubAccount(0).address;
+      const spend = await signSpend(keyring, 0);
+      const mutated = JSON.parse(
+        JSON.stringify(
+          mutate({ ...consolidatorItem(addr0, spend), rawTx: spend.rawTx } as never)
+        ).replace("CHECKSUM0", addr0)
+      );
+
+      expect(await pool.processSyncTransaction(mutated)).toEqual({
+        affectedIndices: [0],
+      });
+      expect(applier).toHaveBeenCalledTimes(1);
+      expect(pool.getRecord(0)?.status).toBe("spent");
+    });
+
+    // Before #1235 Stage 0b every row of this table asserted `res.affectedIndices` equal to [] with
+    // no error: a row another owner or another transaction holds was reported like a success. A
+    // held row is now a typed `held` rejection out of the one writer; only the identical
+    // checkpoint is a quiet repeat. Fails on the base for the five held rows: nothing is rejected.
     it.each([
-      "in-use",
-      "retired",
-      "funding",
-      "spent without a checkpoint",
-      "spent with another checkpoint",
-      "spent with the identical checkpoint",
-    ])("leaves a row that is %s unchanged for a complete item", async (state) => {
+      ["in-use", "held"],
+      ["retired", "held"],
+      ["funding", "held"],
+      ["spent without a checkpoint", "held"],
+      ["spent with another checkpoint", "held"],
+      ["spent with the identical checkpoint", undefined],
+    ])("leaves a row that is %s unchanged for a complete item", async (state, code) => {
       const { keyring, pool, store, warming, writes } = setupSpendTest();
+      attachCommitApplier(pool);
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
       if (state === "in-use" || state === "retired") pool.setStatus(0, state);
@@ -1906,17 +2264,23 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       warming.mockClear();
       const written = writes();
 
-      const res = pool.processSyncTransaction({
+      const refusal = await refusalOf(pool, {
         ...consolidatorItem(addr0, spend),
         rawTx: spend.rawTx,
       });
 
-      expect(res.affectedIndices).toEqual([]);
+      if (code === undefined) expect(refusal).toBe("not refused");
+      else {
+        expect(refusal).toBeInstanceOf(SubAccountSpendRefusedError);
+        expect(refusal).toMatchObject({ code, index: 0 });
+      }
       expect(writes()).toBe(written);
       expect(pool.records()).toEqual(before);
       expect(warming).not.toHaveBeenCalled();
     });
 
+    // Before Stage 0b the item without raw bytes was asserted to return `{ affectedIndices: [] }`;
+    // it is refused now. What the test protects is unchanged: the committed row is not touched.
     it("never re-malforms a committed row when the item without raw bytes arrives afterwards", async () => {
       const { keyring, pool, writes } = setupSpendTest();
       const addr0 = keyring.deriveSubAccount(0).address;
@@ -1926,8 +2290,8 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       const written = writes();
 
       expect(
-        pool.processSyncTransaction(consolidatorItem(addr0, spend))
-      ).toEqual({ affectedIndices: [] });
+        await refusalOf(pool, consolidatorItem(addr0, spend))
+      ).toMatchObject({ code: "missing-transaction", index: 0 });
 
       expect(writes()).toBe(written);
       expect(pool.getRecord(0)).toEqual(committed);
@@ -1937,12 +2301,14 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       ).not.toThrow();
     });
 
-    it("lets the complete transaction commit after the item without raw bytes was applied first", async () => {
+    it("lets the complete transaction commit after the item without raw bytes was refused first", async () => {
       const { keyring, pool, writes } = setupSpendTest();
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
       const written = writes();
-      pool.processSyncTransaction(consolidatorItem(addr0, spend));
+      expect(
+        await refusalOf(pool, consolidatorItem(addr0, spend))
+      ).toMatchObject({ code: "missing-transaction" });
       expect(writes()).toBe(written);
 
       expect(pool.commitSpend(0, spend.rawTx)).toBe("committed");
@@ -1958,6 +2324,25 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       expect(() =>
         validateMonadWalletState(walletStateOf(pool, keyring))
       ).not.toThrow();
+    });
+
+    // The Stage 0a review's finding. On the base `commitSpend` throws ethers' own error here
+    // ("Cannot find square root"): reading the sender sat outside the try.
+    it("commitSpend refuses bytes whose signature does not recover with a typed error", async () => {
+      const { keyring, pool, writes } = setupSpendTest();
+      const broken = unrecoverable(await signSpend(keyring, 0));
+      const before = pool.records();
+      const written = writes();
+      let thrown: unknown;
+      try {
+        pool.commitSpend(0, broken.rawTx);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(SubAccountSpendRefusedError);
+      expect(thrown).toMatchObject({ code: "invalid-transaction", index: 0 });
+      expect(writes()).toBe(written);
+      expect(pool.records()).toEqual(before);
     });
 
     it("commitSpend refuses without writing, and creates no row", async () => {

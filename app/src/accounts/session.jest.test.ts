@@ -24,10 +24,12 @@ jest.mock('@frank/wallet/chain', () => {
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>(done => {
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
     resolve = done
+    reject = fail
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 function fixture() {
   const account = {
@@ -671,4 +673,269 @@ test('importBip39Wallet recovers and successfully imports when initial status is
     activateSpy.mockRestore()
     getWalletSpy.mockRestore()
   }
+})
+
+async function replaceAccount(
+  f: ReturnType<typeof fixture>,
+  invalidate = false,
+) {
+  const account = {
+    ...f.account,
+    receipt: { operationId: 'attempt-b', context: { accountId: 'b' } },
+  } as PublicAccount
+  f.set({ schema: 1, revision: 2, active: account, pending: null })
+  f.capability.account = account
+  if (invalidate) f.invalidate()
+  await f.session.retry()
+  expect(f.session.state.account?.receipt.context.accountId).toBe('b')
+}
+
+const derivedPaths = [
+  'xec-testnet',
+  'btc-testnet',
+  'bch-testnet',
+  'doge-testnet',
+  'solana-devnet',
+  'ethereum-sepolia',
+  'ed25519',
+] as const
+function derivation(
+  f: ReturnType<typeof fixture>,
+  path: (typeof derivedPaths)[number],
+) {
+  return {
+    read: () =>
+      path === 'ed25519'
+        ? f.session.getCurvePublicKey(path)
+        : f.session.getChainAddress(path),
+    cached: () =>
+      path === 'ed25519'
+        ? f.session.getCachedCurvePublicKey(path)
+        : f.session.getCachedChainAddress(path),
+  }
+}
+
+describe.each(['refresh replacement', 'invalidation'] as const)(
+  '%s',
+  transition => {
+    test.each(derivedPaths)(
+      '%s rejects A without publishing or removing pending B',
+      async path => {
+        const f = fixture()
+        await f.session.initialize()
+        const a = deferred<Uint8Array>(),
+          b = deferred<Uint8Array>()
+        const roots = jest
+          .spyOn(f.session, 'getActiveDomainRoot')
+          .mockReturnValueOnce(a.promise)
+          .mockReturnValueOnce(b.promise)
+        const read = derivation(f, path)
+        let displayed: string | Uint8Array | undefined
+        const old = read.read().then(value => {
+          displayed = value
+        })
+        const rejected = expect(old).rejects.toMatchObject({ code: 'closed' })
+        await replaceAccount(f, transition === 'invalidation')
+        const current = read.read()
+        const oldRoot = new Uint8Array(32).fill(19)
+        a.resolve(oldRoot)
+        await rejected
+        expect(displayed).toBeUndefined()
+        expect(read.cached()).toBeUndefined()
+        expect(oldRoot.every(byte => byte === 0)).toBe(true)
+        const duplicate = read.read()
+        expect(roots).toHaveBeenCalledTimes(2)
+        const newRoot = new Uint8Array(32).fill(23)
+        b.resolve(newRoot)
+        const result = await current
+        expect(await duplicate).toEqual(result)
+        expect(read.cached()).toEqual(result)
+        expect(newRoot.every(byte => byte === 0)).toBe(true)
+        expect(await read.read()).toEqual(result)
+        expect(roots).toHaveBeenCalledTimes(2)
+      },
+    )
+  },
+)
+
+test.each(derivedPaths)(
+  '%s rejects completion after close and preserves current errors and retry',
+  async path => {
+    const f = fixture()
+    await f.session.initialize()
+    const a = deferred<Uint8Array>()
+    const roots = jest
+      .spyOn(f.session, 'getActiveDomainRoot')
+      .mockReturnValueOnce(a.promise)
+    const read = derivation(f, path)
+    const failure = new Error('synthetic derivation failure')
+    a.reject(failure)
+    await expect(read.read()).rejects.toBe(failure)
+    const pending = deferred<Uint8Array>()
+    roots.mockReturnValueOnce(pending.promise)
+    const old = read.read()
+    const rejected = expect(old).rejects.toMatchObject({ code: 'closed' })
+    await f.session.close()
+    const root = new Uint8Array(32).fill(29)
+    pending.resolve(root)
+    await rejected
+    expect(read.cached()).toBeUndefined()
+    expect(root.every(byte => byte === 0)).toBe(true)
+    expect(roots).toHaveBeenCalledTimes(2)
+  },
+)
+
+test.each(['close', 'refresh replacement', 'invalidation'] as const)(
+  'domain-root acquisition rejects obsolete capabilities after %s',
+  async transition => {
+    const f = fixture()
+    await f.session.initialize()
+    const held = deferred<typeof f.capability>(),
+      entered = deferred<void>()
+    const oldRoots = DOMAIN_PURPOSES.map((purpose, i) => ({
+      registry: DERIVATION_REGISTRY_ID,
+      purpose,
+      bytes: new Uint8Array(32).fill(i + 31),
+    }))
+    const oldCapability = {
+      account: f.account,
+      takeRoots: jest.fn(() => oldRoots),
+      close: jest.fn(),
+    }
+    f.custody.openActive.mockImplementationOnce(() => {
+      entered.resolve()
+      return held.promise
+    })
+    const old = f.session.getActiveDomainRoot('solana-wallet')
+    const rejected = expect(old).rejects.toMatchObject({ code: 'closed' })
+    await entered.promise
+    if (transition === 'close') await f.session.close()
+    else await replaceAccount(f, transition === 'invalidation')
+    let currentRoot: Uint8Array | undefined
+    if (transition !== 'close') {
+      f.capability.takeRoots.mockImplementation(() =>
+        DOMAIN_PURPOSES.map(purpose => ({
+          registry: DERIVATION_REGISTRY_ID,
+          purpose,
+          bytes: new Uint8Array(32).fill(37),
+        })),
+      )
+      currentRoot = await f.session.getActiveDomainRoot('solana-wallet')
+    }
+    held.resolve(oldCapability)
+    await rejected
+    expect(oldCapability.close).toHaveBeenCalledTimes(1)
+    // A revoked capability need not hand root material out at all.
+    expect(oldCapability.takeRoots).not.toHaveBeenCalled()
+    if (currentRoot) expect(currentRoot).toEqual(new Uint8Array(32).fill(37))
+  },
+)
+
+test('domain-root reads preserve current errors and reject a different active account', async () => {
+  const f = fixture()
+  await f.session.initialize()
+  const failure = new Error('synthetic custody failure')
+  f.custody.openActive.mockRejectedValueOnce(failure)
+  await expect(f.session.getActiveDomainRoot('solana-wallet')).rejects.toBe(
+    failure,
+  )
+  const wrong = {
+    ...f.capability,
+    account: {
+      ...f.account,
+      receipt: { operationId: 'attempt-b', context: { accountId: 'b' } },
+    } as PublicAccount,
+    close: jest.fn(),
+  }
+  f.custody.openActive.mockResolvedValueOnce(wrong)
+  await expect(
+    f.session.getActiveDomainRoot('solana-wallet'),
+  ).rejects.toMatchObject({ code: 'conflict' })
+  expect(wrong.close).toHaveBeenCalledTimes(1)
+})
+
+test.each(['close', 'refresh replacement', 'invalidation'] as const)(
+  'Monad receive-address completion cannot escape after %s',
+  async transition => {
+    const f = fixture()
+    await f.session.initialize()
+    const a = deferred<string>(),
+      entered = deferred<void>()
+    Object.assign(f.wallet, {
+      getReceiveAddress: jest.fn(() => {
+        entered.resolve()
+        return a.promise
+      }),
+    })
+    const old = f.session.getChainAddress('monad-testnet')
+    const rejected = expect(old).rejects.toMatchObject({ code: 'closed' })
+    await entered.promise
+    if (transition === 'close') await f.session.close()
+    else await replaceAccount(f, transition === 'invalidation')
+    a.resolve('obsolete-receive-address')
+    await rejected
+    expect(f.session.getCachedChainAddress('monad-testnet')).toBeUndefined()
+  },
+)
+
+test.each(['close', 'refresh replacement', 'invalidation'] as const)(
+  'secp256k1 wallet acquisition cannot escape after %s',
+  async transition => {
+    const f = fixture()
+    // Exercise acquisition before a cached identity key exists.
+    Object.assign(f.wallet, { identity: {} })
+    await f.session.initialize()
+    const held = deferred<RuntimeWallet>()
+    const acquire = jest
+      .spyOn(f.session, 'getWallet')
+      .mockReturnValueOnce(held.promise)
+    const old = f.session.getCurvePublicKey('secp256k1')
+    const rejected = expect(old).rejects.toMatchObject({ code: 'closed' })
+    if (transition === 'close') await f.session.close()
+    else await replaceAccount(f, transition === 'invalidation')
+    held.resolve({
+      identity: { compressedPubKey: new Uint8Array(33).fill(2) },
+    } as unknown as RuntimeWallet)
+    await rejected
+    expect(f.session.getCachedCurvePublicKey('secp256k1')).toBeUndefined()
+    acquire.mockRestore()
+  },
+)
+
+test('initial root and secp256k1 requests survive initialization and current wallet errors propagate', async () => {
+  const f = fixture()
+  const [root, key, duplicate] = await Promise.all([
+    f.session.getActiveWalletRoot(),
+    f.session.getCurvePublicKey('secp256k1'),
+    f.session.getCurvePublicKey('secp256k1'),
+  ])
+  expect(root).toHaveLength(32)
+  expect(key).toEqual(new Uint8Array(33).fill(0x02))
+  expect(duplicate).toEqual(key)
+  expect(f.createWallet).toHaveBeenCalledTimes(1)
+  const empty = fixture()
+  Object.assign(empty.wallet, { identity: {} })
+  const failure = new Error('synthetic wallet failure')
+  jest.spyOn(empty.session, 'getWallet').mockRejectedValueOnce(failure)
+  await expect(empty.session.getCurvePublicKey('secp256k1')).rejects.toBe(
+    failure,
+  )
+})
+
+test('Monad receive-address errors propagate and a current retry publishes its address', async () => {
+  const f = fixture()
+  const failure = new Error('synthetic receive-address failure')
+  const receive = jest
+    .fn()
+    .mockRejectedValueOnce(failure)
+    .mockResolvedValueOnce('current-receive-address')
+  Object.assign(f.wallet, { getReceiveAddress: receive })
+  await expect(f.session.getChainAddress('monad-testnet')).rejects.toBe(failure)
+  expect(f.session.getCachedChainAddress('monad-testnet')).toBeUndefined()
+  await expect(f.session.getChainAddress('monad-testnet')).resolves.toBe(
+    'current-receive-address',
+  )
+  expect(f.session.getCachedChainAddress('monad-testnet')).toBe(
+    'current-receive-address',
+  )
 })

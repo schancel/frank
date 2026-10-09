@@ -41,6 +41,18 @@
       "url": "https://github.com/schancel/frank/issues/1279",
       "publishedAt": "2026-10-09T10:42:46.559447+00:00",
       "bodyPath": "docs/plans/wallet-messaging-baseline/followups/message-store-readonly.md"
+    },
+    "bip39-containment": {
+      "title": "[bug] Refuse unsafe BIP39 import without deleting data or changing identity",
+      "url": "https://github.com/schancel/frank/issues/1280",
+      "publishedAt": "2026-10-09T10:53:17.411324+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/bip39-containment.md"
+    },
+    "native-fee-copy": {
+      "title": "[bug] Native Send labels an uncapped fee estimate as Maximum Total",
+      "url": "https://github.com/schancel/frank/issues/1283",
+      "publishedAt": "2026-10-09T11:02:06.810373+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/native-fee-copy.md"
     }
   },
   "edges": {
@@ -53,6 +65,38 @@
       "issue": 1237,
       "blockedBy": 1279,
       "checkedAt": "2026-10-09T10:46:32.775592+00:00"
+    }
+  },
+  "drafts": {
+    "explicit-reset-policy": {
+      "status": "NEEDS_SPECIFICATION",
+      "owner": "root/coordinator; maintainer decides policy",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/explicit-reset-policy.md",
+      "published": false
+    },
+    "standard-bip39-custody-design": {
+      "status": "NEEDS_SPECIFICATION",
+      "owner": "root/coordinator; maintainer decides policy",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/standard-bip39-custody-design.md",
+      "published": false
+    }
+  },
+  "scopeAmendments": {
+    "stage-a-60": {
+      "url": "https://github.com/schancel/frank/issues/60#issuecomment-6079983615",
+      "recordedAt": "2026-10-09T11:30:12.210274+00:00"
+    },
+    "stage-a-777": {
+      "url": "https://github.com/schancel/frank/issues/777#issuecomment-6079984094",
+      "recordedAt": "2026-10-09T11:30:14.321894+00:00"
+    },
+    "stage-a-type-60": {
+      "url": "https://github.com/schancel/frank/issues/60#issuecomment-6080017516",
+      "recordedAt": "2026-10-09T11:32:35.195960+00:00"
+    },
+    "stage-a-type-777": {
+      "url": "https://github.com/schancel/frank/issues/777#issuecomment-6080017957",
+      "recordedAt": "2026-10-09T11:32:37.040493+00:00"
     }
   }
 }

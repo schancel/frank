@@ -1797,3 +1797,334 @@ describe("Multi-RPC failover, cooldown, and 429 rollover", () => {
     });
   });
 });
+
+describe("JSON-RPC HTTP batching (#1215)", () => {
+  let server: Server;
+  let rpcUrl: string;
+  let rawRequests: Array<{
+    method: string;
+    url: string;
+    headers: import("http").IncomingHttpHeaders;
+    body: string;
+    json: any;
+  }> = [];
+  let itemErrorMap: Record<string, { code: number; message: string }> = {};
+
+  beforeEach(async () => {
+    rawRequests = [];
+    itemErrorMap = {};
+
+    server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        try {
+          const json = JSON.parse(body);
+          rawRequests.push({
+            method: req.method || "POST",
+            url: req.url || "/",
+            headers: req.headers,
+            body,
+            json,
+          });
+
+          const items = Array.isArray(json) ? json : [json];
+          const responses = items.map((item) => {
+            if (item.method === "eth_chainId") {
+              return { jsonrpc: "2.0", id: item.id, result: "0x279f" };
+            }
+            if (item.method === "eth_blockNumber") {
+              return { jsonrpc: "2.0", id: item.id, result: "0x10" };
+            }
+            if (item.method === "eth_getBalance") {
+              const account = item.params?.[0]?.toLowerCase();
+              if (account && itemErrorMap[account]) {
+                return {
+                  jsonrpc: "2.0",
+                  id: item.id,
+                  error: itemErrorMap[account],
+                };
+              }
+              return { jsonrpc: "2.0", id: item.id, result: "0x2a" };
+            }
+            return { jsonrpc: "2.0", id: item.id, result: "0x0" };
+          });
+
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(Array.isArray(json) ? responses : responses[0]));
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "bad request" }));
+        }
+      });
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const port = (server.address() as AddressInfo).port;
+        rpcUrl = `http://127.0.0.1:${port}`;
+        resolve();
+      });
+    });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("coalesces concurrent asynchronous queries into a single batched HTTP POST payload over the wire", async () => {
+    const provider = createMonadJsonRpcProvider({ rpcUrl });
+    try {
+      // Warm up network verification so we isolate concurrent queries in steady-state
+      await provider.getBalance("0x0000000000000000000000000000000000000001");
+      rawRequests.length = 0;
+
+      const addr1 = "0x0000000000000000000000000000000000000001";
+      const addr2 = "0x0000000000000000000000000000000000000002";
+
+      const [balance1, balance2, blockNumber] = await Promise.all([
+        provider.getBalance(addr1),
+        provider.getBalance(addr2),
+        provider.getBlockNumber(),
+      ]);
+
+      expect(balance1).toBe(42n);
+      expect(balance2).toBe(42n);
+      expect(blockNumber).toBe(16);
+
+      // Verify that exactly 1 HTTP request was made over the wire
+      expect(rawRequests).toHaveLength(1);
+      const request = rawRequests[0];
+      expect(request.method).toBe("POST");
+      expect(request.headers["content-type"]).toMatch(/application\/json/i);
+
+      // Verify the payload is a batched JSON-RPC array `[{ id: 1, ... }, { id: 2, ... }]`
+      expect(Array.isArray(request.json)).toBe(true);
+      expect(request.json).toHaveLength(3);
+
+      const methods = request.json.map((r: any) => r.method);
+      expect(methods).toEqual([
+        "eth_getBalance",
+        "eth_getBalance",
+        "eth_blockNumber",
+      ]);
+
+      const ids = request.json.map((r: any) => r.id);
+      expect(new Set(ids).size).toBe(3);
+      for (const item of request.json) {
+        expect(item.jsonrpc).toBe("2.0");
+      }
+    } finally {
+      provider.destroy();
+    }
+  });
+
+  it("coalesces concurrent queries on a fresh provider including bootstrap network detection", async () => {
+    const provider = createMonadJsonRpcProvider({ rpcUrl });
+    try {
+      const addr1 = "0x0000000000000000000000000000000000000001";
+      const addr2 = "0x0000000000000000000000000000000000000002";
+
+      const [balance1, balance2, blockNumber] = await Promise.all([
+        provider.getBalance(addr1),
+        provider.getBalance(addr2),
+        provider.getBlockNumber(),
+      ]);
+
+      expect(balance1).toBe(42n);
+      expect(balance2).toBe(42n);
+      expect(blockNumber).toBe(16);
+
+      // All initial requests (including eth_chainId) coalesce into one batch
+      expect(rawRequests).toHaveLength(1);
+      expect(Array.isArray(rawRequests[0].json)).toBe(true);
+      expect(rawRequests[0].json).toHaveLength(4);
+
+      const methods = rawRequests[0].json.map((r: any) => r.method);
+      expect(methods).toContain("eth_chainId");
+      expect(methods).toContain("eth_blockNumber");
+      expect(methods.filter((m: string) => m === "eth_getBalance")).toHaveLength(2);
+    } finally {
+      provider.destroy();
+    }
+  });
+
+  it("verifies that errors in one item of a batch do not break parsing for other items", async () => {
+    const provider = createMonadJsonRpcProvider({ rpcUrl });
+    try {
+      // Warm up network detection
+      await provider.getBalance("0x0000000000000000000000000000000000000001");
+      rawRequests.length = 0;
+
+      const addr1 = "0x0000000000000000000000000000000000000001";
+      const addrInvalid = "0x0000000000000000000000000000000000000099";
+      itemErrorMap[addrInvalid] = {
+        code: -32602,
+        message: "invalid address parameter or execution reverted",
+      };
+
+      const results = await Promise.allSettled([
+        provider.getBalance(addr1),
+        provider.getBalance(addrInvalid),
+        provider.getBlockNumber(),
+      ]);
+
+      expect(results[0].status).toBe("fulfilled");
+      if (results[0].status === "fulfilled") {
+        expect(results[0].value).toBe(42n);
+      }
+
+      expect(results[1].status).toBe("rejected");
+      if (results[1].status === "rejected") {
+        expect(results[1].reason.message).toMatch(
+          /invalid address parameter or execution reverted/i
+        );
+      }
+
+      expect(results[2].status).toBe("fulfilled");
+      if (results[2].status === "fulfilled") {
+        expect(results[2].value).toBe(16);
+      }
+
+      // Confirm all 3 queries were dispatched in a single batch
+      expect(rawRequests).toHaveLength(1);
+      expect(Array.isArray(rawRequests[0].json)).toBe(true);
+      expect(rawRequests[0].json).toHaveLength(3);
+    } finally {
+      provider.destroy();
+    }
+  });
+
+  it("respects custom batchStallTime configuration", async () => {
+    // With 50ms batchStallTime, two queries separated by 20ms will coalesce into one batch
+    const provider = createMonadJsonRpcProvider({
+      rpcUrl,
+      batchStallTime: 50,
+    });
+    try {
+      await provider.getBalance("0x0000000000000000000000000000000000000001");
+      rawRequests.length = 0;
+
+      const p1 = provider.getBalance(
+        "0x0000000000000000000000000000000000000001"
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const p2 = provider.getBalance(
+        "0x0000000000000000000000000000000000000002"
+      );
+
+      const [b1, b2] = await Promise.all([p1, p2]);
+      expect(b1).toBe(42n);
+      expect(b2).toBe(42n);
+
+      expect(rawRequests).toHaveLength(1);
+      expect(Array.isArray(rawRequests[0].json)).toBe(true);
+      expect(rawRequests[0].json).toHaveLength(2);
+    } finally {
+      provider.destroy();
+    }
+  });
+
+  it("coalesces concurrent queries when using relay authentication", async () => {
+    let authedRequests: any[] = [];
+    const relayServer = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        if (req.url === "/capability/auth") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              epoch: "00".repeat(32),
+              nonce: "11".repeat(32),
+              expires_at_ms: Date.now() + 60000,
+              token: "22".repeat(32),
+              signing_domain: "frank:rpc-http-auth:v1",
+              customer: "0x0000000000000000000000000000000000000001",
+              chain: "monad-testnet",
+              body_sha256: createHash("sha256")
+                .update(new Uint8Array(0))
+                .digest("hex"),
+              network_tag: Buffer.from("MONT").toString("hex"),
+            })
+          );
+          return;
+        }
+        if (req.url === "/capability") {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify({
+              rpc_path: "/chain-rpc/authed-batch-test",
+              expires_at_ms: Date.now() + 60000,
+            })
+          );
+          return;
+        }
+        if (req.url === "/chain-rpc/authed-batch-test") {
+          const json = JSON.parse(body);
+          authedRequests.push(json);
+          const items = Array.isArray(json) ? json : [json];
+          const responses = items.map((item) => {
+            if (item.method === "eth_chainId") {
+              return { jsonrpc: "2.0", id: item.id, result: "0x279f" };
+            }
+            if (item.method === "eth_blockNumber") {
+              return { jsonrpc: "2.0", id: item.id, result: "0x10" };
+            }
+            return { jsonrpc: "2.0", id: item.id, result: "0x2a" };
+          });
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(
+            JSON.stringify(Array.isArray(json) ? responses : responses[0])
+          );
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+    });
+
+    let relayUrl = "";
+    await new Promise<void>((resolve) => {
+      relayServer.listen(0, "127.0.0.1", () => {
+        const port = (relayServer.address() as AddressInfo).port;
+        relayUrl = `http://127.0.0.1:${port}/rpc`;
+        resolve();
+      });
+    });
+
+    const provider = createMonadJsonRpcProvider({
+      rpcUrl: relayUrl,
+      relayAuth: {
+        chain: "monad-testnet",
+        customer: "0x0000000000000000000000000000000000000001",
+        networkTag: "MONT",
+        signDigest: () => new Uint8Array(64),
+      },
+    });
+
+    try {
+      const [b1, b2, bn] = await Promise.all([
+        provider.getBalance("0x0000000000000000000000000000000000000001"),
+        provider.getBalance("0x0000000000000000000000000000000000000002"),
+        provider.getBlockNumber(),
+      ]);
+
+      expect(b1).toBe(42n);
+      expect(b2).toBe(42n);
+      expect(bn).toBe(16);
+
+      // Verify that authed requests were dispatched as a batch array
+      expect(authedRequests).toHaveLength(1);
+      expect(Array.isArray(authedRequests[0])).toBe(true);
+      expect(authedRequests[0].length).toBeGreaterThanOrEqual(3);
+    } finally {
+      provider.destroy();
+      await new Promise<void>((resolve) => relayServer.close(() => resolve()));
+    }
+  });
+});

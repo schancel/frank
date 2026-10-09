@@ -147,6 +147,9 @@ export type {
 } from "./chains-registry";
 
 export {
+  DirectMessageAlreadyAttemptedError,
+  DirectMessageArgumentError,
+  DirectMessageAttemptUnlinkedError,
   NativeTransactionSubmissionError,
   TopicPostOutcomeUnknownError,
 } from "./active-chain";

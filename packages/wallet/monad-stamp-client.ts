@@ -1903,6 +1903,14 @@ export class MonadCanonicalStampClient {
     return JSON.stringify([this.journal.getIntents(), this.journal.getAll()])
   }
 
+  /** Read-only: whether the journal holds a payment intent or attempt recorded for this consumer. */
+  hasConsumerRecord(consumerId: string): boolean {
+    this.assertOwner()
+    return [...this.journal.getIntents(), ...this.journal.getAll()].some(
+      record => record.consumerId === consumerId,
+    )
+  }
+
   /** All reopened records must match real persisted workflow links before explicit replay. */
   reconcileWorkflowLinks(links: readonly CanonicalWorkflowLink[]): readonly {
     attemptRef: string

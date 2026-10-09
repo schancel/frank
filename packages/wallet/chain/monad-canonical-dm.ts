@@ -74,7 +74,12 @@ import type {
   StealthItem,
 } from '@frank/cashweb/types/messages'
 export { applyWalletSyncItem } from '../sync-dispatcher'
-import { directMessageNotAttempted } from './active-chain'
+import {
+  DirectMessageAlreadyAttemptedError,
+  DirectMessageArgumentError,
+  DirectMessageAttemptUnlinkedError,
+  directMessageNotAttempted,
+} from './active-chain'
 import type {
   ChainAddress,
   DirectMessageAttemptStatus,
@@ -665,6 +670,53 @@ async function send(
   params: Parameters<DirectMessageClient['send']>[0],
   defaultStampValueWei: bigint,
 ): Promise<DirectMessageSendResult> {
+  // Supplied identities are taken exactly or refused: 16 bytes or their lowercase 8-4-4-4-12
+  // form. Nothing is repaired. Bytes are copied, so the repeat check and the sealed message use
+  // the same value whatever the caller does to its buffer while this send waits. A refusal here
+  // is a permanent caller error and is deliberately not labelled.
+  const suppliedId = (
+    argument: 'conversationId' | 'messageId',
+  ): Uint8Array | undefined => {
+    const value: unknown = params[argument]
+    if (value === undefined) return undefined
+    if (
+      typeof value === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)
+    )
+      return fromHex(value.replace(/-/g, ''))
+    if (
+      Object.prototype.toString.call(value) === '[object Uint8Array]' &&
+      (value as Uint8Array).length === 16
+    )
+      return Uint8Array.from(value as Uint8Array)
+    throw new DirectMessageArgumentError(argument)
+  }
+  const conversationIdBytes = suppliedId('conversationId')
+  const suppliedMessageId = suppliedId('messageId')
+  if (suppliedMessageId) {
+    // The repeat rule, before the directory or anything else that can refuse or act. Every send
+    // of this wallet runs one at a time, so no other send can create a record for this ID between
+    // this check and the intent below. A link is written only after its intent is durable, and
+    // links are never deleted: one here means an attempt exists, and the answer is the original.
+    const consumerId = `frank-dm:${toHex(suppliedMessageId)}`
+    const original = owner.links.all().find(row => row.consumerId === consumerId)
+    if (original)
+      throw new DirectMessageAlreadyAttemptedError(
+        formatUuid(suppliedMessageId),
+        original.digest,
+        original.prepared.recipientSubject,
+      )
+    let recorded: boolean
+    try {
+      recorded = owner.client().hasConsumerRecord(consumerId)
+    } catch (error) {
+      // The journal could not be read. This call created nothing, like any refusal further down.
+      throw notAttempted(error)
+    }
+    // A payment record with no link: never a second intent, and not the caller's to clear.
+    if (recorded)
+      throw new DirectMessageAttemptUnlinkedError(formatUuid(suppliedMessageId))
+  }
   let attempted = false
   try {
     const directory = requireDirectory(owner)
@@ -715,18 +767,7 @@ async function send(
     const recipient = await directory.peerCurrent({ subject: peer.subject })
     if (!recipient)
       throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
-    const messageId = randomBytes(16)
-    let conversationIdBytes: Uint8Array | undefined
-    if (params.conversationId) {
-      if (typeof params.conversationId === 'string') {
-        const clean = params.conversationId.replace(/-/g, '')
-        if (clean.length === 32) {
-          conversationIdBytes = Uint8Array.from(Buffer.from(clean, 'hex'))
-        }
-      } else if (params.conversationId.length === 16) {
-        conversationIdBytes = params.conversationId
-      }
-    }
+    const messageId = suppliedMessageId ?? randomBytes(16)
     const roles = owner.roles.create(directory.network, senderCurrent)
     let sealed
     try {

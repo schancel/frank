@@ -86,10 +86,6 @@ test('real typed wallets discover the built-in fake transport and fund/send only
     // zero read; out-of-band funding does not clear it, so clear it explicitly.
     expect(sender.invalidateBalanceCache).toEqual(expect.any(Function))
     sender.invalidateBalanceCache?.()
-    // Still required: the wallet read below goes through the provider, whose
-    // own 250 ms read cache (separate from the wallet balance cache) may also
-    // hold the earlier zero.
-    await new Promise(resolve => setTimeout(resolve, 300))
     expect(await sender.getBalance()).toBe(10n ** 18n)
     expect(await sender.provider.getBalance(sender.identity.address.raw)).toBe(
       0n,

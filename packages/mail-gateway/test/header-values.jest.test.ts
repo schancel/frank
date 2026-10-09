@@ -426,7 +426,7 @@ describe('accepting a Frank message for email', () => {
     expect(ledger.getPendingSpoolCount()).toBe(0);
   });
 
-  it('refuses a message again without recording it when a later poll returns it again', async () => {
+  it('offers a refused message for sending once when later polls return it again', async () => {
     const refused = emailDm({}, { senderAddress: { raw: 'not a sender' }, messageId: 'fmsg_bad', conversationId: 'conv_bad', receivedTime: NOW });
     const { listener, worker, deliver } = makeListener((sinceMs) =>
       [refused].filter((m) => m.receivedTime >= sinceMs)
@@ -436,11 +436,9 @@ describe('accepting a Frank message for email', () => {
     await listener.pollOnce();
     await listener.pollOnce();
 
-    // The cursor is inclusive, so the newest message of a poll is offered again.
-    expect(dispatch).toHaveBeenCalledTimes(2);
-    for (const outcome of dispatch.mock.results) {
-      await expect(outcome.value).resolves.toMatchObject({ success: false, spooled: false });
-    }
+    // The cursor is inclusive, so the newest message of a poll is returned again.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    await expect(dispatch.mock.results[0].value).resolves.toMatchObject({ success: false, spooled: false });
     expect(deliver).not.toHaveBeenCalled();
     expect(ledger.getLatestThreadMappingByConversationId('conv_bad')).toBeUndefined();
     expect(ledger.getPendingSpoolCount()).toBe(0);

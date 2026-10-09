@@ -1,0 +1,22 @@
+{
+  "issues": {
+    "native-avu": {
+      "title": "[bug] Use one oracle snapshot for native wallet and asset AVU values",
+      "url": "https://github.com/schancel/frank/issues/1259",
+      "publishedAt": "2026-10-09T07:52:26.065497+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/native-avu.md"
+    },
+    "spl-failure": {
+      "title": "[bug] Preserve known SPL holdings when token account reads fail",
+      "url": "https://github.com/schancel/frank/issues/1260",
+      "publishedAt": "2026-10-09T07:52:27.968513+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/spl-failure.md"
+    },
+    "swap-containment": {
+      "title": "[bug] Disable fabricated Instant Swap balances and execution",
+      "url": "https://github.com/schancel/frank/issues/1266",
+      "publishedAt": "2026-10-09T08:30:14.170285+00:00",
+      "bodyPath": "docs/plans/wallet-messaging-baseline/followups/swap-containment.md"
+    }
+  }
+}

@@ -1,3 +1,5 @@
+import * as legacyEnvelope from "@frank/cashweb/relay/monad-message-envelope";
+import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 /**
  * Unit tests for `monad-chain.ts` (ticket #41): verifies `MonadChain` (via `createMonadChain`)
  * wires the real Monad wallet clients together correctly. Per the ticket's own instructions, this
@@ -705,6 +707,86 @@ describe("createMonadChain: directMessages", () => {
       "Canonical direct messages require persistent typed wallet custody on a Monad network."
     );
   });
+
+  it.each(["wallet-sync", "payment-transfer", "text"])(
+    "checks inert decoded legacy %s before financial effects",
+    async (type) => {
+      const chain = createMonadChain(TEST_CONFIG);
+      const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
+      const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX);
+      const wallet = makeWallet(alice);
+      wallet.stampPaymentJournal = new InMemoryStampPaymentJournal();
+      await wallet.stampPaymentJournal.put({
+        payloadHashHex: "ab".repeat(32),
+        childIndex: 1,
+        txHash: "retained",
+        address: alice.address.raw,
+        valueWei: "1",
+        status: "sweep-pending",
+      });
+      const before = wallet.stampPaymentJournal.getAll();
+      const put = jest.spyOn(wallet.stampPaymentJournal, "put");
+      const dispatch = jest
+        .spyOn(syncDispatch, "applyWalletSyncItem")
+        .mockReturnValue({});
+      const recovery = jest
+        .spyOn(
+          jest.requireMock<typeof import("../monad-stamp-client")>(
+            "../monad-stamp-client"
+          ),
+          "recoverMonadStampPayments"
+        )
+        .mockReturnValue([]);
+      const parse = jest
+        .spyOn(legacyEnvelope, "parseEnvelope")
+        .mockReturnValue({
+          v: 1,
+          from: bob.address.raw,
+          to: alice.address.raw,
+          networkTag: "MONT",
+          salt: "",
+          ciphertext: "",
+        });
+      // Only inert decoded discriminants, with an ordinary sibling. No wire command or spend data.
+      const decode = jest
+        .spyOn(legacyEnvelope, "decryptEnvelope")
+        .mockReturnValue(
+          JSON.stringify(type === "text" ? [{ type, text: "ordinary control" }] : [{ type: "text", text: "ordinary sibling" }, { type }])
+        );
+      mockedFetchMonadProfile.mockResolvedValue({
+        address: bob.address.raw,
+        pubKey: bob.compressedPubKey,
+      } as Awaited<ReturnType<typeof fetchMonadProfile>>);
+      mockedFetchMonadMessagesSince.mockResolvedValue([
+        {
+          timestamp: 10,
+          networkTag: new Uint8Array(),
+          message: {
+            encryptedPayload: new Uint8Array(),
+            payloadHash: new Uint8Array(32),
+            stampPayments: [],
+          },
+        },
+      ]);
+      try {
+        if (type === "text") {
+          const received = await chain.directMessages.fetchSince({ wallet, sinceMs: 0 });
+          expect(received[0].items).toEqual([{ type: "text", text: "ordinary control" }]);
+          expect(recovery).toHaveBeenCalledTimes(1);
+        } else {
+          for (let i = 0; i < 2; i++)
+            await expect(chain.directMessages.fetchSince({ wallet, sinceMs: 0 })).rejects.toMatchObject({ code: "unsupported_incoming_wallet_sync" });
+          expect(recovery).not.toHaveBeenCalled();
+        }
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(put).not.toHaveBeenCalled();
+        expect(wallet.stampPaymentJournal.getAll()).toEqual(before);
+      } finally {
+        for (const spy of [dispatch, recovery, parse, decode, put])
+          spy.mockRestore();
+      }
+    }
+  );
 
   it("processes direct messages with multiple stamp payments calculating stampValueWei and stampPayments in a single pass", async () => {
     const chain = createMonadChain(TEST_CONFIG);

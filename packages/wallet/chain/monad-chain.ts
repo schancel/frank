@@ -101,7 +101,7 @@ import {
   NativeWalletHandle,
   WalletHandle,
 } from "./active-chain";
-import { MessageItem, WalletSyncItem } from "@frank/cashweb/types/messages";
+import { MessageItem } from "@frank/cashweb/types/messages";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
@@ -794,6 +794,14 @@ export function serializeMessageItems(items: MessageItem[]): string {
   return JSON.stringify(items);
 }
 
+class UnsupportedIncomingWalletSyncError extends Error {
+  readonly code = "unsupported_incoming_wallet_sync";
+  constructor() {
+    super("Unsupported incoming wallet sync; preserve retained records");
+    this.name = "UnsupportedIncomingWalletSyncError";
+  }
+}
+
 /** Inverse of {@link serializeMessageItems}. Throws if `plaintext` doesn't decode to a JSON
  * array. */
 export function deserializeMessageItems(plaintext: string): MessageItem[] {
@@ -1072,28 +1080,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         if (envelope === undefined) continue;
         if (envelope.to.toLowerCase() !== myAddress) continue;
 
-        if (wallet.stampPaymentJournal !== undefined) {
-          const recovered = recoverMonadStampPayments({
-            message: record.message,
-            recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
-          });
-          for (const payment of recovered) {
-            const existing = wallet.stampPaymentJournal.get(
-              payloadHashHex,
-              payment.childIndex
-            );
-            if (existing !== undefined) continue;
-            await wallet.stampPaymentJournal.put({
-              payloadHashHex,
-              childIndex: payment.childIndex,
-              txHash: payment.txHash,
-              address: payment.address,
-              valueWei: payment.valueWei.toString(),
-              status: "discovered",
-            });
-          }
-        }
-
         const senderProfile = await fetchMonadProfile({
           relayBaseUrl: wallet.relayBaseUrl,
           address: toChainAddress(envelope.from),
@@ -1116,13 +1102,37 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           continue;
         }
 
-        for (const item of items) {
-          if (item.type === "wallet-sync" || item.type === "payment-transfer") {
-            try {
-              applyWalletSyncItem(wallet, item as WalletSyncItem);
-            } catch (err) {
-              console.warn("Failed to process received wallet-sync item:", err);
-            }
+        // Decoded legacy items have no supported financial-sync authority. Refuse the
+        // containing read before stamp discovery or any wallet bookkeeping mutation.
+        if (
+          items.some(
+            (item) =>
+              item &&
+              (item.type === "wallet-sync" || item.type === "payment-transfer")
+          )
+        ) {
+          throw new UnsupportedIncomingWalletSyncError();
+        }
+
+        if (wallet.stampPaymentJournal !== undefined) {
+          const recovered = recoverMonadStampPayments({
+            message: record.message,
+            recipientPrivateKey: getBytes(wallet.identity.toPrivateKeyHex()),
+          });
+          for (const payment of recovered) {
+            const existing = wallet.stampPaymentJournal.get(
+              payloadHashHex,
+              payment.childIndex
+            );
+            if (existing !== undefined) continue;
+            await wallet.stampPaymentJournal.put({
+              payloadHashHex,
+              childIndex: payment.childIndex,
+              txHash: payment.txHash,
+              address: payment.address,
+              valueWei: payment.valueWei.toString(),
+              status: "discovered",
+            });
           }
         }
 
@@ -1140,18 +1150,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
         }
 
-          received.push({
-            senderAddress: toChainAddress(envelope.from),
-            recipientAddress: toChainAddress(envelope.to),
-            items,
-            payloadDigest: payloadHashHex,
-            stampValueWei,
-            stampPayments,
-            receivedTime: record.timestamp,
-          });
-        }
+        received.push({
+          senderAddress: toChainAddress(envelope.from),
+          recipientAddress: toChainAddress(envelope.to),
+          items,
+          payloadDigest: payloadHashHex,
+          stampValueWei,
+          stampPayments,
+          receivedTime: record.timestamp,
+        });
+      }
       } catch (err) {
-        if (!canonical) {
+        if (err instanceof UnsupportedIncomingWalletSyncError || !canonical) {
           throw err;
         }
         // Standard mailbox read is best-effort fallback alongside canonical messaging

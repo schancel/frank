@@ -72,9 +72,7 @@ import type {
   EmailItem,
   MessageItem,
   StealthItem,
-  WalletSyncItem,
 } from '@frank/cashweb/types/messages'
-import { applyWalletSyncItem } from '../sync-dispatcher'
 export { applyWalletSyncItem } from '../sync-dispatcher'
 import type {
   ChainAddress,
@@ -1153,23 +1151,6 @@ function indexStealthItemIfRecipient(
   }
 }
 
-function processSyncItemIfPresent(
-  wallet: WalletHandle,
-  item: unknown,
-) {
-  try {
-    const syncItem = item as WalletSyncItem
-    if (
-      syncItem &&
-      (syncItem.type === 'wallet-sync' || syncItem.type === 'payment-transfer')
-    ) {
-      applyWalletSyncItem(wallet, syncItem)
-    }
-  } catch {
-    // ignore
-  }
-}
-
 async function fetchSince(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['fetchSince']>[0],
@@ -1316,29 +1297,7 @@ async function fetchSince(
         }
         items = opened.items.map(item =>
           item.kind === 'parsed' && item.typed?.type === 17
-            ? (() => {
-                try {
-                  const text = item.typed.text
-                  if (text.startsWith('{') || text.startsWith('[')) {
-                    const parsed = JSON.parse(text)
-                    const syncItems = Array.isArray(parsed) ? parsed : [parsed]
-                    for (const s of syncItems) {
-                      if (s && (s.type === 'wallet-sync' || s.type === 'payment-transfer')) {
-                        processSyncItemIfPresent(params.wallet, s)
-                      }
-                    }
-                    if (
-                      parsed &&
-                      typeof parsed === 'object' &&
-                      !Array.isArray(parsed) &&
-                      parsed.type === 'digital-goods'
-                    ) {
-                      return parsed as MessageItem
-                    }
-                  }
-                } catch {}
-                return { type: 'text' as const, text: item.typed.text }
-              })()
+            ? { type: 'text' as const, text: item.typed.text }
             : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
             ? projectBlackjackHandV3Item(item).item
             : item.kind === 'parsed' && isStealthMessageItemFrame(item)
@@ -1557,30 +1516,8 @@ export function canonicalDirectMessages(
                   }
                   items = opened.items.map(item =>
                     item.kind === 'parsed' && item.typed?.type === 17
-                      ? (() => {
-                          try {
-                            const text = item.typed.text
-                            if (text.startsWith('{') || text.startsWith('[')) {
-                              const parsed = JSON.parse(text)
-                              const syncItems = Array.isArray(parsed) ? parsed : [parsed]
-                              for (const s of syncItems) {
-                                if (s && (s.type === 'wallet-sync' || s.type === 'payment-transfer')) {
-                                  processSyncItemIfPresent(params.wallet, s)
-                                }
-                              }
-                              if (
-                                parsed &&
-                                typeof parsed === 'object' &&
-                                !Array.isArray(parsed) &&
-                                parsed.type === 'digital-goods'
-                              ) {
-                                return parsed as MessageItem
-                              }
-                            }
-                          } catch {}
-                          return { type: 'text' as const, text: item.typed.text }
-                        })()
-                      : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
+                    ? { type: 'text' as const, text: item.typed.text }
+                    : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
                       ? projectBlackjackHandV3Item(item).item
                       : item.kind === 'parsed' &&
                         isStealthMessageItemFrame(item)

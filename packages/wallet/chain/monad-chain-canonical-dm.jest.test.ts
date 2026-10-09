@@ -1,3 +1,9 @@
+import * as canonicalOpen from "@frank/cashweb/relay/canonical-dm";
+import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
+import * as legacyEnvelope from "@frank/cashweb/relay/monad-message-envelope";
+import * as legacyFeed from "@frank/cashweb/relay/monad-message-feed";
+import * as legacyProfile from "../monad-identity";
+import * as legacyStamp from "../monad-stamp-client";
 /**
  * #778: typed wallets created through the normal `createMonadChain().createWallet` composition send
  * and receive direct messages only through the canonical wallet client. Real typed custody, real
@@ -775,6 +781,39 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       }),
     ).toEqual([])
   })
+
+  it.each(["wallet-sync", "payment-transfer"])(
+    "still refuses outgoing %s before preparation or submission",
+    async (type) => {
+      installCanonicalDirectory(
+        f.alice,
+        await f.directoryFor("alice", f.alice, f.bob)
+      );
+      const prepare = jest.spyOn(
+        MonadCanonicalStampClient.prototype,
+        "prepareIntent"
+      );
+      const finish = jest.spyOn(
+        MonadCanonicalStampClient.prototype,
+        "finishIntent"
+      );
+      try {
+        await expect(
+          f.chain.directMessages.send({
+            wallet: f.alice,
+            recipient: f.bob.identity.address,
+            items: [{ type } as never],
+          })
+        ).rejects.toThrow(`cannot carry '${type}' items`);
+        expect(prepare).not.toHaveBeenCalled();
+        expect(finish).not.toHaveBeenCalled();
+        expect(f.requests).toHaveLength(0);
+      } finally {
+        prepare.mockRestore();
+        finish.mockRestore();
+      }
+    }
+  );
 
   it('keeps one payment set across an unknown outcome and re-sends the same bytes', async () => {
     installCanonicalDirectory(
@@ -2146,6 +2185,149 @@ describe('two typed wallets on the open directory', () => {
       mockBalances.set(record.address.toLowerCase(), 187_500n + 600n)
     await wallet.pool.flush()
   }
+
+  it.each(["in", "out"] as const)(
+    "keeps inert decoded text exact through fetch and stream (%s)",
+    async (direction) => {
+      await online("alice", f.alice);
+      await online("bob", f.bob);
+      // Seal only an ordinary control message. Synthetic decoded items are injected below;
+      // no command-bearing envelope is created or sent, and the dispatcher is an inert spy.
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text("projection control"),
+      });
+      const texts = [
+        "ordinary text",
+        '{"note":"fixture"}',
+        "[]",
+        "{invalid JSON",
+        '{"type":"digital-goods"}',
+        '{"type":"wallet-sync"}',
+        '[{"type":"payment-transfer"}]',
+      ];
+      const decoded = texts.map((value) =>
+        parseFrame(directMessageText(value))
+      );
+      const originalIn = canonicalOpen.openDirectMessage;
+      const originalOwn = canonicalOpen.openOwnDirectMessage;
+      const inSpy = jest
+        .spyOn(canonicalOpen, "openDirectMessage")
+        .mockImplementation((params) => ({
+          ...originalIn(params),
+          items: decoded,
+        }));
+      const ownSpy = jest
+        .spyOn(canonicalOpen, "openOwnDirectMessage")
+        .mockImplementation((params) => ({
+          ...originalOwn(params),
+          items: decoded,
+        }));
+      const dispatch = jest
+        .spyOn(syncDispatch, "applyWalletSyncItem")
+        .mockReturnValue({});
+      const wallet = direction === "out" ? f.alice : f.bob;
+      const record =
+        direction === "out"
+          ? outboundRecord(0, 10)
+          : { ...inboxRecord(0, 10), direction: "in" as const };
+      const before = wallet.pool.records().map((row) => ({ ...row }));
+      let close: (() => void) | undefined;
+      try {
+        mailboxPage.mockResolvedValueOnce({ records: [record] });
+        const fetched = await f.chain.directMessages.fetchSince({
+          wallet,
+          sinceMs: 0,
+        });
+        expect(fetched[0].items).toEqual(
+          texts.map((text) => ({ type: "text", text }))
+        );
+        let streamed: unknown;
+        mockStreamRecordHandler = undefined;
+        close = f.chain.directMessages.subscribeMailboxStream!({
+          wallet,
+          onRecord: (value) => {
+            streamed = value;
+          },
+        });
+        for (let i = 0; i < 20 && !mockStreamRecordHandler; i++)
+          await new Promise((resolve) => setImmediate(resolve));
+        expect(mockStreamRecordHandler).toBeDefined();
+        await mockStreamRecordHandler!(record);
+        expect(streamed).toEqual(
+          expect.objectContaining({
+            items: texts.map((text) => ({ type: "text", text })),
+          })
+        );
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(wallet.pool.records()).toEqual(before);
+      } finally {
+        close?.();
+        inSpy.mockRestore();
+        ownSpy.mockRestore();
+        dispatch.mockRestore();
+      }
+    }
+  );
+
+  it.each(["wallet-sync", "payment-transfer"])(
+    "rejects inert legacy decoded %s even with canonical service installed",
+    async (type) => {
+      await online("alice", f.alice);
+      mailboxPage.mockResolvedValueOnce({ records: [] });
+      const decode = jest
+        .spyOn(legacyEnvelope, "decryptEnvelope")
+        .mockReturnValue(JSON.stringify([{ type }]));
+      const parse = jest
+        .spyOn(legacyEnvelope, "parseEnvelope")
+        .mockReturnValue({
+          v: 1,
+          networkTag: "MONT",
+          from: f.bob.identity.address.raw,
+          to: f.alice.identity.address.raw,
+          salt: "",
+          ciphertext: "",
+        });
+      const feed = jest
+        .spyOn(legacyFeed, "fetchMonadMessagesSince")
+        .mockResolvedValue([
+          {
+            timestamp: 20,
+            networkTag: new Uint8Array(),
+            message: {
+              encryptedPayload: new Uint8Array(),
+              payloadHash: new Uint8Array(32).fill(9),
+              stampPayments: [],
+            },
+          },
+        ]);
+      const profile = jest
+        .spyOn(legacyProfile, "fetchMonadProfile")
+        .mockResolvedValue({
+          address: f.bob.identity.address.raw,
+          pubKey: f.bob.identity.compressedPubKey,
+        } as Awaited<ReturnType<typeof legacyProfile.fetchMonadProfile>>);
+      const recovery = jest
+        .spyOn(legacyStamp, "recoverMonadStampPayments")
+        .mockReturnValue([]);
+      const dispatch = jest
+        .spyOn(syncDispatch, "applyWalletSyncItem")
+        .mockReturnValue({});
+      const before = f.alice.stampPaymentJournal?.getAll();
+      try {
+        await expect(
+          f.chain.directMessages.fetchSince({ wallet: f.alice, sinceMs: 0 })
+        ).rejects.toMatchObject({ code: "unsupported_incoming_wallet_sync" });
+        expect(recovery).not.toHaveBeenCalled();
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(f.alice.stampPaymentJournal?.getAll()).toEqual(before);
+      } finally {
+        for (const spy of [decode, parse, feed, profile, recovery, dispatch])
+          spy.mockRestore();
+      }
+    }
+  );
 
   it('message each other in both directions knowing only an address', async () => {
     await online('alice', f.alice)

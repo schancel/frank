@@ -1,3 +1,4 @@
+import { useMailboxStatusStore } from '../stores/mailbox-status'
 /**
  * Unit tests for `pinia-chain-adapter.ts` (ticket #42): the `DirectMessageReceived` ->
  * `ReceivedMessageWrapper` adapter and the `activeChain.directMessages.fetchSince` poll loop.
@@ -598,6 +599,45 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       expect(fetchSinceSpy.mock.calls.length).toBeGreaterThanOrEqual(2)
 
       polling.stop()
+    })
+
+    it('retains the replay position and reports repeated unsupported incoming sync fetch failures', async () => {
+      const receive = jest
+        .spyOn(useChatStore(), 'receiveMessages')
+        .mockResolvedValue({ suppressedReceipts: [], cancelled: false })
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue({
+          address: { raw: SENDER_ADDRESS },
+          pubKey: PUB_KEY_BYTES,
+        })
+      const failure = Object.assign(
+        new Error(
+          'Unsupported incoming wallet sync; preserve retained records',
+        ),
+        { code: 'unsupported_incoming_wallet_sync' },
+      )
+      const fetch = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockRejectedValue(failure)
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => fetch.mock.calls.length >= 2)
+        expect(fetch.mock.calls.every(([params]) => params.sinceMs === 0)).toBe(
+          true,
+        )
+        expect(receive).not.toHaveBeenCalled()
+        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+        expect(mockMessageStore.quarantineRelayReceipts).not.toHaveBeenCalled()
+        expect(useMailboxStatusStore().state).toBe('unreachable')
+        fetch.mockResolvedValueOnce([makeRecord()]).mockResolvedValue([])
+        await advanceUntil(() => receive.mock.calls.length === 1)
+        await advanceUntil(() => fetch.mock.calls.at(-1)![0].sinceMs > 0)
+        expect(useMailboxStatusStore().state).toBe('ok')
+      } finally {
+        polling.stop()
+      }
     })
 
     it('does not advance the cursor when durable receipt fails', async () => {

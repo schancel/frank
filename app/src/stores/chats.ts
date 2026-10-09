@@ -58,9 +58,7 @@ import {
   MonadStampTerminalError,
 } from '@frank/wallet/monad-stamp-client'
 import { MonadMailboxUnavailableError } from '@frank/cashweb/relay/monad-mailbox-client'
-import { routeWalletSyncItem } from '@frank/wallet/sync-router'
 import { messagingWallet } from '../utils/monad-identity-session'
-import { appMultiChainResolver } from '../accounts/sync-router'
 import type {
   Message,
   MessageWrapper,
@@ -70,7 +68,6 @@ import type {
   TextItem,
   ImageItem,
   StealthItem,
-  WalletSyncItem,
   SwapRecordItem,
   EmailItem,
 } from '@frank/cashweb/types/messages'
@@ -527,6 +524,25 @@ async function assertDurableAttemptAssociation(
   const storedDigest = persisted?.message.delivery?.attemptDigest
   if (storedDigest !== undefined && storedDigest !== expectedDigest) {
     throw new Error(`conflicting stored payment attempt for ${id}`)
+  }
+}
+
+function assertSupportedIncomingSync(wrappers: ReceivedMessageWrapper[]): void {
+  if (
+    wrappers.some(wrapper =>
+      wrapper.message.items?.some(
+        item =>
+          item &&
+          (item.type === 'wallet-sync' || item.type === 'payment-transfer'),
+      ),
+    )
+  ) {
+    throw Object.assign(
+      new Error('Unsupported incoming wallet sync; preserve retained records'),
+      {
+        code: 'unsupported_incoming_wallet_sync',
+      },
+    )
   }
 }
 
@@ -3613,6 +3629,7 @@ export const useChatStore = defineStore('chats', {
       ownAddressOverride?: string,
       lease?: DeliveryLease,
     ): Promise<ReceivedDeliveryResult> {
+      assertSupportedIncomingSync(messageWrappers)
       let ownAddress: string | null = null
       if (ownAddressOverride !== undefined) {
         try {
@@ -3655,6 +3672,7 @@ export const useChatStore = defineStore('chats', {
       if (lease?.isCancelled()) {
         return { suppressedReceipts: [], cancelled: true }
       }
+      assertSupportedIncomingSync(messageWrappers)
       console.log('receiving messages')
       const messageStore = await store
       if (
@@ -3973,20 +3991,7 @@ export const useChatStore = defineStore('chats', {
 
         if (newMsg.items && Array.isArray(newMsg.items)) {
           for (const item of newMsg.items) {
-            if (
-              item &&
-              (item.type === 'wallet-sync' || item.type === 'payment-transfer')
-            ) {
-              try {
-                void routeWalletSyncItem(item as WalletSyncItem, {
-                  resolver: appMultiChainResolver,
-                }).catch(err => {
-                  console.warn('[chats] failed to route wallet sync item:', err)
-                })
-              } catch {
-                // ignore
-              }
-            } else if (item && item.type === 'swap-record') {
+            if (item && item.type === 'swap-record') {
               try {
                 void import('./swaps').then(({ useSwapStore }) => {
                   useSwapStore().handleSwapItem(item as SwapRecordItem)

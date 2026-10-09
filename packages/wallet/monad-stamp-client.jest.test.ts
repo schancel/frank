@@ -56,6 +56,7 @@ import {
   quoteMonadStampPaymentGasReserve,
   recoverMonadStampPayments,
   sweepRecoveredMonadStampPayment,
+  STAMP_FEE_CACHE_TTL_MS,
   MonadStampedMessageProto,
   StoredMonadMessageProto,
 } from './monad-stamp-client'
@@ -610,13 +611,11 @@ describe('MonadStampClient.submitStampedMessage', () => {
       },
     })
 
-    expect(estimatedData).toHaveLength(4)
-    for (const quoteData of estimatedData.slice(0, 2)) {
-      expect(Array.from(getBytes(quoteData).slice(5))).toEqual(
-        Array(32).fill(0xff),
-      )
-    }
-    expect(estimatedData[2]).not.toBe(estimatedData[3])
+    expect(estimatedData).toHaveLength(3)
+    expect(Array.from(getBytes(estimatedData[0]).slice(5))).toEqual(
+      Array(32).fill(0xff),
+    )
+    expect(estimatedData[1]).not.toBe(estimatedData[2])
   })
 
   it('re-PUTs the identical bytes after a network failure and confirms on the 200 (no GET exists any more)', async () => {
@@ -1508,8 +1507,8 @@ describe('C0 disk-backed exact attempt ownership', () => {
           ),
         ).toBe(true)
         const signCount = sign.mock.calls.length
-        // Current construction signs two capacity probes and two retained members.
-        expect(signCount).toBe(4)
+        // Issue #1216: Single-probe construction signs one capacity probe and two retained members.
+        expect(signCount).toBe(3)
         await journal.Close()
         opened = false
         journal = new LevelStampAttemptJournal(dir)
@@ -2725,4 +2724,173 @@ describe('canonical durable consumer barriers', () => {
     },
     20000,
   )
+
+  describe('Issue #1216: quoteStampPaymentGasReserve probe reuse and fee/capacity caching', () => {
+    it('executes at most 1 network probe across multiple candidate records and reuses sample quote', async () => {
+      const pool = makePool(3)
+      const capacities = [15_000n, 25_000n, 35_000n]
+      const provider = makeCapacityProvider(capacities)
+      const { client } = makeClient({ pool, provider })
+
+      const buildAndSignSpy = jest.spyOn(
+        MonadAccountTxSigner.prototype,
+        'buildAndSignCall',
+      )
+
+      const quotes = await client.quoteStampPaymentGasReserve({
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        overrides: FEE_OVERRIDES,
+      })
+
+      // 1 probe execution across all 3 available records
+      expect(buildAndSignSpy).toHaveBeenCalledTimes(1)
+      expect(quotes).toHaveLength(3)
+
+      // Verify accurate quote calculation across all candidate records
+      const feeReserve = FEE_OVERRIDES.gasLimit * FEE_OVERRIDES.maxFeePerGas
+      for (let i = 0; i < 3; i++) {
+        expect(quotes[i].index).toBe(i)
+        expect(quotes[i].balanceWei).toBe(feeReserve + capacities[i])
+        expect(quotes[i].capacityWei).toBe(capacities[i])
+        expect(quotes[i].resolvedOverrides.maxFeePerGas).toBe(
+          FEE_OVERRIDES.maxFeePerGas,
+        )
+        expect(quotes[i].resolvedOverrides.maxPriorityFeePerGas).toBe(
+          FEE_OVERRIDES.maxPriorityFeePerGas,
+        )
+        expect(quotes[i].resolvedOverrides.gasLimit).toBe(FEE_OVERRIDES.gasLimit)
+      }
+
+      // Only the first probed record has its nonce recorded from the probe; subsequent records leave nonce undefined
+      expect(quotes[0].resolvedOverrides.nonce).toBeDefined()
+      expect(quotes[1].resolvedOverrides.nonce).toBeUndefined()
+      expect(quotes[2].resolvedOverrides.nonce).toBeUndefined()
+
+      buildAndSignSpy.mockRestore()
+    })
+
+    it('reuses in-memory capacityCache to bypass live getBalance RPC calls', async () => {
+      const pool = makePool(2)
+      const feeReserve = FEE_OVERRIDES.gasLimit * FEE_OVERRIDES.maxFeePerGas
+      const now = Date.now()
+
+      // Warm the capacityCache for both records
+      pool.capacityCache.set(0, {
+        capacityWei: 12_000n,
+        checkedAtMs: now,
+        balanceWei: feeReserve + 12_000n,
+      })
+      pool.capacityCache.set(1, {
+        capacityWei: 18_000n,
+        checkedAtMs: now,
+        balanceWei: feeReserve + 18_000n,
+      })
+
+      const provider = makeStubProvider(async req => {
+        if (req.method === 'getTransactionCount') return '0x0'
+        if (req.method === 'getBalance') {
+          throw new Error('getBalance should not be called when capacityCache is warm')
+        }
+        throw new Error(`unexpected _perform: ${req.method}`)
+      })
+
+      const { client } = makeClient({ pool, provider })
+      const quotes = await client.quoteStampPaymentGasReserve({
+        recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        overrides: FEE_OVERRIDES,
+      })
+
+      expect(quotes).toHaveLength(2)
+      expect(quotes[0].capacityWei).toBe(12_000n)
+      expect(quotes[0].balanceWei).toBe(feeReserve + 12_000n)
+      expect(quotes[1].capacityWei).toBe(18_000n)
+      expect(quotes[1].balanceWei).toBe(feeReserve + 18_000n)
+    })
+
+    it('maintains in-memory fee cache for getFeeData with TTL and deduplicates concurrent passes', async () => {
+      const mockFeeData = {
+        maxFeePerGas: 25_000_000_000n,
+        maxPriorityFeePerGas: 2_000_000_000n,
+        gasPrice: null,
+        baseFeePerGas: 11_500_000_000n,
+      }
+      let getFeeDataCallCount = 0
+      const provider = makeCapacityProvider([5_000n, 5_000n])
+      provider.getFeeData = jest.fn(async () => {
+        getFeeDataCallCount++
+        return mockFeeData as any
+      })
+
+      const { client } = makeClient({ provider })
+
+      // First call fetches from provider
+      const fee1 = await client.getFeeData()
+      expect(fee1.maxFeePerGas).toBe(mockFeeData.maxFeePerGas)
+      expect(fee1.baseFee).toBe(mockFeeData.baseFeePerGas)
+      expect(getFeeDataCallCount).toBe(1)
+
+      // Second call within TTL returns cached fee data
+      const fee2 = await client.getFeeData()
+      expect(fee2).toEqual(fee1)
+      expect(getFeeDataCallCount).toBe(1)
+
+      // Concurrent calls share the in-flight promise and do not duplicate queries
+      client.clearFeeCache()
+      const [c1, c2, c3] = await Promise.all([
+        client.getFeeData(),
+        client.getFeeData(),
+        client.getFeeData(),
+      ])
+      expect(c1).toEqual(fee1)
+      expect(c2).toEqual(fee1)
+      expect(c3).toEqual(fee1)
+      expect(getFeeDataCallCount).toBe(2)
+
+      // After TTL expiry, fetches fresh fee data
+      const expiredFee = await client.getFeeData(0)
+      expect(expiredFee.maxFeePerGas).toBe(mockFeeData.maxFeePerGas)
+      expect(getFeeDataCallCount).toBe(3)
+    })
+
+    it('concurrent quote passes without overrides share cached fee query', async () => {
+      const pool = makePool(2)
+      const quoteBalance = 50_000_000_000n
+      let nonce = 0
+      const provider = makeStubProvider(async req => {
+        if (req.method === 'getBalance') return `0x${quoteBalance.toString(16)}`
+        if (req.method === 'getTransactionCount')
+          return `0x${(nonce++).toString(16)}`
+        if (req.method === 'estimateGas') return '0x5208'
+        throw new Error(`unexpected _perform: ${req.method}`)
+      })
+
+      let feeDataCalls = 0
+      provider.getFeeData = jest.fn(async () => {
+        feeDataCalls++
+        return {
+          maxFeePerGas: 2_000_000_000n,
+          maxPriorityFeePerGas: 1_000_000_000n,
+          gasPrice: null,
+        } as any
+      })
+
+      const { client } = makeClient({ pool, provider })
+
+      // Two concurrent quote passes with no fee overrides
+      const [q1, q2] = await Promise.all([
+        client.quoteStampPaymentGasReserve({
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          overrides: { gasLimit: 21_000n, chainId: BigInt(CHAIN_ID) },
+        }),
+        client.quoteStampPaymentGasReserve({
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          overrides: { gasLimit: 21_000n, chainId: BigInt(CHAIN_ID) },
+        }),
+      ])
+
+      expect(q1).toHaveLength(2)
+      expect(q2).toHaveLength(2)
+      expect(feeDataCalls).toBe(1)
+    })
+  })
 })

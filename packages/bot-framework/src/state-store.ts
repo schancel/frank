@@ -96,6 +96,36 @@ export class LevelBotStateStore implements BotStateStore {
     await this.db.batch(transformed);
   }
 
+  /** Bounded owner scan; returned keys are relative to this store's namespace. */
+  async readEntries(
+    prefix = "",
+    limit = 2048
+  ): Promise<Array<[string, string]>> {
+    const start = this.fullKey(prefix);
+    const entries: Array<[string, string]> = [];
+    for await (const [key, value] of this.db.iterator({
+      gte: start,
+      lt: start + "\uffff",
+      limit,
+    })) {
+      entries.push([
+        this.prefix ? key.slice(this.prefix.length + 1) : key,
+        value,
+      ]);
+    }
+    return entries;
+  }
+
+  /** Invocation ownership must reach durable storage before plugin or payment effects. */
+  async durableBatch(
+    ops: Parameters<BotStateStore["batch"]>[0]
+  ): Promise<void> {
+    await this.db.batch(
+      ops.map((op) => ({ ...op, key: this.fullKey(op.key) })),
+      { sync: true }
+    );
+  }
+
   sublevel(name: string): LevelBotStateStore {
     const nextPrefix = this.prefix ? `${this.prefix}!${name}` : name;
     return new LevelBotStateStore(this.db, nextPrefix, false);

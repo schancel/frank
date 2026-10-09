@@ -1,10 +1,7 @@
+import { Wallet, getBytes } from "ethers";
+import type { MonadRootBundle } from "@frank/wallet/monad-wallet-material";
 import { FrankBotHost } from "../src/bot-host";
-import { RelayProfileManager } from "../src/relay-profile-manager";
-import type {
-  FrankBotDefinition,
-  BotMessageContext,
-  BotContext,
-} from "../src/types";
+import type { FrankBotDefinition, BotMessageContext } from "../src/types";
 
 jest.mock("../src/relay-profile-manager", () => ({
   RelayProfileManager: {
@@ -12,17 +9,19 @@ jest.mock("../src/relay-profile-manager", () => ({
   },
 }));
 
-let mockDirectMessagesSend = jest.fn();
-let mockDirectMessagesFetchSince = jest.fn();
-let mockGetReceiveAddress = jest.fn().mockResolvedValue({
-  raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5",
-});
+const mockDirectMessagesSend = jest.fn();
+const mockDirectMessagesFetchSince = jest.fn();
+const mockGetReceiveAddress = jest.fn();
 
+let mockLocalAddress = "";
+let mockLocalSubject = "";
+const mockPeer = new Wallet("0x" + "12".repeat(32));
 jest.mock("@frank/wallet/chain/monad-chain", () => {
   const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
   return {
     ...actual,
     createMonadChain: jest.fn(() => ({
+      chainIdentifier: "monad-testnet",
       directMessages: {
         fetchSince: mockDirectMessagesFetchSince,
         send: mockDirectMessagesSend,
@@ -30,15 +29,21 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
       topics: {
         post: jest.fn(),
       },
-      createWallet: jest.fn().mockResolvedValue({
-        identity: {
-          address: { raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5" },
-          compressedPubKey: new Uint8Array(33),
-          toPrivateKeyHex: () => "0x" + "11".repeat(32),
-        },
-        getReceiveAddress: mockGetReceiveAddress,
-        close: jest.fn().mockResolvedValue(undefined),
-      }),
+      createWallet: jest
+        .fn()
+        .mockImplementation(async (roots: MonadRootBundle) => {
+          const { MonadIdentity } = jest.requireActual<
+            typeof import("@frank/wallet/monad-identity")
+          >("@frank/wallet/monad-identity");
+          const identity = MonadIdentity.fromDomainRoot(roots.authentication);
+          mockLocalAddress = identity.address.raw;
+          mockLocalSubject = identity.compressedPubKey.toString("hex");
+          return {
+            identity,
+            getReceiveAddress: mockGetReceiveAddress,
+            close: jest.fn().mockResolvedValue(undefined),
+          };
+        }),
     })),
     installCanonicalDirectory: jest.fn(() => () => {}),
     loadMonadChainConfigFromEnv: jest.fn(() => ({
@@ -52,6 +57,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
 jest.mock("../src/directory-manager", () => ({
   DirectoryManager: {
     create: jest.fn(() => ({
+      network: "monad-testnet",
       publish: jest.fn().mockResolvedValue(undefined),
       publishWithRetry: jest.fn().mockResolvedValue(undefined),
       startHeartbeat: jest.fn(),
@@ -66,17 +72,40 @@ describe("FrankBotHost Reliability Features", () => {
   const stateDir =
     "/tmp/test-bot-reliability-" + Math.random().toString(36).slice(2);
 
+  let originalEnvironment: NodeJS.ProcessEnv;
   beforeEach(() => {
+    originalEnvironment = process.env;
+    process.env = { ...originalEnvironment };
+    for (const key of [
+      "E2E_DEMO_MAIN_WALLET_PRIVATE_KEY",
+      "FRANK_DEMO_FAUCET_WALLET_JSON",
+      "E2E_DEMO_MAIN_WALLET_JSON",
+    ])
+      delete process.env[key];
     jest.clearAllMocks();
-    mockDirectMessagesSend.mockResolvedValue({
-      payloadDigest: "reply-digest-abc12345",
-      stampValueWei: 10_000_000_000_000_000n,
-      stampPayments: [],
-      preparationTxHashes: [],
-    });
+    mockDirectMessagesSend.mockImplementation(
+      async (params: {
+        onAttemptCreated?: (digest: string) => Promise<void>;
+      }) => {
+        const payloadDigest = mockDirectMessagesSend.mock.calls.length
+          .toString(16)
+          .padStart(64, "0");
+        await params.onAttemptCreated?.(payloadDigest);
+        return {
+          payloadDigest,
+          stampValueWei: 10_000_000_000_000_000n,
+          stampPayments: [],
+          preparationTxHashes: [],
+        };
+      }
+    );
     mockGetReceiveAddress.mockResolvedValue({
-      raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5",
+      raw: mockLocalAddress,
     });
+  });
+
+  afterEach(() => {
+    process.env = originalEnvironment;
   });
 
   describe("Conversation threading", () => {
@@ -86,9 +115,11 @@ describe("FrankBotHost Reliability Features", () => {
       const dummyBot: FrankBotDefinition = {
         id: "thread-bot",
         getProfile: () => ({ name: "ThreadBot", bot: true }),
-        onMessage: async (msg, ctx) => {
+        onMessage: async (msg) => {
           receivedContexts.push(msg);
-          await msg.reply([{ type: "text", text: "reply from reply()" } as any]);
+          await msg.reply([
+            { type: "text", text: "reply from reply()" } as any,
+          ]);
           return [{ type: "text", text: "reply from return" } as any];
         },
       };
@@ -102,13 +133,17 @@ describe("FrankBotHost Reliability Features", () => {
 
       mockDirectMessagesFetchSince.mockResolvedValueOnce([
         {
-          senderAddress: { raw: "0x2222222222222222222222222222222222222222" },
+          senderAddress: { raw: mockPeer.address.toLowerCase() },
+          senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+          recipientPublicKey: getBytes("0x" + mockLocalSubject),
+          messageId: "02020202-0202-0202-0202-020202020202",
           recipientAddress: {
-            raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5",
+            raw: mockLocalAddress,
           },
           items: [{ type: "text", text: "Hello bot" }],
-          conversationId: "conv-thread-uuid-9999",
-          payloadDigest: "msg-digest-1",
+          conversationId: "01010101-0101-0101-0101-010101010101",
+          payloadDigest:
+            "1111111111111111111111111111111111111111111111111111111111111111",
           receivedTime: 1700000000000,
         },
       ]);
@@ -117,23 +152,28 @@ describe("FrankBotHost Reliability Features", () => {
 
       // Allow peerQueue to drain
       const instance = (host as any).instances.get("thread-bot");
-      await instance.peerQueue.enqueue("0x2222222222222222222222222222222222222222", async () => {});
+      await instance.peerQueue.enqueue(
+        mockPeer.address.toLowerCase(),
+        async () => {}
+      );
 
       expect(receivedContexts.length).toBe(1);
-      expect(receivedContexts[0].conversationId).toBe("conv-thread-uuid-9999");
+      expect(receivedContexts[0].conversationId).toBe(
+        "01010101-0101-0101-0101-010101010101"
+      );
 
       // Verify both replies sent through directMessages.send specified conversationId
       expect(mockDirectMessagesSend).toHaveBeenCalledTimes(2);
       expect(mockDirectMessagesSend).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
-          conversationId: "conv-thread-uuid-9999",
+          conversationId: "01010101-0101-0101-0101-010101010101",
         })
       );
       expect(mockDirectMessagesSend).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
-          conversationId: "conv-thread-uuid-9999",
+          conversationId: "01010101-0101-0101-0101-010101010101",
         })
       );
 
@@ -163,13 +203,17 @@ describe("FrankBotHost Reliability Features", () => {
 
       mockDirectMessagesFetchSince.mockResolvedValueOnce([
         {
-          senderAddress: { raw: "0x3333333333333333333333333333333333333333" },
+          senderAddress: { raw: mockPeer.address.toLowerCase() },
+          senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+          recipientPublicKey: getBytes("0x" + mockLocalSubject),
+          messageId: "02020202-0202-0202-0202-020202020202",
           recipientAddress: {
-            raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5",
+            raw: mockLocalAddress,
           },
           items: [{ type: "text", text: "Ping" }],
-          conversationId: "conv-1",
-          payloadDigest: "cursor-digest-1",
+          conversationId: "01010101-0101-0101-0101-010101010101",
+          payloadDigest:
+            "2222222222222222222222222222222222222222222222222222222222222222",
           receivedTime: messageTime,
         },
       ]);
@@ -177,9 +221,14 @@ describe("FrankBotHost Reliability Features", () => {
       await (host1 as any).pollAllBots();
 
       // Drain peerQueue
-      await instance1.peerQueue.enqueue("0x3333333333333333333333333333333333333333", async () => {});
+      await instance1.peerQueue.enqueue(
+        mockPeer.address.toLowerCase(),
+        async () => {}
+      );
 
-      const persistedCursor = await instance1.state.get("cursor:lastPollTimestamp");
+      const persistedCursor = await instance1.state.get(
+        "cursor:lastPollTimestamp"
+      );
       expect(persistedCursor).toBe(String(messageTime + 1));
 
       await host1.stop();
@@ -232,12 +281,17 @@ describe("FrankBotHost Reliability Features", () => {
       const instance = (host as any).instances.get("inflight-bot");
 
       const incomingMsg = {
-        senderAddress: { raw: "0x4444444444444444444444444444444444444444" },
+        senderAddress: { raw: mockPeer.address.toLowerCase() },
+        senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+        recipientPublicKey: getBytes("0x" + mockLocalSubject),
+        messageId: "02020202-0202-0202-0202-020202020202",
         recipientAddress: {
-          raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5",
+          raw: mockLocalAddress,
         },
         items: [{ type: "text", text: "Long-running task" }],
-        payloadDigest: "inflight-digest-xyz",
+        conversationId: "01010101-0101-0101-0101-010101010101",
+        payloadDigest:
+          "3333333333333333333333333333333333333333333333333333333333333333",
         receivedTime: Date.now() + 1000,
       };
 
@@ -248,7 +302,11 @@ describe("FrankBotHost Reliability Features", () => {
       // Wait until onMessage begins
       await enteredPromise;
 
-      expect(instance.inFlightDigests.has("inflight-digest-xyz")).toBe(true);
+      expect(
+        instance.inFlightDigests.has(
+          "3333333333333333333333333333333333333333333333333333333333333333"
+        )
+      ).toBe(true);
 
       // Poll 2: concurrent poll while message is still in-flight
       mockDirectMessagesFetchSince.mockResolvedValueOnce([incomingMsg]);
@@ -256,14 +314,23 @@ describe("FrankBotHost Reliability Features", () => {
 
       // Finish first message processing
       releaseMessageProcessing();
-      await instance.peerQueue.enqueue("0x4444444444444444444444444444444444444444", async () => {});
+      await instance.peerQueue.enqueue(
+        mockPeer.address.toLowerCase(),
+        async () => {}
+      );
 
       // Verify onMessage was only dispatched once
       expect(processCount).toBe(1);
-      expect(instance.inFlightDigests.has("inflight-digest-xyz")).toBe(false);
+      expect(
+        instance.inFlightDigests.has(
+          "3333333333333333333333333333333333333333333333333333333333333333"
+        )
+      ).toBe(false);
 
       // And state store recorded it
-      const saved = await instance.state.get("digest:inflight-digest-xyz");
+      const saved = await instance.state.get(
+        "digest:3333333333333333333333333333333333333333333333333333333333333333"
+      );
       expect(saved).toBeDefined();
 
       await host.stop();
@@ -295,10 +362,13 @@ describe("FrankBotHost Reliability Features", () => {
       // Mock provider and funding wallet
       (host as any).provider = {
         getBalance: jest.fn((addr: string) => {
-          if (addr.toLowerCase() === "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5".toLowerCase()) {
+          if (addr.toLowerCase() === mockLocalAddress.toLowerCase()) {
             return Promise.resolve(50_000_000_000_000_000n); // < 0.1 MON
           }
-          if (addr.toLowerCase() === "0x9999999999999999999999999999999999999999".toLowerCase()) {
+          if (
+            addr.toLowerCase() ===
+            "0x9999999999999999999999999999999999999999".toLowerCase()
+          ) {
             return Promise.resolve(20_000_000_000_000_000n); // < 0.1 MON
           }
           // Main funding wallet balance: 5 MON
@@ -310,6 +380,9 @@ describe("FrankBotHost Reliability Features", () => {
         sendTransaction: mockSendTransaction,
       };
 
+      (host as any).nonceSequencer = {
+        withNonce: (run: (nonce: number) => Promise<void>) => run(0),
+      };
       await host.register(dummyBot);
 
       // Should fund both identity address AND receive address
@@ -317,7 +390,7 @@ describe("FrankBotHost Reliability Features", () => {
       expect(mockSendTransaction).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
-          to: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5",
+          to: mockLocalAddress,
           value: 500_000_000_000_000_000n,
         })
       );
@@ -333,8 +406,8 @@ describe("FrankBotHost Reliability Features", () => {
     });
   });
 
-  describe("Poison loop prevention and retry threshold", () => {
-    it("stops retrying a failing message after 3 failures and advances the cursor", async () => {
+  describe("Interrupted handler admission", () => {
+    it("holds a failed handler across every subsequent poll without marking it processed", async () => {
       let callCount = 0;
       const dummyBot: FrankBotDefinition = {
         id: "failing-bot",
@@ -355,45 +428,36 @@ describe("FrankBotHost Reliability Features", () => {
 
       const messageTime = Date.now() + 5000;
       const failingMsg = {
-        senderAddress: { raw: "0x6666666666666666666666666666666666666666" },
-        recipientAddress: { raw: "0x538910cdeadf7e47a6826700ebc860f1a6b3b4d5" },
+        senderAddress: { raw: mockPeer.address.toLowerCase() },
+        senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+        recipientPublicKey: getBytes("0x" + mockLocalSubject),
+        messageId: "02020202-0202-0202-0202-020202020202",
+        recipientAddress: { raw: mockLocalAddress },
         items: [{ type: "text", text: "Crash message" }],
-        payloadDigest: "fail-digest-1",
+        conversationId: "01010101-0101-0101-0101-010101010101",
+        payloadDigest:
+          "4444444444444444444444444444444444444444444444444444444444444444",
         receivedTime: messageTime,
       };
 
-      // Poll 1: Fails (attempt 1)
-      mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
-      await (host as any).pollAllBots();
-      await instance.peerQueue.enqueue("0x6666666666666666666666666666666666666666", async () => {});
-      expect(callCount).toBe(1);
-      expect(await instance.state.get("digest:fail-digest-1")).toBeUndefined();
-      expect(await instance.state.get("fail:fail-digest-1")).toBe("1");
-
-      // Poll 2: Fails (attempt 2)
-      mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
-      await (host as any).pollAllBots();
-      await instance.peerQueue.enqueue("0x6666666666666666666666666666666666666666", async () => {});
-      expect(callCount).toBe(2);
-      expect(await instance.state.get("digest:fail-digest-1")).toBeUndefined();
-      expect(await instance.state.get("fail:fail-digest-1")).toBe("2");
-
-      // Poll 3: Fails (attempt 3) -> Reaches MAX_RETRIES (3)
-      mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
-      await (host as any).pollAllBots();
-      await instance.peerQueue.enqueue("0x6666666666666666666666666666666666666666", async () => {});
-      expect(callCount).toBe(3);
-
-      // Now digest is marked as processed and cursor advanced!
-      expect(await instance.state.get("digest:fail-digest-1")).toBeDefined();
-      expect(await instance.state.get("fail:fail-digest-1")).toBeUndefined();
-      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(String(messageTime + 1));
-
-      // Poll 4: Relay still returns it, but bot-host skips it without calling onMessage!
-      mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
-      await (host as any).pollAllBots();
-      await instance.peerQueue.enqueue("0x6666666666666666666666666666666666666666", async () => {});
-      expect(callCount).toBe(3); // Not incremented!
+      for (let i = 0; i < 4; i++) {
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
+        await (host as any).pollAllBots();
+        await instance.peerQueue.enqueue(
+          mockPeer.address.toLowerCase(),
+          async () => {}
+        );
+        expect(callCount).toBe(1);
+        expect(
+          await instance.state.get("digest:" + failingMsg.payloadDigest)
+        ).toBeUndefined();
+        expect(
+          await instance.state.get("fail:" + failingMsg.payloadDigest)
+        ).toBeUndefined();
+        expect(
+          await instance.state.get("cursor:lastPollTimestamp")
+        ).toBeUndefined();
+      }
 
       await host.stop();
     });

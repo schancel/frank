@@ -63,4 +63,22 @@ describe("LevelBotStateStore", () => {
     expect(await store.get("k1")).toBeUndefined();
     expect(await store.get("k3")).toBe("v3");
   });
+  it("keeps bounded prefix scans relative and sync batches durable across reopen", async () => {
+    const sub = store.sublevel("owner");
+    await store.put("foreign", "untouched");
+    await sub.durableBatch([
+      { type: "put", key: "row:1", value: "one" },
+      { type: "put", key: "row:2", value: "two" },
+    ]);
+    await store.close();
+    store = await LevelBotStateStore.open(tmpPath);
+    expect(await store.sublevel("owner").readEntries("row:", 1)).toEqual([
+      ["row:1", "one"],
+    ]);
+    expect(await store.sublevel("owner").readEntries()).toEqual([
+      ["row:1", "one"],
+      ["row:2", "two"],
+    ]);
+    expect(await store.get("foreign")).toBe("untouched");
+  });
 });

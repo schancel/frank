@@ -457,6 +457,26 @@ export default defineComponent({
       }
     },
     confirmDiscard() {
+      const doDelete = async () => {
+        try {
+          await this.deleteMessage({
+            address: this.address,
+            payloadDigest: this.payloadDigest,
+            ...(this.message.delivery?.attemptDigest
+              ? { attemptDigest: this.message.delivery.attemptDigest }
+              : {}),
+          })
+        } catch (error) {
+          console.error('Failed to discard message:', error)
+          errorNotify(error instanceof Error ? error : new Error(String(error)))
+        }
+      }
+
+      if (typeof this.$q?.dialog !== 'function') {
+        void doDelete()
+        return
+      }
+
       this.$q
         .dialog({
           title: this.$t('outgoing.discardConfirmTitle'),
@@ -465,22 +485,7 @@ export default defineComponent({
           cancel: true,
           persistent: true,
         })
-        .onOk(async () => {
-          try {
-            await this.deleteMessage({
-              address: this.address,
-              payloadDigest: this.payloadDigest,
-              ...(this.message.delivery?.attemptDigest
-                ? { attemptDigest: this.message.delivery.attemptDigest }
-                : {}),
-            })
-          } catch (error) {
-            console.error('Failed to discard message:', error)
-            errorNotify(
-              error instanceof Error ? error : new Error(String(error)),
-            )
-          }
-        })
+        .onOk(doDelete)
     },
     replyClicked(args: { address: string; payloadDigest: string }) {
       this.$emit('replyClicked', args)

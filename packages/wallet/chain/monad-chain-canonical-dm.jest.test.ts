@@ -51,6 +51,7 @@ import {
   CanonicalRecipientNotPublishedError,
   CanonicalRecipientUndeliverableError,
   CanonicalRelayCannotForwardError,
+  CanonicalSenderUnpublishedError,
   createMonadChain,
   installCanonicalDirectory,
   canonicalMonadStampClient,
@@ -962,6 +963,101 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     })
     expect(result.payloadDigest).toBeDefined()
     expect(result.stampPayments.length).toBeGreaterThan(0)
+    await f.alice.close()
+  })
+
+  it('discardAttempt on a real journaled attempt cleans up journal and leases, unblocking future sends', async () => {
+    const { directory, digest } = await interruptedSend('discard-real')
+    let wallet = await reopen(directory)
+    // Initially, sending another message throws MonadStampPendingAttemptError because the attempt is live:
+    await expect(
+      f.chain.directMessages.send({
+        wallet,
+        recipient: f.bob.identity.address,
+        items: text('blocked send'),
+      }),
+    ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+
+    // Discard the real journaled attempt:
+    await f.chain.directMessages.discardAttempt({
+      wallet,
+      payloadDigest: digest,
+    })
+
+    // Now send proceeds cleanly without throwing MonadStampPendingAttemptError or CanonicalMessagingHoldError:
+    const result = await f.chain.directMessages.send({
+      wallet,
+      recipient: f.bob.identity.address,
+      items: text('message after real discardAttempt'),
+    })
+    expect(result.payloadDigest).toBeDefined()
+    expect(result.stampPayments.length).toBeGreaterThan(0)
+    await wallet.close()
+  })
+
+  it('handles sender_unpublished dead response from relay, marking attempt dead and throwing CanonicalSenderUnpublishedError', async () => {
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    f.submit = async req => {
+      return {
+        status: 200,
+        body: JSON.stringify({
+          version: 1,
+          phase: 'dead',
+          identity: restoreCanonicalRequest(req).identity,
+          reason: 'sender_unpublished',
+        }),
+      }
+    }
+    await expect(
+      f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('unpublished sender'),
+      }),
+    ).rejects.toBeInstanceOf(CanonicalSenderUnpublishedError)
+    await f.alice.close()
+  })
+
+  it('settle marks attempts dead with attempts_exhausted after repeated submit failures', async () => {
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    f.submit = async () => {
+      throw new Error('500 internal relay error')
+    }
+    let digest = ''
+    await expect(
+      f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('failing message'),
+        onAttemptCreated: d => void (digest = d),
+      }),
+    ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+
+    // Reconcile 4 more times (total 5 failures):
+    for (let i = 0; i < 4; i++) {
+      await f.chain.directMessages.reconcileAttempts({
+        wallet: f.alice,
+        payloadDigests: [digest],
+      })
+    }
+
+    // On 5th attempt, settle marks it terminal dead with attempts_exhausted:
+    const status = await f.chain.directMessages.reconcileAttempts({
+      wallet: f.alice,
+      payloadDigests: [digest],
+    })
+    expect(status[digest]).toBe('dead')
+
+    // Subsequent send now unblocked:
+    f.submit = undefined // restore default
+    const result = await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('unblocked after exhausted'),
+    })
+    expect(result.payloadDigest).toBeDefined()
     await f.alice.close()
   })
 

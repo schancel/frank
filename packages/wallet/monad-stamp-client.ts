@@ -1626,6 +1626,7 @@ import {
   submitCanonicalRequest,
   type CanonicalFetch,
   type CanonicalAcceptedBody,
+  type CanonicalTerminalReason,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import type { Current, HistoricalEvidence } from '../directory-admission/src'
 import { openDirectMessage } from '@frank/cashweb/relay/canonical-dm'
@@ -2326,69 +2327,129 @@ export class MonadCanonicalStampClient {
       }
     })
   }
-  cleanupTerminal(attemptRef: string, consumerId: string): Promise<void> {
+  markAttemptTerminal(
+    attemptRef: string,
+    reason: CanonicalTerminalReason = 'attempts_exhausted',
+  ): Promise<CanonicalJournalAttempt> {
     return this.wallet.runCanonicalExclusive(async () => {
       this.assertOwner()
       const attempt = this.journal
         .getAll()
-        .find(a => a.attemptRef === attemptRef && a.consumerId === consumerId)
-      if (!attempt || attempt.terminal === null)
-        throw new Error('canonical-wallet:terminal-required')
-      if (attempt.cleanupComplete) return
-      const members = attempt.request.parts.transactions
-      for (const [i, reservation] of attempt.reservations.entries()) {
-        const record = this.wallet.pool.getRecord(reservation.index)
-        if (
-          !record ||
-          (record.status !== 'in-use' &&
-            record.status !== 'spent' &&
-            record.status !== 'retired')
-        )
-          throw new Error('canonical-wallet:cleanup-hold')
-        if (record.status === 'in-use') {
-          if (
-            attempt.terminal.phase === 'delivered' &&
-            record.lifecycle?.spend === undefined
-          ) {
-            // A spent account must retain its exact signed spend, or the wallet's own
-            // lifecycle validation rejects the whole owner on the next operation or reopen.
-            const rawTx = hexlify(members[i])
-            const tx = Transaction.from(rawTx)
-            if (tx.from?.toLowerCase() !== record.address.toLowerCase())
-              throw new Error('canonical-wallet:cleanup-hold')
-            this.wallet.pool.recordSpendTransaction(record.index, {
-              rawTx,
-              txHash: tx.hash!,
-              valueWei: tx.value.toString(),
+        .find(a => a.attemptRef === attemptRef)
+      if (!attempt) throw new Error('canonical-wallet:attempt-required')
+      if (attempt.terminal !== null) return attempt
+      return this.journal.recordTerminal(attemptRef, {
+        version: 1,
+        phase: 'dead',
+        identity: attempt.request.identity,
+        reason,
+      })
+    })
+  }
+
+  reapOrphanedAttempts(activeAttemptRefs: Set<string>): Promise<void> {
+    return this.wallet.runCanonicalExclusive(async () => {
+      this.assertOwner()
+      const attempts = this.journal
+        .getAll()
+        .filter(a => !activeAttemptRefs.has(a.attemptRef))
+      for (const attempt of attempts) {
+        if (attempt.terminal === null) {
+          try {
+            await this.journal.recordTerminal(attempt.attemptRef, {
+              version: 1,
+              phase: 'dead',
+              identity: attempt.request.identity,
+              reason: 'attempts_exhausted',
             })
-            // The status change below rewrites the same row; make the spend durable first so
-            // the two writes cannot commit out of order.
-            await this.flushCanonicalReservations()
-          }
-          const live = canonicalLiveLeases
-            .get(this.wallet.walletState)
-            ?.get(record.index)
-          if (live) {
-            this.wallet.leaseManager.releaseLease(
-              live,
-              attempt.terminal.phase === 'delivered' ? 'confirmed' : 'failed',
-            )
-            canonicalLiveLeases
-              .get(this.wallet.walletState)!
-              .delete(record.index)
-          } else {
-            if (this.wallet.leaseManager.isLeased(record.index))
-              throw new Error('canonical-wallet:foreign-lease-hold')
-            this.wallet.pool.setStatus(
-              record.index,
-              attempt.terminal.phase === 'delivered' ? 'spent' : 'retired',
-            )
+          } catch {
+            // ignore
           }
         }
+        try {
+          await this.cleanupTerminalOwned(attempt.attemptRef, attempt.consumerId)
+        } catch {
+          // ignore
+        }
+        try {
+          await this.journal.acknowledge(attempt.attemptRef, attempt.consumerId)
+        } catch {
+          // ignore
+        }
       }
-      await this.flushCanonicalReservations()
-      await this.journal.completeCleanup(attemptRef)
     })
+  }
+
+  private async cleanupTerminalOwned(
+    attemptRef: string,
+    consumerId: string,
+  ): Promise<void> {
+    this.assertOwner()
+    const attempt = this.journal
+      .getAll()
+      .find(a => a.attemptRef === attemptRef && a.consumerId === consumerId)
+    if (!attempt || attempt.terminal === null)
+      throw new Error('canonical-wallet:terminal-required')
+    if (attempt.cleanupComplete) return
+    const members = attempt.request.parts.transactions
+    for (const [i, reservation] of attempt.reservations.entries()) {
+      const record = this.wallet.pool.getRecord(reservation.index)
+      if (
+        !record ||
+        (record.status !== 'in-use' &&
+          record.status !== 'spent' &&
+          record.status !== 'retired')
+      )
+        throw new Error('canonical-wallet:cleanup-hold')
+      if (record.status === 'in-use') {
+        if (
+          attempt.terminal.phase === 'delivered' &&
+          record.lifecycle?.spend === undefined
+        ) {
+          // A spent account must retain its exact signed spend, or the wallet's own
+          // lifecycle validation rejects the whole owner on the next operation or reopen.
+          const rawTx = hexlify(members[i])
+          const tx = Transaction.from(rawTx)
+          if (tx.from?.toLowerCase() !== record.address.toLowerCase())
+            throw new Error('canonical-wallet:cleanup-hold')
+          this.wallet.pool.recordSpendTransaction(record.index, {
+            rawTx,
+            txHash: tx.hash!,
+            valueWei: tx.value.toString(),
+          })
+          // The status change below rewrites the same row; make the spend durable first so
+          // the two writes cannot commit out of order.
+          await this.flushCanonicalReservations()
+        }
+        const live = canonicalLiveLeases
+          .get(this.wallet.walletState)
+          ?.get(record.index)
+        if (live) {
+          this.wallet.leaseManager.releaseLease(
+            live,
+            attempt.terminal.phase === 'delivered' ? 'confirmed' : 'failed',
+          )
+          canonicalLiveLeases
+            .get(this.wallet.walletState)!
+            .delete(record.index)
+        } else {
+          if (this.wallet.leaseManager.isLeased(record.index))
+            throw new Error('canonical-wallet:foreign-lease-hold')
+          this.wallet.pool.setStatus(
+            record.index,
+            attempt.terminal.phase === 'delivered' ? 'spent' : 'retired',
+          )
+        }
+      }
+    }
+    await this.flushCanonicalReservations()
+    await this.journal.completeCleanup(attemptRef)
+  }
+
+  cleanupTerminal(attemptRef: string, consumerId: string): Promise<void> {
+    return this.wallet.runCanonicalExclusive(() =>
+      this.cleanupTerminalOwned(attemptRef, consumerId),
+    )
   }
   acknowledgeWorkflow(attemptRef: string, consumerId: string): Promise<void> {
     return this.wallet.runCanonicalExclusive(() =>

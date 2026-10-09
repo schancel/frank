@@ -344,6 +344,22 @@ describe('canonical acceptance stays uncertain unless exact', () => {
       decodeCanonicalAcceptedStatus(
         200,
         'application/json',
+        statusBytes(frozen, { phase: 'dead', reason: 'sender_unpublished' }),
+        frozen,
+      ).phase,
+    ).toBe('dead')
+    expect(
+      decodeCanonicalAcceptedStatus(
+        200,
+        'application/json',
+        statusBytes(frozen, { phase: 'dead', reason: 'undeliverable' }),
+        frozen,
+      ).phase,
+    ).toBe('dead')
+    expect(
+      decodeCanonicalAcceptedStatus(
+        200,
+        'application/json',
         statusBytes(frozen, {
           phase: 'delivered',
           mailbox_committed_at_ms: 42,

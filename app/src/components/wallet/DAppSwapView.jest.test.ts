@@ -40,7 +40,8 @@ const mockHistory = ref([
 const mockRoute = ref({ path: '/wallet/solana', query: {}, params: {} })
 
 jest.mock('@frank/wallet/chain', () => ({
-  activeChain: { isTestnet: true },
+  // Preserve the real adapter and its change subscription; mock only this test's I/O.
+  ...jest.requireActual('@frank/wallet/chain'),
   getChainExchangeConfig: () => undefined,
 }))
 jest.mock('@frank/wallet/plugins', () => ({

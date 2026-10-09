@@ -515,6 +515,21 @@ async function serializeDeliveryMutation<T>(
   }
 }
 
+/** Called inside the delivery mutation boundary, immediately before changing an attributed row. */
+async function assertDurableAttemptAssociation(
+  id: string,
+  expectedDigest: string | undefined,
+): Promise<void> {
+  if (expectedDigest === undefined) return
+  const messageStore = await store
+  if (typeof messageStore.getMessage !== 'function') return
+  const persisted = await messageStore.getMessage(id)
+  const storedDigest = persisted?.message.delivery?.attemptDigest
+  if (storedDigest !== undefined && storedDigest !== expectedDigest) {
+    throw new Error(`conflicting stored payment attempt for ${id}`)
+  }
+}
+
 /**
  * Cancellation identity of one delivery attempt (e.g. one direct-message poller generation).
  * Whether to notify is decided synchronously, but the delivery mutation itself is queued behind
@@ -2397,6 +2412,10 @@ export const useChatStore = defineStore('chats', {
       ) {
         throw new Error(`cannot replace recorded payment attempt for ${id}`)
       }
+      await assertDurableAttemptAssociation(
+        id,
+        recordedDigest ?? delivery.attemptDigest,
+      )
       message.status = status
       // Presentation changes cannot revoke an already attributed signed payment.
       message.delivery = {
@@ -2449,6 +2468,11 @@ export const useChatStore = defineStore('chats', {
     }): Promise<void> {
       const message = this.messages[id]
       if (!message) return
+      const recordedDigest = message.delivery?.attemptDigest
+      if (recordedDigest !== undefined && recordedDigest !== payloadDigest) {
+        throw new Error(`cannot confirm a different payment attempt for ${id}`)
+      }
+      await assertDurableAttemptAssociation(id, payloadDigest)
       const { items, senderAddress, serverTime } = message
       const value = stampValueWei ?? message.stampValueWei
       const payments = stampPayments ?? message.stampPayments
@@ -2999,7 +3023,24 @@ export const useChatStore = defineStore('chats', {
           }
         }
       }
-      const withAttempt = waiting.filter(entry => entry.digest !== undefined)
+      const withAttempt: typeof waiting = []
+      for (const entry of waiting.filter(entry => entry.digest !== undefined)) {
+        const fresh = await this.refreshOutgoingFromStore(
+          entry.address,
+          entry.id,
+        )
+        const current = this.messages[entry.id]
+        if (
+          fresh === 'gone' ||
+          fresh === 'unreadable' ||
+          !current ||
+          current.delivery?.attemptDigest !== entry.digest ||
+          !walletOwnsMessage(wallet, current)
+        ) {
+          continue
+        }
+        withAttempt.push(entry)
+      }
       if (withAttempt.length > 0) {
         try {
           const statuses = await activeChain.directMessages.reconcileAttempts({

@@ -38,6 +38,15 @@ const wallet = {
 } as unknown as WalletHandle
 
 describe('startOutgoingReconciliation (#270)', () => {
+  const previousPromise = global.Promise
+  beforeAll(() => {
+    // The shared setup installs a Promise polyfill, but ES2020 async actions return native
+    // promises. Pinia uses instanceof Promise to defer its `after` observers until completion.
+    global.Promise = (async () => undefined)().constructor as PromiseConstructor
+  })
+  afterAll(() => {
+    global.Promise = previousPromise
+  })
   beforeEach(() => {
     setActivePinia(createPinia())
     jest.restoreAllMocks()
@@ -45,6 +54,28 @@ describe('startOutgoingReconciliation (#270)', () => {
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
   })
   afterEach(() => jest.useRealTimers())
+
+  it('runs the Pinia after observer only after the durable status mutation completes', async () => {
+    const { chats } = await pendingMessage()
+    const message = chats.chats[PEER]!.messages[0]
+    const observed = jest.fn()
+    const unsubscribe = chats.$onAction(({ name, after }) => {
+      if (name === 'setOutgoingStateExclusive') {
+        after(() => observed(message.status))
+      }
+    })
+    const mutation = chats.setOutgoingState(
+      PEER,
+      message.payloadDigest,
+      'error',
+      {},
+    )
+    expect(observed).not.toHaveBeenCalled()
+    await mutation
+    expect(observed).toHaveBeenCalledTimes(1)
+    expect(observed).toHaveBeenCalledWith('error')
+    unsubscribe()
+  })
 
   async function pendingMessage() {
     const send = jest

@@ -182,6 +182,52 @@ describe('outgoing direct messages (#269, #270)', () => {
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
   })
 
+  describe('background attempt ownership', () => {
+    it.each([
+      ['dead', false],
+      ['unknown', false],
+      ['live', false],
+      ['delivered', false],
+      ['live', true],
+      ['delivered', true],
+    ] as const)(
+      'preserves live and durable owners on %s (conflict during lookup: %s)',
+      async (status, conflictDuringLookup) => {
+        const send = sendJournalsThenPending()
+        const chats = useChatStore()
+        await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+        const message = only(chats)[0]
+        const id = message.payloadDigest
+        await chats.setOutgoingState(PEER, id, 'error', {
+          attemptDigest: HASH,
+        })
+        const db = await durable()
+        const row = deserializeMessageWrapper(db.get(id)!)
+        row.message.delivery = { attemptDigest: 'cd'.repeat(32) }
+        const conflictingRow = serializeMessageWrapper(row)
+        if (!conflictDuringLookup) db.set(id, conflictingRow)
+        const reconcile = jest
+          .spyOn(activeChain.directMessages, 'reconcileAttempts')
+          .mockImplementation(async () => {
+            if (conflictDuringLookup) db.set(id, conflictingRow)
+            return { [HASH]: status }
+          })
+
+        await chats.reconcileOutgoing({ wallet })
+
+        expect(db.get(id)).toBe(conflictingRow)
+        expect(chats.messages[id]).toBe(message)
+        expect(message.status).toBe('error')
+        expect(message.delivery).toEqual({ attemptDigest: HASH })
+        expect(db.has(HASH)).toBe(false)
+        expect(chats.messages[HASH]).toBeUndefined()
+        expect(only(chats)).toEqual([message])
+        expect(reconcile).toHaveBeenCalledTimes(conflictDuringLookup ? 1 : 0)
+        expect(send).toHaveBeenCalledTimes(1)
+      },
+    )
+  })
+
   describe('recorded attempt ownership survives rejection', () => {
     it('keeps a dead-reported attempt across reload and later confirms the original message without paying again', async () => {
       const send = sendJournalsThenPending()

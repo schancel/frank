@@ -23,7 +23,7 @@ import {
   type EvmStealthDestination,
   type StealthAccountRecord,
 } from './monad-stealth'
-import type { MonadChainWalletHandle } from './chain/monad-chain'
+import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 import { parseAddressWithOptionalRelay } from './chain/active-chain'
 import { fromHex, toHex } from '@frank/codec'
 
@@ -73,7 +73,7 @@ export interface TableStealthSettlementPlan {
 }
 
 export interface RegisterEscrowStealthPayoutParams {
-  wallet: MonadChainWalletHandle
+  wallet: EvmChainWalletHandle
   ephemeralPubKey: Uint8Array | string
   stealthAddress?: string
   payoutWei: bigint

@@ -16,8 +16,7 @@ import {
   MAX_FORUM_BURN,
 } from './monad-forum-operation'
 import type { OutgoingTopicOperation } from './storage/topic-operation-journal'
-import type { MonadWalletHandle } from './monad-wallet-handle'
-
+import type { EvmWalletHandle } from "./evm-wallet-handle";
 jest.mock('axios')
 const http = axios as jest.MockedFunction<typeof axios>
 const mnemonic = 'test test test test test test test test test test test junk'
@@ -85,7 +84,7 @@ async function fixture() {
     getTransactionReceipt: jest.fn(async () => receipt),
     getTransaction: jest.fn(async () => observed),
   }
-  const wallet: MonadWalletHandle = {
+  const wallet: EvmWalletHandle = {
     pool: bundle.pool,
     leaseManager: bundle.leaseManager,
     walletState: bundle,

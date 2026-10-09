@@ -20,7 +20,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
   const actual = jest.requireActual("@frank/wallet/chain/monad-chain");
   return {
     ...actual,
-    createMonadChain: jest.fn(() => ({
+    createEvmChain: jest.fn(() => ({
       chainIdentifier: "monad-testnet",
       directMessages: {
         fetchSince: mockDirectMessagesFetchSince,

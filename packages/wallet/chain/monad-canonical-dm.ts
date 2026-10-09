@@ -90,7 +90,7 @@ import {
 } from '../monad-stamp-client'
 import type { MonadCanonicalRoleOwner } from '../monad-wallet-material'
 import { deriveEvmStealthPrivateKey } from '../monad-stealth'
-import type { MonadChainWalletHandle } from './monad-chain'
+import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import type { NativeWalletHandle, WalletHandle } from './active-chain'
 
 /** Public directory access owned by the caller. Every call must return a fresh admitted Current. */
@@ -1107,7 +1107,7 @@ function indexStealthItemIfRecipient(
   timestampMs: number,
 ) {
   if (!isOutbound && projected.keyType === 1) {
-    const liveWallet = wallet as MonadChainWalletHandle
+    const liveWallet = wallet as EvmChainWalletHandle
     if (liveWallet?.stealthKeyring && liveWallet?.identity) {
       try {
         const derived = deriveEvmStealthPrivateKey({

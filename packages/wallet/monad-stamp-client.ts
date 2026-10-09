@@ -136,7 +136,7 @@ import {
   MonadTxSubmitter,
   SignedMonadTx,
 } from './monad-account-tx'
-import { MonadWalletHandle } from './monad-wallet-handle'
+import type { EvmWalletHandle } from "./evm-wallet-handle";
 import { selectStampAccounts } from './monad-stamp-account-selection'
 import {
   deriveMonadStampChildPrivate,
@@ -799,8 +799,8 @@ export class MonadStampClient {
   private readonly provider: Provider
   private readonly httpClient: MonadTxSubmitter
   private readonly changePool: MonadChangePool | undefined
-  private readonly attemptJournal: MonadWalletHandle['stampAttemptJournal']
-  private readonly walletAdmission: MonadWalletHandle['walletOperationAdmission']
+  private readonly attemptJournal: EvmWalletHandle['stampAttemptJournal']
+  private readonly walletAdmission: EvmWalletHandle['walletOperationAdmission']
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad` (`PUT`) is appended to it. */
   private readonly relayBaseUrl: string
@@ -810,7 +810,7 @@ export class MonadStampClient {
   }
   private feePromise?: Promise<CachedFeeData>
 
-  constructor(params: MonadWalletHandle) {
+  constructor(params: EvmWalletHandle) {
     this.walletAdmission = params.walletOperationAdmission
     this.pool = params.pool
     this.leaseManager = params.leaseManager

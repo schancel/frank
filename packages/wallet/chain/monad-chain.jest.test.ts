@@ -1,7 +1,7 @@
 import * as legacyEnvelope from "@frank/cashweb/relay/monad-message-envelope";
 import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 /**
- * Unit tests for `monad-chain.ts` (ticket #41): verifies `MonadChain` (via `createMonadChain`)
+ * Unit tests for `monad-chain.ts` (ticket #41): verifies `MonadChain` (via `createEvmChain`)
  * wires the real Monad wallet clients together correctly. Per the ticket's own instructions, this
  * mocks the underlying Monad clients (`MonadStampClient`, `MonadTopicPostClient`,
  * `MonadTopicVoteClient`, `monad-message-feed.ts`, `monad-topic-tally-client.ts`, and
@@ -28,7 +28,8 @@ import {
   createMonadWalletMaterial,
   type MonadRootBundle,
 } from "../monad-wallet-material";
-import type { MonadWalletHandle } from "../monad-wallet-handle";
+import type { EvmWalletHandle } from "../evm-wallet-handle";
+
 import { ChainUtxoPool } from "../chain-utxo-pool";
 import * as viteEnv from "./vite-env";
 import { verifyEcdsa } from "@frank/nakamoto";
@@ -44,11 +45,9 @@ import {
 } from "@frank/cashweb/relay/monad-message-envelope";
 
 import {
-  MonadChainConfig,
-  MonadChainWalletHandle,
   MAILBOX_RECOVERY_SYNC_INTERVAL_MS,
   MAILBOX_RECOVERY_SYNC_WAIT_MS,
-  createMonadChain,
+  createEvmChain,
   prepareMonadRevisionZeroExport,
   deserializeMessageItems,
   loadMonadChainConfigFromEnv,
@@ -57,6 +56,9 @@ import {
   setCustomRelayBaseUrl,
   getDefaultRelayBaseUrl,
 } from "./monad-chain";
+import type { EvmChainConfig } from "./evm-chain-config";
+import type { EvmChainWalletHandle } from "../evm-wallet-handle";
+
 import { TopicPostOutcomeUnknownError, WalletHandle } from "./active-chain";
 import { deriveMonadStampChildPublic } from "../monad-stamp-stealth";
 import { InMemoryStampPaymentJournal } from "../storage/stamp-payment-journal";
@@ -152,7 +154,7 @@ const mockedFetchMonadMessagesSince =
     typeof fetchMonadMessagesSince
   >;
 
-const TEST_CONFIG: MonadChainConfig = {
+const TEST_CONFIG: EvmChainConfig = {
   networkId: "monad-test",
   chainId: 10143,
   nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
@@ -170,7 +172,7 @@ const ALICE_PRIVATE_KEY_HEX = "0x" + "11".repeat(31) + "1a"; // 32 bytes, distin
 const BOB_PRIVATE_KEY_HEX = "0x" + "22".repeat(31) + "2b";
 const EVE_PRIVATE_KEY_HEX = "0x" + "33".repeat(31) + "3c";
 
-function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
+function makeWallet(identity: MonadIdentity): EvmChainWalletHandle {
   return {
     family: "evm",
     chainIdentifier: "monad-testnet",
@@ -192,10 +194,10 @@ function makeWallet(identity: MonadIdentity): MonadChainWalletHandle {
         index: 4,
         fundingTxHashes: [],
       }),
-    } as unknown as MonadChainWalletHandle["pool"],
-    leaseManager: {} as MonadChainWalletHandle["leaseManager"],
-    provider: {} as MonadChainWalletHandle["provider"],
-    httpClient: {} as MonadChainWalletHandle["httpClient"],
+    } as unknown as EvmChainWalletHandle["pool"],
+    leaseManager: {} as EvmChainWalletHandle["leaseManager"],
+    provider: {} as EvmChainWalletHandle["provider"],
+    httpClient: {} as EvmChainWalletHandle["httpClient"],
     relayBaseUrl: "http://relay.test",
   };
 }
@@ -204,8 +206,8 @@ beforeEach(() => {
   jest.clearAllMocks();
 });
 
-describe("createMonadChain: basic chain properties", () => {
-  const chain = createMonadChain(TEST_CONFIG);
+describe("createEvmChain: basic chain properties", () => {
+  const chain = createEvmChain(TEST_CONFIG);
 
   it("exposes the Monad name/unit", () => {
     expect(chain.family).toBe("evm");
@@ -355,8 +357,8 @@ describe("custom relay configuration", () => {
   });
 });
 
-describe("createMonadChain: createWallet", () => {
-  const chain = createMonadChain(TEST_CONFIG);
+describe("createEvmChain: createWallet", () => {
+  const chain = createEvmChain(TEST_CONFIG);
   const seed = {
     mnemonic: "test test test test test test test test test test test junk",
   };
@@ -389,7 +391,7 @@ describe("createMonadChain: createWallet", () => {
   });
 
   it("pre-derives unfunded accounts without moving funds on wallet open", async () => {
-    const wallet = (await chain.createWallet(seed)) as MonadChainWalletHandle;
+    const wallet = (await chain.createWallet(seed)) as EvmChainWalletHandle;
     const records = wallet.pool.ensureSize(0);
     expect(records).toHaveLength(TEST_CONFIG.subAccountPoolSize);
     expect(records.every((record) => record.status === "unfunded")).toBe(true);
@@ -403,7 +405,7 @@ describe("createMonadChain: createWallet", () => {
     };
     const wallet = (await chain.createWallet(
       uniqueSeed
-    )) as MonadChainWalletHandle;
+    )) as EvmChainWalletHandle;
 
     let balance = 100_000n;
     const getBalance = jest.fn(async () => balance);
@@ -429,7 +431,7 @@ describe("createMonadChain: createWallet", () => {
 
   it("preserves old hash-only evidence even when a receipt exists", async () => {
     const nativeAttemptStore = new InMemoryNativeTransactionAttemptStore();
-    const chain = createMonadChain({ ...TEST_CONFIG, nativeAttemptStore });
+    const chain = createEvmChain({ ...TEST_CONFIG, nativeAttemptStore });
     const wallet = await chain.createWallet(seed);
     try {
       const key = nativeTransactionAttemptKey({
@@ -441,7 +443,7 @@ describe("createMonadChain: createWallet", () => {
       nativeAttemptStore.put(key, retained);
       const receipt = jest
         .spyOn(
-          (wallet as MonadChainWalletHandle).provider,
+          (wallet as EvmChainWalletHandle).provider,
           "getTransactionReceipt"
         )
         .mockResolvedValue({ status: 1 } as never);
@@ -457,9 +459,9 @@ describe("createMonadChain: createWallet", () => {
   });
 });
 
-describe("createMonadChain: fetchProfile", () => {
+describe("createEvmChain: fetchProfile", () => {
   it("delegates to monad-identity.fetchMonadProfile with the chain relayBaseUrl", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const addr = { raw: "0x000000000000000000000000000000000000dEaD" };
     const profile = { address: addr, pubKey: new Uint8Array([1, 2, 3]) };
     mockedFetchMonadProfile.mockResolvedValueOnce(profile);
@@ -474,7 +476,7 @@ describe("createMonadChain: fetchProfile", () => {
   });
 
   it("returns undefined when nothing is registered", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     mockedFetchMonadProfile.mockResolvedValueOnce(undefined);
     expect(
       await chain.fetchProfile({ raw: "0x" + "00".repeat(20) })
@@ -482,7 +484,7 @@ describe("createMonadChain: fetchProfile", () => {
   });
 
   it("uses opts.relayBaseUrl instead of the chain default when given (ticket #78)", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const addr = { raw: "0x000000000000000000000000000000000000dEaD" };
     const profile = { address: addr, pubKey: new Uint8Array([1, 2, 3]) };
     mockedFetchMonadProfile.mockResolvedValueOnce(profile);
@@ -499,9 +501,9 @@ describe("createMonadChain: fetchProfile", () => {
   });
 });
 
-describe("createMonadChain: nativeTransfers", () => {
+describe("createEvmChain: nativeTransfers", () => {
   it("reads the balance through the common wallet API", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(identity);
     const getBalance = jest.fn().mockResolvedValue(123n);
@@ -514,7 +516,7 @@ describe("createMonadChain: nativeTransfers", () => {
   });
 
   it("sends through the common wallet API", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(identity);
     const recipient = chain.parseAddress(
@@ -540,7 +542,7 @@ describe("createMonadChain: nativeTransfers", () => {
   });
 
   it("forwards onSigned through the common wallet API", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(identity);
     const onSigned = jest.fn().mockResolvedValue(undefined);
@@ -560,7 +562,7 @@ describe("createMonadChain: nativeTransfers", () => {
   });
 
   it("reports a transaction hash as confirmed / failed / pending / unknown from the node", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const wallet = makeWallet(
       MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     );
@@ -569,7 +571,7 @@ describe("createMonadChain: nativeTransfers", () => {
     wallet.provider = {
       getTransactionReceipt,
       getTransaction,
-    } as unknown as MonadChainWalletHandle["provider"];
+    } as unknown as EvmChainWalletHandle["provider"];
     const status = () =>
       chain.nativeTransfers.getTransactionStatus({
         wallet,
@@ -587,7 +589,7 @@ describe("createMonadChain: nativeTransfers", () => {
   });
 
   it("leaves native value validation at the wallet boundary", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const identity = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
 
     const wallet = makeWallet(identity);
@@ -606,7 +608,7 @@ describe("createMonadChain: nativeTransfers", () => {
   it.each(["estimate", "send"] as const)(
     "requires a lifetime custody owner for %s instead of trusting attached private keys",
     async (action) => {
-      const chain = createMonadChain(TEST_CONFIG);
+      const chain = createEvmChain(TEST_CONFIG);
       const wallet = makeWallet(
         MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
       );
@@ -622,7 +624,7 @@ describe("createMonadChain: nativeTransfers", () => {
       const getBalance = jest.fn();
       wallet.provider = {
         getBalance
-      } as unknown as MonadChainWalletHandle["provider"];
+      } as unknown as EvmChainWalletHandle["provider"];
       const params = {
         wallet,
         recipient: { raw: stranger.address },
@@ -667,9 +669,9 @@ describe("serializeMessageItems / deserializeMessageItems", () => {
   });
 });
 
-describe("createMonadChain: directMessages", () => {
+describe("createEvmChain: directMessages", () => {
   it("requires persistent typed wallet custody on a Monad network (#778)", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
 
@@ -711,7 +713,7 @@ describe("createMonadChain: directMessages", () => {
   it.each(["wallet-sync", "payment-transfer", "text"])(
     "checks inert decoded legacy %s before financial effects",
     async (type) => {
-      const chain = createMonadChain(TEST_CONFIG);
+      const chain = createEvmChain(TEST_CONFIG);
       const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
       const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX);
       const wallet = makeWallet(alice);
@@ -789,7 +791,7 @@ describe("createMonadChain: directMessages", () => {
   );
 
   it("processes direct messages with multiple stamp payments calculating stampValueWei and stampPayments in a single pass", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
@@ -891,9 +893,9 @@ describe("createMonadChain: directMessages", () => {
   });
 });
 
-describe("createMonadChain: one per-wallet queue for every account-spending operation", () => {
+describe("createEvmChain: one per-wallet queue for every account-spending operation", () => {
   it("sequential topic operations run one at a time through the wallet queue", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
     allowMockTopicAdmission(wallet);
@@ -968,9 +970,9 @@ function allowMockTopicAdmission(wallet: ReturnType<typeof makeWallet>) {
     },
   });
 }
-describe("createMonadChain: topics.post", () => {
+describe("createEvmChain: topics.post", () => {
   it("submits a topic post via MonadTopicPostClient and returns its payloadDigest", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
     allowMockTopicAdmission(wallet);
@@ -1012,7 +1014,7 @@ describe("createMonadChain: topics.post", () => {
   });
 
   it("preserves an abandoned Monad post as a typed chain-neutral unknown outcome", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const wallet = makeWallet(
       MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     );
@@ -1041,9 +1043,9 @@ describe("createMonadChain: topics.post", () => {
   });
 });
 
-describe("createMonadChain: topics.vote", () => {
+describe("createEvmChain: topics.vote", () => {
   it("casts a vote via MonadTopicVoteClient", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const wallet = makeWallet(alice);
     allowMockTopicAdmission(wallet);
@@ -1080,14 +1082,14 @@ describe("createMonadChain: topics.vote", () => {
   });
 });
 
-describe("createMonadChain: canonical topic read wiring", () => {
+describe("createEvmChain: canonical topic read wiring", () => {
   const policy = {
     network: "monad-testnet",
     chainId: BigInt(TEST_CONFIG.chainId),
     burnAddress: TEST_CONFIG.stampBurnAddress,
   };
   it("passes explicit read policy and preserves exact projected observations", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const wallet = makeWallet(
       MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX)
     );
@@ -1141,20 +1143,20 @@ describe("createMonadChain: canonical topic read wiring", () => {
   it("propagates discovery failure", async () => {
     mockedFetchDiscoveredTopics.mockRejectedValueOnce(Error("incomplete"));
     await expect(
-      createMonadChain(TEST_CONFIG).topics.discoverTopics()
+      createEvmChain(TEST_CONFIG).topics.discoverTopics()
     ).rejects.toThrow("incomplete");
   });
 });
 
 describe("asMonadWallet guard (exercised indirectly via directMessages/topics)", () => {
   it("throws a clear error when handed a bare WalletHandle missing the wallet-client bundle", async () => {
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
     const bareWallet: WalletHandle = { identity: alice };
 
     await expect(
       chain.directMessages.fetchSince({ wallet: bareWallet, sinceMs: 0 })
-    ).rejects.toThrow(/MonadChainWalletHandle/);
+    ).rejects.toThrow(/EvmChainWalletHandle/);
   });
 });
 
@@ -1169,9 +1171,9 @@ describe("canonical topic owner production composition", () => {
       walletStorageLocation: join(directory, "wallet"),
       subAccountPoolSize: 5,
     };
-    let wallet: MonadChainWalletHandle | undefined;
+    let wallet: EvmChainWalletHandle | undefined;
     try {
-      const firstChain = createMonadChain(config);
+      const firstChain = createEvmChain(config);
       wallet = await firstChain.createWallet(seed);
       const original = wallet.pool.records();
       for (let index = 0; index < 5; index++)
@@ -1227,7 +1229,7 @@ describe("canonical topic owner production composition", () => {
         await stamp.Close();
       }
       jest.clearAllMocks();
-      const chain = createMonadChain(config);
+      const chain = createEvmChain(config);
       wallet = await chain.createWallet(seed);
       expect(wallet.pool.records().map((record) => record.status)).toEqual([
         "in-use",
@@ -1245,14 +1247,14 @@ describe("canonical topic owner production composition", () => {
       expect(MonadAccountTxSigner).not.toHaveBeenCalled();
       expect(MonadTopicPostClient).not.toHaveBeenCalled();
       expect(MonadTopicVoteClient).not.toHaveBeenCalled();
-      await expect(createMonadChain(config).createWallet(seed)).rejects.toThrow(
+      await expect(createEvmChain(config).createWallet(seed)).rejects.toThrow(
         "manifest already has an owner"
       );
       // A rejected second opener must leave all original stores and the owner usable.
       expect(wallet.pool.records()).toHaveLength(5);
       await chain.topics.reconcileOperations({ wallet });
       const privateHandle = (MonadTopicPostClient as jest.Mock).mock
-        .calls[0][0] as MonadWalletHandle;
+        .calls[0][0] as EvmWalletHandle;
       expect(privateHandle.topicOperationJournal!.getAll()).toEqual(rows);
       await wallet.close();
       const reopened = level(join(location, "wallet-manifest"));
@@ -1290,9 +1292,9 @@ describe("canonical topic owner production composition", () => {
       },
     };
     const expected = createMonadWalletMaterial(roots);
-    const chain = createMonadChain(TEST_CONFIG);
+    const chain = createEvmChain(TEST_CONFIG);
     const wallet = await chain.createWallet(roots);
-    let privateHandle: MonadWalletHandle | undefined;
+    let privateHandle: EvmWalletHandle | undefined;
     let entered!: () => void, finish!: () => void;
     const started = new Promise<void>((resolve) => {
       entered = resolve;
@@ -1301,7 +1303,7 @@ describe("canonical topic owner production composition", () => {
       finish = resolve;
     });
     (MonadTopicPostClient as jest.Mock).mockImplementation(
-      (handle: MonadWalletHandle) => {
+      (handle: EvmWalletHandle) => {
         privateHandle = handle;
         return {
           resumePendingOperations: async () => {
@@ -1322,7 +1324,7 @@ describe("canonical topic owner production composition", () => {
       expect(wallet.pool.getRecord(0)!.address).toBe(
         expected.keyring.deriveSubAccount(0).address
       );
-      const other = createMonadChain({
+      const other = createEvmChain({
         ...TEST_CONFIG,
         chainId: 143n,
         stampBurnAddress: "0x" + "22".repeat(20),
@@ -1386,8 +1388,8 @@ it("public revision-zero bridge rejects a valid foreign network descriptor witho
       bytes: new Uint8Array(32).fill(53),
     },
   };
-  const chain = createMonadChain(TEST_CONFIG),
-    wallet = (await chain.createWallet(roots)) as MonadChainWalletHandle;
+  const chain = createEvmChain(TEST_CONFIG),
+    wallet = (await chain.createWallet(roots)) as EvmChainWalletHandle;
   const operator = createMonadWalletMaterial(roots);
   const point = operator.canonicalRoles!.publicGenerationZeroPoints().auth;
   const relay = {

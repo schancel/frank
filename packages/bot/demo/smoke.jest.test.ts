@@ -18,11 +18,9 @@ import { runSmokeChecks } from './smoke-checks'
 import { Supervisor } from './supervisor'
 import { startFakeRpc } from './fake-rpc'
 import { ensureDemoBalance } from './demo-funding'
-import { createMonadChain } from '../../wallet/chain/monad-chain'
-import type {
-  MonadChainConfig,
-  MonadChainWalletHandle,
-} from '../../wallet/chain/monad-chain'
+import { createEvmChain } from "../../wallet/chain/monad-chain";
+import type { EvmChainConfig } from "../../wallet/chain/evm-chain-config";
+import type { EvmChainWalletHandle } from "../../wallet/evm-wallet-handle";
 import type { MonadRootBundle } from '../../wallet/chain/active-chain'
 import { InMemoryNativeTransactionAttemptStore } from '../../wallet/chain/chain-wallet'
 import * as providerModule from '../../wallet/monad-provider'
@@ -65,19 +63,19 @@ test('real typed wallets discover the built-in fake transport and fund/send only
     walletStorageLocation: false,
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     fakeDemo: { enabled: true, controlUrl: fake.url },
-  } satisfies MonadChainConfig & {
+  } satisfies EvmChainConfig & {
     fakeDemo: { enabled: boolean; controlUrl: string }
   }
-  const chain = createMonadChain(config)
-  const wallets: MonadChainWalletHandle[] = []
+  const chain = createEvmChain(config)
+  const wallets: EvmChainWalletHandle[] = []
   try {
     const sender = (await chain.createWallet(
       roots(11),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     wallets.push(sender)
     const recipient = (await chain.createWallet(
       roots(21),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     wallets.push(recipient)
     const from = (await sender.getReceiveAddress()).raw
     const to = (await recipient.getReceiveAddress()).raw

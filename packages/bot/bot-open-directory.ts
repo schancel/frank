@@ -20,13 +20,12 @@ import { nodeDirectoryStorage } from '@frank/cashweb/relay/open-directory-node'
 import {
   prepareMonadNextRevisionExport,
   prepareMonadRevisionZeroExport,
-  type MonadChainWalletHandle,
-} from '@frank/wallet/chain/monad-chain'
-
+} from "@frank/wallet/chain/monad-chain";
+import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 const hexOf = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
 
 /** The compressed signing key (66 hex characters) of a live typed wallet. */
-export function botDirectorySubject(handle: MonadChainWalletHandle): string {
+export function botDirectorySubject(handle: EvmChainWalletHandle): string {
   return hexOf(handle.identity.compressedPubKey)
 }
 
@@ -36,7 +35,7 @@ export function botDirectorySubject(handle: MonadChainWalletHandle): string {
  */
 export function openBotDirectory(params: {
   /** The bot's live typed wallet; it signs the bot's own entry. */
-  handle: MonadChainWalletHandle
+  handle: EvmChainWalletHandle
   /** The wallet's compressed signing key, when the caller already holds it. */
   subject?: string
   networkTag: 'MONT' | 'MON1'

@@ -15,8 +15,7 @@ import {
 import { createInMemoryMonadWalletBundle } from './storage/monad-wallet-bundle'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadIdentity } from './monad-identity'
-import type { MonadWalletHandle } from './monad-wallet-handle'
-
+import type { EvmWalletHandle } from "./evm-wallet-handle";
 jest.mock('axios')
 const http = axios as jest.MockedFunction<typeof axios>
 const mnemonic = 'test test test test test test test test test test test junk'
@@ -83,7 +82,7 @@ async function fixture() {
       }
     }),
   }
-  const wallet: MonadWalletHandle = {
+  const wallet: EvmWalletHandle = {
     pool: bundle.pool,
     leaseManager: bundle.leaseManager,
     walletState: { ...bundle, inventory: undefined } as any,

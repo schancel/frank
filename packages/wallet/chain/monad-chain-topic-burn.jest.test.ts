@@ -38,12 +38,9 @@ import { MonadSubAccountPool } from '../monad-account-pool'
 import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadTxSubmitter } from '../monad-account-tx'
 import { TopicPostOutcomeUnknownError } from './active-chain'
-import {
-  MonadChainConfig,
-  MonadChainWalletHandle,
-  TopicBurnPreparationError,
-  createMonadChain,
-} from './monad-chain'
+import { TopicBurnPreparationError, createEvmChain } from "./monad-chain";
+import type { EvmChainConfig } from "./evm-chain-config";
+import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { DirectMessagePreparationProgress } from './active-chain'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
 import type { MonadWalletPersistenceBundle } from '../storage/monad-wallet-bundle'
@@ -65,7 +62,7 @@ const WEIGHT = 1_000_000_000_000n
 const GAS_PRICE = 2_000_000_000n
 const GAS_LIMIT = 60_000n
 
-const CONFIG: MonadChainConfig = {
+const CONFIG: EvmChainConfig = {
   networkId: 'monad-test',
   chainId: CHAIN_ID,
   rpcChain: 'monad-testnet',
@@ -81,7 +78,7 @@ const CONFIG: MonadChainConfig = {
 const IDENTITY_KEY = '0x' + '11'.repeat(31) + '1a'
 
 interface FakeChain {
-  wallet: MonadChainWalletHandle
+  wallet: EvmChainWalletHandle
   pool: MonadSubAccountPool
   balances: Map<string, bigint>
   /** Every raw transaction handed to the RPC (funding transfers), in order. */
@@ -94,7 +91,7 @@ interface FakeChain {
 
 function makeFakeChain(
   mainBalance = 10n ** 18n,
-  nativeWallet?: MonadChainWalletHandle,
+  nativeWallet?: EvmChainWalletHandle,
 ): FakeChain {
   const identity =
     nativeWallet?.identity ?? MonadIdentity.fromPrivateKeyHex(IDENTITY_KEY)
@@ -204,7 +201,7 @@ function makeFakeChain(
     runOperation: async (operation: (admission: never) => Promise<unknown>) =>
       operation(undefined as never),
   } as unknown as MonadWalletPersistenceBundle
-  const wallet: MonadChainWalletHandle = nativeWallet ?? {
+  const wallet: EvmChainWalletHandle = nativeWallet ?? {
     family: 'evm',
     chainIdentifier: 'monad-testnet',
     networkId: CONFIG.networkId,
@@ -323,7 +320,7 @@ beforeEach(() => {
 
 describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   it('funds exactly one burn account, then burns the vote weight from it', async () => {
-    const chain = createMonadChain(CONFIG)
+    const chain = createEvmChain(CONFIG)
     const fake = makeFakeChain()
     const puts = fakeRelay()
     const progress: string[] = []
@@ -369,7 +366,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   })
 
   it('a vote prepares its own burn account the same way', async () => {
-    const chain = createMonadChain(CONFIG)
+    const chain = createEvmChain(CONFIG)
     const fake = makeFakeChain()
     const puts = fakeRelay()
 
@@ -389,7 +386,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   })
 
   it('spends nothing and leaves the pool untouched when the RPC is down, and a retry then funds exactly once', async () => {
-    const chain = createMonadChain(CONFIG)
+    const chain = createEvmChain(CONFIG)
     const fake = makeFakeChain()
     const puts = fakeRelay()
     const before = JSON.stringify(fake.pool.records())
@@ -425,7 +422,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   })
 
   it('an uncertain relay response retains its account, then exact reconciliation permits a new funded account', async () => {
-    const chain = createMonadChain(CONFIG)
+    const chain = createEvmChain(CONFIG)
     const fake = makeFakeChain()
     const puts = fakeRelay('reject-500')
 
@@ -465,7 +462,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   })
 
   it('surfaces an insufficient main balance before moving any funds', async () => {
-    const chain = createMonadChain(CONFIG)
+    const chain = createEvmChain(CONFIG)
     const fake = makeFakeChain(WEIGHT / 2n)
     fakeRelay()
 
@@ -483,7 +480,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   })
 
   it('serializes a concurrent post, vote and post onto three distinct accounts and nonces', async () => {
-    const chain = createMonadChain(CONFIG)
+    const chain = createEvmChain(CONFIG)
     const fake = makeFakeChain()
     const puts = fakeRelay()
     // A scheduling gap between "account prepared" and "account leased" (the pool's own queue has
@@ -527,7 +524,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
   })
 
   it('serializes concurrent posts so each burn uses its own prepared account', async () => {
-    const chain = createMonadChain(CONFIG)
+    const chain = createEvmChain(CONFIG)
     const fake = makeFakeChain()
     const puts = fakeRelay()
 
@@ -558,7 +555,7 @@ describe('topics.post on a fresh wallet (no funded sub-accounts)', () => {
 })
 
 describe('RPC failing between funding and signing (#273 review F1)', () => {
-  const post = (chain: ReturnType<typeof createMonadChain>, fake: FakeChain) =>
+  const post = (chain: ReturnType<typeof createEvmChain>, fake: FakeChain) =>
     chain.topics.post({
       wallet: fake.wallet,
       topic: 'help',
@@ -566,7 +563,7 @@ describe('RPC failing between funding and signing (#273 review F1)', () => {
       direction: 'up',
       voteWeightWei: WEIGHT,
     })
-  const vote = (chain: ReturnType<typeof createMonadChain>, fake: FakeChain) =>
+  const vote = (chain: ReturnType<typeof createEvmChain>, fake: FakeChain) =>
     chain.topics.vote({
       wallet: fake.wallet,
       payloadDigest: 'ab'.repeat(32),
@@ -580,7 +577,7 @@ describe('RPC failing between funding and signing (#273 review F1)', () => {
   ])(
     '%s: the funded account is kept, nothing is sent, and the retry funds nothing more',
     async (_name, act) => {
-      const chain = createMonadChain(CONFIG)
+      const chain = createEvmChain(CONFIG)
       const fake = makeFakeChain()
       const puts = fakeRelay()
 
@@ -610,7 +607,7 @@ describe('RPC failing between funding and signing (#273 review F1)', () => {
 describe('durable EVM native operation ownership (#1230 P1)', () => {
   const recipient = { raw: '0x' + '42'.repeat(20) }
   const blockHash = '0x' + 'ab'.repeat(32)
-  const opened: MonadChainWalletHandle[] = []
+  const opened: EvmChainWalletHandle[] = []
   const directories: string[] = []
 
   beforeEach(() => {
@@ -637,7 +634,7 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
 
   async function open(walletStorageLocation: string | false = false) {
     const oldStore = new InMemoryNativeTransactionAttemptStore()
-    const chain = createMonadChain({
+    const chain = createEvmChain({
       ...CONFIG,
       walletStorageLocation,
       nativeAttemptStore: oldStore,
@@ -652,11 +649,11 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
         journal = this
         await realOpen.call(this)
       })
-    let wallet: MonadChainWalletHandle
+    let wallet: EvmChainWalletHandle
     try {
       wallet = (await chain.createWallet({
         mnemonic: TEST_MNEMONIC,
-      })) as MonadChainWalletHandle
+      })) as EvmChainWalletHandle
     } finally {
       capture.mockRestore()
     }
@@ -828,7 +825,7 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
     )
     const original = f.wallet.getNativeOperations!()[0]!
     const otherStore = new InMemoryNativeTransactionAttemptStore()
-    const other = createMonadChain({
+    const other = createEvmChain({
       ...CONFIG,
       nativeAttemptStore: otherStore,
     })

@@ -20,8 +20,7 @@ import { stealthParentPublicKey } from '@frank/cashweb/relay/stealth-public'
 import { stealthParentSecret } from '@frank/cashweb/relay/stealth-parent'
 import type { StealthItem } from '@frank/cashweb/types/messages'
 import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
-import type { MonadChainWalletHandle } from './chain/monad-chain'
-
+import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 const SECP256K1_ORDER =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 
@@ -447,7 +446,7 @@ export class MonadStealthKeyring {
 }
 
 export interface BuildEvmStealthPaymentParams {
-  wallet: MonadChainWalletHandle
+  wallet: EvmChainWalletHandle
   recipientSpendPubKey: Uint8Array
   amountWei: bigint
   networkTag?: string

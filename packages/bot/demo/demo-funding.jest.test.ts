@@ -7,10 +7,8 @@ import { JsonRpcProvider } from 'ethers'
 
 import vectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
-import {
-  createMonadChain,
-  MonadChainWalletHandle,
-} from '../../wallet/chain/monad-chain'
+import { createEvmChain } from "../../wallet/chain/monad-chain";
+import type { EvmChainWalletHandle } from "../../wallet/evm-wallet-handle";
 import type { MonadRootBundle } from '../../wallet/chain/active-chain'
 import { InMemoryNativeTransactionAttemptStore } from '../../wallet/chain/chain-wallet'
 import * as providerModule from '../../wallet/monad-provider'
@@ -99,7 +97,7 @@ describe('explicit simulated funding boundary', () => {
         providers.push(provider)
         return provider
       })
-    const chain = createMonadChain({
+    const chain = createEvmChain({
       networkId: 'monad-test',
       chainId: 10143,
       rpcChain: 'monad-testnet',
@@ -112,7 +110,7 @@ describe('explicit simulated funding boundary', () => {
       walletStorageLocation: false,
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     })
-    const wallet = (await chain.createWallet(roots())) as MonadChainWalletHandle
+    const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
     try {
       const address = (await wallet.getReceiveAddress()).raw
       expect(address).toBe(RECEIVE)

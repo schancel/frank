@@ -33,11 +33,11 @@ import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
 import { createChain } from './chain-factory'
 import {
   canonicalMonadStampClient,
-  createMonadChain,
+  createEvmChain,
   prepareMonadRevisionZeroExport,
-  MonadChainConfig,
-  MonadChainWalletHandle,
-} from './monad-chain'
+} from "./monad-chain";
+import type { EvmChainConfig } from "./evm-chain-config";
+import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import type { MonadRootBundle } from './active-chain'
 import {
   InMemoryNativeTransactionAttemptStore,
@@ -62,7 +62,7 @@ jest.mock('../monad-account-tx', () => ({
   MonadAccountTxSigner: jest.fn(),
 }))
 
-const config: MonadChainConfig = {
+const config: EvmChainConfig = {
   networkId: 'monad-test',
   chainId: 10143,
   rpcChain: 'monad-testnet',
@@ -143,10 +143,10 @@ test.each([
         return original.call(this)
       })
     let wallet:
-      | Awaited<ReturnType<ReturnType<typeof createMonadChain>['createWallet']>>
+      | Awaited<ReturnType<ReturnType<typeof createEvmChain>['createWallet']>>
       | undefined
     let published = false
-    const opening = createMonadChain(cfg)
+    const opening = createEvmChain(cfg)
       .createWallet(roots())
       .then(value => {
         wallet = value
@@ -164,12 +164,12 @@ test.each([
       wallet = undefined
       warm.mockClear()
       open.mockRejectedValueOnce(new Error('required owner failed'))
-      await expect(createMonadChain(cfg).createWallet(roots())).rejects.toThrow(
+      await expect(createEvmChain(cfg).createWallet(roots())).rejects.toThrow(
         'required owner failed',
       )
       expect(warm).not.toHaveBeenCalled()
       open.mockRestore()
-      wallet = await createMonadChain(cfg).createWallet(roots())
+      wallet = await createEvmChain(cfg).createWallet(roots())
       expect(warm).toHaveBeenCalledTimes(1)
     } finally {
       release()
@@ -181,9 +181,9 @@ test.each([
 )
 
 test('rejects a second factory owner of the same EVM inventory until close', async () => {
-  const firstChain = createMonadChain(config)
+  const firstChain = createEvmChain(config)
   const first = await firstChain.createWallet(roots())
-  const otherChain = createMonadChain(config)
+  const otherChain = createEvmChain(config)
   await expect(otherChain.createWallet(roots())).rejects.toThrow('already open')
   await expect(
     otherChain.createWallet({
@@ -213,7 +213,7 @@ test('failed bundle validation wipes partial owned snapshots and preserves calle
       return bytes
     })
   await expect(
-    createMonadChain(config).createWallet({
+    createEvmChain(config).createWallet({
       ...input,
       messaging: undefined,
     } as unknown as MonadRootBundle),
@@ -235,7 +235,7 @@ test.each([0, 1])(
     const chain = await createChain({ family: 'evm', config })
     const wallet = (await chain.createWallet(
       roots(index),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     try {
       expect(wallet.identity.address.raw).toBe(expected[index].auth)
       expect((await wallet.getReceiveAddress()).raw).toBe(expected[index].main)
@@ -259,9 +259,9 @@ test.each(['evm', 'authentication', 'messaging'] as const)(
   'changing only %s changes only its role',
   async role => {
     const bundle = { ...roots(), [role]: roots(1)[role] }
-    const wallet = (await createMonadChain(config).createWallet(
+    const wallet = (await createEvmChain(config).createWallet(
       bundle,
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     try {
       expect(wallet.identity.address.raw).toBe(
         expected[role === 'authentication' ? 1 : 0].auth,
@@ -323,7 +323,7 @@ test.each([
     const open = jest.spyOn(LevelSubAccountPoolStore.prototype, 'Open')
     const provider = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
     const mnemonic = jest.spyOn(Mnemonic, 'fromPhrase')
-    const chain = createMonadChain({
+    const chain = createEvmChain({
       ...config,
       walletStorageLocation: 'must-not-open',
     })
@@ -346,7 +346,7 @@ test('snapshots caller bytes, reuses exact bundles, rejects mismatches, wipes me
       materials.push(material)
       return material
     })
-  const chain = createMonadChain(config)
+  const chain = createEvmChain(config)
   const input = roots()
   const pending = chain.createWallet(input)
   Object.values(input).forEach(root => root.bytes.fill(0))
@@ -382,7 +382,7 @@ test('snapshots caller bytes, reuses exact bundles, rejects mismatches, wipes me
 })
 
 test('typed DM entrypoints stay pending without a verified directory, before plaintext, payment, or network access', async () => {
-  const chain = createMonadChain(config)
+  const chain = createEvmChain(config)
   const wallet = await chain.createWallet(roots())
   const items: import('@frank/cashweb/types/messages').MessageItem[] = []
   const plaintextRead = jest.fn(() => {
@@ -432,7 +432,7 @@ test('typed DM entrypoints stay pending without a verified directory, before pla
 })
 
 function mockNativeRpc(
-  wallet: MonadChainWalletHandle,
+  wallet: EvmChainWalletHandle,
   initial: Record<string, bigint>,
 ) {
   const balances = new Map(
@@ -502,10 +502,10 @@ test('native signed bytes survive restart and authentication changes without an 
     walletStorageLocation: join(dir, 'wallet'),
     nativeAttemptStore: store,
   }
-  const first = (await createMonadChain(cfg).createWallet(
+  const first = (await createEvmChain(cfg).createWallet(
     roots(),
-  )) as MonadChainWalletHandle
-  let restored: MonadChainWalletHandle | undefined
+  )) as EvmChainWalletHandle
+  let restored: EvmChainWalletHandle | undefined
   try {
     const rpc = mockNativeRpc(first, { [expected[0].main]: 100000n })
     rpc.broadcast.mockRejectedValueOnce(new Error('reply lost'))
@@ -526,10 +526,10 @@ test('native signed bytes survive restart and authentication changes without an 
       ),
     ).toBeUndefined()
     await first.close()
-    restored = (await createMonadChain(cfg).createWallet({
+    restored = (await createEvmChain(cfg).createWallet({
       ...roots(),
       authentication: roots(1).authentication,
-    })) as MonadChainWalletHandle
+    })) as EvmChainWalletHandle
     const next = mockNativeRpc(restored, { [expected[0].main]: 100000n })
     const tx = await restored.retryUnresolvedNativeTransaction!()
     expect(tx.txHash).toBe(row.members[0]!.signed!.transactionHash)
@@ -548,8 +548,8 @@ test.each([false, true])(
   'authentication signs relay challenges while topic funding uses EVM main (another facade: %s)',
   async anotherFacade => {
     const provider = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
-    const chain = createMonadChain(config)
-    const wallet = (await chain.createWallet(roots())) as MonadChainWalletHandle
+    const chain = createEvmChain(config)
+    const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
     try {
       const auth = provider.mock.calls[0][0].relayAuth!
       expect(auth.customer).toBe(expected[0].auth)
@@ -569,7 +569,7 @@ test.each([false, true])(
           ReturnType<topicModule.MonadTopicPostClient['submitTopicPost']>
         >)
       await expect(
-        (anotherFacade ? createMonadChain(config) : chain).topics.post({
+        (anotherFacade ? createEvmChain(config) : chain).topics.post({
           wallet,
           topic: 'fixture',
           entries: [],
@@ -599,7 +599,7 @@ test.each([false, true])(
           token: 'ab'.repeat(32),
         }),
       } as Response)
-    const chain = createMonadChain({
+    const chain = createEvmChain({
       ...config,
       ...(demo
         ? {
@@ -611,7 +611,7 @@ test.each([false, true])(
     })
     const wallet = await chain.createWallet(roots())
     const destroyHttp = jest.spyOn(MonadHttpClient.prototype, 'destroy')
-    const rpc = mockNativeRpc(wallet as MonadChainWalletHandle, {
+    const rpc = mockNativeRpc(wallet as EvmChainWalletHandle, {
       [expected[0].main]: 100000n,
     })
     let signedHash = ''
@@ -645,7 +645,7 @@ test.each([false, true])(
 )
 
 test('cached callers serialize signing through the same durable native owner', async () => {
-  const chain = createMonadChain({
+  const chain = createEvmChain({
     ...config,
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
   })
@@ -654,7 +654,7 @@ test('cached callers serialize signing through the same durable native owner', a
     chain.createWallet(roots()),
   ])
   expect(first).toBe(second)
-  const rpc = mockNativeRpc(first as MonadChainWalletHandle, {
+  const rpc = mockNativeRpc(first as EvmChainWalletHandle, {
     [expected[0].main]: 100000n,
   })
   jest
@@ -700,8 +700,8 @@ test('cached callers serialize signing through the same durable native owner', a
 test.each(['sendNative', 'sendLegacy'] as const)(
   'snapshots %s authorization before the public wallet queue',
   async method => {
-    const chain = createMonadChain(config)
-    const wallet = (await chain.createWallet(roots())) as MonadChainWalletHandle
+    const chain = createEvmChain(config)
+    const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
     const rpc = mockNativeRpc(wallet, { [expected[0].main]: 500000n })
     jest
       .spyOn(chain.directMessages, 'send')
@@ -752,11 +752,11 @@ test.each(['main', 'identity'] as const)(
       walletStorageLocation: join(dir, 'wallet'),
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     }
-    let wallet: MonadChainWalletHandle | undefined
+    let wallet: EvmChainWalletHandle | undefined
     try {
-      wallet = (await createMonadChain(cfg).createWallet(
+      wallet = (await createEvmChain(cfg).createWallet(
         roots(),
-      )) as MonadChainWalletHandle
+      )) as EvmChainWalletHandle
       const source = origin === 'main' ? expected[0].main : expected[0].auth
       mockNativeRpc(wallet, { [source]: 500000n })
       // A cancelled native row still contributes source provenance on reopen.
@@ -814,9 +814,9 @@ test.each(['main', 'identity'] as const)(
       for (const lifetime of ['current', 'reopened']) {
         if (lifetime === 'reopened') {
           await wallet.close()
-          wallet = (await createMonadChain(cfg).createWallet(
+          wallet = (await createEvmChain(cfg).createWallet(
             roots(),
-          )) as MonadChainWalletHandle
+          )) as EvmChainWalletHandle
         }
         const rpc = mockNativeRpc(wallet, { [source]: 500000n })
         const signed = jest.fn(async () => undefined)
@@ -847,15 +847,15 @@ test('reopens existing EVM inventory after close even when authentication change
   await mkdir(join(dir, `wallet-evm-${expected[0].main.toLowerCase()}`))
   try {
     const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
-    const first = (await createMonadChain(cfg).createWallet(
+    const first = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     first.pool.setStatus(0, 'retired')
     await first.close()
-    const second = (await createMonadChain(cfg).createWallet({
+    const second = (await createEvmChain(cfg).createWallet({
       ...roots(),
       authentication: roots(1).authentication,
-    })) as MonadChainWalletHandle
+    })) as EvmChainWalletHandle
     expect(second.pool.getRecord(0)!.status).toBe('retired')
     expect(second.pool.getRecord(0)!.address).toBe(expected[0].pool)
     await second.close()
@@ -967,9 +967,9 @@ test('a canonical journal bound to another identity keeps EVM inventory open, re
   await mkdir(storage)
   try {
     const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
-    const first = (await createMonadChain(cfg).createWallet(
+    const first = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     // Matching (first-bound) identity: canonical client is available, unchanged behaviour.
     expect(canonicalMonadStampClient(first).reconcileWorkflowLinks([])).toEqual(
       [],
@@ -981,10 +981,10 @@ test('a canonical journal bound to another identity keeps EVM inventory open, re
     const rootsBefore = (await readdir(dir)).sort()
     const namespacesBefore = (await readdir(storage)).sort()
 
-    const second = (await createMonadChain(cfg).createWallet({
+    const second = (await createEvmChain(cfg).createWallet({
       ...roots(),
       authentication: roots(1).authentication,
-    })) as MonadChainWalletHandle
+    })) as EvmChainWalletHandle
     expect(second.pool.getRecord(0)!.status).toBe('retired')
     expect(second.pool.getRecord(0)!.address).toBe(expected[0].pool)
     expect(second.pool.getRecord(1)!.status).toBe('unfunded')
@@ -1009,9 +1009,9 @@ test('a canonical journal bound to another identity keeps EVM inventory open, re
     expect((await readdir(dir)).sort()).toEqual(rootsBefore)
     expect((await readdir(storage)).sort()).toEqual(namespacesBefore)
 
-    const third = (await createMonadChain(cfg).createWallet(
+    const third = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     expect(third.pool.getRecord(1)!.status).toBe('retired')
     expect(canonicalMonadStampClient(third).reconcileWorkflowLinks([])).toEqual(
       [],
@@ -1029,9 +1029,9 @@ test('a mismatched open leaves a retained canonical attempt and its pinned pool 
   await mkdir(storage)
   try {
     const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
-    const first = (await createMonadChain(cfg).createWallet(
+    const first = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     first.pool.setStatus(0, 'in-use')
     await first.pool.flush()
     await first.close()
@@ -1047,10 +1047,10 @@ test('a mismatched open leaves a retained canonical attempt and its pinned pool 
       'observations:0000000000000001',
     ])
 
-    const second = (await createMonadChain(cfg).createWallet({
+    const second = (await createEvmChain(cfg).createWallet({
       ...roots(),
       authentication: roots(1).authentication,
-    })) as MonadChainWalletHandle
+    })) as EvmChainWalletHandle
     // The other identity's unresolved obligation still pins its account: an unreferenced
     // in-use account would have been retired during open.
     expect(second.pool.getRecord(0)!.status).toBe('in-use')
@@ -1060,9 +1060,9 @@ test('a mismatched open leaves a retained canonical attempt and its pinned pool 
     await second.close()
     expect(await canonicalJournalEntries(storage)).toEqual(journalBefore)
 
-    const third = (await createMonadChain(cfg).createWallet(
+    const third = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     expect(third.pool.getRecord(0)!.status).toBe('in-use')
     expect(canonicalMonadStampClient(third).reconcileWorkflowLinks([])).toEqual(
       [{ attemptRef: retained.attemptRef, state: 'hold' }],
@@ -1088,7 +1088,7 @@ test('construction failure closes opened stores and wipes owned messaging root',
     .mockRejectedValueOnce(new Error('fixture open failure'))
   const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
   try {
-    const chain = createMonadChain(cfg)
+    const chain = createEvmChain(cfg)
     await expect(chain.createWallet(roots())).rejects.toThrow(
       'fixture open failure',
     )
@@ -1117,7 +1117,7 @@ test('failed fake discovery creates no providers, wipes owned material and relea
   const fetcher = jest
     .spyOn(globalThis, 'fetch')
     .mockResolvedValue({ ok: false } as Response)
-  const chain = createMonadChain({
+  const chain = createEvmChain({
     ...config,
     networkId: 'monad-testnet',
     fakeDemo: { enabled: true, controlUrl: 'http://127.0.0.1:8545' },
@@ -1134,7 +1134,7 @@ test('failed fake discovery creates no providers, wipes owned material and relea
       token: 'ab'.repeat(32),
     }),
   } as Response)
-  const wallet = (await chain.createWallet(roots())) as MonadChainWalletHandle
+  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
   expect(
     provider.mock.calls.map(([options]) => [options.rpcUrl, options.relayAuth]),
   ).toEqual([
@@ -1154,7 +1154,7 @@ test('construction failure after both clients exist destroys both providers', as
     .spyOn(MonadStampClient.prototype, 'resumePendingAttempts')
     .mockRejectedValue(new Error('fixture resume failure'))
   await expect(
-    createMonadChain(config).createWallet({
+    createEvmChain(config).createWallet({
       mnemonic:
         'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
     }),
@@ -1204,11 +1204,11 @@ test('demo wallet close cancels dispatched balance and HTTP reads and closes the
   const controlUrl = `http://127.0.0.1:${
     (server.address() as AddressInfo).port
   }`
-  const wallet = (await createMonadChain({
+  const wallet = (await createEvmChain({
     ...config,
     networkId: 'monad-testnet',
     fakeDemo: { enabled: true, controlUrl },
-  }).createWallet(roots())) as MonadChainWalletHandle
+  }).createWallet(roots())) as EvmChainWalletHandle
   let timeout: ReturnType<typeof setTimeout> | undefined
   try {
     const reads = Promise.allSettled([
@@ -1278,7 +1278,7 @@ test.each([undefined, false])(
     })
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
-    const wallet = await createMonadChain({
+    const wallet = await createEvmChain({
       ...config,
       relayBaseUrl: url,
       fakeDemo:
@@ -1312,12 +1312,12 @@ test.each([
       walletStorageLocation: join(dir, 'wallet'),
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     }
-    let first: MonadChainWalletHandle | undefined
-    let second: MonadChainWalletHandle | undefined
+    let first: EvmChainWalletHandle | undefined
+    let second: EvmChainWalletHandle | undefined
     try {
-      first = (await createMonadChain(cfg).createWallet(
+      first = (await createEvmChain(cfg).createWallet(
         roots(),
-      )) as MonadChainWalletHandle
+      )) as EvmChainWalletHandle
       let sourceAddress =
         kind === 'main'
           ? expected[0].main
@@ -1362,9 +1362,9 @@ test.each([
       expect(rpc.broadcast).not.toHaveBeenCalled()
       await first.cancelUnsignedNativeOperation!(row.operationId)
       await first.close()
-      second = (await createMonadChain(cfg).createWallet(
+      second = (await createEvmChain(cfg).createWallet(
         roots(),
-      )) as MonadChainWalletHandle
+      )) as EvmChainWalletHandle
       if (kind === 'identity-stealth-v1')
         expect(
           second
@@ -1392,9 +1392,9 @@ test.each([
 )
 
 test('a funded key-only imported account cannot become native custody authority', async () => {
-  const wallet = (await createMonadChain(config).createWallet(
+  const wallet = (await createEvmChain(config).createWallet(
     roots(),
-  )) as MonadChainWalletHandle
+  )) as EvmChainWalletHandle
   try {
     const stranger = new Wallet('0x' + '67'.repeat(32))
     const coin = wallet.accountUtxoPool!.registerSubAccount({
@@ -1422,12 +1422,12 @@ test('native recovery references load before startup orphan retirement', async (
     walletStorageLocation: join(dir, 'wallet'),
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
   }
-  let first: MonadChainWalletHandle | undefined
-  let second: MonadChainWalletHandle | undefined
+  let first: EvmChainWalletHandle | undefined
+  let second: EvmChainWalletHandle | undefined
   try {
-    first = (await createMonadChain(cfg).createWallet(
+    first = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     const rpc = mockNativeRpc(first, { [expected[0].pool]: 100000n })
     rpc.broadcast.mockRejectedValueOnce(new Error('lost response'))
     await expect(
@@ -1437,9 +1437,9 @@ test('native recovery references load before startup orphan retirement', async (
     first.pool.setStatus(0, 'in-use')
     await first.pool.flush()
     await first.close()
-    second = (await createMonadChain(cfg).createWallet(
+    second = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     expect(second.pool.getRecord(0)!.status).toBe('in-use')
     const recovered = mockNativeRpc(second, { [expected[0].pool]: 100000n })
     await second.resumeNativeOperation!(row.operationId)
@@ -1454,9 +1454,9 @@ test('native recovery references load before startup orphan retirement', async (
 })
 
 test('close drains an admitted plan that has not reached signing yet', async () => {
-  const wallet = (await createMonadChain(config).createWallet(
+  const wallet = (await createEvmChain(config).createWallet(
     roots(),
-  )) as MonadChainWalletHandle
+  )) as EvmChainWalletHandle
   const rpc = mockNativeRpc(wallet, { [expected[0].main]: 100000n })
   let entered!: () => void
   let release!: () => void
@@ -1511,11 +1511,11 @@ test('conflicting recovered owners remain read-only without configuring or start
     walletStorageLocation: join(dir, 'wallet'),
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
   }
-  let wallet: MonadChainWalletHandle | undefined
+  let wallet: EvmChainWalletHandle | undefined
   try {
-    wallet = (await createMonadChain(cfg).createWallet(
+    wallet = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     mockNativeRpc(wallet, { [expected[0].main]: 500000n })
     const sign = jest
       .spyOn(Wallet.prototype, 'signTransaction')
@@ -1577,9 +1577,9 @@ test('conflicting recovered owners remain read-only without configuring or start
       .mockImplementation(
         () => ({ buildAndSignTransfer: built, submit: submitted } as never),
       )
-    wallet = (await createMonadChain(cfg).createWallet(
+    wallet = (await createEvmChain(cfg).createWallet(
       roots(),
-    )) as MonadChainWalletHandle
+    )) as EvmChainWalletHandle
     await new Promise<void>(resolve => setImmediate(resolve))
     const snapshot = await lastBundle!.runLifetime(lifetime =>
       Promise.resolve(lastBundle!.inputAdmission.inspect(lifetime)),

@@ -116,10 +116,8 @@ import {
   testAccount,
   type FakeRelay,
 } from '@frank/cashweb/relay/open-directory-fake-relay.testutil'
-import {
-  createCanonicalMessageRoles,
-  type MonadChainConfig,
-} from '@frank/wallet/chain/monad-chain'
+import { createCanonicalMessageRoles } from "@frank/wallet/chain/monad-chain";
+import type { EvmChainConfig } from "@frank/wallet/chain/evm-chain-config";
 import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
 import domainVectors from '../domain-roots/vectors/domain-roots-v1.json'
 import {
@@ -170,7 +168,7 @@ describe('#703/#778 canonical Qwen composition on the open directory', () => {
     }
   }
 
-  function chain(): MonadChainConfig {
+  function chain(): EvmChainConfig {
     return {
       networkId: 'monad-testnet',
       rpcChain: 'monad-testnet',

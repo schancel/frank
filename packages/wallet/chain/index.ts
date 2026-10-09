@@ -8,7 +8,7 @@
  */
 import {
   MonadChain,
-  createMonadChain,
+  createEvmChain,
   loadMonadChainConfigFromEnv,
 } from "./monad-chain";
 import { ActiveChain } from "./active-chain";
@@ -35,19 +35,14 @@ export {
 export type { EcashNetworkId, EcashAddressPrefix } from "../ecash-wallet";
 export {
   createEvmChain,
-  createMonadChain,
   loadMonadChainConfigFromEnv,
   CUSTOM_RELAY_STORAGE_KEY,
   getCustomRelayBaseUrl,
   setCustomRelayBaseUrl,
   getDefaultRelayBaseUrl,
 } from "./monad-chain";
-export type {
-  EvmChainConfig,
-  EvmChainWalletHandle,
-  MonadChainConfig,
-  MonadChainWalletHandle,
-} from "./monad-chain";
+export type { EvmChainConfig } from "./evm-chain-config";
+export type { EvmWalletHandle, EvmChainWalletHandle } from "../evm-wallet-handle";
 export {
   NativeEvmTransactionBuilder,
   defaultNativeEvmTransactionBuilder,
@@ -120,7 +115,7 @@ export function onActiveChainChange(
 export function setNetworkMode(mode: "testnet" | "mainnet"): ActiveChain {
   const isTestnet = mode === "testnet";
   const config = loadMonadChainConfigFromEnv({ isTestnet });
-  const newChain = createMonadChain(config);
+  const newChain = createEvmChain(config);
   setActiveChain(newChain);
   return newChain;
 }

@@ -1,5 +1,8 @@
 /** @jest-environment jsdom */
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
+import { shallowMount, flushPromises } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { useOracleStore } from '../stores/oracle'
 
 const mockMonadBalance = {
   balance: ref<bigint | null>(1000n),
@@ -75,12 +78,47 @@ jest.mock('@frank/wallet/chain', () => ({
   }),
 }))
 
+// Keep this integration fixture on the display boundary; no custody, transport or price polling.
+jest.mock('vue-router', () => ({
+  useRoute: () => ({ path: '/wallet/solana', query: {} }),
+  useRouter: () => ({ push: jest.fn() }),
+}))
+jest.mock('src/composables/useActiveWallet', () => ({
+  useActiveWallet: jest.fn(),
+}))
+jest.mock('src/composables/useSwapHistory', () => ({
+  useSwapHistory: () => ({ getSwapsForChain: () => ref([]) }),
+}))
+jest.mock('src/utils/routes', () => ({ openPage: jest.fn() }))
+jest.mock('src/utils/native-transfer', () => ({
+  nativeSendChainIdentifier: () => 'solana-devnet',
+}))
+jest.mock('src/utils/notifications', () => ({
+  addressCopiedNotify: jest.fn(),
+  errorNotify: jest.fn(),
+}))
+jest.mock('quasar', () => ({ copyToClipboard: jest.fn() }))
+jest.mock('src/components/wallet/AvuExplainerDialog.vue', () => ({
+  template: '<div />',
+}))
+jest.mock('src/components/wallet/AvuParityChart.vue', () => ({
+  template: '<div />',
+}))
+jest.mock('src/components/wallet/DAppSwapView.vue', () => ({
+  template: '<div />',
+}))
+jest.mock('src/components/wallet/RenameWalletDialog.vue', () => ({
+  template: '<div />',
+}))
+
 import {
   useChainBalance,
   useMultichainBalance,
   fetchChainBalance,
   getChainTokens,
 } from './useChainBalance'
+import Wallet from '../pages/Wallet.vue'
+import WalletPanel from '../components/panels/WalletPanel.vue'
 
 describe('useChainBalance', () => {
   beforeEach(() => {
@@ -232,5 +270,91 @@ describe('useChainBalance', () => {
 
     const solanaBalance = useChainBalance('solana')
     expect(solanaBalance.hasError.value).toBe(true)
+  })
+})
+
+describe('native Solana AVU presentation', () => {
+  it('keeps header, asset row and drawer on the reactive oracle snapshot', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const oracle = useOracleStore()
+    jest
+      .spyOn(oracle, 'startBackgroundWorker')
+      .mockImplementation(() => undefined)
+    oracle.snapshot.rates.solana = 37
+    await fetchChainBalance('solana', true)
+
+    const global = {
+      plugins: [pinia],
+      mocks: { $t: (key: string) => key },
+      directives: { ripple: {} },
+      stubs: {
+        QTooltip: true,
+        ...Object.fromEntries(
+          [
+            'q-header',
+            'q-toolbar',
+            'q-toolbar-title',
+            'q-page-container',
+            'q-page',
+            'q-scroll-area',
+            'q-card',
+            'q-card-section',
+            'q-card-actions',
+            'q-separator',
+            'q-badge',
+            'q-skeleton',
+            'q-tabs',
+            'q-tab',
+            'q-tab-panels',
+            'q-tab-panel',
+            'q-icon',
+            'q-list',
+            'q-item',
+            'q-item-section',
+            'q-item-label',
+            'q-avatar',
+          ].map(name => [name, { template: '<div><slot /></div>' }]),
+        ),
+      },
+    }
+    const detail = shallowMount(Wallet, { global })
+    const drawer = shallowMount(WalletPanel, { global })
+    try {
+      await flushPromises()
+      const expectAgreement = (expected: string) => {
+        expect(oracle.formatAvuAmount('solana', 2_500_000_000n)).toBe(expected)
+        expect(detail.get('[data-testid="wallet-balance-avu"]').text()).toBe(
+          expected,
+        )
+        expect(
+          detail
+            .get(
+              '[data-testid="wallet-token-item-tsol"] .text-grey-7.text-right',
+            )
+            .text(),
+        ).toBe(expected)
+        expect(drawer.get('[data-test="solana-wallet-avu"]').text()).toBe(
+          `· ${expected}`,
+        )
+        expect(drawer.get('[data-test="subtoken-tsol"]').text()).toContain(
+          `(${expected})`,
+        )
+      }
+      expectAgreement('≈ 92.50 AVU')
+      oracle.snapshot = {
+        ...oracle.snapshot,
+        rates: { ...oracle.snapshot.rates, solana: 83 },
+      }
+      await nextTick()
+      expectAgreement('≈ 207.50 AVU')
+      // SPL rows keep their existing independently supplied valuation.
+      expect(getChainTokens('solana')[1].avuFormatted).toBe('≈ 1,190.5 AVU')
+    } finally {
+      detail.unmount()
+      drawer.unmount()
+      oracle.stopBackgroundWorker()
+      setActivePinia(undefined)
+    }
   })
 })

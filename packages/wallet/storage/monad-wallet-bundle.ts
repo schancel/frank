@@ -27,7 +27,6 @@ import { SubAccountLeaseManager } from '../monad-account-lease'
 import { MonadChangePool } from '../monad-change-pool'
 import { MonadChangeKeyring } from '../monad-change-keyring'
 import { MonadHdKeyring } from '../monad-hd-keyring'
-import { MonadAddressInventory } from '../monad-address-inventory'
 import {
   InMemoryChangePoolStore,
   type ChangeAccountRecord,
@@ -126,8 +125,6 @@ export interface MonadWalletPersistenceBundle {
   readonly pool: MonadSubAccountPool
   readonly leaseManager: SubAccountLeaseManager
   readonly changePool: MonadChangePool
-  /** Unified HD address inventory tracking spend and change branches (Ticket #924). */
-  readonly inventory?: MonadAddressInventory
   readonly nativeJournal?: NativeJournalReader
   readonly inputAdmission: EvmInputAdmission
   readonly topicOperationJournal: TopicOperationJournal
@@ -289,7 +286,6 @@ function makeBundle(params: {
   topicJournal: TopicOperationJournal
   subKeyring: MonadHdKeyring
   changeKeyring: MonadChangeKeyring
-  inventory?: MonadAddressInventory
   close: () => Promise<void>
   leaseManager?: SubAccountLeaseManager
   additionalLeaseReference?: (index: number) => boolean
@@ -451,12 +447,6 @@ function makeBundle(params: {
     pool: params.pool,
     leaseManager,
     changePool: params.changePool,
-    inventory:
-      params.inventory ??
-      MonadAddressInventory.fromKeyrings({
-        spendKeyring: params.subKeyring,
-        changeKeyring: params.changeKeyring,
-      }),
     topicOperationJournal: params.topicJournal,
     nativeJournal: params.nativeJournal
       ? nativeJournalReader(params.nativeJournal)

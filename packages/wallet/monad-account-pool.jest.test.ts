@@ -31,7 +31,6 @@ import {
   SubAccountSpendRefusedError,
 } from "./monad-account-pool";
 import { MonadChangeKeyring } from "./monad-change-keyring";
-import { EvmAddressInventory } from "./hd-address-inventory";
 import { applyWalletSyncItem } from "./sync-dispatcher";
 import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
 import { MonadChangePool } from "./monad-change-pool";
@@ -1787,17 +1786,13 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
     });
 
     // The same refusal is what the caller awaiting the dispatcher sees, and a chain-mismatched
-    // item never reaches the pool or the inventory. On the base the first commits and resolves;
-    // the second is dispatched to the pool, which commits it, and to the inventory, which debits.
-    it("at the dispatcher: the pool's refusal reaches the awaiting caller, and a chain mismatch mutates neither pool nor inventory", async () => {
+    // item never reaches the pool. On the base the first commits and resolves; the second is
+    // dispatched to the pool, which commits it.
+    it("at the dispatcher: the pool's refusal reaches the awaiting caller, and a chain mismatch does not mutate the pool", async () => {
       const { keyring, pool, writes } = setupSpendTest();
       const addr0 = keyring.deriveSubAccount(0).address;
       const spend = await signSpend(keyring, 0);
-      const inventory = EvmAddressInventory.fromMnemonic(TEST_MNEMONIC, "", 2);
-      inventory.updateBalance(addr0, 100_000n);
-      const account = { ...inventory.getAccount(addr0)! };
-      expect(account.balanceWei).toBe(100_000n);
-      const wallet = { chainIdentifier: "monad-testnet", pool, inventory };
+      const wallet = { chainIdentifier: "monad-testnet", pool };
       const complete = { ...consolidatorItem(addr0, spend), rawTx: spend.rawTx };
       const before = pool.records();
       const written = writes();
@@ -1813,7 +1808,6 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       const refused = await dispatched(complete);
       expect(refused).toBeInstanceOf(SubAccountSpendRefusedError);
       expect(refused).toMatchObject({ code: "no-applier" });
-      expect(inventory.getAccount(addr0)).toEqual(account);
 
       // With an applier that would commit, another chain's item is stopped before the pool.
       const applier = attachCommitApplier(pool);
@@ -1824,7 +1818,6 @@ describe("InMemorySubAccountPoolStore / LevelSubAccountPoolStore", () => {
       expect(applier).not.toHaveBeenCalled();
       expect(writes()).toBe(written);
       expect(pool.records()).toEqual(before);
-      expect(inventory.getAccount(addr0)).toEqual(account);
     });
 
     // With an applier the adapter routes to it and reports what it committed. Before #1235 Stage

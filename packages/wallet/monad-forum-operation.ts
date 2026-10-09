@@ -22,7 +22,6 @@ import type {
   AccountLeaseHandle,
 } from './monad-account-lease'
 import type { MonadTxOverrides } from './monad-account-tx'
-import type { MonadAddressInventory } from './monad-address-inventory'
 
 export type MatchedForumStatus = ForumOperationStatus<ParsedFrame>
 export const MAX_FORUM_BURN = (1n << 63n) - 1n
@@ -212,16 +211,11 @@ async function settle(
   handle?: AccountLeaseHandle,
 ) {
   const bound = bindForumAuthority(wallet, operation)
-  const inventory = wallet.inventory ?? wallet.walletState?.inventory
   if (bound.record.status === 'in-use') {
     if (handle) wallet.leaseManager.releaseLease(handle, 'confirmed')
     else wallet.pool.setStatus(operation.leaseIndex, 'spent')
     await wallet.leaseManager.flush()
   }
-  inventory?.recordSpend(operation.senderAddress, {
-    txHash: operation.txHash,
-    valueWei: BigInt(operation.valueWei),
-  })
   await wallet.topicOperationJournal!.delete(operation)
   if (admission) await wallet.walletState!.compactTerminalAccounts(8, admission)
 }
@@ -248,11 +242,6 @@ export async function reconcileForumOperations(
           valueWei: operation.valueWei,
         })
         await wallet.pool.flush()
-        const inventory = wallet.inventory ?? wallet.walletState?.inventory
-        inventory?.recordSpend(operation.senderAddress, {
-          txHash: operation.txHash,
-          valueWei: BigInt(operation.valueWei),
-        })
       }
       // Status is read-only. If unresolved, SAME-byte replay may broadcast; never sign again.
       try {
@@ -298,21 +287,12 @@ async function submitForumOperationAdmitted(
         )
       : wallet.leaseManager.acquireLease()
   await wallet.leaseManager.flush()
-  const inventory = wallet.inventory ?? wallet.walletState?.inventory
   let operation: OutgoingTopicOperation
   try {
-    const signer = inventory
-      ? inventory.getSigner(
-          { branch: 'spend', index: handle.index },
-          {
-            provider: wallet.provider,
-            httpClient: wallet.httpClient,
-          },
-        )
-      : wallet.pool.getSigner(handle.index, {
-          provider: wallet.provider,
-          httpClient: wallet.httpClient,
-        })
+    const signer = wallet.pool.getSigner(handle.index, {
+      provider: wallet.provider,
+      httpClient: wallet.httpClient,
+    })
     const signed = await signer.buildAndSignCall(
       params.burnAddress,
       params.value,
@@ -358,10 +338,6 @@ async function submitForumOperationAdmitted(
     valueWei: operation.valueWei,
   })
   await wallet.pool.flush()
-  inventory?.recordSpend(operation.senderAddress, {
-    txHash: operation.txHash,
-    valueWei: BigInt(operation.valueWei),
-  })
   let status: MatchedForumStatus
   try {
     status = await exchange(wallet, operation, 'put')

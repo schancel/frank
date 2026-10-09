@@ -25,7 +25,7 @@ import {
   type FeeData,
   type Network,
 } from 'ethers'
-import { MonadAddressInventory } from './monad-address-inventory'
+import { MonadAccountTxSigner } from './monad-account-tx'
 import { MonadAccountHygieneEngine } from './monad-account-hygiene'
 import { MonadHdKeyring } from './monad-hd-keyring'
 import { MonadChangeKeyring } from './monad-change-keyring'
@@ -236,7 +236,7 @@ export interface SimulationResult {
   readonly modelType: 'frank-privacy' | 'naive-baseline'
   readonly ledger: SimulatedLedger
   readonly targetMnemonic: string
-  readonly targetInventory?: MonadAddressInventory
+  readonly targetSpendKeyring?: MonadHdKeyring
   readonly targetMainAddress: string
   readonly targetIdentityPubKey?: string
   readonly identitySigningPolicy?: IdentitySigningPolicy
@@ -273,10 +273,25 @@ export async function runPrivacySimulation(
     'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about'
   const spendKeyring = MonadHdKeyring.fromMnemonic(targetMnemonic)
   const changeKeyring = MonadChangeKeyring.fromMnemonic(targetMnemonic)
-  const targetInventory = new MonadAddressInventory({
-    spendKeyring,
-    changeKeyring,
-    initialLookahead: 100,
+  // Fresh posts, votes and sweeps use the indices after the 100 pre-funded spend accounts and
+  // the first 100 change accounts, the same cursors the simulation always used.
+  let nextSpendIndex = 100
+  let nextChangeIndex = 100
+  const spendIndexByAddress = new Map<string, number>()
+  const signerForSpendIndex = (index: number): MonadAccountTxSigner =>
+    new MonadAccountTxSigner({
+      privateKey: spendKeyring.deriveSubAccount(index).privateKey,
+      provider,
+      httpClient: ledger,
+    })
+  const allocateNextSpendAddress = (): { address: string; index: number } => {
+    const index = nextSpendIndex++
+    const address = spendKeyring.deriveSubAccount(index).address
+    spendIndexByAddress.set(address.toLowerCase(), index)
+    return { address, index }
+  }
+  const allocateNextChangeAddress = (): { address: string } => ({
+    address: changeKeyring.deriveChangeAccount(nextChangeIndex++).address,
   })
   const hygieneEngine = new MonadAccountHygieneEngine({
     provider,
@@ -314,9 +329,9 @@ export async function runPrivacySimulation(
   // Pre-fund target sub-accounts with discrete balances
   const prefundAccounts = 100
   for (let i = 0; i < prefundAccounts; i++) {
-    const acc = targetInventory.getByIndex('spend', i)!
+    const acc = spendKeyring.deriveSubAccount(i)
+    spendIndexByAddress.set(acc.address.toLowerCase(), i)
     ledger.setBalance(acc.address, 200_000_000_000_000_000n) // 0.2 MON
-    targetInventory.updateBalance(acc.address, 200_000_000_000_000_000n)
     targetSpendAddresses.add(acc.address.toLowerCase())
   }
 
@@ -372,15 +387,11 @@ export async function runPrivacySimulation(
       postsCompleted < config.forumPosts &&
       (day % 3 === 0 || postsCompleted < day / 3)
     ) {
-      const account = targetInventory.allocateNextSpendAddress()
+      const account = allocateNextSpendAddress()
       targetSpendAddresses.add(account.address.toLowerCase())
       ledger.setBalance(account.address, 100_000_000_000_000_000n) // 0.1 MON
-      targetInventory.updateBalance(account.address, 100_000_000_000_000_000n)
 
-      const signer = targetInventory.getSigner(account.address, {
-        provider,
-        httpClient: ledger,
-      })
+      const signer = signerForSpendIndex(account.index)
       const postCalldata = hexlify(randomBytes(64))
       const signed = await signer.buildAndSignCall(
         burnContract,
@@ -388,10 +399,6 @@ export async function runPrivacySimulation(
         postCalldata,
       )
       ledger.recordRawTransaction(signed.rawTx, 'forum-post', true)
-      targetInventory.recordSpend(account.address, {
-        txHash: signed.txHash,
-        valueWei: 50_000_000_000_000_000n,
-      })
 
       // Off-chain relay announcement for post
       let postIdentity = targetIdentityPubKey
@@ -419,15 +426,11 @@ export async function runPrivacySimulation(
     // Target Topic Votes (spread across days)
     const votesToday = Math.min(2, config.forumVotes - votesCompleted)
     for (let v = 0; v < votesToday; v++) {
-      const account = targetInventory.allocateNextSpendAddress()
+      const account = allocateNextSpendAddress()
       targetSpendAddresses.add(account.address.toLowerCase())
       ledger.setBalance(account.address, 50_000_000_000_000_000n) // 0.05 MON
-      targetInventory.updateBalance(account.address, 50_000_000_000_000_000n)
 
-      const signer = targetInventory.getSigner(account.address, {
-        provider,
-        httpClient: ledger,
-      })
+      const signer = signerForSpendIndex(account.index)
       const voteCalldata = hexlify(randomBytes(32))
       const signed = await signer.buildAndSignCall(
         burnContract,
@@ -435,10 +438,6 @@ export async function runPrivacySimulation(
         voteCalldata,
       )
       ledger.recordRawTransaction(signed.rawTx, 'forum-vote', true)
-      targetInventory.recordSpend(account.address, {
-        txHash: signed.txHash,
-        valueWei: 10_000_000_000_000_000n,
-      })
 
       // Off-chain relay announcement for vote
       let voteIdentity = targetIdentityPubKey
@@ -506,16 +505,13 @@ export async function runPrivacySimulation(
           15 + ((sweepsCompleted * 43 + day * 17 + 13) % 105)
         ledger.advanceTime(jitterSeconds)
 
-        const changeAcc = targetInventory.allocateNextChangeAddress()
+        const changeAcc = allocateNextChangeAddress()
         targetChangeAddresses.add(changeAcc.address.toLowerCase())
 
         // Find private key for dirty address
-        const invRecord = targetInventory.getAccount(dirtyAddr)
-        if (invRecord) {
-          const signer = targetInventory.getSigner(invRecord.address, {
-            provider,
-            httpClient: ledger,
-          })
+        const dirtyIndex = spendIndexByAddress.get(dirtyAddr.toLowerCase())
+        if (dirtyIndex !== undefined) {
+          const signer = signerForSpendIndex(dirtyIndex)
           const feeCost = 21000n * 100n
           const sweepAmount = dirtyBalance - feeCost
           if (sweepAmount > 0n) {
@@ -524,11 +520,6 @@ export async function runPrivacySimulation(
               sweepAmount,
             )
             ledger.recordRawTransaction(signed.rawTx, 'change-sweep', true)
-            targetInventory.recordSpend(dirtyAddr, {
-              txHash: signed.txHash,
-              valueWei: sweepAmount,
-            })
-            targetInventory.updateBalance(changeAcc.address, sweepAmount)
             sweepsCompleted++
           }
         }
@@ -546,7 +537,7 @@ export async function runPrivacySimulation(
     modelType: 'frank-privacy',
     ledger,
     targetMnemonic,
-    targetInventory,
+    targetSpendKeyring: spendKeyring,
     targetMainAddress,
     targetIdentityPubKey,
     identitySigningPolicy: identityPolicy,

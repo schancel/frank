@@ -4,11 +4,10 @@
  *
  * Dispatches a generic WalletSyncItem across wallet sub-systems:
  * - Sub-account pool: records a spent sub-account through the pool's own sync operation
- * - HD address inventory: consumes nonces, records spends, updates branch balances
  * - Legacy UTXO storage: deletes spent outpoints, registers created outpoints
  *
  * Order and failure (Issue #1235). Chain affinity is checked first, before any branch. The pool
- * branch then decides before the inventory and UTXO branches mutate: it is awaited, and its
+ * branch then decides before the UTXO branches mutate: it is awaited, and its
  * refusal rejects the dispatch with the pool's own typed error, so a refused item changes
  * nothing and the caller sees it. The pool is only ever asked through `processSyncTransaction`;
  * a pool that does not offer it is not written to.
@@ -20,7 +19,6 @@ import type { WalletSyncItem } from "./types/messages";
 
 export interface WalletSyncDispatchResult {
   affectedIndices?: number[];
-  affectedAccounts?: string[];
   deletedUtxos?: string[];
   putUtxos?: unknown[];
 }
@@ -75,37 +73,7 @@ export async function applyWalletSyncItem(
     }
   }
 
-  // 2. Dispatch to wallet.inventory (MonadAddressInventory / EvmAddressInventory)
-  if (wallet.inventory) {
-    try {
-      if (typeof wallet.inventory.processSyncTransaction === "function") {
-        const invRes = wallet.inventory.processSyncTransaction(item);
-        if (invRes?.affectedAccounts && invRes.affectedAccounts.length > 0) {
-          result.affectedAccounts = invRes.affectedAccounts;
-        }
-      } else {
-        const affected: string[] = [];
-        if (item.direction === "out" && item.spentInputs) {
-          for (const input of item.spentInputs) {
-            if (typeof wallet.inventory.markSpent === "function") {
-              wallet.inventory.markSpent(input.address);
-              affected.push(input.address);
-            }
-            if (typeof wallet.inventory.consumeNonce === "function") {
-              wallet.inventory.consumeNonce(input.address, input.nonce);
-            }
-          }
-        }
-        if (affected.length > 0) {
-          result.affectedAccounts = affected;
-        }
-      }
-    } catch (err) {
-      console.warn("applyWalletSyncItem: inventory dispatch failed:", err);
-    }
-  }
-
-  // 3. Dispatch UTXO operations: wallet.deleteUtxo
+  // 2. Dispatch UTXO operations: wallet.deleteUtxo
   if (item.direction === "out" && item.spentInputs) {
     const deleted: string[] = [];
     for (const input of item.spentInputs) {
@@ -123,7 +91,7 @@ export async function applyWalletSyncItem(
     }
   }
 
-  // 4. Dispatch UTXO operations: wallet.putUtxo
+  // 3. Dispatch UTXO operations: wallet.putUtxo
   if (item.direction === "in" && typeof wallet.putUtxo === "function") {
     const put: unknown[] = [];
     if (item.createdOutputs) {

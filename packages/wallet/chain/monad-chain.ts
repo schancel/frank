@@ -2272,6 +2272,35 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 .cancelUnsignedOperations(lifetime)
             )
             .catch(() => undefined);
+          // A pool account whose native spend the journal already records as included, and whose
+          // row was never marked (a crash or a close between the observation and the local pass),
+          // is marked spent here, through the same admission writer a send's own pass uses. Only
+          // observations already in the journal count: a pending member is not looked up. It runs
+          // after the cancel above (an unsigned plan can hold an address against an included
+          // member) and before the wallet is published, so nothing else can be in the queue.
+          // Skipped entirely under the wallet queue's own guard (`runWalletExclusive`): a retained
+          // canonical pre-sign intent on an available row. A failure leaves the member unmarked
+          // for the next native send or the next open; a failed pool write leaves this session
+          // unable to sign, as it would in a send.
+          await topicOwner
+            .runLifetime(async (lifetime) => {
+              if (
+                topicOwner!.canonicalRetained
+                  ?.getIntents()
+                  .some((intent) =>
+                    intent.members.some(
+                      (m) =>
+                        pool.getRecord(m.reservation.index)?.status ===
+                        "available"
+                    )
+                  )
+              )
+                return;
+              await nativeOperationOwners
+                .get(wallet)!
+                .applyRecordedEvidence(lifetime);
+            })
+            .catch(() => undefined);
           topicOwnerWallet = wallet;
           privateTopicWallets.set(wallet, {
             ...wallet,

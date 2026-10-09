@@ -59,7 +59,10 @@ import {
 import { NoAvailableSubAccountError } from '../monad-account-lease'
 import { applyWalletSyncItem } from '../sync-dispatcher'
 import type { WalletSyncItem } from '@frank/cashweb/types/messages'
-import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
+import {
+  EvmLegacyConsolidator,
+  EvmNativeOperationPendingError,
+} from './evm-legacy-consolidator'
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
 import { MonadStampClient } from '../monad-stamp-client'
 import * as topicModule from '../monad-topic-post-client'
@@ -2367,14 +2370,11 @@ describe('recording a native spend from the journal under the input admission (#
       const second = await f.open()
       expect(await second.admission()).toMatchObject({ status: 'ready' })
       expectNoSpendRecordWithoutItsTransaction(second.wallet)
-      if (fault === 'the write is lost') {
-        expect(second.wallet.pool.getRecord(0)).toEqual(availableRow)
-        expect(second.wallet.pool.isSpendReserved(0)).toBe(true)
-        expect(second.wallet.pool.selectForStamp()).toBeUndefined()
-        // The next native send's pass finishes it.
-        second.transport.mockResolvedValue({ payloadDigest: 'aa' } as never)
-        await second.sendFromMain()
-      }
+      // Stage 2 of #1235 changed the `write is lost` half of this on purpose: the row used to be
+      // `available` (and reserved) after the reopen, until the next native send's pass finished
+      // it. The reopen itself now applies the recorded member, so both faults converge here.
+      expect(second.wallet.pool.isSpendReserved(0)).toBe(true)
+      expect(second.wallet.pool.selectForStamp()).toBeUndefined()
       expect(second.wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
       expect(await second.admission()).toMatchObject({ status: 'ready' })
       await second.wallet.close()
@@ -2635,11 +2635,25 @@ describe.each(['pending', 'included'] as const)(
       )
       wallet = second.wallet
       expect(wallet.getNativeOperations!()).toEqual([f.operation])
-      expect(wallet.pool.getRecord(0)).toEqual({
-        index: 0,
-        address: expected[0].pool,
-        status: 'available',
-      })
+      // Stage 2 of #1235 changed the `included` half of this assertion on purpose: the row was
+      // pinned `available` after the reopen, because nothing applied recorded evidence at open.
+      // Open now records it; the reservation below is still read from the journal either way.
+      expect(wallet.pool.getRecord(0)).toEqual(
+        window === 'included'
+          ? {
+              index: 0,
+              address: expected[0].pool,
+              status: 'spent',
+              lifecycle: {
+                spend: {
+                  rawTx: f.member.signed!.rawTransaction,
+                  txHash: f.member.signed!.transactionHash,
+                  valueWei: '50000',
+                },
+              },
+            }
+          : { index: 0, address: expected[0].pool, status: 'available' },
+      )
       expect(wallet.pool.capacityCache.size).toBe(0)
       expect(wallet.pool.isSpendReserved(0)).toBe(true)
       expect(await second.admission()).toMatchObject({ status: 'ready' })
@@ -3329,5 +3343,544 @@ describe('a native plan that never signed is cancelled (#1235 Stage C)', () => {
     expect(reopened.wallet.pool.getRecord(0)).toEqual(row)
     expect(reopened.wallet.getNativeOperations!()[0]).toEqual(regressed)
     expect(reopened.wallet.pool.selectForStamp()).toBeUndefined()
+  })
+})
+
+describe('recorded native spend evidence is applied once at wallet open, with no network (#1235 Stage 2)', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'frank-1235-stage-2-'))
+  })
+  afterEach(async () => {
+    for (const opened of spendRecordWallets.splice(0))
+      await opened.close().catch(() => undefined)
+    await rm(dir, { recursive: true, force: true })
+  })
+  type Composed = Awaited<ReturnType<typeof composedWithProductionFundedPoolRow>>
+  type Session = Awaited<ReturnType<Composed['open']>>
+  const recipient = expected[1].main
+
+  /**
+   * Counts, from now on, every way an open could reach the network, a key or the transport step.
+   *
+   * The layer that counts is the JSON-RPC one. Both the wallet's provider and its relay HTTP
+   * client are `JsonRpcProvider`s: every request either makes goes through `send`, then `_send`,
+   * then `FetchRequest.send`. `FetchRequest.send` is replaced with a rejection, so nothing in
+   * these tests can leave the process. `fetch` and `http(s).request` are watched too, but ethers
+   * on node does not go through `fetch`, so a zero there proves little by itself: `control`
+   * below is what shows these counters see a real provider request.
+   */
+  const watchOpen = () => {
+    const touched = () => Promise.reject(new Error('fixture: network touched'))
+    const created = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
+    const relayClient = Object.getOwnPropertyNames(
+      MonadHttpClient.prototype,
+    ).filter(name => name !== 'constructor' && name !== 'destroy')
+    const watched: Record<string, { mock: { calls: unknown[] } }> = {
+      rpcSend: jest.spyOn(JsonRpcProvider.prototype, 'send'),
+      rpcBatch: jest.spyOn(JsonRpcProvider.prototype, '_send'),
+      rpcTransport: jest
+        .spyOn(FetchRequest.prototype, 'send')
+        .mockImplementation(touched),
+      fetch: jest.spyOn(globalThis, 'fetch').mockImplementation(touched),
+      httpRequest: jest.spyOn(
+        jest.requireActual<typeof import('http')>('http'),
+        'request',
+      ),
+      httpsRequest: jest.spyOn(
+        jest.requireActual<typeof import('https')>('https'),
+        'request',
+      ),
+      ...Object.fromEntries(
+        relayClient.map(name => [
+          `relayClient.${name}`,
+          jest.spyOn(MonadHttpClient.prototype, name as 'getBlockNumber'),
+        ]),
+      ),
+      accountSigner: jest.mocked(MonadAccountTxSigner),
+      signTransaction: jest.spyOn(Wallet.prototype, 'signTransaction'),
+      signDigest: jest.spyOn(SigningKey.prototype, 'sign'),
+      // The transport step and what it would write, and any new observation.
+      flushSync: jest.spyOn(EvmLegacyConsolidator.prototype, 'flushSync'),
+      markSyncApplied: jest.spyOn(
+        EvmNativeOperationJournal.prototype,
+        'markSyncApplied',
+      ),
+      observe: jest.spyOn(EvmLegacyConsolidator.prototype, 'observe'),
+      beginCapture: jest.spyOn(
+        EvmNativeOperationJournal.prototype,
+        'beginCapture',
+      ),
+    }
+    jest.mocked(MonadAccountTxSigner).mockClear()
+    const counts = () =>
+      Object.fromEntries(
+        Object.entries(watched).map(([name, spy]) => [
+          name,
+          spy.mock.calls.length,
+        ]),
+      )
+    const untouched = Object.fromEntries(
+      Object.keys(watched).map(name => [name, 0]),
+    )
+    expect(relayClient.length).toBeGreaterThanOrEqual(4)
+    return {
+      counts,
+      untouched,
+      /** The positive control. One real, unmocked read on the provider the open built and one
+       * on its relay client: each must be counted at all three JSON-RPC layers. */
+      control: async (wallet: EvmChainWalletHandle) => {
+        const [provider, relayProvider] = created.mock.results
+          .slice(-2)
+          .map(result => result.value)
+        expect(wallet.provider).toBe(provider)
+        expect(relayProvider).toBeInstanceOf(JsonRpcProvider)
+        const before = counts()
+        expect(before).toEqual(untouched)
+        await expect(wallet.provider.getBlockNumber()).rejects.toThrow(
+          'fixture: network touched',
+        )
+        const afterProvider = counts()
+        expect(afterProvider).toEqual({
+          ...untouched,
+          rpcSend: 1,
+          rpcBatch: 1,
+          rpcTransport: 1,
+        })
+        await expect(wallet.httpClient.getBlockNumber()).rejects.toThrow()
+        expect(counts()).toEqual({
+          ...untouched,
+          'relayClient.getBlockNumber': 1,
+          rpcSend: 2,
+          rpcBatch: 2,
+          rpcTransport: 2,
+        })
+      },
+    }
+  }
+  /** What the open did to durable state and to the pool's one spend writer. */
+  const watchWrites = () => {
+    const real = {
+      cancel: EvmLegacyConsolidator.prototype.cancelUnsignedOperations,
+      pass: EvmLegacyConsolidator.prototype.applyRecordedEvidence,
+    }
+    const spies = {
+      pass: jest.spyOn(EvmLegacyConsolidator.prototype, 'applyRecordedEvidence'),
+      cancel: jest.spyOn(
+        EvmLegacyConsolidator.prototype,
+        'cancelUnsignedOperations',
+      ),
+      commit: jest.spyOn(MonadSubAccountPool.prototype, 'commitSpend'),
+      putMany: jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany'),
+    }
+    return {
+      ...spies,
+      real,
+      counts: () => ({
+        pass: spies.pass.mock.calls.length,
+        commit: spies.commit.mock.calls.length,
+        putMany: spies.putMany.mock.calls.length,
+      }),
+      clear: () => Object.values(spies).forEach(spy => spy.mockClear()),
+    }
+  }
+  /**
+   * The window a crash or a close leaves: a legacy send from pool account 0 that was pending in
+   * its own call (so its own pass applied nothing), whose inclusion the journal then recorded
+   * through a fee estimate, which observes and runs no pass. Built through the real wallet only.
+   * `node` edits what the simulated node answers before that estimate looks.
+   */
+  const poolSendThenObserved = async (
+    f: Composed,
+    state: 'included-success' | 'included-revert' | 'missing' | 'pending',
+  ) => {
+    const { wallet } = f
+    f.withholdReceipts(true)
+    const sent = await settled(f.sendFromPool())
+    expect(sent.error).toBeInstanceOf(EvmNativeOperationPendingError)
+    const hash = wallet.getNativeOperations!().slice(-1)[0]!.members[0]!.signed!
+      .transactionHash
+    if (state === 'included-revert')
+      (f.rpc.receipts.get(hash) as { status: number }).status = 0
+    if (state === 'missing') {
+      f.rpc.transactions.delete(hash)
+      f.rpc.receipts.delete(hash)
+    }
+    if (state !== 'pending') {
+      f.withholdReceipts(false)
+      await wallet.estimateLegacyFee!({ recipient: { raw: recipient }, value: 1n })
+    }
+    const operations = wallet.getNativeOperations!()
+    const operation = operations[operations.length - 1]!
+    expect(operation.members[0]!.source).toEqual({
+      kind: 'spend',
+      address: f.poolAddress,
+      index: 0,
+    })
+    expect(operation.members[0]!.observation.state).toBe(state)
+    expect(operation.members[0]!.syncApplied).toBe(false)
+    // Nothing recorded the row: it is reserved by the journal member and still `available`.
+    expect(wallet.pool.getRecord(0)).toEqual(availableRow)
+    expect(wallet.pool.isSpendReserved(0)).toBe(true)
+    expect(f.transport).not.toHaveBeenCalled()
+    return { operation, operations }
+  }
+  const settle = () => new Promise(resolve => setImmediate(resolve))
+
+  // Contract cases 1, 2 and 3. On main c32dd683 nothing applies recorded evidence at open: the
+  // row is still `available` after the reopen (and the pass method does not exist).
+  test('a pool-sourced send recorded included but never applied: reopen marks the row spent with the journal member\'s bytes, the whole open makes no request, signs nothing and transports nothing, a main-sourced member costs nothing, and a second reopen writes nothing', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    // A main-sourced native send first: its member is included too, and has no pool row.
+    await f.sendFromMain()
+    f.rpc.balances.set(f.main, 40000n)
+    const { operation, operations } = await poolSendThenObserved(
+      f,
+      'included-success',
+    )
+    expect(operations.map(row => row.members[0]!.source.kind)).toEqual([
+      'main',
+      'spend',
+    ])
+    expect(operations.map(row => row.members[0]!.observation.state)).toEqual([
+      'included-success',
+      'included-success',
+    ])
+    await f.wallet.close()
+
+    const network = watchOpen()
+    const writes = watchWrites()
+    const second = await f.open()
+    // The entire open: no request at any JSON-RPC layer, no relay client call, no signature,
+    // no observation, no transport step.
+    expect(network.counts()).toEqual(network.untouched)
+    await settle()
+    expect(network.counts()).toEqual(network.untouched)
+    expect(second.transport).not.toHaveBeenCalled()
+    // One pass, one call of the writer, one durable put: the pool member. The main-sourced
+    // member reached neither.
+    expect(writes.counts()).toEqual({ pass: 1, commit: 1, putMany: 1 })
+    expect(writes.commit).toHaveBeenCalledWith(
+      0,
+      operation.members[0]!.signed!.rawTransaction,
+    )
+    expect(second.wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
+    expectNoSpendRecordWithoutItsTransaction(second.wallet)
+    // The journal is exactly as the last session left it.
+    expect(second.wallet.getNativeOperations!()).toEqual(operations)
+    // Terminal: out of every selection, with the admission ready and the member's claim and
+    // the row's retained claim one authorization.
+    expect(second.wallet.pool.capacityCache.has(0)).toBe(false)
+    expect(second.wallet.pool.selectForStamp()).toBeUndefined()
+    expect(() => second.wallet.leaseManager.acquireLease()).toThrow(
+      NoAvailableSubAccountError,
+    )
+    const obligations = await second.obligations()
+    expect(obligations.map(claim => claim.provenance.kind).sort()).toEqual([
+      'native',
+      'native',
+      'pool-retained',
+    ])
+    expect(
+      obligations.find(claim => claim.provenance.kind === 'pool-retained')!
+        .transaction!.transactionHash,
+    ).toBe(operation.members[0]!.signed!.transactionHash)
+
+    // A second reopen: the pass runs, finds the row applied, and writes nothing.
+    await second.wallet.close()
+    writes.clear()
+    const third = await f.open()
+    expect(network.counts()).toEqual(network.untouched)
+    expect(writes.counts()).toEqual({ pass: 1, commit: 0, putMany: 0 })
+    expect(third.wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
+    expect(third.wallet.getNativeOperations!()).toEqual(operations)
+    expect(await third.obligations()).toEqual(obligations)
+    // The counters above would have seen a request: prove it on this open's own provider.
+    await network.control(third.wallet)
+  })
+
+  // Pins: each passes on main c32dd683 up to its `pass` count (no pass exists there). What they
+  // pin is that open applies only `included-success`, and never looks.
+  test.each(['pending', 'included-revert', 'missing'] as const)(
+    'pin: a member recorded %s is not applied at open, no lookup is made for it, and its row stays available and reserved',
+    async state => {
+      const f = await composedWithProductionFundedPoolRow(dir)
+      const { operations } = await poolSendThenObserved(f, state)
+      await f.wallet.close()
+      const network = watchOpen()
+      const writes = watchWrites()
+      const second = await f.open()
+      expect(network.counts()).toEqual(network.untouched)
+      expect(writes.counts()).toEqual({ pass: 1, commit: 0, putMany: 0 })
+      expect(second.wallet.pool.getRecord(0)).toEqual(availableRow)
+      expect(second.wallet.pool.isSpendReserved(0)).toBe(true)
+      expect(second.wallet.pool.selectForStamp()).toBeUndefined()
+      expect(second.wallet.getNativeOperations!()).toEqual(operations)
+      expect(await second.admission()).toMatchObject({ status: 'ready' })
+      await network.control(second.wallet)
+      jest.mocked(FetchRequest.prototype.send).mockRestore()
+      // The node of this session answers with the receipt at once. Only a native send looks:
+      // a member that was pending is applied by that send's pass, the others never are.
+      second.transport.mockResolvedValue({ payloadDigest: 'aa' } as never)
+      await second.sendFromMain()
+      const [first] = second.wallet.getNativeOperations!()
+      if (state === 'pending') {
+        expect(first!.members[0]!.observation.state).toBe('included-success')
+        expect(second.wallet.pool.getRecord(0)).toEqual(spentByMember(first!))
+      } else {
+        expect(first!.members[0]!.observation.state).toBe(state)
+        expect(second.wallet.pool.getRecord(0)).toEqual(availableRow)
+        expect(second.wallet.pool.isSpendReserved(0)).toBe(true)
+      }
+      expect(await second.admission()).toMatchObject({ status: 'ready' })
+    },
+  )
+
+  // Ordering. On main c32dd683 the plan is cancelled at open and nothing follows it: the row
+  // stays `available`.
+  test('open cancels a never-signed plan first, then applies: an included member held behind that plan is recorded in the same open, before the wallet is published', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { operation } = await poolSendThenObserved(f, 'included-success')
+    // A crash between the journal write and the first signature, on the same account at the
+    // next nonce: while it stands it holds the address against the included member.
+    const plan = await f.bundle.runLifetime(async lifetime => {
+      const current = f.bundle.inputAdmission.inspect(lifetime)
+      if (current.status !== 'ready') throw new Error(current.reason)
+      return f.bundle.inputAdmission.prepareNative(lifetime, current.epoch, {
+        kind: 'native',
+        recipient: recipient.toLowerCase(),
+        intendedValueWei: '1000',
+        members: [
+          {
+            source: { kind: 'spend', address: f.poolAddress, index: 0 },
+            dependencies: [],
+            unsignedTransaction: Transaction.from({
+              type: 2,
+              chainId: 10143n,
+              nonce: 1,
+              to: recipient,
+              value: 1000n,
+              gasLimit: 21000n,
+              maxFeePerGas: 1n,
+              maxPriorityFeePerGas: 1n,
+            }).unsignedSerialized,
+          },
+        ],
+      })
+    })
+    await f.wallet.close()
+    const network = watchOpen()
+    const writes = watchWrites()
+    const steps: string[] = []
+    writes.cancel.mockImplementation(async function (
+      this: EvmLegacyConsolidator,
+      lifetime,
+    ) {
+      steps.push('cancel started')
+      await writes.real.cancel.call(this, lifetime)
+      steps.push('cancel finished')
+    })
+    writes.pass.mockImplementation(async function (
+      this: EvmLegacyConsolidator,
+      lifetime,
+    ) {
+      steps.push('apply started')
+      await writes.real.pass.call(this, lifetime)
+      steps.push('apply finished')
+    })
+    const second = await f.open().then(session => {
+      steps.push('wallet published')
+      return session
+    })
+    expect(steps).toEqual([
+      'cancel started',
+      'cancel finished',
+      'apply started',
+      'apply finished',
+      'wallet published',
+    ])
+    expect(network.counts()).toEqual(network.untouched)
+    expect(second.wallet.getNativeOperations!()).toEqual([
+      operation,
+      { ...plan, cancelled: true },
+    ])
+    expect(second.wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
+    expect(writes.counts()).toEqual({ pass: 1, commit: 1, putMany: 1 })
+    expect(await second.admission()).toMatchObject({ status: 'ready' })
+  })
+
+  // Contract case 5. On main c32dd683 there is no pass to skip.
+  test('hand-built: while a retained canonical pre-sign intent holds an available row the pass is skipped entirely at open, nothing is written, and the member is applied once the intent is gone', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { operation } = await poolSendThenObserved(f, 'included-success')
+    await f.wallet.close()
+    const writes = watchWrites()
+    // Hand-built: the intent appears once the open-time cancel has run, which is exactly when
+    // the block that follows it asks. Everything before that in the open reads the real journal.
+    let retained = false
+    writes.cancel.mockImplementation(async function (
+      this: EvmLegacyConsolidator,
+      lifetime,
+    ) {
+      await writes.real.cancel.call(this, lifetime)
+      retained = true
+    })
+    const realIntents = LevelCanonicalStampAttemptJournal.prototype.getIntents
+    const intents = jest
+      .spyOn(LevelCanonicalStampAttemptJournal.prototype, 'getIntents')
+      .mockImplementation(function (this: LevelCanonicalStampAttemptJournal) {
+        return retained
+          ? [{ members: [{ reservation: { id: 'r', index: 0 } }] } as never]
+          : realIntents.call(this)
+      })
+    const second = await f.open()
+    expect(writes.cancel).toHaveBeenCalledTimes(1)
+    expect(intents).toHaveBeenCalled()
+    expect(writes.counts()).toEqual({ pass: 0, commit: 0, putMany: 0 })
+    expect(second.wallet.pool.getRecord(0)).toEqual(availableRow)
+    // The same guard still refuses ordinary operations in the session.
+    await expect(second.sendFromMain()).rejects.toThrow(
+      'Canonical pre-sign intent requires explicit correlation',
+    )
+    retained = false
+    second.transport.mockResolvedValue({ payloadDigest: 'aa' } as never)
+    await second.sendFromMain()
+    expect(second.wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
+  })
+
+  // Pin of the failure behaviour for a refusal. Without the pass (main c32dd683) the open is the
+  // same; what is pinned is that a refused apply at open is not an open failure and not a write.
+  test('a member the admission refuses at open (a later pending member holds its address) does not fail the open and writes nothing; it is applied once that member resolves', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { wallet } = f
+    // Both from pool account 0. The first is mined at its broadcast. The node keeps the second
+    // without mining it; its planning saw the first included, and its pass was refused.
+    await wallet.sendNative({ recipient: { raw: recipient }, value: 50000n })
+    f.rpc.broadcast.mockImplementationOnce(
+      async raw => ({ hash: keccak256(raw) } as TransactionResponse),
+    )
+    await wallet.sendNative({ recipient: { raw: recipient }, value: 25000n })
+    const operations = wallet.getNativeOperations!()
+    expect(
+      operations.map(row => [
+        row.members[0]!.source.kind,
+        Transaction.from(row.members[0]!.signed!.rawTransaction).nonce,
+        row.members[0]!.observation.state,
+      ]),
+    ).toEqual([
+      ['spend', 0, 'included-success'],
+      ['spend', 1, 'missing'],
+    ])
+    expect(wallet.pool.getRecord(0)).toEqual(availableRow)
+    await wallet.close()
+
+    const network = watchOpen()
+    const writes = watchWrites()
+    const warned = jest.spyOn(console, 'warn')
+    const errored = jest.spyOn(console, 'error')
+    const second = await f.open()
+    expect(network.counts()).toEqual(network.untouched)
+    // The pass ran and reached the admission, which refused before any write.
+    expect(writes.counts()).toEqual({ pass: 1, commit: 0, putMany: 0 })
+    expect(warned).not.toHaveBeenCalled()
+    expect(errored).not.toHaveBeenCalled()
+    expect(second.wallet.pool.getRecord(0)).toEqual(availableRow)
+    expect(second.wallet.pool.isSpendReserved(0)).toBe(true)
+    expect(second.wallet.getNativeOperations!()).toEqual(operations)
+    expect(await second.admission()).toMatchObject({ status: 'ready' })
+    jest.mocked(FetchRequest.prototype.send).mockRestore()
+    // The second transaction is mined; a send from main observes it, and that send's pass
+    // applies the first member. The second is then held for good (one checkpoint per row).
+    await second.wallet.provider.broadcastTransaction(
+      operations[1]!.members[0]!.signed!.rawTransaction,
+    )
+    second.transport.mockResolvedValue({ payloadDigest: 'aa' } as never)
+    await second.sendFromMain()
+    expect(second.wallet.pool.getRecord(0)).toEqual({
+      ...availableRow,
+      status: 'spent',
+      lifecycle: {
+        spend: {
+          rawTx: operations[0]!.members[0]!.signed!.rawTransaction,
+          txHash: operations[0]!.members[0]!.signed!.transactionHash,
+          valueWei: '50000',
+        },
+      },
+    })
+    expect(await second.admission()).toMatchObject({ status: 'ready' })
+  })
+
+  // Contract case 6. On main c32dd683 there is no pass: `pass` cannot be spied.
+  test('an apply that throws at open, and a pass that rejects outright, do not fail the open; the member stays unapplied and the next pass applies it', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { operation } = await poolSendThenObserved(f, 'included-success')
+    await f.wallet.close()
+    const writes = watchWrites()
+    // The whole pass rejects: the open's own wrapper.
+    writes.pass.mockRejectedValueOnce(new Error('fixture: pass rejected'))
+    const second = await f.open()
+    expect(writes.counts()).toEqual({ pass: 1, commit: 0, putMany: 0 })
+    expect(second.wallet.pool.getRecord(0)).toEqual(availableRow)
+    expect(await second.admission()).toMatchObject({ status: 'ready' })
+    await second.wallet.close()
+    writes.clear()
+    // The apply itself throws something untyped, before any write.
+    const classified = jest
+      .spyOn(MonadSubAccountPool.prototype, 'classifySpendOutcome')
+      .mockImplementationOnce(() => {
+        throw new Error('fixture: untyped apply failure')
+      })
+    const third = await f.open()
+    expect(classified).toHaveBeenCalledTimes(1)
+    expect(writes.counts()).toEqual({ pass: 1, commit: 0, putMany: 0 })
+    expect(third.wallet.pool.getRecord(0)).toEqual(availableRow)
+    expect(third.wallet.pool.isSpendReserved(0)).toBe(true)
+    expect(await third.admission()).toMatchObject({ status: 'ready' })
+    // Not remembered as a hold: the next pass, a native send's, applies it.
+    third.transport.mockResolvedValue({ payloadDigest: 'aa' } as never)
+    await third.sendFromMain()
+    expect(third.wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
+    // And so would the next open have.
+    expect(writes.counts()).toEqual({ pass: 1, commit: 1, putMany: 1 })
+  })
+
+  // Contract case 8, the accepted fence. On main c32dd683 nothing is written at open, so the
+  // fault cannot occur and the session is ready.
+  test('a pool write that fails at open leaves the wallet open for inspection and unable to sign for the session; after a real reopen it is ready with the row recorded', async () => {
+    const f = await composedWithProductionFundedPoolRow(dir)
+    const { operation } = await poolSendThenObserved(f, 'included-success')
+    await f.wallet.close()
+    const writes = watchWrites()
+    const realFlush = LevelSubAccountPoolStore.prototype.flush
+    let faulted = false
+    const flush = jest
+      .spyOn(LevelSubAccountPoolStore.prototype, 'flush')
+      .mockImplementation(async function (this: LevelSubAccountPoolStore) {
+        // The flush the apply takes for its own put.
+        if (writes.commit.mock.calls.length === 1 && !faulted) {
+          faulted = true
+          throw new Error('fixture: pool write fault')
+        }
+        return realFlush.call(this)
+      })
+    const second = await f.open()
+    expect(faulted).toBe(true)
+    expect(writes.counts()).toMatchObject({ pass: 1, commit: 1 })
+    expect(second.wallet.getNativeOperations!()).toHaveLength(1)
+    expect(await second.admission()).toMatchObject({
+      status: 'unavailable',
+      reason: 'uncertain-owner',
+    })
+    const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+    second.rpc.broadcast.mockClear()
+    await expect(second.sendFromMain()).rejects.toThrow('uncertain-owner')
+    expect(sign).not.toHaveBeenCalled()
+    expect(second.rpc.broadcast).not.toHaveBeenCalled()
+    await second.wallet.close()
+    flush.mockRestore()
+    const third = await f.open()
+    expect(await third.admission()).toMatchObject({ status: 'ready' })
+    expect(third.wallet.pool.getRecord(0)).toEqual(spentByMember(operation))
+    expectNoSpendRecordWithoutItsTransaction(third.wallet)
   })
 })

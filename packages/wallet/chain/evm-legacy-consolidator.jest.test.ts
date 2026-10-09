@@ -1710,4 +1710,210 @@ describe('wallet-lifetime EVM native operations', () => {
     })
     expect(c.inspect()).toMatchObject({ status: 'ready' })
   })
+
+  // ---------------------------------------------------------------------------------------
+  // #1235 Stage 2: the pass that wallet open runs once, `applyRecordedEvidence`. A fresh
+  // executor over the same journal and pool stands for the next session. The method does not
+  // exist on main c32dd683, so every test below fails there at its first call of it.
+  // ---------------------------------------------------------------------------------------
+  it('the open-time pass applies exactly the members already recorded as included, with no provider call, no signature and no transport; later runs write nothing, and a pending member waits for a send to observe it', async () => {
+    const state = chain([])
+    const c = await composed(state, [200000n, 150000n, 100000n, 50000n])
+    // Three sends the node keeps without a receipt: each is `pending` in its own call.
+    const send = async (value: bigint) => {
+      state.provider.broadcastTransaction.mockImplementationOnce(async raw =>
+        announce(state, raw),
+      )
+      await pending(
+        c.executor.sendLegacy({ recipient: to, value }, c.lifetime),
+      )
+    }
+    await send(100000n) // row 0: will be included
+    await send(100000n) // row 1: stays pending
+    await send(60000n) // row 2: will revert
+    const [a, b, r] = journal.list()
+    expect([a, b, r].map(row => row!.members[0]!.source)).toMatchObject([
+      { index: 0 },
+      { index: 1 },
+      { index: 2 },
+    ])
+    state.mine(a!.members[0]!.signed!.rawTransaction)
+    state.mine(r!.members[0]!.signed!.rawTransaction, 0)
+    // A fee estimate records what the node now says, and runs no pass: the crash window.
+    await c.executor.estimateLegacyFee(to, 1n, c.lifetime)
+    const recorded = journal.list()
+    expect(recorded.map(row => row.members[0]!.observation.state)).toEqual([
+      'included-success',
+      'pending',
+      'included-revert',
+    ])
+    expect(calls(c)).toEqual({ classify: 0, apply: 0 })
+    expect(c.pool.records().every(row => row.status !== 'spent')).toBe(true)
+
+    const session = c.another()
+    const provider = providerCalls(state)
+    const signatures = c.sign.mock.calls.length
+    const putMany = jest.spyOn(LevelSubAccountPoolStore.prototype, 'putMany')
+    await expect(
+      session.applyRecordedEvidence(c.lifetime),
+    ).resolves.toBeUndefined()
+    expect(c.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: {
+        spend: {
+          rawTx: a!.members[0]!.signed!.rawTransaction,
+          txHash: a!.members[0]!.signed!.transactionHash,
+          valueWei: '100000',
+        },
+      },
+    })
+    // Pending and reverted members: not classified, not applied, rows untouched.
+    expect(c.classify.mock.calls.map(([row, i]) => [row.operationId, i])).toEqual(
+      [[a!.operationId, 0]],
+    )
+    expect(c.apply.mock.calls).toEqual([[a!.operationId, 0, c.lifetime]])
+    for (const index of [1, 2, 3]) {
+      expect(c.pool.getRecord(index)!.status).not.toBe('spent')
+      expect(c.pool.getRecord(index)!.lifecycle?.spend).toBeUndefined()
+    }
+    expect(putMany).toHaveBeenCalledTimes(1)
+    // No request, no signature, nothing broadcast or transported, and the journal as it was:
+    // nothing was observed again and nothing was marked sync-applied.
+    expect(providerCalls(state)).toBe(provider)
+    expect(c.sign.mock.calls.length).toBe(signatures)
+    expect(state.provider.broadcastTransaction).toHaveBeenCalledTimes(3)
+    expect(c.sync).not.toHaveBeenCalled()
+    expect(journal.list()).toEqual(recorded)
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+
+    // Again in the same session, and in the session after it: one comparison, no write.
+    await session.applyRecordedEvidence(c.lifetime)
+    expect(c.classify).toHaveLastReturnedWith('applied')
+    await c.another().applyRecordedEvidence(c.lifetime)
+    expect(c.classify).toHaveLastReturnedWith('applied')
+    expect(calls(c)).toEqual({ classify: 3, apply: 1 })
+    expect(putMany).toHaveBeenCalledTimes(1)
+    expect(providerCalls(state)).toBe(provider)
+    expect(c.sync).not.toHaveBeenCalled()
+
+    // The item for a member applied at open is emitted only when something flushes that
+    // operation's sync; the open-time pass itself never does.
+    await session.flushSync(a!.operationId)
+    expect(c.sync).toHaveBeenCalledTimes(1)
+    expect(c.sync.mock.calls[0]![0]).toMatchObject({
+      rawTx: a!.members[0]!.signed!.rawTransaction,
+    })
+
+    // The pending member lands. Open does not look: only a send's planning does.
+    state.mine(b!.members[0]!.signed!.rawTransaction)
+    const before = providerCalls(state)
+    await c.another().applyRecordedEvidence(c.lifetime)
+    expect(providerCalls(state)).toBe(before)
+    expect(c.pool.getRecord(1)!.status).not.toBe('spent')
+    expect(journal.list()[1]!.members[0]!.observation.state).toBe('pending')
+    await session.sendNative({ recipient: to, value: 1000n }, c.lifetime)
+    expect(c.pool.getRecord(1)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx: b!.members[0]!.signed!.rawTransaction } },
+    })
+    expect(c.pool.getRecord(2)!.lifecycle?.spend).toBeUndefined()
+  })
+
+  it('the open-time pass never throws: a refused member is held under the pass\'s own rules, a member whose apply threw is applied by the next pass, and an unreadable journal changes nothing', async () => {
+    const state = chain([])
+    let mode: 'throw' | 'refuse' | 'real' = 'throw'
+    let real!: (id: string, i: number) => Promise<unknown>
+    const c = await composed(state, [200000n], {
+      applyLocalMember: async (id, i) => {
+        if (mode === 'throw') throw new Error('fixture: untyped failure')
+        if (mode === 'refuse')
+          throw new EvmInputAdmissionError('conflicting-authorization')
+        return real(id, i) as never
+      },
+    })
+    real = (id, i) =>
+      poolSpendAdmission(c.admission, c.lifetime).applyMember(id, i)
+    // Included in its own call; its own pass's apply fails: recorded included, never applied.
+    await c.executor.sendLegacy({ recipient: to, value: 100000n }, c.lifetime)
+    const row = journal.list()[0]!
+    expect(row.members[0]!.observation.state).toBe('included-success')
+    expect(calls(c)).toEqual({ classify: 1, apply: 1 })
+    const unspent = () => expect(c.pool.getRecord(0)!.status).not.toBe('spent')
+    unspent()
+
+    // An unreadable journal.
+    const list = jest.spyOn(journal, 'list').mockImplementationOnce(() => {
+      throw new Error('fixture: journal unreadable')
+    })
+    const unreadable = c.another()
+    await expect(
+      unreadable.applyRecordedEvidence(c.lifetime),
+    ).resolves.toBeUndefined()
+    list.mockRestore()
+    expect(calls(c)).toEqual({ classify: 1, apply: 1 })
+    unspent()
+
+    // A typed refusal: held, not transported, and not tried again by the next pass.
+    mode = 'refuse'
+    const refused = c.another()
+    await expect(
+      refused.applyRecordedEvidence(c.lifetime),
+    ).resolves.toBeUndefined()
+    expect(calls(c)).toEqual({ classify: 2, apply: 2 })
+    unspent()
+    await pending(refused.flushSync(row.operationId))
+    expect(c.sync).not.toHaveBeenCalled()
+    mode = 'real'
+    await refused.applyRecordedEvidence(c.lifetime)
+    expect(calls(c)).toEqual({ classify: 2, apply: 2 })
+    unspent()
+    expect(c.inspect()).toMatchObject({ status: 'ready' })
+
+    // An untyped throw: not remembered. The same session's next pass applies it.
+    mode = 'throw'
+    const thrown = c.another()
+    await expect(
+      thrown.applyRecordedEvidence(c.lifetime),
+    ).resolves.toBeUndefined()
+    expect(calls(c)).toEqual({ classify: 3, apply: 3 })
+    unspent()
+    mode = 'real'
+    await thrown.applyRecordedEvidence(c.lifetime)
+    expect(calls(c)).toEqual({ classify: 4, apply: 4 })
+    expect(c.pool.getRecord(0)).toMatchObject({
+      status: 'spent',
+      lifecycle: { spend: { rawTx: row.members[0]!.signed!.rawTransaction } },
+    })
+    expect(state.raws).toHaveLength(1)
+    expect(c.sign).toHaveBeenCalledTimes(1)
+  })
+
+  it('the open-time pass waits its turn on the executor queue: it runs after a send already in flight, never inside it', async () => {
+    const state = chain([])
+    const c = await composed(state, [200000n])
+    const order: string[] = []
+    const sending = c.executor
+      .sendLegacy(
+        {
+          recipient: to,
+          value: 100000n,
+          onProgress: p => void order.push(p.status.stage),
+        },
+        c.lifetime,
+      )
+      .then(() => order.push('send returned'))
+    const pass = c.executor
+      .applyRecordedEvidence(c.lifetime)
+      .then(() => order.push('open-time pass returned'))
+    await Promise.all([sending, pass])
+    expect(order).toEqual([
+      'planning',
+      'confirmed',
+      'send returned',
+      'open-time pass returned',
+    ])
+    // The send's own pass applied the member; the queued one found it applied.
+    expect(calls(c)).toEqual({ classify: 2, apply: 1 })
+    expect(c.classify).toHaveLastReturnedWith('applied')
+  })
 })

@@ -731,15 +731,13 @@ export function extractDirectPeerAddress(
       peer = conv.address
     } else if (conv.address && conv.address !== conv.id) {
       peer = conv.address
-    } else if (peers.length > 0) {
-      peer = peers[0]
     }
   } else if (conv.address && conv.address !== conv.id) {
     peer = conv.address
-  } else if (conv.address) {
-    peer = conv.address
   }
 
+  // Multiple participants without an explicit recipient or a resolved own identity
+  // do not identify a peer. Guessing one lets list/hydration dedup merge other owners.
   if (!peer) return null
   try {
     return toChainDisplayAddress(peer)

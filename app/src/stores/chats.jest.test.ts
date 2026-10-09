@@ -1915,6 +1915,78 @@ describe('stores/chats.ts (ticket #42)', () => {
   })
 
   describe('ticket #1237: distinct recipient ownership', () => {
+    it('keeps addressless pairs separate in the list and unread total', () => {
+      const chats = useChatStore()
+      const first = chats.createConversation({
+        participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+      })
+      const second = chats.createConversation({
+        participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+      })
+      first.totalUnreadMessages = 1
+      second.totalUnreadMessages = 2
+
+      expect(
+        chats.getSortedChatOrder.map(conversation => conversation.id).sort(),
+      ).toEqual([first.id, second.id].sort())
+      expect(chats.totalUnread).toBe(3)
+    })
+
+    it.each(['null', 'throws', 'known'] as const)(
+      'keeps addressless pairs owned through repeated hydration when own address is %s',
+      async mode => {
+        const chats = useChatStore()
+        const first = chats.createConversation({
+          participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+        })
+        const second = chats.createConversation({
+          participants: [SENDER_ADDRESS, THIRD_ADDRESS],
+        })
+        for (const [conversation, senderAddress, digest] of [
+          [first, RECIPIENT_ADDRESS, 'first-addressless'],
+          [second, THIRD_ADDRESS, 'second-addressless'],
+        ] as const) {
+          conversation.messages.push({
+            payloadDigest: digest,
+            conversationId: conversation.id,
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: digest }],
+            serverTime: 100,
+            receivedTime: 100,
+            outpoints: [],
+            senderAddress,
+          })
+        }
+        if (mode === 'null') mockOwnAddress.mockResolvedValue(null)
+        if (mode === 'throws') {
+          mockOwnAddress.mockRejectedValue(new Error('identity unavailable'))
+        }
+
+        for (let reload = 0; reload < 2; reload += 1) {
+          const restored = await rehydrateState(chats.$state)
+          expect(Object.keys(restored.conversations).sort()).toEqual(
+            [first.id, second.id].sort(),
+          )
+          expect(restored.chats[SENDER_ADDRESS]).toBeUndefined()
+          for (const [id, digest] of [
+            [first.id, 'first-addressless'],
+            [second.id, 'second-addressless'],
+          ]) {
+            const conversation = restored.conversations[id]
+            expect(conversation.address).toBe(id)
+            expect(conversation.messages).toHaveLength(1)
+            expect(conversation.messages[0]).toMatchObject({
+              payloadDigest: digest,
+              conversationId: id,
+            })
+            expect(conversation.totalUnreadMessages).toBe(1)
+          }
+          chats.$patch(restored)
+        }
+      },
+    )
+
     it.each([true, false])(
       'does not reuse overlapping participant sets (explicit recipient: %s)',
       explicitRecipient => {

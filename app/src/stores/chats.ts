@@ -515,6 +515,21 @@ async function serializeDeliveryMutation<T>(
   }
 }
 
+/** Called inside the delivery mutation boundary, immediately before changing an attributed row. */
+async function assertDurableAttemptAssociation(
+  id: string,
+  expectedDigest: string | undefined,
+): Promise<void> {
+  if (expectedDigest === undefined) return
+  const messageStore = await store
+  if (typeof messageStore.getMessage !== 'function') return
+  const persisted = await messageStore.getMessage(id)
+  const storedDigest = persisted?.message.delivery?.attemptDigest
+  if (storedDigest !== undefined && storedDigest !== expectedDigest) {
+    throw new Error(`conflicting stored payment attempt for ${id}`)
+  }
+}
+
 /**
  * Cancellation identity of one delivery attempt (e.g. one direct-message poller generation).
  * Whether to notify is decided synchronously, but the delivery mutation itself is queued behind
@@ -2147,10 +2162,9 @@ export const useChatStore = defineStore('chats', {
      * message (`delivery.attemptDigest`) before the set is first submitted. Every later attempt
      * for that message (background, automatic or manual) first asks the wallet what became of
      * that set (`directMessages.reconcileAttempts`): while it is `live` the identical bytes are
-     * re-sent, which is free and idempotent; only when it is `dead` (the relay ended it for good)
-     * is a *new* payment built, and only by a Retry the user clicked. If its fate is `unknown`,
-     * the user must confirm first. A retry nobody clicked (`retryOutgoing({ automatic: true })`)
-     * never builds a payment after `dead` or `unknown` and is never `confirmed`; it builds one
+     * re-sent, which is free and idempotent. `dead` and `unknown` do not establish that the signed
+     * transactions cannot land: retain the original association and reconcile it again later.
+     * A retry nobody clicked (`retryOutgoing({ automatic: true })`) builds a first payment
      * only for a failed message cut off mid-send (`interrupted`) that has no recorded attempt,
      * after the wallet has shown that it holds no payment nobody points at.
      *
@@ -2246,7 +2260,7 @@ export const useChatStore = defineStore('chats', {
       address: string
       /** The message's key in the store (`ChatMessage.payloadDigest`). */
       payloadDigest: string
-      /** The user accepted that this retry may pay a second time. Ignored when `automatic`. */
+      /** Confirmation for unattributed/recovered drafts. Never replaces a recorded attempt. */
       confirmed?: boolean
       /** Nobody clicked: an earlier payment is only settled, and a payment is built only for a
        * message cut off mid-send (`interrupted`) that provably has none yet. */
@@ -2390,8 +2404,26 @@ export const useChatStore = defineStore('chats', {
         }
         return
       }
+      const recordedDigest = message.delivery?.attemptDigest
+      if (
+        recordedDigest !== undefined &&
+        delivery.attemptDigest !== undefined &&
+        delivery.attemptDigest !== recordedDigest
+      ) {
+        throw new Error(`cannot replace recorded payment attempt for ${id}`)
+      }
+      await assertDurableAttemptAssociation(
+        id,
+        recordedDigest ?? delivery.attemptDigest,
+      )
       message.status = status
-      message.delivery = delivery
+      // Presentation changes cannot revoke an already attributed signed payment.
+      message.delivery = {
+        ...delivery,
+        ...(recordedDigest === undefined
+          ? {}
+          : { attemptDigest: recordedDigest }),
+      }
       await this.saveOutgoingExclusive(address, id, options)
     },
     /** The exact payment set of this message was delivered: re-key the local copy by its payload
@@ -2436,6 +2468,11 @@ export const useChatStore = defineStore('chats', {
     }): Promise<void> {
       const message = this.messages[id]
       if (!message) return
+      const recordedDigest = message.delivery?.attemptDigest
+      if (recordedDigest !== undefined && recordedDigest !== payloadDigest) {
+        throw new Error(`cannot confirm a different payment attempt for ${id}`)
+      }
+      await assertDurableAttemptAssociation(id, payloadDigest)
       const { items, senderAddress, serverTime } = message
       const value = stampValueWei ?? message.stampValueWei
       const payments = stampPayments ?? message.stampPayments
@@ -2509,6 +2546,19 @@ export const useChatStore = defineStore('chats', {
         const message = this.messages[id]
         if (!message) return 'gone'
         const stored = row?.message
+        const storedDigest = stored?.delivery?.attemptDigest
+        const localDigest = message.delivery?.attemptDigest
+        if (
+          storedDigest !== undefined &&
+          localDigest !== undefined &&
+          storedDigest !== localDigest
+        ) {
+          console.warn(
+            'conflicting payment attempt ownership for outgoing message',
+            id,
+          )
+          return 'unreadable'
+        }
         if (!stored || stored.status === 'confirmed') {
           delete this.messages[id]
           for (const c of Object.values(this.conversations ?? {})) {
@@ -2537,8 +2587,6 @@ export const useChatStore = defineStore('chats', {
           }
           return 'gone'
         }
-        const storedDigest = stored.delivery?.attemptDigest
-        const localDigest = message.delivery?.attemptDigest
         // A payment recorded here but not on disk (its write failed) is never forgotten, and a row
         // still 'pending' without a payment only says a send was started, which this copy knows.
         if (storedDigest === undefined) {
@@ -2745,26 +2793,15 @@ export const useChatStore = defineStore('chats', {
         }
         if (!stillCurrent()) return { state: 'busy' }
         if (applied === 'live') return { state: 'payment-pending' }
-        if (applied === 'unknown') {
-          // An automatic retry is never `confirmed` (see `runOutgoing`), so it always stops here.
-          if (!manual || !confirmed) {
-            await this.setOutgoingState(address, id, 'error', {
-              attemptDigest: digest,
-              failureReason: 'unverified',
-            })
-            return manual
-              ? { state: 'needs-confirmation', reason: 'unverified' }
-              : { state: 'failed', reason: 'unverified' }
-          }
-        } else if (!manual || automatic) {
-          // The old payment can never land. Building a new one is the user's decision (Retry).
-          await this.setOutgoingState(address, id, 'error', {
-            failureReason: 'rejected',
-            detail: previous?.detail,
-          })
-          return { state: 'failed', reason: 'rejected' }
-        }
-        // Manual retry of a dead (or user-confirmed unknown) attempt: fall through, new payment.
+        // A relay terminal status or an exhausted local attempt is not financial nonexecution
+        // proof. Even a confirmed Retry must settle the original authorized payment.
+        const failureReason = applied === 'dead' ? 'rejected' : 'unverified'
+        await this.setOutgoingState(address, id, 'error', {
+          attemptDigest: digest,
+          failureReason,
+          detail: previous?.detail,
+        })
+        return { state: 'failed', reason: failureReason }
       } else if (automatic && previous?.failureReason !== 'interrupted') {
         // No attempt recorded and not cut off mid-send: an earlier payment for it was given up
         // (dead) or the send failed for a reason the user must see. Only a click sends it again.
@@ -2896,6 +2933,7 @@ export const useChatStore = defineStore('chats', {
 
           if (
             isTransientRpc &&
+            ownDigest === undefined &&
             sendAttempt < maxSendAttempts &&
             stillCurrent()
           ) {
@@ -2985,7 +3023,24 @@ export const useChatStore = defineStore('chats', {
           }
         }
       }
-      const withAttempt = waiting.filter(entry => entry.digest !== undefined)
+      const withAttempt: typeof waiting = []
+      for (const entry of waiting.filter(entry => entry.digest !== undefined)) {
+        const fresh = await this.refreshOutgoingFromStore(
+          entry.address,
+          entry.id,
+        )
+        const current = this.messages[entry.id]
+        if (
+          fresh === 'gone' ||
+          fresh === 'unreadable' ||
+          !current ||
+          current.delivery?.attemptDigest !== entry.digest ||
+          !walletOwnsMessage(wallet, current)
+        ) {
+          continue
+        }
+        withAttempt.push(entry)
+      }
       if (withAttempt.length > 0) {
         try {
           const statuses = await activeChain.directMessages.reconcileAttempts({
@@ -3001,9 +3056,7 @@ export const useChatStore = defineStore('chats', {
             })
             if (applied === 'dead' || applied === 'unknown') {
               await this.setOutgoingState(entry.address, entry.id, 'error', {
-                ...(applied === 'unknown'
-                  ? { attemptDigest: entry.digest }
-                  : {}),
+                attemptDigest: entry.digest,
                 failureReason: applied === 'dead' ? 'rejected' : 'unverified',
               })
             }

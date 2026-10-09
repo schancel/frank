@@ -103,6 +103,7 @@ export const INTER_TX_FUNDING_DELAY_MS =
 export interface SubAccountCapacityCacheEntry {
   capacityWei: bigint;
   checkedAtMs: number;
+  balanceWei?: bigint;
 }
 
 export interface EnsureMinimumCapacityParams {
@@ -802,6 +803,7 @@ export class MonadSubAccountPool {
             this.capacityCache.set(record.index, {
               capacityWei: balance - params.gasReserveWei,
               checkedAtMs: Date.now(),
+              balanceWei: balance,
             });
           }
         })
@@ -1024,7 +1026,11 @@ export class MonadSubAccountPool {
         const balance = balances[j];
         const capacityWei =
           balance > gasReserveWei ? balance - gasReserveWei : BigInt(0);
-        this.capacityCache.set(record.index, { capacityWei, checkedAtMs });
+        this.capacityCache.set(record.index, {
+          capacityWei,
+          checkedAtMs,
+          balanceWei: balance,
+        });
       }
     }
 
@@ -1170,6 +1176,7 @@ export class MonadSubAccountPool {
     this.capacityCache.set(params.target.index, {
       capacityWei: params.paymentCapacityWei,
       checkedAtMs: Date.now(),
+      balanceWei: fundedValue,
     });
     this.syncUtxo(params.target.index, "available", fundedValue);
     return {
@@ -1368,9 +1375,10 @@ export class MonadSubAccountPool {
   updateCapacityCache(
     index: number,
     capacityWei: bigint,
-    checkedAtMs = Date.now()
+    checkedAtMs = Date.now(),
+    balanceWei?: bigint
   ): void {
-    this.capacityCache.set(index, { capacityWei, checkedAtMs });
+    this.capacityCache.set(index, { capacityWei, checkedAtMs, balanceWei });
   }
 
   /** Configures default parameters for background proactive warming. */
@@ -1476,6 +1484,7 @@ export class MonadSubAccountPool {
             this.capacityCache.set(result.index, {
               capacityWei: stampValueWei,
               checkedAtMs: Date.now(),
+              balanceWei: stampValueWei + gasReserveWei,
             });
             this.syncUtxo(
               result.index,

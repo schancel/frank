@@ -123,7 +123,7 @@ import {
   StoredMonadMessage,
   MonadStampPayment,
 } from '@frank/cashweb/relay/monad-mailbox-compat'
-import { MonadSubAccountPool } from './monad-account-pool'
+import { MonadSubAccountPool, CAPACITY_CACHE_TTL_MS } from './monad-account-pool'
 import {
   AccountLeaseHandle,
   AcquireLeaseWhenAvailableOptions,
@@ -762,6 +762,31 @@ export interface StampMonadMessageResult {
   changeSweeps: Array<ChangeSweepOutcome | undefined>
 }
 
+export const STAMP_FEE_CACHE_TTL_MS = 6_000
+
+export interface CachedFeeData {
+  maxFeePerGas?: bigint | null
+  maxPriorityFeePerGas?: bigint | null
+  gasPrice?: bigint | null
+  baseFee?: bigint | null
+}
+
+export interface QuoteStampPaymentGasReserveParams {
+  recipientPublicKey: Uint8Array
+  encryptedPayload?: Uint8Array
+  payloadHash?: Uint8Array
+  overrides?: MonadTxOverrides
+  waitForLease?: AcquireLeaseWhenAvailableOptions
+}
+
+export interface MonadStampAccountQuote {
+  index: number
+  address: string
+  balanceWei: bigint
+  capacityWei: bigint
+  resolvedOverrides: MonadTxOverrides
+}
+
 /**
  * Ties together sub-account leasing (#14/#18), payment construction (#11), and the live
  * `PUT /message/monad` HTTP surface (#27) into one call:
@@ -779,6 +804,11 @@ export class MonadStampClient {
   /** Base URL of the `cashweb-registry` relay, e.g. `https://relay.example.com` — no trailing
    * slash. `/message/monad` (`PUT`) is appended to it. */
   private readonly relayBaseUrl: string
+  private feeCache?: {
+    feeData: CachedFeeData
+    fetchedAtMs: number
+  }
+  private feePromise?: Promise<CachedFeeData>
 
   constructor(params: MonadWalletHandle) {
     this.walletAdmission = params.walletOperationAdmission
@@ -881,6 +911,236 @@ export class MonadStampClient {
     )
   }
 
+  /**
+   * Retrieves current network fee data, caching the result for 5-10s (default: STAMP_FEE_CACHE_TTL_MS)
+   * so concurrent quote passes do not issue redundant RPC fee history queries.
+   */
+  async getFeeData(ttlMs = STAMP_FEE_CACHE_TTL_MS): Promise<CachedFeeData> {
+    const now = Date.now()
+    if (
+      this.feeCache !== undefined &&
+      now - this.feeCache.fetchedAtMs < ttlMs
+    ) {
+      return this.feeCache.feeData
+    }
+    if (this.feePromise !== undefined) {
+      return this.feePromise
+    }
+    this.feePromise = (async () => {
+      try {
+        if (typeof this.provider?.getFeeData !== 'function') {
+          return {
+            maxFeePerGas: null,
+            maxPriorityFeePerGas: null,
+            gasPrice: null,
+            baseFee: null,
+          }
+        }
+        const feeData = await this.provider.getFeeData()
+        const baseFee =
+          (feeData as { baseFeePerGas?: bigint | null }).baseFeePerGas ??
+          (feeData.maxFeePerGas != null && feeData.maxPriorityFeePerGas != null
+            ? (feeData.maxFeePerGas - feeData.maxPriorityFeePerGas) / 2n
+            : null)
+        const resolved: CachedFeeData = {
+          maxFeePerGas: feeData.maxFeePerGas ?? null,
+          maxPriorityFeePerGas: feeData.maxPriorityFeePerGas ?? null,
+          gasPrice: feeData.gasPrice ?? null,
+          baseFee,
+        }
+        this.feeCache = {
+          feeData: resolved,
+          fetchedAtMs: Date.now(),
+        }
+        return resolved
+      } finally {
+        this.feePromise = undefined
+      }
+    })()
+    return this.feePromise
+  }
+
+  /** Clears the in-memory fee cache. */
+  clearFeeCache(): void {
+    this.feeCache = undefined
+  }
+
+  /**
+   * Quotes stamp payment gas reserves and available capacities across available sub-accounts.
+   * Probes the network once on the first candidate sub-account to sample gas limit and fees,
+   * reusing the sample quote across all candidate sub-accounts.
+   * Utilizes this.pool.capacityCache to minimize live RPC getBalance calls.
+   */
+  async quoteStampPaymentGasReserve(
+    params: QuoteStampPaymentGasReserveParams,
+  ): Promise<MonadStampAccountQuote[]> {
+    let payloadHash = params.payloadHash
+    if (payloadHash === undefined) {
+      if (
+        params.encryptedPayload !== undefined &&
+        params.encryptedPayload.length > 0
+      ) {
+        payloadHash = computeMonadStampCommitment(params.encryptedPayload)
+      } else {
+        const derivationScalar = new Uint8Array(STAMP_COMMITMENT_LENGTH)
+        derivationScalar[STAMP_COMMITMENT_LENGTH - 1] = 1
+        payloadHash = derivationScalar
+      }
+    }
+
+    const quoteCalldata = buildMonadStampCalldata(
+      new Uint8Array(STAMP_COMMITMENT_LENGTH).fill(0xff),
+    )
+    const quoteDestination = deriveMonadStampChildPublic({
+      payloadHash,
+      recipientPublicKey: params.recipientPublicKey,
+      paymentIndex: 0,
+    }).address
+
+    let availableRecords = this.pool
+      .records()
+      .filter(candidate => candidate.status === 'available')
+    if (availableRecords.length === 0 && params.waitForLease !== undefined) {
+      const sleep = params.waitForLease.sleep ?? defaultSleep
+      const now = params.waitForLease.now ?? Date.now
+      const pollIntervalMs = params.waitForLease.pollIntervalMs ?? 250
+      const deadline = now() + (params.waitForLease.timeoutMs ?? 30_000)
+      while (availableRecords.length === 0 && now() < deadline) {
+        await sleep(pollIntervalMs)
+        availableRecords = this.pool
+          .records()
+          .filter(candidate => candidate.status === 'available')
+      }
+    }
+    if (availableRecords.length === 0) {
+      throw new NoAvailableSubAccountError(
+        'No available sub-account to quote for a stamp payment',
+      )
+    }
+
+    const effectiveOverrides: MonadTxOverrides = { ...params.overrides }
+    if (
+      effectiveOverrides.maxFeePerGas === undefined &&
+      effectiveOverrides.gasPrice === undefined
+    ) {
+      try {
+        const feeData = await this.getFeeData()
+        if (feeData.maxFeePerGas != null) {
+          effectiveOverrides.maxFeePerGas = feeData.maxFeePerGas
+          effectiveOverrides.maxPriorityFeePerGas =
+            feeData.maxPriorityFeePerGas ?? undefined
+        } else if (feeData.gasPrice != null) {
+          effectiveOverrides.gasPrice = feeData.gasPrice
+        }
+      } catch {
+        // Fall back to sample signer if feeData query fails
+      }
+    }
+
+    let sampleQuote: {
+      quotedGasLimit: bigint
+      feePerGas: bigint
+      feeReserveWei: bigint
+      sampleOverrides: MonadTxOverrides
+      probeNonce: number
+      sampleIndex: number
+    } | undefined
+
+    const quotes: MonadStampAccountQuote[] = []
+    const now = Date.now()
+
+    for (const record of availableRecords) {
+      let balance: bigint | undefined
+      let cachedCapacity: bigint | undefined
+
+      const cached = this.pool.capacityCache?.get(record.index)
+      if (
+        cached !== undefined &&
+        (cached.checkedAtMs === undefined ||
+          now - cached.checkedAtMs < CAPACITY_CACHE_TTL_MS)
+      ) {
+        if (cached.balanceWei !== undefined) {
+          balance = cached.balanceWei
+        } else if (cached.capacityWei !== undefined) {
+          cachedCapacity = cached.capacityWei
+        }
+      }
+
+      if (balance === undefined && cachedCapacity === undefined) {
+        balance = await this.provider.getBalance(record.address)
+      }
+
+      if (balance !== undefined && balance <= BigInt(0)) {
+        continue
+      }
+
+      if (sampleQuote === undefined) {
+        const signer = this.pool.getSigner(record.index, {
+          provider: this.provider,
+          httpClient: this.httpClient,
+        })
+        const probe = await signer.buildAndSignCall(
+          quoteDestination,
+          BigInt(1),
+          quoteCalldata,
+          effectiveOverrides,
+        )
+        const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
+        if (feePerGas === undefined) {
+          throw new Error('Unable to determine a maximum fee for stamp payment')
+        }
+        const quotedGasLimit = params.overrides?.gasLimit ?? probe.gasLimit
+        const feeReserveWei = quotedGasLimit * feePerGas
+        sampleQuote = {
+          quotedGasLimit,
+          feePerGas,
+          feeReserveWei,
+          probeNonce: probe.nonce,
+          sampleIndex: record.index,
+          sampleOverrides: {
+            gasLimit: params.overrides?.gasLimit,
+            maxFeePerGas: probe.maxFeePerGas,
+            maxPriorityFeePerGas: probe.maxPriorityFeePerGas,
+            gasPrice: probe.gasPrice,
+            chainId: probe.chainId,
+          },
+        }
+      }
+
+      const feeReserveWei = sampleQuote.feeReserveWei
+      let capacityWei: bigint
+      if (balance !== undefined) {
+        capacityWei =
+          balance > feeReserveWei ? balance - feeReserveWei : BigInt(0)
+      } else {
+        capacityWei = cachedCapacity!
+        balance = capacityWei + feeReserveWei
+      }
+
+      this.pool.capacityCache?.set(record.index, {
+        capacityWei,
+        checkedAtMs: now,
+        balanceWei: balance,
+      })
+
+      quotes.push({
+        index: record.index,
+        address: record.address,
+        balanceWei: balance,
+        capacityWei,
+        resolvedOverrides: {
+          ...sampleQuote.sampleOverrides,
+          nonce:
+            record.index === sampleQuote.sampleIndex
+              ? (params.overrides?.nonce ?? sampleQuote.probeNonce)
+              : params.overrides?.nonce,
+        },
+      })
+    }
+
+    return quotes
+  }
+
   private async submitStampedMessageOwned(
     params: StampMonadMessageParams,
   ): Promise<StampMonadMessageResult> {
@@ -910,89 +1170,14 @@ export class MonadStampClient {
     }
 
     const payloadHash = computeMonadStampCommitment(params.encryptedPayload)
-    // Quote with an all-nonzero commitment. The RPC therefore applies the active network's
-    // worst-case calldata schedule (including EIP-7623) without this client hardcoding gas-table
-    // arithmetic that could become stale after another repricing.
-    const quoteCalldata = buildMonadStampCalldata(
-      new Uint8Array(STAMP_COMMITMENT_LENGTH).fill(0xff),
-    )
     const payloadHashHex = toBareHex(payloadHash)
-    const quoteDestination = deriveMonadStampChildPublic({
-      payloadHash,
+
+    const quotes = await this.quoteStampPaymentGasReserve({
       recipientPublicKey: params.recipientPublicKey,
-      paymentIndex: 0,
-    }).address
-
-    let availableRecords = this.pool
-      .records()
-      .filter(candidate => candidate.status === 'available')
-    if (availableRecords.length === 0 && params.waitForLease !== undefined) {
-      const sleep = params.waitForLease.sleep ?? defaultSleep
-      const now = params.waitForLease.now ?? Date.now
-      const pollIntervalMs = params.waitForLease.pollIntervalMs ?? 250
-      const deadline = now() + (params.waitForLease.timeoutMs ?? 30_000)
-      while (availableRecords.length === 0 && now() < deadline) {
-        await sleep(pollIntervalMs)
-        availableRecords = this.pool
-          .records()
-          .filter(candidate => candidate.status === 'available')
-      }
-    }
-    if (availableRecords.length === 0) {
-      throw new NoAvailableSubAccountError(
-        'No available sub-account to quote for a stamp payment',
-      )
-    }
-
-    const quotes: Array<{
-      index: number
-      address: string
-      balanceWei: bigint
-      capacityWei: bigint
-      resolvedOverrides: MonadTxOverrides
-    }> = []
-    for (const record of availableRecords) {
-      const balance = await this.provider.getBalance(record.address)
-      if (balance <= BigInt(0)) continue
-      const signer = this.pool.getSigner(record.index, {
-        provider: this.provider,
-        httpClient: this.httpClient,
-      })
-      // Resolve the exact nonce/gas/fee fields with a one-wei probe. No transaction is submitted.
-      // Every derived destination is an EOA, so changing only its address and value does not alter
-      // the calldata execution cost.
-      const probe = await signer.buildAndSignCall(
-        quoteDestination,
-        BigInt(1),
-        quoteCalldata,
-        params.overrides,
-      )
-      const feePerGas = probe.maxFeePerGas ?? probe.gasPrice
-      if (feePerGas === undefined) {
-        throw new Error('Unable to determine a maximum fee for stamp payment')
-      }
-      const quotedGasLimit = params.overrides?.gasLimit ?? probe.gasLimit
-      const feeReserveWei = quotedGasLimit * feePerGas
-      const capacityWei =
-        balance > feeReserveWei ? balance - feeReserveWei : BigInt(0)
-      quotes.push({
-        index: record.index,
-        address: record.address,
-        balanceWei: balance,
-        capacityWei,
-        resolvedOverrides: {
-          nonce: probe.nonce,
-          // A caller-supplied limit is deliberate. Otherwise each final child is estimated with
-          // its actual commitment bytes; the capacity quote above reserves the worst-case
-          // zero/nonzero calldata variance.
-          gasLimit: params.overrides?.gasLimit,
-          maxFeePerGas: probe.maxFeePerGas,
-          maxPriorityFeePerGas: probe.maxPriorityFeePerGas,
-          gasPrice: probe.gasPrice,
-          chainId: probe.chainId,
-        },
-      })
-    }
+      payloadHash,
+      overrides: params.overrides,
+      waitForLease: params.waitForLease,
+    })
 
     const selected = selectStampAccounts({
       amountWei: params.stampValueWei,

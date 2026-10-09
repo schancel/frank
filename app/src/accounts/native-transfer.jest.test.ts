@@ -7,7 +7,10 @@ import {
   activeChain,
   NativeTransactionSubmissionError,
 } from '@frank/wallet/chain'
-import { createNativeTransferContext } from './native-transfer'
+import {
+  createNativeTransferContext,
+  inspectNativeTransferOperations,
+} from './native-transfer'
 import protocol from '../../../docs/protocol/chains/v1.json'
 
 const mockPrimaryWallet = { chainIdentifier: 'monad-testnet' }
@@ -225,4 +228,48 @@ it('keeps the exact signed hash after a broadcast timeout and blocks a fresh tra
   })
   expect(onSigned).toHaveBeenCalledTimes(1)
   expect(mockConnection.sendRawTransaction).toHaveBeenCalledTimes(1)
+})
+
+it('inspects only the captured compatible owner and makes capability absence explicit', () => {
+  const effects = jest.fn(() => {
+    throw new Error('unexpected mutation')
+  })
+  const wallet = {
+    family: 'evm',
+    chainIdentifier: 'monad-testnet',
+    getNativeOperations: jest.fn(() => []),
+    sendNative: effects,
+    resumeNativeOperation: effects,
+  } as unknown as import('@frank/wallet/chain').NativeWalletHandle
+  expect(inspectNativeTransferOperations(wallet, 'monad-testnet')).toEqual({
+    status: 'available',
+    operations: [],
+  })
+  expect(inspectNativeTransferOperations(wallet, 'monad-mainnet')).toEqual({
+    status: 'unavailable',
+  })
+  expect(
+    inspectNativeTransferOperations(
+      { ...wallet, family: 'solana' },
+      'monad-testnet',
+    ),
+  ).toEqual({ status: 'unsupported' })
+  expect(
+    inspectNativeTransferOperations(
+      { ...wallet, getNativeOperations: undefined },
+      'monad-testnet',
+    ),
+  ).toEqual({ status: 'unsupported' })
+  expect(wallet.getNativeOperations).toHaveBeenCalledTimes(1)
+  expect(mockGetWallet).not.toHaveBeenCalled()
+  expect(mockGetRoot).not.toHaveBeenCalled()
+  expect(effects).not.toHaveBeenCalled()
+})
+
+it('invalidates the captured presentation synchronously when the account changes', async () => {
+  const context = await createNativeTransferContext('monad-testnet')
+  const binding = await context.captureWallet()
+  expect(binding.isCurrent()).toBe(true)
+  mockState.revision++
+  expect(binding.isCurrent()).toBe(false)
 })

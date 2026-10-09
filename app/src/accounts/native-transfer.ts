@@ -3,6 +3,8 @@ import {
   createChain,
   getChainRegistryEntry,
   loadMonadChainConfigFromEnv,
+  summarizeEvmNativeOperation,
+  type EvmNativeOperationStatus,
   type NativeAssetChain,
   type NativeWalletHandle,
 } from '@frank/wallet/chain'
@@ -14,11 +16,39 @@ export interface NativeTransferBinding {
   readonly wallet: NativeWalletHandle
   /** Revalidate custody before handing the captured wallet to a signing operation. */
   assertCurrent(): Promise<void>
+  /** Reactive session check without opening custody or performing network work. */
+  isCurrent(): boolean
 }
 
 export interface NativeTransferContext {
   readonly chain: NativeAssetChain
   captureWallet(): Promise<NativeTransferBinding>
+}
+
+export type NativeOperationInspection =
+  | { status: 'available'; operations: readonly EvmNativeOperationStatus[] }
+  | { status: 'unsupported' | 'unavailable' }
+
+/** Inspect an already captured owner. This never opens custody or invokes recovery. */
+export function inspectNativeTransferOperations(
+  wallet: NativeWalletHandle,
+  chainIdentifier: string,
+): NativeOperationInspection {
+  if (wallet.chainIdentifier !== chainIdentifier)
+    return { status: 'unavailable' }
+  if (wallet.family !== 'evm' || !wallet.getNativeOperations)
+    return { status: 'unsupported' }
+  try {
+    const rows = wallet.getNativeOperations()
+    if (rows.some(row => row.binding.chainIdentifier !== chainIdentifier))
+      return { status: 'unavailable' }
+    return {
+      status: 'available',
+      operations: rows.map(summarizeEvmNativeOperation),
+    }
+  } catch {
+    return { status: 'unavailable' }
+  }
 }
 
 /** App composition owns network selection; custody and the family wallet own keys/signing. */
@@ -112,7 +142,18 @@ export async function createNativeTransferContext(
       if (wallet.chainIdentifier !== chainIdentifier) {
         throw new Error('Wallet network differs from the reviewed network')
       }
-      return { wallet, assertCurrent }
+      return {
+        wallet,
+        assertCurrent,
+        isCurrent: () => {
+          try {
+            check()
+            return true
+          } catch {
+            return false
+          }
+        },
+      }
     },
   }
 }

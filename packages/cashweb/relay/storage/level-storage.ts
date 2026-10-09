@@ -151,7 +151,7 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
   private end(): Promise<void> {
     if (!this.ending) {
       this.ending = new Promise<void>((resolve, reject) => {
-        this.iterator.end((error?: Error) => {
+        this.iterator.end(error => {
           this.released()
           if (error) reject(error)
           else resolve()
@@ -172,12 +172,10 @@ class MessageIterator implements AsyncIterableIterator<MessageWrapper> {
         const entry = await new Promise<
           { key: string; value: string } | undefined
         >((resolve, reject) => {
-          this.iterator.next(
-            (error: Error, key: string | undefined, value: string) => {
-              if (error) reject(error)
-              else resolve(key === undefined ? undefined : { key, value })
-            },
-          )
+          this.iterator.next((error, key, value) => {
+            if (error) reject(error)
+            else resolve(key === undefined ? undefined : { key, value })
+          })
         })
         if (!entry) {
           await this.end()
@@ -278,8 +276,8 @@ export class LevelMessageStore implements MessageStore {
   private async hasAnyKey(db: LevelDB): Promise<boolean> {
     const iterator = db.iterator({ limit: 1, values: false })
     return new Promise<boolean>((resolve, reject) => {
-      iterator.next((error: Error, key: string | undefined) => {
-        iterator.end((endError?: Error) => {
+      iterator.next((error, key) => {
+        iterator.end(endError => {
           if (error || endError) reject(error || endError)
           else resolve(key !== undefined)
         })
@@ -680,13 +678,13 @@ export class LevelMessageStore implements MessageStore {
     await new Promise<void>((resolve, reject) => {
       const iterator = this.db.iterator({})
       const step = () => {
-        iterator.next((error: Error, key: string, value: string) => {
+        iterator.next((error, key, value) => {
           if (error) {
             iterator.end(() => reject(error))
             return
           }
           if (!key) {
-            iterator.end((endError: Error | undefined) => {
+            iterator.end(endError => {
               if (endError) {
                 reject(endError)
                 return

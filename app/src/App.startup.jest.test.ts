@@ -198,6 +198,7 @@ function message(index: string): MessageWrapper {
     senderAddress: SELF,
     copartyAddress: PEER,
     message: {
+      conversationId: '11111111-2222-4333-8444-555555555555',
       outbound: true,
       status: 'confirmed',
       receivedTime: 100,
@@ -280,21 +281,31 @@ describe('visible read-only startup failure', () => {
   afterEach(() => jest.restoreAllMocks())
 
   it.each([
-    ['en-us', false, 'Saved data could not be loaded'],
-    ['fr-fr', false, 'Impossible de charger les données enregistrées'],
-    ['fr-fr', true, 'Saved data could not be loaded'],
+    ['en-us', false, 'Saved data could not be loaded', 'status'],
+    [
+      'fr-fr',
+      false,
+      'Impossible de charger les données enregistrées',
+      'status',
+    ],
+    ['fr-fr', true, 'Saved data could not be loaded', 'status'],
+    ['en-us', false, 'Saved data could not be loaded', 'conversationId'],
   ])(
-    'mounts safe localized failure with real malformed chat restore (%s, appearance failure: %s)',
-    async (locale, badAppearance, heading) => {
+    'mounts safe localized failure with real malformed chat restore (%s, appearance failure: %s, heading: %s, missing: %s)',
+    async (locale, badAppearance, heading, missingField) => {
       const { app, pinia, storage, messages } = await fixture(locale as string)
       if (badAppearance)
         storage.data.set('appearance', '{PRIVATE INVALID APPEARANCE')
       const invalid = message('malformed')
-      Object.assign(invalid.message, { status: undefined })
+      Object.assign(invalid.message, { [missingField as string]: undefined })
       messages.data.set(invalid.index, serializeMessageWrapper(invalid))
       const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
       await expect(setupApis({ app })).resolves.toBeUndefined()
-      await expect(useChatStore().restored).rejects.toThrow()
+      await expect(useChatStore().restored).rejects.toThrow(
+        missingField === 'conversationId'
+          ? /explicit conversation ID required/
+          : /Invalid stored message envelope/,
+      )
       await messagingBoot({ app })
       const chats = useChatStore()
       const contacts = useContactStore()

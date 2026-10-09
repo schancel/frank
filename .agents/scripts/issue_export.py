@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export open GitHub issues as ticket_triage.py JSON.
 
-Parses value/cost/certainty/unblocking and a files: line from the body.
+Parses explicit readiness, value/cost/certainty/unblocking, and a files: line.
 Does not claim, comment, or change issues.
 
 Usage:
@@ -17,10 +17,32 @@ import subprocess
 import sys
 
 AXES = ("value", "cost", "certainty", "unblocking")
+READINESS_STATES = (
+    "NEEDS_SPECIFICATION", "READY", "IN_PROGRESS", "REPAIR_IN_PROGRESS",
+    "READY_TO_MERGE", "BLOCKED_EXTERNAL", "INFEASIBLE", "DECLINED",
+    "SUPERSEDED", "COMPLETE",
+)
+STATE_DECLARATION = re.compile(
+    r"^\s*(?:[-*+]\s+)?(?:state|readiness|planning state):\s*"
+    r"(?:`(" + "|".join(READINESS_STATES) + r")`|(" + "|".join(READINESS_STATES) + r"))(?![\w`])",
+    re.I | re.M,
+)
+
+
+def explicit_readiness(body: str) -> str | None:
+    """Read documented state declarations, never incidental state mentions."""
+    states = {(match.group(1) or match.group(2)).upper()
+              for match in STATE_DECLARATION.finditer(body)}
+    if len(states) > 1:
+        return "NEEDS_SPECIFICATION"
+    return next(iter(states), None)
 
 
 def parse_body(body: str) -> dict:
     row: dict = {"files": []}
+    state = explicit_readiness(body)
+    if state is not None:
+        row["readiness_state"] = state
     match = re.search(r"^files:\s*(.+)$", body, re.M)
     if match:
         row["files"] = match.group(1).split()

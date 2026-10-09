@@ -9,7 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ticket_triage import score
+from issue_export import READINESS_STATES
+from ticket_triage import readiness, score
 
 
 def test_score_formula() -> None:
@@ -56,8 +57,26 @@ def test_script_classifies(tmp_path: Path) -> None:
     assert "src/a.rs: #1, #2" in result.stdout
 
 
+
+def test_explicit_states_override_scores_and_markers() -> None:
+    issue = {"body": "acceptance criteria; owner: maintainer", "value": 3,
+             "cost": 1, "certainty": 5, "unblocking": 1}
+    assert readiness(issue) == ("READY", [])
+    for state in READINESS_STATES:
+        assert readiness({**issue, "body": f"State: {state}\n" + issue["body"]}) == (state, [])
+    assert readiness({**issue, "body": "State: READY\nowner: maintainer"}) == (
+        "NEEDS_SPECIFICATION", ["acceptance"])
+    assert readiness({**issue, "body": "State: READY\nacceptance criteria"}) == (
+        "NEEDS_SPECIFICATION", ["owner"])
+    assert readiness({**issue, "cost": None}) == ("NEEDS_SPECIFICATION", [])
+    # The original body, not a stale derived export field, owns the declaration.
+    assert readiness({**issue, "body": "State: NEEDS_SPECIFICATION\n" + issue["body"],
+                      "readiness_state": "READY"}) == ("NEEDS_SPECIFICATION", [])
+
+
 def main() -> int:
     test_score_formula()
+    test_explicit_states_override_scores_and_markers()
     test_score_rejects_partial()
     with tempfile.TemporaryDirectory() as directory:
         test_script_classifies(Path(directory))

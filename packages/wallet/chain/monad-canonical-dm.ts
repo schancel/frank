@@ -28,6 +28,7 @@ import {
   isEmailMessageItemFrame,
   isStealthMessageItemFrame,
   parseFrame,
+  paymentCommitment,
   paymentTransferFromMember,
   paymentTransferFromStealthItem,
   paymentTransferToMember,
@@ -53,9 +54,11 @@ import {
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
+  describeCanonicalParts,
   installedCanonicalOrigin,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
+import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
 import {
   connectCanonicalMailboxStream,
   fetchCanonicalInboxPage,
@@ -852,6 +855,253 @@ async function resolveHistoricalEvidence(
   }
 }
 
+/** The authenticated sender mailbox is the surviving raw-set authority after compaction. Its
+ * header proves consistency with that delivered set, not an independent local raw-set fingerprint.
+ * Opening the exact saved payload/context binds it to this wallet's original authorized message.
+ * None of these checks establishes chain settlement or restores financial execution authority. */
+async function historicalDeliveryIdentity(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  self: Current,
+  row: StoredLink,
+  record: CanonicalMailboxRecord,
+): Promise<string | undefined> {
+  if (record.direction !== 'out') return undefined
+  const delivery = parseFrame(record.delivery)
+  if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) return undefined
+  const envelope = delivery.typed
+  const payload = envelope.payloadFrame.typed
+  const { prepared } = restoreLink(row)
+  if (
+    payload?.type !== 5 ||
+    prepared.network !== directory.network ||
+    envelope.network !== prepared.network ||
+    prepared.senderSubject !== owner.subject ||
+    toHex(payload.sender.keyBytes) !== prepared.senderSubject ||
+    toHex(payload.recipient.keyBytes) !== prepared.recipientSubject ||
+    toHex(envelope.payloadFrame.frame) !== toHex(prepared.payload) ||
+    toHex(record.context) !== toHex(prepared.context) ||
+    toHex(envelope.payloadDigest) !== row.digest
+  )
+    return undefined
+  const transactions = envelope.payments.map(member => {
+    if (!member.rawTx) throw new Error('historical-delivery:missing-member')
+    return member.rawTx
+  })
+  const identity = describeCanonicalParts({
+    delivery: record.delivery,
+    context: record.context,
+    transactions,
+  })
+  if (
+    identity.submission_identity !== record.submissionIdentity ||
+    identity.payload_hash !== row.digest ||
+    identity.sender_t1 !== prepared.senderT1 ||
+    identity.recipient_t1 !== prepared.recipientT1 ||
+    identity.recipient !==
+      computeAddress('0x' + prepared.recipientSubject).toLowerCase()
+  )
+    return undefined
+  let total = 0n
+  for (const [index, member] of envelope.payments.entries()) {
+    const tx = Transaction.from(hexlify(transactions[index]))
+    const value =
+      typeof member.value === 'bigint'
+        ? member.value
+        : BigInt('0x' + toHex(member.value))
+    const destination = canonicalStampDestination({
+      network: prepared.network,
+      stampKey: envelope.destination,
+      sharedPoint: payload.sharedPoint,
+      childIndex: member.childIndex,
+    })
+    if (
+      !tx.isSigned() ||
+      !tx.from ||
+      (tx.type !== 0 && tx.type !== 2) ||
+      tx.chainId !== BigInt(prepared.chainId) ||
+      tx.hash !== '0x' + toHex(member.transactionId) ||
+      tx.to?.toLowerCase() !== '0x' + toHex(destination.address) ||
+      toHex(member.address) !== toHex(destination.address) ||
+      tx.value !== value ||
+      value <= 0n ||
+      tx.data !== '0x' ||
+      toHex(member.commitment) !==
+        toHex(paymentCommitment(envelope.payloadDigest, member.childIndex))
+    )
+      return undefined
+    total += value
+  }
+  const senderEvidence =
+    toHex(self.evidence.hash) === prepared.senderT1
+      ? self.evidence
+      : await directory
+          .peerHistorical?.({
+            subject: prepared.senderSubject,
+            statementHash: prepared.senderT1,
+          })
+          .catch(() => undefined)
+  if (!senderEvidence || toHex(senderEvidence.hash) !== prepared.senderT1)
+    return undefined
+  // A historical recipient need not have a live directory entry. Resolve the exact
+  // original evidence first; Current is only an optional exact-hash fallback.
+  let recipientEvidence = await directory
+    .peerHistorical?.({
+      subject: prepared.recipientSubject,
+      statementHash: prepared.recipientT1,
+    })
+    .catch(() => undefined)
+  if (!recipientEvidence) {
+    const peer = await directory
+      .peerCurrent({
+        subject: prepared.recipientSubject,
+      })
+      .catch(() => undefined)
+    if (peer?.subject === prepared.recipientSubject)
+      recipientEvidence = peer.current.evidence
+  }
+  if (
+    !recipientEvidence ||
+    toHex(recipientEvidence.hash) !== prepared.recipientT1
+  )
+    return undefined
+  const roles = owner.roles.create(directory.network, self)
+  try {
+    const opened = openOwnDirectMessage({
+      mode: 'archive',
+      network: directory.network,
+      payload: prepared.payload,
+      context: prepared.context,
+      roles,
+      senderEvidence,
+      recipientEvidence,
+    })
+    // The client owns the economic-binding format. Reconstruct through its effect-free
+    // boundary; this allocates no spend inputs, persists nothing and signs no transaction.
+    const rebound = owner.client().bindPrepared({
+      payload: prepared.payload,
+      context: prepared.context,
+      stampValueWei: total,
+      economicBinding: opened.messageId,
+    })
+    if (
+      PREPARED_BYTES.some(
+        key => toHex(rebound[key]) !== toHex(prepared[key]),
+      ) ||
+      row.consumerId !== `frank-dm:${toHex(opened.messageId)}`
+    )
+      return undefined
+  } finally {
+    roles.dispose()
+  }
+  return identity.submission_identity
+}
+
+/** A known exposed historical operation cannot become permission for a replacement payment.
+ * Fetch outside the workflow queue; admit only complete bounded scans and unchanged live owners. */
+async function recoverHistoricalDelivery(
+  owner: CanonicalMessagingOwner,
+  digests: readonly string[],
+): Promise<void> {
+  const requested = new Set(digests)
+  const candidates = await serial(owner.links, async () =>
+    owner.links
+      .all()
+      .filter(
+        row =>
+          requested.has(row.digest) &&
+          row.outcome === 'dead' &&
+          row.acknowledged,
+      )
+      .map(row => ({ ...row, prepared: { ...row.prepared } })),
+  )
+  if (!candidates.length) return
+  const directory = requireDirectory(owner)
+  const client = owner.client()
+  const assertCompacted = (row: StoredLink) => {
+    if (
+      client.lookup(restoreLink(row).prepared) ||
+      !client.wasAcknowledged(row.attemptRef)
+    )
+      throw new CanonicalMessagingHoldError()
+  }
+  const proofs = new Map<string, string>()
+  try {
+    for (const row of candidates) assertCompacted(row)
+    const self = await directory.selfCurrent()
+    const auth = mailboxAuth(owner, directory)
+    let cursor: string | undefined
+    let complete = false
+    for (let pageIndex = 0; pageIndex < MAX_INBOX_PAGES; pageIndex++) {
+      const page = await fetchCanonicalMailboxPage({
+        ...auth,
+        sinceMs: 0,
+        cursor,
+      })
+      for (const supplied of page.records) {
+        const record = {
+          ...supplied,
+          delivery: new Uint8Array(supplied.delivery),
+          context: new Uint8Array(supplied.context),
+        }
+        for (const row of candidates) {
+          let identity: string | undefined
+          try {
+            identity = await historicalDeliveryIdentity(
+              owner,
+              directory,
+              self,
+              row,
+              record,
+            )
+          } catch {
+            // Malformed or presently unverifiable evidence never establishes delivery.
+            continue
+          }
+          if (!identity) continue
+          if (
+            proofs.has(row.attemptRef) &&
+            proofs.get(row.attemptRef) !== identity
+          )
+            throw new CanonicalMessagingHoldError()
+          proofs.set(row.attemptRef, identity)
+        }
+      }
+      cursor = page.nextCursor
+      if (cursor === undefined) {
+        complete = true
+        break
+      }
+    }
+    if (!complete || candidates.some(row => !proofs.has(row.attemptRef)))
+      throw new CanonicalMessagingHoldError()
+  } catch (cause) {
+    throw new CanonicalMessagingHoldError(
+      'The original payment may have been submitted; its historical delivery cannot yet be verified.',
+      cause,
+    )
+  }
+  await serial(owner.links, async () => {
+    if (owner.directory() !== directory) throw new CanonicalMessagingHoldError()
+    for (const snapshot of candidates) {
+      assertCompacted(snapshot) // Also checks that this wallet/session is still open and owns it.
+      const current = owner.links
+        .all()
+        .find(row => row.attemptRef === snapshot.attemptRef)
+      const delivered: StoredLink = {
+        ...snapshot,
+        outcome: 'delivered',
+        reason: undefined,
+      }
+      // Another reconciliation may have completed while this scan was in flight.
+      if (JSON.stringify(current) === JSON.stringify(delivered)) continue
+      if (JSON.stringify(current) !== JSON.stringify(snapshot))
+        throw new CanonicalMessagingHoldError()
+      await owner.links.put(delivered)
+    }
+  })
+}
+
 function indexStealthItemIfRecipient(
   wallet: WalletHandle,
   isOutbound: boolean,
@@ -1171,10 +1421,11 @@ export function canonicalDirectMessages(
   return {
     send: (params: Parameters<DirectMessageClient['send']>[0]) =>
       serial(owner.links, () => send(owner, params, defaultStampValueWei)),
-    reconcileAttempts: (
+    reconcileAttempts: async (
       params: Parameters<DirectMessageClient['reconcileAttempts']>[0],
-    ) =>
-      serial(owner.links, async () => {
+    ) => {
+      await recoverHistoricalDelivery(owner, params.payloadDigests)
+      return serial(owner.links, async () => {
         const directory = requireDirectory(owner)
         await settle(owner, directory.fetch, params.maxPutAttempts ?? 1)
         return Object.fromEntries(
@@ -1183,7 +1434,8 @@ export function canonicalDirectMessages(
             statusOf(owner, digest),
           ]),
         )
-      }),
+      })
+    },
     discardAttempt: (params: { payloadDigest: string }) =>
       serial(owner.links, async () => {
         const clean = (s?: string) =>

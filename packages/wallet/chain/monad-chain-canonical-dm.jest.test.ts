@@ -11,20 +11,27 @@ import { JsonRpcProvider, Transaction, computeAddress, getBytes } from 'ethers'
 import level from 'level'
 import {
   channelStateDigest,
+  decodeCanonical,
+  encodeCanonical,
+  encodeFrame,
   decodeDiceGamePayload,
   encodeDiceGamePayload,
   fromHex,
   parseFrame,
   recipientPayloadDigest,
   toHex,
+  verifyPreviewDirectoryEvidence,
+  type FrankValue,
 } from '@frank/codec'
 import { secp256k1 } from '@noble/curves/secp256k1'
 import type { ChannelUpdateItem } from '@frank/cashweb/types/messages'
 import {
   directMessageText,
+  openOwnDirectMessage,
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
+  describeCanonicalParts,
   restoreCanonicalRequest,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
@@ -159,6 +166,11 @@ import {
   fetchCanonicalInboxPage,
   fetchCanonicalMailboxPage,
   MonadMailboxChallengeCapacityError,
+  MAILBOX_AUTH_DOMAIN,
+  buildMailboxAuthPreimage,
+  mailboxAuthDigest,
+  type MailboxChallenge,
+  type CanonicalMailboxRecord,
 } from '@frank/cashweb/relay/monad-mailbox-client'
 const inboxPage = fetchCanonicalInboxPage as jest.MockedFunction<
   typeof fetchCanonicalInboxPage
@@ -979,6 +991,681 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       finish.mockRestore()
     }
   }
+
+  async function compactedHistoricalAttempt() {
+    const original = await exposedAttempt()
+    const client = canonicalMonadStampClient(f.alice)
+    // Produce the actual old baseline through its public terminal/cleanup/ack owners.
+    await client.markAttemptTerminal(
+      original.attempt.attemptRef,
+      'attempts_exhausted',
+    )
+    await client.cleanupTerminal(
+      original.attempt.attemptRef,
+      original.attempt.consumerId,
+    )
+    await client.acknowledgeWorkflow(
+      original.attempt.attemptRef,
+      original.attempt.consumerId,
+    )
+    expect(client.lookup(original.attempt.prepared)).toBeUndefined()
+    const address = (await f.alice.getReceiveAddress()).raw.toLowerCase()
+    const storageLocation = `${join(f.root, 'wallet')}-evm-${address}`
+    await f.alice.close()
+    const store = await LevelCanonicalLinkStore.open(storageLocation)
+    const row = {
+      ...store.all()[0],
+      outcome: 'dead' as const,
+      reason: 'attempts_exhausted',
+      acknowledged: true,
+      accounted: true,
+    }
+    await store.put(row)
+    await store.close()
+    const record: CanonicalMailboxRecord = {
+      direction: 'out',
+      delivery: original.attempt.request.parts.delivery,
+      context: original.attempt.request.parts.context,
+      submissionIdentity: original.attempt.request.identity.submission_identity,
+      timestampMs: 100_000,
+    }
+    return { ...original, row, record, storageLocation }
+  }
+
+  function noHistoricalExecution(wallet: MonadChainWalletHandle) {
+    const calls = [
+      jest.spyOn(MonadCanonicalStampClient.prototype, 'prepareIntent'),
+      jest.spyOn(MonadCanonicalStampClient.prototype, 'finishIntent'),
+      jest.spyOn(MonadCanonicalStampClient.prototype, 'submit'),
+      jest.spyOn(MonadCanonicalStampClient.prototype, 'cleanupTerminal'),
+      jest.spyOn(MonadCanonicalStampClient.prototype, 'acknowledgeWorkflow'),
+      jest.spyOn(MonadCanonicalStampClient.prototype, 'markAttemptTerminal'),
+      jest.spyOn(wallet.pool, 'getSigner'),
+      jest.spyOn(wallet.pool, 'ensureSize'),
+    ]
+    const pool = structuredClone(wallet.pool.records())
+    const funded = structuredClone(mockFunded)
+    const balances = new Map(mockBalances)
+    return {
+      verify() {
+        for (const spy of calls) expect(spy).not.toHaveBeenCalled()
+        expect(wallet.pool.records()).toEqual(pool)
+        expect(mockBalances).toEqual(balances)
+        expect(mockFunded).toEqual(funded)
+        expect(f.broadcastPayments.size).toBe(0)
+        expect(f.requests).toHaveLength(1)
+      },
+      restore() {
+        for (const spy of calls) spy.mockRestore()
+      },
+    }
+  }
+
+  async function storedHistoricalRow(location: string) {
+    const store = await LevelCanonicalLinkStore.open(location)
+    try {
+      return store.all()[0]
+    } finally {
+      await store.close()
+    }
+  }
+
+  describe('historical delivery recovery', () => {
+    afterEach(() => {
+      const actual = jest.requireActual<
+        typeof import('@frank/cashweb/relay/monad-mailbox-client')
+      >('@frank/cashweb/relay/monad-mailbox-client')
+      mailboxPage
+        .mockReset()
+        .mockImplementation(actual.fetchCanonicalMailboxPage)
+    })
+
+    it('corrects a reopened compacted historical rejection through the authenticated sender mailbox without financial effects', async () => {
+      const historical = await compactedHistoricalAttempt()
+      // Exercise the production challenge, auth signing, bounded multipart reader and crypto opening.
+      const actualMailbox = jest.requireActual<
+        typeof import('@frank/cashweb/relay/monad-mailbox-client')
+      >('@frank/cashweb/relay/monad-mailbox-client')
+      mailboxPage.mockImplementation(actualMailbox.fetchCanonicalMailboxPage)
+      let challenge: MailboxChallenge | undefined
+      const reads: string[] = []
+      const mailboxFetch: CanonicalFetch = async (url, input) => {
+        expect(input.method).toBe(url.includes('/auth/') ? 'POST' : 'GET')
+        reads.push(url)
+        let bytes: Uint8Array
+        let media: string
+        if (url.includes('/auth/')) {
+          const query = new URL(url).searchParams
+          challenge = {
+            epoch: '11'.repeat(32),
+            nonce: '22'.repeat(32),
+            token: '33'.repeat(32),
+            expires_at_ms: Date.now() + 59_000,
+            signing_domain: MAILBOX_AUTH_DOMAIN,
+            resource: 'mailbox',
+            since: Number(query.get('since')),
+            cursor: query.get('cursor'),
+            limit: Number(query.get('limit')),
+            max_bytes: Number(query.get('max_bytes')),
+            network_tag: '4d4f4e54',
+            recovery_payload_hash: null,
+            recovery_obligation_id: null,
+          }
+          bytes = Buffer.from(JSON.stringify(challenge))
+          media = 'application/json'
+        } else {
+          if (!challenge) throw new Error('expected authenticated challenge')
+          const subject = historical.attempt.prepared.senderSubject
+          const address = computeAddress('0x' + subject).toLowerCase()
+          expect(new URL(url).pathname).toBe(`/message/mailbox/${address}`)
+          expect(input.headers['x-frank-mailbox-subject']).toBe(subject)
+          expect(
+            secp256k1.verify(
+              fromHex(input.headers['x-frank-mailbox-signature']),
+              mailboxAuthDigest(buildMailboxAuthPreimage(challenge, address)),
+              fromHex(subject),
+            ),
+          ).toBe(true)
+          const header = (value: string) => Buffer.from(value)
+          bytes = Buffer.concat([
+            header(
+              `--page\r\nContent-Disposition: inline; name="record"\r\nContent-Type: multipart/mixed; boundary=record\r\nX-Frank-Submission-Identity: ${historical.record.submissionIdentity}\r\nX-Frank-Mailbox-Timestamp-Ms: 100000\r\nX-Frank-Mailbox-Direction: out\r\n\r\n`,
+            ),
+            header(
+              '--record\r\nContent-Disposition: inline; name="delivery"\r\nContent-Type: application/vnd.frank.cbor\r\n\r\n',
+            ),
+            historical.record.delivery,
+            header(
+              '\r\n--record\r\nContent-Disposition: inline; name="context"\r\nContent-Type: application/cbor\r\n\r\n',
+            ),
+            historical.record.context,
+            header('\r\n--record--\r\n\r\n--page--\r\n'),
+          ])
+          media = 'multipart/mixed; boundary=page'
+        }
+        let read = false
+        return {
+          url,
+          status: 200,
+          headers: {
+            get: name => (name.toLowerCase() === 'content-type' ? media : null),
+          },
+          body: {
+            getReader: () => ({
+              read: async () =>
+                read
+                  ? { done: true }
+                  : ((read = true), { done: false, value: bytes }),
+              cancel: async () => undefined,
+              releaseLock: () => undefined,
+            }),
+          },
+        }
+      }
+      const wallet = await reopen({
+        ...historical.directory,
+        fetch: mailboxFetch,
+      })
+      const effects = noHistoricalExecution(wallet)
+      try {
+        expect(
+          await f.chain.directMessages.reconcileAttempts({
+            wallet,
+            payloadDigests: [],
+          }),
+        ).toEqual({})
+        expect(reads).toHaveLength(0)
+        const params = { wallet, payloadDigests: [historical.digest] }
+        expect(await f.chain.directMessages.reconcileAttempts(params)).toEqual({
+          [historical.digest]: 'delivered',
+        })
+        expect(await f.chain.directMessages.reconcileAttempts(params)).toEqual({
+          [historical.digest]: 'delivered',
+        })
+        expect(reads).toHaveLength(2)
+        expect(new URL(reads[0]).searchParams.get('since')).toBe('0')
+        expect(
+          canonicalMonadStampClient(wallet).lookup(historical.attempt.prepared),
+        ).toBeUndefined()
+        expect(
+          canonicalMonadStampClient(wallet).wasAcknowledged(
+            historical.attempt.attemptRef,
+          ),
+        ).toBe(true)
+        effects.verify()
+      } finally {
+        effects.restore()
+        await wallet.close()
+      }
+      expect(await storedHistoricalRow(historical.storageLocation)).toEqual({
+        ...historical.row,
+        outcome: 'delivered',
+        reason: undefined,
+      })
+      const again = await reopen(historical.directory)
+      try {
+        expect(
+          await f.chain.directMessages.reconcileAttempts({
+            wallet: again,
+            payloadDigests: [historical.digest],
+          }),
+        ).toEqual({ [historical.digest]: 'delivered' })
+        expect(reads).toHaveLength(2)
+        expect(
+          canonicalMonadStampClient(again).lookup(historical.attempt.prepared),
+        ).toBeUndefined()
+      } finally {
+        await again.close()
+      }
+    })
+
+    it.each([
+      'missing',
+      'inbound',
+      'wrong wallet',
+      'wrong network',
+      'wrong recipient',
+      'changed payload',
+      'changed context',
+      'swapped raw members',
+      'missing raw member',
+      'missing member',
+      'wrong consumer',
+      'wrong header',
+      'changed economics',
+      'changed member value',
+    ])(
+      'holds a compacted historical operation with %s evidence without changing it or paying again',
+      async variation => {
+        const historical = await compactedHistoricalAttempt()
+        let row = historical.row
+        const record = { ...historical.record }
+        if (variation === 'wrong wallet')
+          row = {
+            ...row,
+            prepared: { ...row.prepared, walletBindingId: 'foreign-wallet' },
+          }
+        if (variation === 'wrong network')
+          row = {
+            ...row,
+            prepared: { ...row.prepared, network: 'monad-mainnet' },
+          }
+        if (variation === 'wrong recipient')
+          row = {
+            ...row,
+            prepared: {
+              ...row.prepared,
+              recipientSubject: row.prepared.senderSubject,
+            },
+          }
+        if (variation === 'changed economics') {
+          const economics = decodeCanonical(
+            fromHex(row.prepared.economicBinding),
+          )
+          if (!(economics instanceof Map))
+            throw new Error('expected economic binding')
+          economics.set(1n, '1')
+          row = {
+            ...row,
+            prepared: {
+              ...row.prepared,
+              economicBinding: toHex(encodeCanonical(economics)),
+            },
+          }
+        }
+        if (variation === 'wrong consumer')
+          row = { ...row, consumerId: 'frank-dm:' + '00'.repeat(16) }
+        if (row !== historical.row) {
+          const store = await LevelCanonicalLinkStore.open(
+            historical.storageLocation,
+          )
+          await store.put(row)
+          await store.close()
+        }
+        if (variation === 'inbound') record.direction = 'in'
+        if (variation === 'wrong header')
+          record.submissionIdentity = '00'.repeat(32)
+        if (variation === 'changed context') {
+          record.context = new Uint8Array(record.context)
+          record.context[record.context.length - 1] ^= 1
+        }
+        if (
+          [
+            'changed payload',
+            'swapped raw members',
+            'missing raw member',
+            'missing member',
+            'changed member value',
+          ].includes(variation)
+        ) {
+          const parsed = parseFrame(record.delivery)
+          if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+            throw new Error('expected delivery')
+          const payload = new Map<bigint, FrankValue>(parsed.payload)
+          if (variation === 'changed payload') {
+            const bytes = new Uint8Array(payload.get(2n) as Uint8Array)
+            bytes[bytes.length - 1] ^= 1
+            payload.set(2n, bytes)
+          } else {
+            const members = (
+              payload.get(4n) as ReadonlyMap<bigint, FrankValue>[]
+            ).map(value => new Map(value))
+            if (variation === 'missing raw member') members[0].delete(6n)
+            if (variation === 'missing member') members.pop()
+            if (variation === 'swapped raw members') {
+              const first = members[0].get(6n)!
+              members[0].set(6n, members[1].get(6n)!)
+              members[1].set(6n, first)
+            }
+            if (variation === 'changed member value')
+              members[0].set(2n, new Uint8Array(32).fill(1))
+            payload.set(4n, members)
+          }
+          record.delivery = encodeFrame(
+            { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+            payload,
+          )
+          if (
+            variation === 'changed member value' ||
+            variation === 'missing member'
+          )
+            record.submissionIdentity = describeCanonicalParts({
+              delivery: record.delivery,
+              context: record.context,
+              transactions:
+                variation === 'missing member'
+                  ? historical.attempt.request.parts.transactions.slice(0, 1)
+                  : historical.attempt.request.parts.transactions,
+            }).submission_identity
+        }
+        mailboxPage.mockResolvedValue({
+          records: variation === 'missing' ? [] : [record],
+        })
+        const wallet = await reopen(historical.directory)
+        const effects = noHistoricalExecution(wallet)
+        try {
+          await expect(
+            f.chain.directMessages.reconcileAttempts({
+              wallet,
+              payloadDigests: [historical.digest],
+            }),
+          ).rejects.toBeInstanceOf(CanonicalMessagingHoldError)
+          expect(
+            canonicalMonadStampClient(wallet).lookup(
+              historical.attempt.prepared,
+            ),
+          ).toBeUndefined()
+          effects.verify()
+        } finally {
+          effects.restore()
+          await wallet.close()
+        }
+        expect(await storedHistoricalRow(historical.storageLocation)).toEqual(
+          row,
+        )
+      },
+    )
+
+    it.each([
+      'page limit',
+      'page failure',
+      'persistence failure',
+      'owner changed',
+    ])(
+      'retains the old historical link on %s and accepts a later complete proof',
+      async variation => {
+        const historical = await compactedHistoricalAttempt()
+        const wallet = await reopen(historical.directory)
+        mailboxPage.mockResolvedValue({ records: [historical.record] })
+        if (variation === 'page limit')
+          mailboxPage.mockResolvedValue({
+            records: [historical.record],
+            nextCursor: 'more',
+          })
+        if (variation === 'page failure')
+          mailboxPage
+            .mockResolvedValueOnce({
+              records: [historical.record],
+              nextCursor: 'more',
+            })
+            .mockRejectedValueOnce(new Error('offline'))
+        if (variation === 'owner changed')
+          mailboxPage.mockImplementationOnce(async () => {
+            installCanonicalDirectory(wallet, { ...historical.directory })
+            return { records: [historical.record] }
+          })
+        const persist =
+          variation === 'persistence failure'
+            ? jest
+                .spyOn(LevelCanonicalLinkStore.prototype, 'put')
+                .mockRejectedValueOnce(new Error('storage unavailable'))
+            : undefined
+        const effects = noHistoricalExecution(wallet)
+        try {
+          await expect(
+            f.chain.directMessages.reconcileAttempts({
+              wallet,
+              payloadDigests: [historical.digest],
+            }),
+          ).rejects.toThrow()
+          if (variation === 'page limit')
+            expect(mailboxPage).toHaveBeenCalledTimes(8)
+          effects.verify()
+        } finally {
+          persist?.mockRestore()
+          effects.restore()
+          await wallet.close()
+        }
+        expect(await storedHistoricalRow(historical.storageLocation)).toEqual(
+          historical.row,
+        )
+        mailboxPage.mockResolvedValue({ records: [historical.record] })
+        const again = await reopen(historical.directory)
+        try {
+          expect(
+            await f.chain.directMessages.reconcileAttempts({
+              wallet: again,
+              payloadDigests: [historical.digest],
+            }),
+          ).toEqual({ [historical.digest]: 'delivered' })
+        } finally {
+          await again.close()
+        }
+      },
+    )
+
+    it.each([
+      'complete',
+      'missing sender',
+      'missing recipient',
+      'mismatched recipient',
+    ])(
+      'uses exact expired sender and recipient evidence (%s)',
+      async scenario => {
+        const historical = await compactedHistoricalAttempt()
+        const wallet = await reopen(historical.directory)
+        const old = await historical.directory.selfCurrent()
+        const relay = verifyPreviewDirectoryEvidence(
+          old.evidence.attestation,
+          'monad-testnet',
+        ).statement.relays[0]
+        const now = { seconds: 4000n, nanoseconds: 0 }
+        const renewedRelay = {
+          ...relay,
+          expiry: { seconds: 6600n, nanoseconds: 0 },
+        }
+        const store = await openNodeDirectoryStore({
+          location: join(f.root, 'historical-delivery-renewal'),
+          anchor: {
+            network: 'monad-testnet',
+            subject: {
+              keyType: 1,
+              keyBytes: fromHex(historical.attempt.prepared.senderSubject),
+            },
+            revisionZero: old.evidence.hash,
+          },
+          mode: { kind: 'new' },
+        })
+        const recipient = await historical.directory.peerCurrent({
+          subject: historical.attempt.prepared.recipientSubject,
+        })
+        if (!recipient) throw Error('fixture recipient missing')
+        const recipientStore = await openNodeDirectoryStore({
+          location: join(f.root, 'hd1-expired-recipient'),
+          anchor: {
+            network: 'monad-testnet',
+            subject: { keyType: 1, keyBytes: fromHex(recipient.subject) },
+            revisionZero: recipient.current.evidence.hash,
+          },
+          mode: { kind: 'new' },
+        })
+        await recipientStore.enroll([recipient.current.evidence], {
+          now: NOW,
+          relay,
+        })
+        try {
+          await store.enroll([old.evidence], { now: NOW, relay })
+          const next = prepareMonadNextRevisionExport(wallet, {
+            networkTag: 'MONT',
+            network: 'monad-testnet',
+            chainId: 10143n,
+            issuedAt: { seconds: 3000n, nanoseconds: 0 },
+            expiresAt: renewedRelay.expiry,
+            now,
+            relay: renewedRelay,
+            revision: 1n,
+            predecessor: old.evidence.hash,
+          })
+          const current = await store.advance(
+            [{ statement: next.statement, attestation: next.attestation }],
+            { now, relay: renewedRelay },
+          )
+          expect(current.revision).toBe(1n)
+          expect(current.generations).toEqual(old.generations)
+          expect(toHex(current.evidence.hash)).not.toBe(
+            historical.attempt.prepared.senderT1,
+          )
+          expect(
+            verifyPreviewDirectoryEvidence(
+              old.evidence.attestation,
+              'monad-testnet',
+            ).statement.expiry.seconds,
+          ).toBeLessThan(now.seconds)
+          await expect(recipientStore.current({ now, relay })).rejects.toThrow()
+          const recipientEvidence = await recipientStore.historicalEvidence(
+            fromHex(historical.attempt.prepared.recipientT1),
+          )
+          if (!recipientEvidence)
+            throw new Error('fixture recipient history missing')
+          const archiveRoles = createCanonicalMessageRoles(wallet, current)
+          try {
+            const opened = openOwnDirectMessage({
+              mode: 'archive',
+              network: 'monad-testnet',
+              payload: historical.attempt.prepared.payload,
+              context: historical.attempt.prepared.context,
+              roles: archiveRoles,
+              senderEvidence: old.evidence,
+              recipientEvidence,
+            })
+            expect(toHex(opened.recipientT1)).toBe(
+              historical.attempt.prepared.recipientT1,
+            )
+            expect(toHex(opened.senderT1)).toBe(
+              historical.attempt.prepared.senderT1,
+            )
+          } finally {
+            archiveRoles.dispose()
+          }
+          const historicalRead = jest.fn(
+            async (wanted: { subject: string; statementHash: string }) => {
+              if (wanted.subject === recipient.subject) {
+                if (scenario === 'missing recipient') return undefined
+                if (scenario === 'mismatched recipient') return old.evidence
+                return (
+                  (await recipientStore.historicalEvidence(
+                    fromHex(wanted.statementHash),
+                  )) ?? undefined
+                )
+              }
+              if (scenario === 'missing sender') return undefined
+              return (
+                (await store.historicalEvidence(
+                  fromHex(wanted.statementHash),
+                )) ?? undefined
+              )
+            },
+          )
+          const currentRead = jest.fn(async () => ({
+            subject: recipient.subject,
+            endpoint: recipient.endpoint,
+            current: await recipientStore.current({ now, relay }),
+          }))
+          installCanonicalDirectory(wallet, {
+            ...historical.directory,
+            selfCurrent: () => store.current({ now, relay: renewedRelay }),
+            peerCurrent: currentRead,
+            peerHistorical: historicalRead,
+          })
+          mailboxPage.mockResolvedValue({ records: [historical.record] })
+          const effects = noHistoricalExecution(wallet)
+          try {
+            const result = f.chain.directMessages.reconcileAttempts({
+              wallet,
+              payloadDigests: [historical.digest],
+            })
+            if (scenario === 'complete') {
+              await expect(result).resolves.toEqual({
+                [historical.digest]: 'delivered',
+              })
+              expect(currentRead).not.toHaveBeenCalled()
+              expect(historicalRead).toHaveBeenCalledWith({
+                subject: historical.attempt.prepared.recipientSubject,
+                statementHash: historical.attempt.prepared.recipientT1,
+              })
+            } else {
+              await expect(result).rejects.toBeInstanceOf(
+                CanonicalMessagingHoldError,
+              )
+            }
+            effects.verify()
+          } finally {
+            effects.restore()
+          }
+        } finally {
+          await recipientStore.close()
+          await store.close()
+          await wallet.close()
+        }
+        expect(await storedHistoricalRow(historical.storageLocation)).toEqual(
+          scenario === 'complete'
+            ? { ...historical.row, outcome: 'delivered', reason: undefined }
+            : historical.row,
+        )
+      },
+    )
+
+    it('admits concurrent complete historical proofs once without replaying the compacted operation', async () => {
+      const historical = await compactedHistoricalAttempt()
+      const wallet = await reopen(historical.directory)
+      mailboxPage.mockResolvedValue({ records: [historical.record] })
+      const persist = jest.spyOn(LevelCanonicalLinkStore.prototype, 'put')
+      const effects = noHistoricalExecution(wallet)
+      try {
+        const params = { wallet, payloadDigests: [historical.digest] }
+        expect(
+          await Promise.all([
+            f.chain.directMessages.reconcileAttempts(params),
+            f.chain.directMessages.reconcileAttempts(params),
+          ]),
+        ).toEqual([
+          { [historical.digest]: 'delivered' },
+          { [historical.digest]: 'delivered' },
+        ])
+        expect(persist).toHaveBeenCalledTimes(1)
+        effects.verify()
+      } finally {
+        persist.mockRestore()
+        effects.restore()
+        await wallet.close()
+      }
+    })
+
+    it('does not hold the workflow queue during historical mailbox reads or publish a closed wallet result', async () => {
+      const historical = await compactedHistoricalAttempt()
+      const wallet = await reopen(historical.directory)
+      let resolvePage!: (
+        page: Awaited<ReturnType<typeof fetchCanonicalMailboxPage>>,
+      ) => void
+      let started!: () => void
+      const scanning = new Promise<void>(resolve => {
+        started = resolve
+      })
+      mailboxPage.mockImplementationOnce(() => {
+        started()
+        return new Promise(resolve => {
+          resolvePage = resolve
+        })
+      })
+      const reconciliation = f.chain.directMessages.reconcileAttempts({
+        wallet,
+        payloadDigests: [historical.digest],
+      })
+      await scanning
+      await f.chain.directMessages.discardAttempt({
+        wallet,
+        payloadDigest: historical.digest,
+      })
+      await wallet.close()
+      resolvePage({ records: [historical.record] })
+      await expect(reconciliation).rejects.toBeInstanceOf(
+        CanonicalMessagingHoldError,
+      )
+      expect(await storedHistoricalRow(historical.storageLocation)).toEqual(
+        historical.row,
+      )
+    })
+  })
 
   function retainedAttempt(
     wallet: MonadChainWalletHandle,

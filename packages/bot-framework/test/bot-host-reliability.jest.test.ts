@@ -111,12 +111,24 @@ describe("FrankBotHost Reliability Features", () => {
   describe("Conversation threading", () => {
     it("threads msg.conversationId through bot reply() and return values", async () => {
       const receivedContexts: BotMessageContext[] = [];
+      const substitutedReply = jest.fn();
 
       const dummyBot: FrankBotDefinition = {
         id: "thread-bot",
         getProfile: () => ({ name: "ThreadBot", bot: true }),
-        onMessage: async (msg) => {
+        onMessage: async (msg, ctx) => {
           receivedContexts.push(msg);
+          await Promise.resolve();
+          for (const [target, key, value] of [
+            [msg, "conversationId", "99999999-9999-9999-9999-999999999999"],
+            [msg, "peerAddress", new Wallet("0x" + "13".repeat(32)).address],
+            [msg, "peerSubject", "aa".repeat(32)],
+            [msg, "reply", substitutedReply],
+            [ctx, "networkTag", "MON1"],
+            [ctx, "subject", "aa".repeat(32)],
+            [ctx, "address", new Wallet("0x" + "13".repeat(32)).address],
+          ] as const)
+            expect(Reflect.set(target, key, value)).toBe(false);
           await msg.reply([
             { type: "text", text: "reply from reply()" } as any,
           ]);
@@ -157,7 +169,14 @@ describe("FrankBotHost Reliability Features", () => {
         async () => {}
       );
 
+      expect(substitutedReply).not.toHaveBeenCalled();
       expect(receivedContexts.length).toBe(1);
+      expect(receivedContexts[0].peerSubject).toBe(
+        mockPeer.signingKey.compressedPublicKey.slice(2)
+      );
+      expect(receivedContexts[0].peerSubject).not.toBe(
+        receivedContexts[0].payloadDigest
+      );
       expect(receivedContexts[0].conversationId).toBe(
         "01010101-0101-0101-0101-010101010101"
       );
@@ -168,12 +187,14 @@ describe("FrankBotHost Reliability Features", () => {
         1,
         expect.objectContaining({
           conversationId: "01010101-0101-0101-0101-010101010101",
+          recipient: expect.objectContaining({ raw: mockPeer.address }),
         })
       );
       expect(mockDirectMessagesSend).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
           conversationId: "01010101-0101-0101-0101-010101010101",
+          recipient: expect.objectContaining({ raw: mockPeer.address }),
         })
       );
 

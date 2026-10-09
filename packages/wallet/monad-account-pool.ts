@@ -203,6 +203,7 @@ export class MonadSubAccountPool {
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission
   ) => Promise<T>;
+  private spendReservation?: (index: number) => boolean;
   accountUtxoPool?: ChainUtxoPool;
 
   setAccountUtxoPool(pool: ChainUtxoPool): void {
@@ -273,6 +274,30 @@ export class MonadSubAccountPool {
       throw new Error("Sub-account pool already has a wallet operation gate");
     }
     this.walletOperationGate = gate;
+  }
+
+  /**
+   * Composition-attached reservation: `isReserved(index)` answers whether an operation outside the
+   * pool (today, a native send in the native operation journal) spends from that sub-account. The
+   * pool stores nothing: the answer is read from its owner on every selection, so it starts when
+   * that owner records the spend, survives restart with it, and is never stale. A reserved row is
+   * not offered as funded capacity, not selected for a lease, not chosen as an on-demand funding
+   * target, not a canonical stamp candidate and not retired by preparation's reconciliation; it
+   * stops mattering once the row is terminal. The predicate is asked only after the cheap status
+   * check, so it runs for rows that would otherwise be chosen. A pool with nothing attached
+   * reserves nothing. `acquireForIndex` and native source selection do
+   * not ask: their callers name a row they already own.
+   */
+  attachSpendReservation(isReserved: (index: number) => boolean): void {
+    if (this.spendReservation !== undefined) {
+      throw new Error("Sub-account pool already has a spend reservation");
+    }
+    this.spendReservation = isReserved;
+  }
+
+  /** True while an attached reservation claims sub-account `index` (see `attachSpendReservation`). */
+  isSpendReserved(index: number): boolean {
+    return this.spendReservation?.(index) ?? false;
   }
 
   /**
@@ -789,7 +814,10 @@ export class MonadSubAccountPool {
 
     const unfunded = this.store
       .getAll()
-      .filter((record) => record.status === "unfunded");
+      .filter(
+        (record) =>
+          record.status === "unfunded" && !this.isSpendReserved(record.index)
+      );
     while (unfunded.length < capacities.length) {
       const index = this.nextFreshIndex();
       const derived = this.keyring.deriveSubAccount(index);
@@ -928,8 +956,13 @@ export class MonadSubAccountPool {
         }
       }
     }
+    // A reserved row belongs to the native operation that spends from it until that resolves.
+    // Retiring it here (a status with no checkpoint) would be a second writer of the same
+    // account's state: the input admission then holds the address for the pool against the
+    // native claim and reports `conflicting-authorization` for the whole wallet, across reopen.
     const availableRecords = allRecords.filter(
-      (record) => record.status === "available"
+      (record) =>
+        record.status === "available" && !this.isSpendReserved(record.index)
     );
     if (availableRecords.length > 0) {
       await Promise.all(
@@ -1036,7 +1069,10 @@ export class MonadSubAccountPool {
 
     let target = this.store
       .getAll()
-      .find((record) => record.status === "unfunded");
+      .find(
+        (record) =>
+          record.status === "unfunded" && !this.isSpendReserved(record.index)
+      );
     if (target === undefined) {
       const index = this.nextFreshIndex();
       target = {
@@ -1139,7 +1175,10 @@ export class MonadSubAccountPool {
   ): Promise<Array<{ index: number; address: string; capacityWei: bigint }>> {
     const availableRecords = this.store
       .getAll()
-      .filter((record) => record.status === "available");
+      .filter(
+        (record) =>
+          record.status === "available" && !this.isSpendReserved(record.index)
+      );
     if (availableRecords.length === 0) {
       return [];
     }
@@ -1410,7 +1449,10 @@ export class MonadSubAccountPool {
         (((this.lastSelectedIndex + step) % all.length) + all.length) %
         all.length;
       const candidate = all[candidatePosition];
-      if (candidate.status === "available") {
+      if (
+        candidate.status === "available" &&
+        !this.isSpendReserved(candidate.index)
+      ) {
         this.lastSelectedIndex = candidatePosition;
         return candidate;
       }

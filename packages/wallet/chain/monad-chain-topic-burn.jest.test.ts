@@ -964,9 +964,8 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
 
   // P1 does not claim cross-consumer exclusion. These obsolete hash-only/global-hold
   // assertions belong to the accepted P2 shared-input owner, including actual topic and DM paths.
-  it.todo(
-    'P2: topic post/vote exclude inputs reserved by an uncertain native operation',
-  )
+  // "Topic post/vote exclude inputs reserved by an uncertain native operation" is covered below
+  // for pool accounts (#1235): 'a pool account a native send spends from is not burned from'.
   it.todo(
     'P2: legacy/canonical DM selection and signing fee quotes share native claims',
   )
@@ -978,5 +977,238 @@ describe('durable EVM native operation ownership (#1230 P1)', () => {
   )
   it.todo(
     'P2: a funded topic account remains usable when disjoint native inputs are uncertain',
+  )
+})
+
+/**
+ * #1235 Stage R, at the topic boundary: the real composed wallet (`createEvmChain().createWallet`),
+ * its real pool, lease manager, native operation journal and topic clients. Only the RPC and the
+ * relay's HTTP are faked. The topic producer signs with no admission check, so the pool's
+ * reservation is the only thing that keeps a burn off an account a native send is spending from.
+ */
+describe('a pool account a native send spends from is not burned from (#1235)', () => {
+  const recipient = { raw: '0x' + '42'.repeat(20) }
+  const blockHash = '0x' + 'ab'.repeat(32)
+  const opened: EvmChainWalletHandle[] = []
+
+  beforeEach(() => {
+    jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('Unmocked network request forbidden'))
+  })
+  afterEach(async () => {
+    await Promise.all(opened.splice(0).map(wallet => wallet.close()))
+    jest.restoreAllMocks()
+  })
+
+  /** Opens the wallet, funds pool account X through a topic post whose burn signing fails (the
+   * production funding path: X is left `available` holding exactly one burn), then sends natively
+   * from X. `pending`: the broadcast reply is lost and the node's pending view lacks the
+   * transaction. `included`: it is mined and observed only by a fee estimate. */
+  async function reserved(window: 'pending' | 'included') {
+    const bundleModule = jest.requireActual(
+      '../storage/monad-wallet-bundle',
+    ) as typeof import('../storage/monad-wallet-bundle')
+    const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+    let bundle!: MonadWalletPersistenceBundle
+    jest
+      .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+      .mockImplementation(async params => {
+        bundle = await originalOpen(params)
+        return bundle
+      })
+    const chain = createEvmChain({
+      ...CONFIG,
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+    })
+    const wallet = (await chain.createWallet({
+      mnemonic: TEST_MNEMONIC,
+    })) as EvmChainWalletHandle
+    opened.push(wallet)
+    const fake = makeFakeChain(10n ** 18n, wallet)
+    const main = (await wallet.getReceiveAddress()).raw.toLowerCase()
+    fake.balances.set(main, 10n ** 18n)
+    const puts = fakeRelay()
+
+    // Native RPC surface, layered over the fake chain's funding and burn reads.
+    const provider = wallet.provider as unknown as Record<
+      string,
+      (...args: never[]) => Promise<unknown>
+    >
+    const burnTransaction = provider.getTransaction
+    const burnReceipt = provider.getTransactionReceipt
+    const fundingCount = provider.getTransactionCount
+    const mined = new Map<string, Transaction>()
+    const nativeNonces = new Map<string, number>()
+    const nativeBroadcasts: Transaction[] = []
+    let replyLost = false
+    Object.assign(provider, {
+      getBlock: async () => ({ hash: blockHash, number: 1 } as Block),
+      getTransaction: async (hash: string) =>
+        mined.has(hash)
+          ? (Object.assign(Transaction.from(mined.get(hash)!.serialized), {
+              blockHash,
+              blockNumber: 1,
+              index: 0,
+            }) as unknown as TransactionResponse)
+          : burnTransaction(hash as never),
+      getTransactionReceipt: async (hash: string) =>
+        mined.has(hash)
+          ? ({
+              hash,
+              from: mined.get(hash)!.from,
+              to: mined.get(hash)!.to,
+              blockHash,
+              blockNumber: 1,
+              index: 0,
+              status: 1,
+              gasPrice: GAS_PRICE,
+              gasUsed: GAS_LIMIT,
+            } as TransactionReceipt)
+          : burnReceipt(hash as never),
+      getTransactionCount: async (address: string, ...rest: never[]) =>
+        nativeNonces.get(address.toLowerCase()) ??
+        fundingCount(address as never, ...rest),
+      broadcastTransaction: async (raw: string) => {
+        const tx = Transaction.from(raw)
+        nativeBroadcasts.push(tx)
+        if (replyLost) throw new Error('Submission acknowledgment lost (test)')
+        const from = tx.from!.toLowerCase()
+        mined.set(tx.hash!, tx)
+        nativeNonces.set(from, tx.nonce + 1)
+        fake.balances.set(
+          from,
+          (fake.balances.get(from) ?? 0n) - tx.value - GAS_LIMIT * GAS_PRICE,
+        )
+        return { hash: tx.hash! } as TransactionResponse
+      },
+    })
+
+    const act = {
+      post: () =>
+        chain.topics.post({
+          wallet,
+          topic: 'help',
+          entries: [ENTRY],
+          direction: 'up',
+          voteWeightWei: WEIGHT,
+        }),
+      vote: () =>
+        chain.topics.vote({
+          wallet,
+          payloadDigest: 'ab'.repeat(32),
+          direction: 'up',
+          voteWeightWei: WEIGHT,
+        }),
+    }
+    fake.setSigningDown(true)
+    await expect(act.post()).rejects.toBeInstanceOf(TopicBurnPreparationError)
+    fake.setSigningDown(false)
+    expect(fake.rpcSubmissions).toHaveLength(1)
+    const x = wallet.pool
+      .records()
+      .find(
+        record =>
+          record.address.toLowerCase() ===
+          fake.rpcSubmissions[0].to!.toLowerCase(),
+      )!
+    expect(x.status).toBe('available')
+    const xAddress = x.address.toLowerCase()
+
+    // Main cannot pay, so the native send spends from X, leaving a residual.
+    for (const address of new Set([main, fake.mainAddress.toLowerCase()]))
+      fake.balances.set(address, 0n)
+    replyLost = window === 'pending'
+    const send = chain.nativeTransfers.send({
+      wallet,
+      recipient,
+      value: WEIGHT / 2n,
+    })
+    if (window === 'pending')
+      await expect(send).rejects.toBeInstanceOf(NativeTransactionSubmissionError)
+    else await send
+    replyLost = false
+    for (const address of new Set([main, fake.mainAddress.toLowerCase()]))
+      fake.balances.set(address, 10n ** 18n)
+    if (window === 'included')
+      await wallet.estimateLegacyFee!({ recipient, value: 1n })
+    const member = wallet.getNativeOperations!()[0]!.members[0]!
+    expect(member.source).toEqual({
+      kind: 'spend',
+      address: xAddress,
+      index: x.index,
+    })
+    expect(member.observation.state).toBe(
+      window === 'pending' ? 'missing' : 'included-success',
+    )
+    expect(nativeBroadcasts.map(tx => tx.from!.toLowerCase())).toEqual([
+      xAddress,
+    ])
+    expect(wallet.pool.getRecord(x.index)!.status).toBe('available')
+    const signers = jest.spyOn(Wallet.prototype, 'signTransaction')
+    return {
+      act,
+      wallet,
+      fake,
+      puts,
+      x,
+      xAddress,
+      nativeBroadcasts,
+      /** Addresses that signed anything after the native send. */
+      signedBy: () =>
+        (signers.mock.instances as unknown as Wallet[]).map(signer =>
+          signer.address.toLowerCase(),
+        ),
+      admission: () =>
+        bundle.runLifetime(lifetime =>
+          Promise.resolve(bundle.inputAdmission.inspect(lifetime)),
+        ),
+    }
+  }
+
+  const burnOf = (put: { url: string; body: Uint8Array }) => {
+    const parsed = validateFrame(put.body, defaultContext())
+    if (
+      parsed.kind !== 'parsed' ||
+      (parsed.typed?.type !== 10 && parsed.typed?.type !== 11)
+    )
+      throw new Error('expected a topic post or vote submission')
+    return Transaction.from(
+      '0x' + Buffer.from(parsed.typed.burnTx).toString('hex'),
+    )
+  }
+
+  // Before the reservation, pending: preparation reused X and the burn was signed from it, at the
+  // native member's own nonce. Included: preparation's reconciliation retired X before selection,
+  // so the burn already used another account, but the retired row then conflicted with the native
+  // claim and the admission reported `conflicting-authorization` for the whole wallet.
+  it.each([
+    ['pending', 'post', 'signs nothing from the reserved account'],
+    ['pending', 'vote', 'signs nothing from the reserved account'],
+    ['included', 'post', 'does not retire the reserved account or lock admission'],
+    ['included', 'vote', 'does not retire the reserved account or lock admission'],
+  ] as const)(
+    '%s native send: a topic %s funds and burns from another account and %s',
+    async (window, kind) => {
+      const f = await reserved(window)
+      expect(await f.admission()).toMatchObject({ status: 'ready' })
+
+      await f.act[kind]()
+
+      expect(f.puts).toHaveLength(1)
+      const burn = burnOf(f.puts[0])
+      expect(burn.value).toBe(WEIGHT)
+      expect(burn.from!.toLowerCase()).not.toBe(f.xAddress)
+      // A second funding transfer, to the account the burn was signed from.
+      expect(f.fake.rpcSubmissions).toHaveLength(2)
+      expect(f.fake.rpcSubmissions[1].to!.toLowerCase()).toBe(
+        burn.from!.toLowerCase(),
+      )
+      expect(f.signedBy()).not.toContain(f.xAddress)
+      expect(f.nativeBroadcasts).toHaveLength(1)
+      // The reserved row is left to the native operation that spends from it.
+      expect(f.wallet.pool.getRecord(f.x.index)!.status).toBe('available')
+      expect(await f.admission()).toMatchObject({ status: 'ready' })
+    },
   )
 })

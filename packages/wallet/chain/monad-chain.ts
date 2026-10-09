@@ -2188,6 +2188,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               });
             }
           }
+          // A pool account a non-cancelled native member spends from is reserved: read from the
+          // journal on every selection, so it holds from the journal write and across restart.
+          pool.attachSpendReservation((index) =>
+            topicOwner!.nativeJournal!.referencesSpendIndex(index)
+          );
           nativeOperationOwners.set(
             wallet,
             new EvmLegacyConsolidator({

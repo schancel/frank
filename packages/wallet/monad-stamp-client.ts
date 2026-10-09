@@ -2097,7 +2097,12 @@ export class MonadCanonicalStampClient {
 
       const candidateRecords = this.wallet.pool
         .records()
-        .filter(r => r.status === 'available' && !protectedIndices.has(r.index))
+        .filter(
+          r =>
+            r.status === 'available' &&
+            !protectedIndices.has(r.index) &&
+            !this.wallet.pool.isSpendReserved(r.index),
+        )
 
       // Resolve base quote once outside the loop only if fee fields were not provided in overrides
       if (baseMaxFeePerGas === undefined && baseGasPrice === undefined) {

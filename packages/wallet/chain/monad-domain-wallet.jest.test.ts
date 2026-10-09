@@ -50,6 +50,7 @@ import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-stor
 import { LevelChangePoolStore } from '../storage/level-change-pool-store'
 import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journal'
 import { MonadSubAccountPool } from '../monad-account-pool'
+import { NoAvailableSubAccountError } from '../monad-account-lease'
 import { applyWalletSyncItem } from '../sync-dispatcher'
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
 import { MonadStampClient } from '../monad-stamp-client'
@@ -444,11 +445,17 @@ test('typed DM entrypoints stay pending without a verified directory, before pla
 function mockNativeRpc(
   wallet: EvmChainWalletHandle,
   initial: Record<string, bigint>,
+  initialNonces: Record<string, number> = {},
 ) {
   const balances = new Map(
     Object.entries(initial).map(([key, value]) => [key.toLowerCase(), value]),
   )
-  const nonces = new Map<string, number>()
+  const nonces = new Map<string, number>(
+    Object.entries(initialNonces).map(([key, value]) => [
+      key.toLowerCase(),
+      value,
+    ]),
+  )
   const transactions = new Map<string, TransactionResponse>()
   const receipts = new Map<string, TransactionReceipt>()
   const blockHash = '0x' + 'ab'.repeat(32)
@@ -1626,11 +1633,12 @@ test('a pool-sourced legacy send included in-call keeps admission ready in the s
       status: 'available',
     })
     expectNoSpendRecordWithoutItsTransaction(wallet)
-    // The drained account is not offered from the stale funded-capacity entry.
+    // The drained account is not offered from the stale funded-capacity entry, nor at all: the
+    // journal member that spent from it reserves it until the row is recorded spent.
     expect(wallet.pool.capacityCache.has(0)).toBe(false)
     expect(
       await wallet.pool.fundedCapacities(wallet.provider, 21000n),
-    ).toEqual([{ index: 0, address: expected[0].pool, capacityWei: 0n }])
+    ).toEqual([])
     // A native send for a disjoint pair (main, not the drained account) is still admitted,
     // signed and broadcast.
     first.rpc.broadcast.mockClear()
@@ -1702,6 +1710,260 @@ test('the same item carrying the journal member\'s signed transaction is a spend
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+/** Stage R of #1235. Row 0 is funded through the pool's own on-demand burn-account path with
+ * exactly one 100000 wei burn of capacity, then out-holds main, so a native send selects it as
+ * its source. `pending`: the broadcast reply is lost, so the member is signed and exposed but
+ * unobserved. `included`: the transaction is mined, and inclusion is observed only by a fee
+ * estimate, so nothing has recorded the row as spent. */
+const reservationWallets: EvmChainWalletHandle[] = []
+async function nativeSendFromProductionFundedPoolRow(
+  dir: string,
+  window: 'pending' | 'included',
+) {
+  const bundleModule = jest.requireActual(
+    '../storage/monad-wallet-bundle',
+  ) as typeof import('../storage/monad-wallet-bundle')
+  const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+  const opened: Array<Awaited<ReturnType<typeof originalOpen>>> = []
+  jest
+    .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+    .mockImplementation(async params => {
+      const result = await originalOpen(params)
+      opened.push(result)
+      return result
+    })
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  const main = expected[0].main.toLowerCase()
+  const poolAddress = expected[0].pool.toLowerCase()
+  const ActualSigner = jest.requireActual<typeof import('../monad-account-tx')>(
+    '../monad-account-tx',
+  ).MonadAccountTxSigner
+  const open = async (
+    balances: Record<string, bigint>,
+    nonces: Record<string, number> = {},
+  ) => {
+    const wallet = (await createEvmChain(cfg).createWallet(
+      roots(),
+    )) as EvmChainWalletHandle
+    reservationWallets.push(wallet)
+    const bundle = opened[opened.length - 1]!
+    const rpc = mockNativeRpc(wallet, balances, nonces)
+    jest
+      .spyOn(wallet.provider, 'getNetwork')
+      .mockResolvedValue(Network.from(10143))
+    const funder = new ActualSigner({
+      privateKey: expected[0].mainSecret,
+      provider: wallet.provider,
+      httpClient: {
+        submitRawTransaction: async (raw: string) => {
+          const tx = Transaction.from(raw)
+          await wallet.provider.broadcastTransaction(raw)
+          const to = tx.to!.toLowerCase()
+          rpc.balances.set(to, (rpc.balances.get(to) ?? 0n) + tx.value)
+          return tx.hash!
+        },
+        getTransactionReceipt: async (txHash: string) =>
+          ({ txHash, status: 'success' } as never),
+      },
+    })
+    return {
+      wallet,
+      rpc,
+      admission: () =>
+        bundle.runLifetime(lifetime =>
+          Promise.resolve(bundle.inputAdmission.inspect(lifetime)),
+        ),
+      /** The pool's on-demand preparation of one account able to burn exactly 100000 wei. */
+      prepareBurn: () =>
+        wallet.pool.prepareBurnAccount({
+          mainAccountSigner: funder,
+          provider: wallet.provider,
+          burnValueWei: 100000n,
+          gasReserveWei: 21000n,
+          fundingOverrides: {
+            chainId: 10143n,
+            gasLimit: 21000n,
+            maxFeePerGas: 1n,
+            maxPriorityFeePerGas: 1n,
+          },
+        }),
+      /** Senders of everything handed to the RPC since the last clear. */
+      broadcastSenders: () =>
+        rpc.broadcast.mock.calls.map(([raw]) =>
+          Transaction.from(raw).from!.toLowerCase(),
+        ),
+    }
+  }
+  const first = await open({ [main]: 1000000n })
+  const { wallet, rpc } = first
+  expect(await first.prepareBurn()).toMatchObject({ index: 0 })
+  expect(wallet.pool.getRecord(0)).toEqual({
+    index: 0,
+    address: expected[0].pool,
+    status: 'available',
+  })
+  expect(rpc.balances.get(poolAddress)).toBe(121000n)
+  // Main can no longer cover the send; the pool account can, with 50000 wei left over.
+  rpc.balances.set(main, 40000n)
+  rpc.broadcast.mockClear()
+  const send = () =>
+    wallet.sendNative({ recipient: { raw: expected[1].main }, value: 50000n })
+  if (window === 'pending') {
+    rpc.broadcast.mockRejectedValueOnce(new Error('reply lost'))
+    await expect(send()).rejects.toThrow()
+  } else {
+    await send()
+    expect(
+      wallet.getNativeOperations!()[0]!.members[0]!.observation.state,
+    ).toBe('missing')
+    await wallet.estimateLegacyFee!({
+      recipient: { raw: expected[1].main },
+      value: 1n,
+    })
+  }
+  const operation = wallet.getNativeOperations!()[0]!
+  const member = operation.members[0]!
+  expect(member.source).toEqual({ kind: 'spend', address: poolAddress, index: 0 })
+  expect(member.exposed).toBe(true)
+  expect(member.observation.state).toBe(
+    // `missing`: looked for once, before the broadcast whose reply was lost.
+    window === 'pending' ? 'missing' : 'included-success',
+  )
+  expect(member.syncApplied).toBe(false)
+  expect(rpc.balances.get(poolAddress)).toBe(
+    window === 'pending' ? 121000n : 50000n,
+  )
+  return { ...first, open, operation, member, main, poolAddress }
+}
+
+describe.each(['pending', 'included'] as const)(
+  'a pool account a %s native send spends from is reserved (#1235)',
+  window => {
+    let dir: string
+    let wallet: EvmChainWalletHandle
+    beforeEach(async () => {
+      dir = await mkdtemp(join(tmpdir(), 'frank-1235-reservation-'))
+    })
+    afterEach(async () => {
+      for (const opened of reservationWallets.splice(0)) await opened.close()
+      await rm(dir, { recursive: true, force: true })
+    })
+
+    test('it is not offered as funded capacity, not leased and not reused or funded for a burn, which funds another account', async () => {
+      const f = await nativeSendFromProductionFundedPoolRow(dir, window)
+      wallet = f.wallet
+      // The window: the native member exists and nothing has recorded the row as spent.
+      expect(wallet.pool.getRecord(0)!.status).toBe('available')
+      expect(wallet.pool.isSpendReserved(0)).toBe(true)
+      expect(wallet.pool.isSpendReserved(1)).toBe(false)
+      expect(await f.admission()).toMatchObject({ status: 'ready' })
+
+      expect(await wallet.pool.fundedCapacities(wallet.provider, 21000n)).toEqual(
+        [],
+      )
+      expect(wallet.pool.selectForStamp()).toBeUndefined()
+      expect(() => wallet.leaseManager.acquireLease()).toThrow(
+        NoAvailableSubAccountError,
+      )
+      expect(wallet.pool.getRecord(0)!.status).toBe('available')
+
+      // On-demand preparation of the same burn the account was funded for: it funds row 1.
+      f.rpc.balances.set(f.main, 1000000n)
+      f.rpc.broadcast.mockClear()
+      expect(await f.prepareBurn()).toMatchObject({ index: 1 })
+      expect(f.broadcastSenders()).toEqual([f.main])
+      expect(
+        Transaction.from(f.rpc.broadcast.mock.calls[0]![0]).to!.toLowerCase(),
+      ).toBe(wallet.pool.getRecord(1)!.address.toLowerCase())
+      expect(wallet.pool.getRecord(1)!.status).toBe('available')
+      // The reserved row is left to the native operation that spends from it: preparation neither
+      // funds it nor writes a terminal status over it.
+      expect(wallet.pool.getRecord(0)!.status).toBe('available')
+      // The fresh account is ordinary inventory; the reserved one never comes back.
+      expect(
+        (await wallet.pool.fundedCapacities(wallet.provider, 21000n)).map(
+          account => account.index,
+        ),
+      ).toEqual([1])
+      expect(wallet.leaseManager.acquireLease().index).toBe(1)
+      expect(await f.admission()).toMatchObject({ status: 'ready' })
+      expect(wallet.getNativeOperations!()).toEqual([f.operation])
+    })
+
+    test('the reservation is derived from the journal again after close and reopen', async () => {
+      const f = await nativeSendFromProductionFundedPoolRow(dir, window)
+      wallet = f.wallet
+      const balances = Object.fromEntries(f.rpc.balances)
+      await wallet.close()
+      const second = await f.open(
+        { ...balances, [f.main]: 1000000n },
+        window === 'included' ? { [f.poolAddress]: 1, [f.main]: 1 } : { [f.main]: 1 },
+      )
+      wallet = second.wallet
+      expect(wallet.getNativeOperations!()).toEqual([f.operation])
+      expect(wallet.pool.getRecord(0)).toEqual({
+        index: 0,
+        address: expected[0].pool,
+        status: 'available',
+      })
+      expect(wallet.pool.capacityCache.size).toBe(0)
+      expect(wallet.pool.isSpendReserved(0)).toBe(true)
+      expect(await second.admission()).toMatchObject({ status: 'ready' })
+      expect(await wallet.pool.fundedCapacities(wallet.provider, 21000n)).toEqual(
+        [],
+      )
+      expect(wallet.pool.selectForStamp()).toBeUndefined()
+      expect(() => wallet.leaseManager.acquireLease()).toThrow(
+        NoAvailableSubAccountError,
+      )
+      expect(await second.prepareBurn()).toMatchObject({ index: 1 })
+      expect(second.broadcastSenders()).toEqual([f.main])
+      expect(await second.admission()).toMatchObject({ status: 'ready' })
+    })
+
+    test(
+      window === 'pending'
+        ? 'pins: another native send cannot plan or sign from the account while the first is unresolved'
+        : 'a later native send still spends the residual at the next nonce, and the account stays out of other selection',
+      async () => {
+        const f = await nativeSendFromProductionFundedPoolRow(dir, window)
+        wallet = f.wallet
+        const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+        f.rpc.broadcast.mockClear()
+        // More than main (40000) can pay with its fee; within what the pool account holds (pending:
+        // 121000) or keeps as a residual (included: 50000).
+        const again = wallet.sendNative({
+          recipient: { raw: expected[1].main },
+          value: window === 'pending' ? 45000n : 25000n,
+        })
+        if (window === 'pending') {
+          await expect(again).rejects.toThrow(
+            'Insufficient unreserved native funds',
+          )
+          expect(sign).not.toHaveBeenCalled()
+          expect(f.rpc.broadcast).not.toHaveBeenCalled()
+          expect(wallet.getNativeOperations!()).toEqual([f.operation])
+        } else {
+          await again
+          const residual = Transaction.from(f.rpc.broadcast.mock.calls[0]![0])
+          expect(residual.from!.toLowerCase()).toBe(f.poolAddress)
+          expect(residual.nonce).toBe(1)
+          expect(wallet.pool.getRecord(0)!.status).toBe('available')
+          expect(
+            await wallet.pool.fundedCapacities(wallet.provider, 21000n),
+          ).toEqual([])
+          expect(wallet.pool.selectForStamp()).toBeUndefined()
+        }
+        expect(await f.admission()).toMatchObject({ status: 'ready' })
+      },
+    )
+  },
+)
 
 test('retiring a pool account on a normally opened wallet builds and submits no warming transfer (#1235)', async () => {
   const built = jest.fn(async () => ({

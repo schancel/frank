@@ -13,7 +13,13 @@ import * as legacyStamp from "../monad-stamp-client";
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { JsonRpcProvider, Transaction, computeAddress, getBytes } from 'ethers'
+import {
+  JsonRpcProvider,
+  Transaction,
+  Wallet,
+  computeAddress,
+  getBytes,
+} from 'ethers'
 import level from 'level'
 import {
   channelStateDigest,
@@ -3155,4 +3161,293 @@ describe('two typed wallets on the open directory', () => {
       expect(f.requests).toHaveLength(1)
     })
   })
+})
+
+/**
+ * #1235 Stage R, at the canonical boundary: typed wallets, real journals, pool and admission. Two
+ * stamp accounts are funded through the production on-demand path for a stamp that needs both, so
+ * a send that may select the reserved one does. A native send then spends from the larger one, X,
+ * because main cannot pay. `pending`: the broadcast reply is lost, so the member is signed and
+ * exposed but unobserved. `included`: it is mined and observed only by a fee estimate. In both,
+ * nothing has recorded X as spent.
+ */
+describe('a stamp account a native send spends from (#1235)', () => {
+  const STAMP = 1_000_000n
+  const blockHash = '0x' + '11'.repeat(32)
+  let f: Awaited<ReturnType<typeof fixture>>
+  let bundles: Array<{
+    runLifetime: <T>(task: (lifetime: never) => Promise<T>) => Promise<T>
+    inputAdmission: { inspect(lifetime: never): { status: string } }
+  }>
+  beforeEach(async () => {
+    jest.clearAllMocks()
+    mockBalances.clear()
+    mockFunded.length = 0
+    bundles = []
+    const bundleModule = jest.requireActual(
+      '../storage/monad-wallet-bundle',
+    ) as typeof import('../storage/monad-wallet-bundle')
+    const originalOpen = bundleModule.openExistingPoolMonadTopicOwner
+    jest
+      .spyOn(bundleModule, 'openExistingPoolMonadTopicOwner')
+      .mockImplementation(async params => {
+        const bundle = await originalOpen(params)
+        bundles.push(bundle as never)
+        return bundle
+      })
+    f = await fixture(false)
+  })
+  afterEach(async () => {
+    await f.close()
+    jest.restoreAllMocks()
+  })
+
+  /** Alice's admission snapshot: the fixture opens Alice then Bob; a reopen of Alice is last. */
+  const admission = () => {
+    const bundle = bundles.length > 2 ? bundles[bundles.length - 1]! : bundles[0]!
+    return bundle.runLifetime(lifetime =>
+      Promise.resolve(bundle.inputAdmission.inspect(lifetime)),
+    )
+  }
+
+  async function reserved(
+    window: 'pending' | 'included',
+    /** A node whose pending nonce shows the broadcast transaction although its reply was lost. */
+    pendingVisible = false,
+  ) {
+    const main = (await f.alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 18n)
+    const directory = await f.directoryFor('alice', f.alice, f.bob)
+    installCanonicalDirectory(f.alice, directory)
+    const peer = (await directory.peerCurrent({
+      address: f.bob.identity.address.raw,
+    }))!
+    await prepareCanonicalStampInventory(f.alice, {
+      stampValueWei: STAMP,
+      recipientStampKey: peer.current.stampKey.keyBytes,
+    })
+    const funded = f.alice.pool
+      .records()
+      .filter(record => record.status === 'available')
+    expect(funded).toHaveLength(2)
+    const x = funded.reduce((a, b) =>
+      mockBalances.get(a.address.toLowerCase())! >=
+      mockBalances.get(b.address.toLowerCase())!
+        ? a
+        : b,
+    )
+    const xAddress = x.address.toLowerCase()
+    const recipient = { raw: (await f.bob.getReceiveAddress()).raw }
+
+    const mined = new Map<string, Transaction>()
+    const lostButSeen = new Set<string>()
+    const broadcasts: Transaction[] = []
+    let replyLost = false
+    /** The native RPC surface the offline provider lacks; state is shared across a reopen. */
+    const installRpc = (wallet: EvmChainWalletHandle) => {
+      jest
+        .spyOn(wallet.provider, 'broadcastTransaction')
+        .mockImplementation(async raw => {
+          const tx = Transaction.from(raw)
+          broadcasts.push(tx)
+          const from = tx.from!.toLowerCase()
+          if (replyLost) {
+            if (pendingVisible) lostButSeen.add(from)
+            throw new Error('Submission acknowledgment lost (test)')
+          }
+          mined.set(tx.hash!, tx)
+          mockBalances.set(from, mockBalances.get(from)! - tx.value - 150_000n)
+          return { hash: tx.hash! } as never
+        })
+      jest
+        .spyOn(wallet.provider, 'getTransaction')
+        .mockImplementation(async hash =>
+          mined.has(hash)
+            ? (Object.assign(Transaction.from(mined.get(hash)!.serialized), {
+                blockHash,
+                blockNumber: 1,
+                index: 0,
+              }) as never)
+            : null,
+        )
+      jest
+        .spyOn(wallet.provider, 'getTransactionReceipt')
+        .mockImplementation(async hash =>
+          mined.has(hash)
+            ? ({
+                hash,
+                from: mined.get(hash)!.from,
+                to: mined.get(hash)!.to,
+                blockHash,
+                blockNumber: 1,
+                index: 0,
+                status: 1,
+                gasPrice: 3n,
+                gasUsed: 50_000n,
+              } as never)
+            : null,
+        )
+      jest
+        .spyOn(wallet.provider, 'getTransactionCount')
+        .mockImplementation(async (address, tag) => {
+          const from = String(address).toLowerCase()
+          // Only natively broadcast transactions count; funding goes through the HTTP stand-in.
+          return (
+            [...mined.values()].filter(tx => tx.from!.toLowerCase() === from)
+              .length + (tag === 'pending' && lostButSeen.has(from) ? 1 : 0)
+          )
+        })
+    }
+    installRpc(f.alice)
+
+    mockBalances.set(main, 0n)
+    replyLost = window === 'pending'
+    const send = f.alice.sendNative({ recipient, value: 100n })
+    if (window === 'pending') await expect(send).rejects.toThrow()
+    else await send
+    replyLost = false
+    mockBalances.set(main, 10n ** 18n)
+    if (window === 'included')
+      await f.alice.estimateLegacyFee!({ recipient, value: 1n })
+    const operation = f.alice.getNativeOperations!()[0]!
+    const member = operation.members[0]!
+    expect(member.source).toEqual({
+      kind: 'spend',
+      address: xAddress,
+      index: x.index,
+    })
+    expect(member.exposed).toBe(true)
+    expect(member.observation.state).toBe(
+      window === 'pending' ? 'missing' : 'included-success',
+    )
+    expect(f.alice.pool.getRecord(x.index)!.status).toBe('available')
+    expect(await admission()).toMatchObject({ status: 'ready' })
+    mockFunded.length = 0
+    const message = (wallet: EvmChainWalletHandle, words: string) =>
+      f.chain.directMessages.send({
+        wallet,
+        recipient: f.bob.identity.address,
+        items: text(words),
+        stampValue: STAMP,
+      })
+    /** Senders of the payment transactions in the request at `index`. */
+    const payers = (index: number) =>
+      restoreCanonicalRequest(f.requests[index]).parts.transactions.map(raw =>
+        Transaction.from('0x' + toHex(raw)).from!.toLowerCase(),
+      )
+    return {
+      main,
+      directory,
+      peer,
+      x,
+      xAddress,
+      recipient,
+      operation,
+      broadcasts,
+      installRpc,
+      message,
+      payers,
+    }
+  }
+
+  it.each(['pending', 'included'] as const)(
+    '%s: a direct message that would need the reserved account is paid from other accounts, funding a fresh one',
+    async window => {
+      const r = await reserved(window)
+      const sent = await r.message(f.alice, 'paid around the reserved account')
+      expect(sent.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
+        STAMP,
+      )
+      expect(f.requests).toHaveLength(1)
+      expect(r.payers(0).length).toBeGreaterThan(0)
+      expect(r.payers(0)).not.toContain(r.xAddress)
+      // Inventory was topped up from main with a fresh account, never by funding the reserved one.
+      expect(sent.preparationTxHashes.length).toBeGreaterThan(0)
+      expect(mockFunded.length).toBe(sent.preparationTxHashes.length)
+      expect(mockFunded.map(tx => tx.to)).not.toContain(r.xAddress)
+      expect(f.alice.pool.getRecord(r.x.index)!.status).toBe('available')
+      expect(f.alice.getNativeOperations!()).toEqual([r.operation])
+      expect(await admission()).toMatchObject({ status: 'ready' })
+    },
+  )
+
+  // The wallet-wide lock this stage removes. Preparation's reconciliation used to retire any
+  // `available` account whose pending nonce the chain reports as used, with no checkpoint. For an
+  // account a native member spends from, the admission then held the address for the pool against
+  // the native claim: `conflicting-authorization` for every send, also after reopen.
+  it.each(['pending', 'included'] as const)(
+    '%s: inventory preparation leaves the reserved account alone, so admission stays ready and native and canonical sends still work, also after reopen',
+    async window => {
+      const r = await reserved(window, true)
+      // The canonical send's own preparation, for a stamp the current inventory cannot cover.
+      const funding = await prepareCanonicalStampInventory(f.alice, {
+        stampValueWei: 4n * STAMP,
+        recipientStampKey: r.peer.current.stampKey.keyBytes,
+      })
+      expect(funding.length).toBeGreaterThan(0)
+      expect(mockFunded.map(tx => tx.to)).not.toContain(r.xAddress)
+      expect(f.alice.pool.getRecord(r.x.index)).toEqual({
+        index: r.x.index,
+        address: r.x.address,
+        status: 'available',
+      })
+      expect(await admission()).toMatchObject({ status: 'ready' })
+
+      const sent = await r.message(f.alice, 'after preparation')
+      expect(sent.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
+        STAMP,
+      )
+      expect(r.payers(0)).not.toContain(r.xAddress)
+      r.broadcasts.length = 0
+      await f.alice.sendNative({ recipient: r.recipient, value: 1n })
+      expect(r.broadcasts.map(tx => tx.from!.toLowerCase())).toEqual([r.main])
+      expect(await admission()).toMatchObject({ status: 'ready' })
+
+      await f.alice.close()
+      f.alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      installCanonicalDirectory(f.alice, r.directory)
+      r.installRpc(f.alice)
+      expect(bundles).toHaveLength(3)
+      expect(await admission()).toMatchObject({ status: 'ready' })
+      expect(f.alice.pool.getRecord(r.x.index)!.status).toBe('available')
+      expect(f.alice.pool.isSpendReserved(r.x.index)).toBe(true)
+      const again = await r.message(f.alice, 'after reopen')
+      expect(again.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
+        STAMP,
+      )
+      expect(r.payers(1)).not.toContain(r.xAddress)
+      r.broadcasts.length = 0
+      await f.alice.sendNative({ recipient: r.recipient, value: 1n })
+      expect(r.broadcasts.map(tx => tx.from!.toLowerCase())).toEqual([r.main])
+      expect(await admission()).toMatchObject({ status: 'ready' })
+    },
+  )
+
+  // Pins what the reservation relies on and does not replace: with selection bypassed, the
+  // admission still refuses the signature. Pending: the native member holds the whole address.
+  // Included: the canonical client signs nonce 0, the pair the native member already consumed.
+  it.each(['pending', 'included'] as const)(
+    '%s, pins: with the reservation bypassed, a direct message that needs the reserved account is refused before any signature and the wallet stays usable',
+    async window => {
+      const r = await reserved(window)
+      const bypass = jest
+        .spyOn(f.alice.pool, 'isSpendReserved')
+        .mockReturnValue(false)
+      const sign = jest.spyOn(Wallet.prototype, 'signTransaction')
+      await expect(r.message(f.alice, 'forced onto X')).rejects.toThrow(
+        'evm-input-admission:conflicting-authorization',
+      )
+      expect(sign).not.toHaveBeenCalled()
+      expect(f.requests).toHaveLength(0)
+      expect(mockFunded).toHaveLength(0)
+      expect(f.alice.pool.getRecord(r.x.index)!.status).toBe('available')
+      expect(await admission()).toMatchObject({ status: 'ready' })
+      bypass.mockRestore()
+      const sent = await r.message(f.alice, 'around X')
+      expect(sent.stampPayments.reduce((n, p) => n + p.valueWei, 0n)).toBe(
+        STAMP,
+      )
+      expect(r.payers(0)).not.toContain(r.xAddress)
+    },
+  )
 })

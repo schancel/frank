@@ -358,6 +358,70 @@ describe("FrankBotHost Reliability Features", () => {
     });
   });
 
+  describe("Retention before dispatch", () => {
+    // Reproduces: handlers ran in the wallet's fetch order (time only, ties arbitrary), and a
+    // later message of the batch was not durable until its own handler was about to run.
+    it("retains a whole batch durably, then handles it in (receivedTime, digest) order", async () => {
+      const handled: string[] = [];
+      const retainedAtFirstHandler: (string | undefined)[] = [];
+      const base = Date.now();
+      const incoming = (digit: string, offset: number) => ({
+        senderAddress: { raw: mockPeer.address.toLowerCase() },
+        senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+        recipientPublicKey: getBytes("0x" + mockLocalSubject),
+        messageId: digit.repeat(32),
+        recipientAddress: { raw: mockLocalAddress },
+        items: [{ type: "text", text: digit }],
+        conversationId: "01010101-0101-0101-0101-010101010101",
+        payloadDigest: digit.repeat(64),
+        receivedTime: base + offset,
+      });
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/retention-order`,
+      });
+      const dummyBot: FrankBotDefinition = {
+        id: "order-bot",
+        getProfile: () => ({ name: "OrderBot", bot: true }),
+        onMessage: async (msg) => {
+          if (!handled.length)
+            for (const digit of ["5", "6", "7", "8"])
+              retainedAtFirstHandler.push(
+                await instance.state.get(
+                  "host-inbound:v1:dispatch:" + digit.repeat(64)
+                )
+              );
+          handled.push(msg.payloadDigest[0]);
+          return [];
+        },
+      };
+      await host.register(dummyBot);
+      const instance = (host as any).instances.get("order-bot");
+
+      mockDirectMessagesFetchSince.mockResolvedValueOnce([
+        incoming("8", 300),
+        incoming("7", 200),
+        incoming("6", 200),
+        incoming("5", 100),
+      ]);
+      await (host as any).pollAllBots();
+      await instance.peerQueue.enqueue(
+        mockPeer.address.toLowerCase(),
+        async () => {}
+      );
+
+      expect(handled).toEqual(["5", "6", "7", "8"]);
+      expect(retainedAtFirstHandler.every((row) => row !== undefined)).toBe(
+        true
+      );
+      expect(await instance.state.get("cursor:lastPollTimestamp")).toBe(
+        String(base + 301)
+      );
+
+      await host.stop();
+    });
+  });
+
   describe("Dual-address funding", () => {
     it("funds both identity address and receive address when they diverge", async () => {
       const dummyBot: FrankBotDefinition = {

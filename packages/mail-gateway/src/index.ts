@@ -8,6 +8,7 @@ export * from './storage/s3-blob-store';
 export * from './ledger/schema';
 export * from './ledger/database';
 export * from './ledger/credit-ledger';
+export * from './ledger/mail-journal';
 export * from './http/checkout-server';
 export * from './smtp/inbound-server';
 export * from './smtp/smtp-listener';

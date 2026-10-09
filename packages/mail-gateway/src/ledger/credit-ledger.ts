@@ -60,6 +60,73 @@ export class CreditLedger {
     }
   }
 
+  /** The ledger's SQLite connection, or undefined on Postgres. The ledger keeps ownership of it. */
+  get sqlite(): DatabaseSync | undefined {
+    return this.rawDb;
+  }
+
+  private atomicDepth = 0;
+  private atomicFailed = false;
+
+  /**
+   * Runs `fn` as one SQLite write transaction (`BEGIN IMMEDIATE` … `COMMIT`).
+   *
+   * - Any throw, including one from `COMMIT`, rolls the whole unit back.
+   * - `fn` must be synchronous. A returned promise is refused and rolled back:
+   *   a later `await` would otherwise run after the commit, outside the unit.
+   * - A call made inside `fn` joins the enclosing unit; it does not commit on
+   *   its own. If a joined call throws, the enclosing unit can no longer
+   *   commit, even if the caller catches the error.
+   * - Every value a decision rests on must be read inside `fn`.
+   */
+  atomic<T>(fn: () => T): T {
+    const db = this.rawDb;
+    if (!db) throw new Error('atomic() is only supported on SQLite DatabaseSync');
+
+    const run = (): T => {
+      const result = fn();
+      if (result !== null && typeof (result as { then?: unknown } | undefined)?.then === 'function') {
+        Promise.resolve(result).catch(() => undefined);
+        throw new Error('atomic() callback returned a promise; the unit must be synchronous');
+      }
+      return result;
+    };
+
+    if (this.atomicDepth > 0) {
+      this.atomicDepth++;
+      try {
+        return run();
+      } catch (err) {
+        this.atomicFailed = true;
+        throw err;
+      } finally {
+        this.atomicDepth--;
+      }
+    }
+
+    db.exec('BEGIN IMMEDIATE');
+    this.atomicDepth = 1;
+    this.atomicFailed = false;
+    try {
+      const result = run();
+      if (this.atomicFailed) {
+        throw new Error('atomic(): a joined unit failed, so the enclosing unit was rolled back');
+      }
+      db.exec('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        if (db.isTransaction) db.exec('ROLLBACK');
+      } catch {
+        // The first error is the one the caller needs; SQLite has already ended the transaction.
+      }
+      throw err;
+    } finally {
+      this.atomicDepth = 0;
+      this.atomicFailed = false;
+    }
+  }
+
   private executeGet<T = unknown>(compiled: CompiledQuery): T | undefined {
     if (this.rawDb) {
       const stmt = this.rawDb.prepare(compiled.sql);

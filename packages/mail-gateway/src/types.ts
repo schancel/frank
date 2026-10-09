@@ -92,3 +92,120 @@ export interface OutboundSpoolJob {
   readonly lastError?: string;
   readonly status: 'pending' | 'success' | 'failed';
 }
+
+// ---------------------------------------------------------------------------
+// Mail journal records (#1237 G1). See src/ledger/mail-journal.ts.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mail bytes held by a journal row: inline, or in the blob store under the
+ * SHA-256 of the bytes (lowercase hex). Blob keys are content-addressed so a
+ * stored key can never come to name different bytes.
+ */
+export type StoredMailBytes =
+  | { readonly kind: 'inline'; readonly bytes: Uint8Array }
+  | { readonly kind: 'blob'; readonly sha256: string };
+
+export type MailDirection = 'email_to_frank' | 'frank_to_email';
+
+export interface MailThreadRecord {
+  readonly scopeAccount: string;
+  readonly conversationId: string;
+  readonly origin: 'email' | 'frank';
+  readonly createdAtMs: number;
+}
+
+export interface MailMessageRecord {
+  readonly scopeAccount: string;
+  /** The identifier this message is known by in the scope. For a contested message, the regenerated local one. */
+  readonly rfcMessageId: string;
+  /** Set only on a contested message: the identifier it claimed, which another message holds. */
+  readonly claimedRfcId?: string;
+  readonly contentKey: string;
+  readonly frankMessageId: string;
+  readonly conversationId: string;
+  readonly direction: MailDirection;
+  readonly inReplyTo?: string;
+  readonly createdAtMs: number;
+}
+
+export type InboundEmailDisposition = 'relay' | 'held' | 'released' | 'echo';
+
+export interface InboundEmailRecord {
+  readonly scopeAccount: string;
+  readonly contentKey: string;
+  /** The identifier the mail claimed (its Message-ID, or the synthetic one). */
+  readonly rfcMessageId: string;
+  readonly senderEmail: string;
+  readonly dataSha256: string;
+  readonly raw: StoredMailBytes;
+  readonly disposition: InboundEmailDisposition;
+  readonly heldMessageId?: string;
+  readonly createdAtMs: number;
+}
+
+export type FrankSendSourceKind = 'inbound_email' | 'bounce' | 'reject';
+export type FrankSendState = 'staged' | 'sending' | 'linked' | 'delivered' | 'held';
+
+export interface FrankSendRecord {
+  readonly slotId: number;
+  readonly sourceKind: FrankSendSourceKind;
+  readonly sourceKey: string;
+  readonly frankMessageId: string;
+  readonly payloadDigest?: string;
+  readonly scopeAccount: string;
+  readonly conversationId: string;
+  readonly stampValue: string;
+  readonly state: FrankSendState;
+  readonly lastRefusedAtMs?: number;
+  readonly failedCalls: number;
+  readonly nextCallAtMs?: number;
+  readonly holdReason?: string;
+  readonly createdAtMs: number;
+}
+
+export type FrankInboundDisposition = 'bridged' | 'rejected' | 'quarantined';
+
+export const FRANK_INBOUND_REJECT_REASONS = [
+  'no_email_item',
+  'multiple_email_items',
+  'no_sealed_identity',
+  'bad_message_id',
+  'bad_in_reply_to',
+  'bad_reference',
+  'bad_recipient',
+  'header_unsafe',
+  'header_too_long',
+  'quota',
+] as const;
+export type FrankInboundRejectReason = (typeof FRANK_INBOUND_REJECT_REASONS)[number];
+
+export interface FrankInboundRecord {
+  readonly payloadDigest: string;
+  readonly scopeAccount?: string;
+  readonly frankMessageId?: string;
+  readonly conversationId?: string;
+  readonly receivedTimeMs: number;
+  readonly stampValueWei: string;
+  readonly budgetWei: string;
+  readonly spentWei: string;
+  readonly disposition: FrankInboundDisposition;
+  readonly reason?: string;
+}
+
+export type OutboundJobState = 'pending' | 'sent' | 'failed' | 'bounced';
+
+export interface OutboundJobRecord {
+  readonly jobId: number;
+  readonly scopeAccount: string;
+  readonly frankMessageId: string;
+  readonly recipientEmail: string;
+  readonly conversationId: string;
+  readonly bounceToken: string;
+  readonly signedRfc822: StoredMailBytes;
+  readonly state: OutboundJobState;
+  readonly attempts: number;
+  readonly nextAttemptAtMs: number;
+  readonly lastError?: string;
+  readonly createdAtMs: number;
+}

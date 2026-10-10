@@ -1059,6 +1059,68 @@ describe("EcashWallet", () => {
     expect(wallet.networkId).toBe("xec-testnet");
   });
 
+  describe("on a regtest network", () => {
+    const checkpoint = { height: 1, hash: "ab".repeat(32) };
+    const regtestAddress = Address.fromCashAddress(ADDRESS)
+      .withPrefix("ecregtest")
+      .toString();
+    const open = (
+      chronik: ChronikClient,
+      given?: { height: number; hash: string }
+    ) =>
+      EcashWallet.fromDomainRoot({
+        domainRoot: ROOT,
+        chronik,
+        networkId: "xec-regtest",
+        checkpoint: given,
+        nativeAttemptStore,
+        walletFactory: () => makeBackend(undefined, regtestAddress),
+      });
+    const chronikWith = (hash: string) => {
+      const chronik = makeChronik();
+      jest.spyOn(chronik, "block").mockResolvedValue({
+        blockInfo: { hash },
+      } as Awaited<ReturnType<ChronikClient["block"]>>);
+      return chronik;
+    };
+
+    it("opens on the node that has the given checkpoint block, with regtest addresses", async () => {
+      const chronik = chronikWith(checkpoint.hash);
+      const wallet = await open(chronik, checkpoint);
+      expect(chronik.block).toHaveBeenCalledWith(1);
+      expect(wallet.chainIdentifier).toBe("xec-regtest");
+      expect(wallet.identity.address.raw).toBe(regtestAddress);
+      await expect(
+        wallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n })
+      ).rejects.toThrow("Invalid eCash recipient for the configured network");
+    });
+
+    it("is refused without a checkpoint and on a node that has another block there", async () => {
+      await expect(open(chronikWith(checkpoint.hash))).rejects.toThrow(
+        "xec-regtest needs the checkpoint block"
+      );
+      await expect(
+        open(chronikWith(checkpoint.hash), { height: 0, hash: checkpoint.hash })
+      ).rejects.toThrow("xec-regtest needs the checkpoint block");
+      await expect(
+        open(chronikWith("cd".repeat(32)), checkpoint)
+      ).rejects.toThrow("eCash Chronik checkpoint mismatch");
+    });
+
+    it("does not let a public network take a checkpoint from its caller", async () => {
+      await expect(
+        EcashWallet.fromDomainRoot({
+          domainRoot: ROOT,
+          chronik: chronikWith(checkpoint.hash),
+          networkId: "xec-mainnet",
+          checkpoint,
+          nativeAttemptStore,
+          walletFactory: () => makeBackend(),
+        })
+      ).rejects.toThrow("The checkpoint of xec-mainnet is fixed");
+    });
+  });
+
   it("shares the unresolved guard across backend address case aliases", async () => {
     const failedBackend = makeBackend({
       success: false,

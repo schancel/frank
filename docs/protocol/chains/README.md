@@ -46,9 +46,10 @@ remain numbers within the safe integer range and exact decimal strings above it.
 presentation, units, curve/key selection, public endpoint defaults, deployments and feature
 settings. Its typed shape excludes protocol facts; the projection also rejects unknown or
 protocol-owned extension keys at runtime. Client metadata cannot broaden protocol capabilities.
-The subset currently omits `btc-regtest`, `bch-regtest`, `xec-regtest`, `xpi-mainnet`,
-`xpi-testnet` and `xpi-regtest`. These protocol networks are intentionally unavailable in the
-client registry. Ethereum Holesky is not a protocol row and is not exposed. Runtime chain
+The subset currently omits `btc-regtest`, `bch-regtest`, `xpi-mainnet`, `xpi-testnet` and
+`xpi-regtest`. These protocol networks are intentionally unavailable in the client registry.
+`xec-regtest` is in the subset: it is the local eCash node that `packages/bot/demo/regtest`
+starts (see "Local regtest networks" below). Ethereum Holesky is not a protocol row and is not exposed. Runtime chain
 registration is removed: supporting a network requires a protocol definition and an explicit
 client extension. Unknown direct lookups return `undefined`; existing alias/kind helpers are
 separate consumer seams and do not add networks.
@@ -112,3 +113,29 @@ Relay operator upstreams belong to runtime configuration: EVM rows name server-o
 variables through `EvmRpcChainConf.upstream_env` and `upstream_envs`, rather than storing provider
 credentials in checked-in public metadata. Public client defaults do not override that runtime
 configuration or relax the protocol's native-ID and checkpoint identity probes.
+
+## Local regtest networks
+
+A regtest network is a named network in its own right, with its own registry row
+(`network: regtest`), address prefix and network tag. It is never a stand-in for a testnet.
+Every regtest of a client starts from the same genesis block, so its identity probe is an
+operator block checkpoint: whoever starts the node reads a block the node mined in that run and
+gives its height and hash to the relay (`checkpoint_height`, `checkpoint_hash` in its
+`[[registry.bitcoin_proxy.chains]]` row). The relay refuses to start when the upstream does not
+have that block.
+
+`packages/bot/demo/regtest/regtest-stack.ts` does this for eCash: `startRegtestStack()` starts a
+Bitcoin ABC node with Chronik in regtest mode, mines the first blocks, starts the relay with that
+run's checkpoint, and returns `chains['xec-regtest']` with `fund`, `mine`, `checkpoint` and
+`stop`. The node is a checksum-verified download into the git-ignored `.regtest-cache/`
+(`packages/bot/demo/regtest/bitcoin-abc.ts`). Check the whole stack with:
+
+```sh
+yarn --cwd packages/bot regtest:check
+yarn --cwd packages/bot regtest:ecash-send   # two wallets pay each other through the relay
+```
+
+The wallet library opens an eCash wallet on `xec-regtest` like on any other network
+(`openRelayUtxoChain`), given that run's checkpoint. It is refused without one, and a public
+network refuses to take one. The app does not offer `xec-regtest` yet: it chooses a network by
+kind and a testnet-or-mainnet setting, and has no setting that supplies a checkpoint.

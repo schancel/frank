@@ -29,6 +29,7 @@ export type EcashAddressPrefix = "ecash" | "ectest" | "ecregtest";
 export type EcashNetworkId =
   | "xec-mainnet"
   | "xec-testnet"
+  | "xec-regtest"
   | "ecash-mainnet"
   | "ecash-testnet";
 
@@ -38,7 +39,6 @@ export const ECASH_MAINNET_CHECKPOINT_HASH =
 export const ECASH_TESTNET_CHECKPOINT_HEIGHT = 1_421_481;
 export const ECASH_TESTNET_CHECKPOINT_HASH =
   "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b";
-const ECASH_MAINNET_PREFIX: EcashAddressPrefix = "ecash";
 
 export const ECASH_CHECKPOINTS: Record<
   "xec-mainnet" | "xec-testnet",
@@ -54,12 +54,62 @@ export const ECASH_CHECKPOINTS: Record<
   },
 };
 
+export type CanonicalEcashNetworkId =
+  | "xec-mainnet"
+  | "xec-testnet"
+  | "xec-regtest";
+
 export function canonicalEcashNetworkId(
   networkId: EcashNetworkId
-): "xec-mainnet" | "xec-testnet" {
+): CanonicalEcashNetworkId {
+  if (networkId === "xec-regtest") return "xec-regtest";
   return networkId === "ecash-testnet" || networkId === "xec-testnet"
     ? "xec-testnet"
     : "xec-mainnet";
+}
+
+export const ECASH_ADDRESS_PREFIXES: Record<
+  CanonicalEcashNetworkId,
+  EcashAddressPrefix
+> = {
+  "xec-mainnet": "ecash",
+  "xec-testnet": "ectest",
+  "xec-regtest": "ecregtest",
+};
+
+export interface EcashCheckpoint {
+  readonly height: number;
+  /** Block hash in the usual hex order. */
+  readonly hash: string;
+}
+
+/**
+ * The block an indexer must have to be this network. Mainnet and testnet are pinned here. Every
+ * regtest starts from the same genesis block, so a regtest wallet is given a block of the node it
+ * runs on (the same one the relay was given) and is refused without one.
+ */
+export function ecashCheckpoint(
+  networkId: EcashNetworkId,
+  operatorCheckpoint?: EcashCheckpoint
+): EcashCheckpoint {
+  const canonicalId = canonicalEcashNetworkId(networkId);
+  if (canonicalId === "xec-regtest") {
+    if (
+      operatorCheckpoint === undefined ||
+      !Number.isSafeInteger(operatorCheckpoint.height) ||
+      operatorCheckpoint.height < 1 ||
+      !/^[0-9a-f]{64}$/.test(operatorCheckpoint.hash)
+    ) {
+      throw new Error(
+        "xec-regtest needs the checkpoint block (height above 0 and hash) of the node it runs on"
+      );
+    }
+    return operatorCheckpoint;
+  }
+  if (operatorCheckpoint !== undefined) {
+    throw new Error(`The checkpoint of ${canonicalId} is fixed and cannot be given`);
+  }
+  return ECASH_CHECKPOINTS[canonicalId];
 }
 
 type EcashCheckpointClient = Pick<ChronikClient, "block">;
@@ -68,6 +118,7 @@ type EcashChronikConstructor = new (urls: string[]) => ChronikClient;
 async function verifyEcashChronikEndpoints(params: {
   chronik: ChronikClient;
   networkId: EcashNetworkId;
+  checkpoint?: EcashCheckpoint;
   allowStructuralTestClient: boolean;
   checkpointClientFactory?: (url: string) => EcashCheckpointClient;
 }): Promise<void> {
@@ -106,8 +157,7 @@ async function verifyEcashChronikEndpoints(params: {
     throw new Error("eCash wallet requires chronik-client 4.3 or newer");
   }
 
-  const canonicalId = canonicalEcashNetworkId(params.networkId);
-  const checkpointSpec = ECASH_CHECKPOINTS[canonicalId];
+  const checkpointSpec = ecashCheckpoint(params.networkId, params.checkpoint);
 
   await Promise.all(
     checkpointClients.map(async ({ label, client }) => {
@@ -189,6 +239,8 @@ export type EcashWalletFactory = (params: {
 export interface EcashWalletOptions {
   chronik: ChronikClient;
   networkId: EcashNetworkId;
+  /** Required for `xec-regtest` and refused for every other network. See `ecashCheckpoint`. */
+  checkpoint?: EcashCheckpoint;
   /** Test seam for independently checking every URL reported by a failover client. */
   checkpointClientFactory?: (url: string) => EcashCheckpointClient;
   nativeAttemptStore?: NativeTransactionAttemptStore;
@@ -273,9 +325,7 @@ export class EcashWallet implements NativeWalletHandle {
             domainRoot,
             chronik: params.chronik,
             addressPrefix:
-              canonicalEcashNetworkId(params.networkId) === "xec-testnet"
-                ? "ectest"
-                : ECASH_MAINNET_PREFIX,
+              ECASH_ADDRESS_PREFIXES[canonicalEcashNetworkId(params.networkId)],
           }),
         params.walletFactory !== undefined
       );
@@ -305,14 +355,14 @@ export class EcashWallet implements NativeWalletHandle {
     await verifyEcashChronikEndpoints({
       chronik: params.chronik,
       networkId: params.networkId,
+      checkpoint: params.checkpoint,
       allowStructuralTestClient,
       checkpointClientFactory: params.checkpointClientFactory,
     });
     const backend = await createBackend();
     await backend.syncAndDiscoverAddresses();
     const canonicalId = canonicalEcashNetworkId(params.networkId);
-    const isTestnet = canonicalId === "xec-testnet";
-    const addressPrefix: EcashAddressPrefix = isTestnet ? "ectest" : "ecash";
+    const addressPrefix = ECASH_ADDRESS_PREFIXES[canonicalId];
     const primaryAddress = canonicalEcashAddress(
       backend.getReceiveAddress(0),
       addressPrefix
@@ -439,10 +489,10 @@ export class EcashWallet implements NativeWalletHandle {
       // Discover first so receiveIndex points at the next unused address. Merely displaying an
       // address never consumes an HD index, avoiding restoration gaps from abandoned QR screens.
       await this.backend.syncAndDiscoverAddresses();
-      const isTestnet =
-        canonicalEcashNetworkId(this.networkId as EcashNetworkId) ===
-        "xec-testnet";
-      const expectedPrefix: EcashAddressPrefix = isTestnet ? "ectest" : "ecash";
+      const expectedPrefix =
+        ECASH_ADDRESS_PREFIXES[
+          canonicalEcashNetworkId(this.networkId as EcashNetworkId)
+        ];
       return {
         raw: canonicalEcashAddress(
           this.backend.getReceiveAddress(this.backend.receiveIndex),
@@ -579,10 +629,10 @@ export class EcashWallet implements NativeWalletHandle {
     }
     let recipient: string;
     try {
-      const isTestnet =
-        canonicalEcashNetworkId(this.networkId as EcashNetworkId) ===
-        "xec-testnet";
-      const expectedPrefix: EcashAddressPrefix = isTestnet ? "ectest" : "ecash";
+      const expectedPrefix =
+        ECASH_ADDRESS_PREFIXES[
+          canonicalEcashNetworkId(this.networkId as EcashNetworkId)
+        ];
       recipient = canonicalEcashAddress(params.recipient.raw, expectedPrefix);
     } catch {
       throw new Error("Invalid eCash recipient for the configured network");

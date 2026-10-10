@@ -56,7 +56,23 @@ describe('OfferSwapDialog', () => {
     const wrapper = mountDialog()
     expect(wrapper.text()).toContain('Bob')
     expect((wrapper.vm as any).offeredChain).toBe('monad-testnet')
-    expect((wrapper.vm as any).requestedChain).toBe('solana-testnet')
+    expect((wrapper.vm as any).requestedChain).toBe('solana-devnet')
+  })
+
+  it('offers only the networks the app has a wallet for', () => {
+    const wrapper = mountDialog()
+    const offered = (wrapper.vm as any).chainOptions.map(
+      (option: { value: string }) => option.value,
+    )
+    expect(offered.sort()).toEqual([
+      'bch-testnet',
+      'btc-testnet',
+      'monad-mainnet',
+      'monad-testnet',
+      'solana-devnet',
+      'solana-mainnet',
+      'xec-testnet',
+    ])
   })
 
   it('disables offer button until both amounts are valid and chains differ', async () => {
@@ -79,7 +95,7 @@ describe('OfferSwapDialog', () => {
     await wrapper.setData({
       offeredChain: 'monad-testnet',
       offeredAmount: '10.5',
-      requestedChain: 'solana-testnet',
+      requestedChain: 'solana-devnet',
       requestedAmount: '1.25',
     })
     expect((wrapper.vm as any).canOffer).toBe(true)
@@ -92,7 +108,7 @@ describe('OfferSwapDialog', () => {
     expect(payload.offeredChain).toBe('monad-testnet')
     expect(payload.offeredAsset).toBe('MON')
     expect(payload.offeredAmount).toBe('10.5')
-    expect(payload.requestedChain).toBe('solana-testnet')
+    expect(payload.requestedChain).toBe('solana-devnet')
     expect(payload.requestedAsset).toBe('SOL')
     expect(payload.requestedAmount).toBe('1.25')
     expect(payload.status).toBe('pending')

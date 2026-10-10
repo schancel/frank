@@ -710,7 +710,6 @@ describe("chains-registry", () => {
       const omitted = [
         "btc-regtest",
         "bch-regtest",
-        "xec-regtest",
         "xpi-mainnet",
         "xpi-testnet",
         "xpi-regtest",
@@ -719,6 +718,7 @@ describe("chains-registry", () => {
         "monad-testnet",
         "monad-mainnet",
         "xec-testnet",
+        "xec-regtest",
         "xec-mainnet",
         "solana-devnet",
         "solana-testnet",
@@ -894,6 +894,7 @@ describe("wallet support", () => {
       "solana-devnet": { indexer: "json-rpc" },
       "solana-mainnet": { indexer: "json-rpc" },
       "xec-testnet": { indexer: "chronik" },
+      "xec-regtest": { indexer: "chronik" },
       "btc-testnet": { indexer: "electrum" },
       "bch-testnet": { indexer: "electrum" },
     });

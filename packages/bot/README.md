@@ -174,6 +174,24 @@ transfer is at most 0.5 MON (`FRANK_TEST_MAX_FUND_WEI`).
 The harness these use is `packages/bot/demo/real-stack.ts` (`startRealStack`, `openWallet`, `fund`,
 `stop`): real relay, real chain, real wallets, for any other test that needs them.
 
+**Checks on a local regtest network** (no funds, no `.env`, nothing outside this machine; the
+first run downloads the eCash node into the git-ignored `.regtest-cache/` and checks its SHA-256):
+
+- `yarn --cwd packages/bot regtest:check`: starts a Bitcoin ABC node with Chronik in regtest mode
+  and the real relay binary pointed at it as `xec-regtest`, then checks the faucet, the block
+  driver, the relay's Chronik proxy and that everything stops and frees its ports.
+- `yarn --cwd packages/bot regtest:ecash-send`: on the same stack, two eCash wallets opened
+  through the relay pay each other and each payment is read back from the node; then the wallet
+  package's funded send check (`packages/wallet/utxo-funded-send.livecheck.ts`) runs on
+  `xec-regtest`, funded from the node's faucet.
+
+The harness is `packages/bot/demo/regtest/regtest-stack.ts`: `startRegtestStack()` returns
+`relayUrl`, `chains['xec-regtest']` (`checkpoint`, `fund`, `mine`, `stop`) and `stop`. Blocks
+arrive every 3 seconds on their own and at once from `mine()`. `ecash-send.livecheck.ts` exports
+both send checks (`ecashWalletsPayEachOther(stack)`, `walletFundedSendCheck(stack)`) for scripts
+that start their own stack. How a regtest network proves its identity is in
+`docs/protocol/chains/README.md`.
+
 #### Variables
 
 | Variable                           | Applies to       | Default                                            | Meaning                                                                                                                                                                                                                                                                                                                                                           |

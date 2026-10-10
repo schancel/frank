@@ -291,6 +291,7 @@ import { defineComponent, PropType } from 'vue'
 
 import type { BlackjackHandItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from '../../../utils/chain-amount'
 import {
   cardLabel,
   handValue,
@@ -720,7 +721,7 @@ export default defineComponent({
       return cards.map(cardLabel).join(' ')
     },
     display(wei: bigint): string {
-      return `${activeChain.toDisplayAmount(wei)} ${activeChain.unit}`
+      return formatDisplayAmount(activeChain, wei)
     },
     displayText(wei: string): string {
       return /^[0-9]{1,40}$/.test(wei) ? this.display(BigInt(wei)) : '?'

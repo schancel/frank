@@ -66,6 +66,7 @@ import { defineComponent, PropType, toRaw } from 'vue'
 
 import { RaffleItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from '../../../utils/chain-amount'
 import { verifyRaffleDrawAgainstThread } from '@frank/wallet/message-item-plugins/raffle/draw'
 
 import { useChatStore } from '../../../stores/chats'
@@ -151,9 +152,7 @@ export default defineComponent({
       if (!weiString) return '0'
       try {
         if (!/^\d{1,40}$/.test(String(weiString))) return '?'
-        return `${activeChain.toDisplayAmount(BigInt(weiString))} ${
-          activeChain.unit
-        }`
+        return formatDisplayAmount(activeChain, BigInt(weiString))
       } catch {
         return '?'
       }

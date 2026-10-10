@@ -32,6 +32,7 @@ import { accountStatus } from '../accounts/session'
 import { messagingState } from '../utils/messaging-state'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { isWalletNotReady } from 'src/composables/wallet-not-ready'
+import { formatDisplayAmount, formatRawAmount } from 'src/utils/chain-amount'
 
 /** Window event the capacitor-only boot file dispatches on native app pause/resume, so this
  * composable needs no Capacitor import (the SPA/Electron builds deliberately never load it). */
@@ -47,22 +48,29 @@ const hasError = ref(false)
 const loaded = computed(() => balance.value !== null)
 // True only for a real, loaded zero (never for "not loaded yet" or a failed fetch).
 const isEmpty = computed(() => balance.value === 0n)
-const formattedBalance = computed(
-  () =>
-    `${activeChain.toDisplayAmount(balance.value ?? 0n)} ${activeChain.unit}`,
+// Shortened for reading (`formatDisplayAmount`); the `exact…` twins carry every digit for a
+// title or a detail view. Neither is an input to arithmetic: that is `balance` itself.
+const formattedBalance = computed(() =>
+  formatDisplayAmount(activeChain, balance.value ?? 0n),
+)
+const exactBalance = computed(() =>
+  formatRawAmount(activeChain, balance.value ?? 0n),
 )
 // Funds sitting at a typed account's profile address. The wallet watches them but never spends
 // them, and they are NOT part of `balance`: anything deciding whether a send is affordable keeps
 // reading `balance`. Only the balance display adds them, marked as cordoned.
 const cordoned = ref<bigint>(0n)
-const formattedCordoned = computed(
-  () => `${activeChain.toDisplayAmount(cordoned.value)} ${activeChain.unit}`,
+const formattedCordoned = computed(() =>
+  formatDisplayAmount(activeChain, cordoned.value),
 )
-const formattedTotal = computed(
-  () =>
-    `${activeChain.toDisplayAmount((balance.value ?? 0n) + cordoned.value)} ${
-      activeChain.unit
-    }`,
+const exactCordoned = computed(() =>
+  formatRawAmount(activeChain, cordoned.value),
+)
+const formattedTotal = computed(() =>
+  formatDisplayAmount(activeChain, (balance.value ?? 0n) + cordoned.value),
+)
+const exactTotal = computed(() =>
+  formatRawAmount(activeChain, (balance.value ?? 0n) + cordoned.value),
 )
 
 /** The profile address's current balance for an account whose receive address differs from it
@@ -298,9 +306,12 @@ export function useBalance() {
   return {
     balance: readonly(balance),
     formattedBalance,
+    exactBalance,
     cordoned: readonly(cordoned),
     formattedCordoned,
+    exactCordoned,
     formattedTotal,
+    exactTotal,
     loaded,
     isEmpty,
     hasError,

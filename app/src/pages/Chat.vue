@@ -210,6 +210,7 @@ import {
   activeChain,
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
+import { formatDisplayNumber } from '../utils/chain-amount'
 import type { MessageItem, EmailItem } from '@frank/cashweb/types/messages'
 
 import { debounce, QScrollArea } from 'quasar'
@@ -753,7 +754,7 @@ export default defineComponent({
         this.stampPreparationStatus = this.$t('chat.stampPreparationFunding', {
           completed: progress.completed,
           total: progress.total,
-          feeReserve: activeChain.toDisplayAmount(progress.feeReserveWei),
+          feeReserve: formatDisplayNumber(activeChain, progress.feeReserveWei),
           unit: activeChain.unit,
         })
       } else {

@@ -109,6 +109,7 @@ import { defineComponent, PropType } from 'vue'
 
 import { DigitalGoodsItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from '../../../utils/chain-amount'
 
 import {
   inspectImageDataUri,
@@ -210,9 +211,7 @@ export default defineComponent({
       try {
         if (!/^\d{1,40}$/.test(String(priceWei)))
           return this.$t('digitalGoods.priceUnavailable')
-        return `${activeChain.toDisplayAmount(BigInt(priceWei))} ${
-          activeChain.unit
-        }`
+        return formatDisplayAmount(activeChain, BigInt(priceWei))
       } catch {
         return this.$t('digitalGoods.priceUnavailable')
       }

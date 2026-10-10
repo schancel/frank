@@ -115,7 +115,11 @@
             <span class="text-caption text-grey-7">{{
               $t('sendContactDialog.amount')
             }}</span>
-            <span class="text-caption text-grey-7">{{ balanceText }}</span>
+            <span
+              class="text-caption text-grey-7"
+              :title="balanceText ? exactBalance : undefined"
+              >{{ balanceText }}</span
+            >
           </div>
           <q-input
             v-model="amount"
@@ -255,7 +259,7 @@ export default defineComponent({
     const route = useRoute()
     const router = useRouter()
     const contactStore = useContactStore()
-    const { formattedBalance, loaded } = useBalance()
+    const { formattedBalance, exactBalance, loaded } = useBalance()
 
     const search = ref('')
     const selectedContactAddress = ref<string>(
@@ -331,6 +335,7 @@ export default defineComponent({
       isReviewing,
       sending,
       balanceText,
+      exactBalance,
       unit,
       filteredContacts,
       isValid,

@@ -14,6 +14,7 @@
             aria-live="polite"
             aria-labelledby="receive-balance-heading"
             data-testid="receive-balance"
+            :title="loaded ? exactBalance : undefined"
           >
             {{ balanceText }}
           </div>
@@ -91,7 +92,8 @@ export default defineComponent({
   setup() {
     const router = useRouter()
     // Shared with the drawer: one polling loop, so this page refreshes without a reload.
-    const { formattedBalance, loaded, isEmpty, hasError } = useBalance()
+    const { formattedBalance, exactBalance, loaded, isEmpty, hasError } =
+      useBalance()
     // An em dash (not "0") until the first successful fetch: an unloaded or failed balance must
     // not look like a real zero.
     const balanceText = computed(() =>
@@ -127,6 +129,7 @@ export default defineComponent({
     return {
       displayAddress,
       balanceText,
+      exactBalance,
       isEmpty,
       hasError,
       close() {

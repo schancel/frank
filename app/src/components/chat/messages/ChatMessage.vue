@@ -159,6 +159,7 @@
             :stamp="shortTimestamp"
             :stamp-datetime="stampDatetime"
             :amount="stampAmount"
+            :amount-exact="stampAmountExact"
             :outbound="message.outbound"
             :failure-reason="message.delivery?.failureReason ?? ''"
             :payment-state="paymentState"
@@ -203,6 +204,10 @@ import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { activeChain } from '@frank/wallet/chain'
+import {
+  formatDisplayAmount,
+  formatRawAmount,
+} from '../../../utils/chain-amount'
 import { Message, MessageItem } from '@frank/cashweb/types/messages'
 import { useMonadWallet } from '../../../utils/clients'
 import { errorNotify } from '../../../utils/notifications'
@@ -573,15 +578,19 @@ export default defineComponent({
     },
     stampAmount() {
       if (this.message.stampValueWei !== undefined) {
-        return `${activeChain.toDisplayAmount(this.message.stampValueWei)} ${
-          activeChain.unit
-        }`
+        return formatDisplayAmount(activeChain, this.message.stampValueWei)
       }
       if (!this.message || !this.message.outpoints) {
         return `0 ${activeChain.unit}`
       }
       const amount = stampPrice(this.message.outpoints)
       return Number(amount / 1000000).toFixed(2) + ' XPI'
+    },
+    /** Every digit of the stamp, shown on hover; the bubble shows the shortened amount. */
+    stampAmountExact(): string {
+      return this.message.stampValueWei !== undefined
+        ? formatRawAmount(activeChain, this.message.stampValueWei)
+        : ''
     },
     // Named hooks into `--q-message-color-sent`/`--q-message-color` (app.scss's own header on
     // these classes explains the currentColor mechanism) -- was hardcoded to fixed Quasar palette

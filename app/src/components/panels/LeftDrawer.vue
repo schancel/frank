@@ -244,6 +244,7 @@
                   : $t('receiveBitcoinDialog.balanceUnavailable')
               "
               data-testid="drawer-balance"
+              :title="loaded ? exactBalance : undefined"
               >{{ balanceText
               }}<template v-if="balanceStale">
                 {{ ' ' + $t('chatList.balanceStale') }}</template
@@ -416,7 +417,7 @@ export default defineComponent({
       }
     }
 
-    const { formattedBalance, loaded, hasError } = useBalance()
+    const { formattedBalance, exactBalance, loaded, hasError } = useBalance()
     const balanceText = computed(() =>
       loaded.value ? formattedBalance.value : '\u2014',
     )
@@ -527,6 +528,7 @@ export default defineComponent({
       browseForumTopic,
       totalUnread: totalUnread,
       balanceText,
+      exactBalance,
       balanceStale,
       loaded,
       isNarrow,

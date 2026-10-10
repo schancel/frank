@@ -167,6 +167,7 @@
 import { defineComponent, PropType } from 'vue'
 import type { RpsItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from '../../../utils/chain-amount'
 import { errorNotify } from '../../../utils/notifications'
 
 export default defineComponent({
@@ -206,9 +207,7 @@ export default defineComponent({
     displayWager(weiString?: string): string {
       if (!weiString) return '0 MON'
       try {
-        return `${activeChain.toDisplayAmount(BigInt(weiString))} ${
-          activeChain.unit
-        }`
+        return formatDisplayAmount(activeChain, BigInt(weiString))
       } catch {
         return '0 MON'
       }

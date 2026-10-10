@@ -105,6 +105,7 @@
                       role="status"
                       aria-live="polite"
                       data-testid="wallet-balance"
+                      :title="balanceTitle"
                     >
                       {{
                         balanceObservation
@@ -630,6 +631,15 @@ export default defineComponent({
         ? presentation.lastKnown
         : undefined
     })
+    // Every digit, on hover: the balance line itself is shortened for reading.
+    const balanceTitle = computed(() => {
+      const observation = balanceObservation.value
+      return (
+        (observation?.cordoned
+          ? observation.cordoned.exactTotal
+          : observation?.exactBalance) ?? undefined
+      )
+    })
     const currentWalletHasError = computed(
       () => balancePresentation.value.status === 'unavailable',
     )
@@ -783,6 +793,7 @@ export default defineComponent({
       displayAddress,
       balancePresentation,
       balanceObservation,
+      balanceTitle,
       currentWalletHasError,
       currentWalletAvu,
       currentUnitRateAvu,

@@ -89,32 +89,51 @@ export function same(a: VaultReceipt, b: VaultReceipt): boolean {
   return x.length === y.length && x.every((byte, i) => byte === y[i])
 }
 
-/** Encode only typed roots, copying synchronously before the first asynchronous boundary. */
-export function plaintext(roots: readonly DomainRoot[], c: VaultContext): Uint8Array<ArrayBuffer> {
+/**
+ * Encode typed roots followed by the account root they were derived from, copying
+ * synchronously before the first asynchronous boundary. Framing version 2.
+ */
+export function plaintext(roots: readonly DomainRoot[], accountRoot: Uint8Array, c: VaultContext): Uint8Array<ArrayBuffer> {
   const count = c.purposes.length
   if (!Array.isArray(roots) || roots.length !== count) reject()
-  const output = new Uint8Array(2 + count * 33)
+  const output = new Uint8Array(2 + count * 33 + 32)
   try {
-    output[0] = 1; output[1] = count
+    output[0] = 2; output[1] = count
     for (let i = 0; i < count; i++) {
       const root = roots[i]
       if (!root || root.registry !== DERIVATION_REGISTRY_ID || root.purpose !== c.purposes[i]) reject()
-      const bytes = root.bytes
-      if (!(bytes instanceof Uint8Array) || bytes.byteLength !== 32 || !(bytes.buffer instanceof ArrayBuffer)) reject()
       output[2 + 33 * i] = DOMAIN_PURPOSES.indexOf(c.purposes[i]) + 1
-      output.set(bytes, 3 + 33 * i)
+      output.set(secret(root.bytes), 3 + 33 * i)
     }
+    output.set(secret(accountRoot), 2 + 33 * count)
     return output
   } catch (error) { output.fill(0); throw error }
 }
 
-export function decode(bytes: Uint8Array, c: VaultContext): readonly DomainRoot[] {
-  if (bytes.length !== 2 + c.purposes.length * 33 || bytes[0] !== 1 || bytes[1] !== c.purposes.length) throw new VaultError('corrupt')
-  // Validate the whole payload before publishing any independently owned root.
+function secret(bytes: unknown): Uint8Array {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== 32 || !(bytes.buffer instanceof ArrayBuffer)) reject()
+  return bytes
+}
+
+/** Version 1 records predate the stored account root: they hold the typed roots only. */
+function framed(bytes: Uint8Array, c: VaultContext): 1 | 2 {
+  const version = bytes[0], roots = 2 + c.purposes.length * 33
+  if ((version !== 1 && version !== 2) || bytes.length !== roots + (version === 2 ? 32 : 0) || bytes[1] !== c.purposes.length) throw new VaultError('corrupt')
+  // Validate the whole payload before publishing any independently owned secret.
   for (let i = 0; i < c.purposes.length; i++) {
     if (bytes[2 + i * 33] !== DOMAIN_PURPOSES.indexOf(c.purposes[i]) + 1) throw new VaultError('corrupt')
   }
+  return version
+}
+
+export function decode(bytes: Uint8Array, c: VaultContext): readonly DomainRoot[] {
+  framed(bytes, c)
   return Object.freeze(c.purposes.map((purpose, i) => Object.freeze({
     purpose, registry: DERIVATION_REGISTRY_ID, bytes: bytes.slice(3 + i * 33, 35 + i * 33),
   })))
+}
+
+/** The stored account root, or null for a version 1 record that never held one. */
+export function decodeAccountRoot(bytes: Uint8Array, c: VaultContext): Uint8Array | null {
+  return framed(bytes, c) === 2 ? bytes.slice(2 + c.purposes.length * 33) : null
 }

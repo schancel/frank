@@ -151,7 +151,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       const captured = capture(input)
       try {
         return await run(async () => {
-          const { account, expectedActive, roots } = captured
+          const { account, expectedActive, roots, accountRoot } = captured
           const state = await update(current => {
             if (!matches(current, expectedActive))
               throw new CustodyError('conflict')
@@ -180,7 +180,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           const status = await vault.reconcile(account.receipt)
           if (status === 'absent') {
             try {
-              await vault.stage(writeIntent(account), roots)
+              await vault.stage(writeIntent(account), roots, accountRoot)
             } catch (error) {
               // Concurrent same-intent writes and lost acknowledgements resolve by exact receipt.
               if ((await vault.reconcile(account.receipt)) !== 'committed')
@@ -206,6 +206,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
         })
       } finally {
         wipe(captured.roots)
+        captured.accountRoot.fill(0)
       }
     },
     reconcile: attemptId =>
@@ -326,6 +327,25 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           return capability
         } catch (error) {
           if (roots) wipe(roots)
+          throw error
+        }
+      }),
+    exportAccountRoot: () =>
+      run(async () => {
+        const state = await read()
+        if (!state.active) throw new CustodyError('locked')
+        const accountRoot = await vault.openAccountRoot(state.active.receipt)
+        try {
+          const latest = await read()
+          if (
+            latest.revision !== state.revision ||
+            !same(latest.active, state.active)
+          )
+            throw new CustodyError('conflict')
+          check()
+          return { account: state.active, accountRoot }
+        } catch (error) {
+          accountRoot?.fill(0)
           throw error
         }
       }),

@@ -26,6 +26,8 @@ await custody.stage({
   custodyEpoch: 1,
   metadata: confirmed.metadata,
   roots: DOMAIN_PURPOSES.map(purpose => confirmed.roots[purpose]),
+  // Must be this account's root and derive exactly those roots, or staging is refused.
+  accountRoot: confirmed.accountRoot,
 })
 // Success above means only staged material. Activation is a separate user decision.
 await custody.activate(attemptId, expectedActive)
@@ -39,6 +41,11 @@ try {
   custody.close()
 }
 ```
+
+`custody.exportAccountRoot()` returns the active public account and a caller-owned
+copy of its account root, for Settings > Backup account only. `accountRoot` is
+`null` for an account stored before roots were kept: the caller says only the
+signup shares restore that account and issues none. Wipe the copy after use.
 
 Caller roots and metadata must come from a confirmed/recovered ceremony. The facade
 cannot establish that arbitrary 32-byte values were honestly labelled as domain

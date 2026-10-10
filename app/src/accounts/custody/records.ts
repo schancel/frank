@@ -2,11 +2,13 @@ import {
   decodeRecoveryDescriptor,
   encodeRecoveryDescriptor,
   encodeRecoveryFingerprint,
+  isAccountRootOf,
 } from '@frank/account-recovery'
 import { createVaultWriteIntent } from '@frank/account-vault'
 import {
   DERIVATION_REGISTRY_ID,
   DOMAIN_PURPOSES,
+  deriveDomainRoot,
   type DomainRoot,
 } from '@frank/domain-roots'
 import {
@@ -108,8 +110,10 @@ export function capture(input: StageAccount): {
   account: PublicAccount
   expectedActive: ExpectedActive
   roots: readonly DomainRoot[]
+  accountRoot: Uint8Array
 } {
   const roots: DomainRoot[] = []
+  let accountRoot: Uint8Array | undefined
   try {
     const attemptId = id(input.attemptId),
       accountId = id(input.accountId)
@@ -138,6 +142,16 @@ export function capture(input: StageAccount): {
       last = index
       roots.push(Object.freeze({ registry, purpose, bytes: bytes(root.bytes) }))
     }
+    // What is stored for later backups must be this account's root, and the roots the
+    // wallet will run on must be the ones it derives. Anything else is refused here.
+    accountRoot = bytes(input.accountRoot)
+    if (!isAccountRootOf(accountRoot, decoded)) invalid()
+    for (const root of roots) {
+      const derived = deriveDomainRoot(accountRoot, root.purpose)
+      const matches = derived.bytes.every((byte, i) => byte === root.bytes[i])
+      derived.bytes.fill(0)
+      if (!matches) invalid()
+    }
     const intent = createVaultWriteIntent({
       expected: null,
       operationId: attemptId,
@@ -163,9 +177,11 @@ export function capture(input: StageAccount): {
       }),
       expectedActive,
       roots: Object.freeze(roots),
+      accountRoot,
     }
   } catch {
     wipe(roots)
+    accountRoot?.fill(0)
     throw new CustodyError('invalid-input')
   }
 }

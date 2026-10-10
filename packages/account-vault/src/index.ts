@@ -1,5 +1,5 @@
 import type { DomainRoot } from '@frank/domain-roots'
-import { aad, createIntent, decode, intent, plaintext, receipt, same, validate } from './encoding.js'
+import { aad, createIntent, decode, decodeAccountRoot, intent, plaintext, receipt, same, validate } from './encoding.js'
 import { commit, database, discardIntent, read, remove, transaction, validKey, type RecordRow } from './storage.js'
 import { VaultError, type PreviewVault, type VaultContext, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
@@ -55,11 +55,31 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
     active()
     return stored
   }
+  /** Authenticated read of one committed record; `pick` copies out what the caller owns. */
+  const material = async <T>(input: VaultReceipt, pick: (bytes: Uint8Array, context: VaultContext) => T): Promise<T> => {
+    const target = validate(() => receipt(input))
+    const stored = await current(target)
+    if (!stored.fence?.receipt) throw new VaultError('locked')
+    if (!same(stored.fence.receipt, target)) throw new VaultError('conflict')
+    const row = stored.record as RecordRow
+    let bytes: Uint8Array | undefined
+    try {
+      bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: row.iv, additionalData: aad(target), tagLength: 128 }, stored.key!.key, row.ciphertext))
+      active()
+      // Recheck after crypto: a concurrent removal/replacement must not publish old material.
+      const latest = await current(target)
+      if (!latest.fence?.receipt || !same(latest.fence.receipt, target)) throw new VaultError('conflict')
+      return pick(bytes, target.context)
+    } catch (error) {
+      if (error instanceof VaultError) throw error
+      throw new VaultError('corrupt')
+    } finally { bytes?.fill(0) }
+  }
   return Object.freeze({
-    async stage(input, roots: readonly DomainRoot[]) {
+    async stage(input, roots: readonly DomainRoot[], accountRoot: Uint8Array) {
       active()
       const snapshot = validate(() => intent(input))
-      const bytes = validate(() => plaintext(roots, snapshot.receipt.context))
+      const bytes = validate(() => plaintext(roots, accountRoot, snapshot.receipt.context))
       try {
         const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
         const iv = crypto.getRandomValues(new Uint8Array(12))
@@ -72,25 +92,8 @@ export async function openPreviewVault(options: { namespace: string }): Promise<
         throw new VaultError('storage-failed')
       } finally { bytes.fill(0) }
     },
-    async open(input) {
-      const target = validate(() => receipt(input))
-      const stored = await current(target)
-      if (!stored.fence?.receipt) throw new VaultError('locked')
-      if (!same(stored.fence.receipt, target)) throw new VaultError('conflict')
-      const row = stored.record as RecordRow
-      let bytes: Uint8Array | undefined
-      try {
-        bytes = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: row.iv, additionalData: aad(target), tagLength: 128 }, stored.key!.key, row.ciphertext))
-        active()
-        // Recheck after crypto: a concurrent removal/replacement must not publish old roots.
-        const latest = await current(target)
-        if (!latest.fence?.receipt || !same(latest.fence.receipt, target)) throw new VaultError('conflict')
-        return decode(bytes, target.context)
-      } catch (error) {
-        if (error instanceof VaultError) throw error
-        throw new VaultError('corrupt')
-      } finally { bytes?.fill(0) }
-    },
+    open: input => material(input, decode),
+    openAccountRoot: input => material(input, decodeAccountRoot),
     async reconcile(input) {
       const target = validate(() => receipt(input))
       const stored = await current(target)

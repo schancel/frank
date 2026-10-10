@@ -34,6 +34,15 @@ import { activeChain } from '@frank/wallet/chain'
 import type { WalletHandle } from '@frank/wallet/chain'
 import { MonadStampPendingAttemptError } from '@frank/wallet/monad-stamp-client'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
+import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
+import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+
+// An account that can open a chat always has its conversation-ID salt installed.
+beforeEach(() =>
+  installTestConversationIdSalt(
+    testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
+  ),
+)
 
 jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))
 // The durable store: keyed exactly like LevelMessageStore (by `index`).

@@ -8,18 +8,26 @@ import type { RouteLocationNormalized } from 'vue-router'
 import { createRoutes } from './routes'
 import { startupRestoration } from '../boot/startup-state'
 import { useContactStore } from 'src/stores/contacts'
-import { useChatStore } from 'src/stores/chats'
+import {
+  hasConversationIdSalt,
+  resolveConversation,
+  useChatStore,
+} from 'src/stores/chats'
 import { isChainAddress } from 'src/utils/chain-address'
 import { accountSession, accountStatus } from '../accounts/session'
 
-async function ensureChatState(address?: string) {
+async function ensureChatState(
+  address: string | undefined,
+  stillCurrent: () => boolean,
+) {
   const chatStore = useChatStore()
   if (!address) {
     chatStore.setActiveConversation(null)
     return
   }
   try {
-    if (chatStore.conversations[address]) {
+    // Also a conversation that was dropped for the peer's own: the one that replaced it.
+    if (resolveConversation(chatStore.conversations, address)) {
       chatStore.setActiveConversation(address)
       return
     }
@@ -30,6 +38,16 @@ async function ensureChatState(address?: string) {
         .catch(err => {
           console.debug('fetchAndAddContact suppressed error:', err)
         })
+      // Opening a chat allocates its ID from the account's salt. At launch a route can be
+      // followed before the wallet is at hand: wait for it then.
+      if (!hasConversationIdSalt()) {
+        const { ensureConversationIdSalt } = await import(
+          '../utils/monad-identity-session'
+        )
+        await ensureConversationIdSalt()
+        // The user may have gone elsewhere while the wallet opened.
+        if (!stillCurrent()) return
+      }
       chatStore.setActiveChat(address)
     }
   } catch (ex) {
@@ -94,7 +112,12 @@ export default () => {
       to.path.startsWith('/chat/') && typeof to.params.address === 'string'
         ? to.params.address
         : undefined
-    void ensureChatState(address)
+    void ensureChatState(address, () => {
+      const current = Router.currentRoute.value
+      return (
+        current.path.startsWith('/chat/') && current.params.address === address
+      )
+    })
   })
 
   return Router

@@ -272,7 +272,9 @@ export interface EncryptedMessageContent<F> {
   type: 6
   network: string
   messageId: Uint8Array
-  conversationId: Uint8Array
+  /** Allocated by whoever starts the conversation and carried by every message in it. Writers
+   * should always send it; absent only from a client that sent none. */
+  conversationId?: Uint8Array
   conversationName?: string
   tokenTransfer?: TokenTransfer
   /** The type-8 message-content-revision frame. */

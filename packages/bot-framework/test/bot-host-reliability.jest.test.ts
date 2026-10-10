@@ -208,6 +208,55 @@ describe("FrankBotHost Reliability Features", () => {
 
       await host.stop();
     });
+
+    it("answers a message that named no conversation without naming one", async () => {
+      const received: BotMessageContext[] = [];
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/default-thread`,
+      });
+      await host.register({
+        id: "default-thread-bot",
+        getProfile: () => ({ name: "DefaultThreadBot", bot: true }),
+        onMessage: async (msg) => {
+          received.push(msg);
+          await msg.reply([{ type: "text", text: "reply from reply()" } as any]);
+          return [{ type: "text", text: "reply from return" } as any];
+        },
+      });
+      mockDirectMessagesFetchSince.mockResolvedValueOnce([
+        {
+          senderAddress: { raw: mockPeer.address.toLowerCase() },
+          senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
+          recipientPublicKey: getBytes("0x" + mockLocalSubject),
+          messageId: "03030303-0303-0303-0303-030303030303",
+          recipientAddress: { raw: mockLocalAddress },
+          items: [{ type: "text", text: "Hello bot" }],
+          // No conversationId: a client that sent none.
+          payloadDigest:
+            "3333333333333333333333333333333333333333333333333333333333333333",
+          receivedTime: 1700000000000,
+        },
+      ]);
+
+      await (host as any).pollAllBots();
+      const instance = (host as any).instances.get("default-thread-bot");
+      await instance.peerQueue.enqueue(
+        mockPeer.address.toLowerCase(),
+        async () => {}
+      );
+
+      // Admitted and handled, not refused as an unsupported identity.
+      expect(received).toHaveLength(1);
+      expect(received[0].conversationId).toBeUndefined();
+      // Neither reply invents an ID for the peer's message: none is named, so the sending
+      // layer fills in the one conversation this bot opens with that peer.
+      expect(mockDirectMessagesSend).toHaveBeenCalledTimes(2);
+      for (const [params] of mockDirectMessagesSend.mock.calls)
+        expect(params.conversationId).toBeUndefined();
+
+      await host.stop();
+    });
   });
 
   describe("Cursor persistence in LevelDB state", () => {

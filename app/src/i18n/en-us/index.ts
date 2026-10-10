@@ -109,8 +109,14 @@ export default {
     stampMultiplierValue: '{multiplier}× default ({amount})',
     suggestedStamp: 'Suggested: {amount}',
     resetToSuggested: 'Reset to suggested',
-    convergedPill: 'Converged',
-    overridePill: 'Override',
+    convergedPill: 'Suggested',
+    overridePill: 'Your choice',
+    stampChip: 'Stamp: {amount}',
+    stampChipMultiple: 'Stamp: {amount}, {multiplier}× the minimum',
+    stampWhat:
+      'A stamp is a small payment sent with your message to the person you are writing to. It pays for their attention.',
+    stampWhy:
+      'The suggested stamp for this chat sits midway (the geometric mean) between the last stamp you paid them and the last one they paid you. It never goes below the minimum, and it rises above your last stamp only as far as they have paid you more than you paid them.',
   },
   digitalGoods: {
     catalog: 'Catalog',

@@ -111,8 +111,14 @@ export default {
     stampMultiplierValue: '{multiplier}× par défaut ({amount})',
     suggestedStamp: 'Suggéré : {amount}',
     resetToSuggested: 'Réinitialiser au montant suggéré',
-    convergedPill: 'Convergé',
-    overridePill: 'Modifié',
+    convergedPill: 'Suggéré',
+    overridePill: 'Votre choix',
+    stampChip: 'Timbre : {amount}',
+    stampChipMultiple: 'Timbre : {amount}, {multiplier}× le minimum',
+    stampWhat:
+      'Un timbre est un petit paiement envoyé avec votre message à la personne à qui vous écrivez. Il paie son attention.',
+    stampWhy:
+      'Le timbre suggéré pour cette conversation se situe à mi-chemin (la moyenne géométrique) entre le dernier timbre que vous lui avez payé et le dernier qu’il vous a payé. Il ne descend jamais sous le minimum, et il ne dépasse votre dernier timbre que dans la mesure où il vous a payé plus que vous ne lui avez payé.',
   },
   digitalGoods: {
     catalog: 'Catalogue',

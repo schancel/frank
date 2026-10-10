@@ -25,6 +25,31 @@ export const DELIVERED_IMAGE_LIMITS: ImageLimits = {
   maxDimension: 4096,
   maxPixels: 8_000_000,
 }
+/**
+ * What this app will send as an image item. A canonical direct message's whole sealed body is at
+ * most 524,288 bytes (`MAX_CIPHERTEXT_BYTES` in `@frank/codec`), and the data URI travels byte
+ * for byte, so the picture is held to 448 KiB. The rest is room for the caption below, a reply
+ * reference and the framing. The wallet does not check the total before it funds a send, so
+ * this bound is what keeps an oversized picture from being refused after money has moved.
+ */
+export const SENT_IMAGE_LIMITS: ImageLimits = {
+  maxEncodedLength: 448 * 1024,
+  maxDimension: DELIVERED_IMAGE_LIMITS.maxDimension,
+  maxPixels: DELIVERED_IMAGE_LIMITS.maxPixels,
+}
+/** Characters of caption sent with a picture: at most 8,000 bytes of UTF-8. */
+export const MAX_SENT_CAPTION_LENGTH = 2000
+
+/** `inspectImageDataUri` reasons -> `chatImage.*` message keys. */
+export const IMAGE_REASON_KEYS: Record<string, string> = {
+  'not an image': 'reasonNotAnImage',
+  'too large': 'reasonTooLarge',
+  'not an inline image': 'reasonNotInline',
+  'unreadable image header': 'reasonUnreadableHeader',
+  'empty image': 'reasonEmpty',
+  'dimensions too large': 'reasonDimensionsTooLarge',
+}
+
 /** Most catalog entries rendered (same as the bot's own loader limit). */
 export const MAX_RENDERED_CATALOG_ENTRIES = 50
 

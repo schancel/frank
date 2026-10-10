@@ -148,6 +148,14 @@
         />
       </q-card>
     </q-dialog>
+    <!-- A picture from the composer menu, a paste or a drop: sent as an image item. -->
+    <q-dialog v-model="fileDialog">
+      <send-file-dialog
+        v-if="fileDialog"
+        :file="fileToSend"
+        @send="sendImage"
+      />
+    </q-dialog>
     <!-- Send Stealth dialog: multi-chain encrypted stealth payment -->
     <q-dialog v-model="stealthDialog">
       <send-stealth-dialog
@@ -191,6 +199,7 @@ import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
 import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
 import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
+import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 import { openChat, openContactProfile } from '../utils/routes'
@@ -262,6 +271,7 @@ export default defineComponent({
     BlackjackChallengeForm,
     SendStealthDialog,
     OfferSwapDialog,
+    SendFileDialog,
     ForwardMessageDialog,
     ChatBannerStack,
   },
@@ -298,6 +308,8 @@ export default defineComponent({
       blackjackDialog: false,
       stealthDialog: false,
       swapDialog: false,
+      fileDialog: false,
+      fileToSend: null as File | null,
       forwardDialogOpen: false,
       messageToForward: null as ChatMessage | null,
       // Automatic dealer steps already attempted in this page session.
@@ -327,7 +339,7 @@ export default defineComponent({
       chatScroll: ref<QScrollArea | null>(null),
     }
   },
-  emits: ['giveLotusClicked', 'sendFileClicked'],
+  emits: ['giveLotusClicked'],
   mounted() {
     if (
       this.address &&
@@ -439,8 +451,10 @@ export default defineComponent({
       const message = Array.isArray(raw) ? raw[0] : raw
       message?.focusRetryStatus?.()
     },
-    toSendFileDialog(args: unknown) {
-      this.$emit('sendFileClicked', args)
+    /** Opens the picture dialog: empty from the menu, holding the file from a paste or drop. */
+    toSendFileDialog(file?: unknown) {
+      this.fileToSend = file instanceof File ? file : null
+      this.fileDialog = true
     },
     resizeHandler() {
       const chatScroll = this.chatScroll
@@ -717,6 +731,15 @@ export default defineComponent({
         this.stampPreparationStatus = null
         this.sendingMessage = false
       }
+    },
+    // A picture goes the way text does: one paid message through `sendDirectMessage`, here an
+    // image item and, when there is a caption, a text item after it. The dialog has already
+    // held the picture to what one message can carry.
+    async sendImage({ image, caption }: { image: string; caption: string }) {
+      this.fileDialog = false
+      const items: MessageItem[] = [{ type: 'image', image }]
+      if (caption) items.push({ type: 'text', text: caption })
+      await this.sendFollowUpItems({ items })
     },
     async sendStealthPayment({
       chainId,

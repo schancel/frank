@@ -646,15 +646,6 @@ export default {
     usernameReassigned:
       "You added this contact as {'@'}{username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.",
   },
-  sendLotusDialog: {
-    sendLotusTo: 'Send Lotus to',
-    amountHint: 'Set the amount of Lotus to be sent.',
-    amountPlaceholder: 'Enter number of Lotus...',
-    memoHint: 'Attach a memo to the payment.',
-    memoPlaceholder: 'Enter the memo...',
-    sendBtnLabel: 'Send',
-    cancelBtnLabel: 'Cancel',
-  },
   sendStealthDialog: {
     sendStealthTo: 'Send Stealth to',
     subtitle: 'Encrypted direct transfer (invisible to relay)',
@@ -711,11 +702,12 @@ export default {
     directCreditHint: 'Indexed into spendable balance',
   },
   sendFileDialog: {
-    sendFile: 'Send File',
-    captionHint: 'Attach a memo to the payment.',
-    captionPlaceholder: 'Enter the memo...',
+    sendFile: 'Send Picture',
+    captionHint: 'Add a caption (optional).',
+    captionPlaceholder: 'Caption...',
     sendBtnLabel: 'Send',
     cancelBtnLabel: 'Cancel',
+    cannotSend: 'This picture cannot be sent: {reason}.',
   },
   setup: {
     loginOrSignUp: 'Login/Sign Up',

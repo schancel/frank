@@ -41,71 +41,27 @@ describe('DeleteMessageDialog.vue', () => {
     jest.clearAllMocks()
   })
 
-  it('sweeps message funds prior to relay delete and local delete', async () => {
-    const mockRelayDelete = jest.fn().mockResolvedValue(undefined)
-    const callOrder: string[] = []
+  const mountDialog = () =>
+    shallowMount(DeleteMessageDialog, {
+      props: { address: '0xcontact1', payloadDigest: '0xmsg1', index: 0 },
+      global: { mocks: { $t: (key: string) => key } },
+    })
 
+  it('sweeps the message funds, then deletes locally', async () => {
+    const callOrder: string[] = []
     mockSweepMessageFundsOnDelete.mockImplementationOnce(async () => {
       callOrder.push('sweep')
       return { sweptCount: 1, sweptWei: 1000n, txHashes: ['0xtx1'] }
-    })
-    mockRelayDelete.mockImplementationOnce(async () => {
-      callOrder.push('relayDelete')
     })
     mockDeleteMessage.mockImplementationOnce(async () => {
       callOrder.push('localDelete')
     })
 
-    const wrapper = shallowMount(DeleteMessageDialog, {
-      props: {
-        address: '0xcontact1',
-        payloadDigest: '0xmsg1',
-        index: 0,
-      },
-      global: {
-        mocks: {
-          $t: (key: string) => key,
-          $relayClient: {
-            deleteMessage: mockRelayDelete,
-          },
-        },
-      },
-    })
+    await (mountDialog().vm as any).deleteMessageBoth()
 
-    await (wrapper.vm as any).deleteMessageBoth()
-
-    expect(callOrder).toEqual(['sweep', 'relayDelete', 'localDelete'])
+    expect(callOrder).toEqual(['sweep', 'localDelete'])
     expect(mockSweepMessageFundsOnDelete).toHaveBeenCalledWith({
       message: mockMessages['0xmsg1'],
-      relayClient: expect.any(Object),
-    })
-    expect(mockRelayDelete).toHaveBeenCalledWith('0xmsg1')
-    expect(mockDeleteMessage).toHaveBeenCalledWith({
-      address: '0xcontact1',
-      payloadDigest: '0xmsg1',
-    })
-  })
-
-  it('completes sweep and local delete when $relayClient is undefined (Monad mode)', async () => {
-    const wrapper = shallowMount(DeleteMessageDialog, {
-      props: {
-        address: '0xcontact1',
-        payloadDigest: '0xmsg1',
-        index: 0,
-      },
-      global: {
-        mocks: {
-          $t: (key: string) => key,
-          $relayClient: undefined,
-        },
-      },
-    })
-
-    await (wrapper.vm as any).deleteMessageBoth()
-
-    expect(mockSweepMessageFundsOnDelete).toHaveBeenCalledWith({
-      message: mockMessages['0xmsg1'],
-      relayClient: undefined,
     })
     expect(mockDeleteMessage).toHaveBeenCalledWith({
       address: '0xcontact1',
@@ -113,32 +69,18 @@ describe('DeleteMessageDialog.vue', () => {
     })
   })
 
-  it('completes local delete even if relay delete fails', async () => {
-    const mockRelayDelete = jest.fn().mockRejectedValue(new Error('Relay 500'))
+  it('still deletes locally when the sweep fails', async () => {
+    mockSweepMessageFundsOnDelete.mockRejectedValueOnce(new Error('rpc down'))
+    const logged = jest
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined)
 
-    const wrapper = shallowMount(DeleteMessageDialog, {
-      props: {
-        address: '0xcontact1',
-        payloadDigest: '0xmsg1',
-        index: 0,
-      },
-      global: {
-        mocks: {
-          $t: (key: string) => key,
-          $relayClient: {
-            deleteMessage: mockRelayDelete,
-          },
-        },
-      },
-    })
+    await (mountDialog().vm as any).deleteMessageBoth()
 
-    await (wrapper.vm as any).deleteMessageBoth()
-
-    expect(mockSweepMessageFundsOnDelete).toHaveBeenCalled()
-    expect(mockRelayDelete).toHaveBeenCalledWith('0xmsg1')
     expect(mockDeleteMessage).toHaveBeenCalledWith({
       address: '0xcontact1',
       payloadDigest: '0xmsg1',
     })
+    logged.mockRestore()
   })
 })

@@ -32,19 +32,10 @@ import { ref } from 'vue'
 
 import {
   DELIVERED_IMAGE_LIMITS,
+  IMAGE_REASON_KEYS,
   inspectImageDataUri,
 } from '../../../utils/image-data-uri'
 import ImageDialog from '../../../components/dialogs/ImageDialog.vue'
-
-// inspectImageDataUri reasons (utils/image-data-uri.ts) -> chatImage.* message keys.
-const REASON_KEYS: Record<string, string> = {
-  'not an image': 'reasonNotAnImage',
-  'too large': 'reasonTooLarge',
-  'not an inline image': 'reasonNotInline',
-  'unreadable image header': 'reasonUnreadableHeader',
-  'empty image': 'reasonEmpty',
-  'dimensions too large': 'reasonDimensionsTooLarge',
-}
 
 export default {
   props: {
@@ -69,7 +60,7 @@ export default {
     reasonText(): string {
       const v = this.vetted
       if (v.ok) return ''
-      const key = REASON_KEYS[v.reason]
+      const key = IMAGE_REASON_KEYS[v.reason]
       return key ? this.$t(`chatImage.${key}`) : v.reason
     },
   },

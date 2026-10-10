@@ -189,6 +189,50 @@ describe('Chat.vue sendFollowUpItems vs the no-throw send outcome (#269/#270)', 
   })
 })
 
+describe('Chat.vue attach image', () => {
+  beforeEach(() => jest.mocked(errorNotify).mockReset())
+
+  it('sends the picture as an image item with its caption, through the paid message path', async () => {
+    const self = fakeThis({ fileDialog: true, conversation: { id: 'c1' } })
+    await methods.sendImage.call(self, {
+      image: 'data:image/png;base64,AAAA',
+      caption: 'look',
+    })
+    expect(self.fileDialog).toBe(false)
+    expect(self.sendDirectMessage).toHaveBeenCalledTimes(1)
+    expect(self.sendDirectMessage.mock.calls[0][0]).toMatchObject({
+      address: '0xDealer',
+      conversationId: 'c1',
+      items: [
+        { type: 'image', image: 'data:image/png;base64,AAAA' },
+        { type: 'text', text: 'look' },
+      ],
+    })
+    expect(errorNotify).not.toHaveBeenCalled()
+  })
+
+  it('sends only the image item when there is no caption', async () => {
+    const self = fakeThis()
+    await methods.sendImage.call(self, {
+      image: 'data:image/png;base64,AAAA',
+      caption: '',
+    })
+    expect(self.sendDirectMessage.mock.calls[0][0].items).toEqual([
+      { type: 'image', image: 'data:image/png;base64,AAAA' },
+    ])
+  })
+
+  it('opens the dialog empty from the menu and with the file from a paste or drop', () => {
+    const self = fakeThis({ fileDialog: false, fileToSend: null })
+    methods.toSendFileDialog.call(self)
+    expect(self.fileDialog).toBe(true)
+    expect(self.fileToSend).toBeNull()
+    const file = new File(['x'], 'x.png', { type: 'image/png' })
+    methods.toSendFileDialog.call(self, file)
+    expect(self.fileToSend).toBe(file)
+  })
+})
+
 describe('Chat.vue blackjack challenge', () => {
   const balance = jest.mocked(activeChain.nativeTransfers.getBalance)
   const challengeThis = (over: Record<string, unknown> = {}) => {

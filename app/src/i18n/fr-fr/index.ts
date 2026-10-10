@@ -660,15 +660,6 @@ export default {
     usernameReassigned:
       "Vous avez ajouté ce contact sous {'@'}{username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.",
   },
-  sendLotusDialog: {
-    sendLotusTo: 'Envoyer des Lotus à',
-    amountHint: 'Combien de Lotus voulez vous transmettre.',
-    amountPlaceholder: 'Entrez le nombre de Lotus...',
-    memoHint: 'Ajouter un mémo au paiement.',
-    memoPlaceholder: 'Entrez le texte...',
-    sendBtnLabel: 'Envoyer',
-    cancelBtnLabel: 'Annuler',
-  },
   sendStealthDialog: {
     sendStealthTo: 'Envoyer furtivement à',
     subtitle: 'Transfert direct chiffré (invisible pour le relais)',
@@ -726,11 +717,12 @@ export default {
     directCreditHint: 'Directement crédité au solde disponible',
   },
   sendFileDialog: {
-    sendFile: 'Envoyer un fichier',
-    captionHint: 'Attacher un memo au fichier.',
-    captionPlaceholder: 'Entrez le texte...',
+    sendFile: 'Envoyer une image',
+    captionHint: 'Ajouter une légende (facultatif).',
+    captionPlaceholder: 'Légende...',
     sendBtnLabel: 'Envoyer',
     cancelBtnLabel: 'Annuler',
+    cannotSend: 'Cette image ne peut pas être envoyée : {reason}.',
   },
   topicDrawer: {
     offering: 'Offre:',

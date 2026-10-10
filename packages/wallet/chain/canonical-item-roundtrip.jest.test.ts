@@ -155,6 +155,19 @@ describe('message items across the canonical path, two wallets', () => {
     expect(message.items).toEqual(items)
   })
 
+  // The app holds a picture to 448 KiB of data URI and its caption to 2,000 characters
+  // (app/src/utils/image-data-uri.ts) so the two, with a reply reference, always fit one sealed
+  // message. Above about 523,000 bytes the message is refused only at sealing, after funding.
+  it('the largest picture the app sends, with the longest caption and a reply, arrives whole', async () => {
+    const items: MessageItem[] = [
+      { type: 'reply', payloadDigest: 'ab'.repeat(32) },
+      { type: 'image', image: 'A'.repeat(448 * 1024) },
+      { type: 'text', text: '\u{1F600}'.repeat(2000) },
+    ]
+    const { message } = await roundTrip(items)
+    expect(message.items).toEqual(items)
+  })
+
   describe('refusals happen before anything is paid', () => {
     async function refused(items: MessageItem[]) {
       const requests = f.requests.length

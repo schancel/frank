@@ -17,7 +17,12 @@ export function initSwapOfferPlugin(
     hydrate: raw => raw,
     previewText: raw =>
       `Atomic swap offer: ${raw.offeredAmount} ${raw.offeredAsset} (${raw.offeredChain}) for ${raw.requestedAmount} ${raw.requestedAsset} (${raw.requestedChain})`,
-    tallyValue: raw => Number(raw.offeredAmount),
+    // The offered amount is validated as a plain decimal when the item is decoded. An item built
+    // locally with anything else adds nothing; this never returns NaN.
+    tallyValue: raw => {
+      const value = Number(raw.offeredAmount)
+      return Number.isFinite(value) ? value : 0
+    },
     encode: swapOfferCodec.encode,
     decode: swapOfferCodec.decode,
   })

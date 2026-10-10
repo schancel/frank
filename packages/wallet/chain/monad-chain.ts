@@ -182,6 +182,7 @@ import {
   LevelCanonicalLinkStore,
   MemoryCanonicalLinkStore,
   canonicalDirectMessages,
+  installedMessageItemRegistry,
   type CanonicalDirectory,
   type CanonicalLinkStore,
 } from "./monad-canonical-dm";
@@ -2644,6 +2645,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   signDigest: (digest) =>
                     new Uint8Array(identity.signHash(Buffer.from(digest))),
                   directory: () => canonicalDirectories.get(wallet),
+                  messageItems: () => installedMessageItemRegistry(wallet),
                   prepareInventory,
                 },
                 config.defaultStampValueWei

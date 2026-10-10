@@ -31,6 +31,9 @@ import {
   MonadMailboxRetryableError,
 } from "@frank/cashweb/relay/monad-mailbox-client";
 import type { MessageItem } from "@frank/cashweb/types/messages";
+import { installMessageItemRegistry } from "@frank/wallet/chain/monad-canonical-dm";
+import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
+import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
 import type { DirectMessageSendResult } from "@frank/wallet/chain/active-chain";
 
 import {
@@ -308,10 +311,19 @@ export class FrankBotHost {
       directory.startHeartbeat(this.options.heartbeatIntervalMs);
 
       // Install canonical directory so chain.directMessages routes through canonical directory
-      const uninstallDirectory = installCanonicalDirectory(
+      const removeDirectory = installCanonicalDirectory(
         wallet,
         directory.rawDirectory
       );
+      // The message-item plugins this bot's wallet sends and receives with.
+      const removeMessageItems = installMessageItemRegistry(
+        wallet,
+        createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable)
+      );
+      const uninstallDirectory = () => {
+        removeDirectory();
+        removeMessageItems();
+      };
       uninstall = uninstallDirectory;
 
       // 5. Register Frank metadata profile on relay

@@ -32,6 +32,7 @@ import {
   type CanonicalDirectory,
 } from './monad-chain'
 import type { EvmChainConfig } from './evm-chain-config'
+import { withDefaultMessageItems } from './message-items.testutil'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
 import { LevelCanonicalLinkStore } from './monad-canonical-dm'
@@ -168,7 +169,7 @@ async function fixture() {
     subAccountPoolSize: 0,
     walletStorageLocation: join(root, 'wallet'),
   }
-  const chain = createEvmChain(config)
+  const chain = withDefaultMessageItems(createEvmChain(config))
   const alice = (await chain.createWallet(roots(0))) as EvmChainWalletHandle
   const bob = (await chain.createWallet(roots(1))) as EvmChainWalletHandle
   // Stand-in for confirmed funding: each account covers its fee reserve plus half the stamp.

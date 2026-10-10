@@ -4,6 +4,9 @@
  * transaction instead of trusting any self-reported amount -- there is no amount field on the wire
  * type at all (see `BlackjackMoveItem`'s own header on `@frank/cashweb/types/messages`), so the
  * only way to know the real wager is to look up `wagerTxHash` here.
+ *
+ * Not carried on the canonical direct message path (`NOT_CARRIED_ITEM_TYPES` in `../wire.ts`), and
+ * the hosted dealer no longer plays it. The type stays registered so stored messages render.
  */
 import { Provider } from 'ethers'
 
@@ -200,7 +203,7 @@ export function initBlackjackMovePlugin(
           return 'Blackjack'
       }
     },
-    threadKey: (raw) => raw.gameId,
+    threadKey: raw => raw.gameId,
     reduceState: (prevState, hydrated) =>
       reduceBlackjackState(prevState, hydrated),
     encode: encodeBlackjackMove,

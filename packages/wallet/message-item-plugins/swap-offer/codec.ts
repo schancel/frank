@@ -1,34 +1,50 @@
+/**
+ * A swap offer as bytes. Not carried on the canonical direct message path yet
+ * (`NOT_CARRIED_ITEM_TYPES` in `../wire.ts`): receiving one enables an unconfirmed deposit, so it
+ * is carried once the swap flow validates the offer and asks for confirmation.
+ */
 import type { SwapOfferItem } from '@frank/cashweb/types/messages'
 
 import {
   cborItemCodec,
-  num,
+  chainAddress,
+  chainIdentifier,
+  displayAmount,
+  hash32,
   oneOf,
   opt,
   req,
-  text,
+  timestampMs,
+  token,
+  transactionId,
 } from '../shared/cbor-fields'
+import { id } from '../shared/limits'
+
+/** An asset on a chain: a symbol such as "MON", or a token contract or mint address. */
+const asset = token(128)
 
 export const swapOfferCodec = cborItemCodec<SwapOfferItem>('swap-offer', {
-  swapId: req(0, text),
-  offeredChain: req(1, text),
-  offeredAsset: req(2, text),
-  offeredAmount: req(3, text),
-  requestedChain: req(4, text),
-  requestedAsset: req(5, text),
-  requestedAmount: req(6, text),
+  swapId: req(0, id),
+  offeredChain: req(1, chainIdentifier),
+  offeredAsset: req(2, asset),
+  // What the person typed, in display units: it may have a fraction.
+  offeredAmount: req(3, displayAmount),
+  requestedChain: req(4, chainIdentifier),
+  requestedAsset: req(5, asset),
+  requestedAmount: req(6, displayAmount),
   status: req(
     7,
     oneOf('pending', 'accepted', 'settled', 'cancelled', 'expired'),
   ),
-  initiatorAddress: opt(8, text),
-  recipientAddress: opt(9, text),
-  createdAt: req(10, num),
-  expiresAt: opt(11, num),
-  hashLock: opt(12, text),
-  preimage: opt(13, text),
-  legATxHash: opt(14, text),
-  legBTxHash: opt(15, text),
-  claimTxHash: opt(16, text),
-  originInstanceId: opt(17, text),
+  // The two legs are on different chains, so these are addresses of either.
+  initiatorAddress: opt(8, chainAddress),
+  recipientAddress: opt(9, chainAddress),
+  createdAt: req(10, timestampMs),
+  expiresAt: opt(11, timestampMs),
+  hashLock: opt(12, hash32),
+  preimage: opt(13, hash32),
+  legATxHash: opt(14, transactionId),
+  legBTxHash: opt(15, transactionId),
+  claimTxHash: opt(16, transactionId),
+  originInstanceId: opt(17, id),
 })

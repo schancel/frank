@@ -474,6 +474,24 @@ export interface WalletSyncItem {
 
 export type PaymentTransferItem = WalletSyncItem
 
+/**
+ * A received item this reader could not interpret, kept exactly as it arrived. It is shown as an
+ * unsupported message and is never executed, and no plugin is registered for it. `unknown-type`:
+ * no plugin for the item's type, or a frame type this reader has no item for. `malformed`: a
+ * known type whose bytes its plugin refused.
+ */
+export interface UnsupportedItem {
+  type: 'unsupported'
+  reason: 'unknown-type' | 'malformed'
+  /** The item type the frame named: the identifier in a generic plugin item frame, or the type
+   * that owns a dedicated frame. Absent when the frame names none this reader knows. */
+  itemType?: string
+  /** The frame type identifier, when the envelope could be read. */
+  frameType?: number
+  /** The original complete item frame, lowercase hex. */
+  frame: string
+}
+
 export type MessageItem =
   | StealthItem
   | P2PKHSendItem
@@ -494,6 +512,7 @@ export type MessageItem =
   | ChannelUpdateItem
   | WalletSyncItem
   | EmailItem
+  | UnsupportedItem
 
 /** Why an outgoing direct message is not (yet) delivered (tickets #269/#270). Persisted with the
  * message so the failure and its manual Retry survive a reload. */

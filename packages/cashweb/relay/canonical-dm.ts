@@ -13,6 +13,7 @@ import {
   verifyPreviewDirectoryEvidence,
   type AccountRef,
   type ChildFrame,
+  type NestedItemBudget,
   type Encodable,
   type PreviewDirectoryEvidence,
   type Timestamp,
@@ -389,6 +390,9 @@ export interface OpenedDirectMessage extends PreparedDirectMessage {
   readonly mode: 'receive' | 'archive' | 'send'
   /** Exact retained item frames, with semantic projections only after complete validation. */
   readonly items: readonly ChildFrame[]
+  /** The validation budget this message was accepted under, continued into the opaque bytes of
+   * its items. Whoever decodes those bytes must spend this budget and never start a new one. */
+  readonly itemBudget: NestedItemBudget
 }
 
 export type OpenOwnDirectMessageInput = OpenInput &
@@ -543,6 +547,7 @@ export function openDirectMessage(
     }
     Object.defineProperties(result, {
       mode: { enumerable: true, value: mode },
+      itemBudget: { enumerable: false, value: completed.itemBudget },
       // Parse a copy of the already validated revision only to return fresh owned projections.
       // Acceptance above uses the one-shot aggregate continuation, never this independent parse.
       items: {
@@ -698,6 +703,7 @@ export function openOwnDirectMessage(
     }
     Object.defineProperties(result, {
       mode: { enumerable: true, value: mode },
+      itemBudget: { enumerable: false, value: completed.itemBudget },
       items: {
         enumerable: true,
         get: () => {

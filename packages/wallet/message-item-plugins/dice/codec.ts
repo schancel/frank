@@ -1,25 +1,30 @@
 import type { SatoshiDiceItem } from '@frank/cashweb/types/messages'
 
 import {
+  amount,
   bool,
   cborItemCodec,
-  num,
+  hash32,
+  int,
   oneOf,
   opt,
   req,
-  text,
+  token,
 } from '../shared/cbor-fields'
+import { diceRoll, id, multiplier, secret } from '../shared/limits'
 
 export const diceCodec = cborItemCodec<SatoshiDiceItem>('dice', {
   action: req(0, oneOf('table', 'roll', 'result')),
-  rollId: opt(1, text),
-  target: opt(2, num),
-  multiplier: opt(3, num),
-  wagerWei: opt(4, text),
-  luckyNumber: opt(5, num),
+  rollId: opt(1, id),
+  // The bot accepts targets 1..65535.
+  target: opt(2, int(1, 65_535)),
+  multiplier: opt(3, multiplier),
+  wagerWei: opt(4, amount),
+  luckyNumber: opt(5, diceRoll),
   isWin: opt(6, bool),
-  serverSecret: opt(7, text),
-  userNonce: opt(8, text),
-  payoutWei: opt(9, text),
-  txHash: opt(10, text),
+  serverSecret: opt(7, secret),
+  // `<16 hex of the message digest>_<milliseconds>`: about 30 characters.
+  userNonce: opt(8, token(96)),
+  payoutWei: opt(9, amount),
+  txHash: opt(10, hash32),
 })

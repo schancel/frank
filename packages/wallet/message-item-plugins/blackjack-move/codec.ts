@@ -1,7 +1,8 @@
 /**
  * A dealer-bot `blackjack-move` item as bytes: the type-18 frame `@frank/codec` already defines
- * for the closed move shapes. The canonical direct message path does not carry this item type
- * today; these bytes are what it would carry.
+ * for the closed move shapes. The canonical direct message path does NOT carry this item type
+ * (`NOT_CARRIED_ITEM_TYPES` in `../wire.ts`): it is refused on send and one that arrives is kept
+ * as unsupported. The plugin remains so messages already stored still render.
  */
 import {
   encodeBlackjackItem,
@@ -14,7 +15,11 @@ import type {
   CanonicalBlackjackMoveItem,
 } from '@frank/cashweb/types/messages'
 
-import { MessageItemDecodeError, MessageItemEncodeError } from '../registry'
+import {
+  MessageItemDecodeError,
+  MessageItemEncodeError,
+  type MessageItemDecodeContext,
+} from '../registry'
 import { detailOf } from '../shared/cbor-fields'
 import { decodeWith, openItemFrame } from '../shared/frame'
 
@@ -26,8 +31,11 @@ export function encodeBlackjackMove(item: BlackjackMoveItem): Uint8Array {
   }
 }
 
-export function decodeBlackjackMove(bytes: Uint8Array): BlackjackMoveItem {
-  const parsed = openItemFrame('blackjack-move', bytes)
+export function decodeBlackjackMove(
+  bytes: Uint8Array,
+  context: MessageItemDecodeContext,
+): BlackjackMoveItem {
+  const parsed = openItemFrame('blackjack-move', bytes, context)
   if (isBlackjackHandFrame(parsed) || isBlackjackHandV3Frame(parsed))
     throw new MessageItemDecodeError(
       'blackjack-move',

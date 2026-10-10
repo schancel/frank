@@ -15,6 +15,8 @@
  */
 import type { Provider } from 'ethers'
 
+import type { NestedItemBudget, ParsedFrame } from '@frank/codec'
+
 import type { Message, MessageItem } from '@frank/cashweb/types/messages'
 
 /** Everything a plugin's `hydrate()` needs beyond the raw item itself: the whole message it came
@@ -28,6 +30,21 @@ export interface MessageItemContext {
   message: Message
   index: number
   provider: Provider
+}
+
+/**
+ * What a plugin's `decode` is given besides the bytes: the validation budget of the message the
+ * item arrived in. A plugin never starts a budget of its own. Any CBOR it decodes and any nested
+ * frame it opens goes through `budget`, so the work is charged to the same container, item, depth
+ * and opened-item counters as the enclosing message, and many items that are each acceptable
+ * alone cannot together cost more than one message may. A plugin with its own encoding may use its
+ * own decoder; the length of its bytes is already charged to the enclosing frame.
+ */
+export interface MessageItemDecodeContext {
+  budget: NestedItemBudget
+  /** For an item that travels in its own dedicated frame: that frame as the enclosing validation
+   * already parsed it. The plugin projects from it and does not parse the bytes again. */
+  frame?: ParsedFrame
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -251,14 +268,16 @@ export interface MessageItemPlugin<
    * {@link MessageItemEncodeError} for an item the plugin's own schema does not allow. */
   encode(raw: TRaw): Uint8Array
   /** The inverse of `encode`. Validates completely and throws {@link MessageItemDecodeError} for
-   * anything that is not exactly one well-formed item of this type. */
-  decode(bytes: Uint8Array): TRaw
+   * anything that is not exactly one well-formed item of this type. Decodes under the enclosing
+   * message's budget in `context`, never a fresh one. */
+  decode(bytes: Uint8Array, context: MessageItemDecodeContext): TRaw
   /** Only for value-carrying types (e.g. a legacy stealth payment) -- omit entirely for types that
    * never carry value of their own. A plain sort/badge-value `number`, not a `bigint` wei amount.
    * Same raw-item, synchronous constraint as `previewText`: this reads whatever the type already
    * read before the registry existed (e.g. stealth's own self-reported `amount`), not a
    * chain-verified figure (ticket #60). A type that needs a real verified wei amount (e.g.
-   * blackjack's wager) should use `hydrate`/`reduceState` instead, not this hook. */
+   * blackjack's wager) should use `hydrate`/`reduceState` instead, not this hook. Must return a
+   * finite number, never NaN: a field it reads is validated when the item is decoded. */
   tallyValue?(raw: TRaw): number
   /** Groups items of this type into independent threads (e.g. one per blackjack hand) before
    * folding state with `reduceState`. Synchronous, operates on the raw item (a thread key is
@@ -394,15 +413,22 @@ export interface MessageItemRegistry {
   /** Synchronous preview text for one item; {@link UNSUPPORTED_MESSAGE_ITEM_PREVIEW} for a type
    * with no plugin. Safe to call from a UI getter. */
   previewText(item: MessageItem): string
-  /** Sum of every item's `tallyValue`; a type without the hook, or without a plugin, adds 0. */
+  /** Sum of every item's `tallyValue`; a type without the hook, or without a plugin, adds 0, and
+   * so does a value that is not a finite number. The sum is never NaN. */
   tallyValue(items: readonly MessageItem[]): number
   /** The item's bytes from its plugin. Throws {@link MessageItemUnsupportedError} for a type with
-   * no plugin and {@link MessageItemEncodeError} for an item its plugin refuses. */
+   * no plugin and {@link MessageItemEncodeError} for an item its plugin refuses. Whatever else a
+   * plugin's encoder throws is reported as {@link MessageItemEncodeError} too. */
   encodeItem(item: MessageItem): EncodedMessageItem
   /** The item for `bytes` from the plugin registered for `type`. An unregistered type yields an
    * `unsupported` result holding the same identifier and a copy of the same bytes. Malformed bytes
-   * for a registered type throw {@link MessageItemDecodeError}. */
-  decodeItem(type: string, bytes: Uint8Array): DecodedMessageItem
+   * for a registered type throw {@link MessageItemDecodeError}; whatever else a plugin's decoder
+   * throws is reported as that error too. `context` carries the enclosing message's budget. */
+  decodeItem(
+    type: string,
+    bytes: Uint8Array,
+    context: MessageItemDecodeContext,
+  ): DecodedMessageItem
 }
 
 export function createMessageItemRegistry(): MessageItemRegistry {
@@ -439,21 +465,47 @@ export function createMessageItemRegistry(): MessageItemRegistry {
         : UNSUPPORTED_MESSAGE_ITEM_PREVIEW
     },
     tallyValue(items) {
-      return items.reduce(
-        (total, item) =>
-          total + (plugins.get(item.type)?.tallyValue?.(item) ?? 0),
-        0,
-      )
+      // Never NaN: a value a plugin reports that is not a finite number adds nothing.
+      return items.reduce((total, item) => {
+        const value = plugins.get(item.type)?.tallyValue?.(item) ?? 0
+        return total + (Number.isFinite(value) ? value : 0)
+      }, 0)
     },
     encodeItem(item) {
       const plugin = plugins.get(item.type)
       if (!plugin) throw new MessageItemUnsupportedError(item.type)
-      return { type: item.type, bytes: plugin.encode(item) }
+      let bytes: Uint8Array
+      try {
+        bytes = plugin.encode(item)
+      } catch (error) {
+        if (error instanceof MessageItemEncodeError) throw error
+        throw new MessageItemEncodeError(
+          item.type,
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+      if (!(bytes instanceof Uint8Array))
+        throw new MessageItemEncodeError(item.type, 'the plugin wrote no bytes')
+      return { type: item.type, bytes }
     },
-    decodeItem(type, bytes) {
+    decodeItem(type, bytes, context) {
       const plugin = plugins.get(type)
       if (!plugin) return { kind: 'unsupported', type, bytes: bytes.slice() }
-      const item = plugin.decode(bytes) as MessageItem
+      let item: MessageItem
+      try {
+        item = plugin.decode(bytes, context) as MessageItem
+      } catch (error) {
+        if (error instanceof MessageItemDecodeError) throw error
+        throw new MessageItemDecodeError(
+          type,
+          error instanceof Error ? error.message : String(error),
+        )
+      }
+      if (item === null || typeof item !== 'object' || item.type !== type)
+        throw new MessageItemDecodeError(
+          type,
+          'the plugin returned an item of another type',
+        )
       return { kind: 'item', item }
     },
   }

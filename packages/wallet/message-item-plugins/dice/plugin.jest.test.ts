@@ -25,9 +25,10 @@ describePluginContract({
         rollId: 'r1',
         luckyNumber: 12345,
         isWin: true,
-        serverSecret: 's',
+        serverSecret: '5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a',
         payoutWei: '19',
-        txHash: '0x1',
+        txHash:
+          '0x0101010101010101010101010101010101010101010101010101010101010101',
       },
       preview: 'Satoshi Dice: Rolled 12345 (Win!)',
     },

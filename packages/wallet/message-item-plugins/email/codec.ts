@@ -11,7 +11,10 @@ import {
 } from '@frank/codec'
 import type { EmailItem } from '@frank/cashweb/types/messages'
 
-import { MessageItemDecodeError } from '../registry'
+import {
+  MessageItemDecodeError,
+  type MessageItemDecodeContext,
+} from '../registry'
 import { decodeWith, openItemFrame } from '../shared/frame'
 
 export function encodeEmailItem(item: EmailItem): Uint8Array {
@@ -30,8 +33,11 @@ export function encodeEmailItem(item: EmailItem): Uint8Array {
   })
 }
 
-export function decodeEmailItem(bytes: Uint8Array): EmailItem {
-  const parsed = openItemFrame('email', bytes)
+export function decodeEmailItem(
+  bytes: Uint8Array,
+  context: MessageItemDecodeContext,
+): EmailItem {
+  const parsed = openItemFrame('email', bytes, context)
   if (!isEmailMessageItemFrame(parsed))
     throw new MessageItemDecodeError('email', 'not an email item frame')
   return decodeWith('email', () => ({

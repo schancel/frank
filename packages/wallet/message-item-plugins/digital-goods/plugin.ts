@@ -13,7 +13,7 @@ import {
   type MessageItemPluginCapabilities,
   type MessageItemRegistry,
 } from '../registry'
-import { decodeDigitalGoods, encodeDigitalGoods } from './codec'
+import { digitalGoodsCodec } from './codec'
 
 export interface HydratedDigitalGoods extends DigitalGoodsItem {
   /** Only set for `request` -- copied straight from the message's own relay-verified stamp value,
@@ -47,7 +47,7 @@ export function initDigitalGoodsPlugin(
           return raw.message ?? 'Purchase error'
       }
     },
-    encode: encodeDigitalGoods,
-    decode: decodeDigitalGoods,
+    encode: digitalGoodsCodec.encode,
+    decode: digitalGoodsCodec.decode,
   })
 }

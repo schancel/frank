@@ -7,6 +7,7 @@ import { BLACKJACK_HAND_V3_ITEMS } from '../../../frank-codec/fixtures/blackjack
 import { handPreviewText } from '../blackjack/hand'
 import { MessageItemDecodeError } from '../registry'
 import {
+  standaloneDecodeContext,
   describePluginContract,
   registryWith,
 } from '../shared/plugin-contract.testutil'
@@ -59,8 +60,8 @@ describe('blackjack-hand wire bytes', () => {
       gameId: '0'.repeat(32),
       action: 'hit',
     })
-    expect(() => registry.decodeItem('blackjack-hand', schema2)).toThrow(
-      MessageItemDecodeError,
-    )
+    expect(() =>
+      registry.decodeItem('blackjack-hand', schema2, standaloneDecodeContext()),
+    ).toThrow(MessageItemDecodeError)
   })
 })

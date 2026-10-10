@@ -1,79 +1,83 @@
 import type { PokerItem, PokerPlayerView } from '@frank/cashweb/types/messages'
 
 import {
+  amount,
   bool,
   cborItemCodec,
-  list,
-  num,
+  evmAddress,
+  hash32,
+  listOf,
   oneOf,
   opt,
   req,
+  str,
   struct,
-  text,
 } from '../shared/cbor-fields'
+import { card, cardOrHidden, chips, id, players } from '../shared/limits'
 
 const player = struct<PokerPlayerView>({
-  address: req(0, text),
-  chips: req(1, num),
-  currentStreetBet: req(2, num),
-  totalHandBet: req(3, num),
+  address: req(0, evmAddress),
+  chips: req(1, chips),
+  currentStreetBet: req(2, chips),
+  totalHandBet: req(3, chips),
   folded: req(4, bool),
   isAllIn: req(5, bool),
   isDealerButton: req(6, bool),
   isSmallBlind: req(7, bool),
   isBigBlind: req(8, bool),
-  holeCards: opt(9, list(num)),
+  // Two cards; the bot writes -1 for a card that is not dealt or not shown.
+  holeCards: opt(9, listOf(cardOrHidden, 2)),
 })
 
 export const pokerCodec = cborItemCodec<PokerItem>('poker', {
-  tableId: req(0, text),
+  tableId: req(0, id),
   action: req(
     1,
     oneOf('create', 'join', 'deal', 'action', 'showdown', 'settle'),
   ),
-  buyInWei: opt(2, text),
-  smallBlind: req(3, num),
-  bigBlind: req(4, num),
+  buyInWei: opt(2, amount),
+  smallBlind: req(3, chips),
+  bigBlind: req(4, chips),
   street: opt(
     5,
     oneOf('preflop', 'flop', 'turn', 'river', 'showdown', 'settled'),
   ),
-  pot: req(6, num),
+  pot: req(6, chips),
   sidePots: opt(
     7,
-    list(
+    players(
       struct<NonNullable<PokerItem['sidePots']>[number]>({
-        amount: req(0, num),
-        eligiblePlayers: req(1, list(text)),
+        amount: req(0, chips),
+        eligiblePlayers: req(1, players(evmAddress)),
       }),
     ),
   ),
-  currentBet: opt(8, num),
-  minRaise: opt(9, num),
-  activePlayer: opt(10, text),
-  boardCards: opt(11, list(num)),
-  players: opt(12, list(player)),
-  myHoleCards: opt(13, list(num)),
+  currentBet: opt(8, chips),
+  minRaise: opt(9, chips),
+  activePlayer: opt(10, evmAddress),
+  boardCards: opt(11, listOf(card, 5)),
+  players: opt(12, players(player)),
+  myHoleCards: opt(13, listOf(cardOrHidden, 2)),
   lastAction: opt(
     14,
     struct<NonNullable<PokerItem['lastAction']>>({
-      player: req(0, text),
+      player: req(0, evmAddress),
       action: req(1, oneOf('check', 'call', 'bet', 'raise', 'fold', 'all_in')),
-      amount: opt(2, num),
+      amount: opt(2, chips),
     }),
   ),
   winners: opt(
     15,
-    list(
+    players(
       struct<NonNullable<PokerItem['winners']>[number]>({
-        address: req(0, text),
-        amount: req(1, num),
-        handDescription: opt(2, text),
-        best5Cards: opt(3, list(num)),
+        address: req(0, evmAddress),
+        amount: req(1, chips),
+        handDescription: opt(2, str(128)),
+        best5Cards: opt(3, listOf(card, 5)),
       }),
     ),
   ),
-  winnerAddress: opt(16, text),
-  txHash: opt(17, text),
-  stealthAddress: opt(18, text),
+  winnerAddress: opt(16, evmAddress),
+  txHash: opt(17, hash32),
+  stealthAddress: opt(18, evmAddress),
 })

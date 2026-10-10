@@ -80,6 +80,7 @@ import {
   type CanonicalDirectory,
 } from "./monad-chain";
 import type { EvmChainConfig } from "./evm-chain-config";
+import { withDefaultMessageItems } from './message-items.testutil'
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
 import {
@@ -234,7 +235,7 @@ async function fixture(funded = true) {
     subAccountPoolSize: 0,
     walletStorageLocation: join(directory, 'wallet'),
   }
-  const chain = createEvmChain(config)
+  const chain = withDefaultMessageItems(createEvmChain(config))
   const alice = (await chain.createWallet(roots(0))) as EvmChainWalletHandle,
     bob = (await chain.createWallet(roots(1))) as EvmChainWalletHandle
   // Stand-in for confirmed funding: single-use accounts the offline RPC reports as funded.
@@ -777,9 +778,9 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       f.chain.directMessages.send({
         wallet: f.alice,
         recipient: f.bob.identity.address,
-        items: [{ type: 'image', image: 'data:' } as never],
+        items: [{ type: 'hologram' } as never],
       }),
-    ).rejects.toThrow("cannot carry 'image' items")
+    ).rejects.toThrow("cannot carry 'hologram' items")
     await expect(
       f.chain.directMessages.send({
         wallet: f.alice,
@@ -2205,12 +2206,13 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         f.alice,
         await f.directoryFor('alice', f.alice, f.bob),
       )
+      // A type no installed plugin owns. (An image is a registered type and is carried now.)
       const unsupported = await refusal({
-        items: [{ type: 'image', image: 'data:' } as never],
+        items: [{ type: 'hologram' } as never],
       })
       expect(unsupported.error).toBeInstanceOf(Error)
       expect((unsupported.error as Error).message).toBe(
-        "Canonical direct messages cannot carry 'image' items yet; nothing was paid or sent.",
+        "Canonical direct messages cannot carry 'hologram' items yet; nothing was paid or sent.",
       )
       expectNothingAttempted(unsupported)
       const empty = await refusal({ items: [] })

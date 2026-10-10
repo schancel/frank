@@ -67,9 +67,12 @@ To ensure byte-for-byte deterministic hashing across all languages (TypeScript, 
 | **15**  | `0x000f` | Forum Operation Status                           | `forum-operation-status`         | Relay submission/confirmation status report for an on-chain burn transaction                                  |
 | **16**  | `0x0010` | Container Message Item                           | `container-message-item`         | Opaque nested child frame container for multi-item deliveries                                                 |
 | **17**  | `0x0011` | UTF-8 Text Item                                  | `text-message-item`              | Plaintext chat message text up to 256 KiB                                                                     |
+| **18**  | `0x0012` | Blackjack Message Item                           | `blackjack item (closed shapes)` | Peer-to-peer blackjack hand and move items (closed payload shapes, up to 4 KiB)                               |
 | **19**  | `0x0013` | Stealth Payment Item                             | `stealth-message-item`           | Single-use ephemeral DKSAP on-chain transfer notification                                                     |
 | **24**  | `0x0018` | Universal State Channel Update                   | `channel-update-item`            | Instant off-chain multi-network state execution and interactive turns                                         |
 | **25**  | `0x0019` | Forwarding Delivery Envelope                     | `forwarding-delivery-envelope`   | Store-and-forward relay hop delivery envelope with storage stamps (up to 32 MiB)                              |
+| **26**  | `0x001a` | Email Bridge Message Item                        | `email-message-item`             | Email carried through a gateway: parties, subject, bodies, references and attachments                         |
+| **27**  | `0x001b` | Generic Plugin Message Item                      | `plugin-message-item`            | Application item type identifier with the owning plugin's opaque bytes (up to 512 KiB)                        |
 
 > [!NOTE]
 > **Database Pagination vs. Web Pages**: In Types 13 and 14 (`forum-topic-page` and `forum-discovery-page`), the term **"Page"** refers strictly to cursor-based database query result sets (holding up to 128 verified post observations with continuation cursors), not HTML documents or rendered web pages.

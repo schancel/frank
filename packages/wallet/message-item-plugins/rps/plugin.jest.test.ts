@@ -11,12 +11,18 @@ describePluginContract({
         action: 'challenge',
         matchId: 'm1',
         wagerWei: '100',
-        opponentAddress: '0xB',
+        opponentAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       },
       preview: 'Rock-Paper-Scissors Challenge',
     },
     {
-      item: { type: 'rps', action: 'start', matchId: 'm1', commitHash: 'ab' },
+      item: {
+        type: 'rps',
+        action: 'start',
+        matchId: 'm1',
+        commitHash:
+          'abababababababababababababababababababababababababababababababab',
+      },
       preview: 'Rock-Paper-Scissors Match',
     },
     {
@@ -29,9 +35,10 @@ describePluginContract({
         action: 'resolve',
         playerMove: 'rock',
         botMove: 'scissors',
-        secretSalt: 's',
+        secretSalt: '5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a',
         outcome: 'win',
-        txHash: '0x1',
+        txHash:
+          '0x0101010101010101010101010101010101010101010101010101010101010101',
       },
       preview: 'RPS Result: You won!',
     },

@@ -10,7 +10,6 @@
 import { homedir } from 'os'
 import { join, resolve } from 'path'
 
-import { DEMO_FUNDING_AMOUNT_WEI } from './demo-funding'
 import { parseTrust } from './directory-trust/index'
 import type { BundleRef, TrustInputs } from './directory-trust/index'
 import {
@@ -41,13 +40,11 @@ export interface DemoVar {
  * work without it, #364), every bot, and printed in the app command; a different value must be
  * given to all three. */
 export const DEMO_DEFAULT_BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
-/** Default `FAUCET_AMOUNT_WEI` on a real network: small, the faucet spends real testnet funds. */
-export const DEMO_REAL_FAUCET_AMOUNT_WEI = '50000000000000000' // 0.05 MON
-/** Default `FAUCET_AMOUNT_WEI` with `--fake-chain` (#362): the faucet ceiling, 1 MON. It covers the
- * cheapest blackjack hand (table minimum + default stamp + the app's fee reserve = 0.07 MON), a
- * raffle entry, a shop purchase and several DMs with a wide margin. Fake funds cost nothing; the
- * per-address and daily caps still bind. */
-export const DEMO_FAKE_FAUCET_AMOUNT_WEI = DEMO_FUNDING_AMOUNT_WEI // 1 MON
+/** Default `FAUCET_AMOUNT_WEI`: small, the faucet spends real testnet funds. */
+export const DEMO_FAUCET_AMOUNT_WEI = '50000000000000000' // 0.05 MON
+/** A bot address below this is not funded: the bot host tops an address up from the funding wallet
+ * when it holds less (0.1 MON, ten default stamps). The launcher checks it on chain. */
+export const DEMO_MIN_BOT_BALANCE_WEI = 100_000_000_000_000_000n
 /** The raffle round size the demo uses (the bot's own default is unchanged). */
 export const DEMO_RAFFLE_MAX_ENTRIES = '5'
 /** Least a funded profile needs for one minimum-bet blackjack hand: the table minimum, the default
@@ -70,26 +67,13 @@ export const DEMO_VARS: readonly DemoVar[] = [
     scope: 'launcher',
     default: '~/.frank-demo',
     description:
-      'One directory holding every bot identity, bot state, the relay database, the fake-chain wallet and the logs. Reused across runs.',
-  },
-  {
-    name: 'FRANK_DEMO_FAKE_CHAIN',
-    scope: 'launcher',
-    default: '0',
-    description:
-      'Set to 1 (same as the --fake-chain flag) to run against a built-in fake Monad JSON-RPC: no keys, no funds, no network.',
+      'One directory holding every bot identity, bot state, the relay database and the logs. Reused across runs.',
   },
   {
     name: 'FRANK_DEMO_RELAY_PORT',
     scope: 'relay',
     default: '8098',
     description: 'Port the local relay listens on (127.0.0.1).',
-  },
-  {
-    name: 'FRANK_DEMO_FAKE_RPC_PORT',
-    scope: 'chain',
-    default: '8545',
-    description: 'Port of the fake-chain RPC (only with FRANK_DEMO_FAKE_CHAIN=1).',
   },
   {
     name: 'FRANK_DEMO_NGROK',
@@ -188,14 +172,15 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'MONAD_TESTNET_HTTP_RPC_URL',
     scope: 'chain',
-    default: 'required unless fake chain',
-    description: 'Monad TESTNET JSON-RPC URL (chain id 10143). May embed an API key.',
+    default: 'required',
+    description:
+      'Monad TESTNET JSON-RPC URL (chain id 10143), or several separated by commas (the relay and the bots use the first that answers; a tool given the whole value as one URL gets an authentication error). May embed an API key.',
     secret: true,
   },
   {
     name: 'MONAD_TESTNET_WS_RPC_URL',
     scope: 'chain',
-    default: 'optional on a real chain; unset with fake chain',
+    default: 'optional',
     description: 'Monad TESTNET WebSocket JSON-RPC URL used by the relay proxy. May embed an API key.',
     secret: true,
   },
@@ -241,24 +226,16 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'E2E_DEMO_MAIN_WALLET_JSON',
     scope: 'wallet',
-    default: 'required unless fake chain',
+    default: 'required',
     description:
-      'Not allowed with --fake-chain (a throwaway wallet is generated). Path of a JSON file {"address","privateKey"} of a funded TESTNET wallet that pays for bot stamps and payouts. Read by the bots, never by the launcher. chmod 600.',
-    secret: true,
-  },
-  {
-    name: 'FRANK_DEMO_FAUCET_WALLET_JSON',
-    scope: 'wallet',
-    default: 'required on a real network unless FRANK_DEMO_NO_FAUCET=1',
-    description:
-      'Path of a SEPARATE funded testnet wallet file for the faucet (it must differ from E2E_DEMO_MAIN_WALLET_JSON: two processes sending from one wallet reuse nonces, and the faucet should not hold the stamp wallet). Not allowed with --fake-chain.',
+      'Path of a JSON file {"address","privateKey"} of a funded TESTNET wallet. It is the ONE funding wallet of the demo: the single bot process funds every bot from it and the faucet pays new profiles from it, so there is one source of nonces. The launcher reads only its address (to check balances). chmod 600.',
     secret: true,
   },
   {
     name: 'FRANK_DEMO_NO_FAUCET',
     scope: 'faucet',
     default: '0',
-    description: 'Set to 1 to run without the faucet on a real network.',
+    description: 'Set to 1 to run without the faucet.',
   },
   {
     name: 'QWEN_API_KEY',
@@ -345,9 +322,9 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'FAUCET_AMOUNT_WEI',
     scope: 'faucet',
-    default: `${DEMO_REAL_FAUCET_AMOUNT_WEI} (0.05 MON); ${DEMO_FAKE_FAUCET_AMOUNT_WEI} (1 MON) with --fake-chain`,
+    default: `${DEMO_FAUCET_AMOUNT_WEI} (0.05 MON)`,
     description:
-      'MON sent to each new profile. The 0.05 MON real-network default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. With --fake-chain the default is 1 MON. FAUCET_MAX_PER_DAY and the per-address rule still apply.',
+      'MON sent to each new profile. The 0.05 MON default is small on purpose and is NOT enough for a blackjack hand (0.07 MON minimum: 0.01 bet + 0.01 stamp + 0.05 fee reserve); raise it (ceiling 1 MON) if you want players to be able to play. FAUCET_MAX_PER_DAY and the per-address rule still apply.',
   },
   {
     name: 'FAUCET_MAX_PER_DAY',
@@ -359,7 +336,7 @@ export const DEMO_VARS: readonly DemoVar[] = [
     name: 'FAUCET_MIN_RESERVE_WEI',
     scope: 'faucet',
     default: '100000000000000000',
-    description: 'The faucet wallet keeps at least this balance.',
+    description: 'The faucet stops paying when the funding wallet would drop below this balance.',
   },
   {
     name: 'FRANK_BOT_PEER_DENYLIST',
@@ -400,11 +377,6 @@ export const TOOLCHAIN_VARS = ['PROTOC', 'CARGO', 'CARGO_HOME', 'CARGO_TARGET_DI
 /** The Quasar dev server's port (`devServer.port` in app/quasar.config.js). */
 export const APP_DEV_PORT = 8080
 
-/** A duration far longer than any demo, in place of the bots' 10-minute idle exit. */
-export const NEVER_IDLE_MS = String(30 * 24 * 60 * 60 * 1000)
-
-const INBOX_POLLING = /Polling .*(inbox|\/message\/monad\/inbox)/
-
 export type BotName =
   | 'blackjack'
   | 'raffle'
@@ -419,21 +391,21 @@ export type BotName =
 
 export interface DemoBot {
   name: BotName
-  /** Bot entry file, relative to packages/bot. */
-  script: string
-  env: Record<string, string>
-  /** The state directory the bot's host is started with; its profile is `bots/<name>` inside. */
-  hostStateDir: string
   /** The exported identity file, inside the state directory. The bot is told this path, so it
    * never falls back to a default outside the state directory. */
-  identityJson?: string
-  /** Stdout pattern printed once the bot is running its loop. A profile that already exists on the
-   * relay from an earlier run does not mean the bot has started, so this is always required. */
-  readyLine: RegExp
+  identityJson: string
+}
+
+/** The one process that runs every bot on one bot host (`targets/all-bots.ts`). */
+export interface DemoBotProcess {
+  /** Entry file, relative to packages/bot. */
+  script: string
+  env: Record<string, string>
+  /** The host's state directory; each bot's profile is `bots/<name>` inside. */
+  hostStateDir: string
 }
 
 export interface DemoConfig {
-  fakeChain: boolean
   ngrok: boolean
   ngrokBin: string
   ngrokConfig?: string
@@ -445,7 +417,6 @@ export interface DemoConfig {
   stateDir: string
   relayPort: number
   relayUrl: string
-  fakeRpcPort: number
   rpcUrl: string
   wsRpcUrl?: string
   chronikUrl: string
@@ -456,8 +427,6 @@ export interface DemoConfig {
   stampBurnAddress: string
   /** Wei the faucet sends each new profile (undefined when there is no faucet). */
   faucetAmountWei?: string
-  /** Fake chain only: the JSON ledger that persists the chain across launcher restarts. */
-  fakeChainLedger?: string
   /** Port the app's dev server serves on (fixed by app/quasar.config.js). */
   appPort: number
   mainWalletJson: string
@@ -468,6 +437,7 @@ export interface DemoConfig {
   /** Secret-bearing values that must never be printed. */
   secrets: string[]
   bots: DemoBot[]
+  botProcess: DemoBotProcess
 }
 
 /** Separate, explicit integration selection. It never enables production relay/DM routes. */
@@ -596,7 +566,6 @@ function wei(name: string, raw: string | undefined, dflt: string, problems: stri
 export function resolveDemoConfig(params: {
   env: Record<string, string | undefined>
   envFile: Record<string, string>
-  fakeChainFlag: boolean
   ngrokFlag?: boolean
   /** Used to place the default state dir and resolve relative paths. */
   home?: string
@@ -610,7 +579,6 @@ export function resolveDemoConfig(params: {
   }
   const problems: string[] = []
   const noFaucet = merged.FRANK_DEMO_NO_FAUCET === '1'
-  const fakeChain = params.fakeChainFlag || merged.FRANK_DEMO_FAKE_CHAIN === '1'
   const ngrok = params.ngrokFlag || merged.FRANK_DEMO_NGROK === '1' || merged.FRANK_DEMO_NGROK === 'true'
   const ngrokBin = merged.FRANK_DEMO_NGROK_BIN || 'ngrok'
   const ngrokConfig = merged.FRANK_DEMO_NGROK_CONFIG ? resolve(cwd, merged.FRANK_DEMO_NGROK_CONFIG) : undefined
@@ -629,7 +597,6 @@ export function resolveDemoConfig(params: {
 
   const stateDir = resolve(cwd, merged.FRANK_DEMO_STATE_DIR || join(home, '.frank-demo'))
   const relayPort = port('FRANK_DEMO_RELAY_PORT', merged.FRANK_DEMO_RELAY_PORT, 8098, problems)
-  const fakeRpcPort = port('FRANK_DEMO_FAKE_RPC_PORT', merged.FRANK_DEMO_FAKE_RPC_PORT, 8545, problems)
   const networkTag = merged.FRANK_NETWORK_TAG || 'MONT'
   if (networkTag !== 'MONT') {
     problems.push(`FRANK_NETWORK_TAG must be MONT: the demo runs on Monad testnet only (got "${networkTag}")`)
@@ -646,50 +613,27 @@ export function resolveDemoConfig(params: {
     problems.push(`MONAD_STAMP_BURN_ADDRESS must be 0x followed by 40 hex characters, got "${stampBurnAddress}"`)
   }
 
-  let rpcUrl = merged.MONAD_TESTNET_HTTP_RPC_URL ?? ''
-  let wsRpcUrl = merged.MONAD_TESTNET_WS_RPC_URL || undefined
-  let mainWalletJson = merged.E2E_DEMO_MAIN_WALLET_JSON ? resolve(cwd, merged.E2E_DEMO_MAIN_WALLET_JSON) : ''
-  if (fakeChain) {
-    // The fake chain generates its own throwaway wallets; a real wallet file must never be used
-    // (or even read) alongside it.
-    for (const name of ['E2E_DEMO_MAIN_WALLET_JSON', 'FRANK_DEMO_FAUCET_WALLET_JSON']) {
-      if (merged[name]) {
-        problems.push(
-          `${name} is set, but --fake-chain generates its own throwaway wallets and never uses a real one: unset it, or drop --fake-chain`,
-        )
-      }
-    }
-    rpcUrl = `http://127.0.0.1:${fakeRpcPort}`
-    if (wsRpcUrl) {
-      problems.push(
-        'MONAD_TESTNET_WS_RPC_URL is set, but --fake-chain does not provide a WebSocket RPC: unset it, or drop --fake-chain',
-      )
-    }
-    wsRpcUrl = undefined
-    // The fake chain has no real funds: a wallet is generated under the state dir if none is given.
-    mainWalletJson = join(stateDir, 'fake-chain-wallet.json')
-  } else {
-    if (!rpcUrl) {
-      problems.push(
-        'MONAD_TESTNET_HTTP_RPC_URL is required (set it in the environment or your .env file), or run with --fake-chain',
-      )
-    } else if (
-      !rpcUrl
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .every((u) => /^https?:\/\//.test(u))
-    ) {
-      problems.push('MONAD_TESTNET_HTTP_RPC_URL must be an http(s) URL')
-    }
-    if (wsRpcUrl && !/^wss?:\/\//.test(wsRpcUrl)) {
-      problems.push('MONAD_TESTNET_WS_RPC_URL must be a ws(s) URL')
-    }
-    if (!mainWalletJson) {
-      problems.push(
-        'E2E_DEMO_MAIN_WALLET_JSON is required (path of a funded testnet wallet file {"address","privateKey"}), or run with --fake-chain',
-      )
-    }
+  const rpcUrl = merged.MONAD_TESTNET_HTTP_RPC_URL ?? ''
+  const wsRpcUrl = merged.MONAD_TESTNET_WS_RPC_URL || undefined
+  const mainWalletJson = merged.E2E_DEMO_MAIN_WALLET_JSON ? resolve(cwd, merged.E2E_DEMO_MAIN_WALLET_JSON) : ''
+  if (!rpcUrl) {
+    problems.push('MONAD_TESTNET_HTTP_RPC_URL is required (set it in the environment or your .env file)')
+  } else if (
+    !rpcUrl
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .every((u) => /^https?:\/\//.test(u))
+  ) {
+    problems.push('MONAD_TESTNET_HTTP_RPC_URL must be an http(s) URL')
+  }
+  if (wsRpcUrl && !/^wss?:\/\//.test(wsRpcUrl)) {
+    problems.push('MONAD_TESTNET_WS_RPC_URL must be a ws(s) URL')
+  }
+  if (!mainWalletJson) {
+    problems.push(
+      'E2E_DEMO_MAIN_WALLET_JSON is required (path of a funded testnet wallet file {"address","privateKey"})',
+    )
   }
 
   const chronikUrl = merged.XEC_TESTNET_CHRONIK_URL || 'https://chronik-testnet.fabien.cash'
@@ -718,7 +662,7 @@ export function resolveDemoConfig(params: {
   const faucetAmountWei = wei(
     'FAUCET_AMOUNT_WEI',
     merged.FAUCET_AMOUNT_WEI,
-    fakeChain ? DEMO_FAKE_FAUCET_AMOUNT_WEI : DEMO_REAL_FAUCET_AMOUNT_WEI,
+    DEMO_FAUCET_AMOUNT_WEI,
     problems,
   )
   if (/^[0-9]+$/.test(faucetAmountWei) && BigInt(faucetAmountWei) > MAX_AMOUNT_WEI) {
@@ -732,242 +676,60 @@ export function resolveDemoConfig(params: {
     problems.push(`RAFFLE_BOT_MAX_ENTRIES must be an integer >= 2, got "${raffleMax}"`)
   }
 
-  if (!fakeChain && !noFaucet) {
-    // Least privilege: the faucet never shares the stamp wallet.
-    const faucetPath = merged.FRANK_DEMO_FAUCET_WALLET_JSON ? resolve(cwd, merged.FRANK_DEMO_FAUCET_WALLET_JSON) : ''
-    if (!faucetPath) {
-      problems.push(
-        'FRANK_DEMO_FAUCET_WALLET_JSON is required on a real network (a separate funded testnet wallet for the faucet), or set FRANK_DEMO_NO_FAUCET=1 to run without the faucet',
-      )
-    } else if (faucetPath === mainWalletJson) {
-      problems.push('FRANK_DEMO_FAUCET_WALLET_JSON must be a different file from E2E_DEMO_MAIN_WALLET_JSON')
-    }
-  }
-
   if (problems.length > 0) throw new DemoConfigError(problems)
 
   const relayUrl = `http://127.0.0.1:${relayPort}`
-  const faucetWallet = fakeChain
-    ? join(stateDir, 'fake-chain-faucet-wallet.json')
-    : merged.FRANK_DEMO_FAUCET_WALLET_JSON
-    ? resolve(cwd, merged.FRANK_DEMO_FAUCET_WALLET_JSON)
-    : ''
+  const idPath = (bot: string) => join(stateDir, 'bots', bot, 'identity.json')
+  const names: BotName[] = (
+    ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice', 'liars-dice', 'poker'] as BotName[]
+  ).filter(name => !(noFaucet && name === 'faucet'))
+  const bots: DemoBot[] = names.map(name => ({ name, identityJson: idPath(name) }))
 
-  const common: Record<string, string> = {
+  // ONE process runs every bot on one bot host, so the funding wallet has one user and one nonce
+  // counter. Each bot still has its own identity and state under the host's state directory.
+  const hostStateDir = join(stateDir, 'bot-host')
+  const botEnv: Record<string, string> = {
     E2E_DEMO_RELAY_URL: relayUrl,
     MONAD_TESTNET_HTTP_RPC_URL: rpcUrl,
     FRANK_NETWORK_TAG: networkTag,
     CASHWEB_STAMP_MIN_BURN_VALUE_WEI: minStampWei,
     MONAD_STAMP_BURN_ADDRESS: stampBurnAddress,
+    E2E_DEMO_MAIN_WALLET_JSON: mainWalletJson,
+    BOT_STATE_DIR: hostStateDir,
+    FRANK_BOTS: names.join(','),
+    RAFFLE_BOT_MAX_ENTRIES: raffleMax,
+    QWEN_BOT_MODE: qwenMode,
+    ...(qwenMode === 'live'
+      ? {
+          QWEN_API_KEY: qwenKey as string,
+          QWEN_OPENAI_COMPATIBLE_ENDPOINT: merged.QWEN_OPENAI_COMPATIBLE_ENDPOINT as string,
+          ...(merged.QWEN_MODEL ? { QWEN_MODEL: merged.QWEN_MODEL } : {}),
+        }
+      : {}),
+    ...(noFaucet ? {} : { FAUCET_AMOUNT_WEI: faucetAmountWei, FAUCET_MAX_PER_RUN: '1000' }),
   }
-  // The stamp wallet goes ONLY to the bots that pay stamps or payouts from it. Every bot but the
-  // faucet does: each sends replies through stamp sub-accounts funded from it
-  // (`setUpFundedStampClient`), the dealer and raffle also pay out from it. The faucet gets its
-  // own wallet and never this one.
-  const stampWallet = { E2E_DEMO_MAIN_WALLET_JSON: mainWalletJson }
+  for (const name of names) {
+    botEnv[`${name.toUpperCase().replace(/-/g, '_')}_BOT_IDENTITY_JSON`] = idPath(name)
+  }
   for (const name of PASSTHROUGH) {
     const value = merged[name]
-    if (value) common[name] = value
+    if (value) botEnv[name] = value
   }
-
-  // Everything that belongs to the fake chain lives together, so deleting `<state dir>/fake-chain`
-  // resets the chain AND the faucet's memory of whom it funded (they must never disagree: a
-  // faucet that remembers a funding the chain has forgotten leaves profiles at 0 MON).
-  const fakeChainDir = join(stateDir, 'fake-chain')
-
-  const idPath = (bot: string) => join(stateDir, 'bots', bot, 'identity.json')
-  const stateOf = (bot: string) => join(stateDir, 'bots', bot, 'state')
-  // The faucet's profile and its identity file sit beside the ledger on the fake chain, so
-  // deleting `fake-chain` resets all three together.
-  const faucetState = fakeChain ? join(fakeChainDir, 'faucet-state') : stateOf('faucet')
-  const faucetIdentity = fakeChain ? join(fakeChainDir, 'faucet-identity.json') : idPath('faucet')
-
-  const bots: DemoBot[] = [
-    {
-      name: 'blackjack',
-      script: 'blackjack-bot.livecheck.ts',
-      identityJson: idPath('blackjack'),
-      hostStateDir: stateOf('blackjack'),
-      readyLine: INBOX_POLLING,
-      env: {
-        ...common,
-        ...stampWallet,
-        BLACKJACK_BOT_IDENTITY_JSON: idPath('blackjack'),
-        BLACKJACK_BOT_STATE_DIR: stateOf('blackjack'),
-        BLACKJACK_BOT_IDLE_TIMEOUT_MS: NEVER_IDLE_MS,
-      },
-    },
-    {
-      name: 'raffle',
-      script: 'raffle-bot.livecheck.ts',
-      identityJson: idPath('raffle'),
-      hostStateDir: stateOf('raffle'),
-      readyLine: INBOX_POLLING,
-      env: {
-        ...common,
-        ...stampWallet,
-        RAFFLE_BOT_IDENTITY_JSON: idPath('raffle'),
-        RAFFLE_BOT_STATE_DIR: stateOf('raffle'),
-        RAFFLE_BOT_MAX_ENTRIES: raffleMax,
-        RAFFLE_BOT_IDLE_TIMEOUT_MS: NEVER_IDLE_MS,
-      },
-    },
-    {
-      name: 'vendor',
-      script: 'vendor-bot.livecheck.ts',
-      identityJson: idPath('vendor'),
-      hostStateDir: stateOf('vendor'),
-      readyLine: INBOX_POLLING,
-      env: {
-        ...common,
-        ...stampWallet,
-        VENDOR_BOT_IDENTITY_JSON: idPath('vendor'),
-        VENDOR_BOT_STATE_DIR: stateOf('vendor'),
-        VENDOR_BOT_IDLE_TIMEOUT_MS: NEVER_IDLE_MS,
-      },
-    },
-    {
-      name: 'qwen',
-      script: 'qwen-bot.livecheck.ts',
-      identityJson: idPath('qwen'),
-      hostStateDir: stateOf('qwen'),
-      readyLine: INBOX_POLLING,
-      env: {
-        ...common,
-        ...stampWallet,
-        ...(merged.QWEN_BOT_CANONICAL_ROOTS_JSON
-          ? { QWEN_BOT_CANONICAL_ROOTS_JSON: resolve(cwd, merged.QWEN_BOT_CANONICAL_ROOTS_JSON) }
-          : {}),
-        QWEN_BOT_MODE: qwenMode,
-        ...(qwenMode === 'live'
-          ? {
-              QWEN_API_KEY: qwenKey as string,
-              QWEN_OPENAI_COMPATIBLE_ENDPOINT: merged.QWEN_OPENAI_COMPATIBLE_ENDPOINT as string,
-              ...(merged.QWEN_MODEL ? { QWEN_MODEL: merged.QWEN_MODEL } : {}),
-            }
-          : {}),
-        QWEN_BOT_IDENTITY_JSON: idPath('qwen'),
-        QWEN_BOT_HANDOFF_JSON: join(stateDir, 'bots', 'qwen', 'handoff.json'),
-        QWEN_BOT_STATE_DIR: stateOf('qwen'),
-        QWEN_BOT_WALLET_STATE_DIR: join(
-          stateDir,
-          'bots',
-          'qwen',
-          'wallet-state',
-        ),
-        // The faucet funds new users; the Qwen bot must not fund them a second time.
-        QWEN_BOT_FUND_VALUE_WEI: '0',
-      },
-    },
-    ...(noFaucet
-      ? []
-      : [
-          {
-            name: 'faucet' as BotName,
-            script: 'faucet-bot.livecheck.ts',
-            identityJson: faucetIdentity,
-            hostStateDir: faucetState,
-            readyLine: /Faucet wallet:|Polling .*(inbox|\/message\/monad\/inbox)/,
-            env: {
-              ...common,
-              E2E_DEMO_MAIN_WALLET_JSON: faucetWallet,
-              FAUCET_BOT_IDENTITY_JSON: faucetIdentity,
-              FAUCET_STATE_DIR: faucetState,
-              FAUCET_AMOUNT_WEI: faucetAmountWei,
-              FAUCET_MAX_PER_RUN: '1000',
-            },
-          },
-        ]),
-    {
-      name: 'lobby',
-      script: 'targets/lobby.ts',
-      identityJson: idPath('lobby'),
-      hostStateDir: stateOf('lobby'),
-      readyLine: /\[lobby-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
-      env: {
-        ...common,
-        ...stampWallet,
-        LOBBY_BOT_IDENTITY_JSON: idPath('lobby'),
-        LOBBY_BOT_STATE_DIR: stateOf('lobby'),
-        BOT_STATE_DIR: stateOf('lobby'),
-      },
-    },
-    {
-      name: 'rps',
-      script: 'targets/rps.ts',
-      identityJson: idPath('rps'),
-      hostStateDir: stateOf('rps'),
-      readyLine: /\[rps-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
-      env: {
-        ...common,
-        ...stampWallet,
-        RPS_BOT_IDENTITY_JSON: idPath('rps'),
-        RPS_BOT_STATE_DIR: stateOf('rps'),
-        BOT_STATE_DIR: stateOf('rps'),
-      },
-    },
-    {
-      name: 'dice',
-      script: 'targets/dice.ts',
-      identityJson: idPath('dice'),
-      hostStateDir: stateOf('dice'),
-      readyLine: /\[dice-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
-      env: {
-        ...common,
-        ...stampWallet,
-        DICE_BOT_IDENTITY_JSON: idPath('dice'),
-        DICE_BOT_STATE_DIR: stateOf('dice'),
-        BOT_STATE_DIR: stateOf('dice'),
-      },
-    },
-    {
-      name: 'liars-dice',
-      script: 'targets/liars-dice.ts',
-      identityJson: idPath('liars-dice'),
-      hostStateDir: stateOf('liars-dice'),
-      readyLine: /\[liars-dice-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
-      env: {
-        ...common,
-        ...stampWallet,
-        LIARS_DICE_BOT_IDENTITY_JSON: idPath('liars-dice'),
-        LIARS_DICE_BOT_STATE_DIR: stateOf('liars-dice'),
-        BOT_STATE_DIR: stateOf('liars-dice'),
-      },
-    },
-    {
-      name: 'poker',
-      script: 'targets/poker.ts',
-      identityJson: idPath('poker'),
-      hostStateDir: stateOf('poker'),
-      readyLine: /\[poker-target\]|Polling .*(inbox|\/message\/monad\/inbox)/,
-      env: {
-        ...common,
-        ...stampWallet,
-        POKER_BOT_IDENTITY_JSON: idPath('poker'),
-        POKER_BOT_STATE_DIR: stateOf('poker'),
-        BOT_STATE_DIR: stateOf('poker'),
-      },
-    },
-  ]
+  const botProcess: DemoBotProcess = { script: 'targets/all-bots.ts', env: botEnv, hostStateDir }
 
   const secrets = [
-    ...(fakeChain
-      ? []
-      : [
-          rpcUrl,
-          ...rpcUrl
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean),
-        ]),
+    rpcUrl,
+    ...rpcUrl
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
     wsRpcUrl,
-    fakeChain ? undefined : merged.XEC_TESTNET_CHRONIK_URL,
-    fakeChain ? undefined : merged.SOLANA_DEVNET_HTTP_RPC_URL,
+    merged.XEC_TESTNET_CHRONIK_URL,
+    merged.SOLANA_DEVNET_HTTP_RPC_URL,
     qwenKey,
     ngrokAuthtoken,
   ].filter((v): v is string => !!v)
   return {
-    fakeChain,
     ngrok,
     ngrokBin,
     ngrokConfig,
@@ -979,7 +741,6 @@ export function resolveDemoConfig(params: {
     stateDir,
     relayPort,
     relayUrl,
-    fakeRpcPort,
     rpcUrl,
     wsRpcUrl,
     chronikUrl,
@@ -988,7 +749,6 @@ export function resolveDemoConfig(params: {
     minStampWei,
     stampBurnAddress,
     faucetAmountWei: noFaucet ? undefined : faucetAmountWei,
-    fakeChainLedger: fakeChain ? join(fakeChainDir, 'ledger.json') : undefined,
     appPort: APP_DEV_PORT,
     mainWalletJson,
     cashwebdBin: merged.CASHWEBD_BIN || undefined,
@@ -1002,6 +762,7 @@ export function resolveDemoConfig(params: {
     qwenMode,
     secrets,
     bots,
+    botProcess,
   }
 }
 

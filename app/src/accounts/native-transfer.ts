@@ -115,7 +115,10 @@ export async function createNativeTransferContext(
           networkId: chainIdentifier,
           genesisHash,
           // Its journal for program calls (a swap), and its sync event as a note to self.
-          legacy: solanaLegacyWiring(),
+          legacy: solanaLegacyWiring(
+            signer.publicKey.toBase58(),
+            chainIdentifier,
+          ),
         })
       } finally {
         root.fill(0)

@@ -11,11 +11,15 @@
  * `src/accounts/solana-legacy` sends as the account's free note to itself. The swap history
  * (`src/stores/swaps`) is the fold of those notes; this device's journal supplies its own
  * records to it at once.
+ *
+ * A swap interrupted by a reload is finished by `resumeSolanaSwaps`, which runs when the
+ * account opens (`src/utils/monad-identity-session`), not when a swap screen does.
  */
 import {
   activeChain,
   getChainRegistryEntry,
   loadMonadChainConfigFromEnv,
+  PROTOCOL_CHAINS,
 } from '@frank/wallet/chain'
 import { getSolanaRpcUrls } from '@frank/wallet/chain/solana-balance'
 import {
@@ -29,7 +33,7 @@ import {
   SolanaSwapError,
   SolanaSwapRecordMismatchError,
   SolanaSwapStillPendingError,
-  announceSolanaLegacyTransaction,
+  resumeSolanaLegacyTransactions,
   swapRecordItemOf,
   trackSolanaSwap,
   type SolanaDexWallet,
@@ -44,8 +48,8 @@ import {
   type SwapAsset,
 } from '@frank/wallet/solana-swap'
 import { createNativeTransferContext } from '../accounts/native-transfer'
-import { accountSession } from '../accounts/session'
 import {
+  currentSolanaAccount as solanaAccount,
   sendSolanaLegacySyncNote,
   solanaLegacyJournal,
 } from '../accounts/solana-legacy'
@@ -65,27 +69,6 @@ export {
   SolanaSwapStillPendingError,
 }
 
-/** One tracker per swap, however many times a screen asks to follow it. */
-const tracking = new Map<string, Promise<SolanaSwapOutcome>>()
-
-function follow(
-  signature: string,
-  start: () => Promise<SolanaSwapOutcome>,
-): Promise<SolanaSwapOutcome> {
-  const running = tracking.get(signature)
-  if (running) return running
-  const tracked = start().finally(() => tracking.delete(signature))
-  tracking.set(signature, tracked)
-  return tracked
-}
-
-async function solanaAccount(): Promise<string> {
-  return (
-    accountSession.getCachedChainAddress?.('solana') ??
-    (await accountSession.getChainAddress('solana'))
-  )
-}
-
 async function connect(chainIdentifier: 'solana-devnet' | 'solana-mainnet') {
   const { Connection, PublicKey } = await import('@solana/web3.js')
   const [rpcUrl] = getSolanaRpcUrls({
@@ -103,6 +86,37 @@ const isSolanaNetwork = (
   (chainIdentifier === 'solana-devnet' || chainIdentifier === 'solana-mainnet')
 
 /**
+ * When the account opens: the Solana wallet's unfinished legacy transactions are followed to
+ * their outcome with their same signed bytes, and notes still owed are offered again, on every
+ * Solana network that lists an exchange. This device's own records go to the swap history at
+ * once. With nothing journaled this reads local storage and asks the network nothing.
+ * Throws when a journal cannot be read (that is not "nothing pending").
+ */
+export async function resumeSolanaSwaps(): Promise<void> {
+  const account = await solanaAccount()
+  for (const chainIdentifier of Object.keys(PROTOCOL_CHAINS)) {
+    if (
+      !isSolanaNetwork(chainIdentifier) ||
+      listSolanaDexEntries(chainIdentifier).length === 0
+    )
+      continue
+    const journal = solanaLegacyJournal(account, chainIdentifier)
+    const entries = journal.list()
+    if (entries.length === 0) continue
+    for (const entry of entries) {
+      useSwapStore().handleSwapItem(swapRecordItemOf(entry.record))
+    }
+    const { connection } = await connect(chainIdentifier)
+    // Following needs no key: the journal has the signed bytes.
+    resumeSolanaLegacyTransactions(
+      connection as unknown as SolanaSwapSender,
+      journal,
+      { onSync: sendSolanaLegacySyncNote },
+    )
+  }
+}
+
+/**
  * For the wallet page's activity list: whose swaps a Solana network's are, what an exchange is
  * called, and what a recorded swap did according to the chain. Undefined for a network that is
  * not Solana or lists no exchange.
@@ -112,7 +126,8 @@ export function solanaSwapActivity(chainIdentifier: string):
       account(): Promise<string>
       venueName(venueId: string): string | undefined
       /**
-       * `undefined`: the chain has nothing final to say yet. Throws
+       * `undefined`: nothing final can be said yet (the chain does not show it, or this build
+       * does not list the record's exchange). Throws
        * `SolanaSwapRecordMismatchError` when the record is not this account's swap.
        */
       observe(
@@ -133,9 +148,9 @@ export function solanaSwapActivity(chainIdentifier: string):
       entries.find(entry => entry.id === venueId)?.displayName,
     async observe(record) {
       const entry = entries.find(candidate => candidate.id === record.venueId)
-      if (!entry) {
-        throw new SolanaSwapRecordMismatchError('no such exchange here')
-      }
+      // An exchange this build does not list (one added later, say) decides nothing about
+      // the record: it is unknown, not somebody else's, and nothing is remembered against it.
+      if (!entry) return undefined
       const { connection } = await connect(chainIdentifier)
       const seen = await observeSolanaSwapRecord(
         connection as unknown as SolanaSwapObserver,
@@ -232,37 +247,15 @@ export async function openSolanaSwapSession(
   const ownerKey = new PublicKey(owner)
   const chain = connection as unknown as SolanaDexWallet['chain'] &
     SolanaSwapSender
-  const journal = solanaLegacyJournal()
-  const unfinished = () =>
-    journal
-      .list()
-      .filter(
-        item =>
-          item.record.account === owner &&
-          item.record.chainIdentifier === chainIdentifier,
-      )
-  // Wallet open, for its legacy transactions: this device's own records go to the history at
-  // once, unfinished ones are followed with their same bytes, owed notes are offered again.
+  const journal = solanaLegacyJournal(owner, chainIdentifier)
+  // The account-open resume has normally done this already; a swap screen opened first (or
+  // after a failed read) does it too. It follows nothing twice.
+  await resumeSolanaSwaps()
   const legacyTransactionOutcome = (record: SolanaSwapRecord) =>
-    follow(record.transactionId, () =>
-      // Following needs no key: the journal has the signed bytes.
-      trackSolanaSwap(chain, journal, record, {
-        onSync: sendSolanaLegacySyncNote,
-      }),
-    )
-  for (const item of unfinished()) {
-    useSwapStore().handleSwapItem(swapRecordItemOf(item.record))
-    if (item.settled) {
-      void announceSolanaLegacyTransaction(
-        journal,
-        item.record,
-        sendSolanaLegacySyncNote,
-      )
-    } else {
-      // Fails only when the network cannot be asked; the entry stays and is followed again.
-      void legacyTransactionOutcome(item.record).catch(() => undefined)
-    }
-  }
+    // Joins the transaction's one follower, or starts it. Needs no key.
+    trackSolanaSwap(chain, journal, record, {
+      onSync: sendSolanaLegacySyncNote,
+    })
 
   // The wallet as an exchange sees it: chain reads, and its legacy send. Custody is opened
   // only when a swap is confirmed, for the reviewed network, and re-checked before signing.
@@ -301,17 +294,12 @@ export async function openSolanaSwapSession(
         record => {
           // The wallet has journaled it: the history lists it from now on.
           useSwapStore().handleSwapItem(swapRecordItemOf(record))
-          // This is the swap's one tracker; a screen that opens later joins it.
-          tracking.set(
-            record.transactionId,
-            outcome.finally(() => tracking.delete(record.transactionId)),
-          )
           onSubmitted(record)
         },
       )
       return outcome
     },
-    pending: () => unfinished().find(item => !item.settled)?.record,
+    pending: () => journal.list().find(item => !item.settled)?.record,
     resume: record => dex.readOutcome(record),
   }
 }

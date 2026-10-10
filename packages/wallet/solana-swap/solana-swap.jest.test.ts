@@ -1806,12 +1806,10 @@ describe("the wallet's legacy send: record, send, follow", () => {
     // At the next open the wallet offers it again; nothing is sent to the chain for it.
     const delivered = jest.fn().mockResolvedValue(undefined)
     const later = confirmedNow()
-    resumeSolanaLegacyTransactions(
-      later.connection,
-      store,
-      { ...track, onSync: delivered },
-      new Set(),
-    )
+    resumeSolanaLegacyTransactions(later.connection, store, {
+      ...track,
+      onSync: delivered,
+    })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(delivered).toHaveBeenCalledWith(item)
     expect(later.sent).toEqual([])
@@ -1824,12 +1822,9 @@ describe("the wallet's legacy send: record, send, follow", () => {
       statuses: [null, { err: null, confirmationStatus: 'finalized' }],
     })
     const onSync = jest.fn().mockResolvedValue(undefined)
-    resumeSolanaLegacyTransactions(
-      connection,
-      store,
-      { ...track, onSync },
-      new Set(),
-    )
+    resumeSolanaLegacyTransactions(connection, store, { ...track, onSync })
+    // A second open while the first is still following does not follow it twice.
+    resumeSolanaLegacyTransactions(connection, store, { ...track, onSync })
     await new Promise(resolve => setTimeout(resolve, 5))
     expect(sent.map(toBase64)).toEqual([record.recovery.signedTransaction])
     expect(onSync).toHaveBeenCalledTimes(1)

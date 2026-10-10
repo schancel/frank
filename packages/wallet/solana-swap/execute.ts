@@ -410,11 +410,30 @@ export class SolanaSwapStillPendingError extends Error {
  * it can still land. The journal keeps the transaction until its outcome is definite and, when
  * it reached the chain, until the wallet's sync event for it has been delivered.
  */
-export async function trackSolanaSwap(
+export function trackSolanaSwap(
   connection: SolanaSwapSender,
   journal: SolanaLegacyJournal,
   swap: SolanaSwapRecord,
   options: TrackOptions = {},
+): Promise<SolanaSwapOutcome> {
+  // One follower per transaction, however many ask (the send itself, the resume at account
+  // open, a screen opened later): the others get the same outcome.
+  const running = following.get(swap.transactionId)
+  if (running) return running
+  const tracked = followSolanaSwap(connection, journal, swap, options).finally(
+    () => following.delete(swap.transactionId),
+  )
+  following.set(swap.transactionId, tracked)
+  return tracked
+}
+/** Transactions being followed in this realm, by signature. */
+const following = new Map<string, Promise<SolanaSwapOutcome>>()
+
+async function followSolanaSwap(
+  connection: SolanaSwapSender,
+  journal: SolanaLegacyJournal,
+  swap: SolanaSwapRecord,
+  options: TrackOptions,
 ): Promise<SolanaSwapOutcome> {
   const signature = swap.transactionId
   const sleep = options.sleep ?? defaultSleep
@@ -531,40 +550,40 @@ export async function announceSolanaLegacyTransaction(
   record: SolanaSwapRecord,
   onSync: SolanaLegacySync | undefined,
 ): Promise<void> {
+  // One offer at a time per transaction.
+  if (announcing.has(record.transactionId)) return
+  announcing.add(record.transactionId)
   try {
     await onSync?.(swapRecordItemOf(record))
     journal.remove(record.transactionId)
   } catch {
     // Owed: offered again by `resumeSolanaLegacyTransactions`.
+  } finally {
+    announcing.delete(record.transactionId)
   }
 }
+const announcing = new Set<string>()
 
 /**
- * At wallet open: follows every journaled transaction that is not final yet (with its same
- * signed bytes) and offers again the sync events still owed. Needs no key. Returns at once;
- * the work continues in the background and reports through the journal and `onSync`.
+ * At account open: follows every journaled transaction that is not final yet (with its same
+ * signed bytes) and offers again the sync events still owed. Needs no key, and asks the
+ * network nothing when the journal is empty. Returns at once; the work continues in the
+ * background and reports through the journal and `onSync`. Safe to call again: a transaction
+ * already being followed is not followed twice.
  */
 export function resumeSolanaLegacyTransactions(
   connection: SolanaSwapSender,
   journal: SolanaLegacyJournal,
   options: TrackOptions = {},
-  following: Set<string> = resuming,
 ): void {
   for (const entry of journal.list()) {
-    const id = entry.record.transactionId
-    if (following.has(id)) continue
-    following.add(id)
     const work = entry.settled
       ? announceSolanaLegacyTransaction(journal, entry.record, options.onSync)
       : trackSolanaSwap(connection, journal, entry.record, options)
-    void work.then(
-      () => following.delete(id),
-      () => following.delete(id),
-    )
+    // Fails only when the network cannot be asked; the entry stays for the next open.
+    void work.catch(() => undefined)
   }
 }
-/** Transactions already being followed in this realm, so a second open does not double up. */
-const resuming = new Set<string>()
 
 /**
  * The wallet's legacy send, for a transaction that calls a program rather than paying another

@@ -18,6 +18,27 @@ import {
   type MonadSubAccountPool,
 } from './monad-account-pool'
 import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
+import {
+  ChainUnreachableError,
+  ChainWaitCancelledError,
+  EvmBlockWatcher,
+} from './evm-block-watcher'
+
+export { ChainUnreachableError, ChainWaitCancelledError }
+
+/**
+ * The coin of an account that has sent before (the main account, the identity account):
+ * `(account, nonce)`, spendable from `notBeforeBlock` on. When the transaction spending
+ * `(account, n)` is seen mined at block b, the coin `(account, n)` is gone and its successor is
+ * `(account, n + 1)` with `notBeforeBlock = b + spacing`. While that transaction is unmined
+ * there is no coin: the account stays claimed by its spender. Process memory: the durable facts
+ * are the spending transaction on its own record and the chain, from which the coin is read
+ * again when it is not known (`coinOf`).
+ */
+export interface AccountCoin {
+  readonly nonce: number
+  readonly notBeforeBlock: number
+}
 
 export { InsufficientStampFundsError }
 
@@ -45,11 +66,18 @@ export interface StampFee {
 /** What the chain says about one signed payment. */
 export type StampPaymentObservation =
   /** In a block. A reverted transaction consumed its nonce all the same. */
-  | { readonly state: 'included'; readonly reverted: boolean }
+  | {
+      readonly state: 'included'
+      readonly reverted: boolean
+      readonly block?: number
+    }
   /** The account's nonce was consumed by a different transaction: this one can never land. */
   | { readonly state: 'replaced' }
-  /** Not seen yet. */
-  | { readonly state: 'pending' }
+  /** Not in a block: the node holds it (`mempool`), or does not know it at all. */
+  | {
+      readonly state: 'pending'
+      readonly where?: 'mempool' | 'unknown-to-node'
+    }
 
 /** One coin claimed for a payment: the account, the nonce it is at, and what it pays. */
 export interface ClaimedStampCoin {
@@ -118,6 +146,9 @@ export interface EvmStampPayerConfig {
   /** See `EvmChainConfig.spendSpacingBlocks`. Applies to the main and identity accounts; a
    * single-use sub-account sends one transaction ever. */
   spendSpacingBlocks?: number
+  /** The wallet's one block watcher for this chain. Every wait of a payment goes through it.
+   * Absent (a test of the payer alone): one is made over `provider`. */
+  watcher?: EvmBlockWatcher
   /** The wallet's own accounts a stamp is paid from when no funded sub-account covers it, in
    * the order they are tried. Each is one coin at its current nonce. */
   accounts: readonly {
@@ -152,9 +183,86 @@ export class EvmStampPayer {
    * node that lags right after that block still answers the old count; the next payment is
    * never signed at or below this. */
   private readonly settledNonce = new Map<string, number>()
+  /** Lower-case address -> the account's coin, when this wallet knows it. */
+  private readonly coins = new Map<string, AccountCoin>()
+  readonly watcher: EvmBlockWatcher
   private fee: { value: StampFee; atMs: number } | undefined
   private feeRead: Promise<StampFee> | undefined
-  constructor(private readonly config: EvmStampPayerConfig) {}
+  constructor(private readonly config: EvmStampPayerConfig) {
+    this.watcher =
+      config.watcher ?? new EvmBlockWatcher({ provider: config.provider })
+  }
+
+  /** A read of the chain on behalf of a payment: its failure marks the chain unreachable and
+   * is reported as such; nothing was signed. */
+  private async read<T>(task: () => Promise<T>): Promise<T> {
+    try {
+      const value = await task()
+      this.watcher.noteSuccess()
+      return value
+    } catch (error) {
+      if (error instanceof ChainWaitCancelledError) throw error
+      this.watcher.noteFailure(error)
+      throw new ChainUnreachableError(error)
+    }
+  }
+
+  /** The transaction spending `(address, nonce)` was seen mined at `block`: its successor coin
+   * exists from `block + spacing`. */
+  noteMined(address: string, nonce: number, block: number): void {
+    const key = address.toLowerCase()
+    const known = this.coins.get(key)
+    if (known !== undefined && known.nonce > nonce) return
+    this.coins.set(key, {
+      nonce: nonce + 1,
+      notBeforeBlock: block + (this.config.spendSpacingBlocks ?? 0),
+    })
+    if ((this.settledNonce.get(key) ?? -1) < nonce)
+      this.settledNonce.set(key, nonce)
+  }
+
+  /**
+   * The coin of `address`, for the claimant that holds the account: the one this wallet knows,
+   * or read from the chain. Read from the chain: the head, the account's count there, its count
+   * `spacing` blocks earlier, and its pending count, in one look. While the node still holds an
+   * unmined transaction of the account there is no coin, and the next look is waited for. An
+   * account that sent inside the last `spacing` blocks (which block is not known) has its coin
+   * `spacing` blocks from the head.
+   */
+  private async coinOf(
+    address: string,
+    signal?: AbortSignal,
+  ): Promise<AccountCoin> {
+    const key = address.toLowerCase()
+    const spacing = this.config.spendSpacingBlocks ?? 0
+    for (;;) {
+      const known = this.coins.get(key)
+      const head = await this.watcher.current(signal)
+      const [now, before, pending] = await this.read(() =>
+        Promise.all([
+          this.config.provider.getTransactionCount(address, head),
+          spacing > 0 && head >= spacing
+            ? this.config.provider.getTransactionCount(address, head - spacing)
+            : Promise.resolve(undefined),
+          this.config.provider.getTransactionCount(address, 'pending'),
+        ]),
+      )
+      // Something of this account is in the mempool: no coin until it is mined.
+      if (pending > now) {
+        await this.watcher.next(signal)
+        continue
+      }
+      const settled = this.settledNonce.get(key)
+      const nonce = Math.max(now, settled === undefined ? 0 : settled + 1)
+      if (known !== undefined && known.nonce >= nonce) return known
+      const coin = {
+        nonce,
+        notBeforeBlock: before !== undefined && before !== now ? head + spacing : head,
+      }
+      this.coins.set(key, coin)
+      return coin
+    }
+  }
 
   private currentFee(): Promise<StampFee> {
     if (this.fee && Date.now() - this.fee.atMs < FEE_TTL_MS)
@@ -192,7 +300,7 @@ export class EvmStampPayer {
    * node with a short cache; never a constant.
    */
   async minimumPaymentWei(): Promise<bigint> {
-    return STAMP_GAS_LIMIT * (await this.currentFee()).chargedPerGas
+    return STAMP_GAS_LIMIT * (await this.read(() => this.currentFee())).chargedPerGas
   }
 
   /**
@@ -217,14 +325,19 @@ export class EvmStampPayer {
     /** The account that would pay is held by `holder`: look at the chain for that one
      * operation's payment (nothing else, and no relay request). At most once a second. */
     whileBusy?: (holder: string) => Promise<void>
-    /** Called once when this payment starts waiting for an earlier one to confirm. */
-    onWaiting?: () => void
+    /** Called once when this payment starts waiting for an earlier one to confirm, and again
+     * with the blocks still to pass when what it waits for is the chain's spacing. */
+    onWaiting?: (blocksRemaining?: number) => void
+    /** Ends the wait: the claim rejects with {@link ChainWaitCancelledError}, nothing claimed,
+     * nothing signed. */
+    signal?: AbortSignal
   }): Promise<StampClaim> {
     const { pool, provider } = this.config
     const allowed = (source: StampCoinSource) =>
       input.sources === undefined || input.sources.includes(source)
     try {
-      const fee = await this.currentFee()
+      if (input.signal?.aborted) throw new ChainWaitCancelledError()
+      const fee = await this.read(() => this.currentFee())
       const feeReserveWei =
         STAMP_GAS_LIMIT * (fee.maxFeePerGas ?? fee.gasPrice)!
       let waiting = false
@@ -285,30 +398,31 @@ export class EvmStampPayer {
             continue
           }
           const generation = pool.accountGeneration(account.address)
-          const [balanceWei, nonce] = await Promise.all([
+          const balanceWei = await this.read(() =>
             provider.getBalance(account.address),
-            provider.getTransactionCount(account.address, 'pending'),
-          ])
+          )
           if (balanceWei < input.stampValueWei + feeReserveWei) continue
           // Synchronous: free, and not spent by anyone since the nonce above was read.
           if (pool.claimAccount(input.holder, account.address, generation)) {
-            // Claimed: nothing else signs from it. The payment before this one may have been
-            // mined a block ago; the chain's spacing rule is waited out before this one is
-            // signed (a rejection releases the claim below).
-            await waitForSpendSpacing(
-              provider,
-              account.address,
-              this.config.spendSpacingBlocks,
+            // Claimed: nothing else signs from it. Its coin says the nonce to sign at and the
+            // block from which it may be spent (the chain's spacing after the account's last
+            // transaction): that block is waited for on the wallet's one block watcher.
+            const coin = await this.coinOf(account.address, input.signal)
+            const head = this.watcher.latest() ?? coin.notBeforeBlock
+            if (coin.notBeforeBlock > head) {
+              waiting = true
+              input.onWaiting?.(coin.notBeforeBlock - head)
+              await this.watcher.until(coin.notBeforeBlock, input.signal)
+            }
+            // The balance and (after a wait) the fee, read now that the coin is this payment's.
+            const [balanceNow, feeNow] = await this.read(() =>
+              Promise.all([
+                provider.getBalance(account.address),
+                waiting ? this.currentFee() : Promise.resolve(fee),
+              ]),
             )
-            // Read again now that the wait is over and the account is this payment's: the
-            // nonce (never at or below one this wallet saw mined, whatever a lagging node
-            // says), the balance, and the fee, which a long wait has made stale.
-            const settled = this.settledNonce.get(account.address.toLowerCase())
-            const [balanceNow, counted, feeNow] = await Promise.all([
-              provider.getBalance(account.address),
-              provider.getTransactionCount(account.address, 'pending'),
-              waiting ? this.currentFee() : Promise.resolve(fee),
-            ])
+            const counted = coin.nonce
+            const settled = undefined as number | undefined
             const reserveNow =
               STAMP_GAS_LIMIT * (feeNow.maxFeePerGas ?? feeNow.gasPrice)!
             if (
@@ -354,13 +468,24 @@ export class EvmStampPayer {
         const holder = pool.accountClaimedBy(busy)
         if (holder !== undefined) {
           await input.whileBusy?.(holder)
+          // Woken when the account is released, or at the watcher's next look: one look of
+          // the chain per interval for every waiter of the wallet together, no timer of its own.
           if (pool.accountClaimedBy(busy) !== undefined) {
-            let timer: ReturnType<typeof setTimeout> | undefined
-            await Promise.race([
-              pool.accountReleased(busy),
-              new Promise(resolve => (timer = setTimeout(resolve, BUSY_LOOK_MS))),
-            ])
-            clearTimeout(timer)
+            const abort = new AbortController()
+            const stop = () => abort.abort()
+            input.signal?.addEventListener('abort', stop, { once: true })
+            try {
+              const look = this.watcher.next(abort.signal)
+              look.catch(() => undefined)
+              await Promise.race([pool.accountReleased(busy), look])
+            } catch (error) {
+              if (input.signal?.aborted) throw new ChainWaitCancelledError()
+              // The look was ended only because the account was released first.
+              if (!(error instanceof ChainWaitCancelledError)) throw error
+            } finally {
+              input.signal?.removeEventListener('abort', stop)
+              abort.abort()
+            }
           }
         }
       }
@@ -450,8 +575,9 @@ export class EvmStampPayer {
     return contested
   }
 
-  /** Hands the signed bytes to the chain. A node that already has them is not an error. */
-  async broadcast(rawTx: string): Promise<void> {
+  /** Hands one signed transaction to the chain. A node that already has it is not an error.
+   * Callers outside this class use `submitPaymentSet`. */
+  private async broadcast(rawTx: string): Promise<void> {
     try {
       await this.config.provider.broadcastTransaction(rawTx)
     } catch (error) {
@@ -466,26 +592,64 @@ export class EvmStampPayer {
     }
   }
 
-  /** One look at the chain for one signed payment. Rejects when the chain cannot be read. */
+  /**
+   * One look at the chain for one signed payment: what the node says of it now, read directly
+   * (the receipt, the transaction by its hash, the account's nonce). With a node that answers
+   * there is no "unknown": the payment is mined (succeeded or reverted), in the mempool, not
+   * known to the node (never arrived, or dropped: the same bytes may be offered again), or can
+   * never land because another transaction consumed its nonce. Rejects with
+   * {@link ChainUnreachableError} when the node does not answer.
+   */
   async observe(rawTx: string): Promise<StampPaymentObservation> {
     const { provider } = this.config
     const tx = Transaction.from(rawTx)
-    const receipt = await provider.getTransactionReceipt(tx.hash!)
+    const [receipt, known, used] = await this.read(() =>
+      Promise.all([
+        provider.getTransactionReceipt(tx.hash!),
+        provider.getTransaction(tx.hash!),
+        provider.getTransactionCount(tx.from!, 'latest'),
+      ]),
+    )
     if (receipt !== null) {
-      const from = tx.from!.toLowerCase()
-      if ((this.settledNonce.get(from) ?? -1) < tx.nonce)
-        this.settledNonce.set(from, tx.nonce)
-      return { state: 'included', reverted: receipt.status === 0 }
+      if (tx.nonce > 0 || used > 1) this.noteMined(tx.from!, tx.nonce, receipt.blockNumber)
+      else {
+        // A single-use account's one transaction: no successor coin to keep.
+        const from = tx.from!.toLowerCase()
+        if ((this.settledNonce.get(from) ?? -1) < tx.nonce)
+          this.settledNonce.set(from, tx.nonce)
+      }
+      return {
+        state: 'included',
+        reverted: receipt.status === 0,
+        block: receipt.blockNumber,
+      }
     }
-    const used = await provider.getTransactionCount(tx.from!, 'latest')
-    if (used <= tx.nonce) return { state: 'pending' }
-    // The nonce is consumed and this node shows no receipt. That is what a replaced payment
-    // looks like, and also what a landed payment looks like on a node that lags: the caller
-    // calls it failed only when it keeps looking like this (see `REPLACED_AFTER_MS`).
-    const again = await provider.getTransactionReceipt(tx.hash!)
-    return again !== null
-      ? { state: 'included', reverted: again.status === 0 }
-      : { state: 'replaced' }
+    if (known !== null) return { state: 'pending', where: 'mempool' }
+    // The node knows neither the transaction nor a receipt for it.
+    if (used > tx.nonce) return { state: 'replaced' }
+    return { state: 'pending', where: 'unknown-to-node' }
+  }
+
+  /**
+   * THE place a message's signed payment set is handed to the chain: the whole set, in order,
+   * with what became of each hand-over. Today one broadcast per transaction (a node that
+   * already has the bytes is not an error); a chain whose node takes a set atomically replaces
+   * the loop here and nowhere else. Whether a payment landed is read from the chain
+   * (`observe`), never from this.
+   */
+  async submitPaymentSet(
+    rawTransactions: readonly string[],
+  ): Promise<{ rawTx: string; error?: unknown }[]> {
+    return Promise.all(
+      rawTransactions.map(async rawTx => {
+        try {
+          await this.broadcast(rawTx)
+          return { rawTx }
+        } catch (error) {
+          return { rawTx, error }
+        }
+      }),
+    )
   }
 
   /** The chain shows the payment included: a sub-account's row is marked spent, durably. The

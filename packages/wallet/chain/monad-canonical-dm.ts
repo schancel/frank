@@ -92,6 +92,7 @@ import {
   MonadStampTerminalError,
 } from '../monad-stamp-client'
 import type { EvmStampPayer, StampClaim } from '../evm-stamp-payer'
+import { ChainUnreachableError } from '../evm-block-watcher'
 import { inspectCanonicalPreparedEnvelope } from '../monad-stamp-stealth'
 import type { MonadCanonicalRoleOwner } from '../monad-wallet-material'
 import {
@@ -941,11 +942,9 @@ async function refuseUnexposed(
   return refused
 }
 
-/** How long a payment must keep looking replaced (nonce consumed, no receipt) before it is
- * recorded as failed: a node that lags shows a landed payment the same way for a while. */
-export const REPLACED_AFTER_MS = { value: 60_000 }
-/** Payment transaction hash -> when it first looked replaced. Process memory. */
-const replacedSince = new Map<string, number>()
+/** No longer consulted: whether a payment was replaced is read from the node in one look. Kept
+ * so existing tests that set it still load; remove with them. */
+export const REPLACED_AFTER_MS = { value: 0 }
 
 /**
  * One look at the chain for every payment of `row` that is still pending, and the only place a
@@ -961,6 +960,7 @@ async function settlePayments(
 ): Promise<StoredMessage> {
   const payer = owner.payer()
   const holder = holderOf(owner, row.consumerId)
+  const resubmit: string[] = []
   const states = await Promise.all(
     row.payments.map(async (payment): Promise<StoredPayment['state']> => {
       if (payment.state !== 'pending') return payment.state
@@ -970,21 +970,24 @@ async function settlePayments(
           await payer.recordSpent(holder, payment)
           return seen.reverted ? 'reverted' : 'spent'
         }
+        // The node knows neither the transaction nor a receipt and the nonce is consumed:
+        // read directly, in one look, so there is nothing to wait out.
         if (seen.state === 'replaced') {
-          const since = replacedSince.get(payment.rawTx) ?? Date.now()
-          replacedSince.set(payment.rawTx, since)
-          if (Date.now() - since < REPLACED_AFTER_MS.value) return 'pending'
           await payer.recordFailed(holder, payment)
           return 'failed'
         }
-        replacedSince.delete(payment.rawTx)
-        if (broadcast) await payer.broadcast(payment.rawTx)
+        // Not known to the node at all: the same bytes are offered again (once the relay has
+        // the message). In the mempool: nothing to do but look again.
+        if (broadcast && seen.where !== 'mempool') resubmit.push(payment.rawTx)
       } catch {
         // The chain could not be read or reached: nothing is known, so nothing changes.
       }
       return 'pending'
     }),
   )
+  // What the node did not know goes back to it as one set.
+  if (resubmit.length > 0)
+    await payer.submitPaymentSet(resubmit).catch(() => undefined)
   if (states.every((state, i) => state === row.payments[i].state)) return row
   const next: StoredMessage = {
     ...owner.messages.get(row.consumerId)!,
@@ -997,10 +1000,7 @@ async function settlePayments(
   // claim is what keeps the coin from a second spender, across a crash too.
   await owner.messages.put(next)
   row.payments.forEach((payment, i) => {
-    if (states[i] !== 'pending') {
-      replacedSince.delete(payment.rawTx)
-      payer.releasePayment(holder, payment)
-    }
+    if (states[i] !== 'pending') payer.releasePayment(holder, payment)
   })
   return next
 }
@@ -1043,7 +1043,7 @@ async function repayReverted(
         ],
       })
       recorded = true
-      await payer.broadcast(signed.rawTx)
+      await payer.submitPaymentSet([signed.rawTx])
     } catch (error) {
       // Nothing signed left the wallet unless the row has it; then the row keeps the claim.
       if (!recorded) payer.release(holder)
@@ -1404,32 +1404,52 @@ async function send(
       throw new Error('canonical-wallet:economics-invalid')
     // A paid stamp is never smaller than what the chain charges to move it. The wallet's own
     // default is raised to that; an amount the caller chose is refused, not changed.
-    const floorWei = await owner.lifetime(() => payer.minimumPaymentWei())
-    if (stampValueWei < floorWei) {
-      if (params.stampValue !== undefined)
-        throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
-      stampValueWei = floorWei
+    const requestedWei = stampValueWei
+    // While the chain's node cannot be reached this send is QUEUED here, at its building step:
+    // nothing is claimed or signed, it can be cancelled, and when the node answers again it
+    // goes on. It does not fail. (A free message never comes this way.)
+    for (;;) {
+      try {
+        stampValueWei = requestedWei
+        const floorWei = await owner.lifetime(() => payer.minimumPaymentWei())
+        if (stampValueWei < floorWei) {
+          if (params.stampValue !== undefined)
+            throw new DirectMessageStampBelowFeeError(stampValueWei, floorWei)
+          stampValueWei = floorWei
+        }
+        // This message's own paying coins: claimed in one synchronous step, so no other
+        // message, topic or native send being built at this moment can be given them.
+        // Nothing is funded. From here a rejection is never labelled.
+        attempted = true
+        const wanted = stampValueWei
+        claim = await owner.lifetime(() =>
+          payer.claim({
+            holder,
+            stampValueWei: wanted,
+            signal: params.signal,
+            // The only coin that could pay is spent by an earlier payment: this send waits
+            // its turn, and meanwhile asks the chain about that one payment (never the relay).
+            whileBusy: busyHolder => {
+              // A wallet being closed ends the wait (`payer()` refuses a closed wallet):
+              // nothing was signed, the claim loop lets go, and close is not held up.
+              owner.payer()
+              return settleHolder(owner, busyHolder)
+            },
+            onWaiting: blocksRemaining =>
+              params.onPreparationProgress?.({
+                stage: 'waiting-for-payment',
+                ...(blocksRemaining === undefined ? {} : { blocksRemaining }),
+              }),
+          }),
+        )
+        break
+      } catch (error) {
+        if (!(error instanceof ChainUnreachableError)) throw error
+        owner.payer()
+        params.onPreparationProgress?.({ stage: 'waiting-for-chain' })
+        await owner.lifetime(() => payer.watcher.whenReachable(params.signal))
+      }
     }
-    // This message's own paying coins: claimed in one synchronous step, so no other message,
-    // topic or native send being built at this moment can be given them. Nothing is funded.
-    // From here a rejection is never labelled.
-    attempted = true
-    claim = await owner.lifetime(() =>
-      payer.claim({
-        holder,
-        stampValueWei,
-        // The only coin that could pay is spent by an earlier payment: this send waits its
-        // turn, and meanwhile asks the chain about that one payment (never the relay).
-        whileBusy: busyHolder => {
-          // A wallet being closed ends the wait (`payer()` refuses a closed wallet): nothing
-          // was signed, the claim loop lets go, and close is not held up by a waiting send.
-          owner.payer()
-          return settleHolder(owner, busyHolder)
-        },
-        onWaiting: () =>
-          params.onPreparationProgress?.({ stage: 'waiting-for-payment' }),
-      }),
-    )
     // Fresh snapshots after any wait: the message is sealed to the Current pair in force.
     const senderCurrent = await directory.selfCurrent()
     const recipient = await directory.peerCurrent({ subject: peer.subject })
@@ -1540,18 +1560,15 @@ async function send(
       // The relay has the message. Now, and only now, this wallet broadcasts the payments
       // itself as well; the relay does the same, so the usual answer is "already known".
       // "Spent" is learned from the chain by the resend pass, never from either answer.
-      await owner.lifetime(() =>
-        Promise.all(
-          signed.map(payment =>
-            payer.broadcast(payment.rawTx).catch(error => {
-              console.warn(
-                '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
-                error,
-              )
-            }),
-          ),
-        ),
+      const handed = await owner.lifetime(() =>
+        payer.submitPaymentSet(signed.map(payment => payment.rawTx)),
       )
+      for (const one of handed)
+        if (one.error !== undefined)
+          console.warn(
+            '[monad-canonical-dm] own broadcast failed; it is repeated until the chain shows the payment:',
+            one.error,
+          )
       // A payment from the main or identity account holds that account for the next payment:
       // one look at the chain now, so a block that already has it frees the account at once.
       if (signed.some(payment => payment.source !== 'pool'))
@@ -2042,6 +2059,8 @@ export function canonicalDirectMessages(
      * for (a native send waiting for the main account). No relay request. */
     settleHolder: (holder: string) =>
       owner.lifetime(() => settleHolder(owner, holder)),
+    /** Whether the chain's node answers, as the wallet's reads last found. No request. */
+    chainHealth: () => owner.payer().watcher.health(),
     /** The smallest paid stamp right now: one transfer's fee at the node's gas price. */
     minimumStamp: () => owner.lifetime(() => owner.payer().minimumPaymentWei()),
     /** What the chain has shown of the payments of one sent message. No request is made. */

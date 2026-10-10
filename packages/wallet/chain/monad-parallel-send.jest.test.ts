@@ -563,10 +563,16 @@ describe('parallel paid messages', () => {
   it('a node that lags (nonce consumed, receipt not yet shown) does not make a landed payment failed', async () => {
     const [row] = await fundAccounts(1)
     const sent = await send(1)
-    // The node counts the nonce and has no receipt for the payment yet.
+    // The node counts the nonce and has no receipt for the payment yet, but it knows the
+    // transaction by its hash: read directly, that is "in the node, not in a block", never
+    // "replaced". (Only a transaction the node does not know at all, at a consumed nonce, has
+    // failed; no timer decides.)
     const receipt = jest
       .spyOn(alice.provider, 'getTransactionReceipt')
       .mockResolvedValue(null)
+    const known = jest
+      .spyOn(alice.provider, 'getTransaction')
+      .mockResolvedValue({ hash: 'known' } as never)
     for (let pass = 0; pass < 8; pass++) await tick()
     expect(
       f.chain.directMessages.paymentsOf?.({
@@ -576,6 +582,7 @@ describe('parallel paid messages', () => {
     ).toEqual(['pending'])
     expect(alice.pool.claimedBy(row.index)).toBeDefined()
     receipt.mockRestore()
+    known.mockRestore()
     for (let pass = 0; pass < 9; pass++) await tick()
     expect(statusOf(row.index)).toBe('spent')
   })
@@ -701,6 +708,81 @@ describe('parallel paid messages', () => {
       await new Promise(resolve => setTimeout(resolve, 300))
     }
     await Promise.all(behind)
+  })
+
+  it('while the chain cannot be reached a paid send queues (nothing claimed or signed), a free message goes out, and the queued send completes once when the chain is back', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    // The node stops answering fee reads (what a paid send asks first).
+    let down = true
+    const fee = alice.provider.getFeeData.bind(alice.provider)
+    jest.spyOn(alice.provider, 'getFeeData').mockImplementation(async () => {
+      if (down) throw Object.assign(new Error('no answer'), { code: 'TIMEOUT' })
+      return fee()
+    })
+    const head = alice.provider.getBlockNumber.bind(alice.provider)
+    jest.spyOn(alice.provider, 'getBlockNumber').mockImplementation(async () => {
+      if (down) throw Object.assign(new Error('no answer'), { code: 'TIMEOUT' })
+      return head()
+    })
+    const stages: string[] = []
+    const paid = f.chain.directMessages.send({
+      wallet: alice,
+      recipient: f.bob.identity.address,
+      items: [{ type: 'text', text: 'queued' }],
+      stampValue: STAMP,
+      messageId: ID(1),
+      onPreparationProgress: progress => stages.push(progress.stage),
+    })
+    let settled = false
+    void paid.then(
+      () => (settled = true),
+      () => (settled = true),
+    )
+    await new Promise(resolve => setTimeout(resolve, 1_500))
+    // Queued, not failed; the wallet says the chain is unreachable; nothing was claimed,
+    // signed or handed to the relay.
+    expect(settled).toBe(false)
+    expect(stages).toContain('waiting-for-chain')
+    expect(f.chain.directMessages.chainHealth!({ wallet: alice })).toMatchObject({
+      reachable: false,
+      errorKind: 'TIMEOUT',
+    })
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+    expect(relay.bodies).toHaveLength(0)
+    // A free message needs no chain and is not held up.
+    await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: f.bob.identity.address,
+      items: [{ type: 'text', text: 'free' }],
+      stampValue: 0n,
+    })
+    expect(bobMailbox).toHaveLength(1)
+    // A second queued send can be cancelled: nothing was signed for it.
+    const abort = new AbortController()
+    const cancelled = f.chain.directMessages
+      .send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'cancelled' }],
+        stampValue: STAMP,
+        messageId: ID(2),
+        signal: abort.signal,
+      })
+      .catch(error => error)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    abort.abort()
+    expect((await cancelled).name).toBe('ChainWaitCancelledError')
+    // The chain is back: the queued send goes on by itself and is paid once.
+    down = false
+    await expect(paid).resolves.toMatchObject({ stampValueWei: STAMP })
+    expect(f.chain.directMessages.chainHealth!({ wallet: alice })).toEqual({
+      reachable: true,
+    })
+    expect(
+      relayPayments().filter(tx => tx.from!.toLowerCase() === main),
+    ).toHaveLength(1)
+    expect(bobMailbox).toHaveLength(2)
   })
 
   it('one account the chain and the wallet disagree about goes out of use; every other send proceeds', async () => {

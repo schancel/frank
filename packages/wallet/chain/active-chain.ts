@@ -173,7 +173,15 @@ export type DirectMessagePreparationProgress =
   | { stage: "checking" }
   /** The only coin that can pay is the main (or identity) account, and an earlier payment from
    * it has not been seen on chain yet: this one waits its turn. Nothing has been signed. */
-  | { stage: "waiting-for-payment" }
+  | {
+      stage: "waiting-for-payment";
+      /** Set when what is waited for is the chain's spacing after the account's last
+       * transaction: the blocks still to pass. */
+      blocksRemaining?: number;
+    }
+  /** The chain's node cannot be reached. The send is queued at its building step: nothing is
+   * claimed or signed, it can be cancelled, and it goes on by itself when the node answers. */
+  | { stage: "waiting-for-chain" }
   | {
       stage: "funding";
       completed: number;
@@ -434,6 +442,10 @@ export interface DirectMessageClient {
      * the relay, with its `payloadDigest` (the eventual `DirectMessageSendResult.payloadDigest`).
      * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
     onAttemptCreated?: (payloadDigest: string) => void | Promise<void>;
+    /** Cancels a send that is still waiting (for the chain to be reachable, for an earlier
+     * payment to be mined, for the chain's spacing): it rejects with `ChainWaitCancelledError`
+     * and nothing was claimed or signed. Once the payment is signed it has no effect. */
+    signal?: AbortSignal;
     /** Called with the message's `payloadDigest` once it is sealed and BEFORE anything durable is
      * written from which its bytes could be submitted (the payment intent of a paid message) and
      * before any byte is handed to the relay (a free message). Awaited; if it rejects, nothing was
@@ -492,6 +504,14 @@ export interface DirectMessageClient {
    * refuses an explicit smaller `stampValue` with {@link DirectMessageStampBelowFeeError}.
    */
   minimumStamp?(params: { wallet: WalletHandle }): Promise<bigint>;
+  /**
+   * Whether this wallet's chain can be reached: `reachable`, or since when it is not and the
+   * kind of the last error. No request: it is what the wallet's reads of the chain last met.
+   * While unreachable, paid sends queue (stage `waiting-for-chain`); free messages go on.
+   */
+  chainHealth?(params: { wallet: WalletHandle }):
+    | { reachable: true }
+    | { reachable: false; sinceMs: number; errorKind: string };
   discardAttempt?(params: {
     wallet: WalletHandle;
     payloadDigest: string;

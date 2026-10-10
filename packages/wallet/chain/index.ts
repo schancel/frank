@@ -249,3 +249,8 @@ export {
   findEvmNativeOperationStatus,
 } from "./evm-native-operation-status";
 export type { EvmNativeOperationStatus } from "./evm-native-operation-status";
+export {
+  ChainUnreachableError,
+  ChainWaitCancelledError,
+  type ChainHealth,
+} from '../evm-block-watcher'

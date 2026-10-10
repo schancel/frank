@@ -194,6 +194,11 @@ export function offlineProviderModule() {
           }
         }
         if (request.method === 'getBlockNumber') return 1
+        // The offline node keeps no transaction bodies: one it has not mined it does not know.
+        if (request.method === 'getTransaction') {
+          if (offlineChain.nodeDown) throw new Error('node unreachable')
+          return null
+        }
         if (request.method === 'getTransactionCount') {
           if (offlineChain.nodeDown) throw new Error('node unreachable')
           const address = request.address!.toLowerCase()

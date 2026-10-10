@@ -194,6 +194,7 @@ import {
   type OutgoingMessageStore,
 } from "./monad-canonical-dm";
 import { EvmStampPayer, waitForSpendSpacing } from "../evm-stamp-payer";
+import { EvmBlockWatcher } from "../evm-block-watcher";
 export {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
@@ -1055,6 +1056,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     ),
   ];
   const runningMainTasks = new WeakMap<EvmChainWalletHandle, number>();
+  const blockWatchers = new WeakMap<EvmChainWalletHandle, EvmBlockWatcher>();
   const lastOwnLookMs = new WeakMap<EvmChainWalletHandle, number>();
   /** Address -> transfers signed from it outside the journal, not yet seen on chain. */
   const unjournalledTransfers = new WeakMap<
@@ -1196,11 +1198,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       requireOpenWallet(wallet);
       if (deadline !== undefined && Date.now() >= deadline)
         throw new MainAccountBusyError();
+      // Woken when the account is released or at the wallet's next look at the chain (the one
+      // block watcher every waiter shares); a wallet with none waits a second.
+      const watcher = blockWatchers.get(wallet);
+      const abort = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
+      const look = watcher
+        ? watcher.next(abort.signal).catch(() => undefined)
+        : new Promise((resolve) => (timer = setTimeout(resolve, 1_000)));
       await Promise.race([
         ...(held.length > 0 ? [pool.accountReleased(held[0]!)] : []),
-        new Promise((resolve) => (timer = setTimeout(resolve, 1_000))),
+        look,
       ]);
+      abort.abort();
       clearTimeout(timer);
     }
   };
@@ -1584,6 +1594,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const canonical = canonicalMessagingFor(wallet);
       if (!canonical) throw new CanonicalMessagingPendingError();
       return canonical.minimumStamp();
+    },
+
+    chainHealth(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      return canonicalMessagingFor(wallet)?.chainHealth() ?? { reachable: true };
     },
 
     paymentsOf(params) {
@@ -2946,6 +2961,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             close() {
               if (closing !== undefined) return closing;
               closedWallets.add(wallet);
+              // Every wait on the chain ends now: nothing a waiter had was signed.
+              blockWatchers.get(wallet)?.stop();
               closing = (async () => {
                 // A re-observation pass in flight holds the wallet lifetime: end it first, or a
                 // node that never answers would hold the close.
@@ -4500,10 +4517,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             pool.attachFunderSpacing((address) =>
               waitForSpendSpacing(provider, address, config.spendSpacingBlocks)
             );
+            // The wallet's one source of "current block" and of whether the chain answers.
+            const blockWatcher = new EvmBlockWatcher({ provider });
+            blockWatchers.set(wallet, blockWatcher);
             const stampPayer = new EvmStampPayer({
               pool,
               provider,
               httpClient,
+              watcher: blockWatcher,
               spendSpacingBlocks: config.spendSpacingBlocks,
               // A message took funded accounts: the next fund-ahead call looks again.
               onPoolCoinsClaimed: () => fundAheadBackoffs.delete(wallet),

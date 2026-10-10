@@ -51,12 +51,8 @@ import {
   startOutgoingReconciliation,
 } from '../adapters/pinia-chain-adapter'
 import { useProfileStore } from '../stores/my-profile'
-import {
-  fetchMonadProfile,
-  registerMonadIdentityCbor,
-  type MonadIdentity,
-} from '@frank/wallet/monad-identity'
-import { isAvatarTooLarge, compressAvatarDataUrl } from './avatar-resize'
+import type { MonadIdentity } from '@frank/wallet/monad-identity'
+import { claimProfileStore, syncOwnProfileWithRelay } from './own-profile'
 import { clearOwnUsername, ownUsername, syncOwnUsername } from './own-username'
 import { errorNotify } from './notifications'
 
@@ -230,65 +226,20 @@ function productionDeps(): MessagingDeps {
         ),
     // 5 s, 10 s, 20 s ... capped at 5 minutes.
     retryDelayMs: attempt => Math.min(5_000 * 2 ** (attempt - 1), 300_000),
+    // The account's profile is the relay's to hold: adopt what it has, and publish only what
+    // this device's user typed (`./own-profile.ts`).
     registerProfile: async ({ relayBaseUrl, wallet }) => {
       const identity = (wallet as unknown as { identity?: MonadIdentity })
         .identity
       if (!identity) return
       try {
-        let profile = undefined
-        try {
-          profile = useProfileStore().profile
-        } catch {
-          // Pinia store not available (e.g. non-Vue test environment)
-        }
-        try {
-          const existing = await fetchMonadProfile({
-            relayBaseUrl,
-            address: identity.address,
-          })
-          if (
-            existing &&
-            (existing.name ?? '') === (profile?.name ?? '') &&
-            (existing.username ?? '') === (profile?.username ?? '') &&
-            (existing.location ?? '') === (profile?.location ?? '') &&
-            (existing.bio ?? '') === (profile?.bio ?? '') &&
-            (existing.avatar ?? '') === (profile?.avatar ?? '') &&
-            (existing.accountType ?? 0) === (profile?.accountType ?? 0) &&
-            existing.botRole === profile?.botRole &&
-            JSON.stringify(existing.links ?? []) ===
-              JSON.stringify(profile?.links ?? [])
-          ) {
-            return
-          }
-        } catch {
-          // If check fails, fall through to attempt registration
-        }
-        let identityProfile = profile
-        if (
-          identityProfile?.avatar &&
-          isAvatarTooLarge(identityProfile.avatar)
-        ) {
-          try {
-            const compressed = await compressAvatarDataUrl(
-              identityProfile.avatar,
-            )
-            if (compressed && !isAvatarTooLarge(compressed)) {
-              identityProfile = { ...identityProfile, avatar: compressed }
-            } else {
-              identityProfile = { ...identityProfile, avatar: undefined }
-            }
-          } catch {
-            identityProfile = { ...identityProfile, avatar: undefined }
-          }
-        }
-        await registerMonadIdentityCbor({
+        await syncOwnProfileWithRelay({
           relayBaseUrl,
           identity,
-          profile: identityProfile,
           network: loadMonadChainConfigFromEnv().rpcChain,
         })
       } catch (err) {
-        console.warn('[startMessaging] registerMonadIdentityCbor failed:', err)
+        console.warn('[startMessaging] publishing the profile failed:', err)
       }
     },
     // Bring the account's own username in line with the relay: a saved name is claimed again
@@ -311,6 +262,20 @@ function productionDeps(): MessagingDeps {
         address: identity.address.raw,
         saved,
       })
+      // A name the account holds and this device's copy of the profile lacks (the account was
+      // restored here) is the account's name.
+      if (!saved && ownUsername.held) {
+        try {
+          const store = useProfileStore()
+          if (
+            store.owner === identity.address.raw.toLowerCase() &&
+            !store.profile.username
+          )
+            store.profile = { ...store.profile, username: ownUsername.held }
+        } catch {
+          // No profile store here.
+        }
+      }
       if (ownUsername.problem) {
         console.warn(
           `[startMessaging] saved username @${saved} is not held: ${ownUsername.problem}`,
@@ -368,6 +333,39 @@ export async function ensureConversationIdSalt(): Promise<void> {
   if (d.session.state.status !== 'ready') return
   const salt = conversationIdSaltOf(await d.session.getWallet())
   if (salt) setConversationIdSalt(salt)
+}
+
+/**
+ * Gives a newly set up account the name typed at setup, unless its profile already has one, and
+ * brings the profile in line with the relay. For an account restored on this device the relay's
+ * profile replaces that name; it is published only for an account the relay has no profile of.
+ * `address` is the account's identity address when the caller knows it: the name is then stored
+ * at once, before the wallet is opened.
+ */
+export async function nameOwnProfile(
+  name: string,
+  address?: string,
+): Promise<void> {
+  const store = useProfileStore()
+  const give = (owner: string) => {
+    claimProfileStore(store, owner)
+    if (!store.profile.name && name) store.profile = { ...store.profile, name }
+  }
+  if (address) give(address)
+  let d: MessagingDeps
+  try {
+    d = dependencies()
+  } catch {
+    return
+  }
+  if (d.session.state.status !== 'ready') return
+  const wallet = await d.session.getWallet()
+  const own = (
+    wallet as unknown as { identity?: { address?: { raw?: string } } }
+  ).identity?.address?.raw
+  if (!own) return
+  give(own)
+  await d.registerProfile?.({ relayBaseUrl: d.relayBaseUrl, wallet })
 }
 
 export async function stopMessaging(): Promise<void> {

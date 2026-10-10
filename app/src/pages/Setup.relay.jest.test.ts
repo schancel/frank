@@ -356,6 +356,8 @@ describe('Setup page advanced relay configuration', () => {
   })
 
   test('a profile that already has a name keeps it on activation', async () => {
+    // The stored profile is this account's own (it was set up here before).
+    useProfileStore().owner = '0x00000000000000000000000000000000000000aa'
     useProfileStore().profile.name = 'Existing Name'
     Object.assign(mockAccount, {
       status: 'fresh',
@@ -379,6 +381,37 @@ describe('Setup page advanced relay configuration', () => {
     await view.get('[data-test="activate-account"]').trigger('click')
     await flushPromises()
     expect(useProfileStore().profile.name).toBe('Existing Name')
+    view.unmount()
+  })
+
+  test("another account's stored profile does not name the account set up now", async () => {
+    useProfileStore().owner = '0x00000000000000000000000000000000000000bb'
+    useProfileStore().profile = { name: 'Someone Else', bio: 'their bio' }
+    Object.assign(mockAccount, {
+      status: 'fresh',
+      pending: {
+        status: 'staging',
+        account: {
+          displayName: 'Typed At Setup',
+          descriptor: 'PUBLIC-DESC',
+          receipt: { operationId: 'op-3' },
+        },
+        expectedActive: { revision: 0, accountId: null },
+      },
+      pendingReady: true,
+      pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
+    })
+    accountSession.activatePending.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, { status: 'ready', pending: null })
+    })
+    const view = render()
+    await flushPromises()
+    await view.get('[data-test="activate-account"]').trigger('click')
+    await flushPromises()
+    expect(useProfileStore().owner).toBe(
+      '0x00000000000000000000000000000000000000aa',
+    )
+    expect(useProfileStore().profile).toEqual({ name: 'Typed At Setup' })
     view.unmount()
   })
 

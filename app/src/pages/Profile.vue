@@ -279,6 +279,9 @@ export default defineComponent({
             profile: this.relayData.profile,
             network: cfg.rpcChain,
           })
+          // The relay has the edit. Until it does, the edit stays marked as this device's to
+          // publish, and the next start sends it.
+          this.storedRelayData.unpublished = false
         }
       } catch (err: unknown) {
         console.error(err)

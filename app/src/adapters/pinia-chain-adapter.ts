@@ -53,12 +53,9 @@ import {
 import { profilePubKeyFromBytes } from '../utils/profile-pubkey'
 import { useChatStore, walletOwnsMessage } from '../stores/chats'
 import { useMailboxStatusStore } from '../stores/mailbox-status'
-import { useProfileStore } from '../stores/my-profile'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
-import {
-  registerMonadIdentityCbor,
-  type MonadIdentity,
-} from '@frank/wallet/monad-identity'
+import type { MonadIdentity } from '@frank/wallet/monad-identity'
+import { syncOwnProfileWithRelay } from '../utils/own-profile'
 
 /** Default direct-message poll interval, in milliseconds -- within issue #42's suggested 5-10s
  * range. Configurable via `MONAD_DM_POLL_INTERVAL_MS` (see `src/boot/monad-direct-messages.ts`). */
@@ -161,26 +158,19 @@ export interface DirectMessagePolling {
  * never from local/outbound message clocks.
  */
 /**
- * Auto-registers the wallet's identity profile against the relay after an authentication failure
- * (e.g. relay restart or wiped profile table).
+ * After the relay refused an authenticated read (it restarted, or lost its profile table): the
+ * account's profile is brought in line with the relay again. A relay that has no profile for the
+ * account is given this device's copy; one that has a profile keeps it (`../utils/own-profile`).
  */
 export async function autoRecoverProfile(wallet: WalletHandle): Promise<void> {
   const identity = (wallet as unknown as { identity?: MonadIdentity }).identity
   if (!identity) return
   try {
-    const relayBaseUrl =
-      (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
-      loadMonadChainConfigFromEnv().relayBaseUrl
-    let profile = undefined
-    try {
-      profile = useProfileStore().profile
-    } catch {
-      // Pinia store not initialized
-    }
-    await registerMonadIdentityCbor({
-      relayBaseUrl,
+    await syncOwnProfileWithRelay({
+      relayBaseUrl:
+        (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
+        loadMonadChainConfigFromEnv().relayBaseUrl,
       identity,
-      profile,
       network: loadMonadChainConfigFromEnv().rpcChain,
     })
   } catch (err) {

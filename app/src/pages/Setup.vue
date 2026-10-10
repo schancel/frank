@@ -771,7 +771,7 @@ import {
   retryLegacyInspection,
 } from '../accounts/legacy'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
-import { useProfileStore } from '../stores/my-profile'
+import { nameOwnProfile } from '../utils/monad-identity-session'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import {
   getDefaultRelayBaseUrl,
@@ -1127,14 +1127,18 @@ function activate() {
     } else if (!cleanedRelay || cleanedRelay === defaultRelayUrl) {
       setCustomRelayBaseUrl(undefined)
     }
+    const identityAddress = account.pendingIdentityAddress
     await accountSession.activatePending(
       pending.account.receipt.operationId,
       pending.expectedActive,
     )
     if (account.status !== 'ready') return
-    // The name typed at setup is the profile's name, unless the profile already has one.
-    const profile = useProfileStore().profile
-    if (!profile.name) profile.name = pending.account.displayName
+    // The name typed at setup is a new account's name. An account restored here has the
+    // profile it published, which the relay holds.
+    void nameOwnProfile(
+      pending.account.displayName,
+      identityAddress ?? undefined,
+    ).catch(() => undefined)
     void usePersistentStorageStore().afterActivation()
     emit('setupCompleted')
     await router.push('/wallet')

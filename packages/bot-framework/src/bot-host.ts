@@ -938,13 +938,16 @@ export class FrankBotHost {
                   "Asking the wallet about a reply"
                 )
               )[outbound] ?? "unknown";
-          } catch {
+          } catch (error) {
             held = true;
             instance.operations.assertOpen(); // a failed journal write faults admission, not just recovery
             console.warn(
-              `[bot-host] [${id}] Original reply recovery held; preserve state`
+              `[bot-host] [${id}] The wallet could not be asked about the reply to ${row.peerAddress}; asked again on the next poll:`,
+              error instanceof Error ? error.message : error
             );
-            continue;
+            // Not known this poll. The bound below still applies: a question that keeps failing
+            // must not keep its conversation waiting for ever.
+            status = "unknown";
           }
           if (status === "delivered")
             void this.track(instance, row, () =>

@@ -954,6 +954,45 @@ describe("FrankBotHost replies", () => {
       }
     );
 
+    // On 16218e9f a failing question skipped the bound: the conversation waited for ever.
+    it("is given up visibly after the bound when the wallet cannot be asked about it, poll after poll", async () => {
+      const seen: string[] = [];
+      const { host, instance } = await start(answering(seen));
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      mockSend
+        .mockReset()
+        .mockImplementationOnce(async (params) => {
+          await params.onAttemptCreated?.("ee".repeat(32));
+          throw new Error("the relay has not delivered it yet");
+        })
+        .mockImplementation(accept);
+      mockReconcile.mockRejectedValue(new Error("wallet journal unreadable"));
+      const one = inbound("one");
+      const two = inbound("two");
+
+      await poll(host, [one, two]);
+      await drain(instance);
+      await poll(host, [one]);
+      await drain(instance);
+      expect(await finished(instance, one)).toBe(false);
+      await new Promise((r) => setTimeout(r, 5));
+      (host as any).options.replyGiveUpMs = 1;
+      await poll(host, [one]);
+      await drain(instance);
+      (host as any).options.replyGiveUpMs = 60 * 60_000;
+      await poll(host, [one, two]);
+      await drain(instance);
+
+      expect(
+        error.mock.calls.filter(([line]) =>
+          String(line).includes("Giving up on the reply")
+        )
+      ).toHaveLength(1);
+      expect(await finished(instance, one)).toBe(true);
+      expect(seen).toEqual(["one", "two"]);
+    });
+
     it("that could never be sent is given up visibly after the bound, having paid nothing", async () => {
       const { host, instance } = await start(answering());
       const error = jest.spyOn(console, "error").mockImplementation(() => {});

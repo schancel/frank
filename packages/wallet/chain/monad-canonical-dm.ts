@@ -233,6 +233,14 @@ export interface StoredPayment {
    * payment is never made a third time; a repeat that itself reverts is not repeated.
    */
   repays?: number
+  /**
+   * Set on the SAME payment signed again (the same account and nonce, the same destination and
+   * value, other fee fields): the position in `payments` of the transaction it stands in for,
+   * which the node refused to take. Both stay recorded and both are looked for; an account's
+   * nonce is consumed once, so at most one of them is ever mined and the other ends `failed`.
+   * Written here before it is broadcast.
+   */
+  replaces?: number
 }
 
 /**
@@ -595,7 +603,8 @@ function owedRepayments(row: StoredMessage): number[] {
   if (row.outcome !== 'delivered') return []
   return row.payments.flatMap((payment, index) =>
     payment.state === 'reverted' &&
-    payment.repays === undefined &&
+    // A repeat is never repeated, however often it was signed.
+    row.payments[slotOf(row, index)].repays === undefined &&
     !row.payments.some(other => other.repays === index)
       ? [index]
       : [],
@@ -946,18 +955,51 @@ async function refuseUnexposed(
 /** Signed payments the node was last seen holding unmined. Process memory, for display only. */
 const inMempool = new Set<string>()
 
-/** A message's payments in one word. See `DirectMessagePaymentSummary`. */
+/** The position of the first transaction signed for the payment that `index` belongs to. */
+function slotOf(row: StoredMessage, index: number): number {
+  for (let at = index, hops = 0; hops <= row.payments.length; hops++) {
+    const earlier = row.payments[at]?.replaces
+    if (earlier === undefined) return at
+    at = earlier
+  }
+  return index
+}
+
+/** A message's payments in one word. See `DirectMessagePaymentSummary`. One payment may have
+ * been signed more than once at its nonce (`replaces`): whichever the chain mined is it. */
 function paymentSummary(row: StoredMessage): DirectMessagePaymentSummary {
-  const words = row.payments.flatMap((payment, index): DirectMessagePaymentSummary[] => {
-    if (payment.repays !== undefined) return []
-    if (payment.state === 'spent') return ['paid']
-    if (payment.state === 'pending')
-      return [inMempool.has(payment.rawTx) ? 'mempool' : 'pending']
-    if (payment.state !== 'reverted') return [payment.state]
-    const repeat = row.payments.find(other => other.repays === index)
-    if (repeat?.state === 'spent') return ['repaid']
-    return [repeat === undefined || repeat.state === 'pending' ? 'reverted' : 'failed']
-  })
+  const signedFor = (slot: number) =>
+    row.payments.flatMap((payment, index) =>
+      slotOf(row, index) === slot ? [{ payment, index }] : [],
+    )
+  const word = (slot: number): DirectMessagePaymentSummary => {
+    const signed = signedFor(slot)
+    if (signed.some(({ payment }) => payment.state === 'spent')) return 'paid'
+    const reverted = signed.find(({ payment }) => payment.state === 'reverted')
+    if (reverted) {
+      // Its one repeat, however often that was signed.
+      const repeats = row.payments.filter(
+        (_, index) => row.payments[slotOf(row, index)].repays === reverted.index,
+      )
+      if (repeats.some(payment => payment.state === 'spent')) return 'repaid'
+      return repeats.length === 0 || repeats.some(isPending)
+        ? 'reverted'
+        : 'failed'
+    }
+    const pending = signed.filter(({ payment }) => payment.state === 'pending')
+    if (pending.length > 0)
+      return pending.some(({ payment }) => inMempool.has(payment.rawTx))
+        ? 'mempool'
+        : 'pending'
+    return signed.every(({ payment }) => payment.state === 'unsent')
+      ? 'unsent'
+      : 'failed'
+  }
+  const words = row.payments.flatMap((payment, index) =>
+    payment.repays === undefined && payment.replaces === undefined
+      ? [word(index)]
+      : [],
+  )
   const order: DirectMessagePaymentSummary[] = [
     'failed',
     'reverted',
@@ -966,7 +1008,103 @@ function paymentSummary(row: StoredMessage): DirectMessagePaymentSummary {
     'mempool',
     'repaid',
   ]
-  return order.find(word => words.includes(word)) ?? 'paid'
+  return order.find(found => words.includes(found)) ?? 'paid'
+}
+
+/** How often running the node has refused to take each signed payment (by its bytes). Process
+ * memory: a restart starts counting again. */
+const refusals = new Map<string, { count: number; sinceMs: number }>()
+/** A payment is signed again once the node has refused its bytes this often, */
+const REFUSALS_BEFORE_RESIGN = 2
+/** over at least this long (what made the node refuse may pass in a few blocks: then the next
+ * transaction is not refused for the same reason), */
+export const RESIGN_AFTER_MS = { value: 3_000 }
+/** and one payment is signed at most this many times in all. */
+const MAX_SIGNED_PER_PAYMENT = 4
+
+/** The node answered and refused the transaction (an error of its own), as opposed to not
+ * answering at all. "Already known" and "nonce too low" never get here. */
+function isNodeRefusal(error: unknown): boolean {
+  const raised = error as {
+    code?: unknown
+    error?: { code?: unknown }
+    info?: { error?: { code?: unknown } }
+  }
+  if (
+    raised?.code === 'NETWORK_ERROR' ||
+    raised?.code === 'TIMEOUT' ||
+    raised?.code === 'SERVER_ERROR'
+  )
+    return false
+  return (
+    typeof raised?.error?.code === 'number' ||
+    typeof raised?.info?.error?.code === 'number'
+  )
+}
+
+/** Notes what the node said to each payment handed to it. */
+function noteHandOver(handed: readonly { rawTx: string; error?: unknown }[]) {
+  for (const one of handed)
+    if (one.error !== undefined && isNodeRefusal(one.error)) {
+      const seen = refusals.get(one.rawTx)
+      refusals.set(one.rawTx, {
+        count: (seen?.count ?? 0) + 1,
+        sinceMs: seen?.sinceMs ?? Date.now(),
+      })
+    } else refusals.delete(one.rawTx)
+}
+
+/**
+ * A payment of a delivered message that the node keeps refusing to take is signed again at the
+ * same nonce (`EvmStampPayer.resign`) and that transaction is handed to the node instead. The
+ * row with it is on stable storage first. Without this the same refused bytes were offered for
+ * ever and the account they spend stayed held (seen on a local Monad chain: a payment refused
+ * because its account had just been funded was refused for fifteen minutes). Never throws.
+ */
+async function resignRefused(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+): Promise<StoredMessage> {
+  const payer = owner.payer()
+  for (const [index, payment] of row.payments.entries()) {
+    if (
+      payment.state !== 'pending' ||
+      (refusals.get(payment.rawTx)?.count ?? 0) < REFUSALS_BEFORE_RESIGN ||
+      Date.now() - refusals.get(payment.rawTx)!.sinceMs < RESIGN_AFTER_MS.value ||
+      // Only the newest transaction of a payment is signed again.
+      row.payments.some(other => other.replaces === index)
+    )
+      continue
+    const slot = slotOf(row, index)
+    if (
+      row.payments.filter((_, at) => slotOf(row, at) === slot).length >=
+      MAX_SIGNED_PER_PAYMENT
+    )
+      continue
+    try {
+      const again = await payer.resign(payment, owner.chainId)
+      const next: StoredMessage = {
+        ...owner.messages.get(row.consumerId)!,
+        payments: [
+          ...owner.messages.get(row.consumerId)!.payments,
+          { ...again, state: 'pending', replaces: index },
+        ],
+      }
+      await owner.messages.put(next)
+      row = next
+      refusals.delete(payment.rawTx)
+      console.warn(
+        `[monad-canonical-dm] the node refused payment ${Transaction.from(payment.rawTx).hash} of a delivered message; the same payment is signed again at its nonce as ${Transaction.from(again.rawTx).hash}`,
+      )
+      noteHandOver(await payer.submitPaymentSet([again.rawTx]))
+    } catch (error) {
+      console.warn(
+        '[monad-canonical-dm] a refused payment could not be signed again; it is tried later:',
+        error,
+      )
+    }
+  }
+  return row
 }
 
 /** No longer consulted: whether a payment was replaced is read from the node in one look. Kept
@@ -1016,8 +1154,9 @@ async function settlePayments(
   )
   // What the node did not know goes back to it as one set.
   if (resubmit.length > 0)
-    await payer.submitPaymentSet(resubmit).catch(() => undefined)
-  if (states.every((state, i) => state === row.payments[i].state)) return row
+    noteHandOver(await payer.submitPaymentSet(resubmit).catch(() => []))
+  if (states.every((state, i) => state === row.payments[i].state))
+    return broadcast ? resignRefused(owner, row) : row
   const next: StoredMessage = {
     ...owner.messages.get(row.consumerId)!,
     payments: row.payments.map((payment, i) => ({
@@ -1073,7 +1212,7 @@ async function repayReverted(
         ],
       })
       recorded = true
-      await payer.submitPaymentSet([signed.rawTx])
+      noteHandOver(await payer.submitPaymentSet([signed.rawTx]))
     } catch (error) {
       // Nothing signed left the wallet unless the row has it; then the row keeps the claim.
       if (!recorded) payer.release(holder)
@@ -1220,7 +1359,16 @@ async function resend(
 export function restoreOutgoingClaims(owner: CanonicalMessagingOwner): void {
   const payer = owner.payer()
   for (const row of owner.messages.all()) {
-    const pending = row.payments.filter(isPending)
+    // One claim per coin: a payment signed more than once at its nonce names its coin again.
+    const pending = row.payments
+      .filter(isPending)
+      .filter(
+        (payment, at, all) =>
+          all.findIndex(
+            other =>
+              other.address === payment.address && other.index === payment.index,
+          ) === at,
+      )
     if (pending.length === 0) continue
     // Two records naming one coin must never stop the wallet from opening: the first keeps the
     // claim, both stay in the resend pass, and the chain says which payment landed.
@@ -1594,6 +1742,7 @@ async function send(
       const handed = await owner.lifetime(() =>
         payer.submitPaymentSet(signed.map(payment => payment.rawTx)),
       )
+      noteHandOver(handed)
       for (const one of handed)
         if (one.error !== undefined)
           console.warn(

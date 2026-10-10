@@ -267,6 +267,100 @@ export class EvmStampPayer {
     }
   }
 
+  /**
+   * Resolves once the node will let `address` spend `neededWei`. Monad admits a transaction
+   * against the sender's balance as it was a few blocks back: measured on a local Monad chain
+   * (docs/protocol/chains/monad-reserve-balance.md), a transfer offered 2 blocks after its
+   * account was funded was refused ("Signer had insufficient balance"), at 3 blocks sometimes,
+   * from 4 blocks never; and the node goes on refusing those same bytes long afterwards. So the
+   * balance that counts is the one `spacing + 1` blocks back. While the account's funds are newer
+   * than that, the blocks are waited for on the watcher. A chain with no spacing rule, or a node
+   * that cannot answer for an earlier block, is not waited on.
+   */
+  private async untilFundsSettled(
+    address: string,
+    neededWei: bigint,
+    signal?: AbortSignal,
+    onWaiting?: (blocksRemaining?: number) => void,
+  ): Promise<void> {
+    const lag = (this.config.spendSpacingBlocks ?? 0) + 1
+    if (lag <= 1) return
+    for (let told = false; ; ) {
+      const head = await this.watcher.current(signal)
+      if (head < lag) return
+      let settled: bigint
+      try {
+        settled = await this.config.provider.getBalance(address, head - lag)
+      } catch {
+        return
+      }
+      if (settled >= neededWei) return
+      // Not covered now either: nothing to wait for; the caller's own balance check decides.
+      if ((await this.read(() => this.config.provider.getBalance(address))) < neededWei)
+        return
+      if (!told) {
+        told = true
+        onWaiting?.(lag)
+      }
+      await this.watcher.until(head + 1, signal)
+    }
+  }
+
+  /**
+   * Signs the SAME payment again: the same account at the same nonce, the same destination and
+   * value. Only the fee fields differ (the current fee, never more than the account can pay),
+   * so the bytes and the hash differ. For a payment the node refuses to take: a node that has
+   * refused a transaction goes on refusing those bytes. At most one transaction of an account
+   * at a nonce is ever mined, so the two can never both pay. No request but the fee and the
+   * balance; nothing is broadcast here.
+   */
+  async resign(payment: StampPayment, chainId: bigint): Promise<StampPayment> {
+    const old = Transaction.from(payment.rawTx)
+    const [fee, balance] = await this.read(() =>
+      Promise.all([
+        this.currentFee(),
+        this.config.provider.getBalance(payment.address),
+      ]),
+    )
+    const affordable =
+      balance > old.value ? (balance - old.value) / STAMP_GAS_LIMIT : 0n
+    let cap = (fee.maxFeePerGas ?? fee.gasPrice)!
+    if (affordable < cap) cap = affordable
+    if (cap === (old.maxFeePerGas ?? old.gasPrice)) cap -= 1n
+    if (cap < fee.chargedPerGas)
+      throw new Error(
+        `${payment.address} cannot pay the fee of its payment again (it holds ${balance} wei)`,
+      )
+    const tip = fee.maxPriorityFeePerGas ?? cap
+    const [signed] = await this.sign(
+      {
+        holder: '',
+        fee:
+          fee.maxFeePerGas !== undefined
+            ? {
+                chargedPerGas: fee.chargedPerGas,
+                maxFeePerGas: cap,
+                maxPriorityFeePerGas: tip < cap ? tip : cap,
+              }
+            : { chargedPerGas: fee.chargedPerGas, gasPrice: cap },
+        accounts: [
+          {
+            source: payment.source,
+            ...(payment.index === undefined ? {} : { index: payment.index }),
+            address: payment.address,
+            nonce: old.nonce,
+            paymentValueWei: old.value,
+          },
+        ],
+      },
+      chainId,
+      () => old.to!,
+    )
+    if (!signed || Transaction.from(signed.rawTx).hash === old.hash)
+      throw new Error('The payment could not be signed again')
+    return signed
+  }
+
   private currentFee(): Promise<StampFee> {
     if (this.fee && Date.now() - this.fee.atMs < FEE_TTL_MS)
       return Promise.resolve(this.fee.value)
@@ -370,6 +464,17 @@ export class EvmStampPayer {
             ) === true
           if (dust) pool.releaseClaim(input.holder)
           else if (selected !== undefined) {
+            // An account funded in the last few blocks is not spendable yet.
+            for (const account of selected)
+              await this.untilFundsSettled(
+                account.address,
+                account.paymentValueWei + feeReserveWei,
+                input.signal,
+                blocks => {
+                  waiting = true
+                  input.onWaiting?.(blocks)
+                },
+              )
             this.config.onPoolCoinsClaimed?.()
             return {
               holder: input.holder,
@@ -426,6 +531,16 @@ export class EvmStampPayer {
               input.onWaiting?.(coin.notBeforeBlock - head)
               await this.watcher.until(coin.notBeforeBlock, input.signal)
             }
+            // Funds that arrived in the last few blocks are not spendable yet.
+            await this.untilFundsSettled(
+              account.address,
+              input.stampValueWei + feeReserveWei,
+              input.signal,
+              blocks => {
+                waiting = true
+                input.onWaiting?.(blocks)
+              },
+            )
             // The balance and (after a wait) the fee, read now that the coin is this payment's.
             const [balanceNow, feeNow] = await this.read(() =>
               Promise.all([

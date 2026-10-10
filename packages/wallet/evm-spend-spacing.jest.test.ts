@@ -146,3 +146,80 @@ describe('a stamp paid from the main account right after its last transaction', 
     expect(made.accounts[0]).toEqual(expect.objectContaining({ nonce: 1 }))
   })
 })
+
+/**
+ * Money that has just arrived. Measured on a local Monad chain: a transfer offered 2 blocks
+ * after its account was funded was refused by the node, at 3 blocks sometimes, from 4 blocks
+ * never, and the refused bytes stayed refused. The payer signs only against the balance the
+ * account already had `spacing + 1` blocks ago.
+ */
+describe('a stamp paid from an account whose funds have just arrived', () => {
+  it('waits until the funds are four blocks old, says how many blocks, then signs; funds that were there all along are not waited for', async () => {
+    const state = { head: 100, fundedAt: 100 }
+    const asked: (number | undefined)[] = []
+    const provider = {
+      getBlockNumber: async () => state.head,
+      // The account has never sent.
+      getTransactionCount: async () => 0,
+      getBalance: async (_address: string, block?: number) => {
+        asked.push(block)
+        return block !== undefined && block < state.fundedAt ? 0n : 10n ** 17n
+      },
+      getFeeData: async () => ({
+        gasPrice: 102n * 10n ** 9n,
+        maxFeePerGas: 202n * 10n ** 9n,
+        maxPriorityFeePerGas: 2n * 10n ** 9n,
+      }),
+    } as unknown as Provider
+    let claimed: string | undefined
+    const pool = {
+      accountClaimedBy: () => claimed,
+      accountGeneration: () => 0,
+      claimAccount: (holder: string) => ((claimed = holder), true),
+      releaseAccountClaim: () => (claimed = undefined),
+      releaseClaim: () => (claimed = undefined),
+    } as unknown as MonadSubAccountPool
+    const watcher = new EvmBlockWatcher({ provider, intervalMs: 20 })
+    const payer = new EvmStampPayer({
+      pool,
+      provider,
+      httpClient: {} as never,
+      watcher,
+      spendSpacingBlocks: 3,
+      accounts: [{ source: 'main', address: ADDRESS, privateKey: () => '' }],
+    })
+    const waits: (number | undefined)[] = []
+    let done = false
+    const claim = payer
+      .claim({
+        holder: 'first',
+        stampValueWei: 10n ** 15n,
+        sources: ['main'],
+        onWaiting: blocks => waits.push(blocks),
+      })
+      .then(made => ((done = true), made))
+    state.head = 103
+    await new Promise(resolve => setTimeout(resolve, 250))
+    // Block 99 (103 - 4) does not show the money yet.
+    expect(done).toBe(false)
+    expect(waits).toEqual([4])
+    state.head = 104
+    expect((await claim).accounts[0]).toEqual(
+      expect.objectContaining({ source: 'main', nonce: 0 }),
+    )
+    expect(asked).toContain(100)
+    // Later, the same money is old: no wait.
+    claimed = undefined
+    state.head = 200
+    waits.length = 0
+    await payer.claim({
+      holder: 'second',
+      stampValueWei: 10n ** 15n,
+      sources: ['main'],
+      onWaiting: blocks => waits.push(blocks),
+    })
+    watcher.stop()
+    expect(waits).toEqual([])
+  })
+})
+

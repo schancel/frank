@@ -38,6 +38,7 @@ import {
   CanonicalRecipientUndeliverableError,
   CanonicalSenderUnpublishedError,
   REPLACED_AFTER_MS,
+  RESIGN_AFTER_MS,
   LevelOutgoingMessageStore,
 } from './monad-canonical-dm'
 
@@ -106,6 +107,7 @@ describe('parallel paid messages', () => {
     mailboxes.clear()
     mockMessageWrite.mode = 'ok'
     REPLACED_AFTER_MS.value = 60_000
+    RESIGN_AFTER_MS.value = 3_000
     f = await fixture()
     alice = f.alice
     bobMailbox = []
@@ -979,6 +981,109 @@ describe('parallel paid messages', () => {
     expect(
       [...offlineChain.mined.values()].filter(from => from === main),
     ).toHaveLength(2)
+  })
+
+  // Seen on a local Monad chain (and behind "payment not broadcast ... Signer had insufficient
+  // balance" in the relay's log on testnet): the node refused a payment whose account had just
+  // been funded, then refused those same bytes for fifteen minutes, and the main account was
+  // held all that time, with every other main-paid send waiting behind it.
+  it('a payment the node keeps refusing is signed again at the same nonce and paid once: never two payments, and the account is not held for ever', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    // Neither the relay nor the wallet gets the payment into the node.
+    offlineChain.relayBroadcasts = false
+    offlineChain.refuseNext = true
+    const sent = await send(1) // delivered all the same
+    expect(bobMailbox).toHaveLength(1)
+    // (The wait before a refused payment is signed again is over.)
+    RESIGN_AFTER_MS.value = 0
+    const digest = sent.payloadDigest
+    const payments = () =>
+      f.chain.directMessages.paymentsOf!({ wallet: alice, payloadDigest: digest })
+    const summary = () =>
+      f.chain.directMessages.paymentSummaryOf!({ wallet: alice, payloadDigest: digest })
+    const first = relayPayments()[0]
+    expect(offlineChain.refused.has(first.hash!)).toBe(true)
+    expect(offlineChain.mined.size).toBe(0)
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    // The background pass: refused again, then signed again and taken by the node.
+    for (let i = 0; i < 4 && offlineChain.mined.size === 0; i++) await tick([digest])
+    const mined = [...offlineChain.mined.keys()]
+    expect(mined).toHaveLength(1)
+    expect(mined[0]).not.toBe(first.hash)
+    const again = offlineChain.walletBroadcasts
+      .map(raw => Transaction.from(raw))
+      .find(tx => tx.hash === mined[0])!
+    // The same payment: account, nonce, destination, value. Only the fee fields differ.
+    expect(again.from!.toLowerCase()).toBe(main)
+    expect(again).toMatchObject({
+      nonce: first.nonce,
+      to: first.to,
+      value: first.value,
+      gasLimit: first.gasLimit,
+    })
+    await tick([digest])
+    await tick([digest])
+    // The refused bytes can never land now (their nonce is used); the payment is paid.
+    expect(payments()).toEqual(['failed', 'spent'])
+    expect(summary()).toBe('paid')
+    expect(mockBalances.get(first.to!.toLowerCase())).toBe(STAMP)
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+    // Over a restart and more passes: nothing is signed or paid again.
+    const signedSoFar = new Set(
+      offlineChain.walletBroadcasts.map(raw => Transaction.from(raw).hash),
+    ).size
+    await reopen()
+    for (let i = 0; i < 6; i++) await tick([digest])
+    expect(payments()).toEqual(['failed', 'spent'])
+    expect(
+      new Set(offlineChain.walletBroadcasts.map(raw => Transaction.from(raw).hash)).size,
+    ).toBe(signedSoFar)
+    expect([...offlineChain.mined.values()].filter(from => from === main)).toHaveLength(1)
+    // And the next message is paid at the next nonce, at once.
+    const next = await send(2)
+    expect(
+      Transaction.from(
+        offlineChain.walletBroadcasts[offlineChain.walletBroadcasts.length - 1],
+      ).nonce,
+    ).toBe(first.nonce + 1)
+    expect(next.payloadDigest).not.toBe(digest)
+  })
+
+  it('the wallet is closed after a refused payment was signed again and before the node took the new one: the restart offers both, one is mined, the account is free', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    offlineChain.relayBroadcasts = false
+    offlineChain.refuseNext = true
+    const sent = await send(1)
+    const digest = sent.payloadDigest
+    const payments = () =>
+      f.chain.directMessages.paymentsOf!({ wallet: alice, payloadDigest: digest })!
+    RESIGN_AFTER_MS.value = 0
+    // The node stops answering the moment the payment is signed again: its record is written,
+    // its broadcast is lost.
+    const resign = EvmStampPayer.prototype.resign
+    jest
+      .spyOn(EvmStampPayer.prototype, 'resign')
+      .mockImplementationOnce(async function (
+        this: EvmStampPayer,
+        ...args: Parameters<EvmStampPayer['resign']>
+      ) {
+        const signed = await resign.apply(this, args)
+        offlineChain.broadcastDown = true
+        return signed
+      })
+    for (let i = 0; i < 4 && payments().length < 2; i++) await tick([digest])
+    expect(payments()).toEqual(['pending', 'pending'])
+    expect(offlineChain.mined.size).toBe(0)
+    await reopen()
+    offlineChain.broadcastDown = false
+    // Both transactions name the one coin: it is claimed once, and the wallet opens.
+    expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+    for (let i = 0; i < 5; i++) await tick([digest])
+    expect(payments()).toEqual(['failed', 'spent'])
+    expect([...offlineChain.mined.values()].filter(from => from === main)).toHaveLength(1)
+    expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
   })
 
   it('a dead answer that may follow a broadcast keeps the coins claimed until the chain decides', async () => {

@@ -97,6 +97,11 @@ export const offlineChain = {
   /** The next transaction mined is included and REVERTED: nonce consumed, value not moved. */
   revertNext: false,
   reverted: new Set<string>(),
+  /** The next transaction offered to the node is REFUSED (an error answer of the node's own),
+   * and so are those same bytes ever after: what a Monad node does with a transfer from an
+   * account whose funds are too new ("Signer had insufficient balance"). */
+  refuseNext: false,
+  refused: new Set<string>(),
   /** What the node answers for `eth_gasPrice`: what a transfer is charged per gas. Zero by
    * default, so a suite's stamps of a few wei are not below the fee floor; a test of the floor
    * sets it. The fee CAP (2 x base fee 1 + tip 1 = 3) is separate and unchanged. */
@@ -105,6 +110,8 @@ export const offlineChain = {
     this.gasPrice = 0n
     this.revertNext = false
     this.reverted.clear()
+    this.refuseNext = false
+    this.refused.clear()
     this.mined.clear()
     this.nodeDown = false
     this.broadcastDown = false
@@ -163,6 +170,15 @@ export function offlineProviderModule() {
           if (offlineChain.nodeDown || offlineChain.broadcastDown)
             throw new Error('node unreachable')
           if (offlineChain.mined.has(tx.hash)) throw new Error('already known')
+          if (offlineChain.refuseNext) {
+            offlineChain.refuseNext = false
+            offlineChain.refused.add(tx.hash)
+          }
+          if (offlineChain.refused.has(tx.hash))
+            throw Object.assign(new Error('could not coalesce error'), {
+              code: 'UNKNOWN_ERROR',
+              error: { code: -32000, message: 'Signer had insufficient balance' },
+            })
           offlineChain.mine(raw)
           providerBroadcasts.push({
             from: tx.from.toLowerCase(),

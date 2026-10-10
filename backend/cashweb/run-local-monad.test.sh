@@ -99,6 +99,12 @@ if [[ "${1:-}" == "--check-config" ]]; then
     printf '%s\n' "$config" | "$FRANK_REAL_CASHWEBD" --check-config -
     exit 0
 fi
+if [[ "${1:-}" == "--check-db" ]]; then
+    # The database check is the real relay's: it opens the registry database as a start does.
+    [[ "${2:-}" == "-" ]]
+    [[ -z "${FRANK_LAUNCHER_CHECK_LOG:-}" ]] || echo "check-db" >>"$FRANK_LAUNCHER_CHECK_LOG"
+    exec "$FRANK_REAL_CASHWEBD" --check-db -
+fi
 printf '%s\n' "$@" >"$FRANK_LAUNCHER_ARGS"
 printf 'rpc=%s\ntag=%s\n' "${MONAD_TESTNET_HTTP_RPC_URL:-}" "${FRANK_NETWORK_TAG:-}" \
     >"$FRANK_LAUNCHER_ARGS.env"
@@ -163,7 +169,8 @@ fi
 
 diff -u <(printf '%s\n' -) "$args_file"
 # The launcher must run `--check-config` itself, before starting the daemon.
-[[ "$(cat "$fixture_root/check.log")" == "check-config" ]] || exit 1
+# ... and then the database check, in that order.
+[[ "$(cat "$fixture_root/check.log")" == "$(printf 'check-config\ncheck-db')" ]] || exit 1
 [[ "$(grep -c '^\[registry\.monad_mailbox\]$' "$config_file")" -eq 1 ]] || exit 1
 [[ "$(grep -c '^enabled = true$' "$config_file")" -eq 4 ]] || exit 1
 # The endpoint is secret-bearing: it reaches the daemon only through its environment, never the
@@ -309,3 +316,48 @@ fi
 [[ -z "$(find "$fixture_root/tmp" -type f -print -quit)" ]] || exit 1
 
 echo "run-local-monad tests passed"
+
+# A relay database from an earlier development build: the real relay refuses it, and this
+# launcher (development, demos and tests only) moves exactly the paths the refusal names aside,
+# never deletes them, leaves everything else beside them alone, says so, and starts.
+old_db_dir="$fixture_root/old-relay"
+mkdir -p "$old_db_dir/registry.monad-dm-cbor-v1"
+echo "old messages" >"$old_db_dir/registry.monad-dm-cbor-v1/data"
+echo "session" >"$old_db_dir/registry.session-secret"
+echo "not the relay's" >"$old_db_dir/account-root.hex"
+# The relay itself, started directly, refuses and names the paths.
+if printf 'x' | MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" FRANK_NETWORK_TAG=MONT \
+    "$FRANK_REAL_CASHWEBD" --check-db - <<<"$(sed "s#^db_path = .*#db_path = \"$old_db_dir/registry.rocksdb\"#" "$config_file")" \
+    2>"$fixture_root/refusal.err"; then
+    echo "the relay unexpectedly opened a database beside an earlier message store" >&2
+    exit 1
+fi
+grep -Fq 'Development reset' "$fixture_root/refusal.err" || exit 1
+grep -Fq "$old_db_dir/registry.monad-dm-cbor-v1" "$fixture_root/refusal.err" || exit 1
+[[ -d "$old_db_dir/registry.monad-dm-cbor-v1" ]] || exit 1
+rm -f -- "$args_file" "$config_file"
+MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    FRANK_RELAY_DB_PATH="$old_db_dir/registry.rocksdb" \
+    FRANK_LAUNCHER_ARGS="$args_file" \
+    FRANK_LAUNCHER_CONFIG="$config_file" \
+    "$launcher" 2>"$fixture_root/moved.err"
+grep -Fq 'MOVED ASIDE (not deleted)' "$fixture_root/moved.err" || exit 1
+[[ ! -e "$old_db_dir/registry.monad-dm-cbor-v1" ]] || exit 1
+moved_store="$(find "$old_db_dir" -maxdepth 1 -name 'registry.monad-dm-cbor-v1.old-format-*' -print)"
+[[ -n "$moved_store" && "$(cat "$moved_store/data")" == "old messages" ]] || exit 1
+# The daemon was started, on a database the real relay opens.
+[[ -e "$args_file" ]] || exit 1
+[[ -d "$old_db_dir/registry.rocksdb" ]] || exit 1
+# Nothing but the relay's own database paths was touched.
+[[ "$(cat "$old_db_dir/registry.session-secret")" == "session" ]] || exit 1
+[[ "$(cat "$old_db_dir/account-root.hex")" == "not the relay's" ]] || exit 1
+# A second start finds nothing to move.
+MONAD_TESTNET_HTTP_RPC_URL="$dummy_rpc_url" \
+    CARGO="$fixture_root/bin/fake-cargo" \
+    FRANK_RELAY_DB_PATH="$old_db_dir/registry.rocksdb" \
+    FRANK_LAUNCHER_ARGS="$args_file" \
+    FRANK_LAUNCHER_CONFIG="$config_file" \
+    "$launcher" 2>"$fixture_root/second.err"
+! grep -Fq 'MOVED ASIDE' "$fixture_root/second.err" || exit 1
+[[ "$(find "$old_db_dir" -maxdepth 1 -name '*.old-format-*' | wc -l | tr -d ' ')" -eq 1 ]] || exit 1

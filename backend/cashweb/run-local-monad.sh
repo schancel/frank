@@ -303,4 +303,43 @@ fi
 # the same environment the daemon will see. The Cargo slot covers compilation only, so the
 # long-lived relay cannot block builds in other worktrees.
 printf '%s\n' "$runtime_config" | "$cashwebd" --check-config -
+
+# This launcher is for development, demos and tests. A relay database written by an earlier
+# development build (the relay has no reader for it and refuses to start, naming the paths) is
+# MOVED ASIDE here, never deleted, and the relay starts on a fresh one: bots and test users
+# publish their directory entries again when they start. Only the paths the refusal names are
+# renamed (the registry database and its message stores: messages, profiles, topics and directory
+# entries; no keys, no funds). The session secret and everything else beside them stay. A relay
+# started directly, as in production, keeps refusing.
+move_old_relay_database_aside() {
+    local refusal="$1" db stem stamp moved=() path
+    db="$(printf '%s\n' "$runtime_config" | sed -n 's/^db_path = "\(.*\)"$/\1/p' | head -n 1)"
+    [[ -n "$db" ]] || return 1
+    # Rust's Path::with_extension: the last extension of the file name is replaced.
+    case "${db##*/}" in
+        ?*.*) stem="${db%.*}" ;;
+        *) stem="$db" ;;
+    esac
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    for path in "$db" "$stem.messages-v2" "$stem.monad-dm-cbor-v1"; do
+        [[ -e "$path" ]] || continue
+        # Only what the relay itself named.
+        [[ "$refusal" == *"$path"* ]] || continue
+        mv -- "$path" "$path.old-format-$stamp"
+        moved+=("$path -> $path.old-format-$stamp")
+    done
+    [[ ${#moved[@]} -gt 0 ]] || return 1
+    echo "run-local-monad: the relay database was written by an earlier development build that this relay cannot read; MOVED ASIDE (not deleted): ${moved[*]}. Starting on a fresh relay database; wallets, bots and keys are untouched." >&2
+}
+if ! db_check="$(printf '%s\n' "$runtime_config" | "$cashwebd" --check-db - 2>&1)"; then
+    if [[ "$db_check" == *"Development reset"* ]] && move_old_relay_database_aside "$db_check"; then
+        printf '%s\n' "$runtime_config" | "$cashwebd" --check-db -
+    elif [[ "$db_check" == *"--check-db"* ]]; then
+        # A prebuilt relay (CASHWEBD_BIN) from before the check existed: start it as before.
+        echo "run-local-monad: this relay binary has no --check-db; an old-format database will be refused by the relay itself" >&2
+    else
+        printf '%s\n' "$db_check" >&2
+        exit 1
+    fi
+fi
 exec "$cashwebd" - < <(printf '%s\n' "$runtime_config")

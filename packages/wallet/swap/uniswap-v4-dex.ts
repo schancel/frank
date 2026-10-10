@@ -3,6 +3,7 @@
  * `adapter` is `uniswap-v4`. It is given its entry and the wallet as a narrow interface; it
  * finds nothing by itself.
  */
+import { getChainRegistryEntry } from '../chain/chains-registry'
 import type { UniswapV4Deployment } from '../chain/dex-entries'
 import type { EvmDex, EvmDexWallet } from './evm-dex'
 import {
@@ -48,6 +49,11 @@ export class UniswapV4Dex implements Dex {
     return this.entry.tokens
   }
 
+  /** How this network charges gas: a fact on its registry row, never assumed here. */
+  private get gasChargedOn() {
+    return getChainRegistryEntry(this.chainIdentifier)?.gasChargedOn ?? 'used'
+  }
+
   quote(input: Parameters<Dex['quote']>[0]) {
     return fetchSwapQuote(this.wallet.reader, this.entry, input, this.now)
   }
@@ -68,6 +74,7 @@ export class UniswapV4Dex implements Dex {
     return estimateSwapCost({
       reader: this.wallet.reader,
       wallet: this.wallet,
+      gasChargedOn: this.gasChargedOn,
       ...input,
     })
   }
@@ -89,6 +96,7 @@ export class UniswapV4Dex implements Dex {
       consolidateWei: input.consolidateWei,
       onProgress: input.onProgress,
       timing: input.timing,
+      gasChargedOn: this.gasChargedOn,
       // What the swap is, handed to the wallet with the swap transaction. The wallet records
       // it and writes the note to self; this class does neither.
       record: {

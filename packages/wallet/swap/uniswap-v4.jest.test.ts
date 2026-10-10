@@ -525,18 +525,18 @@ describe('quote, at the node seam', () => {
     // Charged: the whole limit, at the base fee plus the tip, not at the cap.
     node.baseFeePerGas = 2n
     node.maxPriorityFeePerGas = 1n
-    expect(
-      await estimateCallFee(
-        reader,
-        { to: deployment.universalRouter, data: '0x00', value: 0n },
-        account,
-      ),
-    ).toEqual({
+    const feeCall = { to: deployment.universalRouter, data: '0x00', value: 0n }
+    // The usual rule: charged for the gas used.
+    expect(await estimateCallFee(reader, feeCall, account)).toEqual({
       gasLimit: 230_000n,
       maxFeePerGas: 5n,
       maximumFeeWei: 1_150_000n,
-      chargedFeeWei: 690_000n,
+      chargedFeeWei: 600_000n,
     })
+    // A network that charges the limit a transaction reserves: the margin is paid for too.
+    expect(
+      (await estimateCallFee(reader, feeCall, account, 'limit')).chargedFeeWei,
+    ).toBe(690_000n)
   })
 })
 
@@ -593,6 +593,13 @@ describe('venues', () => {
       expect(config.listEvmDexDeploymentChains()).toEqual([])
     })
     jest.dontMock('../chain/dex-entries')
+  })
+
+  it('records on the Monad rows, and only there, that the gas limit is what is charged', () => {
+    for (const [id, entry] of Object.entries(PROTOCOL_CHAINS))
+      expect(entry.gasChargedOn).toBe(
+        id === 'monad-testnet' || id === 'monad-mainnet' ? 'limit' : undefined,
+      )
   })
 
   it('charges no interface fee anywhere today', () => {

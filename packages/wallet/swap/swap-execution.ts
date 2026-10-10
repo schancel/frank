@@ -10,6 +10,7 @@ import {
   chargedGasPrice,
   estimateCallFee,
   swapRevertReasonOf,
+  type GasChargedOn,
   type NetworkFeeEstimate,
   type SwapChainReader,
   type SwapPlan,
@@ -160,16 +161,23 @@ export const DEFAULT_SWAP_TIMING: SwapTiming = {
 
 type Handle = { operationId: string; txHash: string }
 
+/** Multiples of `pollMs` between receipt reads: quick at first, then every five. */
+const RECEIPT_BACKOFF = [1, 1, 2, 3, 5]
+
 async function awaitReceipt(
   reader: SwapExecutionReader,
   txHash: string,
   timing: SwapTiming,
 ): Promise<SwapReceipt | undefined> {
-  for (let waited = 0; ; waited += timing.pollMs) {
+  for (let waited = 0, attempt = 0; ; attempt++) {
     const receipt = await reader.getTransactionReceipt(txHash).catch(() => null)
     if (receipt) return receipt
     if (waited >= timing.inclusionTimeoutMs) return undefined
-    await timing.sleep(timing.pollMs)
+    const wait =
+      timing.pollMs *
+      RECEIPT_BACKOFF[Math.min(attempt, RECEIPT_BACKOFF.length - 1)]!
+    await timing.sleep(wait)
+    waited += wait
   }
 }
 
@@ -329,8 +337,8 @@ export interface SwapCost {
 
 /**
  * What the whole swap will cost in network fees: the transfer(s) of a consolidation, each
- * approval, and the swap, each at its gas limit times the price charged now. Monad charges the
- * limit, so this is what leaves the account, not an upper bound.
+ * approval, and the swap, each as the network will charge it (see `gasChargedOn`): what leaves
+ * the account, not an upper bound.
  */
 export async function estimateSwapCost(params: {
   reader: SwapChainReader
@@ -339,6 +347,8 @@ export async function estimateSwapCost(params: {
   account: string
   /** What `consolidationNeeded` said must be moved in first. */
   moveWei?: bigint
+  /** The network's rule, from its registry row. */
+  gasChargedOn?: GasChargedOn
 }): Promise<SwapCost> {
   const { reader, plan, account } = params
   const transactions: SwapCostLine[] = []
@@ -360,16 +370,24 @@ export async function estimateSwapCost(params: {
     transactions.push({ kind: 'consolidation', feeWei })
   }
   for (const { call } of plan.approvals) {
-    const fee = await estimateCallFee(reader, call, account).catch(
-      () => undefined,
-    )
+    const fee = await estimateCallFee(
+      reader,
+      call,
+      account,
+      params.gasChargedOn,
+    ).catch(() => undefined)
     if (!fee) complete = false
     transactions.push({ kind: 'approval', feeWei: fee?.chargedFeeWei })
   }
   // The swap pulls the token through the allowance, so until that exists it cannot be estimated.
   const swapFee =
     plan.approvals.length === 0
-      ? await estimateCallFee(reader, plan.swap, account).catch(() => undefined)
+      ? await estimateCallFee(
+          reader,
+          plan.swap,
+          account,
+          params.gasChargedOn,
+        ).catch(() => undefined)
       : undefined
   if (!swapFee) complete = false
   transactions.push({ kind: 'swap', feeWei: swapFee?.chargedFeeWei })
@@ -435,9 +453,10 @@ async function feeOrRefusal(
   reader: SwapChainReader,
   call: EncodedCall,
   account: string,
+  gasChargedOn?: GasChargedOn,
 ): Promise<NetworkFeeEstimate> {
   try {
-    return await estimateCallFee(reader, call, account)
+    return await estimateCallFee(reader, call, account, gasChargedOn)
   } catch (error) {
     const reason = swapRevertReasonOf(error)
     if (reason)
@@ -528,6 +547,8 @@ export async function executeSwap(params: {
   /** Passed to the wallet with the swap transaction (never with an approval). `networkFeeWei`
    * is filled in here from the fee the transaction is sent with. */
   record?: Omit<ContractCallRecord, 'networkFeeWei'>
+  /** The network's rule, from its registry row; decides the fee the record states. */
+  gasChargedOn?: GasChargedOn
   onProgress?: (progress: SwapProgress) => void
   onSigned?: (signed: Handle) => Promise<void>
   timing?: SwapTiming
@@ -568,7 +589,12 @@ export async function executeSwap(params: {
       )
   }
 
-  const fee = await feeOrRefusal(reader, plan.swap, account)
+  const fee = await feeOrRefusal(
+    reader,
+    plan.swap,
+    account,
+    params.gasChargedOn,
+  )
   onProgress?.({ stage: 'signing' })
   const handle = await send(
     wallet,

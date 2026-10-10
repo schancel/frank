@@ -756,6 +756,22 @@ export class EvmNativeOperationJournal {
       row.cancelled = true
     })
   }
+  /**
+   * Ends an operation none of whose members was ever handed to the network: its signed bytes are
+   * dropped and it is cancelled. Bytes that never left this device cannot land, so nothing is
+   * left to reconcile; an exposed member refuses this.
+   */
+  discardUnexposed(id: string): Promise<EvmNativeOperation> {
+    return this.mutate(id, row => {
+      if (row.members.some(m => m.exposed)) fail('conflict')
+      for (const m of row.members) {
+        m.signed = null
+        m.observation = { state: 'unknown' }
+        m.account = null
+      }
+      row.cancelled = true
+    })
+  }
   beginCapture(operationId: string, memberIndex: number): EvmNativeCapture {
     if (this.closing) fail('closed')
     const row = this.get(operationId)

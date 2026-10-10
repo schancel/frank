@@ -43,6 +43,7 @@ const clientKeys = new Set([
   "explorerUrl",
   "contracts",
   "dex",
+  "gasChargedOn",
   "exchange",
   "wallet",
 ]);

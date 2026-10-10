@@ -13,6 +13,8 @@ export interface EvmTokenRow {
 }
 
 const REFRESH_MS = 20_000
+/** Without any input for this long, the balances are not read until the page is touched. */
+const IDLE_AFTER_MS = 120_000
 
 /**
  * The ERC-20 balances of the wallet's main account on one EVM chain, read from the chain
@@ -68,13 +70,34 @@ export function useEvmTokenBalances(chainIdentifier: Ref<string | undefined>) {
     status.value = 'none'
     void refresh()
   })
+  // The timer only reads while someone is looking: not in a hidden tab, and not after two
+  // minutes without any input. It reads again at once when either ends.
+  let lastInputAt = Date.now()
+  const watching = () =>
+    !document.hidden && Date.now() - lastInputAt < IDLE_AFTER_MS
+  const touched = () => {
+    const wasWatching = watching()
+    lastInputAt = Date.now()
+    if (!wasWatching && watching()) void refresh()
+  }
+  const onVisibility = () => {
+    if (watching()) void refresh()
+  }
   onMounted(() => {
     void refresh()
-    timer = setInterval(() => void refresh(), REFRESH_MS)
+    timer = setInterval(() => {
+      if (watching()) void refresh()
+    }, REFRESH_MS)
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pointerdown', touched)
+    window.addEventListener('keydown', touched)
   })
   onBeforeUnmount(() => {
     generation++
     if (timer) clearInterval(timer)
+    document.removeEventListener('visibilitychange', onVisibility)
+    window.removeEventListener('pointerdown', touched)
+    window.removeEventListener('keydown', touched)
   })
 
   return { rows, status, refresh }

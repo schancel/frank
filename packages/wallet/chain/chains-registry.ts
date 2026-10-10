@@ -93,6 +93,13 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
    * entries, means no swap on this network. EVM rows only today; see `dex-entries.ts`.
    */
   readonly dex?: readonly EvmDexEntry[];
+  /**
+   * What an EVM network charges a transaction's gas price on: the gas it `used` (the usual
+   * rule, and the default), or the whole gas `limit` it reserved. Monad charges the limit, so
+   * there every unit of headroom above the estimate is paid for and a fee shown to the user is
+   * limit times price, not an upper bound.
+   */
+  readonly gasChargedOn?: "used" | "limit";
   readonly exchange?: ChainExchangeConfig;
   /** What the app's own wallet does on this network. Absent: nothing, and no address is shown. */
   readonly wallet?: ChainWalletSupport;
@@ -128,6 +135,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "MONT",
       networkTag: "MONT",
       ...deployedContracts("monad-testnet"),
+      gasChargedOn: "limit",
       dex: MONAD_TESTNET_DEX,
     }),
     "monad-mainnet": Object.freeze({
@@ -139,6 +147,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "MON",
       networkTag: "MON1",
       ...deployedContracts("monad-mainnet"),
+      gasChargedOn: "limit",
     }),
     "xec-testnet": Object.freeze({
       // The eCash SDK wallet on the relay's Chronik proxy.

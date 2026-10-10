@@ -319,18 +319,21 @@ export interface NetworkFeeEstimate {
   /** The most the call can cost: gas limit times the fee cap. The account must hold this. */
   readonly maximumFeeWei: bigint
   /**
-   * What the network will charge: the whole gas limit (Monad charges the limit a transaction
-   * reserves, not the gas it uses) at the current base fee plus tip. This is what leaves the
+   * What the network will charge at the current base fee plus tip: for the gas the call is
+   * estimated to use, or, on a network that charges the whole limit a transaction reserves
+   * (`gasChargedOn: 'limit'` on its registry row), for the limit. This is what leaves the
    * account, and what the form shows.
    */
   readonly chargedFeeWei: bigint
 }
 
+/** Which gas a network's fee is charged on; a fact of the network, read from its registry row. */
+export type GasChargedOn = 'used' | 'limit'
+
 /**
- * Headroom added to the node's gas estimate. On Monad every unit of the limit is paid for, so
- * it is kept small; it exists because the pool can move between the estimate and inclusion, and
- * a swap that runs out of gas costs its whole fee and swaps nothing. With it a single-pool swap
- * reserves about 207,000 gas (0.021 MON at the testnet's 102 gwei).
+ * Headroom added to the node's gas estimate. It exists because the pool can move between the
+ * estimate and inclusion, and a swap that runs out of gas costs its fee and swaps nothing. It is
+ * kept small because on a network that charges the gas limit every unit of it is paid for.
  */
 export const GAS_MARGIN_PERCENT = 15n
 
@@ -359,6 +362,7 @@ export async function estimateCallFee(
   reader: SwapChainReader,
   call: EncodedCall,
   account: string,
+  gasChargedOn: GasChargedOn = 'used',
 ): Promise<NetworkFeeEstimate> {
   const [estimate, price] = await Promise.all([
     reader.estimateGas({
@@ -374,7 +378,8 @@ export async function estimateCallFee(
     gasLimit,
     maxFeePerGas: price.maxFeePerGas,
     maximumFeeWei: gasLimit * price.maxFeePerGas,
-    chargedFeeWei: gasLimit * price.chargedPerGas,
+    chargedFeeWei:
+      (gasChargedOn === 'limit' ? gasLimit : estimate) * price.chargedPerGas,
   }
 }
 

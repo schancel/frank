@@ -655,6 +655,27 @@ describe('confirming and executing', () => {
     expect(text(view, 'swap-problem')).toContain('The swap was not sent')
   })
 
+  it('a quick retry after a swap that could not be recorded sends one swap, not two', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    mockStorageFull = true
+    await click(view, 'swap-confirm-btn')
+    expect(s.events).toEqual([])
+    // The device can store again; the user goes straight back and confirms.
+    mockStorageFull = false
+    s.receipts.set('0xhash2', receipt(vectors.swapNativeIn))
+    await click(view, 'swap-review-btn')
+    await click(view, 'swap-confirm-btn')
+    expect(s.events).toEqual(['broadcast 0xhash2 after 1 saved'])
+    expect(mockSaved.map(record => record.id)).toEqual([
+      'swap-0xhash2',
+      'swap-0xhash2',
+    ])
+    expect(text(view, 'swap-result')).toContain('Swap complete')
+  })
+
   it('shows on the review card what will be moved into the main account, and moves exactly that once', async () => {
     // 0.01 MON in the main account, 1 MON in the wallet's other accounts.
     const s = scene({ mainBalance: 10n ** 16n, other: E18 })

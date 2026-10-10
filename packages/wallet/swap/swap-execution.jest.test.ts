@@ -494,12 +494,21 @@ describe('what the whole swap costs', () => {
       wallet: s.wallet,
       plan: await s.plan('native-in'),
       account,
+      gasChargedOn: 'limit',
     })
     // 230,000 gas reserved at 102, not at the 202 cap and not at the gas used.
     expect(cost.transactions).toEqual([{ kind: 'swap', feeWei: 23_460_000n }])
     expect(cost.networkFeeWei).toBe(23_460_000n)
     expect(cost.complete).toBe(true)
     expect(cost.swapFee?.maximumFeeWei).toBe(46_460_000n)
+    // Where only the gas used is charged, the margin is not part of the fee.
+    const used = await estimateSwapCost({
+      reader: s.reader,
+      wallet: s.wallet,
+      plan: await s.plan('native-in'),
+      account,
+    })
+    expect(used.networkFeeWei).toBe(20_400_000n)
   })
 
   it('prices each approval, and says the total is incomplete until the swap can be estimated', async () => {
@@ -511,6 +520,7 @@ describe('what the whole swap costs', () => {
       wallet: s.wallet,
       plan: await s.plan('token-in'),
       account,
+      gasChargedOn: 'limit',
     })
     expect(cost.transactions).toEqual([
       { kind: 'approval', feeWei: 1_150_000n },
@@ -530,6 +540,7 @@ describe('what the whole swap costs', () => {
       wallet: { estimateLegacyFee: async () => ({ inputCount: 2 }) },
       plan: await s.plan('native-in'),
       account,
+      gasChargedOn: 'limit',
       moveWei: 5n,
     })
     expect(cost.transactions).toEqual([

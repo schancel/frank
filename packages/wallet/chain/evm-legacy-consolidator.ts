@@ -774,16 +774,41 @@ export class EvmLegacyConsolidator {
       /* Left as it was: the next wallet open cancels it. */
     }
   }
+  /** Ends a contract call that was signed and never exposed. Never throws. */
+  private async discardIfUnexposed(
+    operationId: string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<void> {
+    try {
+      const row = this.config.journal.get(operationId)
+      if (
+        row.kind === 'contract' &&
+        !row.cancelled &&
+        row.members.some(m => m.signed) &&
+        !row.members.some(m => m.exposed)
+      )
+        await this.journal(lifetime).discardUnexposed(operationId)
+    } catch {
+      /* Left as it was: the next wallet open ends it. */
+    }
+  }
   /**
    * Wallet open: cancels every operation no member of which was ever signed or exposed (a crash
-   * or failure between `prepare` and the first signature). Local only: it reads and writes the
+   * or failure between `prepare` and the first signature), and ends every contract call that was
+   * signed but never exposed (a crash between the signature and the broadcast: its record may
+   * not have been kept, so it must not be sent later). Local only: it reads and writes the
    * journal, makes no network request, asks for no signature, and never throws.
    */
   cancelUnsignedOperations(lifetime?: WalletOperationLifetime): Promise<void> {
     return this.run(async () => {
       try {
-        for (const row of this.config.journal.list())
-          await this.cancelIfNeverSigned(() => row, lifetime)
+        for (const row of this.config.journal.list()) {
+          await this.discardIfUnexposed(row.operationId, lifetime)
+          await this.cancelIfNeverSigned(
+            () => this.config.journal.get(row.operationId),
+            lifetime,
+          )
+        }
       } catch {
         /* An unreadable journal cancels nothing. */
       }
@@ -1283,54 +1308,67 @@ export class EvmLegacyConsolidator {
   }
   private contractResendAt = new Map<string, { at: number; waitMs: number }>()
   /**
-   * Hands an already-exposed contract call back to the network when the node was last seen to
-   * know nothing of it (recorded `missing`): the same signed bytes, never a new transaction.
-   * Without this a call whose broadcast was lost would hold its account's nonce with nothing
-   * driving it to an end. Bounded: at most `REOBSERVE_MAX_PROBES` sends per call, and each
-   * member waits `REOBSERVE_MIN_INTERVAL_MS`, doubling to `REOBSERVE_MAX_BACKOFF_MS`, between
-   * sends. Reads nothing and writes nothing; re-observation records what happens. Never rejects.
+   * Drives an exposed contract call that is not yet in a block. Each due call is first looked
+   * at once (`observe`: recorded `missing` when the node knows neither the transaction nor a
+   * receipt, `pending` when it holds it, included when it landed). One recorded `missing` is
+   * then handed back to the network: the same signed bytes, never a new transaction. Without
+   * this a call whose broadcast was lost, or that the node dropped, would hold its account's
+   * nonce with nothing driving it to an end.
+   *
+   * Bounds: one invocation handles at most `REOBSERVE_MAX_PROBES` calls, and a given call is
+   * handled at most once per wait, which starts at `REOBSERVE_MIN_INTERVAL_MS` and doubles to
+   * `REOBSERVE_MAX_BACKOFF_MS`. There is no limit on how many times in total a call is re-sent:
+   * it is re-sent, ever more rarely, until the chain shows it. Never rejects.
    */
   async resendMissingContractCalls(): Promise<void> {
-    try {
-      if (this.reobserveStopped) return
+    const pass = async (lifetime?: WalletOperationLifetime) => {
       const now = this.now()
-      let sent = 0
-      for (const row of this.config.journal.list()) {
-        if (row.cancelled || row.kind !== 'contract') continue
-        const member = row.members[0]!
-        const key = row.operationId
-        if (
-          !member.signed ||
-          !member.exposed ||
-          member.observation.state !== 'missing'
-        ) {
+      let handled = 0
+      for (const listed of this.config.journal.list()) {
+        if (this.reobserveStopped || handled >= REOBSERVE_MAX_PROBES) return
+        const key = listed.operationId
+        const unresolved = (row: EvmNativeOperation) =>
+          row.kind === 'contract' &&
+          !row.cancelled &&
+          row.members[0]!.signed !== null &&
+          row.members[0]!.exposed &&
+          !('transactionHash' in row.members[0]!.observation)
+        if (!unresolved(listed)) {
           this.contractResendAt.delete(key)
           continue
         }
         const last = this.contractResendAt.get(key)
         if (last && now >= last.at && now - last.at < last.waitMs) continue
-        if (sent >= REOBSERVE_MAX_PROBES) break
-        sent++
+        handled++
         this.contractResendAt.set(key, {
           at: now,
           waitMs: last
             ? Math.min(last.waitMs * 2, REOBSERVE_MAX_BACKOFF_MS)
             : REOBSERVE_MIN_INTERVAL_MS,
         })
-        await this.config.provider
-          .broadcastTransaction(member.signed.rawTransaction)
-          .catch(() => undefined)
+        await this.observe(key, 0, lifetime, () => !this.reobserveStopped)
+        const member = this.config.journal.get(key).members[0]!
+        if (member.observation.state === 'missing' && member.signed)
+          await this.config.provider
+            .broadcastTransaction(member.signed.rawTransaction)
+            .catch(() => undefined)
       }
+    }
+    try {
+      if (this.reobserveStopped) return
+      await (this.config.runLifetime ? this.config.runLifetime(pass) : pass())
     } catch {
-      /* A closed journal ends the pass. */
+      /* A closed journal or an ended lifetime ends the pass. */
     }
   }
-  /** Contract calls that are signed and not yet seen in a block, oldest first. */
+  /** Contract calls that were broadcast and are not yet seen in a block, oldest first. */
   unresolvedContractCalls(): ContractCallResult[] {
     return this.listOperations().flatMap(row =>
       row.kind === 'contract' &&
       !row.cancelled &&
       row.members[0]!.signed &&
+      // Only a call that was handed to the network: one that never was is ended, not resumed.
+      row.members[0]!.exposed &&
       !('transactionHash' in row.members[0]!.observation)
         ? [
             {
@@ -1458,15 +1496,24 @@ export class EvmLegacyConsolidator {
     return this.runWithLocalPass(lifetime, async planned => {
       const row = await this.planContractCall(params, lifetime)
       planned(row.operationId)
-      const done = await this.execute(
-        row.operationId,
-        signed =>
-          params.onSigned?.({
-            operationId: row.operationId,
-            txHash: signed.txHash,
-          }) ?? Promise.resolve(),
-        lifetime,
-      )
+      let done: EvmNativeOperation
+      try {
+        done = await this.execute(
+          row.operationId,
+          signed =>
+            params.onSigned?.({
+              operationId: row.operationId,
+              txHash: signed.txHash,
+            }) ?? Promise.resolve(),
+          lifetime,
+        )
+      } catch (error) {
+        // Signed but never handed to the network (the caller could not record it, or signing
+        // itself stopped): the call is ended here, so it can never be sent later without its
+        // record, and the account is free at once.
+        await this.discardIfUnexposed(row.operationId, lifetime)
+        throw error
+      }
       return {
         operationId: row.operationId,
         txHash: done.members[0]!.signed!.transactionHash,

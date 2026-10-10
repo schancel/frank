@@ -48,7 +48,7 @@ function node(initial: { main: bigint; spend?: bigint }) {
   const receipts = new Map<string, object>()
   const raws: string[] = []
   const blockHash = '0x' + 'ab'.repeat(32)
-  let mode: 'mine' | 'lost' | 'lost-once' | 'revert' = 'mine'
+  let mode: 'mine' | 'lost' | 'lost-once' | 'revert' | 'mempool' = 'mine'
   let down = false
   const mine = (raw: string, status = 1) => {
     const tx = Transaction.from(raw)
@@ -102,6 +102,12 @@ function node(initial: { main: bigint; spend?: bigint }) {
     broadcastTransaction: async (raw: string) => {
       raws.push(raw)
       if (mode === 'lost') throw new Error('lost response')
+      if (mode === 'mempool') {
+        // Accepted and held, not yet in a block.
+        const tx = Transaction.from(raw)
+        transactions.set(tx.hash!, tx)
+        return { hash: keccak256(raw) }
+      }
       if (mode === 'lost-once') {
         mode = 'mine'
         throw new Error('lost response')
@@ -119,6 +125,7 @@ function node(initial: { main: bigint; spend?: bigint }) {
     setMode: (value: typeof mode) => {
       mode = value
     },
+    forget: (hash: string) => transactions.delete(hash),
     setDown: (value: boolean) => {
       down = value
     },
@@ -518,5 +525,133 @@ describe('contract calls through the native operation journal', () => {
     expect(sent.hash).toBe(transfer.txHash)
     expect(sent.from).toBe(main.address)
     expect(sent.nonce).toBe(3)
+  })
+
+  it('a call that could not be recorded is not broadcast, then or later, and a quick retry sends exactly one', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor, sign } = owner(state)
+    await expect(
+      executor.sendContractCall({
+        ...call,
+        gasLimit: 250_000n,
+        onSigned: async () => {
+          throw new Error('QuotaExceededError')
+        },
+      }),
+    ).rejects.toThrow('QuotaExceededError')
+    expect(state.raws).toEqual([])
+    const ended = journal.list()[0]!
+    expect(ended.cancelled).toBe(true)
+    expect(ended.members[0]!.signed).toBeNull()
+    // Nothing is left to resume or re-send, on any path.
+    expect(executor.unresolvedContractCalls()).toEqual([])
+    await executor.resendMissingContractCalls()
+    await expect(executor.resumeOperation(ended.operationId)).rejects.toThrow()
+    expect(state.raws).toEqual([])
+
+    // The user tries again at once: one swap goes out, at the nonce the first never used.
+    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    const second = await executor.sendContractCall({
+      ...call,
+      gasLimit: 250_000n,
+    })
+    expect(state.raws).toHaveLength(1)
+    const sent = Transaction.from(state.raws[0]!)
+    expect(sent.hash).toBe(second.txHash)
+    expect(sent.nonce).toBe(0)
+    expect(sign).toHaveBeenCalledTimes(2)
+  })
+
+  it('at wallet open, ends a contract call that was signed and never handed to the network', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor } = owner(state)
+    // A crash between the signature and the broadcast leaves exactly this row.
+    const row = await journal.prepare({
+      kind: 'contract',
+      recipient: router,
+      intendedValueWei: '0',
+      members: [
+        {
+          source: sources[0]!,
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            to: router,
+            chainId: 10143n,
+            nonce: 0,
+            value: 0n,
+            data: calldata,
+            gasLimit: 100_000n,
+            maxFeePerGas: 2n,
+            maxPriorityFeePerGas: 1n,
+          }).unsignedSerialized,
+          dependencies: [],
+        },
+      ],
+    })
+    await journal.checkpointSigned(
+      row.operationId,
+      0,
+      await main.signTransaction(
+        Transaction.from(row.members[0]!.unsignedTransaction),
+      ),
+    )
+    expect((await executor.contractCallFunds()).mainBusy).toBe(true)
+    await executor.cancelUnsignedOperations()
+    expect(journal.get(row.operationId)).toMatchObject({ cancelled: true })
+    expect(journal.get(row.operationId).members[0]!.signed).toBeNull()
+    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(state.raws).toEqual([])
+  })
+
+  it('never ends a call that was handed to the network', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor } = owner(state)
+    state.setMode('lost')
+    const lost = await executor
+      .sendContractCall({ ...call, gasLimit: 250_000n })
+      .catch(error => error)
+    await executor.cancelUnsignedOperations()
+    const row = journal.get(lost.operation.operationId)
+    expect(row.cancelled).toBe(false)
+    expect(row.members[0]!.signed).not.toBeNull()
+    await expect(journal.discardUnexposed(row.operationId)).rejects.toThrow()
+  })
+
+  it('the poll learns that the node has dropped a call it was holding, and hands it back', async () => {
+    const state = node({ main: 10_000_000n })
+    let clock = 1_000_000
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider,
+      transactionBuilder: new NativeEvmTransactionBuilder(),
+      getSources: async () => sources,
+      sign: async (_source, raw) => main.signTransaction(Transaction.from(raw)),
+      now: () => clock,
+    })
+    state.setMode('mempool')
+    const sent = await executor.sendContractCall({
+      ...call,
+      gasLimit: 250_000n,
+    })
+    await executor.observe(sent.operationId, 0)
+    expect(journal.get(sent.operationId).members[0]!.observation.state).toBe(
+      'pending',
+    )
+    // While the node holds it, the poll looks and sends nothing.
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toHaveLength(1)
+    // The node drops it. The next due poll records that and re-sends the same bytes.
+    state.forget(sent.txHash)
+    state.setMode('mine')
+    clock += 15_000
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toHaveLength(2)
+    expect(state.raws[1]).toBe(state.raws[0])
+    clock += 30_000
+    await executor.resendMissingContractCalls()
+    expect(journal.get(sent.operationId).members[0]!.observation.state).toBe(
+      'included-success',
+    )
+    expect(state.raws).toHaveLength(2)
   })
 })

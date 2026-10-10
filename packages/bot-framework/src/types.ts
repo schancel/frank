@@ -122,7 +122,7 @@ export interface BotContext {
   readonly address: string;
   readonly subject: string;
   readonly relayBaseUrl: string;
-  readonly networkTag: "MONT" | "MON1";
+  readonly networkTag: "MONT" | "MON1" | "MONR";
   readonly provider: JsonRpcProvider;
   readonly state: BotStateStore;
   readonly subscriptions: BotSubscriptionManager;
@@ -220,7 +220,7 @@ export interface FrankBotDefinition {
 
 export interface BotHostOptions {
   relayBaseUrl?: string;
-  networkTag?: "MONT" | "MON1";
+  networkTag?: "MONT" | "MON1" | "MONR";
   stateDir?: string;
   rpcUrl?: string;
   fundingPrivateKeyHex?: string;

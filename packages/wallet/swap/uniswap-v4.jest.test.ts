@@ -602,7 +602,11 @@ describe('venues', () => {
   it('records on the Monad rows, and only there, that the gas limit is what is charged', () => {
     for (const [id, entry] of Object.entries(PROTOCOL_CHAINS))
       expect(entry.gasChargedOn).toBe(
-        id === 'monad-testnet' || id === 'monad-mainnet' ? 'limit' : undefined,
+        id === 'monad-testnet' ||
+          id === 'monad-mainnet' ||
+          id === 'monad-regtest'
+          ? 'limit'
+          : undefined,
       )
   })
 

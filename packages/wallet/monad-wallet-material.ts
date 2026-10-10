@@ -821,7 +821,8 @@ export function canonicalWalletPublicBinding(
     !material.canonicalRoles ||
     !(
       (network === 'monad-testnet' && chainId === 10143n) ||
-      (network === 'monad-mainnet' && chainId === 143n)
+      (network === 'monad-mainnet' && chainId === 143n) ||
+      (network === 'monad-regtest' && chainId === 20143n)
     )
   )
     throw new Error('canonical-wallet:typed-network-required')
@@ -905,7 +906,10 @@ function copyEntryInput(
         input.chainId === 10143n) ||
       (input.networkTag === 'MON1' &&
         input.network === 'monad-mainnet' &&
-        input.chainId === 143n)
+        input.chainId === 143n) ||
+      (input.networkTag === 'MONR' &&
+        input.network === 'monad-regtest' &&
+        input.chainId === 20143n)
     )
   )
     throw new Error('canonical-rev0:network')

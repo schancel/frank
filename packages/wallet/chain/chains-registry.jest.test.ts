@@ -592,7 +592,7 @@ describe("chains-registry", () => {
 
     it("verifies protocol registry schema version and chain count", () => {
       expect(protocolRegistry.schema_version).toBe(1);
-      expect(protocolRegistry.chains.length).toBe(26);
+      expect(protocolRegistry.chains.length).toBe(27);
     });
 
     it("agrees with every supported protocol row, including Bitcoin-family probes and capability limits", () => {
@@ -629,6 +629,7 @@ describe("chains-registry", () => {
       ];
       const supported = [
         "monad-testnet",
+        "monad-regtest",
         "monad-mainnet",
         "xec-testnet",
         "xec-regtest",
@@ -803,6 +804,7 @@ describe("wallet support", () => {
     );
     expect(supported).toEqual({
       "monad-testnet": { indexer: "json-rpc" },
+      "monad-regtest": { indexer: "json-rpc" },
       "monad-mainnet": { indexer: "json-rpc" },
       "solana-devnet": { indexer: "json-rpc" },
       "solana-mainnet": { indexer: "json-rpc" },

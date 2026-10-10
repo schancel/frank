@@ -20,6 +20,8 @@ export const DEFAULT_MONAD_CHAIN_ID = 10143n;
 export const MONAD_PROTOCOL_IDENTITIES = Object.freeze({
   "monad-mainnet": Object.freeze({ chainId: 143n, networkTag: "MON1" }),
   "monad-testnet": Object.freeze({ chainId: 10143n, networkTag: "MONT" }),
+  // A local Monad network (monad-solonet), see docs/protocol/chains/README.md.
+  "monad-regtest": Object.freeze({ chainId: 20143n, networkTag: "MONR" }),
 });
 
 export function monadProtocolIdentity(chain: string):

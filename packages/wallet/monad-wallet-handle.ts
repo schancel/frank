@@ -6,7 +6,7 @@ import type { MonadCanonicalRoleOwner } from './monad-wallet-material'
 export interface MonadCanonicalWalletHandle extends EvmWalletHandle {
   walletState: MonadWalletPersistenceBundle
   canonicalRoles: MonadCanonicalRoleOwner
-  installedNetworkTag: 'MONT' | 'MON1'
+  installedNetworkTag: 'MONT' | 'MON1' | 'MONR'
   runCanonicalExclusive<T>(
     operation: (
       lifetime: import('./storage/monad-wallet-bundle').MonadWalletOperationAdmission,
@@ -21,7 +21,7 @@ import type { RolePoint } from '../role-keys/src'
  * entry is valid. The relay tuple is the one that relay publishes at `/relay/v1/info`.
  */
 export interface PublicRevisionZeroInput {
-  readonly networkTag: 'MONT' | 'MON1'
+  readonly networkTag: 'MONT' | 'MON1' | 'MONR'
   readonly network: string
   readonly chainId: bigint
   readonly issuedAt: Timestamp
@@ -39,7 +39,7 @@ export interface PublicNextRevisionInput extends PublicRevisionZeroInput {
 export interface PublicRevisionZeroExport {
   readonly kind: 'public-revision-zero-preparation'
   readonly registry: 'frank-domain-roots-v1'
-  readonly networkTag: 'MONT' | 'MON1'
+  readonly networkTag: 'MONT' | 'MON1' | 'MONR'
   readonly network: string
   readonly chainId: bigint
   readonly authAddress: string

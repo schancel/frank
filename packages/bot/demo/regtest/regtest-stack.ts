@@ -3,7 +3,8 @@
  * Nothing is simulated, nothing costs money, and nothing outside this machine is contacted (apart
  * from the one-time download of the node, see bitcoin-abc.ts).
  *
- *   const stack = await startRegtestStack()
+ *   const stack = await startRegtestStack()                       // eCash only
+ *   const stack = await startRegtestStack({ chains: ['monad-regtest'] })   // or both
  *   const xec = stack.chains['xec-regtest']
  *   await xec.fund('ecregtest:q...', 1_000_000n)     // from the faucet, confirmed in a block
  *   // wallets read and send through `${stack.relayUrl}/chain-rpc/xec-regtest/chronik`,
@@ -20,17 +21,20 @@
  *
  * The relay binary is CASHWEBD_BIN, otherwise this worktree's Cargo build (built first if needed).
  *
- * Networks: `xec-regtest` (eCash, Chronik). A Monad regtest (monad-solonet, chain ID 20143) is to
- * be added as another RegtestChain; it also needs the relay's mailbox and EVM proxy rows, which
- * this file does not write yet.
+ * Networks: `xec-regtest` (eCash, Chronik; a node of this run) and `monad-regtest` (monad-solonet,
+ * chain ID 20143; one long-running chain shared by every run, see monad-regtest.ts). With
+ * `monad-regtest` the relay's message mailbox and EVM proxy run on it, so wallets can message and
+ * pay stamps: monad-wallets.ts opens them.
  */
 import { execFile } from 'child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 
+import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { Supervisor } from '../supervisor'
 import { startEcashRegtest } from './ecash-regtest'
+import { startMonadRegtest } from './monad-regtest'
 import { freePort, isListening, RegtestChain, sleep } from './regtest-chain'
 
 const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..')
@@ -75,8 +79,12 @@ async function relayBinary(env: Record<string, string | undefined>): Promise<str
   throw new Error('cargo did not report a cashwebd-exe binary')
 }
 
-/** The relay's whole configuration for one run: no Monad mailbox, one proxy row per network. */
+/** The relay's whole configuration for one run: one proxy row per network, and the message
+ * mailbox on the Monad network when the stack has one. */
 function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): string {
+  const evm = chains.flatMap(chain => (chain.relay.section === 'evm_rpc' ? [{ chain, relay: chain.relay }] : []))
+  const mailbox = evm[0]
+  const bitcoin = chains.filter(chain => chain.relay.section === 'bitcoin_proxy').map(chain => `${chain.relay.row}\n`)
   return [
     `host = "127.0.0.1:${port}"`,
     `url = "http://127.0.0.1:${port}"`,
@@ -87,9 +95,32 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
     'peers = []',
     'public_relay_urls = []',
     '',
-    '[registry.monad_mailbox]',
-    'enabled = false',
-    '',
+    ...(mailbox
+      ? [
+          // The relay's own entry in the directory wallets publish to. The identity is a fixed
+          // public test value, as in backend/cashweb/cashwebd.local.toml.
+          '[registry.directory]',
+          `network = "${mailbox.chain.chainIdentifier}"`,
+          'relay_id = "0102030405060708090a0b0c0d0e0f10"',
+          'relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"',
+          `endpoint = "http://127.0.0.1:${port}"`,
+          'binding_expiry_ns = "1893456000000000000"',
+          'enrollments_per_source_per_hour = 100000',
+          '',
+          '[registry.monad_mailbox]',
+          'enabled = true',
+          `rpc_url = "${mailbox.relay.mailbox.rpcUrl}"`,
+          `min_value_wei = "${mailbox.relay.mailbox.minValueWei}"`,
+          `expected_chain_id = ${mailbox.relay.mailbox.expectedChainId}`,
+          '',
+          '[registry.evm_rpc]',
+          'enabled = true',
+          'capability_ttl_ms = 3600000',
+          'anonymous_units_per_hour = 1000000',
+          '',
+          ...evm.map(entry => `${entry.relay.row}\n`),
+        ]
+      : ['[registry.monad_mailbox]', 'enabled = false', '']),
     '[registry.pop]',
     'enabled = false',
     'monad_rpc_url = "http://unused.invalid"',
@@ -97,17 +128,16 @@ function relayConfig(port: number, dbPath: string, chains: RegtestChain[]): stri
     'payment_recipient = "0x0000000000000000000000000000000000000000"',
     'min_value_wei = "0"',
     '',
-    '[registry.bitcoin_proxy]',
-    'enabled = true',
-    '',
-    ...chains.filter(chain => chain.relay.section === 'bitcoin_proxy').map(chain => `${chain.relay.row}\n`),
+    ...(bitcoin.length > 0 ? ['[registry.bitcoin_proxy]', 'enabled = true', '', ...bitcoin] : []),
   ].join('\n')
 }
 
 export async function startRegtestStack(
   options: {
     env?: Record<string, string | undefined>
-    /** How often each network makes a block without being asked (default 3000 ms). */
+    /** Which networks to run (default eCash only). */
+    chains?: ReadonlyArray<'xec-regtest' | 'monad-regtest'>
+    /** How often eCash makes a block without being asked (default 3000 ms). */
     blockIntervalMs?: number
   } = {},
 ): Promise<RegtestStack> {
@@ -153,13 +183,24 @@ export async function startRegtestStack(
     })())
 
   try {
-    chains.push(await startEcashRegtest({ stateDir, blockIntervalMs: options.blockIntervalMs, env }))
+    const wanted = options.chains ?? ['xec-regtest']
+    if (wanted.includes('monad-regtest')) chains.push(await startMonadRegtest({ env }))
+    if (wanted.includes('xec-regtest')) {
+      chains.push(await startEcashRegtest({ stateDir, blockIntervalMs: options.blockIntervalMs, env }))
+    }
 
     relayPort = await freePort()
     const relayUrl = `http://127.0.0.1:${relayPort}`
     const configPath = join(stateDir, 'relay.toml')
     writeFileSync(configPath, relayConfig(relayPort, join(stateDir, 'relay-db'), chains), { mode: 0o600 })
     const relayEnv = Object.assign({}, ...chains.map(chain => chain.relay.env)) as Record<string, string>
+    for (const chain of chains) {
+      if (chain.relay.section !== 'evm_rpc') continue
+      relayEnv.FRANK_NETWORK_TAG = chain.relay.mailbox.networkTag
+      // The relay's forum routes read the chain from these two variables, whatever the network.
+      relayEnv.MONAD_TESTNET_HTTP_RPC_URL = chain.relay.mailbox.rpcUrl
+      relayEnv.MONAD_STAMP_BURN_ADDRESS = DEMO_DEFAULT_BURN_ADDRESS
+    }
     const relay = supervisor.start({
       name: 'relay',
       command: cashwebd,
@@ -179,14 +220,28 @@ export async function startRegtestStack(
           if (missing.length > 0) {
             throw new Error(`the relay does not serve ${missing.map(chain => chain.chainIdentifier).join(', ')}`)
           }
-          break
+          // The relay lists an EVM network before it has verified it, and forwards nothing
+          // until the upstream has shown the checkpoint block. Ready means it forwards.
+          const forwarding = await Promise.all(
+            chains
+              .filter(chain => chain.relay.section === 'evm_rpc')
+              .map(async chain => {
+                const answer = await fetch(`${relayUrl}/chain-rpc/${chain.chainIdentifier}/rpc`, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+                })
+                return typeof ((await answer.json()) as { result?: unknown }).result === 'string'
+              }),
+          )
+          if (forwarding.every(Boolean)) break
         }
       } catch (err) {
         if (err instanceof Error && err.message.startsWith('the relay does not serve')) throw err
       }
       if (relay.hasExited() || Date.now() > deadline) {
         throw new Error(
-          `the relay ${relay.hasExited() ? 'exited during startup' : 'did not answer in time'}:\n${relay.tail().join('\n')}`,
+          `the relay ${relay.hasExited() ? 'exited during startup' : 'did not answer, or did not verify its chains, in time'}:\n${relay.tail().join('\n')}`,
         )
       }
       await sleep(250)

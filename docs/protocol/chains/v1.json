@@ -40,6 +40,25 @@
       ]
     },
     {
+      "id": "monad-regtest",
+      "family": "evm",
+      "network": "regtest",
+      "caip2": "eip155:20143",
+      "native_chain_id": "20143",
+      "allowed_proxy_capabilities": ["json-rpc"],
+      "identity_probes": [
+        {
+          "kind": "evm-chain-id",
+          "capability": "json-rpc",
+          "expected": "20143"
+        },
+        {
+          "kind": "operator-block-checkpoint",
+          "capability": "json-rpc"
+        }
+      ]
+    },
+    {
       "id": "btc-mainnet",
       "family": "bitcoin",
       "network": "mainnet",

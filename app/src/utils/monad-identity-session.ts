@@ -77,7 +77,7 @@ export interface MessagingDeps {
   }
   /** The relay this app build publishes to, submits to and reads its mailbox from. */
   relayBaseUrl: string
-  networkTag: 'MONT' | 'MON1'
+  networkTag: 'MONT' | 'MON1' | 'MONR'
   chainId: bigint
   directory: Pick<
     OpenDirectoryDeps,
@@ -117,12 +117,20 @@ const PIN_PREFIX = 'frank-directory-pin:'
 const accountIdOf = (account: unknown): string | undefined =>
   (account as { receipt?: { context?: { accountId?: string } } } | null)
     ?.receipt?.context?.accountId
-const networkOf = (tag: 'MONT' | 'MON1') =>
-  tag === 'MONT' ? 'monad-testnet' : 'monad-mainnet'
+const networkOf = (tag: 'MONT' | 'MON1' | 'MONR') =>
+  tag === 'MONT'
+    ? 'monad-testnet'
+    : tag === 'MONR'
+    ? 'monad-regtest'
+    : 'monad-mainnet'
 
 function productionDeps(): MessagingDeps {
   const config = loadMonadChainConfigFromEnv()
-  if (config.networkTag !== 'MONT' && config.networkTag !== 'MON1')
+  if (
+    config.networkTag !== 'MONT' &&
+    config.networkTag !== 'MON1' &&
+    config.networkTag !== 'MONR'
+  )
     throw new Error('Direct messages need a Monad network')
   return {
     session: accountSession,
@@ -277,6 +285,7 @@ function productionDeps(): MessagingDeps {
           relayBaseUrl,
           identity,
           profile: identityProfile,
+          network: loadMonadChainConfigFromEnv().rpcChain,
         })
       } catch (err) {
         console.warn('[startMessaging] registerMonadIdentityCbor failed:', err)

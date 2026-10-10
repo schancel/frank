@@ -1037,7 +1037,7 @@ export async function ackMonadMailboxRecovery(
 // Canonical mailbox keeps the original P signing transcript, with an isolated HTTP namespace.
 export interface CanonicalMailboxAuthParams
   extends Omit<MailboxAuthParams, "http"> {
-  /** Installed four-byte authentication tag or network identifier; e.g. 'MONT' | 'MON1' | 'monad-testnet' | 'monad-mainnet'. */
+  /** Installed four-byte authentication tag or network identifier; e.g. 'MONT' | 'MON1' | 'MONR' | 'monad-testnet' | 'monad-mainnet'. */
   expectedNetworkTag:
     | "MONT"
     | "MON1"

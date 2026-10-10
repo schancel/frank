@@ -6,8 +6,10 @@
  *   yarn --cwd packages/contracts deploy --local --rpc http://127.0.0.1:8545 --out-dir <dir>
  *
  * `--chain` is a canonical `chainIdentifier` from docs/protocol/chains/v1.json that the
- * registry marks as a testnet (any other network is refused); the node must report that
- * row's native chain id. `--local` is for a local dev node (chain id 31337) and
+ * registry marks as a testnet or a regtest (any other network is refused); the node must
+ * report that row's native chain id. A regtest network (`monad-regtest`, a local chain that is
+ * new on every start) needs `--out-dir`: its record describes one run and is never written
+ * among the committed records. `--local` is for a local dev node (chain id 31337) and
  * needs `--out-dir`, so a local run can never write a public network's record.
  * `--wallet-json` is a file `{"address","privateKey"}`, the format of the demo funding wallet.
  *
@@ -334,13 +336,18 @@ export function registryChainId(chainIdentifier: string): bigint {
   if (row.family !== 'evm' || !('native_chain_id' in row)) {
     throw new Error(`"${chainIdentifier}" is not an EVM network`)
   }
-  // Only testnets for now: nothing here has been approved for a network with real money.
-  if (row.network !== 'testnet') {
+  // Only test networks for now: nothing here has been approved for a network with real money.
+  if (row.network !== 'testnet' && row.network !== 'regtest') {
     throw new Error(
-      `"${chainIdentifier}" is a ${row.network} network; these scripts only deploy to testnets`,
+      `"${chainIdentifier}" is a ${row.network} network; these scripts only deploy to testnets and regtest networks`,
     )
   }
   return BigInt(row.native_chain_id as string)
+}
+
+/** Whether the registry marks the network as one created locally (new on every start). */
+export function isRegtest(chainIdentifier: string): boolean {
+  return protocolChains.chains.find(c => c.id === chainIdentifier)?.network === 'regtest'
 }
 
 /**
@@ -378,6 +385,9 @@ export async function resolveCliTarget(
   if (!local && !walletJson) throw new Error('--wallet-json <file> is required')
   const outDirFlag = flag(argv, '--out-dir')
   if (local && !outDirFlag) throw new Error('--local needs --out-dir <dir>')
+  if (chain && isRegtest(chain) && !outDirFlag) {
+    throw new Error(`${chain} is a regtest network: its record is per run, give --out-dir <dir>`)
+  }
 
   const provider = createProvider(rpc)
   const { chainId } = await provider.getNetwork()

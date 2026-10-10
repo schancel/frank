@@ -87,22 +87,10 @@ const exactSpendable = computed(() =>
 /** The profile address's current balance for an account whose receive address differs from it
  * (a typed account); zero when they are the same address, which the wallet balance already
  * covers. A read only. */
-export async function readCordonedBalance(wallet: unknown): Promise<bigint> {
-  const handle = wallet as {
-    identity?: { address?: { raw?: string } }
-    provider?: { getBalance?(address: string): Promise<bigint> }
-    getReceiveAddress?(): Promise<{ raw: string }>
-  }
-  const profile = handle?.identity?.address?.raw
-  if (
-    !profile ||
-    typeof handle.provider?.getBalance !== 'function' ||
-    typeof handle.getReceiveAddress !== 'function'
-  )
-    return 0n
-  const receive = (await handle.getReceiveAddress()).raw
-  if (receive.toLowerCase() === profile.toLowerCase()) return 0n
-  return handle.provider.getBalance(profile)
+export async function readCordonedBalance(_wallet: unknown): Promise<bigint> {
+  // The wallet's own balance now counts money at the profile (identity) address: it is spendable
+  // like any other coin. Nothing is held apart from it, so there is nothing to add on top.
+  return 0n
 }
 
 let consumers = 0

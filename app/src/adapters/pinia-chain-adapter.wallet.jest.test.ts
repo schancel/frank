@@ -134,7 +134,10 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
     mailboxes.clear()
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
     jest.spyOn(console, 'info').mockImplementation(() => undefined)
-    f = await fixture()
+    // A stamp large enough that funding its accounts ahead costs less than it moves: the wallet
+    // refuses to fund ahead otherwise (a 1,000-wei stamp's funding transfer costs more than it
+    // carries in this fixture).
+    f = await fixture({ defaultStampValueWei: 10n ** 9n })
     wallet = f.alice as unknown as WalletHandle
     installCanonicalDirectory(
       f.alice,
@@ -213,50 +216,9 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
     expect(mockFunded.length - funded).toBeLessThanOrEqual(2)
   })
 
-  // What a relay that does not answer costs. The tick waits for the wallet's answer, and the
-  // wallet waits for the relay (up to the transport's 60 s deadline per unresolved payment), so
-  // that tick's funding ahead and re-observation wait too. Ticks never overlap or queue up: the
-  // next one is armed only when this one ends. A tick that asks about a message's own payment
-  // has always waited like this; the question about no payment in particular waits the same way.
-  it('pin: a relay request that is not answered holds that one tick until it ends, then everything goes on', async () => {
-    await paidMessageWithNoRow('the relay is slow')
-    const reobserve = jest.fn(async () => undefined)
-    wallet = Object.assign(Object.create(f.alice), {
-      reobserveNativeOperations: reobserve,
-    }) as WalletHandle
-    reconcileAttempts.mockImplementation(params =>
-      f.chain.directMessages.reconcileAttempts({ ...params, wallet: f.alice }),
-    )
-    unattributedAttempts.mockImplementation(params =>
-      f.chain.directMessages.unattributedAttempts({
-        ...params,
-        wallet: f.alice,
-      }),
-    )
-    fundAhead.mockImplementation(() =>
-      f.chain.directMessages.fundAhead!({ wallet: f.alice }),
-    )
-    const held = f.holdNextRelayRequest()
-    start()
-    await held.entered
-    // Many tick intervals pass; the tick that asked is the only one.
-    await new Promise(resolve => setTimeout(resolve, 400))
-    expect(asked()).toBe(1)
-    expect(fundAhead).not.toHaveBeenCalled()
-    expect(reobserve).not.toHaveBeenCalled()
-    expect(bobInbox).toHaveLength(0)
-
-    held.release('delivered')
-    await until(() => bobInbox.length === 1, 'the held request to deliver')
-    await until(
-      () => fundAhead.mock.calls.length > 0 && reobserve.mock.calls.length > 1,
-      'the tick to go on',
-    )
-    stop?.()
-    for (const request of f.requests)
-      expect(Buffer.from(request.body)).toEqual(Buffer.from(f.requests[0].body))
-    expect(bobInbox).toHaveLength(1)
-  })
+  // Removed: the pin that an unanswered relay request held the tick. The wallet no longer makes
+  // a tick wait on another message's request; a tick that names a digest waits only for that
+  // message's own step (see packages/wallet/chain/monad-parallel-send.jest.test.ts).
 
   // The wallet here is not empty: it holds one delivered payment no message accounts for, which
   // it goes on reporting. Paying for and delivering that message is the positive control: all

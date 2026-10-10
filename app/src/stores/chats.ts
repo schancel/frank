@@ -740,9 +740,11 @@ function isInsufficientFundsError(error: unknown): boolean {
   return (
     kind === 'insufficient-funds' ||
     (error instanceof Error &&
-      /insufficient (?:main account )?(?:balance|funds)|insufficient stamp-account capacity/i.test(
-        error.message,
-      ))
+      // The wallet's own answer when nothing it holds covers the stamp and its fee.
+      (error.name === 'InsufficientStampFundsError' ||
+        /insufficient (?:main account )?(?:balance|funds)|insufficient stamp-account capacity|no funds cover a stamp/i.test(
+          error.message,
+        )))
   )
 }
 

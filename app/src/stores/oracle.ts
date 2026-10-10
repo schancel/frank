@@ -8,17 +8,18 @@ import {
   type OracleInputs,
   type OracleRates,
   type SupportedAsset,
+  DIRECT_FEED_REFRESH_INTERVAL_MS,
   ORACLE_REFRESH_INTERVAL_MS,
+  at as pointAt,
   computeOracleRates,
   convertRawToAvu,
   fetchOracleFeed,
-  formatAvu,
   temporaryDirectFeed,
   unavailableOracleRates,
 } from '@frank/wallet/oracle'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain'
 import { translateMessage } from 'src/i18n'
-import { UNIT_RATE_ASSET_METRICS } from 'src/utils/avu-units'
+import { UNIT_RATE_ASSET_METRICS, formatAvu } from 'src/utils/avu-units'
 import { useSettingsStore } from './settings'
 import {
   type OracleCache,
@@ -78,19 +79,32 @@ function isPositive(value: unknown): value is number {
  */
 export type FeedSource = (
   request: FeedRequest,
-) => Promise<OracleFeed | undefined>
+  /** The time (unix seconds) of the latest fetched point held for a series, if any. */
+  heldAt: (seriesName: string) => number | undefined,
+) => Promise<FeedAnswer | undefined>
+
+/** A feed, and how often its source is to be asked again when that is not the default. */
+export type FeedAnswer = OracleFeed | { feed: OracleFeed; refreshMs: number }
 
 async function relayThenDirect(
   request: FeedRequest,
-): Promise<OracleFeed | undefined> {
+  heldAt: (seriesName: string) => number | undefined,
+): Promise<FeedAnswer | undefined> {
   const answer = await fetchOracleFeed(
     loadMonadChainConfigFromEnv().relayBaseUrl,
     request,
   )
   if (answer.status === 'ok') return answer.feed
   // TEMPORARY: delete this branch with packages/price-feeds/src/temporary-direct-feed.ts
-  // when relays serve /oracle/v1/feed.
-  if (answer.status === 'not-served') return temporaryDirectFeed(request)
+  // when relays serve /oracle/v1/feed. The adapter asks every provider for every coin,
+  // so it is asked less often than a relay, and it is told what the saved series
+  // already hold so a restart does not repeat a chain reading taken this hour.
+  if (answer.status === 'not-served') {
+    return {
+      feed: await temporaryDirectFeed(request, { heldAt }),
+      refreshMs: DIRECT_FEED_REFRESH_INTERVAL_MS,
+    }
+  }
   return undefined
 }
 
@@ -340,15 +354,37 @@ export const useOracleStore = defineStore('oracle', {
       }
     },
 
+    /**
+     * When the latest feed was last received: in this session, or, after a restart, by
+     * the saved series (the end of the newest stretch of latest answers they record).
+     */
+    lastLatestAt(): number {
+      const saved = this.cache.coverage
+        .filter(c => c.step === POLL_SECONDS)
+        .reduce((newest, c) => Math.max(newest, c.until), 0)
+      return Math.max(scheduleOf(this).lastLatestAt, saved * 1000)
+    },
+
+    /** How often the source of the last answer is to be asked: a relay's 10 minutes by default. */
+    refreshIntervalMs(): number {
+      return this.cache.refreshMs ?? ORACLE_REFRESH_INTERVAL_MS
+    },
+
     /** The earliest time the latest feed may be asked for again. */
     nextFetchAt(): number {
-      const schedule = scheduleOf(this)
+      const last = this.lastLatestAt()
       return Math.max(
-        schedule.lastLatestAt
-          ? schedule.lastLatestAt + ORACLE_REFRESH_INTERVAL_MS
-          : 0,
-        schedule.retryAt,
+        last ? last + this.refreshIntervalMs() : 0,
+        scheduleOf(this).retryAt,
       )
+    },
+
+    /** The time of the latest point held for a series that was fetched, not bundled. */
+    heldAt(seriesName: string): number | undefined {
+      const held = this.cache.series[seriesName]
+      return held && !held.stale
+        ? pointAt(held.points, Infinity)?.[0]
+        : undefined
     },
 
     /**
@@ -373,11 +409,16 @@ export const useOracleStore = defineStore('oracle', {
       const schedule = scheduleOf(this)
       if (schedule.latestInFlight) return schedule.latestInFlight
       const request = schedule
-        .source({ latest: true })
+        .source({ latest: true }, name => this.heldAt(name))
         .catch(() => undefined)
-        .then(feed => {
+        .then(answer => {
           schedule.latestInFlight = null
           const now = Date.now()
+          const feed = answer && 'feed' in answer ? answer.feed : answer
+          const refreshMs =
+            answer && 'feed' in answer
+              ? answer.refreshMs
+              : ORACLE_REFRESH_INTERVAL_MS
           if (!feed) {
             // What was last received stays, with its own time; the next try waits.
             schedule.failures++
@@ -392,7 +433,13 @@ export const useOracleStore = defineStore('oracle', {
           this.$patch({
             cache: {
               ...merged,
-              coverage: coverLatest(merged.coverage, nowSeconds, POLL_SECONDS),
+              refreshMs,
+              coverage: coverLatest(
+                merged.coverage,
+                nowSeconds,
+                POLL_SECONDS,
+                (3 * refreshMs) / 1000,
+              ),
             },
             current: ratesAt(merged, nowSeconds),
           })
@@ -421,10 +468,11 @@ export const useOracleStore = defineStore('oracle', {
           const underWay = schedule.rangesInFlight.get(key)
           if (underWay) return underWay
           const request = schedule
-            .source({ ...range, step })
+            .source({ ...range, step }, name => this.heldAt(name))
             .catch(() => undefined)
-            .then(feed => {
+            .then(answer => {
               schedule.rangesInFlight.delete(key)
+              const feed = answer && 'feed' in answer ? answer.feed : answer
               if (!feed) return
               const merged = mergeFeed(
                 this.cache,
@@ -487,7 +535,7 @@ export function useSafeOracleStore(): OracleStore {
     current: unavailableOracleRates(),
     rates: {},
     avuHash: undefined,
-    avuSpot: { unavailable: 'no-data' },
+    avuSpot: unavailableOracleRates().avuSpot,
     inputs: undefined,
     valuesAreTestnet: false,
     avuHashStaleAgeMs: () => undefined,

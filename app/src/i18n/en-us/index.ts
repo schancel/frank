@@ -498,10 +498,11 @@ export default {
       '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute. An unforgeable thermodynamic standard of real purchasing power.',
     avuHashLabel: 'AVU_hash: energy per unit of value, from mining',
     avuHashNote:
-      'Average over the basket of mined coins, weighted by market capitalisation with Bitcoin capped at 60%: {weights}. Litecoin and Dogecoin are mined together and count as one entry. Hardware efficiency is curated: Cambridge’s fleet estimate for SHA-256, the best machine on sale for the others.',
-    avuSpotLabel: 'AVU_spot: a kWh of wholesale electricity',
+      'Average over the basket of mined coins, weighted by market capitalisation with Bitcoin capped at 60%: {weights}. Litecoin and Dogecoin are mined together and count as one entry. Hardware efficiency is curated: Cambridge’s estimate of the machines actually running for SHA-256, the best machine on sale for scrypt and RandomX. The best machine is more efficient than a fleet, so those two entries read higher per kWh than a like-for-like fleet figure would.',
+    avuSpotLabel:
+      'AVU_spot: wholesale electricity, valued as mining values energy',
     avuSpotNote:
-      'What the grid charges for a kWh, valued as mining values energy: at 1 AVU the two agree. Mean day-ahead wholesale price of {days} days in the {window} to {latest}.',
+      'At 1 AVU the grid and mining agree. Price: each region’s mean day-ahead price over the {window} days to {latest}, regions weighted equally: {regions}.',
     avuUnitLabel: 'The unit',
     avuUnitNote:
       'A unit of account, not a coin or token: nothing is held or swapped in AVU.',
@@ -509,7 +510,7 @@ export default {
     sourceEfficiency:
       'Hardware efficiency (curated, not a live reading): {sources}.',
     avuHashVsSpotNote:
-      'How far what a kWh of mining earns is above (+) or below (−) what a kWh costs at wholesale. The two should roughly agree.',
+      'What a kWh of mining earns against what a kWh costs at wholesale. The two should roughly agree.',
     avuHashVsSpotLabel: 'Mining pay against the grid price',
     avuHashStale: 'Stale: oldest input is {age} old.',
     avuHashLeftOutEfficiency: 'no hardware efficiency figure',
@@ -541,11 +542,11 @@ export default {
       'AVU: 1 AVU = 1 kWh. AVU_hash is the energy a unit of value is worth, averaged over a basket of mined coins by market capitalisation with Bitcoin capped at 60%; for each entry, pay per kWh = price × miner’s block reward ÷ expected hashes per block × hashes per kWh. Every AVU value is a price times AVU_hash.',
     avuHashValue: '{used} of {total} basket entries',
     avuHashEstimated: 'An entry rests on an estimated hardware figure.',
-    avuSpotValue: '1 kWh ≈ {avu} AVU',
+    avuSpotValue: 'A wholesale kWh costs {avu} AVU',
     avuSpotStale: 'Not refreshed: latest price is {age} old.',
     avuSpotNotPositive:
-      'The mean wholesale price of the window is not above zero, so it has no inverse.',
-    avuSpotNoData: 'No wholesale electricity price in the window.',
+      'The mean wholesale price is not above zero, so it has no inverse.',
+    avuSpotNoData: 'No wholesale electricity price has been received.',
     avuUnitValue: '1 AVU = 1 kWh',
     avuNoPrice:
       'The oracle has no price for this coin, so it has no AVU value.',
@@ -562,10 +563,19 @@ export default {
       'Nothing has been received from the oracle yet, so nothing is drawn.',
     sourcePrices: 'Prices: {sources}.',
     sourceChains:
-      'Difficulty, block reward and supply: {sources}. eCash miners receive 58% of the block reward (92% before 15 November 2023), read from the chain.',
+      'Difficulty, block reward and supply: {sources}. Dogecoin’s difficulty is its 24-hour figure.',
     sourceElectricity: 'Wholesale electricity: {sources}.',
     sourceGold:
       'Gold: World Bank Commodity Price Data (Pink Sheet), yearly, valued at AVU_hash of the middle of the year.',
+    avuSpotRegionsLeftOut:
+      'Not in this figure, too few recent prices: {regions}.',
+    avuSpotRegionLast: '{region} (last counted {day})',
+    avuHashVsSpotLess:
+      'Mining pays {percent}% less per kWh than the grid charges.',
+    avuHashVsSpotMore:
+      'Mining pays {percent}% more per kWh than the grid charges.',
+    sourceEcashShare:
+      'eCash miners receive {share} of the block reward since {since} ({previous} before), read from the chain.',
     activeTokenCardTitle: '{symbol} in AVU',
     inspectingDate: 'Inspecting',
     latestValue: 'Latest',

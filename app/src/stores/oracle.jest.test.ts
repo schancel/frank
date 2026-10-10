@@ -197,18 +197,41 @@ describe('where the feed comes from', () => {
     const store = useOracleStore()
     const release = store.acquire()
     await settle()
-    expect(temporaryDirectFeed).toHaveBeenCalledWith({ latest: true })
+    expect(temporaryDirectFeed.mock.calls[0][0]).toEqual({ latest: true })
     expect(store.rates.solana).toBeCloseTo(1100, 9)
     release()
   })
 
-  it('is nothing when the relay fails any other way: the adapter is not a fallback for errors', async () => {
-    fetchOracleFeed.mockResolvedValue({ status: 'failed' })
+  it('asks the adapter every 30 minutes, not every 10: it calls every provider itself', async () => {
+    fetchOracleFeed.mockResolvedValue({ status: 'not-served' })
+    temporaryDirectFeed.mockImplementation(async () => latestNow())
     const store = useOracleStore()
     const release = store.acquire()
     await settle()
-    expect(temporaryDirectFeed).not.toHaveBeenCalled()
-    expect(store.rates).toEqual({})
+    await pass(29 * MINUTE)
+    expect(temporaryDirectFeed).toHaveBeenCalledTimes(1)
+    await pass(2 * MINUTE)
+    expect(temporaryDirectFeed).toHaveBeenCalledTimes(2)
+    // Polls half an hour apart are still one covered stretch: no gap for the chart.
+    expect(store.cache.coverage).toHaveLength(1)
+    release()
+  })
+
+  it('tells the adapter what the saved series already hold', async () => {
+    fetchOracleFeed.mockResolvedValue({ status: 'not-served' })
+    const held: Array<number | undefined> = []
+    temporaryDirectFeed.mockImplementation(async (_request, options) => {
+      held.push(options.heldAt('difficulty/btc-mainnet'))
+      expect(options.heldAt('difficulty/unknown-mainnet')).toBeUndefined()
+      return latestNow()
+    })
+    const store = useOracleStore()
+    const release = store.acquire()
+    await settle()
+    const first = seconds()
+    await pass(31 * MINUTE)
+    // Nothing held at the first request; the first answer's reading at the second.
+    expect(held).toEqual([undefined, first])
     release()
   })
 })
@@ -406,6 +429,60 @@ describe('across a restart', () => {
   afterEach(async () => {
     await storage.close()
     rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('a launch with a fresh saved cache makes zero requests, then asks when the interval is up', async () => {
+    const first = open()
+    await first.restored
+    first.useFeedSource(recordingSource(latestNow).source)
+    const release = first.acquire()
+    await settle()
+    await first.flushPersistence()
+    release()
+
+    // Four minutes later the app is reloaded.
+    jest.setSystemTime(START + 4 * MINUTE)
+    const second = open()
+    const { source, requests } = recordingSource(latestNow)
+    second.useFeedSource(source)
+    const releaseSecond = second.acquire()
+    await second.restored
+    await settle()
+    expect(requests).toEqual([])
+    expect(second.formatAvuAmount('solana', ONE_SOL)).toBe(
+      '≈ 1.1 kAVU · testnet',
+    )
+    await pass(5 * MINUTE)
+    expect(requests).toEqual([])
+    await pass(2 * MINUTE)
+    expect(requests).toEqual([{ latest: true }])
+    releaseSecond()
+  })
+
+  it('remembers across a restart that its source is the adapter, asked every 30 minutes', async () => {
+    const first = open()
+    await first.restored
+    first.useFeedSource(async () => ({
+      feed: latestNow(),
+      refreshMs: 30 * MINUTE,
+    }))
+    const release = first.acquire()
+    await settle()
+    await first.flushPersistence()
+    release()
+
+    jest.setSystemTime(START + 20 * MINUTE)
+    const second = open()
+    const { source, requests } = recordingSource(latestNow)
+    second.useFeedSource(source)
+    const releaseSecond = second.acquire()
+    await second.restored
+    await settle()
+    await pass(5 * MINUTE)
+    expect(requests).toEqual([])
+    await pass(6 * MINUTE)
+    expect(requests).toHaveLength(1)
+    releaseSecond()
   })
 
   it('shows what was last received, with its age, before anything is fetched', async () => {

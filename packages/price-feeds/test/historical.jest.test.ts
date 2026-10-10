@@ -285,30 +285,6 @@ describe('bundled wholesale electricity prices', () => {
     }
   })
 
-  it('aggregates a day as the mean of the regions that have it', () => {
-    const { regions, aggregate } = WHOLESALE_ELECTRICITY
-    const byDay = (daily: Array<[string, number]>) => new Map(daily)
-    const de = byDay(regions['de-lu'].daily)
-    const us = byDay(regions['us-pjm-west'].daily)
-    let both = 0
-    let one = 0
-    for (const [day, value] of aggregate.daily) {
-      const parts = [de.get(day), us.get(day)].filter(
-        (v): v is number => v !== undefined,
-      )
-      expect(parts.length).toBeGreaterThan(0)
-      const mean = parts.reduce((sum, v) => sum + v, 0) / parts.length
-      // Each figure in the file is rounded to five significant digits.
-      expect(Math.abs(value - mean)).toBeLessThanOrEqual(
-        Math.abs(mean) * 1e-3 + 1e-6,
-      )
-      if (parts.length === 2) both++
-      else one++
-    }
-    expect(both).toBeGreaterThan(1000)
-    expect(one).toBeGreaterThan(100)
-  })
-
   it('keeps days whose price was zero or negative: they happened', () => {
     expect(
       WHOLESALE_ELECTRICITY.regions['de-lu'].daily.some(day => day[1] <= 0),

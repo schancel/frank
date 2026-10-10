@@ -46,6 +46,11 @@ export interface OracleCache {
   electricity?: FeedElectricity
   series: Record<string, LocalSeries>
   coverage: Coverage[]
+  /**
+   * How often whoever gave the last latest answer is to be asked again, in milliseconds.
+   * Saved so that a restart inside that interval asks for nothing.
+   */
+  refreshMs?: number
 }
 
 export function emptyOracleCache(): OracleCache {
@@ -134,6 +139,7 @@ export function mergeFeed(
     electricity: feed.electricity,
     series,
     coverage: cache.coverage,
+    ...(cache.refreshMs === undefined ? {} : { refreshMs: cache.refreshMs }),
   }
 }
 
@@ -162,12 +168,12 @@ export function coverLatest(
   coverage: Coverage[],
   at: number,
   pollSeconds: number,
+  /** The longest silence that is still one stretch: three refresh intervals. */
+  maxGapSeconds = 3 * pollSeconds,
 ): Coverage[] {
   const open = coverage.find(
     c =>
-      c.step === pollSeconds &&
-      at >= c.until &&
-      at - c.until <= 3 * pollSeconds,
+      c.step === pollSeconds && at >= c.until && at - c.until <= maxGapSeconds,
   )
   return normalise(
     open
@@ -228,6 +234,7 @@ interface StoredMeta {
   basket?: FeedBasket
   electricity?: FeedElectricity
   coverage: Coverage[]
+  refreshMs?: number
   series: Record<string, Omit<LocalSeries, 'points'>>
 }
 
@@ -236,6 +243,7 @@ function metaOf(cache: OracleCache): string {
     basket: cache.basket,
     electricity: cache.electricity,
     coverage: cache.coverage,
+    refreshMs: cache.refreshMs,
     series: Object.fromEntries(
       Object.entries(cache.series).map(([name, one]) => {
         const { points: _points, ...rest } = one
@@ -329,6 +337,9 @@ export async function restoreOracleCache(
   cache.basket = meta.basket
   cache.electricity = meta.electricity
   cache.coverage = Array.isArray(meta.coverage) ? meta.coverage : []
+  if (typeof meta.refreshMs === 'number' && meta.refreshMs > 0) {
+    cache.refreshMs = meta.refreshMs
+  }
   for (const [name, described] of Object.entries(meta.series ?? {})) {
     const held = points.get(name)
     if (held) cache.series[name] = { ...described, points: held }

@@ -110,9 +110,11 @@ function receive(feed: OracleFeed) {
   return oracle
 }
 
-/** Thirty daily wholesale prices ending yesterday, all `price` per kWh. */
+const TODAY = Math.floor(NOW / DAY) * DAY
+
+/** The aggregate wholesale price, one point a day for five days up to today. */
 function electricity(price: number): SeriesPoint[] {
-  return Array.from({ length: 30 }, (_, i) => [NOW - (30 - i) * DAY, price])
+  return Array.from({ length: 5 }, (_, i) => [TODAY - (4 - i) * DAY, price])
 }
 
 /** A feed whose two basket entries both have their inputs. */
@@ -173,15 +175,23 @@ describe('the figures', () => {
       wrapper.find(`[data-test="metric-value-${id}"]`).text()
     // Equal market caps: Bitcoin 50%, Monero 50%. AVU_hash = (10 + 5) / 2 = 7.5.
     // 1 MON = 0.025 x 7.5 = 0.1875 AVU.
-    expect(value('token-rate')).toBe('1 MON ≈ 188 mAVU · testnet')
+    expect(value('token-rate')).toBe('1 MON ≈ 187.5 mAVU · testnet')
     expect(value('avu-hash')).toBe('2 of 2 basket entries')
     const basket = wrapper.find('[data-test="metric-card-avu-hash"]').text()
     expect(basket).toContain('BTC 50%')
     expect(basket).toContain('XMR 50%')
     // A wholesale kWh costs 0.05; valued by mining: 0.05 x 7.5 = 0.375 AVU.
-    expect(value('avu-spot')).toBe('1 kWh ≈ 0.38 AVU')
+    expect(value('avu-spot')).toBe('A wholesale kWh costs 0.38 AVU')
     // A kWh of mining pays 1 / 0.375 = 2.667 times its wholesale price: +166.7%.
     expect(value('hash-vs-spot')).toBe('+166.7%')
+    expect(
+      wrapper.find('[data-test="metric-card-hash-vs-spot"]').text(),
+    ).toContain('Mining pays 167% more per kWh than the grid charges.')
+    // The tile says how the price was built and which regions are in it.
+    const spot = wrapper.find('[data-test="metric-card-avu-spot"]').text()
+    expect(spot).toContain('over the 30 days to')
+    expect(spot).toContain('regions weighted equally: Test region day-ahead.')
+    expect(spot).not.toContain('Not in this figure')
     expect(value('avu-unit')).toBe('1 AVU = 1 kWh')
   })
 
@@ -208,6 +218,40 @@ describe('the figures', () => {
     )
     expect(wrapper.find('[data-test="metric-card-avu-spot"]').text()).toContain(
       en.walletPanel.avuSpotNotPositive,
+    )
+  })
+
+  it('say "less" when mining pays under the grid price, and name a region that is no longer counted', () => {
+    const feed = twoEntryFeed()
+    // A wholesale kWh at 0.2: 0.2 x 7.5 = 1.5 AVU; mining pays 1 / 1.5 - 1 = -33.3%.
+    feed.series['electricity/aggregate'].points = electricity(0.2)
+    feed.electricity = {
+      ...feed.electricity,
+      regions: [
+        { ...feed.electricity.regions[0], lastContributed: TODAY },
+        {
+          id: 'gone',
+          label: 'Quiet region',
+          attribution: 'Quiet market',
+          lastContributed: Date.UTC(2026, 8, 30) / 1000,
+        },
+      ],
+    }
+    receive(feed)
+    const wrapper = mountChart()
+    expect(wrapper.find('[data-test="metric-value-avu-spot"]').text()).toBe(
+      'A wholesale kWh costs 1.50 AVU',
+    )
+    expect(wrapper.find('[data-test="metric-value-hash-vs-spot"]').text()).toBe(
+      '-33.3%',
+    )
+    expect(
+      wrapper.find('[data-test="metric-card-hash-vs-spot"]').text(),
+    ).toContain('Mining pays 33% less per kWh than the grid charges.')
+    const spot = wrapper.find('[data-test="metric-card-avu-spot"]').text()
+    expect(spot).toContain('regions weighted equally: Test region day-ahead.')
+    expect(spot).toMatch(
+      /Not in this figure, too few recent prices: Quiet region \(last counted .*2026\)\./,
     )
   })
 
@@ -243,7 +287,7 @@ describe('the lines', () => {
     expect(wrapper.find('[data-test="chart-line-grid"]').exists()).toBe(true)
     const cells = wrapper.find('[data-test="chart-inspection-table"]').text()
     expect(cells).toContain('0.38 AVU')
-    expect(cells).toContain('188 mAVU')
+    expect(cells).toContain('187.5 mAVU')
     expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
       '2 points from',
     )
@@ -311,9 +355,11 @@ describe('what is on screen', () => {
     expect(wrapper.find('[data-test="source-prices"]').text()).toContain(
       'test prices',
     )
-    expect(wrapper.find('[data-test="source-chains"]').text()).toContain(
-      'test chain statistics',
-    )
+    const chains = wrapper.find('[data-test="source-chains"]').text()
+    expect(chains).toContain('test chain statistics')
+    // The eCash split is read from the dated steps, not typed into the text.
+    expect(chains).toMatch(/eCash miners receive 58% .* \(92% before\)/)
+    expect(en.walletPanel.sourceEcashShare).not.toMatch(/\d/)
     expect(wrapper.find('[data-test="source-efficiency"]').text()).toContain(
       'curated',
     )

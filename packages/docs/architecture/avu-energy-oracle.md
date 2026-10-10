@@ -137,9 +137,11 @@ the two market capitalisations. Monero's expected hashes per block is its diffic
 over the rest; the app shows how many entries were used and why each other one was not. With
 none, there is no AVU_hash and no AVU value: nothing falls back to a fixed rate.
 
-**AVU_spot** is the inverse of the mean wholesale day-ahead electricity price over the 30 days
-ending at $t$. The prices are averaged first and the mean inverted; a window whose mean is not
-positive has no AVU_spot.
+**AVU_spot** is the inverse of the feed's aggregate wholesale electricity price at $t$. The
+feed builds that price: per region the mean of its daily day-ahead prices in the 30 days ending
+at each day (a region with fewer than 10 of them is left out), then the regions averaged
+equally. Prices are averaged first and the mean inverted; a value that is not positive has no
+AVU_spot.
 
 ### The oracle feed
 
@@ -198,7 +200,6 @@ code reads them and their figures were not computed from sources.
 1. **`@frank/price-feeds`**: the feed contract's types, parser and fetch (`feed.ts`), the
    timeseries lookup (`timeseries.ts`), and the temporary direct adapter.
 2. **`@frank/wallet/oracle`**: pure TypeScript, no Vue/DOM. `avuHashAt`, `avuSpotAt`,
-   `computeOracleRates` (every asset's AVU rate at a time), `convertRawToAvu`, `formatAvu`
-   (compact, SI prefixes).
+   `computeOracleRates` (every asset's AVU rate at a time), `convertRawToAvu`.
 3. **`useOracleStore()` (`app/src/stores/oracle.ts`)**: the local series, the cached rates,
    and the one display helper `formatAvuAmount(asset, rawAmount)`: an AVU string or nothing.

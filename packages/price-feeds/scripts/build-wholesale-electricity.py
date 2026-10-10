@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Builds src/historical/wholesale-electricity-daily.json: daily wholesale day-ahead
-electricity prices in US dollars per kWh, per region, and their aggregate.
+electricity prices in US dollars per kWh, per region.
 
-This file is seed data. The relay is to serve `electricity/aggregate` itself
+This file is seed data. The relay is to serve the `electricity/<region>` series itself
 (docs/protocol/oracle/README.md); until it does, the app's temporary direct adapter reads
 this file. Nothing is typed by hand or interpolated: a day a source does not cover is
-absent from that region, and the aggregate of a day is the mean of the regions that have
-it.
+absent from that region. How the regions are combined into AVU_spot is the client's rule
+(region means over the window, weighted equally), not something stored here.
 
 Sources (download them into one directory first; no key needed):
 
@@ -172,18 +172,10 @@ def main():
     us, us_files = pjm_west(directory)
     de = {day: value for day, value in de.items() if day <= last_day}
     us = {day: value for day, value in us.items() if day <= last_day}
-    aggregate = {}
-    for day in sorted(set(de) | set(us)):
-        values = [region[day] for region in (de, us) if day in region]
-        aggregate[day] = sum(values) / len(values)
     json.dump(
         {
             'unit': 'USD per kWh; one value per UTC day',
             'retrieved': retrieved,
-            'aggregate': {
-                'rule': 'the mean of the regions that have a value for the day',
-                'daily': points(aggregate),
-            },
             'regions': {
                 'de-lu': {
                     'label': 'Germany-Luxembourg day-ahead auction, all hours',

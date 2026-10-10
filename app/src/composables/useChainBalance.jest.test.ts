@@ -638,7 +638,7 @@ describe('native Solana AVU presentation', () => {
       expectAgreement('≈ 92.5 AVU · testnet')
       oracle.$patch({ current: { ...oracle.current, rates: { solana: 83 } } })
       await nextTick()
-      expectAgreement('≈ 208 AVU · testnet')
+      expectAgreement('≈ 207.5 AVU · testnet')
       // No oracle prices an SPL token: its row shows the amount alone.
       expect(getChainTokens('solana')[1].avuFormatted).toBe('')
     } finally {

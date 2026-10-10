@@ -14,6 +14,13 @@
 export const ORACLE_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 
 /**
+ * While the app fills the feed itself (the temporary direct adapter), it asks every
+ * provider for every coin on each refresh, so it refreshes less often than it polls a
+ * relay: every 30 minutes.
+ */
+export const DIRECT_FEED_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
+
+/**
  * Chain statistics (difficulty, issuance, supply) move slowly and come from one free
  * public API, so they are fetched once an hour: 6 chains x 24 = 144 requests a day per
  * open app, where every ten minutes would be 864.

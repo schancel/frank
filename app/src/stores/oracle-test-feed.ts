@@ -24,6 +24,7 @@ export const TEST_BASKET: OracleFeed['basket'] = {
 
 export const TEST_ELECTRICITY: OracleFeed['electricity'] = {
   windowDays: 30,
+  minDays: 10,
   regions: [
     { id: 'test', label: 'Test region day-ahead', attribution: 'Test market' },
   ],
@@ -44,6 +45,7 @@ export function testFeed(
   options: {
     kwhPerValue?: number
     prices?: Record<string, number>
+    /** Points of the windowed aggregate electricity price. */
     electricity?: SeriesPoint[]
   } = {},
 ): OracleFeed {
@@ -67,6 +69,17 @@ export function testFeed(
   }
   for (const [asset, price] of Object.entries(options.prices ?? {})) {
     feed.series[`price/${asset}`] = series(at(price), 'test prices')
+  }
+  if (options.electricity && options.electricity.length > 0) {
+    // The one test region counted in the latest aggregate point.
+    feed.electricity = {
+      ...TEST_ELECTRICITY,
+      regions: TEST_ELECTRICITY.regions.map(region => ({
+        ...region,
+        lastContributed:
+          options.electricity![options.electricity!.length - 1][0],
+      })),
+    }
   }
   if (options.electricity) {
     feed.series['electricity/aggregate'] = series(

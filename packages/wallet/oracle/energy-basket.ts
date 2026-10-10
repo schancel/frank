@@ -16,8 +16,8 @@
  * (basketWeights). An entry lacking any input at t is left out and the weights are taken
  * over the rest; with none there is no AVU_hash.
  *
- * AVU_spot(t) is read off the wholesale electricity market: the inverse of the mean daily
- * price over the feed's window ending at t.
+ * AVU_spot(t) is read off the wholesale electricity market: the inverse of the feed's
+ * aggregate price at t, which the feed has already averaged over its window and regions.
  *
  * Today's figure and every point of a chart are this same function at different times.
  */
@@ -25,7 +25,6 @@ import {
   ELECTRICITY_AGGREGATE,
   at,
   seriesName,
-  trailingMean,
   type FeedBasket,
   type FeedElectricity,
   type Timeseries,
@@ -192,45 +191,32 @@ export function avuPerCoin(
   return price * avuHash.kwhPerValue
 }
 
-const DAY_SECONDS = 86_400
-
-export type AvuSpot =
-  | {
-      /** kWh per unit of value at the mean wholesale price of the window. */
-      kwhPerValue: number
-      /** That mean price, per kWh. */
-      meanPricePerKwh: number
-      /** Days in the window that had a price. */
-      days: number
-      /** The time (unix seconds) of the latest daily price used. */
-      latestAt: number
-      stale: boolean
-    }
-  | {
-      kwhPerValue?: undefined
-      /** 'no-data': no price in the window. 'not-positive': their mean is zero or below. */
-      unavailable: 'no-data' | 'not-positive'
-    }
+export interface AvuSpot {
+  /** kWh per unit of value at the wholesale price. Undefined when there is none. */
+  kwhPerValue?: number
+  /** The price it is the inverse of, per kWh: the feed's windowed regional mean. */
+  pricePerKwh?: number
+  /** The day (unix seconds) of the price used. */
+  at?: number
+  /** The series was flagged stale by whoever served it. */
+  stale: boolean
+  /** 'no-data': no price at or before the time. 'not-positive': it is zero or below. */
+  unavailable?: 'no-data' | 'not-positive'
+}
 
 /**
- * AVU_spot at a time: the inverse of the mean of the daily wholesale prices in the feed's
- * window ending then. The prices are averaged first and the mean is inverted: single days
- * go to zero and below, and a mean of inverses would be meaningless.
+ * AVU_spot at a time: the inverse of the feed's aggregate wholesale electricity price in
+ * force then. The feed has already averaged the daily prices over its window and across
+ * regions; here the value is looked up and inverted, nothing else. A value that is not
+ * positive has no inverse.
  */
 export function avuSpotAt(inputs: OracleInputs, t: number): AvuSpot {
   const series = inputs.series[ELECTRICITY_AGGREGATE]
-  const mean = trailingMean(
-    series?.points,
-    t,
-    inputs.electricity.windowDays * DAY_SECONDS,
-  )
-  if (!mean) return { unavailable: 'no-data' }
-  if (!(mean.mean > 0)) return { unavailable: 'not-positive' }
-  return {
-    kwhPerValue: 1 / mean.mean,
-    meanPricePerKwh: mean.mean,
-    days: mean.count,
-    latestAt: mean.latest,
-    stale: Boolean(series?.stale),
+  const point = at(series?.points, t)
+  const stale = Boolean(series?.stale)
+  if (!point) return { stale, unavailable: 'no-data' }
+  if (!(point[1] > 0)) {
+    return { pricePerKwh: point[1], at: point[0], stale, unavailable: 'not-positive' }
   }
+  return { kwhPerValue: 1 / point[1], pricePerKwh: point[1], at: point[0], stale }
 }

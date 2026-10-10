@@ -2,7 +2,6 @@ import {
   at,
   mergeSeries,
   sliceSeries,
-  spliceSeries,
   trailingMean,
   type Timeseries,
 } from '../src/timeseries'
@@ -54,39 +53,6 @@ describe('joining series', () => {
       [300, 3],
       [400, 4],
     ])
-  })
-
-  it('a live recording wins over bundled history wherever both have data', () => {
-    const bundled: Timeseries = [
-      [100, 1],
-      [200, 2],
-      [300, 3],
-    ]
-    const live: Timeseries = [
-      [250, 2.5],
-      [260, 2.6],
-    ]
-    const joined = spliceSeries(bundled, live)
-    expect(joined).toEqual([
-      [100, 1],
-      [200, 2],
-      [250, 2.5],
-      [260, 2.6],
-    ])
-    // The lookup does not care which part it lands in.
-    expect(at(joined, 150)).toEqual([100, 1])
-    expect(at(joined, 400)).toEqual([260, 2.6])
-  })
-
-  it('a lookup in the gap before the first live point returns the last bundled point, old as it is', () => {
-    const joined = spliceSeries(
-      [
-        [100, 1],
-        [200, 2],
-      ],
-      [[900, 9]],
-    )
-    expect(at(joined, 800)).toEqual([200, 2])
   })
 })
 

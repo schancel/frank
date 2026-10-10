@@ -26,7 +26,6 @@ const fr = flatten(frFR)
 const SAME_IN_FRENCH = new Set([
   'leftDrawer.contacts',
   'leftDrawer.forum',
-  'walletPanel.avuSpotValue',
   'walletPanel.avuUnitValue',
   'walletPanel.avuTestnetValue',
   'walletPanel.chartUsdKwh',

@@ -506,10 +506,11 @@ export default {
       '1 AVU ≡ 1 kWh (3,6 MJ) d’énergie physique. Un étalon thermodynamique infalsifiable de pouvoir d’achat réel.',
     avuHashLabel: 'AVU_hash : énergie par unité de valeur, d’après le minage',
     avuHashNote:
-      'Moyenne sur le panier de monnaies minées, pondérée par la capitalisation avec Bitcoin plafonné à 60 % : {weights}. Litecoin et Dogecoin sont minés ensemble et comptent pour une entrée. L’efficacité du matériel est une donnée choisie : l’estimation de Cambridge pour SHA-256, la meilleure machine en vente pour les autres.',
-    avuSpotLabel: 'AVU_spot : un kWh d’électricité de gros',
+      'Moyenne sur le panier de monnaies minées, pondérée par la capitalisation avec Bitcoin plafonné à 60 % : {weights}. Litecoin et Dogecoin sont minés ensemble et comptent pour une entrée. L’efficacité du matériel est une donnée choisie : l’estimation par Cambridge des machines réellement en service pour SHA-256, la meilleure machine en vente pour scrypt et RandomX. La meilleure machine est plus efficace qu’un parc entier : ces deux entrées ressortent donc plus haut par kWh qu’avec une estimation de parc comparable.',
+    avuSpotLabel:
+      'AVU_spot : l’électricité de gros, évaluée comme le minage évalue l’énergie',
     avuSpotNote:
-      'Ce que le réseau facture pour un kWh, évalué comme le minage évalue l’énergie : à 1 AVU les deux concordent. Prix de gros moyen (marché de la veille) de {days} jours sur les {window} précédant le {latest}.',
+      'À 1 AVU le réseau et le minage concordent. Prix : moyenne par région du prix de la veille sur les {window} jours précédant le {latest}, régions à poids égal : {regions}.',
     avuUnitLabel: 'L’unité',
     avuUnitNote:
       'Une unité de compte, ni monnaie ni jeton : rien n’est détenu ni échangé en AVU.',
@@ -517,7 +518,7 @@ export default {
     sourceEfficiency:
       'Efficacité du matériel (donnée choisie, pas une mesure en direct) : {sources}.',
     avuHashVsSpotNote:
-      'Écart entre ce que rapporte un kWh de minage et ce que coûte un kWh au prix de gros, au-dessus (+) ou en dessous (−). Les deux devraient à peu près concorder.',
+      'Ce que rapporte un kWh de minage face à ce que coûte un kWh au prix de gros. Les deux devraient à peu près concorder.',
     avuHashVsSpotLabel: 'Rémunération du minage face au prix du réseau',
     avuHashStale: 'Périmé : la donnée la plus ancienne date de {age}.',
     avuHashLeftOutEfficiency: 'pas de donnée d’efficacité du matériel',
@@ -550,11 +551,11 @@ export default {
     avuHashValue: '{used} entrées du panier sur {total}',
     avuHashEstimated:
       'Une entrée repose sur une efficacité matérielle estimée.',
-    avuSpotValue: '1 kWh ≈ {avu} AVU',
+    avuSpotValue: 'Un kWh de gros coûte {avu} AVU',
     avuSpotStale: 'Non actualisé : le dernier prix date de {age}.',
     avuSpotNotPositive:
-      'Le prix de gros moyen de la période n’est pas supérieur à zéro : il n’a pas d’inverse.',
-    avuSpotNoData: 'Aucun prix de gros de l’électricité sur la période.',
+      'Le prix de gros moyen n’est pas supérieur à zéro : il n’a pas d’inverse.',
+    avuSpotNoData: 'Aucun prix de gros de l’électricité n’a été reçu.',
     avuUnitValue: '1 AVU = 1 kWh',
     avuNoPrice:
       'L’oracle n’a pas de prix pour cette monnaie : elle n’a pas de valeur en AVU.',
@@ -571,10 +572,19 @@ export default {
     chartNoteNoFeed: 'Rien n’a encore été reçu de l’oracle : rien n’est tracé.',
     sourcePrices: 'Prix : {sources}.',
     sourceChains:
-      'Difficulté, récompense de bloc et offre : {sources}. Les mineurs d’eCash reçoivent 58 % de la récompense de bloc (92 % avant le 15 novembre 2023), lu sur la chaîne.',
+      'Difficulté, récompense de bloc et offre : {sources}. La difficulté de Dogecoin est sa valeur sur 24 heures.',
     sourceElectricity: 'Électricité de gros : {sources}.',
     sourceGold:
       'Or : World Bank Commodity Price Data (Pink Sheet), annuel, évalué à l’AVU_hash du milieu de l’année.',
+    avuSpotRegionsLeftOut:
+      'Hors de ce chiffre, trop peu de prix récents : {regions}.',
+    avuSpotRegionLast: '{region} (dernière prise en compte le {day})',
+    avuHashVsSpotLess:
+      'Le minage rapporte {percent} % de moins par kWh que ce que facture le réseau.',
+    avuHashVsSpotMore:
+      'Le minage rapporte {percent} % de plus par kWh que ce que facture le réseau.',
+    sourceEcashShare:
+      'Les mineurs d’eCash reçoivent {share} de la récompense de bloc depuis le {since} ({previous} auparavant), lu sur la chaîne.',
     activeTokenCardTitle: '{symbol} en AVU',
     inspectingDate: 'Inspection',
     latestValue: 'Dernière valeur',

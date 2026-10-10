@@ -15,6 +15,7 @@
  */
 import { PriceFeedsClient } from './client'
 import { CHAIN_STATS_REFRESH_INTERVAL_MS } from './config'
+import { windowedElectricityAggregate } from './electricity-aggregate'
 import {
   ELECTRICITY_AGGREGATE,
   seriesName,
@@ -104,8 +105,6 @@ export const DIRECT_ASSETS: Record<string, { symbol: string; blockchair?: string
   'solana-mainnet': { symbol: 'SOL' },
   'hyperliquid-mainnet': { symbol: 'HYPE' },
 }
-
-const DAY_SECONDS = 86_400
 
 function seconds(date: string): number {
   // "YYYY-MM" is the start of the month, "YYYY-MM-DD" the start of the day, UTC.
@@ -244,33 +243,52 @@ export function bundledSeries(): Record<string, FeedSeries> {
   }
   all[ELECTRICITY_AGGREGATE] = series(
     'USD/kWh',
-    'day-ahead wholesale, mean of regions, bundled',
+    'day-ahead wholesale, 30-day mean of regions, bundled',
     WHOLESALE_ELECTRICITY.retrieved,
-    WHOLESALE_ELECTRICITY.aggregate.daily.map(day => [seconds(day[0]), day[1]]),
+    electricityAggregate.points,
   )
-  for (const [region, data] of Object.entries(WHOLESALE_ELECTRICITY.regions)) {
+  for (const [region, points] of Object.entries(regionalPrices())) {
     all[seriesName('electricity', region)] = series(
       'USD/kWh',
-      data.label,
+      WHOLESALE_ELECTRICITY.regions[region].label,
       WHOLESALE_ELECTRICITY.retrieved,
-      data.daily.map(day => [seconds(day[0]), day[1]]),
+      points,
     )
   }
   bundled = all
   return all
 }
 
+const ELECTRICITY_WINDOW_DAYS = 30
+const ELECTRICITY_MIN_DAYS = 10
+
+function regionalPrices(): Record<string, SeriesPoint[]> {
+  return Object.fromEntries(
+    Object.entries(WHOLESALE_ELECTRICITY.regions).map(([id, region]) => [
+      id,
+      region.daily.map(day => [seconds(day[0]), day[1]] as const),
+    ]),
+  )
+}
+
+/** The bundled regional prices, windowed and averaged as the contract says. */
+const electricityAggregate = windowedElectricityAggregate(
+  regionalPrices(),
+  ELECTRICITY_WINDOW_DAYS,
+  ELECTRICITY_MIN_DAYS,
+)
+
 export const DIRECT_ELECTRICITY: FeedElectricity = {
-  windowDays: 30,
+  windowDays: ELECTRICITY_WINDOW_DAYS,
+  minDays: ELECTRICITY_MIN_DAYS,
   regions: Object.entries(WHOLESALE_ELECTRICITY.regions).map(([id, region]) => ({
     id,
     label: region.label,
     attribution: region.attribution,
+    ...(electricityAggregate.lastContributed[id] === undefined
+      ? {}
+      : { lastContributed: electricityAggregate.lastContributed[id] }),
   })),
-}
-
-function isElectricity(name: string): boolean {
-  return name.startsWith('electricity/')
 }
 
 /** The bundled history for a range, cut as the contract says a range answer is. */
@@ -278,14 +296,14 @@ export function bundledFeed(
   request: { since: number; until: number; step: number },
   now = Date.now(),
 ): OracleFeed {
-  const window = DIRECT_ELECTRICITY.windowDays * DAY_SECONDS
   const out: Record<string, FeedSeries> = {}
   for (const [name, one] of Object.entries(bundledSeries())) {
-    const points = isElectricity(name)
-      ? one.points.filter(
-          point => point[0] > request.since - window && point[0] <= request.until,
-        )
-      : sliceSeries(one.points, request.since, request.until, request.step)
+    const points = sliceSeries(
+      one.points,
+      request.since,
+      request.until,
+      request.step,
+    )
     if (points.length > 0) out[name] = { ...one, points }
   }
   return {
@@ -304,6 +322,13 @@ export interface DirectFeedOptions {
   /** Stand-ins for the two direct fetches, for tests. */
   fetchPrices?: (symbols: string[]) => Promise<Record<string, number>>
   fetchStats?: (blockchairChain: string) => Promise<MiningStats | null>
+  /**
+   * The time (unix seconds) of the latest point the caller already holds for a series,
+   * if it holds a fetched one. A chain whose held difficulty is under an hour old is not
+   * asked of Blockchair again: after an app restart the saved series say when the last
+   * reading was taken, where this module's own memory has forgotten.
+   */
+  heldAt?: (seriesName: string) => number | undefined
 }
 
 /** The chain statistics last fetched, kept so Blockchair is asked once an hour at most. */
@@ -356,12 +381,22 @@ export async function directLatestFeed(
         timeoutMs: options.timeoutMs,
       }))
   const symbols = Object.values(DIRECT_ASSETS).map(asset => asset.symbol)
-  const due = Object.values(DIRECT_ASSETS).flatMap(asset => {
-    if (!asset.blockchair) return []
-    const held = statsCache.get(asset.blockchair)
-    return held && now - held.fetchedAt < CHAIN_STATS_REFRESH_INTERVAL_MS
-      ? []
-      : [asset.blockchair]
+  /** Chains the caller holds a reading of that is still inside the hour. */
+  const heldFresh = new Set<string>()
+  const due = Object.entries(DIRECT_ASSETS).flatMap(([asset, { blockchair }]) => {
+    if (!blockchair) return []
+    const held = statsCache.get(blockchair)
+    if (held && now - held.fetchedAt < CHAIN_STATS_REFRESH_INTERVAL_MS) return []
+    const heldAt = options.heldAt?.(seriesName('difficulty', asset))
+    if (
+      !held &&
+      heldAt !== undefined &&
+      now - heldAt * 1000 < CHAIN_STATS_REFRESH_INTERVAL_MS
+    ) {
+      heldFresh.add(asset)
+      return []
+    }
+    return [blockchair]
   })
   const [prices] = await Promise.all([
     (options.fetchPrices ?? (s => medianPrices(s, options)))(symbols),
@@ -399,6 +434,8 @@ export async function directLatestFeed(
     }
     if (!blockchair) continue
     const stats = statsCache.get(blockchair)
+    // The caller's own series already hold this hour's reading: nothing to add to it.
+    if (!stats && heldFresh.has(asset)) continue
     if (!stats) {
       for (const kind of ['marketCap', 'difficulty', 'blockReward'] as const) {
         fallback(seriesName(kind, asset))
@@ -433,14 +470,11 @@ export async function directLatestFeed(
       }
     }
   }
+  // Curated steps and the bundled electricity: the point in force now. Electricity is
+  // not fetched here, so it stays marked stale and carries its own, older, day.
   for (const name of Object.keys(history)) {
-    if (name.startsWith('efficiency/')) fallback(name)
-    if (isElectricity(name)) {
-      const window = DIRECT_ELECTRICITY.windowDays * DAY_SECONDS
-      const points = history[name].points.filter(
-        point => point[0] > nowSeconds - window && point[0] <= nowSeconds,
-      )
-      if (points.length > 0) out[name] = { ...history[name], points }
+    if (name.startsWith('efficiency/') || name.startsWith('electricity/')) {
+      fallback(name)
     }
   }
   return {

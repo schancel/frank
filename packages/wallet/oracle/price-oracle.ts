@@ -73,7 +73,7 @@ export function unavailableOracleRates(at = 0): OracleRates {
     rates: {},
     priceAt: {},
     priceStale: {},
-    avuSpot: { unavailable: "no-data" },
+    avuSpot: { stale: false, unavailable: "no-data" },
   };
 }
 
@@ -123,30 +123,4 @@ export function convertRawToAvu(
   const remainder = rawAmount % scale;
   const nominal = Number(whole) + Number(remainder) / Number(scale);
   return nominal * rate;
-}
-
-const AVU_PREFIXES: ReadonlyArray<[number, string]> = [
-  [1e9, "G"],
-  [1e6, "M"],
-  [1e3, "k"],
-  [1, ""],
-  [1e-3, "m"],
-  [1e-6, "μ"],
-  [1e-9, "n"],
-];
-
-/**
- * An AVU figure in the app's compact style: three significant digits and an SI prefix,
- * "1.31 kAVU", "92.5 AVU", "4.2 mAVU". Short enough for a list row. Empty for nothing or
- * for a value that is not a positive number: an unknown value is not "0 AVU".
- */
-export function formatAvu(avu: number): string {
-  if (!Number.isFinite(avu) || avu <= 0) return "";
-  const [scale, prefix] =
-    AVU_PREFIXES.find(([threshold]) => avu >= threshold) ??
-    AVU_PREFIXES[AVU_PREFIXES.length - 1];
-  const scaled = avu / scale;
-  if (scaled < 0.001) return "< 0.001 nAVU";
-  // toPrecision can round 999.6 up to 1000: Number() drops the exponent and zeros.
-  return `${Number(scaled.toPrecision(3))} ${prefix}AVU`;
 }

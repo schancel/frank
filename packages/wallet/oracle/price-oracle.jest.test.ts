@@ -2,7 +2,6 @@ import {
   SUPPORTED_ASSETS,
   computeOracleRates,
   convertRawToAvu,
-  formatAvu,
   priceAssetId,
   unavailableOracleRates,
 } from './price-oracle'
@@ -82,18 +81,5 @@ describe('amounts in AVU', () => {
     expect(convertRawToAvu(150n, 'ecash', 4)).toBeCloseTo(6, 9)
     expect(convertRawToAvu(0n, 'monad', 2)).toBe(0)
     expect(convertRawToAvu(5n, 'monad', undefined)).toBeUndefined()
-  })
-
-  it('formats compactly, three significant digits with an SI prefix', () => {
-    expect(formatAvu(92.5)).toBe('92.5 AVU')
-    expect(formatAvu(1309.52)).toBe('1.31 kAVU')
-    expect(formatAvu(2_500_000)).toBe('2.5 MAVU')
-    expect(formatAvu(7.9e11)).toBe('790 GAVU')
-    expect(formatAvu(0.0042)).toBe('4.2 mAVU')
-    expect(formatAvu(0.00000012)).toBe('120 nAVU')
-    expect(formatAvu(999.96)).toBe('1000 AVU')
-    // Nothing, not "0 AVU", for nothing or an unknown value.
-    expect(formatAvu(0)).toBe('')
-    expect(formatAvu(Number.NaN)).toBe('')
   })
 })

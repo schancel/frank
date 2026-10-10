@@ -144,11 +144,12 @@ describe('the scrypt and RandomX chains, against what Blockchair answered on 202
     })
     expect(stats?.subsidyCoinsPerBlock).toBe(10_000)
     expect(stats?.circulatingCoins).toBeCloseTo(156_268_596_383.7, 0)
-    expect(stats?.hashesPerBlock).toBe(45261326.03663414 * 2 ** 32)
-    // 60-second blocks: 3.24e15 H/s implied; Blockchair says 3.09e15.
-    expect(
-      stats!.hashesPerBlock / 60 / Number(recorded.dogecoin.hashrate_24h),
-    ).toBeCloseTo(1, 0)
+    // Dogecoin retargets every block, so the 24-hour figure is used, not the difficulty
+    // of the moment (45,261,326 here): 3,085,649,443,549,118 H/s x 60 s
+    // = 1.8514e17 expected hashes per block, a difficulty of 43,106,000.
+    expect(stats?.hashesPerBlock).toBeCloseTo(3085649443549118 * 60, -6)
+    expect(stats?.difficulty).toBeCloseTo((3085649443549118 * 60) / 2 ** 32, 3)
+    expect(stats!.difficulty / 1e6).toBeCloseTo(43.106, 2)
   })
 
   it('reads Monero: 12 decimals, and the difficulty itself is the expected hashes per block', async () => {

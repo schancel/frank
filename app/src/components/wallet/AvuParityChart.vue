@@ -386,17 +386,17 @@ import {
   formatAge,
   STALE_AFTER_MS,
 } from 'src/stores/oracle'
-import { UNIT_RATE_ASSET_METRICS } from 'src/utils/avu-units'
+import { UNIT_RATE_ASSET_METRICS, formatAvu } from 'src/utils/avu-units'
 import { useTranslate } from 'src/composables/useTranslate'
 import { useOracleHistory } from 'src/composables/useOracleFeed'
 import {
   ELECTRICITY_AGGREGATE,
+  MINER_SHARE_STEPS,
   US_ANNUAL_ELECTRICITY_AND_GOLD,
   at as valueAt,
   avuHashAt,
   avuPerCoin,
   avuSpotAt,
-  formatAvu,
   priceAssetId,
   seriesName,
   type OracleInputs,
@@ -518,8 +518,14 @@ function formatWeight(weight: number): string {
   return `${formatNumber(weight * 100, weight < 0.1 ? 1 : 0)}%`
 }
 
+/** "9 Oct 2026": a day of a daily series (they are stamped in UTC). */
 function formatDay(seconds: number): string {
-  return new Date(seconds * 1000).toISOString().slice(0, 10)
+  return new Date(seconds * 1000).toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  })
 }
 
 // ---- AVU_hash and AVU_spot, now -----------------------------------------------------------
@@ -648,25 +654,51 @@ const tiles = computed<Tile[]>(() => {
 
   const grid = gridKwhInAvu(hash, spot)
   let spotNote = ''
-  if (spot?.kwhPerValue) {
+  if (spot?.kwhPerValue && spot.at !== undefined) {
+    const electricity = inputs.value?.electricity
+    const priceDay = spot.at
+    const regions = electricity?.regions ?? []
+    // A region counts in the figure when the feed says it counted in that day's price.
+    const counted = regions.filter(
+      region => region.lastContributed === priceDay,
+    )
+    const dropped = regions.filter(
+      region => region.lastContributed !== priceDay,
+    )
     spotNote = t('walletPanel.avuSpotNote', {
-      days: spot.days,
-      window: inputs.value?.electricity.windowDays ?? 30,
-      latest: formatDay(spot.latestAt),
+      window: electricity?.windowDays ?? '',
+      latest: formatDay(priceDay),
+      regions: counted.map(region => region.label).join('; '),
     })
-    const spotAge = Date.now() - spot.latestAt * 1000
+    if (dropped.length > 0) {
+      spotNote += ` ${t('walletPanel.avuSpotRegionsLeftOut', {
+        regions: dropped
+          .map(region =>
+            region.lastContributed === undefined
+              ? region.label
+              : t('walletPanel.avuSpotRegionLast', {
+                  region: region.label,
+                  day: formatDay(region.lastContributed),
+                }),
+          )
+          .join('; '),
+      })}`
+    }
+    const spotAge = Date.now() - priceDay * 1000
     if (spot.stale || spotAge > 3 * DAY * 1000) {
       spotNote += ` ${t('walletPanel.avuSpotStale', {
         age: formatAge(spotAge),
       })}`
     }
-  } else if (spot && 'unavailable' in spot) {
+  } else if (spot?.unavailable) {
     spotNote = t(
       spot.unavailable === 'not-positive'
         ? 'walletPanel.avuSpotNotPositive'
         : 'walletPanel.avuSpotNoData',
     )
   }
+  // What a kWh of mining earns against what a kWh costs at wholesale.
+  const miningVsGrid = grid === undefined ? undefined : (1 / grid - 1) * 100
 
   return [
     {
@@ -709,9 +741,16 @@ const tiles = computed<Tile[]>(() => {
       label: t('walletPanel.avuHashVsSpotLabel'),
       icon: 'compare_arrows',
       color: 'primary',
-      // How far a kWh of mining pay is above (+) or below (-) the wholesale price of a kWh.
-      value: grid === undefined ? '' : formatSpread((1 / grid - 1) * 100),
-      note: t('walletPanel.avuHashVsSpotNote'),
+      value: miningVsGrid === undefined ? '' : formatSpread(miningVsGrid),
+      note:
+        miningVsGrid === undefined
+          ? t('walletPanel.avuHashVsSpotNote')
+          : t(
+              miningVsGrid < 0
+                ? 'walletPanel.avuHashVsSpotLess'
+                : 'walletPanel.avuHashVsSpotMore',
+              { percent: formatNumber(Math.abs(miningVsGrid), 0) },
+            ),
     },
     {
       id: 'avu-unit',
@@ -1045,6 +1084,20 @@ const dataNote = computed(() => {
 
 // ---- Sources ----------------------------------------------------------------------------
 
+/** The eCash miner's share now and before, from the dated steps read off the chain. */
+function ecashShareNote(): string {
+  const steps = MINER_SHARE_STEPS['xec-mainnet'] ?? []
+  const current = steps[steps.length - 1]
+  const previous = steps[steps.length - 2]
+  if (!current || !previous) return ''
+  const percent = (share: number) => `${formatNumber(share * 100, 0)}%`
+  return t('walletPanel.sourceEcashShare', {
+    share: percent(current.share),
+    previous: percent(previous.share),
+    since: formatDay(Date.parse(`${current.from}T00:00:00Z`) / 1000),
+  })
+}
+
 /** One line per kind of input, naming where the feed says its values come from. */
 const sourceLines = computed(() => {
   const feed = inputs.value
@@ -1069,7 +1122,12 @@ const sourceLines = computed(() => {
     },
     {
       id: 'chains',
-      text: t('walletPanel.sourceChains', { sources: labels('difficulty') }),
+      text: [
+        t('walletPanel.sourceChains', { sources: labels('difficulty') }),
+        ecashShareNote(),
+      ]
+        .filter(Boolean)
+        .join(' '),
     },
     {
       id: 'efficiency',

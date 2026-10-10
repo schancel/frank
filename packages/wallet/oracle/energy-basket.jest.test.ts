@@ -250,38 +250,49 @@ describe('one function for today and for history', () => {
 
 describe('AVU_spot', () => {
   const DAY = 86_400
-  const withPrices = (prices: number[]): OracleInputs => ({
+  const withAggregate = (
+    points: Array<[number, number]>,
+    stale = false,
+  ): OracleInputs => ({
     basket: DIRECT_BASKET,
-    electricity: { windowDays: 30, regions: [] },
-    series: {
-      'electricity/aggregate': {
-        points: prices.map((price, day) => [(day + 1) * DAY, price]),
-      },
-    },
+    electricity: DIRECT_ELECTRICITY,
+    series: { 'electricity/aggregate': { points, stale } },
   })
 
-  it('averages the prices first and inverts the mean, zero and negative days included', () => {
-    // (0.08 + 0 - 0.02 + 0.06) / 4 = 0.03 per kWh: 33.33 kWh per unit of value.
-    const spot = avuSpotAt(withPrices([0.08, 0, -0.02, 0.06]), 4 * DAY)
-    expect(spot.kwhPerValue).toBeCloseTo(1 / 0.03, 9)
-    expect(spot).toMatchObject({ days: 4, latestAt: 4 * DAY })
-    // Not the mean of the inverses (one of which would be a division by zero).
-  })
-
-  it('uses only the days of the window ending at the time asked about', () => {
-    const prices = Array.from({ length: 40 }, (_, day) => (day < 10 ? 1 : 0.05))
-    const spot = avuSpotAt(withPrices(prices), 40 * DAY)
-    expect(spot.kwhPerValue).toBeCloseTo(20, 9)
-    expect(spot).toMatchObject({ days: 30 })
-  })
-
-  it('is unavailable, with the reason, when the mean is not positive or there is no price', () => {
-    expect(avuSpotAt(withPrices([0.01, -0.03]), 2 * DAY)).toEqual({
-      unavailable: 'not-positive',
+  it('is the inverse of the aggregate price in force: a floor lookup and nothing else', () => {
+    const inputs = withAggregate([
+      [10 * DAY, 0.05],
+      [11 * DAY, 0.04],
+    ])
+    expect(avuSpotAt(inputs, 10 * DAY + 5)).toEqual({
+      kwhPerValue: 20,
+      pricePerKwh: 0.05,
+      at: 10 * DAY,
+      stale: false,
     })
-    expect(avuSpotAt(withPrices([]), 2 * DAY)).toEqual({ unavailable: 'no-data' })
-    expect(avuSpotAt(withPrices([0.05]), 100 * DAY)).toEqual({
+    expect(avuSpotAt(inputs, 11 * DAY).kwhPerValue).toBeCloseTo(25, 12)
+    // After the last point the last value holds, with its own day, however old.
+    expect(avuSpotAt(inputs, 40 * DAY)).toMatchObject({ at: 11 * DAY })
+  })
+
+  it('is unavailable, with the reason, before the series begins or when the price is not positive', () => {
+    const inputs = withAggregate([
+      [10 * DAY, 0],
+      [11 * DAY, -0.01],
+    ])
+    expect(avuSpotAt(inputs, 9 * DAY)).toEqual({
+      stale: false,
       unavailable: 'no-data',
     })
+    expect(avuSpotAt(inputs, 10 * DAY)).toMatchObject({
+      unavailable: 'not-positive',
+      pricePerKwh: 0,
+    })
+    expect(avuSpotAt(inputs, 12 * DAY).kwhPerValue).toBeUndefined()
+    expect(avuSpotAt(withAggregate([]), 12 * DAY).unavailable).toBe('no-data')
+  })
+
+  it('passes on that the series was served stale', () => {
+    expect(avuSpotAt(withAggregate([[DAY, 0.1]], true), 2 * DAY).stale).toBe(true)
   })
 })

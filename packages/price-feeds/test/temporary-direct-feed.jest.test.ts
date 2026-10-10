@@ -2,7 +2,6 @@ import {
   CHAIN_STATS_REFRESH_INTERVAL_MS,
   DIRECT_ASSETS,
   DIRECT_BASKET,
-  ELECTRICITY_AGGREGATE,
   at,
   bundledFeed,
   bundledSeries,
@@ -120,10 +119,11 @@ describe('a range answer from the bundled history', () => {
     // January's monthly point (stamped 1 January) is the floor at 10 January.
     expect(prices[0][0]).toBe(seconds('2024-01-01'))
     expect(prices[prices.length - 1][0]).toBe(seconds('2024-06-01'))
-    // The electricity window before the start comes with it.
-    const electricity = feed.series[ELECTRICITY_AGGREGATE].points
-    expect(electricity[0][0]).toBeLessThan(since)
-    expect(electricity[0][0]).toBeGreaterThan(since - 31 * 86_400)
+    // The aggregate electricity price is one more series: its floor point, then the days.
+    const electricity = feed.series['electricity/aggregate'].points
+    expect(electricity[0][0]).toBe(since)
+    expect(electricity.length).toBeGreaterThan(4)
+    expect(electricity.length).toBeLessThanOrEqual(8)
   })
 })
 
@@ -168,8 +168,23 @@ describe('the latest answer, filled directly', () => {
     expect(feed.generatedAt).toBe(t)
     // The efficiency step in force, and the electricity window.
     expect(feed.series['efficiency/scrypt'].points).toHaveLength(1)
-    expect(feed.series[ELECTRICITY_AGGREGATE].points.length).toBeGreaterThan(10)
-    expect(feed.series[ELECTRICITY_AGGREGATE].points.length).toBeLessThanOrEqual(30)
+    // One point of the windowed aggregate, bundled, so marked stale with its own day.
+    const electricity = feed.series['electricity/aggregate']
+    expect(electricity.points).toHaveLength(1)
+    expect(electricity.stale).toBe(true)
+    expect(electricity.points[0][0]).toBeLessThan(t)
+    expect(feed.electricity).toMatchObject({ windowDays: 30, minDays: 10 })
+    expect(feed.electricity.regions.map(region => region.id)).toEqual([
+      'de-lu',
+      'us-pjm-west',
+    ])
+    // Germany counts in the latest point; PJM's bundled file ended earlier.
+    expect(feed.electricity.regions[0].lastContributed).toBe(
+      electricity.points[0][0],
+    )
+    expect(feed.electricity.regions[1].lastContributed).toBeLessThanOrEqual(
+      electricity.points[0][0],
+    )
   })
 
   it('leaves the last bundled value, old and marked stale, where nothing could be fetched', async () => {
@@ -186,6 +201,35 @@ describe('the latest answer, filled directly', () => {
     expect(feed.series['difficulty/ltc-mainnet'].stale).toBe(true)
     // A coin with no bundled history and no fetched price is simply absent.
     expect(feed.series['price/monad-mainnet']).toBeUndefined()
+  })
+
+  it('does not ask Blockchair again after a restart while the caller’s saved reading is under an hour old', async () => {
+    const fetchStats = jest.fn(async (chain: string) => stats(chain))
+    const savedAt = (NOW - 20 * 60 * 1000) / 1000
+    const feed = await directLatestFeed({
+      now: () => NOW,
+      fetchPrices: everyPrice,
+      fetchStats,
+      // Every chain but Monero was read twenty minutes ago, before the restart.
+      heldAt: name =>
+        name === 'difficulty/xmr-mainnet' ? undefined : savedAt,
+    })
+    expect(fetchStats.mock.calls).toEqual([['monero']])
+    // Nothing is said about the chains whose saved reading stands: no bundled value is
+    // put in its place.
+    expect(feed.series['difficulty/btc-mainnet']).toBeUndefined()
+    expect(feed.series['difficulty/xmr-mainnet'].stale).toBe(false)
+    expect(feed.series['price/btc-mainnet'].stale).toBe(false)
+
+    resetDirectFeedCache()
+    const later = jest.fn(async (chain: string) => stats(chain))
+    await directLatestFeed({
+      now: () => NOW + 45 * 60 * 1000,
+      fetchPrices: everyPrice,
+      fetchStats: later,
+      heldAt: () => savedAt,
+    })
+    expect(later).toHaveBeenCalledTimes(6)
   })
 
   it('asks for chain statistics once an hour, however often it is called', async () => {

@@ -47,21 +47,8 @@ export function mergeSeries(held: Timeseries, newer: Timeseries): SeriesPoint[] 
 }
 
 /**
- * Bundled history continued by a live recording: the bundled points older than the first
- * live point, then the live points. Where both cover a time the live recording wins, so a
- * coarse bundled point never lands in the middle of what was recorded live. A lookup
- * between the end of the bundled history and the first live point returns the last bundled
- * point, with its own (old) time.
- */
-export function spliceSeries(bundled: Timeseries, live: Timeseries): SeriesPoint[] {
-  if (live.length === 0) return bundled.slice()
-  const firstLive = live[0][0]
-  return [...bundled.filter(point => point[0] < firstLive), ...live]
-}
-
-/**
- * The points inside [since, until], with the floor point at `since` in front when there is
- * one, thinned to the last point of each `step` seconds. This is what a feed answer
+ * The floor point at `since` when there is one, then the points inside (since, until]
+ * thinned to the last point of each `step` seconds. This is what a feed answer
  * carries for a range (see "What a response must contain" in the contract).
  */
 export function sliceSeries(
@@ -72,18 +59,20 @@ export function sliceSeries(
 ): SeriesPoint[] {
   const floor = at(series, since)
   const inside = series.filter(point => point[0] > since && point[0] <= until)
-  const points = floor ? [floor, ...inside] : inside
-  if (!step || !(step > 0)) return points
-  const thinned: SeriesPoint[] = []
-  for (const point of points) {
-    const last = thinned[thinned.length - 1]
-    if (last && Math.floor(last[0] / step) === Math.floor(point[0] / step)) {
-      thinned[thinned.length - 1] = point
-    } else {
-      thinned.push(point)
+  // The floor point is always kept: the series must be readable at `since`.
+  let thinned: SeriesPoint[] = inside
+  if (step && step > 0) {
+    thinned = []
+    for (const point of inside) {
+      const last = thinned[thinned.length - 1]
+      if (last && Math.floor(last[0] / step) === Math.floor(point[0] / step)) {
+        thinned[thinned.length - 1] = point
+      } else {
+        thinned.push(point)
+      }
     }
   }
-  return thinned
+  return floor ? [floor, ...thinned] : thinned
 }
 
 /**

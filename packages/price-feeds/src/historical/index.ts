@@ -169,6 +169,5 @@ export interface WholesaleRegion {
 export const WHOLESALE_ELECTRICITY = wholesale as unknown as {
   unit: string
   retrieved: string
-  aggregate: { rule: string; daily: ElectricityDay[] }
   regions: Record<string, WholesaleRegion>
 }

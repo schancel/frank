@@ -124,7 +124,9 @@ export function useSwapEscrow() {
     return refuse()
   }
 
-  async function claimLock(_params: ClaimLockParams): Promise<{ txHash: string }> {
+  async function claimLock(
+    _params: ClaimLockParams,
+  ): Promise<{ txHash: string }> {
     return refuse()
   }
 

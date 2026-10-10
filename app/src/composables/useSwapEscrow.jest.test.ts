@@ -31,7 +31,9 @@ const mockProvider = {
 }
 
 // A wallet that could sign and submit, so the tests can show that nothing asks it to.
-const mockSubmitRawTransaction = jest.fn().mockResolvedValue('0xmockedevmtxhash123')
+const mockSubmitRawTransaction = jest
+  .fn()
+  .mockResolvedValue('0xmockedevmtxhash123')
 const mockToPrivateKeyHex = jest.fn(() => '0x' + '11'.repeat(32))
 const mockBuildAndSignCall = jest.fn()
 
@@ -76,7 +78,12 @@ describe('useSwapEscrow', () => {
   // Atomic swaps are being rebuilt. Until then these refuse on every chain, with a wallet
   // that could sign, and never hand back a transaction hash (they used to return a random
   // one for Solana and when no submitter was present).
-  it.each(['monad-testnet', 'ethereum-sepolia', 'solana-testnet', 'not-a-chain'])(
+  it.each([
+    'monad-testnet',
+    'ethereum-sepolia',
+    'solana-testnet',
+    'not-a-chain',
+  ])(
     'refuses to lock, claim or refund on %s, and signs and submits nothing',
     async chain => {
       const { depositLock, claimLock, refundLock, error } = useSwapEscrow()

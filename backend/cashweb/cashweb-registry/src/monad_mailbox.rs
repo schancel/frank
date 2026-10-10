@@ -1,16 +1,14 @@
 //! Process-owned configuration and authorization state for durable Monad direct messages.
 
-use std::{fmt, sync::Arc};
+use std::{fmt, sync::Arc, time::Duration};
 
+use axum::http::HeaderMap;
 use hmac::{Hmac, Mac};
 use rand::RngCore;
 use sha2::Sha256;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::{
-    monad_http::{Address, HttpTransport},
-    monad_outbox::{MonadOutboxPermitPool, MonadOutboxReconcileConfig},
-};
+use crate::monad_http::{Address, HttpTransport};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -33,11 +31,101 @@ pub enum MonadMailboxRuntime {
     Enabled(Arc<EnabledMonadMailboxRuntime>),
 }
 
-/// Isolated challenge/cursor state within one shared financial runtime.
+/// What the mailbox needs to know about its chain and its own limits per request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailboxConfig {
+    /// EVM chain id every payment must be signed for.
+    pub expected_chain_id: u64,
+    /// Longest one call to the node may take.
+    pub rpc_timeout: Duration,
+    /// Most private mailbox reads served at once; more are refused, not queued.
+    pub private_read_concurrency: usize,
+}
+
+impl Default for MailboxConfig {
+    fn default() -> Self {
+        Self {
+            expected_chain_id: 41_454,
+            rpc_timeout: Duration::from_secs(10),
+            private_read_concurrency: 256,
+        }
+    }
+}
+
+/// The relay's secret for signing what it hands to clients and later takes back: login
+/// challenges, page cursors and RPC capabilities. Kept in a file beside the database so a
+/// restart does not invalidate them. It is not a wallet key and guards no funds: losing it
+/// only makes clients log in again.
+#[derive(Clone)]
+pub struct SessionSecret([u8; 32]);
+
+impl fmt::Debug for SessionSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SessionSecret(<redacted>)")
+    }
+}
+
+impl SessionSecret {
+    /// A secret that lasts as long as this process.
+    pub fn random() -> Self {
+        let mut secret = [0; 32];
+        rand::thread_rng().fill_bytes(&mut secret);
+        Self(secret)
+    }
+
+    /// Read the secret from `path`, creating the file (owner-only) on first use.
+    pub fn load_or_create(path: &std::path::Path) -> std::io::Result<Self> {
+        match std::fs::read(path) {
+            Ok(bytes) => bytes.as_slice().try_into().map(Self).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is not a 32-byte session secret; delete it to make a new one",
+                        path.display()
+                    ),
+                )
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                use std::io::Write;
+                let secret = Self::random();
+                let mut options = std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                #[cfg(unix)]
+                std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                let mut file = options.open(path)?;
+                file.write_all(&secret.0)?;
+                file.sync_all()?;
+                Ok(secret)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The `(epoch, key)` pair for one purpose. Different purposes never share a key.
+    pub(crate) fn derive(&self, purpose: &str) -> ([u8; 32], [u8; 32]) {
+        let part = |label: &[u8]| -> [u8; 32] {
+            let mut mac = HmacSha256::new_from_slice(&self.0).expect("HMAC accepts 32-byte key");
+            mac.update(b"frank:relay-session:v1\0");
+            mac.update(label);
+            mac.update(b"\0");
+            mac.update(purpose.as_bytes());
+            mac.finalize().into_bytes().into()
+        };
+        (part(b"epoch"), part(b"key"))
+    }
+}
+
+/// Outcome of consuming a recipient-authenticated mailbox challenge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MailboxNamespace {
-    Legacy,
-    Canonical,
+pub(crate) enum ChallengeConsumption {
+    /// The nonce was unused and is now durably consumed.
+    Consumed,
+    /// The challenge is expired or its nonce was already consumed (an authentication failure).
+    Rejected,
+    /// The recipient already has the maximum number of live consumed challenges. This is a
+    /// retryable resource condition, not an authentication failure: capacity returns as the
+    /// recipient's earlier challenges expire.
+    AtCapacity,
 }
 
 /// Private resource selected by an authenticated mailbox request.
@@ -45,10 +133,6 @@ pub(crate) enum MailboxNamespace {
 pub(crate) enum MailboxResource {
     /// Delivered recipient inbox ordered by `(timestamp, payload_hash)`.
     Inbox,
-    /// Incomplete confirmed-prefix recovery ordered by `payload_hash`.
-    Recovery,
-    /// Recipient acknowledgement of one exact terminal recovery obligation.
-    RecoveryAck,
     /// Both-direction canonical mailbox (sent and received) ordered by
     /// `(timestamp, payload_hash)`.
     Mailbox,
@@ -60,8 +144,6 @@ impl MailboxResource {
     fn tag(self) -> u8 {
         match self {
             Self::Inbox => 1,
-            Self::Recovery => 2,
-            Self::RecoveryAck => 3,
             Self::Mailbox => 4,
             Self::MailboxStream => 5,
         }
@@ -78,11 +160,6 @@ pub(crate) enum MailboxCursor {
         /// Tie-breaker within one timestamp.
         payload_hash: [u8; 32],
     },
-    /// Recipient recovery-index ordering key.
-    Recovery {
-        /// Exact outbox payload hash.
-        payload_hash: [u8; 32],
-    },
     /// Composite both-direction mailbox ordering key. A payload hash appears at most once per
     /// mailbox address, so `(timestamp, payload_hash)` is a unique position across directions.
     Mailbox {
@@ -97,7 +174,6 @@ impl MailboxCursor {
     pub(crate) fn resource(self) -> MailboxResource {
         match self {
             Self::Inbox { .. } => MailboxResource::Inbox,
-            Self::Recovery { .. } => MailboxResource::Recovery,
             Self::Mailbox { .. } => MailboxResource::Mailbox,
         }
     }
@@ -115,7 +191,6 @@ impl MailboxCursor {
                 bytes.extend_from_slice(&timestamp.to_be_bytes());
                 bytes.extend_from_slice(&payload_hash);
             }
-            Self::Recovery { payload_hash } => bytes.extend_from_slice(&payload_hash),
         }
     }
 }
@@ -136,18 +211,12 @@ pub(crate) struct MailboxRequestBinding {
     pub(crate) cursor: Option<MailboxCursorBinding>,
     pub(crate) limit: usize,
     pub(crate) max_bytes: usize,
-    /// Exact terminal recovery payload being acknowledged, absent on read requests.
-    pub(crate) recovery_payload_hash: Option<[u8; 32]>,
-    /// Exact durable obligation generation being acknowledged, absent on read requests.
-    pub(crate) recovery_obligation_id: Option<[u8; 32]>,
 }
 
 impl MailboxRequestBinding {
     pub(crate) fn append_canonical(&self, bytes: &mut Vec<u8>) {
         let (method, path): (&[u8], &[u8]) = match self.resource {
             MailboxResource::Inbox => (b"GET", b"inbox/"),
-            MailboxResource::Recovery => (b"GET", b"recovery/"),
-            MailboxResource::RecoveryAck => (b"POST", b"recovery-ack/"),
             MailboxResource::Mailbox => (b"GET", b"mailbox/"),
             MailboxResource::MailboxStream => (b"GET", b"mailbox-ws/"),
         };
@@ -168,38 +237,24 @@ impl MailboxRequestBinding {
         }
         bytes.extend_from_slice(&(self.limit as u64).to_be_bytes());
         bytes.extend_from_slice(&(self.max_bytes as u64).to_be_bytes());
-        if self.resource == MailboxResource::RecoveryAck {
-            bytes.extend_from_slice(
-                &self
-                    .recovery_payload_hash
-                    .expect("recovery acknowledgement binding requires a payload hash"),
-            );
-            bytes.extend_from_slice(
-                &self
-                    .recovery_obligation_id
-                    .expect("recovery acknowledgement binding requires an obligation ID"),
-            );
-        }
     }
 }
 
-/// Immutable runtime facts shared by admission, reads, and reconciliation.
+/// Immutable runtime facts shared by message admission and mailbox reads.
 #[derive(Debug)]
 pub struct EnabledMonadMailboxRuntime {
     transport: HttpTransport,
-    reconcile: Arc<MonadOutboxReconcileConfig>,
-    outbox_permits: MonadOutboxPermitPool,
+    config: MailboxConfig,
     private_read_permits: Arc<Semaphore>,
     min_value_wei: u128,
     network_tag: Vec<u8>,
     auth: MailboxAuthState,
-    canonical_auth: MailboxAuthState,
 }
 
 /// Public facts a recipient signs to authorize one private request.
 #[derive(Debug, Clone, Copy)]
 pub struct MailboxChallenge {
-    /// Runtime epoch; a restart invalidates every outstanding challenge and cursor.
+    /// Identifies the relay's session secret; a challenge made under another is refused.
     pub epoch: [u8; 32],
     /// Cryptographically random one-time value.
     pub nonce: [u8; 32],
@@ -224,11 +279,8 @@ impl fmt::Debug for MailboxAuthState {
 }
 
 impl MailboxAuthState {
-    fn new() -> Self {
-        let mut epoch = [0; 32];
-        let mut secret = [0; 32];
-        rand::thread_rng().fill_bytes(&mut epoch);
-        rand::thread_rng().fill_bytes(&mut secret);
+    fn new(session: &SessionSecret) -> Self {
+        let (epoch, secret) = session.derive("mailbox");
         Self { epoch, secret }
     }
 
@@ -303,8 +355,7 @@ impl MailboxAuthState {
     ) -> Option<MailboxCursor> {
         let position_len = match resource {
             MailboxResource::Inbox | MailboxResource::Mailbox => 8 + 32,
-            MailboxResource::Recovery => 32,
-            MailboxResource::RecoveryAck | MailboxResource::MailboxStream => return None,
+            MailboxResource::MailboxStream => return None,
         };
         let unsigned_len = 2 + 20 + position_len;
         let decoded_len = unsigned_len + 32;
@@ -336,8 +387,7 @@ impl MailboxAuthState {
                 timestamp: i64::from_be_bytes(bytes[22..30].try_into().ok()?),
                 payload_hash,
             },
-            MailboxResource::Recovery => MailboxCursor::Recovery { payload_hash },
-            MailboxResource::RecoveryAck | MailboxResource::MailboxStream => return None,
+            MailboxResource::MailboxStream => return None,
         })
     }
 }
@@ -346,46 +396,18 @@ impl MonadMailboxRuntime {
     /// Construct one enabled runtime after configuration validation.
     pub fn enabled(
         transport: HttpTransport,
-        reconcile: Arc<MonadOutboxReconcileConfig>,
+        config: MailboxConfig,
         min_value_wei: u128,
         network_tag: Vec<u8>,
+        session: &SessionSecret,
     ) -> Self {
-        let max_concurrency = reconcile.max_concurrency.max(1);
-        let read_concurrency = reconcile.private_read_concurrency.max(1);
         Self::Enabled(Arc::new(EnabledMonadMailboxRuntime {
             transport,
-            reconcile,
-            outbox_permits: MonadOutboxPermitPool::new(max_concurrency),
-            private_read_permits: Arc::new(Semaphore::new(read_concurrency)),
+            private_read_permits: Arc::new(Semaphore::new(config.private_read_concurrency.max(1))),
+            config,
             min_value_wei,
             network_tag,
-            auth: MailboxAuthState::new(),
-            canonical_auth: MailboxAuthState::new(),
-        }))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn enabled_with_auth_secret_for_test(
-        transport: HttpTransport,
-        reconcile: Arc<MonadOutboxReconcileConfig>,
-        min_value_wei: u128,
-        network_tag: Vec<u8>,
-        secret: [u8; 32],
-    ) -> Self {
-        let max_concurrency = reconcile.max_concurrency.max(1);
-        let read_concurrency = reconcile.private_read_concurrency.max(1);
-        Self::Enabled(Arc::new(EnabledMonadMailboxRuntime {
-            transport,
-            reconcile,
-            outbox_permits: MonadOutboxPermitPool::new(max_concurrency),
-            private_read_permits: Arc::new(Semaphore::new(read_concurrency)),
-            min_value_wei,
-            network_tag,
-            auth: MailboxAuthState {
-                epoch: [0x51; 32],
-                secret,
-            },
-            canonical_auth: MailboxAuthState::new(),
+            auth: MailboxAuthState::new(session),
         }))
     }
 
@@ -399,22 +421,17 @@ impl MonadMailboxRuntime {
 }
 
 impl EnabledMonadMailboxRuntime {
-    /// Shared RPC transport used by the worker and request admission.
+    /// The node the relay hands payments to.
     pub fn transport(&self) -> &HttpTransport {
         &self.transport
     }
 
-    /// Shared durable reconciliation policy used by DB open, worker, and admission.
-    pub fn reconcile(&self) -> &Arc<MonadOutboxReconcileConfig> {
-        &self.reconcile
+    /// The mailbox's chain and per-request limits.
+    pub fn config(&self) -> &MailboxConfig {
+        &self.config
     }
 
-    /// Process-owned permits shared by HTTP and background reconciliation.
-    pub fn outbox_permits(&self) -> &MonadOutboxPermitPool {
-        &self.outbox_permits
-    }
-
-    /// Frozen aggregate minimum for newly admitted requests.
+    /// Minimum total a paid message must carry.
     pub fn min_value_wei(&self) -> u128 {
         self.min_value_wei
     }
@@ -424,53 +441,9 @@ impl EnabledMonadMailboxRuntime {
         &self.network_tag
     }
 
-    /// Required EVM chain identity shared by admission and recovery.
+    /// EVM chain id every payment must be signed for.
     pub fn expected_chain_id(&self) -> u64 {
-        self.reconcile.expected_chain_id
-    }
-
-    fn auth_namespace(&self, namespace: MailboxNamespace) -> &MailboxAuthState {
-        match namespace {
-            MailboxNamespace::Legacy => &self.auth,
-            MailboxNamespace::Canonical => &self.canonical_auth,
-        }
-    }
-    pub(crate) fn issue_namespace_challenge(
-        &self,
-        namespace: MailboxNamespace,
-        binding: &MailboxRequestBinding,
-        now_ms: i64,
-    ) -> MailboxChallenge {
-        self.auth_namespace(namespace).issue(binding, now_ms)
-    }
-    pub(crate) fn verify_namespace_challenge(
-        &self,
-        namespace: MailboxNamespace,
-        binding: &MailboxRequestBinding,
-        challenge: MailboxChallenge,
-        now_ms: i64,
-    ) -> bool {
-        self.auth_namespace(namespace)
-            .verify(binding, challenge, now_ms)
-    }
-    pub(crate) fn encode_namespace_cursor(
-        &self,
-        namespace: MailboxNamespace,
-        recipient: Address,
-        cursor: MailboxCursor,
-    ) -> String {
-        self.auth_namespace(namespace)
-            .encode_cursor(recipient, cursor)
-    }
-    pub(crate) fn decode_namespace_cursor(
-        &self,
-        namespace: MailboxNamespace,
-        recipient: Address,
-        resource: MailboxResource,
-        encoded: &str,
-    ) -> Option<MailboxCursor> {
-        self.auth_namespace(namespace)
-            .decode_cursor(recipient, resource, encoded)
+        self.config.expected_chain_id
     }
 
     /// Issue a stateless short-lived challenge bound to the complete future request.
@@ -492,12 +465,12 @@ impl EnabledMonadMailboxRuntime {
         self.auth.verify(binding, challenge, now_ms)
     }
 
-    /// Encode a process-authenticated strict-forward private cursor.
+    /// Encode a relay-authenticated strict-forward private cursor.
     pub(crate) fn encode_cursor(&self, recipient: Address, cursor: MailboxCursor) -> String {
         self.auth.encode_cursor(recipient, cursor)
     }
 
-    /// Decode a cursor only for its bound runtime, resource, and recipient.
+    /// Decode a cursor only for its bound relay, resource, and recipient.
     pub(crate) fn decode_cursor(
         &self,
         recipient: Address,
@@ -515,195 +488,215 @@ impl EnabledMonadMailboxRuntime {
     }
 }
 
+pub(crate) const MAILBOX_AUTH_DOMAIN: &str = "frank:mailbox-http-auth:v2";
+const MAILBOX_EPOCH_HEADER: &str = "x-frank-mailbox-epoch";
+const MAILBOX_NONCE_HEADER: &str = "x-frank-mailbox-nonce";
+const MAILBOX_EXPIRY_HEADER: &str = "x-frank-mailbox-expires-at-ms";
+const MAILBOX_SIGNATURE_HEADER: &str = "x-frank-mailbox-signature";
+const MAILBOX_TOKEN_HEADER: &str = "x-frank-mailbox-token";
+const MIN_ECDSA_DER_SIGNATURE_BYTES: usize = 8;
+const MAX_ECDSA_DER_SIGNATURE_BYTES: usize = 72;
+
+/// The bytes a mailbox owner signs to prove a private request is theirs.
+pub(crate) fn mailbox_auth_preimage(
+    challenge: MailboxChallenge,
+    binding: &MailboxRequestBinding,
+    network_tag: &[u8],
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(224 + network_tag.len());
+    bytes.extend_from_slice(MAILBOX_AUTH_DOMAIN.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&challenge.epoch);
+    bytes.extend_from_slice(&challenge.nonce);
+    bytes.extend_from_slice(&challenge.expires_at_ms.to_be_bytes());
+    bytes.extend_from_slice(&challenge.token);
+    binding.append_canonical(&mut bytes);
+    bytes.extend_from_slice(&(network_tag.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(network_tag);
+    bytes
+}
+
+/// The challenge and signature a private request carries in its headers. `None` unless every
+/// header is well formed and the challenge is one this relay issued for exactly this request
+/// and has not expired; checked before any key lookup or storage read.
+pub(crate) fn parse_mailbox_authentication(
+    headers: &HeaderMap,
+    runtime: &EnabledMonadMailboxRuntime,
+    binding: &MailboxRequestBinding,
+    now_ms: i64,
+) -> Option<(MailboxChallenge, Vec<u8>)> {
+    let hex32 = |name: &'static str| -> Option<[u8; 32]> {
+        let value = headers.get(name)?.to_str().ok()?;
+        let mut decoded = [0u8; 32];
+        (value.len() == 64).then_some(())?;
+        hex::decode_to_slice(value, &mut decoded).ok()?;
+        Some(decoded)
+    };
+    let challenge = MailboxChallenge {
+        epoch: hex32(MAILBOX_EPOCH_HEADER)?,
+        nonce: hex32(MAILBOX_NONCE_HEADER)?,
+        token: hex32(MAILBOX_TOKEN_HEADER)?,
+        expires_at_ms: headers
+            .get(MAILBOX_EXPIRY_HEADER)?
+            .to_str()
+            .ok()?
+            .parse()
+            .ok()?,
+    };
+    let signature = headers.get(MAILBOX_SIGNATURE_HEADER)?.to_str().ok()?;
+    if signature.len() % 2 != 0
+        || signature.len() < MIN_ECDSA_DER_SIGNATURE_BYTES * 2
+        || signature.len() > MAX_ECDSA_DER_SIGNATURE_BYTES * 2
+    {
+        return None;
+    }
+    let signature = hex::decode(signature).ok()?;
+    runtime
+        .verify_challenge(binding, challenge, now_ms)
+        .then_some((challenge, signature))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn runtime() -> MonadMailboxRuntime {
+    fn runtime_with(session: &SessionSecret, config: MailboxConfig) -> MonadMailboxRuntime {
         MonadMailboxRuntime::enabled(
             HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
-            Arc::new(MonadOutboxReconcileConfig::default()),
+            config,
             1,
             b"MONT".to_vec(),
+            session,
         )
     }
-
     fn binding(recipient: Address) -> MailboxRequestBinding {
         MailboxRequestBinding {
             resource: MailboxResource::Inbox,
             recipient,
-            since: 7,
+            since: 0,
             cursor: None,
-            limit: 10,
+            limit: 50,
             max_bytes: 1024,
-            recovery_payload_hash: None,
-            recovery_obligation_id: None,
         }
     }
 
     #[test]
-    fn stateless_challenge_is_request_bound_single_use_and_expiring() {
-        let runtime = runtime();
-        let enabled = runtime.as_enabled().unwrap();
-        let recipient = Address([1; 20]);
-        let request = binding(recipient);
-        let challenge = enabled.issue_challenge(&request, 1_000);
-        assert!(enabled.verify_challenge(&request, challenge, 1_001));
-        assert!(!enabled.verify_challenge(&binding(Address([2; 20])), challenge, 1_001));
-
-        let expired = enabled.issue_challenge(&request, 2_000);
-        assert!(!enabled.verify_challenge(&request, expired, expired.expires_at_ms + 1));
+    fn a_challenge_is_bound_to_its_request_and_expires() {
+        let runtime = runtime_with(&SessionSecret::random(), MailboxConfig::default());
+        let runtime = runtime.as_enabled().unwrap();
+        let request = binding(Address([1; 20]));
+        let challenge = runtime.issue_challenge(&request, 1_000);
+        assert!(runtime.verify_challenge(&request, challenge, 1_000));
+        assert!(runtime.verify_challenge(&request, challenge, 1_000 + CHALLENGE_TTL_MS));
+        assert!(!runtime.verify_challenge(&request, challenge, 1_001 + CHALLENGE_TTL_MS));
+        assert!(!runtime.verify_challenge(&binding(Address([2; 20])), challenge, 1_000));
+        let mut other = request.clone();
+        other.limit = 51;
+        assert!(!runtime.verify_challenge(&other, challenge, 1_000));
     }
 
     #[test]
-    fn anonymous_challenge_flood_reserves_no_replay_capacity() {
-        let runtime = runtime();
-        let enabled = runtime.as_enabled().unwrap();
+    fn challenges_and_cursors_survive_a_restart_with_the_same_session_secret() {
+        let session = SessionSecret::random();
+        let before = runtime_with(&session, MailboxConfig::default());
+        let after = runtime_with(&session, MailboxConfig::default());
+        let stranger = runtime_with(&SessionSecret::random(), MailboxConfig::default());
+        let (before, after, stranger) = (
+            before.as_enabled().unwrap(),
+            after.as_enabled().unwrap(),
+            stranger.as_enabled().unwrap(),
+        );
         let recipient = Address([3; 20]);
         let request = binding(recipient);
-        for _ in 0..4096 {
-            let challenge = enabled.issue_challenge(&request, 0);
-            assert!(enabled.verify_challenge(&request, challenge, 0));
-        }
-    }
-
-    #[test]
-    fn debug_redacts_mailbox_hmac_secret() {
-        let secret = [0xa5; 32];
-        let runtime = MonadMailboxRuntime::enabled_with_auth_secret_for_test(
-            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
-            Arc::new(MonadOutboxReconcileConfig::default()),
-            1,
-            b"MONT".to_vec(),
-            secret,
-        );
-        let formatted = format!("{runtime:?}");
-        assert!(formatted.contains("<redacted>"));
-        assert!(!formatted.contains(&format!("{secret:?}")));
-        assert!(!formatted.contains(&hex::encode(secret)));
-    }
-
-    #[test]
-    fn private_reads_share_the_configured_nonqueueing_permit_cap() {
-        let mut config = MonadOutboxReconcileConfig::default();
-        config.max_concurrency = 2;
-        config.private_read_concurrency = 2;
-        let runtime = MonadMailboxRuntime::enabled(
-            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
-            Arc::new(config),
-            1,
-            b"MONT".to_vec(),
-        );
-        let enabled = runtime.as_enabled().unwrap();
-        let first = enabled.try_acquire_private_read().unwrap();
-        let second = enabled.try_acquire_private_read().unwrap();
-        assert!(enabled.try_acquire_private_read().is_none());
-        drop(first);
-        assert!(enabled.try_acquire_private_read().is_some());
-        drop(second);
-    }
-
-    #[test]
-    fn runtime_preserves_shared_config_identity_and_cursor_binding() {
-        let config = Arc::new(MonadOutboxReconcileConfig::default());
-        let runtime = MonadMailboxRuntime::enabled(
-            HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
-            Arc::clone(&config),
-            1,
-            vec![],
-        );
-        let enabled = runtime.as_enabled().unwrap();
-        assert!(Arc::ptr_eq(enabled.reconcile(), &config));
-        let cursor = MailboxCursor::Inbox {
-            timestamp: 9,
-            payload_hash: [7; 32],
+        let challenge = before.issue_challenge(&request, 1_000);
+        assert!(after.verify_challenge(&request, challenge, 1_000));
+        assert!(!stranger.verify_challenge(&request, challenge, 1_000));
+        let position = MailboxCursor::Inbox {
+            timestamp: 7,
+            payload_hash: [9; 32],
         };
-        let encoded = enabled.encode_cursor(Address([4; 20]), cursor);
+        let cursor = before.encode_cursor(recipient, position);
         assert_eq!(
-            enabled.decode_cursor(Address([4; 20]), MailboxResource::Inbox, &encoded),
-            Some(cursor)
+            after.decode_cursor(recipient, MailboxResource::Inbox, &cursor),
+            Some(position)
         );
         assert_eq!(
-            enabled.decode_cursor(Address([5; 20]), MailboxResource::Inbox, &encoded),
-            None
-        );
-        assert_eq!(
-            enabled.decode_cursor(Address([4; 20]), MailboxResource::Recovery, &encoded),
-            None
-        );
-        assert_eq!(
-            enabled.decode_cursor(Address([4; 20]), MailboxResource::Inbox, "not-hex"),
-            None
-        );
-        assert_eq!(
-            enabled.decode_cursor(Address([4; 20]), MailboxResource::Inbox, &"aa".repeat(4096),),
+            stranger.decode_cursor(recipient, MailboxResource::Inbox, &cursor),
             None
         );
     }
+
     #[test]
-    fn cursor_mac_rejects_tampered_position_forged_mac_and_other_runtime() {
-        let runtime = runtime();
-        let enabled = runtime.as_enabled().unwrap();
+    fn a_cursor_is_good_only_for_its_recipient_and_resource_and_cannot_be_altered() {
+        let runtime = runtime_with(&SessionSecret::random(), MailboxConfig::default());
+        let runtime = runtime.as_enabled().unwrap();
         let recipient = Address([4; 20]);
-        for (resource, cursor) in [
-            (
-                MailboxResource::Inbox,
-                MailboxCursor::Inbox {
-                    timestamp: 9,
-                    payload_hash: [7; 32],
-                },
-            ),
-            (
-                MailboxResource::Recovery,
-                MailboxCursor::Recovery {
-                    payload_hash: [8; 32],
-                },
-            ),
-            (
+        let position = MailboxCursor::Mailbox {
+            timestamp: 11,
+            payload_hash: [5; 32],
+        };
+        let cursor = runtime.encode_cursor(recipient, position);
+        let decode = |who, what, text: &str| runtime.decode_cursor(who, what, text);
+        assert_eq!(
+            decode(recipient, MailboxResource::Mailbox, &cursor),
+            Some(position)
+        );
+        assert_eq!(
+            decode(Address([6; 20]), MailboxResource::Mailbox, &cursor),
+            None
+        );
+        assert_eq!(decode(recipient, MailboxResource::Inbox, &cursor), None);
+        let mut altered = cursor.clone().into_bytes();
+        altered[50] = if altered[50] == b'0' { b'1' } else { b'0' };
+        assert_eq!(
+            decode(
+                recipient,
                 MailboxResource::Mailbox,
-                MailboxCursor::Mailbox {
-                    timestamp: 11,
-                    payload_hash: [9; 32],
-                },
+                std::str::from_utf8(&altered).unwrap()
             ),
-        ] {
-            let encoded = enabled.encode_cursor(recipient, cursor);
+            None
+        );
+        assert_eq!(decode(recipient, MailboxResource::Mailbox, "00"), None);
+    }
+
+    #[test]
+    fn private_reads_are_refused_past_the_configured_number_at_once() {
+        let runtime = runtime_with(
+            &SessionSecret::random(),
+            MailboxConfig {
+                private_read_concurrency: 2,
+                ..MailboxConfig::default()
+            },
+        );
+        let runtime = runtime.as_enabled().unwrap();
+        let first = runtime.try_acquire_private_read().unwrap();
+        let _second = runtime.try_acquire_private_read().unwrap();
+        assert!(runtime.try_acquire_private_read().is_none());
+        drop(first);
+        assert!(runtime.try_acquire_private_read().is_some());
+    }
+
+    #[test]
+    fn the_session_secret_is_written_once_read_back_and_never_printed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("relay.session-secret");
+        let first = SessionSecret::load_or_create(&path).unwrap();
+        let again = SessionSecret::load_or_create(&path).unwrap();
+        assert_eq!(first.derive("mailbox"), again.derive("mailbox"));
+        assert_ne!(first.derive("mailbox"), first.derive("evm-rpc"));
+        assert_eq!(std::fs::read(&path).unwrap().len(), 32);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
             assert_eq!(
-                enabled.decode_cursor(recipient, resource, &encoded),
-                Some(cursor)
-            );
-            let bytes = hex::decode(&encoded).unwrap();
-            // Every single-byte change is rejected: header, recipient, position, and MAC alike.
-            for index in 0..bytes.len() {
-                let mut forged = bytes.clone();
-                forged[index] ^= 0x01;
-                assert_eq!(
-                    enabled.decode_cursor(recipient, resource, &hex::encode(forged)),
-                    None,
-                    "{resource:?}: byte {index} of the cursor is not covered by its MAC"
-                );
-            }
-            // A structurally perfect cursor whose MAC was computed with another key.
-            let other_runtime = MonadMailboxRuntime::enabled_with_auth_secret_for_test(
-                HttpTransport::new("http://127.0.0.1:1".parse().unwrap()),
-                Arc::new(MonadOutboxReconcileConfig::default()),
-                1,
-                b"MONT".to_vec(),
-                [0x99; 32],
-            );
-            let foreign = other_runtime
-                .as_enabled()
-                .unwrap()
-                .encode_cursor(recipient, cursor);
-            assert_eq!(enabled.decode_cursor(recipient, resource, &foreign), None);
-            // A zeroed MAC over an otherwise valid position.
-            let mut unsigned = bytes.clone();
-            let mac_start = unsigned.len() - 32;
-            unsigned[mac_start..].fill(0);
-            assert_eq!(
-                enabled.decode_cursor(recipient, resource, &hex::encode(unsigned)),
-                None
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
             );
         }
+        assert!(!format!("{first:?}").contains(&hex::encode(first.0)));
+        let runtime = runtime_with(&first, MailboxConfig::default());
+        assert!(!format!("{runtime:?}").contains(&hex::encode(first.derive("mailbox").1)));
+        std::fs::write(&path, b"short").unwrap();
+        assert!(SessionSecret::load_or_create(&path).is_err());
     }
 }

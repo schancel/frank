@@ -8,7 +8,6 @@
 //! The chain is an owned in-process JSON-RPC fake: no funded-chain finality is claimed.
 use super::*;
 use crate::monad_evm_tx::DecodedSignedTransaction;
-use crate::store::monad_dm_cbor::Phase;
 use std::sync::Mutex;
 
 const JOINED_CLOCK_SECONDS: &str = "1700000100";
@@ -287,7 +286,7 @@ impl Joined {
             },
         )
         .expect("wallet delivery/context must pass the native public stamp verifier");
-        crate::monad_outbox::financial::validate_canonical_payment_set(
+        crate::monad_dm_payment::validate_canonical_payment_set(
             request.clone(),
             &recipient,
             None,
@@ -347,9 +346,7 @@ async fn joined_real_wallet_request_is_admitted_delivered_and_opened_by_recipien
         assert_eq!(delivered["workflowAcknowledged"], true);
         assert_eq!(statuses(&delivered["pool"]), ["spent", "spent"]);
         let claim = joined.claim(&freeze).expect("the relay stored the message");
-        let Phase::Delivered(committed) = claim.phase else {
-            panic!("a stored message is delivered, was {:?}", claim.phase);
-        };
+        let committed = claim.delivered_at;
         assert_eq!(delivered["accepted"]["mailbox_committed_at_ms"], committed);
         assert!(claim.request.exact_equal(&request));
         let mut sent: Vec<_> = joined
@@ -428,7 +425,7 @@ async fn joined_real_wallet_message_is_delivered_and_opened_although_the_node_re
         assert_eq!(joined.chain.count("eth_sendRawTransaction"), 2);
         assert_eq!(joined.chain.broadcasts().len(), 1);
         let claim = joined.claim(&freeze).expect("the relay stored the message");
-        assert!(matches!(claim.phase, Phase::Delivered(_)));
+        assert!(claim.delivered_at > 0);
 
         let read = wallet_phase(&joined.work, "recipient-read").await;
         let inbox = read["inbox"].as_array().unwrap();

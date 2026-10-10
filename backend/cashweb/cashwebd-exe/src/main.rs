@@ -12,10 +12,7 @@ use cashweb_registry::{
     },
     lotus_adapter::LotusAdapter,
     monad_http::HttpTransport,
-    monad_mailbox::MonadMailboxRuntime,
-    monad_outbox::{
-        start_monad_outbox_worker_shared, MonadOutboxReconcileConfig, MonadOutboxWorker,
-    },
+    monad_mailbox::{MailboxConfig, MonadMailboxRuntime, SessionSecret},
     network_tag::{is_valid_network_tag, monad_network},
     p2p::{
         peer::Peer,
@@ -215,16 +212,6 @@ async fn main() -> Result<()> {
     if check_only {
         return Ok(());
     }
-    let mut outbox_config = MonadOutboxReconcileConfig::default();
-    if let MonadMailboxMode::Enabled {
-        expected_chain_id, ..
-    } = &mailbox_mode
-    {
-        outbox_config.expected_chain_id = *expected_chain_id;
-    }
-    let outbox_config = Arc::new(outbox_config);
-    outbox_config.validate()?;
-
     if let Some(parent) = conf
         .registry
         .db_path
@@ -238,7 +225,12 @@ async fn main() -> Result<()> {
             )
         })?;
     }
-    let db = Db::open_with_monad_outbox_limits(&conf.registry.db_path, &outbox_config.limits)?;
+    let db = Db::open(&conf.registry.db_path)?;
+    // Challenges, cursors and RPC capabilities are signed with this, so they survive a restart.
+    // It lives beside the database, not in it, and is not a wallet key.
+    let session_path = conf.registry.db_path.with_extension("session-secret");
+    let session = SessionSecret::load_or_create(&session_path)
+        .wrap_err_with(|| format!("Reading session secret {}", session_path.display()))?;
     let chain_adapter = match conf.bitcoin_rpc.clone() {
         Some(bitcoin_rpc) => {
             let bitcoind = BitcoindRpcClient::new(bitcoin_rpc);
@@ -280,41 +272,30 @@ async fn main() -> Result<()> {
     let evm_rpc_conf = conf.registry.evm_rpc.clone();
     let bitcoin_proxy_conf = conf.registry.bitcoin_proxy.clone();
     let solana_proxy_conf = conf.registry.solana_proxy.clone();
-    let (monad_mailbox, outbox_worker): (MonadMailboxRuntime, Option<MonadOutboxWorker>) =
-        match mailbox_mode {
-            MonadMailboxMode::Disabled => {
-                tracing::event!(
+    let monad_mailbox = match mailbox_mode {
+        MonadMailboxMode::Disabled => {
+            tracing::event!(
                 tracing::Level::WARN,
-                "Monad mailbox is explicitly disabled; omit admission and retain durable rows as readable"
+                "Message routes are disabled by configuration: this relay stores and serves no \
+                 direct messages"
             );
-                (MonadMailboxRuntime::Disabled, None)
-            }
-            MonadMailboxMode::Enabled {
-                rpc_url,
-                min_value_wei,
-                expected_chain_id: _,
-            } => {
-                let transport = HttpTransport::new(rpc_url);
-                let runtime = MonadMailboxRuntime::enabled(
-                    transport.clone(),
-                    Arc::clone(&outbox_config),
-                    min_value_wei,
-                    cashweb_registry::network_tag::frank_network_tag().to_vec(),
-                );
-                let worker = start_monad_outbox_worker_shared(
-                    transport,
-                    Arc::clone(&registry),
-                    Arc::clone(&outbox_config),
-                    runtime
-                        .as_enabled()
-                        .expect("runtime was constructed enabled")
-                        .outbox_permits()
-                        .clone(),
-                )
-                .await?;
-                (runtime, Some(worker))
-            }
-        };
+            MonadMailboxRuntime::Disabled
+        }
+        MonadMailboxMode::Enabled {
+            rpc_url,
+            min_value_wei,
+            expected_chain_id,
+        } => MonadMailboxRuntime::enabled(
+            HttpTransport::new(rpc_url),
+            MailboxConfig {
+                expected_chain_id,
+                ..MailboxConfig::default()
+            },
+            min_value_wei,
+            cashweb_registry::network_tag::frank_network_tag().to_vec(),
+            &session,
+        ),
+    };
     let our_peers = conf
         .registry
         .peers
@@ -379,24 +360,27 @@ async fn main() -> Result<()> {
         build_curated_defaults(&conf.registry.curated_defaults)
             .wrap_err("Invalid registry.curated_defaults entry in configuration file")?,
     );
-    let evm_rpc = EvmRpcRuntime::from_conf_with_env(
+    let evm_rpc = EvmRpcRuntime::from_conf_with_session(
         &evm_rpc_conf,
         cashweb_registry::network_tag::frank_network_tag().to_vec(),
         |name| std::env::var(name).ok(),
+        &session,
     )
     .await
     .wrap_err("Starting customer-authenticated EVM RPC proxy")?;
-    let bitcoin_proxy = BitcoinProxyRuntime::from_conf_with_env(
+    let bitcoin_proxy = BitcoinProxyRuntime::from_conf_with_session(
         &bitcoin_proxy_conf,
         cashweb_registry::network_tag::frank_network_tag().to_vec(),
         |name| std::env::var(name).ok(),
+        &session,
     )
     .await
     .wrap_err("Starting Bitcoin-family RPC/indexer proxy")?;
-    let solana_proxy = SolanaProxyRuntime::from_conf_with_env(
+    let solana_proxy = SolanaProxyRuntime::from_conf_with_session(
         &solana_proxy_conf,
         cashweb_registry::network_tag::frank_network_tag().to_vec(),
         |name| std::env::var(name).ok(),
+        &session,
     )
     .await
     .wrap_err("Starting Solana-family JSON-RPC proxy")?;
@@ -474,9 +458,6 @@ async fn main() -> Result<()> {
             tracing::warn!("Directory owner still draining");
             runtime.wait_stopped().await;
         }
-    }
-    if let Some(worker) = outbox_worker {
-        worker.shutdown().await;
     }
     if let Some(result) = server_result {
         result?;

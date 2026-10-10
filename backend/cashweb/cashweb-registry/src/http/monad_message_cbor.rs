@@ -77,7 +77,7 @@ pub(crate) async fn handle_put(
         }
         stored
     } else {
-        if request.transaction_count() > runtime.reconcile().limits.max_members {
+        if request.transaction_count() > crate::monad_dm_payment::MAX_STAMP_PAYMENTS {
             return Err(CanonicalError::Invalid);
         }
         let principals = request_principals(&request, descriptor.cbor_identifier)?;
@@ -109,7 +109,7 @@ pub(crate) async fn handle_put(
         };
         // Everything that can refuse the message is decided from its bytes, here and in the
         // store's own checks, before anything is stored or broadcast.
-        let input = crate::monad_outbox::financial::validate_canonical_payment_set(
+        let input = crate::monad_dm_payment::validate_canonical_payment_set(
             request,
             &recipient_current,
             historical.as_ref(),
@@ -118,14 +118,6 @@ pub(crate) async fn handle_put(
             runtime.min_value_wei(),
         )?;
         owner.claim(input, now_ms())?
-    };
-    let claim = if matches!(
-        claim.phase,
-        crate::store::monad_dm_cbor::Phase::Delivered(_)
-    ) {
-        claim
-    } else {
-        owner.finalize(&claim.policy.payload_hash, now_ms())?
     };
     // The message is in the recipient's inbox from here on. Nothing below can undo that.
     if let Ok(recipient) = claim.policy.recipient() {
@@ -171,44 +163,40 @@ async fn broadcast_payments(
     claim: &crate::store::monad_dm_cbor::Claim,
 ) -> Vec<std::result::Result<&'static str, String>> {
     let client = crate::monad_http::MonadHttpClient::with_transport(runtime.transport().clone());
-    let wait = runtime.reconcile().rpc_timeout.min(BROADCAST_TIMEOUT);
+    let wait = runtime.config().rpc_timeout.min(BROADCAST_TIMEOUT);
     let payload_hash = hex::encode(claim.policy.payload_hash);
-    let sends = claim
-        .request
-        .raw_transactions()
-        .zip(&claim.members)
-        .map(|(raw, member)| {
-            let (client, payload_hash) = (&client, &payload_hash);
-            async move {
-                let result =
-                    match tokio::time::timeout(wait, client.send_raw_transaction(raw)).await {
-                        Ok(Ok(_)) => Ok("accepted"),
-                        Ok(Err(error)) if error.says_tx_already_held() => Ok("already held"),
-                        Ok(Err(error)) if error.definitively_rejected_send() => {
-                            Err(format!("refused by the node: {error}"))
-                        }
-                        Ok(Err(error)) => Err(format!("could not be sent: {error}")),
-                        Err(_) => Err("no answer from the node in time".to_owned()),
-                    };
-                match &result {
-                    Ok(outcome) => tracing::event!(
-                        tracing::Level::DEBUG,
-                        payload_hash = %payload_hash,
-                        tx_hash = %member.tx_hash.to_hex(),
-                        outcome,
-                        "Direct-message payment broadcast"
-                    ),
-                    Err(reason) => tracing::event!(
-                        tracing::Level::WARN,
-                        payload_hash = %payload_hash,
-                        tx_hash = %member.tx_hash.to_hex(),
-                        reason = %reason,
-                        "Direct-message payment not broadcast; the message is delivered"
-                    ),
+    let sends = claim.request.raw_transactions().map(|raw| {
+        let (client, payload_hash) = (&client, &payload_hash);
+        let tx_hash = hex::encode(Keccak256::digest(raw));
+        async move {
+            let result = match tokio::time::timeout(wait, client.send_raw_transaction(raw)).await {
+                Ok(Ok(_)) => Ok("accepted"),
+                Ok(Err(error)) if error.says_tx_already_held() => Ok("already held"),
+                Ok(Err(error)) if error.definitively_rejected_send() => {
+                    Err(format!("refused by the node: {error}"))
                 }
-                result
+                Ok(Err(error)) => Err(format!("could not be sent: {error}")),
+                Err(_) => Err("no answer from the node in time".to_owned()),
+            };
+            match &result {
+                Ok(outcome) => tracing::event!(
+                    tracing::Level::DEBUG,
+                    payload_hash = %payload_hash,
+                    tx_hash = %tx_hash,
+                    outcome,
+                    "Direct-message payment broadcast"
+                ),
+                Err(reason) => tracing::event!(
+                    tracing::Level::WARN,
+                    payload_hash = %payload_hash,
+                    tx_hash = %tx_hash,
+                    reason = %reason,
+                    "Direct-message payment not broadcast; the message is delivered"
+                ),
             }
-        });
+            result
+        }
+    });
     futures::future::join_all(sends).await
 }
 
@@ -388,25 +376,10 @@ fn request_principals(request: &ExactRequest, network: &str) -> Result<Principal
             .map_err(|_| CanonicalError::Invalid)?,
     })
 }
-fn terminal_reason(reason: crate::store::monad_outbox::MonadOutboxTerminal) -> &'static str {
-    use crate::store::monad_outbox::MonadOutboxTerminal::*;
-    match reason {
-        StaleNonce => "stale_nonce",
-        VerificationFailed => "verification_failed",
-        BroadcastRejected => "broadcast_rejected",
-        CorruptReference => "corrupt_reference",
-        InsufficientTotal => "insufficient_total",
-        Expired => "expired",
-        AttemptsExhausted => "attempts_exhausted",
-    }
-}
 fn accepted_response(claim: &crate::store::monad_dm_cbor::Claim) -> Result<Response> {
-    use crate::store::monad_dm_cbor::Phase;
     let identity = claim.echo()?;
-    // A stored message is a delivered message; the handler never answers for anything else.
-    let Phase::Delivered(timestamp) = claim.phase else {
-        return Err(CanonicalError::Unavailable);
-    };
+    let timestamp = claim.delivered_at;
+    // The client reads this as a JSON number, which is exact only up to 2^53 - 1.
     if !(0..=9_007_199_254_740_991).contains(&timestamp) {
         return Err(CanonicalError::Unavailable);
     }
@@ -440,10 +413,10 @@ pub(crate) enum CanonicalError {
     Capacity,
     #[error("mailbox authentication failed")]
     Unauthorized,
-    #[allow(dead_code)]
-    #[error("recovery obligation is active")]
-    ActiveObligation,
-    #[error("recovery endpoint has been retired")]
+    /// The wallet still asks for a login to the recovery pages on every read and takes this
+    /// answer to mean "there are none". Delete with that request
+    /// (`fetchCanonicalRecoveryPage` in packages/cashweb/relay/monad-mailbox-client.ts).
+    #[error("recovery pages do not exist")]
     Retired,
 }
 pub(crate) type Result<T> = std::result::Result<T, CanonicalError>;
@@ -477,7 +450,6 @@ impl IntoResponse for CanonicalError {
             ),
             Self::Capacity => unreachable!(),
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "mailbox_auth_failed"),
-            Self::ActiveObligation => (StatusCode::CONFLICT, "recovery_obligation_is_active"),
             Self::Retired => (StatusCode::GONE, "recovery_endpoint_retired"),
         };
         (status, Json(serde_json::json!({"version":1,"error":error}))).into_response()
@@ -492,7 +464,6 @@ pub(crate) struct ExactRequest {
     delivery: Range<usize>,
     context: Range<usize>,
     transactions: Vec<Range<usize>>,
-    transactions_part: Range<usize>,
     submission_identity: [u8; 32],
     raw_tx_bytes: Vec<Vec<u8>>,
 }
@@ -537,7 +508,6 @@ impl ExactRequest {
                 content_type,
                 delivery: parts[0].clone(),
                 context: parts[1].clone(),
-                transactions_part: parts[2].clone(),
                 transactions,
                 submission_identity,
                 raw_tx_bytes: Vec::new(),
@@ -567,7 +537,6 @@ impl ExactRequest {
                 content_type,
                 delivery: 0..len,
                 context: 0..0,
-                transactions_part: 0..0,
                 transactions: Vec::new(),
                 submission_identity,
                 raw_tx_bytes,
@@ -598,9 +567,6 @@ impl ExactRequest {
                     .map(|range| &self.body[range.clone()]),
             )
         }
-    }
-    pub(crate) fn transactions_part(&self) -> &[u8] {
-        &self.body[self.transactions_part.clone()]
     }
     pub(crate) fn submission_identity(&self) -> [u8; 32] {
         self.submission_identity
@@ -788,9 +754,8 @@ pub(crate) struct PrivateQuery {
     cursor: Option<String>,
     limit: Option<usize>,
     max_bytes: Option<usize>,
-    recovery_payload_hash: Option<String>,
-    recovery_obligation_id: Option<String>,
 }
+#[cfg(test)]
 fn hash_hex(value: &str) -> Result<[u8; 32]> {
     if value.len() != 64
         || !value
@@ -809,47 +774,20 @@ fn private_binding(
     resource: crate::monad_mailbox::MailboxResource,
     query: &PrivateQuery,
 ) -> Result<crate::monad_mailbox::MailboxRequestBinding> {
-    use crate::monad_mailbox::{
-        MailboxCursorBinding, MailboxNamespace, MailboxRequestBinding, MailboxResource,
-    };
+    use crate::monad_mailbox::{MailboxCursorBinding, MailboxRequestBinding, MailboxResource};
+    let stream = resource == MailboxResource::MailboxStream;
     let since = query.since.unwrap_or(0);
-    if !(0..=9_007_199_254_740_991).contains(&since)
-        || (resource != MailboxResource::Inbox
-            && resource != MailboxResource::Mailbox
-            && since != 0)
-    {
+    if !(0..=9_007_199_254_740_991).contains(&since) || (stream && since != 0) {
         return Err(CanonicalError::Invalid);
     }
-    let ack = resource == MailboxResource::RecoveryAck;
-    let limit = query.limit.unwrap_or(match resource {
-        MailboxResource::Inbox | MailboxResource::Mailbox => 50,
-        MailboxResource::Recovery => 20,
-        MailboxResource::RecoveryAck => 1,
-        MailboxResource::MailboxStream => 1,
-    });
-    let max_bytes =
-        query
-            .max_bytes
-            .unwrap_or(if ack || resource == MailboxResource::MailboxStream {
-                0
-            } else {
-                MAX_REQUEST_BYTES
-            });
+    let limit = query.limit.unwrap_or(if stream { 1 } else { 50 });
+    let max_bytes = query
+        .max_bytes
+        .unwrap_or(if stream { 0 } else { MAX_REQUEST_BYTES });
     if limit == 0
         || limit > 100
-        || (ack && (limit != 1 || max_bytes != 0 || query.cursor.is_some()))
-        || (!ack
-            && resource != MailboxResource::MailboxStream
-            && (max_bytes == 0
-                || max_bytes > MAX_REQUEST_BYTES
-                || query.recovery_payload_hash.is_some()
-                || query.recovery_obligation_id.is_some()))
-        || (resource == MailboxResource::MailboxStream
-            && (limit != 1
-                || max_bytes != 0
-                || query.cursor.is_some()
-                || query.recovery_payload_hash.is_some()
-                || query.recovery_obligation_id.is_some()))
+        || (!stream && (max_bytes == 0 || max_bytes > MAX_REQUEST_BYTES))
+        || (stream && (limit != 1 || max_bytes != 0 || query.cursor.is_some()))
     {
         return Err(CanonicalError::Invalid);
     }
@@ -858,7 +796,7 @@ fn private_binding(
         .as_ref()
         .map(|token| {
             runtime
-                .decode_namespace_cursor(MailboxNamespace::Canonical, recipient, resource, token)
+                .decode_cursor(recipient, resource, token)
                 .map(|position| MailboxCursorBinding {
                     position,
                     token: token.clone(),
@@ -866,19 +804,6 @@ fn private_binding(
                 .ok_or(CanonicalError::Unauthorized)
         })
         .transpose()?;
-    let recovery_payload_hash = query
-        .recovery_payload_hash
-        .as_deref()
-        .map(hash_hex)
-        .transpose()?;
-    let recovery_obligation_id = query
-        .recovery_obligation_id
-        .as_deref()
-        .map(hash_hex)
-        .transpose()?;
-    if ack && (recovery_payload_hash.is_none() || recovery_obligation_id.is_none()) {
-        return Err(CanonicalError::Invalid);
-    }
     Ok(MailboxRequestBinding {
         resource,
         recipient,
@@ -886,8 +811,6 @@ fn private_binding(
         cursor,
         limit,
         max_bytes,
-        recovery_payload_hash,
-        recovery_obligation_id,
     })
 }
 /// The caller's key when it is `recipient`'s and has a current entry. `Err` means the directory
@@ -991,27 +914,20 @@ async fn authenticate(
     headers: &HeaderMap,
     binding: &crate::monad_mailbox::MailboxRequestBinding,
 ) -> Result<()> {
-    use crate::{monad_mailbox::MailboxNamespace, store::monad_messages::ChallengeConsumption};
+    use crate::monad_mailbox::ChallengeConsumption;
     let runtime = server
         .monad_mailbox
         .as_enabled()
         .ok_or(CanonicalError::Unauthorized)?;
-    // Wrong epoch/MAC fails in the original shared parser before key lookup or storage reads.
-    let parsed = super::monad_message::parse_private_authentication_for_runtime(
-        headers,
-        runtime,
-        binding,
-        MailboxNamespace::Canonical,
-    )
-    .map_err(|_| CanonicalError::Unauthorized)?;
+    // A challenge this relay did not issue for this request fails here, before any key
+    // lookup or storage read.
+    let (challenge, signature) =
+        crate::monad_mailbox::parse_mailbox_authentication(headers, runtime, binding, now_ms())
+            .ok_or(CanonicalError::Unauthorized)?;
     let point = admitted_subject(server, headers, binding.recipient).await?;
     let digest = Sha256::digest(
-        super::monad_message::mailbox_auth_preimage(
-            parsed.challenge,
-            binding,
-            runtime.network_tag(),
-        )
-        .into(),
+        crate::monad_mailbox::mailbox_auth_preimage(challenge, binding, runtime.network_tag())
+            .into(),
     );
     let valid = server
         .registry
@@ -1019,17 +935,17 @@ async fn authenticate(
             binding.recipient,
             point.as_deref(),
             digest.as_slice().try_into().expect("SHA256"),
-            &parsed.signature,
+            &signature,
         )
         .map_err(|_| CanonicalError::Unavailable)?;
     if !valid {
         return Err(CanonicalError::Unauthorized);
     }
     match server.registry.canonical_dm().consume_challenge(
-        parsed.challenge.epoch,
+        challenge.epoch,
         binding.recipient,
-        parsed.challenge.nonce,
-        parsed.challenge.expires_at_ms,
+        challenge.nonce,
+        challenge.expires_at_ms,
         now_ms(),
         crate::monad_mailbox::MAX_USED_CHALLENGES_PER_RECIPIENT,
     )? {
@@ -1044,7 +960,7 @@ pub(crate) async fn handle_challenge(
     Extension(server): Extension<super::server::RegistryServer>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    use crate::monad_mailbox::{MailboxNamespace, MailboxResource};
+    use crate::monad_mailbox::MailboxResource;
     let recipient = Address::from_hex(&recipient).map_err(|_| CanonicalError::Unauthorized)?;
     let runtime = server
         .monad_mailbox
@@ -1073,12 +989,13 @@ pub(crate) async fn handle_challenge(
         );
         return Err(CanonicalError::Unauthorized);
     }
-    let challenge =
-        runtime.issue_namespace_challenge(MailboxNamespace::Canonical, &binding, now_ms());
+    let challenge = runtime.issue_challenge(&binding, now_ms());
     Ok(Json(serde_json::json!({
         "epoch":hex::encode(challenge.epoch), "nonce":hex::encode(challenge.nonce), "expires_at_ms":challenge.expires_at_ms, "token":hex::encode(challenge.token),
-        "signing_domain":super::monad_message::MAILBOX_AUTH_DOMAIN, "resource":query.resource, "since":binding.since, "cursor":query.cursor, "limit":binding.limit, "max_bytes":binding.max_bytes, "network_tag":hex::encode(runtime.network_tag()),
-        "recovery_payload_hash":binding.recovery_payload_hash.map(hex::encode), "recovery_obligation_id":binding.recovery_obligation_id.map(hex::encode)
+        "signing_domain":crate::monad_mailbox::MAILBOX_AUTH_DOMAIN, "resource":query.resource, "since":binding.since, "cursor":query.cursor, "limit":binding.limit, "max_bytes":binding.max_bytes, "network_tag":hex::encode(runtime.network_tag()),
+        // The relay has no recovery pages. The client's decoder takes an exact list of fields
+        // that still names these two, and expects null.
+        "recovery_payload_hash":serde_json::Value::Null, "recovery_obligation_id":serde_json::Value::Null
     })).into_response())
 }
 
@@ -1098,24 +1015,13 @@ fn fresh_boundary(parts: &[&[u8]], prefix: &str) -> Result<String> {
     }
     Err(CanonicalError::Unavailable)
 }
+/// One stored message as a part of a mailbox page: the delivery frame and its context.
 fn record_bytes(
     claim: &crate::store::monad_dm_cbor::Claim,
     outer: &str,
-    recovery: bool,
     direction: Option<&str>,
 ) -> Result<Vec<u8>> {
-    use crate::{store::monad_dm_cbor::Phase, store::monad_outbox::MonadOutboxMemberState};
-    let lifecycle = match claim.phase {
-        Phase::Pending => "pending".into(),
-        Phase::FullyConfirmed => "fully_confirmed".into(),
-        Phase::Delivered(_) => "delivered".into(),
-        Phase::Terminal(reason) => format!("terminal:{}", terminal_reason(reason)),
-    };
-    let metadata = serde_json::to_vec(&serde_json::json!({"version":1, "submission_identity":hex::encode(claim.request.submission_identity()), "payload_hash":hex::encode(claim.policy.payload_hash), "obligation_id":hex::encode(claim.obligation_id), "confirmed_children":claim.members.iter().filter(|member| matches!(member.state, MonadOutboxMemberState::Confirmed { .. })).map(|member| member.child_index).collect::<Vec<_>>(), "lifecycle":lifecycle})).map_err(|_| CanonicalError::Unavailable)?;
-    if metadata.len() > 16 * 1024 {
-        return Err(CanonicalError::Unavailable);
-    }
-    let mut parts = vec![
+    let parts = [
         (
             "delivery",
             "application/vnd.frank.cbor",
@@ -1123,14 +1029,6 @@ fn record_bytes(
         ),
         ("context", "application/cbor", claim.request.context()),
     ];
-    if recovery {
-        parts.push((
-            "transactions",
-            "application/cbor",
-            claim.request.transactions_part(),
-        ));
-        parts.push(("recovery", "application/json", &metadata));
-    }
     let boundary = fresh_boundary(
         &parts.iter().map(|(_, _, bytes)| *bytes).collect::<Vec<_>>(),
         "frank-record",
@@ -1143,10 +1041,7 @@ fn record_bytes(
     {
         return Err(CanonicalError::Unavailable);
     }
-    let timestamp = match claim.phase {
-        Phase::Delivered(timestamp) => timestamp,
-        _ => claim.updated,
-    };
+    let timestamp = claim.delivered_at;
     if !(0..=9_007_199_254_740_991).contains(&timestamp) {
         return Err(CanonicalError::Unavailable);
     }
@@ -1190,7 +1085,7 @@ async fn page(
     query: &PrivateQuery,
     resource: crate::monad_mailbox::MailboxResource,
 ) -> Result<Response> {
-    use crate::monad_mailbox::{MailboxCursor, MailboxNamespace, MailboxResource};
+    use crate::monad_mailbox::{MailboxCursor, MailboxResource};
     if query.resource.is_some() {
         return Err(CanonicalError::Invalid);
     }
@@ -1204,88 +1099,45 @@ async fn page(
     let binding = private_binding(runtime, recipient, resource, query)?;
     authenticate(server, headers, &binding).await?;
     let owner = server.registry.canonical_dm();
-    let recovery = resource == MailboxResource::Recovery;
-    let fetch = |after: Option<MailboxCursor>| -> Result<
-        Option<(
-            crate::store::monad_dm_cbor::Claim,
-            Option<crate::store::monad_dm_cbor::MailboxDirection>,
-        )>,
-    > {
-        match resource {
-            MailboxResource::Recovery => {
-                let records = owner.recovery(
-                    recipient,
-                    after.map(|cursor| match cursor {
-                        MailboxCursor::Recovery { payload_hash } => payload_hash,
-                        _ => unreachable!("validated cursor resource"),
-                    }),
-                    1,
-                )?;
-                Ok(records.into_iter().next().map(|claim| (claim, None)))
+    type Record = (
+        crate::store::monad_dm_cbor::Claim,
+        Option<crate::store::monad_dm_cbor::MailboxDirection>,
+    );
+    // The next record strictly after a position. The store starts its scan there.
+    let fetch = |after: Option<MailboxCursor>| -> Result<Option<Record>> {
+        let after = after.map(|cursor| match cursor {
+            MailboxCursor::Inbox {
+                timestamp,
+                payload_hash,
             }
-            MailboxResource::Inbox => {
-                let records = owner.inbox(
-                    recipient,
-                    binding.since,
-                    after.map(|cursor| match cursor {
-                        MailboxCursor::Inbox {
-                            timestamp,
-                            payload_hash,
-                        } => (timestamp, payload_hash),
-                        _ => unreachable!("validated cursor resource"),
-                    }),
-                    1,
-                )?;
-                Ok(records.into_iter().next().map(|claim| (claim, None)))
-            }
-            MailboxResource::Mailbox => {
-                let records = owner.mailbox(
-                    recipient,
-                    binding.since,
-                    after.map(|cursor| match cursor {
-                        MailboxCursor::Mailbox {
-                            timestamp,
-                            payload_hash,
-                        } => (timestamp, payload_hash),
-                        _ => unreachable!("validated cursor resource"),
-                    }),
-                    1,
-                )?;
-                Ok(records
-                    .into_iter()
-                    .next()
-                    .map(|(claim, dir)| (claim, Some(dir))))
-            }
-            MailboxResource::RecoveryAck | MailboxResource::MailboxStream => unreachable!(),
-        }
+            | MailboxCursor::Mailbox {
+                timestamp,
+                payload_hash,
+            } => (timestamp, payload_hash),
+        });
+        Ok(match resource {
+            MailboxResource::Inbox => owner
+                .inbox(recipient, binding.since, after, 1)?
+                .into_iter()
+                .next()
+                .map(|claim| (claim, None)),
+            MailboxResource::Mailbox => owner
+                .mailbox(recipient, binding.since, after, 1)?
+                .into_iter()
+                .next()
+                .map(|(claim, direction)| (claim, Some(direction))),
+            MailboxResource::MailboxStream => unreachable!("the stream is not paged"),
+        })
     };
-    let position = |claim: &crate::store::monad_dm_cbor::Claim| -> Result<MailboxCursor> {
-        match resource {
-            MailboxResource::Recovery => Ok(MailboxCursor::Recovery {
-                payload_hash: claim.policy.payload_hash,
-            }),
-            MailboxResource::Inbox => {
-                if let crate::store::monad_dm_cbor::Phase::Delivered(timestamp) = claim.phase {
-                    Ok(MailboxCursor::Inbox {
-                        timestamp,
-                        payload_hash: claim.policy.payload_hash,
-                    })
-                } else {
-                    Err(CanonicalError::Unavailable)
-                }
-            }
-            MailboxResource::Mailbox => {
-                if let crate::store::monad_dm_cbor::Phase::Delivered(timestamp) = claim.phase {
-                    Ok(MailboxCursor::Mailbox {
-                        timestamp,
-                        payload_hash: claim.policy.payload_hash,
-                    })
-                } else {
-                    Err(CanonicalError::Unavailable)
-                }
-            }
-            MailboxResource::RecoveryAck | MailboxResource::MailboxStream => unreachable!(),
-        }
+    let position = |claim: &crate::store::monad_dm_cbor::Claim| match resource {
+        MailboxResource::Inbox => MailboxCursor::Inbox {
+            timestamp: claim.delivered_at,
+            payload_hash: claim.policy.payload_hash,
+        },
+        _ => MailboxCursor::Mailbox {
+            timestamp: claim.delivered_at,
+            payload_hash: claim.policy.payload_hash,
+        },
     };
     let boundary = fresh_boundary(&[], "frank-page")?;
     let closing = format!("--{boundary}--\r\n").into_bytes();
@@ -1297,14 +1149,14 @@ async fn page(
     let mut candidate = fetch(binding.cursor.as_ref().map(|cursor| cursor.position))?;
     let mut count = 0;
     while let Some((claim, dir)) = candidate {
-        let at = position(&claim)?;
+        let at = position(&claim);
         // One-record lookahead: a page never allocates limit full request bodies in advance.
         let following = fetch(Some(at))?;
         let cursor = following
             .as_ref()
-            .map(|_| runtime.encode_namespace_cursor(MailboxNamespace::Canonical, recipient, at));
+            .map(|_| runtime.encode_cursor(recipient, at));
         let charge = cursor.as_ref().map_or(0, |token| 31 + token.len());
-        let record = record_bytes(&claim, &boundary, recovery, dir.map(|d| d.as_str()))?;
+        let record = record_bytes(&claim, &boundary, dir.map(|d| d.as_str()))?;
         if bytes
             .len()
             .checked_add(record.len())
@@ -1358,11 +1210,6 @@ pub(crate) async fn handle_inbox(
         crate::monad_mailbox::MailboxResource::Inbox,
     )
     .await
-}
-pub(crate) async fn handle_recovery(
-    axum::extract::Path(_recipient): axum::extract::Path<String>,
-) -> Result<Response> {
-    Err(CanonicalError::Retired)
 }
 pub(crate) async fn handle_mailbox(
     axum::extract::Path(address): axum::extract::Path<String>,
@@ -1428,8 +1275,6 @@ pub(crate) async fn handle_mailbox_ws(
         cursor: None,
         limit: 1,
         max_bytes: 0,
-        recovery_payload_hash: None,
-        recovery_obligation_id: None,
     };
 
     if let Some(epoch) = query.epoch {
@@ -1508,7 +1353,7 @@ pub(crate) async fn handle_mailbox_ws(
                             let (sub_id, ts, delivery, context) = if let Ok(Some(claim)) = server.registry.canonical_dm().get(&notification.payload_hash) {
                                 (
                                     hex::encode(claim.request.submission_identity()),
-                                    claim.updated,
+                                    claim.delivered_at,
                                     hex::encode(claim.request.delivery()),
                                     hex::encode(claim.request.context()),
                                 )
@@ -1592,16 +1437,6 @@ pub(crate) async fn handle_mailbox_ws(
         }
     }))
 }
-pub(crate) async fn handle_ack(
-    axum::extract::Path((_recipient, _hash, _obligation)): axum::extract::Path<(
-        String,
-        String,
-        String,
-    )>,
-) -> Result<Response> {
-    Err(CanonicalError::Retired)
-}
-
 #[cfg(test)]
 #[path = "monad_message_cbor_tests.rs"]
 pub(crate) mod tests;

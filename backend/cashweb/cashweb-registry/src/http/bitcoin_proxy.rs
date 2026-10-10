@@ -193,6 +193,18 @@ impl BitcoinProxyRuntime {
         network_tag: Vec<u8>,
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Arc<Self>>, BitcoinProxyStartError> {
+        let session = crate::monad_mailbox::SessionSecret::random();
+        Self::from_conf_with_session(conf, network_tag, env, &session).await
+    }
+
+    /// As [`Self::from_conf_with_env`], signing challenges and capabilities with a key derived
+    /// from the relay's session secret so they survive a restart.
+    pub async fn from_conf_with_session(
+        conf: &BitcoinProxyConf,
+        network_tag: Vec<u8>,
+        env: impl Fn(&str) -> Option<String>,
+        session: &crate::monad_mailbox::SessionSecret,
+    ) -> Result<Option<Arc<Self>>, BitcoinProxyStartError> {
         conf.validate()
             .map_err(BitcoinProxyStartError::InvalidConfig)?;
         if !conf.enabled {
@@ -274,7 +286,7 @@ impl BitcoinProxyRuntime {
         let runtime = Arc::new(Self {
             chains,
             client,
-            auth: RpcAuthState::new(),
+            auth: RpcAuthState::for_session(session, "bitcoin-proxy"),
             network_tag,
             permits: Arc::new(Semaphore::new(conf.max_concurrency)),
             ingress_permits: Arc::new(Semaphore::new(conf.max_concurrency)),

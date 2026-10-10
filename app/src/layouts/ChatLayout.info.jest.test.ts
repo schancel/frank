@@ -27,9 +27,6 @@ jest.mock('../components/dialogs/ClearHistoryDialog.vue', () => ({
 jest.mock('../components/dialogs/DeleteChatDialog.vue', () => ({
   template: '<i />',
 }))
-jest.mock('../components/dialogs/SendFileDialog.vue', () => ({
-  template: '<i />',
-}))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
     getContact: () => mockContact,
@@ -88,7 +85,6 @@ describe('ChatLayout info mode with ?info=true query', () => {
           RouterView: { template: '<div data-testid="chat-view" />' },
           ClearHistoryDialog: true,
           DeleteChatDialog: true,
-          SendFileDialog: true,
         },
       },
     })
@@ -132,7 +128,6 @@ describe('ChatLayout info mode with ?info=true query', () => {
           RouterView: { template: '<div data-testid="chat-view" />' },
           ClearHistoryDialog: true,
           DeleteChatDialog: true,
-          SendFileDialog: true,
         },
       },
     })
@@ -171,7 +166,6 @@ describe('ChatLayout info mode with ?info=true query', () => {
           RouterView: { template: '<div data-testid="chat-view" />' },
           ClearHistoryDialog: true,
           DeleteChatDialog: true,
-          SendFileDialog: true,
         },
       },
     })

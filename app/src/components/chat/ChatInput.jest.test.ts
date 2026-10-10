@@ -18,7 +18,6 @@ jest.mock('@frank/wallet/chain', () => ({
     fromDisplayAmount: (s: string) => BigInt(s),
   },
 }))
-jest.mock('../../utils/chat', () => ({ processInput: jest.fn() }))
 
 const slotted = (tag: string) =>
   defineComponent({

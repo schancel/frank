@@ -19,6 +19,11 @@
       />
     </q-dialog>
 
+    <!-- A picture shown inside the text, opened by a click on it -->
+    <q-dialog v-model="imageDialog">
+      <image-dialog :image="openedImage" />
+    </q-dialog>
+
     <template v-if="payloadDigest">
       <q-chat-message
         :sent="message.outbound"
@@ -100,13 +105,18 @@
               :memo="item.memo"
               :outbound="message.outbound"
             />
-            <chat-message-image
-              v-else-if="item.type == 'image'"
-              :image="item.image"
-            />
+            <!-- A picture the text shows where it is referenced is not shown a second time. -->
+            <template v-else-if="item.type == 'image'">
+              <chat-message-image
+                v-if="!inlineImageItems.has(subIndex)"
+                :image="item.image"
+              />
+            </template>
             <chat-message-text
               v-else-if="item.type == 'text'"
               :text="item.text"
+              :attachments="shownAttachments"
+              @imageClick="openImage"
             />
             <chat-message-blackjack
               v-else-if="item.type == 'blackjack-hand'"
@@ -242,6 +252,7 @@ import ChatMessageChannel from './ChatMessageChannel.vue'
 import ChatMessageMenu from '../../context_menus/ChatMessageMenu.vue'
 import ChatMessageSuffix from './ChatMessageSuffix.vue'
 import DeleteMessageDialog from '../../dialogs/DeleteMessageDialog.vue'
+import ImageDialog from '../../dialogs/ImageDialog.vue'
 import TransactionDialog from '../../dialogs/TransactionDialog.vue'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { activeChain } from '@frank/wallet/chain'
@@ -259,6 +270,11 @@ import {
   readableKeyColor,
   type BubbleAttribution,
 } from '../../../utils/chat-attribution'
+import {
+  inlinePositions,
+  shownAttachments,
+} from '../../../utils/chat-attachments'
+import type { PostAttachment } from '../../../utils/post-editor'
 
 export default defineComponent({
   name: 'ChatMessage',
@@ -280,6 +296,7 @@ export default defineComponent({
     ChatMessageSuffix,
     TransactionDialog,
     DeleteMessageDialog,
+    ImageDialog,
   },
   emits: [
     'replyClicked',
@@ -293,6 +310,8 @@ export default defineComponent({
     return {
       transactionDialog: false,
       deleteDialog: false,
+      imageDialog: false,
+      openedImage: '',
     }
   },
   setup() {
@@ -356,6 +375,10 @@ export default defineComponent({
     },
   },
   methods: {
+    openImage(image: string) {
+      this.openedImage = image
+      this.imageDialog = true
+    },
     focusRetryStatus() {
       ;(
         this.$refs.suffix as { focusStatus?: () => void } | undefined
@@ -538,6 +561,22 @@ export default defineComponent({
       return color
         ? { color: readableKeyColor(color, this.$q?.dark?.isActive === true) }
         : {}
+    },
+    // This message's pictures that passed vetting, by position among its image items.
+    shownAttachments(): PostAttachment[] {
+      return shownAttachments(this.message.items)
+    },
+    // Indexes into `message.items` of the pictures the text shows inline.
+    inlineImageItems(): Set<number> {
+      const inline = inlinePositions(this.message.items, this.shownAttachments)
+      const indexes = new Set<number>()
+      let position = 0
+      this.message.items.forEach((item, index) => {
+        if (item.type !== 'image') return
+        position += 1
+        if (inline.has(position)) indexes.add(index)
+      })
+      return indexes
     },
     paymentState(): string {
       const delivery = this.message.delivery

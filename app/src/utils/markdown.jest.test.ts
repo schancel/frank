@@ -195,3 +195,94 @@ describe('renderMarkdown line breaks', () => {
     expect(html).not.toContain('onerror')
   })
 })
+
+describe('content that may fetch nothing (a direct message)', () => {
+  const picture = 'data:image/png;base64,AAAA'
+  const other = 'data:image/png;base64,BBBB'
+  beforeEach(() => clearMarkdownCache())
+
+  /** Every element of the rendered HTML that names a resource to load. */
+  const sources = (html: string) => {
+    const box = document.createElement('div')
+    box.innerHTML = html
+    return Array.from(box.querySelectorAll('*')).flatMap(el =>
+      ['src', 'srcset', 'poster', 'background', 'style']
+        .map(name => el.getAttribute(name))
+        .filter((value): value is string => value !== null),
+    )
+  }
+
+  it('shows a listed picture where the Markdown has it', () => {
+    const html = renderMarkdown(`a ![cat](${picture}) b`, false, true, [
+      picture,
+    ])
+    expect(html).toContain(`<img alt="cat" src="${picture}">`)
+  })
+
+  it('writes a remote Markdown image as a link and fetches nothing', () => {
+    const html = renderMarkdown(
+      'look ![cat](https://evil.example/t.png?id=1)',
+      false,
+      true,
+      [picture],
+    )
+    expect(html).not.toContain('<img')
+    expect(html).toContain('href="https://evil.example/t.png?id=1"')
+    expect(html).toContain('>cat</a>')
+  })
+
+  it('writes a data URI that is not a listed picture, or any other scheme, as text', () => {
+    const html = renderMarkdown(
+      `![a](${other}) ![b](attachment:3) ![c](ipfs://x)`,
+      false,
+      true,
+      [picture],
+    )
+    expect(html).not.toContain('<img')
+    expect(html).toContain(`![a](${other})`)
+    expect(html).toContain('![b](attachment:3)')
+    expect(html).toContain('![c](ipfs://x)')
+  })
+
+  it('escapes what it writes back as text', () => {
+    const html = renderMarkdown('![x](attachment:"><b>)', false, true, [])
+    expect(html).not.toContain('<b>')
+  })
+
+  it.each([
+    '<img src="https://evil.example/t.png">',
+    '<img src="//evil.example/t.png">',
+    `<img src="${other}">`,
+    '<image src="https://evil.example/t.png">',
+    `<img src="${picture}" srcset="https://evil.example/t.png 2x">`,
+    '<video src="https://evil.example/v.mp4" poster="https://evil.example/p.png"></video>',
+    '<audio src="https://evil.example/a.mp3"></audio>',
+    '<picture><source srcset="https://evil.example/t.png"><img src="https://evil.example/u.png"></picture>',
+    '<input type="image" src="https://evil.example/t.png">',
+    '<table background="https://evil.example/t.png"><tr><td>x</td></tr></table>',
+    '<div style="background-image: url(https://evil.example/t.png)">x</div>',
+    '<style>body { background: url(https://evil.example/t.png) }</style>x',
+    '<svg><image href="https://evil.example/t.png" /></svg>',
+  ])('raw HTML cannot load anything either: %s', raw => {
+    for (const html of [
+      renderMarkdown(`hello\n\n${raw}`, false, true, [picture]),
+      purify(raw, [picture]),
+    ]) {
+      expect(sources(html).filter(value => value !== picture)).toEqual([])
+      expect(html).not.toContain('evil.example')
+    }
+  })
+
+  it('keeps the link colour and the quote bar it writes itself', () => {
+    const html = renderMarkdown('[a](https://x.example)\n\n> q', true, true, [])
+    expect(html).toContain('style="color: mock-color(blue-2)"')
+    expect(html).toContain('border-left: 2px solid')
+  })
+
+  it('leaves the next rendering of other content as it was (posts, email)', () => {
+    renderMarkdown('![x](https://a.example/x.png)', false, true, [])
+    const html = renderMarkdown('![x](https://a.example/x.png)', false)
+    expect(html).toContain('src="https://a.example/x.png"')
+    expect(purify('<img src="https://a.example/x.png">')).toContain('<img')
+  })
+})

@@ -26,19 +26,23 @@ export const DELIVERED_IMAGE_LIMITS: ImageLimits = {
   maxPixels: 8_000_000,
 }
 /**
- * What this app will send as an image item. A canonical direct message's whole sealed body is at
- * most 524,288 bytes (`MAX_CIPHERTEXT_BYTES` in `@frank/codec`), and the data URI travels byte
- * for byte, so the picture is held to 448 KiB. The rest is room for the caption below, a reply
- * reference and the framing. The wallet does not check the total before it funds a send, so
- * this bound is what keeps an oversized picture from being refused after money has moved.
+ * What this app puts in one direct message: the UTF-8 bytes of the text plus the data URIs of
+ * its pictures (they travel byte for byte), plus `SENT_ITEM_ALLOWANCE_BYTES` for each of those
+ * items. A canonical direct message's whole sealed body is at most 524,288 bytes
+ * (`MAX_CIPHERTEXT_BYTES` in `@frank/codec`) and messages of about 523,000 bytes round-trip;
+ * 500 KiB leaves the rest for a reply reference and the framing. The wallet does not check the
+ * total before it funds a send, so this bound is what keeps an oversized message from being
+ * refused after money has moved.
  */
+export const MAX_SENT_MESSAGE_BYTES = 500 * 1024
+/** Framing counted for each text or image item (measured: 44 bytes for an image, 25 for text). */
+export const SENT_ITEM_ALLOWANCE_BYTES = 64
+/** One picture: at most what a message holds, and what a recipient's app will show. */
 export const SENT_IMAGE_LIMITS: ImageLimits = {
-  maxEncodedLength: 448 * 1024,
+  maxEncodedLength: MAX_SENT_MESSAGE_BYTES - SENT_ITEM_ALLOWANCE_BYTES,
   maxDimension: DELIVERED_IMAGE_LIMITS.maxDimension,
   maxPixels: DELIVERED_IMAGE_LIMITS.maxPixels,
 }
-/** Characters of caption sent with a picture: at most 8,000 bytes of UTF-8. */
-export const MAX_SENT_CAPTION_LENGTH = 2000
 
 /** `inspectImageDataUri` reasons -> `chatImage.*` message keys. */
 export const IMAGE_REASON_KEYS: Record<string, string> = {

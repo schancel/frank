@@ -95,6 +95,10 @@ export default {
     sendStealth: 'Send Stealth',
     offerSwap: 'Offer Atomic Swap',
     attachImage: 'Attach Image',
+    removeAttachment: 'Remove {name}',
+    imageRefused: '{name} cannot be sent: {reason}.',
+    messageTooLarge:
+      'This message is too large to send. Remove a picture or shorten the text.',
     blackjackChallenge: 'Blackjack challenge',
     placeHolder: 'Write a message...',
     emojiPickerTitle: 'Select an emoji',
@@ -294,7 +298,6 @@ export default {
     choosePhoto: 'Choose profile photo',
     previousAvatar: 'Previous avatar',
     nextAvatar: 'Next avatar',
-    chooseFile: 'Choose a file',
     openInExplorer: 'Open transaction in block explorer',
     copyTxHash: 'Copy transaction hash',
     backToForum: 'Back to forum',
@@ -700,14 +703,6 @@ export default {
     viewInExplorer: 'View transaction in block explorer',
     viewTransaction: 'View transaction',
     directCreditHint: 'Indexed into spendable balance',
-  },
-  sendFileDialog: {
-    sendFile: 'Send Picture',
-    captionHint: 'Add a caption (optional).',
-    captionPlaceholder: 'Caption...',
-    sendBtnLabel: 'Send',
-    cancelBtnLabel: 'Cancel',
-    cannotSend: 'This picture cannot be sent: {reason}.',
   },
   setup: {
     loginOrSignUp: 'Login/Sign Up',

@@ -126,12 +126,12 @@
       </div>
       <!-- Message box -->
       <chat-input
-        @sendFileClicked="toSendFileDialog"
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
         @sendStealthClicked="stealthDialog = true"
         ref="chatInput"
         v-model:message="message"
+        v-model:attachments="attachments"
         v-model:stamp-amount="stampAmount"
         :suggested-stamp-amount="suggestedStampAmount"
         :is-overridden="isStampOverridden"
@@ -147,14 +147,6 @@
           @submit="sendBlackjackChallenge"
         />
       </q-card>
-    </q-dialog>
-    <!-- A picture from the composer menu, a paste or a drop: sent as an image item. -->
-    <q-dialog v-model="fileDialog">
-      <send-file-dialog
-        v-if="fileDialog"
-        :file="fileToSend"
-        @send="sendImage"
-      />
     </q-dialog>
     <!-- Send Stealth dialog: multi-chain encrypted stealth payment -->
     <q-dialog v-model="stealthDialog">
@@ -199,7 +191,6 @@ import ChatInput from '../components/chat/ChatInput.vue'
 import BlackjackChallengeForm from '../components/chat/BlackjackChallengeForm.vue'
 import SendStealthDialog from '../components/dialogs/SendStealthDialog.vue'
 import OfferSwapDialog from '../components/dialogs/OfferSwapDialog.vue'
-import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import ForwardMessageDialog from '../components/dialogs/ForwardMessageDialog.vue'
 import ChatMessageReply from '../components/chat/messages/ChatMessageReply.vue'
 import { openChat, openContactProfile } from '../utils/routes'
@@ -249,6 +240,8 @@ import {
 } from '@frank/wallet/chain'
 import { formatDisplayNumber } from '../utils/chain-amount'
 import { nextFollowBottom } from '../utils/follow-bottom'
+import { composeChatItems, fitsOneMessage } from '../utils/chat-attachments'
+import type { PostAttachment } from '../utils/post-editor'
 import type { MessageItem, EmailItem } from '@frank/cashweb/types/messages'
 
 import { debounce, QScrollArea } from 'quasar'
@@ -271,7 +264,6 @@ export default defineComponent({
     BlackjackChallengeForm,
     SendStealthDialog,
     OfferSwapDialog,
-    SendFileDialog,
     ForwardMessageDialog,
     ChatBannerStack,
   },
@@ -302,14 +294,14 @@ export default defineComponent({
       scrollDigest: null as string | null,
       chatWidth: 0,
       message: '',
+      // Pictures held by the composer for the next message (see utils/chat-attachments.ts).
+      attachments: [] as PostAttachment[],
       stampPreparationStatus: null as string | null,
       sendingMessage: false,
       activeSendCount: 0,
       blackjackDialog: false,
       stealthDialog: false,
       swapDialog: false,
-      fileDialog: false,
-      fileToSend: null as File | null,
       forwardDialogOpen: false,
       messageToForward: null as ChatMessage | null,
       // Automatic dealer steps already attempted in this page session.
@@ -450,11 +442,6 @@ export default defineComponent({
         | undefined
       const message = Array.isArray(raw) ? raw[0] : raw
       message?.focusRetryStatus?.()
-    },
-    /** Opens the picture dialog: empty from the menu, holding the file from a paste or drop. */
-    toSendFileDialog(file?: unknown) {
-      this.fileToSend = file instanceof File ? file : null
-      this.fileDialog = true
     },
     resizeHandler() {
       const chatScroll = this.chatScroll
@@ -620,7 +607,14 @@ export default defineComponent({
       if (stampValue < acceptancePrice) {
         insufficientStampNotify()
       }
-      if (!message) {
+      const attachmentsToSend = this.attachments
+      if (!message.trim() && attachmentsToSend.length === 0) {
+        return
+      }
+      // The text and its pictures must fit one message. Refused here, before anything is paid:
+      // the wallet would refuse an oversized message only after funding it.
+      if (!fitsOneMessage(message, attachmentsToSend)) {
+        errorNotify(new Error(this.$t('chatInput.messageTooLarge')))
         return
       }
       // Move the submitted text into the optimistic outbox bubble immediately. The user should
@@ -631,21 +625,16 @@ export default defineComponent({
       this.activeSendCount = (this.activeSendCount || 0) + 1
       this.sendingMessage = true
       this.message = ''
+      this.attachments = []
       this.replyDigest = null
 
-      const items: MessageItem[] = []
-      if (replyDigestToSend) {
-        items.push({ type: 'reply', payloadDigest: replyDigestToSend })
-      }
-      items.push({ type: 'text', text: submittedMessage })
+      // The reply, the text, then the pictures the text refers to by position.
+      const items = composeChatItems(
+        submittedMessage,
+        attachmentsToSend,
+        replyDigestToSend,
+      )
 
-      // Was calling the old Lotus `$relayClient.sendMessage` directly, completely bypassing
-      // `stores/chats.ts`'s `sendMessage` (ticket #42's real, tested `activeChain.directMessages.send`
-      // wiring) -- that store action always existed and worked, but nothing in the actual UI ever
-      // called it. Explicitly flagged as ticket #44's job in `utils/clients.ts`'s own doc comment
-      // ("any UI wiring to it") and missed there too. Found live tonight (autonomous overnight
-      // session, 2026-09-27) by actually clicking Send in a real browser and finding the message
-      // never left the input box.
       try {
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
@@ -731,15 +720,6 @@ export default defineComponent({
         this.stampPreparationStatus = null
         this.sendingMessage = false
       }
-    },
-    // A picture goes the way text does: one paid message through `sendDirectMessage`, here an
-    // image item and, when there is a caption, a text item after it. The dialog has already
-    // held the picture to what one message can carry.
-    async sendImage({ image, caption }: { image: string; caption: string }) {
-      this.fileDialog = false
-      const items: MessageItem[] = [{ type: 'image', image }]
-      if (caption) items.push({ type: 'text', text: caption })
-      await this.sendFollowUpItems({ items })
     },
     async sendStealthPayment({
       chainId,

@@ -97,6 +97,10 @@ export default {
     sendStealth: 'Envoi furtif',
     offerSwap: 'Proposer un échange atomique',
     attachImage: 'Attacher une image',
+    removeAttachment: 'Retirer {name}',
+    imageRefused: '{name} ne peut pas être envoyée : {reason}.',
+    messageTooLarge:
+      'Ce message est trop volumineux pour être envoyé. Retirez une image ou raccourcissez le texte.',
     blackjackChallenge: 'Défi de blackjack',
     placeHolder: 'Ecrire un message...',
     emojiPickerTitle: 'Choisir un emoji',
@@ -302,7 +306,6 @@ export default {
     choosePhoto: 'Choisir une photo de profil',
     previousAvatar: 'Avatar précédent',
     nextAvatar: 'Avatar suivant',
-    chooseFile: 'Choisir un fichier',
     openInExplorer: "Ouvrir la transaction dans l'explorateur de blocs",
     copyTxHash: 'Copier le hash de transaction',
     backToForum: 'Retour au forum',
@@ -715,14 +718,6 @@ export default {
     viewInExplorer: 'Voir la transaction dans l’explorateur',
     viewTransaction: 'Voir la transaction',
     directCreditHint: 'Directement crédité au solde disponible',
-  },
-  sendFileDialog: {
-    sendFile: 'Envoyer une image',
-    captionHint: 'Ajouter une légende (facultatif).',
-    captionPlaceholder: 'Légende...',
-    sendBtnLabel: 'Envoyer',
-    cancelBtnLabel: 'Annuler',
-    cannotSend: 'Cette image ne peut pas être envoyée : {reason}.',
   },
   topicDrawer: {
     offering: 'Offre:',

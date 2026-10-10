@@ -41,36 +41,8 @@ pub(crate) fn recipient_signature_work() -> usize {
 /// Cashweb [`Registry`] stores [`SignedPayload`]s containing [`proto::AddressMetadata`] for
 /// addresses.
 ///
-/// Raw mailbox stores are intentionally inaccessible outside this crate; inbox publication must
-/// pass through the validated atomic outbox finalizer.
-///
-/// ```compile_fail
-/// # let db: cashweb_registry::store::db::Db = todo!();
-/// let _ = db.monad_messages();
-/// ```
-///
-/// ```compile_fail
-/// # let db: cashweb_registry::store::db::Db = todo!();
-/// let _ = db.monad_outbox();
-/// ```
-///
-/// ```compile_fail
-/// use cashweb_registry::registry::Registry;
-/// let _ = Registry::claim_monad_outbox;
-/// ```
-///
-/// ```compile_fail
-/// use cashweb_registry::{
-///     monad_http::Address,
-///     store::monad_outbox::MonadOutboxPolicy,
-/// };
-/// let _ = MonadOutboxPolicy {
-///     recipient: Address([0; 20]),
-///     recipient_pubkey: vec![2; 33],
-///     min_value_wei: 1,
-///     network_tag: b"testnet".to_vec(),
-/// };
-/// ```
+/// The message store (`store::monad_dm_cbor`) is private to this crate: messages enter and
+/// leave through the message routes only.
 #[derive(Debug)]
 pub struct Registry {
     /// Database storing the address metadata in RocksDB.

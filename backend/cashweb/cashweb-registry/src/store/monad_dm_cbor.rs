@@ -117,9 +117,9 @@ impl Claim {
     }
 }
 
-/// Live login challenges the relay remembers at once, over all recipients. They expire within
-/// a minute and are deleted as new ones are used.
-const MAX_AUTH_NONCES: usize = 4096;
+/// How often every recipient's expired login challenges are deleted. A recipient's own are
+/// deleted each time it uses a new one; this pass clears those of recipients who went away.
+const AUTH_NONCE_SWEEP_INTERVAL_MS: i64 = 60_000;
 
 /// The message store of one registry. Opened on first use.
 #[derive(Debug)]
@@ -130,6 +130,9 @@ pub(crate) struct Owner {
     broadcast: tokio::sync::broadcast::Sender<FinalizedEnvelope>,
     /// When each message's payments were last handed to the node. In memory only.
     payment_broadcasts: Mutex<std::collections::HashMap<[u8; 32], std::time::Instant>>,
+    /// When every recipient's expired login challenges were last deleted. In memory only: the
+    /// first use after a restart sweeps.
+    auth_nonces_swept_at_ms: Mutex<Option<i64>>,
 }
 impl Owner {
     /// The store that belongs beside the registry database at `registry_db`.
@@ -141,6 +144,7 @@ impl Owner {
             directory: Mutex::new(Weak::new()),
             broadcast,
             payment_broadcasts: Default::default(),
+            auth_nonces_swept_at_ms: Mutex::new(None),
         }
     }
     /// Whether this message's payments may be handed to the node now: at most once per
@@ -289,6 +293,12 @@ impl Owner {
         }
         Ok(message)
     }
+    /// Records one authenticated login challenge as used, so it cannot be replayed.
+    ///
+    /// A challenge is refused when it has expired or was already used. A recipient holding `cap`
+    /// used challenges that have not expired yet is at capacity until one does. There is no
+    /// bound over all recipients: one recipient's use never refuses another's. Used challenges
+    /// are deleted once expired.
     pub(crate) fn consume_challenge(
         &self,
         epoch: [u8; 32],
@@ -298,6 +308,20 @@ impl Owner {
         now: i64,
         cap: usize,
     ) -> Result<ChallengeConsumption> {
+        let sweep_all = {
+            let mut swept = self
+                .auth_nonces_swept_at_ms
+                .lock()
+                .map_err(|_| CanonicalError::Unavailable)?;
+            let due = !matches!(
+                *swept,
+                Some(at) if now >= at && now - at < AUTH_NONCE_SWEEP_INTERVAL_MS
+            );
+            if due {
+                *swept = Some(now);
+            }
+            due
+        };
         self.with(true, |db| {
             let mut prefix = b"N".to_vec();
             prefix.extend_from_slice(&recipient.0);
@@ -314,8 +338,8 @@ impl Owner {
             }
             let mut batch = WriteBatch::default();
             let mut live = 0usize;
-            let mut global_live = 0usize;
-            for item in db.iterator_opt(IteratorMode::Start, prefix_options(b"N")?) {
+            let scanned: &[u8] = if sweep_all { b"N" } else { &prefix };
+            for item in db.iterator_opt(IteratorMode::Start, prefix_options(scanned)?) {
                 let (row, value) = item.map_err(|_| CanonicalError::Unavailable)?;
                 if row.len() != 85 {
                     return Err(CanonicalError::Unavailable);
@@ -328,16 +352,13 @@ impl Owner {
                 );
                 if time < now {
                     batch.delete(row);
-                } else {
-                    global_live += 1;
-                    if row.starts_with(&prefix) {
-                        live += 1;
-                    }
+                } else if row.starts_with(&prefix) {
+                    live += 1;
                 }
             }
-            if live >= cap || global_live >= MAX_AUTH_NONCES {
-                // Expired challenges found on the way are still cleared, so a full table
-                // drains even when every caller is being refused.
+            if live >= cap {
+                // Expired challenges found on the way are still cleared, so a full recipient
+                // drains even while it is being refused.
                 write(db, batch)?;
                 return Ok(ChallengeConsumption::AtCapacity);
             }
@@ -701,4 +722,135 @@ fn load_delivered(db: &rocksdb::DB, hash: &[u8; 32], time: i64) -> Result<Claim>
         return Err(CanonicalError::Unavailable);
     }
     Ok(message)
+}
+
+#[cfg(test)]
+mod challenge_tests {
+    use super::*;
+
+    fn store() -> (tempdir::TempDir, Owner) {
+        let dir = tempdir::TempDir::new("used-challenges").unwrap();
+        let owner = Owner::new(dir.path().join("db.rocksdb"));
+        (dir, owner)
+    }
+    fn stored(owner: &Owner) -> usize {
+        owner
+            .with(false, |db| {
+                Ok(db
+                    .iterator_opt(IteratorMode::Start, prefix_options(b"N")?)
+                    .count())
+            })
+            .unwrap()
+            .unwrap()
+    }
+    const EPOCH: [u8; 32] = [7; 32];
+    const TTL: i64 = 60_000;
+    fn nonce(n: usize) -> [u8; 32] {
+        let mut nonce = [0; 32];
+        nonce[..8].copy_from_slice(&(n as u64).to_be_bytes());
+        nonce
+    }
+
+    #[test]
+    fn a_used_challenge_is_refused_again_and_an_expired_one_is_refused() {
+        let (_dir, owner) = store();
+        let alice = Address([1; 20]);
+        let now = 1_000_000;
+        let use_it = |nonce, expires, now| {
+            owner
+                .consume_challenge(EPOCH, alice, nonce, expires, now, 240)
+                .unwrap()
+        };
+        assert_eq!(
+            use_it(nonce(1), now + TTL, now),
+            ChallengeConsumption::Consumed
+        );
+        // Replay, at once and at the last moment the challenge is still valid.
+        assert_eq!(
+            use_it(nonce(1), now + TTL, now),
+            ChallengeConsumption::Rejected
+        );
+        assert_eq!(
+            use_it(nonce(1), now + TTL, now + TTL),
+            ChallengeConsumption::Rejected
+        );
+        // The same nonce under another epoch or for another recipient is a different challenge.
+        assert_eq!(
+            owner
+                .consume_challenge([8; 32], alice, nonce(1), now + TTL, now, 240)
+                .unwrap(),
+            ChallengeConsumption::Consumed
+        );
+        assert_eq!(
+            owner
+                .consume_challenge(EPOCH, Address([2; 20]), nonce(1), now + TTL, now, 240)
+                .unwrap(),
+            ChallengeConsumption::Consumed
+        );
+        // Never used, but past its expiry.
+        assert_eq!(
+            use_it(nonce(2), now - 1, now),
+            ChallengeConsumption::Rejected
+        );
+    }
+
+    #[test]
+    fn the_bound_is_per_recipient_and_frees_as_challenges_expire() {
+        let (_dir, owner) = store();
+        let alice = Address([1; 20]);
+        let now = 1_000_000;
+        for n in 0..3 {
+            assert_eq!(
+                owner
+                    .consume_challenge(EPOCH, alice, nonce(n), now + TTL, now, 3)
+                    .unwrap(),
+                ChallengeConsumption::Consumed
+            );
+        }
+        assert_eq!(
+            owner
+                .consume_challenge(EPOCH, alice, nonce(3), now + TTL, now, 3)
+                .unwrap(),
+            ChallengeConsumption::AtCapacity
+        );
+        // The refused challenge was not used up: it is good once there is room.
+        let later = now + TTL + 1;
+        assert_eq!(
+            owner
+                .consume_challenge(EPOCH, alice, nonce(3), later + TTL, later, 3)
+                .unwrap(),
+            ChallengeConsumption::Consumed
+        );
+        // Alice's three expired rows went with that use.
+        assert_eq!(stored(&owner), 1);
+    }
+
+    #[test]
+    fn many_recipients_never_refuse_each_other() {
+        let (_dir, owner) = store();
+        let now = 1_000_000;
+        // 5,000 recipients with a live used challenge each: more than the 4,096 the relay
+        // used to hold over all recipients together.
+        for n in 0..5_000usize {
+            let mut recipient = [0; 20];
+            recipient[..8].copy_from_slice(&(n as u64).to_be_bytes());
+            assert_eq!(
+                owner
+                    .consume_challenge(EPOCH, Address(recipient), nonce(n), now + TTL, now, 2)
+                    .unwrap(),
+                ChallengeConsumption::Consumed,
+                "recipient {n}"
+            );
+        }
+        assert_eq!(stored(&owner), 5_000);
+        // Once they have expired, the next sweep deletes them all, whoever asks.
+        let later = now + TTL + AUTH_NONCE_SWEEP_INTERVAL_MS + 1;
+        assert_eq!(
+            owner
+                .consume_challenge(EPOCH, Address([9; 20]), nonce(0), later + TTL, later, 2)
+                .unwrap(),
+            ChallengeConsumption::Consumed
+        );
+        assert_eq!(stored(&owner), 1);
+    }
 }

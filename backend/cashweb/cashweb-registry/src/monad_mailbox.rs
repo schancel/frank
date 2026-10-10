@@ -13,10 +13,10 @@ use crate::monad_http::{Address, HttpTransport};
 type HmacSha256 = Hmac<Sha256>;
 
 pub(crate) const CHALLENGE_TTL_MS: i64 = 60_000;
-/// Consumed challenges retained per recipient per challenge lifetime (60s). Only the
-/// signature-verified recipient can consume one, so raising this does not widen the
-/// unauthenticated surface. It must exceed the app's steady polling rate (about 8.6 authenticated
-/// reads/min at a 7s interval); the per-call expiry cleanup bound (256) still exceeds it.
+/// Used challenges one recipient may hold unexpired at once, that is per challenge lifetime
+/// (60s). Only the signature-verified recipient can use one, and one recipient's use never
+/// refuses another's: there is no bound over all recipients. The app's steady polling uses
+/// about 8.6 a minute at a 7s interval.
 pub(crate) const MAX_USED_CHALLENGES_PER_RECIPIENT: usize = 240;
 const CHALLENGE_MAC_DOMAIN: &[u8] = b"frank:mailbox-challenge-mac:v1\0";
 const CURSOR_MAC_DOMAIN: &[u8] = b"frank:mailbox-cursor-mac:v1\0";

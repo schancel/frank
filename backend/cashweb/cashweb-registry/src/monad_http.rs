@@ -931,7 +931,18 @@ impl<T: JsonRpcTransport> MonadHttpClient<T> {
             .as_str()
             .ok_or_else(|| MonadRpcError::InvalidResponse {
                 method: "eth_sendRawTransaction".to_string(),
-                reason: format!("expected a hex string tx hash, got {}", result),
+                // The node's value is not repeated: it is upstream text of any size.
+                reason: format!(
+                    "expected a hex string tx hash, got a JSON {}",
+                    match &result {
+                        serde_json::Value::Null => "null",
+                        serde_json::Value::Bool(_) => "boolean",
+                        serde_json::Value::Number(_) => "number",
+                        serde_json::Value::String(_) => "string",
+                        serde_json::Value::Array(_) => "array",
+                        serde_json::Value::Object(_) => "object",
+                    }
+                ),
             })?;
         let tx_hash =
             Hash32::from_hex(tx_hash_hex).map_err(|err| MonadRpcError::InvalidResponse {

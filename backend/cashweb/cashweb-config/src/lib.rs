@@ -1321,12 +1321,12 @@ impl SolanaProxyConf {
 /// binaries cannot read newer versioned outbox rows.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct MonadMailboxConf {
-    /// Whether admission and reconciliation are enabled. This is the only switch for
-    /// `PUT /message/monad` and the private mailbox routes (the shipped configs enable it). The
-    /// one environment input is `cashwebd-exe` filling a missing `rpc_url` from
-    /// `MONAD_TESTNET_HTTP_RPC_URL`; this type itself never reads the environment. A disabled deployment omits those routes (every `/message/monad` request
-    /// other than the separate topic routes answers 404) and does not start a worker; durable rows
-    /// remain readable.
+    /// Whether messages are accepted and delivered. This is the only switch for the message
+    /// routes (`PUT /message`, `/message/auth`, `/message/inbox` and `/message/mailbox`); the
+    /// shipped configs enable it. The one environment input is `cashwebd-exe` filling a missing
+    /// `rpc_url` from `MONAD_TESTNET_HTTP_RPC_URL`; this type itself never reads the
+    /// environment. A disabled deployment does not mount those routes (they answer 404) and
+    /// does not start a worker; stored messages are kept.
     pub enabled: bool,
     /// Monad JSON-RPC endpoint. Required exactly when `enabled` is true; the shipped configs omit it
     /// and `cashwebd-exe` supplies it from the environment before calling `mode()`.

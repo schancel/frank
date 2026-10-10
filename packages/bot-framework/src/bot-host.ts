@@ -108,6 +108,22 @@ function bounded<T>(call: Promise<T>, what: string): Promise<T> {
   return Promise.race([call, late]).finally(() => clearTimeout(timer));
 }
 
+/** A bot's own account cannot pay for a transaction its handler asked for. Nothing was signed or
+ * sent. The host tops the account up on its poll, a bounded amount at a time; the payout is the
+ * handler's to keep and make again once the balance covers it. */
+export class BotBalanceShortError extends Error {
+  constructor(
+    readonly botId: string,
+    readonly balanceWei: bigint,
+    readonly neededWei: bigint
+  ) {
+    super(
+      `Bot "${botId}" holds ${balanceWei} wei and this transaction needs ${neededWei}. Nothing was sent; it can be made again after the bot's account is topped up.`
+    );
+    this.name = "BotBalanceShortError";
+  }
+}
+
 /** A replies-per-peer budget as configured: unset, or a non-negative integer. Anything else is a
  * configuration error, never silently the default. */
 function replyBudget(
@@ -535,21 +551,10 @@ export class FrankBotHost {
           const gasLimit = data && data !== "0x" ? 250_000n : 21_000n;
           const needed = valueWei + gasLimit * gasPrice;
 
-          if (
-            botBalance < needed &&
-            this.fundingWallet &&
-            this.nonceSequencer
-          ) {
-            const topUp = needed - botBalance + 50_000_000_000_000_000n;
-            await this.nonceSequencer.withNonce(async (nonce) => {
-              const tx = await this.fundingWallet!.sendTransaction({
-                to: botAddress,
-                value: topUp,
-                nonce,
-              });
-              await tx.wait();
-            });
-          }
+          // A bot pays from its own balance. A handler cannot make the shared funding wallet
+          // pay: that wallet only makes the host's bounded top-up, on the poll.
+          if (botBalance < needed)
+            throw new BotBalanceShortError(definition.id, botBalance, needed);
 
           let tx: any;
           for (let attempt = 1; attempt <= 3; attempt++) {
@@ -617,21 +622,10 @@ export class FrankBotHost {
           const gasLimit = 21_000n;
           const needed = valueWei + gasLimit * gasPrice;
 
-          if (
-            botBalance < needed &&
-            this.fundingWallet &&
-            this.nonceSequencer
-          ) {
-            const topUp = needed - botBalance + 50_000_000_000_000_000n;
-            await this.nonceSequencer.withNonce(async (nonce) => {
-              const tx = await this.fundingWallet!.sendTransaction({
-                to: botAddress,
-                value: topUp,
-                nonce,
-              });
-              await tx.wait();
-            });
-          }
+          // A bot pays from its own balance. A handler cannot make the shared funding wallet
+          // pay: that wallet only makes the host's bounded top-up, on the poll.
+          if (botBalance < needed)
+            throw new BotBalanceShortError(definition.id, botBalance, needed);
 
           const populated = await botWallet.populateTransaction({
             to,
@@ -852,16 +846,26 @@ export class FrankBotHost {
           );
           continue;
         }
-        await this.nonceSequencer.withNonce(async (nonce) => {
-          const tx = await this.fundingWallet!.sendTransaction({
+        // The shared sequence is held only while the transfer is built and handed to the
+        // node, never while it is mined: one slow transfer must not stall every bot's top-up
+        // and the faucet.
+        const tx = await this.nonceSequencer.withNonce((nonce) =>
+          this.fundingWallet!.sendTransaction({
             to: target.addr,
             value: fundAmount,
             nonce,
-          });
-          sent = true;
-          outcome = "sent";
+          })
+        );
+        sent = true;
+        outcome = "sent";
+        try {
           await tx.wait(1, TOP_UP_RECEIPT_MS);
-        });
+        } catch (waitError) {
+          // Not seen mined in time: it may still land, or the node may have dropped it. The
+          // next transfer takes its nonce from the node's pending count, which says which.
+          this.nonceSequencer.resetNonce();
+          throw waitError;
+        }
         console.log(
           `[bot-host] Topped up ${target.label} (${target.addr}) of bot ${id}`
         );

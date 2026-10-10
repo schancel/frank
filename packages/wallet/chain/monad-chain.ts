@@ -412,6 +412,7 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     ),
     // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
     spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
+    blockTimeMs: getChainRegistryEntry(rpcChain)?.blockTimeMs,
     reserveBalanceWei: ((wei) => (wei === undefined ? undefined : BigInt(wei)))(
       getChainRegistryEntry(rpcChain)?.reserveBalanceWei
     ),
@@ -4578,7 +4579,14 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               waitForSpendSpacing(provider, address, config.spendSpacingBlocks)
             );
             // The wallet's one source of "current block" and of whether the chain answers.
-            const blockWatcher = new EvmBlockWatcher({ provider });
+            // About two looks a block while something waits: a payment that is mined is seen
+            // within half a block, not within a second or two.
+            const blockWatcher = new EvmBlockWatcher({
+              provider,
+              ...(config.blockTimeMs === undefined
+                ? {}
+                : { intervalMs: Math.max(100, Math.round(config.blockTimeMs / 2)) }),
+            });
             blockWatchers.set(wallet, blockWatcher);
             const stampPayer = new EvmStampPayer({
               pool,

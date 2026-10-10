@@ -636,6 +636,8 @@ interface MessageWork {
 }
 /** Waiters for a coin look at its holder's payment at most this often, all of them together. */
 export const HOLDER_LOOK_MS = 1_000
+/** ...and of a DELIVERED holder's payment at most this often: the block watcher's looks pace it. */
+export const DELIVERED_LOOK_MS = 100
 /** ...and, while the holder's message is not delivered (its payment can land only if the relay
  * broadcast it before an answer was lost), ever more rarely, up to this. */
 export const HOLDER_LOOK_MAX_MS = 16_000
@@ -1247,7 +1249,10 @@ async function settleHolder(
   if (work.creating) return
   if (work.busy) return void (await work.busy)
   // One look per holder, however many sends wait for its coin: a waiter that comes within the
-  // gap of the last look makes none. Undelivered, the gap doubles from a second to sixteen.
+  // gap of the last look makes none. A delivered message's payment is in the node's hands and
+  // is looked for at every look of the block watcher (the waiters come at its pace): a second's
+  // gap here cost every main-paid message two or three blocks. Undelivered, the gap doubles
+  // from a second to sixteen.
   const now = Date.now()
   if (
     work.lookedAtMs !== undefined &&
@@ -1257,7 +1262,7 @@ async function settleHolder(
   work.lookedAtMs = now
   work.lookGapMs =
     row.outcome === 'delivered'
-      ? HOLDER_LOOK_MS
+      ? DELIVERED_LOOK_MS
       : Math.min(
           work.lookedAtMs === undefined || work.lookGapMs === undefined
             ? HOLDER_LOOK_MS

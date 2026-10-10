@@ -50,6 +50,10 @@
  *   n  (local chain only) a payment the node refuses, because its account was paid a moment
  *      ago and the wallet's wait for that is switched off in the check: delivered all the same,
  *      then signed again at its nonce and paid once, within seconds
+ *   s  (local chain only) a new wallet holding 0.1 MON at its profile address, where a faucet
+ *      pays: MESSAGES paid messages together; wall time, the paying accounts, the blocks
+ *   t  (local chain only) the same from a new wallet holding 20 MON in its main account
+ *      SPREAD_WAIT_MS gives the wallet's background funding that long before the burst
  *   r  a stamp made to revert on purpose (the CHECK signs it inside the chain's spacing window,
  *      behind a transfer of its own from the same account; the wallet's spacing is bypassed for
  *      that one payment and nowhere else): seen reverted, paid again once, never a third time
@@ -1289,6 +1293,96 @@ async function main() {
       require_("n", "the account was not left held: the next message is delivered and paid", nextSettled.statuses[next.digest] === "delivered" && nextSettled.payments[0]?.join(",") === "spent");
     };
 
+    // ---- s, t ------------------------------------------------------------------------
+    /** A burst from a wallet whose money is at ONE address: `messages` paid messages started
+     * together. `where`: the profile address (where a faucet pays a new user) or the main
+     * account. With SPREAD_WAIT_MS the wallet's background funding is first given that long
+     * (the host's tick, as the app and the bots call it). Local chain only: a new wallet. */
+    const burstFrom = async (
+      phase: string,
+      label: string,
+      where: "profile" | "main",
+      fundWei: bigint
+    ) => {
+      if (!stack.chainOutage) {
+        results[phase] = "NOT RUN: only on the local chain (it opens a new wallet)";
+        say(phase, results[phase]);
+        return;
+      }
+      const wallet = await stack.openWallet(label, { stampValueWei: floorNow });
+      const funded = where === "profile" ? wallet.address : wallet.mainAccount;
+      await stack.fund(funded, fundWei);
+      const fundedAt = await provider.getBlockNumber();
+      // As a person would: the money has arrived and been seen before the first message.
+      while ((await provider.getBlockNumber()) < fundedAt + 6) await sleep(100);
+      const spreadMs = Number(process.env.SPREAD_WAIT_MS ?? "0");
+      const spreadStarted = Date.now();
+      const passes: string[] = [];
+      while (Date.now() - spreadStarted < spreadMs) {
+        const pass = await wallet.chain.directMessages.fundAhead?.({ wallet: wallet.handle });
+        passes.push(`${pass?.outcome}${pass?.reason ? `(${pass.reason})` : ""}:${pass?.fundingTxHashes.length ?? 0}`);
+        if (pass?.outcome === "ready") break;
+        await sleep(1000);
+      }
+      const partsBefore = await wallet.handle.getBalanceParts?.();
+      const started = Date.now();
+      const firstBlock = await provider.getBlockNumber();
+      const outcomes = await Promise.all(
+        Array.from({ length: messages }, (_, n) =>
+          sendPaid(wallet, bob.address, `${phase}${n} ${started}`).then(
+            (sent) => ({ sent }),
+            (error) => ({ error: `${(error as Error).name}: ${(error as Error).message}`.slice(0, 200) })
+          )
+        )
+      );
+      const wallMs = Date.now() - started;
+      const sent = outcomes.flatMap((o) => ("sent" in o ? [o.sent] : []));
+      const settled = sent.length > 0 ? await settle(wallet, sent.map((x) => x.digest)) : undefined;
+      // Every transaction of the wallet's accounts since the burst began, from the chain.
+      const ours = new Set([wallet.address.toLowerCase(), wallet.mainAccount.toLowerCase()]);
+      const lastBlock = await provider.getBlockNumber();
+      const txs: { from: string; nonce: number; block: number; status?: number; toOwn: boolean }[] = [];
+      for (let number = fundedAt; number <= lastBlock; number++) {
+        const block = await provider.getBlock(number, true);
+        for (const tx of block?.prefetchedTransactions ?? []) {
+          if (!ours.has(tx.from.toLowerCase())) continue;
+          const receipt = await provider.getTransactionReceipt(tx.hash);
+          // An account the wallet's own accounts pay into before the burst is one of its own.
+          const beforeBurst = number < firstBlock;
+          if (beforeBurst && tx.to) ours.add(tx.to.toLowerCase());
+          txs.push({ from: tx.from.toLowerCase(), nonce: tx.nonce, block: number, status: receipt?.status ?? undefined, toOwn: beforeBurst });
+        }
+      }
+      const burst = txs.filter((tx) => !tx.toOwn);
+      const partsAfter = await wallet.handle.getBalanceParts?.();
+      const total = (parts?: { main: bigint; profile: bigint; received: bigint; sending: bigint }) =>
+        parts ? mon(parts.main + parts.profile + parts.received + parts.sending) : "?";
+      results[phase] = {
+        funded: `${mon(fundWei)} at the ${where} address`,
+        backgroundFunding: spreadMs > 0 ? { waitedMs: Date.now() - spreadStarted - wallMs, passes, transfers: txs.filter((tx) => tx.toOwn).length } : "not given time",
+        balanceBeforeBurst: total(partsBefore),
+        wallMs,
+        delivered: sent.length,
+        failed: outcomes.flatMap((o) => ("error" in o ? [o.error] : [])),
+        perSendMs: sent.map((x) => x.ms).sort((a, b) => a - b),
+        paymentStates: settled?.payments.map((states) => states.join(",")),
+        payingAccounts: new Set(burst.map((tx) => tx.from)).size,
+        payments: burst.map((tx) => `${tx.from.slice(0, 8)}#${tx.nonce}@${tx.block}${tx.status === 1 ? "" : ` STATUS ${tx.status}`}`),
+        blocksFirstToLast: burst.length ? burst[burst.length - 1].block - burst[0].block : undefined,
+        reverted: burst.filter((tx) => tx.status !== 1).length,
+        balanceAfter: total(partsAfter),
+        recipientCopies: sent.length ? (await seenBy(bob, sent.map((x) => x.digest), startedAt)).filter((count) => count === 1).length : 0,
+      };
+      await wallet.close().catch(() => undefined);
+      say(phase, JSON.stringify(results[phase], null, 1));
+      const r = results[phase] as { wallMs: number; payments: string[]; blocksFirstToLast?: number; payingAccounts: number };
+      say(`${phase}: ${messages} together from ${mon(fundWei)} at one ${where} address: ${r.wallMs} ms, ${r.payingAccounts} paying account(s), blocks first to last ${r.blocksFirstToLast}; ${r.payments.join(" ")}`);
+      require_(phase, "every message delivered, one copy each", sent.length === messages && (results[phase] as { recipientCopies: number }).recipientCopies === messages);
+      require_(phase, "every payment mined with status 1 (zero reverts)", burst.length >= messages && burst.every((tx) => tx.status === 1));
+    };
+    const runS = () => burstFrom("s", `small-${Date.now()}`, "profile", 100_000_000_000_000_000n);
+    const runT = () => burstFrom("t", `rich-${Date.now()}`, "main", 20n * 10n ** 18n);
+
     // ---- r -----------------------------------------------------------------------------
     const runR = async () => {
       if (!(await affordable("r", 2n * (floor + txFee) + 2n * txFee))) return;
@@ -1500,6 +1594,8 @@ async function main() {
       w: runW,
       m: runM,
       n: runN,
+      s: runS,
+      t: runT,
       unfreeze: runUnfreeze,
     };
     for (const phase of phases) {

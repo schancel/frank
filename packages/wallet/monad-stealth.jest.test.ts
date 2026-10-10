@@ -127,6 +127,8 @@ describe('Monad / EVM Stealth Direct Payment Engine (#897)', () => {
         ephemeralPubKey: toHex(destination.ephemeralPubKey),
         transactions: [raw.slice(2)],
         amount: 5_000,
+        // The exact figure travels as a string: a JS number cannot hold most wei amounts.
+        amountWei: '5000',
         memo: 'lunch',
       })
 
@@ -153,7 +155,11 @@ describe('Monad / EVM Stealth Direct Payment Engine (#897)', () => {
       // The carried transfer is one the holder may broadcast: it pays this coin on this chain.
       expect(
         stealthItemTransfer(coin.transactions, coin.address, CHAIN_ID),
-      ).toEqual({ txHash: Transaction.from(raw).hash, rawTransaction: raw })
+      ).toEqual({
+        txHash: Transaction.from(raw).hash,
+        rawTransaction: raw,
+        valueWei: 5_000n,
+      })
     })
 
     it('nobody else derives that coin: another key gives another account', async () => {
@@ -172,6 +178,42 @@ describe('Monad / EVM Stealth Direct Payment Engine (#897)', () => {
         discoveredAtMs: 1,
       })!
       expect(asPayer.address).not.toBe(destination.stealthAddress.toLowerCase())
+    })
+
+    it('the claim is kept exactly when the item carries the exact figure', async () => {
+      const destination = deriveEvmStealthAddress({ recipientSpendPubKey })
+      const exact = 1234567890123456789n
+      const item = evmStealthItem({
+        networkTag: 'MONT',
+        ephemeralPubKey: destination.ephemeralPubKey,
+        rawTransaction: await signedTransferTo(destination.stealthAddress, exact),
+        amountWei: exact,
+      })
+      expect(BigInt(item.amount)).not.toBe(exact)
+      const coin = stealthCoinFromItem({
+        item,
+        recipientSpendSecret: recipient.privateKey,
+        discoveredAtMs: 1,
+      })!
+      expect(coin.claimedAmountWei).toBe(exact.toString())
+    })
+
+    it('only a plain transfer of money is a carried transfer: no call data, no zero value', async () => {
+      const address = deriveEvmStealthAddress({ recipientSpendPubKey }).stealthAddress
+      const zero = await signedTransferTo(address, 0n)
+      const call = await payer.signTransaction({
+        type: 2,
+        chainId: CHAIN_ID,
+        nonce: 0,
+        to: address,
+        value: 5n,
+        data: '0xdeadbeef',
+        gasLimit: 50_000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+      })
+      expect(stealthItemTransfer([zero.slice(2)], address, CHAIN_ID)).toBeUndefined()
+      expect(stealthItemTransfer([call.slice(2)], address, CHAIN_ID)).toBeUndefined()
     })
 
     it('a carried transaction that pays someone else, or another chain, is not broadcast', async () => {

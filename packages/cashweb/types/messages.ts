@@ -35,8 +35,12 @@ export interface StealthItem {
   ephemeralPubKey?: string
   /** Hex-encoded raw transactions or transaction hashes. */
   transactions?: string[]
-  /** Transferred value / amount */
+  /** Transferred value / amount. A JS number: approximate above 2^53 base units. */
   amount: number
+  /** The same amount exactly, in base units as a decimal string. Set when decoded from, or
+   * encoded to, the wire frame (which carries an integer); use it for anything but a rough
+   * display. */
+  amountWei?: string
   /** Optional transaction memo. */
   memo?: string
 

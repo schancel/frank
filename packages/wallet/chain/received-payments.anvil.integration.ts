@@ -26,7 +26,7 @@ import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { createServer } from 'net'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { JsonRpcProvider, Transaction, Wallet, parseEther } from 'ethers'
+import { JsonRpcProvider, Transaction, Wallet, getBytes, parseEther } from 'ethers'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 
@@ -41,6 +41,7 @@ import {
 } from './canonical-two-wallets.testutil'
 import { withDefaultMessageItems } from './message-items.testutil'
 import { createEvmChain, installCanonicalDirectory } from './monad-chain'
+import { deriveEvmStealthPrivateKey } from '../monad-stealth'
 
 // The wallet normally reaches its node through the relay's RPC gateway. Here it is pointed
 // straight at the real node this test started: the node is real, only the route to it differs.
@@ -586,6 +587,78 @@ describe('payments between two wallets on a real EVM node', () => {
           coin.address !== sent.stealthAddress.toLowerCase(),
       )?.address
     }
+  })
+
+  it('a sender cannot forge "received": a real, mined, unrelated transaction or a signed zero-value transfer proves nothing', async () => {
+    // A real transaction in a real block that has nothing to do with bob.
+    const elsewhere = Wallet.createRandom().address
+    const unrelated = await dev.sendTransaction({ to: elsewhere, value: 1n })
+    expect((await unrelated.wait())!.status).toBe(1)
+    const byHash = await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: bob.identity.address,
+      items: [
+        {
+          type: 'stealth',
+          networkTag: 'MONT',
+          keyType: 1,
+          ephemeralPubKey: '02' + '44'.repeat(32),
+          transactions: [unrelated.hash.slice(2)],
+          amount: Number(parseEther('10')),
+          amountWei: parseEther('10').toString(),
+        },
+      ],
+    })
+    // A properly signed, MINED transfer of nothing to the very one-time address bob derives.
+    const ephemeral = Wallet.createRandom().signingKey.compressedPublicKey
+    const target = deriveEvmStealthPrivateKey({
+      recipientSpendSecret: bob.identity.toPrivateKeyHex(),
+      ephemeralPubKey: getBytes(ephemeral),
+    }).stealthAddress
+    const zero = await dev.sendTransaction({ to: target, value: 0n })
+    expect((await zero.wait())!.status).toBe(1)
+    const byZero = await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: bob.identity.address,
+      items: [
+        {
+          type: 'stealth',
+          networkTag: 'MONT',
+          keyType: 1,
+          ephemeralPubKey: ephemeral.slice(2),
+          transactions: [zero.hash.slice(2)],
+          amount: Number(parseEther('10')),
+          amountWei: parseEther('10').toString(),
+        },
+      ],
+    })
+    await poll(bob)
+    for (let i = 0; i < 4; i++) await bob.refreshReceivedPayments!()
+    bob.invalidateBalanceCache!()
+
+    expect(stealthOf(bob).length).toBe(2)
+    for (const coin of stealthOf(bob)) {
+      expect(coin.status).not.toBe('received')
+      expect(coin).toMatchObject({ amountWei: 0n, spendable: false })
+      expect(coin.receivedAmountWei).toBeUndefined()
+    }
+    expect(stealthOf(bob).map(coin => coin.address)).toContain(target.toLowerCase())
+    expect(stealthOf(bob).every(coin => coin.claimedAmountWei === parseEther('10'))).toBe(true)
+    for (const sent of [byHash, byZero]) {
+      const payment = await bob.checkMessagePayment!(sent.payloadDigest)
+      expect(payment.status).not.toBe('received')
+    }
+    // Bob's balance is the two messages' stamps, once they land, and nothing else.
+    await until(
+      'the stamps to land',
+      async () => {
+        await bob.refreshReceivedPayments!()
+        return stampsOf(bob)
+      },
+      stamps => stamps.length > 0 && stamps.every(stamp => stamp.status === 'received'),
+    )
+    bob.invalidateBalanceCache!()
+    expect(await bob.getBalance()).toBe(2n * STAMP)
   })
 
   it('a payment whose nonce another transaction took is failed and never counted', async () => {

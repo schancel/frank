@@ -94,6 +94,57 @@ describe('received coins', () => {
     expect(unnamed.state).toBe('unspent')
   })
 
+  it('nothing is received without an amount the chain showed arriving', () => {
+    // A named transaction that is mined and pays this account nothing (someone else's
+    // transaction, or a zero-value transfer), with an empty account: proof of nothing.
+    const forged = observeEvmCoin(coin({ claimedAmountWei: '1000000' }), {
+      balanceWei: 0n,
+      transfer: 'included',
+      transferValueWei: 0n,
+      atMs: 10,
+    })
+    expect(forged.state).toBe('pending')
+    expect(forged.receivedAmountWei).toBeUndefined()
+    expect(receivedPaymentOf(forged, EARLY)).toMatchObject({
+      status: 'pending',
+      amountWei: 0n,
+      claimedAmountWei: 1_000_000n,
+      spendable: false,
+    })
+    expect(receivedPaymentOf(forged, LATE).status).toBe('not-received')
+    expect(messagePaymentOf([forged], forged.payloadDigest!, LATE)).toMatchObject({
+      status: 'not-received',
+      receivedWei: 0n,
+    })
+    // The same with no value reported at all.
+    expect(
+      observeEvmCoin(coin(), { balanceWei: 0n, transfer: 'included', atMs: 10 })
+        .state,
+    ).toBe('pending')
+
+    // A verified transfer that DID pay this account, found already spent (another device):
+    // received, at what that transaction paid, not at what the sender wrote.
+    const spentElsewhere = observeEvmCoin(coin({ claimedAmountWei: '1000000' }), {
+      balanceWei: 0n,
+      transfer: 'included',
+      transferValueWei: 700n,
+      atMs: 10,
+    })
+    expect(spentElsewhere).toMatchObject({
+      state: 'spent',
+      receivedAmountWei: '700',
+    })
+    expect(receivedPaymentOf(spentElsewhere)).toMatchObject({
+      status: 'received',
+      receivedAmountWei: 700n,
+      spendable: false,
+    })
+
+    // A stored coin that somehow says spent with no amount is still not "received".
+    const { receivedAmountWei: _none, ...bare } = spentElsewhere
+    expect(receivedPaymentOf(bare as EvmCoin, EARLY).status).toBe('pending')
+  })
+
   it('a transfer the node knows stays pending; one it still does not know long after the message was not received', () => {
     const waiting = observeEvmCoin(coin(), {
       balanceWei: 0n,

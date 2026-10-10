@@ -101,6 +101,7 @@
               :amount="item.amount"
               :chain-id="item.chainId"
               :network-tag="item.networkTag"
+              :amount-wei="item.amountWei"
               :ephemeral-pub-key="item.ephemeralPubKey"
               :transactions="item.transactions"
               :memo="item.memo"

@@ -10,6 +10,8 @@
 import { toHex } from '@frank/codec'
 import {
   Transaction,
+  Wallet,
+  getBytes,
   type Block,
   type TransactionReceipt,
   type TransactionResponse,
@@ -35,6 +37,7 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { withDefaultMessageItems } from './message-items.testutil'
+import { deriveEvmStealthPrivateKey } from '../monad-stealth'
 import { createEvmChain, installCanonicalDirectory } from './monad-chain'
 
 jest.mock('../monad-provider', () =>
@@ -704,6 +707,79 @@ describe('a payment to a contact', () => {
     })
   })
 
+  it('a sender cannot forge "received" with someone else\'s mined transaction or a zero-value transfer', async () => {
+    // A real, mined, unrelated transaction: alice paying carol.
+    const carol = '0x' + 'c6'.repeat(20)
+    const unrelated = await alice.sendNative({ recipient: { raw: carol }, value: 1_000n })
+    expect(node.receipts.has(unrelated.txHash)).toBe(true)
+    const byHash = await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: bob.identity.address,
+      items: [
+        {
+          type: 'stealth',
+          networkTag: 'MONT',
+          keyType: 1,
+          ephemeralPubKey: '02' + '44'.repeat(32),
+          transactions: [unrelated.txHash.slice(2)],
+          amount: 1_000_000_000,
+        },
+      ],
+    })
+    // And a properly signed transfer, of nothing, to the very one-time address bob derives.
+    const ephemeral = new Wallet('0x' + '0e'.repeat(32)).signingKey.compressedPublicKey
+    const target = deriveEvmStealthPrivateKey({
+      recipientSpendSecret: bob.identity.toPrivateKeyHex(),
+      ephemeralPubKey: getBytes(ephemeral),
+    }).stealthAddress
+    const zero = await new Wallet('0x' + '0d'.repeat(32)).signTransaction({
+      type: 2,
+      chainId: 10143n,
+      nonce: 0,
+      to: target,
+      value: 0n,
+      gasLimit: 21_000n,
+      maxFeePerGas: 1n,
+      maxPriorityFeePerGas: 1n,
+    })
+    const byZero = await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: bob.identity.address,
+      items: [
+        {
+          type: 'stealth',
+          networkTag: 'MONT',
+          keyType: 1,
+          ephemeralPubKey: ephemeral.slice(2),
+          transactions: [zero.slice(2)],
+          amount: 1_000_000_000,
+        },
+      ],
+    })
+    await poll(bob)
+    await settle(bob)
+
+    expect(coinsOf(bob).map(coin => coin.address)).toContain(target.toLowerCase())
+    expect(coinsOf(bob)).toHaveLength(2)
+    for (const coin of coinsOf(bob)) {
+      expect(coin.status).not.toBe('received')
+      expect(coin).toMatchObject({
+        amountWei: 0n,
+        claimedAmountWei: 1_000_000_000n,
+        spendable: false,
+      })
+      expect(coin.receivedAmountWei).toBeUndefined()
+    }
+    for (const sent of [byHash, byZero]) {
+      const payment = bob.getMessagePayment!(sent.payloadDigest)
+      expect(payment.status).not.toBe('received')
+      // Only the message's own stamp ever arrived.
+      expect(payment.receivedWei).toBe(STAMP)
+    }
+    // The zero-value transfer was never handed to the node by bob's wallet.
+    expect(node.broadcasts.some(tx => tx.value === 0n)).toBe(false)
+  })
+
   it('an unverified coin is never an input: not of a native send, not of a sweep', async () => {
     const digest = 'ab'.repeat(32)
     // A claim with no transfer behind it, and real money parked at its address by someone else.
@@ -784,6 +860,10 @@ describe('a payment to a contact', () => {
     await expect(
       alice.sendToContact!({ recipient: bob.identity.address, value: VALUE }),
     ).rejects.toThrow('Insufficient funds for the payment and its message stamp')
+    // More than the message item can state (its amount is an unsigned 64-bit field).
+    await expect(
+      alice.sendToContact!({ recipient: bob.identity.address, value: 2n ** 64n }),
+    ).rejects.toThrow('cannot exceed 2^64-1')
     expect(alice.getContactPayments!()).toEqual([])
     expect(alice.getNativeOperations!()).toEqual([])
     expect(node.broadcasts).toEqual([])

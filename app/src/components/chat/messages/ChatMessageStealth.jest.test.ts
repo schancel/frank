@@ -128,6 +128,48 @@ describe('ChatMessageStealth', () => {
     ).toBe(false)
   })
 
+  it('never shows a green Received without an amount the chain showed arriving', () => {
+    // What a forged item used to produce: "received", nothing arrived, the sender's figure.
+    mockPayment.value = coin({
+      status: 'received',
+      amountWei: 0n,
+      claimedAmountWei: 1000n * ONE,
+      spendable: false,
+    })
+    const wrapper = mountComponent({ amount: Number(1000n * ONE) })
+    expect(text(wrapper, 'stealth-status-badge')).toBe('Pending')
+    expect(text(wrapper, 'stealth-status-badge')).not.toBe('Received')
+    // The figure is the sender's, and is labelled as such.
+    expect(text(wrapper, 'stealth-amount')).toBe(
+      activeChain.toDisplayAmount(1000n * ONE),
+    )
+    expect(text(wrapper, 'stealth-amount-claimed')).toBe('(claimed)')
+    expect(wrapper.text()).not.toMatch(/spendable balance|Received,/)
+  })
+
+  it('compares exact amounts: a claim a JS number cannot hold raises no false difference', () => {
+    const exact = 1234567890123456789n
+    mockPayment.value = coin({
+      status: 'received',
+      amountWei: exact,
+      receivedAmountWei: exact,
+      claimedAmountWei: exact,
+      spendable: true,
+    })
+    // The item's approximate number differs from the exact figure; the exact one is used.
+    expect(BigInt(Number(exact))).not.toBe(exact)
+    const wrapper = mountComponent({
+      amount: Number(exact),
+      amountWei: exact.toString(),
+    })
+    expect(text(wrapper, 'stealth-amount')).toBe(
+      activeChain.toDisplayAmount(exact),
+    )
+    expect(
+      wrapper.find('[data-testid="stealth-amount-mismatch"]').exists(),
+    ).toBe(false)
+  })
+
   it('shows the amount the chain showed when the sender stated more', () => {
     mockPayment.value = coin({
       status: 'received',

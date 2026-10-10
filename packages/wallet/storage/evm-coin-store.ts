@@ -167,6 +167,8 @@ export interface EvmCoinObservation {
   readonly balanceWei: bigint
   /** Asked only while the coin is not yet known to be funded. */
   readonly transfer?: EvmCoinTransfer
+  /** With `included`: what that transaction pays this account, read from the transaction. */
+  readonly transferValueWei?: bigint
   readonly atMs: number
 }
 
@@ -175,7 +177,12 @@ export interface EvmCoinObservation {
  * A coin is counted only when the chain shows BOTH the named transfer included successfully and
  * money at the address (a message that named no transfer has only the balance to go by). Once
  * counted, the amount follows the chain's balance, and an empty account was spent. A transfer
- * that can never land marks the coin failed: it stays recorded and is never counted. */
+ * that can never land marks the coin failed: it stays recorded and is never counted.
+ *
+ * Nothing is ever "received" without an amount the chain showed arriving. A named transfer that
+ * is included but found with an empty account (spent from another device) is taken as received
+ * only at the value that transaction itself paid this account; an included transaction that paid
+ * it nothing proves nothing, and the coin stays pending. */
 export function observeEvmCoin(
   coin: EvmCoin,
   observation: EvmCoinObservation,
@@ -186,8 +193,10 @@ export function observeEvmCoin(
     state = funded ? 'unspent' : 'spent'
   else {
     const transfer = observation.transfer ?? 'none'
+    const paid = observation.transferValueWei ?? 0n
     if (transfer === 'failed') state = 'failed'
-    else if (transfer === 'included') state = funded ? 'unspent' : 'spent'
+    else if (transfer === 'included' && funded) state = 'unspent'
+    else if (transfer === 'included' && paid > 0n) state = 'spent'
     else if (transfer === 'none' && funded) state = 'unspent'
     else state = coin.state === 'failed' ? 'failed' : 'pending'
   }
@@ -196,8 +205,17 @@ export function observeEvmCoin(
     ...rest,
     state,
     amountWei: observation.balanceWei.toString(),
-    ...(state === 'unspent' && coin.receivedAmountWei === undefined
-      ? { receivedAmountWei: observation.balanceWei.toString() }
+    ...(coin.receivedAmountWei === undefined &&
+    (state === 'unspent' || state === 'spent')
+      ? {
+          // What arrived: the verified transfer's own value when known, else what the chain
+          // first showed at the account.
+          receivedAmountWei: (observation.transferValueWei !== undefined &&
+          observation.transferValueWei > 0n
+            ? observation.transferValueWei
+            : observation.balanceWei
+          ).toString(),
+        }
       : {}),
     checkedAtMs: observation.atMs,
     ...(state === 'pending'
@@ -248,7 +266,10 @@ export function receivedPaymentOf(
   const status: ReceivedPaymentStatus =
     coin.state === 'failed'
       ? 'failed'
-      : coin.state !== 'pending'
+      : // Received means an amount the chain showed arriving, and nothing less.
+      coin.state !== 'pending' &&
+        coin.receivedAmountWei !== undefined &&
+        BigInt(coin.receivedAmountWei) > 0n
       ? 'received'
       : coin.checkedAtMs === undefined ||
         coin.transferSeen === true ||

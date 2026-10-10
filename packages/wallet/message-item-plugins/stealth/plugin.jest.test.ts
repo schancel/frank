@@ -32,7 +32,12 @@ describePluginContract({
   type: 'stealth',
   init: initStealthPlugin,
   samples: [
-    { item: canonical, preview: 'Sent stealth payment (MONT)' },
+    {
+      item: canonical,
+      preview: 'Sent stealth payment (MONT)',
+      // A decoded item also carries the frame's exact integer amount.
+      decoded: { ...canonical, amountWei: '1000000' },
+    },
     {
       item: legacy,
       preview: 'Sent stealth payment (MONT)',
@@ -44,6 +49,7 @@ describePluginContract({
         ephemeralPubKey: pub,
         transactions: [tx1],
         amount: 42,
+        amountWei: '42',
       },
     },
   ],

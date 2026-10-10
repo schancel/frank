@@ -150,29 +150,39 @@ export function evmStealthItem(params: {
     ephemeralPubKey: toHex(params.ephemeralPubKey),
     transactions: [bare(params.rawTransaction)],
     amount: Number(params.amountWei),
+    amountWei: params.amountWei.toString(),
     ...(params.memo ? { memo: params.memo } : {}),
   }
 }
 
-/** The transfer a stealth item names: a signed transaction paying `address` on `chainId` (which
- * the holder may broadcast), or only a hash. Anything else is not a transfer to this coin. */
+/** The transfer a stealth item names: a signed plain transfer of a positive value to `address` on
+ * `chainId` (which the holder may broadcast), or only a hash (which proves nothing by itself: the
+ * chain must show what that transaction pays). Anything else is not a transfer to this coin. */
 export function stealthItemTransfer(
   transactions: readonly string[],
   address: string,
   chainId: bigint,
-): { txHash: string; rawTransaction?: string } | undefined {
+): { txHash: string; rawTransaction?: string; valueWei?: bigint } | undefined {
   for (const entry of transactions) {
     const hex = bare(entry)
     if (/^[0-9a-f]{64}$/.test(hex)) return { txHash: '0x' + hex }
     try {
       const tx = Transaction.from('0x' + hex)
+      // A plain transfer of money to this account on this chain, and nothing else: no call
+      // data, no zero value. Only such bytes are ever handed to a node by the recipient.
       if (
         tx.hash !== null &&
         tx.signature !== null &&
         tx.to?.toLowerCase() === address.toLowerCase() &&
-        tx.chainId === chainId
+        tx.chainId === chainId &&
+        tx.data === '0x' &&
+        tx.value > 0n
       )
-        return { txHash: tx.hash, rawTransaction: tx.serialized }
+        return {
+          txHash: tx.hash,
+          rawTransaction: tx.serialized,
+          valueWei: tx.value,
+        }
     } catch {
       /* not a transaction */
     }
@@ -184,7 +194,10 @@ export function stealthItemTransfer(
  * the one-time account, its key, and the sender's stated amount. Pending: nothing is known about
  * the chain yet. Undefined when the item is not an EVM stealth item or its key is malformed. */
 export function stealthCoinFromItem(params: {
-  item: Pick<StealthItem, 'keyType' | 'ephemeralPubKey' | 'transactions' | 'amount'>
+  item: Pick<
+    StealthItem,
+    'keyType' | 'ephemeralPubKey' | 'transactions' | 'amount' | 'amountWei'
+  >
   recipientSpendSecret: Uint8Array | string
   payloadDigest?: string
   discoveredAtMs: number
@@ -198,7 +211,8 @@ export function stealthCoinFromItem(params: {
       recipientSpendSecret: params.recipientSpendSecret,
       ephemeralPubKey: fromHex(bare(item.ephemeralPubKey)),
     })
-    claimed = BigInt(item.amount ?? 0)
+    // The exact figure when the item carries it; a JS number cannot hold most wei amounts.
+    claimed = BigInt(item.amountWei ?? item.amount ?? 0)
   } catch {
     return undefined
   }

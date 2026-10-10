@@ -669,6 +669,9 @@ const mainAccountAdmissions = new WeakMap<
   EvmChainWalletHandle,
   MainAccountAdmission
 >();
+/** The largest amount a stealth message item can state (its wire field is an unsigned 64-bit
+ * integer): about 18.4 units of an 18-decimal coin. */
+export const MAX_STEALTH_ITEM_AMOUNT = 2n ** 64n - 1n;
 /** The most pending coins one background pass asks the chain about. */
 export const PENDING_COIN_PROBES_PER_PASS = 8;
 /** How long the wallet waits before asking the chain a second time whether a received payment's
@@ -2153,56 +2156,75 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           // second broadcast of a known or mined transaction changes nothing) and then reads the
           // chain. The node's wording is never interpreted: whatever it answered, the transaction,
           // its receipt and its sender's nonce say what happened.
-          const transferOf = async (coin: EvmCoin): Promise<EvmCoinTransfer> => {
-            if (coin.transactions.length === 0) return "none";
+          const transferOf = async (
+            coin: EvmCoin
+          ): Promise<{ transfer: EvmCoinTransfer; valueWei?: bigint }> => {
+            if (coin.transactions.length === 0) return { transfer: "none" };
             const transfer = stealthItemTransfer(
               coin.transactions,
               coin.address,
               nativeChainId
             );
-            // Named something that is not a transfer to this account on this chain.
-            if (transfer === undefined) return "unseen";
-            const included = async (): Promise<EvmCoinTransfer | undefined> => {
+            // Named something that is not a plain transfer to this account on this chain.
+            if (transfer === undefined) return { transfer: "unseen" };
+            const included = async (): Promise<
+              { transfer: EvmCoinTransfer; valueWei?: bigint } | undefined
+            > => {
               const receipt = await provider.getTransactionReceipt(
                 transfer.txHash
               );
               if (receipt === null) return undefined;
-              // A carried signed transaction was already checked to pay this account. A bare
-              // hash may be a contract call that pays it (an escrow payout): its success, with
-              // money at the account, is what can be verified.
-              return receipt.status === 1 ? "included" : "failed";
+              // A carried signed transaction was already checked to pay this account, and its
+              // value is its own.
+              if (transfer.valueWei !== undefined)
+                return receipt.status === 1
+                  ? { transfer: "included", valueWei: transfer.valueWei }
+                  : { transfer: "failed" };
+              // A bare hash proves nothing by being mined: anyone can name any transaction.
+              // Only one that itself pays this account counts, at what it pays. Any other
+              // (a contract call that pays the account, or someone else's transaction
+              // altogether) leaves the balance alone to decide.
+              const named = await provider.getTransaction(transfer.txHash);
+              if (named?.to?.toLowerCase() !== coin.address)
+                return { transfer: "none" };
+              return receipt.status === 1
+                ? { transfer: "included", valueWei: named.value }
+                : { transfer: "failed" };
             };
             const mined = await included();
             if (mined !== undefined) return mined;
             // Already judged unable to land: only a receipt can change that.
-            if (coin.state === "failed") return "failed";
+            if (coin.state === "failed") return { transfer: "failed" };
             if (transfer.rawTransaction === undefined)
-              return (await provider.getTransaction(transfer.txHash)) !== null
-                ? "seen"
-                : "unseen";
+              return {
+                transfer:
+                  (await provider.getTransaction(transfer.txHash)) !== null
+                    ? "seen"
+                    : "unseen",
+              };
             try {
               await provider.broadcastTransaction(transfer.rawTransaction);
-              return "seen";
+              return { transfer: "seen" };
             } catch {
               // Refused: already known, already mined, its nonce used, or not acceptable yet.
               if ((await provider.getTransaction(transfer.txHash)) !== null)
-                return (await included()) ?? "seen";
+                return (await included()) ?? { transfer: "seen" };
               const signed = Transaction.from(transfer.rawTransaction);
               const used = await provider.getTransactionCount(signed.from!);
-              if (used <= signed.nonce) return "unseen";
+              if (used <= signed.nonce) return { transfer: "unseen" };
               // The nonce is spent. By this transaction, if the chain shows it; if not, by
               // another one, and this transfer can never land. That verdict is final for the
               // money, so it is not taken from one reading: someone else (the sender, the relay)
               // may have broadcast this very transaction a moment ago, and a node can report its
               // nonce before its receipt. The chain is asked again after a pause.
-              const mined = await included();
-              if (mined !== undefined) return mined;
+              const now = await included();
+              if (now !== undefined) return now;
               await new Promise((resolve) =>
                 setTimeout(resolve, TRANSFER_FAILURE_RECHECK_MS)
               );
               if ((await provider.getTransaction(transfer.txHash)) !== null)
-                return (await included()) ?? "seen";
-              return (await included()) ?? "failed";
+                return (await included()) ?? { transfer: "seen" };
+              return (await included()) ?? { transfer: "failed" };
             }
           };
           // Reads the chain for coins and records what it shows.
@@ -2266,14 +2288,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             for (const coin of [...probed, ...counted]) {
               if (closedWallets.has(wallet)) return;
               try {
-                const transfer =
+                const read =
                   coin.state === "unspent" ? undefined : await transferOf(coin);
                 const balanceWei = await provider.getBalance(coin.address);
                 const current = coinStore.get(coin.address);
                 if (current === undefined || closedWallets.has(wallet)) continue;
                 const next = observeEvmCoin(current, {
                   balanceWei,
-                  transfer,
+                  transfer: read?.transfer,
+                  transferValueWei: read?.valueWei,
                   atMs: Date.now(),
                 });
                 if (
@@ -3129,6 +3152,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             requireOpenWallet(wallet);
             if (params.value <= 0n)
               throw new RangeError("Transfer value must be positive");
+            // The message item states the amount in an unsigned 64-bit field. A larger payment
+            // could be signed and then never described to the contact, so it is refused here.
+            if (params.value > MAX_STEALTH_ITEM_AMOUNT)
+              throw new RangeError(
+                "A payment to a contact cannot exceed 2^64-1 base units: the message item cannot state a larger amount"
+              );
             const recipientAddress = getAddress(
               params.recipient.raw
             ).toLowerCase();

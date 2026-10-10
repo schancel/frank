@@ -680,6 +680,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         ephemeralPubKey: '02' + '22'.repeat(32),
         transactions: ['1234abcd', '5678ef'],
         amount: 50_000,
+        amountWei: '50000',
         memo: 'stealth transfer',
       },
     ])

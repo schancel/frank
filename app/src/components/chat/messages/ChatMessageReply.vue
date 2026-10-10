@@ -13,6 +13,7 @@
             :amount="items.stealth.amount"
             :chain-id="items.stealth.chainId"
             :network-tag="items.stealth.networkTag"
+            :amount-wei="items.stealth.amountWei"
             :ephemeral-pub-key="items.stealth.ephemeralPubKey"
             :transactions="items.stealth.transactions"
             :memo="items.stealth.memo"

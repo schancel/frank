@@ -133,10 +133,15 @@ type WalletStatus = 'pending' | 'received' | 'not-received' | 'failed'
 export default defineComponent({
   name: 'ChatMessageStealth',
   props: {
-    /** The sender's stated amount, in the chain's base unit. */
+    /** The sender's stated amount, in the chain's base unit. A JS number: approximate. */
     amount: {
       type: [Number, String],
       required: true,
+    },
+    /** The same stated amount exactly (decimal string), when the item carries it. */
+    amountWei: {
+      type: String,
+      default: undefined,
     },
     chainId: {
       type: String,
@@ -231,15 +236,25 @@ export default defineComponent({
       if (net.includes('mon')) return 'Monad'
       return this.networkTag || this.chainId || ''
     },
+    /** What the sender stated, exactly where an exact figure exists: the wallet's record of the
+     * claim, else the item's exact field, else the item's approximate number. */
     statedWei(): bigint {
+      if (!this.outbound && this.payment !== undefined)
+        return this.payment.claimedAmountWei
       try {
-        return BigInt(this.amount ?? 0)
+        return BigInt(this.amountWei ?? this.amount ?? 0)
       } catch {
         return 0n
       }
     },
+    /** Never `received` without an amount the chain showed arriving. */
     walletStatus(): WalletStatus | undefined {
-      return this.outbound ? undefined : this.payment?.status
+      if (this.outbound) return undefined
+      const status = this.payment?.status
+      return status === 'received' &&
+        !((this.payment?.receivedAmountWei ?? 0n) > 0n)
+        ? 'pending'
+        : status
     },
     /** What arrived, as the chain showed it, once the wallet has seen it. */
     arrivedWei(): bigint | undefined {
@@ -254,7 +269,7 @@ export default defineComponent({
     /** A received payment the chain has not shown: the figure is the sender's claim, and is
      * labelled so. */
     amountIsClaim(): boolean {
-      return !this.outbound && this.walletStatus !== 'received'
+      return !this.outbound && this.arrivedWei === undefined
     },
     amountMismatch(): string {
       const arrived = this.arrivedWei

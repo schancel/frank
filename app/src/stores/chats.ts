@@ -17,7 +17,6 @@ import {
   safeChainDisplayAddress,
   toChainDisplayAddress,
 } from '../utils/chain-address'
-import { formatBalance } from '../utils/formatting'
 import { acquireOutgoingLock, withOutgoingLock } from '../utils/outgoing-lock'
 import { activeChain } from '@frank/wallet/chain'
 import { messageItems } from '../utils/message-items'
@@ -4035,7 +4034,9 @@ export const useChatStore = defineStore('chats', {
         const pictures = picturePreview(newMsg.items)
         let body = ''
         if (stealthItem.amount > 0) {
-          body = `[${formatBalance(stealthItem.amount)}] `
+          // The item's amount is the sender's claim: nothing here has seen it on the chain,
+          // so it is not announced as money received. The message shows what the wallet verifies.
+          body = '[Payment, not yet verified] '
         }
         // This store has no translator (the name fallback below is English too).
         body += pictures

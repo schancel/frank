@@ -38,7 +38,8 @@ export function encodeStealthItem(item: StealthItem): Uint8Array {
     keyType: item.keyType ?? 1,
     ephemeralPubKey,
     transactions: rawTxs,
-    amount: item.amount,
+    // The exact amount when the item has it: a JS number cannot hold most wei amounts.
+    amount: item.amountWei !== undefined ? BigInt(item.amountWei) : item.amount,
     memo: item.memo,
   })
 }
@@ -52,6 +53,11 @@ export function decodeStealthItem(
     throw new MessageItemDecodeError('stealth', 'not a stealth item frame')
   return decodeWith('stealth', () => {
     const projected = projectStealthMessageItem(parsed)
-    return { ...projected, amount: Number(projected.amount) }
+    return {
+      ...projected,
+      amount: Number(projected.amount),
+      // The frame's own integer, exact.
+      amountWei: BigInt(parsed.typed.amount).toString(),
+    }
   })
 }

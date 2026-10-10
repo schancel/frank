@@ -108,7 +108,12 @@
                 <q-tab-panel name="balance" class="q-pa-none">
                   <q-card-section class="q-py-sm">
                     <div
-                      class="text-bold text-subtitle1 text-center"
+                      class="text-subtitle1 text-center"
+                      :class="
+                        balanceUnsupported
+                          ? 'text-body2 text-grey-7'
+                          : 'text-bold'
+                      "
                       role="status"
                       aria-live="polite"
                       data-testid="wallet-balance"
@@ -122,6 +127,8 @@
                           : $t(
                               balancePresentation.status === 'loading'
                                 ? 'walletPanel.balanceLoading'
+                                : balanceUnsupported
+                                ? 'walletPanel.balanceUnsupported'
                                 : 'walletPanel.balanceUnavailable',
                             )
                       }}
@@ -647,8 +654,19 @@ export default defineComponent({
           : observation?.exactBalance) ?? undefined
       )
     })
+    // No balance reader exists for this network: said once and quietly, not as a failed fetch.
+    const balanceUnsupported = computed(() => {
+      const presentation = balancePresentation.value
+      return (
+        presentation.status === 'unavailable' &&
+        presentation.reason === 'unsupported' &&
+        !presentation.lastKnown
+      )
+    })
     const currentWalletHasError = computed(
-      () => balancePresentation.value.status === 'unavailable',
+      () =>
+        balancePresentation.value.status === 'unavailable' &&
+        !balanceUnsupported.value,
     )
 
     const currentUnitRateAvu = computed(() => {
@@ -801,6 +819,7 @@ export default defineComponent({
       balancePresentation,
       balanceObservation,
       balanceTitle,
+      balanceUnsupported,
       currentWalletHasError,
       currentWalletAvu,
       currentUnitRateAvu,

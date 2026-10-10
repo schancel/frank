@@ -442,9 +442,13 @@ describe('Wallet detail page (#570)', () => {
       mockRoute.value = { query: {}, path: `/wallet/${chain}` }
       const wrapper = mountWallet()
       await flush()
+      // Not the wording of a failed fetch, and no second error line under it.
       expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
-        'walletPanel.balanceUnavailable',
+        'walletPanel.balanceUnsupported',
       )
+      expect(
+        wrapper.find('[data-testid="wallet-balance-error"]').exists(),
+      ).toBe(false)
       expect(wrapper.text()).not.toContain('1 MON')
     },
   )

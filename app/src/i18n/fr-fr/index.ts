@@ -365,6 +365,7 @@ export default {
     confirmSeed: 'Confirmer la phrase de récupération',
     balanceLoading: 'Chargement du solde…',
     balanceUnavailable: 'Solde indisponible.',
+    balanceUnsupported: 'Le solde de ce réseau n’est pas encore affiché.',
     cordoned: '{amount} mis à l’écart',
     cordonedTooltip:
       'Reçu à votre adresse de profil. Le portefeuille surveille ces fonds mais ne les dépense pas.',

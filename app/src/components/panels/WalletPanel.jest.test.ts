@@ -164,9 +164,14 @@ test('renders list of wallets without recovery banners or demo buttons', () => {
   expect(view.find('[data-test="dogecoin-testnet-badge"]').exists()).toBe(true)
   expect(view.find('[data-test="ecash-testnet-badge"]').exists()).toBe(true)
   expect(view.find('[data-test="solana-testnet-badge"]').exists()).toBe(true)
+  // No balance reader for these networks: a quiet dash that names its reason, not the
+  // wording of a failed fetch.
   for (const chain of ['bitcoin', 'bitcoincash', 'dogecoin']) {
-    expect(view.get(`[data-test="${chain}-wallet-balance"]`).text()).toBe(
-      t('walletPanel.balanceUnavailable'),
+    const region = view.get(`[data-test="${chain}-wallet-balance"]`)
+    expect(region.text()).toBe('\u2014')
+    expect(region.attributes('title')).toBe(t('walletPanel.balanceUnsupported'))
+    expect(region.attributes('aria-label')).toBe(
+      t('walletPanel.balanceUnsupported'),
     )
   }
   for (const chain of ['ecash', 'solana']) {

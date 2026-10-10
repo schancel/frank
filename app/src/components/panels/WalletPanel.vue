@@ -18,7 +18,7 @@
                 }}</span>
                 <span
                   v-if="portfolioTotalAvu"
-                  class="text-caption text-weight-medium text-grey-8 q-ml-sm"
+                  class="text-caption text-weight-medium wallet-muted q-ml-sm"
                   data-test="portfolio-total-avu"
                 >
                   ({{ portfolioTotalAvu }})
@@ -99,14 +99,27 @@
               <q-item-label
                 caption
                 :role="wallet.isMain ? 'status' : undefined"
-                class="wallet-balance-line text-grey-8"
+                class="wallet-balance-line"
               >
-                <span :data-test="wallet.balanceDataTest">{{
-                  getWalletBalance(wallet)
-                }}</span>
+                <!-- A network whose balance this app does not read yet shows a quiet dash, not
+                the wording of a failed fetch; the reason is its title and accessible name. -->
+                <span
+                  :data-test="wallet.balanceDataTest"
+                  :title="
+                    isBalanceUnsupported(wallet)
+                      ? $t('walletPanel.balanceUnsupported')
+                      : undefined
+                  "
+                  :aria-label="
+                    isBalanceUnsupported(wallet)
+                      ? $t('walletPanel.balanceUnsupported')
+                      : undefined
+                  "
+                  >{{ getWalletBalance(wallet) }}</span
+                >
                 <span
                   v-if="getWalletAvu(wallet)"
-                  class="text-grey-7 no-shrink"
+                  class="wallet-muted no-shrink"
                   :data-test="`${wallet.id}-wallet-avu`"
                 >
                   <span class="wallet-avu-separator" aria-hidden="true">· </span
@@ -258,7 +271,18 @@ function getWalletChainLabel(wallet: WalletItemConfig): string {
   return getWalletNetworkLabel(wallet, isTestnet.value, getTranslation)
 }
 
+/** No balance reader exists for this network (as opposed to a read that failed). */
+function isBalanceUnsupported(wallet: WalletItemConfig): boolean {
+  const presentation = getPresentation(wallet.id)
+  return (
+    presentation.status === 'unavailable' &&
+    presentation.reason === 'unsupported' &&
+    !presentation.lastKnown
+  )
+}
+
 function getWalletBalance(wallet: WalletItemConfig): string {
+  if (isBalanceUnsupported(wallet)) return '\u2014'
   const presentation = getPresentation(wallet.id)
   const observation =
     presentation.status === 'available'
@@ -416,6 +440,11 @@ function openBackup() {
 
 .no-shrink {
   flex-shrink: 0;
+}
+
+/* Quieter than its neighbour in both modes; a fixed grey was unreadable on the dark drawer. */
+.wallet-muted {
+  opacity: 0.75;
 }
 
 .wallet-header-row {

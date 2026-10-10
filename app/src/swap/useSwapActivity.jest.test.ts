@@ -16,8 +16,27 @@ jest.mock('./evm-swap-session', () => ({
   openEvmSwapSession: (...args: unknown[]) => mockOpen(...(args as [])),
 }))
 
+const mockSolanaObserve = jest.fn()
+jest.mock('src/composables/useSolanaSwap', () => {
+  class SolanaSwapRecordMismatchError extends Error {}
+  return {
+    SolanaSwapRecordMismatchError,
+    // Solana networks have their own way to say whose swaps are whose and what one did.
+    solanaSwapActivity: (chain: string) =>
+      chain === 'solana-devnet'
+        ? {
+            account: async () => 'SoLAccount',
+            venueName: (id: string) =>
+              id === 'orca-whirlpools' ? 'Orca Whirlpools (devnet)' : undefined,
+            observe: (...args: unknown[]) => mockSolanaObserve(...args),
+          }
+        : undefined,
+  }
+})
+
 import { useSwapStore } from '../stores/swaps'
 import { SwapRecordMismatchError } from '@frank/wallet/swap/evm-dex'
+import { SolanaSwapRecordMismatchError } from 'src/composables/useSolanaSwap'
 import { useSwapActivity } from './useSwapActivity'
 
 const note = (over: Partial<SwapRecordItem> = {}): SwapRecordItem => ({
@@ -58,6 +77,7 @@ beforeEach(() => {
   window.localStorage.clear()
   setActivePinia(createPinia())
   mockObserve.mockReset()
+  mockSolanaObserve.mockReset()
   mockOpen.mockClear()
 })
 
@@ -187,5 +207,73 @@ describe('Recent Activity', () => {
     } finally {
       clock.mockRestore()
     }
+  })
+
+  describe('on a Solana network', () => {
+    const solanaNote = (over: Partial<SwapRecordItem> = {}) =>
+      note({
+        swapId: 'b'.repeat(64),
+        chainIdentifier: 'solana-devnet',
+        venueId: 'orca-whirlpools',
+        txHash: 'SIG123',
+        account: 'SoLAccount',
+        assetIn: { symbol: 'SOL', decimals: 9 },
+        amountIn: '10000000',
+        assetOut: { symbol: 'devUSDC', address: 'mint', decimals: 6 },
+        minimumAmountOut: '221089',
+        route: '{"label":"Orca Whirlpool"}',
+        ...over,
+      })
+
+    it('lists the account’s swaps from its notes, with what each did read from the chain', async () => {
+      mockSolanaObserve.mockResolvedValue({
+        status: 'confirmed',
+        amountOut: 222_201n,
+        fee: 5000n,
+      })
+      useSwapStore().handleSwapItem(solanaNote())
+      // Another account's record, and another network's, are not this list's.
+      useSwapStore().handleSwapItem(
+        solanaNote({ swapId: 'c'.repeat(64), account: 'Other' }),
+      )
+      useSwapStore().handleSwapItem(note())
+      const { rows } = await mountActivity('solana-devnet')
+      await flushPromises()
+      expect(mockOpen).not.toHaveBeenCalled()
+      expect(rows.value).toEqual([
+        expect.objectContaining({
+          id: 'b'.repeat(64),
+          txHash: 'SIG123',
+          fromAmount: '0.01',
+          fromAsset: 'SOL',
+          toAmount: '0.222201',
+          toAsset: 'devUSDC',
+          route: 'Orca Whirlpools (devnet)',
+          status: 'confirmed',
+        }),
+      ])
+    })
+
+    it('shows the minimum while the chain has nothing final, and never a record the chain disowns', async () => {
+      mockSolanaObserve.mockResolvedValueOnce(undefined)
+      useSwapStore().handleSwapItem(solanaNote())
+      const { rows, readOutcomes } = await mountActivity('solana-devnet')
+      await flushPromises()
+      expect(rows.value).toEqual([
+        expect.objectContaining({ status: 'pending', toAmount: '0.221089' }),
+      ])
+
+      mockSolanaObserve.mockRejectedValue(new SolanaSwapRecordMismatchError())
+      useSwapStore().handleSwapItem(
+        solanaNote({ swapId: 'd'.repeat(64), txHash: 'FORGED' }),
+      )
+      await flushPromises()
+      await readOutcomes()
+      await flushPromises()
+      expect(rows.value.map(row => row.txHash)).toEqual(['SIG123'])
+      expect(useSwapStore().outcomes['d'.repeat(64)]).toEqual({
+        status: 'foreign',
+      })
+    })
   })
 })

@@ -571,8 +571,12 @@ describe('venues', () => {
 
   it('is the dex list of the network’s registry row, and of no other row', () => {
     expect(PROTOCOL_CHAINS['monad-testnet']!.dex).toEqual(MONAD_TESTNET_DEX)
-    for (const [id, entry] of Object.entries(PROTOCOL_CHAINS))
-      if (id !== 'monad-testnet') expect(entry.dex).toBeUndefined()
+    // No other EVM row lists one; a Solana row lists its own family's entries, never these.
+    for (const [id, entry] of Object.entries(PROTOCOL_CHAINS)) {
+      if (id === 'monad-testnet') continue
+      if (entry.family === 'evm') expect(entry.dex).toBeUndefined()
+      expect(listEvmSwapVenues(id)).toEqual([])
+    }
   })
 
   it('does not offer a disabled entry: nothing else decides whether a network has a swap', () => {

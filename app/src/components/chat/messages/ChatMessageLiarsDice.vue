@@ -16,7 +16,7 @@
         color="amber-9"
         text-color="black"
         class="text-weight-bold"
-        :label="`${displayMon(item.potWei)} Pot`"
+        :label="`${displayAmount(item.potWei)} Pot`"
       />
     </div>
 
@@ -185,7 +185,7 @@
         {{ item.winnerAddress.slice(0, 8) }}... won the table!
       </div>
       <div v-if="item.potWei" class="text-caption text-weight-bold">
-        Pot: {{ displayMon(item.potWei) }}
+        Pot: {{ displayAmount(item.potWei) }}
       </div>
     </div>
 
@@ -288,7 +288,8 @@
 <script lang="ts">
 import { defineComponent, type PropType, ref } from 'vue'
 import type { LiarsDiceItem } from '@frank/cashweb/types/messages'
-import { formatMon } from '@frank/wallet/monad-amount'
+import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from '../../../utils/chain-amount'
 
 const DICE_UNICODE = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅']
 
@@ -315,10 +316,10 @@ export default defineComponent({
       return DICE_UNICODE[face] ?? `${face}`
     }
 
-    const displayMon = (weiStr?: string): string => {
+    const displayAmount = (weiStr?: string): string => {
       if (!weiStr) return '0'
       try {
-        return formatMon(BigInt(weiStr))
+        return formatDisplayAmount(activeChain, BigInt(weiStr))
       } catch {
         return weiStr
       }
@@ -368,7 +369,7 @@ export default defineComponent({
       bidQuantity,
       bidFace,
       diceUnicode,
-      displayMon,
+      displayAmount,
       isTurn,
       isEliminated,
       getDiceCount,

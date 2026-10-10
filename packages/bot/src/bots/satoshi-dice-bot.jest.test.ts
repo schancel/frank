@@ -275,10 +275,10 @@ describe("SatoshiDiceBot", () => {
       await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
       return (h.sent[0].items.find((i) => i.type === "text") as { text: string }).text;
     };
-    expect(await said()).toContain("The most one roll pays is 3.0 MON.");
+    expect(await said()).toContain("The most one roll pays is 3.0 MONT.");
     // The bank shrinks: the next statement of the table says so.
     balance = 10n ** 18n / 2n + RESERVE;
-    expect(await said()).toContain("The most one roll pays is 0.5 MON.");
+    expect(await said()).toContain("The most one roll pays is 0.5 MONT.");
     // A bet whose win the bank covered when the table was stated, and no longer does when
     // the bet arrives, is refused and refunded.
     const { bet } = await table(h, bot, "win");

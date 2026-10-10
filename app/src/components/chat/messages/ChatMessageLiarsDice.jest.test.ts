@@ -75,7 +75,7 @@ describe('ChatMessageLiarsDice.vue', () => {
     })
 
     expect(wrapper.text()).toContain("Liar's Dice (Perudo)")
-    expect(wrapper.text()).toContain('0.1 MON Pot')
+    expect(wrapper.text()).toContain('0.1 MONT Pot')
     expect(wrapper.text()).toContain('0xAlic')
     expect(wrapper.text()).toContain('0xBob')
 

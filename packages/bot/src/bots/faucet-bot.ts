@@ -5,7 +5,6 @@ import type {
   BotMessageContext,
   NewUserEvent,
 } from "@frank/bot-framework";
-import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_SERVICE, BOT_ROLE_FAUCET } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
 import { replyFree, sendFree } from "./money";
@@ -61,7 +60,7 @@ export class FaucetBot implements FrankBotDefinition {
   getProfile(): BotProfile {
     return {
       name: "Monad Faucet",
-      bio: "Automated testnet faucet. Grants starter testnet MON to newly registered accounts.",
+      bio: "Automated testnet faucet. Grants starter testnet coins to newly registered accounts.",
       avatarPng: generateAvatarPng("faucet", [40, 160, 220]),
       bot: true,
       accountType: ACCOUNT_TYPE_SERVICE,
@@ -100,8 +99,8 @@ export class FaucetBot implements FrankBotDefinition {
     return next;
   }
 
-  private sentText(address: string, txHash: string): string {
-    return `Sent ${formatMon(
+  private sentText(ctx: BotContext, address: string, txHash: string): string {
+    return `Sent ${ctx.formatAmount(
       this.amountWei
     )} to your profile address ${address} (transaction ${txHash}). It is part of the balance your wallet shows.`;
   }
@@ -116,7 +115,7 @@ export class FaucetBot implements FrankBotDefinition {
       await sendFree(ctx, user.address, [
         {
           type: "text",
-          text: `Welcome to Frank. ${this.sentText(user.address, result.txHash)}`,
+          text: `Welcome to Frank. ${this.sentText(ctx, user.address, result.txHash)}`,
         },
       ]);
     } catch (err) {
@@ -130,7 +129,7 @@ export class FaucetBot implements FrankBotDefinition {
       const result = await this.grant(ctx, msgCtx.peerAddress);
       text =
         result.outcome === "granted"
-          ? this.sentText(msgCtx.peerAddress, result.txHash)
+          ? this.sentText(ctx, msgCtx.peerAddress, result.txHash)
           : result.outcome === "already"
           ? "You have already received funds from the faucet. It grants once per account."
           : "The faucet is at its reserve. Please check back later.";

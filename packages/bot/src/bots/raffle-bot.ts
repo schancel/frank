@@ -14,7 +14,6 @@ import {
   buildRaffleDrawItem,
   sha256Hex,
 } from "@frank/wallet/message-item-plugins/raffle/draw";
-import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
 import {
@@ -135,7 +134,7 @@ export class RaffleBot implements FrankBotDefinition {
     };
   }
 
-  private invitation(round: RaffleRoundState): MessageItem[] {
+  private invitation(ctx: BotContext, round: RaffleRoundState): MessageItem[] {
     return [
       this.status(round, "announce"),
       {
@@ -144,9 +143,9 @@ export class RaffleBot implements FrankBotDefinition {
           round.status === "open"
             ? `Round ${round.raffleId.slice(0, 8)}: ${round.entrants.length} of ${
                 round.maxEntries
-              } entries. Entry is ${formatMon(
+              } entries. Entry is ${ctx.formatAmount(
                 BigInt(round.entryPriceWei)
-              )}, paid with your entry message; the winner takes all ${formatMon(
+              )}, paid with your entry message; the winner takes all ${ctx.formatAmount(
                 BigInt(round.entryPriceWei) * BigInt(round.maxEntries)
               )}. Use the card to enter.`
             : `Round ${round.raffleId.slice(
@@ -160,7 +159,7 @@ export class RaffleBot implements FrankBotDefinition {
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     try {
       const round = await this.serial(() => this.round(ctx));
-      await sendFree(ctx, user.address, this.invitation(round));
+      await sendFree(ctx, user.address, this.invitation(ctx, round));
     } catch (err) {
       console.warn(`[raffle] Failed to welcome new user ${user.address}:`, err);
     }
@@ -181,7 +180,7 @@ export class RaffleBot implements FrankBotDefinition {
     );
     if (!entry && !typed) {
       const round = await this.serial(() => this.round(ctx));
-      await replyFree(msgCtx, this.invitation(round));
+      await replyFree(msgCtx, this.invitation(ctx, round));
       return;
     }
     // What the entry paid, on chain; looked up before taking the round's turn, since it can wait.
@@ -214,7 +213,7 @@ export class RaffleBot implements FrankBotDefinition {
     // An entry is a confirmed payment of the entry price. Nothing else is.
     if (received.unconfirmed.length > 0 || received.confirmedWei < price)
       return refused(
-        `Entry is ${formatMon(price)} and ${formatMon(
+        `Entry is ${ctx.formatAmount(price)} and ${ctx.formatAmount(
           received.confirmedWei
         )} is confirmed as paid with your message. You are not entered.`
       );
@@ -240,7 +239,7 @@ export class RaffleBot implements FrankBotDefinition {
             text:
               `You are entered: ${round.entrants.length} of ${round.maxEntries}. The draw happens when the round is full.` +
               (excessWei > 0n
-                ? ` You paid ${formatMon(excessWei)} more than the entry price; it is returned with this message.`
+                ? ` You paid ${ctx.formatAmount(excessWei)} more than the entry price; it is returned with this message.`
                 : ""),
           },
         ],
@@ -288,7 +287,7 @@ export class RaffleBot implements FrankBotDefinition {
             text: `Round ${round.raffleId.slice(0, 8)} is drawn. ${draw.winnerAddress.slice(
               0,
               10
-            )}… won and has been paid the pot of ${formatMon(BigInt(draw.potWei))}.`,
+            )}… won and has been paid the pot of ${ctx.formatAmount(BigInt(draw.potWei))}.`,
           },
         ],
       });
@@ -327,7 +326,7 @@ export class RaffleBot implements FrankBotDefinition {
           draw,
           {
             type: "text",
-            text: `You won round ${round.raffleId.slice(0, 8)}. This message pays you the pot of ${formatMon(pot)}.`,
+            text: `You won round ${round.raffleId.slice(0, 8)}. This message pays you the pot of ${ctx.formatAmount(pot)}.`,
           },
         ],
         valueWei: pot,

@@ -10,7 +10,7 @@ export interface GameTableDetails {
   tableId: string;
   /** Address of the user who created / is hosting the table. */
   hostAddress: string;
-  /** Human-readable buy-in amount or limits (e.g. "1000 chips (Blinds: 10/20)", "0.1 MON"). */
+  /** Human-readable buy-in amount or limits (e.g. "1000 chips (Blinds: 10/20)", "0.1 MONT"). */
   buyInAmount: string;
   /** Current number of seated / joined players. */
   currentPlayers: number;

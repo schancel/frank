@@ -9,7 +9,6 @@ import type {
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { MessageItem, RpsItem } from "@frank/cashweb/types/messages";
-import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
   evaluateRps,
@@ -31,10 +30,10 @@ import {
 /** What the bot says to anything that is not a move. It names the largest stake right now
  * (half of what the bank has available: a win pays twice the stake), so a player knows it before
  * a stake is refused for it. */
-export function rpsHelp(maxWagerWei: bigint): string {
+export function rpsHelp(tableLimit: string): string {
   return `Rock-Paper-Scissors. I pick my move first and send you its hash; you pick yours; I reveal my move and the salt, and the app checks they match the hash.
 
-Your stake is what your move message pays me, up to ${formatMon(maxWagerWei)}: a win pays twice the stake, a tie returns it. Amounts typed in chat are not bets. Use the card below, or type rock, paper or scissors to play for nothing.`;
+Your stake is what your move message pays me, up to ${tableLimit}: a win pays twice the stake, a tie returns it. Amounts typed in chat are not bets. Use the card below, or type rock, paper or scissors to play for nothing.`;
 }
 
 interface Match {
@@ -79,7 +78,7 @@ export class RpsBot implements FrankBotDefinition {
     try {
       await sendFree(ctx, user.address, [
         await this.start(ctx, user.address),
-        { type: "text", text: `Welcome to RPS Arena.\n\n${rpsHelp(await this.limit(ctx))}` },
+        { type: "text", text: `Welcome to RPS Arena.\n\n${rpsHelp(ctx.formatAmount(await this.limit(ctx)))}` },
       ]);
     } catch (err) {
       console.warn(`[rps] Failed to welcome ${user.address}:`, err);
@@ -158,7 +157,7 @@ export class RpsBot implements FrankBotDefinition {
     }
     await replyFree(msgCtx, [
       await this.start(ctx, peer),
-      { type: "text", text: rpsHelp(await this.limit(ctx)) },
+      { type: "text", text: rpsHelp(ctx.formatAmount(await this.limit(ctx))) },
     ]);
   }
 
@@ -205,7 +204,7 @@ export class RpsBot implements FrankBotDefinition {
     const minWagerWei = await tableMinimumWei(ctx, this.minWagerWei);
     if (wagerWei > 0n && wagerWei < minWagerWei)
       return refused(
-        `The smallest stake at this table is ${formatMon(
+        `The smallest stake at this table is ${ctx.formatAmount(
           minWagerWei
         )}. Nothing was played.`
       );
@@ -214,14 +213,14 @@ export class RpsBot implements FrankBotDefinition {
     const limitWei = await this.limit(ctx);
     if (wagerWei > limitWei)
       return refused(
-        `That stake is over the table limit of ${formatMon(
+        `That stake is over the table limit of ${ctx.formatAmount(
           limitWei
         )}. Nothing was played.`
       );
     // The stake is what this message is confirmed, on chain, to have paid. Never what it says.
     if (received.unconfirmed.length > 0 || received.confirmedWei < wagerWei)
       return refused(
-        `Your move states a stake of ${formatMon(wagerWei)} but ${formatMon(
+        `Your move states a stake of ${ctx.formatAmount(wagerWei)} but ${ctx.formatAmount(
           received.confirmedWei
         )} is confirmed as paid with it. Nothing was played.`
       );
@@ -248,10 +247,10 @@ export class RpsBot implements FrankBotDefinition {
       (wagerWei === 0n
         ? " Nothing was staked."
         : payoutWei > 0n
-        ? ` This message pays you ${formatMon(payoutWei)}.`
-        : ` Your stake of ${formatMon(wagerWei)} is lost.`) +
+        ? ` This message pays you ${ctx.formatAmount(payoutWei)}.`
+        : ` Your stake of ${ctx.formatAmount(wagerWei)} is lost.`) +
       (excessWei > 0n
-        ? ` You paid ${formatMon(excessWei)} more than your stake; it is returned with this message.`
+        ? ` You paid ${ctx.formatAmount(excessWei)} more than your stake; it is returned with this message.`
         : "");
     const items: MessageItem[] = [result, { type: "text", text }];
     // The result, with its payout, is written down before the move is given up and before

@@ -41,6 +41,10 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
     ...actual,
     createEvmChain: jest.fn(() => ({
       chainIdentifier: "monad-testnet",
+      // A unit no network has: what a bot prints can only have come from this chain object.
+      unit: "UNIT",
+      toDisplayAmount: (raw: bigint) => `${raw}`,
+      fromDisplayAmount: (display: string) => BigInt(display),
       directMessages: {
         fetchSince: mockFetchSince,
         send: mockSend,
@@ -157,6 +161,22 @@ describe("several bots on one host", () => {
       watchRegistrations: false,
       ...options,
     }));
+
+  it("gives each bot the amount formatter of the chain the host runs on", async () => {
+    newHost();
+    await host!.registerAll([
+      bot("teller", async (_message, ctx) => [
+        {
+          type: "text",
+          text: `${ctx.formatAmount(5n)} for ${ctx.parseAmount("7")}`,
+        },
+      ]),
+    ]);
+    mockFetchSince.mockResolvedValue([inboundFor("teller", "how much?")]);
+    await pollAllBots();
+    await until(() => textsSent().length === 1);
+    expect(textsSent()).toEqual(["5 UNIT for 7"]);
+  });
 
   // On 05c93db0 the host polled its bots one after another inside one pass: while bot A's
   // mailbox read hung, bot B was never polled again.

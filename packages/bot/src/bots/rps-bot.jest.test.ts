@@ -176,7 +176,7 @@ describe("RpsBot", () => {
     await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
     expect(
       (h.sent[0].items.find((i) => i.type === "text") as { text: string }).text
-    ).toContain("up to 0.5 MON");
+    ).toContain("up to 0.5 MONT:");
     const refused = await match(h, bot, "win");
     balance = STAKE * 2n + RESERVE - 1n;
     await bot.onMessage(h.message([refused.mine], [h.pay(STAKE)]), h.ctx);

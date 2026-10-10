@@ -9,7 +9,6 @@ import type {
 } from "@frank/bot-framework";
 import type { DigitalGoodsItem, MessageItem } from "@frank/cashweb/types/messages";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_MERCHANT } from "@frank/codec";
-import { formatMon } from "@frank/wallet/monad-amount";
 import { generateAvatarPng } from "../../bot-directory";
 import {
   Outbox,
@@ -130,7 +129,7 @@ export class VendorBot implements FrankBotDefinition {
       return refused(`There is no item "${request.itemId}". Nothing was sold.`);
     if (received.unconfirmed.length > 0 || received.confirmedWei < item.priceWei)
       return refused(
-        `"${item.itemId}" costs ${formatMon(item.priceWei)} and ${formatMon(
+        `"${item.itemId}" costs ${ctx.formatAmount(item.priceWei)} and ${ctx.formatAmount(
           received.confirmedWei
         )} is confirmed as paid with your message. Nothing was sold.`
       );
@@ -151,7 +150,7 @@ export class VendorBot implements FrankBotDefinition {
             text:
               `Thank you. Here is "${item.itemId}".` +
               (excessWei > 0n
-                ? ` You paid ${formatMon(excessWei)} more than the price; it is returned with this message.`
+                ? ` You paid ${ctx.formatAmount(excessWei)} more than the price; it is returned with this message.`
                 : ""),
           },
         ],

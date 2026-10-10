@@ -9,6 +9,7 @@ import {
 } from "./table-announcements";
 import { PokerBot } from "./poker-bot";
 import { LiarsDiceBot } from "./liars-dice-bot";
+import { amountsOf } from "./chain-amounts.testutil";
 import type { BotContext, BotMessageContext } from "@frank/bot-framework";
 
 describe("Game Table Announcements for Topic Discovery", () => {
@@ -30,7 +31,7 @@ describe("Game Table Announcements for Topic Discovery", () => {
     gameType: "liars-dice",
     tableId: "dice9876efgh",
     hostAddress: "0x3333333333333333333333333333333333333333",
-    buyInAmount: "0.1 MON",
+    buyInAmount: "0.1 MONT",
     currentPlayers: 1,
     maxPlayers: 6,
     botAddress: "0x4444444444444444444444444444444444444444",
@@ -71,7 +72,7 @@ describe("Game Table Announcements for Topic Discovery", () => {
         expect(entry.gameType).toBe("liars-dice");
         expect(entry.tableId).toBe("dice9876efgh");
         expect(entry.hostAddress).toBe("0x3333333333333333333333333333333333333333");
-        expect(entry.buyInAmount).toBe("0.1 MON");
+        expect(entry.buyInAmount).toBe("0.1 MONT");
         expect(entry.currentPlayers).toBe(1);
         expect(entry.maxPlayers).toBe(6);
         expect(entry.botAddress).toBe("0x4444444444444444444444444444444444444444");
@@ -215,6 +216,7 @@ describe("Game Table Announcements for Topic Discovery", () => {
       const mockPublish = jest.fn(async () => ({ payloadDigest: "0xdicedigest" }));
       const mockBotCtx: Partial<BotContext> = {
         address: "0xLiarsDiceBotAddress",
+        ...amountsOf("monad-testnet"),
         publishTopicMessage: mockPublish,
         state: { get: jest.fn(), put: jest.fn() } as any,
       };
@@ -235,7 +237,8 @@ describe("Game Table Announcements for Topic Discovery", () => {
       expect(publishArg.topic).toBe(DEFAULT_GAMES_TOPIC);
       expect(publishArg.entries[0].title).toContain("Liar's Dice");
       expect(publishArg.entries[0].message).toContain("Host**: `0xBob`");
-      expect(publishArg.entries[0].message).toContain("0.5 MON");
+      // The unit of the bot's chain, once (the line used to read "0.5 MON MON").
+      expect(publishArg.entries[0].message).toContain("• **Buy-in**: 0.5 MONT\n");
     });
   });
 });

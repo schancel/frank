@@ -14,7 +14,6 @@ import {
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
 } from "@frank/wallet/message-item-plugins/blackjack/game";
-import { formatMon } from "@frank/wallet/monad-amount";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
@@ -255,7 +254,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       { gameId, peer, conversationId },
       0,
       built.item,
-      `Blackjack: bet between ${formatMon(minBet)} and ${formatMon(
+      `Blackjack: bet between ${ctx.formatAmount(minBet)} and ${ctx.formatAmount(
         maxBet
       )}. Your bet is what your bet message pays the dealer.`
     );
@@ -412,7 +411,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       return built && "item" in built
         ? {
             item: built.item,
-            text: `Challenge accepted. Bet up to ${formatMon(wanted)}.`,
+            text: `Challenge accepted. Bet up to ${ctx.formatAmount(wanted)}.`,
           }
         : undefined;
     }
@@ -425,9 +424,9 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         ? "Card dealt."
         : step.item.action === "reveal"
         ? step.payWei
-          ? `Hand over. This message pays you ${formatMon(step.payWei)}.`
+          ? `Hand over. This message pays you ${ctx.formatAmount(step.payWei)}.`
           : "Hand over."
-        : `This message returns ${formatMon(
+        : `This message returns ${ctx.formatAmount(
             step.payWei ?? 0n
           )} the hand did not accept.`;
     return { item: step.item, text, payWei: step.payWei };

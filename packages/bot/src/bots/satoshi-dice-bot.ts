@@ -12,7 +12,6 @@ import type {
   MessageItem,
   SatoshiDiceItem,
 } from "@frank/cashweb/types/messages";
-import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
   DICE_DEFAULT_TARGET,
@@ -39,8 +38,8 @@ export { BANK_RESERVE_WEI };
 
 /** What the bot says to anything that is not a bet. It names the most a roll can pay right
  * now (what the bank has available), so a player knows it before a bet is refused for it. */
-export function diceHelp(maxPayoutWei: bigint): string {
-  return `Satoshi Dice: pick a target, and you win if the number rolled (0 to 65,535) is below it. 1.9% house edge. The most one roll pays is ${formatMon(maxPayoutWei)}.
+export function diceHelp(tableLimit: string): string {
+  return `Satoshi Dice: pick a target, and you win if the number rolled (0 to 65,535) is below it. 1.9% house edge. The most one roll pays is ${tableLimit}.
 
 How a roll is fair: I publish the hash of a secret before you bet. Your bet adds a random value of your own. The number is derived from both, and I reveal the secret with the result, so the app can check that the secret matches the hash and that the number, outcome and payout follow from it.
 
@@ -90,7 +89,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     try {
       await sendFree(ctx, user.address, [
         await this.offer(ctx, user.address),
-        { type: "text", text: `Welcome to Satoshi Dice.\n\n${diceHelp(await this.limit(ctx))}` },
+        { type: "text", text: `Welcome to Satoshi Dice.\n\n${diceHelp(ctx.formatAmount(await this.limit(ctx)))}` },
       ]);
     } catch (err) {
       console.warn(`[dice] Failed to welcome ${user.address}:`, err);
@@ -138,7 +137,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     // is ever a stake.
     await replyFree(msgCtx, [
       await this.offer(ctx, msgCtx.peerAddress),
-      { type: "text", text: diceHelp(await this.limit(ctx)) },
+      { type: "text", text: diceHelp(ctx.formatAmount(await this.limit(ctx))) },
     ]);
   }
 
@@ -193,7 +192,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       (wagerWei < minWagerWei || dicePayoutWei(wagerWei, target) < minWagerWei)
     )
       return refused(
-        `The smallest stake at this table is ${formatMon(
+        `The smallest stake at this table is ${ctx.formatAmount(
           minWagerWei
         )}, and a win must pay at least that. No roll was made.`
       );
@@ -202,14 +201,14 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     const limitWei = await this.limit(ctx);
     if (wagerWei > 0n && dicePayoutWei(wagerWei, target) > limitWei)
       return refused(
-        `That stake could win more than the table limit of ${formatMon(
+        `That stake could win more than the table limit of ${ctx.formatAmount(
           limitWei
         )} per roll. No roll was made.`
       );
     // The stake is what this message is confirmed, on chain, to have paid. Never what it says.
     if (received.unconfirmed.length > 0 || received.confirmedWei < wagerWei)
       return refused(
-        `Your bet states a stake of ${formatMon(wagerWei)} but ${formatMon(
+        `Your bet states a stake of ${ctx.formatAmount(wagerWei)} but ${ctx.formatAmount(
           received.confirmedWei
         )} is confirmed as paid with it. No roll was made.`
       );
@@ -244,10 +243,10 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       (wagerWei === 0n
         ? " Free roll, nothing staked."
         : isWin
-        ? ` This message pays you ${formatMon(payoutWei)}.`
-        : ` Your stake of ${formatMon(wagerWei)} is lost.`) +
+        ? ` This message pays you ${ctx.formatAmount(payoutWei)}.`
+        : ` Your stake of ${ctx.formatAmount(wagerWei)} is lost.`) +
       (excessWei > 0n
-        ? ` You paid ${formatMon(excessWei)} more than your stake; it is returned with this message.`
+        ? ` You paid ${ctx.formatAmount(excessWei)} more than your stake; it is returned with this message.`
         : "");
     const items: MessageItem[] = [result, { type: "text", text }];
     // The result, with its payout, is written down before the secret is given up and before

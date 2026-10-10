@@ -88,7 +88,7 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
   {
     key: 'faucet',
     name: 'Monad Faucet',
-    bio: 'Automated testnet faucet. Grants starter testnet MON to newly registered accounts.',
+    bio: 'Automated testnet faucet. Grants starter testnet coins to newly registered accounts.',
     identityEnv: 'FAUCET_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/faucet-bot-identity.json',
     accent: [40, 160, 220],

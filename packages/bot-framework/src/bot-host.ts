@@ -50,6 +50,7 @@ import {
   type NewUserEvent,
   type PreparedReply,
 } from "./types";
+import { chainAmounts } from "./amounts";
 import { claimTransfer } from "./claims";
 import { EVMNonceSequencer } from "./nonce-sequencer";
 import { LevelBotStateStore } from "./state-store";
@@ -557,6 +558,7 @@ export class FrankBotHost {
         subject: botSubject,
         relayBaseUrl: this.options.relayBaseUrl,
         networkTag: this.options.networkTag,
+        ...chainAmounts(this.chain),
         provider: this.provider,
         state,
         subscriptions,

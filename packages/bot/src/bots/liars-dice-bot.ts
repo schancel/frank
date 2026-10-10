@@ -21,7 +21,6 @@ import type {
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { MessageItem, LiarsDiceItem } from "@frank/cashweb/types/messages";
-import { formatMon, parseMon } from "@frank/wallet/monad-amount";
 import { keccak256, toUtf8Bytes } from "ethers";
 import {
   createLiarsDiceGame,
@@ -257,7 +256,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         let buyInWei = DEFAULT_BUY_IN_WEI;
         if (buyInStr) {
           try {
-            buyInWei = parseMon(buyInStr);
+            buyInWei = ctx.parseAmount(buyInStr);
           } catch {
             // Keep default
           }
@@ -289,7 +288,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
           gameType: "liars-dice",
           tableId,
           hostAddress: sender,
-          buyInAmount: `${formatMon(buyInWei)} MON`,
+          buyInAmount: ctx.formatAmount(buyInWei),
           currentPlayers: game.players.length,
           maxPlayers: game.maxPlayers,
           botAddress: ctx.address,
@@ -299,7 +298,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         await msgCtx.reply([
           {
             type: "text",
-            text: `🎲 Table **${tableId}** created! Buy-in: ${formatMon(buyInWei)} MON. Joined: 1/${game.maxPlayers}. Type \`/table join\` to join!`,
+            text: `🎲 Table **${tableId}** created! Buy-in: ${ctx.formatAmount(buyInWei)}. Joined: 1/${game.maxPlayers}. Type \`/table join\` to join!`,
           },
           item,
         ]);
@@ -429,7 +428,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
       }
 
       if (game.status === "resolved") {
-        msg += `\n\n🏆 **GAME OVER!** Winner: ${game.winnerAddress?.slice(0, 8)}! Pot: ${formatMon(game.potWei)} MON.`;
+        msg += `\n\n🏆 **GAME OVER!** Winner: ${game.winnerAddress?.slice(0, 8)}! Pot: ${ctx.formatAmount(game.potWei)}.`;
         const txHash = await this.settleGameEscrow(game, ctx);
         if (txHash) {
           msg += `\n⛓️ **On-Chain Settlement:** \`${txHash}\` (GenericHTLC.batchDistribute)`;
@@ -452,7 +451,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
       await msgCtx.reply([
         {
           type: "text",
-          text: `📊 Table ${game.tableId} | Round ${game.roundNumber} | Pot: ${formatMon(game.potWei)} MON | Players: ${game.players.length}`,
+          text: `📊 Table ${game.tableId} | Round ${game.roundNumber} | Pot: ${ctx.formatAmount(game.potWei)} | Players: ${game.players.length}`,
         },
         item,
       ]);

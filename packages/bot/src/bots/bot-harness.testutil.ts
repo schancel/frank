@@ -13,6 +13,8 @@ import type {
   StampPaymentInfo,
 } from "@frank/bot-framework";
 
+import { amountsOf } from "./chain-amounts.testutil";
+
 export function memoryState(
   data = new Map<string, string>(),
   prefix = ""
@@ -50,7 +52,12 @@ export const PLAYER = "0x" + "a1".repeat(20);
 let counter = 0;
 const hash = () => "0x" + (++counter).toString(16).padStart(64, "0");
 
-export function harness(data = new Map<string, string>()) {
+/** `chainIdentifier`: the network the bot is composed for; its amounts are written as that
+ * network's chain writes them. */
+export function harness(
+  data = new Map<string, string>(),
+  chainIdentifier = "monad-testnet"
+) {
   /** Messages the wallet delivered, in order. */
   const sent: Sent[] = [];
   /** message ID -> the wallet's own record of its attempt, which outlives a bot restart. */
@@ -113,6 +120,7 @@ export function harness(data = new Map<string, string>()) {
     subject: "02" + "b0".repeat(32),
     relayBaseUrl: "http://relay.invalid",
     networkTag: "MONT",
+    ...amountsOf(chainIdentifier),
     provider: {
       getTransactionReceipt: async (txHash: string) => {
         const tx = chain.get(txHash);

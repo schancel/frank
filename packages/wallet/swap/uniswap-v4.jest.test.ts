@@ -523,6 +523,10 @@ describe('quote, at the node seam', () => {
         { to: deployment.universalRouter, data: '0x00', value: 0n },
         account,
       ),
-    ).toEqual({ gasLimit: 240_000n, maxFeePerGas: 5n, maximumFeeWei: 1_200_000n })
+    ).toEqual({
+      gasLimit: 240_000n,
+      maxFeePerGas: 5n,
+      maximumFeeWei: 1_200_000n,
+    })
   })
 })

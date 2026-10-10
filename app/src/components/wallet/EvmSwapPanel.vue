@@ -1,0 +1,1409 @@
+<template>
+  <div class="evm-swap-panel" data-testid="evm-swap-panel">
+    <div
+      v-if="unavailable"
+      class="q-pa-md text-body2 text-grey-7"
+      role="status"
+      data-testid="swap-unavailable"
+    >
+      {{ $t(unavailableKey) }}
+    </div>
+
+    <div v-else class="column q-gutter-y-sm">
+      <div class="row items-center justify-between q-px-xs">
+        <div class="row items-center q-gutter-x-xs">
+          <q-icon name="swap_horiz" color="primary" size="18px" />
+          <span class="text-subtitle2 text-weight-bold" data-testid="swap-venue">
+            {{ $t('swap.venue') }}
+          </span>
+        </div>
+        <span class="text-caption text-grey-7" data-testid="swap-venue-note">
+          {{ $t('swap.venueNote', { maintainer }) }}
+        </span>
+      </div>
+
+      <!-- Result of the last swap -->
+      <q-card
+        v-if="phase === 'done' && outcome"
+        flat
+        bordered
+        class="q-pa-md swap-card"
+        :class="`swap-card--${outcome.status}`"
+        role="status"
+        data-testid="swap-result"
+      >
+        <div class="row items-center q-gutter-x-sm q-mb-xs">
+          <q-icon :name="resultIcon" :color="resultColor" size="22px" />
+          <span class="text-subtitle1 text-weight-bold">
+            {{ $t(resultTitleKey) }}
+          </span>
+        </div>
+        <div
+          v-if="outcome.status === 'confirmed' && outcome.received"
+          class="text-h6 text-weight-bold"
+          :title="outcome.receivedExact"
+          data-testid="swap-result-received"
+        >
+          {{ outcome.received }} {{ outcome.toSymbol }}
+        </div>
+        <div class="text-body2 text-grey-7" data-testid="swap-result-detail">
+          {{ $t(resultDetailKey, resultDetailParams) }}
+        </div>
+        <div
+          v-if="outcome.fee"
+          class="text-caption text-grey-7 q-mt-xs"
+          data-testid="swap-result-fee"
+        >
+          {{ $t('swap.resultFee', { fee: outcome.fee, unit: nativeSymbol }) }}
+        </div>
+        <div class="row items-center justify-between q-mt-sm">
+          <a
+            v-if="outcome.explorerUrl"
+            :href="outcome.explorerUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-caption text-primary"
+            data-testid="swap-result-explorer"
+          >
+            {{ $t('walletPanel.viewInExplorer') }}
+          </a>
+          <span v-else class="text-caption text-grey-6 ellipsis">
+            {{ outcome.txHash }}
+          </span>
+          <q-btn
+            flat
+            no-caps
+            dense
+            color="primary"
+            :label="$t('swap.newSwap')"
+            data-testid="swap-new-btn"
+            @click="startOver"
+          />
+        </div>
+      </q-card>
+
+      <template v-else>
+        <!-- You pay -->
+        <q-card
+          flat
+          bordered
+          class="q-pa-md swap-card"
+          :class="{ 'swap-card--error': insufficient }"
+        >
+          <div class="row items-center justify-between q-mb-xs">
+            <span class="text-caption text-grey-7">{{ $t('swap.pay') }}</span>
+            <span
+              class="text-caption text-weight-medium"
+              :class="insufficient ? 'text-negative' : 'text-primary'"
+              :title="payBalanceExact"
+              data-testid="swap-pay-balance"
+            >
+              {{ $t('swap.available') }}: {{ payBalanceText }}
+            </span>
+          </div>
+          <div class="row items-center q-gutter-sm no-wrap">
+            <div
+              class="swap-amount-box col row items-center no-wrap"
+              :class="{ 'swap-amount-box--error': insufficient }"
+            >
+              <q-input
+                v-model="amountText"
+                dense
+                borderless
+                inputmode="decimal"
+                placeholder="0.0"
+                class="col text-h5"
+                input-class="text-weight-bold"
+                :disable="locked"
+                :aria-label="$t('swap.pay')"
+                data-testid="swap-pay-amount"
+              />
+              <q-btn
+                flat
+                dense
+                no-caps
+                size="sm"
+                color="primary"
+                class="swap-max-pill q-px-xs q-mr-xs text-weight-bolder"
+                :disable="locked || !canMax"
+                :label="$t('swap.max')"
+                data-testid="swap-max-btn"
+                @click="useMax"
+              />
+            </div>
+            <q-select
+              v-model="payIndex"
+              :options="tokenOptions"
+              dense
+              outlined
+              emit-value
+              map-options
+              class="col-auto asset-select"
+              :disable="locked"
+              :aria-label="$t('swap.payToken')"
+              data-testid="swap-pay-token"
+            />
+          </div>
+          <div
+            v-if="otherAccountsText"
+            class="text-caption text-grey-6 q-mt-xs"
+            data-testid="swap-other-accounts"
+          >
+            {{ $t('swap.otherAccounts', { amount: otherAccountsText }) }}
+          </div>
+        </q-card>
+
+        <div class="swap-flip-container">
+          <q-btn
+            round
+            dense
+            icon="swap_vert"
+            color="primary"
+            class="swap-flip-btn shadow-2"
+            :disable="locked"
+            :aria-label="$t('swap.switchTokens')"
+            data-testid="swap-flip-btn"
+            @click="flip"
+          />
+        </div>
+
+        <!-- You receive -->
+        <q-card flat bordered class="q-pa-md swap-card">
+          <div class="row items-center justify-between q-mb-xs">
+            <span class="text-caption text-grey-7">
+              {{ $t('swap.receive') }}
+            </span>
+            <span
+              class="text-caption text-grey-6"
+              :title="receiveBalanceExact"
+              data-testid="swap-receive-balance"
+            >
+              {{ $t('swap.balance') }}: {{ receiveBalanceText }}
+            </span>
+          </div>
+          <div class="row items-center q-gutter-sm no-wrap">
+            <div
+              class="swap-amount-box swap-amount-box--readonly col row items-center no-wrap"
+            >
+              <q-skeleton
+                v-if="quoteState === 'loading' && !quote"
+                type="text"
+                class="col text-h5"
+                data-testid="swap-quote-loading"
+              />
+              <div
+                v-else
+                class="col text-h5 text-weight-bold swap-receive-amount"
+                :class="quote ? 'text-positive' : 'text-grey-5'"
+                :title="quote ? receiveExact : undefined"
+                data-testid="swap-receive-amount"
+              >
+                {{ quote ? receiveText : '0.0' }}
+              </div>
+            </div>
+            <q-select
+              v-model="receiveIndex"
+              :options="tokenOptions"
+              dense
+              outlined
+              emit-value
+              map-options
+              class="col-auto asset-select"
+              :disable="locked"
+              :aria-label="$t('swap.receiveToken')"
+              data-testid="swap-receive-token"
+            />
+          </div>
+        </q-card>
+
+        <!-- What the chain quoted -->
+        <q-card
+          v-if="quote"
+          flat
+          bordered
+          class="q-pa-sm text-caption swap-card swap-details"
+          data-testid="swap-details"
+        >
+          <div class="swap-row">
+            <span class="text-grey-7">{{ $t('swap.rate') }}</span>
+            <span class="text-weight-medium" data-testid="swap-rate">
+              {{ rateText }}
+            </span>
+          </div>
+          <div class="swap-row">
+            <span class="text-grey-7">{{ $t('swap.priceImpact') }}</span>
+            <span
+              class="text-weight-medium"
+              :class="impactClass"
+              data-testid="swap-price-impact"
+            >
+              {{ impactText }}
+            </span>
+          </div>
+          <div class="swap-row">
+            <span class="text-grey-7">{{ $t('swap.poolFee') }}</span>
+            <span class="text-weight-medium" data-testid="swap-pool-fee">
+              {{ poolFeeText }}
+            </span>
+          </div>
+          <div class="swap-row">
+            <span class="text-grey-7">
+              {{ $t('swap.minimumReceived') }}
+            </span>
+            <span
+              class="text-weight-medium"
+              :title="minimumExact"
+              data-testid="swap-minimum-received"
+            >
+              {{ minimumText }} {{ receiveToken.symbol }}
+            </span>
+          </div>
+          <div class="swap-row">
+            <span class="text-grey-7">{{ $t('swap.networkFee') }}</span>
+            <span class="text-weight-medium" data-testid="swap-network-fee">
+              {{
+                networkFeeText
+                  ? $t('swap.networkFeeUpTo', {
+                      fee: networkFeeText,
+                      unit: nativeSymbol,
+                    })
+                  : $t('swap.networkFeeLater')
+              }}
+            </span>
+          </div>
+          <div
+            v-if="approvalsNeeded > 0"
+            class="swap-row"
+            data-testid="swap-approval-needed"
+          >
+            <span class="text-grey-7">{{ $t('swap.approval') }}</span>
+            <span class="text-weight-medium text-right">
+              {{
+                $t('swap.approvalNeeded', {
+                  count: approvalsNeeded,
+                  asset: payToken.symbol,
+                })
+              }}
+            </span>
+          </div>
+          <q-separator class="q-my-xs" />
+          <div class="swap-row items-center">
+            <span class="text-grey-7">{{ $t('swap.slippage') }}</span>
+            <div class="row items-center q-gutter-x-xs no-wrap">
+              <q-btn
+                v-for="option in slippageOptions"
+                :key="option"
+                dense
+                no-caps
+                unelevated
+                size="sm"
+                :outline="slippageBps !== option"
+                :color="slippageBps === option ? 'primary' : 'grey-7'"
+                :label="`${option / 100}%`"
+                :disable="locked"
+                :data-testid="`swap-slippage-${option}`"
+                @click="setSlippage(option)"
+              />
+              <q-input
+                v-model="customSlippage"
+                dense
+                outlined
+                inputmode="decimal"
+                suffix="%"
+                class="swap-slippage-input"
+                :error="customSlippageInvalid"
+                hide-bottom-space
+                :disable="locked"
+                :aria-label="$t('swap.slippageCustom')"
+                data-testid="swap-slippage-custom"
+              />
+            </div>
+          </div>
+        </q-card>
+
+        <!-- Why the swap cannot go ahead, in plain words -->
+        <div
+          v-if="problem"
+          class="row items-start no-wrap q-px-xs text-caption text-weight-medium"
+          :class="problem.blocking ? 'text-negative' : 'text-warning'"
+          role="alert"
+          data-testid="swap-problem"
+        >
+          <q-icon name="error_outline" size="16px" class="q-mr-xs" />
+          <span>{{ $t(problem.key, problem.params) }}</span>
+        </div>
+
+        <!-- Confirm step -->
+        <q-card
+          v-if="phase === 'review' && quote"
+          flat
+          bordered
+          class="q-pa-md swap-card swap-card--review"
+          data-testid="swap-review"
+        >
+          <div class="text-subtitle2 text-weight-bold q-mb-xs">
+            {{ $t('swap.reviewTitle') }}
+          </div>
+          <div class="text-body2" data-testid="swap-review-summary">
+            {{
+              $t('swap.reviewSummary', {
+                pay: payExact,
+                payAsset: payToken.symbol,
+                receive: receiveText,
+                receiveAsset: receiveToken.symbol,
+                minimum: minimumText,
+              })
+            }}
+          </div>
+          <div class="text-caption text-grey-7 q-mt-xs">
+            {{ $t('swap.reviewNote', { seconds: deadlineSeconds }) }}
+          </div>
+          <div class="row q-gutter-sm q-mt-sm">
+            <q-btn
+              flat
+              no-caps
+              color="grey-8"
+              class="col"
+              :label="$t('swap.back')"
+              data-testid="swap-back-btn"
+              @click="phase = 'form'"
+            />
+            <q-btn
+              unelevated
+              no-caps
+              color="primary"
+              class="col text-weight-bold"
+              :label="$t('swap.confirm')"
+              :loading="confirming"
+              :disable="!canConfirm"
+              data-testid="swap-confirm-btn"
+              @click="confirm"
+            />
+          </div>
+        </q-card>
+
+        <!-- Progress -->
+        <q-card
+          v-else-if="phase === 'working'"
+          flat
+          bordered
+          class="q-pa-md swap-card"
+          role="status"
+          data-testid="swap-progress"
+        >
+          <div class="row items-center q-gutter-x-sm">
+            <q-spinner color="primary" size="20px" />
+            <span class="text-body2 text-weight-medium">
+              {{ $t(progressKey, progressParams) }}
+            </span>
+          </div>
+          <q-linear-progress
+            indeterminate
+            color="primary"
+            class="q-mt-sm"
+            rounded
+          />
+          <div class="text-caption text-grey-7 q-mt-xs">
+            {{ $t('swap.progressKeepOpen') }}
+          </div>
+        </q-card>
+
+        <q-btn
+          v-else
+          unelevated
+          no-caps
+          :color="insufficient ? 'negative' : 'primary'"
+          class="full-width swap-action-btn text-weight-bold"
+          :icon="insufficient ? 'warning' : 'swap_horiz'"
+          :label="$t(actionKey, actionParams)"
+          :disable="!canReview"
+          :loading="quoteState === 'loading' && reviewing"
+          data-testid="swap-review-btn"
+          @click="review"
+        />
+      </template>
+    </div>
+  </div>
+</template>
+
+<script lang="ts">
+import {
+  computed,
+  defineComponent,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+} from 'vue'
+import {
+  estimateCallFee,
+  fetchSwapQuote,
+  planSwap,
+  quoteIsFresh,
+  readTokenBalances,
+  SwapNoLiquidityError,
+  SwapNoRouteError,
+  swapRevertReasonOf,
+  SWAP_DEADLINE_SECONDS,
+  type NetworkFeeEstimate,
+  type SwapQuote,
+} from '@frank/wallet/swap/evm-swap'
+import {
+  executeSwap,
+  reconcileSwap,
+  SwapRefusedError,
+  type SwapFailure,
+  type SwapProgress,
+  type SwapResult,
+} from '@frank/wallet/swap/swap-execution'
+import { minimumOutput, MAX_SLIPPAGE_BPS } from '@frank/wallet/swap/uniswap-v4'
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
+import {
+  EvmSwapUnavailableError,
+  openEvmSwapSession,
+  type EvmSwapSession,
+  type EvmSwapUnavailable,
+} from 'src/swap/evm-swap-session'
+import {
+  exactTokenAmount,
+  outputPerUnit,
+  parseTokenAmount,
+  readablePercent,
+  readableTokenAmount,
+} from 'src/swap/amounts'
+import { useSwapHistory } from 'src/composables/useSwapHistory'
+import type { SwapRecord } from 'src/stores/swaps'
+import { getExplorerUrl } from 'src/utils/explorer'
+
+interface Problem {
+  key: string
+  params?: Record<string, unknown>
+  /** A blocking problem disables the swap; a warning only informs. */
+  blocking: boolean
+}
+
+interface Outcome {
+  status: 'confirmed' | 'reverted' | 'pending'
+  txHash: string
+  toSymbol: string
+  received?: string
+  receivedExact?: string
+  fee?: string
+  reason?: string
+  explorerUrl?: string
+}
+
+const QUOTE_DEBOUNCE_MS = 350
+const QUOTE_REFRESH_MS = 6_000
+const BALANCE_REFRESH_MS = 15_000
+const SLIPPAGE_OPTIONS = [10, 50, 100]
+/** Price impact, in parts per million, from which the figure is shown as a warning or as bad. */
+const IMPACT_WARN_PPM = 10_000
+const IMPACT_BAD_PPM = 50_000
+
+const FAILURE_KEYS: Record<SwapFailure, string> = {
+  slippage: 'swap.errorPriceMoved',
+  deadline: 'swap.errorExpired',
+  allowance: 'swap.errorAllowance',
+  'insufficient-funds': 'swap.errorInsufficientNative',
+  'insufficient-native': 'swap.errorInsufficientNative',
+  'account-busy': 'swap.errorAccountBusy',
+  'approval-failed': 'swap.errorApprovalFailed',
+}
+
+export default defineComponent({
+  name: 'EvmSwapPanel',
+  props: {
+    /** Canonical chain identifier of the wallet being shown. */
+    chainIdentifier: { type: String, required: true },
+    /** The wallet page's name for this wallet; swap history is listed under it. */
+    walletId: { type: String, required: true },
+  },
+  setup(props) {
+    const history = useSwapHistory()
+    const session = shallowRef<EvmSwapSession>()
+    const unavailable = ref<EvmSwapUnavailable | 'error'>()
+    const balances = ref<bigint[]>()
+    const otherAccounts = ref(0n)
+
+    const payIndex = ref(0)
+    const receiveIndex = ref(1)
+    const amountText = ref('')
+    const slippageBps = ref(50)
+    const customSlippage = ref('')
+
+    const quote = shallowRef<SwapQuote>()
+    const fee = shallowRef<NetworkFeeEstimate>()
+    const approvalsNeeded = ref(0)
+    const quoteState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+    const quoteProblem = ref<Problem>()
+    const flowProblem = ref<Problem>()
+
+    const phase = ref<'form' | 'review' | 'working' | 'done'>('form')
+    const reviewing = ref(false)
+    const confirming = ref(false)
+    const reviewed = shallowRef<SwapQuote>()
+    const progress = ref<SwapProgress>()
+    const outcome = shallowRef<Outcome>()
+
+    const tokens = computed(() => session.value?.deployment.tokens ?? [])
+    const payToken = computed(() => tokens.value[payIndex.value]!)
+    const receiveToken = computed(() => tokens.value[receiveIndex.value]!)
+    const nativeIndex = computed(() =>
+      tokens.value.findIndex(token => token.address === null),
+    )
+    const nativeSymbol = computed(
+      () => tokens.value[nativeIndex.value]?.symbol ?? '',
+    )
+    const tokenOptions = computed(() =>
+      tokens.value.map((token, value) => ({ label: token.symbol, value })),
+    )
+    const maintainer = computed(() => session.value?.deployment.maintainer ?? '')
+    const locked = computed(
+      () => phase.value === 'working' || phase.value === 'review',
+    )
+
+    const amount = computed(() =>
+      tokens.value.length
+        ? parseTokenAmount(amountText.value, payToken.value.decimals)
+        : undefined,
+    )
+    const balanceOf = (index: number) => balances.value?.[index]
+    const balanceText = (index: number) => {
+      const value = balanceOf(index)
+      const token = tokens.value[index]
+      return value === undefined || !token
+        ? '…'
+        : `${readableTokenAmount(value, token.decimals)} ${token.symbol}`
+    }
+    const balanceExact = (index: number) => {
+      const value = balanceOf(index)
+      const token = tokens.value[index]
+      return value === undefined || !token
+        ? undefined
+        : exactTokenAmount(value, token.decimals)
+    }
+    const payingNative = computed(() => payIndex.value === nativeIndex.value)
+    /** What the pay side can draw on: the account's balance, plus, for the native coin, what
+     * the wallet can first move in from its other accounts. */
+    const spendable = computed(() => {
+      const own = balanceOf(payIndex.value)
+      if (own === undefined) return undefined
+      return payingNative.value ? own + otherAccounts.value : own
+    })
+    const insufficient = computed(() => {
+      if (amount.value === undefined || spendable.value === undefined)
+        return false
+      const feeWei =
+        payingNative.value && fee.value ? fee.value.maximumFeeWei : 0n
+      return amount.value + feeWei > spendable.value
+    })
+
+    const problem = computed<Problem | undefined>(() => {
+      if (flowProblem.value) return flowProblem.value
+      if (insufficient.value)
+        return {
+          key:
+            payingNative.value &&
+            amount.value !== undefined &&
+            spendable.value !== undefined &&
+            amount.value <= spendable.value
+              ? 'swap.errorInsufficientForFee'
+              : 'swap.errorInsufficientBalance',
+          params: { asset: payToken.value.symbol },
+          blocking: true,
+        }
+      if (quoteProblem.value) return quoteProblem.value
+      if (quote.value && quote.value.priceImpactPpm >= IMPACT_BAD_PPM)
+        return { key: 'swap.warnHighImpact', blocking: false }
+      return undefined
+    })
+
+    const minimum = computed(() =>
+      quote.value
+        ? minimumOutput(quote.value.amountOut, slippageBps.value)
+        : undefined,
+    )
+    const rateText = computed(() => {
+      const q = quote.value
+      if (!q) return ''
+      return `1 ${q.tokenIn.symbol} ≈ ${readableTokenAmount(
+        outputPerUnit(q.amountIn, q.amountOut, q.tokenIn.decimals),
+        q.tokenOut.decimals,
+      )} ${q.tokenOut.symbol}`
+    })
+    const impactClass = computed(() => {
+      const ppm = quote.value?.priceImpactPpm ?? 0
+      return ppm >= IMPACT_BAD_PPM
+        ? 'text-negative'
+        : ppm >= IMPACT_WARN_PPM
+        ? 'text-warning'
+        : 'text-positive'
+    })
+
+    let quoteSequence = 0
+    let debounce: ReturnType<typeof setTimeout> | undefined
+    let quoteTimer: ReturnType<typeof setInterval> | undefined
+    let balanceTimer: ReturnType<typeof setInterval> | undefined
+    let alive = true
+
+    const problemOf = (error: unknown, fallback: string): Problem => {
+      if (error instanceof SwapRefusedError)
+        return { key: FAILURE_KEYS[error.reason], blocking: true }
+      if (error instanceof SwapNoRouteError)
+        return { key: 'swap.errorNoRoute', blocking: true }
+      if (error instanceof SwapNoLiquidityError)
+        return { key: 'swap.errorNoLiquidity', blocking: true }
+      const reason = swapRevertReasonOf(error)
+      if (reason) return { key: FAILURE_KEYS[reason], blocking: true }
+      if (
+        (error as { code?: unknown } | null)?.code === 'INSUFFICIENT_FUNDS' ||
+        (error instanceof RangeError && /Insufficient/.test(error.message))
+      )
+        return { key: 'swap.errorInsufficientNative', blocking: true }
+      return { key: fallback, blocking: true }
+    }
+
+    async function refreshBalances(): Promise<void> {
+      const current = session.value
+      if (!current) return
+      try {
+        const [next, funds] = await Promise.all([
+          readTokenBalances(current.reader, current.deployment, current.account),
+          current.wallet.getContractCallFunds(),
+        ])
+        if (!alive || session.value !== current) return
+        balances.value = next
+        otherAccounts.value = funds.otherBalance
+      } catch {
+        /* The last balances stay on screen; the next refresh tries again. */
+      }
+    }
+
+    /** Reads a quote for exactly what is typed. Returns it only if it is still the latest. */
+    async function refreshQuote(): Promise<SwapQuote | undefined> {
+      const current = session.value
+      const amountIn = amount.value
+      const sequence = ++quoteSequence
+      if (!current || amountIn === undefined) {
+        quote.value = undefined
+        fee.value = undefined
+        approvalsNeeded.value = 0
+        quoteProblem.value = undefined
+        quoteState.value = 'idle'
+        return undefined
+      }
+      if (payIndex.value === receiveIndex.value) {
+        quote.value = undefined
+        quoteProblem.value = { key: 'swap.errorSameAsset', blocking: true }
+        quoteState.value = 'error'
+        return undefined
+      }
+      quoteState.value = 'loading'
+      try {
+        const next = await fetchSwapQuote(current.reader, current.deployment, {
+          tokenIn: payToken.value,
+          tokenOut: receiveToken.value,
+          amountIn,
+        })
+        const plan = await planSwap(current.reader, current.deployment, {
+          quote: next,
+          slippageBps: slippageBps.value,
+          account: current.account,
+        })
+        let nextFee: NetworkFeeEstimate | undefined
+        let nextProblem: Problem | undefined
+        // Only a swap that needs no approval can be gas-estimated before it is approved.
+        if (plan.approvals.length === 0) {
+          try {
+            nextFee = await estimateCallFee(
+              current.reader,
+              plan.swap,
+              current.account,
+            )
+          } catch (error) {
+            // The account cannot pay for this call as it stands: the balance check says so.
+            if (swapRevertReasonOf(error))
+              nextProblem = problemOf(error, 'swap.errorQuote')
+          }
+        }
+        if (!alive || sequence !== quoteSequence) return undefined
+        quote.value = next
+        fee.value = nextFee
+        approvalsNeeded.value = plan.approvals.length
+        quoteProblem.value = nextProblem
+        quoteState.value = 'ready'
+        return next
+      } catch (error) {
+        if (!alive || sequence !== quoteSequence) return undefined
+        quote.value = undefined
+        fee.value = undefined
+        approvalsNeeded.value = 0
+        quoteProblem.value = problemOf(error, 'swap.errorQuote')
+        quoteState.value = 'error'
+        return undefined
+      }
+    }
+
+    function scheduleQuote(): void {
+      // What is on screen was quoted for a different input: never show it beside the new one.
+      quote.value = undefined
+      fee.value = undefined
+      quoteProblem.value = undefined
+      flowProblem.value = undefined
+      quoteSequence++
+      if (debounce) clearTimeout(debounce)
+      if (amount.value === undefined) {
+        quoteState.value = 'idle'
+        return
+      }
+      quoteState.value = 'loading'
+      debounce = setTimeout(() => void refreshQuote(), QUOTE_DEBOUNCE_MS)
+    }
+
+    watch([amountText, payIndex, receiveIndex], scheduleQuote)
+    watch(payIndex, (now, before) => {
+      if (now === receiveIndex.value) receiveIndex.value = before
+    })
+    watch(receiveIndex, (now, before) => {
+      if (now === payIndex.value) payIndex.value = before
+    })
+
+    const customSlippageInvalid = computed(() => {
+      const text = customSlippage.value.trim()
+      if (!text) return false
+      const bps = Math.round(Number(text) * 100)
+      return !(Number.isFinite(bps) && bps >= 1 && bps <= MAX_SLIPPAGE_BPS)
+    })
+    watch(customSlippage, text => {
+      if (!text.trim() || customSlippageInvalid.value) return
+      slippageBps.value = Math.round(Number(text) * 100)
+    })
+    function setSlippage(bps: number): void {
+      customSlippage.value = ''
+      slippageBps.value = bps
+    }
+
+    const canMax = computed(() => (balanceOf(payIndex.value) ?? 0n) > 0n)
+    function useMax(): void {
+      const own = balanceOf(payIndex.value)
+      if (own === undefined) return
+      // The native coin also pays the network fee: leave the estimated fee, or, before any
+      // estimate exists, nothing is assumed and the balance check speaks once it is known.
+      const reserve =
+        payingNative.value && fee.value ? fee.value.maximumFeeWei : 0n
+      const usable = own > reserve ? own - reserve : 0n
+      amountText.value = exactTokenAmount(usable, payToken.value.decimals)
+    }
+    function flip(): void {
+      const pay = payIndex.value
+      payIndex.value = receiveIndex.value
+      receiveIndex.value = pay
+      amountText.value = ''
+    }
+
+    const canReview = computed(
+      () =>
+        phase.value === 'form' &&
+        amount.value !== undefined &&
+        quote.value !== undefined &&
+        !customSlippageInvalid.value &&
+        !problem.value?.blocking,
+    )
+    const canConfirm = computed(
+      () =>
+        phase.value === 'review' &&
+        quote.value !== undefined &&
+        !insufficient.value &&
+        !quoteProblem.value?.blocking,
+    )
+
+    async function review(): Promise<void> {
+      if (!canReview.value) return
+      reviewing.value = true
+      flowProblem.value = undefined
+      try {
+        // Always the chain's current answer, never the one that was on screen.
+        const fresh = await refreshQuote()
+        if (!fresh || problem.value?.blocking) return
+        reviewed.value = fresh
+        phase.value = 'review'
+      } finally {
+        reviewing.value = false
+      }
+    }
+
+    const explorerUrlOf = (txHash: string) => {
+      try {
+        return getExplorerUrl(txHash, props.walletId, {
+          isTestnet:
+            getChainRegistryEntry(props.chainIdentifier)?.isTestnet ?? true,
+        })
+      } catch {
+        return undefined
+      }
+    }
+
+    function recordOf(
+      id: string,
+      timestamp: number,
+      q: SwapQuote,
+      minimumOut: bigint,
+      result: SwapResult,
+      swapCall: { to: string; data: string; value: bigint },
+    ): SwapRecord {
+      const current = session.value!
+      const base = {
+        id,
+        timestamp,
+        chain: props.walletId,
+        chainIdentifier: props.chainIdentifier,
+        fromAsset: q.tokenIn.symbol,
+        toAsset: q.tokenOut.symbol,
+        fromAmount: exactTokenAmount(q.amountIn, q.tokenIn.decimals),
+        txHash: result.txHash,
+        route: 'Uniswap v4',
+        destinationAddress: current.account,
+      }
+      const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
+      const feeDisplay =
+        'feeWei' in result
+          ? `${readableTokenAmount(result.feeWei, nativeDecimals)} ${
+              nativeSymbol.value
+            }`
+          : ''
+      if (result.status === 'confirmed')
+        return {
+          ...base,
+          // From the receipt. When the receipt did not show it, nothing is claimed.
+          toAmount:
+            result.amountOut === undefined
+              ? '?'
+              : readableTokenAmount(result.amountOut, q.tokenOut.decimals),
+          feeDisplay,
+          status: 'confirmed',
+        }
+      if (result.status === 'reverted')
+        return {
+          ...base,
+          toAmount: '0',
+          feeDisplay,
+          status: 'failed',
+          failureReason: result.reason ?? 'reverted',
+        }
+      return {
+        ...base,
+        toAmount: `≥${readableTokenAmount(minimumOut, q.tokenOut.decimals)}`,
+        feeDisplay,
+        status: 'pending',
+        recovery: {
+          operationId: result.operationId,
+          account: current.account,
+          pool: { ...q.route.key },
+          zeroForOne: q.route.zeroForOne,
+          call: {
+            to: swapCall.to,
+            data: swapCall.data,
+            value: swapCall.value.toString(),
+          },
+          toDecimals: q.tokenOut.decimals,
+        },
+      }
+    }
+
+    function outcomeOf(result: SwapResult, q: SwapQuote): Outcome {
+      const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
+      return {
+        status: result.status,
+        txHash: result.txHash,
+        toSymbol: q.tokenOut.symbol,
+        explorerUrl: explorerUrlOf(result.txHash),
+        ...(result.status === 'confirmed' && result.amountOut !== undefined
+          ? {
+              received: readableTokenAmount(
+                result.amountOut,
+                q.tokenOut.decimals,
+              ),
+              receivedExact: exactTokenAmount(
+                result.amountOut,
+                q.tokenOut.decimals,
+              ),
+            }
+          : {}),
+        ...('feeWei' in result
+          ? { fee: readableTokenAmount(result.feeWei, nativeDecimals) }
+          : {}),
+        ...(result.status === 'reverted' ? { reason: result.reason } : {}),
+      }
+    }
+
+    async function confirm(): Promise<void> {
+      const current = session.value
+      const accepted = reviewed.value
+      if (!current || !accepted || !canConfirm.value || confirming.value) return
+      confirming.value = true
+      flowProblem.value = undefined
+      try {
+        if (!current.isCurrent()) {
+          flowProblem.value = { key: 'swap.errorAccountChanged', blocking: true }
+          phase.value = 'form'
+          return
+        }
+        // A quote more than a few seconds old is read again before anything is signed.
+        let q = quote.value
+        if (!q || !quoteIsFresh(q, Date.now())) q = await refreshQuote()
+        if (!q || problem.value?.blocking) return
+        if (
+          q.amountOut < minimumOutput(accepted.amountOut, slippageBps.value)
+        ) {
+          // Worse than what was accepted, beyond the slippage: show the new figures and ask again.
+          reviewed.value = q
+          flowProblem.value = { key: 'swap.errorPriceMoved', blocking: false }
+          return
+        }
+        const plan = await planSwap(current.reader, current.deployment, {
+          quote: q,
+          slippageBps: slippageBps.value,
+          account: current.account,
+        })
+        const id = `swap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const timestamp = Date.now()
+        phase.value = 'working'
+        progress.value = undefined
+        const result = await executeSwap({
+          reader: current.reader,
+          wallet: current.wallet,
+          deployment: current.deployment,
+          plan,
+          account: current.account,
+          onProgress: next => {
+            progress.value = next
+          },
+          // Before broadcast: from here on this swap is in the history, whatever happens.
+          onSigned: async signed => {
+            history.saveLocal(
+              recordOf(
+                id,
+                timestamp,
+                q!,
+                plan.minimumAmountOut,
+                { status: 'pending', ...signed },
+                plan.swap,
+              ),
+            )
+          },
+        })
+        history.saveLocal(
+          recordOf(id, timestamp, q, plan.minimumAmountOut, result, plan.swap),
+        )
+        outcome.value = outcomeOf(result, q)
+        phase.value = 'done'
+        amountText.value = ''
+        void refreshBalances()
+      } catch (error) {
+        flowProblem.value = {
+          ...problemOf(error, 'swap.errorExecution'),
+          blocking: false,
+        }
+        phase.value = 'form'
+        void refreshBalances()
+      } finally {
+        confirming.value = false
+      }
+    }
+
+    function startOver(): void {
+      outcome.value = undefined
+      flowProblem.value = undefined
+      phase.value = 'form'
+    }
+
+    /** Swaps this device recorded as submitted and never saw finish: ask the chain now. */
+    async function reconcilePending(current: EvmSwapSession): Promise<void> {
+      const pending = history
+        .getSwapsForChain(props.walletId, props.chainIdentifier)
+        .value.filter(
+          record =>
+            record.status === 'pending' &&
+            record.recovery &&
+            record.chainIdentifier === props.chainIdentifier &&
+            record.recovery.account.toLowerCase() ===
+              current.account.toLowerCase(),
+        )
+      for (const record of pending) {
+        const recovery = record.recovery!
+        try {
+          const result = await reconcileSwap({
+            reader: current.reader,
+            wallet: current.wallet,
+            deployment: current.deployment,
+            route: { key: recovery.pool, zeroForOne: recovery.zeroForOne },
+            account: recovery.account,
+            swap: {
+              to: recovery.call.to,
+              data: recovery.call.data,
+              value: BigInt(recovery.call.value),
+            },
+            handle: {
+              operationId: recovery.operationId,
+              txHash: record.txHash,
+            },
+          })
+          if (!alive || result.status === 'pending') continue
+          const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
+          const rest: SwapRecord = { ...record }
+          delete rest.recovery
+          history.saveLocal({
+            ...rest,
+            status: result.status === 'confirmed' ? 'confirmed' : 'failed',
+            toAmount:
+              result.status !== 'confirmed'
+                ? '0'
+                : result.amountOut === undefined
+                ? '?'
+                : readableTokenAmount(result.amountOut, recovery.toDecimals),
+            feeDisplay: `${readableTokenAmount(
+              result.feeWei,
+              nativeDecimals,
+            )} ${nativeSymbol.value}`,
+            ...(result.status === 'reverted'
+              ? { failureReason: result.reason ?? 'reverted' }
+              : {}),
+          })
+        } catch {
+          /* Still unknown: the record stays pending and is looked at again next time. */
+        }
+      }
+      void refreshBalances()
+    }
+
+    onMounted(async () => {
+      try {
+        const opened = await openEvmSwapSession(props.chainIdentifier)
+        if (!alive) return
+        session.value = opened
+        const usdc = opened.deployment.tokens.findIndex(
+          token => token.address !== null,
+        )
+        payIndex.value = opened.deployment.tokens.findIndex(
+          token => token.address === null,
+        )
+        if (payIndex.value < 0) payIndex.value = 0
+        receiveIndex.value = usdc >= 0 ? usdc : payIndex.value === 0 ? 1 : 0
+        await refreshBalances()
+        balanceTimer = setInterval(
+          () => void refreshBalances(),
+          BALANCE_REFRESH_MS,
+        )
+        // While a quote is on screen it is kept current.
+        quoteTimer = setInterval(() => {
+          if (
+            (phase.value === 'form' || phase.value === 'review') &&
+            quote.value &&
+            !confirming.value &&
+            !reviewing.value
+          )
+            void refreshQuote()
+        }, QUOTE_REFRESH_MS)
+        void reconcilePending(opened)
+      } catch (error) {
+        if (!alive) return
+        unavailable.value =
+          error instanceof EvmSwapUnavailableError ? error.reason : 'error'
+      }
+    })
+    onBeforeUnmount(() => {
+      alive = false
+      if (debounce) clearTimeout(debounce)
+      if (quoteTimer) clearInterval(quoteTimer)
+      if (balanceTimer) clearInterval(balanceTimer)
+    })
+
+    const progressKey = computed(() => {
+      const stage = progress.value?.stage
+      return stage === 'consolidating'
+        ? 'swap.progressConsolidating'
+        : stage === 'approving'
+        ? 'swap.progressApproving'
+        : stage === 'submitted'
+        ? 'swap.progressSubmitted'
+        : 'swap.progressSigning'
+    })
+    const progressParams = computed(() =>
+      progress.value?.stage === 'approving'
+        ? { step: progress.value.step, of: progress.value.of }
+        : {},
+    )
+
+    return {
+      unavailable,
+      unavailableKey: computed(() =>
+        unavailable.value === 'error'
+          ? 'swap.unavailableError'
+          : unavailable.value === 'no-wallet'
+          ? 'swap.unavailableWallet'
+          : 'swap.unavailableNetwork',
+      ),
+      maintainer,
+      phase,
+      outcome,
+      resultIcon: computed(() =>
+        outcome.value?.status === 'confirmed'
+          ? 'check_circle'
+          : outcome.value?.status === 'reverted'
+          ? 'cancel'
+          : 'schedule',
+      ),
+      resultColor: computed(() =>
+        outcome.value?.status === 'confirmed'
+          ? 'positive'
+          : outcome.value?.status === 'reverted'
+          ? 'negative'
+          : 'warning',
+      ),
+      resultTitleKey: computed(() =>
+        outcome.value?.status === 'confirmed'
+          ? 'swap.resultConfirmed'
+          : outcome.value?.status === 'reverted'
+          ? 'swap.resultReverted'
+          : 'swap.resultPending',
+      ),
+      resultDetailKey: computed(() => {
+        const o = outcome.value
+        if (!o) return ''
+        if (o.status === 'confirmed')
+          return o.received
+            ? 'swap.resultConfirmedDetail'
+            : 'swap.resultConfirmedUnknown'
+        if (o.status === 'pending') return 'swap.resultPendingDetail'
+        return o.reason === 'slippage'
+          ? 'swap.resultRevertedSlippage'
+          : o.reason === 'deadline'
+          ? 'swap.resultRevertedDeadline'
+          : 'swap.resultRevertedOther'
+      }),
+      resultDetailParams: computed(() => ({
+        asset: outcome.value?.toSymbol ?? '',
+      })),
+      nativeSymbol,
+      insufficient,
+      amountText,
+      locked,
+      canMax,
+      useMax,
+      payIndex,
+      receiveIndex,
+      tokenOptions,
+      payToken,
+      receiveToken,
+      payBalanceText: computed(() => balanceText(payIndex.value)),
+      payBalanceExact: computed(() => balanceExact(payIndex.value)),
+      receiveBalanceText: computed(() => balanceText(receiveIndex.value)),
+      receiveBalanceExact: computed(() => balanceExact(receiveIndex.value)),
+      otherAccountsText: computed(() =>
+        payingNative.value && otherAccounts.value > 0n
+          ? `${readableTokenAmount(
+              otherAccounts.value,
+              payToken.value.decimals,
+            )} ${payToken.value.symbol}`
+          : '',
+      ),
+      flip,
+      quote,
+      quoteState,
+      receiveText: computed(() =>
+        quote.value
+          ? readableTokenAmount(
+              quote.value.amountOut,
+              quote.value.tokenOut.decimals,
+            )
+          : '',
+      ),
+      receiveExact: computed(() =>
+        quote.value
+          ? exactTokenAmount(
+              quote.value.amountOut,
+              quote.value.tokenOut.decimals,
+            )
+          : '',
+      ),
+      payExact: computed(() =>
+        quote.value
+          ? exactTokenAmount(quote.value.amountIn, quote.value.tokenIn.decimals)
+          : '',
+      ),
+      rateText,
+      impactText: computed(() =>
+        quote.value ? readablePercent(quote.value.priceImpactPpm) : '',
+      ),
+      impactClass,
+      poolFeeText: computed(() =>
+        quote.value ? readablePercent(quote.value.lpFeePpm) : '',
+      ),
+      minimumText: computed(() =>
+        minimum.value !== undefined && quote.value
+          ? readableTokenAmount(minimum.value, quote.value.tokenOut.decimals)
+          : '',
+      ),
+      minimumExact: computed(() =>
+        minimum.value !== undefined && quote.value
+          ? exactTokenAmount(minimum.value, quote.value.tokenOut.decimals)
+          : '',
+      ),
+      networkFeeText: computed(() =>
+        fee.value
+          ? readableTokenAmount(
+              fee.value.maximumFeeWei,
+              tokens.value[nativeIndex.value]?.decimals ?? 18,
+            )
+          : '',
+      ),
+      approvalsNeeded,
+      slippageBps,
+      slippageOptions: SLIPPAGE_OPTIONS,
+      customSlippage,
+      customSlippageInvalid,
+      setSlippage,
+      problem,
+      deadlineSeconds: SWAP_DEADLINE_SECONDS,
+      canReview,
+      canConfirm,
+      reviewing,
+      confirming,
+      review,
+      confirm,
+      startOver,
+      progressKey,
+      progressParams,
+      actionKey: computed(() =>
+        amount.value === undefined
+          ? 'swap.enterAmount'
+          : insufficient.value
+          ? 'swap.errorInsufficientBalance'
+          : 'swap.review',
+      ),
+      actionParams: computed(() => ({ asset: payToken.value?.symbol ?? '' })),
+    }
+  },
+})
+</script>
+
+<style scoped>
+.evm-swap-panel {
+  width: 100%;
+  margin: 0 auto;
+}
+.swap-card {
+  border-radius: 12px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.swap-card--error {
+  border-color: var(--q-negative, #c10015) !important;
+  box-shadow: 0 0 0 1px rgba(193, 0, 21, 0.2);
+}
+.swap-card--review {
+  border-color: var(--q-primary, #1976d2);
+}
+.swap-card--confirmed {
+  border-color: var(--q-positive, #21ba45);
+}
+.swap-card--reverted {
+  border-color: var(--q-negative, #c10015);
+}
+.swap-card--pending {
+  border-color: var(--q-warning, #f2c037);
+}
+.swap-amount-box {
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 2px 8px;
+  min-height: 48px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+.body--dark .swap-amount-box {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+.swap-amount-box:focus-within {
+  border-color: var(--q-primary, #1976d2);
+  box-shadow: 0 0 0 1px var(--q-primary, #1976d2);
+}
+.swap-amount-box--readonly,
+.swap-amount-box--readonly:focus-within {
+  background: rgba(0, 0, 0, 0.015);
+  border-color: rgba(0, 0, 0, 0.06);
+  box-shadow: none;
+}
+.body--dark .swap-amount-box--readonly,
+.body--dark .swap-amount-box--readonly:focus-within {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+.swap-amount-box--error {
+  border-color: var(--q-negative, #c10015) !important;
+  background-color: rgba(193, 0, 21, 0.04) !important;
+}
+.swap-receive-amount {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.swap-max-pill {
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 6px;
+  background-color: rgba(25, 118, 210, 0.1);
+}
+.body--dark .swap-max-pill {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+.swap-flip-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: -14px auto;
+  height: 28px;
+  z-index: 3;
+  position: relative;
+}
+.swap-flip-btn {
+  background-color: #ffffff;
+  border: 2px solid var(--q-primary);
+  color: var(--q-primary);
+  width: 36px;
+  height: 36px;
+  transition: transform 0.25s ease;
+}
+.body--dark .swap-flip-btn {
+  background-color: #1d1d1d;
+}
+.swap-flip-btn:hover {
+  transform: rotate(180deg);
+}
+.swap-details {
+  background: rgba(0, 0, 0, 0.02);
+}
+.body--dark .swap-details {
+  background: rgba(255, 255, 255, 0.03);
+}
+.swap-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 3px 4px;
+}
+.swap-slippage-input {
+  width: 76px;
+}
+.swap-action-btn {
+  height: 50px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+.asset-select {
+  min-width: 120px;
+}
+</style>

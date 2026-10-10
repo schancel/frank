@@ -78,7 +78,8 @@ function slippageOf(options: SwapQuoteOptions): number {
     options.slippage === undefined
       ? DEFAULT_SLIPPAGE_BPS
       : Number(options.slippage)
-  if (!Number.isInteger(bps)) throw new Error('--slippage is whole basis points')
+  if (!Number.isInteger(bps))
+    throw new Error('--slippage is whole basis points')
   return bps
 }
 
@@ -92,7 +93,9 @@ async function quoteFor(
   const tokenOut = findToken(target.deployment, toAsset)
   if (!tokenIn || !tokenOut)
     throw new Error(
-      `Unknown asset. ${target.chainIdentifier} swaps: ${target.deployment.tokens
+      `Unknown asset. ${
+        target.chainIdentifier
+      } swaps: ${target.deployment.tokens
         .map(token => token.symbol)
         .join(', ')}`,
     )
@@ -146,9 +149,9 @@ export async function swapQuoteCommand(
         console.log(`  Pay:              ${result.amountIn} ${result.from}`)
         console.log(`  Receive:          ${result.amountOut} ${result.to}`)
         console.log(
-          `  Minimum received: ${result.minimumAmountOut} ${result.to} (slippage ${
-            result.slippageBps / 100
-          }%)`,
+          `  Minimum received: ${result.minimumAmountOut} ${
+            result.to
+          } (slippage ${result.slippageBps / 100}%)`,
         )
         console.log(`  Pool fee:         ${result.poolFee}`)
         console.log(`  Price impact:     ${result.priceImpact}`)

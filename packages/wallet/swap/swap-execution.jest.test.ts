@@ -43,12 +43,15 @@ function setup(
   } = {},
 ) {
   const canned = cannedNode(deployment)
-  canned.node.pools.set(poolId(routesFor(deployment, MON, USDC)[0]!.key).toLowerCase(), {
-    sqrtPriceX96: 2n ** 96n,
-    liquidity: 10n ** 18n,
-    lpFee: 500,
-    quote: amountIn => amountIn,
-  })
+  canned.node.pools.set(
+    poolId(routesFor(deployment, MON, USDC)[0]!.key).toLowerCase(),
+    {
+      sqrtPriceX96: 2n ** 96n,
+      liquidity: 10n ** 18n,
+      lpFee: 500,
+      quote: amountIn => amountIn,
+    },
+  )
   const receipts = new Map<string, SwapReceipt>()
   const known = new Set<string>()
   const reader: SwapExecutionReader = {
@@ -66,17 +69,19 @@ function setup(
     ...options.funds,
   }
   const wallet = {
-    sendContractCall: jest.fn(async (params: Parameters<SwapWallet['sendContractCall']>[0]) => {
-      const handle = {
-        operationId: `op-${++sequence}`,
-        txHash: `0xhash${sequence}`,
-      }
-      events.push(`signed ${handle.operationId}`)
-      await params.onSigned?.(handle)
-      events.push(`broadcast ${handle.operationId}`)
-      known.add(handle.txHash)
-      return handle
-    }),
+    sendContractCall: jest.fn(
+      async (params: Parameters<SwapWallet['sendContractCall']>[0]) => {
+        const handle = {
+          operationId: `op-${++sequence}`,
+          txHash: `0xhash${sequence}`,
+        }
+        events.push(`signed ${handle.operationId}`)
+        await params.onSigned?.(handle)
+        events.push(`broadcast ${handle.operationId}`)
+        known.add(handle.txHash)
+        return handle
+      },
+    ),
     getContractCallFunds: jest.fn(async () => funds),
     fundMainAccount: jest.fn(async ({ value }: { value: bigint }) => {
       events.push(`funded ${value}`)
@@ -186,7 +191,14 @@ describe('executing a swap', () => {
     const plan = await s.plan('token-in')
     s.receipts.set('0xhash1', receiptOf({ logs: [] }, 0))
     await expect(
-      executeSwap({ reader: s.reader, wallet: s.wallet, deployment, plan, account, timing }),
+      executeSwap({
+        reader: s.reader,
+        wallet: s.wallet,
+        deployment,
+        plan,
+        account,
+        timing,
+      }),
     ).rejects.toMatchObject({ reason: 'approval-failed' })
     expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
   })
@@ -293,7 +305,10 @@ describe('executing a swap', () => {
       throw callRevert(tooLittleReceived(990n, 900n))
     })
     const result = await executeSwap({
-      reader: { ...s.reader, call: async tx => (tx.from ? replay() : s.reader.call(tx)) },
+      reader: {
+        ...s.reader,
+        call: async tx => (tx.from ? replay() : s.reader.call(tx)),
+      },
       wallet: s.wallet,
       deployment,
       plan,

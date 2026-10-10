@@ -60,8 +60,8 @@ export const NATIVE_CURRENCY = '0x0000000000000000000000000000000000000000'
 const MONAD_TESTNET_USDC = '0x534b2f3A21130d7a60830c2Df862319e593943A3'
 const MONAD_TESTNET_CHOMP = '0x130556848511554b181e645309754F265522F3c2'
 
-const DEPLOYMENTS: Readonly<Record<string, UniswapV4Deployment>> = Object.freeze(
-  {
+const DEPLOYMENTS: Readonly<Record<string, UniswapV4Deployment>> =
+  Object.freeze({
     'monad-testnet': Object.freeze({
       protocol: 'uniswap-v4',
       officialUniswapDeployment: false,
@@ -110,8 +110,7 @@ const DEPLOYMENTS: Readonly<Record<string, UniswapV4Deployment>> = Object.freeze
         }),
       ]),
     }),
-  } as const,
-)
+  } as const)
 
 /** The swap deployment for a canonical chain identifier, or undefined: there is no default. */
 export function getEvmDexDeployment(

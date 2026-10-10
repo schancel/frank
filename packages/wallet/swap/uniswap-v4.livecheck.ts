@@ -18,17 +18,8 @@
  */
 import { Contract, JsonRpcProvider, formatUnits, parseUnits } from 'ethers'
 import { getEvmDexDeployment } from '../chain/dex-deployments'
-import {
-  estimateCallFee,
-  fetchSwapQuote,
-  swapRevertReasonOf,
-} from './evm-swap'
-import {
-  encodeSwap,
-  findToken,
-  poolId,
-  stateViewInterface,
-} from './uniswap-v4'
+import { estimateCallFee, fetchSwapQuote, swapRevertReasonOf } from './evm-swap'
+import { encodeSwap, findToken, poolId, stateViewInterface } from './uniswap-v4'
 
 function ok(condition: unknown, label: string): void {
   if (!condition) throw new Error(`FAILED: ${label}`)
@@ -45,7 +36,9 @@ async function main(): Promise<void> {
   if (!deployment) throw new Error(`No swap deployment for ${chainIdentifier}`)
   const provider = new JsonRpcProvider(url, undefined, { batchMaxCount: 1 })
   console.log(
-    `chain ${(await provider.getNetwork()).chainId} block ${await provider.getBlockNumber()}`,
+    `chain ${
+      (await provider.getNetwork()).chainId
+    } block ${await provider.getBlockNumber()}`,
   )
 
   console.log('contracts')
@@ -93,7 +86,9 @@ async function main(): Promise<void> {
     )
     ok(
       Number(await erc20.decimals()) === token.decimals,
-      `${token.symbol} decimals = ${token.decimals} (chain symbol ${await erc20.symbol()})`,
+      `${token.symbol} decimals = ${
+        token.decimals
+      } (chain symbol ${await erc20.symbol()})`,
     )
   }
 
@@ -109,7 +104,9 @@ async function main(): Promise<void> {
     const liquidity = await stateView.getLiquidity(id)
     ok(
       slot0.sqrtPriceX96 > 0n && liquidity > 0n,
-      `pool ${id.slice(0, 10)} initialised, liquidity ${liquidity}, lpFee ${slot0.lpFee}`,
+      `pool ${id.slice(0, 10)} initialised, liquidity ${liquidity}, lpFee ${
+        slot0.lpFee
+      }`,
     )
     ok(Number(slot0.lpFee) === key.fee, 'pool fee matches its key')
   }
@@ -172,7 +169,9 @@ async function main(): Promise<void> {
     }
   }
   if (!from)
-    console.log('  (no fromAddress given: swaps were not simulated, only quoted)')
+    console.log(
+      '  (no fromAddress given: swaps were not simulated, only quoted)',
+    )
   console.log('live check passed')
 }
 

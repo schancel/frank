@@ -480,28 +480,14 @@ export default {
     tabBalance: 'Balance & Transfer',
     tabParity: 'Thermodynamic Parity',
     tabSwap: 'Instant Swap',
-    swapPay: 'You Pay',
-    swapReceive: 'You Receive (Estimated)',
-    swapAvailable: 'Available',
-    swapFeeLabel: 'Protocol Convenience Fee (8.75 bps)',
-    swapFeeSavingsBadge: '10x Cheaper than MetaMask',
-    swapRouting: 'Execution Route',
-    swapDestinationChange:
-      'Direct settlement to private stealth address (seed recoverable, zero link to identity)',
-    swapSelectDifferent: 'Select different assets to swap',
-    swapEnterAmount: 'Enter an amount to swap',
-    swapInsufficientBalance: 'Insufficient {asset} balance',
-    swapMaxBtn: 'MAX',
     swapUnavailable: 'Instant Swap unavailable',
     swapUnavailableDescription:
       'Swaps are not supported yet. No quote or transaction is available.',
-    swapExecute: 'Swap Now',
-    swapSuccess:
-      'Swap executed successfully! Funds delivered to your private stealth address.',
     assetsAndTokens: 'Assets & Tokens',
     nativeCoin: 'Native Coin',
     splToken: 'SPL Token',
     tokenMint: 'Token Mint',
+    tokenContract: 'Token contract',
     recentActivity: 'Recent Activity',
     noRecentActivity: 'No recent transactions on this chain.',
     swapAction: 'Swap',
@@ -1320,6 +1306,96 @@ export default {
     licenseHeading: 'Licence of the DKLs23 library',
     licenseIntro:
       'The full licence text, including its conditions and disclaimer, as published by Silence Laboratories (English only):',
+  },
+  swap: {
+    venue: 'Uniswap v4',
+    venueNote: 'Testnet deployment run by {maintainer}, not by Uniswap Labs',
+    pay: 'You pay',
+    payToken: 'Token you pay with',
+    receive: 'You receive',
+    receiveToken: 'Token you receive',
+    switchTokens: 'Switch the two tokens',
+    available: 'Available',
+    balance: 'Balance',
+    max: 'MAX',
+    otherAccounts:
+      '{amount} more in this wallet’s other accounts will be moved in first if needed',
+    rate: 'Rate',
+    priceImpact: 'Price impact',
+    poolFee: 'Pool fee',
+    minimumReceived: 'Minimum received',
+    networkFee: 'Network fee',
+    networkFeeUpTo: 'up to {fee} {unit}',
+    networkFeeLater: 'estimated once approved',
+    approval: 'Approval',
+    approvalNeeded:
+      '{count} approval transaction(s) first, for exactly this {asset} amount',
+    slippage: 'Slippage tolerance',
+    slippageCustom: 'Custom slippage, in percent',
+    enterAmount: 'Enter an amount',
+    review: 'Review swap',
+    reviewTitle: 'Confirm this swap',
+    reviewSummary:
+      'Pay {pay} {payAsset} and receive about {receive} {receiveAsset}. If you would get less than {minimum} {receiveAsset}, the swap is cancelled and you keep your {payAsset}.',
+    reviewNote:
+      'The price is checked again when you confirm. The swap expires {seconds} seconds after signing.',
+    back: 'Back',
+    confirm: 'Confirm swap',
+    newSwap: 'New swap',
+    progressConsolidating: 'Moving funds into the swapping account…',
+    progressApproving: 'Approving the exact amount ({step} of {of})…',
+    progressSigning: 'Signing the swap…',
+    progressSubmitted: 'Submitted. Waiting for the network to confirm…',
+    progressKeepOpen:
+      'You can leave this page: the swap is recorded and appears in Recent Activity.',
+    resultConfirmed: 'Swap complete',
+    resultConfirmedDetail: 'Received in your wallet, as recorded on chain.',
+    resultConfirmedUnknown:
+      'The swap confirmed. The amount received could not be read from the receipt; your balance below is current.',
+    resultReverted: 'Swap not completed',
+    resultRevertedSlippage:
+      'The price moved beyond your slippage tolerance, so the swap was cancelled. You kept your funds and paid only the network fee.',
+    resultRevertedDeadline:
+      'The swap reached the network after it expired, so it was cancelled. You kept your funds and paid only the network fee.',
+    resultRevertedOther:
+      'The network rejected the swap. You kept your funds and paid only the network fee.',
+    resultPending: 'Submitted, not confirmed yet',
+    resultPendingDetail:
+      'The network has not confirmed this swap yet. It may still complete; its status updates in Recent Activity. Do not send it again.',
+    resultFee: 'Network fee paid: {fee} {unit}',
+    unavailableNetwork: 'No swap is available for this wallet on this network.',
+    unavailableSolana: 'Swaps for this Solana wallet are not available yet.',
+    unavailableWallet: 'This wallet cannot swap yet. Open it and try again.',
+    unavailableError: 'The swap could not be loaded. Check your connection.',
+    errorSameAsset: 'Choose two different tokens.',
+    errorInsufficientBalance: 'Not enough {asset}',
+    errorInsufficientForFee:
+      'Not enough {asset} for this amount plus the network fee',
+    errorInsufficientNative:
+      'Not enough of the network’s coin to pay for this swap and its fee.',
+    errorNoRoute: 'These two tokens cannot be swapped here.',
+    errorNoLiquidity:
+      'The pool cannot fill this amount. Try a smaller amount.',
+    errorPriceMoved:
+      'The price moved beyond your slippage tolerance. Review the new amount.',
+    errorExpired: 'The swap expired before it was sent. Review it again.',
+    errorAllowance:
+      'The approval for this amount is missing or has lapsed. Try again.',
+    errorAccountBusy:
+      'An earlier transaction from this wallet has not confirmed yet. Try again in a moment.',
+    errorApprovalFailed:
+      'The approval did not confirm, so nothing was swapped. Try again.',
+    errorAccountChanged: 'The account changed. Review the swap again.',
+    errorQuote: 'Could not get a price from the network. Try again.',
+    errorExecution:
+      'The swap was not sent. Nothing was swapped; check Recent Activity before trying again.',
+    warnHighImpact:
+      'This amount is large for the pool: you receive noticeably less than the market rate.',
+    status: {
+      confirmed: 'Confirmed',
+      pending: 'Pending',
+      failed: 'Not completed',
+    },
   },
   close: 'Close',
 }

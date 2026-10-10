@@ -81,9 +81,10 @@ function keyTuple(key: UniswapV4PoolKey) {
 /** The pool's id in the PoolManager: keccak256 of the ABI-encoded key. */
 export function poolId(key: UniswapV4PoolKey): string {
   return keccak256(
-    coder.encode(['address', 'address', 'uint24', 'int24', 'address'], [
-      ...keyTuple(key),
-    ]),
+    coder.encode(
+      ['address', 'address', 'uint24', 'int24', 'address'],
+      [...keyTuple(key)],
+    ),
   )
 }
 

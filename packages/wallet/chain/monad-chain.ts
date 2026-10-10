@@ -2214,6 +2214,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             getContractCallFunds: () =>
               nativeOperationOwner(wallet).contractCallFunds(),
+            evmReader: provider,
             async fundMainAccount(params) {
               const owner = nativeOperationOwner(wallet);
               const result = await runWalletExclusive(wallet, (admission) =>

@@ -38,8 +38,9 @@ export function useSwapHistory() {
       const swapStore = useSwapStore()
       return {
         allSwaps: computed(() => swapStore.allSwaps),
-        getSwapsForChain: (chainName: string) =>
-          computed(() => swapStore.getSwapsForChain(chainName)),
+        getSwapsForChain: (chainName: string, chainIdentifier?: string) =>
+          computed(() => swapStore.getSwapsForChain(chainName, chainIdentifier)),
+        saveLocal: (record: SwapRecord) => swapStore.saveLocal(record),
         logSwap: (params: Parameters<typeof swapStore.recordSwap>[0]) =>
           swapStore.recordSwap(params),
       }
@@ -53,13 +54,24 @@ export function useSwapHistory() {
 
   return {
     allSwaps: computed(() => fallbackSwaps.value),
-    getSwapsForChain: (chainName: string) => {
+    getSwapsForChain: (chainName: string, chainIdentifier?: string) => {
       const c = chainName.toLowerCase()
       return computed(() =>
         fallbackSwaps.value.filter(
-          s => s.chain === c || (c === 'solana' && s.chain.includes('solana')),
+          s =>
+            (s.chain === c || (c === 'solana' && s.chain.includes('solana'))) &&
+            (!chainIdentifier ||
+              !s.chainIdentifier ||
+              s.chainIdentifier === chainIdentifier),
         ),
       )
+    },
+    saveLocal: (record: SwapRecord) => {
+      fallbackSwaps.value = [
+        record,
+        ...fallbackSwaps.value.filter(s => s.id !== record.id).slice(0, 99),
+      ]
+      saveFallbackHistory()
     },
     logSwap: async (params: any) => {
       const record: SwapRecord = {

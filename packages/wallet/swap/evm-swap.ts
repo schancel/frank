@@ -4,10 +4,7 @@
  */
 
 import { getAddress } from 'ethers'
-import type {
-  EvmDexToken,
-  UniswapV4Deployment,
-} from '../chain/dex-deployments'
+import type { EvmDexToken, UniswapV4Deployment } from '../chain/dex-deployments'
 import {
   approvalSteps,
   classifySwapRevert,
@@ -84,7 +81,9 @@ export interface SwapQuote {
 export const QUOTE_MAX_AGE_MS = 8_000
 
 export function quoteIsFresh(quote: SwapQuote, nowMs: number): boolean {
-  return nowMs - quote.quotedAtMs >= 0 && nowMs - quote.quotedAtMs < QUOTE_MAX_AGE_MS
+  return (
+    nowMs - quote.quotedAtMs >= 0 && nowMs - quote.quotedAtMs < QUOTE_MAX_AGE_MS
+  )
 }
 
 /** The account's balance of each configured token, in base units, in the deployment's order. */
@@ -324,7 +323,8 @@ export function revertDataOf(error: unknown): string | undefined {
   while (current && typeof current === 'object' && !seen.has(current)) {
     seen.add(current)
     const data = (current as { data?: unknown }).data
-    if (typeof data === 'string' && /^0x[0-9a-fA-F]{8,}$/.test(data)) return data
+    if (typeof data === 'string' && /^0x[0-9a-fA-F]{8,}$/.test(data))
+      return data
     current =
       (current as { error?: unknown }).error ??
       (current as { info?: { error?: unknown } }).info?.error ??
@@ -333,7 +333,9 @@ export function revertDataOf(error: unknown): string | undefined {
   return undefined
 }
 
-export function swapRevertReasonOf(error: unknown): SwapRevertReason | undefined {
+export function swapRevertReasonOf(
+  error: unknown,
+): SwapRevertReason | undefined {
   return classifySwapRevert(revertDataOf(error))
 }
 

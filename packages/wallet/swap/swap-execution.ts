@@ -41,7 +41,10 @@ export interface SwapWallet {
     data: string
     value: bigint
     gasLimit?: bigint
-    onSigned?: (signed: { operationId: string; txHash: string }) => Promise<void>
+    onSigned?: (signed: {
+      operationId: string
+      txHash: string
+    }) => Promise<void>
   }): Promise<{ operationId: string; txHash: string }>
   getContractCallFunds(): Promise<{
     mainAddress: string
@@ -113,9 +116,7 @@ async function awaitReceipt(
   timing: SwapTiming,
 ): Promise<SwapReceipt | undefined> {
   for (let waited = 0; ; waited += timing.pollMs) {
-    const receipt = await reader
-      .getTransactionReceipt(txHash)
-      .catch(() => null)
+    const receipt = await reader.getTransactionReceipt(txHash).catch(() => null)
     if (receipt) return receipt
     if (waited >= timing.inclusionTimeoutMs) return undefined
     await timing.sleep(timing.pollMs)
@@ -144,11 +145,16 @@ function submittedHandle(
  */
 async function ensureMainHolds(
   wallet: SwapWallet,
+  account: string,
   needed: bigint,
   timing: SwapTiming,
   onProgress?: (progress: SwapProgress) => void,
 ): Promise<void> {
   const funds = await wallet.getContractCallFunds()
+  // The quote, the allowance and the balances were read for `account`; the wallet signs from
+  // its main account. They must be the same account.
+  if (funds.mainAddress.toLowerCase() !== account.toLowerCase())
+    throw new Error('The swap account is not the wallet main account')
   if (funds.mainBusy)
     throw new SwapRefusedError(
       'account-busy',
@@ -278,7 +284,13 @@ export async function executeSwap(params: {
     const { call } = plan.approvals[i]!
     onProgress?.({ stage: 'approving', step: i + 1, of: plan.approvals.length })
     const fee = await feeOrRefusal(reader, call, account)
-    await ensureMainHolds(wallet, fee.maximumFeeWei, timing, onProgress)
+    await ensureMainHolds(
+      wallet,
+      account,
+      fee.maximumFeeWei,
+      timing,
+      onProgress,
+    )
     const handle = await send(wallet, call, fee.gasLimit)
     onProgress?.({
       stage: 'approving',
@@ -299,10 +311,11 @@ export async function executeSwap(params: {
 
   // The gas estimate needs the value in the account, so the value is consolidated first and the
   // fee, once known, second.
-  await ensureMainHolds(wallet, plan.swap.value, timing, onProgress)
+  await ensureMainHolds(wallet, account, plan.swap.value, timing, onProgress)
   const fee = await feeOrRefusal(reader, plan.swap, account)
   await ensureMainHolds(
     wallet,
+    account,
     plan.swap.value + fee.maximumFeeWei,
     timing,
     onProgress,
@@ -331,7 +344,10 @@ export async function executeSwap(params: {
  */
 export async function reconcileSwap(params: {
   reader: SwapExecutionReader
-  wallet: Pick<SwapWallet, 'resumeNativeOperation' | 'reobserveNativeOperations'>
+  wallet: Pick<
+    SwapWallet,
+    'resumeNativeOperation' | 'reobserveNativeOperations'
+  >
   deployment: UniswapV4Deployment
   route: PoolRoute
   account: string
@@ -339,15 +355,22 @@ export async function reconcileSwap(params: {
   handle: { operationId: string; txHash: string }
   timing?: SwapTiming
 }): Promise<SwapResult> {
-  const timing = params.timing ?? { ...DEFAULT_SWAP_TIMING, inclusionTimeoutMs: 0 }
+  const timing = params.timing ?? {
+    ...DEFAULT_SWAP_TIMING,
+    inclusionTimeoutMs: 0,
+  }
   const { reader, handle } = params
   let receipt = await awaitReceipt(reader, handle.txHash, timing)
   if (!receipt) {
-    const known = await reader.getTransaction(handle.txHash).catch(() => 'unknown')
+    const known = await reader
+      .getTransaction(handle.txHash)
+      .catch(() => 'unknown')
     if (known === null && params.wallet.resumeNativeOperation) {
-      await params.wallet.resumeNativeOperation(handle.operationId).catch(() => {
-        /* Still unresolved: the record stays pending and is looked at again later. */
-      })
+      await params.wallet
+        .resumeNativeOperation(handle.operationId)
+        .catch(() => {
+          /* Still unresolved: the record stays pending and is looked at again later. */
+        })
       receipt = await awaitReceipt(reader, handle.txHash, {
         ...timing,
         inclusionTimeoutMs: DEFAULT_SWAP_TIMING.inclusionTimeoutMs,

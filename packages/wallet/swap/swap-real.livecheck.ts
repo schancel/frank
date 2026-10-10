@@ -48,7 +48,10 @@ async function main(): Promise<void> {
   const deployment = getEvmDexDeployment(chainIdentifier)
   if (!deployment) throw new Error(`No swap deployment for ${chainIdentifier}`)
   const provider = new JsonRpcProvider(url, undefined, { batchMaxCount: 1 })
-  if (String((await provider.getNetwork()).chainId) !== String(entry.nativeChainId))
+  if (
+    String((await provider.getNetwork()).chainId) !==
+    String(entry.nativeChainId)
+  )
     throw new Error('The RPC endpoint is not the expected chain')
 
   if (!existsSync(accountFile)) {
@@ -56,10 +59,15 @@ async function main(): Promise<void> {
     const created = Wallet.createRandom()
     writeFileSync(
       accountFile,
-      JSON.stringify({ address: created.address, privateKey: created.privateKey }),
+      JSON.stringify({
+        address: created.address,
+        privateKey: created.privateKey,
+      }),
       { mode: 0o600 },
     )
-    console.log(`Created ${created.address}. Fund it with the native coin and run again.`)
+    console.log(
+      `Created ${created.address}. Fund it with the native coin and run again.`,
+    )
     return
   }
   const signer = new Wallet(
@@ -68,7 +76,8 @@ async function main(): Promise<void> {
   const account = signer.address
   const tokenIn = findToken(deployment, fromSymbol)
   const tokenOut = findToken(deployment, toSymbol)
-  if (!tokenIn || !tokenOut) throw new Error('Unknown token for this deployment')
+  if (!tokenIn || !tokenOut)
+    throw new Error('Unknown token for this deployment')
 
   const journal = new EvmNativeOperationJournal({
     location: join(dirname(accountFile), `journal-${account.toLowerCase()}`),
@@ -135,7 +144,10 @@ async function main(): Promise<void> {
         tokenOut.decimals,
       )} ${tokenOut.symbol} (fee ${quote.lpFeePpm / 10_000}%, impact ${
         quote.priceImpactPpm / 10_000
-      }%), minimum ${formatUnits(plan.minimumAmountOut, tokenOut.decimals)}, approvals needed: ${
+      }%), minimum ${formatUnits(
+        plan.minimumAmountOut,
+        tokenOut.decimals,
+      )}, approvals needed: ${
         plan.approvals.map(step => step.kind).join(', ') || 'none'
       }`,
     )
@@ -159,11 +171,17 @@ async function main(): Promise<void> {
     )
     if (result.status === 'confirmed' && result.amountOut !== undefined)
       console.log(
-        `received from receipt: ${formatUnits(result.amountOut, tokenOut.decimals)} ${
-          tokenOut.symbol
-        }; network fee paid ${formatUnits(result.feeWei, 18)}`,
+        `received from receipt: ${formatUnits(
+          result.amountOut,
+          tokenOut.decimals,
+        )} ${tokenOut.symbol}; network fee paid ${formatUnits(
+          result.feeWei,
+          18,
+        )}`,
       )
-    console.log(`after:  ${show(await readTokenBalances(provider, deployment, account))}`)
+    console.log(
+      `after:  ${show(await readTokenBalances(provider, deployment, account))}`,
+    )
     console.log(
       'journal:',
       journal

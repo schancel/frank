@@ -4,10 +4,7 @@
  * `packages/wallet/swap/uniswap-v4.livecheck.ts`.
  */
 import { getEvmDexDeployment } from '@frank/wallet/chain/dex-deployments'
-import {
-  cannedNode,
-  callRevert,
-} from '@frank/wallet/swap/swap-reader.testutil'
+import { cannedNode, callRevert } from '@frank/wallet/swap/swap-reader.testutil'
 import {
   findToken,
   poolId,
@@ -31,7 +28,8 @@ describe('signet swap', () => {
   let logSpy: jest.SpyInstance
   let errorSpy: jest.SpyInstance
   let canned: ReturnType<typeof cannedNode>
-  const printed = () => logSpy.mock.calls.map(call => String(call[0])).join('\n')
+  const printed = () =>
+    logSpy.mock.calls.map(call => String(call[0])).join('\n')
   const json = () => JSON.parse(String(logSpy.mock.calls[0]![0]))
 
   beforeEach(() => {
@@ -164,11 +162,27 @@ describe('signet swap', () => {
   it('dispatches quote and build from the program, and no longer lists plugins', async () => {
     const program = createProgram()
     program.exitOverride()
-    await program.parseAsync(['node', 'signet', 'swap', 'quote', 'MON', 'USDC', '0.02'])
+    await program.parseAsync([
+      'node',
+      'signet',
+      'swap',
+      'quote',
+      'MON',
+      'USDC',
+      '0.02',
+    ])
     expect(printed()).toContain('Receive:          0.019996 USDC')
     logSpy.mockClear()
     await program.parseAsync([
-      'node', 'signet', 'swap', 'build', 'MON', 'USDC', '0.02', '--account', account,
+      'node',
+      'signet',
+      'swap',
+      'build',
+      'MON',
+      'USDC',
+      '0.02',
+      '--account',
+      account,
     ])
     expect(printed()).toContain(`Unsigned swap for ${account}`)
     const swap = program.commands.find(command => command.name() === 'swap')!

@@ -310,12 +310,47 @@ export interface NativeWalletHandle {
     otherBalance: bigint;
     mainBusy: boolean;
   }>;
+  /** Read-only node access for this handle's own EVM chain. It cannot sign or submit. */
+  readonly evmReader?: EvmChainReader;
   /** Consolidates `value` from the wallet's other accounts into the main account. */
   fundMainAccount?(params: {
     value: bigint;
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<LegacySendResult>;
+}
+
+/** The reads a contract interaction needs: a call, a gas estimate, a balance, a receipt. */
+export interface EvmChainReader {
+  call(tx: {
+    to: string;
+    data: string;
+    from?: string;
+    value?: bigint;
+  }): Promise<string>;
+  estimateGas(tx: {
+    to: string;
+    data: string;
+    value: bigint;
+    from: string;
+  }): Promise<bigint>;
+  getBalance(address: string): Promise<bigint>;
+  getFeeData(): Promise<{
+    maxFeePerGas: bigint | null;
+    gasPrice: bigint | null;
+  }>;
+  getTransactionReceipt(hash: string): Promise<{
+    readonly status: number | null;
+    readonly blockNumber: number;
+    readonly gasUsed: bigint;
+    readonly gasPrice: bigint;
+    readonly logs: ReadonlyArray<{
+      readonly address: string;
+      readonly topics: ReadonlyArray<string>;
+      readonly data: string;
+    }>;
+  } | null>;
+  getTransaction(hash: string): Promise<unknown | null>;
 }
 
 export interface ContractCallHandle {

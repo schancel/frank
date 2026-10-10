@@ -23,6 +23,30 @@ export interface SwapRecord {
   destinationAddress?: string
   status: 'confirmed' | 'pending' | 'failed'
   cborPayload?: string
+  /** Canonical chain identifier the swap was made on (`chain` is the wallet page's alias). */
+  chainIdentifier?: string
+  /** Why a failed swap failed, as a short code the view translates. */
+  failureReason?: string
+  /**
+   * What is needed to finish a swap that was submitted but not yet seen in a block: the wallet's
+   * recorded operation and the exact call. Removed once the outcome is known.
+   */
+  recovery?: SwapRecovery
+}
+
+export interface SwapRecovery {
+  operationId: string
+  account: string
+  pool: {
+    currency0: string
+    currency1: string
+    fee: number
+    tickSpacing: number
+    hooks: string
+  }
+  zeroForOne: boolean
+  call: { to: string; data: string; value: string }
+  toDecimals: number
 }
 
 export const SWAP_STORAGE_KEY = 'frank_swap_history'
@@ -105,12 +129,18 @@ export const useSwapStore = defineStore('swaps', {
       return [...state.swaps].sort((a, b) => b.timestamp - a.timestamp)
     },
 
-    getSwapsForChain: state => (chainName: string) => {
-      const c = chainName.toLowerCase()
-      return state.swaps.filter(
-        s => s.chain === c || (c === 'solana' && s.chain.includes('solana')),
-      )
-    },
+    getSwapsForChain:
+      state => (chainName: string, chainIdentifier?: string) => {
+        const c = chainName.toLowerCase()
+        return state.swaps.filter(
+          s =>
+            (s.chain === c || (c === 'solana' && s.chain.includes('solana'))) &&
+            // A swap that names its network is shown only on that network.
+            (!chainIdentifier ||
+              !s.chainIdentifier ||
+              s.chainIdentifier === chainIdentifier),
+        )
+      },
   },
 
   actions: {
@@ -124,6 +154,17 @@ export const useSwapStore = defineStore('swaps', {
       } catch {
         // Ignore write error
       }
+    },
+
+    /**
+     * Writes one swap to this device's history and nothing else. A swap is saved here as
+     * pending before it is broadcast, then again with its outcome.
+     */
+    saveLocal(record: SwapRecord): void {
+      const index = this.swaps.findIndex(s => s.id === record.id)
+      if (index >= 0) this.swaps[index] = record
+      else this.swaps = [record, ...this.swaps.slice(0, 99)]
+      this.saveToStorage()
     },
 
     async recordSwap(

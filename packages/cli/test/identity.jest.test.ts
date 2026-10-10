@@ -104,6 +104,7 @@ describe('Identity Commands', () => {
     expect(parsed.profile).toBeNull()
     // No message command has run, so there is no messaging account yet.
     expect(parsed.messagingAddress).toBeNull()
+    expect(parsed.messagingFundingAddress).toBeNull()
   })
 
   it('shows the messaging account address, which is not the identity address', async () => {
@@ -117,10 +118,16 @@ describe('Identity Commands', () => {
     const parsed = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0])
     expect(parsed.messagingAddress).toMatch(/^0x[0-9a-fA-F]{40}$/)
     expect(parsed.messagingAddress).not.toBe(created.address)
+    // The address that pays for stamps is the account's own, and is neither of the others.
+    expect(parsed.messagingFundingAddress).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(parsed.messagingFundingAddress.toLowerCase()).not.toBe(
+      parsed.messagingAddress.toLowerCase(),
+    )
 
     await showIdentityCommand({ dataDir: testDataDir })
     const text = logSpy.mock.calls.map(call => call[0]).join('\n')
     expect(text).toContain(`Messaging Address:      ${parsed.messagingAddress}`)
+    expect(text).toContain(`Messaging Funding:      ${parsed.messagingFundingAddress}`)
     expect(text).toContain('separate account')
   })
 

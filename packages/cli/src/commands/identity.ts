@@ -8,7 +8,7 @@ import {
   saveIdentity,
 } from '../config'
 import { outputError, outputResult } from '../util'
-import { cliAccountAddress } from '../account'
+import { cliAccountAddresses } from '../account'
 
 export interface IdentityCreateOptions {
   json?: boolean
@@ -95,6 +95,7 @@ export async function showIdentityCommand(
       // Profile fetch can fail if relay is unreachable; show as unregistered
     }
 
+    const account = cliAccountAddresses(dataDir)
     const result = {
       address,
       encryptionPublicKey,
@@ -102,7 +103,9 @@ export async function showIdentityCommand(
       registered: profile !== null,
       profile,
       // Messages are sent and received as a separate account with its own address.
-      messagingAddress: cliAccountAddress(dataDir) ?? null,
+      messagingAddress: account?.address ?? null,
+      // A paid message is paid from here: it has to hold the stamp and its fee.
+      messagingFundingAddress: account?.mainAccount ?? null,
     }
 
     outputResult(
@@ -117,11 +120,16 @@ export async function showIdentityCommand(
             result.messagingAddress ?? '(created by the first send or inbox)'
           }`,
         )
+        if (result.messagingFundingAddress) {
+          console.log(
+            `  Messaging Funding:      ${result.messagingFundingAddress}`,
+          )
+        }
         console.log(
-          '    Messages use this separate account, not the address above: give this one to',
+          '    Messages use this separate account, not the address above: give the messaging',
         )
         console.log(
-          '    correspondents, and fund its own main address (shown by a failed paid send).',
+          '    address to correspondents, and fund the funding address to pay for stamps.',
         )
         if (result.profile) {
           console.log(`  Relay Profile:          Registered`)

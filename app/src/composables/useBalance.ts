@@ -52,6 +52,10 @@ export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 // changes or the last consumer unmounts.
 const balance = ref<bigint | null>(null)
 const hasError = ref(false)
+// The active wallet's chain cannot be reached: the wallet's own reads say so (`chainHealth`),
+// or the balance read just failed on the network. Shown as a warning for that chain; paid
+// messages queue meanwhile.
+const chainUnreachable = ref(false)
 const loaded = computed(() => balance.value !== null)
 // Money at the profile address of an account whose deposit address is a different one (what a
 // faucet or anyone who only knows the profile pays to). The wallet's `getBalance` leaves it out,
@@ -159,6 +163,7 @@ async function fetchBalance(force: boolean) {
     cordoned.value = 0n
     cordonedReadAtMs = undefined
     hasError.value = false
+    chainUnreachable.value = false
     failures = 0
     requestId++
     pending = false
@@ -189,6 +194,13 @@ async function fetchBalance(force: boolean) {
     }
     hasError.value = false
     failures = 0
+    let health: { reachable: boolean } | undefined
+    try {
+      health = activeChain.directMessages?.chainHealth?.({ wallet })
+    } catch {
+      health = undefined
+    }
+    chainUnreachable.value = health?.reachable === false
   } catch (err) {
     // The setup route may render the drawer before a seed exists: not an error, keep polling.
     // Anything else is a real failure worth an error-level log.
@@ -220,6 +232,7 @@ async function fetchBalance(force: boolean) {
         errStr.includes('Failed to fetch')
 
       if (isTransientRpc) {
+        if (isCurrent()) chainUnreachable.value = true
         console.warn('balance refresh transient rpc issue (will retry)', err)
       } else {
         console.error('balance refresh failed', err)
@@ -326,6 +339,7 @@ export function useBalance() {
     loaded,
     isEmpty,
     hasError,
+    chainUnreachable: readonly(chainUnreachable),
     refresh: () => fetchBalance(true),
     /** Refreshes now and reads the profile address too, whenever it was last read. */
     refreshCordoned: () => {

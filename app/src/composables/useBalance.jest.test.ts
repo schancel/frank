@@ -31,8 +31,12 @@ jest.mock('@frank/wallet/chain', () => ({
     nativeTransfers: {
       getBalance: (...args: unknown[]) => mockGetBalance(...args),
     },
+    directMessages: {
+      chainHealth: () => mockChainHealth,
+    },
   },
 }))
+let mockChainHealth: { reachable: boolean } = { reachable: true }
 // Like the real one: memoized per seed, so a seed change yields a different promise.
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(
@@ -549,5 +553,28 @@ describe('useBalance', () => {
     expect(mockGetBalance).toHaveBeenCalled()
     expect(api.balance.value).toBe(500n)
     expect(api.formattedBalance.value).toBe('500 MON')
+  })
+
+  // The owner's rule: when the chain cannot be reached, a warning for that chain is shown.
+  it("says the chain cannot be reached when the wallet's own reads say so or the balance read fails on the network, and clears it when the chain answers again", async () => {
+    mockChainHealth = { reachable: true }
+    const api = useBalance()
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(false)
+    // The wallet's reads (a send's fee or nonce read) found the node not answering.
+    mockChainHealth = { reachable: false }
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(true)
+    mockChainHealth = { reachable: true }
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(false)
+    // The balance read itself fails on the network.
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    mockGetBalance.mockRejectedValueOnce(new Error('Failed to fetch'))
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(true)
+    mockGetBalance.mockResolvedValue(1n)
+    await api.refresh()
+    expect(api.chainUnreachable.value).toBe(false)
   })
 })

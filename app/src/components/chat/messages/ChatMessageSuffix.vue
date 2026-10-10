@@ -39,6 +39,14 @@
       <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
         amount
       }}</span>
+      <!-- What the chain has shown of this message's payment: in the mempool, paid, reverted
+           (and paid again), failed. -->
+      <span
+        v-if="paymentSummaryText"
+        class="q-ml-xs"
+        data-testid="outgoing-payment-summary"
+        >{{ paymentSummaryText }}</span
+      >
       <chat-message-suffix-buttons
         v-if="status === 'confirmed'"
         :status="status"
@@ -208,6 +216,19 @@ export default defineComponent({
       required: false,
       default: false,
     },
+    /** While waiting for the previous payment: blocks still to pass before this send's coin
+     * may be spent, when the wallet said; -1 otherwise. */
+    waitingBlocks: {
+      type: Number,
+      required: false,
+      default: -1,
+    },
+    /** `DirectMessagePaymentSummary` of a sent paid message; '' when not known. */
+    paymentSummary: {
+      type: String,
+      required: false,
+      default: '',
+    },
     /** Why the message failed (`OutgoingFailureReason`), shown next to "Failed to send". */
     failureReason: {
       type: String,
@@ -253,9 +274,26 @@ export default defineComponent({
      * the account's previous payment to be mined, that it is waiting for that. */
     sendingText(): string {
       if (this.waitingForChain) return this.$t('outgoing.waitingForChain')
+      if (this.waitingForPreviousPayment && this.waitingBlocks > 0)
+        return this.$t('outgoing.waitingBlocks', { blocks: this.waitingBlocks })
       return this.waitingForPreviousPayment
         ? this.$t('outgoing.waitingForPreviousPayment')
         : this.$t('outgoing.sending')
+    },
+    /** The payment's state beside the amount of a sent message. */
+    paymentSummaryText(): string {
+      if (!this.outbound || this.status !== 'confirmed') return ''
+      const keys: Record<string, string> = {
+        pending: 'outgoing.paymentSent',
+        mempool: 'outgoing.paymentInMempool',
+        paid: 'outgoing.paymentPaid',
+        reverted: 'outgoing.paymentReverted',
+        repaid: 'outgoing.paymentRepaid',
+        failed: 'outgoing.paymentFailed',
+        unsent: 'outgoing.paymentUnsent',
+      }
+      const key = keys[this.paymentSummary]
+      return key === undefined ? '' : this.$t(key)
     },
     paymentText(): string {
       if (this.paymentState === 'live')

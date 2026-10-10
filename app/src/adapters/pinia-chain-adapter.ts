@@ -32,6 +32,7 @@
  *   inefficiency, not fixed here since `ActiveChain`'s interface (owned by #41, off-limits to this
  *   ticket) has no cheaper way to ask "what pubkey did you just use to decrypt this."
  */
+import { refreshOutgoingPaymentSummaries } from '../utils/outgoing-payments'
 import { activeChain } from '@frank/wallet/chain'
 import type {
   DirectMessageAttemptStatus,
@@ -683,6 +684,17 @@ export function startOutgoingReconciliation({
     return unsettled.size
   }
 
+  const sentMessages = function* () {
+    const seenChats = new Set<unknown>()
+    for (const chat of Object.values(chats.conversations ?? {})) {
+      if (!chat || seenChats.has(chat)) continue
+      seenChats.add(chat)
+      for (const message of chat.messages ?? [])
+        if (message.outbound && walletOwnsMessage(wallet, message))
+          yield message
+    }
+  }
+
   const tick = async () => {
     if (ticking || stopped) return
     ticking = true
@@ -698,6 +710,19 @@ export function startOutgoingReconciliation({
       // the messages on screen. Once per tick, when no message asked; never from wallet open.
       if (!asked && !stopped) walletUnsettled = await askTheWholeWallet()
       reconciled = true
+      // Sent paid messages whose payment the chain has not finished with: the wallet looks at
+      // every unresolved payment it holds (no request when it holds none), and the bubbles
+      // show what it found. They keep the tick on its short pauses until they are final.
+      if (
+        !stopped &&
+        refreshOutgoingPaymentSummaries(wallet, sentMessages()) > 0
+      ) {
+        await activeChain.directMessages.reconcileAttempts({
+          wallet,
+          payloadDigests: [],
+        })
+        pending += refreshOutgoingPaymentSummaries(wallet, sentMessages())
+      }
       // Every tick that reconciled: this is also how a top-up is picked up.
       fundNextMessage()
     } catch (err) {
@@ -756,7 +781,18 @@ export function startOutgoingReconciliation({
   const unsubscribe = chats.$onAction(({ name, after }) => {
     // A message was delivered and its accounts are spent: fund the next one's now, not at the
     // next idle tick.
-    if (name === 'confirmOutgoing') after(fundNextMessage)
+    if (name === 'confirmOutgoing')
+      after(() => {
+        fundNextMessage()
+        // Its payment has just been handed to the chain: say so on the bubble, and look
+        // again soon for its block.
+        if (stopped) return
+        if (refreshOutgoingPaymentSummaries(wallet, sentMessages()) > 0) {
+          delayMs = intervalMs
+          if (ticking) resetRequested = true
+          else schedule(intervalMs)
+        }
+      })
     // Observe the serialized mutation action itself. `setOutgoingState` now delegates through
     // the delivery queue, so its outer action can settle after another action has already updated
     // `knownPending`; the exclusive action is the exact serialized state/persistence boundary.

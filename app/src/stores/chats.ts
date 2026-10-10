@@ -22,6 +22,7 @@ import {
   sendsWaitingForPreviousPayment,
 } from '../utils/outgoing-waiting'
 import { activeChain } from '@frank/wallet/chain'
+import { sendsWaitingBlocks } from '../utils/outgoing-payments'
 import { messageItems } from '../utils/message-items'
 
 import {
@@ -3059,13 +3060,18 @@ export const useChatStore = defineStore('chats', {
             onPreparationProgress: progress => {
               // Its payment waits for the previous one to be mined, or the chain cannot be
               // reached and the send is queued: the bubble says which.
-              if (progress.stage === 'waiting-for-payment')
+              if (progress.stage === 'waiting-for-payment') {
                 sendsWaitingForPreviousPayment.add(id)
+                if (progress.blocksRemaining === undefined)
+                  sendsWaitingBlocks.delete(id)
+                else sendsWaitingBlocks.set(id, progress.blocksRemaining)
+              }
               if (progress.stage === 'waiting-for-chain')
                 sendsWaitingForChain.add(id)
               onPreparationProgress?.(progress)
             },
             onAttemptCreated: async attemptDigest => {
+              sendsWaitingBlocks.delete(id)
               sendsWaitingForPreviousPayment.delete(id)
               sendsWaitingForChain.delete(id)
               ownDigest = attemptDigest

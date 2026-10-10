@@ -229,4 +229,76 @@ describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
       'The message could not be sent.',
     )
   })
+
+  it.each([
+    ['en-us', enUS],
+    ['fr-fr', frFR],
+  ])(
+    'a send waiting out the blocks after the previous payment says how many remain (%s)',
+    (_name, messages) => {
+      const t = translator(messages)
+      const waiting = mountSuffix(
+        {
+          status: 'pending',
+          inline: true,
+          waitingForPreviousPayment: true,
+          waitingBlocks: 2,
+        },
+        messages,
+      )
+      expect(waiting.get('[data-testid="outgoing-sending"]').text()).toBe(
+        t('outgoing.waitingBlocks'),
+      )
+      expect(t('outgoing.waitingBlocks')).toContain('{blocks}')
+    },
+  )
+
+  it.each([
+    ['pending', 'outgoing.paymentSent'],
+    ['mempool', 'outgoing.paymentInMempool'],
+    ['paid', 'outgoing.paymentPaid'],
+    ['reverted', 'outgoing.paymentReverted'],
+    ['repaid', 'outgoing.paymentRepaid'],
+    ['failed', 'outgoing.paymentFailed'],
+    ['unsent', 'outgoing.paymentUnsent'],
+  ])(
+    'a sent message says what the chain has shown of its payment: %s',
+    (summary, key) => {
+      for (const messages of [enUS, frFR]) {
+        const t = translator(messages)
+        const sent = mountSuffix(
+          {
+            status: 'confirmed',
+            inline: true,
+            amount: '0.002 MON',
+            paymentSummary: summary,
+          },
+          messages,
+        )
+        expect(
+          sent.get('[data-testid="outgoing-payment-summary"]').text(),
+        ).toBe(t(key))
+        // A real string in both languages, never the key.
+        expect(t(key)).not.toBe(key)
+      }
+    },
+  )
+
+  it('says nothing about a payment it knows nothing of, on a received message, or while sending', () => {
+    for (const props of [
+      { status: 'confirmed', inline: true },
+      {
+        status: 'confirmed',
+        inline: true,
+        outbound: false,
+        paymentSummary: 'paid',
+      },
+      { status: 'pending', inline: true, paymentSummary: 'pending' },
+    ])
+      expect(
+        mountSuffix(props)
+          .find('[data-testid="outgoing-payment-summary"]')
+          .exists(),
+      ).toBe(false)
+  })
 })

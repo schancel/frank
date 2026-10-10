@@ -1,4 +1,5 @@
 import { reactive } from 'vue'
+import { sendsWaitingBlocks } from './outgoing-payments'
 
 /**
  * The outgoing messages (by store key) whose send is, right now, waiting for the account's
@@ -29,6 +30,7 @@ export function cancellableSend(id: string): {
       if (waitingSendAborts.get(id) === controller) waitingSendAborts.delete(id)
       sendsWaitingForPreviousPayment.delete(id)
       sendsWaitingForChain.delete(id)
+      sendsWaitingBlocks.delete(id)
     },
   }
 }
@@ -44,4 +46,5 @@ export function endWaitingSend(id: string): void {
   waitingSendAborts.delete(id)
   sendsWaitingForPreviousPayment.delete(id)
   sendsWaitingForChain.delete(id)
+  sendsWaitingBlocks.delete(id)
 }

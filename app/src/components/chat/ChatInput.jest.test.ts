@@ -371,7 +371,10 @@ describe('modernized chat input interface (#1003)', () => {
       props: { stampAmount: minimum.toString(), minimumStampWei: minimum },
       global: globalOptions,
     })
-    expect(atMinimum.find('.chat-stamp-pill-text').text()).toBe('1×')
+    // The chip shows the amount; the multiple of the minimum is beside it, and absent at 1.
+    expect(atMinimum.find('[data-testid="stamp-pill-multiple"]').exists()).toBe(
+      false,
+    )
     expect(
       (atMinimum.vm as unknown as { minimumStampAmount: string })
         .minimumStampAmount,
@@ -383,7 +386,7 @@ describe('modernized chat input interface (#1003)', () => {
       },
       global: globalOptions,
     })
-    expect(doubled.find('.chat-stamp-pill-text').text()).toBe('2×')
+    expect(doubled.get('[data-testid="stamp-pill-multiple"]').text()).toBe('2×')
   })
 
   it('does not render bottom stamp status bar to prevent scroll bounce glitches and loads send button when disabled', () => {

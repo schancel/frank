@@ -623,6 +623,16 @@ export default {
     waitingForPreviousPayment:
       'En attente de la confirmation du paiement précédent…',
     waitingForChain: 'En file : le réseau est injoignable.',
+    waitingBlocks:
+      'Encore {blocks} blocs à attendre après le paiement précédent avant de payer…',
+    paymentSent: '· paiement envoyé',
+    paymentInMempool: '· paiement dans le mempool',
+    paymentPaid: '· payé',
+    paymentReverted:
+      '· paiement annulé par le réseau, nouveau paiement en cours',
+    paymentRepaid: '· annulé par le réseau, payé de nouveau',
+    paymentFailed: '· paiement échoué',
+    paymentUnsent: '· non payé',
     reasonUnreachable: 'Impossible de joindre le serveur.',
     reasonUnavailable: 'Ce relais ne propose pas la messagerie.',
     reasonRejected: 'Le relais a refusé le message.',

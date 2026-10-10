@@ -93,7 +93,7 @@ fn user(runtime: &DirectoryRuntime, record: &UsernameRecord) -> serde_json::Valu
 fn shown(runtime: &DirectoryRuntime, record: &UsernameRecord) -> bool {
     runtime
         .reserved_username(&record.username)
-        .map_or(true, |owner| *owner == record.subject)
+        .is_none_or(|owner| *owner == record.subject)
 }
 
 fn now_ms() -> u64 {

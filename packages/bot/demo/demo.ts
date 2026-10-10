@@ -299,7 +299,7 @@ export function placementNotice(stateDir: string, transfersWei: bigint, newState
   return [
     `${newStateDir ? 'NEW state directory' : 'state directory'} ${stateDir}: this start places ${formatEther(transfersWei)} testnet MON in its bots' accounts.`,
     `  The keys to those accounts exist only in that directory: deleting it, or starting on another one, strands the money.`,
-    `  The bots stay funded between runs. To return what they hold to the funding wallet when this demo state is finished with: yarn demo:sweep ${stateDir} --send`,
+    `  The bots stay funded between runs of this state. A test that creates a state of its own returns it by itself when it ends; a standing demo state that is finished with is returned by: yarn demo:sweep ${stateDir} --send`,
   ]
 }
 
@@ -608,6 +608,9 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       await sleep(options.pollMs ?? 500)
     }
     abortIfStopping()
+    // The relay launcher moves a relay database from an earlier development build aside (the
+    // relay cannot read it) and starts fresh; say so here, not only in the relay's log.
+    for (const line of relay.tail()) if (line.includes('MOVED ASIDE')) print(`[demo] ${redact(line, config.secrets)}`)
     print(`[demo] relay is up at ${config.relayUrl}`)
 
     // ONE process runs every bot: one bot host, one funding wallet, one nonce counter.

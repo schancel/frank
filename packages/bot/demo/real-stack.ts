@@ -36,7 +36,7 @@
  * the next pending nonce and waited for, so parallel test runs cannot collide.
  */
 import { randomBytes } from 'crypto'
-import { existsSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmdirSync, statSync, writeFileSync } from 'fs'
 import { createServer } from 'net'
 import { homedir } from 'os'
 import { dirname, join, resolve } from 'path'
@@ -65,6 +65,10 @@ const MONAD_TESTNET_CHAIN_ID = 10143n
 /** The most one `fund` call sends unless the caller or FRANK_TEST_MAX_FUND_WEI says otherwise. */
 export const DEFAULT_MAX_FUND_WEI = 500_000_000_000_000_000n
 const DEFAULT_RELAY_PORT = 28098
+/** THE float: what a persistent test account (a harness wallet's main account, the smoke user,
+ * a browser check's account) keeps between runs so the next run need not be funded again.
+ * Everything above it goes back to the wallet that funded it when a run ends. 0.02 MON. */
+export const TEST_ACCOUNT_FLOAT_WEI = 20_000_000_000_000_000n
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
 export async function freePort(): Promise<number> {
@@ -89,6 +93,23 @@ export function realStackEnv(env: Record<string, string | undefined> = process.e
   return { ...fromFile, ...Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) }
 }
 
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size
+  } catch {
+    return 0
+  }
+}
+
+/** The lines a relay launch added to its log after byte `from`. */
+export function relayLogLinesSince(path: string, from: number): string[] {
+  try {
+    return readFileSync(path).subarray(from).toString('utf8').split('\n')
+  } catch {
+    return []
+  }
+}
+
 export interface RealRelay {
   url: string
   logPath: string
@@ -109,6 +130,7 @@ export async function startRealRelay(options: {
   const port = options.port
   const url = `http://127.0.0.1:${port}`
   const logPath = join(options.stateDir, 'logs', 'relay.log')
+  const logStart = fileSize(logPath)
   const supervisor = new Supervisor(env, () => {})
   const relay = supervisor.start({
     name: 'relay',
@@ -135,6 +157,17 @@ export async function startRealRelay(options: {
     },
   })
   const stop = () => supervisor.stopAll()
+  // The launcher script moves an old-format relay database aside and says so in the log: repeat
+  // that line here, where the person running the test sees it.
+  let reported = false
+  const reportMovedAside = () => {
+    if (reported) return
+    for (const line of relayLogLinesSince(logPath, logStart)) {
+      if (!line.includes('MOVED ASIDE')) continue
+      reported = true
+      console.log(`[real-stack] ${line}`)
+    }
+  }
   const deadline = Date.now() + (options.timeoutS ?? 1800) * 1000
   for (;;) {
     try {
@@ -142,6 +175,7 @@ export async function startRealRelay(options: {
     } catch {
       /* not up yet */
     }
+    reportMovedAside()
     if (relay.hasExited() || Date.now() > deadline) {
       await stop()
       throw new Error(
@@ -150,6 +184,7 @@ export async function startRealRelay(options: {
     }
     await sleep(500)
   }
+  reportMovedAside()
   return { url, logPath, stop }
 }
 
@@ -328,18 +363,28 @@ export async function openRealWallet(params: {
 /** What a sweep returned and what it could not. */
 export interface SweepOutcome {
   returnedWei: bigint
+  /** What the persistent accounts keep on purpose (TEST_ACCOUNT_FLOAT_WEI each, at most). */
+  floatWei: bigint
   /** Accounts that still hold something, each with the reason it was not moved. */
   left: { wallet: string; account: string; address: string; balanceWei: bigint; reason: string }[]
 }
 
 /** One line per account a sweep left money in, for a script's output. */
-export function describeSweep(outcome: SweepOutcome, to: string): string[] {
-  return [
-    `returned ${formatEther(outcome.returnedWei)} MON to ${to}`,
-    ...outcome.left.map(
-      l => `  NOT returned: ${formatEther(l.balanceWei)} MON in ${l.wallet}'s ${l.account} ${l.address}: ${l.reason}`,
-    ),
+/** The one line a run that funded anything ends with: funded X, returned Y, left Z where (why). */
+export function fundsLine(params: { fundedWei: bigint; outcome: SweepOutcome; to: string; where: string }): string {
+  const { outcome } = params
+  const stuck = outcome.left.reduce((sum, l) => sum + l.balanceWei, 0n)
+  const reasons = new Map<string, number>()
+  for (const l of outcome.left) {
+    const reason = l.reason.split(':')[0]
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+  }
+  const why = [
+    ...(outcome.floatWei > 0n ? [`${formatEther(outcome.floatWei)} is the float the persistent accounts keep for the next run`] : []),
+    ...[...reasons].map(([reason, count]) => `${count} account${count === 1 ? '' : 's'}: ${reason}`),
   ]
+  const leftWei = outcome.floatWei + stuck
+  return `funded ${formatEther(params.fundedWei)} MON, returned ${formatEther(outcome.returnedWei)} MON to ${params.to || '(no test wallet configured)'}, left ${formatEther(leftWei)} MON in ${params.where}${why.length ? ` (${why.join('; ')})` : ''}`
 }
 
 export interface RealStack {
@@ -349,13 +394,19 @@ export interface RealStack {
   provider: JsonRpcProvider
   /** Address of the test wallet `fund` spends from ('' when FRANK_TEST_WALLET_JSON is unset). */
   fundingAddress: string
-  openWallet(label: string, options?: { stampValueWei?: bigint }): Promise<RealWallet>
+  /** `keepIdentityFunds`: the sweep leaves this wallet's identity account alone (the smoke's
+   * test user: the faucet's one grant per profile sits there and is what the smoke checks). */
+  openWallet(label: string, options?: { stampValueWei?: bigint; keepIdentityFunds?: boolean }): Promise<RealWallet>
   /** Sends from the test wallet; refuses above the per-call limit unless `maxWei` raises it. */
   fund(to: string, valueWei: bigint, options?: { maxWei?: bigint }): Promise<string>
   /** Sends what the opened wallets' main and identity accounts and their spent sender accounts
    * hold back to the test wallet, where it is worth the fee, and says what it left and why.
    * Every script that funds a wallet calls this in a `finally`, before `stop`. */
   sweep(): Promise<SweepOutcome>
+  /** What every script ends with, in a `finally`: sweeps, prints the one funds line (funded,
+   * returned, left where and why), then stops. Safe to call more than once. A stack that started
+   * its own relay also does this on Ctrl-C, SIGTERM and SIGHUP before the process ends. */
+  finish(): Promise<void>
   /** Closes the wallets and stops the relay (if this started one). Safe to call more than once. */
   stop(): Promise<void>
 }
@@ -391,19 +442,31 @@ export async function startRealStack(options: {
   const relayUrl = relayUrlWanted
   const provider = new JsonRpcProvider(rpcUrlList(rpcUrl)[0], MONAD_TESTNET_CHAIN_ID, { staticNetwork: true })
   const wallets: RealWallet[] = []
+  const keepIdentity = new Set<RealWallet>()
   let stopped: Promise<void> | undefined
 
   /** Returns one account's balance to the test wallet. `left` says why when it does not. */
-  const sweepKey = async (privateKey: string): Promise<{ address: string; returnedWei: bigint; balanceWei: bigint; left?: string }> => {
+  const sweepKey = async (
+    privateKey: string,
+    keepWei = 0n,
+  ): Promise<{ address: string; returnedWei: bigint; balanceWei: bigint; keptWei: bigint; left?: string }> => {
+    const moved = await sweepAbove(privateKey, keepWei)
+    const kept = moved.balanceWei < keepWei ? moved.balanceWei : keepWei
+    // What stays as the float is not a failure to return.
+    return { ...moved, balanceWei: moved.balanceWei - kept, keptWei: kept, left: moved.balanceWei - kept > 0n ? moved.left : undefined }
+  }
+  /** `balanceWei` in the answer is what the account still holds afterwards. */
+  const sweepAbove = async (privateKey: string, keepWei: bigint): Promise<{ address: string; returnedWei: bigint; balanceWei: bigint; left?: string }> => {
     const signer = new Wallet(privateKey, provider)
-    const balance = await provider.getBalance(signer.address)
-    if (balance === 0n) return { address: signer.address, returnedWei: 0n, balanceWei: 0n }
+    const held = await provider.getBalance(signer.address)
+    if (held <= keepWei) return { address: signer.address, returnedWei: 0n, balanceWei: held }
+    const balance = held - keepWei
     // A plain transfer at the node's gas price costs exactly 21000 x that price. Not worth
     // sending unless it returns at least as much as it costs.
     const gasPrice = BigInt(await provider.send('eth_gasPrice', []))
     const cost = gasPrice * 21_000n
     if (balance < cost * 2n) {
-      return { address: signer.address, returnedWei: 0n, balanceWei: balance, left: `dust: under twice the transfer fee of ${formatEther(cost)} MON` }
+      return { address: signer.address, returnedWei: 0n, balanceWei: held, left: `dust: under twice the transfer fee of ${formatEther(cost)} MON` }
     }
     try {
       const tx = await signer.sendTransaction({
@@ -414,19 +477,32 @@ export async function startRealStack(options: {
         gasPrice,
       })
       const receipt = await tx.wait(1, 120_000)
-      if (receipt?.status !== 1) return { address: signer.address, returnedWei: 0n, balanceWei: balance, left: `transfer ${tx.hash} reverted` }
-      return { address: signer.address, returnedWei: balance - cost, balanceWei: 0n }
+      if (receipt?.status !== 1) return { address: signer.address, returnedWei: 0n, balanceWei: held, left: `transfer reverted: ${tx.hash}` }
+      return { address: signer.address, returnedWei: balance - cost, balanceWei: keepWei }
     } catch (err) {
       return {
         address: signer.address,
         returnedWei: 0n,
-        balanceWei: balance,
-        left: `the transfer failed (${err instanceof Error ? err.message.split('\n')[0].slice(0, 160) : 'error'}); run funds:sweep on the state directory to try again`,
+        balanceWei: held,
+        left: `the transfer failed: ${err instanceof Error ? err.message.split('\n')[0].slice(0, 160) : 'error'}`,
       }
     }
   }
+  let fundedWei = 0n
+  let finished: Promise<void> | undefined
+  const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
+  const onSignal = (signal: NodeJS.Signals) => {
+    console.error(`[real-stack] ${signal}: returning test funds before stopping`)
+    void stack
+      .finish()
+      .catch(() => undefined)
+      .then(() => process.exit(signal === 'SIGINT' ? 130 : 143))
+  }
+  // With a relay of its own this is the whole run, so it owns the signals. On somebody else's
+  // relay (the demo's) the launcher owns them and the script's `finally` calls `finish`.
+  if (relay) for (const signal of signals) process.on(signal, onSignal)
 
-  return {
+  const stack: RealStack = {
     relayUrl,
     rpcUrl,
     stateDir,
@@ -441,6 +517,7 @@ export async function startRealStack(options: {
         burnAddress: env.MONAD_STAMP_BURN_ADDRESS,
       })
       wallets.push(wallet)
+      if (walletOptions?.keepIdentityFunds) keepIdentity.add(wallet)
       return wallet
     },
     async fund(to, valueWei, fundOptions) {
@@ -449,10 +526,12 @@ export async function startRealStack(options: {
           'FRANK_TEST_WALLET_JSON is required to fund a wallet: a funded testnet wallet used only by tests (never E2E_DEMO_MAIN_WALLET_JSON, which belongs to the demo\'s bot host)',
         )
       }
-      return (await fundFromWallet({ rpcUrl, walletJsonPath, to, valueWei, maxWei: fundOptions?.maxWei ?? maxFundWei })).txHash
+      const { txHash } = await fundFromWallet({ rpcUrl, walletJsonPath, to, valueWei, maxWei: fundOptions?.maxWei ?? maxFundWei })
+      fundedWei += valueWei
+      return txHash
     },
     async sweep() {
-      const outcome: SweepOutcome = { returnedWei: 0n, left: [] }
+      const outcome: SweepOutcome = { returnedWei: 0n, floatWei: 0n, left: [] }
       if (!fundingAddress) return outcome
       // On Monad a transfer that empties a small account within a few blocks of that account's
       // last transaction reverts: let the run's last payments settle first.
@@ -473,13 +552,15 @@ export async function startRealStack(options: {
           .map(record => ({ account: `spent sender ${record.index}`, key: pool!.keyring.deriveSubAccount(record.index).privateKey }))
         const accounts = [
           { account: 'main account', key: wallet.handle.mainPrivateKey },
-          { account: 'identity account', key: wallet.handle.identity.toPrivateKeyHex() },
+          ...(keepIdentity.has(wallet) ? [] : [{ account: 'identity account', key: wallet.handle.identity.toPrivateKeyHex() }]),
           ...spent,
         ]
         for (const { account, key } of accounts) {
           if (!key) continue
-          const moved = await sweepKey(key)
+          // The main account is the persistent one: it keeps the float, nothing else does.
+          const moved = await sweepKey(key, account === 'main account' ? TEST_ACCOUNT_FLOAT_WEI : 0n)
           outcome.returnedWei += moved.returnedWei
+          outcome.floatWei += moved.keptWei
           if (moved.left) outcome.left.push({ wallet: wallet.label, account, address: moved.address, balanceWei: moved.balanceWei, reason: moved.left })
         }
       }
@@ -490,6 +571,19 @@ export async function startRealStack(options: {
         for (const wallet of wallets) await wallet.close().catch(() => undefined)
         provider.destroy()
         await relay?.stop()
+        for (const signal of signals) process.off(signal, onSignal)
+      })()),
+    finish: () =>
+      (finished ??= (async () => {
+        let line: string
+        try {
+          line = fundsLine({ fundedWei, outcome: await stack.sweep(), to: fundingAddress, where: stateDir })
+        } catch (err) {
+          line = `funded ${formatEther(fundedWei)} MON, returned NOTHING (${err instanceof Error ? err.message.split('\n')[0] : 'error'}); it is still in the accounts under ${stateDir}`
+        }
+        console.log(`[funds] ${line}`)
+        await stack.stop()
       })()),
   }
+  return stack
 }

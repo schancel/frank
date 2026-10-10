@@ -8,12 +8,11 @@
  *
  * The account lives in a PERSISTENT Chrome profile, ~/.frank-e2e-browser/swap-browser
  * (E2E_PROFILE_DIR; see e2e-profile.mjs): the first run creates it, later runs open the same
- * account with whatever it still holds, so it needs funding only when it has run low and
- * nothing is lost with a discarded profile. It prints the account's main address and waits up
- * to ten minutes for it to hold more than the amount: when it does not already, send it a little
- * more than the amount plus about 0.06 MON for gas
- * (`node --import tsx packages/bot/demo/fund.ts <address> <MON>`). The last line names the
- * account, what it holds and the profile, which is never deleted. The browser helpers are those
+ * account. When it holds less than the amount plus 0.06 MON for gas it is funded up to that
+ * from the test wallet (FRANK_TEST_WALLET_JSON, through packages/bot/demo/fund.ts). When the run
+ * ends (pass, failure or Ctrl-C) what it holds above the test-account float (0.02 MON) is sent
+ * back to the test wallet through the app's send page, and one line says: funded X, returned Y,
+ * left Z in the profile and why. The profile is never deleted. The browser helpers are those
  * of `autonomous-fullstack-e2e.mjs`.
  */
 import assert from 'node:assert/strict'
@@ -29,7 +28,9 @@ import {
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { accountLine, persistentProfile } from './e2e-profile.mjs'
+import { fileURLToPath } from 'node:url'
+
+import { persistentProfile, testFunds } from './e2e-profile.mjs'
 
 const origin = process.env.ACCOUNT_APP_ORIGIN ?? 'http://localhost:8080'
 const profile = await persistentProfile('swap-browser')
@@ -314,22 +315,15 @@ const text = selector =>
   )
 const t = id => text(`[data-testid="${id}"]`)
 
-let accountAddress
-
-/** Where the money is when the run ends, pass or fail. */
-async function printAccount() {
-  if (!accountAddress) return
-  try {
-    const held = await evaluate(
-      `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getBalance()).toString())`,
-    )
-    console.log(accountLine(directory, accountAddress, held))
-  } catch {
-    console.log(
-      `ACCOUNT ${accountAddress}: balance not read; its keys are in the persistent profile ${directory} (do not delete it)`,
-    )
-  }
-}
+const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
+// Funding from the test wallet when the account is low, and sending what is left above the
+// float back when the run ends, on pass, failure and Ctrl-C (e2e-profile.mjs).
+const funds = testFunds({
+  repoRoot,
+  directory,
+  page: { evaluate, typeInput, click, until },
+  stop,
+})
 
 async function run() {
   await launch()
@@ -404,14 +398,11 @@ async function run() {
     `${session}.then(async m => (await (await m.accountSession.getWallet()).getReceiveAddress()).raw)`,
   )
   if (!profile.account) await profile.recordAccount({ receive: main })
-  accountAddress = main
-  console.log(
-    `MAIN ACCOUNT ${main}  (${
-      profile.account
-        ? 'reused; it is funded only if it holds too little'
-        : 'new: fund it now'
-    })`,
-  )
+  console.log(`MAIN ACCOUNT ${main}  (${profile.account ? 'reused' : 'new'})`)
+  // The swap amount plus gas for the moves and the swap; funded only when it holds less.
+  const needWei = BigInt(Math.round((Number(amount) + 0.06) * 1e6)) * 10n ** 12n
+  const funded = await funds.ensure(needWei)
+  console.log(funded ?? 'the account already holds enough: not funded')
 
   await evaluate(`location.hash = '#/wallet/monad'`)
   await click('[data-testid="wallet-tab-swap"]')
@@ -526,6 +517,6 @@ run()
     process.exitCode = 1
   })
   .finally(async () => {
-    await printAccount()
+    if (socket) await funds.finish()
     await stop()
   })

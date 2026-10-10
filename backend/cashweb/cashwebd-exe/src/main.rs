@@ -30,7 +30,7 @@ use tracing_subscriber::fmt;
 pub enum CashwebdExeError {
     #[error(
         "No configuration provided. Specify a path, or '-' to read configuration from stdin: \
-         cashwebd-exe [--check-config] <config path|->"
+         cashwebd-exe [--check-config|--check-db] <config path|->"
     )]
     NoConfigFile,
 
@@ -203,8 +203,13 @@ async fn main() -> Result<()> {
 
     let mut args = std::env::args().skip(1);
     let first_arg = args.next().ok_or(NoConfigFile)?;
-    let (check_only, conf_path) = if first_arg == "--check-config" {
-        (true, args.next().ok_or(NoConfigFile)?)
+    // `--check-db` opens the registry database exactly as a start does and exits: a database
+    // from an earlier development build is refused with the same message. The local launcher
+    // uses it to move such a database aside before starting; a relay started directly keeps
+    // refusing.
+    let check_db = first_arg == "--check-db";
+    let (check_only, conf_path) = if first_arg == "--check-config" || check_db {
+        (!check_db, args.next().ok_or(NoConfigFile)?)
     } else {
         (false, first_arg)
     };
@@ -226,6 +231,9 @@ async fn main() -> Result<()> {
         })?;
     }
     let db = Db::open(&conf.registry.db_path)?;
+    if check_db {
+        return Ok(());
+    }
     // Challenges, cursors and RPC capabilities are signed with this, so they survive a restart.
     // It lives beside the database, not in it, and is not a wallet key.
     let session_path = conf.registry.db_path.with_extension("session-secret");

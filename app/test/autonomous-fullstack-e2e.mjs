@@ -13,15 +13,15 @@
 // It spends real testnet funds (stamps, a bet and gas). The account lives in a PERSISTENT Chrome
 // profile, ~/.frank-e2e-browser/autonomous-fullstack-e2e (E2E_PROFILE_DIR; see e2e-profile.mjs):
 // the first run creates it, later runs open the same account and fund it only when it holds
-// less than 0.1 MON, so what a run leaves is used by the next one instead of being lost with a
-// discarded profile. The native-send scenario pays the test wallet back rather than a dead
-// address, and at the end what the account holds above E2E_FLOAT_MON (default 0.15) is sent back
-// to the test wallet through the app's own send page; if that does not go through it simply
-// stays in the account. The last line names the account, its balance and the profile. The
-// profile is never deleted. Onboarding is only exercised when the profile is new: set
+// less than 0.1 MON (up to E2E_FUND_MON), so nothing is lost with a discarded profile. The
+// native-send scenario pays the test wallet back rather than a dead address, and when the run
+// ends (pass, failure or Ctrl-C) what the account holds above the test-account float (0.02 MON,
+// TEST_ACCOUNT_FLOAT_WEI in packages/bot/demo/real-stack.ts) is sent back to the test wallet
+// through the app's own send page; if that does not go through it stays in the account. One
+// line says: funded X, returned Y, left Z in the profile and why. The profile is never deleted. Onboarding is only exercised when the profile is new: set
 // E2E_PROFILE_DIR to a fresh directory to run it again.
 import assert from 'node:assert/strict'
-import { spawn, execFile } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   mkdir,
@@ -34,7 +34,7 @@ import {
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { accountLine, persistentProfile } from './e2e-profile.mjs'
+import { persistentProfile, testFunds } from './e2e-profile.mjs'
 
 const origin = process.env.ACCOUNT_APP_ORIGIN ?? 'http://localhost:8080'
 const profile = await persistentProfile('autonomous-fullstack-e2e')
@@ -54,8 +54,6 @@ const logsDir = resolve(
 )
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const fundMon = process.env.E2E_FUND_MON ?? '0.2'
-// What the account keeps for the next run; the rest goes back to the test wallet at the end.
-const floatMon = process.env.E2E_FLOAT_MON ?? '0.15'
 const sessionModule = `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name)`
 const executable =
   process.env.CUSTODY_CHROME ??
@@ -446,123 +444,14 @@ async function timedSend(text, timeoutMs) {
   return { sent, reply }
 }
 
-/** Sends `fundMon` real testnet MON from the test wallet to `address` and waits for the
- * transfer to confirm (packages/bot/demo/fund.ts). Rejects with the command's message. */
-function fundAccount(address) {
-  return new Promise((resolveFund, reject) => {
-    execFile(
-      process.execPath,
-      ['--import', 'tsx', 'packages/bot/demo/fund.ts', address, fundMon],
-      {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json',
-        },
-        timeout: 180000,
-      },
-      (error, stdout, stderr) =>
-        error
-          ? reject(
-              new Error(
-                `funding ${address} failed: ${(
-                  stderr || error.message
-                ).trim()}`,
-              ),
-            )
-          : resolveFund(stdout.trim()),
-    )
-  })
-}
-
-/** The address of the test wallet that funds this account (packages/bot/demo/fund.ts
- * --address), or undefined when FRANK_TEST_WALLET_JSON is not configured. */
-let testWallet
-function testWalletAddress() {
-  testWallet ??= new Promise(resolveAddress => {
-    execFile(
-      process.execPath,
-      ['--import', 'tsx', 'packages/bot/demo/fund.ts', '--address'],
-      {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json',
-        },
-        timeout: 60000,
-      },
-      (error, stdout) =>
-        resolveAddress(
-          !error && /^0x[0-9a-fA-F]{40}$/.test(stdout.trim())
-            ? stdout.trim()
-            : undefined,
-        ),
-    )
-  })
-  return testWallet
-}
-
-const spendableWei = async () =>
-  BigInt(
-    await evaluate(
-      `${sessionModule}.then(async m => (await (await m.accountSession.getWallet()).getBalance()).toString())`,
-    ),
-  )
-
-/** Sends what the account holds above the float back to the test wallet through the app's send
- * page, then prints where the rest is. Never fails the run: money that is not sent back stays
- * in the persistent account for the next run. */
-async function returnLeftover() {
-  let address = profile.account?.receive
-  try {
-    address = await evaluate(
-      `${sessionModule}.then(async m => (await (await m.accountSession.getWallet()).getReceiveAddress()).raw)`,
-    )
-    const float = BigInt(Math.round(Number(floatMon) * 1e6)) * 10n ** 12n
-    const held = await spendableWei()
-    const to = await testWalletAddress()
-    // Below 0.01 MON above the float the fee is not worth it.
-    if (to && held > float + 10n ** 16n) {
-      const amount = (Number((held - float) / 10n ** 12n) / 1e6).toFixed(6)
-      await evaluate(`location.hash = '#/send'`)
-      await typeInput('[data-test="send-address-input"]', to)
-      await typeInput('[data-test="send-amount-input"]', amount)
-      await click('[data-test="send-review-button"]')
-      await until(
-        `(() => { const b = document.querySelector('[data-test="review-confirm-button"]'); return b && !b.disabled && !b.classList.contains('q-btn--loading') && !b.querySelector('.q-spinner') })()`,
-        15000,
-        'confirm button ready',
-      )
-      await new Promise(r => setTimeout(r, 500))
-      await click('[data-test="review-confirm-button"]')
-      await until(
-        `location.hash !== '#/send' || /sent on|reverted/i.test(document.querySelector('[data-test="native-operation-outcome"]')?.innerText ?? '')`,
-        120000,
-        'the return transfer to finish',
-      )
-      console.log(`returned ${amount} MON to the test wallet ${to}`)
-    } else if (!to) {
-      console.log(
-        'nothing sent back: FRANK_TEST_WALLET_JSON is not configured, so there is no address to return to',
-      )
-    }
-  } catch (err) {
-    console.log(
-      `the leftover was NOT sent back (${
-        String(err?.message ?? err).split('\n')[0]
-      }); it stays in the account for the next run`,
-    )
-  }
-  try {
-    console.log(accountLine(directory, address, await spendableWei()))
-  } catch {
-    console.log(
-      `ACCOUNT ${
-        address ?? '(unknown)'
-      }: balance not read; its keys are in the persistent profile ${directory} (do not delete it)`,
-    )
-  }
-}
+// Funding from the test wallet when the account is low, and sending what is left above the
+// float back when the run ends, on pass, failure and Ctrl-C (e2e-profile.mjs).
+const funds = testFunds({
+  repoRoot,
+  directory,
+  page: { evaluate, typeInput, click, until },
+  stop,
+})
 
 /** Text of the newest message received in the open conversation. */
 function lastReceivedText() {
@@ -726,7 +615,9 @@ async function run() {
       if (spendable < 100000000000000000n) {
         // Not enough reaches the receive address on its own (the faucet pays the profile address):
         // fund it with a real transfer so the paid scenarios can run, and say so.
-        const transfer = await fundAccount(ids.receive)
+        const transfer = await funds.ensure(
+          BigInt(Math.round(Number(fundMon) * 1e6)) * 10n ** 12n,
+        )
         console.log(transfer)
         await until(
           `parseFloat(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '0') > 0`,
@@ -937,7 +828,7 @@ async function run() {
     await scenario('7 native send', async () => {
       // To the wallet that funds this account, so the amount comes straight back.
       const recipient =
-        (await testWalletAddress()) ??
+        (await funds.testWallet())?.address ??
         '0x1111111111111111111111111111111111111111'
       await evaluate(`location.hash = '#/wallet'`)
       await new Promise(r => setTimeout(r, 1000))
@@ -1066,7 +957,7 @@ async function run() {
     } catch {}
     process.exitCode = 1
   } finally {
-    if (socket) await returnLeftover()
+    if (socket) await funds.finish()
     await stop()
   }
 }

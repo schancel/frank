@@ -85,9 +85,33 @@ describe("blackjack dealer behind the bot host", () => {
   let originalEnvironment: NodeJS.ProcessEnv;
   let sequence = 0;
 
-  const inbound = (items: unknown[], stampValueWei: bigint | undefined) => {
+  /** Transfers the chain knows: what a bet's money is checked against. */
+  const mined = new Map<string, { to: string; value: bigint }>();
+
+  /** `paidWei`: a mined transfer of that value comes with the message. `stampValueWei` alone is
+   * only what the wallet says the message carried. */
+  const inbound = (
+    items: unknown[],
+    stampValueWei: bigint | undefined,
+    paidWei = 0n
+  ) => {
     sequence += 1;
     const byte = sequence.toString(16).padStart(2, "0");
+    const stampPayments =
+      paidWei > 0n
+        ? [
+            {
+              txHash: "0x" + byte.repeat(32),
+              destinationAddress: "0x" + "5e".repeat(20),
+              valueWei: paidWei,
+            },
+          ]
+        : [];
+    for (const payment of stampPayments)
+      mined.set(payment.txHash, {
+        to: payment.destinationAddress,
+        value: payment.valueWei,
+      });
     return {
       senderAddress: { raw: playerAddress },
       senderPublicKey: getBytes(player.signingKey.compressedPublicKey),
@@ -98,7 +122,7 @@ describe("blackjack dealer behind the bot host", () => {
       items,
       payloadDigest: byte.repeat(32),
       stampValueWei,
-      stampPayments: [],
+      stampPayments,
       receivedTime: 1_700_000_000_000 + sequence,
     };
   };
@@ -156,6 +180,13 @@ describe("blackjack dealer behind the bot host", () => {
     (host as any).provider.getBalance = jest.fn(
       async () => 500_000_000_000_000_000n
     );
+    mined.clear();
+    (host as any).provider.getTransactionReceipt = jest.fn(
+      async (txHash: string) => (mined.has(txHash) ? { status: 1 } : null)
+    );
+    (host as any).provider.getTransaction = jest.fn(
+      async (txHash: string) => mined.get(txHash) ?? null
+    );
     // A fresh profile: the bot's default identity path may already exist on this machine.
     process.env.BLACKJACK_BOT_IDENTITY_JSON = join(stateDir, "identity.json");
     bot = new BlackjackDealerBot();
@@ -193,13 +224,14 @@ describe("blackjack dealer behind the bot host", () => {
     return bet;
   };
 
-  it("deals when the bet message carries a stamp value, which the handler receives from the host", async () => {
+  it("deals when the bet message's payment is on chain; the host hands the handler the payments", async () => {
     const bet = await openTable();
 
-    await deliver(inbound([bet], BET));
+    await deliver(inbound([bet], BET, BET));
 
     expect(onMessage).toHaveBeenCalledTimes(2);
     expect(onMessage.mock.calls[1][0].stampValueWei).toBe(BET);
+    expect(onMessage.mock.calls[1][0].stampPayments).toHaveLength(1);
     expect(mockSend).toHaveBeenCalledTimes(2);
     expect(sentItems(1)[0]).toMatchObject({
       type: "blackjack-hand",
@@ -209,11 +241,17 @@ describe("blackjack dealer behind the bot host", () => {
     expect(mockSend.mock.calls[1][0].recipient.raw.toLowerCase()).toBe(
       playerAddress
     );
+    // The dealer's message goes out under a message ID: the wallet's rule against a second
+    // attempt is what makes a retried payout pay once.
+    expect(mockSend.mock.calls[1][0].messageId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    );
   });
 
   it.each([
     ["zero", 0n],
     ["absent", undefined],
+    ["stated by the wallet but backed by no transfer on chain", BET],
   ])(
     "treats a bet message whose stamp value is %s as no bet: nothing is dealt",
     async (_label, stampValueWei) => {
@@ -222,11 +260,10 @@ describe("blackjack dealer behind the bot host", () => {
       await deliver(inbound([bet], stampValueWei));
 
       expect(onMessage).toHaveBeenCalledTimes(2);
-      expect(onMessage.mock.calls[1][0].stampValueWei).toBe(0n);
       expect(mockSend).toHaveBeenCalledTimes(1);
 
       // The hand is still open: the same bet, sent with money, is dealt.
-      await deliver(inbound([bet], BET));
+      await deliver(inbound([bet], BET, BET));
       expect(mockSend).toHaveBeenCalledTimes(2);
       expect(sentItems(1)[0]).toMatchObject({ action: "deal" });
     }

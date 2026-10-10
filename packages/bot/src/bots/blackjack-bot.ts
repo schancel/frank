@@ -4,13 +4,16 @@ import type {
   BotProfile,
   BotContext,
   BotMessageContext,
+  BotScheduleDefinition,
   NewUserEvent,
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
+import type { MessageItem } from "@frank/cashweb/types/messages";
 import {
   BLACKJACK_DEFAULT_MIN_WAGER_WEI,
   BLACKJACK_DEFAULT_MAX_WAGER_WEI,
 } from "@frank/wallet/message-item-plugins/blackjack/game";
+import { formatMon } from "@frank/wallet/monad-amount";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
@@ -21,8 +24,11 @@ import {
   DEALER_COVER_MULTIPLE,
   type HandEvent,
   type HandItem,
-  type HandState,
 } from "@frank/wallet/message-item-plugins/blackjack/hand";
+import { confirmReceived, Outbox, refuse } from "./money";
+
+/** Kept back from the dealer's balance when it works out the largest bet it can cover. */
+const RESERVE_WEI = 20_000_000_000_000_000n;
 
 function serializeEvents(events: HandEvent[]): string {
   return JSON.stringify(events, (_key, val) =>
@@ -30,20 +36,36 @@ function serializeEvents(events: HandEvent[]): string {
   );
 }
 
-function deserializeEvents(raw?: string | null): HandEvent[] {
+function deserializeEvents(raw?: string): HandEvent[] {
   if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((e: any) => ({
-      ...e,
-      stampWei: BigInt(e.stampWei ?? 0),
-    }));
-  } catch {
-    return [];
-  }
+  return (JSON.parse(raw) as HandEvent[]).map((event) => ({
+    ...event,
+    stampWei: BigInt(event.stampWei ?? 0),
+  }));
 }
 
+/** The dealer's message that is written down but not yet in the hand's record: it joins the
+ * record, under the digest it was sent with, once it has gone out. */
+interface Hand {
+  gameId: string;
+  peer: string;
+  conversationId?: string;
+}
+
+const WAITING = "waiting_hands";
+
+interface PendingStep {
+  id: string;
+  item: HandItem;
+  payWei?: string;
+}
+
+/**
+ * The dealer of the peer-to-peer blackjack hand (`@frank/wallet/message-item-plugins/blackjack/hand`,
+ * the same state machine the app folds to check every card). Money is the value of a message: a
+ * bet is counted at what its message is confirmed, on chain, to have paid, and a payout or refund
+ * is the value of the dealer's own message, written down before it is sent and sent once.
+ */
 export class BlackjackDealerBot implements FrankBotDefinition {
   readonly id = "blackjack";
   /** A game is many replies to one player: see `GAME_MAX_REPLIES_PER_PEER`. */
@@ -55,6 +77,22 @@ export class BlackjackDealerBot implements FrankBotDefinition {
 
   private readonly minWagerWei: bigint;
   private readonly maxWagerWei: bigint;
+  private readonly outbox = new Outbox("blackjack");
+  readonly schedules: BotScheduleDefinition[] = [
+    this.outbox.schedule,
+    {
+      // A hand whose dealer message could not be sent at once continues here once it has gone.
+      id: "blackjack-resume",
+      intervalMs: 10_000,
+      runOnStartup: true,
+      handler: (ctx) =>
+        this.serial(async () => {
+          for (const hand of await this.waiting(ctx)) await this.advance(ctx, hand);
+        }),
+    },
+  ];
+  /** One message of a hand is handled at a time. */
+  private turn: Promise<unknown> = Promise.resolve();
 
   constructor(options?: { minWagerWei?: bigint; maxWagerWei?: bigint }) {
     this.minWagerWei = options?.minWagerWei ?? BLACKJACK_DEFAULT_MIN_WAGER_WEI;
@@ -64,7 +102,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
   getProfile(): BotProfile {
     return {
       name: "Blackjack Dealer",
-      bio: "Automated blackjack dealer. Send a wager to start a provably fair hand.",
+      bio: "Automated blackjack dealer. Both sides commit to their randomness before the bet, and the app works out every card itself from what is revealed.",
       avatarPng: generateAvatarPng("blackjack", [200, 60, 60]),
       bot: true,
       accountType: ACCOUNT_TYPE_BOT,
@@ -72,260 +110,243 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     };
   }
 
-  async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
-    console.log(
-      `[blackjack] Proactively challenging new user ${user.address} to blackjack`
-    );
-    try {
-      const bal = await ctx.getBalance().catch(() => 200_000_000_000_000_000n);
-      const reserveWei = 20_000_000_000_000_000n;
-      const free = bal > reserveWei ? bal - reserveWei : 0n;
-      const dealerMax = free / DEALER_COVER_MULTIPLE;
-      const maxBet =
-        dealerMax > this.maxWagerWei
-          ? this.maxWagerWei
-          : dealerMax >= this.minWagerWei
-          ? dealerMax
-          : this.minWagerWei;
-      const gameId = randomBytes(16).toString("hex");
-      const seed = randomBytes(32).toString("hex");
-      await ctx.state.put(`seed:${gameId}`, seed);
-      await ctx.state.put(`active:${user.address}`, gameId);
+  private serial<T>(run: () => Promise<T>): Promise<T> {
+    const next = this.turn.then(run, run);
+    this.turn = next.catch(() => undefined);
+    return next;
+  }
 
-      const built = buildChallenge({
-        gameId,
-        role: "dealer",
-        maxBetWei: maxBet,
-        spendableWei:
-          bal > reserveWei ? bal : maxBet * DEALER_COVER_MULTIPLE + reserveWei,
-        reserveWei,
-        seed,
-      });
+  /** The largest bet the dealer offers: what its balance covers, within the table limits. */
+  private async limits(ctx: BotContext) {
+    const balance = await ctx.getBalance().catch(() => 0n);
+    const free = balance > RESERVE_WEI ? balance - RESERVE_WEI : 0n;
+    const cover = free / DEALER_COVER_MULTIPLE;
+    return {
+      balance,
+      maxBet: cover > this.maxWagerWei ? this.maxWagerWei : cover,
+    };
+  }
 
-      if ("item" in built) {
-        const welcomeDM = [
-          built.item,
+  /** The hand's record, with the dealer's last message added if it has gone out since.
+   * `pending`: that message is written down but has not gone out yet. */
+  private async events(ctx: BotContext, hand: Hand) {
+    const events = deserializeEvents(await ctx.state.get(`events:${hand.gameId}`));
+    const raw = await ctx.state.get(`step:${hand.gameId}`);
+    if (raw === undefined) return { events, pending: false };
+    const step = JSON.parse(raw) as PendingStep;
+    const delivered = await this.outbox.delivered(ctx, step.id);
+    if (!delivered) return { events, pending: true };
+    events.push({
+      item: step.item,
+      from: ctx.address,
+      to: hand.peer,
+      stampWei: step.payWei ? BigInt(step.payWei) : delivered.stampWei,
+      digest: delivered.digest,
+    });
+    await ctx.state.batch([
+      { type: "put", key: `events:${hand.gameId}`, value: serializeEvents(events) },
+      { type: "del", key: `step:${hand.gameId}` },
+      {
+        type: "put",
+        key: WAITING,
+        value: JSON.stringify(
+          (await this.waiting(ctx)).filter((other) => other.gameId !== hand.gameId)
+        ),
+      },
+    ]);
+    return { events, pending: false };
+  }
+
+  /** Hands whose last dealer message is written down and has not gone out yet. */
+  private async waiting(ctx: BotContext): Promise<Hand[]> {
+    const raw = await ctx.state.get(WAITING);
+    return raw ? (JSON.parse(raw) as Hand[]) : [];
+  }
+
+  /** Sends one dealer message of a hand: written down first (with what it pays), then sent until
+   * it has gone, once. Its name is its place in the hand, so the same step is never owed twice.
+   * A hand has at most one such message outstanding: the next is worked out only from a record
+   * that includes it, digest and all. */
+  private async say(
+    ctx: BotContext,
+    hand: Hand,
+    position: number,
+    item: HandItem,
+    text: string,
+    payWei?: bigint
+  ): Promise<void> {
+    const id = `hand:${hand.gameId}:${position}`;
+    const step: PendingStep = {
+      id,
+      item,
+      ...(payWei !== undefined ? { payWei: payWei.toString() } : {}),
+    };
+    await ctx.state.batch([
+      { type: "put", key: `step:${hand.gameId}`, value: JSON.stringify(step) },
+      {
+        type: "put",
+        key: WAITING,
+        value: JSON.stringify([
+          ...(await this.waiting(ctx)).filter((other) => other.gameId !== hand.gameId),
+          hand,
+        ]),
+      },
+    ]);
+    await this.outbox.owe(ctx, id, {
+      to: hand.peer,
+      conversationId: hand.conversationId,
+      items: [item as MessageItem, { type: "text", text }],
+      valueWei: payWei,
+    });
+    await this.outbox.settle(ctx);
+    await this.events(ctx, hand);
+  }
+
+  /** A fresh hand offered by the dealer, its seed saved before its commitment is shown. */
+  private async challenge(
+    ctx: BotContext,
+    peer: string,
+    conversationId?: string
+  ): Promise<void> {
+    const { balance, maxBet } = await this.limits(ctx);
+    if (maxBet < this.minWagerWei) {
+      await ctx.sendMessage(
+        peer,
+        [
           {
             type: "text",
-            text: `Welcome to the blackjack table! Table limits: ${
-              Number(this.minWagerWei) / 1e18
-            } MON to ${Number(maxBet) / 1e18} MON per hand. Enter your bet and click Bet above to play!`,
+            text: "The dealer cannot cover a hand right now. Try again later.",
           },
-        ];
-        const res = await ctx.sendMessage(user.address, welcomeDM as any);
-        if (res) {
-          const event: HandEvent = {
-            item: built.item,
-            from: ctx.address,
-            to: user.address,
-            stampWei: res.stampValueWei ?? 0n,
-            digest: res.payloadDigest,
-          };
-          await ctx.state.put(`events:${gameId}`, serializeEvents([event]));
-        }
-      }
-    } catch (err) {
-      console.warn(
-        `[blackjack] Failed to send challenge DM to ${user.address}:`,
-        err
+        ],
+        conversationId
       );
-    }
-  }
-
-  async onMessage(msgCtx: BotMessageContext, ctx?: BotContext): Promise<void> {
-    const effectiveCtx = ctx ?? (msgCtx as any);
-
-    // 1. Check for modern peer-to-peer blackjack hand item
-    const handItem = msgCtx.items.find(
-      (item: any) => item.type === "blackjack-hand"
-    ) as HandItem | undefined;
-
-    if (handItem) {
-      await this.handleP2pHand(msgCtx, effectiveCtx, handItem);
       return;
     }
-
-    // 2. Anything else (plain text, a greeting, an item this dealer does not play): a fresh
-    // challenge. The dealer plays peer-to-peer blackjack hands only; it has no other bet path.
-    await this.issueChallenge(msgCtx, effectiveCtx);
-  }
-
-  private async issueChallenge(
-    msgCtx: BotMessageContext,
-    ctx: BotContext
-  ): Promise<void> {
-    const bal = await ctx.getBalance().catch(() => 200_000_000_000_000_000n);
-    const reserveWei = 20_000_000_000_000_000n;
-    const free = bal > reserveWei ? bal - reserveWei : 0n;
-    const dealerMax = free / DEALER_COVER_MULTIPLE;
-    const maxBet =
-      dealerMax > this.maxWagerWei
-        ? this.maxWagerWei
-        : dealerMax >= this.minWagerWei
-        ? dealerMax
-        : this.minWagerWei;
     const gameId = randomBytes(16).toString("hex");
     const seed = randomBytes(32).toString("hex");
     await ctx.state.put(`seed:${gameId}`, seed);
-    await ctx.state.put(`active:${msgCtx.peerAddress}`, gameId);
-
     const built = buildChallenge({
       gameId,
       role: "dealer",
       maxBetWei: maxBet,
-      spendableWei:
-        bal > reserveWei ? bal : maxBet * DEALER_COVER_MULTIPLE + reserveWei,
-      reserveWei,
+      spendableWei: balance,
+      reserveWei: RESERVE_WEI,
       seed,
     });
+    if (!("item" in built)) return;
+    await this.say(
+      ctx,
+      { gameId, peer, conversationId },
+      0,
+      built.item,
+      `Blackjack: bet between ${formatMon(this.minWagerWei)} and ${formatMon(
+        maxBet
+      )}. Your bet is what your bet message pays the dealer.`
+    );
+  }
 
-    if ("item" in built) {
-      const replyItems = [
-        built.item,
-        {
-          type: "text",
-          text: `Here is a fresh blackjack challenge! Enter your bet amount above and click "Bet" to start playing (Table limits: ${
-            Number(this.minWagerWei) / 1e18
-          } MON - ${
-            Number(maxBet) / 1e18
-          } MON). You can also challenge me anytime by clicking the 🎲 casino icon in the chat bar!`,
-        },
-      ];
-      const sendRes = await msgCtx.reply(replyItems as any);
-      if (sendRes) {
-        const event: HandEvent = {
-          item: built.item,
-          from: ctx.address,
-          to: msgCtx.peerAddress,
-          stampWei: sendRes.stampValueWei ?? 0n,
-          digest: sendRes.payloadDigest,
-        };
-        await ctx.state.put(`events:${gameId}`, serializeEvents([event]));
-      }
+  async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
+    try {
+      await this.serial(() => this.challenge(ctx, user.address));
+    } catch (err) {
+      console.warn(`[blackjack] Failed to challenge ${user.address}:`, err);
     }
   }
 
-  private async handleP2pHand(
-    msgCtx: BotMessageContext,
-    ctx: BotContext,
-    handItem: HandItem
-  ): Promise<void> {
-    const gameId = handItem.gameId;
-    const eventsKey = `events:${gameId}`;
-    const rawEvents = await ctx.state.get(eventsKey);
-    const events: HandEvent[] = deserializeEvents(rawEvents);
+  async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {
+    const handItem = msgCtx.items.find(
+      (item) => item.type === "blackjack-hand"
+    ) as HandItem | undefined;
+    // Anything but a hand message: a fresh challenge. The dealer has no other bet path.
+    if (!handItem)
+      return this.serial(() =>
+        this.challenge(ctx, msgCtx.peerAddress, msgCtx.conversationId)
+      );
+    // What the message paid, on chain; looked up before taking the turn, since it can wait.
+    const received = await confirmReceived(msgCtx, ctx);
+    await this.serial(async () => {
+      const hand: Hand = {
+        gameId: handItem.gameId,
+        peer: msgCtx.peerAddress,
+        conversationId: msgCtx.conversationId,
+      };
+      const { events } = await this.events(ctx, hand);
+      if (!events.some((event) => event.digest === msgCtx.payloadDigest)) {
+        events.push({
+          item: handItem,
+          from: msgCtx.peerAddress,
+          to: ctx.address,
+          // The money of a message is what the chain confirms it paid, never what the wallet
+          // or the message says.
+          stampWei: received.confirmedWei,
+          digest: msgCtx.payloadDigest,
+        });
+        // In the record before anything is answered: a restart folds the same hand.
+        await ctx.state.put(`events:${hand.gameId}`, serializeEvents(events));
+      }
+      const known = await this.advance(ctx, hand);
+      // Not a message of any hand this dealer holds: whatever it paid goes back.
+      if (!known && (received.confirmedWei > 0n || received.unconfirmed.length > 0))
+        await refuse(
+          this.outbox,
+          msgCtx,
+          ctx,
+          received,
+          "That is not a hand at this table. Nothing was played."
+        );
+    });
+  }
 
-    const incomingEvent: HandEvent = {
-      item: handItem,
-      from: msgCtx.peerAddress,
-      to: ctx.address,
-      stampWei: msgCtx.stampValueWei,
-      digest: msgCtx.payloadDigest,
-    };
-    events.push(incomingEvent);
-
+  /** Sends the dealer's next message of a hand, if one is due and the last one has gone out.
+   * Returns whether the hand exists. The same record always gives the same message. */
+  private async advance(ctx: BotContext, hand: Hand): Promise<boolean> {
+    const { events, pending } = await this.events(ctx, hand);
     const { state } = foldHand(events);
-
-    if (handItem.action === "challenge") {
-      let seed = await ctx.state.get(`seed:${gameId}`);
+    if (!state) return false;
+    if (pending) return true;
+    let seed = await ctx.state.get(`seed:${hand.gameId}`);
+    if (state.phase === "challenged") {
       if (!seed) {
         seed = randomBytes(32).toString("hex");
-        await ctx.state.put(`seed:${gameId}`, seed);
+        await ctx.state.put(`seed:${hand.gameId}`, seed);
       }
-      await ctx.state.put(`active:${msgCtx.peerAddress}`, gameId);
-
-      if (state) {
-        const bal = await ctx.getBalance().catch(() => 200_000_000_000_000_000n);
-        const reserveWei = 20_000_000_000_000_000n;
-        const free = bal > reserveWei ? bal - reserveWei : 0n;
-        const dealerMax = free / DEALER_COVER_MULTIPLE;
-        const wanted =
-          state.maxBetWei < dealerMax
-            ? state.maxBetWei
-            : dealerMax > 0n
-            ? dealerMax
-            : this.minWagerWei;
-
-        const built = buildAccept({
-          state,
-          spendableWei:
-            bal > reserveWei ? bal : wanted * DEALER_COVER_MULTIPLE + reserveWei,
-          reserveWei,
-          seed,
-          wantedMaxBetWei: wanted,
-        });
-
-        if ("item" in built) {
-          const sendRes = await msgCtx.reply([
-            built.item,
-            {
-              type: "text",
-              text: `Challenge accepted! Max bet: ${
-                Number(wanted) / 1e18
-              } MON. Enter your bet and click Bet to begin!`,
-            },
-          ] as any);
-          if (sendRes) {
-            events.push({
-              item: built.item,
-              from: ctx.address,
-              to: msgCtx.peerAddress,
-              stampWei: sendRes.stampValueWei ?? 0n,
-              digest: sendRes.payloadDigest,
-            });
-            await ctx.state.put(eventsKey, serializeEvents(events));
-          }
-        }
-      }
-      return;
+      const { balance, maxBet } = await this.limits(ctx);
+      const wanted = state.maxBetWei < maxBet ? state.maxBetWei : maxBet;
+      const built =
+        wanted >= this.minWagerWei
+          ? buildAccept({
+              state,
+              spendableWei: balance,
+              reserveWei: RESERVE_WEI,
+              seed,
+              wantedMaxBetWei: wanted,
+            })
+          : undefined;
+      if (built && "item" in built)
+        await this.say(
+          ctx,
+          hand,
+          events.length,
+          built.item,
+          `Challenge accepted. Bet up to ${formatMon(wanted)}.`
+        );
+      return true;
     }
-
-    // Move actions: bet, hit, stand, double
-    let seed = await ctx.state.get(`seed:${gameId}`);
-    if (!seed) {
-      console.error(`[blackjack] Missing seed for game ${gameId}`);
-      return;
-    }
-
-    const step = dealerStep(state, seed);
-    if (!step) {
-      console.warn(
-        `[blackjack] dealerStep returned undefined for game ${gameId}, phase=${state?.phase}`
-      );
-      await ctx.state.put(eventsKey, serializeEvents(events));
-      return;
-    }
-
-    let text = "";
-    if (step.item.action === "deal") {
-      text = "Cards dealt! Your turn: Hit, Stand, or Double.";
-    } else if (step.item.action === "card") {
-      text = "Card dealt. Hit or Stand?";
-    } else if (step.item.action === "reveal") {
-      const outcome = state?.outcome ?? "resolved";
-      text = `Game over: ${outcome}!`;
-    } else if (step.item.action === "refund") {
-      text = "Bet refunded.";
-    }
-
-    const replyItems: any[] = [step.item];
-    if (text) {
-      replyItems.push({ type: "text", text });
-    }
-
-    const sendRes = await msgCtx.reply(replyItems, {
-      stampValueWei: step.payWei,
-    });
-
-    if (sendRes) {
-      events.push({
-        item: step.item,
-        from: ctx.address,
-        to: msgCtx.peerAddress,
-        stampWei: sendRes.stampValueWei ?? step.payWei ?? 0n,
-        digest: sendRes.payloadDigest,
-      });
-      await ctx.state.put(eventsKey, serializeEvents(events));
-    }
+    const step = seed ? dealerStep(state, seed) : undefined;
+    if (!step) return true;
+    const text =
+      step.item.action === "deal"
+        ? "Cards dealt. Hit, stand or double."
+        : step.item.action === "card"
+        ? "Card dealt."
+        : step.item.action === "reveal"
+        ? step.payWei
+          ? `Hand over. This message pays you ${formatMon(step.payWei)}.`
+          : "Hand over."
+        : `This message returns ${formatMon(
+            step.payWei ?? 0n
+          )} the hand did not accept.`;
+    await this.say(ctx, hand, events.length, step.item, text, step.payWei);
+    return true;
   }
 }

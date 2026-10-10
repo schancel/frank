@@ -1,316 +1,215 @@
+import type { BotMessageContext } from "@frank/bot-framework";
+import {
+  buildBet,
+  foldHand,
+  payoutWei,
+  playerStep,
+  type HandEvent,
+  type HandItem,
+} from "@frank/wallet/message-item-plugins/blackjack/hand";
 import { BlackjackDealerBot } from "./blackjack-bot";
+import { BOT, harness, PLAYER } from "./bot-harness.testutil";
+
+const BET = 10_000_000_000_000_000n; // 0.01 MON
+const SEED = "aa".repeat(32);
+
+/** The player's side of a hand, folded with the same state machine the app uses: what the bot
+ * sent (with what each message really carried) and what the player sent. */
+function table(h: ReturnType<typeof harness>, bot: BlackjackDealerBot) {
+  const mine: HandEvent[] = [];
+  let seen = 0;
+  const events = (): HandEvent[] => {
+    for (; seen < h.sent.length; seen++) {
+      const item = h.item("blackjack-hand", h.sent[seen]) as HandItem | undefined;
+      if (item)
+        mine.push({
+          item,
+          from: BOT,
+          to: PLAYER,
+          stampWei: h.sent[seen].valueWei,
+          digest: h.sent[seen].digest,
+        });
+    }
+    return mine;
+  };
+  const state = () => foldHand(events()).state;
+  const send = async (item: HandItem, paidWei = 0n, reported?: bigint) => {
+    const message: BotMessageContext = h.message(
+      [item as any],
+      paidWei > 0n ? [h.pay(paidWei)] : []
+    );
+    events();
+    mine.push({
+      item,
+      from: PLAYER,
+      to: BOT,
+      stampWei: paidWei,
+      digest: message.payloadDigest,
+    });
+    await bot.onMessage(
+      reported === undefined ? message : { ...message, stampValueWei: reported },
+      h.ctx
+    );
+  };
+  return {
+    state,
+    send,
+    open: () => bot.onMessage(h.message([{ type: "text", text: "deal me in" }]), h.ctx),
+    bet: (paidWei: bigint, reported?: bigint) =>
+      send(buildBet(state(), SEED)!, paidWei, reported),
+    stand: () => send(playerStep(state(), "stand", SEED)!),
+  };
+}
 
 describe("BlackjackDealerBot", () => {
-  let bot: BlackjackDealerBot;
-
-  beforeEach(() => {
-    bot = new BlackjackDealerBot();
+  test("offers a hand with its commitment, and nothing of its seed, to any message", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    const challenge = h.item("blackjack-hand") as HandItem;
+    expect(challenge).toMatchObject({ action: "challenge", role: "dealer" });
+    expect(t.state()?.phase).toBe("open");
+    const seed = h.data.get(`seed:${challenge.gameId}`)!;
+    expect(JSON.stringify(h.sent.map((m) => m.items))).not.toContain(seed);
   });
 
-  it("provides the correct profile metadata", () => {
-    const profile = bot.getProfile();
-    expect(profile.name).toBe("Blackjack Dealer");
-    expect(profile.bio).toContain("blackjack");
-    expect(profile.bot).toBe(true);
-    expect(profile.avatarPng).toBeDefined();
+  test("a full hand: the bet is what was paid, every card follows from the opened links, and the payout is paid once", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(BET);
+    expect(t.state()?.phase).toBe("player_turn");
+    expect(t.state()?.wagerWei).toBe(BET);
+    await t.stand();
+    // The player's own fold of the messages (what the app does) resolves the hand: the dealer's
+    // links opened the chain it committed to and the outcome follows from the cards.
+    const end = t.state()!;
+    expect(end.phase).toBe("resolved");
+    const owed = payoutWei(end.outcome!, BET, false);
+    expect(h.paidOut()).toBe(owed);
+    expect(h.sent.filter((m) => m.valueWei > 0n)).toHaveLength(owed > 0n ? 1 : 0);
+    // Both sides hold the same record.
+    const game = (h.item("blackjack-hand") as HandItem).gameId;
+    expect(JSON.parse(h.data.get(`events:${game}`)!)).toHaveLength(5);
   });
 
-  it("responds with blackjack-hand challenge on empty/plain text message", async () => {
-    const mockReply = jest.fn();
-    const memoryState = new Map<string, any>();
-    const mockState = {
-      get: jest.fn(async (key: string) => memoryState.get(key)),
-      getJson: jest.fn(async (key: string) => memoryState.get(key)),
-      put: jest.fn(async (key: string, val: any) => memoryState.set(key, val)),
-      putJson: jest.fn(async (key: string, val: any) => memoryState.set(key, val)),
-      del: jest.fn(async (key: string) => memoryState.delete(key)),
-    };
-    const ctx = {
-      conversationId: "conv-123",
-      peerAddress: "0x1234567890123456789012345678901234567890",
-      peerSubject: "subject-123",
-      timestampMs: Date.now(),
-      payloadDigest: "digest-123",
-      items: [{ type: "text", text: "How do I challenge?" }],
-      reply: mockReply,
-      state: mockState,
-      address: "0x2222222222222222222222222222222222222222",
-      getBalance: jest.fn(async () => 500_000_000_000_000_000n),
-    } as any;
-
-    await bot.onMessage(ctx);
-    expect(mockReply).toHaveBeenCalledTimes(1);
-    const replyItems = mockReply.mock.calls[0][0];
-    expect(replyItems).toHaveLength(2);
-    expect(replyItems[0].type).toBe("blackjack-hand");
-    expect(replyItems[0].action).toBe("challenge");
-    expect(replyItems[0].role).toBe("dealer");
-    expect(replyItems[1].text).toContain("blackjack challenge");
+  test("no payment, no hand: a bet message that paid nothing is not dealt", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(0n);
+    expect(h.sent.some((m) => (h.item("blackjack-hand", m) as HandItem)?.action === "deal")).toBe(false);
+    expect(h.paidOut()).toBe(0n);
   });
 
-  it.each([
-    [
-      "a legacy blackjack-move bet",
-      {
-        type: "blackjack-move",
-        action: "bet",
-        gameId: "g",
-        wagerWei: "10000000000000000",
-        wagerTxHash: "0x" + "11".repeat(32),
-      },
-    ],
-    [
-      "a legacy blackjack-move stand",
-      { type: "blackjack-move", action: "stand", gameId: "g" },
-    ],
-    [
-      "any other item that has an action",
-      { type: "raffle", action: "bet", raffleId: "r" },
-    ],
-    [
-      "an item the reader kept as unsupported",
-      {
-        type: "unsupported",
-        reason: "unknown-type",
-        itemType: "blackjack-move",
-        frameType: 27,
-        frame: "00",
-      },
-    ],
-  ])(
-    "has no legacy bet path: %s deals nothing and pays nothing",
-    async (_, item) => {
-      const mockReply = jest.fn(async () => ({
-        payloadDigest: "d",
-        stampValueWei: 0n,
-      }));
-      const sendTransfer = jest.fn();
-      const sendTransaction = jest.fn();
-      const memoryState = new Map<string, any>();
-      const ctx = {
-        conversationId: "game-456",
-        peerAddress: "0x1234567890123456789012345678901234567890",
-        peerSubject: "subject-456",
-        timestampMs: Date.now(),
-        payloadDigest: "digest-456",
-        stampValueWei: 0n,
-        items: [item],
-        reply: mockReply,
-        address: "0x2222222222222222222222222222222222222222",
-        getBalance: async () => 10n ** 18n,
-        sendTransfer,
-        sendTransaction,
-        state: {
-          get: async (key: string) => memoryState.get(key),
-          put: async (key: string, val: any) => void memoryState.set(key, val),
-          del: async (key: string) => void memoryState.delete(key),
-        },
-      } as any;
+  test("a value the wallet reported but the chain does not show is not a bet", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(0n, BET);
+    expect(h.sent.some((m) => (h.item("blackjack-hand", m) as HandItem)?.action === "deal")).toBe(false);
+    expect(h.paidOut()).toBe(0n);
+  });
 
-      await bot.onMessage(ctx);
+  test("a bet over the table's maximum is returned in full, not dealt", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot({ maxWagerWei: BET });
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(BET * 2n);
+    const refund = h.sent[h.sent.length - 1];
+    expect((h.item("blackjack-hand", refund) as HandItem).action).toBe("refund");
+    expect(refund.valueWei).toBe(BET * 2n);
+    expect(h.paidOut()).toBe(BET * 2n);
+  });
 
-      // The only answer is a fresh peer-to-peer challenge, as for plain text.
-      expect(mockReply).toHaveBeenCalledTimes(1);
-      const replied = (mockReply.mock.calls[0] as any[])[0] as any[];
-      expect(replied.map((i) => i.type)).toEqual(["blackjack-hand", "text"]);
-      expect(replied[0].action).toBe("challenge");
-      expect(sendTransfer).not.toHaveBeenCalled();
-      expect(sendTransaction).not.toHaveBeenCalled();
-      expect([...memoryState.keys()].some((k) => k.startsWith("game:"))).toBe(
-        false
-      );
-    }
-  );
-
-  it("challenges a newly registered user with blackjack-hand challenge", async () => {
-    const mockSendMessage = jest.fn();
-    const memoryState = new Map<string, any>();
-    const mockState = {
-      get: jest.fn(async (key: string) => memoryState.get(key)),
-      getJson: jest.fn(async (key: string) => memoryState.get(key)),
-      put: jest.fn(async (key: string, val: any) => memoryState.set(key, val)),
-      putJson: jest.fn(async (key: string, val: any) => memoryState.set(key, val)),
-      del: jest.fn(async (key: string) => memoryState.delete(key)),
-    };
-    const botCtx = {
-      sendMessage: mockSendMessage,
-      state: mockState,
-      address: "0x2222222222222222222222222222222222222222",
-      getBalance: jest.fn(async () => 500_000_000_000_000_000n),
-    } as any;
-
-    const userEvent = {
-      address: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      registeredAtMs: Date.now(),
-    };
-
-    await bot.onNewUser(userEvent, botCtx);
-    expect(mockSendMessage).toHaveBeenCalledTimes(1);
-    expect(mockSendMessage).toHaveBeenCalledWith(
-      "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "blackjack-hand",
-          action: "challenge",
-          role: "dealer",
-        }),
-        expect.objectContaining({ type: "text" }),
-      ])
+  test("money sent with a message of no hand at this table is returned", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    await bot.onMessage(
+      h.message(
+        [
+          {
+            type: "blackjack-hand",
+            gameId: "00".repeat(16),
+            action: "bet",
+            seq: 1,
+            prev: "11".repeat(32),
+            commitment: "22".repeat(32),
+          } as any,
+        ],
+        [h.pay(BET)]
+      ),
+      h.ctx
     );
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].valueWei).toBe(BET);
   });
 
-  it("accepts a player-initiated challenge with blackjack-hand accept", async () => {
-    const mockReply = jest.fn();
-    const memoryState = new Map<string, any>();
-    const mockState = {
-      get: jest.fn(async (key: string) => memoryState.get(key)),
-      getJson: jest.fn(async (key: string) => memoryState.get(key)),
-      put: jest.fn(async (key: string, val: any) => memoryState.set(key, val)),
-      putJson: jest.fn(async (key: string, val: any) => memoryState.set(key, val)),
-      del: jest.fn(async (key: string) => memoryState.delete(key)),
-    };
-    const gameId = "11112222333344445555666677778888";
-    const ctx = {
-      conversationId: "conv-player-chal",
-      peerAddress: "0x1234567890123456789012345678901234567890",
-      peerSubject: "subject-chal",
-      timestampMs: Date.now(),
-      payloadDigest: "digest-chal-12345678901234567890123456789012345678901234567890123456",
-      items: [
-        {
-          type: "blackjack-hand",
-          gameId,
-          action: "challenge",
-          role: "player",
-          maxBetWei: "50000000000000000",
-          seq: 0,
-        },
-      ],
-      reply: mockReply,
-      state: mockState,
-      address: "0x2222222222222222222222222222222222222222",
-      getBalance: jest.fn(async () => 500_000_000_000_000_000n),
-    } as any;
-
-    await bot.onMessage(ctx);
-    expect(mockReply).toHaveBeenCalledTimes(1);
-    const replyItems = mockReply.mock.calls[0][0];
-    expect(replyItems[0].type).toBe("blackjack-hand");
-    expect(replyItems[0].action).toBe("accept");
-    expect(replyItems[0].commitment).toBeDefined();
-    expect(replyItems[1].text).toContain("Challenge accepted");
+  test("the same message delivered twice counts once", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    const bet = buildBet(t.state(), SEED)!;
+    const message = h.message([bet as any], [h.pay(BET)]);
+    await bot.onMessage(message, h.ctx);
+    const after = h.sent.length;
+    await bot.onMessage(message, h.ctx);
+    expect(h.sent).toHaveLength(after);
   });
 
-  it("handles a full peer-to-peer hand: bet -> deal -> stand -> reveal", async () => {
-    const memoryState = new Map<string, any>();
-    const mockState = {
-      get: jest.fn(async (key: string) => memoryState.get(key)),
-      getJson: jest.fn(async (key: string) => memoryState.get(key)),
-      put: jest.fn(async (key: string, val: any) => memoryState.set(key, val)),
-      putJson: jest.fn(async (key: string, val: any) => memoryState.set(key, val)),
-      del: jest.fn(async (key: string) => memoryState.delete(key)),
-    };
+  test("a payout that cannot be sent is kept, the hand waits, and it is paid once later", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(BET);
+    const before = h.sent.length;
+    h.failSends(new Error("Insufficient main account balance"));
+    await t.stand();
+    expect(h.sent).toHaveLength(before);
+    for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    expect(h.sent).toHaveLength(before);
 
-    // 1. Initial challenge from plain text
-    let lastReply: any;
-    const mockReply1 = jest.fn(async (items: any[]) => {
-      lastReply = items;
-      return {
-        payloadDigest: "digest-dealer-challenge-1111222233334444555566667777888899990000",
-        stampValueWei: 10_000_000_000_000_000n,
-      };
-    });
+    h.failSends();
+    // A new process: what is owed is sent by the schedules every bot registers.
+    const restarted = new BlackjackDealerBot();
+    for (let i = 0; i < 3; i++)
+      for (const schedule of restarted.schedules) await schedule.handler(h.ctx);
+    const end = t.state()!;
+    expect(end.phase).toBe("resolved");
+    expect(h.paidOut()).toBe(payoutWei(end.outcome!, BET, false));
+    expect(h.sent).toHaveLength(before + 1);
+  });
 
-    await bot.onMessage({
-      conversationId: "conv-p2p-full",
-      peerAddress: "0x1234567890123456789012345678901234567890",
-      payloadDigest: "digest-text-how-do-i-challenge-11112222333344445555666677778888",
-      items: [{ type: "text", text: "How do I challenge?" }],
-      reply: mockReply1,
-      state: mockState,
-      address: "0x2222222222222222222222222222222222222222",
-      getBalance: jest.fn(async () => 500_000_000_000_000_000n),
-    } as any);
+  test("a restart after the wallet took the payout and before the bot recorded it pays once", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(BET);
+    const beforeStand = new Map(h.data);
+    const stand = playerStep(t.state(), "stand", SEED)!;
+    const message = h.message([stand as any]);
+    await bot.onMessage(message, h.ctx);
+    const paid = h.paidOut();
+    const count = h.sent.length;
+    // Back to the bot's state before the stand; the wallet still holds the attempt it made.
+    for (const key of [...h.data.keys()]) h.data.delete(key);
+    for (const [key, value] of beforeStand) h.data.set(key, value);
+    const restarted = new BlackjackDealerBot();
+    await restarted.onMessage(message, h.ctx);
+    for (const schedule of restarted.schedules) await schedule.handler(h.ctx);
+    expect(h.paidOut()).toBe(paid);
+    expect(h.sent).toHaveLength(count);
+  });
 
-    expect(mockReply1).toHaveBeenCalledTimes(1);
-    const challengeItem = lastReply[0];
-    expect(challengeItem.action).toBe("challenge");
-    const gameId = challengeItem.gameId;
-
-    // 2. Player bets
-    const {
-      entropyChain,
-      CHAIN_LENGTH,
-    } = require("@frank/wallet/message-item-plugins/blackjack/entropy");
-    const playerSeed = "aa".repeat(32);
-    const playerCommitment = entropyChain(playerSeed)[0];
-
-    const mockReply2 = jest.fn(async (items: any[]) => {
-      lastReply = items;
-      return {
-        payloadDigest: "digest-dealer-deal-11112222333344445555666677778888999900001111",
-        stampValueWei: 10_000_000_000_000_000n,
-      };
-    });
-
-    await bot.onMessage({
-      conversationId: "conv-p2p-full",
-      peerAddress: "0x1234567890123456789012345678901234567890",
-      payloadDigest: "digest-player-bet-111122223333444455556666777788889999000011112222",
-      stampValueWei: 10_000_000_000_000_000n,
-      items: [
-        {
-          type: "blackjack-hand",
-          gameId,
-          action: "bet",
-          seq: 1,
-          prev: "digest-dealer-challenge-1111222233334444555566667777888899990000",
-          commitment: playerCommitment,
-        },
-      ],
-      reply: mockReply2,
-      state: mockState,
-      address: "0x2222222222222222222222222222222222222222",
-      getBalance: jest.fn(async () => 500_000_000_000_000_000n),
-    } as any);
-
-    expect(mockReply2).toHaveBeenCalledTimes(1);
-    const dealItem = lastReply[0];
-    expect(dealItem.action).toBe("deal");
-    expect(dealItem.link).toBeDefined();
-
-    // 3. Player stands
-    const mockReply3 = jest.fn(async (items: any[]) => {
-      lastReply = items;
-      return {
-        payloadDigest: "digest-dealer-reveal-11112222333344445555666677778888999900001111",
-        stampValueWei: 10_000_000_000_000_000n,
-      };
-    });
-
-    await bot.onMessage({
-      conversationId: "conv-p2p-full",
-      peerAddress: "0x1234567890123456789012345678901234567890",
-      payloadDigest: "digest-player-stand-111122223333444455556666777788889999000011112222",
-      items: [
-        {
-          type: "blackjack-hand",
-          gameId,
-          action: "stand",
-          seq: 3,
-          prev: "digest-dealer-deal-11112222333344445555666677778888999900001111",
-          link: entropyChain(playerSeed)[CHAIN_LENGTH],
-        },
-      ],
-      reply: mockReply3,
-      state: mockState,
-      address: "0x2222222222222222222222222222222222222222",
-      getBalance: jest.fn(async () => 500_000_000_000_000_000n),
-    } as any);
-
-    expect(mockReply3).toHaveBeenCalledTimes(1);
-    const revealItem = lastReply[0];
-    expect(revealItem.action).toBe("reveal");
-    expect(revealItem.link).toBeDefined();
+  test("the profile makes no fairness claim beyond what the app checks", () => {
+    expect(new BlackjackDealerBot().getProfile().bio).not.toMatch(/provably/i);
   });
 });

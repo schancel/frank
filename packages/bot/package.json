@@ -7,7 +7,6 @@
   "scripts": {
     "bot": "tsx qwen-bot.livecheck.ts",
     "blackjack": "tsx blackjack-bot.livecheck.ts",
-    "blackjack:p2p": "tsx blackjack-p2p-bot.livecheck.ts",
     "target:blackjack": "tsx targets/blackjack.ts",
     "target:raffle": "tsx targets/raffle.ts",
     "target:vendor": "tsx targets/vendor.ts",

@@ -36,6 +36,8 @@ export interface Sent {
   conversationId?: string;
   valueWei: bigint;
   messageId?: string;
+  /** The payload digest the wallet gave the message. */
+  digest: string;
 }
 
 export const BOT = "0x" + "b0".repeat(20);
@@ -74,6 +76,7 @@ export function harness(data = new Map<string, string>()) {
       conversationId,
       valueWei: options?.stampValueWei ?? 0n,
       messageId: id,
+      digest: payloadDigest,
     });
     return { payloadDigest, stampValueWei: options?.stampValueWei ?? 0n } as any;
   };

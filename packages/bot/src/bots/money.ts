@@ -216,6 +216,20 @@ export class Outbox {
     return (await this.store(ctx).get(`sent:${id}`)) !== undefined;
   }
 
+  /** The payload digest and paid value of the message `id`, once it has gone out. */
+  async delivered(
+    ctx: BotContext,
+    id: string
+  ): Promise<{ digest: string; stampWei: bigint } | undefined> {
+    const raw = await this.store(ctx).get(`sent:${id}`);
+    if (raw === undefined) return undefined;
+    const { digest, stampWei } = JSON.parse(raw) as {
+      digest: string;
+      stampWei: string;
+    };
+    return { digest, stampWei: BigInt(stampWei) };
+  }
+
   /** Sends every owed message that can go, oldest first, one at a time. One that cannot go yet
    * stays owed and does not hold up the others. Never rejects. */
   settle(ctx: BotContext): Promise<void> {
@@ -241,10 +255,14 @@ export class Outbox {
     id: string
   ): Promise<void> {
     const raw = await store.get(`owed:${id}`);
-    const done = async (digest: string) =>
+    const done = async (digest: string, stampWei = 0n) =>
       store.batch([
         { type: "del", key: `owed:${id}` },
-        { type: "put", key: `sent:${id}`, value: digest },
+        {
+          type: "put",
+          key: `sent:${id}`,
+          value: JSON.stringify({ digest, stampWei: stampWei.toString() }),
+        },
         {
           type: "put",
           key: "index",
@@ -274,13 +292,16 @@ export class Outbox {
           messageId: messageIdFor(this.botId, id),
         }
       );
-      await done(result?.payloadDigest ?? "");
+      await done(
+        result?.payloadDigest ?? "",
+        value > 0n ? value : result?.stampValueWei ?? 0n
+      );
     } catch (error) {
       // The wallet already holds an attempt for this message ID: it is the wallet's to deliver,
       // and nothing may be sent for it again.
       if ((error as { name?: string })?.name !== "DirectMessageAlreadyAttemptedError")
         throw error;
-      await done((error as { payloadDigest?: string }).payloadDigest ?? "");
+      await done((error as { payloadDigest?: string }).payloadDigest ?? "", value);
     }
   }
 }

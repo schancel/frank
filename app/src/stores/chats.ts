@@ -73,6 +73,8 @@ import {
 } from '../utils/own-address'
 import {
   MessageFundsNotSweptError,
+  mayHoldCoins,
+  settleOutgoingPayments,
   sweepBeforeDelete,
 } from '../utils/sweep-on-delete'
 import { shortAddress } from '../utils/short-address'
@@ -1661,6 +1663,16 @@ export const useChatStore = defineStore('chats', {
             : null
           : messageDestinationAddress(message)
         : null
+      // BEFORE the mutation queue (the sweep reads the chain and can wait for a block; every
+      // send's first save goes through that queue): the money the message brought is moved to a
+      // seed-derived address, and a payment it carried out is released or finished. If the
+      // money could not be moved (or is not in a block yet) the message stays, and the caller is
+      // told why.
+      if (message) {
+        const { kept } = await sweepBeforeDelete([message])
+        if (kept.size > 0) throw new MessageFundsNotSweptError(kept)
+        await settleOutgoingPayments([message])
+      }
       await serializeDeliveryMutation(() =>
         this.deleteMessageExclusive({
           address,
@@ -1762,12 +1774,6 @@ export const useChatStore = defineStore('chats', {
           payloadDigest: attemptDigest,
           receivedTime: installedReceivedTime,
         })
-      }
-      // The money the message brought is moved to a seed-derived address first. If it could
-      // not be (or is not in a block yet) the message stays, and the caller is told why.
-      if (message) {
-        const { kept } = await sweepBeforeDelete([message])
-        if (kept.size > 0) throw new MessageFundsNotSweptError(kept)
       }
       if (recipientAddress) {
         await messageStore.suppressAndDelete(
@@ -3082,32 +3088,58 @@ export const useChatStore = defineStore('chats', {
       } catch {
         //
       }
+      const clearance = await this.clearanceToClear(displayAddress)
       return serializeDeliveryMutation(() =>
-        this.clearChatExclusive(displayAddress),
+        this.clearChatExclusive(displayAddress, clearance),
       )
     },
-    async clearChatExclusive(address: string): Promise<void> {
-      let chat: Conversation | undefined
-      if (this.conversations && address in this.conversations) {
-        chat = this.conversations[address]
-      } else {
-        try {
-          const displayAddress = toChainDisplayAddress(address)
-          chat = this.chats[displayAddress]
-        } catch {
-          chat = this.chats[address]
-        }
+    /** The conversation stored under an address or a conversation ID, if any. */
+    conversationToClear(address: string): Conversation | undefined {
+      if (this.conversations && address in this.conversations)
+        return this.conversations[address]
+      try {
+        return this.chats[toChainDisplayAddress(address)]
+      } catch {
+        return this.chats[address]
       }
+    },
+    /** What may be cleared from a conversation, decided OUTSIDE the mutation queue because it
+     * reads the chain and can wait for a block: the money its messages brought is moved to a
+     * seed-derived address, and payments its messages carried out are released or finished.
+     * `cleared` are the messages that may go; `kept` those whose money could not be moved (or is
+     * not in a block yet), with the reason. A message that arrives after this is not cleared. */
+    async clearanceToClear(address: string): Promise<{
+      cleared: Set<string>
+      kept: Map<string, string>
+    }> {
+      const messages = [...(this.conversationToClear(address)?.messages ?? [])]
+      const { kept } = await sweepBeforeDelete(messages)
+      const clearable = messages.filter(m => !kept.has(m.payloadDigest))
+      await settleOutgoingPayments(clearable)
+      return {
+        cleared: new Set(clearable.map(m => m.payloadDigest)),
+        kept,
+      }
+    },
+    /** Deletes, inside the mutation queue, exactly the messages `clearance` cleared. */
+    async clearChatExclusive(
+      address: string,
+      clearance: { cleared: Set<string>; kept: Map<string, string> },
+    ): Promise<void> {
+      const chat = this.conversationToClear(address)
       if (!chat) return
       const messageStore = await store
-      // The money these messages brought is moved to a seed-derived address first. A message
-      // whose money could not be moved (or is not in a block yet) is not cleared: it stays in the
-      // conversation, and the caller is told why once the rest is cleared.
-      const { kept: keptForFunds } = await sweepBeforeDelete(chat.messages)
-      // This is Clear's atomic cutoff. Composer sends invoked while its durable deletes are in
-      // flight may appear optimistically, but are queued after this mutation and must survive.
+      const keptForFunds = clearance.kept
+      // This is Clear's atomic cutoff: everything in the conversation now goes, except a message
+      // whose money could not be moved, and a received message that can have brought money and
+      // arrived after the sweep looked (it was not swept, so it stays for the next clear).
+      // Composer sends invoked while the durable deletes are in flight may appear
+      // optimistically, but are queued after this mutation and must survive.
       const clearingMessages = chat.messages.filter(
-        message => !keptForFunds.has(message.payloadDigest),
+        message =>
+          !keptForFunds.has(message.payloadDigest) &&
+          (clearance.cleared.has(message.payloadDigest) ||
+            !mayHoldCoins(message)),
       )
       const groups = new Map<
         string,
@@ -3284,18 +3316,21 @@ export const useChatStore = defineStore('chats', {
         await this.deleteConversation(conversation.id, deletedAt)
     },
     async deleteConversation(conversationId: string, deletedAt = Date.now()) {
+      if (!this.conversations[conversationId]) return
+      const clearance = await this.clearanceToClear(conversationId)
       return serializeDeliveryMutation(async () => {
         const conv = this.conversations[conversationId]
         if (!conv) return
-        await this.clearChatExclusive(conversationId)
+        await this.clearChatExclusive(conversationId, clearance)
         conv.deletedAt = deletedAt
         if (this.activeConversationId === conversationId)
           this.activeConversationId = null
       })
     },
     async clearConversation(conversationId: string): Promise<void> {
+      const clearance = await this.clearanceToClear(conversationId)
       return serializeDeliveryMutation(() =>
-        this.clearChatExclusive(conversationId),
+        this.clearChatExclusive(conversationId, clearance),
       )
     },
     setStampOverride({

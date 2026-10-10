@@ -1,5 +1,9 @@
 import type { NativeWalletHandle, ReceivedCoinSweep } from '@frank/wallet/chain'
-import { MessageFundsNotSweptError, sweepBeforeDelete } from './sweep-on-delete'
+import {
+  MessageFundsNotSweptError,
+  settleOutgoingPayments,
+  sweepBeforeDelete,
+} from './sweep-on-delete'
 import type { ChatMessage } from '../stores/chats'
 
 const mockGetWallet = jest.fn()
@@ -131,5 +135,51 @@ describe('sweepBeforeDelete', () => {
       {} as NativeWalletHandle,
     )
     expect(other.kept.size).toBe(0)
+  })
+})
+
+describe('settleOutgoingPayments', () => {
+  beforeEach(() => jest.clearAllMocks())
+  const stealth = (key: string) => ({
+    type: 'stealth',
+    amount: 5,
+    ephemeralPubKey: key,
+  })
+
+  it('asks the wallet to release or finish each payment an outgoing message carried, and nothing for received ones', async () => {
+    const settleContactPayment = jest.fn().mockResolvedValue('released')
+    await settleOutgoingPayments(
+      [
+        message({
+          payloadDigest: 'aa',
+          outbound: true,
+          items: [stealth('02aa')] as never,
+        }),
+        message({
+          payloadDigest: 'bb',
+          outbound: false,
+          items: [stealth('02bb')] as never,
+        }),
+        message({ payloadDigest: 'cc', outbound: true }),
+      ],
+      { settleContactPayment } as unknown as NativeWalletHandle,
+    )
+    expect(settleContactPayment.mock.calls).toEqual([['02aa']])
+  })
+
+  it('never fails the delete: a wallet that cannot be reached is logged and the wallet finishes it later', async () => {
+    mockGetWallet.mockRejectedValueOnce(new Error('wallet is locked'))
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    await expect(
+      settleOutgoingPayments([
+        message({
+          payloadDigest: 'aa',
+          outbound: true,
+          items: [stealth('02aa')] as never,
+        }),
+      ]),
+    ).resolves.toBeUndefined()
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

@@ -184,6 +184,7 @@ export type {
 export {
   ContactPaymentPendingError,
   ContactPaymentFailedError,
+  ContactPaymentReleasedError,
 } from "./active-chain";
 
 export type { NativeTransactionAttemptStore } from "./chain-wallet";

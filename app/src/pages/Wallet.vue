@@ -254,6 +254,7 @@
                         @click="openSend"
                       />
                     </q-card-actions>
+                    <held-contact-payments v-if="selectedWallet === 'monad'" />
                   </q-card-section>
 
                   <q-card-section data-testid="wallet-native-operations">
@@ -612,6 +613,7 @@ import QrcodeVue from 'qrcode.vue'
 import AvuExplainerDialog from 'src/components/wallet/AvuExplainerDialog.vue'
 import AvuParityChart from 'src/components/wallet/AvuParityChart.vue'
 import DAppSwapView from 'src/components/wallet/DAppSwapView.vue'
+import HeldContactPayments from 'src/components/wallet/HeldContactPayments.vue'
 import { copyToClipboard } from 'quasar'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useChainBalance } from 'src/composables/useChainBalance'
@@ -644,6 +646,7 @@ export default defineComponent({
     AvuExplainerDialog,
     AvuParityChart,
     DAppSwapView,
+    HeldContactPayments,
   },
   emits: ['toggleMyDrawerOpen'],
   setup() {

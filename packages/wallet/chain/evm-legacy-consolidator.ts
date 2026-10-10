@@ -1319,8 +1319,10 @@ export class EvmLegacyConsolidator {
   /**
    * Plans and signs one native transfer exactly as `sendNative` does (same sources, same journal,
    * same reservation) and stops before the broadcast. The signed transaction is journalled and
-   * marked exposed, because the caller hands it to someone else (a message to the payee) who may
-   * broadcast it. `resumeOperation` broadcasts the same bytes; nothing ever signs another.
+   * NOT marked exposed: the caller hands it to someone else (a message to the payee) and keeps
+   * its own durable record of whether that hand-off began. `resumeOperation` broadcasts the same
+   * bytes (and marks them exposed); `releaseUnexposed` cancels an operation whose bytes never
+   * left. Nothing ever signs another transfer for the same operation.
    */
   signNative(
     params: SendLegacyParams,
@@ -1330,9 +1332,16 @@ export class EvmLegacyConsolidator {
     return this.runWithLocalPass(lifetime, async planned => {
       const row = await this.plan(params, 'native', lifetime)
       planned(row.operationId)
-      await this.sign(row, lifetime)
-      return this.journal(lifetime).markExposed(row.operationId, 0)
+      return this.sign(row, lifetime)
     })
+  }
+  /** Cancels a signed operation whose bytes were handed to nobody, freeing its source. The
+   * journal refuses if any member was exposed. */
+  releaseUnexposed(
+    operationId: string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<EvmNativeOperation> {
+    return this.run(() => this.journal(lifetime).discardUnexposed(operationId))
   }
   /**
    * Moves everything each of `sources` holds, less its own fee, to `recipient`: one journalled

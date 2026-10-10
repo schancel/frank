@@ -494,6 +494,83 @@ describe('payments between two wallets on a real EVM node', () => {
     })
   })
 
+  it('a payment nothing of which was ever sent is released: its account is free at the same nonce, and its transfer can never land', async () => {
+    const aliceMain = await mainOf(alice)
+    const prepared = await alice.prepareContactPayment!({
+      recipient: bob.identity.address,
+      value: VALUE,
+    })
+    const heldNonce = Transaction.from('0x' + prepared.item.transactions![0]).nonce
+    expect(alice.getContactPayments!()[0]).toMatchObject({
+      state: 'prepared',
+      holdsFunds: true,
+    })
+    await expect(
+      alice.sendNative({
+        recipient: { raw: Wallet.createRandom().address },
+        value: parseEther('0.5'),
+      }),
+    ).rejects.toThrow('Insufficient unreserved native funds')
+
+    // The outgoing message is deleted before it was ever sent.
+    expect(await alice.settleContactPayment!(prepared.item.ephemeralPubKey!)).toBe(
+      'released',
+    )
+    expect(alice.getContactPayments!()[0]).toMatchObject({
+      state: 'released',
+      holdsFunds: false,
+    })
+    // The account is free: an ordinary send goes out at the nonce the cancelled transfer had.
+    const carol = Wallet.createRandom().address
+    const spent = await alice.sendNative({
+      recipient: { raw: carol },
+      value: parseEther('0.5'),
+    })
+    const landed = await node.waitForTransaction(spent.txHash)
+    expect(landed!.status).toBe(1)
+    expect((await node.getTransaction(spent.txHash))!.nonce).toBe(heldNonce)
+    expect(landed!.from.toLowerCase()).toBe(aliceMain)
+    // The released transfer can never land now, and a message carrying it never leaves.
+    await expect(
+      node.broadcastTransaction('0x' + prepared.item.transactions![0]),
+    ).rejects.toThrow()
+    expect(await node.getBalance(prepared.stealthAddress)).toBe(0n)
+    await expect(
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: bob.identity.address,
+        items: [prepared.item],
+      }),
+    ).rejects.toThrow('cancelled before anything was sent')
+    expect(bobMailbox).toHaveLength(0)
+  })
+
+  it('a free message carries a payment too: the sender is told it was delivered, pays, and holds nothing', async () => {
+    const prepared = await alice.prepareContactPayment!({
+      recipient: bob.identity.address,
+      value: VALUE,
+      stampValue: 0n,
+    })
+    await f.chain.directMessages.send({
+      wallet: alice,
+      recipient: bob.identity.address,
+      items: [prepared.item],
+      stampValue: 0n,
+    })
+    await until(
+      'the payment to be paid',
+      async () => {
+        await alice.resumeContactPayments!()
+        return alice.getContactPayments!()[0]
+      },
+      payment => payment.state === 'paid' && !payment.holdsFunds,
+    )
+    expect(await node.getBalance(prepared.stealthAddress)).toBe(VALUE)
+    await poll(bob)
+    await settled(bob)
+    expect(await bob.getBalance()).toBe(VALUE)
+  })
+
   it('a claim larger than what the chain shows is shown at the chain amount; a transfer that never landed is never counted', async () => {
     const sent = await alice.sendToContact!({
       recipient: bob.identity.address,

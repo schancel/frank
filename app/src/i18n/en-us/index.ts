@@ -748,6 +748,17 @@ export default {
     statusExpired: 'Expired',
     processing: 'Processing...',
   },
+  heldContactPayments: {
+    title: 'Payments to contacts in progress',
+    finish: 'Finish',
+    state: {
+      prepared:
+        'Signed. Waiting for its message to be delivered; its funds are held.',
+      delivered: 'Message delivered. The payment is on its way to the chain.',
+      failed:
+        'Its message could not be delivered. The payment is kept; its funds are held.',
+    },
+  },
   chatMessageStealth: {
     title: 'Stealth Payment',
     sentTitle: 'Sent Stealth Payment',

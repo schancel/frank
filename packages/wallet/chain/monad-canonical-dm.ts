@@ -1706,6 +1706,23 @@ async function fetchSince(
     cursor = page.nextCursor
     if (cursor === undefined) break
   }
+  // Stopped at the page limit with more to read: said so, like any other cut-off read, so no
+  // caller takes this for the whole mailbox. The last timestamp may continue on the next page,
+  // so its records are left for the next read (which starts after the last complete one),
+  // unless that would leave nothing to advance on.
+  if (cursor !== undefined) {
+    const last = received.reduce(
+      (latest, message) => Math.max(latest, message.receivedTime ?? 0),
+      0,
+    )
+    const complete = received.filter(
+      message => (message.receivedTime ?? 0) < last,
+    )
+    params.onTruncated?.(
+      new Error(`The mailbox read stopped after ${MAX_INBOX_PAGES} pages`),
+    )
+    if (complete.length > 0) return complete
+  }
   return received
 }
 

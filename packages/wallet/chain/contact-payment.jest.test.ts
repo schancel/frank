@@ -23,6 +23,7 @@ import { join } from 'path'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import {
   ContactPaymentPendingError,
+  ContactPaymentReleasedError,
   type ReceivedPayment,
 } from './chain-wallet'
 import {
@@ -569,6 +570,170 @@ describe('a payment to a contact', () => {
     expect(await bob.getBalance()).toBe(VALUE + STAMP)
   })
 
+  describe('a held payment is released or finished, never left holding the account', () => {
+    const big = 10n ** 17n
+    const held = (wallet: EvmChainWalletHandle) =>
+      wallet.getContactPayments!().filter(payment => payment.holdsFunds)
+    const hostSends = (item: Parameters<typeof f.chain.directMessages.send>[0]['items'][0], extra = {}) =>
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: bob.identity.address,
+        items: [item],
+        ...extra,
+      })
+
+    it('a free message (no stamp, so no payment attempt) still tells the payment it was delivered', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+        stampValue: 0n,
+      })
+      expect(held(alice)).toHaveLength(1)
+      await hostSends(prepared.item, { stampValue: 0n })
+      await alice.resumeContactPayments!()
+      await alice.resumeContactPayments!()
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ state: 'paid', holdsFunds: false }),
+      ])
+      expect(toOneTimeAddresses()).toEqual([
+        expect.objectContaining({ hash: prepared.txHash }),
+      ])
+    })
+
+    it('left by an earlier session with nothing ever sent: released at the first pass, its account free, its item refused', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      // The app stops here: the chat store never saved or sent the message.
+      await alice.close()
+      const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+      attach(reopened)
+      try {
+        installCanonicalDirectory(
+          reopened,
+          await f.directoryFor('alice-reopened', reopened, bob),
+        )
+        expect(held(reopened)).toHaveLength(1)
+        await expect(
+          reopened.sendNative({ recipient: { raw: '0x' + 'c7'.repeat(20) }, value: big }),
+        ).rejects.toThrow('Insufficient unreserved native funds')
+
+        await reopened.resumeContactPayments!()
+        expect(reopened.getContactPayments!()).toEqual([
+          expect.objectContaining({ state: 'released', holdsFunds: false }),
+        ])
+        // The account is usable again, at the very nonce the cancelled transfer had.
+        const aliceMain = await mainOf(reopened)
+        const spent = await reopened.sendNative({
+          recipient: { raw: '0x' + 'c7'.repeat(20) },
+          value: big,
+        })
+        expect(node.broadcasts).toEqual([
+          expect.objectContaining({ from: aliceMain, hash: spent.txHash, value: big }),
+        ])
+        // A message carrying the released payment's item never leaves: the contact could
+        // otherwise broadcast a transfer this wallet considers cancelled.
+        const before = f.requests.length
+        await expect(
+          f.chain.directMessages.send({
+            wallet: reopened,
+            recipient: bob.identity.address,
+            items: [prepared.item],
+          }),
+        ).rejects.toThrow('cancelled before anything was sent')
+        expect(f.requests).toHaveLength(before)
+        expect(bobMailbox).toHaveLength(0)
+        expect(toOneTimeAddresses()).toEqual([])
+      } finally {
+        await reopened.close()
+      }
+    })
+
+    it('the outgoing message is deleted before anything was sent: settle releases it', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      expect(await alice.settleContactPayment!(prepared.item.ephemeralPubKey!)).toBe(
+        'released',
+      )
+      expect(held(alice)).toEqual([])
+      expect(node.broadcasts).toEqual([])
+      expect(await alice.settleContactPayment!('02' + '99'.repeat(32))).toBe('none')
+    })
+
+    it('once its bytes went to a relay it is never released: settle finishes it, by the wallet, with the same transfer', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      // The host's send reaches for the relay and fails: the attempt exists, bytes may be out.
+      f.setPhase('fail')
+      await hostSends(prepared.item).catch(() => undefined)
+      const key = prepared.item.ephemeralPubKey!
+      expect(await alice.settleContactPayment!(key)).toBe('prepared')
+      expect(held(alice)).toHaveLength(1)
+      expect(node.broadcasts).toEqual([])
+
+      // The user deletes the bubble; the relay answers again; the wallet finishes it.
+      f.setPhase('delivered')
+      await alice.settleContactPayment!(key)
+      await alice.resumeContactPayments!()
+      await alice.resumeContactPayments!()
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ state: 'paid', holdsFunds: false }),
+      ])
+      expect(bobMailbox).toHaveLength(1)
+      expect(toOneTimeAddresses()).toEqual([
+        expect.objectContaining({ hash: prepared.txHash }),
+      ])
+    })
+
+    it('the contact put the transfer on the chain while this wallet still waited: paid, and nothing held', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      f.setPhase('fail')
+      await hostSends(prepared.item).catch(() => undefined)
+      expect(held(alice)).toHaveLength(1)
+      // Someone holding the message broadcasts the carried transfer.
+      await bob.provider.broadcastTransaction('0x' + prepared.item.transactions![0])
+      await alice.resumeContactPayments!()
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ state: 'paid', holdsFunds: false }),
+      ])
+      expect(toOneTimeAddresses()).toHaveLength(1)
+    })
+
+    it('the message cannot be paid for because its stamp funding needs the held account: released, not stuck', async () => {
+      const prepared = await alice.prepareContactPayment!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      // The stamp accounts made ready for this message are gone by the time it is sent
+      // (another message used them): its stamp must be funded now, and the only funded
+      // account is the one the payment's transfer is held on.
+      jest.spyOn(alice.pool, 'hasStampInventory').mockResolvedValue(false)
+      const refused = await hostSends(prepared.item).catch(error => error)
+      jest.mocked(alice.pool.hasStampInventory).mockRestore()
+      expect(refused).toBeInstanceOf(ContactPaymentReleasedError)
+      expect(alice.getContactPayments!()).toEqual([
+        expect.objectContaining({ state: 'released', holdsFunds: false }),
+      ])
+      expect(toOneTimeAddresses()).toEqual([])
+      // Nothing is stuck: the same payment can be made again at once.
+      const again = await alice.sendToContact!({
+        recipient: bob.identity.address,
+        value: VALUE,
+      })
+      expect(toOneTimeAddresses()).toEqual([
+        expect.objectContaining({ hash: again.txHash }),
+      ])
+    })
+  })
+
   it('a coin list that did not exist when the host read the mailbox still finds the money: its first read starts at the beginning', async () => {
     const sent = await alice.sendToContact!({
       recipient: bob.identity.address,
@@ -611,6 +776,41 @@ describe('a payment to a contact', () => {
     } finally {
       await late.close()
     }
+  })
+
+  it('a mailbox read that stops at the page limit says so, and the coin list does not take it for the whole mailbox', async () => {
+    const sent = await alice.sendToContact!({
+      recipient: bob.identity.address,
+      value: VALUE,
+    })
+    const mailbox = jest.requireMock('@frank/cashweb/relay/monad-mailbox-client')
+    const page = mailbox.fetchCanonicalInboxPage as jest.Mock
+    const whole = page.getMockImplementation()!
+    // A relay that always has another page.
+    page.mockImplementation(async () => ({ records: [], nextCursor: 'more' }))
+    let truncated = 0
+    const before = page.mock.calls.length
+    expect(
+      await f.chain.directMessages.fetchSince({
+        wallet: bob,
+        sinceMs: 0,
+        onTruncated: () => truncated++,
+      }),
+    ).toEqual([])
+    expect(page.mock.calls.length - before).toBe(8)
+    expect(truncated).toBe(1)
+    expect(coinsOf(bob)).toEqual([])
+
+    // The relay answers in full again, and the host's cursor has moved past the message: the
+    // coin list still reads the part it never finished, and finds the money.
+    page.mockImplementation(whole)
+    await f.chain.directMessages.fetchSince({
+      wallet: bob,
+      sinceMs: bobMailbox[0].timestampMs + 1_000,
+    })
+    expect(coinsOf(bob)).toEqual([
+      expect.objectContaining({ address: sent.stealthAddress.toLowerCase() }),
+    ])
   })
 
   it('shows the chain amount, not the larger amount the sender wrote', async () => {

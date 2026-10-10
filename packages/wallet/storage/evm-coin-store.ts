@@ -71,7 +71,15 @@ export interface ContactPayment {
    * does too). `paid`: the chain showed the transfer included. `failed`: the relay ended the
    * message for good; nothing was broadcast by this wallet, the source stays held, and the item
    * is kept to be sent again in a new message. */
-  readonly state: 'planned' | 'prepared' | 'delivered' | 'paid' | 'failed'
+  /** `released`: no byte of it ever left the device, and its signed transfer was cancelled in
+   * the journal; the record stays so a message carrying its item is refused. */
+  readonly state:
+    | 'planned'
+    | 'prepared'
+    | 'delivered'
+    | 'paid'
+    | 'failed'
+    | 'released'
   /** Who sends the message that carries the item: the wallet itself, or the host through its
    * own send path (a chat). Either way the transfer is broadcast only once the relay has it. */
   readonly deliveredBy?: 'wallet' | 'host'
@@ -228,6 +236,24 @@ export function observeEvmCoin(
  * The coin stays pending in the store and keeps being re-checked (and its carried transaction
  * re-broadcast), so a late arrival still becomes received. */
 export const PAYMENT_NOT_RECEIVED_AFTER_MS = 10 * 60_000
+
+/** The longest a not-received coin waits between two looks at the chain. */
+export const PENDING_COIN_MAX_BACKOFF_MS = 6 * 60 * 60_000
+
+/** Whether a background read should ask the chain about a pending coin now. A coin still within
+ * `PAYMENT_NOT_RECEIVED_AFTER_MS` of its message, or whose transfer the node knows, is always due.
+ * One the node still does not know after that is asked about less and less often: the wait since
+ * its last look grows with its age (an eighth of it, at most `PENDING_COIN_MAX_BACKOFF_MS`), so
+ * any number of claims that never arrive cannot keep the wallet asking at a steady rate. A late
+ * arrival is still found; a read that names the coin always asks. */
+export function pendingCoinDue(coin: EvmCoin, nowMs: number): boolean {
+  if (coin.checkedAtMs === undefined || coin.transferSeen === true) return true
+  const age = nowMs - coin.discoveredAtMs
+  if (age < PAYMENT_NOT_RECEIVED_AFTER_MS) return true
+  return (
+    nowMs - coin.checkedAtMs >= Math.min(age / 8, PENDING_COIN_MAX_BACKOFF_MS)
+  )
+}
 
 /** What a host shows for a received payment.
  * - `pending`: not on the chain yet, and either the node knows the transfer or it is early.

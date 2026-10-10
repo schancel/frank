@@ -107,6 +107,7 @@ export {
   NativeTransactionSubmissionError,
   ContactPaymentPendingError,
   ContactPaymentFailedError,
+  ContactPaymentReleasedError,
 } from "./chain-wallet";
 
 /** Canonical string form of an on-chain address, for storage keys, API calls, and equality checks.

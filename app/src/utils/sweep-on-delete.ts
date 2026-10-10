@@ -33,7 +33,7 @@ export class MessageFundsNotSweptError extends Error {
 }
 
 /** A message that can have brought this wallet money: received, with a stamp or a stealth item. */
-function mayHoldCoins(message: ChatMessage): boolean {
+export function mayHoldCoins(message: ChatMessage): boolean {
   return (
     !message.outbound &&
     !message.payloadDigest.startsWith('pending:') &&
@@ -73,6 +73,37 @@ export async function sweepBeforeDelete(
     kept.set(digest, answer?.reason ?? 'the wallet gave no answer')
   }
   return { kept }
+}
+
+/**
+ * A payment to a contact that an outgoing message carried, when that message is deleted: the
+ * wallet brings it to an end. If no byte of it ever left the device it is released (its signed
+ * transfer cancelled, the funds it held free again); if its bytes went to a relay it is finished
+ * by the wallet (the contact may broadcast the transfer, so it is never released). Deleting the
+ * message never waits on this and never fails for it: the wallet keeps finishing an exposed
+ * payment by itself on its ordinary background pass.
+ */
+export async function settleOutgoingPayments(
+  messages: readonly ChatMessage[],
+  wallet?: NativeWalletHandle,
+): Promise<void> {
+  const keys = messages.flatMap(message =>
+    message.outbound
+      ? message.items.flatMap(item =>
+          item.type === 'stealth' && item.ephemeralPubKey
+            ? [item.ephemeralPubKey]
+            : [],
+        )
+      : [],
+  )
+  if (keys.length === 0) return
+  try {
+    const owner = wallet ?? (await accountSession.getWallet())
+    if (typeof owner.settleContactPayment !== 'function') return
+    for (const key of keys) await owner.settleContactPayment(key)
+  } catch (error) {
+    console.warn('could not settle a payment of a deleted message', error)
+  }
 }
 
 /** Shows why a delete left messages in place. The wallet's own reason goes to the console (it can

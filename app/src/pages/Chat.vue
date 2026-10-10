@@ -719,28 +719,39 @@ export default defineComponent({
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
-        const wallet = await useActiveWallet()
-        if (!wallet.prepareContactPayment)
-          throw new Error(
-            'Payments to a contact are not available on this chain',
-          )
-        const prepared = await wallet.prepareContactPayment({
-          recipient: { raw: recipient },
-          value,
-          memo: memo || undefined,
-          stampValue,
-        })
-        await this.sendDirectMessage({
-          wallet: useMonadWallet(),
-          address: recipient,
-          conversationId: this.conversation?.id,
-          items: [prepared.item],
-          stampValue,
-          onPreparationProgress: this.showStampPreparation,
-        })
-      } catch (err) {
-        // Refused before anything was signed: nothing was sent.
-        errorNotify(err, { fallbackKey: 'sendStealthDialog.notSent' })
+        let prepared
+        try {
+          const wallet = await useActiveWallet()
+          if (!wallet.prepareContactPayment)
+            throw new Error(
+              'Payments to a contact are not available on this chain',
+            )
+          prepared = await wallet.prepareContactPayment({
+            recipient: { raw: recipient },
+            value,
+            memo: memo || undefined,
+            stampValue,
+          })
+        } catch (err) {
+          // Refused before anything was signed: nothing was sent.
+          errorNotify(err, { fallbackKey: 'sendStealthDialog.notSent' })
+          return
+        }
+        try {
+          await this.sendDirectMessage({
+            wallet: useMonadWallet(),
+            address: recipient,
+            conversationId: this.conversation?.id,
+            items: [prepared.item],
+            stampValue,
+            onPreparationProgress: this.showStampPreparation,
+          })
+        } catch (err) {
+          // The payment is signed and saved by now. Whatever stopped the message, this is not
+          // "nothing was sent": the wallet releases the payment if no byte of it left, and
+          // finishes it otherwise.
+          errorNotify(err, { fallbackKey: 'sendStealthDialog.messageEnded' })
+        }
       } finally {
         this.stampPreparationStatus = null
         this.sendingMessage = false

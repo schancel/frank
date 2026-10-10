@@ -275,6 +275,15 @@ export interface NativeWalletHandle {
   /** Sends a payment whose message the relay ended (`ContactPaymentFailedError`) again, in a new
    * message. The transfer is the original one. */
   retryContactPayment?(messageId: string): Promise<void>;
+  /** Brings the payment whose message item has this ephemeral key to an end. If no byte of it
+   * ever left the device it is RELEASED (its signed transfer cancelled, its funds free) and the
+   * answer is `released`. If its bytes went to a relay it is FINISHED, never released: broadcast
+   * if its message is stored, otherwise delivered again by the wallet in a new message with the
+   * same signed transfer; the answer is its state then. A host calls this when the outgoing
+   * message that carried the payment is deleted, and to retry a held payment. */
+  settleContactPayment?(
+    ephemeralPubKey: string
+  ): Promise<ContactPaymentInfo["state"] | "none">;
   /** This wallet's payments to contacts, newest state. */
   getContactPayments?(): ContactPaymentInfo[];
   /** Money received at one-time accounts (stealth payments, stamps), as last read from the chain.
@@ -542,15 +551,32 @@ export interface ReceivedCoinSweep {
   reason?: string;
 }
 
+/** The payment was released before a byte of it left this device: its signed transfer is
+ * cancelled and can never land, and the funds it held are free. Nothing was sent. Make the
+ * payment again; the item of a released payment is never accepted in a message. */
+export class ContactPaymentReleasedError extends Error {
+  constructor() {
+    super(
+      "This payment was cancelled before anything was sent. Nothing was paid; make the payment again."
+    );
+    this.name = "ContactPaymentReleasedError";
+  }
+}
+
 /** A payment to a contact as a host may show it. */
 export interface ContactPaymentInfo {
   messageId: string;
+  /** The ephemeral key of the payment's message item: what a host finds the payment by. */
+  ephemeralPubKey: string;
+  /** Its signed transfer is not on the chain and its source account is held for it. */
+  holdsFunds: boolean;
   recipientAddress: string;
   valueWei: bigint;
   /** `prepared`: signed, nothing broadcast, its message is being delivered. `delivered`: the
    * relay has the message and the transfer is being broadcast. `paid`: the chain shows the
-   * transfer. `failed`: the relay ended the message; `retryContactPayment` sends it again. */
-  state: "planned" | "prepared" | "delivered" | "paid" | "failed";
+   * transfer. `failed`: the relay ended the message; `retryContactPayment` sends it again.
+   * `released`: nothing of it was ever sent and its transfer was cancelled. */
+  state: "planned" | "prepared" | "delivered" | "paid" | "failed" | "released";
   txHash?: string;
   failure?: string;
 }

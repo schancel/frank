@@ -764,6 +764,17 @@ export default {
     statusExpired: 'Expiré',
     processing: 'Traitement en cours...',
   },
+  heldContactPayments: {
+    title: 'Paiements à des contacts en cours',
+    finish: 'Terminer',
+    state: {
+      prepared:
+        'Signé. En attente de la livraison de son message ; ses fonds sont retenus.',
+      delivered: 'Message livré. Le paiement est en route vers la chaîne.',
+      failed:
+        'Son message n’a pas pu être livré. Le paiement est conservé ; ses fonds sont retenus.',
+    },
+  },
   chatMessageStealth: {
     title: 'Paiement furtif',
     sentTitle: 'Paiement furtif envoyé',

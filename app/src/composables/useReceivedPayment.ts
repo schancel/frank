@@ -59,8 +59,11 @@ export function useReceivedPayment(
     } catch {
       // The wallet or the node is not available: what is shown stays as it was.
     }
-    if (!stopped && payment.value?.status !== 'received')
+    if (!stopped && payment.value?.status !== 'received') {
       timer = setTimeout(() => void look(), recheckMs)
+      // Under Node (tests) a forgotten mount must not keep the process alive.
+      ;(timer as { unref?: () => void }).unref?.()
+    }
   }
 
   onMounted(() => void look())

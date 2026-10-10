@@ -44,9 +44,22 @@ jest.mock('../utils/directory-peer', () => ({
 }))
 const mockKept = new Map<string, string>()
 const mockSwept: string[][] = []
+const mockSettled: string[] = []
+const mockQueueBusyDuringSweep: boolean[] = []
+const mockInQueue = { value: false }
 jest.mock('../utils/sweep-on-delete', () => ({
   ...jest.requireActual('../utils/sweep-on-delete'),
+  settleOutgoingPayments: async (
+    messages: readonly { payloadDigest: string; outbound?: boolean }[],
+  ) => {
+    mockSettled.push(
+      ...messages.filter(m => m.outbound).map(message => message.payloadDigest),
+    )
+  },
   sweepBeforeDelete: async (messages: readonly { payloadDigest: string }[]) => {
+    // The sweep reads the chain and may wait for a block: it must never run inside the
+    // store's mutation queue, where every send's first save waits.
+    mockQueueBusyDuringSweep.push(mockInQueue.value)
     mockSwept.push(messages.map(message => message.payloadDigest))
     return {
       kept: new Map(
@@ -94,12 +107,25 @@ describe('deleting messages that brought money', () => {
     setActivePinia(createPinia())
     mockKept.clear()
     mockSwept.length = 0
+    mockSettled.length = 0
+    mockQueueBusyDuringSweep.length = 0
+    mockInQueue.value = false
     const messageStore = (await messageStorePromise) as unknown as {
       deleteMessage: jest.Mock
       suppressAndDelete: jest.Mock
     }
     messageStore.deleteMessage.mockClear()
     messageStore.suppressAndDelete.mockClear()
+    // The durable deletes are what runs inside the mutation queue.
+    for (const write of [
+      messageStore.deleteMessage,
+      messageStore.suppressAndDelete,
+    ])
+      write.mockImplementation(async () => {
+        mockInQueue.value = true
+        await Promise.resolve()
+        mockInQueue.value = false
+      })
     deleted = () => [
       ...messageStore.deleteMessage.mock.calls.map(call => call[0] as string),
       ...messageStore.suppressAndDelete.mock.calls.flatMap(
@@ -172,5 +198,37 @@ describe('deleting messages that brought money', () => {
     await contacts.deleteContact(PEER)
     expect(conv.deletedAt).toBeDefined()
     expect(left()).toEqual([])
+  })
+
+  it('the sweep runs before the mutation queue, never inside it', async () => {
+    await chats.deleteMessage({ address: PEER, payloadDigest: 'aa' })
+    await chats.clearChat(PEER)
+    expect(mockSwept.length).toBe(2)
+    expect(mockQueueBusyDuringSweep).toEqual([false, false])
+    expect(left()).toEqual([])
+  })
+
+  it('a received message that arrived after the sweep looked is not cleared unswept', async () => {
+    const clearance = await chats.clearanceToClear(PEER)
+    const late = received('dd')
+    late.conversationId = conv.id
+    conv.messages.push(late)
+    chats.messages.dd = late
+    await chats.clearChatExclusive(PEER, clearance)
+    expect(left()).toEqual(['dd'])
+  })
+
+  it('deleting or clearing outgoing messages hands their payments to the wallet to release or finish', async () => {
+    const outgoing = {
+      ...received('ee'),
+      outbound: true,
+      senderAddress: OWN,
+      items: [{ type: 'stealth', amount: 5, ephemeralPubKey: '02ab' }],
+    } as unknown as ChatMessage
+    outgoing.conversationId = conv.id
+    conv.messages.push(outgoing)
+    chats.messages.ee = outgoing
+    await chats.deleteMessage({ address: PEER, payloadDigest: 'ee' })
+    expect(mockSettled).toEqual(['ee'])
   })
 })

@@ -7,6 +7,8 @@ import {
   messagePaymentOf,
   observeEvmCoin,
   PAYMENT_NOT_RECEIVED_AFTER_MS,
+  PENDING_COIN_MAX_BACKOFF_MS,
+  pendingCoinDue,
   receivedPaymentOf,
   spendableCoinTotal,
   spendableCoins,
@@ -183,6 +185,34 @@ describe('received coins', () => {
     })
     expect(arrived.state).toBe('unspent')
     expect(arrived.transferSeen).toBeUndefined()
+  })
+
+  it('a claim that never arrives is asked about less and less often, and is still found late', () => {
+    const MIN = 60_000
+    const unseen = (checkedAtMs: number) =>
+      observeEvmCoin(coin(), { balanceWei: 0n, transfer: 'unseen', atMs: checkedAtMs })
+    // Never read, or early, or known to the node: always due.
+    expect(pendingCoinDue(coin(), 5 * MIN)).toBe(true)
+    expect(pendingCoinDue(unseen(2 * MIN), 2 * MIN + 1)).toBe(true)
+    const known = observeEvmCoin(coin(), {
+      balanceWei: 0n,
+      transfer: 'seen',
+      atMs: 100 * MIN,
+    })
+    expect(pendingCoinDue(known, 100 * MIN + 1)).toBe(true)
+    // An hour old and unknown to the node: next look an eighth of its age after the last.
+    const hourOld = unseen(60 * MIN)
+    expect(pendingCoinDue(hourOld, 60 * MIN + 5 * MIN)).toBe(false)
+    expect(pendingCoinDue(hourOld, 60 * MIN + 9 * MIN)).toBe(true)
+    // Very old: at most the cap between looks, never "never".
+    const old = unseen(30 * 24 * 60 * MIN)
+    expect(pendingCoinDue(old, 30 * 24 * 60 * MIN + PENDING_COIN_MAX_BACKOFF_MS - 1)).toBe(false)
+    expect(pendingCoinDue(old, 30 * 24 * 60 * MIN + PENDING_COIN_MAX_BACKOFF_MS)).toBe(true)
+    // And when it does arrive, that look makes it received.
+    expect(
+      observeEvmCoin(old, { balanceWei: 9n, transfer: 'included', transferValueWei: 9n, atMs: 1 })
+        .state,
+    ).toBe('unspent')
   })
 
   it('a transfer that can never land marks the coin failed: kept, shown, never counted', () => {

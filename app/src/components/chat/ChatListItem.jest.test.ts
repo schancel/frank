@@ -271,6 +271,35 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
   })
 })
 
+describe('ChatListItem title line', () => {
+  it('keeps the name and its badge in one wrapping group, apart from the time and unread count', () => {
+    mockOwnAddress.value = OWN_ADDRESS
+    const wrapper = shallowMount(ChatListItem, {
+      props: {
+        chatAddress: '0x1111111111111111111111111111111111111111',
+        timestamp: Date.now(),
+        numUnread: 2,
+        compact: false,
+      },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
+    const title = wrapper.find('[data-testid="chat-list-title"]')
+    expect(title.exists()).toBe(true)
+    // The badge may wrap under the name: the group must not force a single clipped line.
+    expect(title.classes()).not.toContain('no-wrap')
+    expect(title.text()).toContain('Alice Profile')
+    expect(title.findComponent({ name: 'AccountBadge' }).exists()).toBe(true)
+    expect(title.find('[data-testid="chat-timestamp"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="chat-timestamp"]').exists()).toBe(true)
+  })
+})
+
 describe('ChatListItem email thread indicator (ticket-unverified-peer-email-frames)', () => {
   beforeEach(() => {
     mockOwnAddress.value = OWN_ADDRESS

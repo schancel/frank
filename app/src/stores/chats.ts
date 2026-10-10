@@ -27,6 +27,7 @@ import { messageItems } from '../utils/message-items'
 import {
   CanonicalRecipientNotPublishedError,
   ContactPaymentReleasedError,
+  DirectMessageAlreadyAttemptedError,
   DirectMessageStampBelowFeeError,
   type DirectMessageAttemptStatus,
   type DirectMessagePreparationProgress,
@@ -586,6 +587,20 @@ function nextPendingMessageId(timestamp: number): string {
 
 /** Outgoing sends currently being worked on in this process, by local message key. */
 const inflightOutgoing = new Set<string>()
+/** Messages whose first send has begun in this tab and has not reached `runOutgoing` yet (their
+ * row is being saved). Nothing else may judge them cut off. */
+const startingOutgoing = new Set<string>()
+
+/**
+ * The ID an outgoing message is sent under: fixed by the message's local key, which is saved
+ * with its row before the send starts and survives a reload. The wallet keeps one attempt per
+ * message ID, ever: every send and retry of one message names the same ID, so a message whose
+ * send was cut off (a reload) is found again in the wallet by it (`attemptOf`) and can never be
+ * paid for twice.
+ */
+export function outgoingMessageId(localKey: string): string {
+  return uuidv5(NULL_CONVERSATION_NAMESPACE, `frank-outgoing:${localKey}`)
+}
 
 // Incoming message indexes whose notification is being decided right now. The `index in
 // this.messages` check only sees a message once it is stored, which happens after several awaits
@@ -1518,14 +1533,13 @@ export async function rehydateChat(
     }
     if (newMsg.outbound && newMsg.status === 'pending') {
       // A send that was in flight when the app stopped is no longer running. With a recorded
-      // payment attempt it is recoverable (the same bytes are re-sent); without one nothing was
-      // paid, so it is an ordinary failed message the user can retry.
-      if (newMsg.delivery?.attemptDigest !== undefined) {
+      // payment attempt it is recoverable (the same bytes are re-sent). Without one this row
+      // cannot say: the wallet may have stored the complete signed message a moment before the
+      // app stopped. It stays "sending" until the wallet is asked (`resumeCutOffOutgoing`, on
+      // the first reconciliation): what the wallet stored is finished with the same bytes, and
+      // only a message it holds nothing for is shown as interrupted.
+      if (newMsg.delivery?.attemptDigest !== undefined)
         newMsg.status = 'payment-pending'
-      } else {
-        newMsg.status = 'error'
-        newMsg.delivery = { ...newMsg.delivery, failureReason: 'interrupted' }
-      }
     }
     const message: ChatMessage = { payloadDigest: index, ...newMsg }
     const emailItem = message.items?.find(it => it.type === 'email') as
@@ -2372,6 +2386,7 @@ export const useChatStore = defineStore('chats', {
       // The message's lock is asked for first and the row is written only once it is held, so
       // another tab that loads the row always finds the send locked (see `runOutgoing`).
       const lock = acquireOutgoingLock(pendingMessageId)
+      startingOutgoing.add(pendingMessageId)
       try {
         await serializeDeliveryMutation(async () => {
           await lock.held
@@ -2388,6 +2403,7 @@ export const useChatStore = defineStore('chats', {
           onPreparationProgress,
         })
       } finally {
+        startingOutgoing.delete(pendingMessageId)
         await lock.release()
       }
     },
@@ -3028,6 +3044,9 @@ export const useChatStore = defineStore('chats', {
           result = await activeChain.directMessages.send({
             wallet,
             recipient,
+            // One ID for this message, whatever attempt this is: the wallet makes one payment
+            // per ID, ever, and answers a repeat with the attempt it already holds.
+            messageId: outgoingMessageId(id),
             conversationId: message.conversationId,
             ...(subject === undefined ? {} : { conversationName: subject }),
             items: message.items,
@@ -3072,6 +3091,23 @@ export const useChatStore = defineStore('chats', {
         } catch (error) {
           lastSendError = error
           cancellable.done()
+          if (
+            error instanceof DirectMessageAlreadyAttemptedError ||
+            (error instanceof Error &&
+              error.name === 'DirectMessageAlreadyAttemptedError')
+          ) {
+            // The wallet already holds this message's one attempt (this row had not learned
+            // its digest: the app stopped between the wallet's record and this row's). Nothing
+            // new was paid or sent. The row now points at that attempt and the reconciliation
+            // finishes it with the same bytes.
+            const attemptDigest = (error as DirectMessageAlreadyAttemptedError)
+              .payloadDigest
+            endWaitingSend(id)
+            await this.setOutgoingState(address, id, 'payment-pending', {
+              attemptDigest,
+            })
+            return { state: 'payment-pending' }
+          }
           if (error instanceof MonadStampPendingAttemptError) {
             // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
             // bytes. Without an own set, an earlier attempt is still pending and this message has
@@ -3162,6 +3198,80 @@ export const useChatStore = defineStore('chats', {
       return { state: 'sent', payloadDigest: result.payloadDigest }
     },
     /**
+     * A message found "sending" with no recorded attempt and nobody sending it: its send was cut
+     * off (the page was reloaded or closed). The wallet is asked, by the message's ID, what it
+     * stored for it:
+     * - a paid attempt: the complete signed message is in the wallet. The row is pointed at it
+     *   and it is finished with those same bytes (`reconcileOutgoing`), never a new payment;
+     * - the kept envelope of a free message: the same bytes are sent again;
+     * - nothing: nothing of it was signed or handed out. Only then is it shown as interrupted;
+     *   a Retry sends it under the same ID, so it cannot be paid for twice either.
+     * When the wallet cannot be asked the message is left as it is and asked about again.
+     * Holds the message's lock: a tab that is still sending it is left alone.
+     */
+    async resumeCutOffOutgoing({
+      wallet,
+      address,
+      id,
+    }: {
+      wallet: WalletHandle
+      address: string
+      id: string
+    }): Promise<void> {
+      if (inflightOutgoing.has(id) || startingOutgoing.has(id)) return
+      inflightOutgoing.add(id)
+      try {
+        await withOutgoingLock(id, async () => {
+          const fresh = await this.refreshOutgoingFromStore(address, id)
+          const message = this.messages[id]
+          if (
+            fresh === 'gone' ||
+            fresh === 'unreadable' ||
+            !message ||
+            !message.outbound ||
+            message.status !== 'pending' ||
+            message.delivery?.attemptDigest !== undefined ||
+            !walletOwnsMessage(wallet, message)
+          )
+            return
+          let held: { payloadDigest: string; paid: boolean } | undefined
+          try {
+            held = await activeChain.directMessages.attemptOf?.({
+              wallet,
+              messageId: outgoingMessageId(id),
+            })
+          } catch (error) {
+            console.warn('could not ask the wallet about a cut-off send', error)
+            return
+          }
+          if (this.messages[id] !== message) return
+          if (held?.paid) {
+            await this.setOutgoingState(address, id, 'payment-pending', {
+              attemptDigest: held.payloadDigest,
+            })
+          } else if (held) {
+            // A free message the relay may or may not hold: the same envelope goes again.
+            await this.runOutgoingExclusive({
+              wallet,
+              address: toChainDisplayAddress(address),
+              id,
+              manual: false,
+              automatic: false,
+              confirmed: false,
+            })
+          } else {
+            await this.setOutgoingState(address, id, 'error', {
+              failureReason: 'interrupted',
+            })
+          }
+        })
+      } catch (error) {
+        console.warn('could not resume a cut-off send', error)
+      } finally {
+        inflightOutgoing.delete(id)
+      }
+    },
+    /**
      * Background settling of messages whose payment is pending: re-sends the SAME bytes of each
      * live attempt (through `reconcileAttempts`, never building a payment) and flips a message to
      * sent when it finally delivers. Messages that were only waiting behind another pending
@@ -3177,6 +3287,34 @@ export const useChatStore = defineStore('chats', {
         []
       const seenChats = new Set<ChatState>()
       const allChats = [...Object.entries(this.conversations ?? {})]
+      // First: messages whose send was cut off (a reload) and whose row has no attempt. The
+      // wallet says what it stored for each; what it stored joins the settling below.
+      const cutOffSeen = new Set<ChatState>()
+      for (const [key, chat] of allChats) {
+        if (!chat || cutOffSeen.has(chat)) continue
+        cutOffSeen.add(chat)
+        for (const message of [...(chat.messages ?? [])]) {
+          if (
+            !message.outbound ||
+            message.status !== 'pending' ||
+            message.delivery?.attemptDigest !== undefined ||
+            !walletOwnsMessage(wallet, message) ||
+            inflightOutgoing.has(message.payloadDigest) ||
+            startingOutgoing.has(message.payloadDigest)
+          )
+            continue
+          const address =
+            (isChainAddress(chat.address) ? chat.address : undefined) ||
+            message.destinationAddress ||
+            (activeChain.parseAddress(key) ? key : '')
+          if (!address) continue
+          await this.resumeCutOffOutgoing({
+            wallet,
+            address,
+            id: message.payloadDigest,
+          })
+        }
+      }
       for (const [key, chat] of allChats) {
         if (!chat || seenChats.has(chat)) continue
         seenChats.add(chat)

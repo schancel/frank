@@ -1160,6 +1160,10 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(sendSpy).toHaveBeenCalledWith({
         wallet,
         recipient: { raw: RECIPIENT_ADDRESS },
+        // The message's own ID, fixed by its saved key: every attempt of it names the same.
+        messageId: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        ),
         conversationId: expect.any(String),
         items: [{ type: 'text', text: 'hello' }],
         // The store's own wrapper (it marks a waiting send); the caller's is called through it.

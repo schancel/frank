@@ -10,30 +10,44 @@
  * How long a fetched series is served from the local cache before it is fetched again.
  * A series is only fetched at all while something on screen is showing it.
  */
-export const ORACLE_REFRESH_INTERVAL_MS = 10 * 60 * 1000
+export const ORACLE_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
+ * Chain statistics (difficulty, issuance, supply) move slowly and come from one free
+ * public API, so they are fetched once an hour: 3 chains x 24 = 72 requests a day per
+ * open app, where every ten minutes would be 432.
+ */
+export const CHAIN_STATS_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Two providers that differ by more than this share of the lower price do not make a
+ * price: with only two answers there is no telling which one is wrong, and their middle
+ * would be half the error. Three or more answers are settled by the median.
+ */
+export const MAX_TWO_SOURCE_SPREAD_PCT = 10;
 
 export const ORACLE_ENDPOINTS = {
   /** Chainlink price feeds are contracts read with eth_call on Arbitrum One. */
-  chainlink: { arbitrumRpc: 'https://arb1.arbitrum.io/rpc' },
-  pyth: { latestPrice: 'https://hermes.pyth.network/v2/updates/price/latest' },
+  chainlink: { arbitrumRpc: "https://arb1.arbitrum.io/rpc" },
+  pyth: { latestPrice: "https://hermes.pyth.network/v2/updates/price/latest" },
   coinbase: {
-    spotPrice: 'https://api.coinbase.com/v2/prices',
-    candles: 'https://api.exchange.coinbase.com/products',
+    spotPrice: "https://api.coinbase.com/v2/prices",
+    candles: "https://api.exchange.coinbase.com/products",
   },
   kraken: {
-    ticker: 'https://api.kraken.com/0/public/Ticker',
-    ohlc: 'https://api.kraken.com/0/public/OHLC',
+    ticker: "https://api.kraken.com/0/public/Ticker",
+    ohlc: "https://api.kraken.com/0/public/OHLC",
   },
   coingecko: {
-    simplePrice: 'https://api.coingecko.com/api/v3/simple/price',
-    coins: 'https://api.coingecko.com/api/v3/coins',
+    simplePrice: "https://api.coingecko.com/api/v3/simple/price",
+    coins: "https://api.coingecko.com/api/v3/coins",
   },
   binance: {
-    ticker: 'https://api.binance.com/api/v3/ticker/price',
+    ticker: "https://api.binance.com/api/v3/ticker/price",
     /** Asked only when binance.com does not answer. */
-    tickerUs: 'https://api.binance.us/api/v3/ticker/price',
-    klinesUs: 'https://api.binance.us/api/v3/klines',
+    tickerUs: "https://api.binance.us/api/v3/ticker/price",
+    klinesUs: "https://api.binance.us/api/v3/klines",
   },
   /** Chain statistics (difficulty, issuance, supply): `${stats}/<chain>/stats`. */
-  blockchair: { stats: 'https://api.blockchair.com' },
-} as const
+  blockchair: { stats: "https://api.blockchair.com" },
+} as const;

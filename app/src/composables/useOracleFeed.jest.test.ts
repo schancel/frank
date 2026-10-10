@@ -25,7 +25,10 @@ class FakeIntersectionObserver {
   }
 }
 
-function mountConsumer(range = ref<HistoryRange | null>(null)) {
+function mountConsumer(
+  range = ref<HistoryRange | null>(null),
+  shown = ref(true),
+) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const oracle = useOracleStore()
@@ -39,8 +42,9 @@ function mountConsumer(range = ref<HistoryRange | null>(null)) {
   const wrapper = mount(
     defineComponent({
       setup() {
-        useOracleFeed(() =>
-          range.value ? { asset: 'solana', range: range.value } : null,
+        useOracleFeed(
+          () => (range.value ? { asset: 'solana', range: range.value } : null),
+          () => shown.value,
         )
         return () => h('div')
       },
@@ -66,6 +70,18 @@ describe('useOracleFeed', () => {
     await nextTick()
     expect(held).toEqual([])
     FakeIntersectionObserver.instances[0].show(false)
+    expect(held).toEqual([])
+    wrapper.unmount()
+  })
+
+  it('holds nothing while its owner says it is not shown, whatever the browser reports', async () => {
+    const shown = ref(false)
+    const { wrapper, held } = mountConsumer(undefined, shown)
+    FakeIntersectionObserver.instances[0].show(true)
+    expect(held).toEqual([])
+    shown.value = true
+    expect(held).toEqual(['live'])
+    shown.value = false
     expect(held).toEqual([])
     wrapper.unmount()
   })

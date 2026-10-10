@@ -84,14 +84,8 @@ describe('settings store', () => {
       emailGatewayAddress: '0x2222222222222222222222222222222222222222',
       networkMode: 'testnet',
     })
-    // The stored record is corrected, keeping the rest of it.
-    expect(put).toHaveBeenCalledWith(
-      'settings',
-      JSON.stringify({
-        emailGatewayAddress: '0x2222222222222222222222222222222222222222',
-        networkMode: 'testnet',
-      }),
-    )
+    // Loading rewrites nothing: the stored value is simply not used.
+    expect(put).not.toHaveBeenCalled()
     expect('setNetworkMode' in store).toBe(false)
   })
 

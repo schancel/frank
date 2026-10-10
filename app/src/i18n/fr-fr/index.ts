@@ -571,7 +571,7 @@ export default {
     sourceUnit:
       'AVU : 1 AVU = 1 kWh. AVU_hash est le nombre de kWh que vaut un dollar, moyenné sur un panier de cryptos minées selon leur capitalisation, Bitcoin plafonné à 60 % ; pour chacune, dollars par kWh = prix × subvention ÷ hashs par bloc × hashs par kWh. Chaque valeur en AVU est un prix récupéré multiplié par AVU_hash.',
     sourceFeeds:
-      'Prix : récupérés auprès de Coinbase, Kraken, CoinGecko, Binance et Chainlink ; la valeur médiane est retenue. Une crypto sans prix récupéré n’affiche aucune valeur.',
+      'Prix : récupérés auprès de Coinbase, Kraken, CoinGecko, Binance (Binance.US lorsque Binance ne répond pas), Pyth et Chainlink (lu via le RPC public d’Arbitrum) ; la valeur médiane est retenue, et deux sources en fort désaccord ne donnent aucun prix. Une crypto sans prix récupéré n’affiche aucune valeur.',
     sourceHistorical:
       'Historique des prix : les chandeliers publiés par un seul fournisseur pour la période (Coinbase, Kraken, Binance.US ou CoinGecko). Rien n’est interpolé.',
     sourceGrid: 'Données de long terme, intégrées : {electricity}. {gold}',

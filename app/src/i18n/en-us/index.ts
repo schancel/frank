@@ -561,7 +561,7 @@ export default {
     sourceUnit:
       'AVU: 1 AVU = 1 kWh. AVU_hash is the kWh a dollar is worth, averaged over a basket of mined coins by market capitalisation with Bitcoin capped at 60%; for each, dollars per kWh = price × subsidy ÷ hashes per block × hashes per kWh. Every AVU value is a fetched price times AVU_hash.',
     sourceFeeds:
-      'Prices: fetched from Coinbase, Kraken, CoinGecko, Binance and Chainlink; the middle value is used. A coin with no fetched price shows no value.',
+      'Prices: fetched from Coinbase, Kraken, CoinGecko, Binance (Binance.US where Binance does not answer), Pyth and Chainlink (read through the public Arbitrum RPC); the middle value is used, and two sources that disagree widely give no price. A coin with no fetched price shows no value.',
     sourceHistorical:
       'Price history: the candles one provider published for the range (Coinbase, Kraken, Binance.US or CoinGecko). Nothing is interpolated.',
     sourceGrid: 'Long-range data, bundled: {electricity}. {gold}',

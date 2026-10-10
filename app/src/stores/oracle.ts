@@ -10,6 +10,7 @@ import {
   ASSET_FEED_SYMBOLS,
   AVU_HASH_CHAINS,
   HISTORY_RANGES,
+  CHAIN_STATS_REFRESH_INTERVAL_MS,
   ORACLE_REFRESH_INTERVAL_MS,
   convertRawToAvu,
   fetchMiningStats,
@@ -496,8 +497,12 @@ export const useOracleStore = defineStore('oracle', {
       } else {
         fetchedAt = this.candles[rest.join(':')]?.fetchedAt ?? 0
       }
+      const interval =
+        kind === 'mining'
+          ? CHAIN_STATS_REFRESH_INTERVAL_MS
+          : ORACLE_REFRESH_INTERVAL_MS
       return Math.max(
-        fetchedAt ? fetchedAt + ORACLE_REFRESH_INTERVAL_MS : 0,
+        fetchedAt ? fetchedAt + interval : 0,
         scheduleOf(this).failed.get(name)?.retryAt ?? 0,
       )
     },

@@ -378,9 +378,13 @@ function getWalletTokenStatusKey(wallet: WalletItemConfig): string {
     : 'walletPanel.tokenBalancesUnavailable'
 }
 
+// The drawer keeps this panel mounted behind its other tabs and says here whether it is the
+// one showing.
+const props = withDefaults(defineProps<{ shown?: boolean }>(), { shown: true })
+
 const oracle = useSafeOracleStore()
 // Prices are kept current only while this panel is the one showing in the drawer.
-useOracleFeed()
+useOracleFeed(undefined, () => props.shown)
 
 function getWalletAvu(wallet: WalletItemConfig): string {
   if (wallet.isMain) {

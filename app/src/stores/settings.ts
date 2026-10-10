@@ -22,7 +22,7 @@ export const ETHEREUM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/
  * Reads back only the settings this store has, each checked.
  *
  * The app runs on testnet only for now, so `networkMode` is always 'testnet' whatever was stored:
- * a mainnet choice saved by an earlier build is ignored, and the record is rewritten without it.
+ * a mainnet choice saved by an earlier build is ignored (the next save writes testnet).
  * Nothing here touches the active chain. The chain comes from configuration, and a stored
  * setting must never swap it under an open wallet (that broke every balance, send and message
  * call). A future unlock is a change to this field and to how a wallet is opened for the chosen
@@ -48,13 +48,6 @@ export async function restoreSettings(
     typeof gateway === 'string' && ETHEREUM_ADDRESS_REGEX.test(gateway)
       ? { emailGatewayAddress: gateway }
       : {}
-  if (stored?.networkMode !== undefined && stored.networkMode !== 'testnet') {
-    await saveSettings(storage, {
-      emailGatewayAddress:
-        restored.emailGatewayAddress ?? defaultEmailGatewayAddress,
-      networkMode: 'testnet',
-    })
-  }
   return restored
 }
 

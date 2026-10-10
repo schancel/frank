@@ -12,7 +12,9 @@ import type { HistoryRange, SupportedAsset } from '@frank/wallet/oracle'
  *
  * The component holds the 'live' feed (prices and chain statistics) while its root element
  * is mounted and visible: an element hidden with v-show, inside a closed drawer or
- * scrolled out of view holds nothing, so nothing is fetched for it. With `history`, it
+ * scrolled out of view holds nothing, so nothing is fetched for it. A caller that knows
+ * for itself whether it is shown passes `shown`, and holds nothing while that is false,
+ * whatever the browser reports about the element. With `history`, it
  * also holds that coin's candles for that chart range, and swaps them as the selection
  * changes. Everything is released on unmount.
  *
@@ -21,6 +23,8 @@ import type { HistoryRange, SupportedAsset } from '@frank/wallet/oracle'
  */
 export function useOracleFeed(
   history?: () => { asset: SupportedAsset; range: HistoryRange } | null,
+  /** The owner's own word on whether it is shown, e.g. a drawer panel's selected tab. */
+  shown: () => boolean = () => true,
 ): void {
   const oracle = useSafeOracleStore()
   const instance = getCurrentInstance()
@@ -43,7 +47,7 @@ export function useOracleFeed(
 
   watch(
     () => {
-      if (!onScreen.value) return []
+      if (!onScreen.value || !shown()) return []
       const selected = history?.()
       return [
         'live',

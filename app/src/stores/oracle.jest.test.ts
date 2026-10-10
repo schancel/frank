@@ -38,6 +38,7 @@ const MINUTE = 60_000
 const HOUR = 60 * MINUTE
 const DAY = 24 * HOUR
 const INTERVAL = oracleSdk.ORACLE_REFRESH_INTERVAL_MS
+const STATS_INTERVAL = oracleSdk.CHAIN_STATS_REFRESH_INTERVAL_MS
 const ONE_SOL = 1_000_000_000n
 const ONE_MON = 1_000_000_000_000_000_000n
 const START = Date.UTC(2026, 9, 10, 12, 0, 0)
@@ -190,10 +191,12 @@ describe('refresh policy: fetched only while shown, once per interval', () => {
 
     await pass(MINUTE)
     expect(fetchPrices).toHaveBeenCalledTimes(2)
-    expect(miningCalls('bitcoin')).toBe(2)
+    // Chain statistics are on their own, hourly, interval.
+    expect(miningCalls('bitcoin')).toBe(1)
     await pass(HOUR)
     // One fetch per interval while shown: the first, and seven in 70 minutes.
     expect(fetchPrices).toHaveBeenCalledTimes(8)
+    expect(miningCalls('bitcoin')).toBe(2)
     release()
     another()
   })
@@ -212,7 +215,7 @@ describe('refresh policy: fetched only while shown, once per interval', () => {
     expect(jest.getTimerCount()).toBe(0)
     await pass(12 * HOUR)
     expect(fetchPrices).toHaveBeenCalledTimes(2)
-    expect(miningCalls('bitcoin')).toBe(2)
+    expect(miningCalls('bitcoin')).toBe(1)
   })
 
   it('fetches nothing while the tab is hidden, and catches up when it is shown again', async () => {
@@ -344,9 +347,9 @@ describe('the cache is a time series of what was fetched', () => {
       'ecash',
       'solana',
     ])
+    // Chain statistics are fetched hourly, so ten minutes on there is still one record.
     expect(store.miningObservations.bitcoin.map(s => s.fetchedAt)).toEqual([
       START,
-      START + INTERVAL,
     ])
     expect(store.snapshot.priceSources.solana).toBe(3)
   })
@@ -402,7 +405,7 @@ describe('the cache is a time series of what was fetched', () => {
     const before = { ...store.rates }
     // The same prices; twice the hashes per block means twice the kWh per dollar.
     fetchMiningStats.mockImplementation(chains(24))
-    await pass(INTERVAL)
+    await pass(STATS_INTERVAL)
     release()
     expect(Object.keys(store.rates).sort()).toEqual(
       ['bitcoin', 'ecash', 'ethereum', 'solana'].sort(),
@@ -631,12 +634,17 @@ describe('price history: the app’s own record, back-filled by a provider’s c
     release()
 
     const line = store.bitcoinAvuHashHistory('24h')
+    // The first hour's prices go with the statistics read at the start (12); the hourly
+    // refetch then brings the new ones (24).
     expect(line[0]).toEqual({
       timestamp: START + 50 * MINUTE,
-      kwhPerDollar: expect.closeTo(24, 9),
+      kwhPerDollar: expect.closeTo(12, 9),
     })
     expect(line[line.length - 1].timestamp).toBe(START + 3 * HOUR)
-    expect(line.every(p => Math.abs(p.kwhPerDollar - 24) < 1e-9)).toBe(true)
+    expect(line.slice(1).every(p => Math.abs(p.kwhPerDollar - 24) < 1e-9)).toBe(
+      true,
+    )
+    expect(line.length).toBeGreaterThan(1)
   })
 })
 
@@ -704,7 +712,6 @@ describe('the series persists on the device', () => {
     expect(await keysOnDisk()).toEqual([
       'oracle:v1:candles:solana:24h',
       `oracle:v1:mining:bitcoin:00${START}`,
-      `oracle:v1:mining:bitcoin:00${START + INTERVAL}`,
       `oracle:v1:price:00${START}`,
       `oracle:v1:price:00${START + INTERVAL}`,
     ])

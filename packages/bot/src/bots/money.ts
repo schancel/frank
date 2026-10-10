@@ -22,7 +22,7 @@ import type {
   StampPaymentInfo,
 } from "@frank/bot-framework";
 
-type Payment = { txHash: string; destinationAddress: string; valueWei: string };
+export type Payment = { txHash: string; destinationAddress: string; valueWei: string };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -58,6 +58,8 @@ async function landed(
 export interface Received {
   /** Wei confirmed on chain as paid to this bot with the message. */
   confirmedWei: bigint;
+  /** The transfers `confirmedWei` is the sum of. */
+  confirmed: Payment[];
   /** Transfers the message came with that are not mined yet. */
   unconfirmed: Payment[];
 }
@@ -71,6 +73,7 @@ export async function confirmReceived(
 ): Promise<Received> {
   const untilMs = Date.now() + waitMs;
   let confirmedWei = 0n;
+  const confirmed: Payment[] = [];
   const unconfirmed: Payment[] = [];
   const seen = new Set<string>();
   for (const reported of message.stampPayments ?? []) {
@@ -84,10 +87,12 @@ export async function confirmReceived(
       continue;
     await ctx.state.put(key, message.payloadDigest);
     const state = await landed(ctx, payment, untilMs);
-    if (state === "yes") confirmedWei += BigInt(payment.valueWei);
-    else if (state === "unknown") unconfirmed.push(payment);
+    if (state === "yes") {
+      confirmedWei += BigInt(payment.valueWei);
+      confirmed.push(payment);
+    } else if (state === "unknown") unconfirmed.push(payment);
   }
-  return { confirmedWei, unconfirmed };
+  return { confirmedWei, confirmed, unconfirmed };
 }
 
 function payable(payment: StampPaymentInfo): Payment {

@@ -20,7 +20,6 @@
     "target:poker": "tsx targets/poker.ts",
     "target:all": "tsx targets/all-bots.ts",
     "raffle": "tsx raffle-bot.livecheck.ts",
-    "raffle:refund": "tsx raffle-refund.livecheck.ts",
     "vendor": "tsx vendor-bot.livecheck.ts",
     "faucet": "tsx faucet-bot.livecheck.ts",
     "curated-defaults": "tsx print-curated-defaults.ts",

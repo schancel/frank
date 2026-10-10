@@ -22,9 +22,7 @@ import { childEnv } from './supervisor'
 import {
   RAFFLE_DEFAULT_ENTRY_PRICE_WEI,
   RAFFLE_DEFAULT_MAX_ENTRIES,
-  RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI,
-  RAFFLE_DEFAULT_MAX_TOPUP_WEI,
-} from '../raffle-settlement'
+} from '../src/bots/raffle-bot'
 
 const HOME = '/home/dummy'
 const FAKE = (env: Record<string, string> = {}, envFile: Record<string, string> = {}) =>
@@ -444,20 +442,15 @@ describe('child environment', () => {
 
 describe('raffle defaults stay consistent between the launcher and the bot (#363)', () => {
   const documented = (name: string) => DEMO_VARS.find(v => v.name === name)?.default
-  it("documents the bot's own entry price and top-up limit, and passes no price override by default", () => {
-    expect(documented('RAFFLE_BOT_ENTRY_PRICE_WEI')).toBe(RAFFLE_DEFAULT_ENTRY_PRICE_WEI)
-    expect(documented('RAFFLE_BOT_MAX_TOPUP_WEI')).toBe(RAFFLE_DEFAULT_MAX_TOPUP_WEI)
-    expect(documented('RAFFLE_BOT_MAX_TOPUP_PER_DAY_WEI')).toBe(RAFFLE_DEFAULT_MAX_TOPUP_PER_DAY_WEI)
+  it("documents the bot's own entry price, and passes no price override by default", () => {
+    expect(documented('RAFFLE_BOT_ENTRY_PRICE_WEI')).toBe(RAFFLE_DEFAULT_ENTRY_PRICE_WEI.toString())
     const raffle = FAKE().bots.find(b => b.name === 'raffle')!
     expect(raffle.env.RAFFLE_BOT_ENTRY_PRICE_WEI).toBeUndefined()
   })
-  it('the launcher passes the documented round size, and RAFFLE_BOT_MAX_TOPUP_WEI through', () => {
+  it('the launcher passes the documented round size', () => {
     const raffle = FAKE().bots.find(b => b.name === 'raffle')!
     expect(raffle.env.RAFFLE_BOT_MAX_ENTRIES).toBe(documented('RAFFLE_BOT_MAX_ENTRIES'))
     expect(RAFFLE_DEFAULT_MAX_ENTRIES).toBe(5)
-    expect(
-      FAKE({ RAFFLE_BOT_MAX_TOPUP_WEI: '7' }).bots.find(b => b.name === 'raffle')!.env.RAFFLE_BOT_MAX_TOPUP_WEI,
-    ).toBe('7')
   })
 })
 

@@ -164,55 +164,60 @@ describe("game bot replies cross the canonical wire", () => {
     }
   });
 
-  it("raffle: announce, entries by item and by text, a refused repeat, and the draw", async () => {
+  it("raffle: announce, paid entries, a refused repeat and an unpaid entry, and the draw", async () => {
+    const PRICE = 20_000_000_000_000_000n;
     const bot = new RaffleBot({ maxEntries: 3 });
-    const { ctx, sent, say } = harness();
+    const { ctx, sent, say, sync } = harness();
     await bot.onNewUser({ address: ALICE, registeredAtMs: 1 }, ctx);
+    sync();
     await say(bot, ALICE, "how does this work?");
     const announce = sent
       .flat()
-      .find(i => i.type === "raffle" && i.action === "announce") as {
+      .find((i) => i.type === "raffle" && i.action === "announce") as {
       raffleId: string;
     };
-    await say(bot, ALICE, {
+    const enter: MessageItem = {
       type: "raffle",
       raffleId: announce.raffleId,
       action: "enter",
-    });
-    await say(bot, ALICE, "enter");
+    };
+    await say(bot, ALICE, enter, PRICE);
+    await say(bot, ALICE, enter, PRICE);
     await say(bot, BOB, "enter");
-    await say(bot, CAROL, "enter");
-    expectCarried(sent, "raffle", ["announce", "draw", "error"]);
+    await say(bot, BOB, enter, PRICE);
+    await say(bot, CAROL, enter, PRICE);
+    expectCarried(sent, "raffle", ["announce", "joined", "draw", "error"]);
   });
 
-  it("vendor: catalog, a purchase with its picture, and an unknown item", async () => {
+  it("vendor: catalog, a paid purchase with its picture, an unpaid one and an unknown item", async () => {
     const image = "data:image/png;base64," + "A".repeat(80_000);
+    const priceWei = 50_000_000_000_000_000n;
     const bot = new VendorBot({
       catalogItems: [
         {
           itemId: "test-art-1",
           description: "Test art",
-          priceWei: 50_000_000_000_000_000n,
+          priceWei,
           image,
           thumbnail: "data:image/png;base64," + "A".repeat(5_000),
         },
       ],
     });
-    const { ctx, sent, say } = harness();
+    const { ctx, sent, say, sync } = harness();
     await bot.onNewUser({ address: ALICE, registeredAtMs: 1 }, ctx);
+    sync();
     await say(bot, ALICE, "what do you have?");
-    await say(bot, ALICE, {
+    const buy: MessageItem = {
       type: "digital-goods",
       action: "request",
       itemId: "test-art-1",
-    });
-    await say(bot, ALICE, {
-      type: "digital-goods",
-      action: "request",
-      itemId: "missing",
-    });
+    };
+    await say(bot, ALICE, buy);
+    expect(sent.flat().some((i) => i.type === "image")).toBe(false);
+    await say(bot, ALICE, buy, priceWei);
+    await say(bot, ALICE, { ...buy, itemId: "missing" }, priceWei);
     expectCarried(sent, "digital-goods", ["catalog", "fulfill", "error"]);
-    expect(sent.flat().some(i => i.type === "image")).toBe(true);
+    expect(sent.flat().some((i) => i.type === "image")).toBe(true);
   });
 
   it("poker: create, join, deal, bet, call, check and fold to a settled hand", async () => {

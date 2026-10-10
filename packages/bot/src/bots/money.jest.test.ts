@@ -5,7 +5,7 @@ describe("confirmReceived", () => {
   test("counts a transfer that is mined, succeeded and as described", async () => {
     const h = harness();
     const message = h.message([], [h.pay(5n), h.pay(7n)]);
-    expect(await confirmReceived(message, h.ctx, 0)).toEqual({
+    expect(await confirmReceived(message, h.ctx, 0)).toMatchObject({
       confirmedWei: 12n,
       unconfirmed: [],
     });
@@ -30,7 +30,7 @@ describe("confirmReceived", () => {
       h.ctx,
       0
     );
-    expect(got).toEqual({ confirmedWei: 0n, unconfirmed: [] });
+    expect(got).toEqual({ confirmedWei: 0n, confirmed: [], unconfirmed: [] });
     // Never seen by the chain: not received, and reported as not confirmed.
     const pending = await confirmReceived(h.message([], [unknown]), h.ctx, 0);
     expect(pending.confirmedWei).toBe(0n);

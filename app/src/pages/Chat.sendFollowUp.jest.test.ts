@@ -33,6 +33,7 @@ jest.mock('../composables/useActiveWallet', () => ({
 jest.mock('../utils/own-address', () => ({
   getOwnCanonicalAddress: async () => '0xMe',
   sameCanonicalAddress: (a: string, b: string) => a === b,
+  useReactiveOwnCanonicalAddress: () => ({ value: '0xMe' }),
 }))
 
 import ChatPage from './Chat.vue'
@@ -52,6 +53,8 @@ import {
 
 const methods = (ChatPage as unknown as { methods: Record<string, any> })
   .methods
+const computed = (ChatPage as unknown as { computed: Record<string, any> })
+  .computed
 const items = [{ type: 'blackjack-hand', gameId: 'g', action: 'bet' }]
 
 function fakeThis(over: Record<string, unknown> = {}) {
@@ -71,6 +74,10 @@ function fakeThis(over: Record<string, unknown> = {}) {
     buttonScrollBottom: jest.fn(),
     ...over,
   }
+  // The real computed: what this user and the chat's peer sent, and nobody else.
+  Object.defineProperty(self, 'peerMessages', {
+    get: () => computed.peerMessages.call(self),
+  })
   self.sendFollowUpItemsUnsettled = (p: unknown) =>
     methods.sendFollowUpItemsUnsettled.call(self, p)
   self.sendFollowUpItems = (p: unknown) =>
@@ -268,6 +275,7 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
   const GAME = 'feedfacefeedfacefeedfacefeedface'
   const challenge = {
     outbound: false,
+    senderAddress: '0xPeer',
     items: [
       {
         type: 'blackjack-hand',
@@ -366,6 +374,7 @@ describe('Chat.vue automatic dealer steps', () => {
   const hand = (...fields: [boolean, Record<string, unknown>, bigint][]) =>
     fields.map(([outbound, item, stampValueWei], i) => ({
       outbound,
+      senderAddress: outbound ? '0xMe' : '0xPeer',
       items: [{ type: 'blackjack-hand', gameId: GAME, ...item }],
       stampValueWei,
       payloadDigest: digestOf(i),
@@ -413,6 +422,14 @@ describe('Chat.vue automatic dealer steps', () => {
     // The same position is never attempted twice, even if the send left no message behind.
     await methods.runBlackjackDealer.call(self)
     expect(self.sendFollowUpItems).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not take a bet posted into the chat by someone else for the peer's move", async () => {
+    const messages = hand(challenge, [false, betItem, 300n])
+    messages[1].senderAddress = '0xSomeoneElse'
+    const self = dealerThis(messages)
+    await methods.runBlackjackDealer.call(self)
+    expect(self.sendFollowUpItems).not.toHaveBeenCalled()
   })
 
   it('on opening the chat, sends a deal that was cut off again instead of leaving the hand stuck', async () => {
@@ -579,6 +596,7 @@ describe('Chat.vue automatic dealer steps', () => {
     // The digests must match those the events used.
     const messages = rows.map(([outbound, item, stampValueWei], i) => ({
       outbound,
+      senderAddress: outbound ? '0xMe' : '0xPeer',
       items: [{ type: 'blackjack-hand', gameId: GAME, ...item }],
       stampValueWei,
       payloadDigest: events[i].digest,

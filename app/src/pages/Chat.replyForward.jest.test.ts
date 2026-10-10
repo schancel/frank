@@ -11,6 +11,11 @@ const BOB = '0x4f4f4f4f4f4F4F4F4f4f4F4F4f4f4F4F4f4F4F4f'
 const mockSendMessage = jest.fn(async () => ({ state: 'sent' }))
 const mockOpenChat = jest.fn()
 
+// Chat.vue reads the own address reactively; these tests have no wallet to resolve it from.
+jest.mock('../utils/own-address', () => ({
+  ...jest.requireActual('../utils/own-address'),
+  useReactiveOwnCanonicalAddress: () => jest.requireActual('vue').ref(null),
+}))
 jest.mock('../utils/routes', () => ({
   openChat: (...args: any[]) => mockOpenChat(...args),
 }))

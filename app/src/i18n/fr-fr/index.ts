@@ -50,6 +50,10 @@ export default {
   },
   agree: "D'accord",
   chat: {
+    groupRecipientNoticeSelf:
+      'Les messages envoyés ici sont des notes pour vous-même. Les autres personnes qui ont écrit ici ne les reçoivent pas.',
+    groupRecipientNotice:
+      'Vos messages ici sont envoyés uniquement à {name}, et non à tous les participants de cette conversation.',
     sendMessage: 'Envoyer le message',
     stampPreparationChecking: 'Vérification des comptes de timbre privés…',
     stampPreparationFunding:
@@ -76,6 +80,7 @@ export default {
       'Votre vote a été envoyé, mais l’actualisation a échoué. Rechargez pour le voir. Ne votez pas à nouveau.',
   },
   chatLayout: {
+    participantCount: '{count} personnes',
     editSubject: 'Modifier le sujet',
     subject: 'Sujet',
     saveSubject: 'Enregistrer',
@@ -552,6 +557,7 @@ export default {
     energyCost: 'Coût énergétique',
   },
   chatList: {
+    senderPrefix: '{name} : {text}',
     noContactMessage: 'Ajoutez des contacts depuis le tiroir ci-dessus...',
     youPrefix: 'Vous : {text}',
     themPrefix: 'Contact : {text}',
@@ -626,6 +632,8 @@ export default {
       'Le serveur a refusé votre connexion à la messagerie. Nouvelle tentative en cours.',
   },
   chatMessage: {
+    notInContacts: 'Pas dans vos contacts',
+    openSender: 'Ouvrir le profil de {name}',
     noPayloadFound: 'Impossible de trouver les données pour ce message',
     failedToSend: 'Échec de l’envoi',
     showActions: 'Afficher les actions du message',

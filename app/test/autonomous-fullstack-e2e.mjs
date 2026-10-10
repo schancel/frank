@@ -316,7 +316,9 @@ async function getLogOffsets() {
 async function inspectBackendLogs(startOffsets = new Map()) {
   const logFiles = await readdir(logsDir).catch(() => {
     // Without the logs the "no backend errors" claim cannot be made: that is a failure, not a pass.
-    console.error(`No backend logs at ${logsDir}; set E2E_BACKEND_LOGS_DIR or FRANK_DEMO_STATE_DIR`)
+    console.error(
+      `No backend logs at ${logsDir}; set E2E_BACKEND_LOGS_DIR or FRANK_DEMO_STATE_DIR`,
+    )
     return [`no backend logs could be read at ${logsDir}`]
   })
   const backendErrors = []
@@ -440,12 +442,21 @@ function fundAccount(address) {
       ['--import', 'tsx', 'packages/bot/demo/fund.ts', address, fundMon],
       {
         cwd: repoRoot,
-        env: { ...process.env, TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json' },
+        env: {
+          ...process.env,
+          TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json',
+        },
         timeout: 180000,
       },
       (error, stdout, stderr) =>
         error
-          ? reject(new Error(`funding ${address} failed: ${(stderr || error.message).trim()}`))
+          ? reject(
+              new Error(
+                `funding ${address} failed: ${(
+                  stderr || error.message
+                ).trim()}`,
+              ),
+            )
           : resolveFund(stdout.trim()),
     )
   })
@@ -585,7 +596,9 @@ async function run() {
           `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getBalance()).toString())`,
         ),
       )
-      let note = `wallet page shows "${shown}"${appeared ? '' : ' (nothing arrived within 60 s of creating the account)'}; spendable ${spendable} wei`
+      let note = `wallet page shows "${shown}"${
+        appeared ? '' : ' (nothing arrived within 60 s of creating the account)'
+      }; spendable ${spendable} wei`
       if (spendable < 100000000000000000n) {
         // Not enough reaches the receive address on its own (the faucet pays the profile address):
         // fund it with a real transfer so the paid scenarios can run, and say so.
@@ -619,11 +632,21 @@ async function run() {
       // it, or a model's sentence about Frank. "Slow down", an error line or an empty bubble fail.
       const answer = await lastReceivedText()
       const stub = answer.includes('[STUB -- no model, offline canned reply]')
-      if (stub ? !answer.includes('What is Frank?') : !(answer.length >= 20 && /frank/i.test(answer)))
-        throw new Error(`Qwen's reply does not answer the question: ${JSON.stringify(answer.slice(0, 160))}`)
+      if (
+        stub
+          ? !answer.includes('What is Frank?')
+          : !(answer.length >= 20 && /frank/i.test(answer))
+      )
+        throw new Error(
+          `Qwen's reply does not answer the question: ${JSON.stringify(
+            answer.slice(0, 160),
+          )}`,
+        )
       return (
         timings.map(t => `sent ${t.sent} ms, reply ${t.reply} ms`).join('; ') +
-        `; ${stub ? 'stub' : 'model'} answer: ${JSON.stringify(answer.slice(0, 80))}`
+        `; ${stub ? 'stub' : 'model'} answer: ${JSON.stringify(
+          answer.slice(0, 80),
+        )}`
       )
     })
 
@@ -668,7 +691,9 @@ async function run() {
       if (!outcome) throw new Error('hand did not reach an outcome')
       // A finished hand states who won (or a push); anything else is not an outcome.
       if (!/win|won|lose|lost|push|bust|blackjack/i.test(outcome))
-        throw new Error(`the hand ended without a result: ${JSON.stringify(outcome)}`)
+        throw new Error(
+          `the hand ended without a result: ${JSON.stringify(outcome)}`,
+        )
       return outcome
     })
 
@@ -842,7 +867,11 @@ async function run() {
           throw new Error(`sent in ${t.sent} ms, no reply in 25 s`)
         const answer = await lastReceivedText()
         if (!expected.test(answer))
-          throw new Error(`the reply is not an answer to "${text}": ${JSON.stringify(answer.slice(0, 160))}`)
+          throw new Error(
+            `the reply is not an answer to "${text}": ${JSON.stringify(
+              answer.slice(0, 160),
+            )}`,
+          )
         return `reply in ${t.reply} ms: ${JSON.stringify(answer.slice(0, 60))}`
       })
     }

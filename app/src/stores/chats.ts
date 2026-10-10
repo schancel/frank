@@ -73,6 +73,7 @@ import {
   sameCanonicalAddress,
 } from '../utils/own-address'
 import { sweepMessageFundsOnDelete } from '../utils/sweep-on-delete'
+import { shortAddress } from '../utils/short-address'
 
 export type ChatMessage = {
   outbound: boolean
@@ -114,6 +115,9 @@ export interface ConversationMember {
   role?: ConversationRole
   joinedAt?: number
   alias?: string
+  /** Hex of the key this member's first message here was verified against. It gives someone
+   * who is not a contact the same colour a contact gets from their key. */
+  pubKeyHex?: string
 }
 
 export interface ConversationEpoch {
@@ -169,6 +173,10 @@ export interface Conversation {
   createdAt?: number
   updatedAt?: number
   deletedAt?: number
+  /** Messages no newer than this are gone for good: the latest time the conversation was
+   * deleted at. It outlives the conversation being opened again, so that old messages do not
+   * come back with it. */
+  clearedBefore?: number
   verifiedGateway?: boolean
 }
 
@@ -243,6 +251,131 @@ export function makeConversationId(
   const pKey = makeParticipantsKey(participants)
   const name = topicId ? `${pKey}#${topicId}` : pKey
   return uuidv5(NULL_CONVERSATION_NAMESPACE, name)
+}
+
+/** A message ID is chosen by its sender, so two different messages can arrive with the same
+ * one (a buggy client, or someone reusing another person's ID). The first keeps the ID. A later,
+ * different message is filed under an ID derived from the one it named and its own payload hash:
+ * the same on every device and every re-read of the mailbox. Replies that name the shared ID
+ * resolve to the first holder. */
+export function collidedMessageId(
+  messageId: string,
+  payloadDigest: string,
+): string {
+  return uuidv5(NULL_CONVERSATION_NAMESPACE, `${messageId}:${payloadDigest}`)
+}
+
+/**
+ * The ID a message is filed under: the one it named, unless a different message already holds
+ * it, in which case the derived one, and so on while the derived ID is itself held. The same
+ * routine decides on receive and on reload, and always returns an ID nothing else holds.
+ */
+function freeMessageId(
+  named: string,
+  payloadDigest: string,
+  heldByAnother: (id: string) => boolean,
+): string {
+  let id = named
+  for (let round = 0; round < 8 && heldByAnother(id); round++)
+    id = collidedMessageId(id, payloadDigest)
+  if (!heldByAnother(id)) return id
+  // No sender's own ID has this shape. Each try can be held only by a distinct existing
+  // message, so this ends.
+  for (let n = 0; ; n++) {
+    const fallback = `collided:${payloadDigest}:${n}`
+    if (!heldByAnother(fallback)) return fallback
+  }
+}
+
+/** Whether a holder of a message ID is a different message from one in this conversation by
+ * this sender. (The same sender using the ID again in the same conversation is a revision.) */
+function isAnotherMessage(
+  holder: { conversationId: string; senderAddress: string } | undefined,
+  conversationId: string,
+  senderAddress: string,
+): boolean {
+  return (
+    holder !== undefined &&
+    (holder.conversationId !== conversationId ||
+      !sameCanonicalAddress(holder.senderAddress, senderAddress))
+  )
+}
+
+/**
+ * What a message means for a conversation the user has deleted, now or earlier. Deleting means
+ * its old messages do not come back: a message no newer than a deletion is gone, whoever sent
+ * it and even after the conversation was opened again. While the conversation is deleted,
+ * anything from someone other than us or its peer is gone too, and a newer message from us or
+ * the peer reopens it. The same rule decides on receive (before anything is saved) and on
+ * reload.
+ */
+function inDeletedConversation(
+  conversation: Conversation,
+  message: { outbound: boolean; senderAddress: string; serverTime: number },
+  reopenedAlready = false,
+): 'live' | 'reopens' | 'gone' {
+  const deletedAt = reopenedAlready ? undefined : conversation.deletedAt
+  const clearedBefore = Math.max(
+    conversation.clearedBefore ?? -Infinity,
+    conversation.deletedAt ?? -Infinity,
+  )
+  if (message.serverTime <= clearedBefore) return 'gone'
+  if (deletedAt === undefined) return 'live'
+  return speaksForConversation(conversation, message) ? 'reopens' : 'gone'
+}
+
+/** Brings a deleted conversation back, without the messages it was deleted with. */
+function reopenConversation(conversation: Conversation): void {
+  if (conversation.deletedAt === undefined) return
+  conversation.clearedBefore = Math.max(
+    conversation.clearedBefore ?? -Infinity,
+    conversation.deletedAt,
+  )
+  conversation.deletedAt = undefined
+}
+
+/** Relay time, then payload hash: one order for a conversation's messages, however they came. */
+function byRelayTime(
+  a: { serverTime?: number; receivedTime?: number; payloadDigest: string },
+  b: { serverTime?: number; receivedTime?: number; payloadDigest: string },
+): number {
+  return (
+    (a.serverTime ?? a.receivedTime ?? 0) -
+      (b.serverTime ?? b.receivedTime ?? 0) ||
+    (a.payloadDigest < b.payloadDigest
+      ? -1
+      : a.payloadDigest > b.payloadDigest
+      ? 1
+      : 0)
+  )
+}
+
+/** Our own messages, including a note to self that arrives as an inbound row (it is addressed
+ * to its own sender). They never count as unread. */
+function isOwnMessage(message: {
+  outbound: boolean
+  senderAddress: string
+  destinationAddress?: string
+}): boolean {
+  return (
+    message.outbound ||
+    (!!message.destinationAddress &&
+      sameCanonicalAddress(message.senderAddress, message.destinationAddress))
+  )
+}
+
+/** Whether a message may change the conversation itself (its kind, subject, gateway status, or
+ * bring it back after deletion) and not merely be added to it: only what we sent and what the
+ * conversation's own peer sent. Anyone else's message is stored and shown, nothing more. */
+function speaksForConversation(
+  conversation: Conversation,
+  message: { outbound: boolean; senderAddress: string },
+): boolean {
+  return (
+    message.outbound ||
+    !isChainAddress(conversation.address) ||
+    sameCanonicalAddress(message.senderAddress, conversation.address)
+  )
 }
 
 export function recordLogicalMessage(
@@ -424,6 +557,9 @@ const inflightOutgoing = new Set<string>()
 // same message would both pass it and both notify. An index is claimed synchronously, before the
 // first await, and released once the call has stored it (or failed, so a retry can still notify).
 const notifyingIncoming = new Set<string>()
+/** Relay rows this session refused to file. Each is quarantined and reported when refused; if
+ * the relay hands one back before the cursor has moved past it, it is not looked at again. */
+const refusedIncoming = new Set<string>()
 
 // Inbox delivery and local send completion can both confirm/re-key the same payload. Enqueue the
 // mutation synchronously, before either path's first await, so relay-authored metadata always wins
@@ -483,23 +619,14 @@ async function assertDurableAttemptAssociation(
   }
 }
 
-function assertSupportedIncomingSync(wrappers: ReceivedMessageWrapper[]): void {
-  if (
-    wrappers.some(wrapper =>
-      wrapper.message.items?.some(
-        item =>
-          item &&
-          (item.type === 'wallet-sync' || item.type === 'payment-transfer'),
-      ),
-    )
-  ) {
-    throw Object.assign(
-      new Error('Unsupported incoming wallet sync; preserve retained records'),
-      {
-        code: 'unsupported_incoming_wallet_sync',
-      },
-    )
-  }
+/** A wallet's own records (`wallet-sync`, `payment-transfer`) are never taken from a mailbox row
+ * here. The wallet's receive rule already keeps them from arriving as such; if one does, that
+ * row alone is refused, uninterpreted, like any other row that cannot be filed. */
+function carriesWalletRecord(wrapper: ReceivedMessageWrapper): boolean {
+  return !!wrapper.message.items?.some(
+    item =>
+      item && (item.type === 'wallet-sync' || item.type === 'payment-transfer'),
+  )
 }
 
 /**
@@ -674,7 +801,7 @@ function recomputeChatAccounting(
     const value = accountedMessageValue(message)
     chat.totalValue += value
     if (
-      !message.outbound &&
+      !isOwnMessage(message) &&
       chat.id !== activeConversationId &&
       chat.lastRead < message.serverTime
     ) {
@@ -754,6 +881,43 @@ function assertConversationPeer(
   }
 }
 
+/** What we sent and what the conversation's own peer sent. Our replies go to that peer only,
+ * so what anyone else posted here says nothing about the price of reaching them. */
+function messagesWithPeer(
+  conversation: Conversation | undefined,
+): ChatMessage[] {
+  if (!conversation) return []
+  if (!isChainAddress(conversation.address)) return conversation.messages
+  return conversation.messages.filter(
+    message =>
+      message.outbound ||
+      sameCanonicalAddress(message.senderAddress, conversation.address),
+  )
+}
+
+/** Whoever posts into a conversation is one of its participants from then on. A message is
+ * filed under the conversation ID it carries, so this can be someone other than the peer the
+ * conversation was opened with; recording them is what lets the chat show who said what. */
+function addParticipant(
+  conversation: Conversation,
+  address: string,
+  pubKeyHex?: string,
+): void {
+  const member = safeChainDisplayAddress(address) || address
+  if (conversation.participants.some(p => sameCanonicalAddress(p, member)))
+    return
+  conversation.participants = [...conversation.participants, member].sort()
+  conversation.members = {
+    ...conversation.members,
+    [member]: {
+      address: member,
+      role: 'member',
+      joinedAt: Date.now(),
+      pubKeyHex,
+    },
+  }
+}
+
 function newConversation({
   id,
   participants,
@@ -820,7 +984,7 @@ function openDefaultConversation(
         ]),
       )
     }
-    existing.deletedAt = undefined
+    reopenConversation(existing)
     return existing
   }
   const derivedId = makeConversationId(participants)
@@ -948,15 +1112,29 @@ export async function rehydateChat(
     conversations[conversation.id] = conversation
   }
 
-  const logicalOwners = new Map<string, string>()
-  for (const { wrapper, conversationId, internal } of validatedRows) {
-    const { message, copartyAddress, index } = wrapper
+  // Rows are read in the order they were received in: relay time, then payload hash.
+  const orderedRows = [...validatedRows].sort((a, b) =>
+    byRelayTime(
+      { ...a.wrapper.message, payloadDigest: a.wrapper.index },
+      { ...b.wrapper.message, payloadDigest: b.wrapper.index },
+    ),
+  )
+  // A conversation the saved metadata does not know is rebuilt from its rows. Our own rows say
+  // who it is with, so they are read first: whoever else wrote into it, and whenever, cannot
+  // make it theirs and then contradict our own outbox.
+  for (const { wrapper, conversationId, internal } of [
+    ...orderedRows.filter(row => row.wrapper.message.outbound),
+    ...orderedRows.filter(row => !row.wrapper.message.outbound),
+  ]) {
+    const { message, copartyAddress } = wrapper
     const peer = safeChainDisplayAddress(copartyAddress) || copartyAddress
     const existing = conversationId ? conversations[conversationId] : undefined
     // Internal records never reconstruct a chat or dispatch item effects. Check any explicit
     // owner reference below, after all conversational owners have been prepared.
     if (internal) continue
-    if (existing) assertConversationPeer(existing, peer)
+    // Only our own messages are bound to the conversation's peer. An inbound message is filed
+    // under the ID it carries, whoever sent it.
+    if (existing && message.outbound) assertConversationPeer(existing, peer)
     const id = conversationId!
     conversations[id] ??= newConversation({
       id,
@@ -967,20 +1145,11 @@ export async function rehydateChat(
         ? 'email'
         : 'direct',
     })
-    const logicalId = message.logicalMessageId || index
-    const priorOwner = logicalOwners.get(logicalId)
-    if (priorOwner !== undefined && priorOwner !== id) {
-      throw new Error(
-        `Logical message ${logicalId} already belongs to another conversation`,
-      )
-    }
-    logicalOwners.set(logicalId, id)
   }
 
-  // An internal row may precede the conversational row that establishes its explicit owner.
-  // Check that reference against the complete prepared owner set, independent of iterator order.
+  // Only our own records are bound to the conversation's peer, as with conversational rows.
   for (const { wrapper, conversationId, internal } of validatedRows) {
-    if (!internal || !conversationId) continue
+    if (!internal || !conversationId || !wrapper.message.outbound) continue
     const owner = conversations[conversationId]
     if (owner) assertConversationPeer(owner, wrapper.copartyAddress)
   }
@@ -1028,6 +1197,34 @@ export async function rehydateChat(
     }
   }
 
+  // Two different stored messages that name one message ID never stop the store from loading.
+  // The routine is the one receive uses: the earlier keeps the ID, the later is read under a
+  // derived one.
+  const logicalOwners = new Map<
+    string,
+    { conversationId: string; senderAddress: string }
+  >()
+  for (const { wrapper, conversationId, internal } of orderedRows) {
+    if (internal) continue
+    const { message, index } = wrapper
+    const named = message.logicalMessageId || index
+    const logicalId = freeMessageId(named, index, id =>
+      isAnotherMessage(
+        logicalOwners.get(id),
+        conversationId!,
+        message.senderAddress,
+      ),
+    )
+    if (logicalId !== named) message.logicalMessageId = logicalId
+    if (!logicalOwners.has(logicalId))
+      logicalOwners.set(logicalId, {
+        conversationId: conversationId!,
+        senderAddress: message.senderAddress,
+      })
+  }
+
+  // An internal row may precede the conversational row that establishes its explicit owner.
+  // Check that reference against the complete prepared owner set, independent of iterator order.
   // Only an admitted empty/internal-only collection may take a fresh-state exit.
   // Raw internal records remain in MessageStore without conversation indexes or effects.
   if (!canReconstruct) return freshChatsState()
@@ -1044,7 +1241,7 @@ export async function rehydateChat(
       .filter(({ message }) => message.status === 'confirmed')
       .map(row => row.index),
   )
-  for (const { wrapper, conversationId, internal } of validatedRows) {
+  for (const { wrapper, conversationId, internal } of orderedRows) {
     const { index, message: newMsg, copartyAddress } = wrapper
     if (internal) {
       messages[index] = { payloadDigest: index, ...newMsg }
@@ -1078,11 +1275,21 @@ export async function rehydateChat(
     const conv = conversations[conversationId!]
 
     message.conversationId = conv.id
+    const deleted = inDeletedConversation(conv, message)
+    if (deleted === 'gone') {
+      // Receive never saves such a row. One that is on disk all the same is not shown or
+      // counted and joins nobody; only its ID is held, so a later message naming the same ID
+      // is told apart from it.
+      recordLogicalMessage(logicalMessages, message, conv.id)
+      continue
+    }
+    if (deleted === 'reopens') reopenConversation(conv)
     messages[index] = message
     if (!conv.messages.some(m => m.payloadDigest === message.payloadDigest)) {
       conv.messages.push(message)
     }
-    if (emailItem) {
+    if (!message.outbound) addParticipant(conv, message.senderAddress)
+    if (emailItem && speaksForConversation(conv, message)) {
       conv.kind = 'email'
       if (!conv.name && emailItem.subject) {
         conv.name = emailItem.subject
@@ -1099,7 +1306,7 @@ export async function rehydateChat(
     conv.lastReceived = Math.max(conv.lastReceived, message.serverTime)
     const messageValue = accountedMessageValue(message)
     if (
-      !newMsg.outbound &&
+      !isOwnMessage(message) &&
       conv.id !== chatState.activeConversationId &&
       conv.lastRead < message.serverTime
     ) {
@@ -1112,11 +1319,7 @@ export async function rehydateChat(
 
   // Resort conversations and recompute deterministic accounting from deduplicated messages
   for (const conv of Object.values(conversations)) {
-    conv.messages.sort(
-      (messageA, messageB) =>
-        (messageA.serverTime ?? messageA.receivedTime ?? 0) -
-        (messageB.serverTime ?? messageB.receivedTime ?? 0),
-    )
+    conv.messages.sort(byRelayTime)
     conv.totalUnreadMessages = 0
     conv.totalUnreadValue = 0
     conv.totalValue = 0
@@ -1126,7 +1329,7 @@ export async function rehydateChat(
       const msgTime = msg.serverTime ?? msg.receivedTime ?? 0
       conv.lastReceived = Math.max(conv.lastReceived ?? 0, msgTime)
       if (
-        !msg.outbound &&
+        !isOwnMessage(msg) &&
         conv.id !== chatState.activeConversationId &&
         conv.lastRead < msgTime
       ) {
@@ -1257,8 +1460,7 @@ export const useChatStore = defineStore('chats', {
             // ignore
           }
         }
-        const messages = chat?.messages ?? []
-        const metrics = derivePeerStampMetrics(messages)
+        const metrics = derivePeerStampMetrics(messagesWithPeer(chat))
         return computeGeometricStampSuggestion({
           lastSentWei: metrics.lastSentWei,
           lastReceivedWei: metrics.lastReceivedWei,
@@ -1280,7 +1482,7 @@ export const useChatStore = defineStore('chats', {
             // ignore
           }
         }
-        return derivePeerStampMetrics(chat?.messages ?? [])
+        return derivePeerStampMetrics(messagesWithPeer(chat))
       },
     getStampOverrideWei:
       state =>
@@ -1345,6 +1547,7 @@ export const useChatStore = defineStore('chats', {
 
       return {
         outbound: lastMessage.outbound,
+        senderAddress: lastMessage.senderAddress,
         text: messageItems.previewText(lastItem),
       }
     },
@@ -1375,8 +1578,9 @@ export const useChatStore = defineStore('chats', {
         if (typeof messageStore?.quarantineRelayReceipts === 'function') {
           await messageStore.quarantineRelayReceipts(canonical, receipts)
         }
-      } catch {
-        // no-op if unparseable address or mock store lacking quarantine
+      } catch (err) {
+        // The rows stay unanchored: a restart may fetch them again.
+        console.error('could not quarantine relay receipts', err)
       }
     },
     async deleteMessage({
@@ -2917,6 +3121,10 @@ export const useChatStore = defineStore('chats', {
       const clearedPayloads = new Set<string>()
       for (const message of clearingMessages) {
         clearedPayloads.add(message.payloadDigest)
+        // A cleared message no longer holds its ID, as after a reload.
+        const logicalId = message.logicalMessageId || message.payloadDigest
+        if (this.logicalMessages[logicalId]?.conversationId === chat.id)
+          delete this.logicalMessages[logicalId]
         delete this.messages[message.payloadDigest]
         const attempt = message.delivery?.attemptDigest
         if (attempt) delete this.messages[attempt]
@@ -2999,9 +3207,8 @@ export const useChatStore = defineStore('chats', {
         ? this.conversations[id]
         : undefined
       if (!conversation) throw new Error(`Unknown conversation ${id}`)
-      const name = subject.trim()
-      if (!name) throw new Error('Conversation subject must not be empty')
-      conversation.name = name
+      // An empty subject clears it: the conversation is shown by its peer alone again.
+      conversation.name = subject.trim() || undefined
       conversation.updatedAt = Date.now()
     },
     createEmailConversation({
@@ -3135,7 +3342,6 @@ export const useChatStore = defineStore('chats', {
       ownAddressOverride?: string,
       lease?: DeliveryLease,
     ): Promise<ReceivedDeliveryResult> {
-      assertSupportedIncomingSync(messageWrappers)
       let ownAddress: string | null = null
       if (ownAddressOverride !== undefined) {
         try {
@@ -3168,17 +3374,13 @@ export const useChatStore = defineStore('chats', {
       toNotify: Set<string>,
       ownAddress: string | null,
       lease?: DeliveryLease,
-    ): Promise<{
-      suppressedReceipts: RelayReceiptIdentity[]
-      cancelled: boolean
-    }> {
+    ): Promise<ReceivedDeliveryResult> {
       // The lease is checked HERE, after the serialized boundary has been acquired: a
       // replacement that stopped this poller while the delivery was queued leaves the queue
       // holding this work, and only this check prevents the old generation from persisting.
       if (lease?.isCancelled()) {
         return { suppressedReceipts: [], cancelled: true }
       }
-      assertSupportedIncomingSync(messageWrappers)
       console.log('receiving messages')
       const messageStore = await store
       if (
@@ -3197,8 +3399,13 @@ export const useChatStore = defineStore('chats', {
         typeof messageStore?.suppressedRelayReceipts === 'function'
           ? await messageStore.suppressedRelayReceipts(ownAddress, receipts)
           : new Set<string>()
-      const deliverableWrappers = messageWrappers.filter(wrapper => {
-        if (!suppressedDigests.has(wrapper.index)) return true
+      let deliverableWrappers = messageWrappers.filter(wrapper => {
+        // A row refused earlier in this session is not looked at again.
+        if (
+          !suppressedDigests.has(wrapper.index) &&
+          !refusedIncoming.has(wrapper.index)
+        )
+          return true
         toNotify.delete(wrapper.index)
         return false
       })
@@ -3278,9 +3485,24 @@ export const useChatStore = defineStore('chats', {
       }
 
       const receivedConversations = new Map<string, Conversation>()
-      const receivedLogicalOwners = new Map<string, string>()
+      const receivedLogicalOwners = new Map<
+        string,
+        { conversationId: string; senderAddress: string }
+      >()
+      // The ID each received row is filed under: the one it named, or the derived one.
+      const receivedLogicalIds = new Map<string, string>()
+      // Deleted conversations a row of this batch brings back.
+      const reopened = new Set<string>()
       const preparedConversations = { ...this.conversations }
-      for (const wrapper of deliverableWrappers) {
+      // One row that cannot be filed must never stop the rest: a refused row is skipped,
+      // quarantined so the mailbox cursor moves past it, and reported once.
+      const refused: RelayReceiptIdentity[] = []
+      const prepareRow = (wrapper: ReceivedMessageWrapper): void => {
+        if (carriesWalletRecord(wrapper)) {
+          throw Object.assign(new Error('Unsupported incoming wallet sync'), {
+            code: 'unsupported_incoming_wallet_sync',
+          })
+        }
         const peer = toChainDisplayAddress(wrapper.copartyAddress)
         const rawId = wrapper.message.conversationId || wrapper.conversationId
         const loopback = outboundMatches.get(wrapper.index)
@@ -3295,7 +3517,11 @@ export const useChatStore = defineStore('chats', {
         let conv = id
           ? preparedConversations[id]
           : defaultChats(preparedConversations)[peer]
-        if (conv) assertConversationPeer(conv, peer)
+        // Only our own messages are bound to the conversation's peer. An inbound message is
+        // filed under the ID it carries, whoever sent it; its sender joins the participants
+        // when the message is stored below.
+        if (conv && (loopback || wrapper.outbound))
+          assertConversationPeer(conv, peer)
         const existing = this.messages[wrapper.index]
         if (
           existing?.conversationId &&
@@ -3307,31 +3533,88 @@ export const useChatStore = defineStore('chats', {
             'Conversation identity differs from the existing message owner',
           )
         }
+        const created = !conv
         if (!conv) {
           const participants = ownAddress ? [ownAddress, peer] : [peer]
           conv = id
             ? newConversation({ id, address: peer, participants })
             : openDefaultConversation(preparedConversations, peer, participants)
-          preparedConversations[conv.id] = conv
         }
-        const logicalId =
+        // What deleting a conversation means is decided here, before anything is saved: a row
+        // that would not be shown is not kept at all.
+        if (!loopback) {
+          const deleted = inDeletedConversation(
+            conv,
+            wrapper.message,
+            reopened.has(conv.id),
+          )
+          if (deleted === 'gone') {
+            if (created) delete preparedConversations[conv.id]
+            throw new Error(
+              `Conversation ${conv.id} was deleted; this message does not reopen it`,
+            )
+          }
+          if (deleted === 'reopens') reopened.add(conv.id)
+        }
+        const sender = loopback?.message.senderAddress ?? wrapper.senderAddress
+        const named =
           loopback?.message.logicalMessageId ||
           wrapper.message.logicalMessageId ||
           wrapper.index
-        const logicalOwner = this.logicalMessages[logicalId]
-        const batchOwner = receivedLogicalOwners.get(logicalId)
-        if (
-          (batchOwner !== undefined && batchOwner !== conv.id) ||
-          (logicalOwner &&
-            logicalOwner.conversationId !== conv.id &&
-            !replacedAccountCollisions.has(wrapper.index))
-        ) {
+        const conversationId = conv.id
+        const heldByAnother = (id: string): boolean =>
+          isAnotherMessage(
+            receivedLogicalOwners.get(id),
+            conversationId,
+            sender,
+          ) ||
+          (!replacedAccountCollisions.has(wrapper.index) &&
+            isAnotherMessage(this.logicalMessages[id], conversationId, sender))
+        // Our own outbox message keeps the ID it was sent under, and a row we already hold
+        // keeps the ID it was filed under the first time.
+        const filedAs = replacedAccountCollisions.has(wrapper.index)
+          ? undefined
+          : existing?.logicalMessageId
+        const logicalId = loopback
+          ? named
+          : filedAs ?? freeMessageId(named, wrapper.index, heldByAnother)
+        if (heldByAnother(logicalId)) {
+          if (created) delete preparedConversations[conv.id]
           throw new Error(
             `Logical message ${logicalId} already belongs to another conversation`,
           )
         }
-        receivedLogicalOwners.set(logicalId, conv.id)
+        preparedConversations[conv.id] = conv
+        receivedLogicalOwners.set(logicalId, {
+          conversationId: conv.id,
+          senderAddress: sender,
+        })
+        receivedLogicalIds.set(wrapper.index, logicalId)
         receivedConversations.set(wrapper.index, conv)
+      }
+      for (const wrapper of deliverableWrappers) {
+        try {
+          prepareRow(wrapper)
+        } catch (err) {
+          console.warn(
+            `direct messages: skipping message ${wrapper.index} that cannot be filed:`,
+            err,
+          )
+          refused.push({
+            payloadDigest: wrapper.index,
+            receivedTime: wrapper.message.receivedTime,
+          })
+          refusedIncoming.add(wrapper.index)
+          outboundMatches.delete(wrapper.index)
+          replacedAccountCollisions.delete(wrapper.index)
+          toNotify.delete(wrapper.index)
+        }
+      }
+      if (refused.length > 0) {
+        deliverableWrappers = deliverableWrappers.filter(
+          wrapper => !refusedIncoming.has(wrapper.index),
+        )
+        if (ownAddress) await this.quarantineRelayReceipts(ownAddress, refused)
       }
       for (const conv of receivedConversations.values()) {
         this.conversations[conv.id] ??= conv
@@ -3349,6 +3632,7 @@ export const useChatStore = defineStore('chats', {
           message: loopback?.message ?? {
             ...wrapper.message,
             conversationId: receivedConversations.get(wrapper.index)!.id,
+            logicalMessageId: receivedLogicalIds.get(wrapper.index),
           },
           index: wrapper.index,
           outbound: loopback ? true : wrapper.outbound,
@@ -3491,17 +3775,18 @@ export const useChatStore = defineStore('chats', {
           ? sameCanonicalAddress(copartyAddress, trustedGateway)
           : sameCanonicalAddress(newMsg.senderAddress, trustedGateway)
 
-        // Tombstone check: ignore replayed/older messages for a deleted conversation
-        if (conv.deletedAt !== undefined) {
-          if (newMsg.serverTime <= conv.deletedAt) {
-            continue
-          }
-          // Newer message: reopen the conversation!
-          conv.deletedAt = undefined
-        }
+        // What this message may change about the conversation itself, beyond being added to
+        // it: nothing, unless we or the conversation's own peer sent it.
+        const speaks = speaksForConversation(conv, newMsg)
+
+        // Every row that reaches this point was saved above and is recorded in full below:
+        // nothing here may skip it. A row into a deleted conversation got this far only
+        // because it reopens the conversation.
+        reopenConversation(conv)
 
         // Renaming: update conversation name if provided
         if (
+          speaks &&
           convName !== undefined &&
           typeof convName === 'string' &&
           convName.trim().length > 0
@@ -3514,7 +3799,7 @@ export const useChatStore = defineStore('chats', {
           ...newMsg,
           payloadDigest: index,
           conversationId: conv.id,
-          logicalMessageId: (newMsg as any).logicalMessageId || index,
+          logicalMessageId: receivedLogicalIds.get(index) ?? index,
           revisionDigest: (newMsg as any).revisionDigest || index,
           deliveryDigest: index,
         }
@@ -3547,13 +3832,9 @@ export const useChatStore = defineStore('chats', {
           })
           if (!conv.messages.some(m => m.payloadDigest === index)) {
             conv.messages.push(this.messages[index])
-            conv.messages.sort(
-              (a, b) =>
-                (a.serverTime ?? a.receivedTime ?? 0) -
-                (b.serverTime ?? b.receivedTime ?? 0),
-            )
+            conv.messages.sort(byRelayTime)
           }
-          if (emailItem) {
+          if (emailItem && speaks) {
             conv.kind = 'email'
             if (!conv.name && emailItem.subject) {
               conv.name = emailItem.subject
@@ -3576,14 +3857,22 @@ export const useChatStore = defineStore('chats', {
         this.messages[index] = message
         if (!conv.messages.some(m => m.payloadDigest === index)) {
           conv.messages.push(message)
-          conv.messages.sort(
-            (a, b) =>
-              (a.serverTime ?? a.receivedTime ?? 0) -
-              (b.serverTime ?? b.receivedTime ?? 0),
+          conv.messages.sort(byRelayTime)
+        }
+        if (!message.outbound) {
+          const key = wrapper.copartyPubKey?.toBuffer?.()
+          addParticipant(
+            conv,
+            message.senderAddress,
+            key
+              ? Array.from(key, byte =>
+                  byte.toString(16).padStart(2, '0'),
+                ).join('')
+              : undefined,
           )
         }
 
-        if (emailItem) {
+        if (emailItem && speaks) {
           conv.kind = 'email'
           if (!conv.name && emailItem.subject) {
             conv.name = emailItem.subject
@@ -3595,6 +3884,7 @@ export const useChatStore = defineStore('chats', {
 
         const messageValue = accountedMessageValue(message)
         if (
+          !isOwnMessage(message) &&
           conv.id !== this.activeConversationId &&
           conv.lastRead < message.serverTime
         ) {
@@ -3655,7 +3945,14 @@ export const useChatStore = defineStore('chats', {
         if (lease?.isCancelled()) return
 
         const contacts = useContactStore()
-        if (!contacts.isContact(copartyAddress)) {
+        // The peer of a conversation becomes a contact when they write. Someone else who posts
+        // into that conversation does not: they stay marked as not in the contacts.
+        const conversation = this.conversations[stored.conversationId ?? '']
+        const isPeer =
+          !conversation ||
+          !isChainAddress(conversation.address) ||
+          sameCanonicalAddress(conversation.address, copartyAddress)
+        if (isPeer && !contacts.isContact(copartyAddress)) {
           contacts.addLoadingContact({
             address: copartyAddress,
             pubKey: copartyPubKey,
@@ -3674,6 +3971,9 @@ export const useChatStore = defineStore('chats', {
         }
 
         const contact = contacts.getContact(copartyAddress)
+        const senderName = contacts.isContact(copartyAddress)
+          ? contact.profile.name ?? 'Unknown'
+          : shortAddress(copartyAddress)
         const textItem: TextItem = (newMsg.items.find(
           item => item.type === 'text',
         ) as TextItem) ?? { text: '' }
@@ -3691,7 +3991,7 @@ export const useChatStore = defineStore('chats', {
         body += textItem.text
         if (contact?.notify) {
           desktopNotify(
-            contact.profile.name ?? 'Unknown',
+            senderName,
             body,
             contact.profile.avatar ?? '',
             async () => this.setActiveConversation(stored.conversationId!),

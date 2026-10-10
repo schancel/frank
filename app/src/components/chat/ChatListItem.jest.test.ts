@@ -5,13 +5,24 @@ import { messages } from 'src/i18n'
 import { ref } from 'vue'
 import ChatListItem from './ChatListItem.vue'
 
-let latest: { text: string; outbound: boolean } | null = null
+let latest: {
+  text: string
+  outbound: boolean
+  senderAddress?: string
+} | null = null
+// Addresses (lower case) that are not contacts, and names of those that are.
+const mockStrangers = new Set<string>()
+const mockNames: Record<string, string> = {}
 jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({ getLatestMessage: () => latest }),
 }))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
-    getContactProfile: () => ({ name: 'Alice Profile', avatar: undefined }),
+    isContact: (address: string) => !mockStrangers.has(address.toLowerCase()),
+    getContactProfile: (address: string) => ({
+      name: mockNames[address?.toLowerCase()] ?? 'Alice Profile',
+      avatar: undefined,
+    }),
   }),
 }))
 jest.mock('src/stores/my-profile', () => ({
@@ -125,8 +136,30 @@ describe('ChatListItem message preview (ticket #274)', () => {
 })
 
 describe('ChatListItem conversation-oriented display (#943)', () => {
+  const BOB = '0x2222222222222222222222222222222222222222'
+  const CAROL = '0x3333333333333333333333333333333333333333'
+  const STRANGER = '0x5555555555555555555555555555555555555555'
+  const mountConversation = (conversation: Record<string, unknown>) =>
+    shallowMount(ChatListItem, {
+      props: { conversation: conversation as never, compact: false },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
   beforeEach(() => {
     mockOwnAddress.value = OWN_ADDRESS
+    mockStrangers.clear()
+    for (const name of Object.keys(mockNames)) delete mockNames[name]
+    mockNames[BOB.toLowerCase()] = 'Bob'
+    mockNames[CAROL.toLowerCase()] = 'Carol'
+  })
+  afterEach(() => {
+    latest = null
+    for (const name of Object.keys(mockNames)) delete mockNames[name]
   })
 
   it('renders conversation topic/name when provided', () => {
@@ -150,62 +183,88 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
     expect(wrapper.text()).toContain('Token Engineering Working Group')
   })
 
-  it('displays participant badges up to 3 and calculates remaining overflow, excluding own address', () => {
-    const participants = [
-      OWN_ADDRESS,
-      '0x2222222222222222222222222222222222222222',
-      '0x3333333333333333333333333333333333333333',
-      '0x4444444444444444444444444444444444444444',
-      '0x5555555555555555555555555555555555555555',
-    ]
-    const wrapper = shallowMount(ChatListItem, {
-      props: {
-        conversation: {
-          id: 'conv-uuid-2',
-          topic: 'Multi-party Chat',
-          participants,
-        },
-        compact: false,
-      },
-      global: {
-        mocks: {
-          $t: translator('en-us'),
-          $status: { setup: true },
-          $route: { params: {} },
-        },
-      },
+  it('shows no group presentation for a chat between two people', () => {
+    latest = { text: 'hello', outbound: false, senderAddress: BOB }
+    const wrapper = mountConversation({
+      id: 'conv-1on1',
+      address: BOB,
+      participants: [OWN_ADDRESS, BOB],
     })
     const vm = wrapper.vm as any
-    expect(vm.displayParticipants).toHaveLength(3)
-    expect(vm.displayParticipants).not.toContain(OWN_ADDRESS)
-    expect(vm.remainingParticipantsCount).toBe(1)
-    expect(vm.formatParticipant(OWN_ADDRESS)).toBe('You')
+    expect(vm.isGroup).toBe(false)
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe('Bob')
+    expect(vm.latestMessageBody).toBe('Them: hello')
+    expect(wrapper.find('img').exists()).toBe(true)
   })
 
-  it('omits participant badges for 1-on-1 direct messages without separate topic', () => {
-    const wrapper = shallowMount(ChatListItem, {
-      props: {
-        conversation: {
-          id: 'conv-1on1',
-          participants: [
-            OWN_ADDRESS,
-            '0x2222222222222222222222222222222222222222',
-          ],
-        },
-        compact: false,
-      },
-      global: {
-        mocks: {
-          $t: translator('en-us'),
-          $status: { setup: true },
-          $route: { params: {} },
-        },
-      },
+  it('names everyone in a conversation with more than two people, and whoever wrote the last message', () => {
+    mockStrangers.add(STRANGER.toLowerCase())
+    latest = { text: 'count me in', outbound: false, senderAddress: STRANGER }
+    const wrapper = mountConversation({
+      id: 'conv-group',
+      address: BOB,
+      participants: [OWN_ADDRESS, BOB, CAROL, STRANGER],
     })
     const vm = wrapper.vm as any
-    expect(vm.displayParticipants).toHaveLength(0)
-    expect(vm.remainingParticipantsCount).toBe(0)
-    expect(wrapper.find('.participant-badges').exists()).toBe(false)
+    expect(vm.isGroup).toBe(true)
+    // This user is not listed; someone who is not a contact is shown by address.
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe(
+      'Bob, Carol, 0x5555...5555',
+    )
+    expect(vm.latestMessageBody).toBe('0x5555...5555: count me in')
+    latest = { text: 'welcome', outbound: false, senderAddress: CAROL }
+    expect(
+      (
+        mountConversation({
+          id: 'conv-group',
+          address: BOB,
+          participants: [OWN_ADDRESS, BOB, CAROL, STRANGER],
+        }).vm as any
+      ).latestMessageBody,
+    ).toBe('Carol: welcome')
+    latest = { text: 'mine', outbound: true, senderAddress: OWN_ADDRESS }
+    expect(
+      (
+        mountConversation({
+          id: 'conv-group',
+          address: BOB,
+          participants: [OWN_ADDRESS, BOB, CAROL],
+        }).vm as any
+      ).latestMessageBody,
+    ).toBe('You: mine')
+    // No one person's picture stands for the group.
+    expect(wrapper.find('img').exists()).toBe(false)
+  })
+
+  it('keeps "You" first in the own notes once someone else has posted there', () => {
+    mockStrangers.add(STRANGER.toLowerCase())
+    latest = { text: 'boo', outbound: false, senderAddress: STRANGER }
+    const wrapper = mountConversation({
+      id: 'conv-notes',
+      address: OWN_ADDRESS,
+      participants: [OWN_ADDRESS, STRANGER],
+    })
+    expect((wrapper.vm as any).isGroup).toBe(true)
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe(
+      'You, 0x5555...5555',
+    )
+    expect((wrapper.vm as any).latestMessageBody).toBe('0x5555...5555: boo')
+  })
+
+  it('tells two participants with the same display name apart by address', () => {
+    mockNames[CAROL.toLowerCase()] = 'Bob'
+    latest = { text: 'really me', outbound: false, senderAddress: CAROL }
+    const wrapper = mountConversation({
+      id: 'conv-twins',
+      address: BOB,
+      participants: [OWN_ADDRESS, BOB, CAROL],
+    })
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe(
+      'Bob (0x2222...2222), Bob (0x3333...3333)',
+    )
+    expect((wrapper.vm as any).latestMessageBody).toBe(
+      'Bob (0x3333...3333): really me',
+    )
   })
 
   it('formats conversation timestamp properly', () => {
@@ -377,5 +436,73 @@ describe('ChatListItem email thread indicator (ticket-unverified-peer-email-fram
     expect(
       wrapper.find('[data-testid="unverified-email-badge"]').exists(),
     ).toBe(true)
+  })
+})
+
+describe('ChatListItem subject', () => {
+  const PEER = '0x2222222222222222222222222222222222222222'
+  const mountRow = (conversation: Record<string, unknown>) =>
+    shallowMount(ChatListItem, {
+      props: { conversation: conversation as never, compact: false },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
+
+  beforeEach(() => {
+    mockOwnAddress.value = OWN_ADDRESS
+  })
+
+  it('shows the peer as the title and the subject on its own line', () => {
+    const wrapper = mountRow({
+      id: 'conv-subject',
+      name: 'Project plan',
+      address: PEER,
+      participants: [OWN_ADDRESS, PEER],
+    })
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe(
+      'Alice Profile',
+    )
+    expect(wrapper.get('[data-testid="chat-list-subject"]').text()).toBe(
+      'Project plan',
+    )
+  })
+
+  it('shows only the peer when the conversation has no subject', () => {
+    for (const name of [undefined, '', '   ']) {
+      const wrapper = mountRow({
+        id: 'conv-plain',
+        name,
+        address: PEER,
+        participants: [OWN_ADDRESS, PEER],
+      })
+      expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe(
+        'Alice Profile',
+      )
+      expect(wrapper.find('[data-testid="chat-list-subject"]').exists()).toBe(
+        false,
+      )
+    }
+  })
+
+  it('keeps an email thread titled by its subject', () => {
+    const wrapper = mountRow({
+      id: 'conv-email',
+      kind: 'email',
+      name: 'Invoice 12',
+      address: PEER,
+      participants: [PEER],
+      verifiedGateway: true,
+    })
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toContain(
+      'Invoice 12',
+    )
+    expect(wrapper.find('[data-testid="chat-list-subject"]').exists()).toBe(
+      false,
+    )
   })
 })

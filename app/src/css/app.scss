@@ -143,6 +143,79 @@ body.body--dark {
   }
 }
 
+// A conversation with more than two people (ChatMessage.vue's `attribution`): the sender's
+// avatar beside the last bubble of a run and the sender's name at the top of the first.
+.chat-sender-avatar {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  margin: 0 10px 2px 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--q-primary);
+    outline-offset: 3px;
+  }
+}
+
+.chat-sender-avatar--spacer {
+  cursor: default;
+}
+
+.chat-sender-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 0.8125rem;
+  line-height: 1.3;
+}
+
+.chat-sender-name__label {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: start;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--q-primary);
+    outline-offset: 2px;
+  }
+}
+
+.chat-sender-name__unknown {
+  flex: 0 0 auto;
+  font-size: 0.6875rem;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+// Messages of one run sit closer together than messages of different senders.
+.chat-message--in-run .q-message {
+  margin-bottom: 2px;
+}
+
+// A bubble that has no avatar beside it need not be as tall as one.
+.chat-message--in-run .q-message-text:last-child {
+  min-height: 0;
+}
+
 // Respect prefers-reduced-motion preference (#546).
 // Disables spatial transitions on drawers, decorative ripple animations, and makes
 // interactive transitions instantaneous while preserving visible focus state and functionality.

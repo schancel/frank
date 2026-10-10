@@ -22,13 +22,10 @@ const demoEntries = new Map([
   ['packages/cashweb/relay/open-directory-node.ts', '/node'],
   ['app/src/utils/monad-identity-session.ts', '/browser'],
   ['app/src/utils/monad-identity-session.jest.test.ts', '/browser'],
-  // The Qwen bot uses the same open directory through the Node storage helper; its workflows
-  // only name the public Current type. Two workflow tests admit fixtures through a Node store.
+  // The Qwen bot uses the same open directory through the Node storage helper and only names
+  // the public Current type. Its host test admits a fixture through a Node store.
   ['packages/bot/qwen-bot-common.ts', null],
-  ['packages/bot/qwen-inbound-workflow.ts', null],
-  ['packages/bot/qwen-response-workflow.ts', null],
-  ['packages/bot/qwen-inbound-workflow.jest.test.ts', '/node'],
-  ['packages/bot/qwen-response-workflow.jest.test.ts', '/node'],
+  ['packages/bot/qwen-host-safety.jest.test.ts', '/node'],
   ['packages/wallet/chain/monad-canonical-dm.jest.test.ts', '/node'],
 ])
 // A jest test may replace its own allowlisted entry with a mock; nothing else may call it in.

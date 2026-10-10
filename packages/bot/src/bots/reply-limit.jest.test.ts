@@ -31,7 +31,7 @@ const bots: FrankBotDefinition[] = [
   new RaffleBot(),
   new ChatRoomBot(),
   new FaucetBot(),
-  new QwenBot(),
+  new QwenBot({ config: { mode: "stub" } }),
   new VendorBot({ catalogItems: [] }),
 ];
 

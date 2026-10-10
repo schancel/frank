@@ -125,6 +125,65 @@ describe('reply generator seam', () => {
   })
 })
 
+describe('model call settings', () => {
+  it('default to a 45 s limit, three tries and thinking off, and take each from the environment', () => {
+    expect(qwenBotConfigFromEnv(LIVE_ENV)).toMatchObject({
+      modelTimeoutMs: 45_000,
+      modelTries: 3,
+      thinking: false,
+    })
+    expect(
+      qwenBotConfigFromEnv({
+        ...LIVE_ENV,
+        QWEN_MODEL_TIMEOUT_MS: '9000',
+        QWEN_MODEL_TRIES: '1',
+        QWEN_ENABLE_THINKING: '1',
+        QWEN_SYSTEM_PROMPT: 'Be a pirate.',
+      }),
+    ).toMatchObject({
+      modelTimeoutMs: 9000,
+      modelTries: 1,
+      thinking: true,
+      systemPrompt: 'Be a pirate.',
+    })
+  })
+
+  it.each([
+    ['QWEN_MODEL_TIMEOUT_MS', '0'],
+    ['QWEN_MODEL_TIMEOUT_MS', 'soon'],
+    ['QWEN_MODEL_TRIES', '0'],
+    ['QWEN_ENABLE_THINKING', 'yes'],
+  ])('refuse %s=%s by name instead of guessing', (name, value) => {
+    expect(() => qwenBotConfigFromEnv({ ...LIVE_ENV, [name]: value })).toThrow(name)
+  })
+
+  it('reach the client, and every call starts with the system prompt, naming the person when known', async () => {
+    const chat = jest.fn(async () => ({ content: 'real', reasoning: '' }))
+    const makeClient = jest.fn(() => ({ chat }))
+    const gen = createQwenReplyGenerator(
+      qwenBotConfigFromEnv({ ...LIVE_ENV, QWEN_ENABLE_THINKING: '1' }),
+      makeClient,
+    )
+    expect(makeClient).toHaveBeenCalledWith(
+      expect.objectContaining({ timeoutMs: 45_000, thinking: true }),
+    )
+    const history = [{ role: 'user' as const, content: 'hi' }]
+    const signal = new AbortController().signal
+    await gen.reply(history, { signal, userName: 'Ada' })
+    await gen.reply(history)
+    const [named, anonymous] = chat.mock.calls as unknown as [
+      [{ role: string; content: string }[], { signal?: AbortSignal }],
+      [{ role: string; content: string }[]],
+    ]
+    expect(named[0][0].role).toBe('system')
+    expect(named[0][0].content).toMatch(/resident chatbot inside Frank/)
+    expect(named[0][0].content).toMatch(/You are chatting with Ada\.$/)
+    expect(named[0].slice(1)).toEqual(history)
+    expect(named[1].signal).toBe(signal)
+    expect(anonymous[0][0].content).not.toMatch(/You are chatting with/)
+  })
+})
+
 describe('qwen-bot.livecheck.ts entry point', () => {
   it('exits 1 with a clear message (no stack) when the key is missing and no stub mode', () => {
     const env: NodeJS.ProcessEnv = {

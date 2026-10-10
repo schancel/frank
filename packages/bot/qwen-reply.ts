@@ -20,6 +20,25 @@ export const STUB_REPLY_PREFIX = '[STUB -- no model, offline canned reply]'
 
 const STUB_ECHO_MAX_CHARS = 200
 const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000
+/** One whole model answer, connection and stream together. */
+export const DEFAULT_MODEL_TIMEOUT_MS = 45_000
+/** Model calls made for one message before the user is told it failed. */
+export const DEFAULT_MODEL_TRIES = 3
+/** Who Qwen is, sent first on every live call. The one place to edit it; `QWEN_SYSTEM_PROMPT`
+ * replaces it for a deployment without a code change. */
+export const DEFAULT_SYSTEM_PROMPT = [
+  'You are Qwen, the resident chatbot inside Frank, a messaging app where every message carries a small payment.',
+  'You are chatting with a person who paid to send you each message, so respect their time: answer directly and conversationally, and keep replies brief unless they ask for depth.',
+  'Be warm, a little playful, and have a sense of humour. Do not lecture.',
+  'Be honest about what you are: an AI chatbot, never a human. You cannot move money, see balances or do anything in the app; you can only talk. Do not claim otherwise.',
+  'Reply in plain text.',
+].join(' ')
+
+/** The system message of one call: the configured prompt, and who is on the other end when the
+ * bot knows their display name. */
+export function systemPrompt(base: string, userName?: string): string {
+  return userName ? `${base} You are chatting with ${userName}.` : base
+}
 
 export interface QwenBotConfig {
   mode: QwenBotMode
@@ -31,6 +50,13 @@ export interface QwenBotConfig {
   maxReplies: number
   /** `0` disables the idle exit. Defaults to disabled when `maxReplies` is unlimited. */
   idleTimeoutMs: number
+  /** Limit for one whole model call, in milliseconds. */
+  modelTimeoutMs: number
+  /** Model calls made for one message before the user is told it failed. At least 1. */
+  modelTries: number
+  /** Whether the model is asked to think before it answers. Off unless set. */
+  thinking: boolean
+  systemPrompt: string
 }
 
 function nonNegativeInt(env: NodeJS.ProcessEnv, name: string): number | undefined {
@@ -52,13 +78,15 @@ export function qwenBotConfigFromEnv(env: NodeJS.ProcessEnv): QwenBotConfig {
   let apiKey: string | undefined
   let endpoint: string | undefined
   if (mode === 'live') {
-    for (const name of ['QWEN_API_KEY', 'QWEN_OPENAI_COMPATIBLE_ENDPOINT']) {
-      if (!env[name]) {
-        throw new Error(
-          `Missing required env var ${name} (live mode). Set it, or set QWEN_BOT_MODE=stub ` +
-            'to run the bot offline with canned replies and no API key.',
-        )
-      }
+    const missing = ['QWEN_API_KEY', 'QWEN_OPENAI_COMPATIBLE_ENDPOINT'].filter(
+      name => !env[name],
+    )
+    if (missing.length) {
+      throw new Error(
+        `Missing required env var ${missing.join(' and ')} (live mode). Set ` +
+          `${missing.length > 1 ? 'them' : 'it'}, or set QWEN_BOT_MODE=stub ` +
+          'to run the bot offline with canned replies and no API key.',
+      )
     }
     apiKey = env.QWEN_API_KEY
     endpoint = env.QWEN_OPENAI_COMPATIBLE_ENDPOINT
@@ -71,6 +99,18 @@ export function qwenBotConfigFromEnv(env: NodeJS.ProcessEnv): QwenBotConfig {
   const idleTimeoutMs =
     idleRaw ?? (Number.isFinite(maxReplies) ? DEFAULT_IDLE_TIMEOUT_MS : 0)
 
+  const modelTimeoutMs =
+    nonNegativeInt(env, 'QWEN_MODEL_TIMEOUT_MS') ?? DEFAULT_MODEL_TIMEOUT_MS
+  if (modelTimeoutMs === 0) {
+    throw new Error('QWEN_MODEL_TIMEOUT_MS must be greater than 0')
+  }
+  const modelTries = nonNegativeInt(env, 'QWEN_MODEL_TRIES') ?? DEFAULT_MODEL_TRIES
+  if (modelTries === 0) throw new Error('QWEN_MODEL_TRIES must be at least 1')
+  const rawThinking = env.QWEN_ENABLE_THINKING || '0'
+  if (rawThinking !== '0' && rawThinking !== '1') {
+    throw new Error(`QWEN_ENABLE_THINKING must be "0" or "1", got "${rawThinking}"`)
+  }
+
   return {
     mode,
     apiKey,
@@ -78,6 +118,10 @@ export function qwenBotConfigFromEnv(env: NodeJS.ProcessEnv): QwenBotConfig {
     model: env.QWEN_MODEL || 'qwen3.8-max',
     maxReplies,
     idleTimeoutMs,
+    modelTimeoutMs,
+    modelTries,
+    thinking: rawThinking === '1',
+    systemPrompt: env.QWEN_SYSTEM_PROMPT || DEFAULT_SYSTEM_PROMPT,
   }
 }
 
@@ -85,7 +129,11 @@ export interface QwenReplyGenerator {
   mode: QwenBotMode
   /** One line for the startup banner; never contains the API key. */
   describe(): string
-  reply(history: QwenChatMessage[]): Promise<QwenChatResult>
+  /** One model call. `signal` aborts it; `userName` is the person's display name, if known. */
+  reply(
+    history: QwenChatMessage[],
+    options?: { signal?: AbortSignal; userName?: string },
+  ): Promise<QwenChatResult>
 }
 
 export function stubReply(history: QwenChatMessage[]): QwenChatResult {
@@ -107,6 +155,8 @@ export function createQwenReplyGenerator(
     apiKey: string
     endpoint: string
     model: string
+    timeoutMs: number
+    thinking: boolean
   }) => Pick<QwenClient, 'chat'> = opts => new QwenClient(opts),
 ): QwenReplyGenerator {
   if (config.mode === 'stub') {
@@ -121,10 +171,21 @@ export function createQwenReplyGenerator(
     apiKey: config.apiKey as string,
     endpoint: config.endpoint as string,
     model: config.model,
+    timeoutMs: config.modelTimeoutMs,
+    thinking: config.thinking,
   })
   return {
     mode: 'live',
-    describe: () => `LIVE mode: ${config.model} @ ${config.endpoint}`,
-    reply: history => client.chat(history),
+    describe: () =>
+      `LIVE mode: ${config.model} @ ${config.endpoint} (timeout ${config.modelTimeoutMs} ms, ` +
+      `thinking ${config.thinking ? 'on' : 'off'})`,
+    reply: (history, options) =>
+      client.chat(
+        [
+          { role: 'system', content: systemPrompt(config.systemPrompt, options?.userName) },
+          ...history,
+        ],
+        { signal: options?.signal },
+      ),
   }
 }

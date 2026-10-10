@@ -276,7 +276,8 @@ export interface MessageItemPlugin<
    * Same raw-item, synchronous constraint as `previewText`: this reads whatever the type already
    * read before the registry existed (e.g. stealth's own self-reported `amount`), not a
    * chain-verified figure (ticket #60). A type that needs a real verified wei amount (e.g.
-   * blackjack's wager) should use `hydrate`/`reduceState` instead, not this hook. */
+   * blackjack's wager) should use `hydrate`/`reduceState` instead, not this hook. Must return a
+   * finite number, never NaN: a field it reads is validated when the item is decoded. */
   tallyValue?(raw: TRaw): number
   /** Groups items of this type into independent threads (e.g. one per blackjack hand) before
    * folding state with `reduceState`. Synchronous, operates on the raw item (a thread key is
@@ -412,7 +413,8 @@ export interface MessageItemRegistry {
   /** Synchronous preview text for one item; {@link UNSUPPORTED_MESSAGE_ITEM_PREVIEW} for a type
    * with no plugin. Safe to call from a UI getter. */
   previewText(item: MessageItem): string
-  /** Sum of every item's `tallyValue`; a type without the hook, or without a plugin, adds 0. */
+  /** Sum of every item's `tallyValue`; a type without the hook, or without a plugin, adds 0, and
+   * so does a value that is not a finite number. The sum is never NaN. */
   tallyValue(items: readonly MessageItem[]): number
   /** The item's bytes from its plugin. Throws {@link MessageItemUnsupportedError} for a type with
    * no plugin and {@link MessageItemEncodeError} for an item its plugin refuses. Whatever else a
@@ -463,11 +465,11 @@ export function createMessageItemRegistry(): MessageItemRegistry {
         : UNSUPPORTED_MESSAGE_ITEM_PREVIEW
     },
     tallyValue(items) {
-      return items.reduce(
-        (total, item) =>
-          total + (plugins.get(item.type)?.tallyValue?.(item) ?? 0),
-        0,
-      )
+      // Never NaN: a value a plugin reports that is not a finite number adds nothing.
+      return items.reduce((total, item) => {
+        const value = plugins.get(item.type)?.tallyValue?.(item) ?? 0
+        return total + (Number.isFinite(value) ? value : 0)
+      }, 0)
     },
     encodeItem(item) {
       const plugin = plugins.get(item.type)

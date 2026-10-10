@@ -15,7 +15,8 @@ describePluginContract({
         entryPriceWei: '10',
         maxEntries: 3,
         entryCount: 1,
-        serverSeedHash: 'ab',
+        serverSeedHash:
+          'abababababababababababababababababababababababababababababababab',
       },
       preview: 'Raffle open (1/3 entered)',
     },
@@ -42,10 +43,17 @@ describePluginContract({
         type: 'raffle',
         raffleId: 'r1',
         action: 'draw',
-        winnerAddress: '0xB',
-        serverSeed: 'seed',
-        entrants: ['0xA', '0xB'],
-        entryTxHashes: ['0x1', '0x2'],
+        winnerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        serverSeed:
+          '5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e',
+        entrants: [
+          '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        ],
+        entryTxHashes: [
+          '0x0101010101010101010101010101010101010101010101010101010101010101',
+          '0x0202020202020202020202020202020202020202020202020202020202020202',
+        ],
         potWei: '20',
       },
       preview: 'Raffle drawn',

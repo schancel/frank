@@ -21,7 +21,10 @@ describePluginContract({
         type: 'liars-dice',
         tableId: 't1',
         action: 'join',
-        players: ['0xA', '0xB'],
+        players: [
+          '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        ],
       },
       preview: "Liar's Dice: Player joined",
     },
@@ -32,10 +35,16 @@ describePluginContract({
         action: 'round_start',
         diceCounts: [5, 5],
         roundNumber: 1,
-        activePlayer: '0xA',
+        activePlayer: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         turnTimeoutSeconds: 30,
-        serverCommit: 'cc',
-        playerCommits: { '0xB': 'bb', '0xA': 'aa' },
+        serverCommit:
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+        playerCommits: {
+          '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':
+            'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa':
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        },
         myDice: [1, 2, 3, 4, 6],
       },
       preview: "Liar's Dice (Perudo)",
@@ -45,7 +54,11 @@ describePluginContract({
         type: 'liars-dice',
         tableId: 't1',
         action: 'bid',
-        currentBid: { bidder: '0xA', quantity: 3, face: 4 },
+        currentBid: {
+          bidder: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          quantity: 3,
+          face: 4,
+        },
       },
       preview: "Liar's Dice Bid: 3x [4]",
     },
@@ -58,7 +71,7 @@ describePluginContract({
         type: 'liars-dice',
         tableId: 't1',
         action: 'challenge',
-        challenger: '0xB',
+        challenger: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       },
       preview: "Liar's Dice: Called Liar!",
     },
@@ -67,16 +80,25 @@ describePluginContract({
         type: 'liars-dice',
         tableId: 't1',
         action: 'showdown',
-        serverSeed: 'ss',
-        playerSeeds: { '0xA': 'sa', '0xB': 'sb' },
-        revealedCups: { '0xA': [1, 1, 2], '0xB': [] },
+        serverSeed:
+          'c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5',
+        playerSeeds: {
+          '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa':
+            'a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5',
+          '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb':
+            'b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5',
+        },
+        revealedCups: {
+          '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa': [1, 1, 2],
+          '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb': [],
+        },
         challengeResult: {
           bidQuantity: 3,
           bidFace: 4,
           actualCount: 2,
           wildAcesCount: 2,
           challengerWon: true,
-          loserAddress: '0xA',
+          loserAddress: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           eliminated: false,
         },
       },
@@ -87,10 +109,11 @@ describePluginContract({
         type: 'liars-dice',
         tableId: 't1',
         action: 'settle',
-        winnerAddress: '0xB',
+        winnerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         potWei: '200',
-        txHash: '0x1',
-        stealthAddress: '0xS',
+        txHash:
+          '0x0101010101010101010101010101010101010101010101010101010101010101',
+        stealthAddress: '0x5555555555555555555555555555555555555555',
       },
       preview: "Liar's Dice: Table Settled!",
     },

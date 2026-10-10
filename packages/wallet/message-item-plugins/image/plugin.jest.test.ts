@@ -14,7 +14,6 @@ describePluginContract({
       item: { type: 'image', image: 'data:image/png;base64,AAAA' },
       preview: 'Sent image',
     },
-    { item: { type: 'image', image: '' }, preview: 'Sent image' },
   ],
 })
 

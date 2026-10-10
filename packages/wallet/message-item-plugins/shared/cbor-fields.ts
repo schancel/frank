@@ -17,6 +17,7 @@ import {
   MessageItemEncodeError,
   type MessageItemDecodeContext,
 } from '../registry'
+import { isCanonicalChainIdentifier } from './chain-identifiers'
 
 export interface Field<T> {
   enc(value: T, path: string): Encodable
@@ -150,6 +151,199 @@ export function record<T>(of: Field<T>): Field<Record<string, T>> {
           configurable: true,
         })
       }
+      return out
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bounded fields. Every rule is applied on encode and on decode alike, so an item this side will
+// write is exactly an item the other side will read.
+// ---------------------------------------------------------------------------------------------
+
+/** A field whose value must pass one check in both directions. */
+function checked<T>(
+  base: Field<T>,
+  check: (value: T, path: string) => void,
+): Field<T> {
+  return {
+    enc: (v, path) => {
+      const encoded = base.enc(v, path)
+      check(v, path)
+      return encoded
+    },
+    dec: (v, path) => {
+      const decoded = base.dec(v, path)
+      check(decoded, path)
+      return decoded
+    },
+  }
+}
+
+const utf8Length = (s: string): number => utf8.encode(s).length
+
+/**
+ * An integer in `min..max` inclusive, carried as a CBOR integer and nothing else: no text form,
+ * no fraction, no value outside the range. For every count, index, nonce, card, die face,
+ * quantity and timestamp.
+ */
+export function int(min: number, max: number): Field<number> {
+  if (!Number.isSafeInteger(min) || !Number.isSafeInteger(max) || min > max)
+    throw new Error('int(min, max) needs safe integer bounds')
+  const inRange = (n: number, path: string): number =>
+    n < min || n > max ? fail(path, `expected an integer in ${min}..${max}`) : n
+  return {
+    enc: (v, path) =>
+      typeof v === 'number' && Number.isSafeInteger(v)
+        ? inRange(Object.is(v, -0) ? 0 : v, path)
+        : fail(path, `expected an integer in ${min}..${max}`),
+    dec: (v, path) => {
+      if (typeof v !== 'bigint')
+        return fail(path, `expected an integer in ${min}..${max}`)
+      if (v < BigInt(min) || v > BigInt(max))
+        return fail(path, `expected an integer in ${min}..${max}`)
+      return Number(v)
+    },
+  }
+}
+
+/** Milliseconds since the epoch, within the range a JavaScript `Date` can represent. */
+export const MAX_TIMESTAMP_MS = 8_640_000_000_000_000
+export const timestampMs: Field<number> = int(0, MAX_TIMESTAMP_MS)
+
+/** A finite number in `min..max` that may have a fraction (see {@link num} for its encoding). */
+export function decimal(min: number, max: number): Field<number> {
+  return checked(num, (v, path) => {
+    if (v < min || v > max) fail(path, `expected a number in ${min}..${max}`)
+  })
+}
+
+/** Text of at most `maxBytes` UTF-8 bytes (and at least `minBytes`). */
+export function str(maxBytes: number, minBytes = 0): Field<string> {
+  return checked(text, (v, path) => {
+    const length = utf8Length(v)
+    if (length < minBytes || length > maxBytes)
+      fail(path, `expected ${minBytes}..${maxBytes} bytes of text`)
+  })
+}
+
+/** Text carried as bytes ({@link longText}) of at most `maxBytes` UTF-8 bytes. */
+export function longStr(maxBytes: number, minBytes = 0): Field<string> {
+  return checked(longText, (v, path) => {
+    const length = utf8Length(v)
+    if (length < minBytes || length > maxBytes)
+      fail(path, `expected ${minBytes}..${maxBytes} bytes`)
+  })
+}
+
+/** Text matching `pattern` exactly. The pattern must bound the length itself. */
+export function matching(pattern: RegExp, what: string): Field<string> {
+  return checked(text, (v, path) => {
+    if (!pattern.test(v)) fail(path, `expected ${what}`)
+  })
+}
+
+/** An amount in a chain's smallest unit: decimal digits only, no sign, no leading zero, at most
+ * 78 digits (the length of the largest 256-bit value). */
+export const amount: Field<string> = matching(
+  /^(?:0|[1-9][0-9]{0,77})$/,
+  'a decimal amount of at most 78 digits',
+)
+
+/** An amount a person typed, in display units: digits with an optional fraction, no sign, no
+ * exponent, at most 40 digits on each side. */
+export const displayAmount: Field<string> = matching(
+  /^[0-9]{1,40}(?:\.[0-9]{1,40})?$/,
+  'a decimal number with at most 40 digits on each side of the point',
+)
+
+/** Hexadecimal text of `minBytes..maxBytes` bytes, with or without a `0x` prefix. */
+export function hex(minBytes: number, maxBytes = minBytes): Field<string> {
+  const pattern = new RegExp(
+    `^(?:0x)?(?:[0-9a-fA-F]{2}){${minBytes},${maxBytes}}$`,
+  )
+  return matching(
+    pattern,
+    minBytes === maxBytes
+      ? `${minBytes} bytes of hexadecimal`
+      : `${minBytes}..${maxBytes} bytes of hexadecimal`,
+  )
+}
+
+/** A 32-byte hash as hexadecimal, with or without `0x`. */
+export const hash32: Field<string> = hex(32)
+
+/** An EVM address: `0x` and 40 hexadecimal digits. The checksum case is not verified here. */
+export const evmAddress: Field<string> = matching(
+  /^0x[0-9a-fA-F]{40}$/,
+  'an EVM address',
+)
+
+/** An address on any supported chain (EVM hex, base58, a prefixed UTXO address): a bounded token
+ * with no spaces or control characters. Its chain decides whether it is valid there. */
+export const chainAddress: Field<string> = matching(
+  /^[0-9A-Za-z][0-9A-Za-z:_.-]{0,127}$/,
+  'an address of at most 128 characters',
+)
+
+/** A transaction identifier on any supported chain: hexadecimal (with or without `0x`) or base58,
+ * at most 128 characters. */
+export const transactionId: Field<string> = matching(
+  /^[0-9A-Za-z]{1,128}$/,
+  'a transaction identifier of at most 128 characters',
+)
+
+/** A short machine identifier (a table, round, swap or instance id): letters, digits and
+ * `: _ . -`, at most `maxLength` characters. */
+export function token(maxLength = 64): Field<string> {
+  return matching(
+    new RegExp(`^[0-9A-Za-z][0-9A-Za-z:_.-]{0,${maxLength - 1}}$`),
+    `an identifier of at most ${maxLength} characters`,
+  )
+}
+
+/** A canonical chain identifier from the protocol registry (docs/protocol/chains/v1.json). */
+export const chainIdentifier: Field<string> = checked(text, (v, path) => {
+  if (!isCanonicalChainIdentifier(v))
+    fail(path, 'expected a canonical chain identifier')
+})
+
+/** A list of at most `max` elements (and at least `min`). The size is checked before any element
+ * is read. */
+export function listOf<T>(of: Field<T>, max: number, min = 0): Field<T[]> {
+  const inner = list(of)
+  const sized = (v: unknown, path: string): void => {
+    if (Array.isArray(v) && (v.length < min || v.length > max))
+      fail(path, `expected ${min}..${max} elements`)
+  }
+  return {
+    enc: (v, path) => (sized(v, path), inner.enc(v, path)),
+    dec: (v, path) => (sized(v, path), inner.dec(v, path)),
+  }
+}
+
+/** A string-keyed record of at most `max` entries whose keys pass `key`. The size is checked
+ * before any entry is read. */
+export function recordOf<T>(
+  key: Field<string>,
+  of: Field<T>,
+  max: number,
+): Field<Record<string, T>> {
+  const inner = record(of)
+  return {
+    enc: (v, path) => {
+      if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+        const keys = Object.keys(v)
+        if (keys.length > max) fail(path, `expected at most ${max} entries`)
+        for (const k of keys) key.enc(k, `${path} key`)
+      }
+      return inner.enc(v, path)
+    },
+    dec: (v, path) => {
+      if (Array.isArray(v) && v.length > max)
+        fail(path, `expected at most ${max} entries`)
+      const out = inner.dec(v, path)
+      for (const k of Object.keys(out)) key.enc(k, `${path} key`)
       return out
     },
   }

@@ -18,7 +18,18 @@ function translator(messages: unknown) {
   }
 }
 
+const mockEscrow = {
+  depositLock: jest.fn(async () => ({ txHash: '0x' })),
+  claimLock: jest.fn(async () => ({ txHash: '0x' })),
+  refundLock: jest.fn(async () => ({ txHash: '0x' })),
+}
+jest.mock('../../../composables/useSwapEscrow', () => ({
+  useSwapEscrow: () => mockEscrow,
+}))
+
 describe('ChatMessageSwap', () => {
+  beforeEach(() => jest.clearAllMocks())
+
   const defaultProps = {
     swapId: 'swap1234567890abcdef',
     offeredChain: 'monad-testnet',
@@ -126,25 +137,78 @@ describe('ChatMessageSwap', () => {
     await claimBtnMaker.trigger('click')
     expect(wrapperMaker.emitted('claim')).toHaveLength(1)
 
-    // Taker claiming Leg A when preimage revealed
-    const wrapperTaker = mountComponent({
-      outbound: false,
-      status: 'locked',
-      preimage: '0x' + 'aa'.repeat(32),
-    })
-    const claimBtnTaker = wrapperTaker.find('[data-testid="swap-claim-btn"]')
-    expect(claimBtnTaker.exists()).toBe(true)
-    await claimBtnTaker.trigger('click')
-    expect(wrapperTaker.emitted('claim')).toHaveLength(1)
+    expect(mockEscrow.claimLock).toHaveBeenCalledTimes(1)
   })
 
-  it('shows Refund button when swap is expired', async () => {
-    const wrapper = mountComponent({ status: 'expired' })
+  it('shows Refund button when its own offer is expired', async () => {
+    const wrapper = mountComponent({ outbound: true, status: 'expired' })
     const refundBtn = wrapper.find('[data-testid="swap-refund-btn"]')
     expect(refundBtn.exists()).toBe(true)
 
     await refundBtn.trigger('click')
     expect(wrapper.emitted('refund')).toHaveLength(1)
+  })
+
+  // A received offer is its sender's claims. An inbound item saying 'accepted' used to show
+  // "Accept & Lock", one click from a deposit to the sender.
+  describe('a received offer moves no funds', () => {
+    const FUND_BUTTONS = ['swap-lock-btn', 'swap-claim-btn', 'swap-refund-btn']
+    it.each([
+      ['accepted', {}],
+      ['locked', {}],
+      ['locked', { legBTxHash: '0x' + 'bb'.repeat(32) }],
+      ['locked', { preimage: '0x' + 'aa'.repeat(32) }],
+      ['locked', { claimTxHash: '0x' + '22'.repeat(32) }],
+      ['expired', {}],
+    ])(
+      'status %s %j: no lock, claim or refund button, and nothing to click sends funds',
+      async (status, extra) => {
+        const wrapper = mountComponent({
+          outbound: false,
+          status,
+          hashLock: '0x' + 'cc'.repeat(32),
+          recipientAddress: '0x' + '0b'.repeat(20),
+          ...extra,
+        })
+        for (const id of FUND_BUTTONS)
+          expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(false)
+        expect(
+          wrapper.find('[data-testid="swap-unavailable-note"]').text(),
+        ).toBe(enUS.walletPanel.swapUnavailableDescription)
+        // Every control the card does render, clicked.
+        for (const button of wrapper.findAll('button'))
+          await button.trigger('click')
+        for (const call of Object.values(mockEscrow))
+          expect(call).not.toHaveBeenCalled()
+        for (const event of ['deposit', 'claim', 'refund'])
+          expect(wrapper.emitted(event)).toBeUndefined()
+      },
+    )
+
+    it('a pending received offer can still be answered, with no fund action beside it', async () => {
+      const wrapper = mountComponent({ outbound: false, status: 'pending' })
+      expect(wrapper.find('[data-testid="swap-accept-btn"]').exists()).toBe(
+        true,
+      )
+      expect(
+        wrapper.find('[data-testid="swap-unavailable-note"]').exists(),
+      ).toBe(false)
+      for (const id of FUND_BUTTONS)
+        expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(false)
+      for (const button of wrapper.findAll('button'))
+        await button.trigger('click')
+      for (const call of Object.values(mockEscrow))
+        expect(call).not.toHaveBeenCalled()
+    })
+
+    it('the note is not shown on an offer this user made', () => {
+      for (const status of ['pending', 'accepted', 'locked', 'expired'])
+        expect(
+          mountComponent({ outbound: true, status })
+            .find('[data-testid="swap-unavailable-note"]')
+            .exists(),
+        ).toBe(false)
+    })
   })
 
   it('renders explorer links when transaction hashes are provided', () => {

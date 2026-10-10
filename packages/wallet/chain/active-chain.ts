@@ -267,6 +267,25 @@ export type DirectMessagePaymentState =
   | "reverted"
   | "failed"
   | "unsent";
+/**
+ * The payment of one sent message in one word, for display:
+ * - `pending`: signed; not handed to the chain yet, or the node does not have it yet;
+ * - `mempool`: the node holds it, not in a block yet;
+ * - `paid`: every payment is in a block and succeeded;
+ * - `reverted`: a payment was mined and reverted, and its one repeat is not in a block yet;
+ * - `repaid`: a payment was mined and reverted, and its repeat was paid;
+ * - `failed`: a payment can never land (its nonce went to another transaction), or was
+ *   reverted and so was its repeat; it is not paid again;
+ * - `unsent`: the relay refused the message before anything was broadcast; nothing was paid.
+ */
+export type DirectMessagePaymentSummary =
+  | "pending"
+  | "mempool"
+  | "paid"
+  | "reverted"
+  | "repaid"
+  | "failed"
+  | "unsent";
 export type DirectMessageAttemptStatus =
   | "live"
   | "delivered"
@@ -518,6 +537,12 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     payloadDigest: string;
   }): DirectMessagePaymentState[] | undefined;
+  /** `paymentsOf` in one word (see {@link DirectMessagePaymentSummary}); `undefined` for a
+   * digest this wallet has no paid record of. No request. */
+  paymentSummaryOf?(params: {
+    wallet: WalletHandle;
+    payloadDigest: string;
+  }): DirectMessagePaymentSummary | undefined;
   /**
    * The smallest paid stamp this wallet sends right now: what the chain charges for the one
    * transfer that moves it, from the node's current gas price (cached for a few seconds). A

@@ -122,7 +122,11 @@ import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
 import { applyWalletSyncItem } from "../sync-dispatcher";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
-import { requireChainContract, resolveChainIdentifier } from "./chains-registry";
+import {
+  getChainRegistryEntry,
+  requireChainContract,
+  resolveChainIdentifier,
+} from "./chains-registry";
 
 import {
   createMonadWalletMaterial,
@@ -406,8 +410,11 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     defaultStampValueWei: BigInt(
       readEnv("FRANK_DM_DEFAULT_STAMP_VALUE_WEI") ?? "10000000000000000"
     ),
-    // Monad's reserve-balance delay: see `EvmChainConfig.spendSpacingBlocks`.
-    spendSpacingBlocks: 3,
+    // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
+    spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
+    reserveBalanceWei: ((wei) => (wei === undefined ? undefined : BigInt(wei)))(
+      getChainRegistryEntry(rpcChain)?.reserveBalanceWei
+    ),
     defaultTopicVoteValueWei: BigInt(
       readEnv("FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI") ??
         readEnv("CASHWEB_STAMP_MIN_BURN_VALUE_WEI") ??
@@ -1614,6 +1621,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     paymentsOf(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       return canonicalMessagingFor(wallet)?.paymentsOf(params.payloadDigest);
+    },
+    paymentSummaryOf(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      return canonicalMessagingFor(wallet)?.paymentSummaryOf(params.payloadDigest);
     },
 
     async fetchSince(params): Promise<DirectMessageReceived[]> {
@@ -3187,6 +3198,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               nextLook: () =>
                 blockWatchers.get(wallet)?.next() ??
                 new Promise((resolve) => setTimeout(resolve, 500)),
+              inclusionWaitMs: config.nativeInclusionWaitMs,
               transactionBuilder,
               getSources,
               sourceHeld: (source) =>
@@ -4554,6 +4566,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               httpClient,
               watcher: blockWatcher,
               spendSpacingBlocks: config.spendSpacingBlocks,
+              reserveBalanceWei: config.reserveBalanceWei,
               // A message took funded accounts: the next fund-ahead call looks again.
               onPoolCoinsClaimed: () => fundAheadBackoffs.delete(wallet),
               // Received coins pay for stamps like any other funds, after the wallet's own

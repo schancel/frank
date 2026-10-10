@@ -146,6 +146,9 @@ export interface EvmStampPayerConfig {
   /** See `EvmChainConfig.spendSpacingBlocks`. Applies to the main and identity accounts; a
    * single-use sub-account sends one transaction ever. */
   spendSpacingBlocks?: number
+  /** See `EvmChainConfig.reserveBalanceWei`: a payment that leaves its account at or above
+   * this is not held to the spacing. */
+  reserveBalanceWei?: bigint
   /** The wallet's one block watcher for this chain. Every wait of a payment goes through it.
    * Absent (a test of the payer alone): one is made over `provider`. */
   watcher?: EvmBlockWatcher
@@ -413,7 +416,12 @@ export class EvmStampPayer {
             // transaction): that block is waited for on the wallet's one block watcher.
             const coin = await this.coinOf(account.address, input.signal)
             const head = this.watcher.latest() ?? coin.notBeforeBlock
-            if (coin.notBeforeBlock > head) {
+            // The chain's rule only bites a transfer that takes the account below its reserve.
+            const aboveReserve =
+              this.config.reserveBalanceWei !== undefined &&
+              balanceWei - input.stampValueWei - feeReserveWei >=
+                this.config.reserveBalanceWei
+            if (coin.notBeforeBlock > head && !aboveReserve) {
               waiting = true
               input.onWaiting?.(coin.notBeforeBlock - head)
               await this.watcher.until(coin.notBeforeBlock, input.signal)

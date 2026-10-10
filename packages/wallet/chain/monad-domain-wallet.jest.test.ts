@@ -85,6 +85,8 @@ const config: EvmChainConfig = {
   defaultStampValueWei: 1n,
   defaultTopicVoteValueWei: 1n,
   subAccountPoolSize: 2,
+  // The stub node never mines on its own: a native send looks once and returns.
+  nativeInclusionWaitMs: 0,
   walletStorageLocation: false,
 }
 

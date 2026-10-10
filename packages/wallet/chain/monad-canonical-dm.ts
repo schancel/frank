@@ -82,6 +82,7 @@ import {
 import type {
   ChainAddress,
   DirectMessageAttemptStatus,
+  DirectMessagePaymentSummary,
   DirectMessageClient,
   DirectMessageReceived,
   DirectMessageSendResult,
@@ -942,6 +943,32 @@ async function refuseUnexposed(
   return refused
 }
 
+/** Signed payments the node was last seen holding unmined. Process memory, for display only. */
+const inMempool = new Set<string>()
+
+/** A message's payments in one word. See `DirectMessagePaymentSummary`. */
+function paymentSummary(row: StoredMessage): DirectMessagePaymentSummary {
+  const words = row.payments.flatMap((payment, index): DirectMessagePaymentSummary[] => {
+    if (payment.repays !== undefined) return []
+    if (payment.state === 'spent') return ['paid']
+    if (payment.state === 'pending')
+      return [inMempool.has(payment.rawTx) ? 'mempool' : 'pending']
+    if (payment.state !== 'reverted') return [payment.state]
+    const repeat = row.payments.find(other => other.repays === index)
+    if (repeat?.state === 'spent') return ['repaid']
+    return [repeat === undefined || repeat.state === 'pending' ? 'reverted' : 'failed']
+  })
+  const order: DirectMessagePaymentSummary[] = [
+    'failed',
+    'reverted',
+    'unsent',
+    'pending',
+    'mempool',
+    'repaid',
+  ]
+  return order.find(word => words.includes(word)) ?? 'paid'
+}
+
 /** No longer consulted: whether a payment was replaced is read from the node in one look. Kept
  * so existing tests that set it still load; remove with them. */
 export const REPLACED_AFTER_MS = { value: 0 }
@@ -978,6 +1005,8 @@ async function settlePayments(
         }
         // Not known to the node at all: the same bytes are offered again (once the relay has
         // the message). In the mempool: nothing to do but look again.
+        if (seen.where === 'mempool') inMempool.add(payment.rawTx)
+        else inMempool.delete(payment.rawTx)
         if (broadcast && seen.where !== 'mempool') resubmit.push(payment.rawTx)
       } catch {
         // The chain could not be read or reached: nothing is known, so nothing changes.
@@ -2071,6 +2100,12 @@ export function canonicalDirectMessages(
         .all()
         .find(row => row.digest === payloadDigest)
         ?.payments.map(payment => payment.state),
+    paymentSummaryOf: (
+      payloadDigest: string,
+    ): DirectMessagePaymentSummary | undefined => {
+      const row = owner.messages.all().find(r => r.digest === payloadDigest)
+      return row && row.payments.length > 0 ? paymentSummary(row) : undefined
+    },
     discardAttempt: async (params: { payloadDigest: string }) => {
       const clean = (s?: string) =>
         s ? (s.startsWith('0x') ? s.slice(2).toLowerCase() : s.toLowerCase()) : ''

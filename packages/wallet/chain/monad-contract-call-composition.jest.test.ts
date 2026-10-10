@@ -33,6 +33,8 @@ const config: EvmChainConfig = {
   defaultStampValueWei: 1n,
   defaultTopicVoteValueWei: 1n,
   subAccountPoolSize: 2,
+  // The stub node never mines on its own: a native send looks once and returns.
+  nativeInclusionWaitMs: 0,
   walletStorageLocation: false,
 }
 /** The main account the frozen domain-root vector 0 derives (see monad-domain-wallet tests). */
@@ -86,6 +88,8 @@ function stubNode(
     maxFeePerGas: 1n,
     maxPriorityFeePerGas: 1n,
   } as never)
+  // What a node answers for a plain transfer to an account without code.
+  jest.spyOn(p, 'estimateGas').mockResolvedValue(21_000n)
   jest
     .spyOn(p, 'getTransaction')
     .mockImplementation(async hash => transactions.get(hash) ?? null)

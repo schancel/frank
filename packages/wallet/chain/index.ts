@@ -153,6 +153,7 @@ export type {
   ChainFamily,
   ChainTransaction,
   DirectMessageAttemptStatus,
+  DirectMessagePaymentSummary,
   DirectMessageClient,
   DirectMessagePreparationProgress,
   DirectMessageReceived,

@@ -30,9 +30,17 @@ export interface EvmChainConfig {
    * transfer that takes an account below its reserve (10 MON, so nearly every transfer of a
    * small wallet) unless the account sent nothing in the previous 3 blocks. Seen on testnet: a
    * stamp payment mined two blocks after the previous one from the same account reverted, and
-   * its message was delivered unpaid. Default 0: no spacing.
+   * its message was delivered unpaid. Read from the network's registry row; absent: no spacing.
    */
   spendSpacingBlocks?: number;
+  /** The reserve the spacing rule protects (Monad: 10 MON). A transfer that leaves its account
+   * at or above it is never reverted by the rule, so it needs no spacing. Both facts come from
+   * the network's registry row (`ChainRegistryEntry`). */
+  reserveBalanceWei?: bigint;
+  /** How long a native send watches the transfer it just broadcast for its block before it
+   * returns it as pending (it is then watched from outside). Default 30 s. Tests on a stub
+   * node that never mines set 0: one look. */
+  nativeInclusionWaitMs?: number;
   /** Default value, in wei, burned for a topic post or vote. */
   defaultTopicVoteValueWei: bigint;
   /** How many single-use funding sub-accounts `createWallet` pre-derives into the pool. */

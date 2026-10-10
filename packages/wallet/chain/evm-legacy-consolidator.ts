@@ -552,17 +552,54 @@ export class EvmLegacyConsolidator {
     }
     return result
   }
+  /**
+   * The gas limit of a plain transfer to an address the USER entered: the node's estimate for
+   * it, made now. The recipient may have code, and then 21,000 is not enough: the transfer is
+   * mined, reverted, and (on a chain that charges the gas limit, as Monad does) its whole fee is
+   * paid for nothing. A transfer to an account this wallet derives needs no estimate: it is
+   * exactly 21,000. When the paying account does not hold the amount yet (it is funded by this
+   * same operation first) the estimate is made for one wei. A recipient that refuses the
+   * transfer makes this throw: nothing is planned or signed.
+   */
+  private async recipientGasLimit(
+    from: string,
+    recipient: string,
+    amount: bigint,
+  ): Promise<bigint> {
+    const { provider } = this.config
+    try {
+      return await provider.estimateGas({ from, to: recipient, value: amount })
+    } catch (error) {
+      if (amount <= 1n) throw error
+      return provider.estimateGas({ from, to: recipient, value: 1n })
+    }
+  }
   private async transaction(
     source: AvailableSource,
     recipient: string,
     amount: bigint,
     fees: { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint },
+    /** The recipient is the address the user entered, not an account of this wallet. */
+    toUserAddress = false,
   ): Promise<string> {
     const request = await this.config.transactionBuilder.buildTransfer({
       from: source.source.address,
       recipient,
       amount,
-      overrides: { nonce: source.account.nonce, ...fees },
+      overrides: {
+        nonce: source.account.nonce,
+        ...fees,
+        ...(toUserAddress &&
+        this.config.transactionBuilder.supportsNativeConsolidation === true
+          ? {
+              gasLimit: await this.recipientGasLimit(
+                source.source.address,
+                recipient,
+                amount,
+              ),
+            }
+          : {}),
+      },
     })
     if (
       request.from &&
@@ -650,7 +687,13 @@ export class EvmLegacyConsolidator {
     )
     for (const account of accounts) {
       if (account.spendableValue < params.value) continue
-      const raw = await this.transaction(account, recipient, params.value, fees)
+      const raw = await this.transaction(
+        account,
+        recipient,
+        params.value,
+        fees,
+        excludedSource === undefined,
+      )
       const tx = Transaction.from(raw)
       const maximumFee = nativeMaximumFee(tx)
       if (
@@ -676,7 +719,13 @@ export class EvmLegacyConsolidator {
     if (kind === 'native' || accounts.length < 2)
       throw new RangeError('Insufficient unreserved native funds')
     const leader = accounts[0]!
-    const drain = await this.transaction(leader, recipient, params.value, fees)
+    const drain = await this.transaction(
+      leader,
+      recipient,
+      params.value,
+      fees,
+      excludedSource === undefined,
+    )
     const drainTx = Transaction.from(drain)
     let funded = BigInt(leader.account.balanceWei)
     const members: EvmNativeMemberPlan[] = []
@@ -1989,20 +2038,35 @@ export class EvmLegacyConsolidator {
     if (price == null) throw new Error('Native fee quote unavailable')
     const fee = 21000n * price
     accounts.sort((a, b) => (a.spendableValue > b.spendableValue ? -1 : 1))
+    // The transfer to the recipient is charged its gas LIMIT, which is the node's estimate for
+    // that address (it may have code). The review shows that, not a flat 21,000. An estimate
+    // that cannot be made here is made again, and decides, when the transfer is planned.
+    const deliveryFee =
+      accounts.length > 0
+        ? (await this.recipientGasLimit(
+            accounts[0]!.source.address,
+            getAddress(_recipient.raw),
+            value,
+          ).catch(() => 21000n)) * price
+        : fee
     let balance = 0n
     let count = 0
     for (const a of accounts) {
       balance += a.spendableValue
       count++
-      if (balance >= value + BigInt(count) * fee) break
+      if (balance >= value + deliveryFee + BigInt(count - 1) * fee) break
     }
-    if (!count || count > 64 || balance < value + BigInt(count) * fee)
+    if (
+      !count ||
+      count > 64 ||
+      balance < value + deliveryFee + BigInt(count - 1) * fee
+    )
       throw new RangeError('Insufficient native funds')
     return {
       inputCount: count,
-      deliveryFee: fee,
+      deliveryFee,
       consolidationFee: BigInt(count - 1) * fee,
-      totalFee: BigInt(count) * fee,
+      totalFee: deliveryFee + BigInt(count - 1) * fee,
     }
   }
 }

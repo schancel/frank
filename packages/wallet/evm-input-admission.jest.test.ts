@@ -71,6 +71,8 @@ function nativeExecutor(
       maxFeePerGas: 2n,
       maxPriorityFeePerGas: 1n,
     })),
+    // What a node answers for a plain transfer to an account without code.
+    estimateGas: jest.fn(async () => 21000n),
     getTransaction: jest.fn(async (hash: string) => {
       const known = history.find(h => h.tx.hash === hash)
       return !known || known.outcome === 'missing'

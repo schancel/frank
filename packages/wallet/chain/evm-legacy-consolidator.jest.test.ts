@@ -2781,4 +2781,44 @@ describe('wallet-lifetime EVM native operations', () => {
       'included-success',
     )
   })
+
+  // Rule: Monad charges the gas LIMIT, and a transfer to an address with code needs more than
+  // 21,000 (measured: 49,413 for a small contract; sent with 21,000 it was mined, reverted, and
+  // charged in full). The recipient of a native send is whatever the user typed.
+  it('a transfer to the address the user entered carries the node\'s gas estimate for that address; the transfers that fund it between the wallet\'s own accounts stay at exactly 21,000', async () => {
+    const state = chain([80000n, 70000n])
+    state.provider.estimateGas.mockImplementation(async () => 49413n)
+    const { executor } = owner(state)
+    const estimate = await executor.estimateLegacyFee({ raw: recipient }, 40000n)
+    expect(estimate.deliveryFee).toBe(49413n)
+    await executor
+      .sendLegacy({ recipient: { raw: recipient }, value: 40000n })
+      .catch(() => undefined)
+    const members = journal
+      .list()[0]!
+      .members.map(member => Transaction.from(member.unsignedTransaction))
+    // One account funds the other, which then pays the recipient.
+    expect(members).toHaveLength(2)
+    const [funding, toRecipient] = members as [Transaction, Transaction]
+    expect(funding.to!.toLowerCase()).not.toBe(recipient)
+    expect(funding.gasLimit).toBe(21000n)
+    expect(toRecipient.to!.toLowerCase()).toBe(recipient)
+    expect(toRecipient.gasLimit).toBe(49413n)
+    expect(toRecipient.type).toBe(2)
+    expect(funding.type).toBe(2)
+    expect(state.provider.estimateGas).toHaveBeenCalledWith(
+      expect.objectContaining({ to: recipient, value: 40000n }),
+    )
+  })
+  it('a recipient that refuses the transfer (the estimate fails) is not sent to: nothing is planned or signed', async () => {
+    const state = chain([200000n])
+    state.provider.estimateGas.mockRejectedValue(new Error('execution reverted'))
+    const { executor, sign } = owner(state)
+    await expect(
+      executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
+    ).rejects.toThrow('execution reverted')
+    expect(sign).not.toHaveBeenCalled()
+    expect(journal.list()).toHaveLength(0)
+    expect(state.raws).toHaveLength(0)
+  })
 })

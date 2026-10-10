@@ -4,7 +4,9 @@
  * rule itself was seen on Monad testnet (see `EvmChainConfig.spendSpacingBlocks`).
  */
 import type { Provider } from 'ethers'
-import { waitForSpendSpacing } from './evm-stamp-payer'
+import { EvmBlockWatcher } from './evm-block-watcher'
+import { EvmStampPayer, waitForSpendSpacing } from './evm-stamp-payer'
+import type { MonadSubAccountPool } from './monad-account-pool'
 
 /** A node at block `head` where the account's transactions were mined in `minedAt` blocks. */
 function node(state: { head: number; minedAt: number[]; inMempool?: number }) {
@@ -70,5 +72,77 @@ describe('waitForSpendSpacing', () => {
     state.head = 104
     await waiting
     expect(done).toBe(true)
+  })
+})
+
+/**
+ * The payer's own use of the rule, for the main account's coin: the chain reverts only a
+ * transfer that takes its account below the reserve (measured on Monad: from 10.5 MON, two
+ * transfers of 0.1 MON in ONE block both succeeded; from 5 MON the second one reverted).
+ */
+describe('a stamp paid from the main account right after its last transaction', () => {
+  const MON = 10n ** 18n
+  /** The account's last transaction was mined in the head block. Blocks advance on request. */
+  function payer(balanceWei: bigint) {
+    const state = { head: 100 }
+    const provider = {
+      getBlockNumber: async () => state.head,
+      getTransactionCount: async (_address: string, block: number | 'pending') =>
+        block === 'pending' || block >= 100 ? 1 : 0,
+      getBalance: async () => balanceWei,
+      getFeeData: async () => ({
+        gasPrice: 102n * 10n ** 9n,
+        maxFeePerGas: 202n * 10n ** 9n,
+        maxPriorityFeePerGas: 2n * 10n ** 9n,
+      }),
+    } as unknown as Provider
+    let claimed: string | undefined
+    const pool = {
+      accountClaimedBy: () => claimed,
+      accountGeneration: () => 0,
+      claimAccount: (holder: string) => ((claimed = holder), true),
+      releaseAccountClaim: () => (claimed = undefined),
+      releaseClaim: () => (claimed = undefined),
+    } as unknown as MonadSubAccountPool
+    const watcher = new EvmBlockWatcher({ provider, intervalMs: 20 })
+    const waits: (number | undefined)[] = []
+    const claim = new EvmStampPayer({
+      pool,
+      provider,
+      httpClient: {} as never,
+      watcher,
+      spendSpacingBlocks: 3,
+      reserveBalanceWei: 10n * MON,
+      accounts: [{ source: 'main', address: ADDRESS, privateKey: () => '' }],
+    }).claim({
+      holder: 'message',
+      stampValueWei: MON / 10n,
+      sources: ['main'],
+      onWaiting: blocks => waits.push(blocks),
+    })
+    return { state, claim, waits, watcher }
+  }
+
+  it('from an account that stays at or above the reserve: signed at once, at the next nonce, no wait', async () => {
+    const { claim, waits, watcher } = payer(50n * MON)
+    const made = await claim
+    watcher.stop()
+    expect(made.accounts).toEqual([
+      expect.objectContaining({ source: 'main', nonce: 1 }),
+    ])
+    expect(waits).toEqual([])
+  })
+
+  it('from an account the payment takes below the reserve: waits the three blocks, says how many remain, then signs', async () => {
+    const { state, claim, waits, watcher } = payer(5n * MON)
+    let done = false
+    void claim.then(() => (done = true))
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(done).toBe(false)
+    expect(waits).toEqual([3])
+    state.head = 103
+    const made = await claim
+    watcher.stop()
+    expect(made.accounts[0]).toEqual(expect.objectContaining({ nonce: 1 }))
   })
 })

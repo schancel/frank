@@ -281,6 +281,8 @@ async function fixture(funded = true) {
     defaultStampValueWei: 1_000n,
     defaultTopicVoteValueWei: 1_000n,
     subAccountPoolSize: 0,
+    // The stub node never mines on its own: a native send looks once and returns.
+    nativeInclusionWaitMs: 0,
     walletStorageLocation: join(directory, 'wallet'),
   }
   const chain = withDefaultMessageItems(createEvmChain(config))
@@ -2397,7 +2399,14 @@ describe('two typed wallets on the open directory', () => {
             streamed = value;
           },
         });
-        for (let i = 0; i < 20 && !mockStreamRecordHandler; i++)
+        // The stream connects once the wallet's own directory entry is read (disk): wait for
+        // that, bounded by time. (A fixed count of 20 event-loop turns was measured to be
+        // too few for the receiving wallet: 26 turns, 15 ms.)
+        for (
+          const deadline = Date.now() + 2_000;
+          !mockStreamRecordHandler && Date.now() < deadline;
+
+        )
           await new Promise((resolve) => setImmediate(resolve));
         expect(mockStreamRecordHandler).toBeDefined();
         await mockStreamRecordHandler!(record);

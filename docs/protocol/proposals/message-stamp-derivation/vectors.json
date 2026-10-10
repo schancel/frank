@@ -1161,8 +1161,8 @@
       "sha256": "578792c37e73335df70ed30bc555a1c2143ec85a84da3af6b129c225291e7a34"
     },
     {
-      "path": "packages/wallet/chain/monad-domain-wallet.jest.test.ts",
-      "sha256": "5450e61ecf56faf7877108bec1fa78f4e4a04cb9b8bec71b7f337d32736b5cc6"
+      "path": "packages/wallet/bip32-domain-root.ts",
+      "sha256": "173becbd58d0f92ffe8f0713385169a6cbc73fbcd6ee32e95e16d2152914658c"
     },
     {
       "path": "docs/protocol/proposals/suite1-directory/README.md",

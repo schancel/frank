@@ -34,7 +34,11 @@ export async function persistentProfile(check) {
     async recordAccount(addresses) {
       await writeFile(
         marker,
-        JSON.stringify({ ...addresses, createdAt: new Date().toISOString() }, null, 2),
+        JSON.stringify(
+          { ...addresses, createdAt: new Date().toISOString() },
+          null,
+          2,
+        ),
         { mode: 0o600 },
       )
     },

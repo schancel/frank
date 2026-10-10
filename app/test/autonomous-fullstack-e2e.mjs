@@ -483,8 +483,20 @@ function testWalletAddress() {
     execFile(
       process.execPath,
       ['--import', 'tsx', 'packages/bot/demo/fund.ts', '--address'],
-      { cwd: repoRoot, env: { ...process.env, TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json' }, timeout: 60000 },
-      (error, stdout) => resolveAddress(!error && /^0x[0-9a-fA-F]{40}$/.test(stdout.trim()) ? stdout.trim() : undefined),
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json',
+        },
+        timeout: 60000,
+      },
+      (error, stdout) =>
+        resolveAddress(
+          !error && /^0x[0-9a-fA-F]{40}$/.test(stdout.trim())
+            ? stdout.trim()
+            : undefined,
+        ),
     )
   })
   return testWallet
@@ -530,15 +542,25 @@ async function returnLeftover() {
       )
       console.log(`returned ${amount} MON to the test wallet ${to}`)
     } else if (!to) {
-      console.log('nothing sent back: FRANK_TEST_WALLET_JSON is not configured, so there is no address to return to')
+      console.log(
+        'nothing sent back: FRANK_TEST_WALLET_JSON is not configured, so there is no address to return to',
+      )
     }
   } catch (err) {
-    console.log(`the leftover was NOT sent back (${String(err?.message ?? err).split('\n')[0]}); it stays in the account for the next run`)
+    console.log(
+      `the leftover was NOT sent back (${
+        String(err?.message ?? err).split('\n')[0]
+      }); it stays in the account for the next run`,
+    )
   }
   try {
     console.log(accountLine(directory, address, await spendableWei()))
   } catch {
-    console.log(`ACCOUNT ${address ?? '(unknown)'}: balance not read; its keys are in the persistent profile ${directory} (do not delete it)`)
+    console.log(
+      `ACCOUNT ${
+        address ?? '(unknown)'
+      }: balance not read; its keys are in the persistent profile ${directory} (do not delete it)`,
+    )
   }
 }
 
@@ -571,100 +593,104 @@ async function run() {
         60000,
         `the account saved in ${directory} to open (if this profile is damaged, set E2E_PROFILE_DIR to a new directory; do not delete this one while its account ${profile.account.receive} holds money)`,
       )
-      results.push(['1 onboarding', 'PASS', `not run: reused the account ${profile.account.receive} in ${directory}`])
+      results.push([
+        '1 onboarding',
+        'PASS',
+        `not run: reused the account ${profile.account.receive} in ${directory}`,
+      ])
     } else {
-    // SCENARIO 1: ONBOARDING & ACCOUNT CREATION
-    console.log('\n--- SCENARIO 1: Onboarding & Account Creation ---')
-    await call('Page.navigate', { url: origin + '/#/setup' })
-    await until(
-      `document.querySelector('[data-test="new-account"]')`,
-      20000,
-      'setup page loaded',
-    )
-    console.log('✅ Setup page mounted')
+      // SCENARIO 1: ONBOARDING & ACCOUNT CREATION
+      console.log('\n--- SCENARIO 1: Onboarding & Account Creation ---')
+      await call('Page.navigate', { url: origin + '/#/setup' })
+      await until(
+        `document.querySelector('[data-test="new-account"]')`,
+        20000,
+        'setup page loaded',
+      )
+      console.log('✅ Setup page mounted')
 
-    // Click New Account
-    await click('[data-test="new-account"]')
-    await until(
-      `document.querySelector('[data-test="backup-policy"]')`,
-      10000,
-      'backup policy choice',
-    )
+      // Click New Account
+      await click('[data-test="new-account"]')
+      await until(
+        `document.querySelector('[data-test="backup-policy"]')`,
+        10000,
+        'backup policy choice',
+      )
 
-    // Focus radio and press Space to select default policy
-    await evaluate(
-      `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
-    )
-    await key(' ', 'Space', 32)
-    await until(
-      `!document.querySelector('[data-test="generate-backups"]').disabled`,
-      5000,
-      'generate button enabled',
-    )
+      // Focus radio and press Space to select default policy
+      await evaluate(
+        `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
+      )
+      await key(' ', 'Space', 32)
+      await until(
+        `!document.querySelector('[data-test="generate-backups"]').disabled`,
+        5000,
+        'generate button enabled',
+      )
 
-    // Double click to trigger form submit
-    await evaluate(`(() => {
+      // Double click to trigger form submit
+      await evaluate(`(() => {
       document.querySelector('[data-test="generate-backups"]').click();
       document.querySelector('[data-test="generate-backups"]').click();
     })()`)
 
-    // Collect 3 shares
-    await until(
-      `document.querySelector('[data-test="backup-share"]')`,
-      10000,
-      'backup shares presented',
-    )
-    const shares = []
-    for (let i = 0; i < 3; i++) {
-      const shareVal = await getValue('[data-test="backup-share"]')
-      shares.push(shareVal)
-      await click('[data-test="next-share"]')
-    }
-    console.log(`✅ Generated ${shares.length} Codex32 backup shares`)
+      // Collect 3 shares
+      await until(
+        `document.querySelector('[data-test="backup-share"]')`,
+        10000,
+        'backup shares presented',
+      )
+      const shares = []
+      for (let i = 0; i < 3; i++) {
+        const shareVal = await getValue('[data-test="backup-share"]')
+        shares.push(shareVal)
+        await click('[data-test="next-share"]')
+      }
+      console.log(`✅ Generated ${shares.length} Codex32 backup shares`)
 
-    // Confirm shares and enter display name
-    await until(
-      `document.querySelector('[data-test="confirm-shares"]')`,
-      10000,
-      'confirm shares view',
-    )
-    await typeInput(
-      '[data-test="confirm-shares"]',
-      shares.slice(0, 2).join('\n'),
-    )
-    await typeInput('[data-test="display-name"]', 'Autonomous Tester')
-    await click('[data-test="verify-backups"]')
+      // Confirm shares and enter display name
+      await until(
+        `document.querySelector('[data-test="confirm-shares"]')`,
+        10000,
+        'confirm shares view',
+      )
+      await typeInput(
+        '[data-test="confirm-shares"]',
+        shares.slice(0, 2).join('\n'),
+      )
+      await typeInput('[data-test="display-name"]', 'Autonomous Tester')
+      await click('[data-test="verify-backups"]')
 
-    await until(
-      `document.querySelector('[data-test="activate-account"]')`,
-      15000,
-      'activate account ready',
-    )
-    console.log('✅ Backups verified successfully. Activating account...')
-    await click('[data-test="activate-account"]')
+      await until(
+        `document.querySelector('[data-test="activate-account"]')`,
+        15000,
+        'activate account ready',
+      )
+      console.log('✅ Backups verified successfully. Activating account...')
+      await click('[data-test="activate-account"]')
 
-    await until(
-      `location.hash !== '#/setup'`,
-      15000,
-      'navigated away from setup',
-    )
-    console.log(
-      `✅ Account activated! Landed on ${await evaluate('location.hash')}`,
-    )
-    await new Promise(r => setTimeout(r, 2000))
-    await captureScreenshot('01_account_created.png')
+      await until(
+        `location.hash !== '#/setup'`,
+        15000,
+        'navigated away from setup',
+      )
+      console.log(
+        `✅ Account activated! Landed on ${await evaluate('location.hash')}`,
+      )
+      await new Promise(r => setTimeout(r, 2000))
+      await captureScreenshot('01_account_created.png')
 
-    results.push([
-      '1 onboarding',
-      'PASS',
-      'landed on ' + (await evaluate('location.hash')),
-    ])
+      results.push([
+        '1 onboarding',
+        'PASS',
+        'landed on ' + (await evaluate('location.hash')),
+      ])
 
-    await profile.recordAccount(
-      await evaluate(
-        `${sessionModule}.then(async m => { const w = await m.accountSession.getWallet(); return { profile: w.identity.address.raw, receive: (await w.getReceiveAddress()).raw } })`,
-      ),
-    )
+      await profile.recordAccount(
+        await evaluate(
+          `${sessionModule}.then(async m => { const w = await m.accountSession.getWallet(); return { profile: w.identity.address.raw, receive: (await w.getReceiveAddress()).raw } })`,
+        ),
+      )
     }
 
     // SCENARIO 2: what a new account has, with no manual step
@@ -910,7 +936,9 @@ async function run() {
     // SCENARIO 7: native send from the wallet page, then a paid message
     await scenario('7 native send', async () => {
       // To the wallet that funds this account, so the amount comes straight back.
-      const recipient = (await testWalletAddress()) ?? '0x1111111111111111111111111111111111111111'
+      const recipient =
+        (await testWalletAddress()) ??
+        '0x1111111111111111111111111111111111111111'
       await evaluate(`location.hash = '#/wallet'`)
       await new Promise(r => setTimeout(r, 1000))
       await evaluate(`location.hash = '#/send'`)

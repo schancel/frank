@@ -325,7 +325,9 @@ async function printAccount() {
     )
     console.log(accountLine(directory, accountAddress, held))
   } catch {
-    console.log(`ACCOUNT ${accountAddress}: balance not read; its keys are in the persistent profile ${directory} (do not delete it)`)
+    console.log(
+      `ACCOUNT ${accountAddress}: balance not read; its keys are in the persistent profile ${directory} (do not delete it)`,
+    )
   }
 }
 
@@ -341,58 +343,60 @@ async function run() {
       `the account saved in ${directory} to open (do not delete this profile while its account ${profile.account.receive} holds money; set E2E_PROFILE_DIR to use another)`,
     )
   } else {
-  await call('Page.navigate', { url: origin + '/#/setup' })
-  await until(
-    `document.querySelector('[data-test="new-account"]')`,
-    30000,
-    'setup page',
-  )
-  await click('[data-test="new-account"]')
-  await until(
-    `document.querySelector('[data-test="backup-policy"]')`,
-    10000,
-    'backup policy',
-  )
-  await evaluate(
-    `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
-  )
-  await key(' ', 'Space', 32)
-  await until(
-    `!document.querySelector('[data-test="generate-backups"]').disabled`,
-    5000,
-    'generate enabled',
-  )
-  await evaluate(`(() => {
+    await call('Page.navigate', { url: origin + '/#/setup' })
+    await until(
+      `document.querySelector('[data-test="new-account"]')`,
+      30000,
+      'setup page',
+    )
+    await click('[data-test="new-account"]')
+    await until(
+      `document.querySelector('[data-test="backup-policy"]')`,
+      10000,
+      'backup policy',
+    )
+    await evaluate(
+      `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
+    )
+    await key(' ', 'Space', 32)
+    await until(
+      `!document.querySelector('[data-test="generate-backups"]').disabled`,
+      5000,
+      'generate enabled',
+    )
+    await evaluate(`(() => {
     document.querySelector('[data-test="generate-backups"]').click();
     document.querySelector('[data-test="generate-backups"]').click();
   })()`)
-  await until(
-    `document.querySelector('[data-test="backup-share"]')`,
-    10000,
-    'shares',
-  )
-  const shares = []
-  for (let i = 0; i < 3; i++) {
-    shares.push(await getValue('[data-test="backup-share"]'))
-    await click('[data-test="next-share"]')
-  }
-  await until(
-    `document.querySelector('[data-test="confirm-shares"]')`,
-    10000,
-    'confirm',
-  )
-  await typeInput('[data-test="confirm-shares"]', shares.slice(0, 2).join('\n'))
-  await typeInput('[data-test="display-name"]', 'Swap Browser Check')
-  await click('[data-test="verify-backups"]')
-  await until(
-    `document.querySelector('[data-test="activate-account"]')`,
-    15000,
-    'activate',
-  )
-  await click('[data-test="activate-account"]')
-  await until(`location.hash !== '#/setup'`, 20000, 'left setup')
-  await new Promise(r => setTimeout(r, 2000))
-
+    await until(
+      `document.querySelector('[data-test="backup-share"]')`,
+      10000,
+      'shares',
+    )
+    const shares = []
+    for (let i = 0; i < 3; i++) {
+      shares.push(await getValue('[data-test="backup-share"]'))
+      await click('[data-test="next-share"]')
+    }
+    await until(
+      `document.querySelector('[data-test="confirm-shares"]')`,
+      10000,
+      'confirm',
+    )
+    await typeInput(
+      '[data-test="confirm-shares"]',
+      shares.slice(0, 2).join('\n'),
+    )
+    await typeInput('[data-test="display-name"]', 'Swap Browser Check')
+    await click('[data-test="verify-backups"]')
+    await until(
+      `document.querySelector('[data-test="activate-account"]')`,
+      15000,
+      'activate',
+    )
+    await click('[data-test="activate-account"]')
+    await until(`location.hash !== '#/setup'`, 20000, 'left setup')
+    await new Promise(r => setTimeout(r, 2000))
   }
 
   const session = `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name)`
@@ -402,7 +406,11 @@ async function run() {
   if (!profile.account) await profile.recordAccount({ receive: main })
   accountAddress = main
   console.log(
-    `MAIN ACCOUNT ${main}  (${profile.account ? 'reused; it is funded only if it holds too little' : 'new: fund it now'})`,
+    `MAIN ACCOUNT ${main}  (${
+      profile.account
+        ? 'reused; it is funded only if it holds too little'
+        : 'new: fund it now'
+    })`,
   )
 
   await evaluate(`location.hash = '#/wallet/monad'`)

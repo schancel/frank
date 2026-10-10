@@ -53,6 +53,7 @@ import {
   type SolanaSwapRecord,
   type SolanaSwapSender,
 } from './solana-swap/execute'
+import type { SwapCheckConnection } from './solana-swap/swap'
 
 /**
  * Minimum transfer amount for a Solana stealth address.
@@ -621,11 +622,12 @@ export class SolanaWallet
   }
 
   /**
-   * Signs a prepared swap transaction with this wallet's key. The transaction must be paid for
-   * by this wallet and need no other signature, so a transaction built elsewhere (a swap
-   * aggregator's) cannot make the wallet sign on anyone else's behalf.
+   * Signs a prepared swap transaction with this wallet's key. Private (a real `#` member):
+   * the only caller is `sendLegacyTransaction`, which checks the transaction first. The
+   * transaction must be paid for by this wallet and need no other signature, so a transaction
+   * built elsewhere (a swap aggregator's) cannot make the wallet sign on anyone else's behalf.
    */
-  async signSwapTransaction(
+  async #signSwapTransaction(
     transaction: VersionedTransaction,
     lastValidBlockHeight: bigint,
   ): Promise<{ signature: string; rawTransaction: Uint8Array }> {
@@ -646,9 +648,10 @@ export class SolanaWallet
 
   /**
    * The wallet's legacy send, for a transaction that calls a program rather than paying another
-   * Frank user. Takes the transaction and the record of what it is for; checks it once more,
+   * Frank user. Takes the transaction, what was reviewed for it and the record of what it is
+   * for; runs the safety check on that exact transaction against the wallet as it is now,
    * signs it, journals the signed bytes with the record BEFORE broadcasting, sends, and follows
-   * it to its outcome. When the chain has finalised it, the wallet's sync event carries the
+   * it to its outcome. This is the only way the wallet signs such a transaction. When the chain has finalised it, the wallet's sync event carries the
    * record to the account's other frontends.
    */
   async sendLegacyTransaction(
@@ -661,8 +664,14 @@ export class SolanaWallet
     }
     return createSolanaLegacySender({
       // A real Connection has these calls; the wallet's own type lists only what sends need.
-      connection: this.connection as unknown as SolanaSwapSender,
-      signer: async () => this,
+      connection: this.connection as unknown as SolanaSwapSender &
+        SwapCheckConnection,
+      signer: async () => ({
+        address: this.address,
+        chainIdentifier: this.chainIdentifier,
+        sign: (transaction, lastValidBlockHeight) =>
+          this.#signSwapTransaction(transaction, lastValidBlockHeight),
+      }),
       journal: this.legacy.journal,
       track: { onSync: this.legacy.onSync },
     }).sendLegacyTransaction(prepared, intent, onSubmitted)

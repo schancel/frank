@@ -19,8 +19,9 @@
  *    whoever built it: simulate, and compare what it would do to the wallet with the quote
  *    (input debited no more than agreed, output credited at least the minimum, no other SOL or
  *    token leaves, no token account changes owner, delegate or close authority).
- * 2. `execute`: hands the transaction and its record to the wallet's legacy send, which runs
- *    the safety check again immediately before signing.
+ * 2. `execute`: hands the transaction, what was reviewed for it (data, `SwapCheck`) and its
+ *    record to the wallet's legacy send. The send itself runs the safety check again, on that
+ *    exact transaction and the wallet as it then is, immediately before signing.
  * 3. `readOutcome`: the outcome of a swap sent earlier (after a reload); the amounts are read
  *    from the confirmed transaction's balance changes.
  */
@@ -112,7 +113,11 @@ abstract class SolanaDexBase<V extends SolanaSwapVenue> implements SolanaDex {
     // A quote this wallet cannot carry out (for example: not enough SOL) is not sent.
     if (quote.blocker) throw quote.blocker
     return this.wallet.sendLegacyTransaction(
-      quote,
+      {
+        transaction: quote.transaction,
+        lastValidBlockHeight: quote.lastValidBlockHeight,
+        check: quote.check,
+      },
       {
         chainIdentifier: quote.chainIdentifier,
         venueId: quote.venueId,

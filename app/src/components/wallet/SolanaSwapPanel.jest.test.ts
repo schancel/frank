@@ -117,7 +117,7 @@ function quoteFor(amount: bigint, overrides: Record<string, unknown> = {}) {
     fetchedAt: Date.now(),
     transaction: {},
     lastValidBlockHeight: 100n,
-    recheck: async () => undefined,
+    check: {},
     ...overrides,
   }
 }

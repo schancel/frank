@@ -22,7 +22,12 @@ import type { VersionedTransaction } from '@solana/web3.js'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 
 import { swapRecordId } from '../chain/evm-legacy-consolidator'
-import { SolanaSwapError } from './swap'
+import {
+  checkSwapBeforeSigning,
+  SolanaSwapError,
+  type SwapCheck,
+  type SwapCheckConnection,
+} from './swap'
 import { NATIVE_SOL_MINT } from './venues'
 
 /** One side of a swap. `address` is the token's mint; null is SOL, the chain's native coin. */
@@ -75,12 +80,15 @@ export type SolanaSwapIntent = Omit<
   'transactionId' | 'signedAtMs' | 'recovery'
 >
 
-/** A transaction ready to sign, with the check to run immediately before signing. */
+/**
+ * A transaction ready to sign, with what was reviewed for it. The check is data, not a
+ * function of the caller's: the wallet's send runs the safety check itself, on this exact
+ * transaction, immediately before signing.
+ */
 export interface PreparedLegacyTransaction {
   readonly transaction: VersionedTransaction
   readonly lastValidBlockHeight: bigint
-  /** Simulates again and re-applies the safety check; throws when it must not be signed. */
-  readonly recheck: () => Promise<void>
+  readonly check: SwapCheck
 }
 
 /** What a confirmed swap actually did to the wallet, from the transaction itself. */
@@ -207,11 +215,15 @@ export interface SolanaSwapSender {
   ): Promise<{ meta: SwapTransactionMeta | null } | null>
 }
 
-/** Signs with the wallet's own key; implemented by `SolanaWallet.signSwapTransaction`. */
+/**
+ * The wallet's key as the legacy send uses it. `SolanaWallet` hands this to the send it makes
+ * itself and has no public method that signs a swap transaction, so the only way to a
+ * signature is through the check in `sendLegacyTransaction`.
+ */
 export interface SolanaSwapSigner {
   readonly address: string
   readonly chainIdentifier: string
-  signSwapTransaction(
+  sign(
     transaction: VersionedTransaction,
     lastValidBlockHeight: bigint,
   ): Promise<{ signature: string; rawTransaction: Uint8Array }>
@@ -536,8 +548,9 @@ const resuming = new Set<string>()
 
 /**
  * The wallet's legacy send, for a transaction that calls a program rather than paying another
- * Frank user: check, sign, record, send, and follow to its outcome. The record is an argument
- * of the send; whoever asked for the transaction never records it or talks to a relay.
+ * Frank user: check, sign, record, send, and follow to its outcome. The record and what was
+ * reviewed are arguments of the send; whoever asked for the transaction never checks it on the
+ * wallet's behalf, records it or talks to a relay.
  */
 export interface SolanaLegacySender {
   /** `onSubmitted` fires once the signed transaction is recorded and handed to the network. */
@@ -551,7 +564,7 @@ export interface SolanaLegacySender {
 }
 
 export function createSolanaLegacySender(parts: {
-  connection: SolanaSwapSender
+  connection: SolanaSwapSender & SwapCheckConnection
   /** Opens the signing key only when a transaction is actually sent. */
   signer: () => Promise<SolanaSwapSigner>
   journal: SolanaLegacyJournal
@@ -581,11 +594,36 @@ export function createSolanaLegacySender(parts: {
         // An earlier one may still land; resolve it before spending again.
         throw new SolanaSwapError('invalid-request', 'a swap is still pending')
       }
-      // Simulate once more, and re-apply the safety check on what the transaction would do,
-      // immediately before signing. Nothing has left the device, so a failure here is final.
-      await prepared.recheck()
-      const { signature, rawTransaction } = await wallet.signSwapTransaction(
-        prepared.transaction,
+      const { transaction, check } = prepared
+      const { header, staticAccountKeys } = transaction.message
+      if (
+        header.numRequiredSignatures !== 1 ||
+        staticAccountKeys[0]?.toBase58() !== wallet.address
+      ) {
+        throw new SolanaSwapError(
+          'unsafe-transaction',
+          'transaction is not paid and signed by this wallet alone',
+        )
+      }
+      // The record says what the review says: the same wallet, assets and amounts.
+      if (
+        check.owner.toBase58() !== intent.account ||
+        check.state.input.mint.toBase58() !== mintOf(intent.assetIn) ||
+        check.state.output.mint.toBase58() !== mintOf(intent.assetOut) ||
+        check.inputAmount.toString() !== intent.amountIn ||
+        check.minOutputAmount.toString() !== intent.minimumAmountOut ||
+        check.networkFeeLamports.toString() !== intent.networkFeeLamports
+      ) {
+        throw new SolanaSwapError(
+          'invalid-request',
+          'the record of the swap does not match what was reviewed',
+        )
+      }
+      // The safety check, run here on the exact transaction about to be signed, against the
+      // wallet as it is now. Nothing has left the device, so a failure here is final.
+      await checkSwapBeforeSigning(connection, transaction, check)
+      const { signature, rawTransaction } = await wallet.sign(
+        transaction,
         prepared.lastValidBlockHeight,
       )
       const record: SolanaSwapRecord = {

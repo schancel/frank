@@ -189,10 +189,10 @@ export interface SolanaSwapQuote {
   /** Present when the quote is real but this wallet cannot execute it as is. */
   readonly blocker?: SolanaSwapError
   /**
-   * Simulates the transaction again and re-applies the venue's checks. Called immediately
-   * before signing; throws a SolanaSwapError when the swap must not be signed.
+   * What was reviewed for `transaction`. The wallet's send takes it with the transaction and
+   * checks that exact transaction against it, on the chain as it then is, before signing.
    */
-  readonly recheck: () => Promise<void>
+  readonly check: SwapCheck
 }
 
 export interface SolanaSwapDeps {
@@ -338,8 +338,14 @@ export interface SolanaWalletSnapshot {
   readonly walletAccounts: readonly WalletTokenAccount[]
 }
 
+/**
+ * What was agreed for one swap transaction, as data: which transaction, what it may take and
+ * must deliver, and the wallet as it was read. `simulateAndCheckSwap` holds a transaction to it.
+ */
 export interface SwapCheck {
   readonly owner: PublicKey
+  /** The serialized message of the transaction this was reviewed for. */
+  readonly transactionMessage: Uint8Array
   readonly state: WalletState
   /** Exact amount of the input the wallet agreed to pay. */
   readonly inputAmount: bigint
@@ -357,7 +363,7 @@ export interface SwapCheck {
 const SYSTEM_PROGRAM = SystemProgram.programId.toBase58()
 
 async function readWalletTokenAccounts(
-  connection: SolanaSwapConnection,
+  connection: Pick<SolanaSwapConnection, 'getTokenAccountsByOwner'>,
   owner: PublicKey,
 ): Promise<WalletTokenAccount[]> {
   const lists = await Promise.all(
@@ -388,7 +394,7 @@ async function readWalletTokenAccounts(
  * A transaction that would fail throws the program's own reason instead.
  */
 export async function simulateAndCheckSwap(
-  connection: SolanaSwapConnection,
+  connection: Pick<SolanaSwapConnection, 'simulateTransaction'>,
   transaction: VersionedTransaction,
   check: SwapCheck,
 ): Promise<SimulatedOutcome> {
@@ -480,8 +486,14 @@ export async function simulateAndCheckSwap(
     feeAccountAfter && check.feeAccountIsNew
       ? BigInt(feeAccountAfter.lamports)
       : 0n
-  // SOL held by the wallet, wrapped or not, before and after.
-  const solBefore = state.lamports + wrappedBefore
+  // SOL held by the wallet, wrapped or not, before and after. The simulation's own balance
+  // before the run is used when the network reports it (the wallet pays, so it is account 0):
+  // it is the state the run started from, whatever arrived since the wallet was read.
+  const lamportsBefore =
+    value.preBalances?.length && value.preBalances[0] !== undefined
+      ? BigInt(value.preBalances[0])
+      : state.lamports
+  const solBefore = lamportsBefore + wrappedBefore
   const solAfter = lamportsAfter + wrappedAfter
 
   if (output.native) {
@@ -526,6 +538,75 @@ export async function simulateAndCheckSwap(
     outputAmount: credited,
     accountRentLamports: outputRent + feeAccountRent,
   }
+}
+
+/** The reads the check before signing makes. A web3.js `Connection` satisfies it. */
+export type SwapCheckConnection = Pick<
+  SolanaSwapConnection,
+  'getMultipleAccountsInfo' | 'getTokenAccountsByOwner' | 'simulateTransaction'
+>
+
+/**
+ * The same review with the wallet read again now: its SOL, every token account it has, the
+ * output account and whether the fee account exists. What was agreed is unchanged.
+ */
+async function withWalletAsItIsNow(
+  connection: SwapCheckConnection,
+  check: SwapCheck,
+): Promise<SwapCheck> {
+  const { owner, state, feeAccount } = check
+  const [walletAccounts, [wallet, output, fee]] = await Promise.all([
+    readWalletTokenAccounts(connection, owner),
+    connection.getMultipleAccountsInfo([
+      owner,
+      state.output.tokenAccount,
+      ...(feeAccount ? [feeAccount] : []),
+    ]),
+  ])
+  return {
+    ...check,
+    state: {
+      ...state,
+      lamports: BigInt(wallet?.lamports ?? 0),
+      output: {
+        ...state.output,
+        tokenAccountLamports: BigInt(output?.lamports ?? 0),
+        account: decodeTokenAccount(output),
+      },
+    },
+    walletAccounts,
+    ...(feeAccount ? { feeAccountIsNew: fee === null } : {}),
+  }
+}
+
+/**
+ * The check the wallet's send runs itself, immediately before signing: `transaction` must be
+ * the one that was reviewed, byte for byte, and must pass the safety check against the wallet
+ * as it is at this moment (read afresh here, not as it was when quoted: SOL or tokens that
+ * arrived in between must not widen what the transaction may take). Throws a SolanaSwapError
+ * when the transaction must not be signed.
+ */
+export async function checkSwapBeforeSigning(
+  connection: SwapCheckConnection,
+  transaction: VersionedTransaction,
+  check: SwapCheck,
+): Promise<void> {
+  const message = transaction.message.serialize()
+  const reviewed = check.transactionMessage
+  if (
+    message.length !== reviewed.length ||
+    message.some((byte, i) => byte !== reviewed[i])
+  ) {
+    throw new SolanaSwapError(
+      'unsafe-transaction',
+      'is not the transaction that was reviewed',
+    )
+  }
+  await simulateAndCheckSwap(
+    connection,
+    transaction,
+    await withWalletAsItIsNow(connection, check),
+  )
 }
 
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111'
@@ -685,8 +766,7 @@ export type PreparedSolanaSwap = Omit<
   | 'accountRentLamports'
   | 'fetchedAt'
   | 'blocker'
-  | 'recheck'
-> & { readonly check: SwapCheck }
+>
 
 export async function prepareOrcaSwap(
   deps: SolanaSwapDeps,
@@ -825,8 +905,12 @@ export async function prepareOrcaSwap(
   const probe = await build(0n)
   const { networkFeeLamports: fee, priorityFeeLamports } =
     await reviewNetworkFee(connection, venue, probe)
-  const check = (minimum: bigint): SwapCheck => ({
+  const check = (
+    minimum: bigint,
+    transaction: VersionedTransaction,
+  ): SwapCheck => ({
     owner,
+    transactionMessage: transaction.message.serialize(),
     state,
     inputAmount: amount,
     minOutputAmount: minimum,
@@ -836,8 +920,9 @@ export async function prepareOrcaSwap(
     feeAccountIsNew,
   })
   // The expected output IS what the pool's swap delivers in simulation.
-  const expected = (await simulateAndCheckSwap(connection, probe, check(0n)))
-    .outputAmount
+  const expected = (
+    await simulateAndCheckSwap(connection, probe, check(0n, probe))
+  ).outputAmount
   const minOutputAmount = requireMinimum(
     minimumOutput(expected, request.slippageBps),
   )
@@ -880,7 +965,7 @@ export async function prepareOrcaSwap(
     temporaryRentLamports: temporaryRent,
     transaction,
     lastValidBlockHeight: BigInt(latest.lastValidBlockHeight),
-    check: check(minOutputAmount),
+    check: check(minOutputAmount, transaction),
   }
 }
 
@@ -1177,6 +1262,7 @@ export async function prepareJupiterSwap(
     lastValidBlockHeight,
     check: {
       owner: request.owner,
+      transactionMessage: transaction.message.serialize(),
       state,
       inputAmount: request.amount,
       minOutputAmount,
@@ -1216,13 +1302,16 @@ export async function quoteSolanaSwap<V extends SolanaSwapVenue>(
   })
   // The one safety check every venue's transaction passes, whoever built it: simulate, and
   // compare what it would do to the wallet with the swap that was quoted.
-  const { check, ...body } = prepared
-  const verify = () =>
-    simulateAndCheckSwap(deps.connection, prepared.transaction, check)
   let blocker: SolanaSwapError | undefined
   let accountRentLamports = 0n
   try {
-    accountRentLamports = (await verify()).accountRentLamports
+    accountRentLamports = (
+      await simulateAndCheckSwap(
+        deps.connection,
+        prepared.transaction,
+        prepared.check,
+      )
+    ).accountRentLamports
   } catch (error) {
     // The quote itself is real; this wallet just cannot execute it (usually: not funded).
     if (!(error instanceof SolanaSwapError)) throw error
@@ -1233,10 +1322,9 @@ export async function quoteSolanaSwap<V extends SolanaSwapVenue>(
     chainIdentifier: request.chainIdentifier,
     venueId: venue.id,
     venueName: venue.displayName,
-    ...body,
+    ...prepared,
     accountRentLamports,
     fetchedAt: (deps.now ?? Date.now)(),
     blocker,
-    recheck: async () => void (await verify()),
   }
 }

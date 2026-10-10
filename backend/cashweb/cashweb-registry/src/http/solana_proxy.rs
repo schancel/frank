@@ -42,12 +42,23 @@ const MAX_STARTUP_RESPONSE_BYTES: usize = 1024 * 1024;
 const MAX_ACCOUNTS_IN_BATCH_QUERY: usize = 100;
 const MAX_SIGNATURES_LIMIT: u64 = 1000;
 const MAX_WIRE_TRANSACTION_CHARS: usize = 4096;
+/// Longest startup waits for the first identity check of this proxy's chains.
+const STARTUP_WAIT: Duration = Duration::from_secs(2);
+/// How often an upstream that has not yet proved its identity is asked again.
+const IDENTITY_RETRY: Duration = if cfg!(test) {
+    Duration::from_millis(50)
+} else {
+    Duration::from_secs(30)
+};
 
 #[derive(Clone)]
 struct SolanaChain {
     id: String,
     upstream_urls: Vec<Url>,
     expected_genesis_hash: String,
+    /// The chain's upstreams have proved they are the configured chain. Until they do, nothing
+    /// is forwarded to them.
+    verified: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl fmt::Debug for SolanaChain {
@@ -141,7 +152,9 @@ impl SolanaProxyRuntime {
         )
     }
 
-    /// Resolve upstream URLs and verify each configured chain's genesis hash before readiness.
+    /// Resolve upstream URLs and check each configured chain's genesis hash. Only a bad
+    /// configuration is an error: an upstream that is down or is the wrong chain leaves that
+    /// chain unserved, never the relay unstarted.
     pub async fn from_conf_with_env(
         conf: &SolanaProxyConf,
         network_tag: Vec<u8>,
@@ -192,6 +205,7 @@ impl SolanaProxyRuntime {
                     id: row.id.clone(),
                     upstream_urls,
                     expected_genesis_hash: row.expected_genesis_hash.clone(),
+                    verified: Default::default(),
                 },
             );
         }
@@ -215,12 +229,12 @@ impl SolanaProxyRuntime {
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
             cooldowns: UpstreamCooldownTracker::default(),
         });
-        runtime.verify_genesis_hashes().await?;
+        runtime.start_verifying().await;
         Ok(Some(runtime))
     }
 
-    async fn verify_genesis_hashes(&self) -> Result<(), SolanaProxyStartError> {
-        for chain in self.chains.values() {
+    async fn verify_genesis_hash(&self, chain: &SolanaChain) -> Result<(), SolanaProxyStartError> {
+        {
             let body = json!({
                 "jsonrpc": "2.0",
                 "id": "startup",
@@ -263,6 +277,81 @@ impl SolanaProxyRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Check the identity of every chain not yet verified. A chain whose upstream cannot be
+    /// reached, or answers as a different chain, stays unserved and is reported; the relay
+    /// and its other chains carry on. Returns whether every chain is now verified.
+    async fn verify_unverified_chains(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let checks = self
+            .chains
+            .values()
+            .filter(|chain| !chain.verified.load(Ordering::Relaxed))
+            .map(|chain| async move {
+                match self.verify_genesis_hash(chain).await {
+                    Ok(()) => {
+                        chain.verified.store(true, Ordering::Relaxed);
+                        true
+                    }
+                    Err(error) => {
+                        tracing::event!(
+                            tracing::Level::ERROR,
+                            chain = %chain.id,
+                            error = %error,
+                            "Solana proxy chain is NOT being served: its upstream did not pass \
+                             the genesis hash check. Requests for it answer unavailable; the check \
+                             is repeated until it passes"
+                        );
+                        false
+                    }
+                }
+            });
+        futures::future::join_all(checks)
+            .await
+            .into_iter()
+            .all(|verified| verified)
+    }
+
+    /// Check every chain's identity in the background, again and again until all pass or the
+    /// relay stops. Startup waits only briefly for the first round, so a healthy upstream is
+    /// verified before the first request and a dead one never holds the relay up.
+    async fn start_verifying(self: &Arc<Self>) {
+        let runtime = Arc::downgrade(self);
+        let (first_round, first_round_done) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut first_round = Some(first_round);
+            loop {
+                let Some(runtime) = runtime.upgrade() else {
+                    return;
+                };
+                let all_verified = runtime.verify_unverified_chains().await;
+                drop(runtime);
+                if let Some(first_round) = first_round.take() {
+                    let _ = first_round.send(());
+                }
+                if all_verified {
+                    return;
+                }
+                tokio::time::sleep(IDENTITY_RETRY).await;
+            }
+        });
+        let _ = tokio::time::timeout(STARTUP_WAIT, first_round_done).await;
+    }
+
+    /// Refuse a request for a chain whose upstream has not proved its identity.
+    fn require_verified(
+        &self,
+        verified: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), RpcRejection> {
+        if verified.load(std::sync::atomic::Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(rpc_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rpc_upstream_unavailable",
+            ))
+        }
     }
 }
 
@@ -723,6 +812,9 @@ async fn proxy_rpc_inner(
         .get(&chain_id)
         .ok_or_else(|| rpc_error(StatusCode::NOT_FOUND, "unknown_rpc_chain"))?;
     let cost = validate_body(runtime, chain, &body)?;
+    runtime
+        .require_verified(&chain.verified)
+        .map_err(|error| preflight_broadcast_error(error, cost.broadcast))?;
     let correlation = super::json_rpc::request_correlation(&body).map_err(|_| {
         preflight_broadcast_error(
             rpc_error(StatusCode::BAD_REQUEST, "invalid_json_rpc"),
@@ -958,8 +1050,18 @@ async fn proxy_rpc_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{routing, Router};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::{body::Body, http::Request, routing, Router};
+    use bitcoinsuite_core::Net;
     use cashweb_config::SolanaProxyChainConf;
+    use tempdir::TempDir;
+    use tower::ServiceExt;
+
+    use crate::{
+        disabled_chain_adapter::DisabledChainAdapter, http::pop_protection::PopGate,
+        p2p::peers::Peers, registry::Registry, store::db::Db, test_instance::placeholder_pop_conf,
+    };
 
     #[tokio::test]
     async fn startup_verification_succeeds_on_matching_genesis_hash() {
@@ -1002,44 +1104,172 @@ mod tests {
         assert_eq!(runtime.chain_ids(), vec!["solana-devnet"]);
     }
 
-    #[tokio::test]
-    async fn startup_verification_fails_on_genesis_hash_mismatch() {
-        let mock_server = Router::new().route(
+    const DEVNET: &str = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
+    const MAINNET: &str = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
+
+    /// A node of the chain with this genesis hash. `forwarded` counts every call other than
+    /// the identity check.
+    fn node(genesis_hash: &'static str, forwarded: Arc<AtomicUsize>) -> Router {
+        Router::new().route(
             "/",
-            routing::post(|| async {
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "result": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
-                    "id": "startup"
-                }))
+            routing::post(move |Json(call): Json<Value>| async move {
+                let result = if call["method"] == "getGenesisHash" {
+                    json!(genesis_hash)
+                } else {
+                    forwarded.fetch_add(1, Ordering::SeqCst);
+                    json!(7)
+                };
+                Json(json!({"jsonrpc": "2.0", "result": result, "id": call["id"]}))
             }),
-        );
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
+        )
+    }
+    fn serve(listener: std::net::TcpListener, router: Router) {
+        listener.set_nonblocking(true).unwrap();
         tokio::spawn(
             axum::Server::from_tcp(listener)
                 .unwrap()
-                .serve(mock_server.into_make_service()),
+                .serve(router.into_make_service()),
         );
+    }
+    fn chain(id: &str, env: &str, genesis_hash: &str) -> SolanaProxyChainConf {
+        SolanaProxyChainConf {
+            id: id.to_string(),
+            upstream_env: env.to_string(),
+            upstream_envs: vec![],
+            expected_genesis_hash: genesis_hash.to_string(),
+        }
+    }
+    /// A relay with this proxy and nothing else, and a way to ask it for the slot of `chain`.
+    fn relay_with(runtime: Arc<SolanaProxyRuntime>) -> (Router, impl Fn(&str) -> Request<Body>) {
+        let tempdir = TempDir::new("cashweb-registry--solana-startup").unwrap();
+        let registry = Registry::new(
+            Db::open(tempdir.path().join("db.rocksdb")).unwrap(),
+            Arc::new(DisabledChainAdapter),
+            Net::Regtest,
+        );
+        let event_bus = registry.event_bus().clone();
+        let auth = Arc::clone(&runtime);
+        let router = RegistryServer {
+            registry: Arc::new(registry),
+            peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+            pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
+            curated_defaults: Arc::new(vec![]),
+            monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+            evm_rpc: None,
+            bitcoin_proxy: None,
+            solana_proxy: Some(runtime),
+            spa_dir: None,
+            event_bus,
+        }
+        .into_router();
+        let slot = move |chain: &str| {
+            let _keep = &tempdir;
+            let (capability, _) =
+                auth.auth
+                    .issue_capability(Address([7; 20]), chain, now_ms(), 60 * 60 * 1000);
+            Request::post(format!("/chain-rpc/{chain}/cap/{capability}/rpc"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}"#,
+                ))
+                .unwrap()
+        };
+        (router, slot)
+    }
+    async fn error_code(response: Response) -> Value {
+        let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+        serde_json::from_slice::<Value>(&body).unwrap()["error"].clone()
+    }
 
+    #[tokio::test]
+    async fn an_upstream_down_at_startup_leaves_only_its_chain_unserved_until_it_answers() {
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let up = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let up_url = format!("http://{}", up.local_addr().unwrap());
+        serve(up, node(DEVNET, Arc::clone(&forwarded)));
+        // Nothing listens at the second chain's upstream yet.
+        let down = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let down_address = down.local_addr().unwrap();
+        drop(down);
+        let down_url = format!("http://{down_address}");
         let conf = SolanaProxyConf {
             enabled: true,
-            chains: vec![SolanaProxyChainConf {
-                id: "solana-devnet".to_string(),
-                upstream_env: "SOLANA_DEVNET_RPC".to_string(),
-                upstream_envs: vec![],
-                expected_genesis_hash: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG".to_string(),
-            }],
+            chains: vec![
+                chain("solana-devnet", "UP", DEVNET),
+                chain("solana-mainnet", "DOWN", MAINNET),
+            ],
             ..SolanaProxyConf::default()
         };
-        let upstream_url = format!("http://{addr}");
-        let result =
-            SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(upstream_url.clone()))
-                .await;
-        assert!(matches!(
-            result,
-            Err(SolanaProxyStartError::GenesisHashMismatch { id }) if id == "solana-devnet"
-        ));
+        // The relay starts.
+        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |name| {
+            Some(if name == "UP" {
+                up_url.clone()
+            } else {
+                down_url.clone()
+            })
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let (router, slot) = relay_with(runtime);
+        // The chain whose upstream answers is served; the other answers unavailable.
+        let served = router.clone().oneshot(slot("solana-devnet")).await.unwrap();
+        assert_eq!(served.status(), StatusCode::OK);
+        let unserved = router
+            .clone()
+            .oneshot(slot("solana-mainnet"))
+            .await
+            .unwrap();
+        assert_eq!(unserved.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(error_code(unserved).await, "rpc_upstream_unavailable");
+        assert_eq!(forwarded.load(Ordering::SeqCst), 1);
+
+        // Its upstream comes up; the repeated check finds it and the chain is served.
+        serve(
+            std::net::TcpListener::bind(down_address).unwrap(),
+            node(MAINNET, Arc::clone(&forwarded)),
+        );
+        let mut status = StatusCode::SERVICE_UNAVAILABLE;
+        for _ in 0..100 {
+            status = router
+                .clone()
+                .oneshot(slot("solana-mainnet"))
+                .await
+                .unwrap()
+                .status();
+            if status == StatusCode::OK {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn an_upstream_that_is_another_chain_is_never_forwarded_to() {
+        let forwarded = Arc::new(AtomicUsize::new(0));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        // The upstream answers, as mainnet, where devnet is configured.
+        serve(listener, node(MAINNET, Arc::clone(&forwarded)));
+        let conf = SolanaProxyConf {
+            enabled: true,
+            chains: vec![chain("solana-devnet", "URL", DEVNET)],
+            ..SolanaProxyConf::default()
+        };
+        let runtime = SolanaProxyRuntime::from_conf_with_env(&conf, vec![], |_| Some(url.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        let (router, slot) = relay_with(runtime);
+        // Refused now, and still refused after the check has been repeated several times.
+        for _ in 0..2 {
+            let refused = router.clone().oneshot(slot("solana-devnet")).await.unwrap();
+            assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(error_code(refused).await, "rpc_upstream_unavailable");
+            tokio::time::sleep(IDENTITY_RETRY * 5).await;
+        }
+        assert_eq!(forwarded.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

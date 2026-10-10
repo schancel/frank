@@ -1,8 +1,13 @@
 /**
- * The funded send check for one UTXO testnet, through a real relay.
+ * The funded send check for one UTXO network, through a real relay.
  *
  *   FRANK_LIVE_RELAY_URL=http://127.0.0.1:8098 FRANK_UTXO_TEST_SEED_FILE=<file with 64 hex> \
- *     node --import tsx utxo-funded-send.livecheck.ts <xec-testnet|btc-testnet|bch-testnet>
+ *     node --import tsx utxo-funded-send.livecheck.ts <xec-testnet|btc-testnet|bch-testnet|xec-regtest>
+ *
+ * `xec-regtest` is a local node and needs no coins from anyone: `yarn --cwd packages/bot
+ * regtest:ecash-send` starts the node and the relay, funds the wallet from the node's faucet and
+ * runs this check. It passes the node's checkpoint block as FRANK_UTXO_CHECKPOINT=<height>:<hash>,
+ * which a regtest wallet must be given.
  *
  * Unfunded, it prints the wallet's address to fund and exits 2. Funded, it sends a small amount
  * to the wallet's next unused receive address, waits until the indexer shows the transaction and
@@ -24,6 +29,7 @@ import { ChronikClient } from "chronik-client";
 
 const AMOUNT: Record<string, bigint> = {
   "xec-testnet": 1_000n, // 10 XEC
+  "xec-regtest": 1_000n,
   "btc-testnet": 2_000n,
   "bch-testnet": 2_000n,
 };
@@ -54,7 +60,7 @@ async function main(): Promise<number> {
   const entry = getChainRegistryEntry(chainIdentifier);
   if (!relay || !seedFile || amount === undefined || !entry?.wallet) {
     console.error(
-      "usage: FRANK_LIVE_RELAY_URL=<relay> FRANK_UTXO_TEST_SEED_FILE=<file> node --import tsx utxo-funded-send.livecheck.ts <xec-testnet|btc-testnet|bch-testnet>"
+      "usage: FRANK_LIVE_RELAY_URL=<relay> FRANK_UTXO_TEST_SEED_FILE=<file> node --import tsx utxo-funded-send.livecheck.ts <xec-testnet|btc-testnet|bch-testnet|xec-regtest>"
     );
     return 1;
   }
@@ -74,8 +80,11 @@ async function main(): Promise<number> {
   let seen: (txid: string) => Promise<boolean>;
   if (entry.wallet.indexer === "chronik") {
     const chronik = new ChronikClient([`${relay}/chain-rpc/${chainIdentifier}/chronik`]);
+    // Given only for a regtest network; the wallet refuses one for a public network.
+    const [height, hash] = (process.env.FRANK_UTXO_CHECKPOINT ?? "").split(":");
     const ecash = createEcashChain({
-      networkId: chainIdentifier as "xec-testnet",
+      networkId: chainIdentifier as "xec-testnet" | "xec-regtest",
+      checkpoint: hash ? { height: Number(height), hash } : undefined,
       chronik,
       nativeAttemptStore: fileAttemptStore(stateFile),
     });

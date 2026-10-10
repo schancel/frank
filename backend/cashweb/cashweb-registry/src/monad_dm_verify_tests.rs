@@ -73,16 +73,10 @@ fn fixture_current_evidence(evidence: HistoricalEvidence, now: Timestamp) -> Cur
     }
 }
 
-fn check(
-    delivery: &[u8],
-    context: &[u8],
-    sender: &Current,
-    recipient: &Current,
-) -> Result<CanonicalStampChecks> {
+fn check(delivery: &[u8], context: &[u8], recipient: &Current) -> Result<CanonicalStampChecks> {
     verify_canonical_stamp(CanonicalStampCheckInput {
         delivery,
         context,
-        sender_current: sender,
         recipient_current: recipient,
         recipient_evidence: None,
     })
@@ -94,7 +88,7 @@ fn exact_ts_envelope_context_and_stamp_checks_do_not_claim_a_payment() {
     let current = fixture_current(v);
     let delivery = bytes(v, "delivery");
     let context = bytes(v, "context");
-    let checks = check(&delivery, &context, &current, &current).unwrap();
+    let checks = check(&delivery, &context, &current).unwrap();
     assert_eq!(
         hex::encode(checks.payload_digest),
         v["t3"].as_str().unwrap()
@@ -107,7 +101,7 @@ fn exact_ts_envelope_context_and_stamp_checks_do_not_claim_a_payment() {
     let mut bad_context = context.clone();
     let last = bad_context.len() - 1;
     bad_context[last] ^= 1;
-    assert!(check(&delivery, &bad_context, &current, &current).is_err());
+    assert!(check(&delivery, &bad_context, &current).is_err());
     for field in ["message", "stamp", "t1", "fork", "generation", "expiry"] {
         let mut altered = current.clone();
         match field {
@@ -119,10 +113,7 @@ fn exact_ts_envelope_context_and_stamp_checks_do_not_claim_a_payment() {
             "expiry" => altered.status.checked_time.seconds = 3000,
             _ => unreachable!(),
         }
-        assert!(
-            check(&delivery, &context, &current, &altered).is_err(),
-            "{field}"
-        );
+        assert!(check(&delivery, &context, &altered).is_err(), "{field}");
     }
 }
 
@@ -306,7 +297,7 @@ fn distinct_parties_accept_current_and_immediately_previous_but_reject_retired_o
     assert_eq!(recipient.message_key, test_account(2));
     let sender = signed_snapshot(&recipient, 7, test_account(8), test_account(9), None);
     let (delivery, context) = directional_fixture(&sender, &recipient);
-    assert!(check(&delivery, &context, &sender, &recipient).is_ok());
+    assert!(check(&delivery, &context, &recipient).is_ok());
     let first = signed_snapshot(
         &recipient,
         1,
@@ -335,12 +326,9 @@ fn distinct_parties_accept_current_and_immediately_previous_but_reject_retired_o
         Some(&recipient.stamp_key)
     );
     let with_history = |head: &Current| {
-        let mut sender_at_time = sender.clone();
-        sender_at_time.status.checked_time = head.status.checked_time;
         verify_canonical_stamp(CanonicalStampCheckInput {
             delivery: &delivery,
             context: &context,
-            sender_current: &sender_at_time,
             recipient_current: head,
             recipient_evidence: Some(&recipient.evidence),
         })
@@ -378,28 +366,36 @@ fn distinct_parties_accept_current_and_immediately_previous_but_reject_retired_o
 }
 
 #[test]
-fn distinct_sender_and_recipient_p_m_and_t1_are_directionally_bound() {
+fn recipient_fields_are_bound_and_what_the_context_says_of_the_sender_entry_is_not_checked() {
     let recipient = fixture_current(&corpus()["runtime_case"]);
     let sender = signed_snapshot(&recipient, 7, test_account(8), test_account(9), None);
     assert_ne!(sender.message_key, recipient.message_key);
     assert_ne!(sender.evidence.hash, recipient.evidence.hash);
     let (delivery, context) = directional_fixture(&sender, &recipient);
-    assert!(check(&delivery, &context, &sender, &recipient).is_ok());
+    assert!(check(&delivery, &context, &recipient).is_ok());
     for (field, other) in [(2, 3), (3, 2), (6, 7), (7, 6), (4, 5), (5, 4)] {
         let mut substituted = decode_canonical(&context).unwrap();
         let replacement = map_value(&mut substituted, other).clone();
         assert_ne!(&*map_value(&mut substituted, field), &replacement);
         *map_value(&mut substituted, field) = replacement;
         let encoded = encode_canonical(&substituted).unwrap();
+        // Fields 4 and 6 are the sender's directory entry hash and message key. The relay
+        // does not look the sender up, so it takes them as stated; the recipient's client
+        // checks them when it opens the message. Every other field is still bound.
+        let expected = if matches!(field, 4 | 6) {
+            Ok(())
+        } else {
+            Err(CanonicalStampError::DirectoryContext)
+        };
         assert_eq!(
-            check(&delivery, &encoded, &sender, &recipient),
-            Err(CanonicalStampError::DirectoryContext),
-            "directional context field {field}"
+            check(&delivery, &encoded, &recipient).map(|_| ()),
+            expected,
+            "context field {field}"
         );
     }
     assert!(
-        check(&delivery, &context, &recipient, &sender).is_err(),
-        "admitted snapshots cannot swap principals"
+        check(&delivery, &context, &sender).is_err(),
+        "the sender's entry cannot stand in for the recipient's"
     );
 }
 
@@ -438,10 +434,7 @@ fn delivery_rejects_wrong_t3_t4_destination_and_duplicate_or_noncontiguous_membe
             FramePayload::Value(&payload),
         )
         .unwrap();
-        assert!(
-            check(&frame, &context, &current, &current).is_err(),
-            "{case}"
-        );
+        assert!(check(&frame, &context, &current).is_err(), "{case}");
     }
 }
 

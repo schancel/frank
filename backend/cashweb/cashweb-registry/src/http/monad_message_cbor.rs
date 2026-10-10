@@ -67,21 +67,22 @@ pub(crate) async fn handle_put(
     .map_err(|_| CanonicalError::Unavailable)??;
     let request = ExactRequest::parse(bytes, content_type)?;
     let owner = server.registry.canonical_dm();
-    // Immutable retries precede fresh Directory eligibility and changed admission policy.
-    let claim = if let Some(retained) = owner.find_request(&request)? {
-        if retained.policy.network != descriptor.cbor_identifier
-            || retained.policy.chain_id != descriptor.evm_chain_id
+    // An exact repeat of a stored message is answered from the store, whatever the directory
+    // or the admission policy says today.
+    let claim = if let Some(stored) = owner.find_request(&request)? {
+        if stored.policy.network != descriptor.cbor_identifier
+            || stored.policy.chain_id != descriptor.evm_chain_id
         {
             return Err(CanonicalError::Unavailable);
         }
-        retained
+        stored
     } else {
         if request.transaction_count() > runtime.reconcile().limits.max_members {
             return Err(CanonicalError::Invalid);
         }
         let principals = request_principals(&request, descriptor.cbor_identifier)?;
         // The recipient's own entry says which relay holds its mailbox. When this relay cannot
-        // deliver there, say so as a final answer: nothing is retained, no payment is broadcast.
+        // deliver there, say so as a final answer: nothing is stored, no payment is broadcast.
         let Some(recipient_current) =
             deliverable_recipient(owner, descriptor.cbor_identifier, &principals.recipient).await?
         else {
@@ -92,18 +93,9 @@ pub(crate) async fn handle_put(
                 "undeliverable",
             );
         };
-        // A sender whose own entry is missing or expired can republish and send a new message;
-        // this one can never be verified.
-        let Some(sender_current) =
-            sender_entry(owner, descriptor.cbor_identifier, &principals.sender).await?
-        else {
-            return undeliverable_response(
-                &request,
-                descriptor.cbor_identifier,
-                &principals,
-                "sender_unpublished",
-            );
-        };
+        // The sender is whoever the message says. The relay does not look the sender up:
+        // checking who wrote a message is the job of the recipient's client, which opens it
+        // with the key the sender published.
         let Principals {
             recipient,
             recipient_t1,
@@ -115,40 +107,109 @@ pub(crate) async fn handle_put(
             }
             _ => None,
         };
+        // Everything that can refuse the message is decided from its bytes, here and in the
+        // store's own checks, before anything is stored or broadcast.
         let input = crate::monad_outbox::financial::validate_canonical_payment_set(
             request,
-            &sender_current,
             &recipient_current,
             historical.as_ref(),
             descriptor.cbor_identifier,
             descriptor.evm_chain_id,
             runtime.min_value_wei(),
         )?;
-        server
-            .registry
-            .claim_canonical_dm(input, now_ms(), runtime.reconcile())?
+        owner.claim(input, now_ms())?
     };
-    let hash = claim.policy.payload_hash;
-    let outcome = crate::monad_outbox::reconcile_canonical(
-        runtime.transport(),
-        &server.registry,
-        &hash,
-        runtime.reconcile(),
-        runtime.outbox_permits(),
-    )
-    .await;
-    // Deadline/cancellation cannot erase an accepted owner or fabricate delivery.
-    let claim = match outcome {
-        Ok(claim) => claim,
-        Err(_) => owner.get(&hash)?.ok_or(CanonicalError::Unavailable)?,
+    let claim = if matches!(
+        claim.phase,
+        crate::store::monad_dm_cbor::Phase::Delivered(_)
+    ) {
+        claim
+    } else {
+        owner.finalize(&claim.policy.payload_hash, now_ms())?
     };
+    // The message is in the recipient's inbox from here on. Nothing below can undo that.
     if let Ok(recipient) = claim.policy.recipient() {
-        let _ = server
-            .event_bus
-            .publish_message_arrival(&recipient.to_hex(), &claim.policy.payload_hash)
-            .await;
+        // The notification is a courtesy to connected readers. A slow event bus must not
+        // hold up the payments or the answer.
+        let _ = tokio::time::timeout(
+            EVENT_BUS_TIMEOUT,
+            server
+                .event_bus
+                .publish_message_arrival(&recipient.to_hex(), &claim.policy.payload_hash),
+        )
+        .await;
+    }
+    if owner.may_broadcast_payments(&claim.policy.payload_hash, REBROADCAST_INTERVAL) {
+        broadcast_payments(runtime, &claim).await;
     }
     accepted_response(&claim)
+}
+
+/// Longest the relay waits on the event bus to announce a delivered message.
+const EVENT_BUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A message's payments are handed to the node at most once in this long. A repeat of the
+/// same message inside it is answered `delivered` without sending them again.
+pub(crate) const REBROADCAST_INTERVAL: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(300)
+} else {
+    std::time::Duration::from_secs(5)
+};
+
+/// Longest the relay waits on the node for one payment before answering the sender anyway.
+const BROADCAST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Hand every payment of a delivered message to the node once, all at the same time. The
+/// results are logged and nothing else: a payment the node refused, or one that could not be
+/// sent in time, is simply not sent. A resend of the same message sends them again, once
+/// [`REBROADCAST_INTERVAL`] has passed.
+///
+/// Returns what was logged for each payment: the outcome of one that went out, or the reason
+/// one did not.
+async fn broadcast_payments(
+    runtime: &crate::monad_mailbox::EnabledMonadMailboxRuntime,
+    claim: &crate::store::monad_dm_cbor::Claim,
+) -> Vec<std::result::Result<&'static str, String>> {
+    let client = crate::monad_http::MonadHttpClient::with_transport(runtime.transport().clone());
+    let wait = runtime.reconcile().rpc_timeout.min(BROADCAST_TIMEOUT);
+    let payload_hash = hex::encode(claim.policy.payload_hash);
+    let sends = claim
+        .request
+        .raw_transactions()
+        .zip(&claim.members)
+        .map(|(raw, member)| {
+            let (client, payload_hash) = (&client, &payload_hash);
+            async move {
+                let result =
+                    match tokio::time::timeout(wait, client.send_raw_transaction(raw)).await {
+                        Ok(Ok(_)) => Ok("accepted"),
+                        Ok(Err(error)) if error.says_tx_already_held() => Ok("already held"),
+                        Ok(Err(error)) if error.definitively_rejected_send() => {
+                            Err(format!("refused by the node: {error}"))
+                        }
+                        Ok(Err(error)) => Err(format!("could not be sent: {error}")),
+                        Err(_) => Err("no answer from the node in time".to_owned()),
+                    };
+                match &result {
+                    Ok(outcome) => tracing::event!(
+                        tracing::Level::DEBUG,
+                        payload_hash = %payload_hash,
+                        tx_hash = %member.tx_hash.to_hex(),
+                        outcome,
+                        "Direct-message payment broadcast"
+                    ),
+                    Err(reason) => tracing::event!(
+                        tracing::Level::WARN,
+                        payload_hash = %payload_hash,
+                        tx_hash = %member.tx_hash.to_hex(),
+                        reason = %reason,
+                        "Direct-message payment not broadcast; the message is delivered"
+                    ),
+                }
+                result
+            }
+        });
+    futures::future::join_all(sends).await
 }
 
 fn now_ms() -> i64 {
@@ -212,7 +273,6 @@ async fn history(
 }
 /// What a submission says about itself, read from its own bytes before any directory lookup.
 pub(crate) struct Principals {
-    pub(crate) sender: Vec<u8>,
     pub(crate) recipient: Vec<u8>,
     pub(crate) sender_t1: Option<[u8; 32]>,
     pub(crate) recipient_t1: Option<[u8; 32]>,
@@ -247,28 +307,6 @@ async fn deliverable_recipient(
         Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
         // Anything else is this relay's own trouble (clock, storage); the sender may retry.
         Err(_) => Err(CanonicalError::Unavailable),
-    }
-}
-/// The sender's current entry, or `None` when it has none here: never published, expired or
-/// quarantined. That is final for this request; a relay fault is an error the sender may retry.
-async fn sender_entry(
-    owner: &crate::store::monad_dm_cbor::Owner,
-    network: &str,
-    subject: &[u8],
-) -> Result<Option<crate::directory_admission::Current>> {
-    use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
-    let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
-    let reservation = directory
-        .reserve(network, &hex::encode(subject))
-        .map_err(|_| CanonicalError::Unavailable)?;
-    match directory
-        .submit_snapshot(reservation, SnapshotOperation::Current)
-        .wait()
-        .await
-    {
-        Ok(AdmittedSnapshot::Current(current)) => Ok(Some(current)),
-        Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
-        _ => Err(CanonicalError::Unavailable),
     }
 }
 /// A final answer for a submission this relay will never deliver, in the shape of the other
@@ -343,7 +381,6 @@ fn request_principals(request: &ExactRequest, network: &str) -> Result<Principal
         (None, None)
     };
     Ok(Principals {
-        sender: sender.key_bytes.clone(),
         recipient: recipient.key_bytes.clone(),
         sender_t1,
         recipient_t1,
@@ -366,21 +403,17 @@ fn terminal_reason(reason: crate::store::monad_outbox::MonadOutboxTerminal) -> &
 fn accepted_response(claim: &crate::store::monad_dm_cbor::Claim) -> Result<Response> {
     use crate::store::monad_dm_cbor::Phase;
     let identity = claim.echo()?;
-    let (status, body) = match claim.phase {
-        Phase::Pending | Phase::FullyConfirmed => (
-            StatusCode::ACCEPTED,
-            serde_json::json!({"version":1,"phase":"retained","identity":identity}),
-        ),
-        Phase::Delivered(timestamp) if (0..=9_007_199_254_740_991).contains(&timestamp) => (
-            StatusCode::OK,
-            serde_json::json!({"version":1,"phase":"delivered","identity":identity,"mailbox_committed_at_ms":timestamp}),
-        ),
-        Phase::Delivered(_) => return Err(CanonicalError::Unavailable),
-        Phase::Terminal(reason) => (
-            StatusCode::OK,
-            serde_json::json!({"version":1,"phase":"dead","identity":identity,"reason":terminal_reason(reason)}),
-        ),
+    // A stored message is a delivered message; the handler never answers for anything else.
+    let Phase::Delivered(timestamp) = claim.phase else {
+        return Err(CanonicalError::Unavailable);
     };
+    if !(0..=9_007_199_254_740_991).contains(&timestamp) {
+        return Err(CanonicalError::Unavailable);
+    }
+    let (status, body) = (
+        StatusCode::OK,
+        serde_json::json!({"version":1,"phase":"delivered","identity":identity,"mailbox_committed_at_ms":timestamp}),
+    );
     if serde_json::to_vec(&body)
         .map_err(|_| CanonicalError::Unavailable)?
         .len()

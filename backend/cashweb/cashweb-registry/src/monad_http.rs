@@ -508,10 +508,13 @@ impl MonadRpcError {
         }
     }
 
+    /// The upstream URL carries the provider's API key, and reqwest prints the URL with its
+    /// errors. It is removed here, where every transport error is made, so no caller can log
+    /// or return it.
     fn transport(method: &str, source: reqwest::Error) -> Self {
         MonadRpcError::Transport {
             method: method.to_string(),
-            source,
+            source: source.without_url(),
         }
     }
 }

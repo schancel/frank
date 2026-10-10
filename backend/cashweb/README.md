@@ -37,9 +37,12 @@ Frank chain identifier selects an EVM or Bitcoin-family handler. Bitcoin-family 
 serve the Chronik HTTP/Protobuf API at `/chain-rpc/:chain/chronik/*`. Chronik is not used for EVM.
 
 The shipped relay configurations expose `monad-testnet`. Its provider URL is read only from the row's `upstream_env`
-environment variable. At startup the relay calls `eth_chainId` and refuses readiness unless the
+environment variable. At startup the relay calls `eth_chainId` and serves a chain only once its
 provider reports the configured `expected_chain_id` and registry-pinned block checkpoint; every
-configured WebSocket upstream is probed independently with both identity checks. EVM proxy rows
+configured WebSocket upstream is probed independently with both identity checks. A provider that
+is down or reports another chain never stops the relay: startup waits at most 2 seconds for the
+first check, that chain's RPC routes answer `503 rpc_upstream_unavailable`, and the check is
+repeated every 30 seconds until it passes. Message delivery does not depend on it. EVM proxy rows
 must repeat the registry checkpoint exactly so a configuration cannot silently weaken the probe.
 Rotate a provider key by changing that
 server-side environment value and restarting the relay; the URL and key are never returned or
@@ -109,7 +112,10 @@ forwarded only when their IDs match an outstanding call or active subscription.
 Bitcoin-family configuration names optional node JSON-RPC and Chronik upstream environment
 variables plus the registry-pinned checkpoint height/hash (regtest rows use an operator
 checkpoint). Startup checks `getblockhash` and Chronik's
-`GET /block/<height>` before readiness. Anonymous Chronik wallet-bootstrap reads use a high,
+`GET /block/<height>`, with the same rule as the EVM proxy: the relay starts whatever the answer,
+and a chain whose upstream is unreachable or reports a different block is logged, answers
+`503 rpc_upstream_unavailable`, and is checked again every 30 seconds until it passes; nothing is
+forwarded to it before then. The Solana proxy treats `getGenesisHash` the same way. Anonymous Chronik wallet-bootstrap reads use a high,
 burstable fixed-hour IP quota; anonymous `sendrawtransaction`, `broadcast-tx`, and bounded
 `broadcast-txs` use a separate small fixed-hour broadcast quota. Other node RPC and indexer
 operations require the same registered-customer challenge as EVM calls. Anonymous history queries

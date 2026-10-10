@@ -125,7 +125,6 @@ function replayOf(request) {
     ['T_BODY_HEX', 'multipart/form-data; boundary=frank-fixture-777'],
     ['GENUINE_T_BODY_HEX', 'multipart/form-data; boundary=frank-genuine-777'],
     ['PREFIX_T_BODY_HEX', 'multipart/form-data; boundary=frank-prefix-777'],
-    ['CAPACITY_PREFIX_BODY_HEX', 'multipart/form-data; boundary=frank-capacity-prefix'],
   ]) {
     const [line, bodyHex] = constant(name)
     const before = transport.restoreCanonicalRequest({ body: codec.fromHex(bodyHex), contentType })
@@ -145,18 +144,6 @@ function replayOf(request) {
     `const REPLAY_T_BODY_HEX: &str = "${hexOf(replay)}";`,
   )
   console.log('REPLAY_T_BODY_HEX', replay.identity.submission_identity)
-  const cohort = source.match(/const CAPACITY_REQUEST_JSON: &str = r#"(\[.*\])"#;/)
-  if (!cohort) throw Error('missing CAPACITY_REQUEST_JSON')
-  const rows = []
-  for (const row of JSON.parse(cohort[1])) {
-    const after = await plainTransfers(row.body, row.content_type)
-    rows.push({ ...row, body: hexOf(after) })
-  }
-  source = source.replace(
-    cohort[0],
-    `const CAPACITY_REQUEST_JSON: &str = r#"${JSON.stringify(rows)}"#;`,
-  )
-  console.log('CAPACITY_REQUEST_JSON rows', rows.length)
   // Asserted submission identities and pinned raw members follow the re-signed transactions.
   for (const [before, after] of identities) source = source.split(before).join(after)
   fs.writeFileSync(target, source)

@@ -358,20 +358,26 @@ export class EvmLegacyConsolidator {
   }
   private async account(address: string): Promise<EvmNativeAccountObservation> {
     const { provider } = this.config
-    const block = await provider.getBlock('latest')
-    if (!block?.hash) throw new Error('Native account block unavailable')
-    const [balance, nonce, checked] = await Promise.all([
-      provider.getBalance(address, block.number),
-      provider.getTransactionCount(address, block.number),
-      provider.getBlock(block.number),
-    ])
-    if (checked?.hash !== block.hash)
-      throw new Error('Native account block changed')
-    return {
-      blockHash: block.hash.toLowerCase(),
-      blockNumber: block.number,
-      nonce,
-      balanceWei: balance.toString(),
+    // The balance and the nonce are read at one block, and that block is read again to see it
+    // is still the block at its height. On a chain whose newest block is only proposed (Monad:
+    // seen on a local chain, a send that needed two accounts failed here on its first read)
+    // the newest block is often replaced a moment later: then the read is simply made again.
+    for (let attempt = 0; ; attempt++) {
+      const block = await provider.getBlock('latest')
+      if (!block?.hash) throw new Error('Native account block unavailable')
+      const [balance, nonce, checked] = await Promise.all([
+        provider.getBalance(address, block.number),
+        provider.getTransactionCount(address, block.number),
+        provider.getBlock(block.number),
+      ])
+      if (checked?.hash === block.hash)
+        return {
+          blockHash: block.hash.toLowerCase(),
+          blockNumber: block.number,
+          nonce,
+          balanceWei: balance.toString(),
+        }
+      if (attempt >= 5) throw new Error('Native account block changed')
     }
   }
   /** `wanted`, when given, is asked once the reads are in and before anything is recorded: an

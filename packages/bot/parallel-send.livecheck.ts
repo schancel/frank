@@ -45,6 +45,11 @@
  *   w  money that arrived as payments pays for a send: the recipient of two 0.02 stamps, with
  *      nothing in its main account, sends a message with a 0.03 stamp: two transfers, one from
  *      each received coin
+ *   m  a native send that needs more than one account (the main address and a received coin):
+ *      every transaction mined, the recipient paid, the fee quoted is the fee paid
+ *   n  (local chain only) a payment the node refuses, because its account was paid a moment
+ *      ago and the wallet's wait for that is switched off in the check: delivered all the same,
+ *      then signed again at its nonce and paid once, within seconds
  *   r  a stamp made to revert on purpose (the CHECK signs it inside the chain's spacing window,
  *      behind a transfer of its own from the same account; the wallet's spacing is bypassed for
  *      that one payment and nowhere else): seen reverted, paid again once, never a third time
@@ -1133,6 +1138,148 @@ async function main() {
       require_("w", "the recipient has one copy carrying the whole stamp", (results.w as { recipientCopies: string[] }).recipientCopies.join() === mon(wanted));
     };
 
+    // ---- m -----------------------------------------------------------------------------
+    /** A native send that needs more than one account: money at the main address and in a
+     * received coin, sent together to an outside address. */
+    const runM = async () => {
+      const coinWei = 20_000_000_000_000_000n; // 0.02
+      const mainWei = 12_000_000_000_000_000n; // 0.012
+      const value = 22_000_000_000_000_000n; // 0.022: more than either holds
+      if (!(await affordable("m", coinWei + mainWei + 3n * txFee))) return;
+      await ensureMain(stack, alice, coinWei + perMessage + floor);
+      await sleep(3000);
+      const paid = await alice.chain.directMessages.send({
+        wallet: alice.handle,
+        recipient: { raw: bob.address },
+        items: [{ type: "text", text: `m pays bob ${Date.now()}` }],
+        messageId: randomUUID(),
+        stampValue: coinWei,
+      });
+      await settle(alice, [paid.payloadDigest]);
+      const bobMain = await provider.getBalance(bob.mainAccount);
+      if (bobMain < mainWei) await stack.fund(bob.mainAccount, mainWei - bobMain);
+      for (const deadline = Date.now() + 60_000; Date.now() < deadline; ) {
+        await bob.chain.directMessages.fetchSince({ wallet: bob.handle, sinceMs: startedAt });
+        const coins = [...((await bob.handle.refreshReceivedPayments?.()) ?? [])];
+        if (coins.some((coin) => coin.spendable && coin.amountWei === coinWei)) break;
+        await sleep(1500);
+      }
+      const { Wallet } = await import("ethers");
+      const outside = Wallet.createRandom().address;
+      const estimate = await bob.handle
+        .estimateLegacyFee?.({ recipient: { raw: outside }, value })
+        .catch((error: Error) => `${error.name}: ${error.message}`);
+      const started = Date.now();
+      const out = await bob.handle.sendLegacy!({ recipient: { raw: outside }, value }).then(
+        (sent) => ({ sent }),
+        (error: Error & { transaction?: { txHash?: string; relatedTxHashes?: string[] } }) => ({
+          error: `${error.name}: ${error.message}`,
+          hashes: [...(error.transaction?.relatedTxHashes ?? []), error.transaction?.txHash].filter(Boolean) as string[],
+        })
+      );
+      const ms = Date.now() - started;
+      const hashes = "sent" in out ? [...(out.sent.intermediateTxHashes ?? []), out.sent.txHash] : out.hashes;
+      const onChainNow = await Promise.all(
+        hashes.map(async (hash) => {
+          let receipt = await provider.getTransactionReceipt(hash);
+          for (let i = 0; !receipt && i < 20; i++) {
+            await sleep(1000);
+            receipt = await provider.getTransactionReceipt(hash);
+          }
+          const tx = await provider.getTransaction(hash);
+          return `${tx?.from.slice(0, 10)} -> ${tx?.to?.slice(0, 10)} ${tx ? mon(tx.value) : "?"} gas ${tx?.gasLimit} block ${receipt?.blockNumber} status ${receipt?.status} fee ${receipt ? mon(receipt.gasUsed * receipt.gasPrice) : "?"}`;
+        })
+      );
+      results.m = {
+        value: mon(value),
+        feeQuoted: typeof estimate === "object" && estimate ? { inputs: estimate.inputCount, total: mon(estimate.totalFee) } : estimate,
+        ms,
+        result: "sent" in out ? `sent ${out.sent.txHash}` : out.error,
+        feePaid: "sent" in out ? mon(out.sent.totalFeePaid) : undefined,
+        transactions: onChainNow,
+        recipientHolds: mon(await provider.getBalance(outside)),
+      };
+      say("m", JSON.stringify(results.m, null, 1));
+      require_("m", "the send returned sent", "sent" in out);
+      require_("m", "it took more than one transaction, every one mined with status 1", onChainNow.length >= 2 && onChainNow.every((line) => line.includes("status 1")));
+      require_("m", "the recipient holds the whole amount", (await provider.getBalance(outside)) === value);
+      require_("m", "the fee quoted is the fee paid", "sent" in out && typeof estimate === "object" && !!estimate && estimate.totalFee === out.sent.totalFeePaid);
+    };
+
+    // ---- n -----------------------------------------------------------------------------
+    /** A payment the node refuses: a new account is paid and sends at once, with the wallet's
+     * wait for newly arrived funds switched off IN THIS CHECK ONLY. The node refuses the stamp
+     * (and goes on refusing those bytes); the wallet signs the same payment again at its nonce.
+     * Only on a chain made for tests: it opens a wallet of its own. */
+    const runN = async () => {
+      if (!stack.chainOutage) {
+        results.n = "NOT RUN: only on the local chain (it opens a new wallet)";
+        say("n", results.n);
+        return;
+      }
+      const carol = await stack.openWallet("carol", { stampValueWei: floorNow });
+      const carolTap = intercept(carol);
+      const payer = EvmStampPayer.prototype as unknown as {
+        untilFundsSettled(...args: unknown[]): Promise<void>;
+      };
+      const settledWait = payer.untilFundsSettled;
+      payer.untilFundsSettled = async () => undefined;
+      let sent: Sent;
+      const started = Date.now();
+      try {
+        await stack.fund(carol.mainAccount, 3n * perMessage);
+        sent = await sendPaid(carol, bob.address, `n refused ${started}`);
+      } finally {
+        payer.untilFundsSettled = settledWait;
+      }
+      const deliveredMs = Date.now() - started;
+      const first = carolTap.of(sent.digest)[0]?.rawTransactions[0];
+      const statesAtDelivery =
+        carol.chain.directMessages.paymentsOf?.({ wallet: carol.handle, payloadDigest: sent.digest }) ?? [];
+      const firstKnownToNode = first
+        ? (await provider.getTransaction(Transaction.from(first).hash!)) !== null
+        : undefined;
+      const settled = await settle(carol, [sent.digest]);
+      const paidMs = Date.now() - started;
+      const firstTx = first ? Transaction.from(first) : undefined;
+      const stampAddress = firstTx?.to?.toLowerCase() ?? "";
+      const toStamp: string[] = [];
+      const head = await provider.getBlockNumber();
+      for (let number = head - 80; number <= head; number++) {
+        const block = await provider.getBlock(number, true);
+        for (const tx of block?.prefetchedTransactions ?? [])
+          if (tx.from.toLowerCase() === carol.mainAccount.toLowerCase() && tx.to?.toLowerCase() === stampAddress) {
+            const receipt = await provider.getTransactionReceipt(tx.hash);
+            toStamp.push(`${tx.hash.slice(0, 12)} nonce ${tx.nonce} block ${number} status ${receipt?.status} maxFee ${tx.maxFeePerGas}`);
+          }
+      }
+      const next = await sendPaid(carol, bob.address, `n next ${Date.now()}`);
+      const nextSettled = await settle(carol, [next.digest]);
+      results.n = {
+        deliveredMs,
+        paymentStatesAtDelivery: statesAtDelivery,
+        firstSignedPayment: firstTx && `${firstTx.hash!.slice(0, 12)} nonce ${firstTx.nonce} maxFee ${firstTx.maxFeePerGas}`,
+        firstKnownToTheNode: firstKnownToNode,
+        paidAfterMs: paidMs,
+        paymentStates: settled.payments[0],
+        summary: carol.chain.directMessages.paymentSummaryOf?.({ wallet: carol.handle, payloadDigest: sent.digest }),
+        transfersToTheStampAddressOnChain: toStamp,
+        stampAddressBalance: mon(await provider.getBalance(stampAddress)),
+        mainNonceAfter: await mainNonce(stack, carol),
+        nextMessage: `${nextSettled.statuses[next.digest]} ${nextSettled.payments[0]?.join(",")} in ${next.ms} ms`,
+        recipientCopies: await seenBy(bob, [sent.digest], startedAt),
+      };
+      await carol.close().catch(() => undefined);
+      say("n", JSON.stringify(results.n, null, 1));
+      const n = results.n as { paymentStates?: string[]; mainNonceAfter: number };
+      require_("n", "the node refused the first signed payment (it does not know it)", firstKnownToNode === false && statesAtDelivery.includes("pending"));
+      require_("n", "the message was delivered all the same, once", (results.n as { recipientCopies: number[] }).recipientCopies[0] === 1);
+      require_("n", "the payment was signed again and paid: one transfer to the stamp address on chain, status 1, at the same nonce", toStamp.length === 1 && toStamp[0].includes("status 1") && toStamp[0].includes(`nonce ${firstTx?.nonce} `) && !toStamp[0].startsWith(firstTx?.hash?.slice(0, 12) ?? "?"));
+      require_("n", "recorded as the refused bytes failed and the new ones spent; paid", n.paymentStates?.join(",") === "failed,spent");
+      require_("n", `paid within 20 s of the send (took ${Math.round(paidMs / 1000)} s)`, paidMs < 20_000);
+      require_("n", "the account was not left held: the next message is delivered and paid", nextSettled.statuses[next.digest] === "delivered" && nextSettled.payments[0]?.join(",") === "spent");
+    };
+
     // ---- r -----------------------------------------------------------------------------
     const runR = async () => {
       if (!(await affordable("r", 2n * (floor + txFee) + 2n * txFee))) return;
@@ -1342,6 +1489,8 @@ async function main() {
       h: runH,
       r: runR,
       w: runW,
+      m: runM,
+      n: runN,
       unfreeze: runUnfreeze,
     };
     for (const phase of phases) {
@@ -1392,9 +1541,9 @@ async function main() {
             notBroadcast.length > 0 ? `: ${notBroadcast[0].slice(0, 300)}` : ""
           }`
         );
-        // Phase r hands the relay a payment made to fail on purpose; nothing else may.
+        // Phase n hands the relay a payment the node refuses, on purpose; nothing else may.
         (verdicts["relay log"] ??= []).push(
-          ...(notBroadcast.length <= (phases.includes("r") ? 1 : 0)
+          ...(notBroadcast.length <= (phases.includes("n") ? 1 : 0)
             ? []
             : [`${notBroadcast.length} payments the relay could not broadcast`])
         );

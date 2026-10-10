@@ -2896,4 +2896,34 @@ describe('wallet-lifetime EVM native operations', () => {
       totalFee: 21000n * 102n,
     })
   })
+
+  // Seen on a local Monad chain: a send that needed two accounts failed "Native account block
+  // changed" before it signed anything. Monad's newest block is only proposed and is often
+  // replaced a moment later.
+  it('the newest block being replaced between two reads is read again, not an error; a chain that never settles still ends in the error', async () => {
+    const state = chain([200000n])
+    const { executor } = owner(state)
+    const settled = { hash: '0x' + 'ab'.repeat(32), number: 1 }
+    const replaced = { hash: '0x' + 'cd'.repeat(32), number: 1 }
+    // The first look at "latest" sees a block that is gone when it is read again by number.
+    state.provider.getBlock
+      .mockResolvedValueOnce(replaced as never)
+      .mockResolvedValue(settled as never)
+    const result = await executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 100000n,
+    })
+    expect(result.totalValueSent).toBe(100000n)
+    expect(state.raws).toHaveLength(1)
+    // Never the same block twice: the read gives up, having signed nothing more.
+    let n = 0
+    state.provider.getBlock.mockImplementation((async () => ({
+      hash: '0x' + (n++).toString(16).padStart(64, '0'),
+      number: 1,
+    })) as never)
+    await expect(
+      executor.sendLegacy({ recipient: { raw: recipient }, value: 1000n }),
+    ).rejects.toThrow('Native account block changed')
+    expect(state.raws).toHaveLength(1)
+  })
 })

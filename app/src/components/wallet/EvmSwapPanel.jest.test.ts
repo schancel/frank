@@ -51,7 +51,8 @@ jest.mock('src/composables/useSwapHistory', () => ({
   }),
 }))
 jest.mock('src/utils/explorer', () => ({
-  getExplorerUrl: (hash: string) => `https://explorer.test/tx/${hash}`,
+  getExplorerUrl: (hash: string, chain: string) =>
+    `https://explorer.test/${chain}/tx/${hash}`,
 }))
 
 import EvmSwapPanel from './EvmSwapPanel.vue'
@@ -464,7 +465,7 @@ describe('confirming and executing', () => {
     expect(text(view, 'swap-result-fee')).toBe('Network fee paid: 0.02652 MON')
     expect(
       view.get('[data-testid="swap-result-explorer"]').attributes('href'),
-    ).toBe('https://explorer.test/tx/0xhash1')
+    ).toBe('https://explorer.test/monad-testnet/tx/0xhash1')
     await click(view, 'swap-new-btn')
     expect(text(view, 'swap-review-btn')).toBe('Enter an amount')
   })

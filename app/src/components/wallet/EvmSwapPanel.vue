@@ -978,7 +978,8 @@ export default defineComponent({
 
     const explorerUrlOf = (txHash: string) => {
       try {
-        return getExplorerUrl(txHash, props.walletId, {
+        // The canonical identifier, not the wallet's alias: the alias names the mainnet explorer.
+        return getExplorerUrl(txHash, props.chainIdentifier, {
           isTestnet:
             getChainRegistryEntry(props.chainIdentifier)?.isTestnet ?? true,
         })

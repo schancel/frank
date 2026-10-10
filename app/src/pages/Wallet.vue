@@ -768,8 +768,15 @@ export default defineComponent({
       )
     })
 
-    const { rows: evmTokens, status: evmTokenStatus } =
-      useEvmTokenBalances(sendChainIdentifier)
+    const {
+      rows: evmTokens,
+      status: evmTokenStatus,
+      refresh: refreshEvmTokens,
+    } = useEvmTokenBalances(sendChainIdentifier)
+    // Coming back from the swap tab, the token balances are read again at once.
+    watch(activeTab, tab => {
+      if (tab === 'balance') void refreshEvmTokens()
+    })
 
     const swapHistory = useSwapHistory()
     const recentSwaps = computed(() => {
@@ -793,7 +800,8 @@ export default defineComponent({
 
     const getExplorerLink = (swap: SwapRecord) => {
       if (!swap.txHash) return undefined
-      return getExplorerUrl(swap.txHash, swap.chain, {
+      // A swap that names its network links to that network's explorer.
+      return getExplorerUrl(swap.txHash, swap.chainIdentifier ?? swap.chain, {
         isTestnet: isTestnet.value,
       })
     }

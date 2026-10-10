@@ -126,7 +126,6 @@ import { applyWalletSyncItem } from "../sync-dispatcher";
 import { createMessageItemRegistry } from "../message-item-plugins/registry";
 import {
   MessageItemBudgetExceededError,
-  SELF_ONLY_ITEM_TYPES,
   boundedLegacyPlaintext,
   receiveLegacyItems,
 } from "../message-item-plugins/wire";
@@ -1038,13 +1037,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       message.recipientAddress.raw.toLowerCase() !== own
     )
       return { kind: "none" };
-    const notes = message.items.filter((item) =>
-      SELF_ONLY_ITEM_TYPES.has(item.type)
-    );
+    // Of the items carried only in a note to self, the wallet consumes the transaction records.
+    // A swap's record in the same note is the host's: it goes on with the rest of the message.
+    const notes = message.items.filter((item) => item.type === "wallet-sync");
     if (notes.length === 0) return { kind: "none" };
-    const others = message.items.filter(
-      (item) => !SELF_ONLY_ITEM_TYPES.has(item.type)
-    );
+    const others = message.items.filter((item) => item.type !== "wallet-sync");
     const rest = others.length > 0 ? { ...message, items: others } : undefined;
     const digest = message.payloadDigest;
     let settled = settledSelfNotes.get(wallet);

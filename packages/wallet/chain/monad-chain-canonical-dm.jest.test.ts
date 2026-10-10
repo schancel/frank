@@ -415,6 +415,112 @@ async function fixture(funded = true) {
 
 const text = (value: string) => [{ type: 'text' as const, text: value }]
 
+type ServedRecord = {
+  delivery: Uint8Array
+  context: Uint8Array
+  submissionIdentity: string
+  timestampMs: number
+  direction?: 'in' | 'out'
+}
+/** The relay's authenticated mailbox and inbox reads over `records`, framed as the relay frames
+ * them, so the production challenge, signing and bounded page reader run. `cut` drops bytes off
+ * the end of every page: a page that fails as a whole. */
+function relayMailbox(
+  records: readonly ServedRecord[],
+  cut = 0,
+): CanonicalFetch & { reads: string[] } {
+  const reads: string[] = []
+  const serve: CanonicalFetch = async (url, input) => {
+    let bytes: Uint8Array
+    let media: string
+    const query = new URL(url).searchParams
+    if (url.includes('/auth/')) {
+      expect(input.method).toBe('POST')
+      bytes = Buffer.from(
+        JSON.stringify({
+          epoch: '11'.repeat(32),
+          nonce: '22'.repeat(32),
+          token: '33'.repeat(32),
+          expires_at_ms: Date.now() + 59_000,
+          signing_domain: MAILBOX_AUTH_DOMAIN,
+          resource: query.get('resource'),
+          since: Number(query.get('since')),
+          cursor: query.get('cursor'),
+          limit: Number(query.get('limit')),
+          max_bytes: Number(query.get('max_bytes')),
+          network_tag: '4d4f4e54',
+          recovery_payload_hash: null,
+          recovery_obligation_id: null,
+        } satisfies MailboxChallenge),
+      )
+      media = 'application/json'
+    } else {
+      expect(input.method).toBe('GET')
+      reads.push(url)
+      const combined = new URL(url).pathname.startsWith('/message/mailbox/')
+      const line = (value: string) => Buffer.from(value)
+      const page = Buffer.concat([
+        ...records
+          .filter(record => record.timestampMs >= Number(query.get('since')))
+          .flatMap(record => [
+            line(
+              `--page\r\nContent-Disposition: inline; name="record"\r\nContent-Type: multipart/mixed; boundary=record\r\nX-Frank-Submission-Identity: ${
+                record.submissionIdentity
+              }\r\nX-Frank-Mailbox-Timestamp-Ms: ${record.timestampMs}\r\n${
+                combined
+                  ? `X-Frank-Mailbox-Direction: ${record.direction ?? 'in'}\r\n`
+                  : ''
+              }\r\n`,
+            ),
+            line(
+              '--record\r\nContent-Disposition: inline; name="delivery"\r\nContent-Type: application/vnd.frank.cbor\r\n\r\n',
+            ),
+            record.delivery,
+            line(
+              '\r\n--record\r\nContent-Disposition: inline; name="context"\r\nContent-Type: application/cbor\r\n\r\n',
+            ),
+            record.context,
+            line('\r\n--record--\r\n\r\n'),
+          ]),
+        line('--page--\r\n'),
+      ])
+      bytes = page.subarray(0, page.length - cut)
+      media = 'multipart/mixed; boundary=page'
+    }
+    let read = false
+    return {
+      url,
+      status: 200,
+      headers: {
+        get: name => (name.toLowerCase() === 'content-type' ? media : null),
+      },
+      body: {
+        getReader: () => ({
+          read: async () =>
+            read
+              ? { done: true }
+              : ((read = true), { done: false, value: bytes }),
+          cancel: async () => undefined,
+          releaseLock: () => undefined,
+        }),
+      },
+    }
+  }
+  return Object.assign(serve, { reads })
+}
+/** Both page readers as production runs them, for one test. */
+function productionPageReaders() {
+  const actual = jest.requireActual<
+    typeof import('@frank/cashweb/relay/monad-mailbox-client')
+  >('@frank/cashweb/relay/monad-mailbox-client')
+  mailboxPage.mockReset().mockImplementation(actual.fetchCanonicalMailboxPage)
+  inboxPage.mockReset().mockImplementation(actual.fetchCanonicalInboxPage)
+  return () => {
+    mailboxPage.mockReset().mockImplementation(actual.fetchCanonicalMailboxPage)
+    inboxPage.mockReset()
+  }
+}
+
 describe('typed wallet direct messages use the canonical path (#778)', () => {
   jest.setTimeout(30_000)
   let f: Awaited<ReturnType<typeof fixture>>
@@ -1419,6 +1525,38 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         )
       },
     )
+
+    it('proves the historical delivery from a mailbox that also holds a record it cannot decode', async () => {
+      const historical = await compactedHistoricalAttempt()
+      const restore = productionPageReaders()
+      // A record with a corrupt context, ahead of the record that proves the delivery.
+      const mailbox = relayMailbox([
+        {
+          delivery: historical.record.delivery,
+          context: historical.record.context.slice(0, -1),
+          submissionIdentity: 'ab'.repeat(32),
+          timestampMs: 99_000,
+          direction: 'in',
+        },
+        { ...historical.record, timestampMs: 100_000, direction: 'out' },
+      ])
+      const wallet = await reopen({ ...historical.directory, fetch: mailbox })
+      const effects = noHistoricalExecution(wallet)
+      try {
+        expect(
+          await f.chain.directMessages.reconcileAttempts({
+            wallet,
+            payloadDigests: [historical.digest],
+          }),
+        ).toEqual({ [historical.digest]: 'delivered' })
+        expect(mailbox.reads).toHaveLength(1)
+        effects.verify()
+      } finally {
+        effects.restore()
+        await wallet.close()
+        restore()
+      }
+    })
 
     it.each([
       'page limit',
@@ -3120,6 +3258,135 @@ describe('two typed wallets on the open directory', () => {
     } finally {
       later.mockRestore()
     }
+  })
+
+  describe('a mailbox record the client cannot decode', () => {
+    /** Three paid messages from Alice in Bob's mailbox; the middle one is replaced. */
+    async function mailboxWithOneUnreadable(
+      spoil: (record: ServedRecord) => Partial<ServedRecord>,
+    ) {
+      await online('alice', f.alice)
+      const bobDirectory = await online('bob', f.bob)
+      for (const body of ['first', 'second', 'third']) {
+        mockBalances.set(
+          (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+          10n ** 18n,
+        )
+        await f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text(body),
+        })
+      }
+      const original = inboxRecord(1, 7)
+      const delivered = parseFrame(original.delivery)
+      if (delivered.kind !== 'parsed' || delivered.typed?.type !== 1)
+        throw new Error('fixture')
+      const records: ServedRecord[] = [
+        inboxRecord(0, 5),
+        { ...original, ...spoil(original), submissionIdentity: 'ab'.repeat(32) },
+        inboxRecord(2, 9),
+      ]
+      return {
+        records,
+        /** The payments the replaced message was sent with. */
+        spoiledPayments: delivered.typed.payments.map(
+          member => '0x' + toHex(member.transactionId),
+        ),
+        serve: (mailbox: CanonicalFetch) =>
+          installCanonicalDirectory(f.bob, { ...bobDirectory, fetch: mailbox }),
+      }
+    }
+    const read = async (sinceMs: number) => {
+      const incomplete: number[] = [],
+        quarantined: [number, string][] = [],
+        truncated: Error[] = []
+      const received = await f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs,
+        onTruncated: reason => void truncated.push(reason),
+        onIncompleteTimestamp: time => void incomplete.push(time),
+        onQuarantinedTimestamp: (time, id) => void quarantined.push([time, id]),
+      })
+      return { received, incomplete, quarantined, truncated }
+    }
+
+    it.each([
+      [
+        'its payments and a corrupt context',
+        (record: ServedRecord) => ({ context: record.context.slice(0, -1) }),
+      ],
+      [
+        'bytes that are not a frame',
+        () => ({ delivery: new Uint8Array(Buffer.from('not a frame')) }),
+      ],
+    ] as const)(
+      'with %s is skipped and reported once; the messages around it arrive and no stamp is counted from it',
+      async (_name, spoil) => {
+        const restore = productionPageReaders()
+        try {
+          const mailbox = await mailboxWithOneUnreadable(spoil)
+          const relay = relayMailbox(mailbox.records)
+          mailbox.serve(relay)
+
+          const first = await read(0)
+          expect(first.received.map(m => [m.receivedTime, m.items])).toEqual([
+            [5, text('first')],
+            [9, text('third')],
+          ])
+          expect(first.quarantined).toEqual([[7, 'ab'.repeat(32)]])
+          expect(first.incomplete).toEqual([])
+          expect(first.truncated).toEqual([])
+          // One request: the combined mailbox answered, nothing fell back or was retried.
+          expect(relay.reads).toHaveLength(1)
+          // Nothing of the skipped record is a message, a payment or a received stamp.
+          const counted = first.received.flatMap(m => [
+            ...(m.stampPayments ?? []).map(p => p.txHash.toLowerCase()),
+            ...(m.paymentTransfers ?? []).flatMap(t =>
+              JSON.stringify(t).toLowerCase(),
+            ),
+          ])
+          expect(mailbox.spoiledPayments).toHaveLength(1)
+          for (const txHash of mailbox.spoiledPayments)
+            expect(counted.some(entry => entry.includes(txHash.slice(2)))).toBe(
+              false,
+            )
+          expect(first.received.every(m => m.stampPayments?.length === 1)).toBe(
+            true,
+          )
+
+          // The host moves its read position past what was delivered and what was reported
+          // terminal; the record is then neither read nor reported again.
+          const next = await read(10)
+          expect(next.received).toEqual([])
+          expect(next.quarantined).toEqual([])
+          expect(new URL(relay.reads[1]).searchParams.get('since')).toBe('10')
+        } finally {
+          restore()
+        }
+      },
+    )
+
+    it('still fails the whole read when the page itself is broken, and reports nothing', async () => {
+      const restore = productionPageReaders()
+      try {
+        const mailbox = await mailboxWithOneUnreadable(record => ({
+          context: record.context.slice(0, -1),
+        }))
+        mailbox.serve(relayMailbox(mailbox.records, 3))
+        const quarantined: number[] = []
+        await expect(
+          f.chain.directMessages.fetchSince({
+            wallet: f.bob,
+            sinceMs: 0,
+            onQuarantinedTimestamp: time => void quarantined.push(time),
+          }),
+        ).rejects.toThrow()
+        expect(quarantined).toEqual([])
+      } finally {
+        restore()
+      }
+    })
   })
 
   describe('a recipient that lives on another relay', () => {

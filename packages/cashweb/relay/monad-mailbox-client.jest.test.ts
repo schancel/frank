@@ -994,6 +994,47 @@ function canonicalDelivery(): Uint8Array {
     payload
   );
 }
+/** A page of pair records, framed as the relay frames them. */
+function canonicalRecordsPage(
+  records: readonly {
+    delivery: Uint8Array;
+    context: Uint8Array;
+    identity: string;
+    timestampMs: number;
+    direction?: string;
+  }[]
+): Uint8Array {
+  return canonicalConcat(
+    ...records.flatMap((record) => [
+      canonicalText(
+        `--page\r\nContent-Disposition: inline; name="record"\r\nContent-Type: multipart/mixed; boundary=record\r\nX-Frank-Submission-Identity: ${
+          record.identity
+        }\r\nX-Frank-Mailbox-Timestamp-Ms: ${record.timestampMs}\r\n${
+          record.direction === undefined
+            ? ""
+            : `X-Frank-Mailbox-Direction: ${record.direction}\r\n`
+        }\r\n`
+      ),
+      canonicalNested(
+        [
+          {
+            name: "delivery",
+            media: "application/vnd.frank.cbor",
+            bytes: record.delivery,
+          },
+          {
+            name: "context",
+            media: "application/cbor",
+            bytes: record.context,
+          },
+        ],
+        "record"
+      ),
+      canonicalText("\r\n"),
+    ]),
+    canonicalText("--page--\r\n")
+  );
+}
 function canonicalStream(
   url: string,
   status: number,
@@ -1256,6 +1297,101 @@ describe("canonical private mailbox", () => {
   test("requires direction on the combined mailbox while accepting the directionless inbox wire", async () => {
     await expect(fetchCanonicalMailboxPage(auth)).rejects.toThrow(/direction/);
     expect((await fetchCanonicalInboxPage(auth)).records).toHaveLength(1);
+  });
+  describe("a record this client cannot decode", () => {
+    const good = (direction?: string) => ({
+      delivery: canonicalDelivery(),
+      context: fromHex(canonicalWire.context),
+      identity: "aa".repeat(32),
+      timestampMs: 1700000100002,
+      direction,
+    });
+    const unreadable = [
+      [
+        "a corrupt context",
+        () => ({
+          delivery: canonicalDelivery(),
+          context: fromHex(canonicalWire.context).slice(0, -1),
+        }),
+      ],
+      [
+        "bytes that are not a frame",
+        () => ({
+          delivery: canonicalText("not a frame"),
+          context: fromHex(canonicalWire.context),
+        }),
+      ],
+    ] as const;
+    test.each(unreadable)(
+      "with %s is listed as unreadable and the rest of the page is returned",
+      async (_name, bad) => {
+        const skipped = {
+          ...bad(),
+          identity: "bb".repeat(32),
+          timestampMs: 1700000100001,
+        };
+        pageHeaders["x-frank-mailbox-next-cursor"] = "opaque-cursor";
+        const listed = [
+          { submissionIdentity: skipped.identity, timestampMs: 1700000100001 },
+        ];
+        // The unreadable record comes first: nothing after it is lost.
+        page = canonicalRecordsPage([
+          { ...skipped, direction: "in" },
+          good("in"),
+        ]);
+        const mailbox = await fetchCanonicalMailboxPage(auth);
+        expect(mailbox.records.map((r) => r.timestampMs)).toEqual([
+          1700000100002,
+        ]);
+        expect(mailbox.records[0].delivery).toEqual(canonicalDelivery());
+        expect(mailbox.unreadable).toEqual(listed);
+        expect(mailbox.nextCursor).toBe("opaque-cursor");
+
+        page = canonicalRecordsPage([skipped, good()]);
+        const inbox = await fetchCanonicalInboxPage(auth);
+        expect(inbox.records.map((r) => r.timestampMs)).toEqual([
+          1700000100002,
+        ]);
+        expect(inbox.unreadable).toEqual(listed);
+        expect(inbox.nextCursor).toBe("opaque-cursor");
+      }
+    );
+    test("does not excuse a page whose framing or record headers are wrong", async () => {
+      const skipped = {
+        delivery: canonicalText("not a frame"),
+        context: fromHex(canonicalWire.context),
+        identity: "bb".repeat(32),
+        timestampMs: 1700000100001,
+      };
+      // No direction on the combined mailbox.
+      page = canonicalRecordsPage([skipped, good("in")]);
+      await expect(fetchCanonicalMailboxPage(auth)).rejects.toThrow(
+        /direction/
+      );
+      // A record identity or timestamp the relay never emits.
+      page = canonicalRecordsPage([{ ...skipped, identity: "zz" }, good()]);
+      await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow(
+        /record headers/
+      );
+      page = canonicalRecordsPage([{ ...skipped, timestampMs: -1 }, good()]);
+      await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow(
+        /record headers/
+      );
+      // A page cut short.
+      page = canonicalRecordsPage([skipped, good()]).slice(0, -3);
+      await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow();
+      // A readable record for someone else, or served twice, is still the relay's error.
+      page = canonicalRecordsPage([
+        skipped,
+        good(),
+        { ...good(), identity: "cc".repeat(32) },
+      ]);
+      await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow(/duplicate/);
+      // A relay that is down or refuses the read.
+      page = canonicalRecordsPage([skipped, good()]);
+      requestStatus = 503;
+      await expect(fetchCanonicalInboxPage(auth)).rejects.toThrow();
+    });
   });
   test.each([
     "X-Frank-Mailbox-Direction: unknown\r\n",

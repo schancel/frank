@@ -1349,6 +1349,7 @@ async function fetchSince(
             direction?: 'in' | 'out'
           }
       )[]
+      unreadable?: readonly { submissionIdentity: string; timestampMs: number }[]
       nextCursor?: string
     }
     try {
@@ -1379,6 +1380,14 @@ async function fetchSince(
         break
       }
     }
+    // A record this client cannot decode is never a message, never paid and never a received
+    // stamp. It is reported as terminal, under the relay's own identity for it, so the host's
+    // read position passes it instead of meeting it again on every read.
+    for (const skipped of page.unreadable ?? [])
+      params.onQuarantinedTimestamp?.(
+        skipped.timestampMs,
+        skipped.submissionIdentity,
+      )
     for (const record of page.records) {
       const delivery = parseFrame(record.delivery)
       if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) continue

@@ -180,7 +180,7 @@ describe('model call settings', () => {
     expect(named[0][0].content).toMatch(/You are chatting with Ada\.$/)
     expect(named[0].slice(1)).toEqual(history)
     expect(named[1].signal).toBe(signal)
-    expect(anonymous[0][0].content).not.toMatch(/You are chatting with/)
+    expect(anonymous[0][0].content).toMatch(/Reply in plain text\.$/)
   })
 })
 

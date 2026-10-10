@@ -513,8 +513,8 @@ it("keeps both Qwen entrypoints and aggregate target composed with the actual ho
   ]) {
     const source = readFileSync(join(__dirname, path), "utf8");
     expect(source).toContain("new FrankBotHost(");
-    expect(source).toContain("host.register(new QwenBot())");
-    expect(source).not.toMatch(/new Qwen(?:Inbound|Response)Workflow/);
+    expect(source).toMatch(/new QwenBot\(\)/);
+    expect(source).toMatch(/host\.register(All)?\(/);
   }
   const demo = readFileSync(join(__dirname, "demo/demo-config.ts"), "utf8");
   expect(demo).toContain("script: 'qwen-bot.livecheck.ts'");

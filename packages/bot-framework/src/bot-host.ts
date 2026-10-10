@@ -90,6 +90,24 @@ const TOP_UP_CHECK_MS = 30_000;
 const TOP_UP_INTERVAL_MS = 5 * 60_000;
 const TOP_UP_RECEIPT_MS = 60_000;
 
+// One relay or wallet question of a poll may take this long. Past it that bot's poll ends with
+// an error and its next poll starts afresh; the other bots never waited for it.
+const POLL_CALL_TIMEOUT_MS = 30_000;
+
+/** `call`, or a rejection naming `what` once it has taken `POLL_CALL_TIMEOUT_MS`. */
+function bounded<T>(call: Promise<T>, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(new Error(`${what} took over ${POLL_CALL_TIMEOUT_MS / 1000}s`)),
+      POLL_CALL_TIMEOUT_MS
+    );
+    timer.unref?.();
+  });
+  return Promise.race([call, late]).finally(() => clearTimeout(timer));
+}
+
 /** A replies-per-peer budget as configured: unset, or a non-negative integer. Anything else is a
  * configuration error, never silently the default. */
 function replyBudget(
@@ -119,6 +137,8 @@ interface ActiveBotInstance {
   peerQueue: PeerLaneQueue;
   context: BotContext;
   lastPollTimestamp: number;
+  /** This bot's poll pass, while one runs. */
+  polling?: Promise<void>;
   lastAuthRecoveryMs?: number;
   inFlightDigests: Set<string>;
   /** Deferred digests no fetch has returned: when first missed, and when last warned. Log only. */
@@ -164,7 +184,6 @@ export class FrankBotHost {
   /** Aborted when the host starts stopping; handlers hand it to what they wait on. */
   private readonly stopController = new AbortController();
   private pollTimer?: NodeJS.Timeout;
-  private polling?: Promise<void>;
   private registrationTimer?: NodeJS.Timeout;
   private lastRegistrationPollMs = 0;
   private readonly scheduler = new BotScheduler();
@@ -286,6 +305,31 @@ export class FrankBotHost {
     }
   }
 
+  /** Registers several bots on this host, one after another. A bot that cannot be built or
+   * registered is reported by name and left out; the others are registered and served. Each
+   * entry is a definition or a function that makes one, so a bot whose own construction fails
+   * (a missing setting) is held to the same rule. Returns the ids that failed. */
+  async registerAll(
+    bots: readonly (FrankBotDefinition | (() => FrankBotDefinition))[]
+  ): Promise<string[]> {
+    const failed: string[] = [];
+    for (const [index, entry] of bots.entries()) {
+      let name = `#${index + 1}`;
+      try {
+        const definition = typeof entry === "function" ? entry() : entry;
+        name = definition.id;
+        await this.register(definition);
+      } catch (error) {
+        failed.push(name);
+        console.error(
+          `[bot-host] Bot "${name}" could not be started and is left out; the other bots keep running:`,
+          error instanceof Error ? error.message : error
+        );
+      }
+    }
+    return failed;
+  }
+
   async register(definition: FrankBotDefinition): Promise<void> {
     if (this.closing) throw new Error("Bot host is closed");
     if (this.instances.has(definition.id)) {
@@ -401,6 +445,10 @@ export class FrankBotHost {
       });
       const peerQueue = new PeerLaneQueue();
 
+      // Transactions from the bot's own key are built one at a time: two built at once would
+      // read the same pending nonce.
+      const ownTransactions = new EVMNonceSequencer(this.provider, botAddress);
+
       // 8. Assemble BotContext
       const subscriptions = new LevelSubscriptionManager(
         state.sublevel("subscriptions"),
@@ -473,6 +521,7 @@ export class FrankBotHost {
             });
           }
 
+          return ownTransactions.runExclusive(async () => {
           const botWallet = new Wallet(
             wallet.identity.toPrivateKeyHex(),
             this.provider
@@ -526,6 +575,7 @@ export class FrankBotHost {
             }
           }
           return { txHash: tx.hash };
+          });
         },
 
         sendTransfer: async ({ to, valueWei }) => {
@@ -553,6 +603,7 @@ export class FrankBotHost {
             });
           }
 
+          return ownTransactions.runExclusive(async () => {
           const botWallet = new Wallet(
             wallet.identity.toPrivateKeyHex(),
             this.provider
@@ -586,6 +637,7 @@ export class FrankBotHost {
           const rawTx = await botWallet.signTransaction(populated);
           const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
           return { rawTx, txHash };
+          });
         },
 
         waitForReceipt: async (
@@ -732,12 +784,18 @@ export class FrankBotHost {
     return this.stopPromise;
   }
 
-  // Single-flight: an overlapping tick joins the running pass, and stop() can await it.
+  /** One poll pass of every bot. Each bot polls on its own: a relay call that hangs or fails for
+   * one bot holds only that bot. Single flight per bot: a tick that finds a bot's pass still
+   * running joins it instead of starting a second one. Resolves when every pass has ended. */
   private pollAllBots(): Promise<void> {
-    this.polling ??= this.pollOnce().finally(() => {
-      this.polling = undefined;
-    });
-    return this.polling;
+    return Promise.all(
+      [...this.instances.entries()].map(
+        ([id, instance]) =>
+          (instance.polling ??= this.pollOnce(id, instance).finally(() => {
+            instance.polling = undefined;
+          }))
+      )
+    ).then(() => undefined);
   }
 
   /**
@@ -836,8 +894,11 @@ export class FrankBotHost {
       });
   }
 
-  private async pollOnce(): Promise<void> {
-    for (const [id, instance] of this.instances.entries()) {
+  private async pollOnce(
+    id: string,
+    instance: ActiveBotInstance
+  ): Promise<void> {
+    {
       try {
         if (this.closing) return;
         instance.operations.assertOpen();
@@ -866,10 +927,13 @@ export class FrankBotHost {
           try {
             status =
               (
-                await this.chain.directMessages.reconcileAttempts({
-                  wallet: instance.wallet,
-                  payloadDigests: [outbound],
-                })
+                await bounded(
+                  this.chain.directMessages.reconcileAttempts({
+                    wallet: instance.wallet,
+                    payloadDigests: [outbound],
+                  }),
+                  "Asking the wallet about a reply"
+                )
               )[outbound] ?? "unknown";
           } catch {
             held = true;
@@ -905,10 +969,13 @@ export class FrankBotHost {
         // poll would only wait behind it. Never at registration.
         if (!asked && instance.inFlightDigests.size === 0) {
           try {
-            await this.chain.directMessages.reconcileAttempts({
-              wallet: instance.wallet,
-              payloadDigests: [],
-            });
+            await bounded(
+              this.chain.directMessages.reconcileAttempts({
+                wallet: instance.wallet,
+                payloadDigests: [],
+              }),
+              "Retrying the wallet's earlier payments"
+            );
             this.walletRetryWarned.delete(id);
           } catch (error) {
             held = true;
@@ -937,10 +1004,13 @@ export class FrankBotHost {
         // registration: the wallet moves nothing by being opened. Not in a poll whose recovery
         // failed: until the wallet's earlier payments have been looked at, nothing new is funded.
         if (!held) this.fundAhead(id, instance);
-        const messages = await this.chain.directMessages.fetchSince({
-          wallet: instance.wallet,
-          sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
-        });
+        const messages = await bounded(
+          this.chain.directMessages.fetchSince({
+            wallet: instance.wallet,
+            sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
+          }),
+          "Reading the mailbox"
+        );
         const accepted: {
           identity: InboundIdentity;
           items: MessageItem[];
@@ -1716,7 +1786,9 @@ export class FrankBotHost {
 
     // An in-flight relay or wallet call is waited for, never abandoned. A handler's own slow
     // call (a model request) is the handler's to end, on the `stopping` signal.
-    await this.polling?.catch(() => undefined);
+    await Promise.allSettled(
+      [...this.instances.values()].map((instance) => instance.polling)
+    );
     for (const [id, instance] of this.instances.entries()) {
       try {
         while (instance.tasks.size)

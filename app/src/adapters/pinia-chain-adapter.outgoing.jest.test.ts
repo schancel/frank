@@ -42,6 +42,10 @@ describe('startOutgoingReconciliation (#270)', () => {
     typeof activeChain.directMessages
   >
   let fundAhead: jest.SpiedFunction<typeof directMessages.fundAhead>
+  /** The tick's question when no message asks one: which payments does no message account for. */
+  let wholeWallet: jest.SpiedFunction<
+    typeof directMessages.unattributedAttempts
+  >
   const previousPromise = global.Promise
   beforeAll(() => {
     // The shared setup installs a Promise polyfill, but ES2020 async actions return native
@@ -61,9 +65,12 @@ describe('startOutgoingReconciliation (#270)', () => {
     fundAhead = jest
       .spyOn(directMessages, 'fundAhead')
       .mockResolvedValue({ outcome: 'ready', fundingTxHashes: [] })
-    // Likewise it holds no payment attempts: asked about none, it has nothing to report. Tests
-    // that give it an attempt replace this.
+    // Likewise it holds no payment attempts: asked, it has nothing to report. Tests that give
+    // it an attempt replace these.
     jest.spyOn(directMessages, 'reconcileAttempts').mockResolvedValue({})
+    wholeWallet = jest
+      .spyOn(directMessages, 'unattributedAttempts')
+      .mockResolvedValue([])
   })
   afterEach(() => jest.useRealTimers())
 
@@ -464,11 +471,10 @@ describe('startOutgoingReconciliation (#270)', () => {
       // asks about a payment now, so the tick asks the wallet about none (#1236 Q3).
       expect(chats.chats[PEER]?.messages[0].status).toBe('confirmed')
       await jest.advanceTimersByTimeAsync(IDLE_OUTGOING_RECONCILE_INTERVAL_MS)
-      expect(reconcile).toHaveBeenCalledTimes(3)
-      expect(reconcile).toHaveBeenLastCalledWith({
-        wallet: expect.anything(),
-        payloadDigests: [],
-      })
+      expect(reconcile).toHaveBeenCalledTimes(2)
+      expect(wholeWallet.mock.calls).toEqual([
+        [{ wallet: expect.anything(), knownDigests: [] }],
+      ])
       expect(reobserve).toHaveBeenCalledTimes(3)
       polling.stop()
     })
@@ -591,25 +597,30 @@ describe('startOutgoingReconciliation (#270)', () => {
   // tests are the behaviour added; the last three pin when it must NOT be asked.
   // #1236 Q3. On main 1715ec7c a tick asks the wallet only about payments a message here still
   // points at: with no such message the wallet is never asked, so the first, third and fourth
-  // tests fail there (zero calls). The second and the last are pins and pass there.
+  // tests fail there (zero calls). The second and the last are pins and pass there. The question
+  // is "which payments does no message account for" (`unattributedAttempts` with nothing known):
+  // like any question it makes the wallet retry everything unresolved, and its answer is what
+  // keeps the tick on its short pauses (see `pinia-chain-adapter.reload.jest.test.ts`).
   describe('the whole wallet is retried every tick (#1236 Q3)', () => {
-    const none = { wallet, payloadDigests: [] }
+    const none = { wallet, knownDigests: [] }
 
     it('asks the wallet about no payment in particular, once per tick, when no message has one', async () => {
       const reconcile = jest.spyOn(directMessages, 'reconcileAttempts')
       // Starting is not asking: the first question is the first tick's, never the caller's.
       const polling = startOutgoingReconciliation({ wallet })
-      expect(reconcile).not.toHaveBeenCalled()
+      expect(wholeWallet).not.toHaveBeenCalled()
       await jest.advanceTimersByTimeAsync(0)
-      expect(reconcile.mock.calls).toEqual([[none]])
+      expect(wholeWallet.mock.calls).toEqual([[none]])
       await jest.advanceTimersByTimeAsync(IDLE_OUTGOING_RECONCILE_INTERVAL_MS)
       await jest.advanceTimersByTimeAsync(IDLE_OUTGOING_RECONCILE_INTERVAL_MS)
-      expect(reconcile.mock.calls).toEqual([[none], [none], [none]])
+      expect(wholeWallet.mock.calls).toEqual([[none], [none], [none]])
       polling.stop()
       await jest.advanceTimersByTimeAsync(
         10 * IDLE_OUTGOING_RECONCILE_INTERVAL_MS,
       )
-      expect(reconcile).toHaveBeenCalledTimes(3)
+      expect(wholeWallet).toHaveBeenCalledTimes(3)
+      // One question a tick: the wallet reported nothing, so there was nothing to follow up.
+      expect(reconcile).not.toHaveBeenCalled()
     })
 
     it('pin: a message that has a payment is the one question of its tick', async () => {
@@ -624,6 +635,7 @@ describe('startOutgoingReconciliation (#270)', () => {
         [{ wallet, payloadDigests: [HASH], maxPutAttempts: 1 }],
         [{ wallet, payloadDigests: [HASH], maxPutAttempts: 1 }],
       ])
+      expect(wholeWallet).not.toHaveBeenCalled()
       polling.stop()
     })
 
@@ -641,24 +653,22 @@ describe('startOutgoingReconciliation (#270)', () => {
       expect(chats.chats[PEER]?.messages[0]).toEqual(
         expect.objectContaining({ status: 'error' }),
       )
-      const reconcile = jest.spyOn(directMessages, 'reconcileAttempts')
       const polling = startOutgoingReconciliation({ wallet })
       await jest.advanceTimersByTimeAsync(0)
-      expect(reconcile.mock.calls).toEqual([[none]])
+      expect(wholeWallet.mock.calls).toEqual([[none]])
       polling.stop()
     })
 
     it('funds ahead only once the wallet has answered, and not after stop()', async () => {
-      let answer: (v: Record<string, never>) => void = () => undefined
-      const reconcile = jest
-        .spyOn(directMessages, 'reconcileAttempts')
+      let answer: (v: string[]) => void = () => undefined
+      const reconcile = wholeWallet
         .mockReturnValueOnce(new Promise(resolve => (answer = resolve)))
         .mockRejectedValueOnce(new Error('fixture: wallet held'))
       const polling = startOutgoingReconciliation({ wallet })
       await jest.advanceTimersByTimeAsync(0)
       expect(reconcile).toHaveBeenCalledTimes(1)
       expect(fundAhead).not.toHaveBeenCalled()
-      answer({})
+      answer([])
       await jest.advanceTimersByTimeAsync(0)
       expect(fundAhead).toHaveBeenCalledTimes(1)
       // A tick whose question failed funds nothing, says so, and looks again soon rather than
@@ -699,6 +709,7 @@ describe('startOutgoingReconciliation (#270)', () => {
       await jest.advanceTimersByTimeAsync(0)
       await jest.advanceTimersByTimeAsync(IDLE_OUTGOING_RECONCILE_INTERVAL_MS)
       expect(reconcile).not.toHaveBeenCalled()
+      expect(wholeWallet).not.toHaveBeenCalled()
       polling.stop()
     })
   })

@@ -34,6 +34,7 @@
  */
 import { activeChain } from '@frank/wallet/chain'
 import type {
+  DirectMessageAttemptStatus,
   DirectMessageReceived,
   NativeWalletHandle,
   WalletHandle,
@@ -543,7 +544,9 @@ function fundAhead(
  * never a new payment; see `stores/chats.ts`, `sendMessage`), and flips a message to sent when it
  * finally delivers, so the sender's copy follows reality without any user action. While something
  * stays pending the pause doubles up to {@link MAX_OUTGOING_RECONCILE_INTERVAL_MS}; with nothing
- * pending each tick is a cheap local check.
+ * pending each tick is a cheap local check. "Pending" is the wallet's to say as well as the
+ * messages': a payment the wallet still holds unresolved keeps the short pauses whether or not a
+ * message here points at it, also right after a reload.
  */
 export function startOutgoingReconciliation({
   wallet,
@@ -634,24 +637,62 @@ export function startOutgoingReconciliation({
     return false
   }
 
+  // Payments the wallet holds that no message here asks about. `unsettled` are the ones not yet
+  // known to be finished; `finished` are the ones the wallet has answered delivered or ended for,
+  // which it goes on listing and which are not a reason to hurry.
+  let unsettled = new Set<string>()
+  const finished = new Set<string>()
+  let unsettledBefore = 0
+  /**
+   * The tick's one question to the wallet when no message asks one. Either form makes the wallet
+   * retry every unresolved payment it holds, as the same exact bytes and never as a new payment,
+   * and with nothing unresolved neither makes a request. With nothing to follow up it asks which
+   * payments no message accounts for; otherwise it asks what became of those. Returns how many
+   * may still be unresolved, which is what keeps the tick on its short pauses.
+   */
+  const askTheWholeWallet = async (): Promise<number> => {
+    if (unsettled.size === 0) {
+      const reported = await activeChain.directMessages.unattributedAttempts({
+        wallet,
+        knownDigests: [],
+      })
+      unsettled = new Set(reported.filter(digest => !finished.has(digest)))
+      return unsettled.size
+    }
+    const following = [...unsettled]
+    let statuses: Record<string, DirectMessageAttemptStatus> = {}
+    try {
+      statuses = await activeChain.directMessages.reconcileAttempts({
+        wallet,
+        payloadDigests: following,
+      })
+    } finally {
+      // Also when the wallet could not answer: these are asked about once, not on every tick.
+      // The wallet still retries them whenever it is asked anything; they only stop being a
+      // reason for the short pauses.
+      for (const digest of following) {
+        if (statuses[digest] === 'live') continue
+        unsettled.delete(digest)
+        finished.add(digest)
+      }
+    }
+    return unsettled.size
+  }
+
   const tick = async () => {
     if (ticking || stopped) return
     ticking = true
     resetRequested = false
     let pending = 0
+    let walletUnsettled = 0
     try {
       const asked = messagesAskTheWallet()
       pending = (await chats.reconcileOutgoing({ wallet })).pending
-      // A paid message this app has no message for any more (it was deleted, or its row was
-      // lost) is still the wallet's to finish. The wallet retries every unresolved payment it
-      // holds whichever ones it is asked about, so when no message asked, ask about none: the
-      // same exact bytes are sent again, never a new payment, and with nothing unresolved the
-      // wallet makes no request at all. Once per tick; never from wallet open.
-      if (!asked && !stopped)
-        await activeChain.directMessages.reconcileAttempts({
-          wallet,
-          payloadDigests: [],
-        })
+      // A paid message no message here points at (it was deleted, or the app stopped after the
+      // wallet journaled the payment and before the message's row recorded it) is still the
+      // wallet's to finish, and whether anything is unresolved is the wallet's to say, not only
+      // the messages on screen. Once per tick, when no message asked; never from wallet open.
+      if (!asked && !stopped) walletUnsettled = await askTheWholeWallet()
       reconciled = true
       // Every tick that reconciled: this is also how a top-up is picked up.
       fundNextMessage()
@@ -668,6 +709,11 @@ export function startOutgoingReconciliation({
     ticking = false
     if (stopped) return
     knownPending = pendingIds()
+    // A payment the wallet has just reported must not wait out the idle pause: restart the
+    // ladder, as a message that newly becomes pending does.
+    if (walletUnsettled > 0 && unsettledBefore === 0) delayMs = intervalMs
+    unsettledBefore = walletUnsettled
+    pending += walletUnsettled
     delayMs =
       pending > 0 && !resetRequested
         ? Math.min(maxIntervalMs, delayMs * 2)

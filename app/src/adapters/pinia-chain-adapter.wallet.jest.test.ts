@@ -77,12 +77,18 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
   let reconcileAttempts: jest.SpiedFunction<
     typeof directMessages.reconcileAttempts
   >
+  let unattributedAttempts: jest.SpiedFunction<
+    typeof directMessages.unattributedAttempts
+  >
   let fundAhead: jest.SpiedFunction<typeof directMessages.fundAhead>
   let stop: (() => void) | undefined
 
   /** Every request that left the wallet: node RPC, chain HTTP, and payment sets to the relay. */
   const requests = () =>
     providerRequests.length + chainHttpRequests.length + f.requests.length
+  /** Questions the tick has put to the wallet: one per tick when no message asks. */
+  const asked = () =>
+    unattributedAttempts.mock.calls.length + reconcileAttempts.mock.calls.length
   const journal = () =>
     (canonicalMonadStampClient(f.alice) as unknown as ClientInternals).journal
   const until = async (done: () => boolean, what: string) => {
@@ -142,6 +148,11 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
       .mockImplementation(params =>
         f.chain.directMessages.reconcileAttempts(params),
       )
+    unattributedAttempts = jest
+      .spyOn(directMessages, 'unattributedAttempts')
+      .mockImplementation(params =>
+        f.chain.directMessages.unattributedAttempts(params),
+      )
     fundAhead = jest
       .spyOn(directMessages, 'fundAhead')
       .mockImplementation(params => f.chain.directMessages.fundAhead!(params))
@@ -167,16 +178,16 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
     start()
     await until(() => bobInbox.length > 0, 'the message to reach its recipient')
     // Let the tick that delivered it finish, then a few more.
-    const asked = reconcileAttempts.mock.calls.length
-    await until(
-      () => reconcileAttempts.mock.calls.length >= asked + 3,
-      'three more ticks',
-    )
+    const before = asked()
+    await until(() => asked() >= before + 3, 'three more ticks')
     stop?.()
 
-    // Every question was about no payment in particular.
+    // No message accounted for a payment: the wallet was asked which ones nobody accounts for,
+    // and then only what became of the one it reported.
+    for (const [params] of unattributedAttempts.mock.calls)
+      expect(params.knownDigests).toEqual([])
     for (const [params] of reconcileAttempts.mock.calls)
-      expect(params.payloadDigests).toEqual([])
+      expect(params.payloadDigests).toEqual([digest])
     // One payment set, sent again as the identical bytes; delivered once.
     expect(f.requests.length).toBeGreaterThanOrEqual(2)
     for (const request of f.requests)
@@ -216,6 +227,12 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
     reconcileAttempts.mockImplementation(params =>
       f.chain.directMessages.reconcileAttempts({ ...params, wallet: f.alice }),
     )
+    unattributedAttempts.mockImplementation(params =>
+      f.chain.directMessages.unattributedAttempts({
+        ...params,
+        wallet: f.alice,
+      }),
+    )
     fundAhead.mockImplementation(() =>
       f.chain.directMessages.fundAhead!({ wallet: f.alice }),
     )
@@ -224,7 +241,7 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
     await held.entered
     // Many tick intervals pass; the tick that asked is the only one.
     await new Promise(resolve => setTimeout(resolve, 400))
-    expect(reconcileAttempts).toHaveBeenCalledTimes(1)
+    expect(asked()).toBe(1)
     expect(fundAhead).not.toHaveBeenCalled()
     expect(reobserve).not.toHaveBeenCalled()
     expect(bobInbox).toHaveLength(0)
@@ -241,35 +258,82 @@ describe('the outgoing tick on a real wallet (#1236 Q3)', () => {
     expect(bobInbox).toHaveLength(1)
   })
 
+  // The wallet here is not empty: it holds one delivered payment no message accounts for, which
+  // it goes on reporting. Paying for and delivering that message is the positive control: all
+  // three counters move. After that, with the next message's accounts ready, nothing does.
   it('an idle wallet: twenty ticks make no relay and no node request', async () => {
+    await paidMessageWithNoRow('delivered before the wallet idles')
+    f.setPhase('delivered')
+    const outcomes: string[] = []
+    fundAhead.mockImplementation(async params => {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      const result = await f.chain.directMessages.fundAhead!(params)
+      outcomes.push(result.outcome)
+      return result
+    })
     start()
-    // Positive control: the first resolved tick funds the next message ahead, and the counters
-    // see it. Wait until that has settled and the wallet answers "ready" without a request.
-    await until(() => mockFunded.length >= 2, 'the next message to be funded')
-    await until(() => {
-      const results = fundAhead.mock.results
-      return results.length > 0 && requests() > 0
-    }, 'funding ahead to be counted')
-    let quiet = requests()
+    await until(() => bobInbox.length === 1, 'the earlier message to deliver')
+    await until(
+      () => outcomes.at(-1) === 'ready',
+      'the next message to have its accounts',
+    )
+    let quiet = -1
     await until(() => {
       const still = requests() === quiet
       quiet = requests()
-      return still && reconcileAttempts.mock.calls.length >= 3
+      return still && asked() >= 6
     }, 'the funding to settle')
-    expect(requests()).toBeGreaterThan(0)
+    expect(providerRequests.length).toBeGreaterThan(0)
+    expect(chainHttpRequests.length).toBeGreaterThan(0)
+    expect(f.requests.length).toBeGreaterThan(0)
 
     providerRequests.length = 0
     chainHttpRequests.length = 0
     const relay = f.requests.length
-    const ticks = reconcileAttempts.mock.calls.length
-    await until(
-      () => reconcileAttempts.mock.calls.length >= ticks + 20,
-      'twenty idle ticks',
-    )
+    const ticks = asked()
+    await until(() => asked() >= ticks + 20, 'twenty idle ticks')
     stop?.()
     expect(providerRequests).toEqual([])
     expect(chainHttpRequests).toEqual([])
     expect(f.requests).toHaveLength(relay)
-    expect(relay).toBe(0)
+  })
+
+  // The reload, on the real wallet: the app starts again while the relay still keeps a paid
+  // message, and nothing in the chat store points at it when the tick looks. Before: the first
+  // tick re-sent it once and the next look was the idle pause away (here a minute, so the wait
+  // below times out). After: it is re-sent on the short pauses until the relay delivers it.
+  it('after a reload, a message the relay still keeps is re-sent on the short pauses until it is delivered, never paid again', async () => {
+    const digest = await paidMessageWithNoRow('sent just before the reload')
+    const funded = mockFunded.length
+    // A new session: nothing in memory, a new tick. Its idle pause is the real minute.
+    setActivePinia(createPinia())
+    stop = startOutgoingReconciliation({
+      wallet,
+      intervalMs: 10,
+      maxIntervalMs: 40,
+      idleIntervalMs: 60_000,
+    }).stop
+    await until(
+      () => f.requests.length >= 5,
+      'four re-sends on the short pauses',
+    )
+    expect(bobInbox).toHaveLength(0)
+    f.setPhase('delivered')
+    await until(() => bobInbox.length === 1, 'the message to be delivered')
+    stop?.()
+
+    for (const request of f.requests)
+      expect(Buffer.from(request.body)).toEqual(Buffer.from(f.requests[0].body))
+    expect(bobInbox).toHaveLength(1)
+    expect(journal().getIntents()).toHaveLength(0)
+    const sent = f.requests.length
+    await expect(
+      f.chain.directMessages.reconcileAttempts({
+        wallet: f.alice,
+        payloadDigests: [digest],
+      }),
+    ).resolves.toEqual({ [digest]: 'delivered' })
+    expect(f.requests).toHaveLength(sent)
+    expect(mockFunded.length - funded).toBeLessThanOrEqual(2)
   })
 })

@@ -23,6 +23,10 @@ import { EvmChangeKeyring } from '@frank/wallet/secp256k1-hd-keyring'
 import { encodeEncryptedMessageContent } from '@frank/codec/token-transfer'
 import type { TokenTransfer } from '@frank/codec/types'
 import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
+import {
+  allocateOpeningConversationId,
+  conversationIdSalt,
+} from '@frank/cashweb/relay/conversation-id'
 import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
 import { fetchMonadProfile } from '@frank/wallet/monad-identity'
 
@@ -562,7 +566,16 @@ export async function tokenSendCommand(
 
     const messageId = new Uint8Array(16)
     for (let i = 0; i < 16; i++) messageId[i] = Math.floor(Math.random() * 256)
-    const conversationId = new Uint8Array(messageId)
+    // No conversation is named: the one this account opens with the recipient, allocated from
+    // the account's private salt.
+    const conversationId = allocateOpeningConversationId(
+      conversationIdSalt(
+        Uint8Array.from(
+          Buffer.from(identity.toPrivateKeyHex().replace(/^0x/, ''), 'hex'),
+        ),
+      ),
+      toAddress.toLowerCase(),
+    )
     const revisionFrame = new Uint8Array([0xa0]) // Minimal CBOR empty map revision frame
 
     const type6Frame = encodeEncryptedMessageContent({

@@ -42,6 +42,15 @@ import { mailboxAuthFor } from '@frank/wallet/monad-identity'
 import { activeChain, type WalletHandle } from '@frank/wallet/chain'
 import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
 import { messageItems } from '../utils/message-items'
+import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
+import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+
+// An account that can open a chat always has its conversation-ID salt installed.
+beforeEach(() =>
+  installTestConversationIdSalt(
+    testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
+  ),
+)
 
 jest.mock('axios', () => ({ __esModule: true, default: jest.fn() }))
 jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))

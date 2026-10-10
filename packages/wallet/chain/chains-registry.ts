@@ -6,6 +6,11 @@ import {
 } from "./protocol-chain-registry";
 
 import { MONAD_TESTNET_DEX, type EvmDexEntry } from "./dex-entries";
+import {
+  SOLANA_DEVNET_DEX,
+  SOLANA_MAINNET_DEX,
+  type SolanaDexEntry,
+} from "./solana-dex-entries";
 
 export type SupportedChainFamily = "evm" | "bitcoin" | "solana";
 export type SupportedNetwork = "mainnet" | "testnet" | "regtest";
@@ -90,9 +95,10 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
   /**
    * The exchanges this network's wallet can swap on, in order: facts only (addresses, pools,
    * which adapter speaks to it, enabled or not). An absent or empty list, or only disabled
-   * entries, means no swap on this network. EVM rows only today; see `dex-entries.ts`.
+   * entries, means no swap on this network. Each chain family has its own entry
+   * types, told apart by `adapter`: `dex-entries.ts` (EVM), `solana-dex-entries.ts` (Solana).
    */
-  readonly dex?: readonly EvmDexEntry[];
+  readonly dex?: readonly (EvmDexEntry | SolanaDexEntry)[];
   /**
    * What an EVM network charges a transaction's gas price on: the gas it `used` (the usual
    * rule, and the default), or the whole gas `limit` it reserved. Monad charges the limit, so
@@ -190,17 +196,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "dSOL",
       networkTag: "SOLD",
       contracts: CANONICAL_SOLANA_CONTRACTS,
-      exchange: Object.freeze({
-        pluginId: "jupiter-aggregator",
-        routerName: "Jupiter Aggregator v6",
-        adapterType: "dex-aggregator",
-        defaultPair: Object.freeze({
-          from: "SOL",
-          to: "USDC",
-          defaultAmount: "1",
-        }),
-        supportedAssets: Object.freeze(["SOL", "USDC", "USDT"]),
-      }),
+      dex: SOLANA_DEVNET_DEX,
     }),
     "solana-testnet": Object.freeze({
       kind: "solana",
@@ -210,17 +206,6 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "tSOL",
       networkTag: "SOLT",
       contracts: CANONICAL_SOLANA_CONTRACTS,
-      exchange: Object.freeze({
-        pluginId: "jupiter-aggregator",
-        routerName: "Jupiter Aggregator v6",
-        adapterType: "dex-aggregator",
-        defaultPair: Object.freeze({
-          from: "SOL",
-          to: "USDC",
-          defaultAmount: "1",
-        }),
-        supportedAssets: Object.freeze(["SOL", "USDC", "USDT"]),
-      }),
     }),
     "solana-mainnet": Object.freeze({
       wallet: JSON_RPC_WALLET,
@@ -231,17 +216,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       unit: "SOL",
       networkTag: "SOL1",
       contracts: CANONICAL_SOLANA_CONTRACTS,
-      exchange: Object.freeze({
-        pluginId: "jupiter-aggregator",
-        routerName: "Jupiter Aggregator v6",
-        adapterType: "dex-aggregator",
-        defaultPair: Object.freeze({
-          from: "SOL",
-          to: "USDC",
-          defaultAmount: "1",
-        }),
-        supportedAssets: Object.freeze(["SOL", "USDC", "USDT"]),
-      }),
+      dex: SOLANA_MAINNET_DEX,
     }),
     "ethereum-sepolia": Object.freeze({
       kind: "ethereum",
@@ -483,7 +458,7 @@ export function resolveChainIdentifier(
 /**
  * Resolves the exchange / swap router configuration for a chain entry by its ID or kind.
  * Enables swap and dApp views to dynamically discover the native router (Uniswap Universal Router
- * for EVM, Jupiter for Solana, eCash Atomic Swap Router for eCash, etc.) without hardcoding.
+ * for EVM, eCash Atomic Swap Router for eCash, etc.; Solana exchanges are `dex` entries) without hardcoding.
  */
 export function getChainExchangeConfig(
   idOrKind: string,

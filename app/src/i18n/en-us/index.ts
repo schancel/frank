@@ -1463,5 +1463,104 @@ export default {
       failed: 'Not completed',
     },
   },
+  solanaSwap: {
+    route: 'Route',
+    enterAmount: 'Enter an amount to swap',
+    loading: 'Loading your Solana tokens…',
+    unsupportedTitle: 'Swaps are not available on this network',
+    unsupportedBody:
+      'No exchange is turned on for this Solana network, so no quote or swap can be made here.',
+    loadError: 'Could not load your Solana tokens.',
+    pendingUnreadable:
+      'The saved record of a swap in progress cannot be read on this device, so it is not known whether a swap is still pending. No new swap can be started here until this is resolved.',
+    retry: 'Try again',
+    venueTestnet:
+      'Trading on {venue}, {network}: test tokens with no real value.',
+    venueMainnet: 'Trading on {venue}, {network}. This swap uses real funds.',
+    payToken: 'Token you pay',
+    receiveToken: 'Token you receive',
+    flip: 'Swap the two tokens',
+    slippage: 'Slippage tolerance',
+    invalidAmount: 'Enter an amount with at most {decimals} decimal places',
+    rate: 'Rate',
+    priceImpact: 'Price impact',
+    minimumReceived: 'At the very least',
+    tradeFee: 'Pool fee (included in the rate)',
+    networkFee: 'Network fee',
+    priorityFee: 'Priority fee',
+    priorityFeeHint:
+      'Set by the transaction to be included sooner; charged in full if the swap lands',
+    accountRent: 'Deposit to open your {token} account',
+    accountRentHint:
+      'Paid once. It stays in your own account and comes back if you ever close it.',
+    temporaryRent: 'Held during the swap',
+    temporaryRentHint:
+      'Needed in your wallet while the swap runs; the same transaction returns it.',
+    platformFee: 'Frank fee ({percent}%)',
+    platformFeeFromInput: 'Part of what you pay.',
+    platformFeeFromOutput: 'Already taken out of what you receive.',
+    totalLeaving: 'Total leaving your wallet',
+    noPlatformFee: 'Frank adds no fee to this swap.',
+    reviewSwap: 'Review swap',
+    reviewTitle: 'Review this swap',
+    reviewWhereTestnet:
+      'On {venue}, on {network}. These are test tokens with no real value.',
+    reviewWhereMainnet: 'On {venue}, on {network}. This uses real funds.',
+    netLine:
+      'In all: {give} leaves your wallet and about {get} arrives (never less than {minimum}, or the swap does not happen).',
+    costWarning:
+      'Fees and deposits ({costs}) are {percent}% of the {amount} being swapped.',
+    back: 'Back',
+    confirmSwap: 'Confirm swap',
+    refreshQuote: 'Get current quote',
+    paid: 'You pay',
+    expected: 'You receive about',
+    actuallyPaid: 'You paid',
+    networkFeeCharged: 'Network fee charged',
+    priorityFeeCharged: 'Priority fee charged',
+    totalLeft: 'Total that left your wallet',
+    received: 'You received',
+    checkAgain: 'Check again',
+    newSwap: 'New swap',
+    stage: {
+      signing: 'Signing…',
+      submitted: 'Sent. Waiting for the network to confirm…',
+      confirmed: 'Swap complete',
+      failed: 'Swap failed',
+      expired: 'Swap was not processed',
+      unknown: 'Still checking this swap',
+    },
+    stageNote: {
+      signing: 'Your wallet is signing the swap. Nothing has been sent yet.',
+      submitted:
+        'This usually takes a few seconds. You can leave this page; the swap is recorded and keeps being followed.',
+      confirmed:
+        'These figures are taken from the confirmed transaction, not from the quote.',
+      failed:
+        'The network rejected the swap, so nothing was exchanged. Only the network fee was paid.',
+      expired:
+        'The network did not include the swap before it expired. Nothing was exchanged and no fee was paid. You can try again.',
+      unknown:
+        'The network could not be reached, so it is not yet known whether this swap went through. It has not been sent again as a new swap.',
+    },
+    error: {
+      invalidRequest:
+        'This swap cannot be quoted. The amount may be too small, or the tokens the same.',
+      noRoute: 'There is no market for this pair here.',
+      insufficientBalance:
+        'You do not have enough of the token you are paying.',
+      insufficientSol:
+        'Not enough SOL to cover this swap, its network fee and its deposits.',
+      slippage:
+        'The price moved beyond your slippage tolerance. Get a new quote or raise the tolerance.',
+      simulationFailed:
+        'The network would reject this swap, so it was not sent.',
+      venueUnavailable:
+        'The exchange did not answer. Try again in a few seconds.',
+      unsafeTransaction:
+        'The transaction for this swap would do something other than the swap that was quoted, so it was not signed.',
+      unexpected: 'Something went wrong and the swap was not sent.',
+    },
+  },
   close: 'Close',
 }

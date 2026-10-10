@@ -1514,5 +1514,106 @@ export default {
       failed: 'Non réalisé',
     },
   },
+  solanaSwap: {
+    route: 'Itinéraire',
+    enterAmount: 'Saisissez un montant à échanger',
+    loading: 'Chargement de vos jetons Solana…',
+    unsupportedTitle: 'Les échanges ne sont pas disponibles sur ce réseau',
+    unsupportedBody:
+      'Aucune plateforme d’échange n’est activée pour ce réseau Solana ; aucun devis ni échange n’est possible ici.',
+    loadError: 'Impossible de charger vos jetons Solana.',
+    pendingUnreadable:
+      'L’enregistrement d’un échange en cours est illisible sur cet appareil ; on ne sait donc pas si un échange est encore en attente. Aucun nouvel échange ne peut être lancé ici tant que ce n’est pas résolu.',
+    retry: 'Réessayer',
+    venueTestnet:
+      'Échange sur {venue}, {network} : des jetons de test sans valeur réelle.',
+    venueMainnet:
+      'Échange sur {venue}, {network}. Cet échange utilise des fonds réels.',
+    payToken: 'Jeton que vous payez',
+    receiveToken: 'Jeton que vous recevez',
+    flip: 'Inverser les deux jetons',
+    slippage: 'Tolérance de glissement',
+    invalidAmount: 'Saisissez un montant avec au plus {decimals} décimales',
+    rate: 'Taux',
+    priceImpact: 'Impact sur le prix',
+    minimumReceived: 'Au strict minimum',
+    tradeFee: 'Frais du pool (inclus dans le taux)',
+    networkFee: 'Frais de réseau',
+    priorityFee: 'Frais de priorité',
+    priorityFeeHint:
+      'Fixés par la transaction pour être incluse plus vite ; facturés en entier si l’échange aboutit',
+    accountRent: 'Dépôt pour ouvrir votre compte {token}',
+    accountRentHint:
+      'Payé une seule fois. Il reste sur votre propre compte et vous revient si vous le fermez un jour.',
+    temporaryRent: 'Immobilisé pendant l’échange',
+    temporaryRentHint:
+      'Nécessaire dans votre portefeuille pendant l’échange ; la même transaction le restitue.',
+    platformFee: 'Frais Frank ({percent} %)',
+    platformFeeFromInput: 'Compris dans ce que vous payez.',
+    platformFeeFromOutput: 'Déjà déduits de ce que vous recevez.',
+    totalLeaving: 'Total quittant votre portefeuille',
+    noPlatformFee: 'Frank n’ajoute aucuns frais à cet échange.',
+    reviewSwap: 'Vérifier l’échange',
+    reviewTitle: 'Vérifiez cet échange',
+    reviewWhereTestnet:
+      'Sur {venue}, sur {network}. Ce sont des jetons de test sans valeur réelle.',
+    reviewWhereMainnet:
+      'Sur {venue}, sur {network}. Des fonds réels sont utilisés.',
+    netLine:
+      'Au total : {give} quitte votre portefeuille et environ {get} arrive (jamais moins de {minimum}, sinon l’échange n’a pas lieu).',
+    costWarning:
+      'Les frais et dépôts ({costs}) représentent {percent} % des {amount} échangés.',
+    back: 'Retour',
+    confirmSwap: 'Confirmer l’échange',
+    refreshQuote: 'Obtenir le devis actuel',
+    paid: 'Vous payez',
+    expected: 'Vous recevez environ',
+    actuallyPaid: 'Vous avez payé',
+    networkFeeCharged: 'Frais de réseau facturés',
+    priorityFeeCharged: 'Frais de priorité facturés',
+    totalLeft: 'Total ayant quitté votre portefeuille',
+    received: 'Vous avez reçu',
+    checkAgain: 'Vérifier à nouveau',
+    newSwap: 'Nouvel échange',
+    stage: {
+      signing: 'Signature…',
+      submitted: 'Envoyé. En attente de confirmation par le réseau…',
+      confirmed: 'Échange terminé',
+      failed: 'Échange échoué',
+      expired: 'L’échange n’a pas été traité',
+      unknown: 'Vérification de cet échange en cours',
+    },
+    stageNote: {
+      signing:
+        'Votre portefeuille signe l’échange. Rien n’a encore été envoyé.',
+      submitted:
+        'Cela prend généralement quelques secondes. Vous pouvez quitter cette page ; l’échange est enregistré et son suivi continue.',
+      confirmed:
+        'Ces chiffres proviennent de la transaction confirmée, et non du devis.',
+      failed:
+        'Le réseau a rejeté l’échange ; rien n’a été échangé. Seuls les frais de réseau ont été payés.',
+      expired:
+        'Le réseau n’a pas inclus l’échange avant son expiration. Rien n’a été échangé et aucuns frais n’ont été payés. Vous pouvez réessayer.',
+      unknown:
+        'Le réseau est injoignable ; on ne sait pas encore si cet échange a abouti. Il n’a pas été renvoyé sous la forme d’un nouvel échange.',
+    },
+    error: {
+      invalidRequest:
+        'Impossible d’établir un devis pour cet échange. Le montant est peut-être trop faible, ou les jetons identiques.',
+      noRoute: 'Il n’existe pas de marché pour cette paire ici.',
+      insufficientBalance: 'Vous n’avez pas assez du jeton que vous payez.',
+      insufficientSol:
+        'Pas assez de SOL pour couvrir cet échange, ses frais de réseau et ses dépôts.',
+      slippage:
+        'Le prix a dépassé votre tolérance de glissement. Demandez un nouveau devis ou augmentez la tolérance.',
+      simulationFailed:
+        'Le réseau rejetterait cet échange ; il n’a donc pas été envoyé.',
+      venueUnavailable:
+        'La plateforme d’échange n’a pas répondu. Réessayez dans quelques secondes.',
+      unsafeTransaction:
+        'La transaction de cet échange ferait autre chose que l’échange annoncé ; elle n’a donc pas été signée.',
+      unexpected: 'Une erreur est survenue et l’échange n’a pas été envoyé.',
+    },
+  },
   close: 'Fermer',
 }

@@ -11,6 +11,7 @@ import {
 import { getSolanaRpcUrls } from '@frank/wallet/chain/solana-balance'
 import protocol from '../../../docs/protocol/chains/v1.json'
 import { accountSession } from './session'
+import { solanaLegacyWiring } from './solana-legacy'
 
 export interface NativeTransferBinding {
   readonly wallet: NativeWalletHandle
@@ -113,6 +114,11 @@ export async function createNativeTransferContext(
           chainIdentifier,
           networkId: chainIdentifier,
           genesisHash,
+          // Its journal for program calls (a swap), and its sync event as a note to self.
+          legacy: solanaLegacyWiring(
+            signer.publicKey.toBase58(),
+            chainIdentifier,
+          ),
         })
       } finally {
         root.fill(0)

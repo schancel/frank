@@ -194,6 +194,9 @@ export interface DirectMessageReceived {
   outbound?: boolean;
   items: MessageItem[];
   conversationId?: string;
+  /** The conversation subject this message carries: present on a conversation's first message
+   * and on a rename, absent otherwise. Authenticated content of the message's sender. */
+  conversationName?: string;
   messageId?: string;
   /** Bare (no `0x`) hex `payload_hash` of the stamped message this was decoded from. */
   payloadDigest: string;
@@ -391,6 +394,10 @@ export interface DirectMessageClient {
     /** 16 bytes or their lowercase `8-4-4-4-12` form; anything else supplied rejects with
      * {@link DirectMessageArgumentError}. Only `undefined` means omitted. */
     conversationId?: string | Uint8Array;
+    /** The conversation's subject, carried in the message. Supply it only on the first message
+     * of a conversation that has one and on a message that renames it; 1 to 512 characters,
+     * not only whitespace, no control characters. */
+    conversationName?: string;
     /** Sealed message identity chosen by the caller, in the same two forms and as strictly
      * checked. The caller must have stored it durably before this call. A repeat of an ID this
      * wallet already has an attempt for rejects with {@link DirectMessageAlreadyAttemptedError}

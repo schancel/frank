@@ -653,6 +653,24 @@ export function createCanonicalMessageRoles(
     throw new Error("Canonical roles require live typed wallet custody");
   return material.canonicalRoles.create(installed.network, current);
 }
+/**
+ * The live typed wallet's private conversation-ID salt, or `undefined` for a wallet that has no
+ * typed messaging root (it then cannot allocate a deterministic conversation ID and its host
+ * allocates a random one). See `@frank/cashweb/relay/conversation-id`.
+ */
+export function conversationIdSaltOf(
+  wallet: NativeWalletHandle | WalletHandle
+): Uint8Array | undefined {
+  const live = wallet as EvmChainWalletHandle;
+  const material = walletMaterial.get(live);
+  if (
+    !material?.canonicalRoles ||
+    !typedWallets.has(live) ||
+    closedWallets.has(live)
+  )
+    return undefined;
+  return material.canonicalRoles.conversationIdSalt();
+}
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
 function canonicalMessagingFor(wallet: EvmChainWalletHandle) {
   requireOpenWallet(wallet);

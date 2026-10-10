@@ -69,10 +69,12 @@ async function main() {
   console.log('regtest stack: OK')
 }
 
-main().then(
-  () => process.exit(0),
-  err => {
-    console.error(err)
-    process.exit(1)
-  },
-)
+if (require.main === module) {
+  main().then(
+    () => process.exit(0),
+    err => {
+      console.error(err)
+      process.exit(1)
+    },
+  )
+}

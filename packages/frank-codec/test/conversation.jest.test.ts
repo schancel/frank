@@ -4,7 +4,10 @@ import {
   encodeFrame,
   defaultContext,
   FrankCodecError,
+  messageContentDigest,
+  toHex,
 } from '../src'
+import { encodeEncryptedMessageContent } from '../src/token-transfer'
 import {
   type6Frame,
   rev8Frame,
@@ -41,24 +44,36 @@ describe('ticket #818: conversation identifiers and names in encrypted message c
     expect(parsed.typed.conversationName).toBeUndefined()
   })
 
-  it('rejects type 6 missing conversation_id (field 4)', () => {
+  it('parses type 6 without conversation_id (field 4), which a reader must accept', () => {
     const rawMap = new Map<number, unknown>([
       [0, 'frank'],
       [1, bytesOf(16, 1)],
       [2, rev8Frame([textItem('test')])],
-      [3, bytesOf(32, 2)],
+      [3, messageContentDigest(rev8Frame([textItem('test')]))],
     ])
     const frame = encodeFrame(
       { typeId: 6, schemaVersion: 1, minReaderVersion: 1 },
       rawMap,
     )
-    expect(() => parseFrame(frame, defaultContext())).toThrow(FrankCodecError)
-    try {
-      parseFrame(frame, defaultContext())
-    } catch (e) {
-      expect((e as FrankCodecError).category).toBe('schema')
-      expect((e as FrankCodecError).stage).toBe('8.2')
-    }
+    const parsed = parseFrame(frame, defaultContext())
+    if (parsed.kind !== 'parsed' || parsed.typed?.type !== 6)
+      throw new Error('expected parsed type 6')
+    expect(parsed.typed.conversationId).toBeUndefined()
+
+    // With the field, the same content parses with its ID: both shapes round-trip.
+    const named = encodeEncryptedMessageContent({
+      network: 'frank',
+      messageId: bytesOf(16, 1),
+      conversationId: bytesOf(16, 9),
+      revisionFrame: rev8Frame([textItem('test')]),
+    })
+    const reopened = parseFrame(named, defaultContext())
+    if (reopened.kind !== 'parsed' || reopened.typed?.type !== 6)
+      throw new Error('expected parsed type 6')
+    expect(reopened.typed.conversationId).toEqual(bytesOf(16, 9))
+    // The two differ by exactly field 4.
+    expect(toHex(named)).not.toBe(toHex(frame))
+    expect(toHex(reopened.typed.messageId)).toBe(toHex(parsed.typed.messageId))
   })
 
   it('rejects conversation_id with wrong byte length', () => {

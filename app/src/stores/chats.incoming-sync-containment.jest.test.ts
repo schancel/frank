@@ -4,6 +4,15 @@ import { useContactStore } from './contacts'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 import { store as storePromise } from '../adapters/level-message-store'
+import { setConversationIdSalt as installTestConversationIdSalt } from './chats'
+import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+
+// An account that can open a chat always has its conversation-ID salt installed.
+beforeEach(() =>
+  installTestConversationIdSalt(
+    testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
+  ),
+)
 
 Object.defineProperty(globalThis, 'document', {
   value: { hasFocus: () => true },

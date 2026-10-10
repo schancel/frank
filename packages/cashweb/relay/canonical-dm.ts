@@ -228,7 +228,9 @@ export interface PreparedDirectMessage {
   readonly context: Uint8Array
   readonly t3: Uint8Array
   readonly messageId: Uint8Array
-  readonly conversationId: Uint8Array
+  /** Absent only when the caller named none (see `prepareDirectMessage`) or, on an opened
+   * message, when its sender sent none. */
+  readonly conversationId?: Uint8Array
   readonly conversationName?: string
   readonly contentDigest: Uint8Array
   readonly content: Uint8Array
@@ -270,9 +272,13 @@ export function prepareDirectMessage(input: {
     const recipient = current(input.network, input.recipientCurrent)
     localRoles(input.roles, sender, true)
     const messageId = copy(input.messageId)
+    // No conversation named: none is encoded, and never the message's own ID, which would
+    // start a new conversation per message. Allocating an ID needs the sender's private salt,
+    // which this layer does not hold: the wallet-side caller allocates and passes it in
+    // (`./conversation-id`). The receiver of a message without one files it per sender.
     const conversationId = input.conversationId
       ? copy(input.conversationId)
-      : copy(messageId)
+      : undefined
     const revision = frame(
       8,
       cborMap([
@@ -286,8 +292,8 @@ export function prepareDirectMessage(input: {
       [1, messageId],
       [2, revision],
       [3, contentDigest],
-      [4, conversationId],
     ]
+    if (conversationId !== undefined) contentEntries.push([4, conversationId])
     if (input.conversationName !== undefined) {
       contentEntries.push([5, input.conversationName])
     }
@@ -337,7 +343,7 @@ export function prepareDirectMessage(input: {
       context,
       t3: recipientPayloadDigest(input.network, payload),
       messageId,
-      conversationId,
+      ...(conversationId === undefined ? {} : { conversationId }),
       contentDigest,
       content: plaintext,
       revision,
@@ -528,7 +534,11 @@ export function openDirectMessage(
       context,
       t3: recipientPayloadDigest(input.network, payload),
       messageId: content.messageId,
-      conversationId: content.conversationId,
+      // A client that sent no conversation ID: reported as absent. The receiver files it under
+      // the conversation it would itself open with the sender.
+      ...(content.conversationId === undefined
+        ? {}
+        : { conversationId: content.conversationId }),
       contentDigest: content.contentDigest,
       senderT1: sender.statementHash,
       recipientT1: recipient.statementHash,
@@ -684,7 +694,11 @@ export function openOwnDirectMessage(
       context,
       t3: recipientPayloadDigest(input.network, payload),
       messageId: content.messageId,
-      conversationId: content.conversationId,
+      // A client that sent no conversation ID: reported as absent. The receiver files it under
+      // the conversation it would itself open with the sender.
+      ...(content.conversationId === undefined
+        ? {}
+        : { conversationId: content.conversationId }),
       contentDigest: content.contentDigest,
       senderT1: sender.statementHash,
       recipientT1: recipient.statementHash,

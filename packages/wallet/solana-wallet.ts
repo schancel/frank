@@ -43,6 +43,17 @@ import {
 } from './ed25519-hd-keyring'
 import { SolanaAccountHygieneEngine } from './solana-account-hygiene'
 import type { ChainUtxoPool, ChainUtxoCoin } from './chain-utxo-pool'
+import {
+  createSolanaLegacySender,
+  type PreparedLegacyTransaction,
+  type SolanaLegacyJournal,
+  type SolanaLegacySync,
+  type SolanaSwapIntent,
+  type SolanaSwapOutcome,
+  type SolanaSwapRecord,
+  type SolanaSwapSender,
+} from './solana-swap/execute'
+import type { SwapCheckConnection } from './solana-swap/swap'
 
 /**
  * Minimum transfer amount for a Solana stealth address.
@@ -321,6 +332,9 @@ export class SolanaWallet
   private readonly nativeAttemptKey: string
   private networkVerification: Promise<void> | undefined
   private readonly expectedGenesisHash: string
+  private readonly legacy:
+    | { journal: SolanaLegacyJournal; onSync?: SolanaLegacySync }
+    | undefined
 
   constructor(params: {
     connection: SolanaWalletConnection
@@ -338,7 +352,13 @@ export class SolanaWallet
     hdKeyring?: SolanaHdKeyring
     changeKeyring?: SolanaChangeKeyring
     chainUtxoPool?: ChainUtxoPool
+    /**
+     * Where this wallet journals the legacy transactions it signs (calls to a program, such
+     * as a swap), and its sync event for them. Without a journal the wallet refuses to send one.
+     */
+    legacy?: { journal: SolanaLegacyJournal; onSync?: SolanaLegacySync }
   }) {
+    this.legacy = params.legacy
     this.connection = params.connection
     this.signer = params.signer
     this.chainIdentifier = params.chainIdentifier ?? params.genesisHash
@@ -409,10 +429,12 @@ export class SolanaWallet
     hdKeyring?: SolanaHdKeyring
     changeKeyring?: SolanaChangeKeyring
     hygiene?: AccountHygieneEngine<string>
+    legacy?: { journal: SolanaLegacyJournal; onSync?: SolanaLegacySync }
   }): Promise<SolanaWallet> {
     const stableSeed = params.seed.slice()
     await ensureEd25519Support()
     return new SolanaWallet({
+      legacy: params.legacy,
       connection: params.connection,
       signer: await Keypair.fromSeed(stableSeed),
       chainIdentifier: params.chainIdentifier,
@@ -597,6 +619,62 @@ export class SolanaWallet
   async getPrimaryBalance(): Promise<bigint> {
     await this.verifyNetwork()
     return BigInt(await this.connection.getBalance(this.signer.publicKey))
+  }
+
+  /**
+   * Signs a prepared swap transaction with this wallet's key. Private (a real `#` member):
+   * the only caller is `sendLegacyTransaction`, which checks the transaction first. The
+   * transaction must be paid for by this wallet and need no other signature, so a transaction
+   * built elsewhere (a swap aggregator's) cannot make the wallet sign on anyone else's behalf.
+   */
+  async #signSwapTransaction(
+    transaction: VersionedTransaction,
+    lastValidBlockHeight: bigint,
+  ): Promise<{ signature: string; rawTransaction: Uint8Array }> {
+    await this.verifyNetwork()
+    const { header, staticAccountKeys } = transaction.message
+    if (
+      header.numRequiredSignatures !== 1 ||
+      !staticAccountKeys[0]?.equals(this.signer.publicKey)
+    ) {
+      throw new Error('Swap transaction is not paid and signed by this wallet alone')
+    }
+    await transaction.sign([this.signer], { lastValidBlockHeight })
+    return {
+      signature: base58Decoder.decode(transaction.signatures[0]),
+      rawTransaction: transaction.serialize(),
+    }
+  }
+
+  /**
+   * The wallet's legacy send, for a transaction that calls a program rather than paying another
+   * Frank user. Takes the transaction, what was reviewed for it and the record of what it is
+   * for; runs the safety check on that exact transaction against the wallet as it is now,
+   * signs it, journals the signed bytes with the record BEFORE broadcasting, sends, and follows
+   * it to its outcome. This is the only way the wallet signs such a transaction. When the chain has finalised it, the wallet's sync event carries the
+   * record to the account's other frontends.
+   */
+  async sendLegacyTransaction(
+    prepared: PreparedLegacyTransaction,
+    intent: SolanaSwapIntent,
+    onSubmitted?: (record: SolanaSwapRecord) => void,
+  ): Promise<SolanaSwapOutcome> {
+    if (!this.legacy) {
+      throw new Error('This wallet has no journal for legacy transactions')
+    }
+    return createSolanaLegacySender({
+      // A real Connection has these calls; the wallet's own type lists only what sends need.
+      connection: this.connection as unknown as SolanaSwapSender &
+        SwapCheckConnection,
+      signer: async () => ({
+        address: this.address,
+        chainIdentifier: this.chainIdentifier,
+        sign: (transaction, lastValidBlockHeight) =>
+          this.#signSwapTransaction(transaction, lastValidBlockHeight),
+      }),
+      journal: this.legacy.journal,
+      track: { onSync: this.legacy.onSync },
+    }).sendLegacyTransaction(prepared, intent, onSubmitted)
   }
 
   getUnresolvedNativeTransaction(): ChainTransaction | undefined {

@@ -41,7 +41,7 @@ import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-pl
 import { registerMonadIdentity } from '@frank/wallet/monad-identity'
 import { findToken } from '@frank/wallet/swap/uniswap-v4'
 import { UniswapV4Dex } from '@frank/wallet/swap/uniswap-v4-dex'
-import { DirectoryManager } from '@frank/bot-framework/src/directory-manager'
+import { DirectoryManager } from '@frank/bot-framework/directory-manager'
 
 const CHAIN = 'monad-testnet'
 const PURPOSES = [
@@ -258,7 +258,7 @@ async function main(): Promise<void> {
         (item): item is SwapRecordItem => item.type === 'swap-record',
       ),
     )
-    const expected = swapRecordId(CHAIN, txHash)
+    const expected = swapRecordId(CHAIN, txHash.toLowerCase())
     const record = records.find(item => item.swapId === expected)
     console.log(
       `   mailbox: ${received.length} message(s), ${
@@ -282,10 +282,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().then(
-  () => process.exit(0),
-  error => {
-    console.error(error instanceof Error ? error.stack ?? error.message : error)
-    process.exit(1)
-  },
-)
+if (require.main === module) {
+  main().then(
+    () => process.exit(0),
+    error => {
+      console.error(error instanceof Error ? error.stack ?? error.message : error)
+      process.exit(1)
+    },
+  )
+}

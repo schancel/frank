@@ -42,6 +42,15 @@ import {
 } from '../utils/blackjack-hand'
 import { FakeLockManager } from '../utils/__fakes__/web-locks'
 import { outgoingLockName } from '../utils/outgoing-lock'
+import { setConversationIdSalt as installTestConversationIdSalt } from './chats'
+import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+
+// An account that can open a chat always has its conversation-ID salt installed.
+beforeEach(() =>
+  installTestConversationIdSalt(
+    testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
+  ),
+)
 
 jest.mock('../utils/notifications', () => ({ desktopNotify: jest.fn() }))
 

@@ -135,6 +135,9 @@ export async function toReceivedMessageWrapper(
       senderAddress,
       destinationAddress,
       conversationId: record.conversationId,
+      ...(record.conversationName === undefined
+        ? {}
+        : { conversationName: record.conversationName }),
       logicalMessageId: record.messageId,
     },
   }

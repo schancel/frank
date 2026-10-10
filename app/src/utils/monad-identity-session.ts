@@ -21,6 +21,8 @@ import {
 } from '@frank/wallet/chain/monad-chain'
 import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
 import { messageItems } from './message-items'
+import { conversationIdSaltOf } from '@frank/wallet/chain/monad-chain'
+import { setConversationIdSalt } from '../stores/chats'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
 import {
@@ -89,6 +91,12 @@ export interface MessagingDeps {
   install: typeof installCanonicalDirectory
   startPolling: (options: { wallet: WalletHandle }) => Stoppable
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
+  /**
+   * Picks up what the account's wallets signed earlier and did not finish (a swap interrupted
+   * by a reload) once the account is open and can send its notes to itself. Costs no network
+   * request when nothing is unfinished.
+   */
+  resumeLegacy?: () => void
   /** Delay before the n-th retry (1-based) of a failed publish. */
   retryDelayMs(attempt: number): number
   /** Registers the identity profile with the relay so authenticated inbox reads succeed. */
@@ -203,6 +211,15 @@ function productionDeps(): MessagingDeps {
     },
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
+    resumeLegacy: () =>
+      void import('../composables/useSolanaSwap')
+        .then(swaps => swaps.resumeSolanaSwaps())
+        .catch(error =>
+          console.warn(
+            '[startMessaging] could not resume Solana swaps:',
+            error,
+          ),
+        ),
     // 5 s, 10 s, 20 s ... capped at 5 minutes.
     retryDelayMs: attempt => Math.min(5_000 * 2 ** (attempt - 1), 300_000),
     registerProfile: async ({ relayBaseUrl, wallet }) => {
@@ -302,6 +319,8 @@ export { messagingState }
 export type { MessagingReason, MessagingState }
 
 let deps: MessagingDeps | undefined
+/** The account whose conversation-ID salt is installed in the chat store. */
+let saltAccount: unknown
 let live: Live | undefined
 /** Identity of the attempt in flight; anything older must publish no result. */
 let attempt: object | undefined
@@ -325,7 +344,26 @@ export function messagingWallet(): WalletHandle | undefined {
   return live ? (live.wallet as unknown as WalletHandle) : undefined
 }
 
+/**
+ * Installs the active account's conversation-ID salt in the chat store, if it is not there yet.
+ * Anything that opens a chat outside the messaging start (a route followed at launch) awaits
+ * this first. Resolves without one when no account is ready.
+ */
+export async function ensureConversationIdSalt(): Promise<void> {
+  let d: MessagingDeps
+  try {
+    d = dependencies()
+  } catch {
+    return // This build has no Monad network, so no account that could open a chat.
+  }
+  if (d.session.state.status !== 'ready') return
+  const salt = conversationIdSaltOf(await d.session.getWallet())
+  if (salt) setConversationIdSalt(salt)
+}
+
 export async function stopMessaging(): Promise<void> {
+  // The salt goes with the account, not with the connection to the relay.
+  if (accountStatus.status !== 'ready') setConversationIdSalt(null)
   attempt = undefined
   if (retryTimer !== undefined) clearTimeout(retryTimer)
   retryTimer = undefined
@@ -395,7 +433,15 @@ export async function startMessaging(): Promise<void> {
   let wallet: NativeWalletHandle | undefined
   try {
     if (d.session.state.status !== 'ready') throw new Error('no account')
+    // One account's salt never serves another: on a switch straight from one ready account to
+    // the next, the old salt goes before the new wallet opens.
+    if (saltAccount !== account) setConversationIdSalt(null)
     wallet = await d.session.getWallet()
+    saltAccount = account
+    // The chat store allocates conversation IDs from this account's private salt. It is
+    // installed as soon as the wallet is at hand, before the relay is asked anything, and
+    // stays through every messaging restart: it belongs to the account, not to the connection.
+    setConversationIdSalt(conversationIdSaltOf(wallet))
     if (d.registerProfile) {
       await d.registerProfile({ relayBaseUrl: d.relayBaseUrl, wallet })
     }
@@ -465,6 +511,7 @@ export async function startMessaging(): Promise<void> {
       failures = 0
       state.status = 'ready'
       state.reason = null
+      d.resumeLegacy?.()
       void d.claimUsername?.({
         relayBaseUrl: d.relayBaseUrl,
         network: networkOf(d.networkTag),

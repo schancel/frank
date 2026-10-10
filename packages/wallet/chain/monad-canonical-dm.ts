@@ -53,6 +53,7 @@ import {
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
+import { allocateOpeningConversationId } from '@frank/cashweb/relay/conversation-id'
 import {
   connectCanonicalMailboxStream,
   fetchCanonicalInboxPage,
@@ -748,7 +749,12 @@ function sealUnpaid(
   directory: CanonicalDirectory,
   message: Pick<
     Parameters<typeof prepareDirectMessage>[0],
-    'senderCurrent' | 'recipientCurrent' | 'messageId' | 'conversationId' | 'items'
+    | 'senderCurrent'
+    | 'recipientCurrent'
+    | 'messageId'
+    | 'conversationId'
+    | 'conversationName'
+    | 'items'
   >,
 ) {
   const roles = owner.roles.create(directory.network, message.senderCurrent)
@@ -889,6 +895,18 @@ async function send(
         params.recipient.raw,
         peer.endpoint,
       )
+    // One conversation ID and one subject for this message, paid or not. A caller that named no
+    // conversation gets the one this account opens with this recipient.
+    const conversationId =
+      conversationIdBytes ??
+      allocateOpeningConversationId(
+        owner.roles.conversationIdSalt(),
+        params.recipient.raw.toLowerCase(),
+      )
+    const conversationName =
+      params.conversationName === undefined
+        ? {}
+        : { conversationName: params.conversationName }
     if (stampValueWei === 0n) {
       // No stamp: the message is sealed and handed to the relay. No account is funded or
       // reserved, nothing is written to the payment journal or the links, and earlier paid
@@ -916,7 +934,10 @@ async function send(
           senderCurrent: await directory.selfCurrent(),
           recipientCurrent: peer.current,
           messageId: suppliedMessageId ?? randomBytes(16),
-          conversationId: conversationIdBytes,
+          // Sealed into the kept envelope, so a repeat resends these same bytes: a stored
+          // envelope's conversation ID and subject are never recomputed or changed.
+          conversationId,
+          ...conversationName,
           items,
         })
         digest = unpaid.digest
@@ -989,7 +1010,8 @@ async function send(
         senderCurrent,
         recipientCurrent: recipient.current,
         messageId,
-        conversationId: conversationIdBytes,
+        conversationId,
+        ...conversationName,
         items,
         roles,
       })
@@ -1604,6 +1626,7 @@ async function fetchSince(
       const roles = owner.roles.create(directory.network, self)
       let items: MessageItem[]
       let conversationIdStr: string | undefined
+      let conversationNameStr: string | undefined
       let messageIdStr: string | undefined
       try {
         const opened = isOutbound
@@ -1632,6 +1655,7 @@ async function fetchSince(
         if (opened.conversationId) {
           conversationIdStr = formatUuid(opened.conversationId)
         }
+        conversationNameStr = opened.conversationName
         if (opened.messageId) {
           messageIdStr = formatUuid(opened.messageId)
         }
@@ -1700,6 +1724,9 @@ async function fetchSince(
           : fromHex(owner.subject),
         items,
         conversationId: conversationIdStr,
+        ...(conversationNameStr === undefined
+          ? {}
+          : { conversationName: conversationNameStr }),
         messageId: messageIdStr,
         payloadDigest: digest,
         stampValueWei: stampPayments.reduce((sum, p) => sum + p.valueWei, 0n),
@@ -1845,6 +1872,7 @@ export function canonicalDirectMessages(
                 const roles = owner.roles.create(directory.network, self)
                 let items: MessageItem[]
                 let conversationIdStr: string | undefined
+                let conversationNameStr: string | undefined
                 let messageIdStr: string | undefined
                 try {
                   const opened = isOutbound
@@ -1873,6 +1901,7 @@ export function canonicalDirectMessages(
                   if (opened.conversationId) {
                     conversationIdStr = formatUuid(opened.conversationId)
                   }
+                  conversationNameStr = opened.conversationName
                   if (opened.messageId) {
                     messageIdStr = formatUuid(opened.messageId)
                   }
@@ -1927,6 +1956,9 @@ export function canonicalDirectMessages(
                     : fromHex(owner.subject),
                   items,
                   conversationId: conversationIdStr,
+                  ...(conversationNameStr === undefined
+                    ? {}
+                    : { conversationName: conversationNameStr }),
                   messageId: messageIdStr,
                   payloadDigest: digest,
                   stampValueWei: stampPayments.reduce(

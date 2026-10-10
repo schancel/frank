@@ -39,6 +39,7 @@ import {
   type MessagingDeps,
 } from './monad-identity-session'
 import { useMonadWallet } from './clients'
+import { hasConversationIdSalt } from '../stores/chats'
 
 jest.setTimeout(30000)
 
@@ -157,6 +158,7 @@ function device(live: EvmChainWalletHandle) {
     }),
     startPolling: jest.fn(() => polling),
     startReconcile: jest.fn(() => reconcile),
+    resumeLegacy: jest.fn(),
     retryDelayMs: () => 20,
   }
   return { deps, saved, uninstall, polling, reconcile }
@@ -227,6 +229,9 @@ test('a ready account publishes its own entry and starts messaging with no user 
   expect(d.deps.install).toHaveBeenCalledTimes(1)
   expect(d.deps.startPolling).toHaveBeenCalledWith({ wallet: alice })
   expect(d.deps.startReconcile).toHaveBeenCalledWith({ wallet: alice })
+  // The account is open and can send its notes: transactions the wallet signed earlier and
+  // did not finish are picked up now, whatever screen is showing.
+  expect(d.deps.resumeLegacy).toHaveBeenCalledTimes(1)
   expect(messagingState.reason).toBeNull()
   expect(useMonadWallet()).toBe(alice)
 })
@@ -268,6 +273,7 @@ test('a relay that is down leaves messaging off with a plain reason, and the ret
   expect(messagingState.reason).toBe('relay-unreachable')
   expect(d.deps.install).not.toHaveBeenCalled()
   expect(d.deps.startPolling).not.toHaveBeenCalled()
+  expect(d.deps.resumeLegacy).not.toHaveBeenCalled()
   expect(signedZero).not.toHaveBeenCalled()
   // No legacy path: there is simply no messaging wallet.
   expect(() => useMonadWallet()).toThrow('Messaging is not available yet')
@@ -372,6 +378,31 @@ test('messaging stops when the account changes and restarts for the new account'
   // Reopened from this device's own stores: nothing new is signed or stored at the relay.
   expect(signedZero).toHaveBeenCalledTimes(1)
   expect(relay.requests.filter(r => r.method === 'PUT')).toHaveLength(1)
+})
+
+test('the conversation-ID salt comes with the wallet, not with the relay, and goes only with the account', async () => {
+  const alice = await wallet(0, 'alice')
+  const d = device(alice)
+  // The relay never answers: messaging cannot become ready.
+  d.deps.directory.fetch = () => new Promise<never>(() => undefined)
+  d.deps.registerProfile = () => new Promise<never>(() => undefined)
+  await configureMessagingForTest(d.deps)
+  expect(hasConversationIdSalt()).toBe(false)
+  mockStatus.status = 'ready'
+  void initializeMonadIdentity()
+  // Installed as soon as the wallet is at hand, so a chat opened now gets its real ID.
+  await until(() => hasConversationIdSalt(), 'the salt')
+  expect(messagingState.status).not.toBe('ready')
+  expect(d.deps.install).not.toHaveBeenCalled()
+
+  // A messaging restart keeps it: the account is still there.
+  await stopMessaging()
+  expect(hasConversationIdSalt()).toBe(true)
+
+  // It goes when the account does.
+  mockStatus.status = 'loading'
+  await stopMessaging()
+  expect(hasConversationIdSalt()).toBe(false)
 })
 
 test('an attempt overtaken by a stop installs nothing', async () => {

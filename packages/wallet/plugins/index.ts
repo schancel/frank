@@ -6,29 +6,16 @@
  * Uniswap, eCash swaps, Tempo and Hyperliquid computed their answers from constants in the source
  * and have been deleted. The prediction-escrow typed-data builder remains as a library for its
  * own tests but is not registered: nothing is deployed at the contract address it signs for.
+ * The Jupiter plugin did the same (a price table, a made-up fee recipient) and is deleted too:
+ * Solana swaps live in `../solana-swap`. Nothing is registered today.
  */
 
 export * from './types'
 export * from './plugin-registry'
-export * from './jupiter-plugin'
 export * from './prediction-escrow-plugin'
 
-import { DAppPluginRegistry, defaultPluginRegistry } from './plugin-registry'
-import { JupiterDAppPlugin } from './jupiter-plugin'
+import { DAppPluginRegistry } from './plugin-registry'
 
 export function createStandardPluginRegistry(): DAppPluginRegistry {
-  const registry = new DAppPluginRegistry()
-  registry.register(new JupiterDAppPlugin())
-  return registry
+  return new DAppPluginRegistry()
 }
-
-export function initializeDefaultPluginRegistry(): void {
-  const plugins = [new JupiterDAppPlugin()]
-  for (const p of plugins) {
-    if (!defaultPluginRegistry.has(p.id)) {
-      defaultPluginRegistry.register(p)
-    }
-  }
-}
-
-initializeDefaultPluginRegistry()

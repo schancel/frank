@@ -54,6 +54,7 @@ import {
   SUITE_AUTH_XCHACHA,
 } from '@frank/crypto-box'
 import type { SuiteResult } from '@frank/crypto-box'
+import { conversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 import {
   openOwnDirectMessage,
   type OpenOwnDirectMessageInput,
@@ -112,6 +113,10 @@ export interface MonadCanonicalRoleOwner {
     message: Uint8Array
     stamp: Uint8Array
   }
+  /** This account's private conversation-ID salt (16 bytes), derived from the messaging root
+   * under a fixed label: the same on every device holding the account, computable by nobody
+   * else. See `@frank/cashweb/relay/conversation-id`. A fresh copy on every call. */
+  conversationIdSalt(): Uint8Array
   dispose(): void
 }
 
@@ -430,6 +435,10 @@ function roleOwner(
         owned.predecessor,
         () => copyNextRevisionInput(owned),
       )
+    },
+    conversationIdSalt() {
+      if (disposed) throw new Error('canonical-roles:disposed')
+      return conversationIdSalt(messageRoot.bytes)
     },
     publicGenerationZeroPoints() {
       if (disposed) throw new Error('canonical-roles:disposed')

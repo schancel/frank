@@ -9,9 +9,12 @@ function checkNodeConsumer() {
   const root = path.resolve(packageRoot, '../..')
   const manifest = require(path.join(packageRoot, 'package.json'))
   const filename = path.join(root, 'directory-node-consumer.ts')
-  const envelopeFilename = path.join(
+  // The repository's one declaration of the bare `level` module. Every project
+  // that calls Level lists it explicitly, as packages/bot-framework/tsconfig.json does.
+  const levelDeclaration = path.join(root, 'packages/wallet/level.d.ts')
+  const botTypesFilename = path.join(
     root,
-    'directory-node-consumer-envelope.d.ts',
+    'packages/bot-framework/src/types.ts',
   )
   const source = `
 import {
@@ -40,17 +43,28 @@ export function consume(location: string, anchor: Anchor): Promise<DirectoryStor
         path.resolve(packageRoot, manifest.exports['./node']),
       ],
       '@frank/codec': [path.join(root, 'packages/frank-codec/src/index.ts')],
-      // Isolate the unchanged faucet's Level boundary from unrelated cashweb
-      // declarations. This stub does not declare or replace the Level module.
-      '@frank/cashweb/relay/monad-message-envelope': [envelopeFilename],
     },
   }
-  function check(label, consumer) {
+  function check(label, consumer, extraRoots = []) {
     const sources = new Map([
       [filename, consumer],
+      // The bot state store takes only this interface from the bot framework's
+      // types. Standing in for that file keeps the wallet, cashweb and ethers
+      // declarations it also imports out of this check. It does not declare or
+      // replace the Level module.
       [
-        envelopeFilename,
-        'export declare function canonicalMonadEnvelopeAddress(address: string): string',
+        botTypesFilename,
+        `export interface BotStateStore {
+  get(key: string): Promise<string | undefined>
+  put(key: string, value: string): Promise<void>
+  del(key: string): Promise<void>
+  batch(
+    ops: Array<
+      { type: 'put'; key: string; value: string } | { type: 'del'; key: string }
+    >,
+  ): Promise<void>
+  sublevel(name: string): BotStateStore
+}`,
       ],
     ])
     const host = ts.createCompilerHost(options)
@@ -61,7 +75,7 @@ export function consume(location: string, anchor: Anchor): Promise<DirectoryStor
       sources.has(file)
         ? ts.createSourceFile(file, sources.get(file), languageVersion)
         : getSourceFile(file, languageVersion, ...rest)
-    const program = ts.createProgram([filename], options, host)
+    const program = ts.createProgram([filename, ...extraRoots], options, host)
     const diagnostics = ts.getPreEmitDiagnostics(program)
     if (diagnostics.length) {
       throw new Error(
@@ -76,16 +90,19 @@ export function consume(location: string, anchor: Anchor): Promise<DirectoryStor
     console.log(`${label}: strict declaration closure ok`)
   }
   check('directory Node public consumer', source)
-  // Compile the actual unmodified legacy consumer, including its location-only
-  // level(this.dbLocation) call, alongside the public Node entry. Neither check
-  // includes private ambient declarations as consumer root files.
+  // Compile the bots' actual Level state store, including its location-only
+  // level(location) call, alongside the public Node entry. A bot opens both in one
+  // process, so the directory's private view of Level must not change what the
+  // bare `level` module accepts. The only declaration added as a root file is the
+  // repository's own bare `level` declaration, never the directory's private one.
   check(
-    'directory Node + legacy faucet consumer',
+    'directory Node + bot state store consumer',
     source +
       `
-import { FaucetStateStore } from './packages/bot/faucet-state'
-export const legacy = new FaucetStateStore('/unused-typecheck-only')
+import { LevelBotStateStore } from './packages/bot-framework/src/state-store'
+export const botState = new LevelBotStateStore('/unused-typecheck-only')
 `,
+    [levelDeclaration],
   )
 }
 

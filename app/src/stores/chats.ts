@@ -1,12 +1,12 @@
 import assert from 'assert'
 import { defineStore } from 'pinia'
+import { shallowRef } from 'vue'
 
 import {
   defaultEmailGatewayAddress,
   defaultStampAmount,
   displayNetwork,
 } from '../utils/constants'
-import { sha1 } from '@noble/hashes/sha1'
 import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { picturePreview, picturePreviewText } from '../utils/chat-attachments'
@@ -62,6 +62,12 @@ import {
   type RelayReceiptIdentity,
 } from '@frank/cashweb/relay/storage/storage'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import {
+  allocateOpeningConversationId,
+  formatConversationId,
+  isOpeningConversationId,
+  uuidv5Bytes,
+} from '@frank/cashweb/relay/conversation-id'
 import { accountSession } from '../accounts/session'
 import { useProfileStore } from './my-profile'
 import { useSettingsStore } from './settings'
@@ -160,10 +166,15 @@ export interface Conversation {
   id: string
   kind: ConversationKind
   name?: string
+  /** The subject last carried by a message in this conversation, sent by this account or by the
+   * peer. A message carries the subject only when it differs from this: the first message of a
+   * conversation that has a subject, and a message after a rename. */
+  nameOnWire?: string
+  /** Relay time of the message whose subject this conversation currently has, when a message
+   * set it. A carried subject replaces the current one only if its message is not older. */
+  nameSetAt?: number
   topic?: string
   emailRecipient?: string
-  /** Assigned only by default-peer opening; subjects and explicit IDs never select it. */
-  defaultDirect?: boolean
   participants: string[]
   members?: Record<string, ConversationMember>
   epoch?: ConversationEpoch
@@ -226,37 +237,16 @@ export function makeParticipantsKey(participants: string[]): string {
 export const NULL_CONVERSATION_NAMESPACE =
   '00000000-0000-0000-0000-000000000000'
 
+/** A UUIDv5 as text. The one implementation is shared with the sending layer
+ * (`@frank/cashweb/relay/conversation-id`). */
 export function uuidv5(namespaceUuid: string, name: string): string {
-  const cleanNs = namespaceUuid.replace(/-/g, '')
-  const nsBytes = new Uint8Array(16)
-  for (let i = 0; i < 16; i++) {
-    nsBytes[i] = parseInt(cleanNs.slice(i * 2, i * 2 + 2), 16)
-  }
-  const nameBytes = new TextEncoder().encode(name)
-  const input = new Uint8Array(nsBytes.length + nameBytes.length)
-  input.set(nsBytes, 0)
-  input.set(nameBytes, nsBytes.length)
-
-  const digest = sha1(input)
-  digest[6] = (digest[6] & 0x0f) | 0x50 // version 5
-  digest[8] = (digest[8] & 0x3f) | 0x80 // RFC 4122 variant
-
-  const hex = Array.from(digest.slice(0, 16))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
-    12,
-    16,
-  )}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
-}
-
-export function makeConversationId(
-  participants: string[],
-  topicId?: string,
-): string {
-  const pKey = makeParticipantsKey(participants)
-  const name = topicId ? `${pKey}#${topicId}` : pKey
-  return uuidv5(NULL_CONVERSATION_NAMESPACE, name)
+  const hex = namespaceUuid.replace(/-/g, '')
+  if (!/^[0-9a-fA-F]{32}$/.test(hex))
+    throw new Error('UUID namespace must contain exactly 16 bytes')
+  const namespace = new Uint8Array(16)
+  for (let i = 0; i < 16; i++)
+    namespace[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  return formatConversationId(uuidv5Bytes(namespace, name))
 }
 
 /** A message ID is chosen by its sender, so two different messages can arrive with the same
@@ -867,15 +857,164 @@ export type RestorableState = {
   lastReceived: number | null
 }
 
-/** The peer index is a derived view of explicitly marked default threads, never a writer. */
+/**
+ * A conversation's earliest message that the relay has timed: relay time, then payload hash.
+ * A message of ours that is still pending or failed carries this device's clock, which no other
+ * device sees, so it does not count until the relay has it. `messages` is kept in relay order,
+ * so the first timed one is the earliest; only rows of the same time are compared by hash.
+ */
+function earliestMessage(conversation: Conversation): ChatMessage | undefined {
+  let first: ChatMessage | undefined
+  for (const message of conversation.messages) {
+    if (message.outbound && message.status !== 'confirmed') continue
+    if (!first) first = message
+    else if (message.serverTime > first.serverTime) break
+    else if (byRelayTime(message, first) < 0) first = message
+  }
+  return first
+}
+
+/**
+ * The peer's thread: the one conversation Contacts opens for `peer`.
+ *
+ * It is derived from facts every device of the account sees, never from which device opened
+ * what first: of the conversations with this peer (email threads aside) that carry an opening ID (a UUIDv5, what an
+ * account allocates when it opens a chat; an explicitly created further conversation is a
+ * UUIDv4 and never becomes the peer's thread) and that the peer or this account started (their
+ * earliest message is from one of the two, not from a third party), the one whose earliest
+ * message is the earliest, by relay time and then payload hash. With no such message yet it is
+ * the conversation this account opens with the peer, the ID allocated from its private salt, if
+ * that exists. A thread opened here and still empty therefore yields to the peer's own
+ * conversation when the peer's first message arrives, on every device alike, and a reload
+ * computes the same answer from the same messages.
+ */
+export function peerThread(
+  conversations: Record<string, Conversation | undefined>,
+  peer: string,
+): Conversation | undefined {
+  let thread: Conversation | undefined
+  let threadStart: ChatMessage | undefined
+  for (const conversation of Object.values(conversations)) {
+    if (
+      !conversation ||
+      conversation.kind === 'group' ||
+      // An email thread's ID is the gateway's own; it is never anybody's opening thread,
+      // whatever its bytes happen to look like.
+      conversation.kind === 'email' ||
+      !isOpeningConversationId(conversation.id) ||
+      !sameCanonicalAddress(conversation.address, peer)
+    )
+      continue
+    const start = earliestMessage(conversation)
+    if (
+      !start ||
+      !(
+        start.outbound ||
+        sameCanonicalAddress(start.senderAddress, conversation.address)
+      )
+    )
+      continue
+    if (!threadStart || byRelayTime(start, threadStart) < 0) {
+      thread = conversation
+      threadStart = start
+    }
+  }
+  if (thread || !conversationIdSalt.value) return thread
+  const opened = conversations[allocateOpeningConversationIdFor(peer)]
+  return opened && sameCanonicalAddress(opened.address, peer)
+    ? opened
+    : undefined
+}
+
+/** The ID of the peer's thread, whether or not that conversation has been opened on this
+ * device yet: with no message exchanged, the ID this account allocates for the peer. */
+export function peerThreadId(
+  conversations: Record<string, Conversation | undefined>,
+  peer: string,
+): string {
+  return (
+    peerThread(conversations, peer)?.id ??
+    allocateOpeningConversationIdFor(peer)
+  )
+}
+
+/** Every peer's thread by peer address: a derived view, never a writer. */
 function defaultChats(
   conversations: Record<string, Conversation>,
 ): Readonly<Record<string, Conversation | undefined>> {
-  return Object.fromEntries(
+  const peers = new Set(
     Object.values(conversations)
-      .filter(c => c.defaultDirect && c.address)
-      .map(c => [c.address, c]),
+      .filter(c => c.kind !== 'group' && c.address)
+      .map(c => c.address),
   )
+  return Object.fromEntries(
+    [...peers]
+      .map(peer => [peer, peerThread(conversations, peer)] as const)
+      .filter(([, thread]) => thread !== undefined),
+  )
+}
+
+/** A subject as the wire accepts it (1 to 512 characters, not only whitespace, no control
+ * characters), trimmed; `undefined` for anything else. */
+function usableSubject(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  // Direction overrides and isolates would let a subject reorder the text shown around it.
+  const subject = value.replace(/[\u202a-\u202e\u2066-\u2069]/g, '').trim()
+  if (
+    subject.length === 0 ||
+    new TextEncoder().encode(subject).length > 512 ||
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(subject)
+  )
+    return undefined
+  return subject
+}
+
+/**
+ * A subject carried by a message sets or replaces the conversation's subject when the message is
+ * from the conversation's peer or from this account itself (its own message read back from the
+ * mailbox: a rename made on another of its devices). Nobody else's message changes it. Of two
+ * renames the one with the later relay time wins, whatever order they are read in, so every
+ * device of the account ends with the same subject. An email thread's subject is the email's;
+ * a carried subject does not override it.
+ */
+function applyCarriedSubject(
+  conversation: Conversation,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    serverTime: number
+    items?: MessageItem[]
+    conversationName?: string
+  },
+): void {
+  const subject = usableSubject(message.conversationName)
+  if (
+    subject === undefined ||
+    conversation.kind === 'email' ||
+    conversation.kind === 'group' ||
+    message.items?.some(item => item.type === 'email') ||
+    !(
+      message.outbound ||
+      sameCanonicalAddress(message.senderAddress, conversation.address)
+    ) ||
+    message.serverTime < (conversation.nameSetAt ?? 0)
+  )
+    return
+  if (conversation.name !== subject) conversation.updatedAt = Date.now()
+  conversation.name = subject
+  conversation.nameOnWire = subject
+  conversation.nameSetAt = message.serverTime
+}
+
+/** The subject the next message sent in `conversation` must carry, if any: its subject when no
+ * message has carried that subject yet (a new conversation with a subject, or a rename). */
+function subjectToCarry(
+  conversation: Conversation | undefined,
+): string | undefined {
+  if (!conversation || conversation.kind === 'email') return undefined
+  const subject = usableSubject(conversation.name)
+  return subject === conversation.nameOnWire ? undefined : subject
 }
 
 function canonicalConversationId(value: string): string {
@@ -886,6 +1025,76 @@ function canonicalConversationId(value: string): string {
     12,
     16,
   )}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/** The active account's private conversation-ID salt. Installed by the host when a wallet
+ * becomes active and cleared when it goes ({@link setConversationIdSalt}); never persisted, so
+ * it is not store state. It is reactive: a peer's thread read before the salt arrived is read
+ * again when it does. */
+const conversationIdSalt = shallowRef<Uint8Array | null>(null)
+
+/** Whether the active account's conversation-ID salt is installed: a chat can be opened. */
+export function hasConversationIdSalt(): boolean {
+  return conversationIdSalt.value !== null
+}
+
+/** Installs (or, with nothing, removes) the active account's conversation-ID salt. */
+export function setConversationIdSalt(salt?: Uint8Array | null): void {
+  conversationIdSalt.value = salt ? Uint8Array.from(salt) : null
+}
+
+/** Threads dropped this session because the peer's own conversation replaced them, and what
+ * replaced each: a view, a dialog or a route still holding the old ID is led to the new one. */
+const replacedConversations = new Map<string, string>()
+
+/** The conversation `id` names, or the one that replaced it if it was dropped. */
+export function resolveConversation(
+  conversations: Record<string, Conversation | undefined>,
+  id: string,
+): Conversation | undefined {
+  if (Object.prototype.hasOwnProperty.call(conversations, id))
+    return conversations[id]
+  const replacement = replacedConversations.get(id)
+  return replacement === undefined
+    ? undefined
+    : resolveConversation(conversations, replacement)
+}
+
+/**
+ * The ID of the conversation this account opens with `peer`, and the ID a message from `peer`
+ * that carries none is filed under. From the account's private salt it is the same on every
+ * device and unknown to everyone else.
+ *
+ * It needs the salt. An account that can open a chat has one (it is installed as soon as the
+ * account's wallet is, before any chat can be opened), so a missing salt is a defect and is
+ * refused: a random ID here would differ on every device, for good.
+ */
+function allocateOpeningConversationIdFor(peer: string): string {
+  const salt = conversationIdSalt.value
+  if (!salt)
+    throw new Error(
+      'No conversation-ID salt is installed: a chat can be opened only once the account is active',
+    )
+  return formatConversationId(
+    allocateOpeningConversationId(salt, peer.toLowerCase()),
+  )
+}
+
+/** The conversation this account opens with `peer` (its salted ID), created if it is not there. */
+function openAllocatedConversation(
+  conversations: Record<string, Conversation>,
+  peer: string,
+  participants: string[],
+): Conversation {
+  const id = allocateOpeningConversationIdFor(peer)
+  const allocated = conversations[id]
+  if (allocated) {
+    assertConversationPeer(allocated, peer)
+    return allocated
+  }
+  const conversation = newConversation({ id, address: peer, participants })
+  conversations[id] = conversation
+  return conversation
 }
 
 function freshConversationId(): string {
@@ -1000,7 +1209,7 @@ function openDefaultConversation(
       'Default direct conversation requires the explicit recipient and at most one other participant',
     )
   }
-  const existing = defaultChats(conversations)[peer]
+  const existing = peerThread(conversations, peer)
   if (existing) {
     if (
       members.length === 2 &&
@@ -1025,17 +1234,10 @@ function openDefaultConversation(
     reopenConversation(existing)
     return existing
   }
-  const derivedId = makeConversationId(participants)
-  // An explicitly supplied ID never becomes the default merely because it equals this value.
-  const id = conversations[derivedId] ? freshConversationId() : derivedId
-  const conversation = newConversation({
-    id,
-    address: peer,
-    participants,
-    defaultDirect: true,
-  })
-  conversations[id] = conversation
-  return conversation
+  // No message with this peer yet: the conversation this account opens with it.
+  const opened = openAllocatedConversation(conversations, peer, participants)
+  reopenConversation(opened)
+  return opened
 }
 
 function isInternalMessage(items: unknown): boolean {
@@ -1427,8 +1629,8 @@ export const useChatStore = defineStore('chats', {
       }
       try {
         const displayAddress = toChainDisplayAddress(addressOrId)
-        return defaultChats(state.conversations)[displayAddress]
-          ? defaultChats(state.conversations)[displayAddress]
+        return peerThread(state.conversations, displayAddress)
+          ? peerThread(state.conversations, displayAddress)
               ?.totalUnreadMessages ?? 0
           : 0
       } catch {
@@ -1479,7 +1681,7 @@ export const useChatStore = defineStore('chats', {
       }
       try {
         const displayAddress = toChainDisplayAddress(addressOrId)
-        return defaultChats(state.conversations)[displayAddress]?.lastRead ?? 0
+        return peerThread(state.conversations, displayAddress)?.lastRead ?? 0
       } catch {
         return 0
       }
@@ -1493,7 +1695,7 @@ export const useChatStore = defineStore('chats', {
         } else {
           try {
             const displayAddress = toChainDisplayAddress(addressOrId)
-            chat = defaultChats(state.conversations)[displayAddress]
+            chat = peerThread(state.conversations, displayAddress)
           } catch {
             // ignore
           }
@@ -1515,7 +1717,7 @@ export const useChatStore = defineStore('chats', {
         } else {
           try {
             const displayAddress = toChainDisplayAddress(addressOrId)
-            chat = defaultChats(state.conversations)[displayAddress]
+            chat = peerThread(state.conversations, displayAddress)
           } catch {
             // ignore
           }
@@ -1530,7 +1732,7 @@ export const useChatStore = defineStore('chats', {
         }
         try {
           const displayAddress = toChainDisplayAddress(addressOrId)
-          return defaultChats(state.conversations)[displayAddress]
+          return peerThread(state.conversations, displayAddress)
             ?.stampOverrideWei
         } catch {
           return undefined
@@ -1544,7 +1746,7 @@ export const useChatStore = defineStore('chats', {
       }
       try {
         const displayAddress = toChainDisplayAddress(addressOrId)
-        const chat = defaultChats(state.conversations)[displayAddress]
+        const chat = peerThread(state.conversations, displayAddress)
         if (!chat) {
           return defaultStampAmount
         }
@@ -1560,7 +1762,7 @@ export const useChatStore = defineStore('chats', {
       } else {
         try {
           const displayAddress = toChainDisplayAddress(addressOrId)
-          chat = defaultChats(state.conversations)[displayAddress]
+          chat = peerThread(state.conversations, displayAddress)
         } catch {
           chat = undefined
         }
@@ -2863,10 +3065,18 @@ export const useChatStore = defineStore('chats', {
       for (let sendAttempt = 1; sendAttempt <= maxSendAttempts; sendAttempt++) {
         if (!stillCurrent()) return { state: 'busy' }
         try {
+          // The subject rides only on the first message of a conversation that has one and on
+          // the first message after a rename; ordinary messages omit it.
+          const subject = subjectToCarry(
+            message.conversationId === undefined
+              ? undefined
+              : this.conversations[message.conversationId],
+          )
           result = await activeChain.directMessages.send({
             wallet,
             recipient,
             conversationId: message.conversationId,
+            ...(subject === undefined ? {} : { conversationName: subject }),
             items: message.items,
             ...(message.stampValueWei === undefined
               ? {}
@@ -2890,6 +3100,10 @@ export const useChatStore = defineStore('chats', {
               )
             },
           })
+          if (subject !== undefined && message.conversationId !== undefined) {
+            const carriedIn = this.conversations[message.conversationId]
+            if (carriedIn) carriedIn.nameOnWire = subject
+          }
           break
         } catch (error) {
           lastSendError = error
@@ -3281,12 +3495,8 @@ export const useChatStore = defineStore('chats', {
       return this.conversations[id]
     },
     renameConversation(id: string, subject: string): void {
-      const conversation = Object.prototype.hasOwnProperty.call(
-        this.conversations,
-        id,
-      )
-        ? this.conversations[id]
-        : undefined
+      // A thread dropped while its subject was being edited: the one that replaced it.
+      const conversation = resolveConversation(this.conversations, id)
       if (!conversation) throw new Error(`Unknown conversation ${id}`)
       // An empty subject clears it: the conversation is shown by its peer alone again.
       conversation.name = subject.trim() || undefined
@@ -3384,7 +3594,7 @@ export const useChatStore = defineStore('chats', {
         return this.setActiveChat(conversationId)
       }
       const conv = conversationId
-        ? this.conversations[conversationId]
+        ? resolveConversation(this.conversations, conversationId)
         : undefined
       if (conversationId && !conv)
         throw new Error(`Unknown conversation ${conversationId}`)
@@ -3614,9 +3824,14 @@ export const useChatStore = defineStore('chats', {
             'Conversation identity differs from the original outgoing message',
           )
         }
+        // A message is filed under the ID it carries. One that carries none (a client that
+        // sent none) is filed under the ID this account allocates for its sender: always the
+        // same conversation, whatever else has arrived and in whatever order.
         let conv = id
           ? preparedConversations[id]
-          : defaultChats(preparedConversations)[peer]
+          : conversationIdSalt.value
+          ? preparedConversations[allocateOpeningConversationIdFor(peer)]
+          : undefined
         // Only our own messages are bound to the conversation's peer. An inbound message is
         // filed under the ID it carries, whoever sent it; its sender joins the participants
         // when the message is stored below.
@@ -3638,7 +3853,11 @@ export const useChatStore = defineStore('chats', {
           const participants = ownAddress ? [ownAddress, peer] : [peer]
           conv = id
             ? newConversation({ id, address: peer, participants })
-            : openDefaultConversation(preparedConversations, peer, participants)
+            : openAllocatedConversation(
+                preparedConversations,
+                peer,
+                participants,
+              )
         }
         // What deleting a conversation means is decided here, before anything is saved: a row
         // that would not be shown is not kept at all.
@@ -3844,6 +4063,12 @@ export const useChatStore = defineStore('chats', {
         }: { copartyAddress: string; index: string; message: Message } = wrapper
 
         if (outboundMatches.has(index)) {
+          // Our own message, read back from the mailbox: its content is already here, but the
+          // relay time of a rename it carried decides against a rename by the peer, the same
+          // way it does on this account's other devices.
+          const sentIn = receivedConversations.get(index)
+          if (sentIn)
+            applyCarriedSubject(sentIn, { ...wrapper.message, outbound: true })
           continue
         }
 
@@ -3894,6 +4119,8 @@ export const useChatStore = defineStore('chats', {
           conv.name = convName
           conv.updatedAt = Date.now()
         }
+
+        applyCarriedSubject(conv, wrapper.message)
 
         const message: ChatMessage = {
           ...newMsg,
@@ -3990,6 +4217,32 @@ export const useChatStore = defineStore('chats', {
         }
         this.lastReceived = message.serverTime
         conv.totalValue += messageValue
+      }
+      // A thread opened here and never used yields to the peer's own conversation once that
+      // is the peer's thread: it is dropped rather than left as a second, empty thread, and
+      // whoever had it open is shown the peer's thread instead.
+      if (conversationIdSalt.value) {
+        for (const peer of new Set(
+          [...receivedConversations.values()].map(c => c.address),
+        )) {
+          if (!isChainAddress(peer)) continue
+          const opened =
+            this.conversations[allocateOpeningConversationIdFor(peer)]
+          const thread = peerThread(this.conversations, peer)
+          if (
+            opened &&
+            thread &&
+            opened !== thread &&
+            opened.messages.length === 0 &&
+            !opened.name &&
+            !opened.deletedAt
+          ) {
+            delete this.conversations[opened.id]
+            replacedConversations.set(opened.id, thread.id)
+            if (this.activeConversationId === opened.id)
+              this.activeConversationId = thread.id
+          }
+        }
       }
       const hasIncomingConfirmedStamps = deliverableWrappers.some(wrapper => {
         if (outboundMatches.has(wrapper.index) || wrapper.outbound) {

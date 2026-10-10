@@ -131,10 +131,12 @@ async function main(): Promise<boolean> {
   return problems.length === 0
 }
 
-main().then(
-  ok => process.exit(ok ? 0 : 1),
-  err => {
-    console.error(err)
-    process.exit(1)
-  },
-)
+if (require.main === module) {
+  main().then(
+    ok => process.exit(ok ? 0 : 1),
+    err => {
+      console.error(err)
+      process.exit(1)
+    },
+  )
+}

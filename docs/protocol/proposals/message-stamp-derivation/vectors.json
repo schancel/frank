@@ -1150,7 +1150,7 @@
     },
     {
       "path": "packages/wallet/monad-wallet-material.ts",
-      "sha256": "5f5a6dea5017c18e8c31c45c2c4a16a95f0f1843aeda6bf98b66eebffd7306b4"
+      "sha256": "c2fc3a42591a4d1df86093171e2d2b737c164f6a4e5a6f503be73e7ad7cec66c"
     },
     {
       "path": "packages/wallet/monad-hd-keyring.ts",

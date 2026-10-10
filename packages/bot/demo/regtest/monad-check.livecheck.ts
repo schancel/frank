@@ -84,10 +84,12 @@ async function main() {
   console.log(`Monad regtest: OK (${Math.round((Date.now() - startedAt) / 1000)} s; the chain keeps running, stop it with regtest:monad-stop)`)
 }
 
-main().then(
-  () => process.exit(0),
-  err => {
-    console.error(err)
-    process.exit(1)
-  },
-)
+if (require.main === module) {
+  main().then(
+    () => process.exit(0),
+    err => {
+      console.error(err)
+      process.exit(1)
+    },
+  )
+}

@@ -42,6 +42,9 @@
  *   h  the chain made unreachable (only on a stack that can do that: `chainOutage`): a paid
  *      send queues with the wallet's chain warning set, nothing claimed or sent; a free
  *      message goes meanwhile; the paid one completes when the chain is back
+ *   w  money that arrived as payments pays for a send: the recipient of two 0.02 stamps, with
+ *      nothing in its main account, sends a message with a 0.03 stamp: two transfers, one from
+ *      each received coin
  *   r  a stamp made to revert on purpose (the CHECK signs it inside the chain's spacing window,
  *      behind a transfer of its own from the same account; the wallet's spacing is bypassed for
  *      that one payment and nowhere else): seen reverted, paid again once, never a third time
@@ -54,7 +57,13 @@
  */
 import { createHash, randomUUID } from "crypto";
 import { spawn } from "child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join, resolve as resolvePath } from "path";
 import { Transaction, formatEther, hexlify } from "ethers";
@@ -98,6 +107,7 @@ function intercept(wallet: RealWallet) {
         url: string
       ) => ReturnType<CanonicalFetch>)
     | undefined;
+  let nextPaidOnly = false;
   const base = wallet.directory;
   const fetch: CanonicalFetch = async (url, init) => {
     let record: Submitted | undefined;
@@ -124,7 +134,9 @@ function intercept(wallet: RealWallet) {
       if (record) record.status = response.status;
       return response;
     };
-    if (record && next) {
+    // The wallet also writes free notes to itself in the background (a received coin, a native
+    // send): a phase that waits for its own PAID message must not be handed one of those.
+    if (record && next && (!nextPaidOnly || record.rawTransactions.length > 0)) {
       const act = next;
       next = undefined;
       return act(real, init, url);
@@ -148,8 +160,9 @@ function intercept(wallet: RealWallet) {
   return {
     submitted,
     /** The next message request is handed to `act` instead of sent as it is. */
-    onNext(act: NonNullable<typeof next>) {
+    onNext(act: NonNullable<typeof next>, paidOnly = false) {
       next = act;
+      nextPaidOnly = paidOnly;
     },
     of: (digest: string) => submitted.filter((s) => s.digest === digest),
   };
@@ -375,6 +388,17 @@ async function main() {
   const messages = Number(process.env.MESSAGES ?? "10");
   const budget = BigInt(process.env.BUDGET_WEI ?? "100000000000000000");
   const stack = await startStack();
+  // The relay this run started writes its log under the stack's state: what it logs from here
+  // on is read at the end.
+  const relayLogPath = join(stack.stateDir, "logs", "relay.log");
+  const relayLogStart = existsSync(relayLogPath) ? statSync(relayLogPath).size : 0;
+  const relayLog = existsSync(relayLogPath)
+    ? () =>
+        readFileSync(relayLogPath)
+          .subarray(relayLogStart)
+          .toString("utf8")
+          .split("\n")
+    : undefined;
   const results: Record<string, unknown> = {};
   /** What each phase was required to show, and whether it did. */
   const verdicts: Record<string, string[]> = {};
@@ -588,6 +612,9 @@ async function main() {
       require_("a", "consecutive nonces", all.every((t, i) => t.nonce === nonce0 + i));
       require_("a", `each at least ${spacing} blocks after the previous one`, all.slice(1).every((t, i) => t.block - all[i].block >= spacing));
       require_("a", "one copy of each at the recipient", seen.every((count) => count === 1));
+      // Each main-paid message waits the chain's spacing after the one before: a few blocks.
+      // Ten of them in minutes means one was stuck.
+      require_("a", `done within ${Number(process.env.MAX_SECONDS_PER_MESSAGE ?? "6")} s a message (took ${Math.round(wallMs / 1000)} s)`, wallMs <= messages * 1000 * Number(process.env.MAX_SECONDS_PER_MESSAGE ?? "6"));
       require_("c", "the native send issued mid-burst was mined with status 1", native.status === 1);
       require_("c", "at a nonce of its own", native.nonce !== undefined && flat.every((p) => p.nonce !== native.nonce));
     };
@@ -772,7 +799,7 @@ async function main() {
         });
         refusal.status = response.status;
         return response;
-      });
+      }, true);
       const d2Started = Date.now();
       const d2 = await sendPaid(alice, bob.address, "refused outright").then(
         (sent) => `SENT ${sent.digest} (${sent.how})`,
@@ -907,7 +934,7 @@ async function main() {
       const e = results.e as { childEndedBy?: string; statusAfter?: string; minedOk?: boolean; mainNonceBefore?: number; mainNonceAfter?: number; recipientCopies?: number[]; submitsAfterReopen?: number };
       require_("e", "the wallet process was killed after the relay answered", e.childEndedBy === "SIGKILL");
       require_("e", "reopened: delivered, the payment mined with status 1", e.statusAfter === "delivered" && e.minedOk === true);
-      require_("e", "paid once: the main nonce advanced by one, one copy at the recipient", e.mainNonceAfter === (e.mainNonceBefore ?? 0) + 1 && e.recipientCopies?.[0] === 1);
+      require_("e", "paid once: one payment recorded, spent; one copy at the recipient", (e as { paymentAfter?: string[] }).paymentAfter?.join(",") === "spent" && e.recipientCopies?.[0] === 1);
     };
 
     // ---- h -----------------------------------------------------------------------------
@@ -994,10 +1021,116 @@ async function main() {
       say("h", JSON.stringify(results.h, null, 1));
       require_("h", "the paid send reported waiting-for-chain", stages.includes("waiting-for-chain"));
       require_("h", "the wallet's chain warning was set while the chain was down", healthWhileDown?.reachable === false);
-      require_("h", "while down nothing was claimed and the paid message made no relay request", !whileDown.paidSendSettled && whileDown.mainHeldBy === "nobody" && whileDown.relayRequests <= 1);
+      require_("h", "while down the queued message claimed nothing and made no relay request", !whileDown.paidSendSettled && !whileDown.mainHeldBy.includes("frank-dm:") && whileDown.relayRequests <= 1);
       require_("h", "a free message was delivered while the chain was down", free.startsWith("delivered"));
-      require_("h", "when the chain came back the same send completed, paid once", done?.digest !== undefined && chain?.status === 1 && (results.h as { mainNonceAfter: number }).mainNonceAfter === nonce0 + 1);
+      require_("h", "when the chain came back the same send completed, its payment mined with status 1", done?.digest !== undefined && chain?.status === 1 && settled?.payments[0]?.join(",") === "spent");
       require_("h", "the chain warning cleared", health()?.reachable === true);
+    };
+
+    // ---- w -----------------------------------------------------------------------------
+    /** Money that arrived as payments pays for a send: the recipient of two stamps, holding
+     * nothing else, sends a message whose stamp neither received coin covers alone. */
+    const runW = async () => {
+      const each = 20_000_000_000_000_000n; // 0.02
+      const wanted = 30_000_000_000_000_000n; // 0.03
+      if (!(await affordable("w", 2n * (each + txFee) + 2n * txFee))) return;
+      await ensureMain(stack, alice, 2n * (each + perMessage) + floor);
+      await sleep(3000);
+      const bobMainBefore = await provider.getBalance(bob.mainAccount);
+      const bobNonceBefore = await mainNonce(stack, bob);
+      const paidIn: string[] = [];
+      for (const n of [1, 2]) {
+        const sent = await alice.chain.directMessages.send({
+          wallet: alice.handle,
+          recipient: { raw: bob.address },
+          items: [{ type: "text", text: `w pays bob ${n} ${Date.now()}` }],
+          messageId: randomUUID(),
+          stampValue: each,
+        });
+        paidIn.push(sent.payloadDigest);
+      }
+      await settle(alice, paidIn);
+      // Bob reads his mailbox (that is how a wallet learns of the coins) until the chain shows
+      // both funded.
+      let coins: { spendable: boolean; amountWei: bigint }[] = [];
+      for (const deadline = Date.now() + 60_000; Date.now() < deadline; ) {
+        await bob.chain.directMessages.fetchSince({ wallet: bob.handle, sinceMs: startedAt });
+        coins = [...((await bob.handle.refreshReceivedPayments?.()) ?? [])].filter(
+          (coin) => coin.spendable && coin.amountWei === each
+        );
+        if (coins.length >= 2) break;
+        await sleep(1500);
+      }
+      const headline = await bob.handle.getBalance();
+      const started = Date.now();
+      const stages: string[] = [];
+      const out = await bob.chain.directMessages
+        .send({
+          wallet: bob.handle,
+          recipient: { raw: alice.address },
+          items: [{ type: "text", text: `w from received coins ${started}` }],
+          messageId: randomUUID(),
+          stampValue: wanted,
+          onPreparationProgress: (progress) => stages.push(progress.stage),
+        })
+        .then(
+          (sent) => ({ sent }),
+          (error) => ({ error: `${(error as Error).name}: ${(error as Error).message}` })
+        );
+      const ms = Date.now() - started;
+      const paid =
+        "sent" in out
+          ? await Promise.all(
+              out.sent.stampPayments.map(async (payment) => {
+                let receipt = await provider.getTransactionReceipt(payment.txHash);
+                for (let i = 0; !receipt && i < 30; i++) {
+                  await sleep(1000);
+                  receipt = await provider.getTransactionReceipt(payment.txHash);
+                }
+                const tx = await provider.getTransaction(payment.txHash);
+                return {
+                  from: tx?.from.toLowerCase(),
+                  valueWei: payment.valueWei,
+                  status: receipt?.status,
+                  block: receipt?.blockNumber,
+                  feeWei: receipt ? receipt.gasUsed * receipt.gasPrice : undefined,
+                };
+              })
+            )
+          : [];
+      results.w = {
+        bobMainBefore: mon(bobMainBefore),
+        receivedCoinsSpendable: coins.length,
+        bobHeadlineBalance: mon(headline),
+        stampWanted: mon(wanted),
+        ms,
+        stages: [...new Set(stages)],
+        result: "sent" in out ? out.sent.payloadDigest : out.error,
+        payments: paid.map(
+          (p) => `${p.from} pays ${mon(p.valueWei)} block ${p.block} status ${p.status} fee ${p.feeWei === undefined ? "?" : mon(p.feeWei)}`
+        ),
+        bobMainNonceBefore: bobNonceBefore,
+        bobMainNonceAfter: await mainNonce(stack, bob),
+        recipientCopies:
+          "sent" in out
+            ? await (async () => {
+                for (const deadline = Date.now() + 60_000; ; ) {
+                  const got = (
+                    await alice.chain.directMessages.fetchSince({ wallet: alice.handle, sinceMs: startedAt })
+                  ).filter((m) => !m.outbound && m.payloadDigest === out.sent.payloadDigest);
+                  if (got.length > 0 || Date.now() > deadline)
+                    return got.map((m) => mon(m.stampValueWei ?? 0n));
+                  await sleep(1500);
+                }
+              })()
+            : [],
+      };
+      say("w", JSON.stringify(results.w, null, 1));
+      require_("w", "the two received payments became spendable coins", coins.length >= 2);
+      require_("w", "a stamp neither coin covers alone was sent", "sent" in out);
+      require_("w", "paid by two transfers from two different received coins, both mined with status 1, adding up to the stamp", paid.length === 2 && new Set(paid.map((p) => p.from)).size === 2 && paid.every((p) => p.status === 1 && p.from !== bob.mainAccount.toLowerCase()) && paid.reduce((sum, p) => sum + p.valueWei, 0n) === wanted);
+      require_("w", "the main account was not used", (results.w as { bobMainNonceAfter: number }).bobMainNonceAfter === bobNonceBefore);
+      require_("w", "the recipient has one copy carrying the whole stamp", (results.w as { recipientCopies: string[] }).recipientCopies.join() === mon(wanted));
     };
 
     // ---- r -----------------------------------------------------------------------------
@@ -1040,7 +1173,7 @@ async function main() {
           })
         ).hash;
         return send();
-      });
+      }, true);
       let sent: Sent;
       try {
         sent = await sendPaid(alice, bob.address, `r reverted ${Date.now()}`);
@@ -1208,6 +1341,7 @@ async function main() {
       f: runF,
       h: runH,
       r: runR,
+      w: runW,
       unfreeze: runUnfreeze,
     };
     for (const phase of phases) {
@@ -1239,6 +1373,8 @@ async function main() {
     await sleep(3000);
     const address = stack.fundingAddress;
     const rpcUrl = stack.rpcUrl;
+    // Read now: a stack on a throwaway chain removes its state when it stops.
+    const relayLines = relayLog?.();
     // The harness returns what is left, prints the one funds line, and stops.
     await stack.finish();
     if (address) {
@@ -1247,6 +1383,22 @@ async function main() {
       const after = await reader.getBalance(address);
       reader.destroy();
       say("RESULTS", JSON.stringify(results, null, 1));
+      if (relayLines !== undefined) {
+        const notBroadcast = relayLines.filter((line) =>
+          /payment not broadcast/i.test(line)
+        );
+        say(
+          `relay log: ${notBroadcast.length} "payment not broadcast" line(s)${
+            notBroadcast.length > 0 ? `: ${notBroadcast[0].slice(0, 300)}` : ""
+          }`
+        );
+        // Phase r hands the relay a payment made to fail on purpose; nothing else may.
+        (verdicts["relay log"] ??= []).push(
+          ...(notBroadcast.length <= (phases.includes("r") ? 1 : 0)
+            ? []
+            : [`${notBroadcast.length} payments the relay could not broadcast`])
+        );
+      }
       for (const [phase, failed] of Object.entries(verdicts))
         say(
           `VERDICT ${phase}: ${
@@ -1296,7 +1448,7 @@ async function killedAfterDelivered() {
     process.kill(process.pid, "SIGKILL");
     await sleep(60_000);
     return response;
-  });
+  }, true);
   await alice.chain.directMessages.send({
     wallet: alice.handle,
     recipient: { raw: process.env.PSEND_TO! },

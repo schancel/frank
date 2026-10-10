@@ -2229,6 +2229,19 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 )
               );
               primaryBalanceCache = undefined;
+              // The move is an ordinary legacy send to one of this wallet's own accounts: it
+              // notes itself to the account's other devices exactly as `sendLegacy` does.
+              if (!closedWallets.has(wallet)) {
+                const operation = owner
+                  .listOperations()
+                  .find(
+                    (row) =>
+                      row.members[row.members.length - 1]?.signed
+                        ?.transactionHash === result.txHash
+                  );
+                if (operation) await owner.startSync(operation.operationId);
+                retryEarlierNotes(owner);
+              }
               return result;
             },
             estimateLegacyFee: (params) =>

@@ -22,7 +22,7 @@ import {
   isDiceTarget,
 } from "@frank/wallet/message-item-plugins/dice/fair";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received } from "./money";
+import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
 
 /** The most one roll pays, stake included: the table limit. */
 export const DICE_DEFAULT_MAX_PAYOUT_WEI = 250_000_000_000_000_000n; // 0.25 MON
@@ -70,7 +70,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
 
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     try {
-      await ctx.sendMessage(user.address, [
+      await sendFree(ctx, user.address, [
         await this.offer(ctx, user.address),
         { type: "text", text: `Welcome to Satoshi Dice.\n\n${HELP}` },
       ]);
@@ -104,7 +104,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       );
     // Anything else, including an amount typed in chat: the next roll on offer. Nothing typed
     // is ever a stake.
-    await msgCtx.reply([
+    await replyFree(msgCtx, [
       await this.offer(ctx, msgCtx.peerAddress),
       { type: "text", text: HELP },
     ]);
@@ -172,7 +172,10 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     if (
       wagerWei > 0n &&
       (await ctx.getBalance().catch(() => 0n)) <
-        dicePayoutWei(wagerWei, target) + BANK_RESERVE_WEI
+        dicePayoutWei(wagerWei, target) +
+          BANK_RESERVE_WEI +
+          // What is already written down as owed is not there to win.
+          (await this.outbox.owedWei(ctx))
     )
       return refused(
         "The bank cannot cover that bet right now. No roll was made."

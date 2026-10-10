@@ -24,6 +24,7 @@ import {
   DEALER_COVER_MULTIPLE,
   type HandEvent,
   type HandItem,
+  type HandState,
 } from "@frank/wallet/message-item-plugins/blackjack/hand";
 import { Outbox, refuse, type Received } from "./money";
 
@@ -118,7 +119,10 @@ export class BlackjackDealerBot implements FrankBotDefinition {
 
   /** The largest bet the dealer offers: what its balance covers, within the table limits. */
   private async limits(ctx: BotContext) {
-    const balance = await ctx.getBalance().catch(() => 0n);
+    // What the dealer holds, less what it has already written down as owed.
+    const held = await ctx.getBalance().catch(() => 0n);
+    const owed = await this.outbox.owedWei(ctx);
+    const balance = held > owed ? held - owed : 0n;
     const free = balance > RESERVE_WEI ? balance - RESERVE_WEI : 0n;
     const cover = free / DEALER_COVER_MULTIPLE;
     return {
@@ -146,21 +150,28 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     await ctx.state.batch([
       { type: "put", key: `events:${hand.gameId}`, value: serializeEvents(events) },
       { type: "del", key: `step:${hand.gameId}` },
-      {
-        type: "put",
-        key: WAITING,
-        value: JSON.stringify(
-          (await this.waiting(ctx)).filter((other) => other.gameId !== hand.gameId)
-        ),
-      },
     ]);
     return { events, pending: false };
   }
 
-  /** Hands whose last dealer message is written down and has not gone out yet. */
+  /** Hands the dealer may still have to act on: a message of theirs was recorded, or a dealer
+   * message is written down and has not gone out. The schedule continues each of them, so a
+   * restart at any point picks the hand up where its record stands. */
   private async waiting(ctx: BotContext): Promise<Hand[]> {
     const raw = await ctx.state.get(WAITING);
     return raw ? (JSON.parse(raw) as Hand[]) : [];
+  }
+
+  /** The write that puts `hand` on (or takes it off) the list of hands to continue. */
+  private async listed(ctx: BotContext, hand: Hand, on: boolean) {
+    const others = (await this.waiting(ctx)).filter(
+      (other) => other.gameId !== hand.gameId
+    );
+    return {
+      type: "put" as const,
+      key: WAITING,
+      value: JSON.stringify(on ? [...others, hand] : others),
+    };
   }
 
   /** Sends one dealer message of a hand: written down first (with what it pays), then sent until
@@ -181,27 +192,25 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       item,
       ...(payWei !== undefined ? { payWei: payWei.toString() } : {}),
     };
-    await ctx.state.batch([
-      { type: "put", key: `step:${hand.gameId}`, value: JSON.stringify(step) },
+    // One write: the step, the message owed for it, and the hand on the list to continue.
+    await this.outbox.owe(
+      ctx,
+      id,
       {
-        type: "put",
-        key: WAITING,
-        value: JSON.stringify([
-          ...(await this.waiting(ctx)).filter((other) => other.gameId !== hand.gameId),
-          hand,
-        ]),
+        to: hand.peer,
+        conversationId: hand.conversationId,
+        // No stamp: only a payout or a refund carries value.
+        items: [item as MessageItem, { type: "text", text }],
+        valueWei: payWei,
       },
-    ]);
-    await this.outbox.owe(ctx, id, {
-      to: hand.peer,
-      conversationId: hand.conversationId,
-      items: [item as MessageItem, { type: "text", text }],
-      valueWei: payWei,
-      // A hand's messages name each other by digest: each is one journaled message.
-      unpaidOk: false,
-    });
+      {
+        writes: [
+          { type: "put", key: `step:${hand.gameId}`, value: JSON.stringify(step) },
+          await this.listed(ctx, hand, true),
+        ],
+      }
+    );
     await this.outbox.settle(ctx);
-    await this.events(ctx, hand);
   }
 
   /** A fresh hand offered by the dealer, its seed saved before its commitment is shown. */
@@ -220,7 +229,8 @@ export class BlackjackDealerBot implements FrankBotDefinition {
             text: "The dealer cannot cover a hand right now. Try again later.",
           },
         ],
-        conversationId
+        conversationId,
+        { stampValueWei: 0n }
       );
       return;
     }
@@ -276,9 +286,27 @@ export class BlackjackDealerBot implements FrankBotDefinition {
     ctx: BotContext,
     received: Received
   ): Promise<void> {
+    const first = deserializeEvents(
+      await ctx.state.get(`events:${handItem.gameId}`)
+    )[0];
+    // The other party of a hand is fixed by its first message. Everything the dealer sends for
+    // the hand, every payout included, goes to that account and to nobody else.
+    const player = first
+      ? first.from.toLowerCase() === ctx.address.toLowerCase()
+        ? first.to
+        : first.from
+      : msgCtx.peerAddress;
+    if (player.toLowerCase() !== msgCtx.peerAddress.toLowerCase())
+      return refuse(
+        this.outbox,
+        msgCtx,
+        ctx,
+        received,
+        "That hand is not yours. Nothing was played."
+      );
     const hand: Hand = {
       gameId: handItem.gameId,
-      peer: msgCtx.peerAddress,
+      peer: player,
       conversationId: msgCtx.conversationId,
     };
     // Money that is not on chain yet is not a bet and is not lost either: the message is not
@@ -322,18 +350,38 @@ export class BlackjackDealerBot implements FrankBotDefinition {
           key: `events:${hand.gameId}`,
           value: serializeEvents(events),
         },
+        // And on the list to continue: a crash right here is picked up by the schedule.
+        await this.listed(ctx, hand, true),
       ]);
     }
     await this.advance(ctx, hand);
   }
 
-  /** Sends the dealer's next message of a hand, if one is due and the last one has gone out.
-   * Returns whether the hand exists. The same record always gives the same message. */
+  /** Sends the dealer's messages of a hand for as long as one is due and the last has gone out
+   * (a card that busts the player is followed at once by the reveal). Returns whether the hand
+   * exists. The same record always gives the same message. */
   private async advance(ctx: BotContext, hand: Hand): Promise<boolean> {
-    const { events, pending } = await this.events(ctx, hand);
-    const { state } = foldHand(events);
-    if (!state) return false;
-    if (pending) return true;
+    for (let steps = 0; steps < 16; steps++) {
+      const { events, pending } = await this.events(ctx, hand);
+      const { state } = foldHand(events);
+      if (pending) return true;
+      const next = state ? await this.next(ctx, hand, state) : undefined;
+      if (!next) {
+        // Nothing for the dealer to do until the player's next message.
+        await ctx.state.batch([await this.listed(ctx, hand, false)]);
+        return !!state;
+      }
+      await this.say(ctx, hand, events.length, next.item, next.text, next.payWei);
+    }
+    return true;
+  }
+
+  /** The dealer's next message for `state`, if it is the dealer's turn. */
+  private async next(
+    ctx: BotContext,
+    hand: Hand,
+    state: HandState
+  ): Promise<{ item: HandItem; text: string; payWei?: bigint } | undefined> {
     let seed = await ctx.state.get(`seed:${hand.gameId}`);
     if (state.phase === "challenged") {
       if (!seed) {
@@ -352,18 +400,15 @@ export class BlackjackDealerBot implements FrankBotDefinition {
               wantedMaxBetWei: wanted,
             })
           : undefined;
-      if (built && "item" in built)
-        await this.say(
-          ctx,
-          hand,
-          events.length,
-          built.item,
-          `Challenge accepted. Bet up to ${formatMon(wanted)}.`
-        );
-      return true;
+      return built && "item" in built
+        ? {
+            item: built.item,
+            text: `Challenge accepted. Bet up to ${formatMon(wanted)}.`,
+          }
+        : undefined;
     }
     const step = seed ? dealerStep(state, seed) : undefined;
-    if (!step) return true;
+    if (!step) return undefined;
     const text =
       step.item.action === "deal"
         ? "Cards dealt. Hit, stand or double."
@@ -376,7 +421,6 @@ export class BlackjackDealerBot implements FrankBotDefinition {
         : `This message returns ${formatMon(
             step.payWei ?? 0n
           )} the hand did not accept.`;
-    await this.say(ctx, hand, events.length, step.item, text, step.payWei);
-    return true;
+    return { item: step.item, text, payWei: step.payWei };
   }
 }

@@ -244,4 +244,22 @@ describe("SatoshiDiceBot", () => {
     expect(h.sent.map((m) => m.valueWei)).toEqual([STAKE]);
     expect(h.sent[0].items.some((i) => i.type === "dice")).toBe(false);
   });
+
+  test("the bank does not promise what it already owes: a bet it could cover alone is refused while a payout is outstanding", async () => {
+    const h = harness();
+    const payout = dicePayoutWei(STAKE, TARGET);
+    (h.ctx as any).getBalance = async () => payout + 20_000_000_000_000_000n + 1n;
+    const bot = new SatoshiDiceBot();
+    const first = await table(h, bot, "win");
+    // The first win cannot go out yet: it stays owed.
+    h.failSends(new Error("down"));
+    await bot.onMessage(h.message([first.bet], [h.pay(STAKE)]), h.ctx);
+    h.failSends();
+    (bot as any).outbox.settle = async () => undefined;
+    const second = await table(h, bot, "win");
+    await bot.onMessage(h.message([second.bet], [h.pay(STAKE)]), h.ctx);
+    const rolls = JSON.parse(h.data.get("outbox:index")!).owed as string[];
+    expect(rolls.filter((id) => id.startsWith("roll:"))).toHaveLength(1);
+    expect(rolls.filter((id) => id.startsWith("refund:"))).toHaveLength(1);
+  });
 });

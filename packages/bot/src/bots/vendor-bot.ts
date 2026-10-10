@@ -10,7 +10,7 @@ import type { DigitalGoodsItem, MessageItem } from "@frank/cashweb/types/message
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_MERCHANT } from "@frank/codec";
 import { formatMon } from "@frank/wallet/monad-amount";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received } from "./money";
+import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
 import {
   buildFulfillItems,
   catalogItem,
@@ -57,7 +57,7 @@ export class VendorBot implements FrankBotDefinition {
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     console.log(`[vendor] Proactively presenting catalog to new user ${user.address}`);
     try {
-      await ctx.sendMessage(user.address, [
+      await sendFree(ctx, user.address, [
         catalogItem(this.catalog) as MessageItem,
         {
           type: "text",
@@ -75,7 +75,7 @@ export class VendorBot implements FrankBotDefinition {
         item.type === "digital-goods" && item.action === "request"
     );
     if (!request) {
-      await msgCtx.reply([
+      await replyFree(msgCtx, [
         catalogItem(this.catalog) as MessageItem,
         {
           type: "text",

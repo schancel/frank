@@ -94,7 +94,7 @@ const TOP_UP_BELOW_WEI = 300_000_000_000_000_000n;
 const TOP_UP_TO_WEI = 500_000_000_000_000_000n;
 // What bot top-ups leave in the shared funding wallet: the faucet pays its grants from the same
 // wallet and keeps this reserve itself (`FAUCET_MIN_RESERVE_WEI`, 0.1 MON when unset; the
-// faucet's own default lives in packages/bot/faucet-core.ts and must stay the same figure).
+// faucet's own default lives in packages/bot/src/bots/faucet-bot.ts and must stay the same figure).
 const FUNDING_RESERVE_WEI = 100_000_000_000_000_000n;
 // The account a bot's wallet pays message stamps from spends far less.
 const STAMP_TOP_UP_BELOW_WEI = 100_000_000_000_000_000n;
@@ -1459,13 +1459,15 @@ export class FrankBotHost {
    * does not answer in `PAYMENT_CHECK_MS`, counts the same.
    *
    * THE ONE PLACE that decides this. SWITCH HERE to the wallet's own "has this message's
-   * payment landed" call when it exists; this uses `nativeTransfers.getTransactionStatus`. */
+   * payment landed" call when it exists; this uses `nativeTransfers.getTransactionStatus` and
+   * reads each transaction back to compare its destination and value. */
   private async confirmedPaidWei(
     instance: ActiveBotInstance,
     message: {
       identity: InboundIdentity;
       stampValueWei: bigint;
       paymentTxHashes: string[];
+      stampPayments: readonly StampPaymentInfo[];
     }
   ): Promise<bigint> {
     // At or under the minimum the reply carries no stamp anyway: nothing to look up.
@@ -1490,6 +1492,31 @@ export class FrankBotHost {
         PAYMENT_CHECK_MS
       );
       if (!statuses.every((status) => status === "confirmed")) return 0n;
+      // Confirmed is not enough: each must be the transfer the delivery describes (that
+      // address, that value), and a transfer counts for one message only, the first it is
+      // confirmed for. The record is the one the bots' own payment check keeps
+      // (`received:<tx hash>` in the bot's state), so the two never credit one transfer twice.
+      for (const payment of message.stampPayments) {
+        const tx = await bounded(
+          this.provider.getTransaction(payment.txHash),
+          "Reading a message's payment",
+          PAYMENT_CHECK_MS
+        );
+        if (
+          !tx ||
+          tx.to?.toLowerCase() !== payment.destinationAddress.toLowerCase() ||
+          tx.value !== payment.valueWei
+        )
+          return 0n;
+      }
+      for (const payment of message.stampPayments) {
+        const key = `received:${payment.txHash.toLowerCase()}`;
+        const creditedTo = await instance.state.get(key);
+        if (creditedTo !== undefined && creditedTo !== message.identity.digest)
+          return 0n;
+        if (creditedTo === undefined)
+          await instance.state.put(key, message.identity.digest);
+      }
     } catch {
       return 0n;
     }

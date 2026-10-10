@@ -71,6 +71,8 @@ function harness() {
   const sync = () => {
     sent.length = 0;
     sent.push(...h.sent.map((message) => message.items));
+    // No bot leaves a message of its own to the host's paid stamp.
+    expect(h.sent.filter((message) => message.hostStamp)).toEqual([]);
   };
   const say = async (
     bot: { onMessage(m: BotMessageContext, c: BotContext): Promise<void> },

@@ -8,7 +8,9 @@ import {
   type HandItem,
 } from "@frank/wallet/message-item-plugins/blackjack/hand";
 import { BlackjackDealerBot } from "./blackjack-bot";
+import { handValue } from "@frank/wallet/message-item-plugins/blackjack/deck";
 import { BOT, harness, PLAYER } from "./bot-harness.testutil";
+import { Outbox } from "./money";
 
 const BET = 10_000_000_000_000_000n; // 0.01 MON
 const SEED = "aa".repeat(32);
@@ -252,5 +254,156 @@ describe("BlackjackDealerBot", () => {
     expect(h.paidOut()).toBe(0n);
     expect(errors.mock.calls.flat().join(" ")).toContain("FAILED");
     errors.mockRestore();
+  });
+
+  /** Plays hands until `enough` says the wanted cases were seen; every hand must end resolved
+   * with exactly what its outcome owes, with no message from the player after its last move. */
+  async function hands(
+    play: (t: ReturnType<typeof table>) => Promise<{ staked: bigint; doubled: boolean }>,
+    enough: (seen: Set<string>) => boolean
+  ) {
+    const seen = new Set<string>();
+    for (let i = 0; i < 60 && !enough(seen); i++) {
+      const h = harness();
+      const bot = new BlackjackDealerBot();
+      const t = table(h, bot);
+      await t.open();
+      const { doubled } = await play(t);
+      const end = t.state()!;
+      expect(end.phase).toBe("resolved");
+      expect(h.paidOut()).toBe(payoutWei(end.outcome!, BET, doubled));
+      expect(h.sent.some((m) => m.hostStamp)).toBe(false);
+      seen.add(`${end.outcome}${handValue(end.playerCards).bust ? ":bust" : ""}`);
+    }
+    return seen;
+  }
+
+  test("a hit that busts is followed by the reveal without another message from the player", async () => {
+    const seen = await hands(
+      async (t) => {
+        await t.bet(BET);
+        while (t.state()?.phase === "player_turn")
+          await t.send(playerStep(t.state(), "hit", SEED)!);
+        return { staked: BET, doubled: false };
+      },
+      (s) => [...s].some((o) => o.endsWith(":bust"))
+    );
+    expect([...seen].some((o) => o.endsWith(":bust"))).toBe(true);
+  });
+
+  test("a double, won or lost, is followed by the reveal and pays what the doubled stake owes", async () => {
+    const doubles = { won: false, lost: false };
+    let last: ReturnType<typeof table> | undefined;
+    const note = () => {
+      const end = last?.state();
+      if (end?.doubled && end.outcome === "player_win") doubles.won = true;
+      if (end?.doubled && end.outcome === "dealer_win") doubles.lost = true;
+    };
+    const seen = await hands(
+      async (t) => {
+        note();
+        last = t;
+        await t.bet(BET);
+        if (t.state()?.phase !== "player_turn") return { staked: BET, doubled: false };
+        const double = playerStep(t.state(), "double", SEED);
+        if (!double) {
+          await t.stand();
+          return { staked: BET, doubled: false };
+        }
+        await t.send(double, BET);
+        return { staked: BET * 2n, doubled: true };
+      },
+      (s) => doubles.won && doubles.lost
+    );
+    void seen;
+    expect(doubles).toEqual({ won: true, lost: true });
+  });
+
+  test("only the hand's player is dealt to or paid: another account's messages for the hand are refused, and the payout is owed once", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(BET);
+    const MALLORY = "0x" + "e7".repeat(20);
+    const stand = playerStep(t.state(), "stand", SEED)!;
+    // Before, during and after the reveal: free messages from a second account.
+    await bot.onMessage(h.message([stand as any], [], MALLORY), h.ctx);
+    await t.stand();
+    for (let i = 0; i < 3; i++)
+      await bot.onMessage(h.message([stand as any], [], MALLORY), h.ctx);
+    for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    const end = t.state()!;
+    expect(end.phase).toBe("resolved");
+    expect(h.paidOut()).toBe(payoutWei(end.outcome!, BET, false));
+    expect(h.sent.filter((m) => m.to === MALLORY).every((m) => m.valueWei === 0n)).toBe(true);
+    expect(
+      h.sent.filter((m) => m.to === MALLORY).some((m) => h.item("blackjack-hand", m))
+    ).toBe(false);
+    // Money a stranger sends with such a message comes back to the stranger, once.
+    h.sent.length = 0;
+    await bot.onMessage(h.message([stand as any], [h.pay(BET)], MALLORY), h.ctx);
+    expect(h.sent.map((m) => [m.to, m.valueWei])).toEqual([[MALLORY, BET]]);
+  });
+
+  test("the dealer pays nothing to talk: a free message, a challenge and a lost hand cost it no stamp", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    await bot.onNewUser({ address: PLAYER, registeredAtMs: 1 }, h.ctx);
+    const t = table(h, bot);
+    await t.open();
+    await t.bet(BET);
+    await t.stand();
+    const end = t.state()!;
+    expect(h.sent.some((m) => m.hostStamp)).toBe(false);
+    // Everything but the payout carries nothing.
+    expect(h.sent.filter((m) => m.valueWei > 0n).length).toBe(
+      payoutWei(end.outcome!, BET, false) > 0n ? 1 : 0
+    );
+  });
+
+  test("a crash after a bet is recorded and before the deal is written: the hand goes on after restart", async () => {
+    const h = harness();
+    const bot = new BlackjackDealerBot();
+    const t = table(h, bot);
+    await t.open();
+    (bot as any).advance = async () => {
+      throw new Error("killed");
+    };
+    await expect(t.bet(BET)).rejects.toThrow("killed");
+    expect(h.sent.some((m) => (h.item("blackjack-hand", m) as HandItem)?.action === "deal")).toBe(false);
+    const restarted = new BlackjackDealerBot();
+    for (const schedule of restarted.schedules) await schedule.handler(h.ctx);
+    expect(t.state()?.phase).toBe("player_turn");
+    // Not also refunded as an unhandled message.
+    expect(h.paidOut()).toBe(0n);
+  });
+
+  test("the bank offered is net of what the dealer already owes", async () => {
+    const h = harness();
+    (h.ctx as any).getBalance = async () => 100_000_000_000_000_000n; // 0.1 MON
+    const bot = new BlackjackDealerBot({ minWagerWei: 1n, maxWagerWei: 10n ** 18n });
+    const offered = async () => {
+      await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
+      return BigInt((h.item("blackjack-hand") as any).maxBetWei);
+    };
+    const free = await offered();
+    // A debt that cannot go out yet (it waits for a transfer that is not mined).
+    await new Outbox("blackjack").owe(h.ctx, "debt", {
+      to: PLAYER,
+      items: [],
+      valueWei: 60_000_000_000_000_000n,
+      awaits: [
+        {
+          txHash: "0x" + "ee".repeat(32),
+          destinationAddress: "0x" + "5e".repeat(20),
+          valueWei: "1",
+        },
+      ],
+      awaitsFor: "x",
+    });
+    const owing = await offered();
+    expect(free).toBe(20_000_000_000_000_000n); // (0.1 - 0.02 reserve) / 4
+    expect(owing).toBe(5_000_000_000_000_000n); // (0.1 - 0.06 owed - 0.02) / 4
   });
 });

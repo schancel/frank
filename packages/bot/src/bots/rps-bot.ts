@@ -18,7 +18,7 @@ import {
   type RpsMove,
 } from "@frank/wallet/message-item-plugins/rps/fair";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received } from "./money";
+import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
 import { BANK_RESERVE_WEI } from "./satoshi-dice-bot";
 
 /** The most one match can be played for: the table limit. */
@@ -63,7 +63,7 @@ export class RpsBot implements FrankBotDefinition {
 
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     try {
-      await ctx.sendMessage(user.address, [
+      await sendFree(ctx, user.address, [
         await this.start(ctx, user.address),
         { type: "text", text: `Welcome to RPS Arena.\n\n${HELP}` },
       ]);
@@ -128,7 +128,7 @@ export class RpsBot implements FrankBotDefinition {
         { confirmedWei: 0n, confirmed: [], unconfirmed: [] }
       );
     }
-    await msgCtx.reply([
+    await replyFree(msgCtx, [
       await this.start(ctx, peer),
       { type: "text", text: HELP },
     ]);
@@ -190,7 +190,8 @@ export class RpsBot implements FrankBotDefinition {
     // The bank must hold the most this match can pay before the stake is taken.
     if (
       wagerWei > 0n &&
-      (await ctx.getBalance().catch(() => 0n)) < wagerWei * 2n + BANK_RESERVE_WEI
+      (await ctx.getBalance().catch(() => 0n)) <
+        wagerWei * 2n + BANK_RESERVE_WEI + (await this.outbox.owedWei(ctx))
     )
       return refused(
         "The bank cannot cover that stake right now. Nothing was played."

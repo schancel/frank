@@ -38,6 +38,9 @@ export interface Sent {
   messageId?: string;
   /** The payload digest the wallet gave the message. */
   digest: string;
+  /** True when the bot named no stamp, so the host would put its own (paid) stamp on it. A
+   * bot's own messages must never be: they carry a payout, a refund, or nothing. */
+  hostStamp: boolean;
 }
 
 export const BOT = "0x" + "b0".repeat(20);
@@ -85,6 +88,7 @@ export function harness(data = new Map<string, string>()) {
       valueWei: options?.stampValueWei ?? 0n,
       messageId: id,
       digest: payloadDigest,
+      hostStamp: options?.stampValueWei === undefined,
     };
     if (mode !== "deliver") {
       if (id) attempts.set(id, { digest: payloadDigest, status: mode, message });

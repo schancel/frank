@@ -126,18 +126,57 @@ describe("Outbox", () => {
     expect(h.paidOut()).toBe(9n);
   });
 
-  test("a refund waits for a payment that is not mined, then returns it", async () => {
+  test("a payment not mined in time: the refusal goes out at once, and the payment is returned when it lands", async () => {
     const h = harness();
     const outbox = new Outbox("test");
     const payment = h.pay(5n, { mined: false });
     const message = h.message([], [payment]);
     const received = await confirmReceived(message, h.ctx, 0);
     await refuse(outbox, message, h.ctx, received, "Too little.");
-    expect(h.sent).toHaveLength(0);
+    // Said at once, carrying nothing.
+    expect(h.sent.map((m) => m.valueWei)).toEqual([0n]);
     h.chain.get(payment.txHash)!.mined = true;
     await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+    expect(h.sent.map((m) => m.valueWei)).toEqual([0n, 5n]);
+  });
+
+  test("a payment that never lands is never returned and nothing more is said", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const message = h.message([], [h.pay(5n, { mined: false })]);
+    await refuse(outbox, message, h.ctx, await confirmReceived(message, h.ctx, 0), "No.");
+    const now = jest.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
+    await outbox.settle(h.ctx);
+    now.mockRestore();
     expect(h.sent).toHaveLength(1);
-    expect(h.sent[0].valueWei).toBe(5n);
+    expect((await outbox.list(h.ctx)).owed).toEqual([]);
+  });
+
+  test("one unmined transfer named by two messages is returned once", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const payment = h.pay(10n, { mined: false });
+    for (const message of [h.message([], [payment]), h.message([], [payment])])
+      await refuse(outbox, message, h.ctx, await confirmReceived(message, h.ctx, 0), "No.");
+    h.chain.get(payment.txHash)!.mined = true;
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+    expect(h.paidOut()).toBe(10n);
+  });
+
+  test("a transfer played by one message is not also refunded to another that named it", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const payment = h.pay(10n, { mined: false });
+    const early = h.message([], [payment]);
+    await refuse(outbox, early, h.ctx, await confirmReceived(early, h.ctx, 0), "No.");
+    h.chain.get(payment.txHash)!.mined = true;
+    // Another message names it once it is mined, and is credited with it (it plays).
+    expect((await confirmReceived(h.message([], [payment]), h.ctx, 0)).confirmedWei).toBe(10n);
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+    expect(h.paidOut()).toBe(0n);
   });
 
   test("a refund returns exactly what was confirmed, and nothing when nothing was paid", async () => {
@@ -310,5 +349,33 @@ describe("Outbox.handle: a paid message is written down before anything else", (
     ).rejects.toThrow();
     await settleTwice(new Outbox("test"), h);
     expect(h.sent).toHaveLength(0);
+  });
+});
+
+describe("a bot's own messages carry no stamp", () => {
+  test("an owed message with no value, a refusal and a refund all name their own value; none is left to the host's paid stamp", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    await outbox.owe(h.ctx, "a", { to: PLAYER, items: [{ type: "text", text: "you lost" }] });
+    const paid = h.message([], [h.pay(4n)]);
+    await refuse(outbox, paid, h.ctx, await confirmReceived(paid, h.ctx, 0), "No.");
+    const unpaid = h.message([]);
+    await refuse(outbox, unpaid, h.ctx, await confirmReceived(unpaid, h.ctx, 0), "No.");
+    await outbox.settle(h.ctx);
+    expect(h.sent.map((m) => m.valueWei)).toEqual([0n, 4n, 0n]);
+    expect(h.sent.some((m) => m.hostStamp)).toBe(false);
+  });
+
+  test("what is owed and not delivered is known, for a bank that must not promise it twice", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    h.failSends(new Error("down"));
+    await outbox.owe(h.ctx, "a", { to: PLAYER, items: [], valueWei: 7n });
+    await outbox.owe(h.ctx, "b", { to: PLAYER, items: [], valueWei: 5n });
+    await outbox.settle(h.ctx);
+    expect(await outbox.owedWei(h.ctx)).toBe(12n);
+    h.failSends();
+    await outbox.settle(h.ctx);
+    expect(await outbox.owedWei(h.ctx)).toBe(0n);
   });
 });

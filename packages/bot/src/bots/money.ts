@@ -152,10 +152,11 @@ export interface Owed {
   sinceMs: number;
   /** The payload digest of the wallet's attempt for this message, once one is known to exist. */
   attempt?: string;
-  /** False: when it carries no value it is still sent with the bot's ordinary stamp, so the
-   * wallet journals it and a retry is the same message (a hand's messages are chained by digest).
-   * Otherwise a message that carries no value goes out unpaid. */
-  unpaidOk?: boolean;
+  /** The received message `awaits` came with: a transfer is returned only if it is credited to
+   * that message, so one transfer is credited once, for play or for refund, ever. */
+  awaitsFor?: string;
+  /** True: there is nothing to say unless there is money to return (a late refund). */
+  onlyWithValue?: boolean;
   /** How many times an operator has sent this again after an attempt failed: each is a new
    * message to the wallet. */
   tries?: number;
@@ -305,10 +306,12 @@ export class Outbox {
       conversationId?: string;
       items: MessageItem[];
       valueWei?: bigint;
+      /** Needs `awaitsFor`: the digest of the message these transfers came with. */
       awaits?: Payment[];
-      unpaidOk?: boolean;
+      awaitsFor?: string;
+      onlyWithValue?: boolean;
     },
-    settles?: { digest: string; writes?: BatchOp[] }
+    settles?: { digest?: string; writes?: BatchOp[] }
   ): Promise<void> {
     return this.serial(async () => {
       const index = await this.index(ctx.state);
@@ -322,8 +325,10 @@ export class Outbox {
           conversationId: entry.conversationId,
           items: entry.items,
           valueWei: (entry.valueWei ?? 0n).toString(),
-          ...(entry.awaits?.length ? { awaits: entry.awaits } : {}),
-          ...(entry.unpaidOk === false ? { unpaidOk: false } : {}),
+          ...(entry.awaits?.length && entry.awaitsFor
+            ? { awaits: entry.awaits, awaitsFor: entry.awaitsFor }
+            : {}),
+          ...(entry.onlyWithValue ? { onlyWithValue: true } : {}),
           sinceMs: Date.now(),
         };
         index.owed.push(id);
@@ -349,6 +354,22 @@ export class Outbox {
   /** Whether the message `id` was ever written down: owed, delivered or failed. */
   has(ctx: BotContext, id: string): Promise<boolean> {
     return this.known(ctx, id);
+  }
+
+  /** Whether the relay ended the message `id`: it was not delivered and waits for an operator. */
+  async failed(ctx: BotContext, id: string): Promise<boolean> {
+    return (await ctx.state.get(`${K}failed:${id}`)) !== undefined;
+  }
+
+  /** Wei this bot has written down as owed and not yet delivered: what its balance is already
+   * spoken for. */
+  async owedWei(ctx: BotContext): Promise<bigint> {
+    let total = 0n;
+    for (const id of (await this.index(ctx.state)).owed) {
+      const raw = await ctx.state.get(`${K}owed:${id}`);
+      if (raw !== undefined) total += BigInt((JSON.parse(raw) as Owed).valueWei);
+    }
+    return total;
   }
 
   /** Whether the message `id` is known to have been delivered. */
@@ -484,6 +505,7 @@ export class Outbox {
           ],
           valueWei: received.confirmedWei,
           awaits: received.unconfirmed,
+          awaitsFor: digest,
         },
         { digest }
       );
@@ -527,7 +549,13 @@ export class Outbox {
         for (const payment of owed.awaits) {
           const state = await landed(ctx, payment, 0);
           if (state === "unknown" && !expired) return;
-          if (state === "yes") still.push(payment);
+          // Returned only if it is credited to the message it came with: the same transfer
+          // named by two messages, or played by another, is not returned twice.
+          if (
+            state === "yes" &&
+            (await claim(ctx, payment.txHash, owed.awaitsFor as string))
+          )
+            still.push(payment);
         }
         // Fixed before the first send: the value of a message never changes between attempts.
         for (const payment of still) value += BigInt(payment.valueWei);
@@ -535,18 +563,17 @@ export class Outbox {
         delete owed.awaits;
         await state.put(`${K}owed:${id}`, JSON.stringify(owed));
       }
+      // Nothing landed, so there is nothing to return and nothing to say.
+      if (owed.onlyWithValue && value === 0n) return sent("", 0n);
       try {
         const result = await ctx.sendMessage(
           owed.to,
           owed.items,
           owed.conversationId,
           {
-            // What it pays, or nothing at all: an answer that carries no money is free.
-            ...(value > 0n
-              ? { stampValueWei: value }
-              : owed.unpaidOk === false
-              ? {}
-              : { stampValueWei: 0n }),
+            // What it pays, or no stamp at all. A bot's own messages are never paid for:
+            // value leaves it only as a payout or a refund of confirmed money.
+            stampValueWei: value,
             messageId: messageIdFor(this.botId, id, owed.tries),
           }
         );
@@ -578,8 +605,10 @@ export class Outbox {
   }
 }
 
-/** A message that did not pay for what it asked: says so, and returns what it did pay. The reply
- * is owed like any payout, so the refund is neither forgotten nor sent twice. */
+/** A message that did not pay for what it asked: says so at once, and returns what it is
+ * confirmed to have paid with that same message. Transfers that are not mined yet are returned by
+ * a second message if and when they land; they are never kept. Both are owed like any payout, so
+ * neither is forgotten or sent twice. */
 export async function refuse(
   outbox: Outbox,
   message: BotMessageContext,
@@ -588,13 +617,14 @@ export async function refuse(
   text: string,
   items: MessageItem[] = []
 ): Promise<void> {
-  const pending = received.unconfirmed.length > 0;
+  const late = received.unconfirmed.length > 0;
   const back =
-    received.confirmedWei > 0n || pending
-      ? pending
-        ? " Your payment is not confirmed on chain yet; it is returned once it is."
-        : " What you paid is returned with this message."
-      : "";
+    (received.confirmedWei > 0n
+      ? " What you paid is returned with this message."
+      : "") +
+    (late
+      ? " A payment you sent with it is not confirmed on chain yet; it is returned if it lands."
+      : "");
   await outbox.owe(
     ctx,
     `refund:${message.payloadDigest}`,
@@ -603,9 +633,37 @@ export async function refuse(
       conversationId: message.conversationId,
       items: [...items, { type: "text", text: text + back }],
       valueWei: received.confirmedWei,
-      awaits: received.unconfirmed,
     },
     { digest: message.payloadDigest }
   );
+  if (late)
+    await outbox.owe(ctx, `late-refund:${message.payloadDigest}`, {
+      to: message.peerAddress,
+      conversationId: message.conversationId,
+      items: [
+        {
+          type: "text",
+          text: "The payment you sent earlier has now landed. Nothing was played or sold for it; it is returned with this message.",
+        },
+      ],
+      awaits: received.unconfirmed,
+      awaitsFor: message.payloadDigest,
+      onlyWithValue: true,
+    });
   await outbox.settle(ctx);
+}
+
+/** A bot's own message that carries no money goes out with no stamp: a greeting, a table, a
+ * catalog, an answer. Value leaves a bot only as a payout or a refund of confirmed money. */
+export function sendFree(
+  ctx: BotContext,
+  to: string,
+  items: MessageItem[],
+  conversationId?: string
+) {
+  return ctx.sendMessage(to, items, conversationId, { stampValueWei: 0n });
+}
+
+export function replyFree(message: BotMessageContext, items: MessageItem[]) {
+  return message.reply(items, { stampValueWei: 0n });
 }

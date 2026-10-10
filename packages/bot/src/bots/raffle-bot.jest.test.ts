@@ -1,6 +1,7 @@
 import type { RaffleItem } from "@frank/cashweb/types/messages";
 import { verifyRaffleDrawAgainstThread } from "@frank/wallet/message-item-plugins/raffle/draw";
 import { harness } from "./bot-harness.testutil";
+import { Outbox } from "./money";
 import { RaffleBot } from "./raffle-bot";
 
 const PRICE = 20_000_000_000_000_000n; // 0.02 MON
@@ -182,7 +183,7 @@ describe("RaffleBot", () => {
     expect(h.data.get("current_round")).toBe("{not json");
   });
 
-  test("a winner's payment the relay ended is never announced; the round waits for the operator", async () => {
+  test("a winner's payment the relay ended is never announced, later rounds go on, and the round is announced once an operator's retry has paid it", async () => {
     const errors = jest.spyOn(console, "error").mockImplementation(() => undefined);
     const h = harness();
     const bot = new RaffleBot({ maxEntries: 2 });
@@ -194,11 +195,27 @@ describe("RaffleBot", () => {
     h.wallet("deliver");
     for (let i = 0; i < 3; i++)
       for (const schedule of bot.schedules) await schedule.handler(h.ctx);
-    // Nobody was told of a draw, nothing was paid, and no new round opened.
+    // Nobody was told of a draw and nothing was paid...
     expect(h.sent.some((m) => h.item("raffle", m)?.action === "draw")).toBe(false);
     expect(h.paidOut()).toBe(0n);
-    expect(JSON.parse(h.data.get("current_round")!)).toMatchObject({ raffleId, status: "drawing" });
-    expect(errors.mock.calls.flat().join(" ")).toMatch(/FAILED.*draw:/);
+    expect(errors.mock.calls.flat().join(" ")).toMatch(/NOT paid/);
+    // ...and the next round is open: one failed payment does not stop the raffle.
+    const next = JSON.parse(h.data.get("current_round")!);
+    expect(next.raffleId).not.toBe(raffleId);
+    expect(next.status).toBe("open");
+    const CAROL = "0x" + "c3".repeat(20);
+    await enter(h, bot, next.raffleId, CAROL);
+    expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([CAROL]);
+
+    // The operator sends the failed payment again: the winner is paid, then the others are told.
+    h.sent.length = 0;
+    expect(await new Outbox("raffle").retry(h.ctx, `draw:${raffleId}`)).toBe(true);
+    for (let i = 0; i < 3; i++)
+      for (const schedule of bot.schedules) await schedule.handler(h.ctx);
+    expect(h.sent.filter((m) => m.valueWei === PRICE * 2n)).toHaveLength(1);
+    expect(
+      h.sent.filter((m) => h.item("raffle", m)?.action === "draw" && h.item("raffle", m).raffleId === raffleId)
+    ).toHaveLength(2);
     errors.mockRestore();
   });
 

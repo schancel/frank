@@ -1411,6 +1411,12 @@ describe("with the real canonical wallet", () => {
       ).chain.nativeTransfers = {
         getTransactionStatus: async () => "confirmed",
       };
+      (
+        host as unknown as { provider: { getTransaction: unknown } }
+      ).provider.getTransaction = async () => ({
+        to: "0x" + "5e".repeat(20),
+        value: 2_000_000_000_000n,
+      });
     };
     /** The process ends and starts again: a new host, and the wallet reopened from its disk. */
     const restart = async () => {

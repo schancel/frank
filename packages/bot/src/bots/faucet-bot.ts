@@ -8,6 +8,7 @@ import type {
 import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_SERVICE, BOT_ROLE_FAUCET } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
+import { replyFree, sendFree } from "./money";
 
 export const FAUCET_DEFAULT_AMOUNT_WEI = 50_000_000_000_000_000n; // 0.05 MON
 export const FAUCET_DEFAULT_MIN_RESERVE_WEI = 100_000_000_000_000_000n; // 0.1 MON
@@ -112,7 +113,7 @@ export class FaucetBot implements FrankBotDefinition {
         console.warn(`[faucet] At the reserve; ${user.address} not funded`);
       if (result.outcome !== "granted") return;
       console.log(`[faucet] Funded ${user.address} (tx: ${result.txHash})`);
-      await ctx.sendMessage(user.address, [
+      await sendFree(ctx, user.address, [
         {
           type: "text",
           text: `Welcome to Frank. ${this.sentText(user.address, result.txHash)}`,
@@ -138,6 +139,6 @@ export class FaucetBot implements FrankBotDefinition {
       text =
         "The faucet could not send your grant just now. Send any message to try again.";
     }
-    await msgCtx.reply([{ type: "text", text }]);
+    await replyFree(msgCtx, [{ type: "text", text }]);
   }
 }

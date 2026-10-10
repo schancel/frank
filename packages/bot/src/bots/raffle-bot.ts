@@ -16,7 +16,7 @@ import {
 import { formatMon } from "@frank/wallet/monad-amount";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { generateAvatarPng } from "../../bot-directory";
-import { Outbox, refuse, type Received } from "./money";
+import { Outbox, refuse, type Received, replyFree, sendFree } from "./money";
 
 export const RAFFLE_DEFAULT_ENTRY_PRICE_WEI = 20_000_000_000_000_000n; // 0.02 MON
 export const RAFFLE_DEFAULT_MAX_ENTRIES = 5;
@@ -39,6 +39,7 @@ export interface RaffleRoundState {
 }
 
 const ROUND = "current_round";
+const UNPAID = "unpaid_rounds";
 
 export class RaffleBot implements FrankBotDefinition {
   readonly id = "raffle";
@@ -149,7 +150,7 @@ export class RaffleBot implements FrankBotDefinition {
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {
     try {
       const round = await this.serial(() => this.round(ctx));
-      await ctx.sendMessage(user.address, this.invitation(round));
+      await sendFree(ctx, user.address, this.invitation(round));
     } catch (err) {
       console.warn(`[raffle] Failed to welcome new user ${user.address}:`, err);
     }
@@ -165,7 +166,7 @@ export class RaffleBot implements FrankBotDefinition {
     );
     if (!entry && !typed) {
       const round = await this.serial(() => this.round(ctx));
-      await msgCtx.reply(this.invitation(round));
+      await replyFree(msgCtx, this.invitation(round));
       return;
     }
     // What the entry paid, on chain; looked up before taking the round's turn, since it can wait.
@@ -239,44 +240,32 @@ export class RaffleBot implements FrankBotDefinition {
     if (round.status === "drawing") await this.finish(ctx);
   }
 
-  /** Pays the winner of a full round, and only once that payment has gone out tells the other
-   * entrants and opens the next round. Safe to repeat: every message is owed once by its own
-   * name. */
-  private async finish(ctx: BotContext): Promise<void> {
-    const raw = await ctx.state.get(ROUND);
-    if (raw === undefined) return;
-    const round = JSON.parse(raw) as RaffleRoundState;
-    if (round.status !== "drawing") return;
-    const draw = buildRaffleDrawItem({
+  /** Rounds whose winner's payment the relay ended: drawn, not announced, waiting for an operator
+   * to send the payment again. They do not hold up the rounds after them. */
+  private async unpaid(ctx: BotContext): Promise<RaffleRoundState[]> {
+    const raw = await ctx.state.get(UNPAID);
+    return raw ? (JSON.parse(raw) as RaffleRoundState[]) : [];
+  }
+
+  private draw(round: RaffleRoundState) {
+    return buildRaffleDrawItem({
       raffleId: round.raffleId,
       entryPriceWei: round.entryPriceWei,
       serverSeed: round.serverSeed,
       entrants: round.entrants,
       entryTxHashes: round.entryTxHashes,
     });
-    const pot = BigInt(draw.potWei);
-    const paid = `draw:${round.raffleId}`;
-    const conversationOf = (entrant: string) =>
-      round.conversations[round.entrants.indexOf(entrant)] ?? undefined;
-    await this.outbox.owe(ctx, paid, {
-      to: draw.winnerAddress,
-      conversationId: conversationOf(draw.winnerAddress),
-      items: [
-        draw,
-        {
-          type: "text",
-          text: `You won round ${round.raffleId.slice(0, 8)}. This message pays you the pot of ${formatMon(pot)}.`,
-        },
-      ],
-      valueWei: pot,
-    });
-    await this.outbox.settle(ctx);
-    if (!(await this.outbox.sent(ctx, paid))) return;
+  }
+
+  /** Tells the entrants who did not win, once the winner's payment has gone out. */
+  private async announce(ctx: BotContext, round: RaffleRoundState) {
+    const draw = this.draw(round);
     for (const entrant of round.entrants) {
       if (entrant === draw.winnerAddress) continue;
-      await this.outbox.owe(ctx, `${paid}:${entrant}`, {
+      await this.outbox.owe(ctx, `draw:${round.raffleId}:${entrant}`, {
         to: entrant,
-        conversationId: conversationOf(entrant),
+        conversationId:
+          round.conversations[round.entrants.indexOf(entrant)] ?? undefined,
         items: [
           draw,
           {
@@ -284,14 +273,69 @@ export class RaffleBot implements FrankBotDefinition {
             text: `Round ${round.raffleId.slice(0, 8)} is drawn. ${draw.winnerAddress.slice(
               0,
               10
-            )}… won and has been paid the pot of ${formatMon(pot)}.`,
+            )}… won and has been paid the pot of ${formatMon(BigInt(draw.potWei))}.`,
           },
         ],
       });
     }
-    // The next round: a fresh seed, committed before anyone can enter it.
-    await ctx.state.del(ROUND);
-    await this.round(ctx);
+  }
+
+  /** Pays the winner of a full round, and only once that payment has gone out tells the other
+   * entrants. The next round opens when the payment has gone out, or when the relay has ended
+   * it: such a round is set aside, unannounced, until an operator sends the payment again, and
+   * is announced then. Safe to repeat: every message is owed once by its own name. */
+  private async finish(ctx: BotContext): Promise<void> {
+    // Rounds set aside earlier whose winner has been paid since.
+    const waiting = await this.unpaid(ctx);
+    for (const round of waiting)
+      if (await this.outbox.sent(ctx, `draw:${round.raffleId}`)) {
+        await this.announce(ctx, round);
+        await ctx.state.put(
+          UNPAID,
+          JSON.stringify(
+            (await this.unpaid(ctx)).filter((other) => other.raffleId !== round.raffleId)
+          )
+        );
+      }
+
+    const raw = await ctx.state.get(ROUND);
+    const round = raw === undefined ? undefined : (JSON.parse(raw) as RaffleRoundState);
+    if (round?.status === "drawing") {
+      const draw = this.draw(round);
+      const pot = BigInt(draw.potWei);
+      const paid = `draw:${round.raffleId}`;
+      await this.outbox.owe(ctx, paid, {
+        to: draw.winnerAddress,
+        conversationId:
+          round.conversations[round.entrants.indexOf(draw.winnerAddress)] ?? undefined,
+        items: [
+          draw,
+          {
+            type: "text",
+            text: `You won round ${round.raffleId.slice(0, 8)}. This message pays you the pot of ${formatMon(pot)}.`,
+          },
+        ],
+        valueWei: pot,
+      });
+      await this.outbox.settle(ctx);
+      if (await this.outbox.sent(ctx, paid)) {
+        await this.announce(ctx, round);
+      } else if (await this.outbox.failed(ctx, paid)) {
+        console.error(
+          `[raffle] Round ${round.raffleId} is drawn but its winner ${draw.winnerAddress} was NOT paid ${pot} wei (the relay ended the payment). Nobody has been told a winner. The next round opens; this one waits for the outbox admin tool.`
+        );
+        await ctx.state.put(
+          UNPAID,
+          JSON.stringify([
+            ...(await this.unpaid(ctx)).filter((other) => other.raffleId !== round.raffleId),
+            round,
+          ])
+        );
+      } else return; // Still on its way: nothing is said and no round opens yet.
+      // The next round: a fresh seed, committed before anyone can enter it.
+      await ctx.state.del(ROUND);
+      await this.round(ctx);
+    }
     await this.outbox.settle(ctx);
   }
 }

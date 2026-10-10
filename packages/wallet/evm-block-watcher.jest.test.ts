@@ -110,3 +110,21 @@ describe('EvmBlockWatcher', () => {
     watcher.stop()
   })
 })
+
+describe('a wait keeps its process alive', () => {
+  // Seen on a local Monad chain: a process that opened a wallet, sent one paid message and had
+  // nothing else to do ended with exit code 0 while the send was waiting for a block.
+  it('the timer of a pending wait is not unref\'d', async () => {
+    const { EvmBlockWatcher } = await import('./evm-block-watcher')
+    const watcher = new EvmBlockWatcher({
+      provider: { getBlockNumber: async () => 1 },
+      intervalMs: 60_000,
+    })
+    const waiting = watcher.until(2)
+    waiting.catch(() => undefined)
+    const timer = (watcher as unknown as { timer?: { hasRef(): boolean } }).timer
+    expect(timer?.hasRef()).toBe(true)
+    watcher.stop()
+    await expect(waiting).rejects.toThrow()
+  })
+})

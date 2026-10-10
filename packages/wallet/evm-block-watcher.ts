@@ -195,7 +195,9 @@ export class EvmBlockWatcher {
       this.timer = undefined
       void this.look()
     }, delayMs ?? this.delayMs)
-    ;(this.timer as { unref?: () => void }).unref?.()
+    // Not unref'd: the timer exists only while something waits, and a wait is work in flight.
+    // (Unref'd, a short-lived process whose only pending work was a send waiting for a block
+    // ended, with exit code 0, in the middle of that send.)
   }
 
   private async look(): Promise<void> {

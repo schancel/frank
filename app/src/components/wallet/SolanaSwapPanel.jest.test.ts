@@ -111,6 +111,7 @@ function quoteFor(amount: bigint, overrides: Record<string, unknown> = {}) {
     route: [{ label: 'Orca Whirlpool', inputMint: SOL, outputMint: USDC }],
     tradeFee: { amount: 20_000n, mint: SOL },
     networkFeeLamports: 5000n,
+    priorityFeeLamports: 0n,
     accountRentLamports: 1_488_440n,
     temporaryRentLamports: 1_488_440n,
     fetchedAt: Date.now(),
@@ -135,6 +136,7 @@ const pendingRecord = {
   minimumAmountOut: '221089',
   interfaceFeeAmount: '0',
   networkFeeLamports: '5000',
+  priorityFeeLamports: '0',
 }
 
 function fakeSession(overrides: Record<string, unknown> = {}) {
@@ -215,6 +217,7 @@ const confirmed = {
   receivedAmount: 222_000n,
   spentAmount: 10_000_000n,
   networkFeeLamports: 5000n,
+  priorityFeeLamports: 0n,
   accountRentLamports: 1_488_440n,
 }
 
@@ -222,6 +225,38 @@ describe('SolanaSwapPanel', () => {
   beforeEach(() => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
     mockOpenSession.mockReset()
+  })
+
+  it('shows a priority fee on its own line: on the quote, on the review card and in the result', async () => {
+    const session = fakeSession({
+      quote: jest.fn(async ({ amount }: { amount: bigint }) =>
+        quoteFor(amount, {
+          networkFeeLamports: 105_000n,
+          priorityFeeLamports: 100_000n,
+        }),
+      ),
+      execute: jest.fn().mockResolvedValue({
+        ...confirmed,
+        networkFeeLamports: 105_000n,
+        priorityFeeLamports: 100_000n,
+      }),
+    })
+    const wrapper = await mountPanel(session)
+    await enterAmount(wrapper, '0.01')
+    expect(text(wrapper, 'solana-swap-quote-network-fee')).toBe('0.000005 SOL')
+    expect(text(wrapper, 'solana-swap-quote-priority-fee')).toBe('0.0001 SOL')
+    await wrapper
+      .find('[data-testid="solana-swap-review-btn"]')
+      .trigger('click')
+    await flushPromises()
+    expect(text(wrapper, 'solana-swap-review-network-fee')).toBe('0.000005 SOL')
+    expect(text(wrapper, 'solana-swap-review-priority-fee')).toBe('0.0001 SOL')
+    // Both are in what leaves the wallet: 0.01 + 0.000105 fees + 0.00148844 deposit.
+    expect(text(wrapper, 'solana-swap-review-total')).toBe('0.01159344 SOL')
+    await wrapper.find('[data-testid="solana-swap-confirm"]').trigger('click')
+    await flushPromises()
+    expect(text(wrapper, 'solana-swap-result-network-fee')).toBe('0.000005 SOL')
+    expect(text(wrapper, 'solana-swap-result-priority-fee')).toBe('0.0001 SOL')
   })
   afterEach(() => {
     jest.useRealTimers()
@@ -327,6 +362,7 @@ describe('SolanaSwapPanel', () => {
     expect(text(wrapper, 'solana-swap-quote-minimum')).toBe('0.221089 devUSDC')
     expect(text(wrapper, 'solana-swap-quote-trade-fee')).toBe('0.00002 SOL')
     expect(text(wrapper, 'solana-swap-quote-network-fee')).toBe('0.000005 SOL')
+    expect(text(wrapper, 'solana-swap-quote-priority-fee')).toBe('0 SOL')
     expect(text(wrapper, 'solana-swap-quote-route')).toBe(
       'Orca Whirlpools (devnet) · Orca Whirlpool',
     )
@@ -452,6 +488,7 @@ describe('SolanaSwapPanel', () => {
     )
     expect(text(wrapper, 'solana-swap-review-pay')).toBe('0.01 SOL')
     expect(text(wrapper, 'solana-swap-review-network-fee')).toBe('0.000005 SOL')
+    expect(text(wrapper, 'solana-swap-review-priority-fee')).toBe('0 SOL')
     expect(text(wrapper, 'solana-swap-review-rent')).toBe('0.00148844 SOL')
     // Input, fee and the deposit that stays in the new account, in one figure.
     expect(text(wrapper, 'solana-swap-review-total')).toBe('0.01149344 SOL')
@@ -585,6 +622,7 @@ describe('SolanaSwapPanel', () => {
     expect(text(wrapper, 'solana-swap-stage')).toBe('Swap complete')
     expect(text(wrapper, 'solana-swap-result-paid')).toBe('0.01 SOL')
     expect(text(wrapper, 'solana-swap-result-network-fee')).toBe('0.000005 SOL')
+    expect(text(wrapper, 'solana-swap-result-priority-fee')).toBe('0 SOL')
     expect(text(wrapper, 'solana-swap-result-rent')).toBe('0.00148844 SOL')
     expect(text(wrapper, 'solana-swap-result-total')).toBe('0.01149344 SOL')
     expect(text(wrapper, 'solana-swap-result-received')).toBe('0.222 devUSDC')
@@ -646,6 +684,7 @@ describe('SolanaSwapPanel', () => {
       signature: 'SIG123',
       reason: 'x',
       networkFeeLamports: 5000n,
+      priorityFeeLamports: 0n,
     })
     await wrapper
       .find('[data-testid="solana-swap-check-again"]')

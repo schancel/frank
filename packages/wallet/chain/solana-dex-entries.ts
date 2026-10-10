@@ -28,6 +28,13 @@
  *   so it cannot be a devnet exchange.
  * Every pool is re-checked on chain each time it is read (solana-swap/orca.ts `decodeWhirlpool`).
  *
+ * `maxNetworkFeeLamports`:
+ * - Orca Whirlpools: the wallet builds the transaction with one signature and no priority fee,
+ *   so it costs the base fee of 5 000 lamports; the limit is twice that.
+ * - Jupiter: 1 000 000 lamports (0.001 SOL). Jupiter's API sets a priority fee from recent
+ *   network conditions; it is asked to keep it under this limit, and its transactions observed
+ *   on 2026-10-10 carried about 100 000 lamports.
+ *
  * `interfaceFee`: Frank's own fee, off everywhere until fee-collecting accounts exist (#1375).
  * With none configured nothing fee-related is put in a transaction.
  */
@@ -53,9 +60,17 @@ export interface SolanaSwapToken {
  * collects it. The shared entry's `InterfaceFee`. */
 export type SolanaSwapPlatformFee = InterfaceFee
 
-/** The fields every chain family's `dex` entry has (`SwapVenue`), plus the tokens offered. */
+/** The fields every chain family's `dex` entry has (`SwapVenue`), plus what Solana needs. */
 interface VenueBase extends SwapVenue {
   readonly tokens: readonly SolanaSwapToken[]
+  /**
+   * The most a swap through this exchange may pay the network, in lamports: the base fee plus
+   * any priority fee (compute-unit limit times price). A transaction that could be charged more
+   * is refused, never shown or signed. Whoever builds the transaction (for Jupiter, its API)
+   * chooses the priority fee, so this is what stops a bad response from burning the wallet's
+   * SOL as fees.
+   */
+  readonly maxNetworkFeeLamports: number
 }
 
 export interface OrcaWhirlpoolsVenue extends VenueBase {
@@ -92,6 +107,7 @@ const USDC: SolanaSwapToken = {
   name: 'USD Coin',
 }
 const ORCA_PROGRAM_ID = 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc'
+const ORCA_MAX_NETWORK_FEE_LAMPORTS = 10_000
 
 /** The `dex` list of the `solana-devnet` row of the chain registry. */
 export const SOLANA_DEVNET_DEX: readonly SolanaDexEntry[] = [
@@ -101,6 +117,7 @@ export const SOLANA_DEVNET_DEX: readonly SolanaDexEntry[] = [
     enabled: true,
     displayName: 'Orca Whirlpools (devnet)',
     maintainer: 'Orca',
+    maxNetworkFeeLamports: ORCA_MAX_NETWORK_FEE_LAMPORTS,
     programId: ORCA_PROGRAM_ID,
     pools: [
       '3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt', // SOL / devUSDC
@@ -142,6 +159,7 @@ export const SOLANA_MAINNET_DEX: readonly SolanaDexEntry[] = [
     enabled: false,
     displayName: 'Jupiter',
     maintainer: 'Jupiter',
+    maxNetworkFeeLamports: 1_000_000,
     apiBaseUrl: 'https://api.jup.ag/swap/v1',
     programId: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
     tokens: [
@@ -165,6 +183,7 @@ export const SOLANA_MAINNET_DEX: readonly SolanaDexEntry[] = [
     enabled: false,
     displayName: 'Orca Whirlpools',
     maintainer: 'Orca',
+    maxNetworkFeeLamports: ORCA_MAX_NETWORK_FEE_LAMPORTS,
     programId: ORCA_PROGRAM_ID,
     pools: ['Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE'], // SOL / USDC
     tokens: [SOL, USDC],

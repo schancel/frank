@@ -170,7 +170,10 @@ export interface SolanaSwapQuote {
     readonly mint: string
     readonly bps: number
   }
+  /** Everything the network charges for the transaction: its base fee plus its priority fee. */
   readonly networkFeeLamports: bigint
+  /** The part of `networkFeeLamports` that is a priority fee; zero when the transaction has none. */
+  readonly priorityFeeLamports: bigint
   /** Rent the wallet pays to open token accounts this swap needs; it stays in those accounts. */
   readonly accountRentLamports: bigint
   /**
@@ -342,6 +345,7 @@ export interface SwapCheck {
   readonly inputAmount: bigint
   /** Least output the wallet accepts; zero only while probing for the expected output. */
   readonly minOutputAmount: bigint
+  /** The network fee that was reviewed. The transaction may be charged this and no more. */
   readonly networkFeeLamports: bigint
   /** Every token account the wallet has, so none can be touched unnoticed. */
   readonly walletAccounts: readonly WalletTokenAccount[]
@@ -376,7 +380,8 @@ async function readWalletTokenAccounts(
  * Refused (`unsafe-transaction`) unless, from the simulation's own before/after state:
  * - the input is debited by no more than the agreed amount;
  * - the output is credited by at least the minimum;
- * - no other SOL leaves, beyond rent for token accounts opened by this swap;
+ * - no other SOL leaves, beyond the reviewed network fee and rent for token accounts opened by
+ *   this swap;
  * - no other token of the wallet moves, and no token account of the wallet changes owner,
  *   gains a delegate or a close authority, or disappears;
  * - the wallet remains an ordinary account.
@@ -460,9 +465,16 @@ export async function simulateAndCheckSwap(
   }
 
   // Simulation charges the network fee to the payer like a real run (checked on devnet and
-  // mainnet RPCs); add it back so the amounts below are the swap's own.
-  const lamportsAfter =
-    BigInt(ownerAfter.lamports) + BigInt(value.fee ?? check.networkFeeLamports)
+  // mainnet RPCs). The fee that was reviewed is the allowance: a larger one is refused, and
+  // only what is within it is added back so the amounts below are the swap's own.
+  const charged =
+    value.fee === null || value.fee === undefined
+      ? check.networkFeeLamports
+      : BigInt(value.fee)
+  if (charged > check.networkFeeLamports) {
+    refuse('is charged a higher network fee than was reviewed')
+  }
+  const lamportsAfter = BigInt(ownerAfter.lamports) + charged
   const feeAccountAfter = check.feeAccount && afterOf(check.feeAccount)
   const feeAccountRent =
     feeAccountAfter && check.feeAccountIsNew
@@ -513,6 +525,100 @@ export async function simulateAndCheckSwap(
   return {
     outputAmount: credited,
     accountRentLamports: outputRent + feeAccountRent,
+  }
+}
+
+const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111'
+/** Solana's fee rules, as every cluster applies them. */
+const LAMPORTS_PER_SIGNATURE = 5000n
+const MAX_COMPUTE_UNITS = 1_400_000n
+const DEFAULT_COMPUTE_UNITS_PER_INSTRUCTION = 200_000n
+const MICRO_LAMPORTS_PER_LAMPORT = 1_000_000n
+
+/**
+ * What a transaction can be charged, worked out from the transaction itself: the base fee for
+ * its signatures, and the priority fee its compute-budget instructions set (the compute-unit
+ * limit times the price per unit, rounded up; charged in full whatever the run consumes).
+ * A compute-budget instruction other than a limit, a price, a heap size or a loaded-data size
+ * is refused, as is a repeated limit or price.
+ */
+export function transactionFee(transaction: VersionedTransaction): {
+  baseFeeLamports: bigint
+  priorityFeeLamports: bigint
+} {
+  const refuse = (): never => {
+    throw new SolanaSwapError(
+      'unsafe-transaction',
+      'carries a compute-budget instruction that is not understood',
+    )
+  }
+  const { header, staticAccountKeys, compiledInstructions } =
+    transaction.message
+  let limit: bigint | undefined
+  let price: bigint | undefined
+  let otherInstructions = 0n
+  for (const instruction of compiledInstructions) {
+    const program = staticAccountKeys[instruction.programIdIndex]?.toBase58()
+    if (program !== COMPUTE_BUDGET_PROGRAM) {
+      otherInstructions++
+      continue
+    }
+    const data = instruction.data
+    if (data[0] === 2 && data.length === 5 && limit === undefined) {
+      limit = readU64(Uint8Array.of(...data.slice(1), 0, 0, 0, 0), 0)
+    } else if (data[0] === 3 && data.length === 9 && price === undefined) {
+      price = readU64(data, 1)
+    } else if (!((data[0] === 1 || data[0] === 4) && data.length === 5)) {
+      refuse()
+    }
+  }
+  const units = [
+    limit ?? otherInstructions * DEFAULT_COMPUTE_UNITS_PER_INSTRUCTION,
+    MAX_COMPUTE_UNITS,
+  ].reduce((a, b) => (a < b ? a : b))
+  return {
+    baseFeeLamports:
+      LAMPORTS_PER_SIGNATURE * BigInt(header.numRequiredSignatures),
+    priorityFeeLamports:
+      (units * (price ?? 0n) + MICRO_LAMPORTS_PER_LAMPORT - 1n) /
+      MICRO_LAMPORTS_PER_LAMPORT,
+  }
+}
+
+/**
+ * The network fee to review for a transaction, and how much of it is a priority fee. Refused
+ * when it is above what the exchange's entry allows, and when the network does not state the
+ * fee (an unknown fee is never shown as zero).
+ */
+async function reviewNetworkFee(
+  connection: SolanaSwapConnection,
+  venue: SolanaSwapVenue,
+  transaction: VersionedTransaction,
+): Promise<{ networkFeeLamports: bigint; priorityFeeLamports: bigint }> {
+  const allowed = BigInt(venue.maxNetworkFeeLamports)
+  const within = (fee: bigint): bigint => {
+    if (fee > allowed) {
+      throw new SolanaSwapError(
+        'unsafe-transaction',
+        `network fee of ${fee} lamports is above the ${allowed} this exchange may charge`,
+      )
+    }
+    return fee
+  }
+  const { baseFeeLamports, priorityFeeLamports } = transactionFee(transaction)
+  // From the transaction alone first: a fee this large is refused whatever the network says.
+  const own = within(baseFeeLamports + priorityFeeLamports)
+  const stated = (await connection.getFeeForMessage(transaction.message)).value
+  if (stated === null) {
+    throw new SolanaSwapError(
+      'simulation-failed',
+      'the network did not state the fee for this transaction',
+    )
+  }
+  const fee = BigInt(stated)
+  return {
+    networkFeeLamports: within(fee > own ? fee : own),
+    priorityFeeLamports,
   }
 }
 
@@ -717,9 +823,8 @@ export async function prepareOrcaSwap(
   }
 
   const probe = await build(0n)
-  const fee = BigInt(
-    (await connection.getFeeForMessage(probe.message)).value ?? 0,
-  )
+  const { networkFeeLamports: fee, priorityFeeLamports } =
+    await reviewNetworkFee(connection, venue, probe)
   const check = (minimum: bigint): SwapCheck => ({
     owner,
     state,
@@ -771,6 +876,7 @@ export async function prepareOrcaSwap(
         }
       : {}),
     networkFeeLamports: fee,
+    priorityFeeLamports,
     temporaryRentLamports: temporaryRent,
     transaction,
     lastValidBlockHeight: BigInt(latest.lastValidBlockHeight),
@@ -819,7 +925,7 @@ const JUPITER_SWAP_INSTRUCTIONS: readonly {
  * Reads a transaction Jupiter built, instruction by instruction, and refuses anything that is
  * not part of the quoted swap. Lookup tables are resolved from the chain here, not taken on
  * trust. Allowed, and nothing else:
- * - compute-budget instructions;
+ * - compute-budget instructions (the fee they set is bounded by `reviewNetworkFee`);
  * - creating a token account that this wallet owns;
  * - wrapping SOL into the wallet's own wrapped-SOL account (no more than the input), and
  *   closing that account back into the wallet;
@@ -884,7 +990,8 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
     const program = key(instruction.programIdIndex)
     const account = (i: number) => key(instruction.accountKeyIndexes[i])
     const data = instruction.data
-    if (program === 'ComputeBudget111111111111111111111111111111') continue
+    // What these may cost is bounded where the fee is reviewed (`reviewNetworkFee`).
+    if (program === COMPUTE_BUDGET_PROGRAM) continue
     if (program === ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()) {
       if (account(0) !== owner || account(2) !== owner) {
         refuse('creates a token account for someone else')
@@ -983,6 +1090,8 @@ export async function prepareJupiterSwap(
       quote,
       userPublicKey: request.owner.toBase58(),
       feeAccount: feeAccount?.toBase58(),
+      maxPriorityFeeLamports:
+        BigInt(venue.maxNetworkFeeLamports) - LAMPORTS_PER_SIGNATURE,
     })
   } catch (error) {
     if (error instanceof JupiterApiError) {
@@ -1029,10 +1138,9 @@ export async function prepareJupiterSwap(
     platformFeeBps: venue.interfaceFee?.bps ?? 0,
   })
 
-  // Includes the priority fee Jupiter set on the transaction.
-  const fee = BigInt(
-    (await connection.getFeeForMessage(transaction.message)).value ?? 0,
-  )
+  // Jupiter chose the priority fee: it is bounded by the entry's limit, and shown.
+  const { networkFeeLamports: fee, priorityFeeLamports } =
+    await reviewNetworkFee(connection, venue, transaction)
   // When this transaction can no longer land is decided from the chain, never from the API:
   // its blockhash cannot be newer than the chain's tip, so it expires no later than one
   // blockhash lifetime after the tip seen now (doubled, in case the API's node was ahead).
@@ -1063,6 +1171,7 @@ export async function prepareJupiterSwap(
         }
       : {}),
     networkFeeLamports: fee,
+    priorityFeeLamports,
     temporaryRentLamports: 0n,
     transaction,
     lastValidBlockHeight,

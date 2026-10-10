@@ -125,6 +125,7 @@ abstract class SolanaDexBase<V extends SolanaSwapVenue> implements SolanaDex {
         minimumAmountOut: quote.minOutputAmount.toString(),
         interfaceFeeAmount: (quote.platformFee?.amount ?? 0n).toString(),
         networkFeeLamports: quote.networkFeeLamports.toString(),
+        priorityFeeLamports: quote.priorityFeeLamports.toString(),
       },
       onSubmitted,
     )

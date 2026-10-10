@@ -56,8 +56,10 @@ export interface SolanaSwapRecord {
   readonly minimumAmountOut: string
   /** Frank's fee, in the asset it is taken in; zero when the exchange has none. */
   readonly interfaceFeeAmount: string
-  /** The network fee the transaction is charged, in lamports. */
+  /** The network fee the transaction is charged, in lamports: base fee plus priority fee. */
   readonly networkFeeLamports: string
+  /** The part of it that is the priority fee the transaction sets; "0" when it sets none. */
+  readonly priorityFeeLamports: string
   readonly signedAtMs: number
   /** What the wallet needs to finish this exact swap: its signed bytes and their lifetime. */
   readonly recovery: {
@@ -95,12 +97,15 @@ export type SolanaSwapOutcome =
       readonly status: 'confirmed'
       readonly signature: string
       readonly finalized: boolean
+      /** The part of `networkFeeLamports` that was the transaction's priority fee. */
+      readonly priorityFeeLamports: bigint
     } & ObservedSwap)
   | {
       readonly status: 'failed'
       readonly signature: string
       readonly reason: string
       readonly networkFeeLamports: bigint
+      readonly priorityFeeLamports: bigint
     }
   | { readonly status: 'expired'; readonly signature: string }
 
@@ -408,6 +413,8 @@ export async function trackSolanaSwap(
     }
     return outcome
   }
+  // A transaction that lands is charged the priority fee it sets, in full.
+  const priorityFeeLamports = BigInt(swap.priorityFeeLamports)
   const transactionMeta = async () =>
     (
       await connection.getTransaction(signature, {
@@ -452,6 +459,7 @@ export async function trackSolanaSwap(
               signature: signature,
               reason: JSON.stringify(current.err),
               networkFeeLamports: BigInt(meta?.fee ?? swap.networkFeeLamports),
+              priorityFeeLamports,
             })
           }
         } else if (finalized || current.confirmationStatus === 'confirmed') {
@@ -461,6 +469,7 @@ export async function trackSolanaSwap(
               status: 'confirmed',
               signature: signature,
               finalized,
+              priorityFeeLamports,
               ...observeSwapTransaction(
                 meta,
                 swap.account,

@@ -190,6 +190,25 @@ describe('dex configuration', () => {
     }
   })
 
+  it('every exchange states the most a swap through it may pay in network fees', () => {
+    for (const chain of ['solana-devnet', 'solana-mainnet']) {
+      for (const entry of listSolanaDexEntries(chain)) {
+        expect(Number.isSafeInteger(entry.maxNetworkFeeLamports)).toBe(true)
+        // At least one signature's base fee, and well under a hundredth of a SOL.
+        expect(entry.maxNetworkFeeLamports).toBeGreaterThanOrEqual(5000)
+        expect(entry.maxNetworkFeeLamports).toBeLessThan(10_000_000)
+      }
+    }
+    for (const bad of [0, -1, 1.5, undefined, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() =>
+        validateSolanaSwapVenue({
+          ...DEVNET,
+          maxNetworkFeeLamports: bad as number,
+        }),
+      ).toThrow(/network fee/)
+    }
+  })
+
   it('lists only real tokens: AVU is a unit of account, never a swap side', () => {
     for (const chain of ['solana-devnet', 'solana-mainnet']) {
       for (const entry of listSolanaDexEntries(chain)) {
@@ -335,6 +354,7 @@ describe('Orca devnet quote (recorded devnet responses)', () => {
     expect(quote.tradeFee).toEqual({ amount: 10_000n, mint: NATIVE_SOL_MINT })
     expect(quote.platformFee).toBeUndefined()
     expect(quote.networkFeeLamports).toBe(5000n)
+    expect(quote.priorityFeeLamports).toBe(0n)
     expect(quote.accountRentLamports).toBe(0n)
     expect(quote.temporaryRentLamports).toBe(
       BigInt(solToDevUsdc.expected.temporaryRentLamports),
@@ -385,6 +405,17 @@ describe('Orca devnet quote (recorded devnet responses)', () => {
     expect(toBase64(quote.transaction.serialize())).toBe(
       devUsdcToSol.expected.transaction,
     )
+  })
+
+  it('gives no quote when the network does not state the fee, rather than showing a fee of zero', async () => {
+    await expect(
+      orca(solToDevUsdc.calls, DEVNET, (method, result) =>
+        method === 'getFeeForMessage' ? { ...result, value: null } : result,
+      ).quote(request(solToDevUsdc)),
+    ).rejects.toMatchObject({
+      code: 'simulation-failed',
+      detail: expect.stringMatching(/did not state the fee/),
+    })
   })
 
   it('does not quote an amount the wallet does not hold', async () => {
@@ -719,6 +750,27 @@ describe('the safety check on a wallet described by hand', () => {
     })
   })
 
+  it('allows the reviewed network fee and no more, whatever fee the transaction carries', async () => {
+    const paid = 1_000_000_000n - 10_000_000n
+    // The simulation charged 50 000 lamports where 5 000 were reviewed.
+    await expect(
+      run({ lamports: paid - 50_000n, fee: 50_000n }),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/network fee/),
+    })
+    // A network that does not state the simulated fee: the reviewed fee is the allowance.
+    await expect(
+      run({ lamports: paid - 5000n, fee: null }),
+    ).resolves.toMatchObject({ outputAmount: 222n })
+    await expect(
+      run({ lamports: paid - 50_000n, fee: null }),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/more SOL than the swap needs/),
+    })
+  })
+
   it("refuses a transaction that takes from another of the wallet's accounts of the output token", async () => {
     // 300 leave the second account while 222 arrive in the output account.
     await expect(run({ second: 200n })).rejects.toMatchObject({
@@ -958,6 +1010,84 @@ describe('Jupiter quote (recorded API and mainnet responses)', () => {
         detail: expect.stringMatching(/quoted amounts and slippage/),
       })
     }
+  })
+
+  /** Jupiter's recorded transaction with the data of its n-th compute-budget instruction replaced. */
+  function withComputeBudget(index: number, data: Uint8Array): string {
+    const copy = VersionedTransaction.deserialize(
+      fromBase64(built.swapTransaction),
+    )
+    const message = copy.message as any
+    const budget = message.compiledInstructions.filter(
+      (ix: any) =>
+        message.staticAccountKeys[ix.programIdIndex]?.toBase58() ===
+        'ComputeBudget111111111111111111111111111111',
+    )
+    budget[index].data = data
+    return toBase64(copy.serialize())
+  }
+  const u64 = (tag: number, value: bigint) => {
+    const data = Buffer.alloc(9)
+    data.writeUInt8(tag, 0)
+    data.writeBigUInt64LE(value, 1)
+    return Uint8Array.from(data)
+  }
+
+  it('shows the priority fee Jupiter set, separately, and asks Jupiter to keep it under the limit', async () => {
+    const pending = quoteWith()
+    const quote = await pending
+    // As recorded: 1 400 000 compute units at 71 428 micro-lamports each, rounded up.
+    expect(quote.priorityFeeLamports).toBe(100_000n)
+    expect(quote.networkFeeLamports).toBe(105_000n)
+    expect(pending.requests[1].body.prioritizationFeeLamports).toEqual({
+      priorityLevelWithMaxLamports: {
+        maxLamports: JUPITER.maxNetworkFeeLamports - 5000,
+        priorityLevel: 'high',
+      },
+    })
+  })
+
+  it('refuses a transaction whose priority fee would burn more than the exchange entry allows', async () => {
+    // The same swap with the compute-unit price raised a thousandfold: 100 SOL in fees.
+    await expect(
+      quoteWith(tampered(withComputeBudget(1, u64(3, 71_428_000n)))),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/network fee/),
+    })
+    // The limit is the entry's: the recorded 105 000 lamports is too much for a lower one.
+    await expect(
+      quoteWith(undefined, { ...JUPITER, maxNetworkFeeLamports: 104_999 }),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/network fee/),
+    })
+    // The old instruction that names an extra fee outright is not accepted at all.
+    const deprecated = Buffer.alloc(9)
+    deprecated.writeUInt32LE(200_000, 1)
+    deprecated.writeUInt32LE(1_000_000_000, 5)
+    await expect(
+      quoteWith(tampered(withComputeBudget(0, Uint8Array.from(deprecated)))),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/compute-budget instruction/),
+    })
+  })
+
+  it('gives no Jupiter quote when the network does not state the fee', async () => {
+    const { fetchImpl } = replayFetch()
+    await expect(
+      createSolanaDex(
+        'solana-mainnet',
+        JUPITER,
+        walletOver(
+          replay(jupiterFixture.calls, (method, result) =>
+            method === 'getFeeForMessage' ? { ...result, value: null } : result,
+          ),
+        ),
+        { fetch: fetchImpl },
+      ).quote(request),
+    ).rejects.toMatchObject({ code: 'simulation-failed' })
   })
 
   it("refuses a swap instruction that pays the output anywhere but this wallet's own token account", async () => {
@@ -1204,6 +1334,7 @@ describe("the wallet's legacy send: record, send, follow", () => {
     minimumAmountOut: '221089',
     interfaceFeeAmount: '0',
     networkFeeLamports: '5000',
+    priorityFeeLamports: '0',
     signedAtMs: 1,
     recovery: {
       signedTransaction: toBase64(Uint8Array.of(1, 2, 3)),
@@ -1286,6 +1417,7 @@ describe("the wallet's legacy send: record, send, follow", () => {
       receivedAmount: 222_201n,
       spentAmount: 10_000_000n,
       networkFeeLamports: 5000n,
+      priorityFeeLamports: 0n,
       accountRentLamports: 1_488_440n,
     })
     expect(sent.length).toBeGreaterThan(0)
@@ -1355,6 +1487,22 @@ describe("the wallet's legacy send: record, send, follow", () => {
       trackSolanaSwap(finalized.connection, failing, record, track),
     ).resolves.toMatchObject({ status: 'failed', networkFeeLamports: 5000n })
     expect(failing.settled).toEqual([['sig', 'failed']])
+
+    // A swap that carried a priority fee reports it as its own part of what was charged.
+    const paidPriority = { ...record, priorityFeeLamports: '1200' }
+    await expect(
+      trackSolanaSwap(
+        sender({ statuses: [{ err: null, confirmationStatus: 'finalized' }] })
+          .connection,
+        memoryJournal([paidPriority]),
+        paidPriority,
+        track,
+      ),
+    ).resolves.toMatchObject({
+      status: 'confirmed',
+      networkFeeLamports: 5000n,
+      priorityFeeLamports: 1200n,
+    })
   })
 
   it('keeps the swap pending when the network cannot be asked', async () => {
@@ -1603,6 +1751,7 @@ describe("the wallet's legacy send: record, send, follow", () => {
       expectedOutputAmount: 222_201n,
       minOutputAmount: 221_089n,
       networkFeeLamports: 5000n,
+      priorityFeeLamports: 0n,
     }
     await dex.execute(quote as never, {
       assetIn: record.assetIn,

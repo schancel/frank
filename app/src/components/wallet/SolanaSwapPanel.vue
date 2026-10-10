@@ -671,11 +671,7 @@ const quoteRows = computed<Row[]>(() => {
       value: display(current.tradeFee.amount, feeToken),
     })
   }
-  rows.push({
-    key: 'network-fee',
-    label: t('solanaSwap.networkFee'),
-    value: displayLamports(current.networkFeeLamports),
-  })
+  rows.push(...feeRows(current, 'networkFee', 'priorityFee'))
   rows.push({
     key: 'route',
     label: t('solanaSwap.route'),
@@ -683,6 +679,32 @@ const quoteRows = computed<Row[]>(() => {
   })
   return rows
 })
+
+/**
+ * What the network charges, as two lines: the base fee, and the priority fee the transaction
+ * sets (shown even when it is zero, so a transaction that carries one never hides it in a total).
+ */
+function feeRows(
+  fees: { networkFeeLamports: bigint; priorityFeeLamports: bigint },
+  baseLabel: string,
+  priorityLabel: string,
+): Row[] {
+  return [
+    {
+      key: 'network-fee',
+      label: t(`solanaSwap.${baseLabel}`),
+      value: displayLamports(
+        fees.networkFeeLamports - fees.priorityFeeLamports,
+      ),
+    },
+    {
+      key: 'priority-fee',
+      label: t(`solanaSwap.${priorityLabel}`),
+      hint: t('solanaSwap.priorityFeeHint'),
+      value: displayLamports(fees.priorityFeeLamports),
+    },
+  ]
+}
 
 /**
  * Everything that leaves the wallet, each in its own asset: the amount paid, plus the SOL the
@@ -727,11 +749,7 @@ const reviewRows = computed<Row[]>(() => {
       value: display(current.platformFee.amount, feeToken),
     })
   }
-  rows.push({
-    key: 'network-fee',
-    label: t('solanaSwap.networkFee'),
-    value: displayLamports(current.networkFeeLamports),
-  })
+  rows.push(...feeRows(current, 'networkFee', 'priorityFee'))
   if (current.accountRentLamports > 0n) {
     rows.push({
       key: 'rent',
@@ -998,11 +1016,7 @@ function outcomeRows(
       label: t('solanaSwap.actuallyPaid'),
       value: display(outcome.spentAmount, view.assetIn),
     },
-    {
-      key: 'network-fee',
-      label: t('solanaSwap.networkFeeCharged'),
-      value: displayLamports(outcome.networkFeeLamports),
-    },
+    ...feeRows(outcome, 'networkFeeCharged', 'priorityFeeCharged'),
   ]
   if (outcome.accountRentLamports > 0n) {
     rows.push({
@@ -1043,13 +1057,7 @@ function showOutcome(outcome: SolanaSwapOutcome) {
       outcome.status === 'confirmed'
         ? outcomeRows(view, outcome)
         : outcome.status === 'failed'
-        ? [
-            {
-              key: 'network-fee',
-              label: t('solanaSwap.networkFeeCharged'),
-              value: displayLamports(outcome.networkFeeLamports),
-            },
-          ]
+        ? feeRows(outcome, 'networkFeeCharged', 'priorityFeeCharged')
         : [],
   }
   void loadTokens().catch(() => undefined)

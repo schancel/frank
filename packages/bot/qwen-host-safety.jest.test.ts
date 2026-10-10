@@ -517,7 +517,8 @@ it("keeps both Qwen entrypoints and aggregate target composed with the actual ho
     expect(source).toMatch(/host\.register(All)?\(/);
   }
   const demo = readFileSync(join(__dirname, "demo/demo-config.ts"), "utf8");
-  expect(demo).toContain("script: 'qwen-bot.livecheck.ts'");
+  // The launcher starts one bot process, and it is the aggregate target checked above.
+  expect(demo).toContain("script: 'targets/all-bots.ts'");
 });
 
 describe("durable retention before dispatch", () => {

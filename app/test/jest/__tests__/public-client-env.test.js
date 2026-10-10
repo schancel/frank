@@ -8,7 +8,9 @@ describe('public client environment boundary', () => {
     expect(
       PUBLIC_CLIENT_ENV.has('import.meta.env.QCLI_MONAD_TESTNET_HTTP_RPC_URL'),
     ).toBe(false)
-    expect([...PUBLIC_CLIENT_ENV].filter(key => /FAKE|DEMO_CONTROL/.test(key))).toEqual([])
+    expect(
+      [...PUBLIC_CLIENT_ENV].filter(key => /FAKE|DEMO_CONTROL/.test(key)),
+    ).toEqual([])
   })
   it('preserves declared public settings and excludes upstream provider secrets', () => {
     const publicValues = Object.fromEntries(

@@ -43,10 +43,7 @@ export function isLocalRpcChain(options?: ExplorerOptions): boolean {
 
   // Check explicit options
   const optRpcChain = options?.rpcChain ?? readEnv('MONAD_RPC_CHAIN')
-  if (
-    optRpcChain &&
-    /^(local|localhost|anvil|dev)$/i.test(optRpcChain)
-  ) {
+  if (optRpcChain && /^(local|localhost|anvil|dev)$/i.test(optRpcChain)) {
     return true
   }
 
@@ -61,7 +58,10 @@ export function isLocalRpcChain(options?: ExplorerOptions): boolean {
   // Check configured chain environment if available
   try {
     const config = loadMonadChainConfigFromEnv()
-    if (config.rpcChain && /^(local|localhost|anvil|dev)$/i.test(config.rpcChain)) {
+    if (
+      config.rpcChain &&
+      /^(local|localhost|anvil|dev)$/i.test(config.rpcChain)
+    ) {
       return true
     }
     // In non-test mode or when explicitly set, check relay base url for local chain ports

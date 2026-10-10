@@ -129,28 +129,63 @@ function recert(kind: 'same-key' | 'wrong-key' | 'wrong-san' | 'expired'): {
     }\n`,
     { mode: 0o600 },
   )
-  openssl(
-    [
-      'x509',
-      '-req',
-      '-in',
-      join(root, 'other.csr'),
-      '-CA',
-      join(bundle.runDir, 'ca.pem'),
-      '-CAkey',
-      join(bundle.runDir, 'ca.key'),
-      '-set_serial',
-      '2',
-      '-out',
-      join(root, 'other.pem'),
-      ...(kind === 'expired'
-        ? ['-not_before', '20200101000000Z', '-not_after', '20200102000000Z']
-        : ['-days', '1']),
-      '-extfile',
-      join(root, 'ext'),
-    ],
-    root,
-  )
+  if (kind === 'expired') {
+    // `openssl ca` rather than `x509 -not_before/-not_after`: those two options need
+    // OpenSSL 3.4, and the hosted runner (and LibreSSL) has an older one. `ca` has always
+    // been able to set both dates.
+    writeFileSync(join(root, 'index.txt'), '', { mode: 0o600 })
+    writeFileSync(
+      join(root, 'ca.cnf'),
+      '[ca]\ndefault_ca=test_ca\n[test_ca]\ndatabase=index.txt\nserial=serial\nnew_certs_dir=.\ndefault_md=sha256\npolicy=any\nunique_subject=no\n[any]\ncommonName=supplied\n',
+      { mode: 0o600 },
+    )
+    writeFileSync(join(root, 'serial'), '02\n', { mode: 0o600 })
+    openssl(
+      [
+        'ca',
+        '-batch',
+        '-notext',
+        '-config',
+        join(root, 'ca.cnf'),
+        '-cert',
+        join(bundle.runDir, 'ca.pem'),
+        '-keyfile',
+        join(bundle.runDir, 'ca.key'),
+        '-in',
+        join(root, 'other.csr'),
+        '-out',
+        join(root, 'other.pem'),
+        '-startdate',
+        '20200101000000Z',
+        '-enddate',
+        '20200102000000Z',
+        '-extfile',
+        join(root, 'ext'),
+      ],
+      root,
+    )
+  } else
+    openssl(
+      [
+        'x509',
+        '-req',
+        '-in',
+        join(root, 'other.csr'),
+        '-CA',
+        join(bundle.runDir, 'ca.pem'),
+        '-CAkey',
+        join(bundle.runDir, 'ca.key'),
+        '-set_serial',
+        '2',
+        '-out',
+        join(root, 'other.pem'),
+        '-days',
+        '1',
+        '-extfile',
+        join(root, 'ext'),
+      ],
+      root,
+    )
   return {
     key: readFileSync(privatePath),
     cert: readFileSync(join(root, 'other.pem')),

@@ -306,14 +306,27 @@ try {
   await new Promise((resolveFund, reject) =>
     execFile(
       process.execPath,
-      ['--import', 'tsx', 'packages/bot/demo/fund.ts', receive, process.env.FORUM_FUND_MON ?? '0.1'],
+      [
+        '--import',
+        'tsx',
+        'packages/bot/demo/fund.ts',
+        receive,
+        process.env.FORUM_FUND_MON ?? '0.1',
+      ],
       {
         cwd: resolve(fileURLToPath(new URL('../..', import.meta.url))),
-        env: { ...process.env, TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json' },
+        env: {
+          ...process.env,
+          TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json',
+        },
         timeout: 180000,
       },
       (error, _stdout, stderr) =>
-        error ? reject(new Error(`funding failed: ${(stderr || error.message).trim()}`)) : resolveFund(),
+        error
+          ? reject(
+              new Error(`funding failed: ${(stderr || error.message).trim()}`),
+            )
+          : resolveFund(),
     ),
   )
   await until(

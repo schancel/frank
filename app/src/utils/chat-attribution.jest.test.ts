@@ -10,6 +10,8 @@ jest.mock('./own-address', () => ({
 /* eslint-disable @typescript-eslint/no-var-requires */
 const {
   attributeMessages,
+  contrastOnBubble,
+  readableKeyColor,
   conversationSenders,
   isGroupConversation,
   otherParticipants,
@@ -40,7 +42,67 @@ describe('who is in a conversation', () => {
   })
 })
 
+describe('when a conversation with a peer needs senders shown', () => {
+  it('not for the peer alone, but for anyone who is neither this user nor the peer', () => {
+    expect(isGroupConversation([ME, ALICE], ME, ALICE)).toBe(false)
+    expect(isGroupConversation([ALICE], ME, ALICE)).toBe(false)
+    expect(isGroupConversation([ME, ALICE, STRANGER], ME, ALICE)).toBe(true)
+    // The peer has not written yet, a stranger has.
+    expect(isGroupConversation([ME, STRANGER], ME, ALICE)).toBe(true)
+  })
+
+  it("in this user's own notes, as soon as anyone else has posted", () => {
+    expect(isGroupConversation([ME], ME, ME)).toBe(false)
+    expect(isGroupConversation([ME, STRANGER], ME, ME.toLowerCase())).toBe(true)
+  })
+
+  it('a conversation with no single peer needs two other people', () => {
+    const id = '11111111-1111-4111-8111-111111111111'
+    expect(isGroupConversation([ME, ALICE], ME, id)).toBe(false)
+    expect(isGroupConversation([ME, ALICE, BOB], ME, id)).toBe(true)
+  })
+})
+
+describe('the key colour as name text', () => {
+  const colours = [
+    'hsl(0, 0%, 60%)', // the pale grey a key can hash to
+    'hsl(60, 100%, 60%)',
+    'hsl(120, 40%, 60%)',
+    'hsl(200, 3.5%, 60%)',
+    'hsl(255, 90%, 60%)',
+  ]
+  it.each([false, true])(
+    'reaches 4.5:1 on the bubble with the hue and saturation unchanged (dark: %s)',
+    onDark => {
+      for (const colour of colours) {
+        const readable = readableKeyColor(colour, onDark)
+        expect(contrastOnBubble(readable, onDark)).toBeGreaterThanOrEqual(4.5)
+        expect(readable.replace(/[\d.]+%\)$/, '')).toBe(
+          colour.replace(/[\d.]+%\)$/, ''),
+        )
+      }
+    },
+  )
+
+  it('shows the problem it fixes, and leaves a colour that already reads alone', () => {
+    expect(contrastOnBubble('hsl(0, 0%, 60%)', false)).toBeLessThan(3)
+    expect(readableKeyColor('hsl(240, 100%, 30%)', false)).toBe(
+      'hsl(240, 100%, 30%)',
+    )
+    expect(readableKeyColor('rgb(1, 2, 3)', false)).toBe('rgb(1, 2, 3)')
+  })
+})
+
 describe('naming a sender', () => {
+  it('drops direction marks from a name so it cannot rearrange the address shown after it', () => {
+    const senders = resolveSenders([
+      { address: ALICE, inContacts: true, name: 'Bob\u202e' },
+      { address: BOB, inContacts: true, name: '\u2066Bob' },
+    ])
+    expect(senderOf(senders, ALICE)?.label).toBe('Bob (0x2222...2222)')
+    expect(senderOf(senders, BOB)?.label).toBe('Bob (0x3333...3333)')
+  })
+
   it('uses the contact name, and the address for a blank or not yet loaded one', () => {
     const senders = resolveSenders([
       { address: ALICE, inContacts: true, name: 'Alice', avatar: 'a.png' },

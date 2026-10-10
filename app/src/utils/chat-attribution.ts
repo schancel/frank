@@ -6,6 +6,7 @@
  * not ours is shown with its own sender: name, avatar and the sender's key colour. A
  * conversation between two people is shown without any of that.
  */
+import { isChainAddress } from './chain-address'
 import { pubKeyToColor } from './formatting'
 import { sameCanonicalAddress } from './own-address'
 import { shortAddress } from './short-address'
@@ -55,18 +56,33 @@ export function otherParticipants(
   )
 }
 
-/** More than two people: this user and at least two others. */
+/**
+ * Whether each message must say who sent it: someone in the conversation is neither this user
+ * nor the peer the conversation is with. That is a third person in a chat with a peer, and
+ * anyone at all in this user's own notes. A conversation with no single peer (its `address` is
+ * not a person) needs it once there are two other people.
+ */
 export function isGroupConversation(
   participants: readonly string[] | undefined,
   ownAddress: string | null | undefined,
+  peerAddress?: string | null,
 ): boolean {
-  return otherParticipants(participants, ownAddress).length > 1
+  const others = otherParticipants(participants, ownAddress)
+  return peerAddress && isChainAddress(peerAddress)
+    ? others.some(other => !sameCanonicalAddress(other, peerAddress))
+    : others.length > 1
 }
+
+/** Direction marks and overrides: invisible, and able to reorder the text that follows them. */
+const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g
 
 /** A contact is shown by the name the app has for them. Someone who is not a contact is shown
  * by their address only: a name they published themselves is not shown as if it were known. */
 function baseName(record: SenderRecord): string {
-  const name = record.inContacts ? record.name : undefined
+  // A name must not be able to rearrange the address shown after it.
+  const name = record.inContacts
+    ? record.name?.replace(BIDI_CONTROLS, '')
+    : undefined
   // Nothing visible (empty, spaces, zero-width or direction marks) is not a name, and neither
   // is the placeholder of a contact whose profile has not been fetched yet.
   return !name ||
@@ -206,4 +222,54 @@ export function conversationSenders(
       }
     }),
   )
+}
+
+const BUBBLE_BACKGROUND = { light: [255, 255, 255], dark: [36, 36, 48] }
+
+function luminance([r, g, b]: number[]): number {
+  const [lr, lg, lb] = [r, g, b].map(channel => {
+    const c = channel / 255
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb
+}
+
+function hslToRgb(h: number, s: number, l: number): number[] {
+  const a = s * Math.min(l, 1 - l)
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12
+    return 255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))
+  }
+  return [f(0), f(8), f(4)]
+}
+
+/** Contrast ratio of an `hsl(...)` colour against a received bubble, light or dark. */
+export function contrastOnBubble(color: string, onDark: boolean): number {
+  const [h, s, l] = (color.match(/-?[\d.]+/g) ?? []).map(Number)
+  const text = luminance(hslToRgb(h, s / 100, l / 100))
+  const back = luminance(BUBBLE_BACKGROUND[onDark ? 'dark' : 'light'])
+  return (Math.max(text, back) + 0.05) / (Math.min(text, back) + 0.05)
+}
+
+/**
+ * A key colour made readable as text on a received bubble. The hue and saturation are the key
+ * colour's own, so a person is the same colour everywhere; only the lightness moves, darker on
+ * a light bubble and lighter on a dark one, until the text reaches 4.5:1. The avatar ring keeps
+ * the colour as it is.
+ */
+export function readableKeyColor(color: string, onDark: boolean): string {
+  const parts = color.match(
+    /^hsl\(\s*(-?[\d.]+),\s*(-?[\d.]+)%,\s*(-?[\d.]+)%\)$/,
+  )
+  if (!parts) return color
+  const [h, s] = [Number(parts[1]), Number(parts[2])]
+  let lightness = Number(parts[3])
+  const shade = () => `hsl(${h}, ${s}%, ${lightness}%)`
+  while (
+    contrastOnBubble(shade(), onDark) < 4.5 &&
+    lightness > 0 &&
+    lightness < 100
+  )
+    lightness += onDark ? 2 : -2
+  return shade()
 }

@@ -8,6 +8,11 @@ import { defineComponent, h, nextTick, reactive } from 'vue'
 
 import ChatPage from './Chat.vue'
 
+// Chat.vue reads the own address reactively; these tests have no wallet to resolve it from.
+jest.mock('../utils/own-address', () => ({
+  ...jest.requireActual('../utils/own-address'),
+  useReactiveOwnCanonicalAddress: () => jest.requireActual('vue').ref(null),
+}))
 jest.mock('quasar', () => {
   const actual = jest.requireActual<Record<string, unknown>>('quasar')
   return {

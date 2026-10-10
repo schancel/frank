@@ -223,7 +223,6 @@
           <q-btn
             color="primary"
             :label="$t('chatLayout.saveSubject')"
-            :disable="!subjectDraft.trim()"
             data-testid="conversation-subject-save"
             @click="saveSubject"
           />
@@ -276,6 +275,7 @@ import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import { profileAvatar } from 'src/utils/avatar'
 import {
   conversationSenders,
+  isGroupConversation,
   otherParticipants,
 } from 'src/utils/chat-attribution'
 import {
@@ -370,12 +370,7 @@ export default defineComponent({
     saveSubject() {
       const id = this.subjectEditorId
       const subject = this.subjectDraft.trim()
-      if (
-        !this.subjectEditorOpen ||
-        !id ||
-        id !== this.activeConversation?.id ||
-        !subject
-      )
+      if (!this.subjectEditorOpen || !id || id !== this.activeConversation?.id)
         return
       useChatStore().renameConversation(id, subject)
       this.cancelSubjectEditor()
@@ -467,15 +462,17 @@ export default defineComponent({
         )
       }
       if (this.isGroup) {
-        return Array.from(
+        // In this user's own notes the others are listed after "You", never instead of it.
+        const names = Array.from(
           conversationSenders(
             conv,
             this.ownAddress,
             this.contactStore,
           ).values(),
-        )
-          .map(sender => sender.label)
-          .join(', ')
+        ).map(sender => sender.label)
+        if (sameCanonicalAddress(this.effectiveAddress, this.ownAddress))
+          names.unshift(this.$t('selfChat.you'))
+        return names.join(', ')
       }
       // With no peer to name, the subject is the title itself.
       if (conv?.name && !isChainAddress(this.effectiveAddress)) return conv.name
@@ -493,7 +490,11 @@ export default defineComponent({
       )
     },
     isGroup(): boolean {
-      return this.participantCount > 2
+      return isGroupConversation(
+        this.activeConversation?.participants,
+        this.ownAddress,
+        this.activeConversation?.address,
+      )
     },
     subject(): string {
       const conv = this.activeConversation

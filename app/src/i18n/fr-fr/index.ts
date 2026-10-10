@@ -50,6 +50,8 @@ export default {
   },
   agree: "D'accord",
   chat: {
+    groupRecipientNoticeSelf:
+      'Les messages envoyés ici sont des notes pour vous-même. Les autres personnes qui ont écrit ici ne les reçoivent pas.',
     groupRecipientNotice:
       'Vos messages ici sont envoyés uniquement à {name}, et non à tous les participants de cette conversation.',
     sendMessage: 'Envoyer le message',

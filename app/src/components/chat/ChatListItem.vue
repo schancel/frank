@@ -73,7 +73,9 @@
         data-testid="chat-list-subject"
         >{{ subject }}</q-item-label
       >
-      <q-item-label caption lines="2">{{ latestMessageBody }}</q-item-label>
+      <q-item-label caption lines="2" class="chat-list-preview">{{
+        latestMessageBody
+      }}</q-item-label>
     </q-item-section>
     <q-item-section
       v-show="!compact"
@@ -302,6 +304,7 @@ export default defineComponent({
       return isGroupConversation(
         this.conversation?.participants ?? this.participants,
         this.ownAddress,
+        this.conversation?.address,
       )
     },
     /** Everyone but this user, as they are named in the chat itself. */
@@ -334,9 +337,13 @@ export default defineComponent({
     titleName(): string {
       if (this.subjectIsTitle && this.effectiveName) return this.effectiveName
       if (this.isGroup) {
-        return Array.from(this.senders.values())
-          .map(sender => sender.label)
-          .join(', ')
+        // In this user's own notes the others are listed after "You", never instead of it.
+        const names = Array.from(this.senders.values()).map(
+          sender => sender.label,
+        )
+        if (sameCanonicalAddress(this.effectiveAddress, this.ownAddress))
+          names.unshift(this.$t('selfChat.you'))
+        return names.join(', ')
       }
       return this.contactName
     },
@@ -478,6 +485,12 @@ export default defineComponent({
 </script>
 
 <style scoped>
+/* Quasar's caption colour is a fixed dark grey, unreadable on the dark sidebar: follow the row. */
+.chat-list-preview {
+  color: inherit;
+  opacity: 0.7;
+}
+
 .chat-list-title {
   display: flex;
   flex-wrap: wrap;

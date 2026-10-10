@@ -236,6 +236,21 @@ describe('ChatListItem conversation-oriented display (#943)', () => {
     expect(wrapper.find('img').exists()).toBe(false)
   })
 
+  it('keeps "You" first in the own notes once someone else has posted there', () => {
+    mockStrangers.add(STRANGER.toLowerCase())
+    latest = { text: 'boo', outbound: false, senderAddress: STRANGER }
+    const wrapper = mountConversation({
+      id: 'conv-notes',
+      address: OWN_ADDRESS,
+      participants: [OWN_ADDRESS, STRANGER],
+    })
+    expect((wrapper.vm as any).isGroup).toBe(true)
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe(
+      'You, 0x5555...5555',
+    )
+    expect((wrapper.vm as any).latestMessageBody).toBe('0x5555...5555: boo')
+  })
+
   it('tells two participants with the same display name apart by address', () => {
     mockNames[CAROL.toLowerCase()] = 'Bob'
     latest = { text: 'really me', outbound: false, senderAddress: CAROL }

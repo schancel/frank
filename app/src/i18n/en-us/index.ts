@@ -12,6 +12,8 @@ export default {
   accountRecovery,
   agree: 'Agree',
   chat: {
+    groupRecipientNoticeSelf:
+      'Messages you send here are notes to yourself. Nobody else who has posted here receives them.',
     groupRecipientNotice:
       'Your messages here go to {name} only, not to everyone in this conversation.',
     sendMessage: 'Send message',

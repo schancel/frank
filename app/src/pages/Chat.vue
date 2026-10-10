@@ -119,7 +119,9 @@
         role="note"
       >
         <q-icon name="info" size="14px" class="q-mr-xs" />{{
-          $t('chat.groupRecipientNotice', { name: recipientName })
+          recipientIsSelf
+            ? $t('chat.groupRecipientNoticeSelf')
+            : $t('chat.groupRecipientNotice', { name: recipientName })
         }}
       </div>
       <!-- Message box -->
@@ -1082,7 +1084,8 @@ export default defineComponent({
       if (this.conversation?.kind === 'email') {
         return true
       }
-      return this.messages.some(m => m.items?.some(i => i.type === 'email'))
+      // An email item makes this an email thread only when we or the peer sent it.
+      return this.peerMessages.some(m => m.items?.some(i => i.type === 'email'))
     },
     bannerClearanceStyle(): { paddingTop: string } | undefined {
       return this.bannerClearance > 0
@@ -1149,6 +1152,7 @@ export default defineComponent({
       return isGroupConversation(
         this.conversation?.participants,
         this.ownAddress,
+        this.conversation?.address,
       )
     },
     senders(): Map<string, SenderIdentity> {
@@ -1164,6 +1168,10 @@ export default defineComponent({
     attributions(): Array<BubbleAttribution | undefined> {
       if (!this.isGroup) return []
       return attributeMessages(this.chunkedMessages, this.senders)
+    },
+    /** These are this user's own notes: what is sent from here goes to nobody else. */
+    recipientIsSelf(): boolean {
+      return sameCanonicalAddress(this.recipientAddress, this.ownAddress)
     },
     /** Who a message sent from here goes to. */
     recipientName(): string {

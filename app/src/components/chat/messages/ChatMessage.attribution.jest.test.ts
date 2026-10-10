@@ -214,6 +214,52 @@ describe('a conversation with more than two people', () => {
     ).toBe('Pas dans vos contacts')
   })
 
+  it.each([
+    [false, 'rgb(117, 117, 117)'],
+    [true, 'rgb(153, 153, 153)'],
+  ])(
+    'shades a pale key colour for the name only; the ring keeps it (dark: %s)',
+    (dark, shaded) => {
+      const wrapper = shallowMount(ChatMessage, {
+        props: {
+          address: ALICE,
+          name: 'Alice',
+          chatWidth: 500,
+          payloadDigest: 'digest-1',
+          attribution: {
+            sender: { ...alice, color: 'hsl(0, 0%, 60%)' },
+            showName: true,
+            showAvatar: true,
+          } as never,
+          message: {
+            outbound: false,
+            status: 'confirmed',
+            receivedTime: 1,
+            serverTime: 1,
+            items: [{ type: 'text', text: 'hi' }],
+            outpoints: [],
+            senderAddress: ALICE,
+          } as never,
+        },
+        global: {
+          stubs: { QChatMessage: ChatMessageFrame, QAvatar: Avatar },
+          mocks: { $t: translator(enUS), $q: { dark: { isActive: dark } } },
+        },
+      })
+      expect(
+        wrapper
+          .get('[data-testid="chat-sender-name"] button')
+          .attributes('style'),
+      ).toContain(shaded)
+      // The ring is the key colour itself (60% lightness), whatever the theme.
+      expect(
+        wrapper
+          .get('[data-testid="chat-sender-avatar"] span')
+          .attributes('style'),
+      ).toMatch(/hsl\(0, 0%, 60%\)|rgb\(153, 153, 153\)/)
+    },
+  )
+
   it('asks to open the sender when the name or the avatar is used', async () => {
     const wrapper = mountBubble({
       sender: alice,

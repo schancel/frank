@@ -9,6 +9,11 @@ import { createPinia, setActivePinia } from 'pinia'
 import * as quasar from 'quasar'
 import { defineComponent, h } from 'vue'
 
+// Chat.vue reads the own address reactively; these tests have no wallet to resolve it from.
+jest.mock('../utils/own-address', () => ({
+  ...jest.requireActual('../utils/own-address'),
+  useReactiveOwnCanonicalAddress: () => jest.requireActual('vue').ref(null),
+}))
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
     saveMessage: jest.fn(async () => undefined),

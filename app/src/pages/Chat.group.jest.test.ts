@@ -144,7 +144,7 @@ function received(sender: string, text: string, fill: number) {
   }
 }
 
-async function openConversation(table: unknown = en) {
+async function openConversation(table: unknown = en, peer = ALICE) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const chats = useChatStore()
@@ -168,8 +168,8 @@ async function openConversation(table: unknown = en) {
     })
   }
   chats.createConversation({
-    participants: [mockOwn, ALICE],
-    address: ALICE,
+    participants: [mockOwn, peer],
+    address: peer,
     conversationId: CONVERSATION,
   })
   const push = jest.fn()
@@ -335,5 +335,71 @@ describe('a conversation a third person has posted into', () => {
       .findAll('[data-testid="chat-message"]')[1]
       .trigger('click')
     expect(chat.push).toHaveBeenCalledWith(`/chat/${BOB}?info=true`)
+  })
+})
+
+describe('a two-person chat that one stranger posts into before the peer has', () => {
+  it('shows the stranger as themselves, not as the peer', async () => {
+    const chat = await openConversation()
+    await chat.receive(received(STRANGER, 'psst', 9))
+    expect(chat.bubbles()).toEqual([
+      '0x5555...5555 | (stranger) | name | avatar',
+    ])
+    expect(
+      chat.wrapper.get('[data-testid="chat-group-recipient"]').text(),
+    ).toContain('Alice')
+  })
+})
+
+describe('notes to self that someone else posts into', () => {
+  it('shows nothing extra while only this user has written', async () => {
+    const chat = await openConversation(en, mockOwn)
+    const note = received(mockOwn, 'remember milk', 3)
+    note.message.destinationAddress = mockOwn
+    await chat.receive(note)
+    expect(chat.bubbles()).toEqual(['plain'])
+    expect(
+      chat.wrapper.find('[data-testid="chat-group-recipient"]').exists(),
+    ).toBe(false)
+  })
+
+  it("shows a stranger's message with its sender, and says the notes reach nobody else", async () => {
+    const chat = await openConversation(en, mockOwn)
+    await chat.receive(received(STRANGER, 'I am in your notes', 9))
+    expect(chat.bubbles()).toEqual([
+      '0x5555...5555 | (stranger) | name | avatar',
+    ])
+    expect(
+      chat.wrapper.get('[data-testid="chat-group-recipient"]').text(),
+    ).toBe(
+      'Messages you send here are notes to yourself. Nobody else who has posted here receives them.',
+    )
+  })
+})
+
+describe('an email item sent by a third person', () => {
+  it('stays an ordinary attributed bubble; the chat does not become an email thread', async () => {
+    const chat = await openConversation()
+    const hello = received(ALICE, 'hello', 1)
+    const email = received(STRANGER, '', 9)
+    email.message.items = [
+      {
+        type: 'email',
+        subject: 'From your bank',
+        from: { name: 'Alice', address: 'alice@example.com' },
+        to: [],
+        body: 'x',
+      } as never,
+    ]
+    await chat.receive(hello, email)
+    expect(
+      (chat.wrapper.vm as unknown as { isEmailThread: boolean }).isEmailThread,
+    ).toBe(false)
+    expect(chat.bubbles()).toEqual([
+      'Alice | name | avatar',
+      '0x5555...5555 | (stranger) | name | avatar',
+    ])
+    expect(chat.chats.conversations[CONVERSATION].kind).toBe('direct')
+    expect(chat.chats.conversations[CONVERSATION].name).toBeUndefined()
   })
 })

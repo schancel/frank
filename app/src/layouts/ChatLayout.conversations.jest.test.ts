@@ -540,15 +540,21 @@ it.each([false, true])(
       await app.root
         .get('[data-testid="conversation-subject-input"]')
         .setValue('   ')
-      expect(
-        (
-          app.root.get('[data-testid="conversation-subject-save"]')
-            .element as HTMLButtonElement
-        ).disabled,
-      ).toBe(true)
+      // A blank subject can be saved: it clears the subject, and the row shows the peer alone.
       await app.root
-        .get('[data-testid="conversation-subject-cancel"]')
+        .get('[data-testid="conversation-subject-save"]')
         .trigger('click')
+      await settle()
+      expect(app.chats.conversations[first].name).toBeUndefined()
+      expect(app.chats.conversations[first].id).toBe(first)
+      expect(
+        app.root
+          .getComponent(ChatLayout)
+          .find('[data-testid="chat-header-subject"]')
+          .exists(),
+      ).toBe(false)
+      expect(app.chats.conversations[second]).toEqual(sibling)
+      await edit('Same subject', true)
       await app.root
         .get('[data-testid="edit-conversation-subject"]')
         .trigger('click')

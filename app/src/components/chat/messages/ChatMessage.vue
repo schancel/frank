@@ -255,7 +255,10 @@ import { errorNotify } from '../../../utils/notifications'
 import { getMessageItemRenderer } from '../../../utils/message-item-renderers'
 import { messageItems } from '../../../utils/message-items'
 import { profileAvatar } from '../../../utils/avatar'
-import type { BubbleAttribution } from '../../../utils/chat-attribution'
+import {
+  readableKeyColor,
+  type BubbleAttribution,
+} from '../../../utils/chat-attribution'
 
 export default defineComponent({
   name: 'ChatMessage',
@@ -529,9 +532,12 @@ export default defineComponent({
       const color = this.attribution?.sender.color
       return color ? { boxShadow: `0 0 0 2px ${color}` } : {}
     },
+    // As text the key colour keeps its hue but is shaded until it reads on the bubble.
     senderNameStyle(): Record<string, string> {
       const color = this.attribution?.sender.color
-      return color ? { color } : {}
+      return color
+        ? { color: readableKeyColor(color, this.$q?.dark?.isActive === true) }
+        : {}
     },
     paymentState(): string {
       const delivery = this.message.delivery

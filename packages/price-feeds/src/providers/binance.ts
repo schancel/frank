@@ -1,4 +1,5 @@
 import type { PriceFeedProvider, PriceSample } from '../types'
+import { ORACLE_ENDPOINTS } from '../config'
 
 export const BINANCE_SYMBOLS: Record<string, string> = {
   XEC: 'XECUSDT',
@@ -16,8 +17,8 @@ export const BINANCE_SYMBOLS: Record<string, string> = {
  */
 export const BINANCE_US_UNTRADED = new Set(['XECUSDT'])
 
-export const BINANCE_API_BASE = 'https://api.binance.com/api/v3/ticker/price'
-export const BINANCE_US_API_BASE = 'https://api.binance.us/api/v3/ticker/price'
+export const BINANCE_API_BASE = ORACLE_ENDPOINTS.binance.ticker
+export const BINANCE_US_API_BASE = ORACLE_ENDPOINTS.binance.tickerUs
 
 export class BinanceProvider implements PriceFeedProvider {
   readonly id = 'binance' as const

@@ -1,4 +1,5 @@
 import type { PriceFeedProvider, PriceSample } from '../types'
+import { ORACLE_ENDPOINTS } from '../config'
 
 export const KRAKEN_PAIRS: Record<string, string> = {
   ETH: 'ETHUSD',
@@ -10,7 +11,7 @@ export const KRAKEN_PAIRS: Record<string, string> = {
   MON: 'MONUSD',
 }
 
-export const KRAKEN_API_BASE = 'https://api.kraken.com/0/public/Ticker'
+export const KRAKEN_API_BASE = ORACLE_ENDPOINTS.kraken.ticker
 
 export class KrakenProvider implements PriceFeedProvider {
   readonly id = 'kraken' as const

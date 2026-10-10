@@ -5,6 +5,7 @@
  * interpolated, smoothed or filled in: when no provider has history for an asset the
  * result is empty, and a short history stays short.
  */
+import { ORACLE_ENDPOINTS } from './config'
 import { BINANCE_SYMBOLS, BINANCE_US_UNTRADED } from './providers/binance'
 import { COINBASE_PAIRS } from './providers/coinbase'
 import { COINGECKO_IDS } from './providers/coingecko'
@@ -42,10 +43,10 @@ export const HISTORY_RANGES: Record<
   '1y': { spanSeconds: 365 * DAY_SECONDS, stepSeconds: 7 * DAY_SECONDS },
 }
 
-export const COINBASE_CANDLES_URL = 'https://api.exchange.coinbase.com/products'
-export const KRAKEN_OHLC_URL = 'https://api.kraken.com/0/public/OHLC'
-export const BINANCE_US_KLINES_URL = 'https://api.binance.us/api/v3/klines'
-export const COINGECKO_COINS_URL = 'https://api.coingecko.com/api/v3/coins'
+export const COINBASE_CANDLES_URL = ORACLE_ENDPOINTS.coinbase.candles
+export const KRAKEN_OHLC_URL = ORACLE_ENDPOINTS.kraken.ohlc
+export const BINANCE_US_KLINES_URL = ORACLE_ENDPOINTS.binance.klinesUs
+export const COINGECKO_COINS_URL = ORACLE_ENDPOINTS.coingecko.coins
 
 type HistoryFetcher = (
   asset: string,

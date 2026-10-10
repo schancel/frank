@@ -1,4 +1,5 @@
 import type { PriceFeedProvider, PriceSample } from '../types'
+import { ORACLE_ENDPOINTS } from '../config'
 
 export const CHAINLINK_ARBITRUM_FEEDS: Record<
   string,
@@ -13,7 +14,7 @@ export const CHAINLINK_ARBITRUM_FEEDS: Record<
 }
 
 export const LATEST_ROUND_DATA_SELECTOR = '0xfeaf968c'
-export const DEFAULT_ARBITRUM_RPC = 'https://arb1.arbitrum.io/rpc'
+export const DEFAULT_ARBITRUM_RPC = ORACLE_ENDPOINTS.chainlink.arbitrumRpc
 
 export interface ChainlinkProviderOptions {
   rpcUrl?: string

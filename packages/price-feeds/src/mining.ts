@@ -13,6 +13,8 @@
  * No price is read here: prices come from the price oracle.
  */
 
+import { ORACLE_ENDPOINTS } from './config'
+
 export interface MiningStats {
   /** Blockchair chain name, e.g. "bitcoin-cash". */
   chain: string
@@ -27,7 +29,7 @@ export interface MiningStats {
   fetchedAt: number
 }
 
-export const BLOCKCHAIR_API_BASE = 'https://api.blockchair.com'
+export const BLOCKCHAIR_API_BASE = ORACLE_ENDPOINTS.blockchair.stats
 
 /**
  * A block is found, on average, once per `difficulty x 2^32` hashes on chains that keep

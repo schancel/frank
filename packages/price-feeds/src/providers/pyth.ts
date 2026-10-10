@@ -1,4 +1,5 @@
 import type { PriceFeedProvider, PriceSample } from '../types'
+import { ORACLE_ENDPOINTS } from '../config'
 
 /**
  * Feed ids as listed by Hermes' public /v2/price_feeds directory. Hermes answers price
@@ -19,8 +20,7 @@ export const PYTH_FEED_IDS: Record<string, string> = {
   BRENT: '0xf33ce961935076ef4dc98be75cf2126046eac1bffdcd7a0fa05ccf18b746fda6',
 }
 
-export const PYTH_HERMES_URL =
-  'https://hermes.pyth.network/v2/updates/price/latest'
+export const PYTH_HERMES_URL = ORACLE_ENDPOINTS.pyth.latestPrice
 
 export class PythProvider implements PriceFeedProvider {
   readonly id = 'pyth' as const

@@ -994,6 +994,9 @@ async function send(
             owner.roles.conversationIdSalt(),
             params.recipient.raw.toLowerCase(),
           ),
+        ...(params.conversationName === undefined
+          ? {}
+          : { conversationName: params.conversationName }),
         items,
         roles,
       })
@@ -1671,6 +1674,7 @@ async function fetchSince(
       const roles = owner.roles.create(directory.network, self)
       let items: MessageItem[]
       let conversationIdStr: string | undefined
+      let conversationNameStr: string | undefined
       let messageIdStr: string | undefined
       try {
         const opened = isOutbound
@@ -1699,6 +1703,7 @@ async function fetchSince(
         if (opened.conversationId) {
           conversationIdStr = formatUuid(opened.conversationId)
         }
+        conversationNameStr = opened.conversationName
         if (opened.messageId) {
           messageIdStr = formatUuid(opened.messageId)
         }
@@ -1765,6 +1770,9 @@ async function fetchSince(
           : fromHex(owner.subject),
         items,
         conversationId: conversationIdStr,
+        ...(conversationNameStr === undefined
+          ? {}
+          : { conversationName: conversationNameStr }),
         messageId: messageIdStr,
         payloadDigest: digest,
         stampValueWei: stampPayments.reduce((sum, p) => sum + p.valueWei, 0n),
@@ -1892,6 +1900,7 @@ export function canonicalDirectMessages(
                 const roles = owner.roles.create(directory.network, self)
                 let items: MessageItem[]
                 let conversationIdStr: string | undefined
+                let conversationNameStr: string | undefined
                 let messageIdStr: string | undefined
                 try {
                   const opened = isOutbound
@@ -1920,6 +1929,7 @@ export function canonicalDirectMessages(
                   if (opened.conversationId) {
                     conversationIdStr = formatUuid(opened.conversationId)
                   }
+                  conversationNameStr = opened.conversationName
                   if (opened.messageId) {
                     messageIdStr = formatUuid(opened.messageId)
                   }
@@ -1974,6 +1984,9 @@ export function canonicalDirectMessages(
                     : fromHex(owner.subject),
                   items,
                   conversationId: conversationIdStr,
+                  ...(conversationNameStr === undefined
+                    ? {}
+                    : { conversationName: conversationNameStr }),
                   messageId: messageIdStr,
                   payloadDigest: digest,
                   stampValueWei: stampPayments.reduce(

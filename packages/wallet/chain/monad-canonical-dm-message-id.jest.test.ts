@@ -346,6 +346,22 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     )
   })
 
+  it('carries the conversation subject only on a message that is given one', async () => {
+    const opening = await attempt({
+      conversationId: CONVERSATION,
+      conversationName: 'Weekend plans',
+    } as Extra)
+    const followUp = await attempt({ conversationId: CONVERSATION })
+    expect(opening.error).toBeUndefined()
+    expect(followUp.error).toBeUndefined()
+    const opened = await received()
+    expect(opened.map(m => [m.conversationId, m.conversationName])).toEqual([
+      [CONVERSATION, 'Weekend plans'],
+      [CONVERSATION, undefined],
+    ])
+    expect('conversationName' in opened[1]).toBe(false)
+  })
+
   // PIN (A6): a caller that passes no `messageId` behaves as on main.
   it('pin: without a message ID the wallet draws a fresh random one for every send, as before', async () => {
     const journalRead = jest.spyOn(

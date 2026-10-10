@@ -158,6 +158,13 @@ export interface Conversation {
   id: string
   kind: ConversationKind
   name?: string
+  /** The subject last carried by a message in this conversation, sent by this account or by the
+   * peer. A message carries the subject only when it differs from this: the first message of a
+   * conversation that has a subject, and a message after a rename. */
+  nameOnWire?: string
+  /** Relay time of the message whose subject this conversation currently has, when a message
+   * set it. A carried subject replaces the current one only if its message is not older. */
+  nameSetAt?: number
   topic?: string
   emailRecipient?: string
   /** Assigned only by default-peer opening; subjects and explicit IDs never select it. */
@@ -853,6 +860,67 @@ function defaultChats(
       .filter(c => c.defaultDirect && c.address)
       .map(c => [c.address, c]),
   )
+}
+
+/** A subject as the wire accepts it (1 to 512 characters, not only whitespace, no control
+ * characters), trimmed; `undefined` for anything else. */
+function usableSubject(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const subject = value.trim()
+  if (
+    subject.length === 0 ||
+    new TextEncoder().encode(subject).length > 512 ||
+    // eslint-disable-next-line no-control-regex
+    /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(subject)
+  )
+    return undefined
+  return subject
+}
+
+/**
+ * A subject carried by a message sets or replaces the conversation's subject when the message is
+ * from the conversation's peer or from this account itself (its own message read back from the
+ * mailbox: a rename made on another of its devices). Nobody else's message changes it. Of two
+ * renames the one with the later relay time wins, whatever order they are read in, so every
+ * device of the account ends with the same subject. An email thread's subject is the email's;
+ * a carried subject does not override it.
+ */
+function applyCarriedSubject(
+  conversation: Conversation,
+  message: {
+    outbound: boolean
+    senderAddress: string
+    serverTime: number
+    items?: MessageItem[]
+    conversationName?: string
+  },
+): void {
+  const subject = usableSubject(message.conversationName)
+  if (
+    subject === undefined ||
+    conversation.kind === 'email' ||
+    message.items?.some(item => item.type === 'email') ||
+    !(
+      message.outbound ||
+      sameCanonicalAddress(message.senderAddress, conversation.address)
+    ) ||
+    message.serverTime < (conversation.nameSetAt ?? 0)
+  )
+    return
+  if (conversation.name !== subject) conversation.updatedAt = Date.now()
+  conversation.name = subject
+  conversation.nameOnWire = subject
+  conversation.nameSetAt = message.serverTime
+}
+
+/** The subject the next message sent in `conversation` must carry, if any: its subject when no
+ * message has carried that subject yet (a new conversation with a subject, or a rename). */
+function subjectToCarry(
+  conversation: Conversation | undefined,
+): string | undefined {
+  if (!conversation || conversation.kind === 'email') return undefined
+  const subject = usableSubject(conversation.name)
+  return subject === conversation.nameOnWire ? undefined : subject
 }
 
 function canonicalConversationId(value: string): string {
@@ -2884,10 +2952,18 @@ export const useChatStore = defineStore('chats', {
       for (let sendAttempt = 1; sendAttempt <= maxSendAttempts; sendAttempt++) {
         if (!stillCurrent()) return { state: 'busy' }
         try {
+          // The subject rides only on the first message of a conversation that has one and on
+          // the first message after a rename; ordinary messages omit it.
+          const subject = subjectToCarry(
+            message.conversationId === undefined
+              ? undefined
+              : this.conversations[message.conversationId],
+          )
           result = await activeChain.directMessages.send({
             wallet,
             recipient,
             conversationId: message.conversationId,
+            ...(subject === undefined ? {} : { conversationName: subject }),
             items: message.items,
             ...(message.stampValueWei === undefined
               ? {}
@@ -2911,6 +2987,10 @@ export const useChatStore = defineStore('chats', {
               )
             },
           })
+          if (subject !== undefined && message.conversationId !== undefined) {
+            const carriedIn = this.conversations[message.conversationId]
+            if (carriedIn) carriedIn.nameOnWire = subject
+          }
           break
         } catch (error) {
           lastSendError = error
@@ -3629,7 +3709,8 @@ export const useChatStore = defineStore('chats', {
                 id,
                 address: peer,
                 participants,
-                ...(fromPeer && !hasConversationWith(preparedConversations, peer)
+                ...(fromPeer &&
+                !hasConversationWith(preparedConversations, peer)
                   ? { defaultDirect: true }
                   : {}),
               })
@@ -3839,6 +3920,12 @@ export const useChatStore = defineStore('chats', {
         }: { copartyAddress: string; index: string; message: Message } = wrapper
 
         if (outboundMatches.has(index)) {
+          // Our own message, read back from the mailbox: its content is already here, but the
+          // relay time of a rename it carried decides against a rename by the peer, the same
+          // way it does on this account's other devices.
+          const sentIn = receivedConversations.get(index)
+          if (sentIn)
+            applyCarriedSubject(sentIn, { ...wrapper.message, outbound: true })
           continue
         }
 
@@ -3889,6 +3976,8 @@ export const useChatStore = defineStore('chats', {
           conv.name = convName
           conv.updatedAt = Date.now()
         }
+
+        applyCarriedSubject(conv, wrapper.message)
 
         const message: ChatMessage = {
           ...newMsg,

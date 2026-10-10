@@ -41,6 +41,8 @@ export type ReceivedMessage = {
     valueWei: bigint
   }>
   conversationId?: string
+  /** The conversation subject this message carries (a first message or a rename), if any. */
+  conversationName?: string
   logicalMessageId?: string
 }
 

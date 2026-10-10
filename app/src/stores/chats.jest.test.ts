@@ -4199,9 +4199,9 @@ describe('stores/chats.ts (ticket #42)', () => {
 
         // A second device of the same account (a fresh store, the same salt) opens the same ID.
         setActivePinia(createPinia())
-        expect(useChatStore().openDirectConversation(RECIPIENT_ADDRESS).id).toBe(
-          opened.id,
-        )
+        expect(
+          useChatStore().openDirectConversation(RECIPIENT_ADDRESS).id,
+        ).toBe(opened.id)
       })
 
       it('differs for every peer and for every other account, and notes to self are not derivable from an address', () => {
@@ -4471,7 +4471,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         setConversationIdSalt(null)
       })
 
-      it('only a message from the peer itself makes a conversation that peer\'s thread', async () => {
+      it("only a message from the peer itself makes a conversation that peer's thread", async () => {
         const chats = useChatStore()
         // A message in a conversation with RECIPIENT whose sender is someone else: filed under
         // the ID it carries, but that does not make it what Contacts opens for RECIPIENT.
@@ -4492,6 +4492,257 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect(chats.chats[RECIPIENT_ADDRESS]).toBeUndefined()
         const opened = chats.openDirectConversation(RECIPIENT_ADDRESS)
         expect(opened).not.toBe(filed)
+      })
+
+      describe('the subject goes on the wire', () => {
+        const withSubject = (
+          wrapper: ReturnType<typeof incoming>,
+          conversationName: string,
+          from: string = RECIPIENT_ADDRESS,
+        ) => ({
+          ...wrapper,
+          senderAddress: from,
+          message: {
+            ...wrapper.message,
+            conversationName,
+            senderAddress: from,
+          },
+        })
+        const say = (
+          chats: ReturnType<typeof useChatStore>,
+          conversationId: string,
+          text: string,
+        ) =>
+          chats.sendMessage({
+            wallet: makeWallet(SENDER_ADDRESS),
+            address: RECIPIENT_ADDRESS,
+            conversationId,
+            items: [{ type: 'text', text }],
+          })
+
+        it('rides on the first message of a conversation that has one and on a rename, and on nothing else', async () => {
+          const chats = useChatStore()
+          const conversation = chats.createConversation({
+            address: RECIPIENT_ADDRESS,
+            participants: [RECIPIENT_ADDRESS],
+            name: 'Weekend plans',
+          })
+          const send = sendSpy()
+          await say(chats, conversation.id, 'first')
+          await say(chats, conversation.id, 'second')
+          chats.renameConversation(conversation.id, 'Sunday plans')
+          await say(chats, conversation.id, 'third')
+          await say(chats, conversation.id, 'fourth')
+          expect(
+            send.mock.calls.map(([p]) => [
+              p.conversationId,
+              (p as any).conversationName,
+            ]),
+          ).toEqual([
+            [conversation.id, 'Weekend plans'],
+            [conversation.id, undefined],
+            [conversation.id, 'Sunday plans'],
+            [conversation.id, undefined],
+          ])
+          // Ordinary messages do not even carry the key.
+          expect('conversationName' in send.mock.calls[1][0]).toBe(false)
+
+          // A conversation with no subject never carries one.
+          const plain = chats.openDirectConversation(THIRD_ADDRESS)
+          await chats.sendMessage({
+            wallet: makeWallet(SENDER_ADDRESS),
+            address: THIRD_ADDRESS,
+            conversationId: plain.id,
+            items: [{ type: 'text', text: 'no subject' }],
+          })
+          expect('conversationName' in send.mock.calls[4][0]).toBe(false)
+        })
+
+        it('a send that fails keeps the subject for the next message', async () => {
+          const chats = useChatStore()
+          const conversation = chats.createConversation({
+            address: RECIPIENT_ADDRESS,
+            participants: [RECIPIENT_ADDRESS],
+            name: 'Weekend plans',
+          })
+          const send = jest
+            .spyOn(activeChain.directMessages, 'send')
+            .mockRejectedValueOnce(new Error('relay refused'))
+            .mockResolvedValue({
+              payloadDigest: 'subject-retry-1',
+              stampValueWei: 1n,
+              stampPayments: [],
+              preparationTxHashes: [],
+            })
+          await say(chats, conversation.id, 'lost')
+          await say(chats, conversation.id, 'arrives')
+          expect(
+            send.mock.calls.map(([p]) => (p as any).conversationName),
+          ).toEqual(['Weekend plans', 'Weekend plans'])
+        })
+
+        it('the peer sees the subject, and a rename by the peer replaces it; I do not send it back', async () => {
+          const chats = useChatStore()
+          await receive(
+            chats,
+            withSubject(incoming('opening', THEIR_ID), 'Weekend plans'),
+            incoming('follow-up without a subject', THEIR_ID),
+          )
+          const conversation = chats.conversations[THEIR_ID]
+          expect(conversation.name).toBe('Weekend plans')
+
+          const send = sendSpy()
+          await say(chats, THEIR_ID, 'reply')
+          expect('conversationName' in send.mock.calls[0][0]).toBe(false)
+
+          await receive(
+            chats,
+            withSubject(incoming('renamed', THEIR_ID), 'Sunday plans'),
+          )
+          expect(conversation.name).toBe('Sunday plans')
+          await say(chats, THEIR_ID, 'reply again')
+          expect('conversationName' in send.mock.calls[1][0]).toBe(false)
+
+          // My own rename then goes out once.
+          chats.renameConversation(THEIR_ID, 'Monday plans')
+          await say(chats, THEIR_ID, 'my rename')
+          expect((send.mock.calls[2][0] as any).conversationName).toBe(
+            'Monday plans',
+          )
+        })
+
+        it('ignores a subject from anyone but the conversation peer, and an unusable one', async () => {
+          const chats = useChatStore()
+          await receive(
+            chats,
+            withSubject(incoming('opening', THEIR_ID), 'Weekend plans'),
+          )
+          const conversation = chats.conversations[THEIR_ID]
+          // A third party's message in this conversation carrying a subject.
+          await receive(
+            chats,
+            withSubject(
+              incoming('third party', THEIR_ID),
+              'Hijacked',
+              THIRD_ADDRESS,
+            ),
+          )
+          expect(conversation.name).toBe('Weekend plans')
+          // Whitespace and control characters are not a subject.
+          await receive(
+            chats,
+            withSubject(incoming('blank', THEIR_ID), '   '),
+            withSubject(incoming('control', THEIR_ID), 'a\u0007b'),
+          )
+          expect(conversation.name).toBe('Weekend plans')
+        })
+
+        it('a rename I made on another device arrives with my own message, and of two renames the later relay time wins', async () => {
+          const at = (wrapper: ReturnType<typeof incoming>, time: number) => ({
+            ...wrapper,
+            message: {
+              ...wrapper.message,
+              serverTime: time,
+              receivedTime: time,
+            },
+          })
+          const mine = (text: string, subject: string, time: number) => {
+            const echo = at(
+              withSubject(incoming(text, THEIR_ID), subject, SENDER_ADDRESS),
+              time,
+            )
+            return {
+              ...echo,
+              outbound: true,
+              message: {
+                ...echo.message,
+                outbound: true,
+                destinationAddress: RECIPIENT_ADDRESS,
+              },
+            } as any
+          }
+          const theirs = (text: string, subject: string, time: number) =>
+            at(withSubject(incoming(text, THEIR_ID), subject), time)
+          const rows = () => [
+            theirs('opening', 'Weekend plans', 1000),
+            mine('my rename, other device', 'Sunday plans', 3000),
+            theirs('their rename', 'Monday plans', 2000),
+          ]
+
+          // Read in relay order, in the opposite order, and one poll at a time: the subject is
+          // the one with the latest relay time, mine, every time.
+          for (const order of [
+            (r: any[]) => [r],
+            (r: any[]) => [[...r].reverse()],
+            (r: any[]) => r.map(row => [row]),
+            (r: any[]) => [...r].reverse().map(row => [row]),
+          ]) {
+            setActivePinia(createPinia())
+            const chats = useChatStore()
+            for (const batch of order(rows()))
+              await chats.receiveMessages(batch, SENDER_ADDRESS)
+            expect(chats.conversations[THEIR_ID].name).toBe('Sunday plans')
+            // It has been carried already: my next message here does not resend it.
+            const send = sendSpy()
+            await say(chats, THEIR_ID, 'next')
+            expect('conversationName' in send.mock.calls[0][0]).toBe(false)
+            send.mockRestore()
+          }
+
+          // A later rename by the peer then replaces mine.
+          const chats = useChatStore()
+          await receive(
+            chats,
+            theirs('their later rename', 'Tuesday plans', 4000),
+          )
+          expect(chats.conversations[THEIR_ID].name).toBe('Tuesday plans')
+        })
+
+        it('two conversations with one peer and equal subjects stay two', async () => {
+          const chats = useChatStore()
+          const other = '44444444-4444-4444-8444-444444444444'
+          await receive(
+            chats,
+            withSubject(incoming('in one', THEIR_ID), 'Equal'),
+            withSubject(incoming('in the other', other), 'Equal'),
+          )
+          expect(chats.conversations[THEIR_ID].name).toBe('Equal')
+          expect(chats.conversations[other].name).toBe('Equal')
+          expect(threadOf(chats, 'in one')).not.toBe(
+            threadOf(chats, 'in the other'),
+          )
+          expect(Object.keys(chats.conversations)).toHaveLength(2)
+        })
+
+        it('an email thread keeps the subject of its email whatever a message carries', async () => {
+          const chats = useChatStore()
+          const emailThread = incoming('unused', THEIR_ID)
+          await receive(chats, {
+            ...emailThread,
+            message: {
+              ...emailThread.message,
+              conversationName: 'Wire subject',
+              items: [
+                {
+                  type: 'email',
+                  messageId: '<a@x>',
+                  from: { address: 'a@example.com' },
+                  to: [{ address: 'me@frank.org' }],
+                  subject: 'Email subject',
+                  textBody: 'body',
+                },
+              ],
+            },
+          } as any)
+          const conversation = chats.conversations[THEIR_ID]
+          expect(conversation.kind).toBe('email')
+          expect(conversation.name).toBe('Email subject')
+          await receive(
+            chats,
+            withSubject(incoming('later text', THEIR_ID), 'Wire subject'),
+          )
+          expect(conversation.name).toBe('Email subject')
+        })
       })
 
       it('accepted case: both sides opened each other before any message arrived, so each has two conversations', async () => {

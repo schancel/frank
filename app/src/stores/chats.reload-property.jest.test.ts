@@ -3,7 +3,8 @@
  *
  * Seeded random sequences of the events that matter are applied to the real chat store over an
  * in-memory message store: messages from this user, two peers and a stranger; into live, deleted
- * and reopened conversations and one nobody opened; with message IDs that are fresh, reused
+ * and reopened conversations and one nobody opened; carrying a conversation ID nobody here has
+ * seen, or none at all; some carrying a subject (a first message or a rename); with message IDs that are fresh, reused
  * within and across conversations, or equal to another message's derived ID; relay times before
  * and after a deletion; replays of earlier rows; delivered in one batch or over several polls;
  * with deletions in between. After each sequence the store is saved and restored through its own
@@ -22,11 +23,13 @@ import { createApp } from 'vue'
 
 import {
   collidedMessageId,
+  setConversationIdSalt,
   useChatStore,
   type Conversation,
   type RestorableState,
 } from './chats'
 import { useContactStore } from './contacts'
+import { conversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 import { displayNetwork } from '../utils/constants'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
@@ -89,11 +92,14 @@ const STRANGER = '0x5555555555555555555555555555555555555555'
 const WITH_PEER_1 = '11111111-1111-4111-8111-111111111111'
 const WITH_PEER_2 = '22222222-2222-4222-8222-222222222222'
 const UNOPENED = '33333333-3333-4333-8333-333333333333'
+// An ID allocated by whoever sent the first message in it; nobody here opened it.
+const UNKNOWN = '44444444-4444-4444-8444-444444444444'
 const CONVERSATIONS = [WITH_PEER_1, WITH_PEER_2, UNOPENED]
 const PEER_OF: Record<string, string> = {
   [WITH_PEER_1]: PEER_1,
   [WITH_PEER_2]: PEER_2,
   [UNOPENED]: PEER_1,
+  [UNKNOWN]: PEER_2,
 }
 
 /** mulberry32: small, seeded, repeatable. */
@@ -143,15 +149,23 @@ function sequence(seed: number): Step[] {
       // The relay hands an earlier row back.
       batch.push(random.pick(sent))
     } else {
-      const conversationId = random.pick(CONVERSATIONS)
+      // Mostly a conversation this device knows; sometimes an ID it has never seen, and
+      // sometimes none at all (a client that sent none).
+      const where = random.int(10)
+      const conversationId =
+        where < 7 ? random.pick(CONVERSATIONS) : where < 9 ? UNKNOWN : undefined
       const sender = random.pick([PEER_1, PEER_2, STRANGER, ME, PEER_1])
       const outbound = sender === ME
       // Our own row names who it was sent to: usually the conversation's peer.
       const coparty = outbound
-        ? random.chance(0.8)
+        ? conversationId !== undefined && random.chance(0.8)
           ? PEER_OF[conversationId]
           : PEER_2
         : sender
+      // A first message or a rename carries the subject.
+      const subject = random.chance(0.25)
+        ? random.pick(['Subject A', 'Subject B'])
+        : undefined
       const named = random.pick(['shared-1', 'shared-2'])
       const idKind = random.int(20)
       const messageId =
@@ -163,7 +177,7 @@ function sequence(seed: number): Step[] {
             collidedMessageId(named, digest(random.int(count)))
       const time = 1 + random.int(100)
       const wrapper = {
-        conversationId,
+        ...(conversationId === undefined ? {} : { conversationId }),
         outbound,
         senderAddress: sender,
         copartyAddress: coparty,
@@ -171,7 +185,8 @@ function sequence(seed: number): Step[] {
         index: digest(n),
         stampValue: 0,
         message: {
-          conversationId,
+          ...(conversationId === undefined ? {} : { conversationId }),
+          ...(subject === undefined ? {} : { conversationName: subject }),
           outbound,
           status: 'confirmed',
           senderAddress: sender,
@@ -206,6 +221,7 @@ function visible(state: {
         peer: c.address,
         kind: c.kind,
         subject: c.name,
+        peerThread: c.defaultDirect === true,
         deletedAt: c.deletedAt,
         clearedBefore: c.clearedBefore,
         participants: [...c.participants].sort(),
@@ -249,6 +265,9 @@ async function openStore() {
   })
   createApp({}).use(pinia)
   setActivePinia(pinia)
+  // The account's salt: a message with no conversation ID is filed under the ID allocated from
+  // it for the sender.
+  setConversationIdSalt(conversationIdSalt(new Uint8Array(32).fill(0x11)))
   const chats = useChatStore()
   jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
   chats.createConversation({
@@ -429,6 +448,9 @@ describe('a reload shows what the session showed, whatever was received', () => 
                   PEER_OF[String(wrapper.conversationId)])
             )
               continue
+            // A row is saved under the conversation it was filed in, so no saved row lacks one:
+            // a message that carried no ID reaches the disk only through `receiveMessages`.
+            if (wrapper.conversationId === undefined) continue
             const kept = row(wrapper)
             // Sometimes already re-filed, under an ID something else may also hold.
             if (random.chance(0.2))

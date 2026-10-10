@@ -55,7 +55,7 @@ encrypted-message-content = {
   2: framed-object, ; type-8 message-content-revision frame
   3: digest-32, ; T1a digest of field 2
   ? 4: uuid-16, ; stable logical conversation_id (ticket #818), allocated by whoever starts the conversation and carried by every message in it. Writers SHOULD always send it: when opening a chat with a peer, the UUIDv5 whose namespace is the writer's private conversation-ID salt and whose name is the peer (no topic); for a further conversation with the same peer, a random UUIDv4. Readers MUST accept its absence and file the message under the ID they would themselves allocate for its sender.
-  ? 5: conversation-name, ; short text; required on opening message; optional afterwards (ticket #818)
+  ? 5: conversation-name, ; the conversation's subject (ticket #818). Sent on the first message of a conversation that has one and on a message that renames it; other messages omit it. A reader applies it only when the message is from the conversation's peer.
   ? 6: token-transfer, ; optional token transfer attached to message (tickets #1152, #1153)
   * uint => frank-value,
 }

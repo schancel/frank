@@ -129,10 +129,11 @@ impl CanonicalPaymentInput {
     }
 }
 
-/// New admission consumes genuine facade snapshots, never a decoded statement as Current.
+/// New admission consumes a genuine facade snapshot of the recipient, never a decoded
+/// statement as Current. The sender is whoever the request says: the relay neither looks the
+/// sender up nor checks what the context states about the sender's directory entry.
 pub(crate) fn validate_canonical_payment_set(
     request: crate::http::monad_message_cbor::ExactRequest,
-    sender: &crate::directory_admission::Current,
     recipient: &crate::directory_admission::Current,
     recipient_evidence: Option<&crate::directory_admission::HistoricalEvidence>,
     network: &str,
@@ -148,7 +149,6 @@ pub(crate) fn validate_canonical_payment_set(
         crate::monad_dm_verify::CanonicalStampCheckInput {
             delivery: request.delivery(),
             context: request.context(),
-            sender_current: sender,
             recipient_current: recipient,
             recipient_evidence,
         },
@@ -185,10 +185,10 @@ pub(crate) fn validate_canonical_payment_set(
         minimum,
         sender_p: sender_p.key_bytes.clone(),
         recipient_p: recipient_p.key_bytes.clone(),
-        sender_m: sender.message_key.key_bytes.clone(),
+        sender_m: checks.sender_message_key.key_bytes.clone(),
         recipient_m: recipient.message_key.key_bytes.clone(),
         stamp: destination.key_bytes.clone(),
-        sender_t1: sender.evidence.hash,
+        sender_t1: checks.sender_directory_hash,
         recipient_t1: recipient_evidence.unwrap_or(&recipient.evidence).hash,
         payload_hash: checks.payload_digest,
     };

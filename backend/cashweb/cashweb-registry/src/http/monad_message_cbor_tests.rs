@@ -503,14 +503,6 @@ async fn undeliverable(fixture: NativeDirectoryFixture) {
     );
 }
 #[tokio::test]
-async fn message_from_a_sender_with_no_entry_here_gets_a_final_explanatory_answer() {
-    let fixture = NativeDirectoryFixture::homed(1, |index| index == 1).await;
-    assert_eq!(
-        final_answer(fixture, false).await,
-        (200, "sender_unpublished".to_owned())
-    );
-}
-#[tokio::test]
 async fn a_busy_directory_is_a_retryable_answer_never_a_final_one() {
     // Both accounts are fine; the relay itself cannot look them up right now.
     let fixture = NativeDirectoryFixture::homed(1, |_| true).await;
@@ -984,13 +976,6 @@ async fn admitted_input(
     request: &ExactRequest,
 ) -> Result<crate::monad_outbox::financial::CanonicalPaymentInput> {
     let principals = request_principals(request, "monad-testnet").unwrap();
-    let sender = current(
-        fixture.registry.canonical_dm(),
-        "monad-testnet",
-        &principals.sender,
-    )
-    .await
-    .unwrap();
     let recipient = current(
         fixture.registry.canonical_dm(),
         "monad-testnet",
@@ -1000,7 +985,6 @@ async fn admitted_input(
     .unwrap();
     crate::monad_outbox::financial::validate_canonical_payment_set(
         request.clone(),
-        &sender,
         &recipient,
         None,
         "monad-testnet",

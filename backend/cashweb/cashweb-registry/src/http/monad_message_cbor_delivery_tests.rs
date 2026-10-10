@@ -64,6 +64,9 @@ fn parsed(frame: &[u8]) -> frank_cbor::ParsedFrame {
 enum Parties {
     /// The captured sender to the captured recipient, both published on the relay.
     Captured,
+    /// The captured parties, with the context naming this hash as the sender's directory
+    /// entry instead of the sender's real one.
+    SenderEntry([u8; 32]),
     /// The captured recipient writing to itself.
     ToSelf,
 }
@@ -103,6 +106,9 @@ fn build(
     }
     match parties {
         Parties::Captured => {}
+        Parties::SenderEntry(hash) => {
+            *entry(&mut context, 4) = CborValue::Bytes(hash.to_vec());
+        }
         Parties::ToSelf => {
             *entry(&mut sealed, 1) = entry(&mut sealed, 2).clone();
             for (sender, recipient) in [(2, 3), (4, 5), (6, 7)] {
@@ -235,7 +241,21 @@ impl Relay {
         rpc_timeout: Duration,
         answer: Option<Arc<dyn Fn(&str) -> Answer + Send + Sync>>,
     ) -> Self {
-        let fixture = NativeDirectoryFixture::new().await;
+        Self::on(
+            NativeDirectoryFixture::new().await,
+            min_value_wei,
+            rpc_timeout,
+            answer,
+        )
+        .await
+    }
+    /// A relay over this directory.
+    async fn on(
+        fixture: NativeDirectoryFixture,
+        min_value_wei: u128,
+        rpc_timeout: Duration,
+        answer: Option<Arc<dyn Fn(&str) -> Answer + Send + Sync>>,
+    ) -> Self {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (mut stops, mut tasks) = (Vec::new(), Vec::new());
         let rpc_url = match answer {
@@ -473,6 +493,82 @@ async fn a_message_to_oneself_is_in_the_mailbox_once() {
         .all(|(_, direction)| *direction == MailboxDirection::In));
     assert_eq!(relay.inbox().len(), 2);
     assert_eq!(relay.broadcasts().len(), 2);
+    relay.stop().await;
+}
+
+/// The relay does not look the sender up. A message from someone with no directory entry
+/// here, paid or free, is checked against the recipient and its payments like any other and
+/// delivered. Who wrote it is for the recipient's client to check when it opens the message.
+#[tokio::test]
+async fn a_message_from_a_sender_with_no_entry_on_this_relay_is_delivered() {
+    // Only the recipient has published here.
+    let relay = Relay::on(
+        NativeDirectoryFixture::homed(1, |index| index == 1).await,
+        1,
+        Duration::from_secs(10),
+        Some(Arc::new(|_: &str| Answer::Accepted)),
+    )
+    .await;
+    let (paid, free) = (message(70, 2), message(71, 0));
+    for request in [&paid, &free] {
+        delivered(&relay.put(request).await, request);
+    }
+    assert_eq!(relay.inbox(), [payload_hash(&paid), payload_hash(&free)]);
+    // The sender's own mailbox is keyed by the sender key in the message, entry or no entry.
+    assert_eq!(
+        relay.mailbox(relay.sender()),
+        [
+            (payload_hash(&paid), MailboxDirection::Out),
+            (payload_hash(&free), MailboxDirection::Out)
+        ]
+    );
+    assert_eq!(sorted(relay.broadcasts()), sorted(raws(&paid)));
+    relay.stop().await;
+}
+
+/// The sender's entry here has moved on from, or never was, the one the message's context
+/// names. That used to be a permanent refusal; the relay no longer reads the field.
+#[tokio::test]
+async fn a_message_naming_a_sender_entry_this_relay_does_not_hold_is_delivered() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let request = build(72, Parties::SenderEntry([0x5a; 32]), 2, Payment::signed);
+    let committed = delivered(&relay.put(&request).await, &request);
+    assert!(committed > 0);
+    relay.assert_delivered_to_both(&request);
+    // The answer echoes the hash the message stated, which is what the client compares.
+    let stored = relay.owner().get(&payload_hash(&request)).unwrap().unwrap();
+    assert_eq!(stored.policy.sender_t1, [0x5a; 32]);
+    assert_eq!(sorted(relay.broadcasts()), sorted(raws(&request)));
+
+    // The recipient is still held to its real entry: naming another recipient entry is refused.
+    let genuine = genuine_fixture();
+    let mut context = map(frank_cbor::decode_canonical(genuine.context()).unwrap());
+    *entry(&mut context, 5) = CborValue::Bytes(vec![0x5a; 32]);
+    let wrong_recipient_entry = encode_canonical(&CborValue::Map(context)).unwrap();
+    let boundary = "frank-wrong-recipient-entry";
+    let transactions = encode_canonical(&CborValue::Array(
+        genuine
+            .raw_transactions()
+            .map(|raw| CborValue::Bytes(raw.to_vec()))
+            .collect(),
+    ))
+    .unwrap();
+    let mut body = Vec::new();
+    for (name, media, bytes) in [
+        ("delivery", "application/vnd.frank.cbor", genuine.delivery()),
+        ("context", "application/cbor", &wrong_recipient_entry),
+        ("transactions", "application/cbor", &transactions),
+    ] {
+        body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\nContent-Type: {media}\r\n\r\n").as_bytes());
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    let refused =
+        ExactRequest::parse(body, format!("multipart/form-data; boundary={boundary}")).unwrap();
+    let answer = relay.put(&refused).await;
+    assert_ne!(answer.0, 200, "{}", answer.1);
+    assert!(relay.owner().find_request(&refused).unwrap().is_none());
     relay.stop().await;
 }
 
@@ -815,7 +911,6 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
     let (sender, recipient) = relay.entries().await;
     let input = crate::monad_outbox::financial::validate_canonical_payment_set(
         request.clone(),
-        &sender,
         &recipient,
         None,
         NETWORK,

@@ -93,18 +93,9 @@ pub(crate) async fn handle_put(
                 "undeliverable",
             );
         };
-        // A sender whose own entry is missing or expired can republish and send a new message;
-        // this one can never be verified.
-        let Some(sender_current) =
-            sender_entry(owner, descriptor.cbor_identifier, &principals.sender).await?
-        else {
-            return undeliverable_response(
-                &request,
-                descriptor.cbor_identifier,
-                &principals,
-                "sender_unpublished",
-            );
-        };
+        // The sender is whoever the message says. The relay does not look the sender up:
+        // checking who wrote a message is the job of the recipient's client, which opens it
+        // with the key the sender published.
         let Principals {
             recipient,
             recipient_t1,
@@ -120,7 +111,6 @@ pub(crate) async fn handle_put(
         // store's own checks, before anything is stored or broadcast.
         let input = crate::monad_outbox::financial::validate_canonical_payment_set(
             request,
-            &sender_current,
             &recipient_current,
             historical.as_ref(),
             descriptor.cbor_identifier,
@@ -283,7 +273,6 @@ async fn history(
 }
 /// What a submission says about itself, read from its own bytes before any directory lookup.
 pub(crate) struct Principals {
-    pub(crate) sender: Vec<u8>,
     pub(crate) recipient: Vec<u8>,
     pub(crate) sender_t1: Option<[u8; 32]>,
     pub(crate) recipient_t1: Option<[u8; 32]>,
@@ -318,28 +307,6 @@ async fn deliverable_recipient(
         Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
         // Anything else is this relay's own trouble (clock, storage); the sender may retry.
         Err(_) => Err(CanonicalError::Unavailable),
-    }
-}
-/// The sender's current entry, or `None` when it has none here: never published, expired or
-/// quarantined. That is final for this request; a relay fault is an error the sender may retry.
-async fn sender_entry(
-    owner: &crate::store::monad_dm_cbor::Owner,
-    network: &str,
-    subject: &[u8],
-) -> Result<Option<crate::directory_admission::Current>> {
-    use crate::directory_runtime::{AdmittedSnapshot, RuntimeError, SnapshotOperation};
-    let directory = owner.directory().ok_or(CanonicalError::Unavailable)?;
-    let reservation = directory
-        .reserve(network, &hex::encode(subject))
-        .map_err(|_| CanonicalError::Unavailable)?;
-    match directory
-        .submit_snapshot(reservation, SnapshotOperation::Current)
-        .wait()
-        .await
-    {
-        Ok(AdmittedSnapshot::Current(current)) => Ok(Some(current)),
-        Err(RuntimeError::NotFound | RuntimeError::Expired | RuntimeError::Forked) => Ok(None),
-        _ => Err(CanonicalError::Unavailable),
     }
 }
 /// A final answer for a submission this relay will never deliver, in the shape of the other
@@ -414,7 +381,6 @@ fn request_principals(request: &ExactRequest, network: &str) -> Result<Principal
         (None, None)
     };
     Ok(Principals {
-        sender: sender.key_bytes.clone(),
         recipient: recipient.key_bytes.clone(),
         sender_t1,
         recipient_t1,

@@ -276,16 +276,12 @@ impl Joined {
             freeze["identity"]["submission_identity"].as_str().unwrap()
         );
         let owner = self.fixture.registry.canonical_dm();
-        let Principals {
-            sender, recipient, ..
-        } = request_principals(&request, "monad-testnet").unwrap();
-        let sender = current(owner, "monad-testnet", &sender).await.unwrap();
+        let Principals { recipient, .. } = request_principals(&request, "monad-testnet").unwrap();
         let recipient = current(owner, "monad-testnet", &recipient).await.unwrap();
         crate::monad_dm_verify::verify_canonical_stamp(
             crate::monad_dm_verify::CanonicalStampCheckInput {
                 delivery: request.delivery(),
                 context: request.context(),
-                sender_current: &sender,
                 recipient_current: &recipient,
                 recipient_evidence: None,
             },
@@ -293,7 +289,6 @@ impl Joined {
         .expect("wallet delivery/context must pass the native public stamp verifier");
         crate::monad_outbox::financial::validate_canonical_payment_set(
             request.clone(),
-            &sender,
             &recipient,
             None,
             "monad-testnet",

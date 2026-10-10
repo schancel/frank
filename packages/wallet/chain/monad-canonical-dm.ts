@@ -950,6 +950,9 @@ async function send(
             recipientSubject: peer.subject,
           })
       }
+      // The caller learns the message's digest, durably on its side, BEFORE the relay is handed
+      // a byte: a free message has no payment attempt to announce it.
+      await params.onBeforeExposure?.(digest)
       // From here the relay may hold the message, whatever this call learns of it.
       attempted = true
       const accepted = await submitCanonicalRequest({
@@ -1025,6 +1028,9 @@ async function send(
       stampValueWei,
       economicBinding: messageId,
     })
+    // Before the intent (and so before any durable record from which these bytes could later be
+    // submitted): the caller learns the digest of what is about to become sendable.
+    await params.onBeforeExposure?.(digest)
     let own: CanonicalWorkflowLink | undefined
     await client.prepareIntent({
       prepared,
@@ -1455,77 +1461,11 @@ function receivedItems(
   timestampMs: number,
   selfAddressed: boolean,
 ): MessageItem[] {
-  const children = opened.items
-  const items = decodeItemFrames(registry, children, opened.itemBudget, {
+  // A received stealth payment becomes a coin where the wallet reads its mailbox
+  // (`recordReceivedCoins` in monad-chain.ts), from the decoded item. Nothing is done here.
+  return decodeItemFrames(registry, opened.items, opened.itemBudget, {
     selfAddressed,
   })
-  // A wallet effect, not a plugin's: a received stealth payment is added to this wallet's keys.
-  // It reads the validated frame, so the amount is exact.
-  children.forEach((child, index) => {
-    if (
-      items[index].type === 'stealth' &&
-      child.kind === 'parsed' &&
-      isStealthMessageItemFrame(child)
-    )
-      indexStealthItemIfRecipient(
-        wallet,
-        isOutbound,
-        projectStealthMessageItem(child),
-        timestampMs,
-      )
-  })
-  return items
-}
-
-function indexStealthItemIfRecipient(
-  wallet: WalletHandle,
-  isOutbound: boolean,
-  projected: ReturnType<typeof projectStealthMessageItem>,
-  timestampMs: number,
-) {
-  if (!isOutbound && projected.keyType === 1) {
-    const liveWallet = wallet as EvmChainWalletHandle
-    if (liveWallet?.stealthKeyring && liveWallet?.identity) {
-      try {
-        const derived = deriveEvmStealthPrivateKey({
-          recipientSpendSecret: liveWallet.identity.toPrivateKeyHex(),
-          ephemeralPubKey: fromHex(projected.ephemeralPubKey),
-        })
-        void liveWallet.stealthKeyring.addAccount({
-          address: derived.stealthAddress,
-          privateKey: derived.stealthPrivateKey,
-          ephemeralPubKey: projected.ephemeralPubKey,
-          networkTag: projected.networkTag,
-          discoveredAtMs: timestampMs,
-          initialAmountWei: BigInt(projected.amount),
-          txHash: projected.transactions[0],
-        })
-      } catch {
-        // ignore corrupt stealth key derivation
-      }
-    }
-  } else if (!isOutbound && projected.keyType === 2) {
-    const solWallet =
-      (
-        wallet as {
-          solanaWallet?: {
-            stealthKeyring?: { registerFromStealthItem: Function }
-            spendSeed?: Uint8Array
-          }
-        }
-      )?.solanaWallet ?? (wallet as any)
-    if (solWallet?.stealthKeyring && solWallet?.spendSeed) {
-      try {
-        void solWallet.stealthKeyring.registerFromStealthItem({
-          item: projected,
-          recipientSpendSeed: solWallet.spendSeed,
-          timestampMs,
-        })
-      } catch {
-        // ignore corrupt stealth key derivation
-      }
-    }
-  }
 }
 
 /** The payment members of a received delivery that pay THIS wallet: a member's address must be
@@ -1757,6 +1697,8 @@ async function fetchSince(
             deliveryTyped.payments,
           )
       const stampPayments = paidHere.map(member => ({
+        childIndex: member.childIndex,
+        ...(member.rawTx ? { rawTx: hexlify(member.rawTx) } : {}),
         txHash: hexlify(member.transactionId),
         destinationAddress: getAddress(hexlify(member.address)),
         valueWei:
@@ -1789,12 +1731,30 @@ async function fetchSince(
         payloadDigest: digest,
         stampValueWei: stampPayments.reduce((sum, p) => sum + p.valueWei, 0n),
         stampPayments,
+        stampSharedPoint: toHex(payload.sharedPoint),
         paymentTransfers,
         receivedTime: record.timestampMs,
       })
     }
     cursor = page.nextCursor
     if (cursor === undefined) break
+  }
+  // Stopped at the page limit with more to read: said so, like any other cut-off read, so no
+  // caller takes this for the whole mailbox. The last timestamp may continue on the next page,
+  // so its records are left for the next read (which starts after the last complete one),
+  // unless that would leave nothing to advance on.
+  if (cursor !== undefined) {
+    const last = received.reduce(
+      (latest, message) => Math.max(latest, message.receivedTime ?? 0),
+      0,
+    )
+    const complete = received.filter(
+      message => (message.receivedTime ?? 0) < last,
+    )
+    params.onTruncated?.(
+      new Error(`The mailbox read stopped after ${MAX_INBOX_PAGES} pages`),
+    )
+    if (complete.length > 0) return complete
   }
   return received
 }

@@ -255,6 +255,59 @@ export interface NativeWalletHandle {
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction>;
 
+  /** Pays a contact at a one-time address and delivers the message that lets the contact's wallet
+   * find the money. Paid from the wallet's spendable funds through the same recorded path as
+   * `sendNative`. The signed transfer and its message item are saved, the message (which carries
+   * the signed transfer) is delivered, and only when the relay has confirmed it is the transfer
+   * broadcast. Rejects with `ContactPaymentPendingError` while the relay has not confirmed. */
+  sendToContact?(params: ContactSendParams): Promise<ContactSendResult>;
+  /** The same payment for a host that sends the message itself (a chat, with its own outgoing
+   * bubble and retry): signs and saves the transfer, holds its source, broadcasts nothing, and
+   * returns the item. The host then sends a message carrying that item with
+   * `directMessages.send`; when the relay has stored it the wallet broadcasts the transfer. The
+   * item may be sent again (a retry, a new message): the transfer is always the same one. */
+  prepareContactPayment?(
+    params: ContactSendParams
+  ): Promise<PreparedContactPayment>;
+  /** Finishes every payment to a contact whose message is not delivered yet. A mailbox read does
+   * this by itself; it never signs or pays anything new and never rejects. */
+  resumeContactPayments?(): Promise<void>;
+  /** Sends a payment whose message the relay ended (`ContactPaymentFailedError`) again, in a new
+   * message. The transfer is the original one. */
+  retryContactPayment?(messageId: string): Promise<void>;
+  /** Brings the payment whose message item has this ephemeral key to an end. If no byte of it
+   * ever left the device it is RELEASED (its signed transfer cancelled, its funds free) and the
+   * answer is `released`. If its bytes went to a relay it is FINISHED, never released: broadcast
+   * if its message is stored, otherwise delivered again by the wallet in a new message with the
+   * same signed transfer; the answer is its state then. A host calls this when the outgoing
+   * message that carried the payment is deleted, and to retry a held payment. */
+  settleContactPayment?(
+    ephemeralPubKey: string
+  ): Promise<ContactPaymentInfo["state"] | "none">;
+  /** This wallet's payments to contacts, newest state. */
+  getContactPayments?(): ContactPaymentInfo[];
+  /** Money received at one-time accounts (stealth payments, stamps), as last read from the chain.
+   * No request is made. */
+  getReceivedPayments?(): ReceivedPayment[];
+  /** Reads the chain for every received payment that may hold money, then returns them. */
+  refreshReceivedPayments?(): Promise<ReceivedPayment[]>;
+  /** Have the payments this message carried (its stamps, a stealth transfer) landed? From what
+   * the wallet last read; no request is made. `received` only when the chain showed each
+   * transaction included successfully and its money at its account. */
+  getMessagePayment?(payloadDigest: string): MessagePayment;
+  /** The same answer after asking the chain about the message's payments that are still pending
+   * (it broadcasts the carried transactions too). What a bot calls before it pays out. Makes no
+   * request when nothing of the message is pending. */
+  checkMessagePayment?(payloadDigest: string): Promise<MessagePayment>;
+  /** Moves the unspent received coins of these messages (stamps, stealth payments) to the
+   * wallet's seed-derived main account, each in a recorded native operation. Their one-time accounts
+   * can only be found again from the messages, so a host calls this BEFORE deleting them and
+   * deletes only a message whose answer is `none` or `swept`. Asking again for a `pending` or
+   * `failed` message continues the same operation; it never signs a second sweep of a coin. */
+  sweepReceivedCoins?(params: {
+    payloadDigests: readonly string[];
+  }): Promise<Record<string, ReceivedCoinSweep>>;
+
   /**
    * Sends funds to an external legacy destination address, automatically aggregating
    * fragmented sub-accounts or UTXOs using the chain's appropriate consolidation strategy.
@@ -393,6 +446,16 @@ export interface LegacyFeeEstimate {
   deliveryFee: bigint;
 }
 
+export type {
+  MessagePayment,
+  ReceivedPayment,
+  ReceivedPaymentStatus,
+} from "../storage/evm-coin-store";
+import type {
+  MessagePayment,
+  ReceivedPayment,
+} from "../storage/evm-coin-store";
+
 export interface LegacySendResult {
   /** Final transaction hash that paid the recipient. */
   txHash: string;
@@ -403,7 +466,13 @@ export interface LegacySendResult {
 }
 
 export interface ContactSendProgress {
-  stage: "resolving-keys" | "deriving-stealth" | "signing" | "broadcasting" | "confirmed";
+  stage:
+    | "resolving-keys"
+    | "deriving-stealth"
+    | "signing"
+    | "delivering"
+    | "broadcasting"
+    | "confirmed";
   message?: string;
   txHash?: string;
 }
@@ -412,6 +481,117 @@ export interface ContactSendResult {
   txHash: string;
   stealthAddress: string;
   value: bigint;
+  /** The message that carries the payment to the contact. */
+  messageId: string;
+  payloadDigest: string;
+}
+
+/** A payment to a contact that is signed, saved and NOT broadcast, with the message item the host
+ * must now deliver to the contact through its ordinary message send. */
+export interface PreparedContactPayment {
+  item: import("@frank/cashweb/types/messages").StealthItem;
+  txHash: string;
+  stealthAddress: string;
+  value: bigint;
+}
+
+/** A payment to a contact: a transfer to a one-time address only the contact can spend from, and
+ * the message that tells the contact's wallet where it is. */
+export interface ContactSendParams {
+  recipient: ChainAddress;
+  value: bigint;
+  memo?: string;
+  /** The conversation the message belongs to; the default thread with the contact when absent. */
+  conversationId?: string;
+  /** The message's stamp. The payment itself is `value`, never part of the stamp. */
+  stampValue?: bigint;
+  onProgress?: (progress: ContactSendProgress) => void;
+}
+
+/** The payment is signed and saved, and the relay has not confirmed its message yet. NOTHING has
+ * been broadcast: the transfer goes out only once the relay has the message. The wallet finishes
+ * this same payment by itself (on every mailbox read, also after a restart); calling
+ * `sendToContact` again would be a second payment. */
+export class ContactPaymentPendingError extends Error {
+  constructor(
+    readonly messageId: string,
+    readonly txHash: string | undefined,
+    readonly reason: unknown
+  ) {
+    super(
+      `The payment is saved and its message is not delivered yet (${
+        reason instanceof Error ? reason.message : String(reason)
+      }). The wallet keeps delivering it; do not send it again.`
+    );
+    this.name = "ContactPaymentPendingError";
+  }
+}
+
+/** The relay ended the payment's message for good. This wallet broadcast nothing. The item is
+ * kept: `retryContactPayment` sends it to the contact in a new message. Nothing is signed again. */
+export class ContactPaymentFailedError extends Error {
+  constructor(readonly messageId: string, readonly failure: string) {
+    super(
+      `The relay will not deliver this payment's message (${failure}). The payment is kept and can be delivered again.`
+    );
+    this.name = "ContactPaymentFailedError";
+  }
+}
+
+/** What happened to the received coins of one message when the wallet was asked to sweep them.
+ * - `none`: the message has no coin that holds money worth moving (never funded, already spent, or
+ *   too small to pay for its own move). Nothing is lost by deleting it.
+ * - `swept`: its coins were moved to this wallet's seed-derived main account and the chain shows
+ *   it. Deleting the message loses nothing, also after a restore from the seed.
+ * - `pending`: a sweep is signed and broadcast and the chain has not shown it yet. Ask again.
+ * - `failed`: nothing could be established or moved (`reason`). The money is still at an account
+ *   only this device's coin list and the message can find. */
+export interface ReceivedCoinSweep {
+  outcome: "none" | "swept" | "pending" | "failed";
+  reason?: string;
+}
+
+/** The payment was released before a byte of it left this device: its signed transfer is
+ * cancelled and can never land, and the funds it held are free. Nothing was sent. Make the
+ * payment again; the item of a released payment is never accepted in a message. */
+export class ContactPaymentReleasedError extends Error {
+  constructor() {
+    super(
+      "This payment was cancelled before anything was sent. Nothing was paid; make the payment again."
+    );
+    this.name = "ContactPaymentReleasedError";
+  }
+}
+
+/** The largest amount a stealth message item can state (its wire field is an unsigned 64-bit
+ * integer): about 18.4 units of an 18-decimal coin. A host checks an amount against it before
+ * review. */
+export const MAX_STEALTH_ITEM_AMOUNT = 2n ** 64n - 1n;
+
+/** Refused before anything is signed: the amount is more than one contact payment can carry. */
+export class ContactPaymentTooLargeError extends RangeError {
+  constructor(message: string) {
+    super(message);
+    this.name = "ContactPaymentTooLargeError";
+  }
+}
+
+/** A payment to a contact as a host may show it. */
+export interface ContactPaymentInfo {
+  messageId: string;
+  /** The ephemeral key of the payment's message item: what a host finds the payment by. */
+  ephemeralPubKey: string;
+  /** Its signed transfer is not on the chain and its source account is held for it. */
+  holdsFunds: boolean;
+  recipientAddress: string;
+  valueWei: bigint;
+  /** `prepared`: signed, nothing broadcast, its message is being delivered. `delivered`: the
+   * relay has the message and the transfer is being broadcast. `paid`: the chain shows the
+   * transfer. `failed`: the relay ended the message; `retryContactPayment` sends it again.
+   * `released`: nothing of it was ever sent and its transfer was cancelled. */
+  state: "planned" | "prepared" | "delivered" | "paid" | "failed" | "released";
+  txHash?: string;
+  failure?: string;
 }
 
 /** Minimum identity surface accepted by profile, message, and topic capabilities. */

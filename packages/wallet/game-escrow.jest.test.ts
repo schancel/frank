@@ -10,7 +10,8 @@ import {
   registerEscrowStealthPayout,
 } from './game-escrow'
 import { MonadIdentity } from './monad-identity'
-import { MonadStealthKeyring } from './monad-stealth'
+import { stealthCoinFromItem } from './monad-stealth'
+import type { StealthItem } from '@frank/cashweb/types/messages'
 import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
   const dummyVault = '0xB0ae4A94A7616029CD99Cf3Ab9Bf417be1DfD9E9'
@@ -80,22 +81,17 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     expect(recovered.toLowerCase()).toBe(hostWallet.address.toLowerCase())
   })
 
-  it('indexes game escrow stealth payouts into winner wallet and allows immediate spend', async () => {
+  it('records a game escrow stealth payout as a coin of the winner wallet', async () => {
     const winnerIdentity = MonadIdentity.generate()
-    const keyring = new MonadStealthKeyring()
-
-    const mockBalances = new Map<string, bigint>()
-    const mockProvider = {
-      getBalance: jest.fn(async (addr: string) => mockBalances.get(addr.toLowerCase()) ?? 0n),
-    } as unknown as any
-
+    const recorded: StealthItem[] = []
     const mockWallet = {
       family: 'evm',
       chainIdentifier: 'monad-testnet',
       networkId: 'monad-testnet',
       identity: winnerIdentity,
-      stealthKeyring: keyring,
-      provider: mockProvider,
+      recordStealthPayment: async (item: StealthItem) => {
+        recorded.push(item)
+      },
     } as unknown as EvmChainWalletHandle
 
     // Escrow payout derived by counterparty or host
@@ -105,7 +101,6 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     const payoutAmountWei = ethers.parseEther('5.0')
     const txHash = '0x' + '99'.repeat(32)
 
-    // Winner wallet registers the escrow payout upon receipt/indexing
     const record = await registerEscrowStealthPayout({
       wallet: mockWallet,
       ephemeralPubKey: payout.ephemeralPubKey,
@@ -116,24 +111,19 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     })
 
     expect(record.address.toLowerCase()).toBe(payout.stealthAddress.toLowerCase())
-    expect(keyring.hasAccount(record.address)).toBe(true)
-
-    // Set balance on mock provider
-    mockBalances.set(record.address.toLowerCase(), payoutAmountWei)
-
-    // Verify stealth keyring balance reflects payout
-    const totalBalance = await keyring.getTotalBalance(mockProvider, 'MONT')
-    expect(totalBalance).toBe(payoutAmountWei)
-
-    // Verify account can be selected for spending without sweeping
-    const spendable = await keyring.selectAccountForSpend(
-      ethers.parseEther('2.0'),
-      mockProvider,
-      'MONT',
-    )
-    expect(spendable).toBeDefined()
-    expect(spendable?.address.toLowerCase()).toBe(record.address.toLowerCase())
-    expect(spendable?.privateKey).toBe(record.privateKey)
+    expect(recorded).toHaveLength(1)
+    // What the wallet is handed is enough to derive the same one-time account and its key.
+    const coin = stealthCoinFromItem({
+      item: recorded[0],
+      recipientSpendSecret: winnerIdentity.toPrivateKeyHex(),
+      discoveredAtMs: 1,
+    })
+    expect(coin?.address).toBe(payout.stealthAddress.toLowerCase())
+    expect(new Wallet(coin!.privateKey).address.toLowerCase()).toBe(coin!.address)
+    // The stated amount is only a claim: the coin is pending and holds nothing until read.
+    expect(coin?.state).toBe('pending')
+    expect(coin?.amountWei).toBe('0')
+    expect(coin?.claimedAmountWei).toBe(payoutAmountWei.toString())
   })
 
   it('computes StateChannel cooperative close digest with DKSAP stealth address and encodes calldata', async () => {
@@ -193,7 +183,7 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     const winnerIdentity = MonadIdentity.generate()
     const mockWallet = {
       identity: winnerIdentity,
-      stealthKeyring: new MonadStealthKeyring(),
+      recordStealthPayment: async () => undefined,
     } as unknown as EvmChainWalletHandle
 
     const payout = deriveEscrowStealthPayout({

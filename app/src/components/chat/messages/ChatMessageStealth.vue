@@ -27,6 +27,13 @@
         <span class="text-h6 text-weight-bold" data-testid="stealth-amount">
           {{ displayAmount }}
         </span>
+        <span
+          v-if="amountIsClaim"
+          class="text-caption text-grey-7 q-ml-xs"
+          data-testid="stealth-amount-claimed"
+        >
+          ({{ $t('chatMessageStealth.claimedAmount') }})
+        </span>
         <q-badge
           outline
           color="primary"
@@ -55,20 +62,27 @@
         "{{ memo }}"
       </div>
 
-      <!-- Direct credit indicator (no sweep friction needed) -->
-      <div class="row items-center text-caption text-grey-6 q-mt-xs">
+      <!-- What the wallet read from the chain, when it differs from what the sender wrote -->
+      <div
+        v-if="amountMismatch"
+        class="text-caption text-warning q-my-xs"
+        data-testid="stealth-amount-mismatch"
+      >
+        {{ amountMismatch }}
+      </div>
+
+      <!-- What the wallet says about the money. Nothing is claimed for a sent payment. -->
+      <div
+        v-if="hint"
+        class="row items-center text-caption text-grey-6 q-mt-xs"
+      >
         <q-icon
-          name="check_circle"
+          :name="hintIcon"
           size="xs"
-          color="positive"
+          :color="statusColor"
           class="q-mr-xs"
         />
-        <span data-testid="stealth-direct-credit-hint">
-          {{
-            $t('chatMessageStealth.directCreditHint') ||
-            'Indexed into spendable balance'
-          }}
-        </span>
+        <span data-testid="stealth-status-hint">{{ hint }}</span>
       </div>
 
       <!-- Explorer link (if transaction exists) -->
@@ -99,14 +113,35 @@
 <script lang="ts">
 import { defineComponent, computed, type PropType } from 'vue'
 import { useQuasar } from 'quasar'
+import { Transaction } from 'ethers'
+import { activeChain } from '@frank/wallet/chain'
 import { multiChainExplorerUrl } from '../../../utils/explorer'
+import { useReceivedPayment } from '../../../composables/useReceivedPayment'
+import { useTranslate } from '../../../composables/useTranslate'
+import { errorNotify } from '../../../utils/notifications'
 
+type WalletStatus = 'pending' | 'received' | 'not-received' | 'failed'
+
+/**
+ * A stealth payment in a conversation. The amount in the item is what the SENDER wrote. Whether
+ * money arrived, how much, and whether it can be spent come from the wallet, which reads the
+ * chain: `pending` until the chain shows it, `received` then, `not-received` when the chain still
+ * shows no such transfer long after the message, `failed` when it can never arrive. Until it is
+ * received the amount is labelled as the sender's claim. A payment the wallet holds no coin for is
+ * shown as not checked.
+ */
 export default defineComponent({
   name: 'ChatMessageStealth',
   props: {
+    /** The sender's stated amount, in the chain's base unit. A JS number: approximate. */
     amount: {
       type: [Number, String],
       required: true,
+    },
+    /** The same stated amount exactly (decimal string), when the item carries it. */
+    amountWei: {
+      type: String,
+      default: undefined,
     },
     chainId: {
       type: String,
@@ -116,60 +151,72 @@ export default defineComponent({
       type: String,
       default: undefined,
     },
+    /** The item's ephemeral key: what the wallet's coin for this payment is found by. */
+    ephemeralPubKey: {
+      type: String,
+      default: undefined,
+    },
     transactions: {
       type: Array as PropType<string[]>,
       default: () => [],
     },
-    txHash: {
-      type: String,
-      default: undefined,
-    },
-    status: {
-      type: String,
-      default: 'confirmed',
-    },
     outbound: {
       type: Boolean,
       default: false,
-    },
-    unit: {
-      type: String,
-      default: undefined,
     },
     memo: {
       type: String,
       default: undefined,
     },
   },
-  setup() {
+  setup(props) {
     const $q = useQuasar()
+    const $t = useTranslate()
     const isDark = computed(() => $q?.dark?.isActive ?? false)
+    // A payment this wallet sent is not one it received: the wallet is not asked.
+    // The user is told, once, when a payment a sender claimed did not arrive.
+    const { payment } = useReceivedPayment(
+      () => (props.outbound ? undefined : props.ephemeralPubKey),
+      undefined,
+      known => {
+        const notice = $t('chatMessageStealth.notReceivedNotice', {
+          amount: `${activeChain.toDisplayAmount(known.claimedAmountWei)} ${
+            activeChain.unit
+          }`,
+        })
+        errorNotify(new Error(notice), { safeMessage: notice })
+      },
+    )
     return {
       isDark,
+      payment,
     }
   },
   computed: {
     cardBg(): string {
       return this.isDark ? 'bg-grey-10' : 'bg-grey-1'
     },
+    /** The hash of the transfer the item carries: a bare hash, or a signed transaction's. */
     primaryTx(): string | undefined {
-      if (this.txHash) return this.txHash
-      if (this.transactions && this.transactions.length > 0) {
-        return this.transactions[0]
+      const first = this.transactions?.[0]
+      if (!first) return undefined
+      const hex = first.replace(/^0x/, '').toLowerCase()
+      if (/^[0-9a-f]{64}$/.test(hex)) return `0x${hex}`
+      try {
+        return Transaction.from(`0x${hex}`).hash ?? undefined
+      } catch {
+        return undefined
       }
-      return undefined
     },
     truncatedTx(): string {
       const tx = this.primaryTx
       if (!tx) return ''
-      if (tx.length <= 16) return tx
       return `${tx.slice(0, 8)}...${tx.slice(-6)}`
     },
     networkIdentifier(): string {
       return this.networkTag || this.chainId || 'monad-testnet'
     },
     displayUnit(): string {
-      if (this.unit) return this.unit
       const net = this.networkIdentifier.toLowerCase()
       if (net.includes('sol')) {
         return net.includes('dev') || net.includes('test') ? 'tSOL' : 'SOL'
@@ -189,42 +236,110 @@ export default defineComponent({
       if (net.includes('mon')) return 'Monad'
       return this.networkTag || this.chainId || ''
     },
+    /** What the sender stated, exactly where an exact figure exists: the wallet's record of the
+     * claim, else the item's exact field, else the item's approximate number. */
+    statedWei(): bigint {
+      if (!this.outbound && this.payment !== undefined)
+        return this.payment.claimedAmountWei
+      try {
+        return BigInt(this.amountWei ?? this.amount ?? 0)
+      } catch {
+        return 0n
+      }
+    },
+    /** Never `received` without an amount the chain showed arriving. */
+    walletStatus(): WalletStatus | undefined {
+      if (this.outbound) return undefined
+      const status = this.payment?.status
+      return status === 'received' &&
+        !((this.payment?.receivedAmountWei ?? 0n) > 0n)
+        ? 'pending'
+        : status
+    },
+    /** What arrived, as the chain showed it, once the wallet has seen it. */
+    arrivedWei(): bigint | undefined {
+      return this.walletStatus === 'received'
+        ? this.payment?.receivedAmountWei
+        : undefined
+    },
+    /** Received: the amount the chain showed. Otherwise: what the sender stated. */
     displayAmount(): string {
-      if (this.amount === undefined || this.amount === null) return '0'
-      return String(this.amount)
+      return activeChain.toDisplayAmount(this.arrivedWei ?? this.statedWei)
+    },
+    /** A received payment the chain has not shown: the figure is the sender's claim, and is
+     * labelled so. */
+    amountIsClaim(): boolean {
+      return !this.outbound && this.arrivedWei === undefined
+    },
+    amountMismatch(): string {
+      const arrived = this.arrivedWei
+      if (arrived === undefined || arrived === this.statedWei) return ''
+      return this.$t('chatMessageStealth.statedAmount', {
+        stated: `${activeChain.toDisplayAmount(this.statedWei)} ${
+          this.displayUnit
+        }`,
+        actual: `${activeChain.toDisplayAmount(arrived)} ${this.displayUnit}`,
+      }) as string
     },
     title(): string {
-      if (this.outbound) {
-        return (
-          (this.$t('chatMessageStealth.sentTitle') as string) ||
-          'Sent Stealth Payment'
-        )
-      }
-      return (
-        (this.$t('chatMessageStealth.receivedTitle') as string) ||
-        'Received Stealth Payment'
-      )
+      return this.$t(
+        this.outbound
+          ? 'chatMessageStealth.sentTitle'
+          : 'chatMessageStealth.receivedTitle',
+      ) as string
     },
     displayStatus(): string {
-      if (this.status) {
-        const s = this.status.toLowerCase()
-        if (s === 'confirmed') {
-          return (
-            (this.$t('chatMessageStealth.confirmed') as string) || 'Confirmed'
-          )
-        }
-        return this.status
+      if (this.outbound) return this.$t('chatMessageStealth.sent') as string
+      switch (this.walletStatus) {
+        case 'received':
+          return this.$t('chatMessageStealth.received') as string
+        case 'pending':
+          return this.$t('chatMessageStealth.pending') as string
+        case 'not-received':
+          return this.$t('chatMessageStealth.notReceived') as string
+        case 'failed':
+          return this.$t('chatMessageStealth.failed') as string
+        default:
+          return this.$t('chatMessageStealth.unverified') as string
       }
-      return (this.$t('chatMessageStealth.confirmed') as string) || 'Confirmed'
     },
     statusColor(): string {
-      const s = (this.status || 'confirmed').toLowerCase()
-      if (s === 'confirmed' || s === 'settled' || s === 'success') {
-        return 'positive'
+      if (this.outbound) return 'primary'
+      switch (this.walletStatus) {
+        case 'received':
+          return 'positive'
+        case 'pending':
+          return 'warning'
+        case 'not-received':
+        case 'failed':
+          return 'negative'
+        default:
+          return 'grey'
       }
-      if (s === 'pending') return 'warning'
-      if (s === 'failed' || s === 'rejected') return 'negative'
-      return 'primary'
+    },
+    hint(): string {
+      if (this.outbound) return ''
+      switch (this.walletStatus) {
+        case 'received':
+          return this.$t(
+            this.payment?.spendable
+              ? 'chatMessageStealth.spendableHint'
+              : 'chatMessageStealth.spentHint',
+          ) as string
+        case 'pending':
+          return this.$t('chatMessageStealth.pendingHint') as string
+        case 'not-received':
+          return this.$t('chatMessageStealth.notReceivedHint') as string
+        case 'failed':
+          return this.$t('chatMessageStealth.failedHint') as string
+        default:
+          return this.$t('chatMessageStealth.unverifiedHint') as string
+      }
+    },
+    hintIcon(): string {
+      if (this.walletStatus === 'received') return 'check_circle'
+      if (this.walletStatus === 'pending') return 'schedule'
+      return 'error_outline'
     },
     explorerUrl(): string | undefined {
       const tx = this.primaryTx

@@ -1,11 +1,11 @@
-import { getBytes, hexlify, randomBytes, SigningKey, verifyMessage, Wallet } from 'ethers'
-import { fromHex, toHex } from '@frank/codec'
-import { MonadAccountTxSigner } from './monad-account-tx'
+import { getBytes, randomBytes, SigningKey, Transaction, verifyMessage, Wallet } from 'ethers'
+import { toHex } from '@frank/codec'
 import {
   deriveEvmStealthAddress,
   deriveEvmStealthPrivateKey,
-  MonadStealthKeyring,
-  buildEvmStealthPayment,
+  evmStealthItem,
+  stealthCoinFromItem,
+  stealthItemTransfer,
 } from './monad-stealth'
 
 describe('Monad / EVM Stealth Direct Payment Engine (#897)', () => {
@@ -93,758 +93,159 @@ describe('Monad / EVM Stealth Direct Payment Engine (#897)', () => {
     )
   })
 
-  describe('MonadStealthKeyring', () => {
-    it('registers and retrieves stealth accounts idempotently', async () => {
-      const keyring = new MonadStealthKeyring()
-
-      const record = {
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '22'.repeat(32),
-        ephemeralPubKey: '0x02' + '33'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 123456,
-        initialAmountWei: 10_000n,
-      }
-
-      expect(keyring.hasAccount(record.address)).toBe(false)
-      const added = await keyring.addAccount(record)
-      expect(added).toBe(true)
-      expect(keyring.hasAccount(record.address)).toBe(true)
-      expect(keyring.getAccount(record.address)?.privateKey).toBe(
-        record.privateKey,
-      )
-
-      // Duplicate registration returns false
-      const addedAgain = await keyring.addAccount(record)
-      expect(addedAgain).toBe(false)
-
-      expect(keyring.getAccounts('MONT')).toHaveLength(1)
-      expect(keyring.getAccounts('OTHER')).toHaveLength(0)
-    })
-
-    it('aggregates balances across registered stealth accounts', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-      })
-      await keyring.addAccount({
-        address: '0x2222222222222222222222222222222222222222',
-        privateKey: '0x' + '22'.repeat(32),
-        ephemeralPubKey: '0x02' + '22'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 200,
+  describe('the item a payment carries and the coin it becomes', () => {
+    const CHAIN_ID = 10143n
+    const recipient = new Wallet('0x' + '0b'.repeat(32))
+    const recipientSpendPubKey = getBytes(recipient.signingKey.compressedPublicKey)
+    const payer = new Wallet('0x' + '0a'.repeat(32))
+    const signedTransferTo = (to: string, value: bigint, chainId = CHAIN_ID) =>
+      payer.signTransaction({
+        type: 2,
+        chainId,
+        nonce: 0,
+        to,
+        value,
+        gasLimit: 21_000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
       })
 
-      const mockBalances = new Map<string, bigint>([
-        ['0x1111111111111111111111111111111111111111', 5_000n],
-        ['0x2222222222222222222222222222222222222222', 15_000n],
-      ])
-
-      const mockProvider = {
-        getBalance: jest.fn(async (addr: string) => {
-          return mockBalances.get(addr.toLowerCase()) ?? 0n
-        }),
-      } as any
-
-      const total = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(total).toBe(20_000n)
-    })
-
-    it('selects an account with sufficient balance for outbound spend', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
+    it('the recipient derives the coin of a payment from its item, pending and worth nothing', async () => {
+      const destination = deriveEvmStealthAddress({ recipientSpendPubKey })
+      const raw = await signedTransferTo(destination.stealthAddress, 5_000n)
+      const item = evmStealthItem({
         networkTag: 'MONT',
-        discoveredAtMs: 100,
+        ephemeralPubKey: destination.ephemeralPubKey,
+        rawTransaction: raw,
+        amountWei: 5_000n,
+        memo: 'lunch',
       })
-      await keyring.addAccount({
-        address: '0x2222222222222222222222222222222222222222',
-        privateKey: '0x' + '22'.repeat(32),
-        ephemeralPubKey: '0x02' + '22'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 200,
-      })
-
-      const mockBalances = new Map<string, bigint>([
-        ['0x1111111111111111111111111111111111111111', 2_000n],
-        ['0x2222222222222222222222222222222222222222', 10_000n],
-      ])
-
-      const mockProvider = {
-        getBalance: jest.fn(async (addr: string) => {
-          return mockBalances.get(addr.toLowerCase()) ?? 0n
-        }),
-      } as any
-
-      const selected = await keyring.selectAccountForSpend(
-        8_000n,
-        mockProvider,
-        'MONT',
-      )
-      expect(selected?.address.toLowerCase()).toBe(
-        '0x2222222222222222222222222222222222222222',
-      )
-
-      const none = await keyring.selectAccountForSpend(
-        50_000n,
-        mockProvider,
-        'MONT',
-      )
-      expect(none).toBeUndefined()
-    })
-  })
-
-  describe('buildEvmStealthPayment', () => {
-    it('derives stealth address, signs transfer, submits transaction, and creates StealthItem', async () => {
-      const recipient = Wallet.createRandom()
-      const recipientSpendPubKey = getBytes(
-        SigningKey.computePublicKey(recipient.privateKey, true),
-      )
-
-      const submitted: string[] = []
-      const mockHttpClient = {
-        submitRawTransaction: jest.fn(async (raw: string) => {
-          const hash = '0x' + 'aa'.repeat(32)
-          submitted.push(hash)
-          return hash
-        }),
-        destroy: jest.fn(),
-      }
-
-      const mockProvider = {
-        _perform: jest.fn(async (req: { method: string }) => {
-          if (req.method === 'getTransactionCount') return 0
-          if (req.method === 'estimateGas') return 21_000n
-          if (req.method === 'getGasPrice') return 1n
-          if (req.method === 'getPriorityFee') return 1n
-          if (req.method === 'getBalance') return 10n ** 18n
-          throw new Error(`Unexpected method: ${req.method}`)
-        }),
-        getBalance: jest.fn(async () => 10n ** 18n),
-        estimateGas: jest.fn(async () => 21_000n),
-        getFeeData: jest.fn(async () => ({
-          gasPrice: 1n,
-          maxFeePerGas: 2n,
-          maxPriorityFeePerGas: 1n,
-        })),
-        getTransactionCount: jest.fn(async () => 0),
-        getNetwork: jest.fn(async () => ({ chainId: 10143n })),
-      } as any
-
-      const senderWallet = Wallet.createRandom()
-      const walletHandle = {
-        mainAccount: senderWallet,
-        provider: mockProvider,
-        httpClient: mockHttpClient,
-        stealthKeyring: new MonadStealthKeyring(),
-      } as any
-
-      const result = await buildEvmStealthPayment({
-        wallet: walletHandle,
-        recipientSpendPubKey,
-        amountWei: 1_000_000n,
-        networkTag: 'MONT',
-        memo: 'secret coffee',
-      })
-
-      expect(mockHttpClient.submitRawTransaction).toHaveBeenCalled()
-      expect(result.txHash).toBe('0x' + 'aa'.repeat(32))
-      expect(result.stealthItem).toEqual({
+      expect(item).toEqual({
         type: 'stealth',
         networkTag: 'MONT',
         keyType: 1,
-        ephemeralPubKey: toHex(result.stealthDestination.ephemeralPubKey),
-        transactions: ['0x' + 'aa'.repeat(32)],
-        amount: 1_000_000,
-        memo: 'secret coffee',
-        chainId: 'MONT',
+        ephemeralPubKey: toHex(destination.ephemeralPubKey),
+        transactions: [raw.slice(2)],
+        amount: 5_000,
+        // The exact figure travels as a string: a JS number cannot hold most wei amounts.
+        amountWei: '5000',
+        memo: 'lunch',
       })
 
-      // Recipient can now derive the private key from the StealthItem
-      const recipientDerivation = deriveEvmStealthPrivateKey({
-        recipientSpendSecret: getBytes(recipient.privateKey),
-        ephemeralPubKey: fromHex(result.stealthItem.ephemeralPubKey!),
+      const coin = stealthCoinFromItem({
+        item,
+        recipientSpendSecret: recipient.privateKey,
+        payloadDigest: '0xAB' + 'cd'.repeat(31),
+        discoveredAtMs: 7,
+      })!
+      expect(coin).toEqual({
+        address: destination.stealthAddress.toLowerCase(),
+        privateKey: coin.privateKey,
+        origin: 'stealth',
+        state: 'pending',
+        amountWei: '0',
+        claimedAmountWei: '5000',
+        transactions: [raw.slice(2)],
+        payloadDigest: 'ab' + 'cd'.repeat(31),
+        ephemeralPubKey: toHex(destination.ephemeralPubKey),
+        discoveredAtMs: 7,
       })
-
-      expect(recipientDerivation.stealthAddress.toLowerCase()).toBe(
-        result.stealthDestination.stealthAddress.toLowerCase(),
-      )
-    })
-  })
-
-  describe('EVM Stealth Keyring & Spend Selection without sweeping', () => {
-    it('indexes received stealth payment into keyring and spends directly from it when main account has 0 balance', async () => {
-      // 1. Bob's wallet setup
-      const bobWallet = Wallet.createRandom()
-      const bobSpendSecret = getBytes(bobWallet.privateKey)
-      const bobSpendPubKey = getBytes(
-        SigningKey.computePublicKey(bobSpendSecret, true),
-      )
-
-      // 2. Alice sends 50,000 wei to Bob's stealth address
-      const stealthDestination = deriveEvmStealthAddress({
-        recipientSpendPubKey: bobSpendPubKey,
-      })
-      const stealthAddress = stealthDestination.stealthAddress
-
-      // 3. Recipient receives stealth item (e.g. from DM)
-      const stealthItem = {
-        type: 'stealth' as const,
-        networkTag: 'MONT',
-        keyType: 1 as const,
-        ephemeralPubKey: toHex(stealthDestination.ephemeralPubKey),
-        transactions: ['0x' + '33'.repeat(32)],
-        amount: 50_000,
-        memo: 'stealth transfer',
-      }
-
-      // 4. Bob's wallet derives the stealth private key and registers into keyring
-      const bobKeyring = new MonadStealthKeyring()
-      const derived = deriveEvmStealthPrivateKey({
-        recipientSpendSecret: bobSpendSecret,
-        ephemeralPubKey: fromHex(stealthItem.ephemeralPubKey),
-      })
-      await bobKeyring.addAccount({
-        address: derived.stealthAddress,
-        privateKey: derived.stealthPrivateKey,
-        ephemeralPubKey: stealthItem.ephemeralPubKey,
-        networkTag: stealthItem.networkTag,
-        discoveredAtMs: 1000,
-        initialAmountWei: BigInt(stealthItem.amount),
-        txHash: stealthItem.transactions[0],
-      })
-
-      expect(bobKeyring.hasAccount(stealthAddress)).toBe(true)
-
-      // 5. Mock provider where Bob's main account has 0 balance, but stealth address has 50,000 wei
-      const mockBalances = new Map<string, bigint>([
-        [bobWallet.address.toLowerCase(), 0n],
-        [stealthAddress.toLowerCase(), 50_000n],
-      ])
-
-      const mockProvider = {
-        _perform: jest.fn(async (req: { method: string; address?: string }) => {
-          if (req.method === 'getBalance') {
-            return mockBalances.get(req.address!.toLowerCase()) ?? 0n
-          }
-          if (req.method === 'getTransactionCount') return 0
-          if (req.method === 'estimateGas') return 21_000n
-          if (req.method === 'getGasPrice') return 1n
-          if (req.method === 'getPriorityFee') return 1n
-          throw new Error(`unexpected call ${req.method}`)
-        }),
-        getBalance: jest.fn(async (addr: string) => mockBalances.get(addr.toLowerCase()) ?? 0n),
-        estimateGas: jest.fn(async () => 21_000n),
-        getFeeData: jest.fn(async () => ({
-          gasPrice: 1n,
-          maxFeePerGas: 2n,
-          maxPriorityFeePerGas: 1n,
-        })),
-        getTransactionCount: jest.fn(async () => 0),
-        getNetwork: jest.fn(async () => ({ chainId: 10143n })),
-      } as any
-
-      // Check total aggregated balance
-      const mainBal = await mockProvider.getBalance(bobWallet.address)
-      const stealthBal = await bobKeyring.getTotalBalance(mockProvider, 'MONT')
-      const totalBalance = mainBal + stealthBal
-      expect(totalBalance).toBe(50_000n)
-
-      // 6. Spend outbound from Bob without sweeping first:
-      // Coin/account selector picks the funded stealth account because main account has 0 balance!
-      const selected = await bobKeyring.selectAccountForSpend(
-        30_000n,
-        mockProvider,
-        'MONT',
-      )
-      expect(selected).toBeDefined()
-      expect(selected!.address.toLowerCase()).toBe(stealthAddress.toLowerCase())
-      expect(selected!.privateKey).toBe(derived.stealthPrivateKey)
-
-      // Bob signs an outbound transfer directly from the stealth account!
-      const mockHttpClient = {
-        submitRawTransaction: jest.fn(async (raw: string) => {
-          return '0x' + 'bb'.repeat(32)
-        }),
-      }
-
-      const signer = new MonadAccountTxSigner({
-        privateKey: selected!.privateKey,
-        provider: mockProvider,
-        httpClient: mockHttpClient as any,
-      })
-
-      const charlie = Wallet.createRandom().address
-      const signed = await signer.buildAndSignTransfer(charlie, 30_000n)
-      const txHash = await mockHttpClient.submitRawTransaction(signed.rawTransaction)
-
-      expect(txHash).toBe('0x' + 'bb'.repeat(32))
-      const parsedWallet = new Wallet(selected!.privateKey)
-      expect(parsedWallet.address.toLowerCase()).toBe(stealthAddress.toLowerCase())
-    })
-  })
-
-  describe('UTXO inventory tracking & parallel balance resolution (#1170)', () => {
-    it('initializes account with default utxo metadata in addAccount', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 1234,
-        initialAmountWei: 10_000n,
-      })
-
-      const record = keyring.getAccount('0x1111111111111111111111111111111111111111')
-      expect(record).toBeDefined()
-      expect(record?.nonce).toBe(0)
-      expect(record?.isClean).toBe(true)
-      expect(record?.isSpent).toBe(false)
-      expect(record?.balanceWei).toBe(10_000n)
-      expect(record?.lastUpdatedMs).toBeDefined()
-    })
-
-    it('performs instant in-memory selection when cached balance is sufficient without network calls', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-        initialAmountWei: 50_000n,
-      })
-
-      const getBalanceSpy = jest.fn(async () => 0n)
-      const mockProvider = {
-        getBalance: getBalanceSpy,
-      } as any
-
-      const selected = await keyring.selectAccountForSpend(
-        30_000n,
-        mockProvider,
-        'MONT',
-      )
-
-      expect(selected).toBeDefined()
-      expect(selected?.address.toLowerCase()).toBe(
-        '0x1111111111111111111111111111111111111111',
-      )
-      // Zero network calls made because cached balance was sufficient!
-      expect(getBalanceSpy).not.toHaveBeenCalled()
-    })
-
-    it('recordSpend properly marks account as spent (isSpent === true, isClean === false, nonce === 1)', async () => {
-      const keyring = new MonadStealthKeyring()
-      const addr = '0x1111111111111111111111111111111111111111'
-      await keyring.addAccount({
-        address: addr,
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-        initialAmountWei: 50_000n,
-      })
-
-      const updated = await keyring.recordSpend(addr, {
-        valueWei: 20_000n,
-        txHash: '0x' + 'ff'.repeat(32),
-      })
-
-      expect(updated).toBeDefined()
-      expect(updated?.isSpent).toBe(true)
-      expect(updated?.isClean).toBe(false)
-      expect(updated?.nonce).toBe(1)
-      expect(updated?.balanceWei).toBe(30_000n)
-      expect(updated?.txHash).toBe('0x' + 'ff'.repeat(32))
-
-      const fetched = keyring.getAccount(addr)
-      expect(fetched?.isSpent).toBe(true)
-      expect(fetched?.isClean).toBe(false)
-      expect(fetched?.nonce).toBe(1)
-      expect(fetched?.balanceWei).toBe(30_000n)
-    })
-
-    it('skips spent accounts during subsequent selections', async () => {
-      const keyring = new MonadStealthKeyring()
-      const addr1 = '0x1111111111111111111111111111111111111111'
-      const addr2 = '0x2222222222222222222222222222222222222222'
-
-      await keyring.addAccount({
-        address: addr1,
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-        initialAmountWei: 100_000n,
-      })
-      await keyring.addAccount({
-        address: addr2,
-        privateKey: '0x' + '22'.repeat(32),
-        ephemeralPubKey: '0x02' + '22'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 200,
-        initialAmountWei: 40_000n,
-      })
-
-      // Mark addr1 as spent
-      await keyring.recordSpend(addr1, { valueWei: 100_000n })
-
-      const mockProvider = {
-        getBalance: jest.fn(async () => 100_000n),
-      } as any
-
-      // Even though addr1 has sufficient initial/queried balance, it must be skipped because isSpent === true!
-      const selected = await keyring.selectAccountForSpend(
-        30_000n,
-        mockProvider,
-        'MONT',
-      )
-      expect(selected?.address.toLowerCase()).toBe(addr2.toLowerCase())
-
-      // If we also mark addr2 as spent, none can be selected
-      await keyring.recordSpend(addr2, { valueWei: 40_000n })
-      const none = await keyring.selectAccountForSpend(
-        10_000n,
-        mockProvider,
-        'MONT',
-      )
-      expect(none).toBeUndefined()
-    })
-
-    it('queries balances in parallel when cached balance is insufficient', async () => {
-      const keyring = new MonadStealthKeyring()
-      const addr1 = '0x1111111111111111111111111111111111111111'
-      const addr2 = '0x2222222222222222222222222222222222222222'
-      const addr3 = '0x3333333333333333333333333333333333333333'
-
-      // Accounts have 0 cached balance
-      await keyring.addAccount({
-        address: addr1,
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-        initialAmountWei: 0n,
-      })
-      await keyring.addAccount({
-        address: addr2,
-        privateKey: '0x' + '22'.repeat(32),
-        ephemeralPubKey: '0x02' + '22'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 200,
-        initialAmountWei: 0n,
-      })
-      await keyring.addAccount({
-        address: addr3,
-        privateKey: '0x' + '33'.repeat(32),
-        ephemeralPubKey: '0x02' + '33'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 300,
-        initialAmountWei: 0n,
-      })
-
-      let activeQueries = 0
-      let maxConcurrentQueries = 0
-
-      const mockProvider = {
-        getBalance: jest.fn(async (addr: string) => {
-          activeQueries++
-          maxConcurrentQueries = Math.max(maxConcurrentQueries, activeQueries)
-          await new Promise(r => setTimeout(r, 20))
-          activeQueries--
-          if (addr.toLowerCase() === addr2.toLowerCase()) {
-            return 80_000n
-          }
-          return 5_000n
-        }),
-      } as any
-
-      const selected = await keyring.selectAccountForSpend(
-        50_000n,
-        mockProvider,
-        'MONT',
-      )
-
-      expect(selected?.address.toLowerCase()).toBe(addr2.toLowerCase())
-      expect(selected?.balanceWei).toBe(80_000n)
-      expect(maxConcurrentQueries).toBeGreaterThan(1)
-      expect(keyring.getAccount(addr2)?.balanceWei).toBe(80_000n)
-    })
-
-    it('buildEvmStealthPayment invokes recordSpend when spending from a stealth account', async () => {
-      const recipient = Wallet.createRandom()
-      const recipientSpendPubKey = getBytes(
-        SigningKey.computePublicKey(recipient.privateKey, true),
-      )
-
-      const mockHttpClient = {
-        submitRawTransaction: jest.fn(async () => '0x' + '99'.repeat(32)),
-        destroy: jest.fn(),
-      }
-
-      const stealthKp = Wallet.createRandom()
-      const stealthKeyring = new MonadStealthKeyring()
-      await stealthKeyring.addAccount({
-        address: stealthKp.address,
-        privateKey: stealthKp.privateKey,
-        ephemeralPubKey: '0x02' + '77'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-        initialAmountWei: 100_000n,
-      })
-
-      const mockProvider = {
-        _perform: jest.fn(async (req: { method: string }) => {
-          if (req.method === 'getTransactionCount') return 0
-          if (req.method === 'estimateGas') return 21_000n
-          if (req.method === 'getGasPrice') return 1n
-          if (req.method === 'getPriorityFee') return 1n
-          if (req.method === 'getBalance') return 0n // main account has 0
-          throw new Error(`Unexpected: ${req.method}`)
-        }),
-        getBalance: jest.fn(async () => 0n),
-        estimateGas: jest.fn(async () => 21_000n),
-        getFeeData: jest.fn(async () => ({
-          gasPrice: 1n,
-          maxFeePerGas: 2n,
-          maxPriorityFeePerGas: 1n,
-        })),
-        getTransactionCount: jest.fn(async () => 0),
-        getNetwork: jest.fn(async () => ({ chainId: 10143n })),
-      } as any
-
-      const walletHandle = {
-        mainAccount: Wallet.createRandom(),
-        provider: mockProvider,
-        httpClient: mockHttpClient,
-        stealthKeyring,
-      } as any
-
-      const res = await buildEvmStealthPayment({
-        wallet: walletHandle,
-        recipientSpendPubKey,
-        amountWei: 40_000n,
-        networkTag: 'MONT',
-      })
-
-      expect(res.txHash).toBe('0x' + '99'.repeat(32))
-
-      const stealthRecord = stealthKeyring.getAccount(stealthKp.address)
-      expect(stealthRecord?.isSpent).toBe(true)
-      expect(stealthRecord?.isClean).toBe(false)
-      expect(stealthRecord?.nonce).toBe(1)
-      expect(stealthRecord?.balanceWei).toBe(60_000n)
-      expect(stealthRecord?.txHash).toBe('0x' + '99'.repeat(32))
-    })
-  })
-
-  describe('Stealth balance caching and zero-RPC reads (#1214)', () => {
-    it('caches getTotalBalance across repeated calls and only queries provider once within TTL', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-      })
-      await keyring.addAccount({
-        address: '0x2222222222222222222222222222222222222222',
-        privateKey: '0x' + '22'.repeat(32),
-        ephemeralPubKey: '0x02' + '22'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 200,
-      })
-
-      const mockBalances = new Map<string, bigint>([
-        ['0x1111111111111111111111111111111111111111', 5_000n],
-        ['0x2222222222222222222222222222222222222222', 15_000n],
-      ])
-
-      const getBalance = jest.fn(async (addr: string) => {
-        return mockBalances.get(addr.toLowerCase()) ?? 0n
-      })
-      const mockProvider = { getBalance } as any
-
-      // First query: populates cache
-      const total1 = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(total1).toBe(20_000n)
-      expect(getBalance).toHaveBeenCalledTimes(2)
-
-      // Repeated queries within TTL window: returned from cache with zero provider calls
-      const total2 = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(total2).toBe(20_000n)
-      expect(getBalance).toHaveBeenCalledTimes(2)
-
-      const total3 = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(total3).toBe(20_000n)
-      expect(getBalance).toHaveBeenCalledTimes(2)
-    })
-
-    it('invalidates cache upon explicit invalidateBalanceCache', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-      })
-
-      const getBalance = jest.fn(async () => 5_000n)
-      const mockProvider = { getBalance } as any
-
-      await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(getBalance).toHaveBeenCalledTimes(1)
-
-      // Cache hit
-      await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(getBalance).toHaveBeenCalledTimes(1)
-
-      // Invalidation for networkTag
-      keyring.invalidateBalanceCache('MONT')
-
-      // Re-queries provider
-      await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(getBalance).toHaveBeenCalledTimes(2)
-
-      // Invalidation for all networkTags
-      keyring.invalidateBalanceCache()
-      await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(getBalance).toHaveBeenCalledTimes(3)
-    })
-
-    it('invalidates cache upon updateBalance', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-      })
-
-      let currentBalance = 5_000n
-      const getBalance = jest.fn(async () => currentBalance)
-      const mockProvider = { getBalance } as any
-
-      const initial = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(initial).toBe(5_000n)
-      expect(getBalance).toHaveBeenCalledTimes(1)
-
-      // External balance update invalidates cache
-      currentBalance = 12_000n
-      await keyring.updateBalance('0x1111111111111111111111111111111111111111', 12_000n)
-
-      const updated = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(updated).toBe(12_000n)
-      expect(getBalance).toHaveBeenCalledTimes(2)
-    })
-
-    it('invalidates cache upon account additions (addAccount and registerFromStealthItem)', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-      })
-
-      const mockBalances = new Map<string, bigint>([
-        ['0x1111111111111111111111111111111111111111', 5_000n],
-        ['0x2222222222222222222222222222222222222222', 7_000n],
-      ])
-      const getBalance = jest.fn(async (addr: string) => {
-        return mockBalances.get(addr.toLowerCase()) ?? 0n
-      })
-      const mockProvider = { getBalance } as any
-
-      const total1 = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(total1).toBe(5_000n)
-      expect(getBalance).toHaveBeenCalledTimes(1)
-
-      // Adding an account invalidates cache
-      await keyring.addAccount({
-        address: '0x2222222222222222222222222222222222222222',
-        privateKey: '0x' + '22'.repeat(32),
-        ephemeralPubKey: '0x02' + '22'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 200,
-      })
-
-      const total2 = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(total2).toBe(12_000n)
-      expect(getBalance).toHaveBeenCalledTimes(3)
-    })
-
-    it('invalidates cache upon recordSpend', async () => {
-      const keyring = new MonadStealthKeyring()
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
-        networkTag: 'MONT',
-        discoveredAtMs: 100,
-      })
-
-      const getBalance = jest.fn(async () => 5_000n)
-      const mockProvider = { getBalance } as any
-
-      await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(getBalance).toHaveBeenCalledTimes(1)
-
-      // Spending marks account as spent and clears cache
-      await keyring.recordSpend('0x1111111111111111111111111111111111111111', {
+      // The stored key is the one-time account's own.
+      expect(new Wallet(coin.privateKey).address.toLowerCase()).toBe(coin.address)
+      // The carried transfer is one the holder may broadcast: it pays this coin on this chain.
+      expect(
+        stealthItemTransfer(coin.transactions, coin.address, CHAIN_ID),
+      ).toEqual({
+        txHash: Transaction.from(raw).hash,
+        rawTransaction: raw,
         valueWei: 5_000n,
-        txHash: '0xabc',
       })
-
-      // Spent account is skipped; returns 0n
-      const totalAfterSpend = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(totalAfterSpend).toBe(0n)
     })
 
-    it('refetches from provider after TTL expiration', async () => {
-      const keyring = new MonadStealthKeyring(undefined, {
-        balanceCacheTtlMs: 40,
-      })
-      await keyring.addAccount({
-        address: '0x1111111111111111111111111111111111111111',
-        privateKey: '0x' + '11'.repeat(32),
-        ephemeralPubKey: '0x02' + '11'.repeat(32),
+    it('nobody else derives that coin: another key gives another account', async () => {
+      const destination = deriveEvmStealthAddress({ recipientSpendPubKey })
+      const item = evmStealthItem({
         networkTag: 'MONT',
-        discoveredAtMs: 100,
+        ephemeralPubKey: destination.ephemeralPubKey,
+        rawTransaction: await signedTransferTo(destination.stealthAddress, 1n),
+        amountWei: 1n,
       })
+      // The payer knows the ephemeral secret and the recipient's public key, and still cannot
+      // make the account's key: it needs the recipient's secret.
+      const asPayer = stealthCoinFromItem({
+        item,
+        recipientSpendSecret: payer.privateKey,
+        discoveredAtMs: 1,
+      })!
+      expect(asPayer.address).not.toBe(destination.stealthAddress.toLowerCase())
+    })
 
-      let bal = 1_000n
-      const getBalance = jest.fn(async () => bal)
-      const mockProvider = { getBalance } as any
+    it('the claim is kept exactly when the item carries the exact figure', async () => {
+      const destination = deriveEvmStealthAddress({ recipientSpendPubKey })
+      const exact = 1234567890123456789n
+      const item = evmStealthItem({
+        networkTag: 'MONT',
+        ephemeralPubKey: destination.ephemeralPubKey,
+        rawTransaction: await signedTransferTo(destination.stealthAddress, exact),
+        amountWei: exact,
+      })
+      expect(BigInt(item.amount)).not.toBe(exact)
+      const coin = stealthCoinFromItem({
+        item,
+        recipientSpendSecret: recipient.privateKey,
+        discoveredAtMs: 1,
+      })!
+      expect(coin.claimedAmountWei).toBe(exact.toString())
+    })
 
-      const res1 = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(res1).toBe(1_000n)
-      expect(getBalance).toHaveBeenCalledTimes(1)
+    it('only a plain transfer of money is a carried transfer: no call data, no zero value', async () => {
+      const address = deriveEvmStealthAddress({ recipientSpendPubKey }).stealthAddress
+      const zero = await signedTransferTo(address, 0n)
+      const call = await payer.signTransaction({
+        type: 2,
+        chainId: CHAIN_ID,
+        nonce: 0,
+        to: address,
+        value: 5n,
+        data: '0xdeadbeef',
+        gasLimit: 50_000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+      })
+      expect(stealthItemTransfer([zero.slice(2)], address, CHAIN_ID)).toBeUndefined()
+      expect(stealthItemTransfer([call.slice(2)], address, CHAIN_ID)).toBeUndefined()
+    })
 
-      // Within TTL: cached
-      const resCached = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(resCached).toBe(1_000n)
-      expect(getBalance).toHaveBeenCalledTimes(1)
+    it('a carried transaction that pays someone else, or another chain, is not broadcast', async () => {
+      const destination = deriveEvmStealthAddress({ recipientSpendPubKey })
+      const address = destination.stealthAddress
+      const elsewhere = await signedTransferTo(payer.address, 1n)
+      const otherChain = await signedTransferTo(address, 1n, 1n)
+      expect(stealthItemTransfer([elsewhere.slice(2)], address, CHAIN_ID)).toBeUndefined()
+      expect(stealthItemTransfer([otherChain.slice(2)], address, CHAIN_ID)).toBeUndefined()
+      expect(stealthItemTransfer(['zz', '1234'], address, CHAIN_ID)).toBeUndefined()
+      // A bare hash names a transfer and gives nothing to broadcast.
+      expect(stealthItemTransfer(['99'.repeat(32)], address, CHAIN_ID)).toEqual({
+        txHash: '0x' + '99'.repeat(32),
+      })
+    })
 
-      // Wait for TTL expiration
-      await new Promise((resolve) => setTimeout(resolve, 50))
-
-      bal = 2_000n
-      const res2 = await keyring.getTotalBalance(mockProvider, 'MONT')
-      expect(res2).toBe(2_000n)
-      expect(getBalance).toHaveBeenCalledTimes(2)
+    it('an item for another curve or with a malformed key is no coin', () => {
+      const base = { transactions: [], amount: 1 }
+      expect(
+        stealthCoinFromItem({
+          item: { ...base, keyType: 2, ephemeralPubKey: '11'.repeat(32) },
+          recipientSpendSecret: recipient.privateKey,
+          discoveredAtMs: 1,
+        }),
+      ).toBeUndefined()
+      expect(
+        stealthCoinFromItem({
+          item: { ...base, keyType: 1, ephemeralPubKey: '02' + '00'.repeat(32) },
+          recipientSpendSecret: recipient.privateKey,
+          discoveredAtMs: 1,
+        }),
+      ).toBeUndefined()
     })
   })
 })

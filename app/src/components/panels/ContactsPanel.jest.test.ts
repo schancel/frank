@@ -15,7 +15,7 @@ jest.mock('vue-router', () => ({
   }),
 }))
 
-const mockDeleteContact = jest.fn()
+const mockDeleteContact = jest.fn(async () => undefined)
 const mockAddContact = jest.fn()
 const mockContacts = ref<Record<string, any>>({
   '0x1111111111111111111111111111111111111111': {

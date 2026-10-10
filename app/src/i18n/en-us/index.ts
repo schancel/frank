@@ -685,6 +685,8 @@ export default {
     sentTransaction: 'Sent transaction',
     unexpectedError: 'Something went wrong. Please try again.',
     viewAction: 'View',
+    messagesKeptForFunds:
+      'Not deleted: money these messages brought could not be moved to your wallet yet. Try again in a moment.',
   },
   chatRightDrawer: {
     stampPrice: 'Stamp Price',
@@ -698,17 +700,23 @@ export default {
   },
   sendStealthDialog: {
     sendStealthTo: 'Send Stealth to',
-    subtitle: 'Encrypted direct transfer (invisible to relay)',
-    chainLabel: 'Chain',
-    walletLabel: 'Wallet',
+    subtitle:
+      'Paid from your wallet to a one-time address only this contact can spend from',
     balanceLabel: 'Spendable Balance:',
-    amountHint: 'Amount to send in message payload',
+    amountHint: 'Amount to pay',
     amountPlaceholder: '0.0',
-    memoHint: 'Encrypted message memo (optional)',
+    memoHint: 'Memo, sent with the payment (optional)',
     memoPlaceholder: 'Enter memo...',
     sendBtnLabel: 'Send Stealth',
     cancelBtnLabel: 'Cancel',
-    dustLimitError: 'Amount must be at least {min} {unit} (dust limit)',
+    sent: 'Payment sent',
+    pending:
+      'Payment saved. Its message is still being delivered; it is paid when the message arrives. Do not send it again.',
+    notSent: 'The payment could not be made. Nothing was sent.',
+    messageEnded:
+      'The payment is saved, and its message could not be delivered. Open the chat with this contact and retry the message: nothing has been paid, and nothing is paid twice.',
+    tooLarge:
+      'This payment is larger than a single contact payment can carry (about {max} {unit}); send it in parts.',
   },
   offerSwapDialog: {
     title: 'Offer Atomic Swap to',
@@ -742,14 +750,42 @@ export default {
     statusExpired: 'Expired',
     processing: 'Processing...',
   },
+  heldContactPayments: {
+    title: 'Payments to contacts in progress',
+    finish: 'Finish',
+    state: {
+      prepared:
+        'Signed. Waiting for its message to be delivered; its funds are held.',
+      delivered: 'Message delivered. The payment is on its way to the chain.',
+      failed:
+        'Its message could not be delivered. The payment is kept; its funds are held.',
+    },
+  },
   chatMessageStealth: {
     title: 'Stealth Payment',
     sentTitle: 'Sent Stealth Payment',
     receivedTitle: 'Received Stealth Payment',
-    confirmed: 'Confirmed',
     viewInExplorer: 'View transaction in block explorer',
     viewTransaction: 'View transaction',
-    directCreditHint: 'Indexed into spendable balance',
+    sent: 'Sent',
+    pending: 'Pending',
+    received: 'Received',
+    unverified: 'Not checked',
+    pendingHint:
+      'Waiting for the chain to show this payment. It is not in your balance yet.',
+    spendableHint: 'In your spendable balance',
+    spentHint: 'Received, and spent since',
+    unverifiedHint:
+      'Your wallet has not checked this payment against the chain.',
+    statedAmount: 'The sender stated {stated}; the chain shows {actual}.',
+    notReceived: 'Payment not received',
+    notReceivedHint:
+      'The sender claimed this payment, and the chain shows no such transfer. It is not in your balance. Your wallet keeps checking.',
+    failed: 'Payment failed',
+    failedHint:
+      'This payment can never arrive: its transaction failed or was replaced. It is not in your balance.',
+    claimedAmount: 'claimed',
+    notReceivedNotice: 'A payment a sender claimed ({amount}) did not arrive.',
   },
   setup: {
     loginOrSignUp: 'Login/Sign Up',
@@ -1058,7 +1094,7 @@ export default {
     reviewTransfer: 'Review Transfer',
     recipient: 'Recipient',
     stealthNotice:
-      'Sent via Dual-Key Stealth Address (DKSAP) for complete on-chain privacy.',
+      'Paid to a one-time address only this contact can spend from. A message tells their wallet where the money is.',
     confirmAndSend: 'Confirm & Send',
     sending: 'Sending...',
     cancel: 'Cancel',
@@ -1066,6 +1102,14 @@ export default {
     edit: 'Edit',
     invalidAmount: 'Please enter a valid amount',
     missingSpendKey: 'Contact does not have a registered stealth public key',
+    sent: 'Payment sent',
+    pending:
+      'Payment saved. Its message is still being delivered; it is paid when the message arrives. Do not send it again.',
+    notSent: 'The payment could not be made. Nothing was sent.',
+    messageEnded:
+      'The payment is saved, and its message could not be delivered. Open the chat with this contact and retry the message: nothing has been paid, and nothing is paid twice.',
+    tooLarge:
+      'This payment is larger than a single contact payment can carry (about {max} {unit}); send it in parts.',
   },
   contactBookDialog: {
     contacts: 'Contacts',

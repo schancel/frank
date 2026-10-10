@@ -173,24 +173,34 @@ export type {
   LegacySendResult,
   ContactSendProgress,
   ContactSendResult,
+  ContactSendParams,
+  ContactPaymentInfo,
+  PreparedContactPayment,
+  ReceivedPayment,
+  ReceivedPaymentStatus,
+  ReceivedCoinSweep,
+  MessagePayment,
+} from "./active-chain";
+export {
+  ContactPaymentPendingError,
+  ContactPaymentFailedError,
+  ContactPaymentReleasedError,
+  ContactPaymentTooLargeError,
+  MAX_STEALTH_ITEM_AMOUNT,
 } from "./active-chain";
 
 export type { NativeTransactionAttemptStore } from "./chain-wallet";
 
 export {
-  MonadStealthKeyring,
-  MemoryMonadStealthKeyringStore,
   deriveEvmStealthAddress,
   deriveEvmStealthPrivateKey,
-  buildEvmStealthPayment,
+  evmStealthItem,
+  stealthCoinFromItem,
+  stealthItemTransfer,
 } from "../monad-stealth";
 export type {
   EvmStealthDestination,
   EvmStealthDerivedAccount,
-  StealthAccountRecord,
-  MonadStealthKeyringStore,
-  BuildEvmStealthPaymentParams,
-  EvmStealthPaymentResult,
 } from "../monad-stealth";
 
 export {

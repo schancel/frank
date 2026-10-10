@@ -261,6 +261,7 @@ import { openChat, openContactProfile, openPage } from 'src/utils/routes'
 import { isNarrowWidth } from 'src/utils/layout'
 import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
 import { isOwnAddress } from 'src/utils/own-address'
+import { notifyDeleteFailure } from 'src/utils/sweep-on-delete'
 import {
   searchMonadProfiles,
   decodeProfileBytes,
@@ -594,7 +595,9 @@ export default defineComponent({
     }
 
     function deleteContact(address: string) {
-      contactStore.deleteContact(address)
+      // The contact's history is deleted first; a message whose money could not be moved to
+      // the wallet stays, the contact with it, and the reason is shown.
+      contactStore.deleteContact(address).catch(notifyDeleteFailure)
     }
 
     return {

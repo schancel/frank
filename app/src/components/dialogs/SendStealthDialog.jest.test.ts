@@ -4,7 +4,7 @@ import { ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import SendStealthDialog from './SendStealthDialog.vue'
 import enUS from '../../i18n/en-us'
-import { useWalletNames } from '../../composables/useWalletNames'
+import { activeChain } from '@frank/wallet/chain'
 
 const mockBalance = ref(2500000000000000000n)
 const mockFormattedBalance = ref('2.50 MON')
@@ -67,72 +67,43 @@ describe('SendStealthDialog', () => {
   }
 
   beforeEach(() => {
-    const { clearAllCustomNames } = useWalletNames()
-    clearAllCustomNames()
+    mockLoaded.value = true
   })
 
-  it('renders contact name and defaults to monad wallet', () => {
+  it('names the contact and pays in the wallet own unit: no other wallet is offered', () => {
     const wrapper = mountDialog()
     expect(wrapper.text()).toContain('Alice')
-    expect((wrapper.vm as any).selectedWalletId).toBe('monad')
-    expect((wrapper.vm as any).currentUnit).toBe('MONT')
+    expect((wrapper.vm as any).currentUnit).toBe(activeChain.unit)
+    expect(wrapper.find('[data-testid="stealth-wallet-select"]').exists()).toBe(
+      false,
+    )
   })
 
-  it('displays spendable balance for current wallet', () => {
+  it('shows the wallet real balance, and no figure at all while it is not known', async () => {
     const wrapper = mountDialog()
     expect(wrapper.find('[data-testid="wallet-balance-value"]').text()).toBe(
       '2.50 MON',
     )
+    mockLoaded.value = false
+    await wrapper.vm.$nextTick()
+    const unknown = wrapper.find('[data-testid="wallet-balance-value"]').text()
+    expect(unknown).toBe('…')
+    expect(unknown).not.toMatch(/\d/)
   })
 
-  it('disables send button when amount is empty or non-positive', () => {
+  it('cannot send an empty, zero, negative or unparseable amount', async () => {
     const wrapper = mountDialog()
-    expect((wrapper.vm as any).canSend).toBe(false)
+    for (const amount of ['', '0', '-1', 'abc']) {
+      await wrapper.setData({ amount })
+      expect((wrapper.vm as any).canSend).toBe(false)
+      ;(wrapper.vm as any).sendStealth()
+    }
+    expect(wrapper.emitted('send')).toBeUndefined()
   })
 
-  it('switches wallet to solana and updates unit, curve, and keyType', async () => {
+  it('emits the amount in the chain base unit and the memo: what the wallet needs to pay', async () => {
     const wrapper = mountDialog()
-    await wrapper.setData({ selectedWalletId: 'solana' })
-
-    expect((wrapper.vm as any).selectedWallet.chain).toBe('solana')
-    expect((wrapper.vm as any).selectedWallet.curve).toBe('ed25519')
-    expect((wrapper.vm as any).selectedWallet.keyType).toBe(2)
-    expect((wrapper.vm as any).currentUnit).toBe('tSOL')
-    expect((wrapper.vm as any).selectedWallet.minDust).toBe(0.00089)
-  })
-
-  it('enforces dust limit on Solana (< 0.00089 SOL)', async () => {
-    const wrapper = mountDialog()
-    await wrapper.setData({
-      selectedWalletId: 'solana',
-      amount: '0.0001',
-    })
-
-    expect((wrapper.vm as any).isBelowDustLimit).toBe(true)
-    expect((wrapper.vm as any).canSend).toBe(false)
-    expect(wrapper.text()).toContain(
-      'Amount must be at least 0.00089 tSOL (dust limit)',
-    )
-  })
-
-  it('allows valid amount above dust limit and enables send button', async () => {
-    const wrapper = mountDialog()
-    await wrapper.setData({
-      selectedWalletId: 'solana',
-      amount: '0.05',
-    })
-
-    expect((wrapper.vm as any).isBelowDustLimit).toBe(false)
-    expect((wrapper.vm as any).canSend).toBe(true)
-  })
-
-  it('emits send with multi-chain payload when confirmed', async () => {
-    const wrapper = mountDialog()
-    await wrapper.setData({
-      selectedWalletId: 'solana',
-      amount: '2.5',
-      memo: 'Secret bet cover',
-    })
+    await wrapper.setData({ amount: '2.5', memo: '  lunch  ' })
     expect((wrapper.vm as any).canSend).toBe(true)
     ;(wrapper.vm as any).sendStealth()
 
@@ -140,26 +111,25 @@ describe('SendStealthDialog', () => {
     expect(emitted).toHaveLength(1)
     expect(emitted![0][0]).toEqual({
       address: '0xAlice',
-      chainId: 'solana-devnet',
-      amount: 2.5,
-      memo: 'Secret bet cover',
-      wallet: 'solana',
-      walletName: 'Solana Testnet',
-      networkTag: 'solana-devnet',
-      chain: 'solana',
-      curve: 'ed25519',
-      keyType: 2,
-      unit: 'tSOL',
+      value: activeChain.fromDisplayAmount('2.5'),
+      memo: 'lunch',
     })
+    expect(activeChain.fromDisplayAmount('2.5')).toBe(
+      2_500_000_000_000_000_000n,
+    )
   })
 
-  it('reflects custom wallet names from useWalletNames', () => {
-    const { setCustomName } = useWalletNames()
-    setCustomName('solana', 'My Secret Solana Vault')
-
+  it('says before sending that an amount is more than one contact payment can carry', async () => {
     const wrapper = mountDialog()
-    const options = (wrapper.vm as any).walletOptions
-    const solanaOption = options.find((o: any) => o.value === 'solana')
-    expect(solanaOption.label).toBe('My Secret Solana Vault')
+    await wrapper.setData({ amount: '18' })
+    expect((wrapper.vm as any).canSend).toBe(true)
+    await wrapper.setData({ amount: '19' })
+    expect((wrapper.vm as any).tooLarge).toBe(true)
+    expect((wrapper.vm as any).canSend).toBe(false)
+    expect(wrapper.text()).toContain(
+      `This payment is larger than a single contact payment can carry (about 18.4 ${activeChain.unit}); send it in parts.`,
+    )
+    ;(wrapper.vm as any).sendStealth()
+    expect(wrapper.emitted('send')).toBeUndefined()
   })
 })

@@ -1,8 +1,10 @@
 /**
- * Monad and EVM stealth direct payment engine (STEALTH-4).
+ * EVM stealth payments: the one-time address a sender derives for a contact, the key only that
+ * contact can derive for it, and the message item that carries what the contact needs.
  *
- * Implements DKSAP / secp256k1 ECDH stealth address derivation, transaction creation,
- * and recipient spendable keyring indexing without sweeping on receipt.
+ * Nothing here sends, signs or stores. A payment to a contact is sent by the wallet
+ * (`sendToContact` in `chain/monad-chain.ts`), and a received one is recorded as a coin in the
+ * wallet's coin store (`storage/evm-coin-store.ts`).
  */
 import {
   computeAddress,
@@ -10,8 +12,7 @@ import {
   hexlify,
   randomBytes,
   SigningKey,
-  Wallet,
-  type Provider,
+  Transaction,
 } from 'ethers'
 import { fromHex, toHex } from '@frank/codec'
 import { stealthSharedPoint } from '@frank/cashweb/relay/stealth-shared'
@@ -19,8 +20,7 @@ import { stealthPointDigest } from '@frank/cashweb/relay/stealth-point-digest'
 import { stealthParentPublicKey } from '@frank/cashweb/relay/stealth-public'
 import { stealthParentSecret } from '@frank/cashweb/relay/stealth-parent'
 import type { StealthItem } from '@frank/cashweb/types/messages'
-import { MonadAccountTxSigner, type MonadTxSubmitter } from './monad-account-tx'
-import type { EvmChainWalletHandle } from "./evm-wallet-handle";
+import type { EvmCoin } from './storage/evm-coin-store'
 const SECP256K1_ORDER =
   0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 
@@ -36,21 +36,6 @@ export interface EvmStealthDerivedAccount {
   readonly stealthAddress: string
   readonly stealthPrivateKey: string
   readonly stealthPublicKey: Uint8Array
-}
-
-export interface StealthAccountRecord {
-  readonly address: string
-  readonly privateKey: string
-  readonly ephemeralPubKey: string
-  readonly networkTag: string
-  readonly discoveredAtMs: number
-  readonly initialAmountWei?: bigint
-  readonly txHash?: string
-  readonly nonce?: number
-  readonly isClean?: boolean
-  readonly isSpent?: boolean
-  readonly balanceWei?: bigint
-  readonly lastUpdatedMs?: number
 }
 
 function randomScalar(): Uint8Array {
@@ -145,417 +130,104 @@ export function deriveEvmStealthPrivateKey(params: {
   }
 }
 
-export interface MonadStealthKeyringStore {
-  get(address: string): StealthAccountRecord | undefined
-  put(record: StealthAccountRecord): Promise<void> | void
-  all(): StealthAccountRecord[]
-  close?(): Promise<void> | void
+const bare = (hex: string): string =>
+  (hex.startsWith('0x') ? hex.slice(2) : hex).toLowerCase()
+
+/** The stealth item for a signed transfer to a one-time address. It carries the whole signed
+ * transaction, so whoever holds the message can put the transfer on the chain: delivery of the
+ * message is delivery of the money. `amount` is the sender's statement, for display. */
+export function evmStealthItem(params: {
+  networkTag: string
+  ephemeralPubKey: Uint8Array
+  rawTransaction: string
+  amountWei: bigint
+  memo?: string
+}): StealthItem {
+  return {
+    type: 'stealth',
+    networkTag: params.networkTag,
+    keyType: 1,
+    ephemeralPubKey: toHex(params.ephemeralPubKey),
+    transactions: [bare(params.rawTransaction)],
+    amount: Number(params.amountWei),
+    amountWei: params.amountWei.toString(),
+    ...(params.memo ? { memo: params.memo } : {}),
+  }
 }
 
-export class MemoryMonadStealthKeyringStore implements MonadStealthKeyringStore {
-  private readonly records = new Map<string, StealthAccountRecord>()
-
-  get(address: string): StealthAccountRecord | undefined {
-    return this.records.get(address.toLowerCase())
-  }
-
-  put(record: StealthAccountRecord): void {
-    this.records.set(record.address.toLowerCase(), { ...record })
-  }
-
-  all(): StealthAccountRecord[] {
-    return [...this.records.values()]
-  }
-}
-
-export const DEFAULT_STEALTH_BALANCE_CACHE_TTL_MS = 45_000
-
-export interface MonadStealthKeyringOptions {
-  balanceCacheTtlMs?: number
-  onAccountAdded?: (record: StealthAccountRecord) => void
-  onSpendRecorded?: (record: StealthAccountRecord) => void
-  onBalanceUpdated?: (record: StealthAccountRecord) => void
-}
-
-/**
- * Keyring managing discovered stealth accounts without sweeping.
- * Funds stay in individual stealth accounts; the wallet spends directly from them.
- */
-export class MonadStealthKeyring {
-  private readonly store: MonadStealthKeyringStore
-  private readonly balanceCacheTtlMs: number
-  private readonly options?: MonadStealthKeyringOptions
-  private readonly balanceCache = new Map<
-    string,
-    { balance: bigint; cachedAtMs: number }
-  >()
-  private readonly inFlightQueries = new Map<string, Promise<bigint>>()
-
-  constructor(
-    store?: MonadStealthKeyringStore,
-    options?: MonadStealthKeyringOptions,
-  ) {
-    this.store = store ?? new MemoryMonadStealthKeyringStore()
-    this.balanceCacheTtlMs =
-      options?.balanceCacheTtlMs ?? DEFAULT_STEALTH_BALANCE_CACHE_TTL_MS
-    this.options = options
-  }
-
-  private normalizeTag(networkTag?: string): string {
-    return networkTag ? networkTag.toLowerCase() : '__all__'
-  }
-
-  /**
-   * Invalidate in-memory total balance cache for a given networkTag or all tags.
-   */
-  invalidateBalanceCache(networkTag?: string): void {
-    if (networkTag) {
-      this.balanceCache.delete(networkTag.toLowerCase())
-      this.balanceCache.delete('__all__')
-      this.inFlightQueries.delete(networkTag.toLowerCase())
-      this.inFlightQueries.delete('__all__')
-    } else {
-      this.balanceCache.clear()
-      this.inFlightQueries.clear()
-    }
-  }
-
-  async addAccount(record: StealthAccountRecord): Promise<boolean> {
-    const existing = this.store.get(record.address)
-    if (existing !== undefined) {
-      return false
-    }
-    const fullRecord: StealthAccountRecord = {
-      ...record,
-      nonce: record.nonce ?? 0,
-      isClean: record.isClean ?? true,
-      isSpent: record.isSpent ?? false,
-      balanceWei: record.balanceWei ?? record.initialAmountWei ?? 0n,
-      lastUpdatedMs:
-        record.lastUpdatedMs ?? record.discoveredAtMs ?? Date.now(),
-    }
-    await this.store.put(fullRecord)
-    this.invalidateBalanceCache(record.networkTag)
-    this.options?.onAccountAdded?.(fullRecord)
-    return true
-  }
-
-  async recordSpend(
-    address: string,
-    details?: { valueWei?: bigint; txHash?: string },
-  ): Promise<StealthAccountRecord | undefined> {
-    const record = this.store.get(address)
-    if (!record) {
-      return undefined
-    }
-    const deduct = details?.valueWei ?? 0n
-    const currentBalance = record.balanceWei ?? 0n
-    const newBalance = currentBalance >= deduct ? currentBalance - deduct : 0n
-    const updated: StealthAccountRecord = {
-      ...record,
-      isSpent: true,
-      isClean: false,
-      nonce: (record.nonce ?? 0) + 1,
-      balanceWei: newBalance,
-      lastUpdatedMs: Date.now(),
-      ...(details?.txHash ? { txHash: details.txHash } : {}),
-    }
-    await this.store.put(updated)
-    this.invalidateBalanceCache(record.networkTag)
-    this.options?.onSpendRecorded?.(updated)
-    return updated
-  }
-
-  async updateBalance(
-    address: string,
-    balance: bigint,
-  ): Promise<StealthAccountRecord | undefined> {
-    const record = this.store.get(address)
-    if (!record) {
-      return undefined
-    }
-    const updated: StealthAccountRecord = {
-      ...record,
-      balanceWei: balance,
-      lastUpdatedMs: Date.now(),
-    }
-    await this.store.put(updated)
-    this.invalidateBalanceCache(record.networkTag)
-    this.options?.onBalanceUpdated?.(updated)
-    return updated
-  }
-
-  hasAccount(address: string): boolean {
-    return this.store.get(address) !== undefined
-  }
-
-  getAccount(address: string): StealthAccountRecord | undefined {
-    return this.store.get(address)
-  }
-
-  getAccounts(networkTag?: string): StealthAccountRecord[] {
-    const all = this.store.all()
-    if (!networkTag) return all
-    return all.filter(
-      r => r.networkTag.toLowerCase() === networkTag.toLowerCase(),
-    )
-  }
-
-  /**
-   * Sums the spendable on-chain balance of all registered stealth accounts for a given network.
-   * Skips spent accounts. Caches result in-memory with a TTL per networkTag.
-   */
-  async getTotalBalance(
-    provider: Provider,
-    networkTag?: string,
-  ): Promise<bigint> {
-    const cacheKey = this.normalizeTag(networkTag)
-    const cached = this.balanceCache.get(cacheKey)
-    if (cached && Date.now() - cached.cachedAtMs < this.balanceCacheTtlMs) {
-      return cached.balance
-    }
-
-    const running = this.inFlightQueries.get(cacheKey)
-    if (running) {
-      return running
-    }
-
-    const queryPromise = (async () => {
-      try {
-        const accounts = this.getAccounts(networkTag).filter(a => !a.isSpent)
-        if (accounts.length === 0) {
-          this.balanceCache.set(cacheKey, { balance: 0n, cachedAtMs: Date.now() })
-          return 0n
-        }
-
-        const balances = await Promise.all(
-          accounts.map(async account => {
-            try {
-              const bal = await provider.getBalance(account.address)
-              await this.updateBalance(account.address, bal)
-              return bal
-            } catch {
-              return 0n
-            }
-          }),
-        )
-
-        const total = balances.reduce((sum, b) => sum + b, 0n)
-        this.balanceCache.set(cacheKey, { balance: total, cachedAtMs: Date.now() })
-        return total
-      } finally {
-        this.inFlightQueries.delete(cacheKey)
-      }
-    })()
-
-    this.inFlightQueries.set(cacheKey, queryPromise)
-    return queryPromise
-  }
-
-  /**
-   * Discovers and indexes a stealth account from an incoming StealthItem (keyType === 1).
-   */
-  async registerFromStealthItem(params: {
-    item: StealthItem
-    recipientSpendSecret: Uint8Array | string
-    timestampMs?: number
-  }): Promise<EvmStealthDerivedAccount | undefined> {
-    if (params.item.keyType !== 1 || !params.item.ephemeralPubKey) {
-      return undefined
-    }
-    const ephPubBytes = fromHex(
-      params.item.ephemeralPubKey.startsWith('0x')
-        ? params.item.ephemeralPubKey.slice(2)
-        : params.item.ephemeralPubKey,
-    )
-    const derived = deriveEvmStealthPrivateKey({
-      recipientSpendSecret: params.recipientSpendSecret,
-      ephemeralPubKey: ephPubBytes,
-    })
-    await this.addAccount({
-      address: derived.stealthAddress,
-      privateKey: derived.stealthPrivateKey,
-      ephemeralPubKey: params.item.ephemeralPubKey,
-      networkTag: params.item.networkTag ?? 'MONT',
-      discoveredAtMs: params.timestampMs ?? Date.now(),
-      initialAmountWei:
-        params.item.amount !== undefined ? BigInt(params.item.amount) : undefined,
-      txHash: params.item.transactions?.[0],
-    })
-    return derived
-  }
-
-  /**
-   * Selects a single stealth account with sufficient balance to cover `neededWei`.
-   * First pass: in-memory O(1) selection against unspent accounts with cached balance >= neededWei.
-   * Second pass: bounded parallel verification of remaining unspent accounts.
-   */
-  async selectAccountForSpend(
-    neededWei: bigint,
-    provider: Provider,
-    networkTag?: string,
-  ): Promise<StealthAccountRecord | undefined> {
-    const accounts = this.getAccounts(networkTag)
-
-    // First pass (In-Memory O(1) selection): check all accounts for networkTag.
-    // If an account has !account.isSpent && (account.balanceWei ?? 0n) >= neededWei,
-    // select and return it immediately without any network calls!
-    for (const account of accounts) {
-      if (!account.isSpent && (account.balanceWei ?? 0n) >= neededWei) {
-        return account
-      }
-    }
-
-    // Second pass (Parallel Bounded Verification): if no cached account has enough balance,
-    // filter out accounts where isSpent === true.
-    const candidateAccounts = accounts.filter(account => !account.isSpent)
-    if (candidateAccounts.length === 0) {
-      return undefined
-    }
-
-    // Query balances concurrently in chunks of 6 using Promise.all
-    const CHUNK_SIZE = 6
-    for (let i = 0; i < candidateAccounts.length; i += CHUNK_SIZE) {
-      const chunk = candidateAccounts.slice(i, i + CHUNK_SIZE)
-      const results = await Promise.all(
-        chunk.map(async account => {
-          try {
-            const bal = await provider.getBalance(account.address)
-            await this.updateBalance(account.address, bal)
-            return { account, balance: bal }
-          } catch {
-            return { account, balance: 0n }
-          }
-        }),
+/** The transfer a stealth item names: a signed plain transfer of a positive value to `address` on
+ * `chainId` (which the holder may broadcast), or only a hash (which proves nothing by itself: the
+ * chain must show what that transaction pays). Anything else is not a transfer to this coin. */
+export function stealthItemTransfer(
+  transactions: readonly string[],
+  address: string,
+  chainId: bigint,
+): { txHash: string; rawTransaction?: string; valueWei?: bigint } | undefined {
+  for (const entry of transactions) {
+    const hex = bare(entry)
+    if (/^[0-9a-f]{64}$/.test(hex)) return { txHash: '0x' + hex }
+    try {
+      const tx = Transaction.from('0x' + hex)
+      // A plain transfer of money to this account on this chain, and nothing else: no call
+      // data, no zero value. Only such bytes are ever handed to a node by the recipient.
+      if (
+        tx.hash !== null &&
+        tx.signature !== null &&
+        tx.to?.toLowerCase() === address.toLowerCase() &&
+        tx.chainId === chainId &&
+        tx.data === '0x' &&
+        tx.value > 0n
       )
-
-      for (const res of results) {
-        if (res.balance >= neededWei) {
-          return (
-            this.getAccount(res.account.address) ?? {
-              ...res.account,
-              balanceWei: res.balance,
-            }
-          )
+        return {
+          txHash: tx.hash,
+          rawTransaction: tx.serialized,
+          valueWei: tx.value,
         }
-      }
+    } catch {
+      /* not a transaction */
     }
+  }
+  return undefined
+}
 
+/** The coin a received secp256k1 stealth item describes for the holder of `recipientSpendSecret`:
+ * the one-time account, its key, and the sender's stated amount. Pending: nothing is known about
+ * the chain yet. Undefined when the item is not an EVM stealth item or its key is malformed. */
+export function stealthCoinFromItem(params: {
+  item: Pick<
+    StealthItem,
+    'keyType' | 'ephemeralPubKey' | 'transactions' | 'amount' | 'amountWei'
+  >
+  recipientSpendSecret: Uint8Array | string
+  payloadDigest?: string
+  discoveredAtMs: number
+}): EvmCoin | undefined {
+  const { item } = params
+  if ((item.keyType ?? 1) !== 1 || !item.ephemeralPubKey) return undefined
+  let derived: EvmStealthDerivedAccount
+  let claimed: bigint
+  try {
+    derived = deriveEvmStealthPrivateKey({
+      recipientSpendSecret: params.recipientSpendSecret,
+      ephemeralPubKey: fromHex(bare(item.ephemeralPubKey)),
+    })
+    // The exact figure when the item carries it; a JS number cannot hold most wei amounts.
+    claimed = BigInt(item.amountWei ?? item.amount ?? 0)
+  } catch {
     return undefined
   }
-}
-
-export interface BuildEvmStealthPaymentParams {
-  wallet: EvmChainWalletHandle
-  recipientSpendPubKey: Uint8Array
-  amountWei: bigint
-  networkTag?: string
-  memo?: string
-  fromAddress?: string
-}
-
-export interface EvmStealthPaymentResult {
-  stealthDestination: EvmStealthDestination
-  txHash: string
-  rawTransaction: string
-  stealthItem: StealthItem
-}
-
-/**
- * Builds, signs, and broadcasts an on-chain EVM transfer to an ephemeral DKSAP stealth address.
- * Generates the corresponding StealthItem to include in direct messages.
- */
-export async function buildEvmStealthPayment(
-  params: BuildEvmStealthPaymentParams,
-): Promise<EvmStealthPaymentResult> {
-  const { wallet, recipientSpendPubKey, amountWei } = params
-  if (amountWei <= 0n) {
-    throw new Error('Transfer amount must be positive')
-  }
-
-  // 1. Derive one-time stealth destination address
-  const stealthDestination = deriveEvmStealthAddress({ recipientSpendPubKey })
-
-  // 2. Select funding account (main account or an un-swept stealth account)
-  let fundingPrivateKey =
-    wallet.identity?.toPrivateKeyHex() ??
-    (wallet as any).mainAccount?.privateKey
-  let selectedStealthAddress: string | undefined
-  if (params.fromAddress) {
-    const custom = wallet.stealthKeyring?.getAccount(params.fromAddress)
-    if (custom) {
-      fundingPrivateKey = custom.privateKey
-      selectedStealthAddress = custom.address
-    } else if (
-      params.fromAddress.toLowerCase() !==
-      (
-        wallet.identity?.address.raw ??
-        (wallet as any).mainAccount?.address
-      )?.toLowerCase()
-    ) {
-      throw new Error(`Account ${params.fromAddress} not found in wallet`)
-    }
-  } else if (wallet.stealthKeyring) {
-    // If main account has insufficient funds, try selecting a funded stealth account
-    const mainAddress =
-      wallet.identity?.address.raw ?? (wallet as any).mainAccount?.address
-    const mainBal = mainAddress
-      ? await wallet.provider.getBalance(mainAddress)
-      : 0n
-    if (mainBal < amountWei) {
-      const selected = await wallet.stealthKeyring.selectAccountForSpend(
-        amountWei,
-        wallet.provider,
-        params.networkTag,
-      )
-      if (selected) {
-        fundingPrivateKey = selected.privateKey
-        selectedStealthAddress = selected.address
-      }
-    }
-  }
-
-  // 3. Build and sign transaction
-  const signer = new MonadAccountTxSigner({
-    privateKey: fundingPrivateKey,
-    provider: wallet.provider,
-    httpClient: wallet.httpClient,
-  })
-
-  const signed = await signer.buildAndSignTransfer(
-    stealthDestination.stealthAddress,
-    amountWei,
-  )
-
-  // 4. Submit transaction to RPC
-  const txHash = await wallet.httpClient.submitRawTransaction(
-    signed.rawTx,
-  )
-
-  if (selectedStealthAddress && wallet.stealthKeyring) {
-    await wallet.stealthKeyring.recordSpend(selectedStealthAddress, {
-      valueWei: amountWei,
-      txHash,
-    })
-  }
-
-  // 5. Construct StealthItem
-  const stealthItem: StealthItem = {
-    type: 'stealth',
-    networkTag: params.networkTag ?? 'MONT',
-    keyType: 1,
-    ephemeralPubKey: toHex(stealthDestination.ephemeralPubKey),
-    transactions: [txHash],
-    amount: Number(amountWei),
-    ...(params.memo ? { memo: params.memo } : {}),
-    // Compatibility fields
-    chainId: params.networkTag ?? 'MONT',
-  }
-
   return {
-    stealthDestination,
-    txHash,
-    rawTransaction: signed.rawTx,
-    stealthItem,
+    address: derived.stealthAddress.toLowerCase(),
+    privateKey: derived.stealthPrivateKey,
+    origin: 'stealth',
+    state: 'pending',
+    amountWei: '0',
+    claimedAmountWei: (claimed < 0n ? 0n : claimed).toString(),
+    transactions: (item.transactions ?? []).map(bare),
+    ...(params.payloadDigest === undefined
+      ? {}
+      : { payloadDigest: bare(params.payloadDigest) }),
+    ephemeralPubKey: bare(item.ephemeralPubKey),
+    discoveredAtMs: params.discoveredAtMs,
   }
 }

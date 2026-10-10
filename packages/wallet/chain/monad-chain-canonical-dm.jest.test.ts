@@ -680,15 +680,38 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         ephemeralPubKey: '02' + '22'.repeat(32),
         transactions: ['1234abcd', '5678ef'],
         amount: 50_000,
+        amountWei: '50000',
         memo: 'stealth transfer',
       },
     ])
-    expect(f.bob.stealthKeyring.getAccounts()).toHaveLength(1)
-    const bobStealthAcc = f.bob.stealthKeyring.getAccounts()[0]
-    expect(bobStealthAcc.networkTag).toBe('MONT')
-    expect(bobStealthAcc.initialAmountWei).toBe(50_000n)
-    expect(bobStealthAcc.ephemeralPubKey).toBe('02' + '22'.repeat(32))
-    expect(bobStealthAcc.privateKey).toMatch(/^0x[0-9a-f]{64}$/)
+    // The one-time account is a coin of bob's wallet. The sender's figure is only a claim: the
+    // coin is pending and counts for nothing until the chain shows money there.
+    const all = f.bob.getReceivedPayments!()
+    const coins = all.filter(coin => coin.origin === 'stealth')
+    expect(coins).toHaveLength(1)
+    expect(coins[0]).toMatchObject({
+      origin: 'stealth',
+      status: 'pending',
+      amountWei: 0n,
+      claimedAmountWei: 50_000n,
+      spendable: false,
+      payloadDigest: sent.payloadDigest,
+    })
+    // The message's stamp is a coin too, as unverified as the stealth claim.
+    expect(all.filter(coin => coin.origin === 'stamp')).toEqual([
+      expect.objectContaining({
+        status: 'pending',
+        claimedAmountWei: 1_000n,
+        spendable: false,
+        payloadDigest: sent.payloadDigest,
+        childIndex: 0,
+      }),
+    ])
+    // Reading the same message again changes nothing.
+    await f.chain.directMessages.fetchSince({ wallet: f.bob, sinceMs: 0 })
+    expect(
+      f.bob.getReceivedPayments!().map(coin => coin.address).sort(),
+    ).toEqual(all.map(coin => coin.address).sort())
   })
 
   it('sends and receives a channel-update item over canonical direct messages', async () => {

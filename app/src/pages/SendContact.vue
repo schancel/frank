@@ -130,6 +130,14 @@
             data-test="send-contact-amount-input"
             :placeholder="$t('sendContactDialog.enterAmount', { unit })"
           />
+          <div
+            v-if="tooLarge"
+            class="text-negative text-caption q-mt-xs"
+            role="alert"
+            data-test="send-contact-too-large"
+          >
+            {{ tooLargeText }}
+          </div>
         </q-card-section>
 
         <q-card-section class="q-pt-none">
@@ -245,13 +253,19 @@
 <script lang="ts">
 import { computed, defineComponent, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { activeChain } from '@frank/wallet/chain'
+import { activeChain, MAX_STEALTH_ITEM_AMOUNT } from '@frank/wallet/chain'
+import { useChatStore } from 'src/stores/chats'
+import { useMonadWallet } from 'src/utils/clients'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useBalance } from 'src/composables/useBalance'
 import { useContactStore } from 'src/stores/contacts'
 import { useTranslate } from 'src/composables/useTranslate'
 import { navigateBack } from 'src/utils/navigate-back'
-import { sentTransactionNotify, errorNotify } from 'src/utils/notifications'
+import {
+  sentTransactionNotify,
+  errorNotify,
+  infoNotify,
+} from 'src/utils/notifications'
 
 export default defineComponent({
   setup() {
@@ -259,6 +273,7 @@ export default defineComponent({
     const route = useRoute()
     const router = useRouter()
     const contactStore = useContactStore()
+    const chatStore = useChatStore()
     const { formattedBalance, exactBalance, loaded } = useBalance()
 
     const search = ref('')
@@ -318,11 +333,24 @@ export default defineComponent({
       }
     })
 
+    /** More than one contact payment can carry: said before review. */
+    const tooLarge = computed(
+      () =>
+        parsedValue.value !== undefined &&
+        parsedValue.value > MAX_STEALTH_ITEM_AMOUNT,
+    )
+    const tooLargeText = computed(() =>
+      $t('sendContactDialog.tooLarge', {
+        max: activeChain.toDisplayAmount(MAX_STEALTH_ITEM_AMOUNT).slice(0, 4),
+        unit: activeChain.unit,
+      }),
+    )
     const isValid = computed(() => {
       return (
         Boolean(selectedContactAddress.value) &&
         parsedValue.value !== undefined &&
-        parsedValue.value > 0n
+        parsedValue.value > 0n &&
+        !tooLarge.value
       )
     })
 
@@ -339,6 +367,8 @@ export default defineComponent({
       unit,
       filteredContacts,
       isValid,
+      tooLarge,
+      tooLargeText,
       shortAddress,
       selectContact(addr: string) {
         selectedContactAddress.value = addr
@@ -350,6 +380,12 @@ export default defineComponent({
         navigateBack(router)
       },
       reviewTransfer() {
+        if (tooLarge.value) {
+          errorNotify(new Error(tooLargeText.value), {
+            safeMessage: tooLargeText.value,
+          })
+          return
+        }
         if (!isValid.value) {
           errorNotify(new Error('Invalid transfer details'), {
             fallbackKey: 'sendContactDialog.invalidAmount',
@@ -367,30 +403,43 @@ export default defineComponent({
 
         try {
           const wallet = await useActiveWallet()
-          const pubKeyObj = contactStore.getPubKey(selectedContactAddress.value)
-          const pubKey = pubKeyObj?.toBuffer?.()
 
-          if (!activeChain.nativeTransfers.sendToContact) {
+          if (!wallet.prepareContactPayment) {
             throw new Error('sendToContact is not supported on this chain')
           }
+          // Asked for first: with no messaging wallet nothing is signed.
+          const messaging = useMonadWallet()
 
-          const result = await activeChain.nativeTransfers.sendToContact({
-            wallet,
-            recipient: {
-              address: { raw: selectedContactAddress.value },
-              pubKey: pubKey ?? undefined,
-              name: selectedContactName.value || undefined,
-            },
+          // The wallet signs and saves the transfer from its spendable funds (nothing is
+          // broadcast) and returns the item. The message carrying it goes through the
+          // conversation's ordinary send, so it shows in the chat with the contact, with its
+          // pending state and Retry; the wallet broadcasts the transfer once the relay has
+          // stored that message.
+          const prepared = await wallet.prepareContactPayment({
+            recipient: { raw: selectedContactAddress.value },
             value: parsedValue.value!,
             memo: memo.value.trim() || undefined,
           })
+          const outcome = await chatStore.sendMessage({
+            wallet: messaging,
+            address: selectedContactAddress.value,
+            items: [prepared.item],
+          })
 
-          sentTransactionNotify(result.txHash)
+          if (outcome.state === 'sent') {
+            sentTransactionNotify(prepared.txHash, $t('sendContactDialog.sent'))
+          } else if (outcome.state === 'failed') {
+            // Saved in the conversation with its Retry: the same payment, never a second one.
+            errorNotify(new Error(outcome.reason), {
+              fallbackKey: 'sendContactDialog.messageEnded',
+            })
+          } else {
+            infoNotify($t('sendContactDialog.pending'))
+          }
           navigateBack(router)
         } catch (err) {
-          errorNotify(err, {
-            fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
-          })
+          // Refused before anything was signed: nothing was sent.
+          errorNotify(err, { fallbackKey: 'sendContactDialog.notSent' })
         } finally {
           sending.value = false
         }

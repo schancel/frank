@@ -79,6 +79,7 @@ import {
   LegacySendResult,
   ContactSendProgress,
   ContactSendResult,
+  ContactSendParams,
 } from "./chain-wallet";
 
 export type {
@@ -94,8 +95,22 @@ export type {
   LegacySendResult,
   ContactSendProgress,
   ContactSendResult,
+  ContactSendParams,
+  ContactPaymentInfo,
+  PreparedContactPayment,
+  ReceivedPayment,
+  ReceivedPaymentStatus,
+  ReceivedCoinSweep,
+  MessagePayment,
 } from "./chain-wallet";
-export { NativeTransactionSubmissionError } from "./chain-wallet";
+export {
+  NativeTransactionSubmissionError,
+  ContactPaymentPendingError,
+  ContactPaymentFailedError,
+  ContactPaymentReleasedError,
+  ContactPaymentTooLargeError,
+  MAX_STEALTH_ITEM_AMOUNT,
+} from "./chain-wallet";
 
 /** Canonical string form of an on-chain address, for storage keys, API calls, and equality checks.
  * For `MonadChain`, this is an EIP-55 checksummed `0x...` string (`../wallet/monad-identity.ts`) --
@@ -189,6 +204,8 @@ export interface DirectMessageReceived {
    * transactions, not merely echoing a configured constant -- see `./monad-chain.ts`). */
   stampValueWei: bigint;
   stampPayments: StampPaymentInfo[];
+  /** A canonical message: the public shared point its stamp accounts are derived from (hex). */
+  stampSharedPoint?: string;
   paymentTransfers?: PaymentTransfer[];
   /** Milliseconds since the Unix epoch, as recorded by the relay. */
   receivedTime: number;
@@ -198,6 +215,12 @@ export interface StampPaymentInfo {
   txHash: string;
   destinationAddress: string;
   valueWei: bigint;
+  /** A received canonical message: which of the message's payments this is. With the message's
+   * `stampSharedPoint` it is what the recipient derives the one-time account's key from. */
+  childIndex?: number;
+  /** The signed transaction the message carried for this payment (hex), when it carried one:
+   * what lets the recipient put the payment on the chain itself. */
+  rawTx?: string;
 }
 
 export interface RecoveredStampPaymentInfo {
@@ -390,6 +413,12 @@ export interface DirectMessageClient {
      * the relay, with its `payloadDigest` (the eventual `DirectMessageSendResult.payloadDigest`).
      * Lets the caller tie its own pending message to the attempt for `reconcileAttempts`. */
     onAttemptCreated?: (payloadDigest: string) => void | Promise<void>;
+    /** Called with the message's `payloadDigest` once it is sealed and BEFORE anything durable is
+     * written from which its bytes could be submitted (the payment intent of a paid message) and
+     * before any byte is handed to the relay (a free message). Awaited; if it rejects, nothing was
+     * recorded or sent. After it resolves the message may leave at any time, also after a restart:
+     * a caller that must know "no byte of this ever left the device" records the digest here. */
+    onBeforeExposure?: (payloadDigest: string) => void | Promise<void>;
   }): Promise<DirectMessageSendResult>;
   /** Re-sends the SAME exact bytes of every still-live earlier attempt (idempotent and free: the
    * relay answers 200 for an already-delivered set, and 503 while it is pending), then reports
@@ -502,16 +531,13 @@ export interface NativeTransferClient {
   }): Promise<LegacyFeeEstimate>;
 
   /**
-   * Sends funds to a Frank contact using the Dual-Key Stealth Address Protocol (DKSAP),
-   * preserving complete sender/recipient privacy on-chain.
+   * Pays a Frank contact at a one-time address only the contact can spend from, and delivers the
+   * message that tells the contact's wallet where the money is. See
+   * `NativeWalletHandle.sendToContact`.
    */
-  sendToContact?(params: {
-    wallet: NativeWalletHandle;
-    recipient: ProfileInfo | ChainAddress;
-    value: bigint;
-    memo?: string;
-    onProgress?: (progress: ContactSendProgress) => void;
-  }): Promise<ContactSendResult>;
+  sendToContact?(
+    params: ContactSendParams & { wallet: NativeWalletHandle }
+  ): Promise<ContactSendResult>;
 }
 
 /** Native-transfer guarantees required by the currently selected full application chain. */
@@ -549,13 +575,9 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
     value: bigint;
   }): Promise<LegacyFeeEstimate>;
 
-  sendToContact?(params: {
-    wallet: WalletHandle;
-    recipient: ProfileInfo | ChainAddress;
-    value: bigint;
-    memo?: string;
-    onProgress?: (progress: ContactSendProgress) => void;
-  }): Promise<ContactSendResult>;
+  sendToContact?(
+    params: ContactSendParams & { wallet: NativeWalletHandle }
+  ): Promise<ContactSendResult>;
 }
 
 /** A paid topic post may have reached the relay, but the chain adapter could not prove whether

@@ -96,6 +96,15 @@ export interface MonadCanonicalRoles {
 export interface MonadCanonicalRoleOwner {
   create(network: string, current: Current): MonadCanonicalRoles
   verifyRetainedRecoveryCustody(proof: CanonicalRecoveryCustody): void
+  /** The private key of the one-time account a stamp payment to this wallet pays: the stamp
+   * key's secret times the payment's tweak (`canonicalStampDestination`). Undefined when the
+   * derived account is not `address`: the payment was made to some other key. */
+  stampChildPrivateKey(input: {
+    network: string
+    sharedPoint: Uint8Array
+    childIndex: number
+    address: string
+  }): string | undefined
   prepareRevisionZero(input: PublicRevisionZeroInput): PublicRevisionZeroExport
   /** Sign the next revision of this account's own entry (renewal or relay move, same keys). */
   prepareNextRevision(input: PublicNextRevisionInput): PublicNextRevisionExport
@@ -341,6 +350,64 @@ function roleOwner(
             }
           })
         }
+      } finally {
+        leaves.dispose()
+      }
+    },
+    stampChildPrivateKey(input: {
+      network: string
+      sharedPoint: Uint8Array
+      childIndex: number
+      address: string
+    }): string | undefined {
+      if (disposed) throw new Error('canonical-roles:disposed')
+      // The stamp key never rotates (see `prepareRevisionZero`): generation zero is the key.
+      const leaves = deriveRoleLeaves({
+        authRoot,
+        messageRoot,
+        stampRoot,
+        messageGeneration: 0n,
+        stampGeneration: 0n,
+      })
+      try {
+        const domain = 'frank/stamp-child/v1'
+        const prefix = Uint8Array.from([
+          0,
+          domain.length,
+          ...Array.from(domain, c => c.charCodeAt(0)),
+          0,
+          input.network.length,
+          ...Array.from(input.network, c => c.charCodeAt(0)),
+        ])
+        const index = input.childIndex
+        if (!Number.isSafeInteger(index) || index < 0 || index > 0x7fffffff)
+          return undefined
+        const tweak = bytesToBigint(
+          getBytes(
+            sha256(
+              concat([
+                prefix,
+                input.sharedPoint,
+                Uint8Array.of(index >>> 24, index >>> 16, index >>> 8, index),
+              ]),
+            ),
+          ),
+        )
+        const order =
+          0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
+        if (tweak <= 0n || tweak >= order) return undefined
+        return leaves.stamp.useSecret(secret => {
+          const child =
+            '0x' +
+            ((bytesToBigint(secret) * tweak) % order)
+              .toString(16)
+              .padStart(64, '0')
+          return computeAddress(
+            SigningKey.computePublicKey(child, false),
+          ).toLowerCase() === input.address.toLowerCase()
+            ? child
+            : undefined
+        })
       } finally {
         leaves.dispose()
       }

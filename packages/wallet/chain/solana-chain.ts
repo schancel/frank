@@ -6,7 +6,7 @@ import { HDSeed, NativeAssetChain, ChainAddress } from "./active-chain";
 import { formatBaseUnit, parseBaseUnit } from "./base-unit";
 import { NativeTransactionAttemptStore } from "./chain-wallet";
 import { SolanaWallet, SolanaWalletConnection } from "../solana-wallet";
-import { buildSolanaStealthPayment } from "../solana-stealth";
+import { SolanaStealthSendRefusedError } from "../solana-stealth";
 import type { ChainUtxoPool } from "../chain-utxo-pool";
 import { getChainRegistryEntry } from "./chains-registry";
 
@@ -49,7 +49,8 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
       profiles: false,
       directMessages: false,
       topics: false,
-      stealthPayments: true,
+      // Off until the one-time key is the recipient's alone (`SolanaStealthSendRefusedError`).
+      stealthPayments: false,
       legacyConsolidation: "solana-bundle",
     },
     toDisplayAmount: (raw) => formatBaseUnit(raw, 9),
@@ -236,33 +237,9 @@ export function createSolanaChain(config: SolanaChainConfig): NativeAssetChain {
           deliveryFee: 5000n,
         };
       },
-      async sendToContact({ wallet, recipient, value, memo, onProgress }) {
-        if (wallet.family !== "solana") {
-          throw new Error(`Expected a Solana wallet, got ${wallet.family}`);
-        }
-        onProgress?.({ stage: "resolving-keys" });
-        let spendPubkey: Uint8Array;
-        if ("pubKey" in recipient && recipient.pubKey) {
-          spendPubkey = recipient.pubKey;
-        } else {
-          spendPubkey = new PublicKey(
-            (recipient as ChainAddress).raw
-          ).toBytes();
-        }
-        onProgress?.({ stage: "deriving-stealth" });
-        onProgress?.({ stage: "signing" });
-        const stealthPayment = await buildSolanaStealthPayment({
-          wallet: wallet as SolanaWallet,
-          recipientSpendPubKey: spendPubkey,
-          amountLamports: value,
-          memo,
-        });
-        onProgress?.({ stage: "confirmed", txHash: stealthPayment.txHash });
-        return {
-          txHash: stealthPayment.txHash,
-          stealthAddress: stealthPayment.stealthDestination.stealthAddress,
-          value,
-        };
+      // Refused: nothing is derived, signed or sent. See `SolanaStealthSendRefusedError`.
+      async sendToContact() {
+        throw new SolanaStealthSendRefusedError();
       },
     },
   };

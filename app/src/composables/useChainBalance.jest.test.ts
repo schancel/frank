@@ -261,6 +261,28 @@ describe('useChainBalance', () => {
     }
   })
 
+  // 2026-10-10: "≈ 15.89 mAVU" in the wallet list and "≈ 16.4 mAVU" under the balance, for
+  // one balance: the list converted the wallet's own figure, the page the shown total.
+  it('the raw Monad balance an AVU conversion reads is the shown balance, in every view', () => {
+    mockMonadBalance.balance.value = 1589n
+    mockMonadBalance.total.value = 1640n // with the money at the profile address
+    try {
+      const shown = useChainBalance('monad').presentation.value
+      expect(shown.status).toBe('available')
+      const figure =
+        shown.status === 'available' ? shown.observation.balance : null
+      expect(figure).toBe(1640n)
+      expect(useMultichainBalance().getRawBalance('monad')).toBe(figure)
+      expect(useChainBalance('monad').balance.value).toBe(figure)
+      mockMonadBalance.loaded.value = false
+      expect(useMultichainBalance().getRawBalance('monad')).toBeNull()
+    } finally {
+      mockMonadBalance.loaded.value = true
+      mockMonadBalance.balance.value = 1000n
+      mockMonadBalance.total.value = 1000n
+    }
+  })
+
   it('delegates to useBalance for monad', () => {
     const { formattedBalance, loaded } = useChainBalance('monad')
     expect(formattedBalance.value).toBe('10 MON')

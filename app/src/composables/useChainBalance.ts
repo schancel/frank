@@ -79,6 +79,19 @@ function observedTokens(observation: TokenObservation) {
     : observation.lastKnown
 }
 
+/**
+ * THE Monad balance figure the app shows, as a raw amount: `useBalance().total`, the one
+ * shown-balance figure there is. Every place that shows the Monad balance or converts it
+ * (to AVU, to anything) reads it here, so two figures for one balance cannot appear side
+ * by side (2026-10-10: the wallet list valued the balance without the profile address's
+ * money and the Wallet page valued it with). null while not loaded.
+ */
+function shownMonadBalance(
+  monad: ReturnType<typeof useBalance>,
+): bigint | null {
+  return monad.loaded.value ? monad.total.value : null
+}
+
 // Derived presentation only: the existing readers remain the observation owners.
 function getBalancePresentation(
   chain: string,
@@ -89,7 +102,7 @@ function getBalancePresentation(
   if (chain === 'monad') {
     exactBalance = monad.exactBalance?.value
     state = {
-      balance: monad.total.value,
+      balance: shownMonadBalance(monad),
       formattedBalance: monad.formattedBalance.value,
       loaded: monad.loaded.value,
       hasError: monad.hasError.value,
@@ -400,7 +413,7 @@ export function useChainBalance(chainRef: Ref<string> | string) {
   )
 
   const balance = computed<bigint | null>(() => {
-    if (chain.value === 'monad') return monad.balance.value
+    if (chain.value === 'monad') return shownMonadBalance(monad)
     if (chain.value === 'solana') return solanaState.value.balance
     return utxoState(chain.value).balance
   })
@@ -530,9 +543,7 @@ export function useMultichainBalance() {
       return state.loaded ? state.formattedBalance : undefined
     },
     getRawBalance(chain: string): bigint | null {
-      if (chain === 'monad') {
-        return monad.loaded.value ? monad.balance.value : null
-      }
+      if (chain === 'monad') return shownMonadBalance(monad)
       if (chain === 'solana') {
         return solanaState.value.loaded ? solanaState.value.balance : null
       }

@@ -78,6 +78,7 @@ beforeEach(async () => {
     account: null,
     pending: null,
     pendingReady: false,
+    pendingIdentityAddress: null,
     pendingError: null,
   })
   await inspectLegacyWallet({
@@ -166,7 +167,11 @@ test.each(['denied', 'hanging'])(
     const storage = usePersistentStorageStore()
     await storage.ensureForAccount()
     expect(persist).not.toHaveBeenCalled()
-    Object.assign(mockAccount, { pending, pendingReady: true })
+    Object.assign(mockAccount, {
+      pending,
+      pendingReady: true,
+      pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
+    })
     const view = render()
     await view.get('[data-test="activate-account"]').trigger('click')
     await flushPromises()
@@ -356,4 +361,38 @@ test('invalid identification stays local and retains its input without claiming 
   expect(mockSession.activatePending).not.toHaveBeenCalled()
   expect(mockPush).not.toHaveBeenCalled()
   view.unmount()
+})
+
+test.each(['en', 'fr'] as const)(
+  'shows the identity a pending attempt would activate, and what to do if it is unexpected (%s)',
+  async locale => {
+    const address = '0x1234567890abcdef1234567890ABCDEF12345678'
+    Object.assign(mockAccount, {
+      status: 'pending',
+      pending,
+      pendingReady: true,
+      pendingIdentityAddress: address,
+    })
+    const view = render(locale)
+    expect(view.get('[data-test="pending-identity-address"]').text()).toBe(
+      address,
+    )
+    const words = (locale === 'fr' ? fr : en).accountRecovery
+    const shown = view.get('[data-test="pending-identity"]').text()
+    expect(shown).toContain(words.pending_identity_address)
+    expect(shown).toContain(words.pending_identity_stop_if_unexpected)
+    expect(view.find('[data-test="activate-account"]').exists()).toBe(true)
+  },
+)
+
+test('offers no Activate button while the identity of the attempt is unknown', async () => {
+  Object.assign(mockAccount, {
+    status: 'pending',
+    pending,
+    pendingReady: true,
+    pendingIdentityAddress: null,
+  })
+  const view = render()
+  expect(view.find('[data-test="pending-identity"]').exists()).toBe(false)
+  expect(view.find('[data-test="activate-account"]').exists()).toBe(false)
 })

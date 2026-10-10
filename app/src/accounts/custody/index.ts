@@ -356,6 +356,22 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           throw error
         }
       }),
+    async openPending(attemptId) {
+      let roots: readonly DomainRoot[] | undefined
+      try {
+        check()
+        const pending = pendingFor(await read(), id(attemptId))
+        if (pending.status !== 'staging') throw new CustodyError('conflict')
+        roots = await vault.open(pending.account.receipt)
+        if (!same((await read()).pending, pending))
+          throw new CustodyError('conflict')
+        check()
+        return roots
+      } catch (error) {
+        if (roots) wipe(roots)
+        throw normalized(error)
+      }
+    },
     async exportAccountRoot() {
       let accountRoot: Uint8Array | null = null
       try {

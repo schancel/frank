@@ -17,6 +17,7 @@ jest.mock('../accounts/session', () => ({
     account: null,
     pending: null,
     pendingReady: false,
+    pendingIdentityAddress: null,
     pendingError: null,
   }),
   accountSession: {
@@ -263,6 +264,7 @@ describe('Setup page advanced relay configuration', () => {
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
       })
       return {
         isRestore: true,
@@ -316,6 +318,7 @@ describe('Setup page advanced relay configuration', () => {
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
       })
       return {
         isRestore: true,
@@ -366,6 +369,7 @@ describe('Setup page advanced relay configuration', () => {
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
       })
       return {
         isRestore: true,
@@ -414,6 +418,7 @@ describe('Setup page advanced relay configuration', () => {
           expectedActive: { revision: 0, accountId: null },
         },
         pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
       })
       return {
         isRestore: true,

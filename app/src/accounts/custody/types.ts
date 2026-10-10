@@ -83,6 +83,11 @@ export interface AccountCustody {
   cancel(attemptId: string): Promise<CustodySnapshot>
   openActive(): Promise<ActiveCustody>
   /**
+   * Caller-owned roots of a staged, not yet active account, so the user can be shown which
+   * identity an attempt would activate before choosing to. Changes nothing.
+   */
+  openPending(attemptId: string): Promise<readonly DomainRoot[]>
+  /**
    * The active account and a caller-owned copy of its account root, for issuing backup
    * shares. `accountRoot` is null for an account stored before roots were kept: no backup
    * can be issued for it, and callers must say so rather than split something else.

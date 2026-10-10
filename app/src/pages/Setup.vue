@@ -157,6 +157,21 @@
             <p class="recovery-text">
               {{ account.pending.account.descriptor }}
             </p>
+            <div
+              v-if="account.pendingIdentityAddress"
+              role="status"
+              data-test="pending-identity"
+            >
+              <p class="q-mb-xs">
+                {{ $t('accountRecovery.pending_identity_address') }}
+              </p>
+              <p class="recovery-text" data-test="pending-identity-address">
+                {{ account.pendingIdentityAddress }}
+              </p>
+              <p class="text-negative">
+                {{ $t('accountRecovery.pending_identity_stop_if_unexpected') }}
+              </p>
+            </div>
             <p
               v-if="discoveredRelay"
               role="status"
@@ -209,7 +224,7 @@
               </q-card>
             </q-expansion-item>
             <div
-              v-if="account.pendingReady"
+              v-if="account.pendingReady && account.pendingIdentityAddress"
               class="row q-gutter-sm q-mt-md items-center"
             >
               <q-btn

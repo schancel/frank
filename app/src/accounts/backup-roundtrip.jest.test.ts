@@ -50,6 +50,7 @@ test('a backup made from Settings restores the same account on a fresh device', 
     const device = freshDevice()
     const outcome = await restore(device, subset)
     expect(outcome.address).toBe(original.identityAddress)
+    expect(outcome.shownBeforeActivate).toBe(original.identityAddress)
     expect(await describeAccount(device)).toEqual(original)
     await device.close()
   }

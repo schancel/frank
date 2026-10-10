@@ -18,6 +18,10 @@ export const en = {
   a_saved_account_attempt_is_pending_it:
     'A saved account attempt is pending. It is not active until you choose Activate account.',
   activate_account: 'Activate',
+  pending_identity_address:
+    'This is the account these shares restore. Activating opens the account with this identity address:',
+  pending_identity_stop_if_unexpected:
+    'If you are restoring an account and this is not the address you expect, stop: do not activate. Cancel the attempt instead.',
   the_attempt_is_incomplete_or_awaiting_cleanup:
     'The attempt is incomplete or awaiting cleanup. Cancel it explicitly before starting another account.',
   cancel_pending_attempt: 'Cancel',
@@ -155,6 +159,10 @@ export const fr = {
   a_saved_account_attempt_is_pending_it:
     'Une tentative de création enregistrée est en attente. Le compte ne sera actif qu’après avoir choisi Activer le compte.',
   activate_account: 'Activer',
+  pending_identity_address:
+    'Voici le compte que ces parts restaurent. L’activation ouvre le compte ayant cette adresse d’identité :',
+  pending_identity_stop_if_unexpected:
+    'Si vous restaurez un compte et que ce n’est pas l’adresse attendue, arrêtez : n’activez pas. Annulez plutôt la tentative.',
   the_attempt_is_incomplete_or_awaiting_cleanup:
     'La tentative est incomplète ou en attente de nettoyage. Annulez-la explicitement avant de créer un autre compte.',
   cancel_pending_attempt: 'Annuler',

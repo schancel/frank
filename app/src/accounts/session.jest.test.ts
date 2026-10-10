@@ -16,7 +16,12 @@ import {
   type CustodySnapshot,
   type PublicAccount,
 } from './custody'
-import { DOMAIN_PURPOSES, DERIVATION_REGISTRY_ID } from '@frank/domain-roots'
+import {
+  DOMAIN_PURPOSES,
+  DERIVATION_REGISTRY_ID,
+  type DomainRoot,
+} from '@frank/domain-roots'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
 
 jest.mock('@frank/wallet/chain', () => {
   const actual = jest.requireActual('@frank/wallet/chain')
@@ -61,6 +66,13 @@ function fixture() {
     snapshot: jest.fn(async () => snapshot),
     reconcile: jest.fn(async () => 'ready'),
     openActive: jest.fn(async () => capability),
+    openPending: jest.fn(async () =>
+      DOMAIN_PURPOSES.map((purpose, i) => ({
+        registry: DERIVATION_REGISTRY_ID,
+        purpose,
+        bytes: new Uint8Array(32).fill(i + 1),
+      })),
+    ),
     stage: jest.fn(),
     activate: jest.fn(),
     cancel: jest.fn(),
@@ -164,8 +176,36 @@ test('pending readable material stays pending across initialization and does not
   await f.session.initialize()
   expect(f.session.state.status).toBe('pending')
   expect(f.session.state.pendingReady).toBe(true)
+  // The identity that Activate would open is published, read from the staged material.
+  const staged = (await f.custody.openPending('attempt-a')).find(
+    root => root.purpose === 'identity-authentication',
+  )
+  expect(f.session.state.pendingIdentityAddress).toBe(
+    MonadIdentity.fromDomainRoot(
+      staged as DomainRoot<'identity-authentication'>,
+    ).displayAddress,
+  )
   expect(f.createWallet).not.toHaveBeenCalled()
   expect(f.custody.activate).not.toHaveBeenCalled()
+})
+test('an attempt whose identity cannot be read is not offered for activation', async () => {
+  const f = fixture()
+  f.set({
+    schema: 1,
+    revision: 0,
+    active: null,
+    pending: {
+      status: 'staging',
+      account: f.account,
+      expectedActive: { revision: 0, accountId: null },
+    },
+  })
+  f.custody.openPending.mockRejectedValue(new CustodyError('locked'))
+  await f.session.initialize()
+  expect(f.session.state.status).toBe('pending')
+  expect(f.session.state.pendingReady).toBe(false)
+  expect(f.session.state.pendingIdentityAddress).toBeNull()
+  expect(f.session.state.pendingError).toBe('locked')
 })
 test('locked or missing staged material is never interpreted as a fresh account', async () => {
   const f = fixture()

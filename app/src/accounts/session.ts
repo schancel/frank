@@ -8,6 +8,7 @@ import {
   type WalletHandle,
 } from '@frank/wallet/chain'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { Platform } from 'quasar'
 import type { DomainRoot } from '@frank/domain-roots'
 import {
@@ -40,6 +41,11 @@ export interface AccountSessionState {
   account: PublicAccount | null
   pending: CustodySnapshot['pending']
   pendingReady: boolean
+  /**
+   * The identity address the pending attempt would activate, read from the staged material
+   * itself. Public. Set whenever the attempt is ready, so it can be shown before Activate.
+   */
+  pendingIdentityAddress: string | null
   pendingError: string | null
   error: string | null
 }
@@ -57,6 +63,24 @@ export class AccountBackupUnavailableError extends Error {
   }
 }
 
+async function pendingIdentityAddress(
+  custody: AccountCustody,
+  attemptId: string,
+): Promise<string> {
+  const roots = await custody.openPending(attemptId)
+  try {
+    const root = roots.find(
+      value => value.purpose === 'identity-authentication',
+    )
+    if (!root) throw new CustodyError('locked')
+    return MonadIdentity.fromDomainRoot(
+      root as DomainRoot<'identity-authentication'>,
+    ).displayAddress
+  } finally {
+    roots.forEach(root => root.bytes.fill(0))
+  }
+}
+
 /** The only runtime owner. Its reactive projection contains public data only. */
 export function createAccountSession(deps: {
   open: () => Promise<AccountCustody>
@@ -71,6 +95,7 @@ export function createAccountSession(deps: {
     account: null,
     pending: null,
     pendingReady: false,
+    pendingIdentityAddress: null,
     pendingError: null,
     error: null,
   })
@@ -152,12 +177,18 @@ export function createAccountSession(deps: {
     }
     publish(snapshot)
     state.pendingReady = false
+    state.pendingIdentityAddress = null
     state.pendingError = null
     if (snapshot.pending) {
       try {
-        const result = await custody.reconcile(
-          snapshot.pending.account.receipt.operationId,
-        )
+        const attemptId = snapshot.pending.account.receipt.operationId
+        const result = await custody.reconcile(attemptId)
+        if (result === 'ready') {
+          // Ready means the user can be shown whose account this is before activating it.
+          const address = await pendingIdentityAddress(custody, attemptId)
+          check(token)
+          state.pendingIdentityAddress = address
+        }
         state.pendingReady = result === 'ready'
       } catch (error) {
         state.pendingError =
@@ -723,6 +754,7 @@ export function createAccountSession(deps: {
         state.account = null
         state.pending = null
         state.pendingReady = false
+        state.pendingIdentityAddress = null
         state.pendingError = null
         await release()
         custody?.close()

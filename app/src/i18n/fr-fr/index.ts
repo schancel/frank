@@ -800,7 +800,7 @@ export default {
       'Paiements et timbres que l’on vous a envoyés, chacun à sa propre adresse à usage unique, confirmés sur le réseau.',
     other: 'Comptes d’envoi',
     otherNote:
-      'Gardé par le portefeuille dans ses propres comptes pour payer vos messages, et la monnaie de paiements précédents. Non compté dans le solde ci-dessus.',
+      'Mis de côté par le portefeuille dans ses propres comptes pour payer vos prochains messages. Compris dans le solde ci-dessus.',
     total: 'Solde',
     yours:
       'Chacun de ces comptes appartient à ce portefeuille et se retrouve avec votre phrase de récupération.',

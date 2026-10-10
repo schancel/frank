@@ -383,6 +383,12 @@ const heldBy = (wallet: RealWallet, address: string) =>
 async function ensureMain(stack: RealStack, alice: RealWallet, wei: bigint) {
   const has = await stack.provider.getBalance(alice.mainAccount);
   if (has >= wei) return;
+  if (!stack.fundingAddress)
+    throw new Error(
+      `the sender's main account holds ${mon(has)} and this phase needs ${mon(
+        wei
+      )}; FRANK_TEST_WALLET_JSON is not set, so it cannot be topped up`
+    );
   const tx = await stack.fund(alice.mainAccount, wei - has);
   say(`funded alice's main account with ${mon(wei - has)} (${tx})`);
 }
@@ -467,6 +473,9 @@ async function main() {
     /** What this run has cost the test wallet so far, counting what alice's main account
      * holds as coming back (less the fee of sending it back). */
     const spentSoFar = async () => {
+      // No test wallet configured: nothing can be funded, so nothing of it is spent. The run
+      // uses what the persistent wallets already hold.
+      if (!stack.fundingAddress) return 0n;
       const now = await provider.getBalance(stack.fundingAddress);
       const main = await provider.getBalance(alice.mainAccount);
       return fundingBefore - now - (main > txFee ? main - txFee : 0n);

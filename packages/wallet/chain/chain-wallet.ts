@@ -237,6 +237,24 @@ export interface NativeWalletHandle {
   /** Address to show for a new inbound payment; may rotate independently of wallet identity. */
   getReceiveAddress(): Promise<ChainAddress>;
   getBalance(): Promise<bigint>;
+  /**
+   * Where the balance is, in the wallet's own words: every coin a send can draw on, and nothing
+   * else. `getBalance()` is the sum of the four amounts.
+   * - `main`: the main account (the deposit address);
+   * - `profile`: the address on the user's profile, when it is another address (else 0);
+   * - `received`: payments and stamps received at one-time addresses that the chain shows
+   *   funded (`receivedCount` of them);
+   * - `sending`: single-use sending accounts the wallet has funded and not yet used.
+   * What is left behind in a sending account after its one payment is not in any of them: no
+   * send can draw on it.
+   */
+  getBalanceParts?(): Promise<{
+    main: bigint;
+    profile: bigint;
+    received: bigint;
+    receivedCount: number;
+    sending: bigint;
+  }>;
   /** The exact signed attempt whose submission outcome must be resolved before a fresh send. */
   getUnresolvedNativeTransaction?(): ChainTransaction | undefined;
   /** Resubmits the exact unresolved signed bytes; never builds a replacement payment. */

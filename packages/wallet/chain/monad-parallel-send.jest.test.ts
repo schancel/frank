@@ -249,6 +249,39 @@ describe('parallel paid messages', () => {
     expect(payersOf([first, ...sent])).toHaveLength(21)
   })
 
+  // Seen in Chrome on testnet: the balance shown was not what sends drew on.
+  it('the balance is the sum of every coin a send can draw on (main, profile address, funded sending accounts), its parts add up to it, and a send is paid out of it', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    const identity = alice.identity.address.raw.toLowerCase()
+    mockBalances.set(main, 500_000n)
+    mockBalances.set(identity, 300_000n)
+    const rows = await fundAccounts(2)
+    const funded = 2n * (STAMP + FEE_RESERVE)
+    const parts = await alice.getBalanceParts!()
+    expect(parts).toEqual({
+      main: 500_000n,
+      profile: 300_000n,
+      received: 0n,
+      receivedCount: 0,
+      sending: funded,
+    })
+    expect(await alice.getBalance()).toBe(800_000n + funded)
+    // A message is paid from a funded sending account: the balance falls by what left it.
+    const sent = await send(1)
+    await tick()
+    const spent = relayPayments().find(
+      tx => tx.hash === sent.stampPayments[0].txHash,
+    )!
+    expect(rows.map(row => row.address.toLowerCase())).toContain(
+      spent.from!.toLowerCase(),
+    )
+    const after = await alice.getBalanceParts!()
+    // The used account is no longer a coin; what is left in it is not counted.
+    expect(after.sending).toBe(STAMP + FEE_RESERVE)
+    expect(after.main + after.profile).toBe(800_000n)
+    expect(await alice.getBalance()).toBe(800_000n + STAMP + FEE_RESERVE)
+  })
+
   it('a new account whose only money is at its identity address sends a paid message, with no funding transfer', async () => {
     const identity = alice.identity.address.raw.toLowerCase()
     mockBalances.set(identity, 10n ** 17n)

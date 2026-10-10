@@ -2606,6 +2606,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return { raw: mainAccount.address };
             },
             async getBalance() {
+              const parts = await wallet.getBalanceParts!();
+              return parts.main + parts.profile + parts.received + parts.sending;
+            },
+            // The one account of where the wallet's money is: every coin a send can draw on.
+            // `getBalance` is its sum, and the app's breakdown shows its rows.
+            async getBalanceParts() {
               requireOpenWallet(wallet);
               const now = Date.now();
               let mainBalance: bigint;
@@ -2671,11 +2677,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // Plus every received coin the chain shows funded. A pending coin (nothing seen on
               // the chain yet) is never counted, whatever its message said.
               await readCoins(PRIMARY_BALANCE_CACHE_TTL_MS);
-              return (
-                mainBalance +
-                identityBalance +
-                spendableCoinTotal(coinStore.all())
-              );
+              const received = spendableCoins(coinStore.all());
+              // Plus what sits in the single-use sending accounts that are funded and not yet
+              // used: a message pays its stamp from those first.
+              const sending = (
+                await pool.fundedCapacities(provider, 0n, {
+                  fromBalance: true,
+                  maxCacheAgeMs: PRIMARY_BALANCE_CACHE_TTL_MS,
+                })
+              ).reduce((sum, account) => sum + account.capacityWei, 0n);
+              return {
+                main: mainBalance,
+                profile: identityBalance,
+                received: spendableCoinTotal(coinStore.all()),
+                receivedCount: received.length,
+                sending,
+              };
             },
             getReceivedPayments() {
               return coinStore.all().map((coin) => receivedPaymentOf(coin));

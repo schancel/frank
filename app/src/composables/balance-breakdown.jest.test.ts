@@ -105,3 +105,46 @@ describe('readBalanceBreakdown', () => {
     expect(await readBalanceBreakdown({})).toEqual({ rows: [], total: 0n })
   })
 })
+
+// Seen in Chrome on testnet: the balance shown was not what sends drew on, and the breakdown's
+// rows did not add up to it.
+describe('a wallet that gives its balance in parts', () => {
+  it('shows exactly those parts as rows, adding up to the wallet balance; an empty part has no row', async () => {
+    const wallet = {
+      identity: { address: { raw: '0x' + 'bb'.repeat(20) } },
+      getReceiveAddress: async () => ({ raw: '0x' + 'aa'.repeat(20) }),
+      getBalance: async () => 12n + 22n + 50n + 21n,
+      getBalanceParts: async () => ({
+        main: 12n,
+        profile: 22n,
+        received: 50n,
+        receivedCount: 3,
+        sending: 21n,
+      }),
+      // Not consulted when the wallet gives its parts.
+      getContractCallFunds: async () => {
+        throw new Error('not read')
+      },
+    }
+    const breakdown = await readBalanceBreakdown(wallet)
+    expect(breakdown.rows).toEqual([
+      { id: 'main', amount: 12n, address: '0x' + 'aa'.repeat(20) },
+      { id: 'profile', amount: 22n, address: '0x' + 'bb'.repeat(20) },
+      { id: 'received', amount: 50n, count: 3 },
+      { id: 'other', amount: 21n },
+    ])
+    expect(breakdown.total).toBe(await wallet.getBalance())
+    const bare = await readBalanceBreakdown({
+      ...wallet,
+      getBalanceParts: async () => ({
+        main: 7n,
+        profile: 0n,
+        received: 0n,
+        receivedCount: 0,
+        sending: 0n,
+      }),
+    })
+    expect(bare.rows.map(row => row.id)).toEqual(['main'])
+    expect(bare.total).toBe(7n)
+  })
+})

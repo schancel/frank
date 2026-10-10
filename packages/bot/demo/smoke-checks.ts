@@ -375,7 +375,9 @@ export async function runSmokeChecks(
     }
     // ONE fixed test user, reused on every run: a new profile each time would take a faucet
     // grant per run. It is topped up to what this run's prompts need.
-    const user = await stack.openWallet('smoke-user', { stampValueWei })
+    // The faucet's grant to this profile (one per profile, ever) is what the faucet check reads on
+    // later runs: it stays in the identity account and is not this run's money to return.
+    const user = await stack.openWallet('smoke-user', { stampValueWei, keepIdentityFunds: true })
     await options.onUser?.(user)
     const needWei = smokeUserNeedWei(Object.keys(PROMPTS).filter(bot => handle.addresses[bot]).length)
     const heldWei = await stack.provider.getBalance(user.mainAccount)
@@ -430,7 +432,9 @@ export async function runSmokeChecks(
   } catch (err) {
     checks.push({ name: 'smoke-user', ok: false, detail: err instanceof Error ? err.message : String(err) })
   } finally {
-    await stack?.stop()
+    // The test user is persistent and keeps only its float; the rest of this run's top-up goes
+    // back to the test wallet. The demo's bots are never touched here.
+    await stack?.finish().catch(err => checks.push({ name: 'smoke-user funds', ok: false, detail: err instanceof Error ? err.message : String(err) }))
   }
   return checks
 }

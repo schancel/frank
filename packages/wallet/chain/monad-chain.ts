@@ -29,6 +29,7 @@ import {
   messagePaymentOf,
   observeEvmCoin,
   pendingCoinDue,
+  receivedCoinNoteOf,
   receivedPaymentOf,
   spendableCoinTotal,
   spendableCoins,
@@ -110,6 +111,7 @@ import {
 } from "./active-chain";
 import {
   MessageItem,
+  ReceivedCoinItem,
   StealthItem,
   WalletSyncItem,
 } from "@frank/cashweb/types/messages";
@@ -666,11 +668,15 @@ interface ReceivedCoinOwner {
     address: string;
     privateKey: string;
     childIndex: number;
+    /** The message's public shared point (hex), when the key was derived from it. */
+    stampSharedPoint?: string;
     payloadDigest: string;
     valueWei: bigint;
     transaction: string;
     timestampMs: number;
   }): Promise<void>;
+  /** Sends the note to self of every coin that has none yet. Never rejects. */
+  noteCoins(): Promise<void>;
   /** The bounded background pass over pending coins. No request when none is pending. */
   checkPendingCoins(): Promise<void>;
   /** Finishes every payment to a contact that is not delivered yet. Never rejects. */
@@ -1117,11 +1123,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       message.recipientAddress.raw.toLowerCase() !== own
     )
       return { kind: "none" };
-    // Of the items carried only in a note to self, the wallet consumes the transaction records.
-    // A swap's record in the same note is the host's: it goes on with the rest of the message.
+    // Of the items carried only in a note to self, the wallet consumes the transaction records
+    // and the received-coin notes (those were applied to the coin list when the message was
+    // read, in `recordReceivedCoins`). A swap's record in the same note is the host's: it goes
+    // on with the rest of the message.
+    const isWalletNote = (item: MessageItem) =>
+      item.type === "wallet-sync" || item.type === "received-coin";
+    if (!message.items.some(isWalletNote)) return { kind: "none" };
     const notes = message.items.filter((item) => item.type === "wallet-sync");
-    if (notes.length === 0) return { kind: "none" };
-    const others = message.items.filter((item) => item.type !== "wallet-sync");
+    const others = message.items.filter((item) => !isWalletNote(item));
     const rest = others.length > 0 ? { ...message, items: others } : undefined;
     const digest = message.payloadDigest;
     let settled = settledSelfNotes.get(wallet);
@@ -1162,6 +1172,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     const owner = receivedCoinOwners.get(wallet);
     if (owner === undefined) return;
     const own = wallet.identity.address.raw.toLowerCase();
+    // A note this account wrote to itself about a coin it received: how the coin's key is
+    // derived. It goes through the wallet sync boundary (chain affinity, then the coin list,
+    // which derives the key itself). Another chain's note is not this wallet's and is passed; a
+    // failed write fails the read, like every coin below.
+    for (const message of messages) {
+      if (
+        message.senderAddress.raw.toLowerCase() !== own ||
+        message.recipientAddress.raw.toLowerCase() !== own
+      )
+        continue;
+      for (const item of message.items)
+        if (item.type === "received-coin")
+          await applyWalletSyncItem(wallet, item).catch((error) => {
+            if (!(error instanceof WalletSyncItemRejectedError)) throw error;
+          });
+    }
     for (const message of messages) {
       // This wallet's own payment to someone else is not money it received.
       if (
@@ -1375,6 +1401,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       // Payments to contacts whose message is not delivered yet are finished from here: the
       // hosts' existing mailbox poll, never at wallet open.
       void receivedCoinOwners.get(wallet)?.resumeContactPayments();
+      // Coins with no note to self yet get one: free messages, not waited for.
+      void receivedCoinOwners.get(wallet)?.noteCoins();
       // The wallet's background pass over payments the chain has not shown yet: bounded, and
       // no request at all when nothing is pending. Not awaited: the messages do not wait for it.
       void receivedCoinOwners.get(wallet)?.checkPendingCoins();
@@ -1401,8 +1429,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           ...params,
           // The same boundary as a polled read. A note not applied yet is left to the poll.
           onRecord: (record) => {
-            // A stealth payment is recorded as a coin before the record is handed on.
-            void (record.items.some((item) => item.type === "stealth")
+            // A stealth payment, or a note about a received coin, is recorded in the coin list
+            // before the record is handed on.
+            void (record.items.some(
+              (item) => item.type === "stealth" || item.type === "received-coin"
+            )
               ? recordReceivedCoins(wallet, [record]).then(() =>
                   consumeSelfNotes(wallet, record)
                 )
@@ -2338,6 +2369,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return messagePaymentOf(coinStore.all(), digest);
             },
             sweepReceivedCoins: (params) => sweepReceivedCoins(params),
+            recordReceivedCoin: (note) => recordReceivedCoin(note),
+            noteReceivedCoins: () => noteCoins(),
             getContactPayments() {
               return paymentStore.all().map((payment) => ({
                 messageId: payment.messageId,
@@ -3402,8 +3435,146 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               transactions: [stamp.transaction.replace(/^0x/, "").toLowerCase()],
               payloadDigest: stamp.payloadDigest.replace(/^0x/, "").toLowerCase(),
               childIndex: stamp.childIndex,
+              ...(stamp.stampSharedPoint === undefined
+                ? {}
+                : {
+                    stampSharedPoint: stamp.stampSharedPoint
+                      .replace(/^0x/, "")
+                      .toLowerCase(),
+                  }),
               discoveredAtMs: stamp.timestampMs,
             });
+          // A note this account wrote to itself about a coin: the key is derived here, from the
+          // note's data and this wallet's own secrets, and the coin is recorded only if that key
+          // opens the account the note names. It starts pending, like a coin read from a
+          // message: nothing is counted until the chain shows it.
+          const recordReceivedCoin = async (
+            note: ReceivedCoinItem
+          ): Promise<boolean> => {
+            const address = note.address.toLowerCase();
+            const transactions = (note.transactions ?? []).map((entry) =>
+              entry.replace(/^0x/, "").toLowerCase()
+            );
+            let coin: EvmCoin | undefined;
+            if (note.origin === "stealth") {
+              if (note.ephemeralPubKey === undefined) return false;
+              coin = stealthCoinFromItem({
+                item: {
+                  ephemeralPubKey: note.ephemeralPubKey,
+                  transactions,
+                  amount: 0,
+                  amountWei: note.claimedAmountWei,
+                },
+                recipientSpendSecret: identity.toPrivateKeyHex(),
+                payloadDigest: note.payloadDigest,
+                discoveredAtMs: note.timestamp,
+              });
+            } else {
+              const roles = material.canonicalRoles;
+              if (
+                roles === undefined ||
+                note.stampSharedPoint === undefined ||
+                note.childIndex === undefined
+              )
+                return false;
+              const sharedPoint = note.stampSharedPoint
+                .replace(/^0x/, "")
+                .toLowerCase();
+              const privateKey = roles.stampChildPrivateKey({
+                network: forumPolicy.network,
+                sharedPoint: getBytes(`0x${sharedPoint}`),
+                childIndex: note.childIndex,
+                address,
+              });
+              if (privateKey !== undefined)
+                coin = {
+                  address,
+                  privateKey,
+                  origin: "stamp",
+                  state: "pending",
+                  amountWei: "0",
+                  claimedAmountWei: note.claimedAmountWei,
+                  transactions,
+                  ...(note.payloadDigest === undefined
+                    ? {}
+                    : {
+                        payloadDigest: note.payloadDigest
+                          .replace(/^0x/, "")
+                          .toLowerCase(),
+                      }),
+                  childIndex: note.childIndex,
+                  stampSharedPoint: sharedPoint,
+                  discoveredAtMs: note.timestamp,
+                };
+            }
+            if (coin === undefined || coin.address !== address) return false;
+            // The mailbox holds this coin's note: it is not written again.
+            const known = coinStore.get(address);
+            if (known === undefined)
+              await recordCoin({ ...coin, notedAtMs: Date.now() });
+            else if (known.notedAtMs === undefined)
+              await coinStore.put(address, { ...known, notedAtMs: Date.now() });
+            return true;
+          };
+          // Every coin gets one note to self saying how its key is derived: a FREE message (no
+          // stamp, no payment attempt, nothing funded or reserved), whose identity is fixed by
+          // the chain and the coin's account, so a repeat is the same message. Sent only once
+          // the coin list has read the whole mailbox (a restored wallet first reads the notes
+          // that are already there). A failure leaves the coin without `notedAtMs` and the next
+          // pass sends the note again; a coin whose note failed goes last, and one failure ends
+          // the pass, so a relay that cannot be reached is asked once per pass.
+          const noteFailures = new Set<string>();
+          let notingCoins: Promise<void> | undefined;
+          const noteCoins = (): Promise<void> => {
+            notingCoins ??= (async () => {
+              if (scanState.get("scan")?.complete !== true) return;
+              const waiting = coinStore
+                .all()
+                .filter((coin) => coin.notedAtMs === undefined)
+                .map((coin) => coin.address);
+              for (const address of [
+                ...waiting.filter((entry) => !noteFailures.has(entry)),
+                ...waiting.filter((entry) => noteFailures.has(entry)),
+              ]) {
+                if (closedWallets.has(wallet)) return;
+                const coin = coinStore.get(address);
+                if (coin === undefined || coin.notedAtMs !== undefined) continue;
+                const note = receivedCoinNoteOf(coin, chainIdentifier);
+                if (note === undefined) continue;
+                try {
+                  await directMessages.send({
+                    wallet,
+                    recipient: toChainAddress(identity.address.raw),
+                    items: [note],
+                    stampValue: 0n,
+                    messageId: getBytes(
+                      keccak256(
+                        toUtf8Bytes(
+                          `frank-received-coin:${chainIdentifier}:${address}`
+                        )
+                      )
+                    ).slice(0, 16),
+                  });
+                } catch {
+                  noteFailures.delete(address);
+                  noteFailures.add(address);
+                  return;
+                }
+                noteFailures.delete(address);
+                const current = coinStore.get(address);
+                if (current !== undefined && current.notedAtMs === undefined)
+                  await coinStore.put(address, {
+                    ...current,
+                    notedAtMs: Date.now(),
+                  });
+              }
+            })()
+              .catch(() => undefined)
+              .finally(() => {
+                notingCoins = undefined;
+              });
+            return notingCoins;
+          };
           // Moves the unspent coins of these messages to the main account: a seed-derived
           // address, so the money survives the message and a restore from the seed. One journalled
           // native operation per coin, each a single transfer; a coin an earlier sweep already
@@ -3609,6 +3780,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   address,
                   privateKey,
                   childIndex: payment.childIndex,
+                  stampSharedPoint: message.stampSharedPoint,
                   payloadDigest: message.payloadDigest,
                   valueWei: payment.valueWei,
                   transaction: payment.rawTx ?? payment.txHash,
@@ -3616,6 +3788,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 });
               }
             },
+            noteCoins,
             checkPendingCoins: () =>
               readCoinsPass({ pendingOnly: true }).catch(() => undefined),
             async recordStealthItem(item, origin) {

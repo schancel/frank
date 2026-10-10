@@ -5,6 +5,9 @@
  * Dispatches a generic WalletSyncItem across wallet sub-systems:
  * - Sub-account pool: records a spent sub-account through the pool's own sync operation
  * - Legacy UTXO storage: deletes spent outpoints, registers created outpoints
+ * - Received coins: a `received-coin` note is handed to the wallet's coin list
+ *   (`recordReceivedCoin`), which derives the key itself and records the coin only if it opens the
+ *   named account. Recording a coin twice changes nothing.
  *
  * Order and failure (Issue #1235). Chain affinity is checked first, before any branch. The pool
  * branch then decides before the UTXO branches mutate: it is awaited, and its
@@ -15,10 +18,12 @@
  * Do not call this from inside the wallet's own operation queue (a send, a canonical or a topic
  * operation): the pool's spend applier may enter that queue and would wait for itself.
  */
-import type { WalletSyncItem } from "./types/messages";
+import type { ReceivedCoinItem, WalletSyncItem } from "./types/messages";
 
 export interface WalletSyncDispatchResult {
   affectedIndices?: number[];
+  /** Addresses of received coins the wallet's own keys open (new or known already). */
+  recordedCoins?: string[];
   deletedUtxos?: string[];
   putUtxos?: unknown[];
 }
@@ -43,7 +48,7 @@ export class WalletSyncItemRejectedError extends Error {
 
 export async function applyWalletSyncItem(
   wallet: any,
-  item: WalletSyncItem
+  item: WalletSyncItem | ReceivedCoinItem
 ): Promise<WalletSyncDispatchResult> {
   if (!wallet || !item) {
     return {};
@@ -63,6 +68,17 @@ export async function applyWalletSyncItem(
   }
 
   const result: WalletSyncDispatchResult = {};
+
+  // A received coin's derivation note goes to the coin list and nowhere else. A wallet with no
+  // coin list ignores it.
+  if (item.type === "received-coin") {
+    if (
+      typeof wallet.recordReceivedCoin === "function" &&
+      (await wallet.recordReceivedCoin(item))
+    )
+      result.recordedCoins = [item.address.toLowerCase()];
+    return result;
+  }
 
   // 1. Dispatch to wallet.pool (MonadSubAccountPool). Awaited and not caught: a refusal stops the
   // dispatch before the branches below mutate anything.

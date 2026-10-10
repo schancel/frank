@@ -107,6 +107,7 @@ describe('the dispatch rule', () => {
       'wallet-sync': 'no',
       'payment-transfer': 'no',
       'swap-record': 'no',
+      'received-coin': 'no',
       'device-claim': 'no',
       'p2pkh': 'no',
       'swap-offer': 'no',
@@ -120,7 +121,11 @@ describe('the dispatch rule', () => {
   })
 
   it('carries a self-only type in a message a wallet addresses to itself, and in no other', () => {
-    expect([...SELF_ONLY_ITEM_TYPES]).toEqual(['wallet-sync', 'swap-record'])
+    expect([...SELF_ONLY_ITEM_TYPES]).toEqual([
+      'wallet-sync',
+      'swap-record',
+      'received-coin',
+    ])
     for (const type of SELF_ONLY_ITEM_TYPES) {
       expect(NOT_CARRIED_ITEM_TYPES.has(type)).toBe(false)
       expect(itemFrameRule(type)).toEqual({ carried: 'no' })

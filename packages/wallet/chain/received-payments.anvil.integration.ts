@@ -826,7 +826,7 @@ describe('payments between two wallets on a real EVM node', () => {
     expect(await bob.getBalance()).toBe(STAMP)
   })
 
-  it('stamps: delivered without a broadcast, the recipient broadcasts and verifies; then they are spent, or swept before a delete', async () => {
+  it('stamps: delivered without a broadcast, the recipient broadcasts and verifies; then they are spent, or moved by an explicit sweep', async () => {
     const send = (text: string) =>
       f.chain.directMessages.send({
         wallet: alice,
@@ -876,7 +876,8 @@ describe('payments between two wallets on a real EVM node', () => {
     expect(await node.getBalance(carol)).toBe(STAMP / 4n)
     await settled(bob)
 
-    // Deleting the third message: its unspent stamp goes to B's seed-derived main account.
+    // An explicit sweep of the third message's stamp: it goes to B's seed-derived main account.
+    // (Deleting a message never does this: see the next test.)
     const bobMain = await mainOf(bob)
     const mainBefore = await node.getBalance(bobMain)
     const thirdStamps = stampsOf(bob, third.payloadDigest)
@@ -890,7 +891,7 @@ describe('payments between two wallets on a real EVM node', () => {
     const heldBefore = await thirdHeld()
     expect(heldBefore).toBeGreaterThan(STAMP / 4n)
 
-    // With the node unreachable the answer is that the message must stay, and nothing moved.
+    // With the node unreachable the sweep says so, and nothing moved.
     const unreachable = jest
       .spyOn(bob.provider, 'getBalance')
       .mockRejectedValue(new Error('node unreachable'))
@@ -911,7 +912,7 @@ describe('payments between two wallets on a real EVM node', () => {
     expect(swept).toBeLessThanOrEqual(heldBefore)
     expect(await thirdHeld()).toBeLessThan(heldBefore / 10n)
 
-    // Clearing the conversation: every unspent stamp left in it is swept.
+    // Asked for every message: every unspent stamp left is swept.
     const all = [first.payloadDigest, second.payloadDigest, third.payloadDigest]
     const answers = await bob.sweepReceivedCoins!({ payloadDigests: all })
     for (const digest of all)
@@ -921,5 +922,115 @@ describe('payments between two wallets on a real EVM node', () => {
     const atMain = await node.getBalance(bobMain)
     expect(atMain).toBeGreaterThan((3n * STAMP - STAMP / 4n) * 8n / 10n)
     expect(await bob.getBalance()).toBeLessThanOrEqual(atMain + STAMP / 10n)
+  })
+
+  it('a deleted message: no money moves and its coin is still spent from; a second wallet opened from the same roots with empty state finds the coin through the note to self, without the message, and spends it', async () => {
+    // Bob can find himself in the directory, as with a real relay: his notes to self go out.
+    const selfAware = async (owner: string, self: EvmChainWalletHandle) => {
+      const base = await f.directoryFor(owner, self, alice)
+      const subject = subjectOf(self)
+      const address = self.identity.address.raw.toLowerCase()
+      return {
+        ...base,
+        peerCurrent: async (wanted: { address: string } | { subject: string }) =>
+          ('subject' in wanted
+            ? wanted.subject === subject
+            : wanted.address.toLowerCase() === address)
+            ? { subject, endpoint: base.homeEndpoint, current: await base.selfCurrent() }
+            : base.peerCurrent(wanted),
+      }
+    }
+    installCanonicalDirectory(bob, await selfAware('bob-self', bob))
+
+    const send = (text: string) =>
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: bob.identity.address,
+        items: [{ type: 'text', text }],
+        stampValue: STAMP,
+      })
+    const first = await send('one')
+    const second = await send('two')
+    expect(bobMailbox).toHaveLength(2)
+    expect((await poll(bob)).map(m => m.payloadDigest).sort()).toEqual(
+      [first.payloadDigest, second.payloadDigest].sort(),
+    )
+    await settled(bob)
+    expect(await bob.getBalance()).toBe(2n * STAMP)
+    // The wallet wrote, for each coin, how its key is derived, in a free note to itself.
+    await bob.noteReceivedCoins!()
+    const coins = stampsOf(bob)
+    expect(bobMailbox).toHaveLength(2 + coins.length)
+    const addresses = coins.map(coin => coin.address).sort()
+
+    // The messages are DELETED. The wallet is not asked anything by a delete; here the messages
+    // are also gone from the relay's mailbox, so nothing but the notes can lead to the coins.
+    const bobMain = await mainOf(bob)
+    const mainBefore = await node.getBalance(bobMain)
+    const broadcastsBefore = await node.getBlockNumber()
+    bobMailbox.splice(0, 2)
+    expect(await poll(bob)).toEqual([])
+    await settled(bob)
+    // No money moved: no block was made, the main account holds what it held, the coins hold
+    // the stamps, and the balance is what it was.
+    expect(await node.getBlockNumber()).toBe(broadcastsBefore)
+    expect(await node.getBalance(bobMain)).toBe(mainBefore)
+    let held = 0n
+    for (const address of addresses) held += await node.getBalance(address)
+    expect(held).toBe(2n * STAMP)
+    expect(await bob.getBalance()).toBe(2n * STAMP)
+    expect(stampsOf(bob).every(coin => coin.spendable)).toBe(true)
+
+    // The deleted message's coin is spent by an ordinary send (B has no other money).
+    const carol = Wallet.createRandom().address
+    const spent = await bob.sendNative({ recipient: { raw: carol }, value: STAMP / 4n })
+    const spend = await node.waitForTransaction(spent.txHash)
+    expect(spend!.status).toBe(1)
+    expect(addresses).toContain(spend!.from.toLowerCase())
+    expect(await node.getBalance(carol)).toBe(STAMP / 4n)
+    await settled(bob)
+    await bob.close()
+
+    // A SECOND wallet of the same account: same roots, empty state. Its mailbox holds no
+    // message that brought money, only the notes.
+    const root = mkdtempSync(join(tmpdir(), 'received-payments-second-device-'))
+    extraRoots.push(root)
+    const secondChain = withDefaultMessageItems(
+      createEvmChain({ ...f.config, walletStorageLocation: join(root, 'wallet') }),
+    )
+    const secondDevice = (await secondChain.createWallet(roots(1))) as EvmChainWalletHandle
+    try {
+      installCanonicalDirectory(secondDevice, await selfAware('bob-second', secondDevice))
+      expect(secondDevice.getReceivedPayments!()).toEqual([])
+      const requests = f.requests.length
+      // The notes are the wallet's: none is handed on as a message.
+      expect(await poll(secondDevice, secondChain)).toEqual([])
+      expect(
+        secondDevice.getReceivedPayments!().map(coin => coin.address).sort(),
+      ).toEqual(addresses)
+      // Claims until the chain is read; then exactly what the chain holds.
+      await settled(secondDevice)
+      let left = 0n
+      for (const address of addresses) left += await node.getBalance(address)
+      expect(left).toBeGreaterThan(STAMP)
+      expect(await secondDevice.getBalance()).toBe(left)
+
+      // And it can SPEND them: the key it derived from the note signs for the money.
+      const dave = Wallet.createRandom().address
+      const again = await secondDevice.sendNative({
+        recipient: { raw: dave },
+        value: STAMP / 2n,
+      })
+      const moved = await node.waitForTransaction(again.txHash)
+      expect(moved!.status).toBe(1)
+      expect(addresses).toContain(moved!.from.toLowerCase())
+      expect(await node.getBalance(dave)).toBe(STAMP / 2n)
+      // It read the notes from the mailbox, so it wrote none itself.
+      await secondDevice.noteReceivedCoins!()
+      expect(f.requests).toHaveLength(requests)
+      expect(bobMailbox).toHaveLength(coins.length)
+    } finally {
+      await secondDevice.close()
+    }
   })
 })

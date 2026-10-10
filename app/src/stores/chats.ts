@@ -78,13 +78,6 @@ import {
   getOwnCanonicalAddress,
   sameCanonicalAddress,
 } from '../utils/own-address'
-import {
-  MessageFundsNotSweptError,
-  mayHoldCoins,
-  settleOutgoingPayments,
-  stripReleasedPayments,
-  sweepBeforeDelete,
-} from '../utils/sweep-on-delete'
 import { shortAddress } from '../utils/short-address'
 
 export type ChatMessage = {
@@ -481,6 +474,55 @@ function observedRelayReceiptTime(
   return message?.status === 'confirmed' && messageDestinationAddress(message)
     ? message.receivedTime
     : undefined
+}
+
+/**
+ * Deleting a message leaves a TOMBSTONE: its content (text, items, attachments) is dropped from
+ * this device's store and from the screen, and its payload hash stays recorded as deleted, so the
+ * relay handing the row back does not bring the message back. Nothing else is kept, and nothing
+ * else is needed: money a message brought is the wallet's coin from the moment the message was
+ * read (key and all, with its derivation noted to self), so a delete never asks the wallet
+ * anything, never moves money and never waits for a chain.
+ *
+ * The tombstone is kept under the mailbox the row is read from, which is always this account's
+ * own: a received message was sent to us, and the relay keeps our own sent messages in our
+ * mailbox too. Undefined when the message names neither.
+ */
+function tombstoneMailbox(message: Message): string | undefined {
+  return message.outbound
+    ? message.senderAddress
+    : messageDestinationAddress(message)
+}
+
+/**
+ * The relay time a tombstone may anchor the mailbox's read position at: only a time the relay
+ * itself gave. A message we sent to someone else carries this device's own clock until its row
+ * is read back, so its tombstone has no time; the relay's row gives it one when it arrives.
+ */
+function tombstoneReceiptTime(
+  message: Message | undefined,
+): number | undefined {
+  if (
+    message?.outbound &&
+    !sameCanonicalAddress(
+      message.senderAddress,
+      messageDestinationAddress(message) ?? '',
+    )
+  )
+    return undefined
+  return observedRelayReceiptTime(message)
+}
+
+/**
+ * A message whose payment the wallet released keeps the bubble and loses the signed transfer:
+ * the stealth items stay (amount, memo) with no transaction in them. Such an item cannot be
+ * encoded, so the message can never be sent again, by a retry or otherwise; the only copies of a
+ * released transfer are then ones that never existed outside this device.
+ */
+export function stripReleasedPayments(message: ChatMessage): void {
+  message.items = message.items.map(item =>
+    item.type === 'stealth' ? { ...item, transactions: [] } : item,
+  )
 }
 
 function accountedMessageValue(message: {
@@ -1251,6 +1293,7 @@ function isInternalMessage(items: unknown): boolean {
         !Array.isArray(item) &&
         (item.type === 'swap-record' ||
           item.type === 'wallet-sync' ||
+          item.type === 'received-coin' ||
           item.type === 'payment-transfer'),
     )
   )
@@ -1858,25 +1901,14 @@ export const useChatStore = defineStore('chats', {
       }
       const attemptDigest =
         explicitAttemptDigest || message?.delivery?.attemptDigest
-      // Relay inboxes are recipient-indexed. An ordinary outbound row can never return to the
-      // sender's mailbox, so only a self-route needs a durable delayed-receipt suppression.
+      // The tombstone goes under this account's own mailbox, whichever way the message went:
+      // the relay keeps our sent messages there too, and hands them back like received ones.
+      // The wallet is not asked anything: a delete moves no money and waits for no chain. A
+      // payment to a contact the message carried stays the wallet's to finish, and stays listed
+      // under the Wallet page's unfinished payments until it is.
       const recipientAddress = message
-        ? message.outbound
-          ? sameCanonicalAddress(address, message.senderAddress)
-            ? message.senderAddress
-            : null
-          : messageDestinationAddress(message)
+        ? tombstoneMailbox(message) ?? null
         : null
-      // BEFORE the mutation queue (the sweep reads the chain and can wait for a block; every
-      // send's first save goes through that queue): the money the message brought is moved to a
-      // seed-derived address, and a payment it carried out is released or finished. If the
-      // money could not be moved (or is not in a block yet) the message stays, and the caller is
-      // told why.
-      if (message) {
-        const { kept } = await sweepBeforeDelete([message])
-        if (kept.size > 0) throw new MessageFundsNotSweptError(kept)
-        await settleOutgoingPayments([message])
-      }
       await serializeDeliveryMutation(() =>
         this.deleteMessageExclusive({
           address,
@@ -1966,13 +1998,13 @@ export const useChatStore = defineStore('chats', {
       const suppressions: RelayDeliverySuppression[] = []
       if (attemptDigest) suppressions.push({ payloadDigest: attemptDigest })
       if (!payloadDigest.startsWith('pending:')) {
-        const receivedTime = observedRelayReceiptTime(message)
+        const receivedTime = tombstoneReceiptTime(message)
         suppressions.push({
           payloadDigest,
           ...(receivedTime === undefined ? {} : { receivedTime }),
         })
       }
-      const installedReceivedTime = observedRelayReceiptTime(installedDelivery)
+      const installedReceivedTime = tombstoneReceiptTime(installedDelivery)
       if (installedReceivedTime !== undefined && attemptDigest) {
         suppressions.splice(0, 1, {
           payloadDigest: attemptDigest,
@@ -3309,9 +3341,8 @@ export const useChatStore = defineStore('chats', {
       } catch {
         //
       }
-      const clearance = await this.clearanceToClear(displayAddress)
       return serializeDeliveryMutation(() =>
-        this.clearChatExclusive(displayAddress, clearance),
+        this.clearChatExclusive(displayAddress),
       )
     },
     /** The conversation stored under an address or a conversation ID, if any. */
@@ -3324,56 +3355,24 @@ export const useChatStore = defineStore('chats', {
         return this.chats[address]
       }
     },
-    /** What may be cleared from a conversation, decided OUTSIDE the mutation queue because it
-     * reads the chain and can wait for a block: the money its messages brought is moved to a
-     * seed-derived address, and payments its messages carried out are released or finished.
-     * `cleared` are the messages that may go; `kept` those whose money could not be moved (or is
-     * not in a block yet), with the reason. A message that arrives after this is not cleared. */
-    async clearanceToClear(address: string): Promise<{
-      cleared: Set<string>
-      kept: Map<string, string>
-    }> {
-      const messages = [...(this.conversationToClear(address)?.messages ?? [])]
-      const { kept } = await sweepBeforeDelete(messages)
-      const clearable = messages.filter(m => !kept.has(m.payloadDigest))
-      await settleOutgoingPayments(clearable)
-      return {
-        cleared: new Set(clearable.map(m => m.payloadDigest)),
-        kept,
-      }
-    },
-    /** Deletes, inside the mutation queue, exactly the messages `clearance` cleared. */
-    async clearChatExclusive(
-      address: string,
-      clearance: { cleared: Set<string>; kept: Map<string, string> },
-    ): Promise<void> {
+    /** Tombstones, inside the mutation queue, every message the conversation holds now. Like
+     * deleting one message, it asks the wallet nothing and moves no money. */
+    async clearChatExclusive(address: string): Promise<void> {
       const chat = this.conversationToClear(address)
       if (!chat) return
       const messageStore = await store
-      const keptForFunds = clearance.kept
-      // This is Clear's atomic cutoff: everything in the conversation now goes, except a message
-      // whose money could not be moved, and a received message that can have brought money and
-      // arrived after the sweep looked (it was not swept, so it stays for the next clear).
-      // Composer sends invoked while the durable deletes are in flight may appear
-      // optimistically, but are queued after this mutation and must survive.
-      const clearingMessages = chat.messages.filter(
-        message =>
-          !keptForFunds.has(message.payloadDigest) &&
-          (clearance.cleared.has(message.payloadDigest) ||
-            !mayHoldCoins(message)),
-      )
+      // This is Clear's atomic cutoff: everything in the conversation now goes. Composer sends
+      // invoked while the durable deletes are in flight may appear optimistically, but are
+      // queued after this mutation and must survive.
+      const clearingMessages = [...chat.messages]
       const groups = new Map<
         string,
         { digests: Set<string>; suppressions: RelayDeliverySuppression[] }
       >()
       const unscopedDigests = new Set<string>()
       for (const message of clearingMessages) {
-        // As above, peer-directed outbound history has no receipt in our mailbox to suppress.
-        const recipientAddress = message.outbound
-          ? sameCanonicalAddress(chat.address, message.senderAddress)
-            ? message.senderAddress
-            : null
-          : messageDestinationAddress(message)
+        // Whichever way the message went, its row is read from this account's own mailbox.
+        const recipientAddress = tombstoneMailbox(message)
         const digests = [
           message.payloadDigest,
           message.delivery?.attemptDigest,
@@ -3393,7 +3392,7 @@ export const useChatStore = defineStore('chats', {
           })
         }
         if (!message.payloadDigest.startsWith('pending:')) {
-          const receivedTime = observedRelayReceiptTime(message)
+          const receivedTime = tombstoneReceiptTime(message)
           group.suppressions.push({
             payloadDigest: message.payloadDigest,
             ...(receivedTime === undefined ? {} : { receivedTime }),
@@ -3426,8 +3425,6 @@ export const useChatStore = defineStore('chats', {
         message => !clearedPayloads.has(message.payloadDigest),
       )
       recomputeChatAccounting(chat, this.activeConversationId)
-      if (keptForFunds.size > 0)
-        throw new MessageFundsNotSweptError(keptForFunds)
     },
     openDirectConversation(
       address: string,
@@ -3534,20 +3531,18 @@ export const useChatStore = defineStore('chats', {
     },
     async deleteConversation(conversationId: string, deletedAt = Date.now()) {
       if (!this.conversations[conversationId]) return
-      const clearance = await this.clearanceToClear(conversationId)
       return serializeDeliveryMutation(async () => {
         const conv = this.conversations[conversationId]
         if (!conv) return
-        await this.clearChatExclusive(conversationId, clearance)
+        await this.clearChatExclusive(conversationId)
         conv.deletedAt = deletedAt
         if (this.activeConversationId === conversationId)
           this.activeConversationId = null
       })
     },
     async clearConversation(conversationId: string): Promise<void> {
-      const clearance = await this.clearanceToClear(conversationId)
       return serializeDeliveryMutation(() =>
-        this.clearChatExclusive(conversationId, clearance),
+        this.clearChatExclusive(conversationId),
       )
     },
     setStampOverride({

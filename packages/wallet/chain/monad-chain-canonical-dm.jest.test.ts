@@ -3264,12 +3264,17 @@ describe('two typed wallets on the open directory', () => {
     expect(atBob[0].senderAddress.raw.toLowerCase()).toBe(
       f.alice.identity.address.raw.toLowerCase(),
     )
+    // Bob's wallet notes the stamp it received to itself (a free message of its own) before
+    // his reply goes out; the reply is the last request the relay served.
+    await f.bob.noteReceivedCoins!()
     await f.chain.directMessages.send({
       wallet: f.bob,
       recipient: atBob[0].senderAddress,
       items: text('hello alice'),
     })
-    inboxPage.mockResolvedValue({ records: [inboxRecord(1, 9)] })
+    inboxPage.mockResolvedValue({
+      records: [inboxRecord(f.requests.length - 1, 9)],
+    })
     const atAlice = await f.chain.directMessages.fetchSince({
       wallet: f.alice,
       sinceMs: 0,
@@ -3582,6 +3587,9 @@ describe('two typed wallets on the open directory', () => {
       expect(received.map(m => m.receivedTime)).toEqual([9])
       expect(incomplete).toEqual([5])
       expect(quarantined).toEqual([])
+      // The wallet's own note about the stamp it received looks itself up in the directory:
+      // finished here, so it does not use up the next read's failing lookup.
+      await f.bob.noteReceivedCoins!()
     }
     // After a day of failing, it is given up on so it cannot hold the inbox scan forever.
     const later = jest

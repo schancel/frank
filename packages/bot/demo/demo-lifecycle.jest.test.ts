@@ -106,7 +106,8 @@ process.stdin.on('end', () => {
     console.log('token sk-abcdefghijklmnop1234 at https://rpc.example.invalid/v2/CREDPATH?key=abc123')
     process.exit(1)
   }
-  if (args[0] === '--check-config') process.exit(0)
+  // The launcher script asks the relay to check its config, then its database, before starting it.
+  if (args[0] === '--check-config' || args[0] === '--check-db') process.exit(0)
   fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))
   fs.writeFileSync(${JSON.stringify(
     pidFile + '.env',

@@ -688,8 +688,6 @@ export default {
     sentTransaction: 'Sent transaction',
     unexpectedError: 'Something went wrong. Please try again.',
     viewAction: 'View',
-    messagesKeptForFunds:
-      'Not deleted: money these messages brought could not be moved to your wallet yet. Try again in a moment.',
   },
   chatRightDrawer: {
     stampPrice: 'Stamp Price',

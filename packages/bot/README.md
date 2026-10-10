@@ -65,6 +65,18 @@ hold, lives in the state directory: do not start on a new one, or delete one, as
 a start funds bot accounts it says how much it places in the state directory; `yarn demo:sweep
 <state dir> --send` returns a finished demo state's funds to the funding wallet (see below).
 
+**A relay database from an earlier build.** The relay has no reader for a database written by
+an earlier development build and refuses to start on one. The local launcher
+(`backend/cashweb/run-local-monad.sh`, which `yarn demo`, `demo:smoke` and the real-stack harness
+all start the relay through) handles that itself: it asks the relay to check the database
+(`cashwebd-exe --check-db`), and when the relay refuses it RENAMES the paths the refusal names
+(the registry database and its message stores) to `<path>.old-format-<UTC time>` beside them,
+says so in one line (repeated by the launcher and the harness), and starts on a fresh database.
+Nothing is deleted and nothing else is touched: no wallet, bot or key file, and the relay's
+session secret stays. Bots and test users publish their directory entries again when they
+start. A relay started directly (production) keeps refusing. The regtest stack always starts
+on a new directory and never meets an old database.
+
 Source builds also need a usable native `protoc` (libprotoc 3+ with proto3 support). The relay
 launcher validates `PROTOC` when set; otherwise it searches PATH, then the installed `protoc`
 npm package's native compiler. It skips npm's CLI wrapper, which can have a CRLF shebang.
@@ -179,26 +191,41 @@ wallet; nothing but the bot host may send from `E2E_DEMO_MAIN_WALLET_JSON` while
 - `node app/test/autonomous-fullstack-e2e.mjs`: the browser run, against a running `yarn demo`
   (see the header of that file). Its account lives in a persistent Chrome profile,
   `~/.frank-e2e-browser/autonomous-fullstack-e2e` (`E2E_PROFILE_DIR`): created on the first run,
-  reused afterwards, funded (0.2 MON, `E2E_FUND_MON`) only when it holds less than 0.1 MON. Its
-  native-send scenario pays the test wallet, and at the end what the account holds above 0.15 MON
-  (`E2E_FLOAT_MON`) is sent back to the test wallet through the app's send page; anything not sent
-  stays in the account for the next run. The last line names the account and its balance.
-  `app/test/swap-browser.livecheck.mjs` keeps its account the same way in
-  `~/.frank-e2e-browser/swap-browser`. Never delete these profiles: the account's keys are only
-  there.
+  reused afterwards, funded (up to 0.2 MON, `E2E_FUND_MON`) only when it holds less than 0.1 MON.
+  Its native-send scenario pays the test wallet. `app/test/swap-browser.livecheck.mjs` keeps its
+  account the same way in `~/.frank-e2e-browser/swap-browser` and funds it, only when it is
+  low, to the swap amount plus 0.06 MON. Never delete these profiles: the account's keys are
+  only there.
 
 Every one of these refuses to fund anything without `FRANK_TEST_WALLET_JSON`, and one funding
 transfer is at most 0.5 MON (`FRANK_TEST_MAX_FUND_WEI`).
 
 The harness these use is `packages/bot/demo/real-stack.ts` (`startRealStack`, `openWallet`, `fund`,
-`sweep`, `stop`): real relay, real chain, real wallets, for any other test that needs them. A
-script that funds a wallet calls `stack.sweep()` in a `finally`, before `stop()`:
-`test:two-wallets` and `real-games.livecheck.ts` do, pass or fail, and print one line for every
-account the sweep left money in and why (dust under twice the transfer fee, a failed or reverted
-transfer). The smoke's test user is deliberately persistent and is not swept.
+`finish`): real relay, real chain, real wallets, for any other test that needs them.
 
-**Where the test money is, and getting it back.** Every demo start, harness run and livecheck
-puts testnet MON in accounts whose keys exist only in a state directory. Two commands read those
+**Test money comes back by itself.** Nobody runs a command for it. Every scripted run that
+funds anything returns what it can when it ends, on pass, on failure and on Ctrl-C, and prints
+one line: `[funds] funded X MON, returned Y MON to <wallet>, left Z MON in <place> (why)`.
+
+- Harness runs (`test:two-wallets`, `real-games.livecheck.ts`, the smoke's test user) end with
+  `stack.finish()` in a `finally`: main and identity accounts and spent single-use sender
+  accounts go back to the test wallet. A stack that started its own relay also does this on
+  SIGINT, SIGTERM and SIGHUP; under `demo:smoke` the launcher handles the signal and the
+  `finally` runs.
+- The browser checks send what their account holds above the float back to the test wallet
+  through the app's own send page (`app/test/e2e-profile.mjs`), on the same three endings.
+- A persistent test account (a harness wallet's main account, the smoke user, a browser
+  check's account) keeps one small float so the next run need not be funded again: 0.02 MON,
+  `TEST_ACCOUNT_FLOAT_WEI` in `real-stack.ts`, the only place that number is written.
+- A run that CREATES a demo state for itself (`yarn demo:smoke` on a state directory that had no
+  bots yet) returns the whole state, bots included, to the funding wallet after it stops. A run
+  on a standing demo state never touches the bots: they stay funded between runs.
+- What cannot come back is said in the line: dust under twice the transfer fee, a transfer that
+  failed or reverted, sender accounts funded for coming messages (they stay with the wallet).
+
+**Looking at it, and collecting what a crashed or old run left.** Every demo start, harness run
+and livecheck puts testnet MON in accounts whose keys exist only in a state directory. For state
+that no run will return by itself any more (a killed process, an old directory) two commands read those
 directories with the wallet's own derivation (main account, identity, single-use sender accounts
 whatever their state, change accounts) and the chain:
 
@@ -206,17 +233,24 @@ whatever their state, change accounts) and the chain:
   account holds, what is worth moving, what is dust and what has no key left. With no directory
   it looks at `~/.frank-*` and the `frank-*` directories of the temp directory. Read-only.
 - `yarn --cwd packages/bot funds:sweep <dir ...>`: a dry run of sending it back;
-  `--send` does it. One transfer per account, one at a time, each waited for, to the address of
-  the funding wallet (`E2E_DEMO_MAIN_WALLET_JSON`; only its address is read); every transfer is
-  appended to a log file (`--log <file>`, otherwise a file in the temp directory that the last
-  line names). An account under twice the transfer fee (21,000 gas at the node's gas price,
-  about 0.0021 MON) is left as dust. It refuses a directory a running process has open, and a
-  demo state directory unless asked through `yarn demo:sweep`. It never writes to a state
-  directory (pool records are read from a temporary copy) and never prints a key.
-- `yarn demo:sweep <demo state dir> [--send]` (repo root): the same for a demo's bots, for a
-  demo state that is finished with. A stop does NOT sweep: the bots are meant to stay funded
-  between runs. When a start funds bot accounts the launcher prints how much it places in the
-  state directory and this command.
+  `--send` does it (`--help` lists the options). One transfer per account, one at a time, each
+  waited for, to the address of the funding wallet (`E2E_DEMO_MAIN_WALLET_JSON`; only its
+  address is read); every transfer is appended to a log file (`--log <file>`, otherwise a file
+  in the temp directory that the last line names). An account under twice the transfer fee
+  (21,000 gas at the node's gas price, about 0.0021 MON) is left as dust. It refuses a directory
+  a running process has open, asks again immediately before sending, and counts the directory
+  as in use when `lsof` is missing or fails. It never writes to a state directory (pool records
+  are read from a temporary copy), never follows a symbolic link, and never prints a key or the
+  contents of a key file it could not parse.
+  **A state that will be used again stays usable**: by default the sweep takes main, identity
+  and change accounts and the sender accounts the wallet's records call spent or retired, and
+  leaves the sender accounts the records hold funded for coming messages, so the records stay
+  true. `--abandoned` takes those too, for a state that will never be opened again. When a
+  wallet's pool records are missing or unreadable the report says so (only accounts 0-2 are
+  then looked at).
+- `yarn demo:sweep <demo state dir> [--send]` (repo root): `funds:sweep --demo --abandoned`, for
+  a standing demo state that is finished with. A stop does NOT sweep a standing demo: its bots
+  are meant to stay funded between runs.
 
 State kept under a temp directory is gone after a reboot, and its money with it: keep state
 directories under the home directory. Until the unmerged `wallet-parallel-send` branch lands (a

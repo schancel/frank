@@ -110,10 +110,17 @@ export interface EvmLegacyConsolidatorConfig {
    * `Date.now`. */
   now?: () => number
 }
-/** The id every frontend of the account derives for a swap: from its chain and transaction. */
-export function swapRecordId(chainIdentifier: string, txHash: string): string {
+/**
+ * The id every frontend of the account derives for a swap: from its chain and the transaction
+ * id, hashed exactly as given. A Solana signature is case-sensitive; a caller with an EVM hash
+ * passes it in lower case.
+ */
+export function swapRecordId(
+  chainIdentifier: string,
+  transactionId: string,
+): string {
   return keccak256(
-    toUtf8Bytes(`frank-swap:${chainIdentifier}:${txHash.toLowerCase()}`),
+    toUtf8Bytes(`frank-swap:${chainIdentifier}:${transactionId}`),
   ).slice(2)
 }
 
@@ -132,7 +139,10 @@ export function swapRecordItemOf(
   const route = JSON.stringify(record.route)
   return {
     type: 'swap-record',
-    swapId: swapRecordId(row.binding.chainIdentifier, signed.transactionHash),
+    swapId: swapRecordId(
+      row.binding.chainIdentifier,
+      signed.transactionHash.toLowerCase(),
+    ),
     chainIdentifier: row.binding.chainIdentifier,
     venueId: record.venueId,
     txHash: signed.transactionHash,

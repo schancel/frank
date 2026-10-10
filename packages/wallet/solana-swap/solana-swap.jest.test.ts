@@ -1228,6 +1228,11 @@ describe("the wallet's legacy send: record, send, follow", () => {
       timestamp: 1,
     })
 
+    // A signature is case-sensitive base58: two that differ only in case are two swaps.
+    expect(swapRecordId('solana-devnet', '5VERv8NMvzbJMEkV')).not.toBe(
+      swapRecordId('solana-devnet', '5verv8nmvzbjmekv'),
+    )
+
     // The note cannot be sent now: the swap is still confirmed, and the entry stays, settled.
     const store = memoryJournal([record])
     const confirmedNow = () =>

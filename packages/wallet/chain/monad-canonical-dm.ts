@@ -38,6 +38,7 @@ import {
 import { randomBytes } from '@frank/crypto-box'
 import type { Current, HistoricalEvidence } from '../../directory-admission/src'
 import {
+  DirectMessageError,
   openDirectMessage,
   openOwnDirectMessage,
   prepareDirectMessage,
@@ -1493,7 +1494,17 @@ async function fetchSince(
       } catch (error) {
         // Tampered, stale-keyed or foreign ciphertext never reaches display or payment import.
         // A message whose items together exceed its limits is refused as a whole and for good.
-        if (error instanceof MessageItemBudgetExceededError)
+        // So is one that fails at or after decryption: its sender, recipient, entries and keys
+        // all matched what this wallet holds, so no later read can open it. A forged message,
+        // also one addressed from this wallet to itself, ends here. Failures before decryption
+        // (an entry or key this wallet could not look up yet) are left for a later read.
+        if (
+          error instanceof MessageItemBudgetExceededError ||
+          (error instanceof DirectMessageError &&
+            (error.code === 'crypto' ||
+              error.code === 'network' ||
+              error.code === 'digest'))
+        )
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
         continue
       } finally {

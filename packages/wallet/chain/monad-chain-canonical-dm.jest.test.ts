@@ -3309,6 +3309,66 @@ describe('two typed wallets on the open directory', () => {
     }
   })
 
+  it('reports a forged ciphertext as terminal so the read position passes it, and still delivers the next message', async () => {
+    await online('alice', f.alice)
+    await online('bob', f.bob)
+    for (const body of ['forged over', 'genuine']) {
+      mockBalances.set(
+        (await f.alice.getReceiveAddress()).raw.toLowerCase(),
+        10n ** 18n,
+      )
+      await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text(body),
+      })
+    }
+    // Everything a forger can copy is right (sender, recipient, entries, context); only the
+    // ciphertext is not what the key holders sealed, so it cannot be opened now or later.
+    const original = inboxRecord(0, 5)
+    const delivery = parseFrame(original.delivery)
+    if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1)
+      throw new Error('fixture')
+    const sealed = delivery.typed.payloadFrame
+    if (!(sealed.payload instanceof Map)) throw new Error('fixture')
+    const box = new Uint8Array(sealed.payload.get(4n) as Uint8Array)
+    box[box.length - 1] ^= 1
+    const forgedPayload = encodeFrame(
+      { typeId: 5, schemaVersion: 2, minReaderVersion: 2 },
+      new Map(sealed.payload).set(4n, box),
+    )
+    const forgedDigest = recipientPayloadDigest(
+      delivery.typed.network,
+      forgedPayload,
+    )
+    const forged = {
+      ...original,
+      delivery: encodeFrame(
+        { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+        new Map(delivery.payload as Map<bigint, FrankValue>)
+          .set(2n, forgedPayload)
+          .set(3n, forgedDigest),
+      ),
+    }
+    // A record whose context does not match is not known to be unopenable: it is left alone.
+    const mismatched = inboxRecord(0, 6)
+    const context = new Uint8Array(mismatched.context)
+    context[context.length - 1] ^= 1
+    inboxPage.mockResolvedValue({
+      records: [forged, { ...mismatched, context }, inboxRecord(1, 9)],
+    })
+    const quarantined: [number, string][] = []
+    const received = await f.chain.directMessages.fetchSince({
+      wallet: f.bob,
+      sinceMs: 0,
+      onQuarantinedTimestamp: (time, id) => void quarantined.push([time, id]),
+    })
+    expect(received.map(m => [m.receivedTime, m.items])).toEqual([
+      [9, text('genuine')],
+    ])
+    expect(quarantined).toEqual([[5, toHex(forgedDigest)]])
+  })
+
   describe('a mailbox record the client cannot decode', () => {
     /** Three paid messages from Alice in Bob's mailbox; the middle one is replaced. */
     async function mailboxWithOneUnreadable(

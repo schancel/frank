@@ -343,12 +343,15 @@ describe('SolanaSwapPanel', () => {
     expect(button(wrapper, 'solana-swap-review-btn').disabled).toBe(true)
 
     await enterAmount(wrapper, '0.01')
-    expect(session.quote).toHaveBeenCalledWith({
-      inputMint: SOL,
-      outputMint: USDC,
-      amount: 10_000_000n,
-      slippageBps: 50,
-    })
+    expect(session.quote).toHaveBeenCalledWith(
+      {
+        inputMint: SOL,
+        outputMint: USDC,
+        amount: 10_000_000n,
+        slippageBps: 50,
+      },
+      expect.any(Object),
+    )
     expect(
       (
         wrapper.find('[data-testid="solana-swap-receive-amount"] input')
@@ -385,7 +388,11 @@ describe('SolanaSwapPanel', () => {
     await flushPromises()
     expect(session.quote).toHaveBeenLastCalledWith(
       expect.objectContaining({ slippageBps: 100 }),
+      expect.any(Object),
     )
+    // Changed input starts a new run of quotes.
+    const runs = session.quote.mock.calls.map(call => call[1])
+    expect(runs[1]).not.toBe(runs[0])
   })
 
   it('does not ask for a quote the wallet cannot pay for, or for a malformed amount', async () => {
@@ -443,13 +450,30 @@ describe('SolanaSwapPanel', () => {
     const wrapper = await mountPanel(session)
     await enterAmount(wrapper, '0.01')
     expect(session.quote).toHaveBeenCalledTimes(1)
+    // Each quote costs the relay a simulation: the first refresh comes after 15 seconds, the
+    // ones after it every 30.
     jest.advanceTimersByTime(11_000)
     await flushPromises()
+    expect(session.quote).toHaveBeenCalledTimes(1)
+    jest.advanceTimersByTime(5_000)
+    await flushPromises()
     expect(session.quote).toHaveBeenCalledTimes(2)
+    jest.advanceTimersByTime(16_000)
+    await flushPromises()
+    expect(session.quote).toHaveBeenCalledTimes(2)
+    jest.advanceTimersByTime(15_000)
+    await flushPromises()
+    expect(session.quote).toHaveBeenCalledTimes(3)
+    // The refreshes are one run of quotes for the same amount: they share what the first read.
+    const run = session.quote.mock.calls.map(call => call[1])
+    expect(run[0]).toEqual(expect.any(Object))
+    expect(run[1]).toBe(run[0])
+    expect(run[2]).toBe(run[0])
 
-    // Two minutes with no input: no more quotes by itself.
+    // Two minutes with no input: no more quotes by itself, five in all for this amount.
     jest.advanceTimersByTime(120_000)
     await flushPromises()
+    expect(session.quote.mock.calls.length).toBeLessThanOrEqual(5)
     const whileActive = session.quote.mock.calls.length
     jest.advanceTimersByTime(60_000)
     await flushPromises()
@@ -562,7 +586,7 @@ describe('SolanaSwapPanel', () => {
     const wrapper = await mountPanel(session)
     await toReview(wrapper)
     const hidden = jest.spyOn(document, 'hidden', 'get').mockReturnValue(true)
-    jest.advanceTimersByTime(12_000) // the quote goes stale; hidden, so nothing refreshed it
+    jest.advanceTimersByTime(17_000) // the quote goes stale; hidden, so nothing refreshed it
     await flushPromises()
     hidden.mockRestore()
     expect(button(wrapper, 'solana-swap-confirm').textContent).toContain(

@@ -430,6 +430,7 @@ import {
   PendingSwapsUnreadableError,
   SolanaSwapError,
   type SolanaSwapOutcome,
+  type SolanaQuoteCycle,
   type SolanaSwapQuote,
   type SolanaSwapRecord,
   type SolanaSwapSession,
@@ -450,11 +451,15 @@ const props = defineProps<{
   venueId?: string
 }>()
 
-/** A quote older than this is refreshed before it can be confirmed. */
-const QUOTE_MAX_AGE_MS = 10_000
+/** A quote older than this is refreshed before it can be confirmed, and is refreshed by
+ * itself the first time, and for as long as the review card is open. */
+const QUOTE_MAX_AGE_MS = 15_000
+/** After that first refresh the quote on screen is refreshed this often: each quote costs the
+ * relay a simulation, and reviewing or confirming gets a current one anyway. */
+const REQUOTE_BACKOFF_MS = 30_000
 const QUOTE_DEBOUNCE_MS = 500
-/** With no input for this long the panel stops re-quoting by itself (each quote costs the
- * relay a simulation); it quotes again on input and before confirming. */
+/** With no input for this long the panel stops re-quoting by itself; it quotes again on input
+ * and before confirming. */
 const IDLE_REQUOTE_LIMIT_MS = 120_000
 /** Left in the wallet by MAX when paying SOL, for the network fee and account deposits. */
 const SOL_RESERVE_LAMPORTS = 5_000_000n
@@ -506,6 +511,10 @@ const swap = ref<SwapView | null>(null)
 const now = ref(Date.now())
 
 let quoteGeneration = 0
+/** One per run of quotes for the same input: what the first quote read, later ones reuse. */
+let quoteCycle: SolanaQuoteCycle = {}
+/** Quotes the panel fetched by itself since the last input. */
+let ownRequotes = 0
 let lastInputAt = Date.now()
 let debounce: ReturnType<typeof setTimeout> | undefined
 let ticker: ReturnType<typeof setInterval> | undefined
@@ -905,12 +914,15 @@ async function fetchQuote() {
   }
   quoting.value = true
   try {
-    const fresh = await current.quote({
-      inputMint: payMint.value,
-      outputMint: receiveMint.value,
-      amount: amount.value,
-      slippageBps: slippageBps.value,
-    })
+    const fresh = await current.quote(
+      {
+        inputMint: payMint.value,
+        outputMint: receiveMint.value,
+        amount: amount.value,
+        slippageBps: slippageBps.value,
+      },
+      quoteCycle,
+    )
     if (generation !== quoteGeneration || unmounted) return
     quote.value = fresh
     quoteError.value = null
@@ -934,6 +946,8 @@ async function fetchQuote() {
 watch([payMint, receiveMint, amountText, slippageBps], () => {
   // What is on screen no longer matches the inputs: drop it until the new quote arrives.
   lastInputAt = Date.now()
+  quoteCycle = {}
+  ownRequotes = 0
   quote.value = null
   quoteError.value = null
   reviewing.value = false
@@ -947,6 +961,7 @@ watch(
   () => [props.chainIdentifier, props.venueId],
   () => {
     // Another network or exchange is another session; nothing quoted carries over.
+    quoteCycle = {}
     quote.value = null
     quoteError.value = null
     reviewing.value = false
@@ -1171,17 +1186,25 @@ onMounted(() => {
   void load()
   ticker = setInterval(() => {
     now.value = Date.now()
-    // Keep the quote on screen current while the user is here and active. Hidden tab, or no
-    // input for a while: stop asking; `review` and `confirm` refresh a stale quote themselves.
+    // Keep the quote on screen current while the user is here and active: once when it goes
+    // stale, then at the slower pace, except while the review card is open (what is about to
+    // be confirmed stays current). Hidden tab, or no input for a while: stop asking; `review`
+    // and `confirm` refresh a stale quote themselves.
+    const due =
+      reviewing.value || ownRequotes === 0
+        ? !quoteFresh.value
+        : quote.value !== null &&
+          now.value - quote.value.fetchedAt > REQUOTE_BACKOFF_MS
     if (
       quote.value &&
       !quoting.value &&
       !swap.value &&
       quoteMatchesInput.value &&
-      !quoteFresh.value &&
+      due &&
       !document.hidden &&
       now.value - lastInputAt < IDLE_REQUOTE_LIMIT_MS
     ) {
+      ownRequotes++
       void fetchQuote()
     }
   }, 1000)

@@ -34,6 +34,7 @@ import {
   trackSolanaSwap,
   type SolanaDexWallet,
   type SolanaLegacySender,
+  type SolanaQuoteCycle,
   type SolanaSwapObserver,
   type SolanaSwapOutcome,
   type SolanaSwapQuote,
@@ -51,6 +52,7 @@ import {
 import { useSwapStore, type SwapRecord } from '../stores/swaps'
 
 export type {
+  SolanaQuoteCycle,
   SolanaSwapOutcome,
   SolanaSwapQuote,
   SolanaSwapRecord,
@@ -167,12 +169,16 @@ export interface SolanaSwapSession {
   readonly owner: string
   /** Balances of the venue's tokens for this wallet, read from the chain. */
   loadTokens(): Promise<SolanaSwapTokenBalance[]>
-  quote(params: {
-    inputMint: string
-    outputMint: string
-    amount: bigint
-    slippageBps: number
-  }): Promise<SolanaSwapQuote>
+  /** `cycle`: one object for all the quotes of the same input, a new one when it changes. */
+  quote(
+    params: {
+      inputMint: string
+      outputMint: string
+      amount: bigint
+      slippageBps: number
+    },
+    cycle?: SolanaQuoteCycle,
+  ): Promise<SolanaSwapQuote>
   /** Signs, records, sends and follows the swap to a definite outcome. */
   execute(
     quote: SolanaSwapQuote,
@@ -287,7 +293,7 @@ export async function openSolanaSwapSession(
     owner,
     loadTokens: () =>
       fetchSwapTokenBalances(connection, ownerKey, venue.tokens),
-    quote: params => dex.quote({ owner: ownerKey, ...params }),
+    quote: (params, cycle) => dex.quote({ owner: ownerKey, ...params }, cycle),
     execute(quote, assets, onSubmitted) {
       const outcome: Promise<SolanaSwapOutcome> = dex.execute(
         quote,

@@ -980,6 +980,125 @@ describe("FrankBotHost Reliability Features", () => {
       expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(1);
     });
   });
+  // #1235 Q4. On main 8c656f32 `pollOnce` never asks the wallet to fund ahead: the first three
+  // tests fail there (the mock is never called). The last two are pins and pass there: a
+  // closing host asks for nothing, and every other test in this file already polls with a
+  // chain that has no such method.
+  describe("Funding ahead at the poll", () => {
+    const bot: FrankBotDefinition = {
+      id: "fund-ahead-bot",
+      getProfile: () => ({ name: "FundAheadBot", bot: true }),
+      onMessage: async () => undefined,
+    };
+    const registered = async (name: string, fundAhead?: jest.Mock) => {
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/${name}`,
+      });
+      // Installed before registration, so a call made while registering would be seen.
+      if (fundAhead) (host as any).chain.directMessages.fundAhead = fundAhead;
+      await host.register(bot);
+      const instance = (host as any).instances.get("fund-ahead-bot");
+      mockDirectMessagesFetchSince.mockResolvedValue([]);
+      return { host, instance };
+    };
+    const ready = { outcome: "ready", fundingTxHashes: [] };
+
+    it("never during registration; once per poll, for that bot's wallet, after the recovery loop and before the mailbox fetch", async () => {
+      const order: string[] = [];
+      const fundAhead = jest.fn(async () => {
+        order.push("fund ahead");
+        return ready;
+      });
+      const { host, instance } = await registered("order", fundAhead);
+      expect(fundAhead).not.toHaveBeenCalled();
+      jest.spyOn(instance.operations, "listIncomplete").mockReturnValue([
+        {
+          digest: "aa".repeat(32),
+          replies: [{ digest: "bb".repeat(32), observation: "unknown" }],
+        },
+      ]);
+      jest
+        .spyOn(instance.operations, "observe")
+        .mockImplementation(async () => void order.push("recovery recorded"));
+      (host as any).chain.directMessages.reconcileAttempts = jest.fn(
+        async () => {
+          order.push("recovery read");
+          return {};
+        }
+      );
+      mockDirectMessagesFetchSince.mockImplementation(async () => {
+        order.push("fetch");
+        return [];
+      });
+      await (host as any).pollAllBots();
+      expect(order).toEqual([
+        "recovery read",
+        "recovery recorded",
+        "fund ahead",
+        "fetch",
+      ]);
+      expect(fundAhead).toHaveBeenCalledWith({ wallet: instance.wallet });
+      await (host as any).pollAllBots();
+      expect(fundAhead).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not wait for it: a pass that never settles does not hold the poll", async () => {
+      const fundAhead = jest.fn(() => new Promise(() => undefined));
+      const { host } = await registered("unawaited", fundAhead);
+      await (host as any).pollAllBots();
+      await (host as any).pollAllBots();
+      expect(fundAhead).toHaveBeenCalledTimes(2);
+      expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(2);
+    });
+
+    it("survives its failure: a rejection or a synchronous throw neither breaks the poll nor goes unhandled, and is logged once", async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        const fundAhead = jest
+          .fn()
+          .mockRejectedValueOnce(new Error("fixture: wallet queue refused"))
+          .mockImplementationOnce(() => {
+            throw new Error("fixture: wallet closed");
+          })
+          .mockRejectedValue(new Error("fixture: still refused"));
+        const { host } = await registered("failure", fundAhead);
+        for (let poll = 0; poll < 4; poll++)
+          await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(fundAhead).toHaveBeenCalledTimes(4);
+        expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(4);
+        expect(unhandled).toEqual([]);
+        expect(
+          warn.mock.calls.filter(([line]) =>
+            String(line).includes("Funding ahead failed")
+          )
+        ).toHaveLength(1);
+      } finally {
+        warn.mockRestore();
+        process.off("unhandledRejection", onUnhandled);
+      }
+    });
+
+    it("not while closing: a poll that finds the host stopping asks for nothing", async () => {
+      const fundAhead = jest.fn(async () => ready);
+      const { host } = await registered("closing", fundAhead);
+      (host as any).closing = true;
+      await (host as any).pollAllBots();
+      expect(fundAhead).not.toHaveBeenCalled();
+      (host as any).closing = false;
+    });
+
+    it("pin: a chain without the method has nothing to do, and the poll fetches as before", async () => {
+      const { host } = await registered("absent");
+      expect((host as any).chain.directMessages.fundAhead).toBeUndefined();
+      await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+      expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(1);
+    });
+  });
   // A launcher that must publish a bot's address before the bot runs creates the profile through
   // `provisionBotProfile`. The host admits that profile, and keeps refusing one that something
   // else wrote, which is what the demo launcher used to leave behind.

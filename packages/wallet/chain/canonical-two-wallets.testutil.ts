@@ -214,7 +214,8 @@ function roots(index: number): MonadRootBundle {
   }
 }
 
-export async function fixture() {
+/** `overrides` replaces fields of the chain configuration both wallets are opened with. */
+export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'chain-blackjack-'))
   const config: EvmChainConfig = {
     networkId: 'monad-testnet',
@@ -228,6 +229,7 @@ export async function fixture() {
     defaultTopicVoteValueWei: 1_000n,
     subAccountPoolSize: 0,
     walletStorageLocation: join(directory, 'wallet'),
+    ...overrides,
   }
   const chain = createEvmChain(config)
   const alice = (await chain.createWallet(roots(0))) as EvmChainWalletHandle,

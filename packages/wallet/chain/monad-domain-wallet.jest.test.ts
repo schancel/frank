@@ -133,7 +133,7 @@ test.each([
   ['native', EvmNativeOperationJournal.prototype],
   ['canonical', LevelCanonicalStampAttemptJournal.prototype],
 ] as const)(
-  'actual wallet publication waits for the %s owner; failure cannot publish, and warming stays off',
+  'actual wallet publication waits for the %s owner; failure cannot publish, and opening starts no funding',
   async (_name, prototype) => {
     const dir = await mkdtemp(join(tmpdir(), 'frank-admission-publication-'))
     const cfg = { ...config, walletStorageLocation: join(dir, 'wallet') }
@@ -145,13 +145,21 @@ test.each([
       release = resolve
     })
     const original = prototype.Open
-    const warm = jest
-      .spyOn(MonadSubAccountPool.prototype, 'triggerProactiveWarming')
-      .mockImplementation(() => undefined)
-    const configure = jest.spyOn(
+    // Nothing funds as a side effect of opening: no pass ahead, no preparation, no signer.
+    const ahead = jest.spyOn(
       MonadSubAccountPool.prototype,
-      'configureProactiveWarming',
+      'fundStampInventoryAhead',
     )
+    const prepare = jest.spyOn(
+      MonadSubAccountPool.prototype,
+      'prepareStampInventory',
+    )
+    jest.mocked(MonadAccountTxSigner).mockClear()
+    const nothingFunded = () => {
+      expect(ahead).not.toHaveBeenCalled()
+      expect(prepare).not.toHaveBeenCalled()
+      expect(jest.mocked(MonadAccountTxSigner)).not.toHaveBeenCalled()
+    }
     const open = jest
       .spyOn(prototype, 'Open')
       .mockImplementationOnce(async function (this: typeof prototype) {
@@ -173,26 +181,20 @@ test.each([
     try {
       await started
       expect(published).toBe(false)
-      expect(warm).not.toHaveBeenCalled()
-      expect(configure).not.toHaveBeenCalled()
+      nothingFunded()
       release()
       await opening
-      expect(configure).not.toHaveBeenCalled()
-      expect(warm).not.toHaveBeenCalled()
+      nothingFunded()
       await wallet!.close()
       wallet = undefined
-      warm.mockClear()
-      configure.mockClear()
       open.mockRejectedValueOnce(new Error('required owner failed'))
       await expect(createEvmChain(cfg).createWallet(roots())).rejects.toThrow(
         'required owner failed',
       )
-      expect(warm).not.toHaveBeenCalled()
-      expect(configure).not.toHaveBeenCalled()
+      nothingFunded()
       open.mockRestore()
       wallet = await createEvmChain(cfg).createWallet(roots())
-      expect(configure).not.toHaveBeenCalled()
-      expect(warm).not.toHaveBeenCalled()
+      nothingFunded()
     } finally {
       release()
       await opening.catch(() => undefined)
@@ -2708,7 +2710,9 @@ describe.each(['pending', 'included'] as const)(
   },
 )
 
-test('retiring a pool account on a normally opened wallet builds and submits no warming transfer (#1235)', async () => {
+// The background funder that ran after every spend, broadcasting with no record, is deleted
+// (#1235 Q4). Pin: a spent or retired account starts no funding by itself.
+test('retiring a pool account on a normally opened wallet builds and submits no transfer (#1235)', async () => {
   const built = jest.fn(async () => ({
     rawTx: '0x1234',
     txHash: '0x' + 'ab'.repeat(32),
@@ -2719,20 +2723,22 @@ test('retiring a pool account on a normally opened wallet builds and submits no 
     .mockImplementation(
       () => ({ buildAndSignTransfer: built, submit: submitted } as never),
     )
-  const dir = await mkdtemp(join(tmpdir(), 'frank-warming-off-'))
+  const dir = await mkdtemp(join(tmpdir(), 'frank-no-funding-after-spend-'))
   const wallet = (await createEvmChain({
     ...config,
     walletStorageLocation: join(dir, 'wallet'),
   }).createWallet(roots())) as EvmChainWalletHandle
   try {
     jest.spyOn(wallet.provider, 'getBalance').mockResolvedValue(0n)
+    jest.mocked(MonadAccountTxSigner).mockClear()
     wallet.pool.setStatus(0, 'in-use')
     wallet.pool.setStatus(0, 'retired')
-    wallet.pool.triggerProactiveWarming()
-    await wallet.pool.ensureMinimumAvailableCapacity()
+    wallet.pool.setStatus(1, 'in-use')
+    wallet.pool.setStatus(1, 'spent')
+    await new Promise<void>(resolve => setImmediate(resolve))
+    expect(jest.mocked(MonadAccountTxSigner)).not.toHaveBeenCalled()
     expect(built).not.toHaveBeenCalled()
     expect(submitted).not.toHaveBeenCalled()
-    expect(wallet.pool.getProactiveWarmingConfig()).toBeUndefined()
     expect(
       wallet.pool.records().filter(row => row.status === 'funding'),
     ).toEqual([])
@@ -2740,6 +2746,30 @@ test('retiring a pool account on a normally opened wallet builds and submits no 
     await wallet.close()
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+// #1235 Q4. `fundAhead` does not exist on main 8c656f32.
+test('fundAhead answers unavailable, having built nothing, for a wallet with no canonical sender accounts, and rejects once it is closed', async () => {
+  const chain = createEvmChain(config)
+  const wallet = await chain.createWallet(roots())
+  try {
+    jest.mocked(MonadAccountTxSigner).mockClear()
+    const read = jest.spyOn(
+      (wallet as EvmChainWalletHandle).provider,
+      'getBalance',
+    )
+    await expect(chain.directMessages.fundAhead!({ wallet })).resolves.toEqual({
+      outcome: 'unavailable',
+      fundingTxHashes: [],
+    })
+    expect(jest.mocked(MonadAccountTxSigner)).not.toHaveBeenCalled()
+    expect(read).not.toHaveBeenCalled()
+  } finally {
+    await wallet.close()
+  }
+  await expect(chain.directMessages.fundAhead!({ wallet })).rejects.toThrow(
+    'closed',
+  )
 })
 
 test('close drains an admitted plan that has not reached signing yet', async () => {
@@ -2778,7 +2808,7 @@ test('close drains an admitted plan that has not reached signing yet', async () 
   }
 })
 
-test('conflicting recovered owners remain read-only without configuring or starting warming', async () => {
+test('conflicting recovered owners remain read-only, and reopening builds and submits nothing', async () => {
   const bundleModule = jest.requireActual(
     '../storage/monad-wallet-bundle',
   ) as typeof import('../storage/monad-wallet-bundle')
@@ -2791,10 +2821,7 @@ test('conflicting recovered owners remain read-only without configuring or start
       lastBundle = result
       return result
     })
-  const warm = jest
-    .spyOn(MonadSubAccountPool.prototype, 'triggerProactiveWarming')
-    .mockImplementation(() => undefined)
-  const dir = await mkdtemp(join(tmpdir(), 'frank-stage-a-conflict-warm-'))
+  const dir = await mkdtemp(join(tmpdir(), 'frank-stage-a-conflict-'))
   const cfg = {
     ...config,
     walletStorageLocation: join(dir, 'wallet'),
@@ -2860,16 +2887,11 @@ test('conflicting recovered owners remain read-only without configuring or start
     expect(Transaction.from(held.fundingAttempt!.rawTx).nonce).toBe(0)
     await wallet.close()
     wallet = undefined
-    warm.mockRestore()
     const built = jest.fn(async () => ({
       rawTx: '0x1234',
       txHash: '0x' + 'ab'.repeat(32),
     }))
     const submitted = jest.fn(async () => '0x' + 'ab'.repeat(32))
-    const configured = jest.spyOn(
-      MonadSubAccountPool.prototype,
-      'configureProactiveWarming',
-    )
     jest
       .mocked(MonadAccountTxSigner)
       .mockImplementation(
@@ -2892,7 +2914,6 @@ test('conflicting recovered owners remain read-only without configuring or start
     )
     expect(built).not.toHaveBeenCalled()
     expect(submitted).not.toHaveBeenCalled()
-    expect(configured).not.toHaveBeenCalled()
   } finally {
     await wallet?.close()
     await rm(dir, { recursive: true, force: true })
@@ -3413,6 +3434,15 @@ describe('recorded native spend evidence is applied once at wallet open, with no
       ),
       // Stage 3: open never starts a re-observation, whatever is pending in the journal.
       reobserve: jest.spyOn(EvmLegacyConsolidator.prototype, 'reobservePending'),
+      // Q4: open never funds, ahead or otherwise. Only a host's explicit call does.
+      fundAhead: jest.spyOn(
+        MonadSubAccountPool.prototype,
+        'fundStampInventoryAhead',
+      ),
+      prepareInventory: jest.spyOn(
+        MonadSubAccountPool.prototype,
+        'prepareStampInventory',
+      ),
     }
     jest.mocked(MonadAccountTxSigner).mockClear()
     const counts = () =>

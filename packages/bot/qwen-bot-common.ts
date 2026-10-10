@@ -36,30 +36,13 @@
  * maxFeePerGas * gasLimit`) for its own payment -- not a padded, "plenty of headroom" number like
  * #8's, because this ticket's balance doesn't have room for padding.
  *
- * ## Nonce-race retries (`fundPoolWithRetry`)
+ * ## Pre-funding a pool (`poolSize`)
  *
- * Confirmed live while running this ticket's own demo: the shared main funded wallet
- * (`frank-worktrees/spike-demo/spike/data/chain-wallet.json`) is apparently also in concurrent use
- * by other activity in this environment (its balance kept dropping, and `eth_getTransactionCount`
- * kept moving, between this ticket's own transactions) -- so a nonce fetched via `eth_
- * getTransactionCount(address, "pending")` can already be stale by the time the signed transfer
- * actually reaches the node, and `eth_sendRawTransaction` rejects it as `"nonce has already been
- * used"`. `fanOutFundSubAccounts` (`./monad-account-pool.ts`, #14) deliberately has no retry logic
- * of its own for this (its own doc comment calls parallelizing/retrying "out of scope" for that
- * ticket) and `MonadSubAccountPool.fundAll` doesn't expose an `onFunded` hook to track partial
- * progress across a retry -- so `fundPoolWithRetry` below calls `fanOutFundSubAccounts` directly
- * (bypassing `fundAll`, not editing it) with its own `onFunded` bookkeeping, so a retry after a
- * nonce race only re-attempts whichever sub-accounts didn't already get a real funding tx
- * broadcast, rather than re-funding (and double-spending on) ones that already succeeded.
- *
- * **2026-09-28: no longer the default path.** `fundPoolWithRetry` still exists and still works
- * exactly as described above, but as of `setUpFundedStampClient`'s "Lazy per-send funding" update
- * it only runs when a caller explicitly opts in with a nonzero `poolSize` (`monad-ui-verify.
- * livecheck.ts`, which needs a pool pre-funded before it ever calls `directMessages.send`). Both
- * bot scripts fund lazily per-send instead (`sendDirectMessageText`'s `pool.prepareStampInventory`
- * call), which sidesteps this contention almost entirely: instead of one burst of N
- * near-simultaneous transactions from a single account, funding happens in small
- * (`DEFAULT_TOPUP_BUFFER_SIZE = 5`) top-ups spread out one send at a time.
+ * Both bot scripts fund lazily per send (`sendDirectMessageText`'s `pool.prepareStampInventory`
+ * call). A caller that needs accounts funded before its first send passes a nonzero `poolSize`
+ * (`monad-ui-verify.livecheck.ts`); that goes through `MonadSubAccountPool.topUpPool`, the pool's
+ * recorded funding path: each transfer's signed bytes are stored before they are submitted, and a
+ * retry resumes that transfer instead of signing another for the same account.
  */
 import { readFileSync, existsSync, statSync, writeFileSync } from 'fs'
 import { JsonRpcProvider, Provider } from 'ethers'
@@ -72,11 +55,7 @@ import {
 import { MonadHdKeyring } from '@frank/wallet/monad-hd-keyring'
 import { MonadChangeKeyring } from '@frank/wallet/monad-change-keyring'
 import { MonadChangePool } from '@frank/wallet/monad-change-pool'
-import {
-  MonadSubAccountPool,
-  fanOutFundSubAccounts,
-  FanOutFundingResult,
-} from '@frank/wallet/monad-account-pool'
+import { MonadSubAccountPool } from '@frank/wallet/monad-account-pool'
 import { SubAccountLeaseManager } from '@frank/wallet/monad-account-lease'
 import {
   MonadStampClient,
@@ -302,69 +281,6 @@ export async function waitForConfirmation(
   throw new Error(`${label} (${txHash}) did not confirm within the poll budget`)
 }
 
-/** See this file's header, "Nonce-race retries". Funds every currently-`'available'` sub-account
- * in `pool`, retrying only the not-yet-funded remainder when a funding tx is rejected for a
- * nonce reason (another concurrent user of the same shared wallet having raced it), up to
- * `maxAttempts`. Any other kind of failure (insufficient balance, RPC down, ...) propagates
- * immediately without retrying.
- *
- * **Widened tonight (autonomous overnight session, 2026-09-27):** Monad testnet's node doesn't
- * always phrase this as "nonce" -- confirmed live, a real rejection came back as `"An existing
- * transaction had higher priority"` (`eth_sendRawTransaction`'s `-32000` response), which the
- * original `/nonce/i` regex didn't match, so a genuine nonce race propagated as a hard failure
- * instead of retrying. Broadened to also match "higher priority" and "already known" (another
- * common phrasing for the same underlying race across different EVM clients). */
-export async function fundPoolWithRetry(params: {
-  pool: MonadSubAccountPool
-  mainAccountSigner: MonadAccountTxSigner
-  stampValueWei: bigint
-  gasReserve: bigint
-  label: string
-  maxAttempts?: number
-}): Promise<FanOutFundingResult[]> {
-  // Bumped from 6 tonight (autonomous overnight session, 2026-09-27): confirmed live, repeatedly,
-  // that this environment's shared testnet wallet has persistent, severe nonce contention -- a
-  // 10-account pool exhausted 6 attempts (needing a 5th retry for just the 4th-from-last account)
-  // before finishing even one of two consecutive runs. Raised the ceiling rather than reducing pool
-  // size further, since the linear backoff below already spaces attempts out increasingly.
-  const maxAttempts = params.maxAttempts ?? 15
-  const funded: FanOutFundingResult[] = []
-  let remaining = params.pool
-    .records()
-    .filter(record => record.status === 'available')
-
-  for (
-    let attempt = 1;
-    attempt <= maxAttempts && remaining.length > 0;
-    attempt++
-  ) {
-    try {
-      await fanOutFundSubAccounts({
-        mainAccountSigner: params.mainAccountSigner,
-        targets: remaining,
-        burnValue: params.stampValueWei,
-        gasReserve: params.gasReserve,
-        onFunded: result => {
-          funded.push(result)
-          remaining = remaining.filter(target => target.index !== result.index)
-        },
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      const isNonceRace = /nonce|higher priority|already known/i.test(message)
-      if (!isNonceRace || attempt === maxAttempts) throw err
-      const backoffMs = 1500 * attempt
-      console.log(
-        `[${params.label}] funding hit a nonce race (the shared testnet wallet is apparently in ` +
-          `concurrent use elsewhere too) -- retrying the remaining ${remaining.length} sub-account(s) ` +
-          `in ${backoffMs}ms (attempt ${attempt}/${maxAttempts})`,
-      )
-      await sleep(backoffMs)
-    }
-  }
-  return funded
-}
-
 /** Loads the operator-supplied main wallet (`{address, privateKey}` JSON at `mainWalletJsonPath`)
  * as a transfer signer. The key is only ever passed to the signer, never logged. Shared by the
  * stamp-funded bots and the faucet (#316), which needs no stamp pool. */
@@ -392,11 +308,10 @@ export function loadMainAccountSigner(params: {
  * Stamp-over-Monad messages against the main funded testnet wallet at `mainWalletJsonPath`.
  *
  * **Lazy per-send funding (direct user feedback, 2026-09-28):** this used to eagerly pre-fund
- * `poolSize` sub-accounts all at once via `fundPoolWithRetry`, sized to `maxReplies + maxGreetings`
- * by callers -- which meant a long-running bot with generous limits fired a burst of dozens (or,
- * mistakenly, thousands) of near-simultaneous funding transactions from one account before ever
- * reaching its message-polling loop, hitting exactly the nonce contention `fundPoolWithRetry`'s own
- * header describes, with no bound on how bad a large `poolSize` makes it. The real app's own send
+ * `poolSize` sub-accounts all at once, sized to `maxReplies + maxGreetings` by callers -- which
+ * meant a long-running bot with generous limits fired a burst of dozens (or, mistakenly,
+ * thousands) of near-simultaneous funding transactions from one account before ever reaching its
+ * message-polling loop, with no bound on how bad a large `poolSize` makes it. The real app's own send
  * path (`ActiveChain.directMessages.send`, `chain/monad-chain.ts`) never pre-funds like this --
  * it calls `pool.prepareStampInventory()` right before each individual send, topping up only the
  * shortfall (default buffer of `DEFAULT_TOPUP_BUFFER_SIZE = 5`, see `monad-account-pool.ts`).
@@ -446,9 +361,9 @@ export async function setUpFundedStampClient(params: {
   }
 
   if (params.poolSize) {
-    pool.ensureSize(params.poolSize)
     await fundConfiguredPool({
       pool,
+      poolSize: params.poolSize,
       provider,
       mainAccountSigner,
       stampValueWei: params.stampValueWei,
@@ -469,8 +384,11 @@ export async function setUpFundedStampClient(params: {
   return { provider, stampClient, mainAccountSigner, pool, closePool }
 }
 
+/** Brings the pool's funded, unused accounts up to `poolSize` through its recorded funding path
+ * (`topUpPool`): each transfer is stored before it is submitted and confirmed by its receipt. */
 async function fundConfiguredPool(params: {
   pool: MonadSubAccountPool
+  poolSize: number
   provider: JsonRpcProvider
   mainAccountSigner: MonadAccountTxSigner
   stampValueWei: bigint
@@ -486,24 +404,15 @@ async function fundConfiguredPool(params: {
     `[${params.label}] maxFeePerGas=${maxFeePerGas} wei; funding each sub-account with stampValue=${params.stampValueWei} + gasReserve=${gasReserve} wei`,
   )
 
-  const funded = await fundPoolWithRetry({
-    pool: params.pool,
+  const funded = await params.pool.topUpPool({
     mainAccountSigner: params.mainAccountSigner,
-    stampValueWei: params.stampValueWei,
+    burnValue: params.stampValueWei,
     gasReserve,
-    label: params.label,
+    bufferSize: params.poolSize,
   })
   for (const funding of funded) {
     console.log(
-      `[${params.label}] funded ${funding.address} (sub-account ${funding.index}) with ${funding.fundedValue} wei, tx ${funding.txHash}`,
-    )
-    await waitForConfirmation(
-      params.mainAccountSigner,
-      funding.txHash,
-      `${params.label} funding tx (sub-account ${funding.index})`,
-    )
-    console.log(
-      `[${params.label}] funding tx for sub-account ${funding.index} confirmed on-chain`,
+      `[${params.label}] funded ${funding.address} (sub-account ${funding.index}) with ${funding.fundedValue} wei, tx ${funding.txHash} (confirmed)`,
     )
   }
 }
@@ -588,9 +497,9 @@ export async function setUpDurableFundedStampClient(params: {
     await stampClient.resumePendingAttempts()
 
     if (params.poolSize) {
-      pool.ensureSize(params.poolSize)
       await fundConfiguredPool({
         pool,
+        poolSize: params.poolSize,
         provider,
         mainAccountSigner,
         stampValueWei: params.stampValueWei,

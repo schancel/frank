@@ -49,8 +49,8 @@
  *       "consolidate now" action) iterate `records()`, re-derive each change account's signer via
  *       `MonadChangeKeyring.deriveChangeAccount(index)`, and transfer each one's current balance
  *       (again gated by the same dust-threshold logic as here) back into the main funding account
- *       that originally fan-out-funds burn accounts (`monad-account-pool.ts`'s
- *       `fanOutFundSubAccounts`) -- closing the loop.
+ *       that originally funds burn accounts (`monad-account-pool.ts`) -- closing
+ *       the loop.
  *   (b) **Promote directly to a fresh burn account**: since a change account and a burn account
  *       are both just derived EOAs, a sufficiently-funded change account could itself be
  *       "promoted" -- have its balance topped up (if short of `burnValue + gasReserve`) or trimmed

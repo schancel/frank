@@ -4,8 +4,8 @@
  * Implements `PLAN.md`'s M5/constraint-3 privacy pool: instead of one hot wallet address
  * accumulating a linkable on-chain history across every stamp payment or broadcast, we derive independent
  * `m/44'/60'/0'/0/i` sub-account EOAs (`./monad-hd-keyring.ts`) from a single root secret, fund
- * each one from a main account (`fanOutFundSubAccounts`, below), and hand out each one exactly
- * once (`MonadSubAccountPool.selectForStamp`) — never reusing an address, like a UTXO.
+ * each one from a main account (`fundAccount`, below: the one recorded funding path), and hand out
+ * each one exactly once (`MonadSubAccountPool.selectForStamp`) — never reusing an address, like a UTXO.
  *
  * **Correction (ticket #34, after #14/#18/#21 shipped):** this pool originally operated over a
  * fixed size fixed once at startup (`ensureSize(N)`), on the (incorrect) assumption that
@@ -24,11 +24,14 @@
  *     invoked automatically from inside `selectForStamp()`, for one concrete reason:
  *     `selectForStamp()` is called synchronously today, from `SubAccountLeaseManager.acquireLease()`
  *     (itself called synchronously by `MonadStampClient.submitStampedMessage`, #13) — funding is
- *     unavoidably async (it submits real transactions via `fanOutFundSubAccounts`), so it can't run
+ *     unavoidably async (it submits real transactions), so it can't run
  *     inside that synchronous call chain without restructuring callers this ticket doesn't own.
  *     Ticket #79 wires production DMs through `prepareStampInventory()` only after the user presses
  *     Send. `topUpPool()` remains an explicit API for non-DM callers; neither path moves funds merely
- *     because a wallet was opened.
+ *     because a wallet was opened. `fundStampInventoryAhead()` (#1235) is that same preparation
+ *     asked for by a host between messages, for the one next message; nothing calls it at open
+ *     either. Every one of these funds through `fundAccount`, which stores the signed transfer
+ *     before it submits it: there is no other way value reaches a sub-account.
  *
  *     Buffer size is a caller-supplied `bufferSize` (default `DEFAULT_TOPUP_BUFFER_SIZE = 5`,
  *     below). Tradeoff: a bigger buffer means fewer, larger fan-out batches — cheaper in aggregate
@@ -95,7 +98,6 @@ export type {
  * header ("Look-ahead funding buffer") for the tradeoff this default balances. */
 export const DEFAULT_TOPUP_BUFFER_SIZE = 5;
 
-export const DEFAULT_MIN_AVAILABLE_CAPACITY_COUNT = 2;
 export const CAPACITY_CACHE_TTL_MS = 30_000;
 export const INTER_TX_FUNDING_DELAY_MS =
   process.env.NODE_ENV === "test" || process.env.JEST_WORKER_ID !== undefined
@@ -106,15 +108,6 @@ export interface SubAccountCapacityCacheEntry {
   capacityWei: bigint;
   checkedAtMs: number;
   balanceWei?: bigint;
-}
-
-export interface EnsureMinimumCapacityParams {
-  mainAccountSigner: MonadAccountTxSigner;
-  provider: Provider;
-  minCount?: number;
-  stampValueWei?: bigint;
-  gasReserveWei?: bigint;
-  overrides?: MonadTxOverrides;
 }
 
 export type StampInventoryPreparationProgress =
@@ -131,6 +124,27 @@ export type StampInventoryPreparationProgress =
 export interface StampInventoryPreparationResult {
   fundingTxHashes: string[];
   selectedAccountCount: number;
+}
+
+/** How many transfers one message's stamp accounts take: the 3/8 + 5/8 pair. */
+export const STAMP_PAIR_TRANSFERS = 2;
+
+/**
+ * Why a fund-ahead pass (`MonadSubAccountPool.fundStampInventoryAhead`) moved nothing more. Thrown
+ * before the transfer concerned is written or submitted: a signature made for it is discarded.
+ * - `unresolved-funding`: an earlier funding transfer has no observed outcome. Nothing is funded
+ *   on top of an unknown; the pass only looked at it once and offered its exact bytes again.
+ * - `over-bound`: the planned transfers exceed the pass's count or value limit.
+ * - `uneconomic`: a transfer's maximum fee exceeds the value it would move.
+ */
+export class FundAheadRefusedError extends Error {
+  constructor(
+    readonly code: "unresolved-funding" | "over-bound" | "uneconomic",
+    detail: string
+  ) {
+    super(`Funding ahead refused (${code}): ${detail}`);
+    this.name = "FundAheadRefusedError";
+  }
 }
 
 export interface BurnAccountPreparationResult {
@@ -220,8 +234,6 @@ export class MonadSubAccountPool {
   private stampPreparationAuthorized = false;
   private compactionCursor = -1;
   readonly capacityCache = new Map<number, SubAccountCapacityCacheEntry>();
-  private activeWarmingPromise?: Promise<void>;
-  private proactiveWarmingConfig?: EnsureMinimumCapacityParams;
   private walletOperationGate?: <T>(
     operation: (admission: MonadWalletOperationAdmission) => Promise<T>,
     admission?: MonadWalletOperationAdmission
@@ -452,11 +464,7 @@ export class MonadSubAccountPool {
    * itself (except from `topUpPool()`, to mark a freshly-funded index `'available'`); it exists so
    * #18 has a slot to write through without needing to touch the storage layer directly. Throws if
    * `index` isn't a known sub-account. */
-  setStatus(
-    index: number,
-    status: SubAccountStatus,
-    notifyWarming = true
-  ): SubAccountRecord {
+  setStatus(index: number, status: SubAccountStatus): SubAccountRecord {
     const existing = this.store.getByIndex(index);
     if (existing === undefined) {
       throw new Error(`No sub-account at index ${index} in the pool`);
@@ -469,9 +477,6 @@ export class MonadSubAccountPool {
     const updated: SubAccountRecord = { ...base, status };
     this.store.put(updated);
     this.syncUtxo(index, status);
-    if (notifyWarming && (status === "spent" || status === "retired")) {
-      this.triggerProactiveWarming();
-    }
     return updated;
   }
 
@@ -511,7 +516,7 @@ export class MonadSubAccountPool {
    * that is not a lease outcome. It trusts nothing but the signed bytes: the sender must be the
    * keyring's address for `index`, and the stored hash and value are the transaction's own, so the
    * row it writes is what `validateMonadWalletState` recomputes. Checkpoint and terminal status go
-   * down in a single put. It does not flush, never triggers warming, and never creates a row.
+   * down in a single put. It does not flush and never creates a row.
    * Throws `SubAccountSpendRefusedError` (nothing written) for unacceptable bytes or a row that
    * another owner or another transaction already holds.
    *
@@ -955,15 +960,64 @@ export class MonadSubAccountPool {
     return run;
   }
 
-  private async prepareStampInventoryExclusive(params: {
+  /**
+   * The same preparation as `prepareStampInventory`, run AHEAD of a message instead of inside its
+   * send, so the send finds its accounts ready. It is the same code and the same recorded path
+   * (`fundAccount`: sign, write the `funding` row with the exact bytes, flush, submit, wait for
+   * the receipt), on the same queue, with four differences:
+   *
+   * - An earlier `funding` row is looked at ONCE (its recorded bytes are offered again, never
+   *   re-signed) instead of polled for a minute, and while any row is still `funding` afterwards
+   *   the pass funds nothing (`unresolved-funding`).
+   * - Bounded: at most `STAMP_PAIR_TRANSFERS` transfers, moving at most `maxValueWei` in total.
+   *   A plan over either limit is refused before anything is signed (`over-bound`).
+   * - A transfer whose maximum fee exceeds the value it moves is refused after signing and before
+   *   it is written or submitted (`uneconomic`).
+   * - Nothing is reported as progress: no message is waiting on it.
+   *
+   * One message only. The send selects greedily over every available account
+   * (`selectStampAccounts`), so a second pre-funded pair is not kept for a second message: the
+   * first message takes three accounts and strands part of one. Funding further ahead needs
+   * selection that takes a pair at a time.
+   *
+   * Resolves with the hashes of transfers it confirmed (empty when inventory already sufficed).
+   * Safe to repeat and to run beside a send: calls are serialized on the pool queue and each one
+   * re-reads the rows, so a second call finds the first one's accounts and funds nothing.
+   */
+  async fundStampInventoryAhead(params: {
     mainAccountSigner: MonadAccountTxSigner;
     provider: Provider;
     stampValueWei: bigint;
     gasReserveWei: bigint;
+    /** Upper limit on the combined value of this pass's transfers (fees excluded). */
+    maxValueWei: bigint;
     fundingOverrides?: MonadTxOverrides;
-    onProgress?: (progress: StampInventoryPreparationProgress) => void;
     receipt?: FundingReceiptOptions;
   }): Promise<StampInventoryPreparationResult> {
+    const { maxValueWei, ...preparation } = params;
+    const run = this.preparationQueue.then(() =>
+      this.prepareStampInventoryExclusive(preparation, { maxValueWei })
+    );
+    this.preparationQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async prepareStampInventoryExclusive(
+    params: {
+      mainAccountSigner: MonadAccountTxSigner;
+      provider: Provider;
+      stampValueWei: bigint;
+      gasReserveWei: bigint;
+      fundingOverrides?: MonadTxOverrides;
+      onProgress?: (progress: StampInventoryPreparationProgress) => void;
+      receipt?: FundingReceiptOptions;
+    },
+    /** Set for a pass that runs ahead of any message: see `fundStampInventoryAhead`. */
+    ahead?: { maxValueWei: bigint }
+  ): Promise<StampInventoryPreparationResult> {
     const zero = BigInt(0);
     if (params.stampValueWei <= zero) {
       throw new Error(
@@ -977,7 +1031,24 @@ export class MonadSubAccountPool {
     }
     params.onProgress?.({ stage: "checking" });
 
-    const fundingTxHashes = await this.reconcileBeforePreparation(params);
+    const fundingTxHashes = await this.reconcileBeforePreparation(
+      ahead === undefined
+        ? params
+        : { ...params, receipt: { ...params.receipt, maxAttempts: 0 }, quiet: true }
+    );
+    if (ahead !== undefined) {
+      const unresolved = this.store
+        .getAll()
+        .filter((record) => record.status === "funding");
+      if (unresolved.length > 0) {
+        throw new FundAheadRefusedError(
+          "unresolved-funding",
+          `sub-account ${unresolved
+            .map((record) => record.index)
+            .join(", ")} has a funding transfer with no observed outcome`
+        );
+      }
+    }
 
     let accounts = await this.fundedCapacities(
       params.provider,
@@ -1020,6 +1091,23 @@ export class MonadSubAccountPool {
             preferredFirstCapacity,
             params.stampValueWei - preferredFirstCapacity,
           ].filter((capacity) => capacity > zero);
+
+    if (ahead !== undefined) {
+      const plannedValueWei = capacities.reduce(
+        (total, capacity) => total + capacity + params.gasReserveWei,
+        zero
+      );
+      if (
+        capacities.length > STAMP_PAIR_TRANSFERS ||
+        plannedValueWei > ahead.maxValueWei
+      ) {
+        throw new FundAheadRefusedError(
+          "over-bound",
+          `${capacities.length} transfers moving ${plannedValueWei} wei exceed ` +
+            `${STAMP_PAIR_TRANSFERS} transfers or ${ahead.maxValueWei} wei`
+        );
+      }
+    }
 
     const unfunded = this.store
       .getAll()
@@ -1097,6 +1185,7 @@ export class MonadSubAccountPool {
         mainAccountSigner: params.mainAccountSigner,
         overrides: params.fundingOverrides,
         receipt: params.receipt,
+        refuseUneconomic: ahead !== undefined,
         onSigned: (signedTx) =>
           params.onProgress?.({
             stage: "funding",
@@ -1145,6 +1234,8 @@ export class MonadSubAccountPool {
     provider: Provider;
     gasReserveWei: bigint;
     receipt?: FundingReceiptOptions;
+    /** A pass no message waits on repeats; it does not log each look at a pending transfer. */
+    quiet?: boolean;
   }): Promise<string[]> {
     const fundingTxHashes: string[] = [];
     const allRecords = this.store.getAll();
@@ -1158,10 +1249,12 @@ export class MonadSubAccountPool {
           );
           fundingTxHashes.push(txHash);
         } catch (err) {
-          console.warn(
-            `[MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account ${record.index}:`,
-            err
-          );
+          if (params.quiet !== true) {
+            console.warn(
+              `[MonadSubAccountPool] Skipping unconfirmed/timed out funding attempt for sub-account ${record.index}:`,
+              err
+            );
+          }
         }
       }
     }
@@ -1378,10 +1471,22 @@ export class MonadSubAccountPool {
     return total;
   }
 
+  /**
+   * What each `available`, unreserved account could pay after keeping `gasReserveWei` for its own
+   * fee. Balances are read once and remembered for `CAPACITY_CACHE_TTL_MS`.
+   *
+   * `options.fromBalance` answers for THIS reserve from the remembered balance. Without it a
+   * remembered answer is returned as it was computed, which may have been for another reserve
+   * (funding records the capacity it intended, at the fee quoted then).
+   * `options.maxCacheAgeMs` replaces the remembered balance's lifetime: `Infinity` re-reads only
+   * accounts this process has never read.
+   */
   async fundedCapacities(
     provider: Provider,
-    gasReserveWei: bigint
+    gasReserveWei: bigint,
+    options: { fromBalance?: boolean; maxCacheAgeMs?: number } = {}
   ): Promise<Array<{ index: number; address: string; capacityWei: bigint }>> {
+    const maxCacheAgeMs = options.maxCacheAgeMs ?? CAPACITY_CACHE_TTL_MS;
     const availableRecords = this.store
       .getAll()
       .filter(
@@ -1399,7 +1504,8 @@ export class MonadSubAccountPool {
       const cached = this.capacityCache.get(record.index);
       if (
         cached === undefined ||
-        now - cached.checkedAtMs >= CAPACITY_CACHE_TTL_MS
+        now - cached.checkedAtMs >= maxCacheAgeMs ||
+        (options.fromBalance === true && cached.balanceWei === undefined)
       ) {
         uncachedRecords.push(record);
       }
@@ -1432,13 +1538,58 @@ export class MonadSubAccountPool {
     }> = [];
     for (const record of availableRecords) {
       const cached = this.capacityCache.get(record.index);
+      const balanceWei =
+        options.fromBalance === true ? cached?.balanceWei : undefined;
       accounts.push({
         index: record.index,
         address: record.address,
-        capacityWei: cached !== undefined ? cached.capacityWei : BigInt(0),
+        capacityWei:
+          balanceWei !== undefined
+            ? balanceWei > gasReserveWei
+              ? balanceWei - gasReserveWei
+              : BigInt(0)
+            : cached !== undefined
+            ? cached.capacityWei
+            : BigInt(0),
       });
     }
     return accounts;
+  }
+
+  /**
+   * Whether a stamp of `stampValueWei` can be paid now without funding anything: the accounts that
+   * are `available`, unreserved and not in `heldIndices` cover it, each keeping `feeReserveWei`
+   * for its own fee, as two payments (two accounts of at least 3/8 of the value, or any set the
+   * send's own selection would split over two or more). A value of 1 wei cannot be split.
+   * Makes no request for an account whose balance is remembered (see `fundedCapacities`).
+   */
+  async hasStampInventory(params: {
+    provider: Provider;
+    stampValueWei: bigint;
+    feeReserveWei: bigint;
+    /** Accounts another operation holds although their row still reads `available`. */
+    heldIndices?: ReadonlySet<number>;
+    maxCacheAgeMs?: number;
+  }): Promise<boolean> {
+    const accounts = (
+      await this.fundedCapacities(params.provider, params.feeReserveWei, {
+        fromBalance: true,
+        maxCacheAgeMs: params.maxCacheAgeMs,
+      })
+    ).filter((account) => params.heldIndices?.has(account.index) !== true);
+    const total = accounts.reduce(
+      (sum, account) => sum + account.capacityWei,
+      BigInt(0)
+    );
+    if (total < params.stampValueWei) return false;
+    if (params.stampValueWei === BigInt(1)) return true;
+    const pairShare = (params.stampValueWei * BigInt(3)) / BigInt(8);
+    return (
+      accounts.filter((account) => account.capacityWei >= pairShare).length >=
+        STAMP_PAIR_TRANSFERS ||
+      this.selectFundedCapacity(params.stampValueWei, accounts).length >=
+        STAMP_PAIR_TRANSFERS
+    );
   }
 
   private selectFundedCapacity(
@@ -1578,6 +1729,9 @@ export class MonadSubAccountPool {
     mainAccountSigner: MonadAccountTxSigner;
     overrides?: MonadTxOverrides;
     receipt?: FundingReceiptOptions;
+    /** Refuse, before anything is written or submitted, a transfer whose maximum fee exceeds the
+     * value it moves. The signature is discarded. */
+    refuseUneconomic?: boolean;
     onSigned?: (signedTx: SignedMonadTx) => void;
   }): Promise<FanOutFundingResult> {
     const fundedValue = params.paymentCapacityWei + params.gasReserveWei;
@@ -1586,6 +1740,20 @@ export class MonadSubAccountPool {
       fundedValue,
       params.overrides
     );
+    if (params.refuseUneconomic === true) {
+      const feePerGas = signedTx.maxFeePerGas ?? signedTx.gasPrice;
+      if (
+        feePerGas === undefined ||
+        signedTx.gasLimit * feePerGas > signedTx.value
+      ) {
+        throw new FundAheadRefusedError(
+          "uneconomic",
+          `funding sub-account ${params.target.index} could cost ${
+            feePerGas === undefined ? "an unknown fee" : signedTx.gasLimit * feePerGas
+          } wei to move ${signedTx.value} wei`
+        );
+      }
+    }
     this.store.put({
       ...params.target,
       status: "funding",
@@ -1667,31 +1835,6 @@ export class MonadSubAccountPool {
       }
     }
     return undefined;
-  }
-
-  /**
-   * Convenience wrapper around `fanOutFundSubAccounts` that funds every pool record matching
-   * `statuses` (defaults to just `'available'`) from `mainAccountSigner`. See that function for
-   * the funding semantics (burn value / gas reserve kept separate).
-   */
-  async fundAll(params: {
-    mainAccountSigner: MonadAccountTxSigner;
-    burnValue: bigint;
-    gasReserve: bigint;
-    overrides?: MonadTxOverrides;
-    statuses?: SubAccountStatus[];
-  }): Promise<FanOutFundingResult[]> {
-    const statuses = params.statuses ?? ["available"];
-    const targets = this.store
-      .getAll()
-      .filter((record) => statuses.includes(record.status));
-    return fanOutFundSubAccounts({
-      mainAccountSigner: params.mainAccountSigner,
-      targets,
-      burnValue: params.burnValue,
-      gasReserve: params.gasReserve,
-      overrides: params.overrides,
-    });
   }
 
   /** The next sub-account index that has never been derived/persisted into this pool yet — i.e.
@@ -1811,206 +1954,15 @@ export class MonadSubAccountPool {
   ): void {
     this.capacityCache.set(index, { capacityWei, checkedAtMs, balanceWei });
   }
-
-  /**
-   * Configures default parameters for background proactive warming. Nothing in production calls
-   * this while warming is off (#1235): until the pass records before it broadcasts, every trigger
-   * is a no-op because no configuration is set.
-   */
-  configureProactiveWarming(config?: EnsureMinimumCapacityParams): void {
-    this.proactiveWarmingConfig = config;
-  }
-
-  getProactiveWarmingConfig(): EnsureMinimumCapacityParams | undefined {
-    return this.proactiveWarmingConfig;
-  }
-
-  /** Triggers a non-blocking background check of available capacity using configured parameters. */
-  triggerProactiveWarming(): void {
-    if (this.proactiveWarmingConfig) {
-      void this.ensureMinimumAvailableCapacity(
-        this.proactiveWarmingConfig
-      ).catch(() => undefined);
-    }
-  }
-
-  /**
-   * Called when a lease is released, invalidating its cache entry and asynchronously
-   * triggering proactive warming if configured.
-   */
-  onLeaseReleased(index: number, _outcome?: string): void {
-    this.capacityCache.delete(index);
-    this.triggerProactiveWarming();
-  }
-
-  /**
-   * Ensures that the pool has at least `minCount` (default 2) receipt-confirmed,
-   * available funded sub-accounts ready for single-use spends. If the available
-   * funded capacity falls below `minCount`, schedules a non-blocking background
-   * `fanOutFundSubAccounts` call. Warming is currently off (#1235): it runs only when a caller
-   * configures it explicitly or passes `params`, and no production caller does, so sends fund on demand.
-   */
-  ensureMinimumAvailableCapacity(
-    params?: EnsureMinimumCapacityParams
-  ): Promise<void> {
-    const config = params ?? this.proactiveWarmingConfig;
-    if (!config) {
-      return Promise.resolve();
-    }
-    if (this.activeWarmingPromise) {
-      return this.activeWarmingPromise;
-    }
-
-    const warming = (async () => {
-      try {
-        const minCount =
-          config.minCount ?? DEFAULT_MIN_AVAILABLE_CAPACITY_COUNT;
-        const stampValueWei = config.stampValueWei ?? BigInt(1_000);
-        const gasReserveWei = config.gasReserveWei ?? BigInt(21_000);
-
-        const accounts = await this.fundedCapacities(
-          config.provider,
-          gasReserveWei
-        );
-        const fundedAccounts = accounts.filter(
-          (a) =>
-            a.capacityWei >=
-            (config.stampValueWei !== undefined
-              ? config.stampValueWei
-              : BigInt(1))
-        );
-
-        if (fundedAccounts.length >= minCount) {
-          return;
-        }
-
-        const deficit = minCount - fundedAccounts.length;
-        const unfunded = this.store
-          .getAll()
-          .filter((record) => record.status === "unfunded");
-        while (unfunded.length < deficit) {
-          const index = this.nextFreshIndex();
-          const derived = this.keyring.deriveSubAccount(index);
-          const record: SubAccountRecord = {
-            index,
-            address: derived.address,
-            status: "unfunded",
-          };
-          this.store.put(record);
-          unfunded.push(record);
-        }
-        await this.store.flush();
-        const targets = unfunded.slice(0, deficit);
-
-        await fanOutFundSubAccounts({
-          mainAccountSigner: config.mainAccountSigner,
-          targets,
-          burnValue: stampValueWei,
-          gasReserve: gasReserveWei,
-          overrides: config.overrides,
-          onFunded: async (result) => {
-            this.store.put({
-              index: result.index,
-              address: result.address,
-              status: "available",
-            });
-            this.capacityCache.set(result.index, {
-              capacityWei: stampValueWei,
-              checkedAtMs: Date.now(),
-              balanceWei: stampValueWei + gasReserveWei,
-            });
-            this.syncUtxo(
-              result.index,
-              "available",
-              stampValueWei + gasReserveWei
-            );
-            await this.store.flush();
-          },
-        });
-      } catch {
-        // Non-blocking background warming: absorb errors so callers never throw or crash
-      } finally {
-        this.activeWarmingPromise = undefined;
-      }
-    })();
-
-    this.activeWarmingPromise = warming;
-    return warming;
-  }
 }
 
-/** Result of funding one sub-account via `fanOutFundSubAccounts`. */
+/** Result of funding one sub-account through the recorded path (`fundAccount`). */
 export interface FanOutFundingResult {
   index: number;
   address: string;
-  /** `burnValue + gasReserve` for this sub-account. The two figures are combined only here, at the
-   * point where `MonadAccountTxSigner.buildAndSignTransfer`'s single `value` parameter requires
-   * one number — everywhere else in this module and its callers, `burnValue` and `gasReserve`
-   * travel as two separate, explicit parameters (ticket #14's acceptance criterion). */
+  /** Payment capacity plus fee reserve: the one value the funding transfer carries. Everywhere
+   * else the two figures travel as separate, explicit parameters. */
   fundedValue: bigint;
   signedTx: SignedMonadTx;
   txHash: string;
-}
-
-/**
- * Fan-out funding routine (ticket #14 acceptance criterion): given a main funded account's
- * `MonadAccountTxSigner` (#11) and a list of target sub-accounts, sends `burnValue + gasReserve`
- * to each one as a plain native-value transfer. `burnValue` and `gasReserve` are always taken as
- * two separate, explicit parameters — never pre-combined by a caller into one opaque "amount" —
- * so this is the one place, right before the single `value` the underlying tx construction API
- * takes, where they're added together.
- *
- * Sequenced deliberately: each target is fully built, signed, *and submitted* before moving on to
- * the next, rather than building/submitting all N concurrently. `MonadAccountTxSigner` fetches a
- * fresh nonce from the chain (`eth_getTransactionCount(mainAccount, "pending")`) on every build
- * call with no local caching or reuse (see `monad-account-tx.ts`) — firing all N transfers from
- * the same main account concurrently would race every one of them for the same "next" nonce.
- * Awaiting each submit before building the next lets the node's pending-nonce view advance
- * normally between sends. (A future caller wanting throughput could pass explicit, pre-planned
- * `overrides.nonce` values per target and parallelize — out of scope here.)
- *
- * `onFunded`, if given, is awaited right after each individual target's send
- * succeeds (not batched at the end) — added for ticket #34's `MonadSubAccountPool.topUpPool()`, so
- * it can durably persist each freshly-funded index as `'available'` incrementally, rather than
- * losing already-funded targets' bookkeeping if a later target in the same batch throws.
- */
-export async function fanOutFundSubAccounts(params: {
-  mainAccountSigner: MonadAccountTxSigner;
-  targets: Array<Pick<SubAccountRecord, "index" | "address">>;
-  burnValue: bigint;
-  gasReserve: bigint;
-  overrides?: MonadTxOverrides;
-  onFunded?: (result: FanOutFundingResult) => void | Promise<void>;
-}): Promise<FanOutFundingResult[]> {
-  // `BigInt(0)` rather than a `0n` literal: this app's tsconfig targets ES2017, which doesn't
-  // support BigInt literal syntax (only the `bigint` type/`BigInt(...)` calls) — the same
-  // constraint `monad-account-tx.ts` (#11) works under; see this file's header precedent.
-  const zero = BigInt(0);
-  if (params.burnValue < zero) {
-    throw new Error(`burnValue must be >= 0, got ${params.burnValue}`);
-  }
-  if (params.gasReserve < zero) {
-    throw new Error(`gasReserve must be >= 0, got ${params.gasReserve}`);
-  }
-
-  const results: FanOutFundingResult[] = [];
-  for (const target of params.targets) {
-    const fundedValue = params.burnValue + params.gasReserve;
-    const signedTx = await params.mainAccountSigner.buildAndSignTransfer(
-      target.address,
-      fundedValue,
-      params.overrides
-    );
-    const txHash = await params.mainAccountSigner.submit(signedTx);
-    const result: FanOutFundingResult = {
-      index: target.index,
-      address: target.address,
-      fundedValue,
-      signedTx,
-      txHash,
-    };
-    results.push(result);
-    await params.onFunded?.(result);
-  }
-  return results;
 }

@@ -306,7 +306,54 @@ export class DirectMessageAttemptUnlinkedError extends Error {
   }
 }
 
+/**
+ * How many further messages `DirectMessageClient.fundAhead` keeps sender accounts funded for.
+ * One: the two single-use accounts the next message spends. It is not a host option, because a
+ * larger number does not do what it says today: a send selects greedily over every funded
+ * account, so with two pairs funded the first message takes three accounts, strands part of one
+ * and leaves the second message short. Raising this needs selection that takes one pair at a time.
+ */
+export const FUND_AHEAD_MESSAGES = 1;
+
+/** What one `DirectMessageClient.fundAhead` call did. For logs and tests; nothing to act on. */
+export interface DirectMessageFundAheadResult {
+  /**
+   * - `ready`: the next message's accounts were already funded; nothing moved.
+   * - `funded`: this call's transfers confirmed (`fundingTxHashes`).
+   * - `not-funded`: nothing more could be funded now (`reason`). A transfer this or an earlier
+   *   call recorded is finished by a later call or by the next send; never signed again.
+   * - `unavailable`: this wallet has no canonical sender accounts to fund.
+   */
+  outcome: "ready" | "funded" | "not-funded" | "unavailable";
+  fundingTxHashes: string[];
+  reason?: string;
+}
+
 export interface DirectMessageClient {
+  /**
+   * Funds the single-use sender accounts of the next {@link FUND_AHEAD_MESSAGES} message, at the
+   * wallet's default stamp value, before that message exists, so its `send` does not wait for
+   * funding. Absent on a chain whose messages need no such accounts.
+   *
+   * It is the funding a `send` does for itself, through the same recorded path: each transfer's
+   * exact signed bytes are durable before they are submitted, and a transfer interrupted at any
+   * point is finished from that record, never signed a second time. It takes only accounts no
+   * operation holds, pays only from the wallet's main account, and one call signs at most two
+   * transfers moving at most the default stamp value plus two fee reserves (a reserve is capped
+   * at the stamp value); it moves nothing when a transfer's fee would exceed the value moved or
+   * while an earlier funding transfer is unresolved. While it runs it holds the wallet's queue as
+   * a send's own funding does.
+   *
+   * The HOST decides when: after its recovery pass has run, after a message was sent, when the
+   * balance grew. Never at wallet open. Calls are single flight and repeatable: with the accounts
+   * ready a call makes no request. Do not await it in a poll; catch its rejection. It rejects only
+   * for a closed or foreign handle or when the wallet's queue refuses the operation; a funding
+   * failure resolves as `not-funded`.
+   */
+  fundAhead?(params: {
+    wallet: WalletHandle;
+  }): Promise<DirectMessageFundAheadResult>;
+
   /** A rejection may carry the wallet's not-attempted label for this one call; see
    * {@link isDirectMessageNotAttempted}. Without it, assume the call may have had an effect. */
   send(params: {

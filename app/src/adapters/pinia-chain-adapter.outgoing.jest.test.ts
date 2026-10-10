@@ -38,6 +38,10 @@ const wallet = {
 } as unknown as WalletHandle
 
 describe('startOutgoingReconciliation (#270)', () => {
+  const directMessages = activeChain.directMessages as Required<
+    typeof activeChain.directMessages
+  >
+  let fundAhead: jest.SpiedFunction<typeof directMessages.fundAhead>
   const previousPromise = global.Promise
   beforeAll(() => {
     // The shared setup installs a Promise polyfill, but ES2020 async actions return native
@@ -52,6 +56,11 @@ describe('startOutgoingReconciliation (#270)', () => {
     jest.restoreAllMocks()
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
     jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    // The fixture wallet is not a wallet the chain can fund for: the suite's default answer is
+    // "nothing to do". The fund-ahead tests below replace it.
+    fundAhead = jest
+      .spyOn(directMessages, 'fundAhead')
+      .mockResolvedValue({ outcome: 'ready', fundingTxHashes: [] })
   })
   afterEach(() => jest.useRealTimers())
 
@@ -566,6 +575,197 @@ describe('startOutgoingReconciliation (#270)', () => {
       expect(reconcile).toHaveBeenCalledTimes(2)
       expect(console.warn).not.toHaveBeenCalled()
       polling.stop()
+    })
+  })
+
+  // #1235 Q4. On main 8c656f32 the chain client has no `fundAhead` and nothing asks for it:
+  // this suite's spy on it cannot be installed there, so the whole file fails. The first five
+  // tests are the behaviour added; the last three pin when it must NOT be asked.
+  describe('funding the next message ahead (#1235 Q4)', () => {
+    const idle = () =>
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({})
+
+    it('is asked only once a reconciliation has resolved, then on every tick that resolves, also with nothing pending', async () => {
+      const { chats } = await pendingMessage()
+      let release: (v: Record<string, 'live' | 'delivered'>) => void = () =>
+        undefined
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockReturnValueOnce(
+          new Promise(resolve => {
+            release = resolve
+          }),
+        )
+        .mockResolvedValue({ [HASH]: 'live' })
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reconcile).toHaveBeenCalledTimes(1)
+      // Starting the reconciliation is not a reason to fund: nothing has been looked at yet.
+      expect(fundAhead).not.toHaveBeenCalled()
+      release({ [HASH]: 'live' })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(fundAhead).toHaveBeenCalledTimes(1)
+      expect(fundAhead).toHaveBeenCalledWith({ wallet })
+      await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile).toHaveBeenCalledTimes(2)
+      expect(fundAhead).toHaveBeenCalledTimes(2)
+      expect(chats.chats[PEER]?.messages[0].status).toBe('payment-pending')
+      polling.stop()
+    })
+
+    it('is not asked by a tick whose reconciliation failed, and is asked by the next one that resolves', async () => {
+      const { chats } = await pendingMessage()
+      const reconcile = jest
+        .spyOn(chats, 'reconcileOutgoing')
+        .mockRejectedValueOnce(new Error('fixture: relay unavailable'))
+        .mockResolvedValue({ pending: 1 })
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(reconcile).toHaveBeenCalledTimes(1)
+      expect(fundAhead).not.toHaveBeenCalled()
+      await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile).toHaveBeenCalledTimes(2)
+      expect(fundAhead).toHaveBeenCalledTimes(1)
+      polling.stop()
+    })
+
+    it('is asked as soon as a message is delivered, without waiting for the idle tick', async () => {
+      idle()
+      const chats = useChatStore()
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      expect(fundAhead).toHaveBeenCalledTimes(1)
+      jest.spyOn(activeChain.directMessages, 'send').mockResolvedValue({
+        payloadDigest: HASH,
+        stampValueWei: 1n,
+        stampPayments: [],
+        preparationTxHashes: [],
+      })
+      await chats.sendMessage({
+        wallet,
+        address: PEER,
+        items: [{ type: 'text', text: 'delivered at once' }],
+      })
+      expect(chats.chats[PEER]?.messages[0].status).toBe('confirmed')
+      // No timer ran: the next idle tick is a minute away.
+      expect(fundAhead).toHaveBeenCalledTimes(2)
+      polling.stop()
+    })
+
+    it('is not waited for: a pass that never settles does not hold the next tick', async () => {
+      await pendingMessage()
+      const reconcile = jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockResolvedValue({ [HASH]: 'live' })
+      fundAhead.mockReturnValue(new Promise(() => undefined))
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+      await jest.advanceTimersByTimeAsync(4 * OUTGOING_RECONCILE_INTERVAL_MS)
+      expect(reconcile).toHaveBeenCalledTimes(3)
+      expect(fundAhead).toHaveBeenCalledTimes(3)
+      polling.stop()
+    })
+
+    it('survives its failure: a rejection or a synchronous throw is not a failed reconciliation, does not go unhandled, and is logged once', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        await pendingMessage()
+        const reconcile = jest
+          .spyOn(activeChain.directMessages, 'reconcileAttempts')
+          .mockResolvedValue({ [HASH]: 'live' })
+        fundAhead
+          .mockReset()
+          .mockRejectedValueOnce(new Error('fixture: wallet queue refused'))
+          .mockImplementationOnce(() => {
+            throw new Error('fixture: wallet closed')
+          })
+          .mockRejectedValue(new Error('fixture: still refused'))
+        const polling = startOutgoingReconciliation({ wallet })
+        await jest.advanceTimersByTimeAsync(0)
+        await jest.advanceTimersByTimeAsync(2 * OUTGOING_RECONCILE_INTERVAL_MS)
+        await jest.advanceTimersByTimeAsync(4 * OUTGOING_RECONCILE_INTERVAL_MS)
+        expect(reconcile).toHaveBeenCalledTimes(3)
+        expect(fundAhead).toHaveBeenCalledTimes(3)
+        expect(console.warn).not.toHaveBeenCalledWith(
+          'outgoing message reconciliation failed',
+          expect.anything(),
+        )
+        expect(
+          jest
+            .mocked(console.warn)
+            .mock.calls.filter(([line]) =>
+              String(line).startsWith('funding ahead failed'),
+            ),
+        ).toHaveLength(1)
+        polling.stop()
+        await new Promise(resolve => setImmediate(resolve))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off('unhandledRejection', onUnhandled)
+      }
+    })
+
+    it('pin: is not asked by a tick that was stopped while reconciling, nor by a delivery after stop', async () => {
+      const { chats } = await pendingMessage()
+      let release: (v: Record<string, 'live'>) => void = () => undefined
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockReturnValue(
+          new Promise(resolve => {
+            release = resolve
+          }),
+        )
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      polling.stop()
+      release({ [HASH]: 'live' })
+      await jest.advanceTimersByTimeAsync(
+        10 * MAX_OUTGOING_RECONCILE_INTERVAL_MS,
+      )
+      await chats.confirmOutgoing({
+        address: PEER,
+        id: chats.chats[PEER]?.messages[0].id ?? '',
+        payloadDigest: HASH,
+      })
+      expect(fundAhead).not.toHaveBeenCalled()
+    })
+
+    it('pin: a delivery before any reconciliation has resolved asks for nothing', async () => {
+      const { chats } = await pendingMessage()
+      jest
+        .spyOn(activeChain.directMessages, 'reconcileAttempts')
+        .mockReturnValue(new Promise(() => undefined))
+      const polling = startOutgoingReconciliation({ wallet })
+      await jest.advanceTimersByTimeAsync(0)
+      await chats.confirmOutgoing({
+        address: PEER,
+        id: chats.chats[PEER]?.messages[0].id ?? '',
+        payloadDigest: HASH,
+      })
+      expect(fundAhead).not.toHaveBeenCalled()
+      polling.stop()
+    })
+
+    it('pin: a chain without the method has nothing to do', async () => {
+      idle()
+      // As on a chain whose client never had the method.
+      fundAhead.mockRestore()
+      const present = activeChain.directMessages.fundAhead
+      activeChain.directMessages.fundAhead = undefined
+      try {
+        const polling = startOutgoingReconciliation({ wallet })
+        await jest.advanceTimersByTimeAsync(0)
+        await jest.advanceTimersByTimeAsync(IDLE_OUTGOING_RECONCILE_INTERVAL_MS)
+        expect(console.warn).not.toHaveBeenCalled()
+        polling.stop()
+      } finally {
+        activeChain.directMessages.fundAhead = present
+      }
     })
   })
 })

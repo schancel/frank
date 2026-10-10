@@ -1277,23 +1277,20 @@ export function canonicalAdmissionPool(
       outcome: Parameters<SubAccountLeaseManager['releaseLease']>[1],
     ) => {
       await owner.mutate(lifetime, async () => {
-        leases.releaseLease(handle, outcome, false)
+        leases.releaseLease(handle, outcome)
         await flush()
       })
       owner.owners.assertLifetime(lifetime)
-      if (outcome !== 'unused') pool.triggerProactiveWarming()
     },
     setStatus: async (
       index: number,
       status: Parameters<MonadSubAccountPool['setStatus']>[1],
     ) => {
       await owner.mutate(lifetime, async () => {
-        pool.setStatus(index, status, false)
+        pool.setStatus(index, status)
         await flush()
       })
       owner.owners.assertLifetime(lifetime)
-      if (status === 'spent' || status === 'retired')
-        pool.triggerProactiveWarming()
     },
   }
 }

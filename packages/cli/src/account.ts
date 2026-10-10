@@ -88,6 +88,10 @@ export async function openCliAccount(params: {
     relayBaseUrl,
     location: join(dir, 'directory'),
   })
+  // The helpers below report progress with console.log. A command's standard output is its
+  // result (JSON with --json), so progress goes to standard error while they run.
+  const log = console.log
+  console.log = (...args: unknown[]) => console.error(...args)
   try {
     await directory.publishWithRetry('cli')
     installCanonicalDirectory(handle, directory.rawDirectory)
@@ -105,6 +109,8 @@ export async function openCliAccount(params: {
     await directory.close().catch(() => {})
     await handle.close().catch(() => {})
     throw err
+  } finally {
+    console.log = log
   }
 
   return {

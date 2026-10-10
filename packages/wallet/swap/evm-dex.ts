@@ -80,6 +80,14 @@ export interface EvmDexWallet extends SwapWallet {
   readonly reader: SwapExecutionReader
 }
 
+/** A swap record names a transaction that the named account did not send to this exchange. */
+export class SwapRecordMismatchError extends Error {
+  constructor() {
+    super('The recorded transaction is not a swap by this account on this exchange')
+    this.name = 'SwapRecordMismatchError'
+  }
+}
+
 export interface EvmDex<
   Q extends EvmDexQuote = EvmDexQuote,
   P extends EvmDexPlan<Q> = EvmDexPlan<Q>,
@@ -115,7 +123,9 @@ export interface EvmDex<
     timing?: SwapTiming
   }): Promise<SwapResult>
   /** What the chain says a recorded swap did, from its receipt alone. Sends nothing: for a
-   * swap another frontend of the account made. */
+   * swap another frontend of the account made. Throws `SwapRecordMismatchError` when the
+   * transaction was not sent by `account` to this exchange: a record is not believed over
+   * the chain about whose swap it is. */
   observe(input: {
     transactionId: string
     account: string

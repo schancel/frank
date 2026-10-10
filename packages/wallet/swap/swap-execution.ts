@@ -25,6 +25,9 @@ import {
 } from './uniswap-v4'
 
 export interface SwapReceipt {
+  /** Who sent the transaction and what it called, as the node reports them. */
+  readonly from?: string
+  readonly to?: string | null
   readonly status: number | null
   readonly blockNumber: number
   readonly gasUsed: bigint

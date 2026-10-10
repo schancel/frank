@@ -349,6 +349,8 @@ export interface EvmChainReader {
   }>;
   getBlock(tag: "latest"): Promise<{ baseFeePerGas: bigint | null } | null>;
   getTransactionReceipt(hash: string): Promise<{
+    readonly from?: string;
+    readonly to?: string | null;
     readonly status: number | null;
     readonly blockNumber: number;
     readonly gasUsed: bigint;

@@ -15,6 +15,7 @@ import {
   type SwapWallet,
 } from './swap-execution'
 import { findToken, poolId, routesFor } from './uniswap-v4'
+import { SwapRecordMismatchError } from './evm-dex'
 import { UniswapV4Dex } from './uniswap-v4-dex'
 import {
   callRevert,
@@ -664,6 +665,42 @@ describe('the exchange adapter and the wallet it is given', () => {
     expect(() =>
       dex.reconcile({ ...stored, route: { pool: 'other' } }),
     ).toThrow(/does not belong/)
+  })
+})
+
+describe('reading what a recorded swap did', () => {
+  it("reads the receipt of the account's own swap on this exchange, and refuses a record naming another sender or another contract", async () => {
+    const s = setup()
+    const own = receiptOf(vectors.swapNativeIn)
+    const router = deployment.universalRouter
+    s.receipts.set('0xmine', { ...own, from: account.toLowerCase(), to: router })
+    s.receipts.set('0xtheirs', {
+      ...own,
+      from: '0x00000000000000000000000000000000000000aa',
+      to: router,
+    })
+    s.receipts.set('0xelsewhere', {
+      ...own,
+      from: account,
+      to: '0x00000000000000000000000000000000000000bb',
+    })
+    // A receipt that does not say who sent it proves nothing about whose swap it is.
+    s.receipts.set('0xsilent', own)
+    const dex = new UniswapV4Dex('monad-testnet', deployment, {
+      reader: s.reader,
+      ...s.wallet,
+    })
+    const route = (await s.plan('native-in')).quote.route
+    expect(
+      await dex.observe({ transactionId: '0xmine', account, route }),
+    ).toMatchObject({ status: 'confirmed', amountOut: 19_996n })
+    for (const transactionId of ['0xtheirs', '0xelsewhere', '0xsilent'])
+      await expect(
+        dex.observe({ transactionId, account, route }),
+      ).rejects.toThrow(SwapRecordMismatchError)
+    expect(
+      await dex.observe({ transactionId: '0xnone', account, route }),
+    ).toMatchObject({ status: 'pending' })
   })
 })
 

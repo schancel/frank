@@ -5,6 +5,7 @@
  */
 import { getChainRegistryEntry } from '../chain/chains-registry'
 import type { UniswapV4Deployment } from '../chain/dex-entries'
+import { SwapRecordMismatchError } from './evm-dex'
 import type { EvmDex, EvmDexWallet } from './evm-dex'
 import {
   fetchSwapQuote,
@@ -123,6 +124,13 @@ export class UniswapV4Dex implements Dex {
       input.transactionId,
     )
     if (!receipt) return { status: 'pending' as const, ...handle }
+    const same = (a: string | null | undefined, b: string) =>
+      typeof a === 'string' && a.toLowerCase() === b.toLowerCase()
+    if (
+      !same(receipt.from, input.account) ||
+      !same(receipt.to, this.entry.universalRouter)
+    )
+      throw new SwapRecordMismatchError()
     return readSwapResult({
       reader: this.wallet.reader,
       deployment: this.entry,

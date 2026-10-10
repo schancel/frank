@@ -88,8 +88,6 @@ pub struct Registry {
     chain_adapter: Arc<dyn ChainAdapter>,
     /// Whether server is running on a mainnet or regtest network.
     net: Net,
-    /// Optional clustered or custom username uniqueness store (ticket #981 / Track C).
-    username_store: Option<Arc<dyn crate::store::directory_usernames::UsernameStore>>,
     /// Notification event bus for real-time relay message fan-out (ticket #982 / track C).
     event_bus: Arc<dyn crate::events::RelayEventBus>,
 }
@@ -218,14 +216,13 @@ pub enum RegistryError {
 use self::RegistryError::*;
 
 impl Registry {
-    /// Construct new [`Registry`] with default in-process event bus and embedded RocksDB username store.
+    /// Construct new [`Registry`] with the default in-process event bus.
     pub fn new(db: Db, chain_adapter: Arc<dyn ChainAdapter>, net: Net) -> Self {
-        Self::new_with_options(
+        Self::new_with_event_bus(
             db,
             chain_adapter,
             net,
             Arc::new(crate::events::StandaloneEventBus::new()),
-            None,
         )
     }
 
@@ -235,33 +232,6 @@ impl Registry {
         chain_adapter: Arc<dyn ChainAdapter>,
         net: Net,
         event_bus: Arc<dyn crate::events::RelayEventBus>,
-    ) -> Self {
-        Self::new_with_options(db, chain_adapter, net, event_bus, None)
-    }
-
-    /// Construct new [`Registry`] with an optional custom or clustered [`crate::store::directory_usernames::UsernameStore`].
-    pub fn new_with_username_store(
-        db: Db,
-        chain_adapter: Arc<dyn ChainAdapter>,
-        net: Net,
-        username_store: Option<Arc<dyn crate::store::directory_usernames::UsernameStore>>,
-    ) -> Self {
-        Self::new_with_options(
-            db,
-            chain_adapter,
-            net,
-            Arc::new(crate::events::StandaloneEventBus::new()),
-            username_store,
-        )
-    }
-
-    /// Construct new [`Registry`] with custom event bus and username store options.
-    pub fn new_with_options(
-        db: Db,
-        chain_adapter: Arc<dyn ChainAdapter>,
-        net: Net,
-        event_bus: Arc<dyn crate::events::RelayEventBus>,
-        username_store: Option<Arc<dyn crate::store::directory_usernames::UsernameStore>>,
     ) -> Self {
         let forum = crate::forum::Owner::new(db.owned_path().to_path_buf());
         let canonical_dm = crate::store::monad_dm_cbor::Owner::new(db.owned_path().to_path_buf());
@@ -273,7 +243,6 @@ impl Registry {
             ecc: EccSecp256k1::default(),
             chain_adapter,
             net,
-            username_store,
             event_bus,
         }
     }
@@ -301,37 +270,23 @@ impl Registry {
         self.db.directory_subjects()
     }
 
-    /// Access the unique username and tombstone store.
-    pub fn directory_usernames(
-        &self,
-    ) -> Box<dyn crate::store::directory_usernames::UsernameStore + '_> {
-        match &self.username_store {
-            Some(custom) => Box::new(Arc::clone(custom)),
-            None => Box::new(self.db.directory_usernames()),
-        }
+    /// The store of unique usernames.
+    pub fn usernames(&self) -> crate::store::directory_usernames::DbDirectoryUsernames<'_> {
+        self.db.directory_usernames()
     }
 
-    /// Register a username with tombstone protection.
-    pub fn register_username(
+    /// Check a signed username claim for `network` against the key it names. See
+    /// [`crate::store::directory_usernames::verify_claim`].
+    pub fn verify_username_claim(
         &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-    ) -> std::result::Result<(), crate::store::directory_usernames::UsernameError> {
-        self.directory_usernames()
-            .register_username(username, address, now)
-    }
-
-    /// Tombstone a username with cooldown duration.
-    pub fn tombstone_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-        cooldown_seconds: i64,
-    ) -> std::result::Result<bool, crate::store::directory_usernames::UsernameError> {
-        self.directory_usernames()
-            .tombstone_username(username, address, now, cooldown_seconds)
+        claim: &[u8],
+        network: &str,
+        now_ms: u64,
+    ) -> std::result::Result<
+        crate::store::directory_usernames::UsernameRecord,
+        crate::store::directory_usernames::UsernameError,
+    > {
+        crate::store::directory_usernames::verify_claim(&self.ecc, claim, network, now_ms)
     }
 
     pub(crate) fn forum(&self) -> &crate::forum::Owner {

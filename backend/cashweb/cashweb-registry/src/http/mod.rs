@@ -15,3 +15,4 @@ pub mod pop_protection;
 pub mod server;
 pub mod solana_proxy;
 pub(crate) mod upstream_cooldown;
+pub mod usernames;

@@ -2,6 +2,7 @@
 
 import { mount, flushPromises } from '@vue/test-utils'
 import IdentityQrDialog from './IdentityQrDialog.vue'
+import { setOwnUsername } from 'src/utils/own-username'
 import enUS from '../../i18n/en-us'
 
 const mockCopy = jest.fn()
@@ -55,7 +56,6 @@ describe('IdentityQrDialog', () => {
         modelValue: true,
         address: '0x10239E8fbFD030Da11Df8f452984Ebfb894d0DC3',
         name: 'Shammah',
-        username: 'shammah',
         avatar: 'shammah.png',
         ...props,
       },
@@ -91,7 +91,21 @@ describe('IdentityQrDialog', () => {
     })
   }
 
+  it('shows no username when the relay has not confirmed one, whatever the profile has saved', async () => {
+    setOwnUsername(null)
+    const wrapper = mountDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-test="identity-qr-username"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-test="identity-qr-name"]').text()).toBe(
+      'Shammah',
+    )
+  })
+
   it('renders user identity, name, username, and scannable QR code', async () => {
+    // The username shown is the one the relay confirms this account holds.
+    setOwnUsername('shammah')
     const wrapper = mountDialog()
     await flushPromises()
 

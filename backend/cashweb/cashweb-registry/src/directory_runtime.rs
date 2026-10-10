@@ -234,6 +234,8 @@ struct Owner {
     enrollments_per_source_per_hour: u32,
     sync_interval: Duration,
     trusted_proxies: Vec<std::net::IpAddr>,
+    /// Canonical username -> the only key that may claim it.
+    reserved_usernames: std::collections::BTreeMap<String, [u8; 33]>,
     federation: OnceLock<Arc<crate::directory_federation::Federation>>,
     registry: Arc<Registry>,
     sender: Mutex<Option<mpsc::Sender<Job>>>,
@@ -760,6 +762,9 @@ impl DirectoryRuntime {
         let enrollments_per_source_per_hour = config.enrollments_per_source_per_hour;
         let config_sync_interval_s = config.sync_interval_s;
         let trusted_proxies = config.trusted_proxies.clone();
+        let reserved_usernames =
+            crate::store::directory_usernames::reserved(&config.reserved_usernames)
+                .ok_or(RuntimeError::Trust)?;
         static OWNERS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
         let address = Arc::as_ptr(&registry) as usize;
         if !OWNERS
@@ -888,6 +893,7 @@ impl DirectoryRuntime {
                     enrollments_per_source_per_hour,
                     sync_interval: Duration::from_secs(config_sync_interval_s.max(1)),
                     trusted_proxies,
+                    reserved_usernames,
                     federation: OnceLock::new(),
                     registry,
                     sender: Mutex::new(Some(sender)),
@@ -933,6 +939,10 @@ impl DirectoryRuntime {
     }
     pub(crate) fn registry(&self) -> &Arc<Registry> {
         &self.owner.registry
+    }
+    /// The only key that may claim the canonical `username`, when the operator reserved it.
+    pub fn reserved_username(&self, username: &str) -> Option<&[u8; 33]> {
+        self.owner.reserved_usernames.get(username)
     }
     /// First-time publications one source may make per clock hour.
     pub fn enrollments_per_source_per_hour(&self) -> u32 {

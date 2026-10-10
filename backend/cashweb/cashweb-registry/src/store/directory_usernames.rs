@@ -1,208 +1,226 @@
-//! Unique username index and tombstone store for domain-level identity routing.
+//! Unique usernames: a name points to exactly one account key, and a key holds at most one name.
 //!
-//! Enforces First-Come, First-Served (FCFS) uniqueness for routable handles (e.g. `alice`),
-//! prevents collisions, and records tombstones upon de-registration to prevent handle recycling.
+//! A name is taken by a *claim*: a `cashweb_payload::proto::SignedPayload` (the same envelope a
+//! profile uses, checked by [`crate::monad_profile_verify::verify_signed_payload`]) whose payload
+//! is the text built by [`claim_text`], signed by the key the name will point to. The stored
+//! record keeps those exact bytes, so a record is a self-contained signed statement: anyone,
+//! including another relay, can re-check it with [`verify_claim`] without trusting this store.
+//!
+//! Rules, all enforced in [`DbDirectoryUsernames::claim`]:
+//! - the first key to claim a name holds it; a different key is refused ([`UsernameError::Taken`]);
+//! - the holder claiming its own name again changes nothing;
+//! - a key claiming a different name releases the one it held, but only with a claim issued
+//!   later than the one it replaces, so an old claim cannot be replayed to move a key back.
+//!
+//! Layout of the `directory_usernames` column family: `n` + name -> record (JSON), and
+//! `a` + 20-byte address -> name.
 
-use bitcoinsuite_error::{ErrorMeta, Result, WrapErr};
-use rocksdb::{ColumnFamilyDescriptor, WriteBatch, WriteOptions};
+use bitcoinsuite_ecc_secp256k1::EccSecp256k1;
+use bitcoinsuite_error::Result;
+use prost::Message;
+use rocksdb::{ColumnFamilyDescriptor, Direction, IteratorMode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::db::{Db, CF};
+use crate::{
+    monad_profile_verify::verify_signed_payload,
+    store::db::{Db, CF},
+};
 
-/// Backward-compatible RocksDB column family name for routable username records.
+/// Column family holding username records.
 pub const CF_DIRECTORY_USERNAMES: &str = "directory_usernames";
-/// Ticket 1.1 Column Family constant alias for username records (`cf_usernames`).
-pub const CF_USERNAMES: &str = CF_DIRECTORY_USERNAMES;
+/// First line of every claim. Nothing else an account signs starts with it.
+pub const CLAIM_DOMAIN: &str = "frank-username-claim-v1";
+/// Largest claim accepted. A real one is under 250 bytes.
+pub const MAX_CLAIM_BYTES: u64 = 1024;
+/// Most names one search returns.
+pub const MAX_SEARCH_RESULTS: usize = 100;
+/// A claim may be issued this far ahead of the relay's clock, no further.
+const MAX_FUTURE_MS: u64 = 10 * 60 * 1000;
 
-/// Errors specifically related to username registration and uniqueness.
-#[derive(Debug, Error, ErrorMeta, PartialEq, Eq)]
+/// Why a name or a claim was refused.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum UsernameError {
-    /// The username handle format is invalid (length, character set).
-    #[invalid_client_input()]
-    #[error("Invalid username handle format: {0}")]
-    InvalidFormat(String),
-
-    /// The username is already registered to a different account.
-    #[invalid_client_input()]
-    #[error("Username '{0}' is already registered to account 0x{1}")]
-    NameCollision(String, String),
-
-    /// The username is in a cooldown tombstone period and cannot be claimed.
-    #[invalid_client_input()]
-    #[error("Username '{0}' has been deactivated and is tombstoned until {1}")]
-    Tombstoned(String, i64),
-
-    /// Conflict error when a handle is already taken or tombstoned.
-    #[invalid_client_input()]
-    #[error("Conflict: {0}")]
-    Conflict(String),
-
-    /// Remote RESP / Redis store error or connection failure.
-    #[critical()]
-    #[error("RESP store error: {0}")]
-    RespError(String),
+    /// The name is not 3 to 32 of `a-z 0-9 - _` starting with a letter or digit.
+    #[error("Invalid username: {0}")]
+    InvalidName(String),
+    /// The claim is malformed, wrongly signed, for another network, or issued in the future.
+    #[error("Invalid username claim: {0}")]
+    InvalidClaim(String),
+    /// Another key already holds this name.
+    #[error("This username is already taken")]
+    Taken,
+    /// The key has since claimed another name with a later claim.
+    #[error("This claim is older than the one this account already made")]
+    Stale,
 }
 
-/// Abstract store for unique routable usernames, claim verification, and tombstone lifecycle.
-///
-/// Implemented by [`DbDirectoryUsernames`] for standalone embedded RocksDB, and by
-/// [`crate::store::resp_username::RespUsernameStore`] for clustered Apache Kvrocks / Redis-XC deployments.
-pub trait UsernameStore: std::fmt::Debug + Send + Sync {
-    /// Fetch a username record by canonical name.
-    fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>>;
-
-    /// Attempt to claim or re-bind a username for an account address.
-    ///
-    /// Fails with [`UsernameError::NameCollision`] if owned by another account.
-    /// Fails with [`UsernameError::Tombstoned`] if tombstone cooldown is still active.
-    fn claim(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        stamp_key: Option<Vec<u8>>,
-        now_ms: i64,
-    ) -> Result<UsernameClaimResult>;
-
-    /// Mark a username as tombstoned when released or deactivated.
-    fn tombstone(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<bool>;
-
-    /// Rename an active username to a new handle for the same account.
-    ///
-    /// Claims the `new_username` for `account_address`, and transitions `old_username`
-    /// into a `Moved` state with a redirect pointer to `new_username` and a tombstone cooldown.
-    fn rename(
-        &self,
-        old_username: &str,
-        new_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<()>;
-
-    /// Register a username for an account address with tombstone protection.
-    ///
-    /// - If name does not exist -> insert as Active, return Ok(()).
-    /// - If name exists with same address -> update updated_at, return Ok(()).
-    /// - If name exists with different address and status is Active -> return Conflict (Handle taken).
-    /// - If name exists and status is Tombstoned:
-    ///   - If now < tombstone_expires_at -> return Conflict (Handle tombstoned).
-    ///   - If now >= tombstone_expires_at -> reclaim name: overwrite with new address, status Active, return Ok(()).
-    fn register_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-    ) -> std::result::Result<(), UsernameError>;
-
-    /// Tombstone a username with cooldown protection.
-    ///
-    /// If name owned by address -> set status to Tombstoned, tombstone_expires_at = now + cooldown_seconds.
-    fn tombstone_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-        cooldown_seconds: i64,
-    ) -> std::result::Result<bool, UsernameError>;
-}
-
-use self::UsernameError::*;
-
-/// The active, tombstoned, or moved state of a username.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UsernameStatus {
-    /// Active handle bound to an account.
-    Active,
-    /// Handle was released/deleted and is cooling off to prevent recycling.
-    Tombstoned,
-    /// Handle was renamed/migrated to another username and redirects there.
-    Moved,
-}
-
-impl Default for UsernameStatus {
-    fn default() -> Self {
-        UsernameStatus::Active
-    }
-}
-
-/// Durable record for a username.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct UsernameRecord {
-    /// Canonical lowercase username handle.
-    #[serde(default)]
-    pub username: String,
-    /// 20-byte raw account address.
-    pub account_address: [u8; 20],
-    /// Optional stamp public key.
-    #[serde(default)]
-    pub stamp_key: Option<Vec<u8>>,
-    /// Active, tombstoned, or moved state.
-    pub status: UsernameStatus,
-    /// Timestamp of last modification in seconds / milliseconds.
-    #[serde(default)]
-    pub updated_at: i64,
-    /// Expiration timestamp in seconds / milliseconds for tombstone cooldown.
-    #[serde(default)]
-    pub tombstone_expires_at: i64,
-    /// Timestamp of last modification in milliseconds.
-    #[serde(default)]
-    pub updated_at_ms: i64,
-    /// Expiration timestamp in milliseconds for tombstone cooldown.
-    #[serde(default)]
-    pub tombstone_expires_at_ms: Option<i64>,
-    /// Optional redirect pointer to new username when status is Moved.
-    #[serde(default)]
-    pub redirect_to: Option<String>,
-}
-
-impl UsernameRecord {
-    /// Construct a new username record with account address and status.
-    pub fn new(
-        username: impl Into<String>,
-        account_address: [u8; 20],
-        status: UsernameStatus,
-        updated_at: i64,
-        tombstone_expires_at: i64,
-    ) -> Self {
-        let name = username.into();
-        Self {
-            username: name,
-            account_address,
-            stamp_key: None,
-            status,
-            updated_at,
-            tombstone_expires_at,
-            updated_at_ms: updated_at,
-            tombstone_expires_at_ms: if tombstone_expires_at > 0 {
-                Some(tombstone_expires_at)
-            } else {
-                None
-            },
-            redirect_to: None,
+impl UsernameError {
+    /// Stable machine-readable code sent to clients.
+    pub fn code(&self) -> &'static str {
+        match self {
+            UsernameError::InvalidName(_) => "invalid-username",
+            UsernameError::InvalidClaim(_) => "invalid-claim",
+            UsernameError::Taken => "taken",
+            UsernameError::Stale => "stale-claim",
         }
     }
 }
 
-/// Result of attempting to claim a username.
-#[derive(Debug, PartialEq, Eq)]
-pub enum UsernameClaimResult {
-    /// Successfully claimed the handle.
-    Claimed,
-    /// Handle was already owned by this same account; updated metadata.
-    AlreadyOwned,
+use self::UsernameError::*;
+
+/// The canonical form of a name: trimmed, one leading `@` dropped, ASCII lower-case, then 3 to
+/// 32 characters of `a-z 0-9 - _` starting with a letter or digit. This is the only definition
+/// of a valid name; clients may pre-check but the relay decides.
+pub fn normalize(raw: &str) -> std::result::Result<String, UsernameError> {
+    let trimmed = raw.trim();
+    let name = trimmed
+        .strip_prefix('@')
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase();
+    if !(3..=32).contains(&name.len()) {
+        return Err(InvalidName("use 3 to 32 characters".to_string()));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+    {
+        return Err(InvalidName(
+            "use only letters, digits, hyphens and underscores".to_string(),
+        ));
+    }
+    if matches!(name.as_bytes()[0], b'-' | b'_') {
+        return Err(InvalidName("start with a letter or digit".to_string()));
+    }
+    Ok(name)
 }
 
-/// RocksDB store for unique routable usernames and tombstones.
+/// The operator's reserved names (`[registry.directory] reserved_usernames`: name -> key hex)
+/// with names in canonical form and keys decoded. `None` when a name is not a valid username,
+/// a key is not 33 bytes of hex starting 02 or 03, or two spellings give the same name.
+pub fn reserved(
+    configured: &std::collections::BTreeMap<String, String>,
+) -> Option<std::collections::BTreeMap<String, [u8; 33]>> {
+    let mut reserved = std::collections::BTreeMap::new();
+    for (name, key) in configured {
+        let key: [u8; 33] = hex::decode(key).ok()?.try_into().ok()?;
+        if !matches!(key[0], 2 | 3) || reserved.insert(normalize(name).ok()?, key).is_some() {
+            return None;
+        }
+    }
+    Some(reserved)
+}
+
+/// The text a key signs to claim `username` (already canonical) on `network`.
+pub fn claim_text(network: &str, username: &str, issued_ms: u64) -> String {
+    format!("{CLAIM_DOMAIN}\n{network}\n{username}\n{issued_ms}")
+}
+
+/// One name and the key holding it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsernameRecord {
+    /// Canonical name.
+    pub username: String,
+    /// Compressed secp256k1 key the name points to: the subject of its directory entry.
+    pub subject: [u8; 33],
+    /// Address of that key.
+    pub address: [u8; 20],
+    /// When the holder says it signed the claim, Unix milliseconds.
+    pub issued_ms: u64,
+    /// When this relay accepted the claim, Unix milliseconds. Zero until stored.
+    pub accepted_ms: u64,
+    /// The exact signed claim (`SignedPayload` bytes).
+    pub claim: Vec<u8>,
+}
+
+/// Check a signed claim made for `network` and return what it claims. Verifies the signature
+/// against the key named in the claim itself; whether the name is free is the store's question.
+pub fn verify_claim(
+    ecc: &EccSecp256k1,
+    claim: &[u8],
+    network: &str,
+    now_ms: u64,
+) -> std::result::Result<UsernameRecord, UsernameError> {
+    if claim.len() as u64 > MAX_CLAIM_BYTES {
+        return Err(InvalidClaim("too large".to_string()));
+    }
+    let signed = cashweb_payload::proto::SignedPayload::decode(claim)
+        .map_err(|_| InvalidClaim("not a signed payload".to_string()))?;
+    let signer =
+        verify_signed_payload(ecc, &signed).map_err(|err| InvalidClaim(err.to_string()))?;
+    let text = std::str::from_utf8(&signed.payload)
+        .map_err(|_| InvalidClaim("payload is not text".to_string()))?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let [domain, claimed_network, username, issued] = lines.as_slice() else {
+        return Err(InvalidClaim("payload is not a username claim".to_string()));
+    };
+    if *domain != CLAIM_DOMAIN {
+        return Err(InvalidClaim("payload is not a username claim".to_string()));
+    }
+    if *claimed_network != network {
+        return Err(InvalidClaim(format!(
+            "claim is for network {claimed_network:?}, this relay serves {network:?}"
+        )));
+    }
+    if normalize(username)? != *username {
+        return Err(InvalidClaim(
+            "the signed name is not in canonical form".to_string(),
+        ));
+    }
+    let issued_ms: u64 = issued
+        .parse()
+        .ok()
+        .filter(|ms: &u64| ms.to_string() == *issued)
+        .ok_or_else(|| InvalidClaim("bad issue time".to_string()))?;
+    if issued_ms > now_ms.saturating_add(MAX_FUTURE_MS) {
+        return Err(InvalidClaim("issued in the future".to_string()));
+    }
+    Ok(UsernameRecord {
+        username: username.to_string(),
+        subject: signer.pubkey,
+        address: signer.address.0,
+        issued_ms,
+        accepted_ms: 0,
+        claim: claim.to_vec(),
+    })
+}
+
+/// What an accepted claim did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimOutcome {
+    /// The key now holds the name (and no longer holds any name it held before).
+    Claimed,
+    /// The key already held the name; nothing changed.
+    Unchanged,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Stored {
+    subject: String,
+    address: String,
+    issued_ms: u64,
+    accepted_ms: u64,
+    claim: String,
+}
+
+fn name_key(name: &str) -> Vec<u8> {
+    [b"n", name.as_bytes()].concat()
+}
+
+fn address_key(address: &[u8; 20]) -> Vec<u8> {
+    [b"a".as_slice(), address].concat()
+}
+
+/// RocksDB store of username records.
 pub struct DbDirectoryUsernames<'a> {
     db: &'a Db,
     cf: &'a CF,
+}
+
+impl std::fmt::Debug for DbDirectoryUsernames<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbDirectoryUsernames").finish()
+    }
 }
 
 impl<'a> DbDirectoryUsernames<'a> {
@@ -218,825 +236,353 @@ impl<'a> DbDirectoryUsernames<'a> {
         ));
     }
 
-    /// Normalizes and validates username syntax:
-    /// - 3 to 32 characters
-    /// - Lowercase ASCII alphanumeric plus '-' and '_'
-    /// - Must start with an alphanumeric character
-    pub fn validate_and_normalize(raw: &str) -> std::result::Result<String, UsernameError> {
-        let normalized = raw.trim().to_ascii_lowercase();
-        let len = normalized.len();
-        if !(3..=32).contains(&len) {
-            return Err(InvalidFormat(format!(
-                "length must be between 3 and 32 characters, got {}",
-                len
+    fn decode(username: &str, bytes: &[u8]) -> Result<UsernameRecord> {
+        let stored: Stored = serde_json::from_slice(bytes)?;
+        let fixed = |hex_text: &str| hex::decode(hex_text).ok();
+        let (Some(subject), Some(address), Some(claim)) = (
+            fixed(&stored.subject).and_then(|b| b.try_into().ok()),
+            fixed(&stored.address).and_then(|b| b.try_into().ok()),
+            fixed(&stored.claim),
+        ) else {
+            return Err(bitcoinsuite_error::Report::msg(format!(
+                "corrupt username record for {username:?}"
             )));
-        }
-
-        let first = normalized.chars().next().unwrap();
-        if !first.is_ascii_alphanumeric() {
-            return Err(InvalidFormat(
-                "username must start with an alphanumeric character".to_string(),
-            ));
-        }
-
-        for ch in normalized.chars() {
-            if !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' {
-                return Err(InvalidFormat(format!(
-                    "character '{}' is not allowed in username",
-                    ch
-                )));
-            }
-        }
-
-        Ok(normalized)
+        };
+        Ok(UsernameRecord {
+            username: username.to_string(),
+            subject,
+            address,
+            issued_ms: stored.issued_ms,
+            accepted_ms: stored.accepted_ms,
+            claim,
+        })
     }
 
-    /// Fetch a username record by canonical name.
-    pub fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>> {
-        let normalized = match Self::validate_and_normalize(raw_username) {
-            Ok(n) => n,
-            Err(_) => return Ok(None),
-        };
+    /// The record of a canonical name, if someone holds it.
+    pub fn get(&self, username: &str) -> Result<Option<UsernameRecord>> {
+        match self.db.rocksdb().get_cf(self.cf, name_key(username))? {
+            Some(bytes) => Ok(Some(Self::decode(username, &bytes)?)),
+            None => Ok(None),
+        }
+    }
 
-        let slice = match self
+    /// The record of the name `address` holds, if any.
+    pub fn of_address(&self, address: &[u8; 20]) -> Result<Option<UsernameRecord>> {
+        let Some(name) = self.db.rocksdb().get_cf(self.cf, address_key(address))? else {
+            return Ok(None);
+        };
+        let name = String::from_utf8(name)?;
+        self.get(&name)
+    }
+
+    /// Up to `limit` records whose name starts with the canonical `prefix`, in name order.
+    pub fn search(&self, prefix: &str, limit: usize) -> Result<Vec<UsernameRecord>> {
+        let start = name_key(prefix);
+        let iter = self
             .db
             .rocksdb()
-            .get_cf(self.cf, normalized.as_bytes())
-            .wrap_err(crate::store::db::DbError::RocksDb)?
-        {
-            Some(s) => s,
-            None => return Ok(None),
-        };
-
-        let mut record: UsernameRecord =
-            serde_json::from_slice(&slice).wrap_err(crate::store::db::DbError::RocksDb)?;
-        if record.updated_at == 0 && record.updated_at_ms != 0 {
-            record.updated_at = record.updated_at_ms;
-        }
-        if record.updated_at_ms == 0 && record.updated_at != 0 {
-            record.updated_at_ms = record.updated_at;
-        }
-        if record.tombstone_expires_at == 0 {
-            if let Some(exp) = record.tombstone_expires_at_ms {
-                record.tombstone_expires_at = exp;
+            .iterator_cf(self.cf, IteratorMode::From(&start, Direction::Forward));
+        let mut found = Vec::new();
+        for item in iter {
+            let (key, value) = item?;
+            if found.len() == limit.min(MAX_SEARCH_RESULTS) || !key.starts_with(&start) {
+                break;
             }
+            let name = std::str::from_utf8(&key[1..])?;
+            found.push(Self::decode(name, &value)?);
         }
-        if record.tombstone_expires_at_ms.is_none() && record.tombstone_expires_at > 0 {
-            record.tombstone_expires_at_ms = Some(record.tombstone_expires_at);
-        }
-        Ok(Some(record))
+        Ok(found)
     }
 
-    /// Attempt to claim or re-bind a username for an account address.
+    /// Store a verified claim under the rules in the module docs. The outer error is storage;
+    /// the inner one is a refusal.
     ///
-    /// Fails with `NameCollision` if owned by another account.
-    /// Fails with `Tombstoned` if tombstone cooldown is still active.
+    /// `reserved_for_claimant`: the operator reserved this name for the claiming key. Whoever
+    /// took it before it was reserved loses it to that key.
     pub fn claim(
         &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        stamp_key: Option<Vec<u8>>,
-        now_ms: i64,
-    ) -> Result<UsernameClaimResult> {
-        let normalized = Self::validate_and_normalize(raw_username)?;
-
-        if let Some(existing) = self.get(&normalized)? {
-            match existing.status {
-                UsernameStatus::Active => {
-                    if existing.account_address != *account_address {
-                        let current_hex = hex::encode(existing.account_address);
-                        return Err(NameCollision(normalized, current_hex).into());
-                    }
-                    // Same account updating stamp_key or metadata
-                    let updated = UsernameRecord {
-                        username: normalized.clone(),
-                        account_address: *account_address,
-                        stamp_key,
-                        status: UsernameStatus::Active,
-                        updated_at: now_ms,
-                        tombstone_expires_at: 0,
-                        updated_at_ms: now_ms,
-                        tombstone_expires_at_ms: None,
-                        redirect_to: None,
-                    };
-                    self.put_record(&updated)?;
-                    return Ok(UsernameClaimResult::AlreadyOwned);
-                }
-                UsernameStatus::Tombstoned | UsernameStatus::Moved => {
-                    let expires_at = existing
-                        .tombstone_expires_at
-                        .max(existing.tombstone_expires_at_ms.unwrap_or(0));
-                    if now_ms < expires_at {
-                        return Err(Tombstoned(normalized, expires_at).into());
-                    }
-                    // Cooldown expired, allow fresh claim
-                }
+        record: &UsernameRecord,
+        accepted_ms: u64,
+        reserved_for_claimant: bool,
+    ) -> Result<std::result::Result<ClaimOutcome, UsernameError>> {
+        let _guard = self.db.lock_usernames();
+        let mut batch = rocksdb::WriteBatch::default();
+        if let Some(holder) = self.get(&record.username)? {
+            if holder.subject == record.subject {
+                return Ok(Ok(ClaimOutcome::Unchanged));
             }
-        }
-
-        let record = UsernameRecord {
-            username: normalized,
-            account_address: *account_address,
-            stamp_key,
-            status: UsernameStatus::Active,
-            updated_at: now_ms,
-            tombstone_expires_at: 0,
-            updated_at_ms: now_ms,
-            tombstone_expires_at_ms: None,
-            redirect_to: None,
-        };
-        self.put_record(&record)?;
-
-        Ok(UsernameClaimResult::Claimed)
-    }
-
-    /// Mark a username as tombstoned when released or deactivated.
-    pub fn tombstone(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<bool> {
-        let normalized = Self::validate_and_normalize(raw_username)?;
-        let existing = match self.get(&normalized)? {
-            Some(e) => e,
-            None => return Ok(false),
-        };
-
-        if existing.account_address != *account_address {
-            return Ok(false); // Only the owner can tombstone
-        }
-
-        let tombstone_record = UsernameRecord {
-            username: normalized,
-            account_address: *account_address,
-            stamp_key: existing.stamp_key,
-            status: UsernameStatus::Tombstoned,
-            updated_at: now_ms,
-            tombstone_expires_at: now_ms + cooldown_duration_ms,
-            updated_at_ms: now_ms,
-            tombstone_expires_at_ms: Some(now_ms + cooldown_duration_ms),
-            redirect_to: None,
-        };
-        self.put_record(&tombstone_record)?;
-        Ok(true)
-    }
-
-    /// Rename an active username to a new handle for the same account.
-    ///
-    /// Claims the `new_username` for `account_address`, and transitions `old_username`
-    /// into a `Moved` state with a redirect pointer to `new_username` and a tombstone cooldown.
-    pub fn rename(
-        &self,
-        old_username: &str,
-        new_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<()> {
-        let old_norm = Self::validate_and_normalize(old_username)?;
-        let new_norm = Self::validate_and_normalize(new_username)?;
-
-        if old_norm == new_norm {
-            return Ok(());
-        }
-
-        let existing_old = match self.get(&old_norm)? {
-            Some(r) => r,
-            None => {
-                return Err(UsernameError::InvalidFormat(format!(
-                    "Username '{}' does not exist",
-                    old_norm
-                ))
-                .into());
+            if !reserved_for_claimant {
+                return Ok(Err(Taken));
             }
-        };
-
-        if existing_old.account_address != *account_address {
-            let current_hex = hex::encode(existing_old.account_address);
-            return Err(UsernameError::NameCollision(old_norm, current_hex).into());
+            batch.delete_cf(self.cf, address_key(&holder.address));
         }
-
-        // 1. Claim new username (fails on collision with other accounts or active tombstones)
-        self.claim(
-            &new_norm,
-            account_address,
-            existing_old.stamp_key.clone(),
-            now_ms,
-        )?;
-
-        // 2. Put old username into Moved state with redirect to new_norm
-        let moved_record = UsernameRecord {
-            username: old_norm,
-            account_address: *account_address,
-            stamp_key: existing_old.stamp_key,
-            status: UsernameStatus::Moved,
-            updated_at: now_ms,
-            tombstone_expires_at: now_ms + cooldown_duration_ms,
-            updated_at_ms: now_ms,
-            tombstone_expires_at_ms: Some(now_ms + cooldown_duration_ms),
-            redirect_to: Some(new_norm),
-        };
-        self.put_record(&moved_record)?;
-
-        Ok(())
-    }
-
-    /// Attempt to register a username with first-come, first-served uniqueness and tombstone protection.
-    ///
-    /// - If name does not exist -> insert as Active, return Ok(()).
-    /// - If name exists with same address -> update updated_at, return Ok(()).
-    /// - If name exists with different address and status is Active -> return Conflict (Handle taken).
-    /// - If name exists and status is Tombstoned:
-    ///   - If now < tombstone_expires_at -> return Conflict (Handle tombstoned).
-    ///   - If now >= tombstone_expires_at -> reclaim name: overwrite with new address, status Active, return Ok(()).
-    pub fn register_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-    ) -> std::result::Result<(), UsernameError> {
-        let normalized = Self::validate_and_normalize(username)?;
-
-        if let Ok(Some(existing)) = self.get(&normalized) {
-            match existing.status {
-                UsernameStatus::Active => {
-                    if existing.account_address != address {
-                        return Err(UsernameError::Conflict("Handle taken".to_string()));
-                    }
-                    let updated = UsernameRecord {
-                        username: normalized.clone(),
-                        account_address: address,
-                        stamp_key: existing.stamp_key,
-                        status: UsernameStatus::Active,
-                        updated_at: now,
-                        tombstone_expires_at: 0,
-                        updated_at_ms: now,
-                        tombstone_expires_at_ms: None,
-                        redirect_to: None,
-                    };
-                    self.put_record(&updated)
-                        .map_err(|e| UsernameError::Conflict(e.to_string()))?;
-                    return Ok(());
-                }
-                UsernameStatus::Tombstoned | UsernameStatus::Moved => {
-                    let expires_at = existing
-                        .tombstone_expires_at
-                        .max(existing.tombstone_expires_at_ms.unwrap_or(0));
-                    if now < expires_at {
-                        return Err(UsernameError::Conflict("Handle tombstoned".to_string()));
-                    }
-                    let reclaimed = UsernameRecord {
-                        username: normalized.clone(),
-                        account_address: address,
-                        stamp_key: None,
-                        status: UsernameStatus::Active,
-                        updated_at: now,
-                        tombstone_expires_at: 0,
-                        updated_at_ms: now,
-                        tombstone_expires_at_ms: None,
-                        redirect_to: None,
-                    };
-                    self.put_record(&reclaimed)
-                        .map_err(|e| UsernameError::Conflict(e.to_string()))?;
-                    return Ok(());
-                }
+        if let Some(previous) = self.of_address(&record.address)? {
+            if record.issued_ms <= previous.issued_ms {
+                return Ok(Err(Stale));
             }
+            batch.delete_cf(self.cf, name_key(&previous.username));
         }
-
-        let record = UsernameRecord {
-            username: normalized,
-            account_address: address,
-            stamp_key: None,
-            status: UsernameStatus::Active,
-            updated_at: now,
-            tombstone_expires_at: 0,
-            updated_at_ms: now,
-            tombstone_expires_at_ms: None,
-            redirect_to: None,
+        let stored = Stored {
+            subject: hex::encode(record.subject),
+            address: hex::encode(record.address),
+            issued_ms: record.issued_ms,
+            accepted_ms,
+            claim: hex::encode(&record.claim),
         };
-        self.put_record(&record)
-            .map_err(|e| UsernameError::Conflict(e.to_string()))?;
-        Ok(())
-    }
-
-    /// Mark a username as tombstoned with cooldown expiration.
-    ///
-    /// If name owned by address -> set status to Tombstoned, tombstone_expires_at = now + cooldown_seconds.
-    pub fn tombstone_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-        cooldown_seconds: i64,
-    ) -> std::result::Result<bool, UsernameError> {
-        let normalized = Self::validate_and_normalize(username)?;
-        let existing = match self.get(&normalized) {
-            Ok(Some(e)) => e,
-            Ok(None) => return Ok(false),
-            Err(e) => return Err(UsernameError::Conflict(e.to_string())),
-        };
-
-        if existing.account_address != address {
-            return Ok(false);
-        }
-
-        let expires = now + cooldown_seconds;
-        let tombstone_record = UsernameRecord {
-            username: normalized,
-            account_address: address,
-            stamp_key: existing.stamp_key,
-            status: UsernameStatus::Tombstoned,
-            updated_at: now,
-            tombstone_expires_at: expires,
-            updated_at_ms: now,
-            tombstone_expires_at_ms: Some(expires),
-            redirect_to: None,
-        };
-        self.put_record(&tombstone_record)
-            .map_err(|e| UsernameError::Conflict(e.to_string()))?;
-        Ok(true)
-    }
-
-    fn put_record(&self, record: &UsernameRecord) -> Result<()> {
-        let mut rec = record.clone();
-        if rec.updated_at == 0 && rec.updated_at_ms != 0 {
-            rec.updated_at = rec.updated_at_ms;
-        }
-        if rec.updated_at_ms == 0 && rec.updated_at != 0 {
-            rec.updated_at_ms = rec.updated_at;
-        }
-        if rec.tombstone_expires_at == 0 {
-            if let Some(exp) = rec.tombstone_expires_at_ms {
-                rec.tombstone_expires_at = exp;
-            }
-        }
-        if rec.tombstone_expires_at_ms.is_none() && rec.tombstone_expires_at > 0 {
-            rec.tombstone_expires_at_ms = Some(rec.tombstone_expires_at);
-        }
-        let serialized = serde_json::to_vec(&rec).wrap_err(crate::store::db::DbError::RocksDb)?;
-        let mut batch = WriteBatch::default();
-        batch.put_cf(self.cf, rec.username.as_bytes(), serialized);
-        let mut write_options = WriteOptions::default();
-        write_options.set_sync(false);
-        self.db
-            .rocksdb()
-            .write_opt(batch, &write_options)
-            .wrap_err(crate::store::db::DbError::RocksDb)?;
-        Ok(())
-    }
-}
-
-impl std::fmt::Debug for DbDirectoryUsernames<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DbDirectoryUsernames {{ .. }}")
-    }
-}
-
-// RocksDB column family handles are immutable and thread-safe for concurrent reads and writes.
-unsafe impl Send for DbDirectoryUsernames<'_> {}
-unsafe impl Sync for DbDirectoryUsernames<'_> {}
-
-impl UsernameStore for DbDirectoryUsernames<'_> {
-    fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>> {
-        self.get(raw_username)
-    }
-
-    fn claim(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        stamp_key: Option<Vec<u8>>,
-        now_ms: i64,
-    ) -> Result<UsernameClaimResult> {
-        self.claim(raw_username, account_address, stamp_key, now_ms)
-    }
-
-    fn tombstone(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<bool> {
-        self.tombstone(raw_username, account_address, cooldown_duration_ms, now_ms)
-    }
-
-    fn rename(
-        &self,
-        old_username: &str,
-        new_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<()> {
-        self.rename(
-            old_username,
-            new_username,
-            account_address,
-            cooldown_duration_ms,
-            now_ms,
-        )
-    }
-
-    fn register_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-    ) -> std::result::Result<(), UsernameError> {
-        self.register_username(username, address, now)
-    }
-
-    fn tombstone_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-        cooldown_seconds: i64,
-    ) -> std::result::Result<bool, UsernameError> {
-        self.tombstone_username(username, address, now, cooldown_seconds)
-    }
-}
-
-impl<T: ?Sized + UsernameStore> UsernameStore for Box<T> {
-    fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>> {
-        (**self).get(raw_username)
-    }
-
-    fn claim(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        stamp_key: Option<Vec<u8>>,
-        now_ms: i64,
-    ) -> Result<UsernameClaimResult> {
-        (**self).claim(raw_username, account_address, stamp_key, now_ms)
-    }
-
-    fn tombstone(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<bool> {
-        (**self).tombstone(raw_username, account_address, cooldown_duration_ms, now_ms)
-    }
-
-    fn rename(
-        &self,
-        old_username: &str,
-        new_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<()> {
-        (**self).rename(
-            old_username,
-            new_username,
-            account_address,
-            cooldown_duration_ms,
-            now_ms,
-        )
-    }
-
-    fn register_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-    ) -> std::result::Result<(), UsernameError> {
-        (**self).register_username(username, address, now)
-    }
-
-    fn tombstone_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-        cooldown_seconds: i64,
-    ) -> std::result::Result<bool, UsernameError> {
-        (**self).tombstone_username(username, address, now, cooldown_seconds)
-    }
-}
-
-impl<T: ?Sized + UsernameStore> UsernameStore for std::sync::Arc<T> {
-    fn get(&self, raw_username: &str) -> Result<Option<UsernameRecord>> {
-        (**self).get(raw_username)
-    }
-
-    fn claim(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        stamp_key: Option<Vec<u8>>,
-        now_ms: i64,
-    ) -> Result<UsernameClaimResult> {
-        (**self).claim(raw_username, account_address, stamp_key, now_ms)
-    }
-
-    fn tombstone(
-        &self,
-        raw_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<bool> {
-        (**self).tombstone(raw_username, account_address, cooldown_duration_ms, now_ms)
-    }
-
-    fn rename(
-        &self,
-        old_username: &str,
-        new_username: &str,
-        account_address: &[u8; 20],
-        cooldown_duration_ms: i64,
-        now_ms: i64,
-    ) -> Result<()> {
-        (**self).rename(
-            old_username,
-            new_username,
-            account_address,
-            cooldown_duration_ms,
-            now_ms,
-        )
-    }
-
-    fn register_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-    ) -> std::result::Result<(), UsernameError> {
-        (**self).register_username(username, address, now)
-    }
-
-    fn tombstone_username(
-        &self,
-        username: &str,
-        address: [u8; 20],
-        now: i64,
-        cooldown_seconds: i64,
-    ) -> std::result::Result<bool, UsernameError> {
-        (**self).tombstone_username(username, address, now, cooldown_seconds)
+        batch.put_cf(
+            self.cf,
+            name_key(&record.username),
+            serde_json::to_vec(&stored)?,
+        );
+        batch.put_cf(
+            self.cf,
+            address_key(&record.address),
+            record.username.as_bytes(),
+        );
+        self.db.write_batch(batch)?;
+        Ok(Ok(ClaimOutcome::Claimed))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use bitcoinsuite_error::Result;
-    use tempdir::TempDir;
+pub(crate) mod tests {
+    use bitcoinsuite_core::{ecc::Ecc, Hashed, Sha256};
+    use cashweb_payload::proto::signed_payload::SignatureScheme;
+    use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::store::db::Db;
 
-    #[test]
-    fn test_username_validation() {
-        assert_eq!(
-            DbDirectoryUsernames::validate_and_normalize("alice").unwrap(),
-            "alice"
-        );
-        assert_eq!(
-            DbDirectoryUsernames::validate_and_normalize("  Bob-123  ").unwrap(),
-            "bob-123"
-        );
-        assert_eq!(
-            DbDirectoryUsernames::validate_and_normalize("charlie_dev").unwrap(),
-            "charlie_dev"
-        );
+    pub(crate) const NETWORK: &str = "monad-testnet";
+    pub(crate) const NOW_MS: u64 = 1_800_000_000_000;
 
-        // Too short (< 3)
-        assert!(DbDirectoryUsernames::validate_and_normalize("al").is_err());
-        // Too long (> 32)
-        assert!(DbDirectoryUsernames::validate_and_normalize(&"a".repeat(33)).is_err());
-        // Must start with alphanumeric
-        assert!(DbDirectoryUsernames::validate_and_normalize("-alice").is_err());
-        assert!(DbDirectoryUsernames::validate_and_normalize("_alice").is_err());
-        // Invalid characters
-        assert!(DbDirectoryUsernames::validate_and_normalize("alice@frank").is_err());
-        assert!(DbDirectoryUsernames::validate_and_normalize("alice.smith").is_err());
+    /// A claim exactly as a client builds it: the claim text in a `SignedPayload`, signed over
+    /// its SHA-256 by the key whose secret is `secret` repeated.
+    pub(crate) fn signed_claim(secret: [u8; 32], text: &str) -> Vec<u8> {
+        let ecc = EccSecp256k1::default();
+        let seckey = ecc.seckey_from_array(secret).unwrap();
+        let payload = text.as_bytes().to_vec();
+        let payload_hash = Sha256::digest(payload.clone().into());
+        cashweb_payload::proto::SignedPayload {
+            pubkey: ecc.derive_pubkey(&seckey).as_slice().to_vec(),
+            sig: ecc
+                .sign(&seckey, payload_hash.byte_array().clone())
+                .to_vec(),
+            sig_scheme: SignatureScheme::Ecdsa as i32,
+            payload,
+            payload_hash: payload_hash.as_slice().to_vec(),
+            burn_amount: 0,
+            burn_txs: vec![],
+        }
+        .encode_to_vec()
+    }
+
+    fn claim_for(secret: u8, name: &str, issued_ms: u64) -> Vec<u8> {
+        signed_claim([secret; 32], &claim_text(NETWORK, name, issued_ms))
+    }
+
+    fn verified(secret: u8, name: &str, issued_ms: u64) -> UsernameRecord {
+        verify_claim(
+            &EccSecp256k1::default(),
+            &claim_for(secret, name, issued_ms),
+            NETWORK,
+            NOW_MS,
+        )
+        .unwrap()
+    }
+
+    fn open() -> (tempdir::TempDir, Db) {
+        let dir = tempdir::TempDir::new("cashweb-registry--usernames").unwrap();
+        let db = Db::open(dir.path().join("db.rocksdb")).unwrap();
+        (dir, db)
     }
 
     #[test]
-    fn test_claim_collision_and_tombstone_lifecycle() -> Result<()> {
-        let tempdir = TempDir::new("test-db-usernames")?;
-        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let store = db.directory_usernames();
+    fn names_are_normalised_and_restricted() {
+        assert_eq!(normalize("  @Alice_01 ").unwrap(), "alice_01");
+        assert_eq!(normalize("a-b").unwrap(), "a-b");
+        assert_eq!(normalize(&"x".repeat(32)).unwrap(), "x".repeat(32));
+        for bad in [
+            "",
+            "ab",
+            &"x".repeat(33),
+            "_abc",
+            "-abc",
+            "al ice",
+            "al.ice",
+            "álice",
+            "@@abc",
+            "a/b",
+        ] {
+            assert!(
+                matches!(normalize(bad), Err(InvalidName(_))),
+                "{bad:?} should be refused"
+            );
+        }
+    }
 
-        let alice_addr = [1u8; 20];
-        let mallory_addr = [2u8; 20];
-        let now = 1000000;
-
-        // 1. Alice claims "alice"
-        let res = store.claim("alice", &alice_addr, Some(vec![1, 2, 3]), now)?;
-        assert_eq!(res, UsernameClaimResult::Claimed);
-
-        let record = store.get("alice")?.expect("record should exist");
-        assert_eq!(record.status, UsernameStatus::Active);
-        assert_eq!(record.account_address, alice_addr);
-
-        // 2. Alice updates metadata for "alice" -> AlreadyOwned
-        let res2 = store.claim("alice", &alice_addr, Some(vec![4, 5, 6]), now + 10)?;
-        assert_eq!(res2, UsernameClaimResult::AlreadyOwned);
-
-        // 3. Mallory tries to claim "alice" -> Collision Error!
-        let collision_err = store.claim("alice", &mallory_addr, None, now + 20);
-        assert!(collision_err.is_err());
-
-        // 4. Alice deactivates and tombstones "alice" with 1000s cooldown
-        let cooldown = 1000;
-        let tombstoned = store.tombstone("alice", &alice_addr, cooldown, now + 30)?;
-        assert!(tombstoned);
-
-        let tomb_record = store.get("alice")?.expect("record should exist");
-        assert_eq!(tomb_record.status, UsernameStatus::Tombstoned);
+    #[test]
+    fn a_claim_is_verified_against_the_key_it_names() {
+        let ecc = EccSecp256k1::default();
+        let record = verified(1, "alice", NOW_MS);
+        assert_eq!(record.username, "alice");
+        assert_eq!(record.issued_ms, NOW_MS);
+        let seckey = ecc.seckey_from_array([1; 32]).unwrap();
         assert_eq!(
-            tomb_record.tombstone_expires_at_ms,
-            Some(now + 30 + cooldown)
+            record.subject.as_slice(),
+            ecc.derive_pubkey(&seckey).as_slice()
         );
 
-        // 5. Mallory tries to claim during tombstone cooldown -> Blocked by Tombstoned!
-        let blocked = store.claim("alice", &mallory_addr, None, now + 100);
-        assert!(blocked.is_err());
+        // Signed by key 2 but naming key 1 as the signer: refused.
+        let mut forged =
+            cashweb_payload::proto::SignedPayload::decode(claim_for(2, "alice", NOW_MS).as_slice())
+                .unwrap();
+        forged.pubkey = record.subject.to_vec();
+        assert!(matches!(
+            verify_claim(&ecc, &forged.encode_to_vec(), NETWORK, NOW_MS),
+            Err(InvalidClaim(_))
+        ));
 
-        // 6. After cooldown expires, Mallory can successfully claim
-        let claim_after_expiry =
-            store.claim("alice", &mallory_addr, None, now + 30 + cooldown + 1)?;
-        assert_eq!(claim_after_expiry, UsernameClaimResult::Claimed);
+        // A signature over other text does not carry over to this claim.
+        let mut altered =
+            cashweb_payload::proto::SignedPayload::decode(claim_for(1, "alice", NOW_MS).as_slice())
+                .unwrap();
+        altered.payload = claim_text(NETWORK, "alicf", NOW_MS).into_bytes();
+        altered.payload_hash = vec![];
+        assert!(matches!(
+            verify_claim(&ecc, &altered.encode_to_vec(), NETWORK, NOW_MS),
+            Err(InvalidClaim(_))
+        ));
 
-        let final_record = store.get("alice")?.expect("record should exist");
-        assert_eq!(final_record.account_address, mallory_addr);
-        assert_eq!(final_record.status, UsernameStatus::Active);
+        let refused = |bytes: Vec<u8>| {
+            assert!(matches!(
+                verify_claim(&ecc, &bytes, NETWORK, NOW_MS),
+                Err(InvalidClaim(_) | InvalidName(_))
+            ))
+        };
+        // Another network, a non-canonical or invalid name, the future, other text, junk.
+        refused(signed_claim(
+            [1; 32],
+            &claim_text("monad-mainnet", "alice", NOW_MS),
+        ));
+        refused(claim_for(1, "Alice", NOW_MS));
+        refused(claim_for(1, "al", NOW_MS));
+        refused(claim_for(1, "alice", NOW_MS + MAX_FUTURE_MS + 1));
+        refused(signed_claim([1; 32], "hello"));
+        refused(signed_claim(
+            [1; 32],
+            &format!("{CLAIM_DOMAIN}\n{NETWORK}\nalice\n+5"),
+        ));
+        refused(signed_claim(
+            [1; 32],
+            &format!("{CLAIM_DOMAIN}\n{NETWORK}\nalice\n5\nextra"),
+        ));
+        refused(vec![0xff; 40]);
+        refused(vec![0; MAX_CLAIM_BYTES as usize + 1]);
+    }
 
+    #[test]
+    fn first_claim_wins_and_the_holder_can_repeat_it() -> Result<()> {
+        let (_dir, db) = open();
+        let names = db.directory_usernames();
+        let alice = verified(1, "alice", NOW_MS);
+        assert_eq!(
+            names.claim(&alice, NOW_MS + 5, false)?,
+            Ok(ClaimOutcome::Claimed)
+        );
+
+        let stored = names.get("alice")?.unwrap();
+        assert_eq!(stored.subject, alice.subject);
+        assert_eq!(stored.address, alice.address);
+        assert_eq!(stored.accepted_ms, NOW_MS + 5);
+        // The stored record is the signed statement itself and verifies on its own.
+        assert_eq!(
+            verify_claim(&EccSecp256k1::default(), &stored.claim, NETWORK, NOW_MS).unwrap(),
+            alice
+        );
+        assert_eq!(names.of_address(&alice.address)?.unwrap().username, "alice");
+
+        // Another key is refused and changes nothing, however late its claim.
+        let mallory = verified(2, "alice", NOW_MS + 60_000);
+        assert_eq!(names.claim(&mallory, NOW_MS + 60_000, false)?, Err(Taken));
+        assert_eq!(names.get("alice")?.unwrap(), stored);
+        assert_eq!(names.of_address(&mallory.address)?, None);
+
+        // The holder claiming again, with the same or a fresh claim, is a no-op.
+        assert_eq!(
+            names.claim(&alice, NOW_MS + 9, false)?,
+            Ok(ClaimOutcome::Unchanged)
+        );
+        assert_eq!(
+            names.claim(&verified(1, "alice", NOW_MS + 1), NOW_MS + 9, false)?,
+            Ok(ClaimOutcome::Unchanged)
+        );
+        assert_eq!(names.get("alice")?.unwrap(), stored);
         Ok(())
     }
 
     #[test]
-    fn test_rename_lifecycle() -> Result<()> {
-        let tempdir = TempDir::new("test-db-rename")?;
-        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let store = db.directory_usernames();
+    fn changing_name_releases_the_old_one_and_cannot_be_replayed_back() -> Result<()> {
+        let (_dir, db) = open();
+        let names = db.directory_usernames();
+        let first = verified(1, "alice", NOW_MS);
+        names.claim(&first, NOW_MS, false)?.unwrap();
 
-        let alice_addr = [1u8; 20];
-        let bob_addr = [2u8; 20];
-        let now = 2000000;
-        let cooldown = 50000;
+        let second = verified(1, "alice2", NOW_MS + 1);
+        assert_eq!(
+            names.claim(&second, NOW_MS + 1, false)?,
+            Ok(ClaimOutcome::Claimed)
+        );
+        assert_eq!(names.get("alice")?, None);
+        assert_eq!(
+            names.of_address(&first.address)?.unwrap().username,
+            "alice2"
+        );
 
-        // 1. Alice claims "alice_old"
-        store.claim("alice_old", &alice_addr, None, now)?;
+        // Anyone holding the old signed claim cannot move the key back with it.
+        assert_eq!(names.claim(&first, NOW_MS + 2, false)?, Err(Stale));
+        assert_eq!(
+            names.of_address(&first.address)?.unwrap().username,
+            "alice2"
+        );
 
-        // 2. Bob already has "bob_taken"
-        store.claim("bob_taken", &bob_addr, None, now)?;
-
-        // 3. Alice tries to rename "alice_old" to "bob_taken" -> Collision error
-        assert!(store
-            .rename("alice_old", "bob_taken", &alice_addr, cooldown, now + 10)
-            .is_err());
-
-        // 4. Alice renames "alice_old" to "alice_new"
-        store.rename("alice_old", "alice_new", &alice_addr, cooldown, now + 20)?;
-
-        // Verify "alice_new" is Active for Alice
-        let new_rec = store.get("alice_new")?.expect("should exist");
-        assert_eq!(new_rec.status, UsernameStatus::Active);
-        assert_eq!(new_rec.account_address, alice_addr);
-
-        // Verify "alice_old" is Moved pointing to "alice_new"
-        let old_rec = store.get("alice_old")?.expect("should exist");
-        assert_eq!(old_rec.status, UsernameStatus::Moved);
-        assert_eq!(old_rec.redirect_to, Some("alice_new".to_string()));
-        assert_eq!(old_rec.tombstone_expires_at_ms, Some(now + 20 + cooldown));
-
-        // 5. Bob tries to claim "alice_old" during cooldown -> Blocked
-        assert!(store
-            .claim("alice_old", &bob_addr, None, now + 100)
-            .is_err());
-
+        // The released name is free for someone else.
+        let bob = verified(2, "alice", NOW_MS + 3);
+        assert_eq!(
+            names.claim(&bob, NOW_MS + 3, false)?,
+            Ok(ClaimOutcome::Claimed)
+        );
+        assert_eq!(names.get("alice")?.unwrap().subject, bob.subject);
         Ok(())
     }
 
     #[test]
-    fn test_cf_usernames_column_family() -> Result<()> {
-        let tempdir = TempDir::new("test-cf-usernames")?;
-        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let cf = db.cf_usernames()?;
-        assert!(db.cf(CF_USERNAMES).is_ok());
-        assert!(db.cf("directory_usernames").is_ok());
-        db.put(cf, b"test_key", b"test_val")?;
-        let val = db.get(cf, b"test_key")?;
-        assert_eq!(val.as_deref(), Some(b"test_val".as_slice()));
-        Ok(())
-    }
-
-    #[test]
-    fn test_register_username_state_machine_and_tombstones() -> Result<()> {
-        let tempdir = TempDir::new("test-username-state-machine")?;
-        let db = Db::open(tempdir.path().join("db.rocksdb"))?;
-        let store = db.directory_usernames();
-
-        let alice_addr = [1u8; 20];
-        let mallory_addr = [2u8; 20];
-        let bob_addr = [3u8; 20];
-        let charlie_addr = [4u8; 20];
-
-        // 1. Valid vs Invalid username normalization and registration
-        assert!(store.register_username("alice", alice_addr, 1000).is_ok());
-        assert!(store.register_username("bob-123", bob_addr, 1000).is_ok());
-        assert!(store
-            .register_username("charlie_dev", charlie_addr, 1000)
-            .is_ok());
-
-        // Reject invalid usernames:
-        // Too short (< 3)
-        assert!(matches!(
-            store.register_username("al", alice_addr, 1000),
-            Err(UsernameError::InvalidFormat(_))
-        ));
-        // Too long (> 32)
-        let too_long = "a".repeat(33);
-        assert!(matches!(
-            store.register_username(&too_long, alice_addr, 1000),
-            Err(UsernameError::InvalidFormat(_))
-        ));
-        // Non-alphanumeric start
-        assert!(matches!(
-            store.register_username("-alice", alice_addr, 1000),
-            Err(UsernameError::InvalidFormat(_))
-        ));
-        assert!(matches!(
-            store.register_username("_alice", alice_addr, 1000),
-            Err(UsernameError::InvalidFormat(_))
-        ));
-        // Disallowed characters
-        assert!(matches!(
-            store.register_username("alice@domain.com", alice_addr, 1000),
-            Err(UsernameError::InvalidFormat(_))
-        ));
-        assert!(matches!(
-            store.register_username("alice.smith", alice_addr, 1000),
-            Err(UsernameError::InvalidFormat(_))
-        ));
-
-        // 2. Same address re-registering -> succeeds and updates updated_at
-        assert!(store.register_username("alice", alice_addr, 1050).is_ok());
-        let rec = store.get("alice")?.expect("record should exist");
-        assert_eq!(rec.account_address, alice_addr);
-        assert_eq!(rec.status, UsernameStatus::Active);
-        assert_eq!(rec.updated_at, 1050);
-
-        // Name clash with different address -> returns Conflict ("Handle taken")
-        let clash_res = store.register_username("alice", mallory_addr, 1060);
-        assert!(
-            matches!(clash_res, Err(UsernameError::Conflict(ref msg)) if msg.contains("taken"))
-        );
-
-        // 3. Tombstone prevents re-registration before expiry
-        // Alice tombstones "alice" with 300s cooldown at now = 1100 (expires 1400)
-        let tombstoned = store.tombstone_username("alice", alice_addr, 1100, 300)?;
-        assert!(tombstoned);
-
-        let tomb_rec = store.get("alice")?.expect("record should exist");
-        assert_eq!(tomb_rec.status, UsernameStatus::Tombstoned);
-        assert_eq!(tomb_rec.tombstone_expires_at, 1400);
-
-        // Mallory attempts to register "alice" at now = 1200 (now < tombstone_expires_at) -> Conflict ("Handle tombstoned")
-        let blocked = store.register_username("alice", mallory_addr, 1200);
-        assert!(
-            matches!(blocked, Err(UsernameError::Conflict(ref msg)) if msg.contains("tombstoned"))
-        );
-
-        // 4. Re-registration succeeds after expiry (now >= tombstone_expires_at)
-        // Mallory reclaims at now = 1400 (exact expiry) -> succeeds!
-        assert!(store.register_username("alice", mallory_addr, 1400).is_ok());
-        let reclaimed_rec = store.get("alice")?.expect("record should exist");
-        assert_eq!(reclaimed_rec.account_address, mallory_addr);
-        assert_eq!(reclaimed_rec.status, UsernameStatus::Active);
-        assert_eq!(reclaimed_rec.updated_at, 1400);
-
-        // 5. Ownership transition
-        // Mallory owns "alice". Mallory tombstones it at now = 1500 with 100s cooldown (expires 1600).
-        assert!(store.tombstone_username("alice", mallory_addr, 1500, 100)?);
-
-        // Charlie cannot claim before expiry
-        assert!(matches!(
-            store.register_username("alice", charlie_addr, 1550),
-            Err(UsernameError::Conflict(_))
-        ));
-
-        // Charlie claims at now = 1605 (after expiry) -> succeeds!
-        assert!(store.register_username("alice", charlie_addr, 1605).is_ok());
-        let charlie_rec = store.get("alice")?.expect("record should exist");
-        assert_eq!(charlie_rec.account_address, charlie_addr);
-        assert_eq!(charlie_rec.status, UsernameStatus::Active);
-        assert_eq!(charlie_rec.updated_at, 1605);
-
-        // Charlie re-registers at now = 1700 -> succeeds and updates updated_at
-        assert!(store.register_username("alice", charlie_addr, 1700).is_ok());
-        let updated_charlie = store.get("alice")?.expect("record should exist");
-        assert_eq!(updated_charlie.updated_at, 1700);
-
+    fn search_finds_names_by_prefix_in_order() -> Result<()> {
+        let (_dir, db) = open();
+        let names = db.directory_usernames();
+        for (secret, name) in [(1, "alice"), (2, "alicia"), (3, "bob"), (4, "al")] {
+            if let Ok(record) = verify_claim(
+                &EccSecp256k1::default(),
+                &claim_for(secret, name, NOW_MS),
+                NETWORK,
+                NOW_MS,
+            ) {
+                names.claim(&record, NOW_MS, false)?.unwrap();
+            }
+        }
+        let found = |prefix: &str, limit: usize| -> Result<Vec<String>> {
+            Ok(names
+                .search(prefix, limit)?
+                .into_iter()
+                .map(|record| record.username)
+                .collect())
+        };
+        assert_eq!(found("ali", 10)?, ["alice", "alicia"]);
+        assert_eq!(found("ali", 1)?, ["alice"]);
+        assert_eq!(found("b", 10)?, ["bob"]);
+        assert_eq!(found("", 10)?, ["alice", "alicia", "bob"]);
+        assert_eq!(found("zed", 10)?, Vec::<String>::new());
+        // The address index shares the column family and never shows up as a name.
+        assert_eq!(found("a", 10)?, ["alice", "alicia"]);
         Ok(())
     }
 }

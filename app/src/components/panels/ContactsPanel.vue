@@ -169,12 +169,7 @@
             <q-item-section class="col" style="min-width: 0">
               <div class="row items-center no-wrap">
                 <q-item-label lines="1" class="text-weight-medium ellipsis">
-                  {{
-                    res.name ||
-                    (res.username
-                      ? `@${res.username}`
-                      : formatAddrCompact(res.address))
-                  }}
+                  {{ res.name || formatAddrCompact(res.address) }}
                 </q-item-label>
                 <account-badge
                   :address="res.address"
@@ -185,8 +180,11 @@
                 />
               </div>
               <q-item-label caption lines="1" class="ellipsis">
-                <span v-if="res.username">@{{ res.username }} • </span
-                >{{ formatAddrCompact(res.address) }}
+                <username-handle
+                  v-if="res.username"
+                  :username="res.username"
+                  class="q-mr-xs"
+                />{{ formatAddrCompact(res.address) }}
               </q-item-label>
             </q-item-section>
             <q-item-section side style="padding-left: 4px">
@@ -268,9 +266,12 @@ import {
   decodeProfileBytes,
 } from '@frank/wallet/monad-identity'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/monad-chain'
-import { fromHex } from '@frank/codec'
-import axios from 'axios'
+import {
+  searchUsernames,
+  usernamesOfAddresses,
+} from '@frank/cashweb/relay/username-client'
 import AccountBadge from 'src/components/contacts/AccountBadge.vue'
+import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
 
 interface NetworkSearchResult {
   address: string
@@ -287,6 +288,7 @@ export default defineComponent({
   components: {
     IdentityQrDialog,
     AccountBadge,
+    UsernameHandle,
   },
   emits: ['closeDrawer'],
   setup(props, { emit }) {
@@ -416,61 +418,50 @@ export default defineComponent({
           }
           if (!relayBaseUrl) return
 
-          const searchPromises: Promise<any>[] = [
+          // Two searches: unique usernames (the relay gives a name to one account only), and
+          // display names, which are free text anyone can set.
+          const [named, entries] = await Promise.all([
+            searchUsernames({ relayBaseUrl, prefix: cleanQ, limit: 10 }).catch(
+              () => [],
+            ),
             searchMonadProfiles({
               relayBaseUrl,
               prefix: cleanQ,
               limit: 10,
             }).catch(() => []),
+          ])
+          // The username shown for an account is only ever the one the relay says it holds,
+          // never the one a profile claims for itself.
+          const usernameOf = new Map<string, string>(
+            named.map(user => [user.address, user.username]),
+          )
+          const unnamed = entries
+            .map(entry => entry.address.toLowerCase())
+            .filter(address => !usernameOf.has(address))
+          if (unnamed.length > 0) {
+            const held = await usernamesOfAddresses({
+              relayBaseUrl,
+              addresses: unnamed,
+            }).catch(() => [])
+            for (const user of held) usernameOf.set(user.address, user.username)
+          }
+          const allEntries: { address: string; rawBytes: Uint8Array }[] = [
+            ...named.map(user => ({
+              address: user.address,
+              rawBytes: user.profile ?? new Uint8Array(),
+            })),
+            ...entries.filter(
+              entry =>
+                !named.some(
+                  user => user.address === entry.address.toLowerCase(),
+                ),
+            ),
           ]
-
-          if (/^[a-z0-9][a-z0-9_-]{2,31}$/i.test(cleanQ)) {
-            const userUrl = `${relayBaseUrl.replace(
-              /\/+$/,
-              '',
-            )}/directory/user/${cleanQ.toLowerCase()}`
-            searchPromises.push(
-              axios
-                .get(userUrl)
-                .then(r => r.data)
-                .catch(() => null),
-            )
-          }
-
-          const [entries, userLookup] = await Promise.all(searchPromises)
-          const allEntries: any[] = [...(entries || [])]
-
-          if (
-            userLookup &&
-            userLookup.status === 'active' &&
-            userLookup.address
-          ) {
-            const userAddr = userLookup.address
-            const alreadyHas = allEntries.some(
-              (e: any) => e.address.toLowerCase() === userAddr.toLowerCase(),
-            )
-            if (!alreadyHas) {
-              let rawBytes: Uint8Array = new Uint8Array()
-              if (userLookup.entry?.raw_hex) {
-                try {
-                  rawBytes = fromHex(userLookup.entry.raw_hex)
-                } catch {
-                  // Ignore
-                }
-              }
-              allEntries.unshift({
-                address: userAddr,
-                rawBytes,
-                signedPayload: null,
-                username: userLookup.username,
-              })
-            }
-          }
 
           const results: NetworkSearchResult[] = []
           for (const entry of allEntries) {
             let name = formatAddrCompact(entry.address)
-            let username = (entry as any).username
+            const username = usernameOf.get(entry.address.toLowerCase())
             let avatar: string | undefined
             let bio: string | undefined
             let bot = false
@@ -482,7 +473,6 @@ export default defineComponent({
                   expectedAddress: entry.address,
                 })
                 if (decoded.name) name = decoded.name
-                if (decoded.username) username = decoded.username
                 avatar = decoded.avatar
                 bio = decoded.bio
                 bot = Boolean(decoded.bot)
@@ -559,6 +549,8 @@ export default defineComponent({
               ...(pendingRelayData?.profile ?? {}),
               name: item.name,
               username: item.username,
+              // Pinned: this contact is this address from now on, whoever holds the name later.
+              addedByUsername: item.username ?? null,
               bio: item.bio ?? '',
               avatar: item.avatar ?? null,
               pubKey: null,

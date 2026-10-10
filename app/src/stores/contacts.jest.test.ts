@@ -30,6 +30,12 @@ jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: () => mockUseActiveWallet(),
 }))
 
+// The relay's name store, the only source of a contact's @username.
+const mockRelayHandleOf = jest.fn()
+jest.mock('../utils/contact-username', () => ({
+  relayHandleOf: (...args: unknown[]) => mockRelayHandleOf(...args),
+}))
+
 import { useChatStore } from './chats'
 import {
   isBlankName,
@@ -56,6 +62,182 @@ describe('stores/contacts.ts (ticket #42)', () => {
     jest.restoreAllMocks()
     mockUseActiveWallet.mockReset()
     mockUseActiveWallet.mockRejectedValue(new Error('wallet not initialized'))
+    // By default the relay cannot be asked, so contacts keep whatever handle they had.
+    mockRelayHandleOf.mockReset()
+    mockRelayHandleOf.mockResolvedValue(undefined)
+  })
+
+  describe('usernames come from the relay name store only', () => {
+    const OTHER = '0x4f4F4f4F4f4f4F4F4f4F4F4f4f4f4f4f4F4F4f4f'
+    const profileClaiming = (username: string) =>
+      ({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        name: 'Qwen',
+        username,
+      } as Awaited<ReturnType<typeof activeChain.fetchProfile>>)
+
+    it('a profile that claims a username it does not hold never gives the contact that handle', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue(profileClaiming('qwen'))
+      // The relay says this address holds no name.
+      mockRelayHandleOf.mockResolvedValue({ username: null, reassigned: false })
+
+      await contacts.fetchAndAddContact({
+        address: ADDRESS,
+        contact: undefined as unknown as Partial<ContactState>,
+      })
+      expect(contacts.getContact(ADDRESS).profile.name).toBe('Qwen')
+      expect(contacts.getContact(ADDRESS).profile.username).toBeNull()
+
+      await contacts.refresh(ADDRESS)
+      expect(contacts.getContact(ADDRESS).profile.username).toBeNull()
+
+      // Nor when the relay cannot be asked at all.
+      mockRelayHandleOf.mockResolvedValue(undefined)
+      await contacts.refresh(ADDRESS)
+      expect(contacts.getContact(ADDRESS).profile.username).toBeNull()
+    })
+
+    it('a contact added from an address shows the name the relay says that address holds', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      jest
+        .spyOn(activeChain, 'fetchProfile')
+        .mockResolvedValue(profileClaiming('somebody-else'))
+      mockRelayHandleOf.mockResolvedValue({
+        username: 'alice',
+        reassigned: false,
+      })
+
+      await contacts.fetchAndAddContact({
+        address: ADDRESS,
+        contact: undefined as unknown as Partial<ContactState>,
+      })
+      expect(contacts.getContact(ADDRESS).profile.username).toBe('alice')
+      expect(mockRelayHandleOf).toHaveBeenCalledWith(ADDRESS)
+    })
+
+    it('a contact added by username stays its address when the name later goes to another account, and says so', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      // Added by @alice: resolved once to ADDRESS and stored under it.
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          profile: {
+            name: 'Alice',
+            username: 'alice',
+            addedByUsername: 'alice',
+            bio: '',
+            avatar: '',
+            pubKey: null,
+          },
+        },
+      })
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+        name: 'Alice',
+      })
+
+      // While the address still holds the name nothing changes.
+      mockRelayHandleOf.mockResolvedValue({
+        username: 'alice',
+        reassigned: false,
+      })
+      await contacts.refresh(ADDRESS)
+      expect(mockRelayHandleOf).toHaveBeenLastCalledWith(ADDRESS, 'alice')
+      expect(contacts.getContact(ADDRESS).profile.username).toBe('alice')
+      expect(contacts.getContact(ADDRESS).profile.usernameReassigned).toBe(
+        false,
+      )
+
+      // The holder renamed and another account took @alice.
+      mockRelayHandleOf.mockResolvedValue({ username: null, reassigned: true })
+      await contacts.refresh(ADDRESS)
+
+      const pinned = contacts.getContact(ADDRESS)
+      // Still the same contact at the same address...
+      expect(contacts.isContact(ADDRESS)).toBe(true)
+      expect(contacts.isContact(OTHER)).toBe(false)
+      expect(Object.keys(contacts.contacts)).toEqual([toDisplay(ADDRESS)])
+      expect(pinned.profile.name).toBe('Alice')
+      // ...which no longer shows a handle it does not hold, and carries the notice.
+      expect(pinned.profile.username).toBeNull()
+      expect(pinned.profile.usernameReassigned).toBe(true)
+      expect(pinned.profile.addedByUsername).toBe('alice')
+
+      // A relay outage afterwards does not clear the notice or bring the handle back.
+      mockRelayHandleOf.mockResolvedValue(undefined)
+      await contacts.refresh(ADDRESS)
+      expect(contacts.getContact(ADDRESS).profile.username).toBeNull()
+      expect(contacts.getContact(ADDRESS).profile.usernameReassigned).toBe(true)
+    })
+
+    it("a username saved by an older build, copied from the contact's own profile, is dropped on load", async () => {
+      const restored = await rehydrateContacts({
+        updateInterval: 0,
+        contacts: {
+          [ADDRESS]: {
+            lastUpdateTime: 1,
+            notify: true,
+            relayURL: null,
+            // No usernameReassigned field: written before the relay was the only source.
+            profile: {
+              name: 'Qwen',
+              username: 'qwen',
+              bio: '',
+              avatar: '',
+              pubKey: null,
+            },
+            inbox: {},
+          },
+          [OTHER]: {
+            lastUpdateTime: 1,
+            notify: true,
+            relayURL: null,
+            profile: {
+              name: 'Alice',
+              username: 'alice',
+              addedByUsername: 'alice',
+              usernameReassigned: false,
+              bio: '',
+              avatar: '',
+              pubKey: null,
+            },
+            inbox: {},
+          },
+        },
+      })
+      expect(restored.contacts[ADDRESS]?.profile.username).toBeNull()
+      expect(restored.contacts[OTHER]?.profile.username).toBe('alice')
+      expect(restored.contacts[OTHER]?.profile.addedByUsername).toBe('alice')
+    })
+
+    it('an unregistered contact also loses a handle it no longer holds', async () => {
+      const contacts = useContactStore()
+      contacts.setUpdateInterval(0)
+      contacts.addContact({
+        address: ADDRESS,
+        contact: {
+          profile: {
+            name: 'Bob',
+            username: 'bob',
+            bio: '',
+            avatar: '',
+            pubKey: null,
+          },
+        },
+      })
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue(undefined)
+      mockRelayHandleOf.mockResolvedValue({ username: null, reassigned: false })
+      await contacts.refresh(ADDRESS)
+      expect(contacts.getContact(ADDRESS).profile.username).toBeNull()
+    })
   })
 
   describe('fetchAndAddContact', () => {

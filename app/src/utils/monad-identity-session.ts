@@ -55,6 +55,8 @@ import {
   type MonadIdentity,
 } from '@frank/wallet/monad-identity'
 import { isAvatarTooLarge, compressAvatarDataUrl } from './avatar-resize'
+import { clearOwnUsername, ownUsername, syncOwnUsername } from './own-username'
+import { errorNotify } from './notifications'
 
 type Stoppable = { stop: () => void }
 interface Live {
@@ -92,6 +94,12 @@ export interface MessagingDeps {
   /** Registers the identity profile with the relay so authenticated inbox reads succeed. */
   registerProfile?: (options: {
     relayBaseUrl: string
+    wallet: NativeWalletHandle
+  }) => Promise<void>
+  /** Claims the saved username again once this account's entry is published. */
+  claimUsername?: (options: {
+    relayBaseUrl: string
+    network: string
     wallet: NativeWalletHandle
   }) => Promise<void>
 }
@@ -257,6 +265,35 @@ function productionDeps(): MessagingDeps {
         console.warn('[startMessaging] registerMonadIdentityCbor failed:', err)
       }
     },
+    // Bring the account's own username in line with the relay: a saved name is claimed again
+    // (a no-op when held; what restores it on a relay with a fresh database), and the user is
+    // told when the relay will not give it, instead of the app going on showing it.
+    claimUsername: async ({ relayBaseUrl, network, wallet }) => {
+      const identity = (wallet as unknown as { identity?: MonadIdentity })
+        .identity
+      if (!identity) return
+      let saved: string | undefined
+      try {
+        saved = useProfileStore().profile.username
+      } catch {
+        // Pinia store not available (e.g. non-Vue test environment)
+      }
+      await syncOwnUsername({
+        relayBaseUrl,
+        network,
+        signer: identity,
+        address: identity.address.raw,
+        saved,
+      })
+      if (ownUsername.problem) {
+        console.warn(
+          `[startMessaging] saved username @${saved} is not held: ${ownUsername.problem}`,
+        )
+        errorNotify(new Error('saved username is not held'), {
+          fallbackKey: 'profile.usernameNotHeld',
+        })
+      }
+    },
   }
 }
 
@@ -295,6 +332,8 @@ export async function stopMessaging(): Promise<void> {
   failures = 0
   const previous = live
   live = undefined
+  // Never show one account's username while another is being started.
+  clearOwnUsername()
   setDirectoryLookup(accountStatus.status === 'ready' ? 'pending' : null)
   cancelDirectoryLookupWaiters()
   if (state.status !== 'pending') state.status = 'pending'
@@ -426,6 +465,11 @@ export async function startMessaging(): Promise<void> {
       failures = 0
       state.status = 'ready'
       state.reason = null
+      void d.claimUsername?.({
+        relayBaseUrl: d.relayBaseUrl,
+        network: networkOf(d.networkTag),
+        wallet,
+      })
       return
     } catch (err) {
       console.error('[startMessaging] install failed:', err)

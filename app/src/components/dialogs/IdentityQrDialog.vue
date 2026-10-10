@@ -36,12 +36,8 @@
         >
           {{ displayName }}
         </div>
-        <div
-          v-if="displayUsername"
-          class="text-caption text-grey-7"
-          data-test="identity-qr-username"
-        >
-          @{{ displayUsername }}
+        <div v-if="displayUsername" data-test="identity-qr-username">
+          <username-handle :username="displayUsername" />
         </div>
         <div class="text-caption text-grey-8 q-mt-xs">
           {{ $t('profileDialog.identitySubheading') }}
@@ -128,11 +124,14 @@ import QrcodeVue from 'qrcode.vue'
 import { copyToClipboard } from 'quasar'
 import { getOwnCanonicalAddress } from 'src/utils/own-address'
 import { addressCopiedNotify, errorNotify } from 'src/utils/notifications'
+import { ownUsername } from 'src/utils/own-username'
+import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
 
 export default defineComponent({
   name: 'IdentityQrDialog',
   components: {
     QrcodeVue,
+    UsernameHandle,
   },
   props: {
     modelValue: {
@@ -147,10 +146,6 @@ export default defineComponent({
       type: String,
       default: '',
     },
-    username: {
-      type: String,
-      default: '',
-    },
     avatar: {
       type: String,
       default: '',
@@ -162,7 +157,6 @@ export default defineComponent({
     const internalAddress = ref('')
     const internalProfile = ref<{
       name?: string
-      username?: string
       avatar?: string
     }>({})
 
@@ -184,14 +178,13 @@ export default defineComponent({
               // ignore
             }
           }
-          if (!props.name && !props.username && !props.avatar) {
+          if (!props.name && !props.avatar) {
             try {
               const { useProfileStore } = await import('src/stores/my-profile')
               const p = useProfileStore()?.profile
               if (p) {
                 internalProfile.value = {
                   name: p.name,
-                  username: p.username,
                   avatar: p.avatar,
                 }
               }
@@ -209,18 +202,11 @@ export default defineComponent({
     )
 
     const displayName = computed(() => {
-      return (
-        props.name ||
-        internalProfile.value.name ||
-        props.username ||
-        internalProfile.value.username ||
-        'You'
-      )
+      return props.name || internalProfile.value.name || 'You'
     })
 
-    const displayUsername = computed(
-      () => props.username || internalProfile.value.username || '',
-    )
+    // Only the name the relay confirms this account holds, never the one merely saved.
+    const displayUsername = computed(() => ownUsername.held ?? '')
 
     const avatarSrc = computed(
       () => props.avatar || internalProfile.value.avatar || '',

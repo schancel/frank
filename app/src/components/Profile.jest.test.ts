@@ -176,6 +176,75 @@ describe('Profile.vue component avatar handling', () => {
     expect(wrapper.emitted('update:username')?.[0]).toEqual(['alice_99'])
   })
 
+  it("shows the relay's refusal of a username on the username field, and nothing when there is none", async () => {
+    const wrapper = mount(ProfileComponent, {
+      props: {
+        username: 'alice',
+        usernameError: 'That username is already taken.',
+      },
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+        },
+        stubs: defaultStubs,
+      },
+    })
+    const field = wrapper.find('[data-test="profile-input-username"]')
+    expect(field.attributes('error')).toBe('true')
+    expect(field.attributes('error-message')).toBe(
+      'That username is already taken.',
+    )
+
+    await wrapper.setProps({ usernameError: '' })
+    expect(
+      wrapper.find('[data-test="profile-input-username"]').attributes('error'),
+    ).toBe('false')
+  })
+
+  it('says under the username field that a held name stays held when the field is cleared or changed', async () => {
+    const wrapper = mount(ProfileComponent, {
+      props: { username: 'alice', heldUsername: 'alice' },
+      global: {
+        mocks: {
+          $t: (key: string, params?: Record<string, unknown>) =>
+            params ? `${key}:${JSON.stringify(params)}` : key,
+        },
+        stubs: defaultStubs,
+      },
+    })
+    // Typed name is the held one: the ordinary hint.
+    expect((wrapper.vm as any).usernameHint).toBe('profile.usernameHint')
+
+    for (const typed of ['', 'alice2']) {
+      ;(wrapper.vm as any).internalUsername = typed
+      await wrapper.vm.$nextTick()
+      expect((wrapper.vm as any).usernameHint).toBe(
+        'profile.usernameStillHeld:{"username":"alice"}',
+      )
+    }
+
+    // An account that holds no name gets the ordinary hint whatever is typed.
+    await wrapper.setProps({ heldUsername: '' })
+    expect((wrapper.vm as any).usernameHint).toBe('profile.usernameHint')
+  })
+
+  it('refuses a display name that starts with @, which is how usernames are written', async () => {
+    const wrapper = mount(ProfileComponent, {
+      props: { name: 'Alice' },
+      global: {
+        mocks: { $t: (key: string) => key },
+        stubs: defaultStubs,
+      },
+    })
+    expect((wrapper.vm as any).nameRule('@qwen')).toBe(
+      'profile.nameStartsWithAt',
+    )
+    expect((wrapper.vm as any).nameRule('  @qwen')).toBe(
+      'profile.nameStartsWithAt',
+    )
+    expect((wrapper.vm as any).nameRule('Qwen @ home')).toBe(true)
+  })
+
   it('manages interactive links list (add, remove, emit)', async () => {
     const wrapper = mount(ProfileComponent, {
       props: {

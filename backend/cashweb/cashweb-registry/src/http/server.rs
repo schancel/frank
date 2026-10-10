@@ -128,142 +128,6 @@ async fn handle_get_peers(Extension(server): Extension<RegistryServer>) -> Json<
     })
 }
 
-/// Inlined directory entry payload returned alongside the user handle.
-#[derive(Debug, Clone, Serialize)]
-pub struct DirectoryEntryPayload {
-    /// Content type of the serialized profile (application/cbor or application/x-protobuf).
-    pub content_type: &'static str,
-    /// Hex-encoded serialized profile statement.
-    pub raw_hex: String,
-}
-
-/// JSON response for directory user lookup.
-#[derive(Debug, Clone, Serialize)]
-pub struct DirectoryUserResponse {
-    /// Canonical lowercase username handle.
-    pub username: String,
-    /// 0x-prefixed hexadecimal Monad account address.
-    pub address: String,
-    /// 0x-prefixed hexadecimal Monad account address (backward-compatible alias).
-    pub account_address: String,
-    /// Active, tombstoned, or moved state.
-    pub status: &'static str,
-    /// Timestamp of last modification in milliseconds.
-    pub updated_at_ms: i64,
-    /// Expiration timestamp in milliseconds for tombstone cooldown.
-    pub tombstone_expires_at_ms: Option<i64>,
-    /// Pointer to new username if status is moved.
-    pub redirect_to: Option<String>,
-    /// Inlined profile / directory entry statement (if active and published).
-    pub entry: Option<DirectoryEntryPayload>,
-}
-
-async fn handle_get_directory_user(
-    Path(username): Path<String>,
-    Extension(server): Extension<RegistryServer>,
-) -> Response {
-    let normalized =
-        match crate::store::directory_usernames::DbDirectoryUsernames::validate_and_normalize(
-            &username,
-        ) {
-            Ok(n) => n,
-            Err(err) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    [(header::CONTENT_TYPE, "application/json")],
-                    Json(serde_json::json!({
-                        "error": err.to_string()
-                    })),
-                )
-                    .into_response();
-            }
-        };
-
-    let store = server.registry.directory_usernames();
-    let record = match store.get(&normalized) {
-        Ok(Some(record)) => record,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                [(header::CONTENT_TYPE, "application/json")],
-                Json(serde_json::json!({
-                    "username": normalized,
-                    "address": "",
-                    "account_address": "",
-                    "status": "not_found",
-                    "error": format!("User '{}' not found", normalized)
-                })),
-            )
-                .into_response();
-        }
-        Err(err) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [(header::CONTENT_TYPE, "application/json")],
-                Json(serde_json::json!({
-                    "error": err.to_string()
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    let status_str = match record.status {
-        crate::store::directory_usernames::UsernameStatus::Active => "active",
-        crate::store::directory_usernames::UsernameStatus::Tombstoned => "tombstoned",
-        crate::store::directory_usernames::UsernameStatus::Moved => "moved",
-    };
-
-    let entry = if record.status == crate::store::directory_usernames::UsernameStatus::Active {
-        match server
-            .registry
-            .get_monad_profile_raw(MonadAddress(record.account_address))
-        {
-            Ok(Some(raw)) => {
-                let is_cbor = crate::store::monad_profiles::is_cbor_frame(&raw);
-                let content_type = if is_cbor {
-                    "application/cbor"
-                } else {
-                    "application/x-protobuf"
-                };
-                Some(DirectoryEntryPayload {
-                    content_type,
-                    raw_hex: hex::encode(&raw),
-                })
-            }
-            _ => None,
-        }
-    } else {
-        None
-    };
-
-    let addr_hex = format!("0x{}", hex::encode(record.account_address));
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, "application/json"),
-            (header::CACHE_CONTROL, "no-store"),
-        ],
-        Json(DirectoryUserResponse {
-            username: record.username,
-            address: addr_hex.clone(),
-            account_address: addr_hex,
-            status: status_str,
-            updated_at_ms: record.updated_at_ms.max(record.updated_at),
-            tombstone_expires_at_ms: record.tombstone_expires_at_ms.or(
-                if record.tombstone_expires_at > 0 {
-                    Some(record.tombstone_expires_at)
-                } else {
-                    None
-                },
-            ),
-            redirect_to: record.redirect_to,
-            entry,
-        }),
-    )
-        .into_response()
-}
-
 #[derive(Deserialize)]
 struct MessagesQuery {
     from: Option<i64>,
@@ -594,10 +458,6 @@ impl RegistryServer {
         let router = Router::new()
             .route("/chains", routing::get(handle_get_chains))
             .route("/peers", routing::get(handle_get_peers))
-            .route(
-                "/directory/user/:username",
-                routing::get(handle_get_directory_user),
-            )
             .route("/metadata", routing::get(handle_get_metadata_range))
             .route(
                 "/metadata/:addr",
@@ -834,7 +694,9 @@ impl RegistryServer {
                 );
         }
         if let Some(runtime) = directory {
-            router = router.merge(crate::http::directory::router(runtime));
+            router = router
+                .merge(crate::http::usernames::router(Arc::clone(&runtime)))
+                .merge(crate::http::directory::router(runtime));
         }
         if let Some(spa_dir) = &self.spa_dir {
             use tower_http::services::{ServeDir, ServeFile};
@@ -1453,114 +1315,5 @@ mod spa_tests {
             let body = response_bytes(response).await;
             assert_eq!(std::str::from_utf8(&body).unwrap(), index_html);
         }
-    }
-
-    #[tokio::test]
-    async fn test_directory_user_route_lifecycle() {
-        let (_db_dir, server) = test_server(None);
-        let alice_addr = [42u8; 20];
-        server
-            .registry
-            .directory_usernames()
-            .claim("alice", &alice_addr, None, 1700000000)
-            .unwrap();
-
-        let router = server.clone().into_router();
-
-        // 1. Existing active user -> 200 OK with JSON
-        let response = router
-            .clone()
-            .oneshot(
-                Request::get("/directory/user/alice")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_bytes(response).await;
-        let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(val["username"], "alice");
-        assert_eq!(val["status"], "active");
-        assert_eq!(val["address"], format!("0x{}", hex::encode(alice_addr)));
-        assert_eq!(
-            val["account_address"],
-            format!("0x{}", hex::encode(alice_addr))
-        );
-
-        // 2. Unknown user -> 404 with status: not_found
-        let res_404 = router
-            .clone()
-            .oneshot(
-                Request::get("/directory/user/unknown_user")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res_404.status(), StatusCode::NOT_FOUND);
-        let not_found_body = response_bytes(res_404).await;
-        let not_found_val: serde_json::Value = serde_json::from_slice(&not_found_body).unwrap();
-        assert_eq!(not_found_val["username"], "unknown_user");
-        assert_eq!(not_found_val["status"], "not_found");
-
-        // 3. Invalid handle format -> 400
-        let res_400 = router
-            .clone()
-            .oneshot(
-                Request::get("/directory/user/a")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res_400.status(), StatusCode::BAD_REQUEST);
-
-        // 4. Tombstoned user -> 200 OK with status: tombstoned
-        server
-            .registry
-            .directory_usernames()
-            .tombstone("alice", &alice_addr, 60000, 1700000100)
-            .unwrap();
-        let res_tomb = router
-            .clone()
-            .oneshot(
-                Request::get("/directory/user/alice")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res_tomb.status(), StatusCode::OK);
-        let tomb_body = response_bytes(res_tomb).await;
-        let tomb_val: serde_json::Value = serde_json::from_slice(&tomb_body).unwrap();
-        assert_eq!(tomb_val["status"], "tombstoned");
-
-        // 5. Renamed / Moved user -> 200 OK with status: moved and redirect_to
-        let bob_addr = [99u8; 20];
-        server
-            .registry
-            .directory_usernames()
-            .claim("bob_v1", &bob_addr, None, 1700000200)
-            .unwrap();
-        server
-            .registry
-            .directory_usernames()
-            .rename("bob_v1", "bob_v2", &bob_addr, 60000, 1700000250)
-            .unwrap();
-
-        let res_moved = router
-            .oneshot(
-                Request::get("/directory/user/bob_v1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res_moved.status(), StatusCode::OK);
-        let moved_body = response_bytes(res_moved).await;
-        let moved_val: serde_json::Value = serde_json::from_slice(&moved_body).unwrap();
-        assert_eq!(moved_val["status"], "moved");
-        assert_eq!(moved_val["redirect_to"], "bob_v2");
     }
 }

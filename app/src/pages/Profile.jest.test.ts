@@ -32,6 +32,16 @@ jest.mock('@frank/wallet/monad-identity', () => {
   }
 })
 
+jest.mock('@frank/cashweb/relay/username-client', () => ({
+  ...jest.requireActual('@frank/cashweb/relay/username-client'),
+  claimUsername: jest.fn(),
+}))
+import {
+  UsernameError,
+  claimUsername,
+} from '@frank/cashweb/relay/username-client'
+
+import { clearOwnUsername, ownUsername } from 'src/utils/own-username'
 import { errorNotify } from 'src/utils/notifications'
 
 jest.mock('src/utils/notifications', () => ({
@@ -50,6 +60,8 @@ const defaultStubs = {
     props: [
       'name',
       'username',
+      'usernameError',
+      'heldUsername',
       'location',
       'bio',
       'avatar',
@@ -83,6 +95,15 @@ describe('Profile.vue', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     HTMLCanvasElement.prototype.getContext = jest.fn(() => null)
+    // The relay gives whatever name is asked for unless a test says otherwise.
+    ;(claimUsername as jest.Mock).mockImplementation(
+      async ({ username }: { username: string }) => ({
+        username,
+        address: '0x1234567890123456789012345678901234567890',
+        subject: '02' + '11'.repeat(32),
+      }),
+    )
+    clearOwnUsername()
   })
 
   it('renders profile editor and actions without legacy protobuf registration', () => {
@@ -301,6 +322,14 @@ describe('Profile.vue', () => {
 
     await (wrapper.vm as any).updateRelayData()
 
+    // The name is claimed on the relay, signed by this account's identity key.
+    expect(claimUsername).toHaveBeenCalledWith({
+      relayBaseUrl: 'https://127.0.0.1:18443',
+      network: 'monad-testnet',
+      signer: mockWallet.identity,
+      username: 'alice_crypt',
+    })
+    expect((wrapper.vm as any).usernameError).toBe('')
     expect(mockSetRelayData).toHaveBeenCalledWith({
       profile: expect.objectContaining({
         username: 'alice_crypt',
@@ -358,6 +387,196 @@ describe('Profile.vue', () => {
     expect(mockSetRelayData).not.toHaveBeenCalled()
     expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
   })
+  it.each([
+    ['taken', 'profile.usernameTaken'],
+    ['not-published', 'profile.usernameNotPublished'],
+    ['unreachable', 'profile.usernameUnavailable'],
+    ['invalid-username', 'profile.invalidUsername'],
+  ] as const)(
+    'a username the relay refuses as %s is shown on the field and nothing is saved or published',
+    async (code, message) => {
+      ;(useActiveWallet as jest.Mock).mockResolvedValue({
+        identity: {
+          address: { raw: '0x1234567890123456789012345678901234567890' },
+        },
+        relayBaseUrl: 'https://127.0.0.1:18443',
+      })
+      ;(claimUsername as jest.Mock).mockRejectedValueOnce(
+        new UsernameError(code),
+      )
+
+      const wrapper = mount(ProfilePage, {
+        global: {
+          mocks: {
+            $t: (key: string) => key,
+            $router: { push: jest.fn() },
+            $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+          },
+          stubs: defaultStubs,
+        },
+      })
+      ;(wrapper.vm as any).username = 'alice'
+      await (wrapper.vm as any).updateRelayData()
+      await wrapper.vm.$nextTick()
+
+      expect(
+        wrapper.findComponent({ name: 'Profile' }).props('usernameError'),
+      ).toBe(message)
+      expect(errorNotify).toHaveBeenCalledWith(
+        expect.any(UsernameError),
+        expect.objectContaining({ safeMessage: message }),
+      )
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+
+      // Saving again with a name the relay accepts clears the error and saves.
+      ;(wrapper.vm as any).username = 'alice2'
+      await (wrapper.vm as any).updateRelayData()
+      await wrapper.vm.$nextTick()
+      expect(
+        wrapper.findComponent({ name: 'Profile' }).props('usernameError'),
+      ).toBe('')
+      expect(mockSetRelayData).toHaveBeenCalled()
+      expect(registerMonadIdentityCbor).toHaveBeenCalled()
+    },
+  )
+
+  it('claims the username only after the local checks pass, so a rejected avatar cannot leave the relay renamed', async () => {
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    })
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    ;(wrapper.vm as any).username = 'alice'
+    // Far over the avatar limit, and compression is unavailable in this environment.
+    ;(wrapper.vm as any).avatar = 'data:image/png;base64,' + 'A'.repeat(200_000)
+    await (wrapper.vm as any).updateRelayData()
+
+    expect(errorNotify).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ fallbackKey: 'profileDialog.avatarTooLarge' }),
+    )
+    expect(claimUsername).not.toHaveBeenCalled()
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+  })
+
+  it('does not save a username when there is no unlocked account to claim it with', async () => {
+    ;(useActiveWallet as jest.Mock).mockRejectedValue(new Error('locked'))
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    ;(wrapper.vm as any).username = 'alice'
+    await (wrapper.vm as any).updateRelayData()
+    await wrapper.vm.$nextTick()
+
+    expect(claimUsername).not.toHaveBeenCalled()
+    expect(mockSetRelayData).not.toHaveBeenCalled()
+    expect(
+      wrapper.findComponent({ name: 'Profile' }).props('usernameError'),
+    ).toBe('profile.usernameNoWallet')
+
+    // Without a username the profile is still saved locally, as before.
+    ;(wrapper.vm as any).username = ''
+    await (wrapper.vm as any).updateRelayData()
+    expect(mockSetRelayData).toHaveBeenCalled()
+  })
+
+  it('records the name the relay confirmed and passes it to the editor', async () => {
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    })
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    expect(
+      wrapper.findComponent({ name: 'Profile' }).props('heldUsername'),
+    ).toBe('')
+    ;(wrapper.vm as any).username = 'alice'
+    await (wrapper.vm as any).updateRelayData()
+    await wrapper.vm.$nextTick()
+    expect(ownUsername.held).toBe('alice')
+    expect(
+      wrapper.findComponent({ name: 'Profile' }).props('heldUsername'),
+    ).toBe('alice')
+  })
+
+  it('opens with the reason on the username field when the saved name was refused at startup', async () => {
+    const saved = {
+      profile: { name: 'Alice', username: 'alice' },
+      inbox: { acceptancePrice: 100 },
+      setRelayData: mockSetRelayData,
+    }
+    // Read once in setup() and once in data().
+    ;(useProfileStore as unknown as jest.Mock)
+      .mockReturnValueOnce(saved)
+      .mockReturnValueOnce(saved)
+    ownUsername.wanted = 'alice'
+    ownUsername.problem = 'profile.usernameTaken'
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    expect(
+      wrapper.findComponent({ name: 'Profile' }).props('usernameError'),
+    ).toBe('profile.usernameTaken')
+  })
+
+  it('claims no username when none is entered', async () => {
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    })
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    await (wrapper.vm as any).updateRelayData()
+    expect(claimUsername).not.toHaveBeenCalled()
+    expect(registerMonadIdentityCbor).toHaveBeenCalled()
+  })
+
   it('updateRelayData saves profile, stays on profile page without navigating back, and shows notify (#1041)', async () => {
     const mockWallet = {
       identity: {

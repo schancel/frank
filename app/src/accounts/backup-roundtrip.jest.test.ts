@@ -18,6 +18,10 @@ import {
   signUp,
 } from './testing/device'
 
+// This suite does real account derivation, Codex32 and KDF work. The app-wide 1 s budget
+// (test/jest/jest.setup.ts) is too tight for a shared CI runner, so these suites get more.
+jest.setTimeout(15000)
+
 jest.mock('./session', () => ({
   ...jest.requireActual('./session'),
   // The ceremony stages into whichever device the test is currently using.

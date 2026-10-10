@@ -1,6 +1,9 @@
 // No console.log() / setTimeout
 // console.log = jest.fn(() => { throw new Error('Do not use console.log() in production') })
-jest.setTimeout(1000)
+// Jest's own default. A one-second budget failed real-work tests at random on a busy hosted
+// runner (two account suites on 2026-10-10, others before); a test that should be fast can assert
+// its own tighter bound.
+jest.setTimeout(5000)
 
 // jsdom in this repo does not provide the platform text codecs. Wallet envelope
 // code constructs them at import, which sign-up now reaches from Setup.vue.

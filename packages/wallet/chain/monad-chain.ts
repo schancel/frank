@@ -3144,6 +3144,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               runLifetime: (operation) => topicOwner!.runLifetime(operation),
               transactionBuilder,
               getSources,
+              sourceHeld: (source) =>
+                source.kind === "spend"
+                  ? pool.claimedBy(source.index) !== undefined ||
+                    pool.getRecord(source.index)?.status === "in-use"
+                  : (() => {
+                      const claimant = pool.accountClaimedBy(source.address);
+                      return (
+                        claimant !== undefined &&
+                        claimant !== mainAccountHolder(wallet)
+                      );
+                    })(),
               claimSources: (sources) => {
                 const indices = sources.flatMap((source) =>
                   source.kind === "spend" ? [source.index] : []

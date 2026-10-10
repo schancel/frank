@@ -87,6 +87,9 @@ export interface EvmLegacyConsolidatorConfig {
   ) => Promise<T>
   transactionBuilder: EvmTransactionBuilder
   getSources: () => Promise<EvmNativeSource[]>
+  /** True while another operation of the wallet (a message paying its stamp, a topic burn)
+   * holds this source in the wallet's one claim: it is not offered to a plan. */
+  sourceHeld?: (source: EvmNativeSource) => boolean
   /** Claims the plan's source accounts in the wallet's one claim, synchronously, or throws when
    * another operation holds one. Returns the release, called once the plan is in the journal. */
   claimSources?: (sources: readonly EvmNativeSource[]) => () => void
@@ -475,10 +478,20 @@ export class EvmLegacyConsolidator {
         // The node knows neither the transaction nor a receipt: the same signed bytes are
         // handed to it again, so a lost broadcast cannot hold the account for good.
         const member = this.config.journal.get(operationId).members[index]!
-        if (member.observation.state === 'missing' && member.signed)
-          await this.config.provider
-            .broadcastTransaction(member.signed.rawTransaction)
-            .catch(() => undefined)
+        const key = `${operationId}:${index}`
+        if (member.observation.state !== 'missing' || !member.signed) {
+          this.missedOnce.delete(key)
+          continue
+        }
+        // Missing twice running: a node asked the moment after a broadcast often does not
+        // know the transaction yet, and that is not a lost broadcast.
+        if (!this.missedOnce.has(key)) {
+          this.missedOnce.add(key)
+          continue
+        }
+        await this.config.provider
+          .broadcastTransaction(member.signed.rawTransaction)
+          .catch(() => undefined)
       }
     }
     try {
@@ -509,6 +522,7 @@ export class EvmLegacyConsolidator {
         }
     const result: AvailableSource[] = []
     for (const source of sources.values()) {
+      if (this.config.sourceHeld?.(source)) continue
       const account = await this.account(source.address)
       if (!journal.canSelect(source.address, account.nonce)) continue
       const spendableValue =
@@ -1608,6 +1622,7 @@ export class EvmLegacyConsolidator {
     return this.legacyResult(await this.resumeOperation(operationId, lifetime))
   }
   private contractResendAt = new Map<string, { at: number; waitMs: number }>()
+  private readonly missedOnce = new Set<string>()
   /**
    * Drives an exposed contract call that is not yet in a block. Each due call is first looked
    * at once (`observe`: recorded `missing` when the node knows neither the transaction nor a

@@ -1263,10 +1263,12 @@ describe('outgoing direct messages (#269, #270)', () => {
         .mockRejectedValue(new Error('offline'))
       const chats = useChatStore()
       await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      // Clear's durable write: the row is dropped and its tombstone written in one call.
       const messageStore = (await messageStorePromise) as unknown as {
-        deleteMessage: jest.Mock
+        suppressAndDelete: jest.Mock
       }
-      const originalDelete = messageStore.deleteMessage.getMockImplementation()
+      const originalDelete =
+        messageStore.suppressAndDelete.getMockImplementation()
       let clearStarted: (() => void) | undefined
       const started = new Promise<void>(resolve => {
         clearStarted = resolve
@@ -1275,18 +1277,20 @@ describe('outgoing direct messages (#269, #270)', () => {
       const gate = new Promise<void>(resolve => {
         releaseClear = resolve
       })
-      messageStore.deleteMessage.mockImplementation(async (digest: string) => {
-        clearStarted?.()
-        await gate
-        return originalDelete?.(digest)
-      })
+      messageStore.suppressAndDelete.mockImplementation(
+        async (...args: unknown[]) => {
+          clearStarted?.()
+          await gate
+          return originalDelete?.(...args)
+        },
+      )
 
       const clearing = chats.clearChat(PEER)
       await started
       const sending = chats.sendMessage({ wallet, address: PEER, items: TEXT })
       releaseClear?.()
       await Promise.all([clearing, sending])
-      messageStore.deleteMessage.mockImplementation(originalDelete)
+      messageStore.suppressAndDelete.mockImplementation(originalDelete)
 
       expect(only(chats)).toHaveLength(1)
       expect(only(await reload())).toHaveLength(1)

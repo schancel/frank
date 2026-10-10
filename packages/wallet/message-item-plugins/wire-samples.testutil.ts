@@ -241,6 +241,18 @@ export const NEVER_FROM_A_PEER_SAMPLES: MessageItem[] = [
     timestamp: 1760000000000,
   },
   {
+    type: 'received-coin',
+    chainIdentifier: 'monad-testnet',
+    address: '0x' + 'cc'.repeat(20),
+    origin: 'stamp',
+    stampSharedPoint: '02' + 'ab'.repeat(32),
+    childIndex: 0,
+    claimedAmountWei: '1000000000000',
+    transactions: ['ef'.repeat(32)],
+    payloadDigest: '12'.repeat(32),
+    timestamp: 1760000000000,
+  },
+  {
     type: 'device-claim',
     instanceId: '123e4567-e89b-42d3-a456-426614174000',
     claimedAt: 1760000000000,

@@ -1,5 +1,5 @@
 /**
- * Every range, size and format rule of the fourteen CBOR item decoders, tested against bytes a
+ * Every range, size and format rule of the fifteen CBOR item decoders, tested against bytes a
  * peer could send: a valid item's own bytes with exactly one field replaced by a value outside
  * the rule. Each must be refused with the typed decode error, and the unmodified bytes must be
  * accepted.
@@ -445,6 +445,38 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
   },
   {
     item: {
+      type: 'received-coin',
+      chainIdentifier: 'monad-testnet',
+      address: A,
+      origin: 'stamp',
+      ephemeralPubKey: '03' + 'cd'.repeat(32),
+      stampSharedPoint: '02' + 'ab'.repeat(32),
+      childIndex: 1,
+      claimedAmountWei: '1000000000000',
+      transactions: [H],
+      payloadDigest: H,
+      timestamp: 1760000000000,
+    },
+    cases: [
+      ...each('chainIdentifier', [0], BAD_CHAINS),
+      ...each('address', [1], BAD_CHAIN_ADDRESSES),
+      ...each('origin', [2], ['', 'utxo', 1]),
+      ...each('ephemeralPubKey', [3], ['zz', 'ab'.repeat(32), 'ab'.repeat(66)]),
+      ...each('stampSharedPoint', [4], ['zz', 'ab'.repeat(32), 'ab'.repeat(66)]),
+      ...each('childIndex', [5], [-1, 2_147_483_648, '1']),
+      ...each('claimedAmountWei', [6], BAD_AMOUNTS),
+      ...each('transactions[0]', [7, 0], [
+        'zz',
+        'ab'.repeat(31),
+        'ab'.repeat(16_385),
+      ]),
+      ['transactions: 17 entries', [7], many(17, H)],
+      ...each('payloadDigest', [8], BAD_HASHES),
+      ...each('timestamp', [9], BAD_TIMESTAMPS),
+    ],
+  },
+  {
+    item: {
       type: 'device-claim',
       instanceId: '123e4567-e89b-42d3-a456-426614174000',
       deviceName: 'iOS Device',
@@ -578,8 +610,8 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
   },
 ]
 
-describe('the fourteen CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
-  it('covers exactly the fourteen CBOR-map plugins', () => {
+describe('the fifteen CBOR item decoders refuse out-of-range, misformatted and oversize fields', () => {
+  it('covers exactly the fifteen CBOR-map plugins', () => {
     expect(SUITES.map(s => s.item.type).sort()).toEqual(
       [
         'device-claim',
@@ -591,6 +623,7 @@ describe('the fourteen CBOR item decoders refuse out-of-range, misformatted and 
         'payment-transfer',
         'poker',
         'raffle',
+        'received-coin',
         'reply',
         'rps',
         'swap-offer',

@@ -279,8 +279,9 @@ export interface NativeWalletHandle {
    * ever left the device it is RELEASED (its signed transfer cancelled, its funds free) and the
    * answer is `released`. If its bytes went to a relay it is FINISHED, never released: broadcast
    * if its message is stored, otherwise delivered again by the wallet in a new message with the
-   * same signed transfer; the answer is its state then. A host calls this when the outgoing
-   * message that carried the payment is deleted, and to retry a held payment. */
+   * same signed transfer; the answer is its state then. A host calls this to end a held payment
+   * (the Wallet page's unfinished payments). Deleting the message that carried a payment does
+   * not call it: the payment stays listed until it is finished. */
   settleContactPayment?(
     ephemeralPubKey: string
   ): Promise<ContactPaymentInfo["state"] | "none">;
@@ -300,13 +301,22 @@ export interface NativeWalletHandle {
    * request when nothing of the message is pending. */
   checkMessagePayment?(payloadDigest: string): Promise<MessagePayment>;
   /** Moves the unspent received coins of these messages (stamps, stealth payments) to the
-   * wallet's seed-derived main account, each in a recorded native operation. Their one-time accounts
-   * can only be found again from the messages, so a host calls this BEFORE deleting them and
-   * deletes only a message whose answer is `none` or `swept`. Asking again for a `pending` or
-   * `failed` message continues the same operation; it never signs a second sweep of a coin. */
+   * wallet's seed-derived main account, each in a recorded native operation. An explicit request
+   * only: deleting a message does NOT need it and never moves money (the coins stay in the coin
+   * list, and their derivation is noted to self). Asking again for a `pending` or `failed`
+   * message continues the same operation; it never signs a second sweep of a coin. */
   sweepReceivedCoins?(params: {
     payloadDigests: readonly string[];
   }): Promise<Record<string, ReceivedCoinSweep>>;
+  /** The wallet sync boundary's way in for a `received-coin` note this account wrote to itself
+   * (`applyWalletSyncItem`): the wallet derives the key from the note's data and records the
+   * coin, pending until the chain is read, only if that key opens the note's account. True when
+   * it does (recorded now, or known already); recording twice changes nothing. */
+  recordReceivedCoin?(note: ReceivedCoinItem): Promise<boolean>;
+  /** Writes, in free notes to self, how the key of each received coin not yet noted is derived,
+   * so the account's other devices and a restore from the seed find those coins without their
+   * messages. A mailbox read does this by itself; it moves no money and never rejects. */
+  noteReceivedCoins?(): Promise<void>;
 
   /**
    * Sends funds to an external legacy destination address, automatically aggregating
@@ -455,6 +465,7 @@ import type {
   MessagePayment,
   ReceivedPayment,
 } from "../storage/evm-coin-store";
+import type { ReceivedCoinItem } from "@frank/cashweb/types/messages";
 
 export interface LegacySendResult {
   /** Final transaction hash that paid the recipient. */
@@ -540,12 +551,12 @@ export class ContactPaymentFailedError extends Error {
 
 /** What happened to the received coins of one message when the wallet was asked to sweep them.
  * - `none`: the message has no coin that holds money worth moving (never funded, already spent, or
- *   too small to pay for its own move). Nothing is lost by deleting it.
+ *   too small to pay for its own move).
  * - `swept`: its coins were moved to this wallet's seed-derived main account and the chain shows
- *   it. Deleting the message loses nothing, also after a restore from the seed.
+ *   it.
  * - `pending`: a sweep is signed and broadcast and the chain has not shown it yet. Ask again.
- * - `failed`: nothing could be established or moved (`reason`). The money is still at an account
- *   only this device's coin list and the message can find. */
+ * - `failed`: nothing could be established or moved (`reason`). The money is still at its
+ *   one-time account, in the coin list. */
 export interface ReceivedCoinSweep {
   outcome: "none" | "swept" | "pending" | "failed";
   reason?: string;

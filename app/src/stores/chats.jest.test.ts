@@ -1793,7 +1793,11 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
-  it('deletes an ordinary non-self outbound without an impossible sender-mailbox tombstone', async () => {
+  // The relay keeps a sender's own messages in the sender's mailbox and hands them back on a
+  // read, so a deleted sent message needs its tombstone there like a received one. (This test
+  // used to pin the opposite, from when a sent row could never come back.) The row here was
+  // never read back from the relay, so its time is this device's and anchors nothing.
+  it('deletes an ordinary non-self outbound and leaves its tombstone under our own mailbox, with no relay time', async () => {
     const chats = useChatStore()
     seedConversation(chats, RECIPIENT_ADDRESS, {
       address: RECIPIENT_ADDRESS,
@@ -1822,8 +1826,9 @@ describe('stores/chats.ts (ticket #42)', () => {
       payloadDigest: 'delete-me',
     })
 
-    expect(mockMessageStore.suppressAndDelete).not.toHaveBeenCalled()
-    expect(mockMessageStore.deleteMessage).toHaveBeenCalledWith('delete-me')
+    expect(mockMessageStore.suppressAndDelete.mock.calls).toEqual([
+      [SENDER_ADDRESS, ['delete-me'], [{ payloadDigest: 'delete-me' }]],
+    ])
     expect(chats.messages['delete-me']).toBeUndefined()
     expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
     expect(chats.chats[RECIPIENT_ADDRESS]?.totalValue).toBe(0)
@@ -1902,7 +1907,8 @@ describe('stores/chats.ts (ticket #42)', () => {
     expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
   })
 
-  it('clears ordinary outbound history without growing sender-mailbox suppression', async () => {
+  // As above: this used to pin that cleared sent messages leave no tombstone.
+  it('clears ordinary outbound history and leaves a tombstone for each message under our own mailbox', async () => {
     const chats = useChatStore()
     seedConversation(chats, RECIPIENT_ADDRESS, {
       address: RECIPIENT_ADDRESS,
@@ -1929,11 +1935,14 @@ describe('stores/chats.ts (ticket #42)', () => {
 
     await chats.clearChat(RECIPIENT_ADDRESS)
 
-    expect(mockMessageStore.suppressAndDelete).not.toHaveBeenCalled()
-    expect(mockMessageStore.deleteMessage.mock.calls).toEqual([
-      ['clear-one'],
-      ['clear-two'],
+    expect(mockMessageStore.suppressAndDelete.mock.calls).toEqual([
+      [
+        SENDER_ADDRESS,
+        ['clear-one', 'clear-two'],
+        [{ payloadDigest: 'clear-one' }, { payloadDigest: 'clear-two' }],
+      ],
     ])
+    expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
     expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
   })
 

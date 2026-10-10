@@ -506,6 +506,78 @@ async fn an_unreachable_node_does_not_stop_delivery() {
     relay.stop().await;
 }
 
+/// The Monad RPC is down when the relay starts: the relay's own RPC proxy for the chain is up
+/// but unverified, and the message path's node is unreachable. A paid message is still
+/// checked, stored and answered `delivered`; only the proxy route says unavailable.
+#[tokio::test]
+async fn with_the_monad_rpc_down_at_startup_a_paid_message_is_still_delivered() {
+    let fixture = NativeDirectoryFixture::new().await;
+    let dead = "http://127.0.0.1:1";
+    let conf = cashweb_config::EvmRpcConf {
+        enabled: true,
+        chains: vec![cashweb_config::EvmRpcChainConf {
+            id: NETWORK.to_string(),
+            expected_chain_id: CHAIN_ID,
+            upstream_env: "MONAD_RPC".to_string(),
+            upstream_envs: vec![],
+            upstream_ws_env: None,
+            checkpoint_block_number: Some(0),
+            checkpoint_block_hash: Some(
+                "0x298034669ee44327d2da9744b9b2782848e2f2a6959756b7b0471b09a404f5c9".to_string(),
+            ),
+            max_get_logs_range: 10,
+        }],
+        ..Default::default()
+    };
+    // Startup succeeds with the upstream down.
+    let proxy =
+        crate::http::evm_rpc::EvmRpcRuntime::from_conf_with_env(&conf, b"MONT".to_vec(), |_| {
+            Some(dead.to_owned())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let mut server = server_with(&fixture, dead, 1, Duration::from_secs(10));
+    server.evm_rpc = Some(proxy);
+    let (url, stop, task) =
+        serve_http(server.into_router_with_directory(Some(fixture.directory.clone()))).await;
+    let client = reqwest::Client::new();
+
+    let request = message(50, 2);
+    let response = client
+        .put(format!("{url}/message/monad/cbor"))
+        .header("content-type", request.content_type())
+        .body(request.body().to_vec())
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = serde_json::from_slice(&response.bytes().await.unwrap()).unwrap();
+    delivered(&(status, body), &request);
+    let owner = fixture.registry.canonical_dm();
+    let recipient = address(&hex::decode(&fixture.accounts[1].subject).unwrap());
+    let sender = address(&hex::decode(&fixture.accounts[0].subject).unwrap());
+    assert_eq!(owner.inbox(recipient, 0, None, 10).unwrap().len(), 1);
+    assert_eq!(owner.mailbox(sender, 0, None, 10).unwrap().len(), 1);
+
+    // The chain's RPC proxy route, meanwhile, answers unavailable rather than forwarding.
+    let proxied = client
+        .post(format!("{url}/chain-rpc/{NETWORK}/rpc"))
+        .header("content-type", "application/json")
+        .body(r#"{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxied.status().as_u16(), 503);
+    let refusal: serde_json::Value =
+        serde_json::from_slice(&proxied.bytes().await.unwrap()).unwrap();
+    assert_eq!(refusal["error"], "rpc_upstream_unavailable");
+
+    stop.send(()).unwrap();
+    task.await.unwrap();
+    fixture.stop().await;
+}
+
 #[tokio::test]
 async fn a_node_that_never_answers_holds_the_answer_no_longer_than_one_call_timeout() {
     let relay = Relay::start_with(

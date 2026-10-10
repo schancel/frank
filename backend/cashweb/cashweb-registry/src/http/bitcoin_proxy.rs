@@ -47,6 +47,8 @@ use crate::{
 
 const PROXY_METHOD_HEADER: &str = "x-frank-proxy-method";
 const MAX_STARTUP_RESPONSE_BYTES: usize = 1024 * 1024;
+/// Longest startup waits for the first identity check of this proxy's chains.
+const STARTUP_WAIT: Duration = Duration::from_secs(2);
 /// How often an upstream that has not yet proved its identity is asked again.
 const IDENTITY_RETRY: Duration = if cfg!(test) {
     Duration::from_millis(50)
@@ -296,9 +298,7 @@ impl BitcoinProxyRuntime {
         });
         // Only a bad configuration stops the relay. An upstream that is down or is the wrong
         // chain leaves that chain unserved.
-        if !runtime.verify_unverified_chains().await {
-            runtime.keep_verifying();
-        }
+        runtime.start_verifying().await;
         Ok(Some(runtime))
     }
 
@@ -411,20 +411,30 @@ impl BitcoinProxyRuntime {
             .all(|verified| verified)
     }
 
-    /// Keep checking in the background until every chain is verified or the relay stops.
-    fn keep_verifying(self: &Arc<Self>) {
+    /// Check every chain's identity in the background, again and again until all pass or the
+    /// relay stops. Startup waits only briefly for the first round, so a healthy upstream is
+    /// verified before the first request and a dead one never holds the relay up.
+    async fn start_verifying(self: &Arc<Self>) {
         let runtime = Arc::downgrade(self);
+        let (first_round, first_round_done) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
+            let mut first_round = Some(first_round);
             loop {
-                tokio::time::sleep(IDENTITY_RETRY).await;
                 let Some(runtime) = runtime.upgrade() else {
                     return;
                 };
-                if runtime.verify_unverified_chains().await {
+                let all_verified = runtime.verify_unverified_chains().await;
+                drop(runtime);
+                if let Some(first_round) = first_round.take() {
+                    let _ = first_round.send(());
+                }
+                if all_verified {
                     return;
                 }
+                tokio::time::sleep(IDENTITY_RETRY).await;
             }
         });
+        let _ = tokio::time::timeout(STARTUP_WAIT, first_round_done).await;
     }
 
     /// Refuse a request for a chain whose upstream has not proved its identity.

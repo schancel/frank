@@ -776,6 +776,15 @@ export class EvmNativeOperationJournal {
     await this.mutate(capture.operationId, row => {
       if (this.captures.get(key) !== capture.token) return false
       const m = row.members[capture.memberIndex]!
+      // `unknown` is the absence of an answer (a failed or inconsistent read), not evidence.
+      // It never replaces what the chain has already been seen to say: a member recorded
+      // included stays included, and one recorded missing or pending stays so, until a read
+      // that did answer says otherwise.
+      if (
+        frozenObservation.state === 'unknown' &&
+        m.observation.state !== 'unknown'
+      )
+        return false
       m.observation = frozenObservation
       m.account = frozenAccount
       if (frozenObservation.state !== 'included-success') m.syncApplied = false

@@ -27,6 +27,8 @@ export interface EvmDexToken {
   readonly name: string
   readonly decimals: number
   readonly address: string | null
+  /** A token with no value or issuer behind it, listed only because its pool is real. */
+  readonly testToken?: boolean
 }
 
 /** A Uniswap v4 pool key. `currency0 < currency1`; the native coin is the zero address. */
@@ -91,6 +93,7 @@ const DEPLOYMENTS: Readonly<Record<string, UniswapV4Deployment>> =
           name: 'Monad Pet Chomp (test token)',
           decimals: 18,
           address: MONAD_TESTNET_CHOMP,
+          testToken: true,
         }),
       ]),
       pools: Object.freeze([

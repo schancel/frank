@@ -157,14 +157,19 @@ export const useSwapStore = defineStore('swaps', {
     },
 
     /**
-     * Writes one swap to this device's history and nothing else. A swap is saved here as
-     * pending before it is broadcast, then again with its outcome.
+     * Writes one swap to this device's history and nothing else, or throws. A swap is saved
+     * here as pending before it is broadcast, then again with its outcome.
      */
     saveLocal(record: SwapRecord): void {
       const index = this.swaps.findIndex(s => s.id === record.id)
-      if (index >= 0) this.swaps[index] = record
-      else this.swaps = [record, ...this.swaps.slice(0, 99)]
-      this.saveToStorage()
+      const next =
+        index >= 0
+          ? this.swaps.map((s, i) => (i === index ? record : s))
+          : [record, ...this.swaps.slice(0, 99)]
+      // Throws when the device cannot store it. A swap is saved here before it is broadcast,
+      // and a save that silently did nothing would let a swap go out with no record of it.
+      window.localStorage.setItem(SWAP_STORAGE_KEY, JSON.stringify(next))
+      this.swaps = next
     },
 
     async recordSwap(

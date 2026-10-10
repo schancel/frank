@@ -1319,8 +1319,13 @@ export default {
     available: 'Available',
     balance: 'Balance',
     max: 'MAX',
-    otherAccounts:
-      '{amount} more in this wallet’s other accounts will be moved in first if needed',
+    otherAccounts: '{amount} more in this wallet’s other accounts',
+    testToken: 'test token',
+    reviewMove:
+      '{amount} {unit} will first be moved from your other accounts into your main account, which makes the swap.',
+    reviewStale:
+      'The price could not be refreshed. Retrying; you can confirm once it is current.',
+    progressRecovering: 'Finishing an earlier transaction from this wallet…',
     rate: 'Rate',
     priceImpact: 'Price impact',
     poolFee: 'Pool fee',

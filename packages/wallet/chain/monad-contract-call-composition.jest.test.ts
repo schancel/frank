@@ -150,9 +150,9 @@ test('the wallet handle sends a contract call from its main account and reports 
       onSigned: async signed => {
         order.push(`signed ${signed.operationId}`)
         expect(node.broadcast).not.toHaveBeenCalled()
-        const row = wallet
-          .getNativeOperations!()
-          .find(r => r.operationId === signed.operationId)!
+        const row = wallet.getNativeOperations!().find(
+          r => r.operationId === signed.operationId,
+        )!
         expect(row.kind).toBe('contract')
         expect(row.members[0]!.signed!.transactionHash).toBe(signed.txHash)
       },
@@ -197,9 +197,9 @@ test('a contract call whose broadcast reply was lost is resent byte for byte aft
       gasLimit: 250_000n,
     }).catch(error => error)
     const operationId = failure.operation.operationId as string
-    const signed = first
-      .getNativeOperations!()
-      .find(r => r.operationId === operationId)!.members[0]!.signed!
+    const signed = first.getNativeOperations!().find(
+      r => r.operationId === operationId,
+    )!.members[0]!.signed!
     expect(failure.transaction.txHash).toBe(signed.transactionHash)
     // Unknown outcome: the account must not build another transaction over it.
     expect((await first.getContractCallFunds!()).mainBusy).toBe(true)
@@ -226,6 +226,62 @@ test('a contract call whose broadcast reply was lost is resent byte for byte aft
   } finally {
     await second?.close()
     await first.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the background poll re-sends a lost contract call, and once it lands the main account sends natively again', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const wallet = (await createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 1_000_000n)
+    node.loseReplies(true)
+    const failure = await wallet.sendContractCall!({
+      to: { raw: ROUTER },
+      data: CALLDATA,
+      value: 0n,
+      gasLimit: 100_000n,
+    }).catch(error => error)
+    const lost = wallet.getUnresolvedContractCalls!()
+    expect(lost).toEqual([
+      {
+        operationId: failure.operation.operationId,
+        txHash: failure.transaction.txHash,
+      },
+    ])
+    await expect(
+      wallet.sendNative({ recipient: { raw: ROUTER }, value: 1n }),
+    ).rejects.toThrow()
+
+    // The poll every host already runs: no user action, no new signature.
+    node.loseReplies(false)
+    node.broadcast.mockClear()
+    await wallet.reobserveNativeOperations!()
+    expect(node.broadcast).toHaveBeenCalledTimes(1)
+    const raw = wallet.getNativeOperations!().find(
+      r => r.operationId === lost[0]!.operationId,
+    )!.members[0]!.signed!.rawTransaction
+    expect(node.broadcast).toHaveBeenCalledWith(raw)
+
+    expect((await wallet.getContractCallFunds!()).mainBusy).toBe(false)
+    expect(wallet.getUnresolvedContractCalls!()).toEqual([])
+    const sent = await wallet.sendNative({
+      recipient: { raw: ROUTER },
+      value: 1n,
+    })
+    expect(
+      Transaction.from(node.broadcast.mock.calls[1]![0] as string),
+    ).toMatchObject({
+      hash: sent.txHash,
+      from: MAIN,
+      nonce: 1,
+    })
+  } finally {
+    await wallet.close()
     await rm(dir, { recursive: true, force: true })
   }
 })

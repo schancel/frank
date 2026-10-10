@@ -52,7 +52,7 @@ function mountShell(
       mocks: { $t: translate(options.locale ?? en) },
       stubs: {
         EvmSwapPanel: panel('evm-panel', ['chainIdentifier', 'walletId']),
-        SolanaSwapPanel: panel('solana-panel', ['selectedWallet', 'isTestnet']),
+        SolanaSwapPanel: panel('solana-panel', []),
         QCard: { template: '<div><slot /></div>' },
         QCardSection: { template: '<div><slot /></div>' },
       },
@@ -88,8 +88,9 @@ describe('the swap shell', () => {
 
   it('gives a Solana wallet the Solana panel and never the EVM one', () => {
     const view = mountShell('solana')
+    // The Solana panel finds its own wallet: the shell passes it nothing.
     expect(JSON.parse(view.get('[data-testid="solana-panel"]').text())).toEqual(
-      { selectedWallet: 'solana', isTestnet: true },
+      {},
     )
     expect(has(view, 'evm-panel')).toBe(false)
   })

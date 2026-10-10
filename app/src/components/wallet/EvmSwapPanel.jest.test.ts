@@ -28,6 +28,7 @@ const E18 = 10n ** 18n
 
 const mockOpen = jest.fn()
 const mockSaved: SwapRecord[] = []
+let mockStorageFull = false
 const mockHistory = ref<SwapRecord[]>([])
 jest.mock('src/swap/evm-swap-session', () => {
   class EvmSwapUnavailableError extends Error {
@@ -44,6 +45,7 @@ jest.mock('src/composables/useSwapHistory', () => ({
   useSwapHistory: () => ({
     getSwapsForChain: () => mockHistory,
     saveLocal: (record: SwapRecord) => {
+      if (mockStorageFull) throw new Error('QuotaExceededError')
       mockSaved.push(JSON.parse(JSON.stringify(record)))
     },
   }),
@@ -148,6 +150,9 @@ function scene(
     })),
     fundMainAccount: jest.fn(),
     resumeNativeOperation: jest.fn(),
+    getUnresolvedContractCalls: jest.fn(
+      () => [] as { operationId: string; txHash: string }[],
+    ),
     reobserveNativeOperations: jest.fn(async () => undefined),
   }
   let current = true
@@ -218,6 +223,7 @@ beforeEach(() => {
   jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
   jest.setSystemTime(1_800_000_000_000)
   mockSaved.length = 0
+  mockStorageFull = false
   mockHistory.value = []
   mockOpen.mockReset()
 })
@@ -575,6 +581,181 @@ describe('confirming and executing', () => {
       toAmount: '0.019996',
     })
     expect(mockSaved[0]!.recovery).toBeUndefined()
+    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
+  })
+
+  it('does not broadcast when the swap cannot first be written to the history', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    mockStorageFull = true
+    await click(view, 'swap-confirm-btn')
+    // The wallet stub broadcasts only after `onSigned` returns; it threw.
+    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
+    expect(s.events).toEqual([])
+    expect(view.find('[data-testid="swap-result"]').exists()).toBe(false)
+    expect(text(view, 'swap-problem')).toContain('The swap was not sent')
+  })
+
+  it('shows on the review card what will be moved into the main account, and moves exactly that once', async () => {
+    // 0.01 MON in the main account, 1 MON in the wallet's other accounts.
+    const s = scene({ mainBalance: 10n ** 16n, other: E18 })
+    s.wallet.fundMainAccount.mockImplementation(async () => {
+      s.node.nativeBalance = E18
+    })
+    s.receipts.set('0xhash1', receipt(vectors.swapNativeIn))
+    const view = await mountPanel()
+    await type(view, '0.02')
+    expect(s.wallet.fundMainAccount).not.toHaveBeenCalled()
+    await click(view, 'swap-review-btn')
+    // 0.02 MON plus 240,000 gas at 100 gwei, less the 0.01 MON already there.
+    expect(text(view, 'swap-review-move')).toBe(
+      '0.034 MON will first be moved from your other accounts into your main account, which makes the swap.',
+    )
+    expect(s.wallet.fundMainAccount).not.toHaveBeenCalled()
+    await click(view, 'swap-confirm-btn')
+    expect(s.wallet.fundMainAccount).toHaveBeenCalledTimes(1)
+    expect(s.wallet.fundMainAccount).toHaveBeenCalledWith({
+      value: 34n * 10n ** 15n,
+    })
+    expect(text(view, 'swap-result')).toContain('Swap complete')
+  })
+
+  it('shows no such line when the main account can pay by itself', async () => {
+    scene({ other: E18 })
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    expect(view.find('[data-testid="swap-review-move"]').exists()).toBe(false)
+  })
+})
+
+describe('reviewing while the network is unreliable', () => {
+  it('keeps the review card when a refresh fails: stale, Confirm off, Back on, and it recovers', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    const working = s.reader.call
+    s.reader.call = () => Promise.reject(new Error('rate limited'))
+    jest.advanceTimersByTime(6_000)
+    await flushPromises()
+    expect(view.find('[data-testid="swap-review"]').exists()).toBe(true)
+    expect(text(view, 'swap-review-summary')).toContain('about 0.019996 USDC')
+    expect(text(view, 'swap-review-stale')).toContain(
+      'The price could not be refreshed',
+    )
+    expect(
+      view.get('[data-testid="swap-confirm-btn"]').attributes('disabled'),
+    ).toBeDefined()
+    expect(
+      view.get('[data-testid="swap-back-btn"]').attributes('disabled'),
+    ).toBeUndefined()
+
+    // The next refresh retries by itself, and Confirm comes back with a fresh quote.
+    s.reader.call = working
+    jest.advanceTimersByTime(6_000)
+    await flushPromises()
+    expect(view.find('[data-testid="swap-review-stale"]').exists()).toBe(false)
+    expect(
+      view.get('[data-testid="swap-confirm-btn"]').attributes('disabled'),
+    ).toBeUndefined()
+  })
+
+  it('lets the user go back from a stale review to a working form', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    await click(view, 'swap-review-btn')
+    s.reader.call = () => Promise.reject(new Error('rate limited'))
+    jest.advanceTimersByTime(6_000)
+    await flushPromises()
+    await click(view, 'swap-back-btn')
+    expect(view.find('[data-testid="swap-review"]').exists()).toBe(false)
+    expect(
+      view.get('[data-testid="swap-pay-amount"]').attributes('disabled'),
+    ).toBeUndefined()
+    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
+  })
+})
+
+describe('how much the form asks of the network', () => {
+  const quoterCalls = (s: ReturnType<typeof scene>) =>
+    s.node.calls.filter(
+      call => call.to.toLowerCase() === deployment.quoter.toLowerCase(),
+    ).length
+
+  it('walks the wallet’s accounts once when it opens, never on a timer', async () => {
+    const s = scene()
+    await mountPanel()
+    expect(s.wallet.getContractCallFunds).toHaveBeenCalledTimes(1)
+    s.node.calls.length = 0
+    for (let i = 0; i < 4; i++) {
+      jest.advanceTimersByTime(15_000)
+      await flushPromises()
+    }
+    expect(s.wallet.getContractCallFunds).toHaveBeenCalledTimes(1)
+    // Each 15 s tick read one ERC-20 balance by call (the other is the native balance).
+    expect(s.node.calls).toHaveLength(4)
+    expect(
+      s.node.calls.every(
+        call => call.to.toLowerCase() === USDC.address!.toLowerCase(),
+      ),
+    ).toBe(true)
+  })
+
+  it('stops refreshing in a hidden tab and starts again when it is shown', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    const hidden = jest.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    s.node.calls.length = 0
+    jest.advanceTimersByTime(60_000)
+    await flushPromises()
+    expect(s.node.calls).toEqual([])
+    hidden.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(quoterCalls(s)).toBe(1)
+    hidden.mockRestore()
+  })
+
+  it('stops refreshing after two minutes without input and starts again on the next touch', async () => {
+    const s = scene()
+    const view = await mountPanel()
+    await type(view, '0.02')
+    jest.advanceTimersByTime(121_000)
+    await flushPromises()
+    s.node.calls.length = 0
+    jest.advanceTimersByTime(120_000)
+    await flushPromises()
+    expect(s.node.calls).toEqual([])
+    await view.get('[data-testid="evm-swap-panel"]').trigger('pointerdown')
+    await flushPromises()
+    expect(quoterCalls(s)).toBe(1)
+  })
+})
+
+describe('tokens', () => {
+  it('labels a test token as one in the selectors', async () => {
+    scene()
+    const view = await mountPanel()
+    const options = view
+      .get('[data-testid="swap-receive-token"]')
+      .findAll('option')
+      .map(option => option.text())
+    expect(options).toEqual(['MON', 'USDC', 'CHOMP · test token'])
+  })
+
+  it('on opening, hands back to the network a contract call that was signed and never landed', async () => {
+    const s = scene()
+    s.wallet.getUnresolvedContractCalls.mockReturnValue([
+      { operationId: 'op-approve', txHash: '0xapprove' },
+    ])
+    await mountPanel()
+    await flushPromises()
+    expect(s.wallet.resumeNativeOperation).toHaveBeenCalledWith('op-approve')
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
   })
 })

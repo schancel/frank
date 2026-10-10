@@ -13,6 +13,11 @@ import {
 } from './evm-legacy-consolidator'
 import { NativeEvmTransactionBuilder } from './evm-transaction-builder'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
+import { getEvmDexDeployment } from './dex-deployments'
+import { fetchSwapQuote, planSwap } from '../swap/evm-swap'
+import { executeSwap } from '../swap/swap-execution'
+import { cannedNode } from '../swap/swap-reader.testutil'
+import { findToken, poolId, routesFor } from '../swap/uniswap-v4'
 import {
   EvmNativeJournalError,
   EvmNativeOperationJournal,
@@ -43,7 +48,8 @@ function node(initial: { main: bigint; spend?: bigint }) {
   const receipts = new Map<string, object>()
   const raws: string[] = []
   const blockHash = '0x' + 'ab'.repeat(32)
-  let mode: 'mine' | 'lost' | 'revert' = 'mine'
+  let mode: 'mine' | 'lost' | 'lost-once' | 'revert' = 'mine'
+  let down = false
   const mine = (raw: string, status = 1) => {
     const tx = Transaction.from(raw)
     const from = tx.from!.toLowerCase()
@@ -70,6 +76,7 @@ function node(initial: { main: bigint; spend?: bigint }) {
       index: 0,
       gasUsed: tx.gasLimit,
       gasPrice: tx.maxFeePerGas,
+      logs: [],
     })
   }
   const provider = {
@@ -84,11 +91,21 @@ function node(initial: { main: bigint; spend?: bigint }) {
       gasPrice: 2n,
     }),
     estimateGas: jest.fn(async () => 100_000n),
-    getTransaction: async (hash: string) => transactions.get(hash) ?? null,
-    getTransactionReceipt: async (hash: string) => receipts.get(hash) ?? null,
+    getTransaction: async (hash: string) => {
+      if (down) throw new Error('rate limited')
+      return transactions.get(hash) ?? null
+    },
+    getTransactionReceipt: async (hash: string) => {
+      if (down) throw new Error('rate limited')
+      return receipts.get(hash) ?? null
+    },
     broadcastTransaction: async (raw: string) => {
       raws.push(raw)
       if (mode === 'lost') throw new Error('lost response')
+      if (mode === 'lost-once') {
+        mode = 'mine'
+        throw new Error('lost response')
+      }
       mine(raw, mode === 'revert' ? 0 : 1)
       return { hash: keccak256(raw) }
     },
@@ -101,6 +118,9 @@ function node(initial: { main: bigint; spend?: bigint }) {
     mine,
     setMode: (value: typeof mode) => {
       mode = value
+    },
+    setDown: (value: boolean) => {
+      down = value
     },
   }
 }
@@ -354,5 +374,149 @@ describe('contract calls through the native operation journal', () => {
       intendedValueWei: '0',
       payment: 'unknown',
     })
+  })
+
+  it('a read that fails never takes back what the chain was seen to say', async () => {
+    const state = node({ main: 10_000_000n })
+    const { executor } = owner(state)
+    const sent = await executor.sendContractCall({
+      ...call,
+      gasLimit: 250_000n,
+    })
+    await executor.observe(sent.operationId, 0)
+    const included = journal.get(sent.operationId).members[0]!
+    expect(included.observation.state).toBe('included-success')
+    state.setDown(true)
+    await executor.observe(sent.operationId, 0)
+    expect(journal.get(sent.operationId).members[0]).toEqual(included)
+    // So the account is still free: an exhausted RPC quota cannot freeze it.
+    state.setDown(false)
+    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+
+    state.setMode('lost')
+    const lost = await executor
+      .sendContractCall({ ...call, gasLimit: 250_000n })
+      .catch(error => error)
+    const id = lost.operation.operationId as string
+    expect(journal.get(id).members[0]!.observation.state).toBe('missing')
+    state.setDown(true)
+    await executor.observe(id, 0)
+    expect(journal.get(id).members[0]!.observation.state).toBe('missing')
+  })
+
+  it('hands a lost contract call back to the network on a backoff, the same bytes, until it lands', async () => {
+    const state = node({ main: 10_000_000n })
+    let clock = 1_000_000
+    const sign = async (_source: EvmNativeSource, raw: string) =>
+      main.signTransaction(Transaction.from(raw))
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider,
+      transactionBuilder: new NativeEvmTransactionBuilder(),
+      getSources: async () => sources,
+      sign,
+      now: () => clock,
+    })
+    state.setMode('lost')
+    const lost = await executor
+      .sendContractCall({ ...call, gasLimit: 250_000n })
+      .catch(error => error)
+    const id = lost.operation.operationId as string
+    expect(executor.unresolvedContractCalls()).toEqual([
+      { operationId: id, txHash: lost.transaction.txHash },
+    ])
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toHaveLength(2)
+    // Not again until the wait has passed, and then twice as long.
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toHaveLength(2)
+    clock += 15_000
+    state.setMode('mine')
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toHaveLength(3)
+    expect(new Set(state.raws).size).toBe(1)
+    // Once it is seen in a block nothing more is sent.
+    await executor.observe(id, 0)
+    clock += 600_000
+    await executor.resendMissingContractCalls()
+    expect(state.raws).toHaveLength(3)
+    expect(executor.unresolvedContractCalls()).toEqual([])
+  })
+
+  it('a swap whose first approval was lost in broadcast: the approval is re-sent, lands, the swap goes on, and the account can send afterwards', async () => {
+    const state = node({ main: 10n ** 18n })
+    const { executor, sign } = owner(state)
+    const deployment = getEvmDexDeployment('monad-testnet')!
+    const USDC = findToken(deployment, 'USDC')!
+    const MON = findToken(deployment, 'MON')!
+    const canned = cannedNode(deployment)
+    canned.node.pools.set(
+      poolId(routesFor(deployment, MON, USDC)[0]!.key).toLowerCase(),
+      {
+        sqrtPriceX96: 2n ** 96n,
+        liquidity: 10n ** 18n,
+        lpFee: 500,
+        quote: amountIn => amountIn,
+      },
+    )
+    const reader = {
+      ...canned.reader,
+      getFeeData: () => state.provider.getFeeData(),
+      getTransactionReceipt: (hash: string) =>
+        state.provider.getTransactionReceipt(hash) as never,
+      getTransaction: (hash: string) => state.provider.getTransaction(hash),
+    }
+    const plan = await planSwap(canned.reader, deployment, {
+      quote: await fetchSwapQuote(canned.reader, deployment, {
+        tokenIn: USDC,
+        tokenOut: MON,
+        amountIn: 15_000n,
+      }),
+      slippageBps: 100,
+      account: main.address,
+    })
+    expect(plan.approvals).toHaveLength(2)
+    state.setMode('lost-once')
+    const stages: string[] = []
+    const result = await executeSwap({
+      reader,
+      wallet: {
+        sendContractCall: params => executor.sendContractCall(params),
+        getContractCallFunds: () => executor.contractCallFunds(),
+        resumeNativeOperation: id => executor.resumeOperation(id),
+        getUnresolvedContractCalls: () => executor.unresolvedContractCalls(),
+      },
+      deployment,
+      plan,
+      account: main.address,
+      timing: {
+        inclusionTimeoutMs: 0,
+        pollMs: 1,
+        sleep: async () => undefined,
+      },
+      onProgress: progress => stages.push(progress.stage),
+    })
+    expect(result.status).toBe('confirmed')
+    // Four broadcasts for three transactions: the first approval twice, byte for byte.
+    expect(state.raws).toHaveLength(4)
+    expect(state.raws[1]).toBe(state.raws[0])
+    expect(sign).toHaveBeenCalledTimes(3)
+    expect(state.raws.map(raw => Transaction.from(raw).nonce)).toEqual([
+      0, 0, 1, 2,
+    ])
+    expect(Transaction.from(state.raws[3]!).data).toBe(plan.swap.data)
+    // Once the wallet has looked at the chain, every call is recorded as included.
+    expect((await executor.contractCallFunds()).mainBusy).toBe(false)
+    expect(executor.unresolvedContractCalls()).toEqual([])
+
+    // Nothing is left holding the main account: an ordinary send goes out from it.
+    const transfer = await executor.sendNative({
+      recipient: { raw: spend.address },
+      value: 1_000n,
+    })
+    const sent = Transaction.from(state.raws[4]!)
+    expect(sent.hash).toBe(transfer.txHash)
+    expect(sent.from).toBe(main.address)
+    expect(sent.nonce).toBe(3)
   })
 })

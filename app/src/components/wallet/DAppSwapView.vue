@@ -7,11 +7,7 @@
       :chain-identifier="chainIdentifier"
       :wallet-id="selectedWallet"
     />
-    <solana-swap-panel
-      v-else-if="panel === 'solana'"
-      :selected-wallet="selectedWallet"
-      :is-testnet="isTestnet"
-    />
+    <solana-swap-panel v-else-if="panel === 'solana'" />
     <q-card v-else flat bordered>
       <q-card-section role="status" data-testid="swap-unavailable">
         <div class="text-subtitle1 text-weight-medium">

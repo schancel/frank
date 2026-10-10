@@ -2107,11 +2107,15 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             reobserveNativeOperations() {
               const owner = nativeOperationOwners.get(wallet);
               if (!owner || closedWallets.has(wallet)) return Promise.resolve();
-              return owner.reobservePending(() =>
-                runWalletExclusive(wallet, (admission) =>
-                  owner.applyRecordedEvidence(admission)
+              // A contract call the node was seen not to know is handed to it again (the same
+              // signed bytes), so a lost broadcast cannot hold the main account for good.
+              return owner
+                .reobservePending(() =>
+                  runWalletExclusive(wallet, (admission) =>
+                    owner.applyRecordedEvidence(admission)
+                  )
                 )
-              );
+                .then(() => owner.resendMissingContractCalls());
             },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
@@ -2214,6 +2218,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             },
             getContractCallFunds: () =>
               nativeOperationOwner(wallet).contractCallFunds(),
+            getUnresolvedContractCalls: () =>
+              nativeOperationOwner(wallet).unresolvedContractCalls(),
             evmReader: provider,
             async fundMainAccount(params) {
               const owner = nativeOperationOwner(wallet);

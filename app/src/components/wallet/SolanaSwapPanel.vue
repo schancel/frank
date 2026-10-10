@@ -17,9 +17,5 @@ import { defineComponent } from 'vue'
 
 export default defineComponent({
   name: 'SolanaSwapPanel',
-  props: {
-    selectedWallet: { type: String, required: true },
-    isTestnet: { type: Boolean, default: true },
-  },
 })
 </script>

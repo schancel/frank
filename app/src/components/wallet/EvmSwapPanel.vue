@@ -1,5 +1,12 @@
 <template>
-  <div class="evm-swap-panel" data-testid="evm-swap-panel">
+  <div
+    ref="root"
+    class="evm-swap-panel"
+    data-testid="evm-swap-panel"
+    @pointerdown="touched"
+    @keydown="touched"
+    @focusin="touched"
+  >
     <div
       v-if="unavailable"
       class="q-pa-md text-body2 text-grey-7"
@@ -136,7 +143,7 @@
             </div>
             <q-select
               v-model="payIndex"
-              :options="tokenOptions"
+              :options="tokenOptions($t('swap.testToken'))"
               dense
               outlined
               emit-value
@@ -206,7 +213,7 @@
             </div>
             <q-select
               v-model="receiveIndex"
-              :options="tokenOptions"
+              :options="tokenOptions($t('swap.testToken'))"
               dense
               outlined
               emit-value
@@ -358,8 +365,25 @@
               })
             }}
           </div>
+          <div
+            v-if="moveText"
+            class="text-body2 q-mt-xs"
+            data-testid="swap-review-move"
+          >
+            {{
+              $t('swap.reviewMove', { amount: moveText, unit: nativeSymbol })
+            }}
+          </div>
           <div class="text-caption text-grey-7 q-mt-xs">
             {{ $t('swap.reviewNote', { seconds: deadlineSeconds }) }}
+          </div>
+          <div
+            v-if="quoteStale"
+            class="text-caption text-warning text-weight-medium q-mt-xs"
+            role="status"
+            data-testid="swap-review-stale"
+          >
+            {{ $t('swap.reviewStale') }}
           </div>
           <div class="row q-gutter-sm q-mt-sm">
             <q-btn
@@ -369,7 +393,7 @@
               class="col"
               :label="$t('swap.back')"
               data-testid="swap-back-btn"
-              @click="phase = 'form'"
+              @click="backToForm"
             />
             <q-btn
               unelevated
@@ -444,7 +468,7 @@ import {
   fetchSwapQuote,
   planSwap,
   quoteIsFresh,
-  readTokenBalances,
+  readTokenBalance,
   SwapNoLiquidityError,
   SwapNoRouteError,
   swapRevertReasonOf,
@@ -453,6 +477,7 @@ import {
   type SwapQuote,
 } from '@frank/wallet/swap/evm-swap'
 import {
+  consolidationNeeded,
   executeSwap,
   reconcileSwap,
   SwapRefusedError,
@@ -500,6 +525,8 @@ interface Outcome {
 const QUOTE_DEBOUNCE_MS = 350
 const QUOTE_REFRESH_MS = 6_000
 const BALANCE_REFRESH_MS = 15_000
+/** Without any input for this long, the form stops asking the network until it is touched. */
+const IDLE_AFTER_MS = 120_000
 const SLIPPAGE_OPTIONS = [10, 50, 100]
 /** Price impact, in parts per million, from which the figure is shown as a warning or as bad. */
 const IMPACT_WARN_PPM = 10_000
@@ -527,8 +554,14 @@ export default defineComponent({
     const history = useSwapHistory()
     const session = shallowRef<EvmSwapSession>()
     const unavailable = ref<EvmSwapUnavailable | 'error'>()
-    const balances = ref<bigint[]>()
+    const root = ref<HTMLElement>()
+    /** Balances by token index. Only the two tokens on screen are kept current. */
+    const balances = ref<Record<number, bigint>>({})
     const otherAccounts = ref(0n)
+    /** What the reviewed swap needs moved into the main account first; shown and confirmed. */
+    const moveWei = ref(0n)
+    /** A refresh failed while reviewing: the figures shown are the last ones the chain gave. */
+    const quoteStale = ref(false)
 
     const payIndex = ref(0)
     const receiveIndex = ref(1)
@@ -559,9 +592,13 @@ export default defineComponent({
     const nativeSymbol = computed(
       () => tokens.value[nativeIndex.value]?.symbol ?? '',
     )
-    const tokenOptions = computed(() =>
-      tokens.value.map((token, value) => ({ label: token.symbol, value })),
-    )
+    const tokenOptions = (testTokenLabel: string) =>
+      tokens.value.map((token, value) => ({
+        label: token.testToken
+          ? `${token.symbol} · ${testTokenLabel}`
+          : token.symbol,
+        value,
+      }))
     const maintainer = computed(
       () => session.value?.deployment.maintainer ?? '',
     )
@@ -574,7 +611,8 @@ export default defineComponent({
         ? parseTokenAmount(amountText.value, payToken.value.decimals)
         : undefined,
     )
-    const balanceOf = (index: number) => balances.value?.[index]
+    const balanceOf = (index: number): bigint | undefined =>
+      balances.value[index]
     const balanceText = (index: number) => {
       const value = balanceOf(index)
       const token = tokens.value[index]
@@ -670,24 +708,73 @@ export default defineComponent({
       return { key: fallback, blocking: true }
     }
 
+    /** The main account's balance of the two tokens on screen: two node requests. */
     async function refreshBalances(): Promise<void> {
       const current = session.value
       if (!current) return
+      const indices =
+        payIndex.value === receiveIndex.value
+          ? [payIndex.value]
+          : [payIndex.value, receiveIndex.value]
       try {
-        const [next, funds] = await Promise.all([
-          readTokenBalances(
-            current.reader,
-            current.deployment,
-            current.account,
+        const values = await Promise.all(
+          indices.map(index =>
+            readTokenBalance(
+              current.reader,
+              current.deployment.tokens[index]!,
+              current.account,
+            ),
           ),
-          current.wallet.getContractCallFunds(),
-        ])
+        )
         if (!alive || session.value !== current) return
+        const next = { ...balances.value }
+        indices.forEach((index, i) => {
+          next[index] = values[i]!
+        })
         balances.value = next
-        otherAccounts.value = funds.otherBalance
       } catch {
         /* The last balances stay on screen; the next refresh tries again. */
       }
+    }
+    /**
+     * What the wallet's other accounts hold. This read walks every account of the wallet, so it
+     * is made when the form opens and after a swap, never on a timer.
+     */
+    async function refreshOtherAccounts(): Promise<void> {
+      const current = session.value
+      if (!current) return
+      try {
+        const funds = await current.wallet.getContractCallFunds()
+        if (alive && session.value === current)
+          otherAccounts.value = funds.otherBalance
+      } catch {
+        /* Unknown stays at the last known figure. */
+      }
+    }
+
+    // The timers only run while someone is looking: not in a hidden tab, not while the panel is
+    // off screen, and not after two minutes without any input.
+    let lastInputAt = Date.now()
+    let onScreen = true
+    let observer: IntersectionObserver | undefined
+    const watching = () =>
+      !document.hidden && onScreen && Date.now() - lastInputAt < IDLE_AFTER_MS
+    function touched(): void {
+      const wasWatching = watching()
+      lastInputAt = Date.now()
+      if (!wasWatching && watching()) resumeRefreshing()
+    }
+    function resumeRefreshing(): void {
+      void refreshBalances()
+      if (wantsQuoteRefresh()) void refreshQuote()
+    }
+    const wantsQuoteRefresh = () =>
+      !confirming.value &&
+      !reviewing.value &&
+      ((phase.value === 'form' && quote.value !== undefined) ||
+        phase.value === 'review')
+    const onVisibility = () => {
+      if (watching()) resumeRefreshing()
     }
 
     /** Reads a quote for exactly what is typed. Returns it only if it is still the latest. */
@@ -743,9 +830,17 @@ export default defineComponent({
         approvalsNeeded.value = plan.approvals.length
         quoteProblem.value = nextProblem
         quoteState.value = 'ready'
+        quoteStale.value = false
         return next
       } catch (error) {
         if (!alive || sequence !== quoteSequence) return undefined
+        if (phase.value === 'review' && quote.value) {
+          // Stay on the review card with the last figures, marked stale. Confirm waits for a
+          // fresh quote; Back is always there; the next refresh tries again.
+          quoteStale.value = true
+          quoteState.value = 'error'
+          return undefined
+        }
         quote.value = undefined
         fee.value = undefined
         approvalsNeeded.value = 0
@@ -772,6 +867,8 @@ export default defineComponent({
     }
 
     watch([amountText, payIndex, receiveIndex], scheduleQuote)
+    watch([payIndex, receiveIndex], () => void refreshBalances())
+    watch([amountText, payIndex, receiveIndex, slippageBps], touched)
     watch(payIndex, (now, before) => {
       if (now === receiveIndex.value) receiveIndex.value = before
     })
@@ -824,6 +921,7 @@ export default defineComponent({
       () =>
         phase.value === 'review' &&
         quote.value !== undefined &&
+        !quoteStale.value &&
         !insufficient.value &&
         !quoteProblem.value?.blocking,
     )
@@ -836,8 +934,33 @@ export default defineComponent({
         // Always the chain's current answer, never the one that was on screen.
         const fresh = await refreshQuote()
         if (!fresh || problem.value?.blocking) return
+        // What, if anything, has to be moved into the main account first. The user sees the
+        // amount on the review card and confirms it with the swap.
+        const current = session.value
+        if (!current) return
+        const need = await consolidationNeeded({
+          reader: current.reader,
+          wallet: current.wallet,
+          plan: await planSwap(current.reader, current.deployment, {
+            quote: fresh,
+            slippageBps: slippageBps.value,
+            account: current.account,
+          }),
+          swapFee: fee.value,
+        })
+        if (!need.possible) {
+          flowProblem.value = {
+            key: 'swap.errorInsufficientNative',
+            blocking: true,
+          }
+          return
+        }
+        moveWei.value = need.moveWei
         reviewed.value = fresh
+        quoteStale.value = false
         phase.value = 'review'
+      } catch (error) {
+        flowProblem.value = problemOf(error, 'swap.errorQuote')
       } finally {
         reviewing.value = false
       }
@@ -991,10 +1114,12 @@ export default defineComponent({
           deployment: current.deployment,
           plan,
           account: current.account,
+          consolidateWei: moveWei.value,
           onProgress: next => {
             progress.value = next
           },
-          // Before broadcast: from here on this swap is in the history, whatever happens.
+          // Before broadcast: from here on this swap is in the history, whatever happens. If
+          // the history cannot be written this throws, and the wallet broadcasts nothing.
           onSigned: async signed => {
             history.saveLocal(
               recordOf(
@@ -1015,6 +1140,7 @@ export default defineComponent({
         phase.value = 'done'
         amountText.value = ''
         void refreshBalances()
+        void refreshOtherAccounts()
       } catch (error) {
         flowProblem.value = {
           ...problemOf(error, 'swap.errorExecution'),
@@ -1022,11 +1148,18 @@ export default defineComponent({
         }
         phase.value = 'form'
         void refreshBalances()
+        void refreshOtherAccounts()
       } finally {
         confirming.value = false
       }
     }
 
+    function backToForm(): void {
+      quoteStale.value = false
+      flowProblem.value = undefined
+      phase.value = 'form'
+      void refreshQuote()
+    }
     function startOver(): void {
       outcome.value = undefined
       flowProblem.value = undefined
@@ -1089,6 +1222,12 @@ export default defineComponent({
           /* Still unknown: the record stays pending and is looked at again next time. */
         }
       }
+      // A contract call that was signed and never seen in a block (an approval whose broadcast
+      // was lost) holds the account until it lands: hand the same bytes to the network again.
+      for (const call of current.wallet.getUnresolvedContractCalls?.() ?? [])
+        await current.wallet
+          .resumeNativeOperation?.(call.operationId)
+          .catch(() => undefined)
       void refreshBalances()
     }
 
@@ -1106,20 +1245,25 @@ export default defineComponent({
         if (payIndex.value < 0) payIndex.value = 0
         receiveIndex.value = usdc >= 0 ? usdc : payIndex.value === 0 ? 1 : 0
         await refreshBalances()
-        balanceTimer = setInterval(
-          () => void refreshBalances(),
-          BALANCE_REFRESH_MS,
-        )
-        // While a quote is on screen it is kept current.
+        void refreshOtherAccounts()
+        balanceTimer = setInterval(() => {
+          if (watching()) void refreshBalances()
+        }, BALANCE_REFRESH_MS)
+        // While a quote is on screen, and someone is looking, it is kept current. During
+        // review this also retries after a refresh that failed.
         quoteTimer = setInterval(() => {
-          if (
-            (phase.value === 'form' || phase.value === 'review') &&
-            quote.value &&
-            !confirming.value &&
-            !reviewing.value
-          )
-            void refreshQuote()
+          if (watching() && wantsQuoteRefresh()) void refreshQuote()
         }, QUOTE_REFRESH_MS)
+        document.addEventListener('visibilitychange', onVisibility)
+        if (typeof IntersectionObserver !== 'undefined' && root.value) {
+          observer = new IntersectionObserver(entries => {
+            const visible = entries.some(entry => entry.isIntersecting)
+            const resumed = visible && !onScreen
+            onScreen = visible
+            if (resumed && watching()) resumeRefreshing()
+          })
+          observer.observe(root.value)
+        }
         void reconcilePending(opened)
       } catch (error) {
         if (!alive) return
@@ -1132,11 +1276,15 @@ export default defineComponent({
       if (debounce) clearTimeout(debounce)
       if (quoteTimer) clearInterval(quoteTimer)
       if (balanceTimer) clearInterval(balanceTimer)
+      document.removeEventListener('visibilitychange', onVisibility)
+      observer?.disconnect()
     })
 
     const progressKey = computed(() => {
       const stage = progress.value?.stage
-      return stage === 'consolidating'
+      return stage === 'recovering'
+        ? 'swap.progressRecovering'
+        : stage === 'consolidating'
         ? 'swap.progressConsolidating'
         : stage === 'approving'
         ? 'swap.progressApproving'
@@ -1151,6 +1299,18 @@ export default defineComponent({
     )
 
     return {
+      root,
+      touched,
+      quoteStale,
+      backToForm,
+      moveText: computed(() =>
+        moveWei.value > 0n
+          ? readableTokenAmount(
+              moveWei.value,
+              tokens.value[nativeIndex.value]?.decimals ?? 18,
+            )
+          : '',
+      ),
       unavailable,
       unavailableKey: computed(() =>
         unavailable.value === 'error'

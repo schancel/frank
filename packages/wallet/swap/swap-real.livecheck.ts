@@ -103,6 +103,7 @@ async function main(): Promise<void> {
     sendContractCall: params => consolidator.sendContractCall(params),
     getContractCallFunds: () => consolidator.contractCallFunds(),
     resumeNativeOperation: id => consolidator.resumeOperation(id),
+    getUnresolvedContractCalls: () => consolidator.unresolvedContractCalls(),
     reobserveNativeOperations: () => consolidator.reobservePending(),
   }
   try {

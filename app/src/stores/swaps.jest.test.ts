@@ -167,4 +167,49 @@ describe('useSwapStore and typed CBOR swap records', () => {
     expect(store.getSwapsForChain('ecash')).toHaveLength(1)
     expect(store.getSwapsForChain('ecash')[0].id).toBe('s2')
   })
+
+  const pending: SwapRecord = {
+    id: 'swap-pending',
+    timestamp: 1,
+    chain: 'monad',
+    chainIdentifier: 'monad-testnet',
+    fromAsset: 'MON',
+    toAsset: 'USDC',
+    fromAmount: '0.02',
+    toAmount: '≥0.019796',
+    txHash: '0xabc',
+    route: 'Uniswap v4',
+    feeDisplay: '',
+    status: 'pending',
+  }
+
+  test('saveLocal writes the swap to this device and replaces it by id', () => {
+    const store = useSwapStore()
+    store.saveLocal(pending)
+    store.saveLocal({ ...pending, status: 'confirmed', toAmount: '0.019996' })
+    expect(store.swaps).toHaveLength(1)
+    expect(
+      JSON.parse(window.localStorage.getItem('frank_swap_history')!),
+    ).toEqual([{ ...pending, status: 'confirmed', toAmount: '0.019996' }])
+  })
+
+  test('saveLocal throws, and records nothing, when the device cannot store the swap', () => {
+    const store = useSwapStore()
+    const write = jest
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation(() => {
+        throw new Error('QuotaExceededError')
+      })
+    expect(() => store.saveLocal(pending)).toThrow('QuotaExceededError')
+    expect(store.swaps).toEqual([])
+    write.mockRestore()
+  })
+
+  test('a swap that names its network is listed only on that network', () => {
+    const store = useSwapStore()
+    store.saveLocal(pending)
+    expect(store.getSwapsForChain('monad', 'monad-testnet')).toHaveLength(1)
+    expect(store.getSwapsForChain('monad', 'monad-mainnet')).toHaveLength(0)
+    expect(store.getSwapsForChain('monad')).toHaveLength(1)
+  })
 })

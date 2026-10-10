@@ -70,6 +70,9 @@ export async function openEvmSwapSession(
       resumeNativeOperation: wallet.resumeNativeOperation
         ? id => wallet.resumeNativeOperation!(id)
         : undefined,
+      getUnresolvedContractCalls: wallet.getUnresolvedContractCalls
+        ? () => wallet.getUnresolvedContractCalls!()
+        : undefined,
       reobserveNativeOperations: wallet.reobserveNativeOperations
         ? () => wallet.reobserveNativeOperations!()
         : undefined,

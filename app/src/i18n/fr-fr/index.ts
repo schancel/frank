@@ -1359,7 +1359,14 @@ export default {
     balance: 'Solde',
     max: 'MAX',
     otherAccounts:
-      '{amount} de plus dans les autres comptes de ce portefeuille seront déplacés d’abord si nécessaire',
+      '{amount} de plus dans les autres comptes de ce portefeuille',
+    testToken: 'jeton de test',
+    reviewMove:
+      '{amount} {unit} seront d’abord déplacés de vos autres comptes vers votre compte principal, qui effectue l’échange.',
+    reviewStale:
+      'Le prix n’a pas pu être actualisé. Nouvel essai en cours ; vous pourrez confirmer une fois le prix à jour.',
+    progressRecovering:
+      'Finalisation d’une transaction précédente de ce portefeuille…',
     rate: 'Taux',
     priceImpact: 'Impact sur le prix',
     poolFee: 'Frais du pool',

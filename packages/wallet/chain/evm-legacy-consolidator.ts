@@ -1281,6 +1281,66 @@ export class EvmLegacyConsolidator {
   ): Promise<LegacySendResult> {
     return this.legacyResult(await this.resumeOperation(operationId, lifetime))
   }
+  private contractResendAt = new Map<string, { at: number; waitMs: number }>()
+  /**
+   * Hands an already-exposed contract call back to the network when the node was last seen to
+   * know nothing of it (recorded `missing`): the same signed bytes, never a new transaction.
+   * Without this a call whose broadcast was lost would hold its account's nonce with nothing
+   * driving it to an end. Bounded: at most `REOBSERVE_MAX_PROBES` sends per call, and each
+   * member waits `REOBSERVE_MIN_INTERVAL_MS`, doubling to `REOBSERVE_MAX_BACKOFF_MS`, between
+   * sends. Reads nothing and writes nothing; re-observation records what happens. Never rejects.
+   */
+  async resendMissingContractCalls(): Promise<void> {
+    try {
+      if (this.reobserveStopped) return
+      const now = this.now()
+      let sent = 0
+      for (const row of this.config.journal.list()) {
+        if (row.cancelled || row.kind !== 'contract') continue
+        const member = row.members[0]!
+        const key = row.operationId
+        if (
+          !member.signed ||
+          !member.exposed ||
+          member.observation.state !== 'missing'
+        ) {
+          this.contractResendAt.delete(key)
+          continue
+        }
+        const last = this.contractResendAt.get(key)
+        if (last && now >= last.at && now - last.at < last.waitMs) continue
+        if (sent >= REOBSERVE_MAX_PROBES) break
+        sent++
+        this.contractResendAt.set(key, {
+          at: now,
+          waitMs: last
+            ? Math.min(last.waitMs * 2, REOBSERVE_MAX_BACKOFF_MS)
+            : REOBSERVE_MIN_INTERVAL_MS,
+        })
+        await this.config.provider
+          .broadcastTransaction(member.signed.rawTransaction)
+          .catch(() => undefined)
+      }
+    } catch {
+      /* A closed journal ends the pass. */
+    }
+  }
+  /** Contract calls that are signed and not yet seen in a block, oldest first. */
+  unresolvedContractCalls(): ContractCallResult[] {
+    return this.listOperations().flatMap(row =>
+      row.kind === 'contract' &&
+      !row.cancelled &&
+      row.members[0]!.signed &&
+      !('transactionHash' in row.members[0]!.observation)
+        ? [
+            {
+              operationId: row.operationId,
+              txHash: row.members[0]!.signed.transactionHash,
+            },
+          ]
+        : [],
+    )
+  }
   /** The main account: it makes contract calls and holds the tokens they move. */
   private async mainSource(): Promise<EvmNativeSource> {
     const main = (await this.config.getSources()).find(

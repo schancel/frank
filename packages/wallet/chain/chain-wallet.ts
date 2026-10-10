@@ -286,7 +286,9 @@ export interface NativeWalletHandle {
   /**
    * Looks again, within a hard request bound the wallet enforces, for this wallet's own broadcast
    * transfers whose inclusion nothing has observed. Safe to call on every poll tick: it makes no
-   * request when nothing is pending, never signs or submits anything, and never rejects. Absent
+   * request when nothing is pending, never signs anything, and never rejects. The one thing it
+   * may submit is a contract call this wallet already broadcast and the node no longer knows:
+   * the same signed bytes again, on a backoff. Absent
    * on a handle with nothing to look up; callers treat absence as nothing to do.
    */
   reobserveNativeOperations?(): Promise<void>;
@@ -310,6 +312,8 @@ export interface NativeWalletHandle {
     otherBalance: bigint;
     mainBusy: boolean;
   }>;
+  /** Contract calls signed by this wallet and not yet seen in a block; resume each by its id. */
+  getUnresolvedContractCalls?(): ContractCallHandle[];
   /** Read-only node access for this handle's own EVM chain. It cannot sign or submit. */
   readonly evmReader?: EvmChainReader;
   /** Consolidates `value` from the wallet's other accounts into the main account. */
@@ -327,6 +331,7 @@ export interface EvmChainReader {
     data: string;
     from?: string;
     value?: bigint;
+    blockTag?: number;
   }): Promise<string>;
   estimateGas(tx: {
     to: string;

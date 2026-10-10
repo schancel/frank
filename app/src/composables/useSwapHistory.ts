@@ -69,11 +69,13 @@ export function useSwapHistory() {
       )
     },
     saveLocal: (record: SwapRecord) => {
-      fallbackSwaps.value = [
+      const next = [
         record,
         ...fallbackSwaps.value.filter(s => s.id !== record.id).slice(0, 99),
       ]
-      saveFallbackHistory()
+      // Throws when it cannot be stored: see the store's `saveLocal`.
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+      fallbackSwaps.value = next
     },
     logSwap: async (params: any) => {
       const record: SwapRecord = {

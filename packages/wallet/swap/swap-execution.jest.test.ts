@@ -1,8 +1,11 @@
 import { getEvmDexDeployment } from '../chain/dex-deployments'
 import { fetchSwapQuote, planSwap, type SwapPlan } from './evm-swap'
 import {
+  consolidationNeeded,
   executeSwap,
   reconcileSwap,
+  UNESTIMATED_APPROVAL_GAS,
+  UNESTIMATED_SWAP_GAS,
   SwapRefusedError,
   type SwapExecutionReader,
   type SwapReceipt,
@@ -107,7 +110,10 @@ function setup(
       slippageBps: 100,
       account,
     })
-  return { ...canned, reader, receipts, known, wallet, events, plan }
+  const setFunds = (next: Partial<typeof funds>) => {
+    funds = { ...funds, ...next }
+  }
+  return { ...canned, reader, receipts, known, wallet, events, plan, setFunds }
 }
 
 describe('executing a swap', () => {
@@ -220,7 +226,7 @@ describe('executing a swap', () => {
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
   })
 
-  it('refuses while an earlier transaction from the account is unresolved', async () => {
+  it('refuses while an earlier transaction from the account is unresolved and cannot be finished', async () => {
     const s = setup({ funds: { mainBusy: true } })
     await expect(
       executeSwap({
@@ -235,29 +241,172 @@ describe('executing a swap', () => {
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
   })
 
-  it('moves a shortfall into the main account first, by the wallet’s consolidation', async () => {
-    // Needs 1,000 value + 240,000 gas * 100 gwei.
-    const fee = 240_000n * 100n * 10n ** 9n
+  it('first finishes an earlier contract call of the wallet that never landed, then swaps', async () => {
+    const s = setup({ funds: { mainBusy: true } })
+    const earlier = { operationId: 'op-lost', txHash: '0xlost' }
+    const wallet = {
+      ...s.wallet,
+      getUnresolvedContractCalls: () => [earlier],
+      resumeNativeOperation: jest.fn(async (id: string) => {
+        s.events.push(`resumed ${id}`)
+        s.receipts.set('0xlost', receiptOf({ logs: [] }))
+        s.setFunds({ mainBusy: false })
+      }),
+    }
+    s.receipts.set('0xhash1', receiptOf(vectors.swapNativeIn))
+    const stages: string[] = []
+    const result = await executeSwap({
+      reader: s.reader,
+      wallet,
+      deployment,
+      plan: await s.plan('native-in'),
+      account,
+      timing,
+      onProgress: progress => stages.push(progress.stage),
+    })
+    expect(s.events).toEqual([
+      'resumed op-lost',
+      'signed op-1',
+      'broadcast op-1',
+    ])
+    expect(stages[0]).toBe('recovering')
+    expect(result.status).toBe('confirmed')
+  })
+
+  it('re-submits an approval whose broadcast was lost, and goes on once it lands', async () => {
+    const s = setup()
+    const plan = await s.plan('token-in')
+    // The first approval is recorded by the wallet but the node never hears of it.
+    s.wallet.sendContractCall.mockRejectedValueOnce(
+      Object.assign(new Error('outcome unknown'), {
+        transaction: { txHash: '0xapprove1' },
+        operation: { operationId: 'op-approve1' },
+      }),
+    )
+    s.wallet.resumeNativeOperation.mockImplementation(async id => {
+      s.events.push(`resumed ${id}`)
+      s.receipts.set('0xapprove1', receiptOf({ logs: [] }))
+    })
+    s.receipts.set('0xhash1', receiptOf({ logs: [] }))
+    s.receipts.set('0xhash2', receiptOf(vectors.swapTokenIn))
+    const result = await executeSwap({
+      reader: s.reader,
+      wallet: s.wallet,
+      deployment,
+      plan,
+      account,
+      timing,
+    })
+    expect(s.events[0]).toBe('resumed op-approve1')
+    expect(s.wallet.resumeNativeOperation).toHaveBeenCalledTimes(1)
+    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(3)
+    expect(result.status).toBe('confirmed')
+  })
+
+  it('does not re-submit a transaction the node still holds, or one it could not ask about', async () => {
+    const s = setup()
+    const plan = await s.plan('native-in')
+    await expect(
+      executeSwap({
+        reader: s.reader,
+        wallet: s.wallet,
+        deployment,
+        plan,
+        account,
+        timing,
+      }),
+    ).resolves.toMatchObject({ status: 'pending' })
+    await expect(
+      executeSwap({
+        reader: {
+          ...s.reader,
+          getTransaction: () => Promise.reject(new Error('rate limited')),
+        },
+        wallet: s.wallet,
+        deployment,
+        plan,
+        account,
+        timing,
+      }),
+    ).resolves.toMatchObject({ status: 'pending' })
+    expect(s.wallet.resumeNativeOperation).not.toHaveBeenCalled()
+  })
+
+  it('moves funds into the main account only for the confirmed amount, once', async () => {
     const s = setup({ funds: { mainBalance: 400n, otherBalance: 10n ** 18n } })
+    const plan = await s.plan('native-in')
+    // Needs 1,000 value plus gas; with no estimate yet the gas is the ceiling for one swap.
+    const need = await consolidationNeeded({
+      reader: s.reader,
+      wallet: s.wallet,
+      plan,
+    })
+    expect(need).toEqual({
+      moveWei: 1_000n + UNESTIMATED_SWAP_GAS * 100n * 10n ** 9n - 400n,
+      possible: true,
+    })
     s.receipts.set('0xhash1', receiptOf(vectors.swapNativeIn))
     const result = await executeSwap({
       reader: s.reader,
       wallet: s.wallet,
       deployment,
-      plan: await s.plan('native-in'),
+      plan,
       account,
+      consolidateWei: need.moveWei,
       timing,
     })
     expect(s.events).toEqual([
-      'funded 600',
-      `funded ${fee}`,
+      `funded ${need.moveWei}`,
       'signed op-1',
       'broadcast op-1',
     ])
+    expect(s.wallet.fundMainAccount).toHaveBeenCalledTimes(1)
     expect(result.status).toBe('confirmed')
   })
 
-  it('says the native coin is short when no other account can cover it', async () => {
+  it('sizes the move from the estimated fee when there is one, and counts approvals', async () => {
+    const s = setup({ funds: { mainBalance: 0n, otherBalance: 5n } })
+    const swapFee = { gasLimit: 10n, maxFeePerGas: 3n, maximumFeeWei: 30n }
+    expect(
+      await consolidationNeeded({
+        reader: s.reader,
+        wallet: s.wallet,
+        plan: await s.plan('native-in'),
+        swapFee,
+      }),
+    ).toEqual({ moveWei: 1_030n, possible: false })
+    expect(
+      await consolidationNeeded({
+        reader: s.reader,
+        wallet: s.wallet,
+        plan: await s.plan('token-in'),
+        swapFee,
+      }),
+    ).toEqual({
+      moveWei: (2n * UNESTIMATED_APPROVAL_GAS + 10n) * 3n,
+      possible: false,
+    })
+  })
+
+  it('never moves funds the user did not confirm', async () => {
+    const s = setup({ funds: { mainBalance: 400n, otherBalance: 10n ** 18n } })
+    s.wallet.sendContractCall.mockRejectedValue(
+      new RangeError('Insufficient unreserved native funds'),
+    )
+    await expect(
+      executeSwap({
+        reader: s.reader,
+        wallet: s.wallet,
+        deployment,
+        plan: await s.plan('native-in'),
+        account,
+        timing,
+      }),
+    ).rejects.toThrow(/Insufficient/)
+    expect(s.wallet.fundMainAccount).not.toHaveBeenCalled()
+  })
+
+  it('refuses a confirmed move the other accounts can no longer cover', async () => {
     const s = setup({ funds: { mainBalance: 400n, otherBalance: 100n } })
     await expect(
       executeSwap({
@@ -266,6 +415,7 @@ describe('executing a swap', () => {
         deployment,
         plan: await s.plan('native-in'),
         account,
+        consolidateWei: 600n,
         timing,
       }),
     ).rejects.toMatchObject({ reason: 'insufficient-native' })
@@ -301,13 +451,13 @@ describe('executing a swap', () => {
     const s = setup()
     const plan = await s.plan('native-in')
     s.receipts.set('0xhash1', receiptOf({ logs: [] }, 0))
-    const replay = jest.fn(async () => {
+    const replay = jest.fn(async (_blockTag?: number) => {
       throw callRevert(tooLittleReceived(990n, 900n))
     })
     const result = await executeSwap({
       reader: {
         ...s.reader,
-        call: async tx => (tx.from ? replay() : s.reader.call(tx)),
+        call: async tx => (tx.from ? replay(tx.blockTag) : s.reader.call(tx)),
       },
       wallet: s.wallet,
       deployment,
@@ -322,6 +472,8 @@ describe('executing a swap', () => {
       reason: 'slippage',
       feeWei: 600_000n,
     })
+    // Asked at the block the swap failed in, not at whatever block is latest by then.
+    expect(replay).toHaveBeenCalledWith(1)
   })
 })
 

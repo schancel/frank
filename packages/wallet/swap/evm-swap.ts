@@ -34,6 +34,8 @@ export interface SwapChainReader {
     data: string
     from?: string
     value?: bigint
+    /** Evaluate at this block instead of the latest. */
+    blockTag?: number
   }): Promise<string>
   estimateGas(tx: {
     to: string
@@ -86,24 +88,31 @@ export function quoteIsFresh(quote: SwapQuote, nowMs: number): boolean {
   )
 }
 
+/** The account's balance of one token, in base units: one node request. */
+export async function readTokenBalance(
+  reader: SwapChainReader,
+  token: EvmDexToken,
+  account: string,
+): Promise<bigint> {
+  const owner = getAddress(account)
+  return token.address === null
+    ? reader.getBalance(owner)
+    : BigInt(
+        await reader.call({
+          to: getAddress(token.address),
+          data: erc20Interface.encodeFunctionData('balanceOf', [owner]),
+        }),
+      )
+}
+
 /** The account's balance of each configured token, in base units, in the deployment's order. */
 export async function readTokenBalances(
   reader: SwapChainReader,
   deployment: UniswapV4Deployment,
   account: string,
 ): Promise<bigint[]> {
-  const owner = getAddress(account)
   return Promise.all(
-    deployment.tokens.map(async token =>
-      token.address === null
-        ? reader.getBalance(owner)
-        : BigInt(
-            await reader.call({
-              to: getAddress(token.address),
-              data: erc20Interface.encodeFunctionData('balanceOf', [owner]),
-            }),
-          ),
-    ),
+    deployment.tokens.map(token => readTokenBalance(reader, token, account)),
   )
 }
 

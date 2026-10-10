@@ -71,10 +71,17 @@ import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
  * the behavior that function's own doc comment describes), keeps only envelopes addressed to the
  * wallet's own identity address (`envelope.to`, compared case-insensitively -- EIP-55 checksums
  * differ only in letter case), resolves each sender's pubkey the same way `send()` resolves the
- * recipient's, and decrypts. The `stampValueWei` field on the returned
+ * recipient's, and decrypts. The decrypted JSON is not delivered as it is: every item goes
+ * through the wire module's receive rule (`receiveLegacyItems`), the same one a canonical message's
+ * items go through, so a type that path does not carry, or an item its plugin refuses, arrives as
+ * an `unsupported` item. The `stampValueWei` field on the returned
  * `DirectMessageReceived` is summed from the message's own signed stamp transactions
- * (`ethers.Transaction.from(...).value`), not merely echoed from config -- it is the actual
- * recipient-payment value, even if it ever diverges from `defaultStampValueWei`.
+ * (`ethers.Transaction.from(...).value`), not merely echoed from config. This wallet does not
+ * check those transactions against the chain: the relay admits a legacy message only with payments
+ * to addresses derived from the recipient's registered key, worth its minimum, and publishes it
+ * to the inbox only once they are confirmed, so the value is as trustworthy as this wallet's own
+ * relay, like a canonical delivery's. With a stamp-payment journal attached the destinations are
+ * derived and compared here as well.
  *
  * ## Canonical Forum topics
  *
@@ -114,7 +121,10 @@ import {
 import { MessageItem, WalletSyncItem } from "@frank/cashweb/types/messages";
 import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
 import { applyWalletSyncItem } from "../sync-dispatcher";
-import { SELF_ONLY_ITEM_TYPES } from "../message-item-plugins/wire";
+import {
+  SELF_ONLY_ITEM_TYPES,
+  receiveLegacyItems,
+} from "../message-item-plugins/wire";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
@@ -185,6 +195,7 @@ import {
 } from "../monad-topic-tally-client";
 import { readViteEnv } from "./vite-env";
 import {
+  CanonicalMessageItemsNotInstalledError,
   CanonicalMessagingPendingError,
   LevelCanonicalLinkStore,
   MemoryCanonicalLinkStore,
@@ -781,16 +792,10 @@ export function serializeMessageItems(items: MessageItem[]): string {
   return JSON.stringify(items);
 }
 
-class UnsupportedIncomingWalletSyncError extends Error {
-  readonly code = "unsupported_incoming_wallet_sync";
-  constructor() {
-    super("Unsupported incoming wallet sync; preserve retained records");
-    this.name = "UnsupportedIncomingWalletSyncError";
-  }
-}
-
 /** Inverse of {@link serializeMessageItems}. Throws if `plaintext` doesn't decode to a JSON
- * array. */
+ * array. What it returns is whatever JSON the sender wrote, typed as items but checked by
+ * nothing: a wallet's own read passes it through `receiveLegacyItems` before anything is
+ * delivered, and any other reader must treat every field as the sender's claim. */
 export function deserializeMessageItems(plaintext: string): MessageItem[] {
   const parsed: unknown = JSON.parse(plaintext);
   if (!Array.isArray(parsed)) {
@@ -1127,6 +1132,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       }
 
       try {
+        // The legacy JSON mailbox (`PUT /message/monad`): still written by the command-line
+        // client and by scripts, and a relay that enables it accepts it from anyone. Its items
+        // go through the same receive rule as a canonical message's, so with no registry
+        // installed nothing is read.
+        const registry = installedMessageItemRegistry(wallet);
+        if (!registry) throw new CanonicalMessageItemsNotInstalledError();
         const mailbox = mailboxAuthFor(wallet.identity, wallet.relayBaseUrl);
         const stored = await fetchMonadMessagesSince({
           ...mailbox,
@@ -1156,27 +1167,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
 
         let items: MessageItem[];
         try {
-          items = deserializeMessageItems(
-            decryptEnvelope({
-              envelope,
-              myPrivateKey: wallet.identity.toNakamotoPrivateKey(),
-              senderPubKey: Buffer.from(senderProfile.pubKey),
-            })
+          // Nothing the sender wrote is an item until a plugin has read it: a type this path
+          // does not carry, or one its plugin refuses, arrives as an unsupported item. A legacy
+          // message is never self-addressed, so a wallet sync record is among them and reaches
+          // no wallet state.
+          items = receiveLegacyItems(
+            registry,
+            deserializeMessageItems(
+              decryptEnvelope({
+                envelope,
+                myPrivateKey: wallet.identity.toNakamotoPrivateKey(),
+                senderPubKey: Buffer.from(senderProfile.pubKey),
+              })
+            )
           );
         } catch {
           continue;
-        }
-
-        // Decoded legacy items have no supported financial-sync authority. Refuse the
-        // containing read before stamp discovery or any wallet bookkeeping mutation.
-        if (
-          items.some(
-            (item) =>
-              item &&
-              (item.type === "wallet-sync" || item.type === "payment-transfer")
-          )
-        ) {
-          throw new UnsupportedIncomingWalletSyncError();
         }
 
         if (wallet.stampPaymentJournal !== undefined) {
@@ -1226,7 +1232,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         });
       }
       } catch (err) {
-        if (err instanceof UnsupportedIncomingWalletSyncError || !canonical) {
+        if (!canonical) {
           throw err;
         }
         // Standard mailbox read is best-effort fallback alongside canonical messaging

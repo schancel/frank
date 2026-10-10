@@ -234,6 +234,58 @@ describe("FrankBotHost replies", () => {
     });
   });
 
+  // The legacy JSON mailbox (`PUT /message/monad`) is read by the same `fetchSince`. A record
+  // from it names no sender key, recipient key or conversation, so the host admits none of it:
+  // whatever its items say, and whatever stamp it claims, no handler sees it. This held before
+  // the wallet began putting legacy items through the canonical receive rule; it is pinned here
+  // because a dealer sizes a bet from the stamp of the message it is handed.
+  describe("a record from the legacy JSON mailbox", () => {
+    const legacy = (items: unknown[]) => {
+      const { senderPublicKey, recipientPublicKey, messageId, conversationId, ...record } =
+        inbound("placeholder", { stampValueWei: 5_000_000_000_000_000_000n });
+      void [senderPublicKey, recipientPublicKey, messageId, conversationId];
+      return { ...record, items };
+    };
+
+    it.each([
+      [
+        "blackjack-move",
+        { type: "blackjack-move", gameId: "g", action: "bet", amount: 5 },
+      ],
+      [
+        "swap-offer",
+        { type: "swap-offer", swapId: "00".repeat(16), status: "accepted" },
+      ],
+      ["text", { type: "text", text: "deal me in" }],
+      [
+        "unsupported",
+        {
+          type: "unsupported",
+          reason: "unknown-type",
+          itemType: "blackjack-move",
+          frame: "",
+        },
+      ],
+    ])("holding a %s item is never dispatched to a handler", async (_type, item) => {
+      const seen: BotMessageContext[] = [];
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(
+        bot("legacy-bot", async (message) => {
+          seen.push(message);
+        })
+      );
+      await poll(host, [legacy([item]), inbound("canonical control")]);
+      await drain(instance);
+      expect(seen.map((message) => message.items)).toEqual([
+        [{ type: "text", text: "canonical control" }],
+      ]);
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Unsupported inbound identity")
+      );
+    });
+  });
+
   // On 21a868a2 the first refusal fails the handler: the wallet is called once, the row stays
   // started for good and the message is never answered.
   describe("a direct reply the wallet refused without attempting it", () => {

@@ -8,6 +8,8 @@
  * - A few types are not carried at all yet (see {@link NOT_CARRIED_ITEM_TYPES}).
  * - A wallet's notes to its own other devices are carried only in a message it addresses to
  *   itself (see {@link SELF_ONLY_ITEM_TYPES}).
+ * - Items read from the legacy JSON mailbox go through the same rule
+ *   ({@link receiveLegacyItems}); nothing from it is delivered as it arrived.
  *
  * The send and receive code calls {@link encodeItemFrames} and {@link decodeItemFrames} and names
  * no item type. Frame type identifiers are protocol allocations and stay in this one table; a
@@ -390,4 +392,71 @@ export function decodeItemFrames(
   const exceeded = watched.exceeded()
   if (exceeded !== undefined) throw new MessageItemBudgetExceededError(exceeded)
   return items
+}
+
+/** Longest item kept from the legacy mailbox, as JSON text. A longer one is kept as its type only. */
+const MAX_LEGACY_RAW_ITEM_CHARS = 64 * 1024
+
+/**
+ * The items of one message read from the legacy JSON mailbox (`PUT /message/monad`), under the
+ * same receive rule as a canonical message. That transport delivers whatever JSON its sender
+ * wrote, so nothing from it is an item until a plugin has read it:
+ *
+ * - A type that is not carried between these two parties, or has no plugin, becomes an
+ *   `unsupported` item naming the type. A legacy message is never self-addressed: that transport
+ *   does not authenticate its sender the way the rule requires.
+ * - A carried, registered type is written by its plugin and read back from those bytes, exactly
+ *   as a sender's own check does. What is returned is what the plugin read, never the object that
+ *   arrived. One the plugin refuses either way becomes an `unsupported`, `malformed` item.
+ *
+ * An unsupported item keeps what arrived as JSON text (hex, in `frame`); it has no frame type.
+ * Never throws for an item.
+ */
+export function receiveLegacyItems(
+  registry: MessageItemRegistry,
+  raw: readonly unknown[],
+): MessageItem[] {
+  return raw.map((value): MessageItem => {
+    const type = (value as { type?: unknown } | null)?.type
+    const itemType = typeof type === 'string' ? type : undefined
+    const kept = (reason: UnsupportedItem['reason']): UnsupportedItem => {
+      let text = ''
+      try {
+        text = JSON.stringify(value) ?? ''
+      } catch {
+        // Not serialisable: nothing of it is kept.
+      }
+      if (text.length > MAX_LEGACY_RAW_ITEM_CHARS) text = ''
+      return {
+        type: 'unsupported',
+        reason,
+        ...(itemType === undefined ? {} : { itemType }),
+        frame: toHex(new TextEncoder().encode(text)),
+      }
+    }
+    if (
+      itemType === undefined ||
+      itemFrameRule(itemType).carried === 'no' ||
+      !registry.has(itemType)
+    )
+      return kept('unknown-type')
+    try {
+      const { frame } = itemFrame(
+        registry,
+        value as MessageItem,
+        NOT_SELF_ADDRESSED,
+      )
+      const [child] = openAsMessageItems([frame])
+      const read = readItemFrame(
+        registry,
+        child,
+        watch(standaloneItemBudget()),
+        NOT_SELF_ADDRESSED,
+      )
+      if (read.type === 'unsupported') return kept('malformed')
+      return read
+    } catch {
+      return kept('malformed')
+    }
+  })
 }

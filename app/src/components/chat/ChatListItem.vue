@@ -46,17 +46,25 @@
         <q-item-label
           lines="1"
           class="text-weight-medium text-body2 ellipsis"
-          >{{ subjectOrName }}</q-item-label
+          >{{ titleName }}</q-item-label
         >
         <account-badge
           v-if="effectiveAddress && !conversation?.topic"
           :address="effectiveAddress"
-          :name="subjectOrName"
+          :name="titleName"
           :account-type="targetProfile?.accountType"
           :bot-role="targetProfile?.botRole"
           :is-bot="targetProfile?.isBot"
         />
       </div>
+      <!-- The subject tells two conversations with one peer apart; none, no line. -->
+      <q-item-label
+        v-if="subject"
+        lines="1"
+        class="text-caption text-weight-medium chat-list-subject"
+        data-testid="chat-list-subject"
+        >{{ subject }}</q-item-label
+      >
       <div
         class="row items-center q-gutter-xs q-my-none participant-badges"
         v-if="displayParticipants.length > 0"
@@ -167,7 +175,7 @@
     <q-dialog v-model="deleteDialogOpen">
       <delete-chat-dialog
         :address="effectiveId"
-        :name="subjectOrName"
+        :name="rowLabel"
         @deleted="onChatDeleted"
       />
     </q-dialog>
@@ -337,21 +345,13 @@ export default defineComponent({
       )
     },
     displayParticipants(): string[] {
-      if (
-        this.otherParticipants.length <= 1 &&
-        !this.conversation?.topic &&
-        !this.conversationName
-      ) {
+      if (this.otherParticipants.length <= 1) {
         return []
       }
       return this.otherParticipants.slice(0, 3)
     },
     remainingParticipantsCount(): number {
-      if (
-        this.otherParticipants.length <= 1 &&
-        !this.conversation?.topic &&
-        !this.conversationName
-      ) {
+      if (this.otherParticipants.length <= 1) {
         return 0
       }
       return Math.max(0, this.otherParticipants.length - 3)
@@ -372,11 +372,23 @@ export default defineComponent({
       if (!ts) return ''
       return formatConversationTimestamp(ts)
     },
-    subjectOrName(): string {
-      if (this.effectiveName) {
-        return this.effectiveName
-      }
+    /** An email thread is titled by its subject. Any other conversation is titled by its
+     * peer, with the subject (if it has one) on its own line under the name. */
+    titleName(): string {
+      if (this.subjectIsTitle && this.effectiveName) return this.effectiveName
       return this.contactName
+    },
+    /** With no peer to name (or an email thread), the subject is the title itself. */
+    subjectIsTitle(): boolean {
+      return this.isEmail || !isChainAddress(this.effectiveAddress)
+    },
+    subject(): string {
+      return this.subjectIsTitle ? '' : this.effectiveName.trim()
+    },
+    rowLabel(): string {
+      return this.subject
+        ? `${this.titleName} \u2014 ${this.subject}`
+        : this.titleName
     },
     latestMessageBody(): string {
       const target =

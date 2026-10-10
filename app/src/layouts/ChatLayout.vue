@@ -69,18 +69,30 @@
               :src="profileAvatar(presentedAvatar, effectiveAddress || address)"
             />
           </q-avatar>
-          <q-toolbar-title
-            class="h6 row items-center no-wrap"
-            :style="contactNameColorStyle"
-          >
-            <span>{{ contactName }}</span>
-            <account-badge
-              v-if="effectiveAddress && !activeConversation?.topic"
-              :address="effectiveAddress"
-              :account-type="targetProfile?.accountType"
-              :bot-role="targetProfile?.botRole"
-              :is-bot="targetProfile?.isBot"
-            />
+          <q-toolbar-title class="h6 chat-header-title">
+            <div
+              class="row items-center no-wrap"
+              :style="contactNameColorStyle"
+            >
+              <span class="ellipsis" data-testid="chat-header-name">{{
+                contactName
+              }}</span>
+              <account-badge
+                v-if="effectiveAddress && !activeConversation?.topic"
+                :address="effectiveAddress"
+                :account-type="targetProfile?.accountType"
+                :bot-role="targetProfile?.botRole"
+                :is-bot="targetProfile?.isBot"
+              />
+            </div>
+            <!-- The subject of this conversation, under the peer; none, no line. -->
+            <div
+              v-if="subject"
+              class="text-caption ellipsis chat-header-subject"
+              data-testid="chat-header-subject"
+            >
+              {{ subject }}
+            </div>
           </q-toolbar-title>
           <q-space />
           <q-btn
@@ -203,12 +215,12 @@
     </q-dialog>
 
     <q-dialog v-model="confirmClearOpen">
-      <clear-history-dialog :address="address" :name="contactName" />
+      <clear-history-dialog :address="address" :name="conversationLabel" />
     </q-dialog>
     <q-dialog v-model="confirmDeleteOpen">
       <delete-chat-dialog
         :address="address"
-        :name="contactName"
+        :name="conversationLabel"
         @deleted="onChatDeleted"
       />
     </q-dialog>
@@ -420,9 +432,11 @@ export default defineComponent({
         return ''
       }
       const conv = this.activeConversation
-      if (conv?.name) return conv.name
+      // An email thread is titled by its subject. Any other conversation is titled by its peer,
+      // and its subject is shown under the name (see `subject`).
       if (conv?.kind === 'email') {
         return (
+          conv.name ||
           conv.emailRecipient ||
           conv.topic ||
           this.contactProfile?.name ||
@@ -430,9 +444,22 @@ export default defineComponent({
           this.address
         )
       }
+      // With no peer to name, the subject is the title itself.
+      if (conv?.name && !isChainAddress(this.effectiveAddress)) return conv.name
       return sameCanonicalAddress(this.effectiveAddress, this.ownAddress)
         ? this.$t('selfChat.you')
         : this.contactProfile?.name ?? (this.effectiveAddress || this.address)
+    },
+    subject(): string {
+      const conv = this.activeConversation
+      if (!conv || conv.kind === 'email') return ''
+      if (!isChainAddress(this.effectiveAddress)) return ''
+      return (conv.name || conv.topic || '').trim()
+    },
+    conversationLabel(): string {
+      return this.subject
+        ? `${this.contactName} \u2014 ${this.subject}`
+        : this.contactName
     },
     presentedAvatar(): string | undefined {
       if (!this.effectiveAddress) {
@@ -482,6 +509,14 @@ export default defineComponent({
 </script>
 
 <style lang="scss" scoped>
+.chat-header-title {
+  line-height: 1.2;
+}
+.chat-header-subject {
+  font-weight: 400;
+  opacity: 0.85;
+}
+
 .reply {
   padding: 5px 0;
   color: var(--q-color-text);

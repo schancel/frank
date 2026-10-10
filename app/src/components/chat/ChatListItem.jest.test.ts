@@ -379,3 +379,71 @@ describe('ChatListItem email thread indicator (ticket-unverified-peer-email-fram
     ).toBe(true)
   })
 })
+
+describe('ChatListItem subject', () => {
+  const PEER = '0x2222222222222222222222222222222222222222'
+  const mountRow = (conversation: Record<string, unknown>) =>
+    shallowMount(ChatListItem, {
+      props: { conversation: conversation as never, compact: false },
+      global: {
+        mocks: {
+          $t: translator('en-us'),
+          $status: { setup: true },
+          $route: { params: {} },
+        },
+      },
+    })
+
+  beforeEach(() => {
+    mockOwnAddress.value = OWN_ADDRESS
+  })
+
+  it('shows the peer as the title and the subject on its own line', () => {
+    const wrapper = mountRow({
+      id: 'conv-subject',
+      name: 'Project plan',
+      address: PEER,
+      participants: [OWN_ADDRESS, PEER],
+    })
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe(
+      'Alice Profile',
+    )
+    expect(wrapper.get('[data-testid="chat-list-subject"]').text()).toBe(
+      'Project plan',
+    )
+  })
+
+  it('shows only the peer when the conversation has no subject', () => {
+    for (const name of [undefined, '', '   ']) {
+      const wrapper = mountRow({
+        id: 'conv-plain',
+        name,
+        address: PEER,
+        participants: [OWN_ADDRESS, PEER],
+      })
+      expect(wrapper.get('[data-testid="chat-list-title"]').text()).toBe(
+        'Alice Profile',
+      )
+      expect(wrapper.find('[data-testid="chat-list-subject"]').exists()).toBe(
+        false,
+      )
+    }
+  })
+
+  it('keeps an email thread titled by its subject', () => {
+    const wrapper = mountRow({
+      id: 'conv-email',
+      kind: 'email',
+      name: 'Invoice 12',
+      address: PEER,
+      participants: [PEER],
+      verifiedGateway: true,
+    })
+    expect(wrapper.get('[data-testid="chat-list-title"]').text()).toContain(
+      'Invoice 12',
+    )
+    expect(wrapper.find('[data-testid="chat-list-subject"]').exists()).toBe(
+      false,
+    )
+  })
+})

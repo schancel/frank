@@ -274,6 +274,97 @@ it('renders an explicit subject in the header and provides its editor', async ()
   }
 })
 
+it('shows the peer and the subject in the title and in each list row, and neither where there is none', async () => {
+  const app = await mountedConversations()
+  try {
+    const defaultId = await app.create(PEER, '', false)
+    const header = (part: string) =>
+      app.root
+        .getComponent(ChatLayout)
+        .find(`[data-testid="chat-header-${part}"]`)
+    const row = (id: string) =>
+      app.root
+        .findAllComponents(ChatListItem)
+        .find(item => item.props('conversationId') === id)!
+    // The ordinary thread: just the peer, no subject line and no placeholder.
+    expect(header('name').text()).toBe('Alice')
+    expect(header('subject').exists()).toBe(false)
+    expect(row(defaultId).get('[data-testid="chat-list-title"]').text()).toBe(
+      'Alice',
+    )
+    expect(
+      row(defaultId).find('[data-testid="chat-list-subject"]').exists(),
+    ).toBe(false)
+
+    // Two more conversations with the same peer and the same subject stay two rows, each
+    // with its own last message and unread count.
+    const first = await app.create(PEER, 'Project plan')
+    const second = await app.create(PEER, 'Project plan')
+    expect(header('name').text()).toBe('Alice')
+    expect(header('subject').text()).toBe('Project plan')
+    await app.select(defaultId)
+    for (const [id, text, count] of [
+      [first, 'about the first', 1],
+      [second, 'about the second', 2],
+    ] as const) {
+      for (let n = 0; n < count; n++) {
+        await app.chats.receiveMessages([
+          {
+            index: `received-${id}-${n}`,
+            conversationId: id,
+            outbound: false,
+            senderAddress: PEER,
+            copartyAddress: PEER,
+            copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+            stampValue: 0,
+            message: {
+              conversationId: id,
+              outbound: false,
+              senderAddress: PEER,
+              status: 'confirmed',
+              receivedTime: 100 + n,
+              serverTime: 100 + n,
+              outpoints: [],
+              items: [{ type: 'text', text }],
+            },
+          },
+        ] as never)
+      }
+    }
+    await settle()
+    for (const [id, text, count] of [
+      [first, 'about the first', 1],
+      [second, 'about the second', 2],
+    ] as const) {
+      expect(row(id).get('[data-testid="chat-list-title"]').text()).toBe(
+        'Alice',
+      )
+      expect(row(id).get('[data-testid="chat-list-subject"]').text()).toBe(
+        'Project plan',
+      )
+      expect(app.chats.getLatestMessage(id)?.text).toBe(text)
+      expect(app.chats.conversations[id].totalUnreadMessages).toBe(count)
+    }
+    expect(row(defaultId).text()).not.toContain('Project plan')
+
+    // Editing the subject changes what is shown, not which conversation it is.
+    await app.select(first)
+    app.chats.renameConversation(first, 'Budget')
+    await settle()
+    expect(header('subject').text()).toBe('Budget')
+    expect(row(first).get('[data-testid="chat-list-subject"]').text()).toBe(
+      'Budget',
+    )
+    expect(row(second).get('[data-testid="chat-list-subject"]').text()).toBe(
+      'Project plan',
+    )
+    expect(app.chats.conversations[first].id).toBe(first)
+    expect(app.router.currentRoute.value.params.address).toBe(first)
+  } finally {
+    app.root.unmount()
+  }
+})
+
 it.each([false, true])(
   'keeps equal subjects, edits and recovered attempts independent (bot: %s)',
   async bot => {

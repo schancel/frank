@@ -96,8 +96,8 @@ function storeFor() {
     },
     messages: {},
     getAcceptancePrice: () => 0,
-    getStampAmount: () => 1,
-    setStampAmount: jest.fn(),
+    getStampWei: () => 1n,
+    setStampWei: jest.fn(),
     getMessageByPayload: () => null,
     sendMessage: jest.fn(),
   })

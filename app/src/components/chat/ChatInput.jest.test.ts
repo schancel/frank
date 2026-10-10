@@ -296,13 +296,9 @@ describe('modernized chat input interface (#1003)', () => {
       )
     })
 
-    it('shows the multiple of the minimum as secondary text, and whether it is the suggestion', () => {
-      // What the run saw after a 0.02 bet: sqrt(0.02 × 0.01).
+    it('shows the multiple of the default as secondary text', () => {
       const wrapper = mount(ChatInput, {
-        props: {
-          stampAmount: '0.014142135623730950',
-          suggestedStampAmount: '0.014142135623730950',
-        },
+        props: { stampAmount: '0.014142135623730950' },
         global: globalOptions,
       })
       expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('14.14 mMON')
@@ -310,11 +306,54 @@ describe('modernized chat input interface (#1003)', () => {
         '1.4×',
       )
       expect(wrapper.get('[data-testid="stamp-tooltip-amount"]').text()).toBe(
-        'Stamp: 0.01414 MON, 1.4× the minimum (Suggested)',
+        'Stamp: 0.01414 MON, 1.4× the default',
       )
     })
 
-    it('explains what a stamp is and why the suggestion moves, where the amount is set', () => {
+    it('a stamp of 0 reads "Free" on the chip and in its hover line', () => {
+      const wrapper = mount(ChatInput, {
+        props: { stampAmount: '0.0' },
+        global: globalOptions,
+      })
+      expect(wrapper.find('.chat-stamp-pill-text').text()).toBe('Free')
+      expect(wrapper.get('[data-testid="stamp-tooltip-amount"]').text()).toBe(
+        enUS.chatInput.stampChipFree,
+      )
+    })
+
+    it('the amount box takes 0, and keeps what was typed while it is the chosen amount', async () => {
+      const wrapper = mount(ChatInput, {
+        props: { stampAmount: '0.01' },
+        global: globalOptions,
+      })
+      const vm = wrapper.vm as any
+      // The chain's own text for an amount is not shown raw ("0.010000000000000000").
+      expect(vm.innerStampAmount).toBe('0.01')
+      vm.innerStampAmount = '0'
+      expect(wrapper.emitted('update:stampAmount')?.[0]).toEqual(['0'])
+      // The page answers with the chain's text for the amount: the box still shows "0".
+      await wrapper.setProps({ stampAmount: '0.0' })
+      expect(vm.innerStampAmount).toBe('0')
+      // The clear button gives null: passed on as no amount, never thrown on.
+      vm.innerStampAmount = null
+      expect(wrapper.emitted('update:stampAmount')?.[1]).toEqual([''])
+    })
+
+    it('offers the default again once another amount is chosen', async () => {
+      const wrapper = mount(ChatInput, {
+        props: { stampAmount: '0.0' },
+        global: globalOptions,
+      })
+      const reset = wrapper.get('[data-testid="chat-input-reset-default"]')
+      await reset.trigger('click')
+      expect(wrapper.emitted('update:stampAmount')?.[0]).toEqual(['0.01'])
+      await wrapper.setProps({ stampAmount: '0.01' })
+      expect(
+        wrapper.find('[data-testid="chat-input-reset-default"]').exists(),
+      ).toBe(false)
+    })
+
+    it('explains what a stamp is and how its amount is chosen, where the amount is set', () => {
       const wrapper = mount(ChatInput, {
         props: { stampAmount: '0.01' },
         global: globalOptions,
@@ -352,7 +391,7 @@ describe('ChatInput toolbar alignment and layout (#1009)', () => {
   })
 })
 
-describe('orders-of-magnitude stamp slider and geometric suggestion lifecycle (Issues #819 & #820)', () => {
+describe('orders-of-magnitude stamp slider (Issue #819)', () => {
   it('correctly maps multipliers across 4 orders of magnitude in decadeIndex', async () => {
     const wrapper = mount(ChatInput, {
       props: { stampAmount: (10n ** 16n).toString() },
@@ -368,41 +407,5 @@ describe('orders-of-magnitude stamp slider and geometric suggestion lifecycle (I
     expect(emitted).toBeTruthy()
     // 10x of default stamp = 10^17 wei in test mock
     expect(emitted[0][0]).toBe((10n ** 17n).toString())
-  })
-
-  it('renders converged badge when suggestedStampAmount matches and not overridden', () => {
-    const wrapper = mount(ChatInput, {
-      props: {
-        stampAmount: '0.71',
-        suggestedStampAmount: '0.71',
-        isOverridden: false,
-      },
-      global: globalOptions,
-    })
-    expect(wrapper.find('[data-testid="stamp-converged-badge"]').exists()).toBe(
-      true,
-    )
-    expect(wrapper.find('[data-testid="stamp-override-badge"]').exists()).toBe(
-      false,
-    )
-  })
-
-  it('renders override badge and reset button when isOverridden is true', async () => {
-    const wrapper = mount(ChatInput, {
-      props: {
-        stampAmount: '1.0',
-        suggestedStampAmount: '0.71',
-        isOverridden: true,
-      },
-      global: globalOptions,
-    })
-    expect(wrapper.find('[data-testid="stamp-override-badge"]').exists()).toBe(
-      true,
-    )
-    const resetBtn = wrapper.find('[data-testid="chat-input-reset-suggested"]')
-    expect(resetBtn.exists()).toBe(true)
-
-    await resetBtn.trigger('click')
-    expect(wrapper.emitted('resetStampToSuggested')).toBeTruthy()
   })
 })

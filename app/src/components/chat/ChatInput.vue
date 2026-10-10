@@ -148,24 +148,6 @@
                 <div class="text-subtitle2 text-weight-medium">
                   {{ $t('chatInput.stampPayment') }}
                 </div>
-                <q-badge
-                  v-if="suggestedStampAmount && !isOverridden"
-                  color="teal"
-                  outline
-                  class="text-caption"
-                  data-testid="stamp-converged-badge"
-                >
-                  {{ $t('chatInput.convergedPill') }}
-                </q-badge>
-                <q-badge
-                  v-else-if="isOverridden"
-                  color="orange"
-                  outline
-                  class="text-caption"
-                  data-testid="stamp-override-badge"
-                >
-                  {{ $t('chatInput.overridePill') }}
-                </q-badge>
               </div>
 
               <div
@@ -181,7 +163,9 @@
                 dense
                 autofocus
                 type="number"
-                :min="minimumStampAmount"
+                min="0"
+                step="any"
+                data-testid="chat-input-stamp-amount"
                 :suffix="chainUnit"
                 :label="$t('chatInput.stampPayment')"
               />
@@ -206,14 +190,12 @@
               </div>
 
               <div
-                v-if="suggestedStampAmount && isOverridden"
+                v-if="!isDefaultStamp"
                 class="row items-center justify-between q-mt-sm"
               >
                 <div class="text-caption text-grey-7">
                   {{
-                    $t('chatInput.suggestedStamp', {
-                      amount: `${suggestedStampAmount} ${chainUnit}`,
-                    })
+                    $t('chatInput.defaultStamp', { amount: defaultStampText })
                   }}
                 </div>
                 <q-btn
@@ -223,9 +205,9 @@
                   color="primary"
                   icon="restart_alt"
                   class="q-px-xs"
-                  data-testid="chat-input-reset-suggested"
-                  :label="$t('chatInput.resetToSuggested')"
-                  @click="resetToSuggested"
+                  data-testid="chat-input-reset-default"
+                  :label="$t('chatInput.resetToDefault')"
+                  @click="resetToDefault"
                 />
               </div>
             </div>
@@ -296,14 +278,6 @@ export default defineComponent({
       type: String,
       default: () => activeChain.toDisplayAmount(activeChain.defaultStampValue),
     },
-    suggestedStampAmount: {
-      type: String,
-      default: () => '',
-    },
-    isOverridden: {
-      type: Boolean,
-      default: false,
-    },
     // A send is in progress. Blocks sending (Enter, the send button) and the toolbar controls,
     // but deliberately NOT the text box itself (#396): disabling a focused textarea drops its
     // focus (seen in Chromium) and ignores keystrokes until the send ends, so the first characters
@@ -318,20 +292,25 @@ export default defineComponent({
     return {
       // Why the last picture could not be attached; empty when it could.
       attachError: '',
+      // The stamp as the user is typing it; shown while it still means the chosen amount.
+      typedStamp: null as string | null,
     }
   },
   emits: [
     'update:message',
     'update:attachments',
     'update:stampAmount',
-    'resetStampToSuggested',
     'sendMessage',
     'blackjackClicked',
     'sendStealthClicked',
   ],
   methods: {
-    resetToSuggested() {
-      this.$emit('resetStampToSuggested')
+    resetToDefault() {
+      this.typedStamp = null
+      this.$emit(
+        'update:stampAmount',
+        activeChain.toDisplayAmount(activeChain.defaultStampValue),
+      )
     },
     /** Public focus target for chat-level focus handoffs. */
     focus() {
@@ -526,8 +505,24 @@ export default defineComponent({
         this.$emit('update:stampAmount', activeChain.toDisplayAmount(raw))
       },
     },
-    /** The stamp on the chip: the amount in the chain's unit, compact ("14.14 mMONT"). */
+    /** The chosen stamp in base units; `undefined` while the field holds no amount. */
+    stampWei(): bigint | undefined {
+      try {
+        return activeChain.fromDisplayAmount(this.stampAmount)
+      } catch {
+        return undefined
+      }
+    },
+    isDefaultStamp(): boolean {
+      return this.stampWei === activeChain.defaultStampValue
+    },
+    defaultStampText(): string {
+      return formatCompactAmount(activeChain, activeChain.defaultStampValue)
+    },
+    /** The stamp on the chip: the amount in the chain's unit, compact ("14.14 mMONT"); a
+     * message with no stamp reads "Free". */
     stampPillText(): string {
+      if (this.stampWei === 0n) return this.$t('chatInput.stampFree')
       try {
         return formatCompactAmount(
           activeChain,
@@ -538,9 +533,9 @@ export default defineComponent({
         return `${this.stampAmount} ${activeChain.unit}`
       }
     },
-    /** The chip's hover line: the amount in full, how it compares with the minimum, and
-     * whether it is the suggestion for this chat or the user's own choice. */
+    /** The chip's hover line: the amount in full and how it compares with the default. */
     stampLabel(): string {
+      if (this.stampWei === 0n) return this.$t('chatInput.stampChipFree')
       let amount = `${this.stampAmount} ${activeChain.unit}`
       try {
         amount = formatDisplayAmount(
@@ -550,23 +545,12 @@ export default defineComponent({
       } catch {
         // Shown as typed.
       }
-      const base =
-        this.stampMultiplier === '1'
-          ? this.$t('chatInput.stampChip', { amount })
-          : this.$t('chatInput.stampChipMultiple', {
-              amount,
-              multiplier: this.stampMultiplier,
-            })
-      if (this.suggestedStampAmount && !this.isOverridden) {
-        return `${base} (${this.$t('chatInput.convergedPill')})`
-      }
-      if (this.isOverridden) {
-        return `${base} (${this.$t('chatInput.overridePill')})`
-      }
-      return base
-    },
-    minimumStampAmount() {
-      return activeChain.toDisplayAmount(activeChain.defaultStampValue)
+      return this.stampMultiplier === '1'
+        ? this.$t('chatInput.stampChip', { amount })
+        : this.$t('chatInput.stampChipMultiple', {
+            amount,
+            multiplier: this.stampMultiplier,
+          })
     },
     innerMessage: {
       get() {
@@ -579,12 +563,29 @@ export default defineComponent({
         this.$emit('update:message', emojifiedValue)
       },
     },
+    /** The amount box. It keeps what the user typed for as long as that is the chosen amount
+     * (so "0" stays "0" and "1" does not become "1.0" under the caret); any other change of the
+     * amount (the slider, a reset, another chat) shows the chosen amount in its shortest form. */
     innerStampAmount: {
-      get() {
-        return this.stampAmount
+      get(): string {
+        if (this.typedStamp !== null) {
+          try {
+            if (
+              activeChain.fromDisplayAmount(this.typedStamp) === this.stampWei
+            ) {
+              return this.typedStamp
+            }
+          } catch {
+            // What is typed is not an amount: the chosen one is shown below.
+          }
+        }
+        return this.stampAmount.includes('.')
+          ? this.stampAmount.replace(/\.?0+$/, '')
+          : this.stampAmount
       },
-      set(val: string) {
-        this.$emit('update:stampAmount', val)
+      set(val: string | number | null) {
+        this.typedStamp = val === null ? '' : String(val)
+        this.$emit('update:stampAmount', this.typedStamp)
       },
     },
   },

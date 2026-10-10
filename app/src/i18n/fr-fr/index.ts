@@ -109,16 +109,16 @@ export default {
     stampQuickSelection:
       'Sélection rapide par ordres de grandeur (1× à 10 000×)',
     stampMultiplierValue: '{multiplier}× par défaut ({amount})',
-    suggestedStamp: 'Suggéré : {amount}',
-    resetToSuggested: 'Réinitialiser au montant suggéré',
-    convergedPill: 'Suggéré',
-    overridePill: 'Votre choix',
+    defaultStamp: 'Par défaut : {amount}',
+    resetToDefault: 'Revenir au montant par défaut',
+    stampFree: 'Gratuit',
+    stampChipFree: 'Sans timbre : ce message est gratuit',
     stampChip: 'Timbre : {amount}',
-    stampChipMultiple: 'Timbre : {amount}, {multiplier}× le minimum',
+    stampChipMultiple: 'Timbre : {amount}, {multiplier}× le montant par défaut',
     stampWhat:
       'Un timbre est un petit paiement envoyé avec votre message à la personne à qui vous écrivez. Il paie son attention.',
     stampWhy:
-      'Le timbre suggéré pour cette conversation se situe à mi-chemin (la moyenne géométrique) entre le dernier timbre que vous lui avez payé et le dernier qu’il vous a payé. Il ne descend jamais sous le minimum, et il ne dépasse votre dernier timbre que dans la mesure où il vous a payé plus que vous ne lui avez payé.',
+      'Chaque message porte le timbre par défaut, sauf si vous choisissez un autre montant pour cette conversation. Saisissez 0 pour envoyer des messages gratuits.',
   },
   digitalGoods: {
     catalog: 'Catalogue',
@@ -155,6 +155,8 @@ export default {
     balanceUnknown: 'Votre solde n’est pas encore connu.',
   },
   gameFairness: {
+    moveNotSent:
+      'Non envoyé. Utilisez Réessayer sur votre message ci-dessous, ou supprimez-le pour choisir à nouveau.',
     notVerified: 'NON VÉRIFIÉ.',
     diceVerified:
       'Vérifié : le secret correspond à l’engagement sur lequel vous avez misé, et le nombre, le résultat et le gain en découlent, avec votre propre valeur aléatoire.',
@@ -396,6 +398,8 @@ export default {
     iframeTitle: 'Documentation de Frank',
   },
   walletPanel: {
+    cordonedNote:
+      'Plus {amount} à votre adresse de profil, que ce portefeuille ne dépense pas.',
     title: 'Portefeuilles',
     mainWallet: 'Portefeuille principal',
     renameWallet: 'Renommer le portefeuille',
@@ -498,8 +502,8 @@ export default {
     splToken: 'Jeton SPL',
     tokenMint: 'Adresse de contrat (Mint)',
     tokenContract: 'Contrat du jeton',
-    recentActivity: 'Activité récente',
-    noRecentActivity: 'Aucune transaction récente sur cette chaîne.',
+    recentActivity: 'Échanges récents',
+    noRecentActivity: 'Aucun échange sur cette chaîne pour le moment.',
     swapAction: 'Échanger',
     viewInExplorer: 'Voir dans l’explorateur',
     avuTooltip:
@@ -778,7 +782,9 @@ export default {
     other: 'Comptes d’envoi',
     otherNote:
       'Gardé par le portefeuille dans ses propres comptes pour payer vos messages, et la monnaie de paiements précédents. Non compté dans le solde ci-dessus.',
-    total: 'Total dans ce portefeuille',
+    total: 'Tous les comptes réunis',
+    totalNote:
+      'Supérieur au solde ci-dessus lorsque les comptes d’envoi ou l’adresse de profil contiennent de l’argent : le solde compte ce que vous pouvez envoyer maintenant.',
     yours:
       'Chacun de ces comptes appartient à ce portefeuille et se retrouve avec votre phrase de récupération.',
     unavailable: 'Les comptes n’ont pas pu être lus pour le moment.',
@@ -1476,7 +1482,7 @@ export default {
     progressSigning: 'Signature de l’échange…',
     progressSubmitted: 'Envoyé. En attente de la confirmation du réseau…',
     progressKeepOpen:
-      'Vous pouvez quitter cette page : l’échange est enregistré et apparaît dans l’activité récente.',
+      'Vous pouvez quitter cette page : l’échange est enregistré et apparaît dans les échanges récents.',
     resultConfirmed: 'Échange terminé',
     resultConfirmedDetail:
       'Reçu dans votre portefeuille, tel qu’enregistré sur la chaîne.',
@@ -1491,7 +1497,7 @@ export default {
       'Le réseau a rejeté l’échange. Vous gardez vos fonds et n’avez payé que les frais de réseau.',
     resultPending: 'Envoyé, pas encore confirmé',
     resultPendingDetail:
-      'Le réseau n’a pas encore confirmé cet échange. Il peut encore aboutir ; son état est mis à jour dans l’activité récente. Ne le renvoyez pas.',
+      'Le réseau n’a pas encore confirmé cet échange. Il peut encore aboutir ; son état est mis à jour dans les échanges récents. Ne le renvoyez pas.',
     unavailableNetwork:
       'Aucun échange n’est disponible pour ce portefeuille sur ce réseau.',
     unavailableSolana:
@@ -1522,7 +1528,7 @@ export default {
     errorAccountChanged: 'Le compte a changé. Vérifiez à nouveau l’échange.',
     errorQuote: 'Impossible d’obtenir un prix du réseau. Réessayez.',
     errorExecution:
-      'L’échange n’a pas été envoyé. Rien n’a été échangé ; consultez l’activité récente avant de réessayer.',
+      'L’échange n’a pas été envoyé. Rien n’a été échangé ; consultez les échanges récents avant de réessayer.',
     warnHighImpact:
       'Ce montant est important pour ce pool : vous recevez nettement moins que le taux du marché.',
     status: {

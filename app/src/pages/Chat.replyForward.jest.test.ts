@@ -45,7 +45,7 @@ jest.mock('../stores/chats', () => ({
       },
     },
     sendMessage: mockSendMessage,
-    getStampAmount: () => 0,
+    getStampWei: () => 1n,
     readAll: jest.fn(),
   }),
 }))

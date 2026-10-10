@@ -2,11 +2,7 @@ import assert from 'assert'
 import { defineStore } from 'pinia'
 import { shallowRef } from 'vue'
 
-import {
-  defaultEmailGatewayAddress,
-  defaultStampAmount,
-  displayNetwork,
-} from '../utils/constants'
+import { defaultEmailGatewayAddress, displayNetwork } from '../utils/constants'
 import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { picturePreview, picturePreviewText } from '../utils/chat-attachments'
@@ -20,11 +16,6 @@ import {
 import { acquireOutgoingLock, withOutgoingLock } from '../utils/outgoing-lock'
 import { activeChain } from '@frank/wallet/chain'
 import { messageItems } from '../utils/message-items'
-import {
-  computeGeometricStampSuggestion,
-  derivePeerStampMetrics,
-  type PeerStampMetrics,
-} from '@frank/wallet/stamp-suggestion'
 
 import {
   CanonicalMessagingHoldError,
@@ -177,8 +168,9 @@ export interface Conversation {
   totalValue: number
   lastReceived: number
   lastRead: number
-  stampAmount: number
-  stampOverrideWei?: bigint
+  /** The stamp this user chose for this conversation, in the chain's base units, as a decimal
+   * string so it is saved with the conversation. Unset: the chain's configured default. */
+  stampWei?: string
   address: string
   createdAt?: number
   updatedAt?: number
@@ -537,7 +529,6 @@ function accountedMessageValue(message: {
 
 const defaultContactObject = {
   kind: 'direct' as const,
-  stampAmount: defaultStampAmount,
   totalUnreadMessages: 0,
   totalUnreadValue: 0,
   totalValue: 0,
@@ -1170,20 +1161,6 @@ function assertConversationPeer(
   }
 }
 
-/** What we sent and what the conversation's own peer sent. Our replies go to that peer only,
- * so what anyone else posted here says nothing about the price of reaching them. */
-function messagesWithPeer(
-  conversation: Conversation | undefined,
-): ChatMessage[] {
-  if (!conversation) return []
-  if (!isChainAddress(conversation.address)) return conversation.messages
-  return conversation.messages.filter(
-    message =>
-      message.outbound ||
-      sameCanonicalAddress(message.senderAddress, conversation.address),
-  )
-}
-
 /** Whoever posts into a conversation is one of its participants from then on. A message is
  * filed under the conversation ID it carries, so this can be someone other than the peer the
  * conversation was opened with; recording them is what lets the chat show who said what. */
@@ -1685,38 +1662,14 @@ export const useChatStore = defineStore('chats', {
         .filter(c => !c.deletedAt)
         .reduce((total, c) => total + c.totalUnreadMessages, 0)
     },
+    /** Newest message first. The order changes only when a message is sent or received:
+     * reading a conversation does not move it. */
     getSortedChatOrder(state) {
-      const all = Object.values(state.conversations).filter(c => !c.deletedAt)
-      const sortedOrder = all.sort((contactA, contactB) => {
-        assert(contactA && contactB, 'Make typescript happy')
-        if (contactB.totalUnreadValue - contactA.totalUnreadValue !== 0) {
-          return contactB.totalUnreadValue - contactA.totalUnreadValue
-        }
-
-        if (contactB.totalValue - contactA.totalValue !== 0) {
-          return contactB.totalValue - contactA.totalValue
-        }
-
-        if (contactB.lastRead !== contactA.lastRead) {
-          return (contactB.lastRead ?? 0) - (contactA.lastRead ?? 0)
-        }
-
-        if (contactB.totalUnreadMessages - contactA.totalUnreadMessages !== 0) {
-          return contactB.totalUnreadMessages - contactA.totalUnreadMessages
-        }
-
-        const timeB =
-          contactB.lastReceived || contactB.updatedAt || contactB.createdAt || 0
-        const timeA =
-          contactA.lastReceived || contactA.updatedAt || contactA.createdAt || 0
-        if (timeB !== timeA) {
-          return timeB - timeA
-        }
-
-        // No other tiebreakers
-        return 0
-      })
-      return sortedOrder
+      const latest = (conversation: Conversation) =>
+        conversation.lastReceived || conversation.createdAt || 0
+      return Object.values(state.conversations)
+        .filter(c => !c.deletedAt)
+        .sort((a, b) => latest(b) - latest(a))
     },
     lastRead: state => (addressOrId: string) => {
       if (state.conversations && addressOrId in state.conversations) {
@@ -1729,75 +1682,26 @@ export const useChatStore = defineStore('chats', {
         return 0
       }
     },
-    getPeerStampSuggestion:
+    /** The stamp a message in this conversation carries: what the user chose for it, else the
+     * chain's configured default. What the peer pays does not change it. Zero is a free message. */
+    getStampWei:
       state =>
       (addressOrId: string): bigint => {
-        let chat: Conversation | undefined
-        if (state.conversations && addressOrId in state.conversations) {
-          chat = state.conversations[addressOrId]
-        } else {
-          try {
-            const displayAddress = toChainDisplayAddress(addressOrId)
-            chat = peerThread(state.conversations, displayAddress)
-          } catch {
-            // ignore
-          }
-        }
-        const metrics = derivePeerStampMetrics(messagesWithPeer(chat))
-        return computeGeometricStampSuggestion({
-          lastSentWei: metrics.lastSentWei,
-          lastReceivedWei: metrics.lastReceivedWei,
-          netReceivedWei: metrics.netReceivedWei,
-          defaultStampWei: activeChain.defaultStampValue,
-        })
-      },
-    getPeerStampMetrics:
-      state =>
-      (addressOrId: string): PeerStampMetrics => {
-        let chat: Conversation | undefined
-        if (state.conversations && addressOrId in state.conversations) {
-          chat = state.conversations[addressOrId]
-        } else {
-          try {
-            const displayAddress = toChainDisplayAddress(addressOrId)
-            chat = peerThread(state.conversations, displayAddress)
-          } catch {
-            // ignore
-          }
-        }
-        return derivePeerStampMetrics(messagesWithPeer(chat))
-      },
-    getStampOverrideWei:
-      state =>
-      (addressOrId: string): bigint | undefined => {
-        if (state.conversations && addressOrId in state.conversations) {
-          return state.conversations[addressOrId]?.stampOverrideWei
-        }
-        try {
-          const displayAddress = toChainDisplayAddress(addressOrId)
-          return peerThread(state.conversations, displayAddress)
-            ?.stampOverrideWei
-        } catch {
-          return undefined
-        }
-      },
-    getStampAmount: state => (addressOrId: string) => {
-      if (state.conversations && addressOrId in state.conversations) {
-        return (
-          state.conversations[addressOrId]?.stampAmount ?? defaultStampAmount
-        )
-      }
-      try {
-        const displayAddress = toChainDisplayAddress(addressOrId)
-        const chat = peerThread(state.conversations, displayAddress)
+        let chat: Conversation | undefined = state.conversations?.[addressOrId]
         if (!chat) {
-          return defaultStampAmount
+          try {
+            chat = peerThread(
+              state.conversations,
+              toChainDisplayAddress(addressOrId),
+            )
+          } catch {
+            chat = undefined
+          }
         }
-        return chat.stampAmount ?? defaultStampAmount
-      } catch {
-        return defaultStampAmount
-      }
-    },
+        return chat?.stampWei === undefined
+          ? activeChain.defaultStampValue
+          : BigInt(chat.stampWei)
+      },
     getLatestMessage: state => (addressOrId: string) => {
       let chat: Conversation | undefined
       if (state.conversations && addressOrId in state.conversations) {
@@ -3445,7 +3349,6 @@ export const useChatStore = defineStore('chats', {
       participants,
       conversationId,
       initialRole = 'member',
-      stampAmount = defaultStampAmount,
       address,
       verifiedGateway,
     }: {
@@ -3456,7 +3359,6 @@ export const useChatStore = defineStore('chats', {
       participants: string[]
       conversationId?: string
       initialRole?: ConversationRole
-      stampAmount?: number
       address?: string
       verifiedGateway?: boolean
     }): Conversation {
@@ -3483,7 +3385,6 @@ export const useChatStore = defineStore('chats', {
         emailRecipient,
         participants,
         address: peer,
-        stampAmount,
         verifiedGateway,
       })
       for (const member of Object.values(conv.members ?? {}))
@@ -3545,37 +3446,16 @@ export const useChatStore = defineStore('chats', {
         this.clearChatExclusive(conversationId),
       )
     },
-    setStampOverride({
+    /** Sets the stamp the user chose for a conversation; `undefined` returns it to the default. */
+    setStampWei({
       address,
-      overrideWei,
+      stampWei,
     }: {
       address: string
-      overrideWei: bigint | undefined
+      stampWei: bigint | undefined
     }) {
       const chat = this.chats[address] || this.conversations[address]
-      if (chat) {
-        chat.stampOverrideWei = overrideWei
-      }
-    },
-    clearStampOverride(address: string) {
-      const chat = this.chats[address] || this.conversations[address]
-      if (chat) {
-        chat.stampOverrideWei = undefined
-      }
-    },
-    setStampAmount({
-      address,
-      stampAmount,
-    }: {
-      address: string
-      stampAmount: number
-    }) {
-      const chat = this.chats[address] || this.conversations[address]
-      if (!chat) {
-        console.error('attempting to set stamp amount for non-existant contact')
-        return
-      }
-      chat.stampAmount = Math.trunc(stampAmount)
+      if (chat) chat.stampWei = stampWei?.toString()
     },
     setActiveChat(address: string | null): void {
       if (!address) return this.setActiveConversation(null)
@@ -3930,8 +3810,12 @@ export const useChatStore = defineStore('chats', {
         )
         if (ownAddress) await this.quarantineRelayReceipts(ownAddress, refused)
       }
-      for (const conv of receivedConversations.values()) {
+      // From here on each row is filed into the store's own conversation object. A conversation
+      // this batch created is a plain object until it is installed; writing to that one would
+      // change the data without telling the screen (the list kept an empty preview).
+      for (const [index, conv] of receivedConversations) {
         this.conversations[conv.id] ??= conv
+        receivedConversations.set(index, this.conversations[conv.id])
       }
 
       for (const wrapper of deliverableWrappers) {

@@ -208,12 +208,15 @@ export interface BotHostOptions {
    * the peer and message at error level and lets that conversation go on. Default: one hour. */
   replyGiveUpMs?: number;
   /** The account a bot pays transfers from is topped up from the shared funding wallet when it
-   * holds less than `topUpBelowWei` (default 0.5 MON, or `FRANK_BOT_TOP_UP_BELOW_WEI`), up to
-   * `topUpToWei` (default 1 MON, or `FRANK_BOT_TOP_UP_TO_WEI`). Set them so that the threshold
+   * holds less than `topUpBelowWei` (default 0.3 MON, or `FRANK_BOT_TOP_UP_BELOW_WEI`), up to
+   * `topUpToWei` (default 0.5 MON, or `FRANK_BOT_TOP_UP_TO_WEI`), which must be the greater. Set them so that the threshold
    * is at least the largest payout a bot on this host can owe. One top-up at a time per bot,
    * and none for five minutes after one went out. */
   topUpBelowWei?: bigint;
   topUpToWei?: bigint;
+  /** What bot top-ups leave in the shared funding wallet, for the faucet that pays from it.
+   * Default: `FAUCET_MIN_RESERVE_WEI`, else 0.1 MON, the faucet's own reserve. */
+  fundingReserveWei?: bigint;
   /** The longest one relay or wallet call of a bot's poll, or one send of a stored reply, may
    * take before the host stops waiting for it. Default: 30 seconds. */
   callTimeoutMs?: number;

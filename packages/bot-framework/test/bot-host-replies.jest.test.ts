@@ -1323,9 +1323,9 @@ describe("FrankBotHost replies", () => {
       clock += 31_000;
       await poll(host);
       await until(() => sendTransaction.mock.calls.length === 1);
-      // Topped up to 1 MON.
+      // Topped up to 0.5 MON.
       expect(sendTransaction).toHaveBeenCalledWith(
-        expect.objectContaining({ value: 950_000_000_000_000_000n })
+        expect.objectContaining({ value: 450_000_000_000_000_000n })
       );
       // Its receipt is still awaited: later polls start nothing.
       clock += 31_000;
@@ -1350,7 +1350,7 @@ describe("FrankBotHost replies", () => {
     // The reviewer's sequence on 8815aed8: a dice bot at 0.5 MON pays 0.196 twice and holds
     // 0.108; the third win needs 0.196, and nothing topped the bot up because 0.108 was not
     // under the old 0.1 threshold. The payout failed until the balance happened to fall.
-    it("keeps the paying balance above what a game can owe: a bot at 0.108 MON is topped up to 1 MON", async () => {
+    it("keeps the paying balance above what a game can owe: a bot at 0.108 MON is topped up to 0.5 MON", async () => {
       let clock = Date.now();
       jest.spyOn(Date, "now").mockImplementation(() => clock);
       const sendTransaction = jest.fn(async () => ({ wait: async () => {} }));
@@ -1361,8 +1361,60 @@ describe("FrankBotHost replies", () => {
       await settle(instance);
       expect(sendTransaction).toHaveBeenCalledTimes(1);
       expect(sendTransaction).toHaveBeenCalledWith(
-        expect.objectContaining({ value: 892_000_000_000_000_000n })
+        expect.objectContaining({ value: 392_000_000_000_000_000n })
       );
+    });
+
+    it("refuses a top-up target that is not above its threshold, at construction", () => {
+      for (const [topUpBelowWei, topUpToWei] of [
+        [5n, 5n],
+        [5n, 4n],
+      ])
+        expect(
+          () =>
+            new FrankBotHost({
+              relayBaseUrl: "http://127.0.0.1:8098",
+              stateDir,
+              topUpBelowWei,
+              topUpToWei,
+            })
+        ).toThrow(/FRANK_BOT_TOP_UP_TO_WEI\) must be greater than its threshold/);
+    });
+
+    // On 2d54a52d a low funding wallet gave a quarter of what it had left, down to about
+    // 0.04 MON: below the 0.1 MON the faucet, which pays from the same wallet, keeps back.
+    it("never takes the funding wallet below the faucet's reserve, and says the wallet is exhausted", async () => {
+      let clock = Date.now();
+      jest.spyOn(Date, "now").mockImplementation(() => clock);
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const sendTransaction = jest.fn(async () => ({ wait: async () => {} }));
+      const { host, balances, instance } = await funded(sendTransaction);
+      const funder = { wei: 350_000_000_000_000_000n };
+      (host as any).provider.getBalance = jest.fn(async (address: string) =>
+        address === "0x1111111111111111111111111111111111111111"
+          ? funder.wei
+          : balances.bot
+      );
+      balances.bot = 0n;
+      // 0.35 MON left: the bot gets what is above the 0.1 MON reserve, not the 0.5 it wants.
+      clock += 31_000;
+      await poll(host);
+      await settle(instance);
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+      expect(sendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 250_000_000_000_000_000n })
+      );
+      // Only the reserve (and dust) is left: nothing is sent, and it is said loudly.
+      funder.wei = 105_000_000_000_000_000n;
+      clock += 6 * 60_000;
+      await poll(host);
+      await settle(instance);
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+      expect(
+        error.mock.calls.filter(([line]) =>
+          String(line).includes("FUNDING WALLET EXHAUSTED")
+        )
+      ).toHaveLength(1);
     });
 
     it("takes its threshold and target from the host options, and warns at registration about a bot whose largest payout they cannot cover", async () => {

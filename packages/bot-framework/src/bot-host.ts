@@ -84,8 +84,14 @@ export const FAILED_REPLY_TEXT =
 
 // The account a bot pays transfers (game payouts) from: topped up from the shared funding wallet
 // when it holds less than the first amount, up to the second. Defaults; see `BotHostOptions`.
-const TOP_UP_BELOW_WEI = 500_000_000_000_000_000n;
-const TOP_UP_TO_WEI = 1_000_000_000_000_000_000n;
+// 0.3 / 0.5 MON: above the largest payout the games advertise (about 0.25 MON), and ten bots
+// starting from nothing draw under 10 MON.
+const TOP_UP_BELOW_WEI = 300_000_000_000_000_000n;
+const TOP_UP_TO_WEI = 500_000_000_000_000_000n;
+// What bot top-ups leave in the shared funding wallet: the faucet pays its grants from the same
+// wallet and keeps this reserve itself (`FAUCET_MIN_RESERVE_WEI`, 0.1 MON when unset; the
+// faucet's own default lives in packages/bot/faucet-core.ts and must stay the same figure).
+const FUNDING_RESERVE_WEI = 100_000_000_000_000_000n;
 // The account a bot's wallet pays message stamps from spends far less.
 const STAMP_TOP_UP_BELOW_WEI = 100_000_000_000_000_000n;
 const STAMP_TOP_UP_TO_WEI = 500_000_000_000_000_000n;
@@ -308,7 +314,15 @@ export class FrankBotHost {
       topUpToWei:
         options.topUpToWei ??
         BigInt(process.env.FRANK_BOT_TOP_UP_TO_WEI || TOP_UP_TO_WEI),
+      fundingReserveWei:
+        options.fundingReserveWei ??
+        BigInt(process.env.FAUCET_MIN_RESERVE_WEI || FUNDING_RESERVE_WEI),
     };
+
+    if (this.options.topUpToWei <= this.options.topUpBelowWei)
+      throw new Error(
+        `Bot top-up target (${this.options.topUpToWei} wei, FRANK_BOT_TOP_UP_TO_WEI) must be greater than its threshold (${this.options.topUpBelowWei} wei, FRANK_BOT_TOP_UP_BELOW_WEI)`
+      );
 
     const cursorFile = join(this.options.stateDir, "registration-cursor.json");
     if (existsSync(cursorFile)) {
@@ -916,17 +930,14 @@ export class FrankBotHost {
         const funderBal = await this.provider.getBalance(
           this.fundingWallet.address
         );
-        // Up to the target; a funding wallet that is running low gives a quarter of what it
-        // has left at most.
+        // Up to the target, and never into the funding wallet's reserve.
         const wanted = target.toWei - bal;
-        const fundAmount =
-          funderBal > 1_000_000_000_000_000_000n + wanted || wanted < funderBal / 4n
-            ? wanted
-            : funderBal / 4n;
+        const spare = funderBal - this.options.fundingReserveWei;
+        const fundAmount = wanted < spare ? wanted : spare;
         if (fundAmount <= 10_000_000_000_000_000n) {
           outcome = outcome === "sent" ? "sent" : "failed";
-          console.warn(
-            `[bot-host] Funding wallet ${this.fundingWallet.address} is too low to top up ${target.label} (${target.addr}) of bot ${id}`
+          console.error(
+            `[bot-host] FUNDING WALLET EXHAUSTED: ${this.fundingWallet.address} holds ${funderBal} wei, of which ${this.options.fundingReserveWei} is the reserve left for the faucet. ${target.label} (${target.addr}) of bot ${id} was not topped up`
           );
           continue;
         }

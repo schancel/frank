@@ -630,11 +630,13 @@ it.each([
       if (end === "started") expect(row).toMatchObject({ replies: [] });
       if (end === "started") expect(row?.prepared).toBeUndefined();
       // Held with a slot the wallet never linked to this row: not reconciled, not sent again.
+      // The poll's question to the wallet is about no reply in particular (#1236 Q3).
       if (end === "unlinked") {
         expect(row?.replies).toEqual([
           expect.not.objectContaining({ digest: expect.anything() }),
         ]);
-        expect(mockReconcile).not.toHaveBeenCalled();
+        for (const [asked] of mockReconcile.mock.calls)
+          expect(asked.payloadDigests).toEqual([]);
       }
     }
     expect(legacy).not.toHaveBeenCalled();
@@ -1253,7 +1255,10 @@ describe("durable retention before dispatch", () => {
       await settle();
       expect(writes).not.toHaveBeenCalled();
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      expect(mockReconcile).not.toHaveBeenCalled();
+      // One pass: its one question to the wallet, about no reply in particular (#1236 Q3).
+      expect(mockReconcile.mock.calls).toEqual([
+        [{ wallet: expect.anything(), payloadDigests: [] }],
+      ]);
       expect(reply).toHaveBeenCalledTimes(blocked === "fetch" ? 0 : 1);
       await open();
       expect(bot().operations.get(a1.payloadDigest)?.phase).toBe(
@@ -1283,6 +1288,8 @@ describe("durable retention before dispatch", () => {
       () => new Promise((resolve) => (release = resolve))
     );
     mockFetch.mockClear();
+    // The first poll asked the wallet once already, about no reply in particular (#1236 Q3).
+    mockReconcile.mockClear();
     const pollAllBots = () =>
       (host as unknown as { pollAllBots(): Promise<void> }).pollAllBots();
     const passes = [pollAllBots(), pollAllBots()];

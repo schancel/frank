@@ -25,7 +25,10 @@ async function main() {
 
 if (require.main === module) {
   main().catch((err) => {
-    console.error("Qwen bot failed:", err);
+    // The message, not a stack: a missing model variable is named in one line.
+    console.error(
+      "QWEN BOT FAILED: " + (err instanceof Error ? err.message : String(err))
+    );
     process.exit(1);
   });
 }

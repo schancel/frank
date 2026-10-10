@@ -25,17 +25,25 @@ async function main() {
     rpcUrl: process.env.MONAD_TESTNET_HTTP_RPC_URL ?? process.env.MONAD_RPC_URL,
   });
 
-  // Register all Frank bots with the unified host
-  await host.register(new BlackjackDealerBot());
-  await host.register(new RaffleBot());
-  await host.register(new VendorBot());
-  await host.register(new QwenBot());
-  await host.register(new FaucetBot());
-  await host.register(new ChatRoomBot());
-  await host.register(new RpsBot());
-  await host.register(new SatoshiDiceBot());
-  await host.register(new LiarsDiceBot());
-  await host.register(new PokerBot());
+  // Every Frank bot on the one host, sharing its funding wallet and nonce sequence. A bot that
+  // cannot be built or registered (the Qwen bot without its model variables, say) is reported
+  // by name and left out; the others run.
+  const failed = await host.registerAll([
+    () => new BlackjackDealerBot(),
+    () => new RaffleBot(),
+    () => new VendorBot(),
+    () => new QwenBot(),
+    () => new FaucetBot(),
+    () => new ChatRoomBot(),
+    () => new RpsBot(),
+    () => new SatoshiDiceBot(),
+    () => new LiarsDiceBot(),
+    () => new PokerBot(),
+  ]);
+  if (failed.length)
+    console.error(
+      `[all-bots-target] NOT RUNNING: ${failed.join(", ")}. See the errors above.`
+    );
 
   await host.start();
   console.log(

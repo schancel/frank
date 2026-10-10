@@ -53,7 +53,8 @@ export interface BotStateStore {
 }
 
 export interface BotMessageContext {
-  readonly conversationId: string;
+  /** Absent: the default thread with this peer. */
+  readonly conversationId?: string;
   readonly peerAddress: string;
   readonly peerSubject: string;
   readonly timestampMs: number;
@@ -102,6 +103,9 @@ export interface BotContext {
   readonly provider: JsonRpcProvider;
   readonly state: BotStateStore;
   readonly subscriptions: BotSubscriptionManager;
+  /** Aborted when the host starts stopping. A handler passes it to anything slow it waits on
+   * (a model call, an HTTP request) so shutdown does not wait for it. */
+  readonly stopping: AbortSignal;
 
   // --- Directory & Peer APIs ---
   lookupPeer(address: string): Promise<DirectoryPeerInfo | undefined>;
@@ -149,29 +153,21 @@ export interface BotContext {
   }): Promise<{ payloadDigest: string }>;
 }
 
-/** A reply the host stages durably before it is first sent, with one plugin value the host
- * commits at `commit.key` of `ctx.state`, once, when that same reply is observed delivered.
- * `expectedSha256` is the SHA-256 (lowercase hex) of the value the handler read at the key, or
- * `null` if it was absent; if the key holds anything else when the reply is sent or delivered the
- * invocation is held and nothing is overwritten. The key must be scoped to the conversation, and
- * the handler must not write it itself. A handler that returns one must not also have used
- * `reply()` or `sendMessage()` in that invocation. */
+/** A text reply the host stores before it is first sent and then delivers itself: it is sent
+ * again on later polls, and after a restart, until it is delivered, always as the same message,
+ * so it is paid for once. A handler that returns one must not also have used `reply()` or
+ * `sendMessage()` in that invocation. */
 export interface PreparedReply {
   readonly kind: "prepared-reply";
   readonly text: string;
-  readonly commit: {
-    readonly key: string;
-    readonly expectedSha256: string | null;
-    readonly value: string;
-  };
 }
 
 export interface FrankBotDefinition {
   readonly id: string;
   readonly defaultIdentityPath?: string;
-  /** Replies this bot sends to one peer per hour before the host stops handling that peer's
-   * messages (the loop guard). Unset: `DEFAULT_MAX_REPLIES_PER_PEER`. A bot whose one exchange is
-   * many replies, such as a game, declares more (`GAME_MAX_REPLIES_PER_PEER`). The operator's
+  /** Replies this bot sends per hour to one peer that is itself a bot, before the host stops
+   * handling that peer's messages (the loop guard: two bots must not answer each other for
+   * ever). People are never limited. Unset: `DEFAULT_MAX_REPLIES_PER_PEER`. The operator's
    * `BotHostOptions.maxRepliesPerPeer` overrides it. */
   readonly maxRepliesPerPeer?: number;
   readonly schedules?: BotScheduleDefinition[];
@@ -196,8 +192,11 @@ export interface BotHostOptions {
   heartbeatIntervalMs?: number;
   watchRegistrations?: boolean;
   unrefTimers?: boolean;
-  /** Operator override of every bot's replies-per-peer-per-hour budget, a non-negative integer
-   * (0: never reply). Default: the `FRANK_BOT_MAX_REPLIES_PER_PEER` environment variable when
+  /** Operator override of every bot's replies-per-hour budget for a peer that is a bot, a
+   * non-negative integer (0: never reply to a bot). Default: the `FRANK_BOT_MAX_REPLIES_PER_PEER` environment variable when
    * set; otherwise each bot's own `maxRepliesPerPeer`. */
   maxRepliesPerPeer?: number;
+  /** How long the host keeps trying to deliver a stored reply before it gives up on it, logs
+   * the peer and message at error level and lets that conversation go on. Default: one hour. */
+  replyGiveUpMs?: number;
 }

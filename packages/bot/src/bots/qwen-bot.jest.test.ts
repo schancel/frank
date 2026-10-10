@@ -1,4 +1,3 @@
-import { createHash } from "crypto";
 import { Wallet } from "ethers";
 import {
   MAX_TEXT_STRING_BYTES,
@@ -11,7 +10,7 @@ import type {
   PreparedReply,
 } from "@frank/bot-framework";
 import type { QwenChatMessage } from "../../qwen-client";
-import { QwenBot } from "./qwen-bot";
+import { MODEL_FAILED_TEXT, QwenBot } from "./qwen-bot";
 
 const local = new Wallet("0x" + "11".repeat(32));
 const peer = new Wallet("0x" + "12".repeat(32));
@@ -48,22 +47,6 @@ const record = (messages = pair()) => ({
   scope: scope(ctx, msg),
   messages,
 });
-const sha = (value: string) =>
-  createHash("sha256").update(value, "utf8").digest("hex");
-/** The model path's whole effect: a reply for the host to stage, never a send or a write. */
-async function answer(
-  message = msg,
-  context = ctx,
-  sender = message.reply
-): Promise<PreparedReply> {
-  const result = await bot.onMessage(message, context);
-  if (!result) throw new Error("no prepared reply returned");
-  expect(sender).not.toHaveBeenCalled();
-  expect(context.state.put).not.toHaveBeenCalled();
-  expect(context.state.batch).not.toHaveBeenCalled();
-  return result;
-}
-
 beforeEach(() => {
   rows = new Map();
   const state: BotStateStore = {
@@ -100,6 +83,7 @@ beforeEach(() => {
     buildAndSignTransfer: jest.fn(),
     waitForReceipt: jest.fn(),
     getBalance: jest.fn(),
+    stopping: new AbortController().signal,
   };
   msg = {
     conversationId: thread,
@@ -116,354 +100,275 @@ beforeEach(() => {
   }));
   bot = new QwenBot({
     generator: { mode: "stub", describe: () => "fixture", reply: generator },
+    retryDelayMs: 1,
   });
 });
 afterEach(() => jest.restoreAllMocks());
 
-it("keeps profile, subscription, greeting and newsletter behavior", async () => {
+const text = (value: string): PreparedReply => ({
+  kind: "prepared-reply",
+  text: value,
+});
+const stored = (context = ctx, message = msg) => {
+  const raw = rows.get(key(context, message));
+  return raw === undefined ? undefined : JSON.parse(raw);
+};
+
+it("keeps its profile and newsletter, and answers a subscription command or an empty message with a stored reply, not a send of its own", async () => {
   expect(bot.getProfile().name).toBe("Qwen");
   expect(bot.schedules).toHaveLength(1);
-  jest
-    .mocked(ctx.subscriptions.handleSubscriptionCommand)
-    .mockResolvedValueOnce([{ type: "text", text: "subscribed" }]);
-  await bot.onMessage(msg, ctx);
-  expect(msg.reply).toHaveBeenCalledWith([
-    { type: "text", text: "subscribed" },
-  ]);
+  // No reply budget of its own: a person chatting is never cut off.
+  expect((bot as { maxRepliesPerPeer?: number }).maxRepliesPerPeer).toBeUndefined();
+  (ctx.subscriptions.handleSubscriptionCommand as jest.Mock).mockResolvedValueOnce(
+    [{ type: "text", text: "subscribed" }]
+  );
+  expect(await bot.onMessage(msg, ctx)).toEqual(text("subscribed"));
+  expect(
+    await bot.onMessage({ ...msg, items: [{ type: "stamp" } as never] }, ctx)
+  ).toEqual(text("Hello! I am Qwen. How can I help you today?"));
+  expect(msg.reply).not.toHaveBeenCalled();
   expect(generator).not.toHaveBeenCalled();
-  expect(ctx.state.get).not.toHaveBeenCalled();
-  await bot.onNewUser({ address: peer.address, registeredAtMs: 1 }, ctx);
-  expect(ctx.sendMessage).toHaveBeenCalledWith(peer.address, expect.any(Array));
+  expect(ctx.state.put).not.toHaveBeenCalled();
   expect(await bot.sendDailyNewsletter(ctx)).toEqual({ sent: 1, failed: 0 });
 });
 
-// T9. Was: the handler sent the reply and then wrote history itself, so a reply that was paid
-// and reported pending left no history. It now returns both for the host to stage and commit.
-it("returns the exact reply and scoped next history for the host to commit, retaining the latest ten pairs", async () => {
-  const stored = JSON.stringify(
-    record(Array.from({ length: 10 }, (_, i) => pair(String(i))).flat())
+it("returns the model's answer and remembers the turn, keeping the latest ten pairs", async () => {
+  expect(await bot.onMessage(msg, ctx)).toEqual(text("answer"));
+  expect(generator).toHaveBeenCalledWith(
+    [{ role: "user", content: "hello" }],
+    expect.objectContaining({ signal: ctx.stopping })
   );
-  rows.set(key(ctx, msg), stored);
-  const prepared = await answer();
-  expect(generator.mock.calls[0][0]).toHaveLength(21);
-  expect(prepared).toEqual({
-    kind: "prepared-reply",
-    text: "answer",
-    commit: {
-      key: key(ctx, msg),
-      expectedSha256: sha(stored),
-      value: JSON.stringify(
-        record([
-          ...Array.from({ length: 9 }, (_, i) => pair(String(i + 1))).flat(),
-          ...pair("hello"),
-        ])
-      ),
-    },
-  });
-  expect(ctx.state.get).toHaveBeenCalledTimes(1);
-  expect(rows.get(key(ctx, msg))).toBe(stored);
-  expect([...rows.keys()]).toEqual([key(ctx, msg)]);
-});
-it("expects an absent key when the conversation has no history yet", async () => {
-  const prepared = await answer();
-  expect(prepared.commit.expectedSha256).toBeNull();
-  expect(JSON.parse(prepared.commit.value)).toEqual(record(pair("hello")));
-  expect(rows.size).toBe(0);
-});
-
-it.each(["thread", "peer", "local", "network"])(
-  "isolates history by %s in the same store",
-  async (dimension) => {
-    const first = await answer();
-    const next = { ...msg };
-    const nextContext = { ...ctx };
-    if (dimension === "thread") next.conversationId = threadB;
-    if (dimension === "peer") {
-      next.peerAddress = other.address;
-      next.peerSubject = subject(other);
-    }
-    if (dimension === "local") {
-      nextContext.address = other.address;
-      nextContext.subject = subject(other);
-    }
-    if (dimension === "network") nextContext.networkTag = "MON1";
-    const second = await answer(next, nextContext);
-    expect(generator.mock.calls[1][0]).toEqual([
-      { role: "user", content: "hello" },
-    ]);
-    const keys = [first.commit.key, second.commit.key];
-    expect(keys).toEqual([key(ctx, msg), key(nextContext, next)]);
-    expect(new Set(keys).size).toBe(2);
-    expect(
-      keys.every((k) => !k.includes('"MONT"') && !k.includes('"MON1"'))
-    ).toBe(true);
-  }
-);
-
-it("never reads, repairs or overwrites obsolete peer history", async () => {
-  const old = `history:${peer.address.toLowerCase()}`;
-  rows.set(old, "malformed old history kept exactly");
-  await bot.onMessage(msg, ctx);
-  expect(ctx.state.get).toHaveBeenCalledTimes(1);
-  expect(ctx.state.get).toHaveBeenCalledWith(key(ctx, msg));
-  expect(rows.get(old)).toBe("malformed old history kept exactly");
-});
-
-it.each([
-  ["conversationId", undefined],
-  ["conversationId", "conv-1"],
-  ["conversationId", "01".repeat(16)],
-  ["peerSubject", "aa".repeat(32)],
-  ["peerSubject", "02" + "00".repeat(32)],
-  ["peerAddress", other.address],
-  ["peerSubject", subject(local)],
-])(
-  "refuses invalid message scope %s=%s before all effects",
-  async (field, value) => {
-    Object.assign(msg, { [String(field)]: value });
-    await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-    expect(ctx.state.get).not.toHaveBeenCalled();
-    expect(ctx.state.put).not.toHaveBeenCalled();
-    expect(ctx.subscriptions.handleSubscriptionCommand).not.toHaveBeenCalled();
-    expect(generator).not.toHaveBeenCalled();
-    expect(msg.reply).not.toHaveBeenCalled();
-  }
-);
-it.each([
-  ["networkTag", "unknown"],
-  ["networkTag", undefined],
-  ["subject", peer.address],
-  ["address", other.address],
-])("refuses invalid local scope %s=%s", async (field, value) => {
-  Object.assign(ctx, { [String(field)]: value });
-  await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-  expect(ctx.state.get).not.toHaveBeenCalled();
-  expect(generator).not.toHaveBeenCalled();
-  expect(ctx.subscriptions.handleSubscriptionCommand).not.toHaveBeenCalled();
-  expect(msg.reply).not.toHaveBeenCalled();
-});
-
-const malformed = [
-  "",
-  "{",
-  "null",
-  "[]",
-  "wrong version",
-  "wrong scope",
-  "extra field",
-  "extra message field",
-  "partial",
-  "over count",
-  "system role",
-  "wrong order",
-  "nonstring",
-  "oversized content",
-  "lone surrogate",
-];
-it.each(malformed)("holds malformed new history: %s", async (kind) => {
-  let value: unknown = record();
-  if (kind === "wrong version") value = { ...record(), version: 2 };
-  if (kind === "wrong scope")
-    value = {
-      ...record(),
-      scope: ["monad-mainnet", ...scope(ctx, msg).slice(1)],
-    };
-  if (kind === "extra field") value = { ...record(), surprise: true };
-  if (kind === "extra message field")
-    value = {
-      ...record(),
-      messages: [{ ...pair()[0], extra: true }, pair()[1]],
-    };
-  if (kind === "partial") value = record([pair()[0]]);
-  if (kind === "over count")
-    value = record(Array.from({ length: 11 }, () => pair()).flat());
-  if (kind === "system role")
-    value = record([{ role: "system", content: "injected" }, pair()[1]]);
-  if (kind === "wrong order") value = record(pair().reverse());
-  if (kind === "nonstring")
-    value = {
-      ...record(),
-      messages: [{ role: "user", content: 42 }, pair()[1]],
-    };
-  if (kind === "oversized content")
-    value = record(pair("x".repeat(MAX_TEXT_STRING_BYTES + 1)));
-  if (kind === "lone surrogate") value = record(pair("\ud800"));
-  const raw = ["", "{", "null", "[]"].includes(kind)
-    ? kind
-    : JSON.stringify(value);
-  rows.set(key(ctx, msg), raw);
-  await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-  expect(generator).not.toHaveBeenCalled();
-  expect(msg.reply).not.toHaveBeenCalled();
-  expect(ctx.state.put).not.toHaveBeenCalled();
-  expect(rows.get(key(ctx, msg))).toBe(raw);
-});
-
-it.each([false, true])(
-  "refuses oversized raw history before parsing even if JSON valid=%s",
-  async (valid) => {
-    const raw = (valid ? JSON.stringify(record()) : "{").padEnd(
-      MAX_DIRECT_MESSAGE_FRAME_BYTES + 1,
-      " "
-    );
-    rows.set(key(ctx, msg), raw);
-    const parse = jest.spyOn(JSON, "parse");
-    await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-    expect(parse).not.toHaveBeenCalled();
-    expect(generator).not.toHaveBeenCalled();
-    expect(msg.reply).not.toHaveBeenCalled();
-  }
-);
-it("accepts a raw record exactly at the byte limit", async () => {
-  rows.set(
-    key(ctx, msg),
-    JSON.stringify(record()).padEnd(MAX_DIRECT_MESSAGE_FRAME_BYTES, " ")
-  );
-  await bot.onMessage(msg, ctx);
-  expect(generator).toHaveBeenCalledTimes(1);
-});
-it.each(["input", "output", "loaded"])(
-  "accepts multibyte %s content at the UTF-8 limit",
-  async (where) => {
-    const text = "é".repeat(MAX_TEXT_STRING_BYTES / 2);
-    if (where === "input") msg.items = [{ type: "text", text }];
-    if (where === "output") generator.mockResolvedValue({ content: text });
-    if (where === "loaded")
-      rows.set(key(ctx, msg), JSON.stringify(record(pair(text))));
-    const prepared = await answer();
-    expect(prepared.text).toBe(where === "output" ? text : "answer");
-  }
-);
-it.each(["é".repeat(MAX_TEXT_STRING_BYTES / 2) + "a", "\ud800"])(
-  "refuses oversized/malformed input before model",
-  async (text) => {
-    msg.items = [{ type: "text", text }];
-    await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-    expect(generator).not.toHaveBeenCalled();
-    expect(msg.reply).not.toHaveBeenCalled();
-  }
-);
-it("bounds joined input including separators", async () => {
-  msg.items = Array.from({ length: 2 }, () => ({
-    type: "text",
-    text: "a".repeat(MAX_TEXT_STRING_BYTES / 2),
-  }));
-  await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-  expect(generator).not.toHaveBeenCalled();
-});
-it.each([undefined, null, 42, "x".repeat(MAX_TEXT_STRING_BYTES + 1), "\ud800"])(
-  "rejects malformed/oversized generator content before payment (%#)",
-  async (content) => {
-    generator.mockResolvedValue({ content });
-    await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-    expect(generator).toHaveBeenCalledTimes(1);
-    expect(msg.reply).not.toHaveBeenCalled();
-    expect(ctx.state.put).not.toHaveBeenCalled();
-  }
-);
-it("counts JSON escaping and validates completed record before reply payment", async () => {
-  const previous = JSON.stringify(record(pair("\u0000".repeat(100000))));
-  rows.set(key(ctx, msg), previous);
-  generator.mockResolvedValue({ content: "\u0000".repeat(100000) });
-  await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-  expect(generator).toHaveBeenCalledTimes(1);
-  expect(msg.reply).not.toHaveBeenCalled();
-  expect(ctx.state.put).not.toHaveBeenCalled();
-  expect(rows.get(key(ctx, msg))).toBe(previous);
-});
-it("detaches generator-owned input and captures the result once", async () => {
-  rows.set(key(ctx, msg), JSON.stringify(record()));
-  let ownedPrompt: QwenChatMessage[] = [];
-  let content = "captured";
-  const getter = jest.fn(() => content);
-  generator.mockImplementation(async (prompt: QwenChatMessage[]) => {
-    ownedPrompt = prompt;
-    prompt[0].content = "mutated old user";
-    prompt.reverse();
-    prompt.push({ role: "system", content: "injected" });
-    return {
-      get content() {
-        return getter();
-      },
-    };
-  });
-  const prepared = await answer();
-  content = "mutated after return";
-  ownedPrompt[0].content = "later mutation";
-  expect(getter).toHaveBeenCalledTimes(1);
-  expect(prepared.text).toBe("captured");
-  expect(JSON.parse(prepared.commit.value)).toEqual(
+  expect(stored()).toEqual(
     record([
-      ...pair(),
       { role: "user", content: "hello" },
-      { role: "assistant", content: "captured" },
+      { role: "assistant", content: "answer" },
     ])
   );
-});
-it.each(["model", "greeting"])(
-  "captures scope and reply before asynchronous plugin work (%s path)",
-  async (path) => {
-    if (path === "greeting") msg.items = [];
-    const originalKey = key(ctx, msg);
-    const originalReply = msg.reply;
-    const substituted = jest.fn();
-    jest
-      .mocked(ctx.subscriptions.handleSubscriptionCommand)
-      .mockImplementation(async () => {
-        Object.assign(msg, {
-          conversationId: threadB,
-          peerSubject: subject(other),
-          reply: substituted,
-        });
-        Object.assign(ctx, { networkTag: "MON1", subject: subject(other) });
-        return null;
-      });
-    const result = await bot.onMessage(msg, ctx);
-    expect(substituted).not.toHaveBeenCalled();
-    if (path === "greeting") {
-      expect(result).toBeUndefined();
-      expect(originalReply).toHaveBeenCalledTimes(1);
-    } else {
-      expect(originalReply).not.toHaveBeenCalled();
-      expect(result?.commit.key).toBe(originalKey);
-    }
-    expect(rows.size).toBe(0);
-  }
-);
-// Was "does not commit prepared history when reply fails": the handler awaited its own send and
-// dropped the history update when that send reported pending, although the reply could still
-// be delivered. That was the defect. The handler no longer sends, so no send outcome can
-// reach it; the host commits the update when the reply is delivered.
-it("neither sends nor writes on the model path, so a pending send cannot cost the history update", async () => {
-  const raw = JSON.stringify(record());
-  rows.set(key(ctx, msg), raw);
-  jest
-    .mocked(msg.reply)
-    .mockRejectedValue(new Error("original attempt pending"));
-  const prepared = await answer();
-  expect(prepared.commit.expectedSha256).toBe(sha(raw));
-  expect(JSON.parse(prepared.commit.value)).toEqual(
-    record([...pair(), ...pair("hello")])
+  rows.set(
+    key(ctx, msg),
+    JSON.stringify(
+      record(Array.from({ length: 10 }, (_, i) => pair("old" + i)).flat())
+    )
   );
-  expect(rows.get(key(ctx, msg))).toBe(raw);
+  await bot.onMessage(msg, ctx);
+  expect(generator.mock.calls[1][0]).toHaveLength(21);
+  const kept = stored().messages;
+  expect(kept).toHaveLength(20);
+  expect(kept[0].content).toBe("old1");
+  expect(kept.slice(-2).map((m: { content: string }) => m.content)).toEqual([
+    "hello",
+    "answer",
+  ]);
+  expect(msg.reply).not.toHaveBeenCalled();
 });
 
-it.each([undefined, null, {}])(
-  "holds a malformed generator result before reply (%#)",
-  async (result) => {
-    generator.mockResolvedValue(result);
-    await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
-    expect(msg.reply).not.toHaveBeenCalled();
+it.each([
+  ["thread", () => ({ message: { ...msg, conversationId: threadB } })],
+  [
+    "peer",
+    () => ({
+      message: {
+        ...msg,
+        peerAddress: other.address,
+        peerSubject: subject(other),
+      },
+    }),
+  ],
+  [
+    "local",
+    () => ({
+      context: { ...ctx, address: other.address, subject: subject(other) },
+    }),
+  ],
+  ["network", () => ({ context: { ...ctx, networkTag: "MON1" as const } })],
+])("keeps history apart by %s in the same store", async (_label, change) => {
+  await bot.onMessage(msg, ctx);
+  const { message = msg, context = ctx } = change() as {
+    message?: BotMessageContext;
+    context?: BotContext;
+  };
+  await bot.onMessage(message, context);
+  expect(generator.mock.calls[1][0]).toEqual([
+    { role: "user", content: "hello" },
+  ]);
+  expect(key(context, message)).not.toBe(key(ctx, msg));
+  expect(stored(context, message).messages).toHaveLength(2);
+  expect(stored().messages).toHaveLength(2);
+});
+
+// The default thread carries no conversation ID on the wire. On 05c93db0 such a message was
+// refused outright ("history admission held") and never answered.
+it("keys the history of a message with no conversation ID by the peer, and remembers it across messages", async () => {
+  const bare = { ...msg, conversationId: undefined };
+  const defaultKey =
+    "qwen-history:v1:" +
+    JSON.stringify(["monad-testnet", ctx.subject, msg.peerSubject, "default"]);
+  expect(await bot.onMessage(bare, ctx)).toEqual(text("answer"));
+  await bot.onMessage(
+    { ...bare, items: [{ type: "text", text: "and then?" }] },
+    ctx
+  );
+  expect(generator.mock.calls[1][0]).toEqual([
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "answer" },
+    { role: "user", content: "and then?" },
+  ]);
+  expect(JSON.parse(rows.get(defaultKey)!).messages).toHaveLength(4);
+  // An explicit conversation with the same peer, and another peer's default thread, are apart.
+  await bot.onMessage(msg, ctx);
+  await bot.onMessage(
+    { ...bare, peerAddress: other.address, peerSubject: subject(other) },
+    ctx
+  );
+  for (const call of generator.mock.calls.slice(2))
+    expect(call[0]).toEqual([{ role: "user", content: "hello" }]);
+  expect([...rows.keys()]).toHaveLength(3);
+});
+
+it("asks the model again after a failure, with a short wait, and answers once", async () => {
+  generator
+    .mockRejectedValueOnce(new Error("Request failed with status code 500"))
+    .mockResolvedValueOnce({ content: "   " })
+    .mockResolvedValue({ content: "third time" });
+  jest.spyOn(console, "warn").mockImplementation(() => {});
+  expect(await bot.onMessage(msg, ctx)).toEqual(text("third time"));
+  expect(generator).toHaveBeenCalledTimes(3);
+  expect(stored().messages[1].content).toBe("third time");
+});
+
+it.each([
+  ["rejects", () => Promise.reject(new Error("socket hang up"))],
+  ["answers nothing", async () => ({ content: "" })],
+  ["answers a non-string", async () => ({ content: 7 })],
+  ["answers malformed text", async () => ({ content: "\ud800" })],
+  [
+    "answers more than a message can carry",
+    async () => ({ content: "x".repeat(MAX_TEXT_STRING_BYTES + 1) }),
+  ],
+])(
+  "returns the plain failure reply when the model %s on every try, and remembers nothing",
+  async (_label, result) => {
+    generator.mockImplementation(result as never);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await bot.onMessage(msg, ctx)).toEqual(text(MODEL_FAILED_TEXT));
+    expect(generator).toHaveBeenCalledTimes(3);
     expect(ctx.state.put).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(3);
   }
 );
 
-it("greets non-text input without loading or changing model history", async () => {
-  msg.items = [];
+it("makes as many model calls as configured, and none once the host is stopping", async () => {
+  generator.mockRejectedValue(new Error("down"));
+  jest.spyOn(console, "warn").mockImplementation(() => {});
+  const once = new QwenBot({
+    generator: { mode: "stub", describe: () => "fixture", reply: generator },
+    modelTries: 1,
+  });
+  expect(await once.onMessage(msg, ctx)).toEqual(text(MODEL_FAILED_TEXT));
+  expect(generator).toHaveBeenCalledTimes(1);
+  const stopped = new AbortController();
+  generator.mockImplementation(async () => {
+    stopped.abort();
+    throw new Error("aborted");
+  });
+  await bot.onMessage(msg, { ...ctx, stopping: stopped.signal });
+  expect(generator).toHaveBeenCalledTimes(2);
+});
+
+it("does not log what the provider answered, only the error's message", async () => {
+  const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+  generator.mockRejectedValue(
+    Object.assign(new Error("Request failed with status code 401"), {
+      response: { data: "SECRET-BODY", config: { headers: "Bearer KEY" } },
+    })
+  );
   await bot.onMessage(msg, ctx);
-  expect(msg.reply).toHaveBeenCalledWith([
-    { type: "text", text: "Hello! I am Qwen. How can I help you today?" },
-  ]);
-  expect(ctx.state.get).not.toHaveBeenCalled();
+  expect(JSON.stringify(warn.mock.calls)).not.toMatch(/SECRET-BODY|KEY/);
+});
+
+it("gives the generator its own copy of the prompt", async () => {
+  generator.mockImplementation(async (prompt: QwenChatMessage[]) => {
+    prompt[0].content = "rewritten";
+    return { content: "answer" };
+  });
+  await bot.onMessage(msg, ctx);
+  expect(stored().messages[0].content).toBe("hello");
+});
+
+it.each([
+  ["a malformed conversation ID", () => ({ ...msg, conversationId: "conv-1" })],
+  ["a peer key that is not the peer's", () => ({ ...msg, peerSubject: subject(other) })],
+  ["its own key as the peer", () => ({ ...msg, peerAddress: local.address, peerSubject: subject(local) })],
+])("refuses %s before any model call or write", async (_label, change) => {
+  await expect(bot.onMessage(change() as BotMessageContext, ctx)).rejects.toThrow(
+    /held/
+  );
   expect(generator).not.toHaveBeenCalled();
+  expect(ctx.state.put).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["not JSON", () => "{"],
+  ["another conversation's record", () => JSON.stringify({ ...record(), scope: ["x", "y", "z", "w"] })],
+  ["an odd number of turns", () => JSON.stringify(record(pair().slice(0, 1)))],
+  ["larger than a history record may be", () => "x".repeat(MAX_DIRECT_MESSAGE_FRAME_BYTES + 1)],
+])(
+  "refuses stored history that is %s, leaving it as it is",
+  async (_label, raw) => {
+    const bytes = raw();
+    rows.set(key(ctx, msg), bytes);
+    await expect(bot.onMessage(msg, ctx)).rejects.toThrow(/held/);
+    expect(generator).not.toHaveBeenCalled();
+    expect(rows.get(key(ctx, msg))).toBe(bytes);
+  }
+);
+
+it("accepts multibyte input and output at the text limit", async () => {
+  const big = "é".repeat(MAX_TEXT_STRING_BYTES / 2);
+  generator.mockResolvedValue({ content: big });
+  expect(
+    await bot.onMessage({ ...msg, items: [{ type: "text", text: big }] }, ctx)
+  ).toEqual(text(big));
+});
+
+// On 05c93db0 the class fell back to stub echo replies when the model variables were missing.
+describe("model configuration", () => {
+  let environment: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    environment = process.env;
+    process.env = { PATH: environment.PATH };
+    jest.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    process.env = environment;
+  });
+
+  it("is a startup error naming the missing variables, never a silent stub", () => {
+    expect(() => new QwenBot()).toThrow(
+      /QWEN_API_KEY and QWEN_OPENAI_COMPATIBLE_ENDPOINT/
+    );
+    process.env.QWEN_API_KEY = "k";
+    expect(() => new QwenBot()).toThrow(/QWEN_OPENAI_COMPATIBLE_ENDPOINT/);
+    expect(() => new QwenBot()).not.toThrow(/QWEN_API_KEY and/);
+  });
+
+  it("is the offline stub only when asked for, and says so", async () => {
+    process.env.QWEN_BOT_MODE = "stub";
+    const stub = new QwenBot();
+    expect((await stub.onMessage(msg, ctx)).text).toMatch(/^\[STUB/);
+    expect(
+      (await new QwenBot({ config: { mode: "stub" } }).onMessage(msg, ctx)).text
+    ).toMatch(/^\[STUB/);
+  });
+
+  it("is live with both variables set", () => {
+    process.env.QWEN_API_KEY = "k";
+    process.env.QWEN_OPENAI_COMPATIBLE_ENDPOINT = "http://model.invalid/v1";
+    const log = console.log as jest.Mock;
+    new QwenBot();
+    expect(String(log.mock.calls[0][0])).toMatch(
+      /LIVE mode.*timeout 45000 ms, thinking off/
+    );
+    expect(JSON.stringify(log.mock.calls)).not.toContain('"k"');
+  });
 });

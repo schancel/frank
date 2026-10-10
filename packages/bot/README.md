@@ -543,205 +543,50 @@ export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
 yarn bot   # keeps running; set QWEN_BOT_MAX_REPLIES=<n> to exit after n replies
 ```
 
-### Reply mode: live or stub (`QWEN_BOT_MODE`)
+### How the Qwen bot answers
 
-- `QWEN_BOT_MODE=live` (default): real Qwen replies. `QWEN_API_KEY` and
-  `QWEN_OPENAI_COMPATIBLE_ENDPOINT` are required; if one is missing the bot exits at startup.
-  It never falls back to the stub by itself. Failure logs omit provider bodies, even with
-  `QWEN_BOT_DEBUG` set; check configuration and durable state locally.
-- `QWEN_BOT_MODE=stub`: no API key, no network call to any model. Replies are deterministic and
-  every one starts with `[STUB -- no model, offline canned reply]`, the startup banner and the
-  logs identify `Reply mode: stub`. Use it for offline demos, smoke tests and CI.
-- `QWEN_BOT_MAX_REPLIES` (default unset = keep running; `1` = exit after one reply) and
-  `QWEN_BOT_IDLE_TIMEOUT_MS` (default: never when unlimited, 10 minutes when a reply cap is set;
-  `0` = never).
+The Qwen bot is one implementation: `src/bots/qwen-bot.ts`, run by `FrankBotHost`
+(`@frank/bot-framework`) from `qwen-bot.livecheck.ts`. An earlier stand-alone command-line bot
+with its own state store and workflows was removed.
+
+Every message ends in exactly one reply: the model's answer, or a short plain failure reply
+("Sorry, I couldn't answer that just now. Please send it again.").
+
+- **Model call.** One call has a time limit for the whole answer and is aborted when the bot
+  stops. A failed call (an error, a timeout, an empty answer) is made again a bounded number of
+  times, a second or two apart; then the user gets the failure reply. Thinking is off by default.
+- **Delivery.** The answer is stored before it is first sent, and the host sends it on every poll
+  (3 s) until it is delivered, also after a restart. Every send of one reply carries the same
+  message identity, and the wallet pays at most once per identity, so a resend finishes the first
+  attempt and never pays twice. A send refused before the wallet recorded a payment, such as a
+  wallet with no funds, paid nothing and is simply repeated once it can succeed. A reply that is
+  still undelivered after an hour is given up with an error log naming the peer and message.
+- **Order.** Replies to one conversation go out in order; nothing else waits. There is no reply
+  limit for a person and no limit on how many messages the bot has taken. Only a peer whose own
+  profile says it is a bot is cut off after its hourly budget, so two bots cannot answer each
+  other for ever.
+- **Memory.** The last ten exchanges of a conversation are stored in the bot's state and sent
+  with the next prompt. A conversation is its conversation ID; a message with none belongs to
+  the default thread with that peer.
+- **Funding.** When the shared funding wallet is configured, the host tops the bot's account up
+  on the poll whenever it holds under 0.1 MON: one top-up at a time, and none for five minutes
+  after one went out.
+
+| Variable                          | Default        | Meaning                                                                 |
+| --------------------------------- | -------------- | ----------------------------------------------------------------------- |
+| `QWEN_BOT_MODE`                   | `live`         | `live` calls the model; `stub` answers offline with labelled replies.   |
+| `QWEN_API_KEY`                    | required, live | Model provider key. Missing in live mode: the bot refuses to start.     |
+| `QWEN_OPENAI_COMPATIBLE_ENDPOINT` | required, live | OpenAI-compatible base URL. Missing in live mode: refuses to start.     |
+| `QWEN_MODEL`                      | `qwen3.8-max`  | Model name.                                                             |
+| `QWEN_MODEL_TIMEOUT_MS`           | `45000`        | Limit for one whole model answer.                                       |
+| `QWEN_MODEL_TRIES`                | `3`            | Model calls for one message before the failure reply.                   |
+| `QWEN_ENABLE_THINKING`            | `0`            | `1` lets the model reason at length first; slower by seconds or more.   |
+| `QWEN_SYSTEM_PROMPT`              | built in       | Replaces the system prompt (`DEFAULT_SYSTEM_PROMPT` in `qwen-reply.ts`). |
 
 ```sh
 QWEN_BOT_MODE=stub yarn bot   # still needs the relay/RPC/wallet env, but no Qwen key
+yarn workspace @frank/bot test --runInBand qwen-host-safety qwen-client qwen-reply src/bots/qwen-bot
 ```
-
-The bot persists its mailbox/profile cursors, greeted and processed identities, and per-user Qwen
-conversation history under `QWEN_BOT_STATE_DIR` (default `~/.frank-bots/qwen`, or under
-`$XDG_STATE_HOME`). Its HD sender seed, single-use account pools, and exact payment journals live separately under
-`QWEN_BOT_WALLET_STATE_DIR` (default `~/.frank-bots/qwen-wallet`, or under
-`$XDG_STATE_HOME`). On restart it reconciles that
-wallet authority before funding or signing anything new, then resumes the persisted mailbox
-scan. On a new root, `QWEN_BOT_MESSAGE_SINCE_MS=<unix milliseconds>` sets the replay origin;
-otherwise the pre-funding startup time is used. The origin is saved once. Changing the variable
-on restart does not rebind an existing scan.
-
-The `inbox-scan:v1` record binds the scan to the canonical bot identity, relay URL and network.
-An existing legacy `__since__`, response, processed marker or conversation cannot prove that
-earlier inputs were retained: first adoption replays the relay's retained inbox from origin **0**,
-preserving all old processed/response rows. A response may have committed before the first
-`__since__` checkpoint, so a missing timestamp alone does not make the store new.
-This is an additive namespace; it does not rewrite or delete old state. A changed context or
-malformed record stops ingress without erasing data. Use the original context to resume.
-
-Each authenticated mailbox page and its exact opaque continuation are committed in one synced
-Level batch before any imported turn reaches Qwen or a reply payment. Pending `inbox:v1:<hash>`
-rows contain ciphertext, timestamp, network and local admission order, with account/relay context
-owned by the immutable scan record. A completed sweep starts another sweep from the fixed origin,
-so late equal-timestamp inputs are discovered. Saved stale/foreign-epoch tokens are cleared durably
-and retried without a token at most once per poll; a no-token rejection remains an error.
-
-Named local limits are 100 messages / 4 MiB + 16 KiB per page (the existing relay ceiling),
-two page requests per poll, and 1,000 pending
-inputs / 16 MiB pending ciphertext. A full page that exceeds local capacity leaves the checkpoint
-unchanged and pauses admission; no pending row is evicted. Missing keys, policy/budget deferrals,
-unsupported envelopes and unavailable decryption remain pending. An authenticated, deterministic
-rejection retains only a fixed disposition and hash. Model ownership atomically removes the inbox
-ciphertext as it creates `model-started`. Terminal identities deliberately grow with replayable
-history; total storage is not constant and there is no tombstone garbage collector.
-
-Qwen responses have a separate input-keyed record (`response:v1:<inbound payload hash>`) in
-`QWEN_BOT_STATE_DIR/qwen-bot-state`. The bot fsyncs the generated response and proposed history
-before sending, then fsyncs a `send-started` boundary before entering the ordinary send builder.
-Only a confirmed send commits the response receipt, conversation and processed marker together.
-Confirmed response rows keep only bounded input/context/receipt metadata; cumulative history
-lives once in the conversation record. Pending responses retain their proposed history until commit.
-Existing processed markers remain terminal. The database contains private conversation text;
-keep it local and do not paste its contents into diagnostic logs or tickets.
-
-| Durable response phase | Restart behavior |
-| --- | --- |
-| `model-started` | Held: the provider may have completed, but no result was durably accepted. No automatic model retry. |
-| `response-ready` | Reuses the saved response/history without a model call, subject to peer policy and matching bot/funding/network/relay/stamp context. A transient policy lookup failure or exhausted budget is reconsidered on later polls. |
-| `send-started` | Held: delivery or payment may have happened. No rebuilt envelope, new signature, or automatic resend. |
-| `confirmed` | Terminal: duplicates do not generate or send again. |
-
-A held diagnostic includes the inbound hash and a fixed reason. Stop the bot and preserve both
-state roots before investigating that record alongside the wallet journals. There is deliberately
-no automatic release/reset command: exact outbound-envelope and wallet attempt reconciliation
-exists only for canonical replies (below); the legacy send keeps these holds. Later admitted turns from the held peer remain durably pending in order;
-other peers proceed. This does not complete #168 or promise
-exactly-once provider execution in the model-call/persistence crash window.
-
-#### Canonical replies: one sealed envelope and one wallet attempt (#703)
-
-With `QWEN_BOT_CANONICAL_ROOTS_JSON` set, a `response-ready` turn never enters the ordinary send
-builder and never becomes `send-started`. Instead it owns one coupling record
-(`coupling:v1:<inbound payload hash>`) beside its response row:
-
-| Coupling phase | What is durable | Restart behavior |
-| --- | --- | --- |
-| `envelope-ready` | The sealed reply bytes, the wallet's public prepared binding and bounded public identity, fsynced before the first wallet call. | The wallet is asked for a record with exactly those bytes. If it has one, the link is repaired; otherwise the first payment intent is prepared for the same bytes. The reply is never sealed again. |
-| `intent-linked` | The wallet's attempt reference. | Signs the stored unsigned transactions only, then re-sends the one promoted request. A `202` from the relay or an unknown outcome is held and retried with the same bytes. |
-| `terminal` | The wallet's delivered or dead evidence, copied in the Qwen final batch. Delivered commits receipt, conversation and processed marker in that same batch. | The wallet's evidence is cleaned up and acknowledged; a crash in between repeats only those two steps. |
-| `settled` | Bounded identity and evidence only; the sealed bytes are dropped once the wallet's acknowledgement frontier has passed the attempt. | Terminal. |
-
-The record holds ciphertext, never the reply text, history or model reasoning. On startup the CLI
-opens this state first, then the canonical wallet (which signs, funds and sends nothing on open),
-then correlates every retained wallet record with a saved turn before any replay. A wallet record
-no turn owns, a linked attempt the wallet no longer has, a changed account or stamp policy, or a
-dead outcome leaves the turn held with a fixed reason; none of them builds a second envelope or
-payment. A dead outcome is acknowledged to the wallet after it is recorded here, so it does not
-block later turns for other peers; the dead turn and its peer stay held. Legacy `model-started`
-and `send-started` rows keep the meanings in the table above and are never coupled after the fact.
-At most 64 unsettled envelopes are retained; beyond that new replies wait.
-
-Safe rollback: stop the bot and back up both state roots and its identity. Do not run older bot
-code against these roots while any pending inbox or nonterminal response row exists: old code
-ignores those rows and could skip input or repeat a paid send. Preserve the rows and keep the bot stopped until a compatible
-version or reviewed reconciliation is available. Never delete the state root to clear a held turn.
-
-Credential-free regression fixtures run the real CLI in stub mode with local Level state,
-the public authenticated mailbox client, and local relay/model/payment fixtures. CLI child tests
-use SIGKILL immediately after synced page, model-ownership and confirmation commits without
-Close/flush. Fault tests cover uncertain batch completion, stale imports, concurrent drains,
-capacity, context rejection and privacy. These fixtures do not prove live relay or chain finality.
-
-```sh
-yarn workspace @frank/bot test --runInBand qwen-inbound-workflow qwen-bot-loop qwen-bot.livecheck qwen-response-workflow
-```
-
-In a separate shell, once the bot prints its address (or is already running from a prior run —
-its identity persists at `QWEN_BOT_IDENTITY_JSON`, default `/tmp/qwen-bot-identity.json`):
-
-```sh
-set -a; source ../../.env; set +a
-export E2E_DEMO_RELAY_URL=http://127.0.0.1:8098
-export E2E_DEMO_MAIN_WALLET_JSON=/absolute/path/to/chain-wallet.json
-export QWEN_BOT_MESSAGES='["Hi, who are you?","Follow-up: prove you paid to reply."]'
-yarn send-demo
-```
-
-`yarn ui-verify` (`monad-ui-verify.livecheck.ts`) exercises the same flow through the real app's
-own `ActiveChain` seam (`@frank/wallet/chain`) instead of the bot's own hand-rolled calls -- see
-that file's own header comment for its specific env vars.
-
-## Canonical mode (#703/#778)
-
-Setting `QWEN_BOT_CANONICAL_ROOTS_JSON` runs the bot as an ordinary account on the open
-directory, with a typed account only: no legacy identity, profile registration, greeting or legacy
-stamp wallet. At startup it signs its own directory entry ("this address lives on this relay, and
-these are its message and stamp keys") and publishes it to its relay. Nobody approves that entry
-and nothing else is installed anywhere. It then reads its canonical inbox from that relay and
-answers **any** account whose own published entry verifies, each turn through one sealed envelope
-and one durable wallet attempt (see "Canonical replies" above). No sender is configured in the
-bot; a user only needs the bot's address.
-
-What you provide (paths absolute or relative to `packages/bot`):
-
-- **Roots path** (`QWEN_BOT_CANONICAL_ROOTS_JSON`, secret, mode `0600`). If nothing exists at the
-  path, the bot creates the file on first run with three fresh random roots and logs only that it
-  did so and the path. Those roots are the account: back the file up, or treat the account as
-  disposable. To use roots you already have, put them there yourself:
-  `{"registry":"frank-domain-roots-v1","roots":{"evm-wallet":"<64 hex>","identity-authentication":"<64 hex>","messaging-encryption":"<64 hex>"}}`.
-  An existing file is never replaced; one that group or others can access, or that is not a roots
-  bundle, is refused.
-- **Relay** (`E2E_DEMO_RELAY_URL`, required): the `https://` root origin of the relay the bot
-  lives on. `NODE_EXTRA_CA_CERTS` is only needed when that origin uses a local CA.
-- **State directories**: `QWEN_BOT_STATE_DIR` (turns, inbox, couplings, and
-  `canonical-directory/` with the public directory stores) and `QWEN_BOT_WALLET_STATE_DIR`
-  (`canonical-*`: typed wallet pool and journals). Use a fresh `QWEN_BOT_STATE_DIR`: a root that
-  already holds a legacy inbox context is refused. Back up and restore both together with the
-  roots file.
-
-**Run** (local Ollama model shown; use `QWEN_BOT_MODE=stub` for the deterministic model):
-
-```sh
-cd packages/bot
-QWEN_BOT_MODE=live QWEN_API_KEY=local-ollama-placeholder \
-QWEN_OPENAI_COMPATIBLE_ENDPOINT=http://127.0.0.1:11434/v1 QWEN_MODEL=qwen2.5:7b \
-QWEN_BOT_CANONICAL_ROOTS_JSON=/abs/bot-roots.json \
-E2E_DEMO_RELAY_URL=https://relay.example \
-QWEN_BOT_STATE_DIR=/abs/bot-state QWEN_BOT_WALLET_STATE_DIR=/abs/bot-wallet \
-QWEN_BOT_STAMP_VALUE_WEI=10000000000000000 \
-npx tsx qwen-bot.livecheck.ts
-```
-
-The bot prints `Bot Frank identity address: 0x...` (also written to `QWEN_BOT_HANDOFF_JSON`):
-that address is all a user needs to message it. It also prints its "canonical stamp account";
-**fund that account** with native MON. The wallet funds its single-use stamp accounts from it,
-through the relay's RPC proxy. Until it is funded, replies are prepared and held, not sent.
-
-- Startup order: roots, bot state, typed wallet (opening signs, funds and sends nothing), then the
-  bot's own entry. The bot asks the relay to describe itself (`GET <relay>/relay/v1/info`), adopts
-  the entry the relay already holds for its key or signs and stores revision 0
-  (`PUT <relay>/directory/v1/<network>/<P>/head`), and renews it with a new revision before it
-  expires. While that fails (relay unreachable, for example) it logs
-  `directory entry not published: <fixed reason>; retrying in <n> ms` and retries with doubling
-  backoff up to one minute. It reads no mail and answers nothing until
-  `directory entry published` is logged.
-- A sender is answered when the entry the relay serves for its key is signed by the key that
-  hashes to its address, is unexpired, and continues the first entry chain this bot saw for that
-  address. A sender with no published entry, or whose entry is refused (`invalid`, `expired`,
-  `rollback`, `fork`) or cannot be read, gets no reply and nothing is paid; its message stays
-  retained and is answered once a valid entry can be read. The reply is sealed to the message key
-  in the sender's own entry.
-- The network comes from the chain configuration: `MONAD_RPC_CHAIN` (default `monad-testnet`)
-  selects tag `MONT` (`monad-testnet`, chain 10143) or `MON1` (`monad-mainnet`, chain 143). Chain
-  RPC goes only through `<relay>/chain-rpc/<MONAD_RPC_CHAIN>/rpc`.
-- `QWEN_BOT_MAX_REPLIES`, `QWEN_BOT_IDLE_TIMEOUT_MS`, `QWEN_BOT_POLL_INTERVAL_MS`,
-  `QWEN_BOT_MESSAGE_SINCE_MS`, `QWEN_BOT_STAMP_VALUE_WEI`, the per-peer reply budget
-  (`FRANK_BOT_MAX_REPLIES_PER_PEER`, `FRANK_BOT_REPLY_WINDOW_MS`) and `FRANK_BOT_PEER_DENYLIST`
-  apply as in legacy mode. The legacy bot-marker profile lookup is not consulted (canonical
-  accounts register no legacy profile), so the reply budget and the denylist are what bound a
-  conversation with another bot.
-- A configuration the bot will not start with prints `QWEN BOT REFUSING TO START: <reason>` with a
-  fixed reason word: `relay-url-not-https-origin`, `roots-file-permissions`, `network-not-monad`,
-  `wallet-storage-not-durable`.
 
 ## Auto-greet / auto-fund new signups (ticket #77)
 

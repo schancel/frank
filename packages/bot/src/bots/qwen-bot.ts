@@ -13,16 +13,24 @@ import {
   MAX_TEXT_STRING_BYTES,
   MAX_DIRECT_MESSAGE_FRAME_BYTES,
 } from "@frank/codec";
-import { createHash } from "crypto";
 import { computeAddress, getAddress } from "ethers";
 import { canonicalNetworkDescriptor } from "@frank/cashweb/relay/canonical-dm-transport";
 import { generateAvatarPng } from "../../bot-directory";
 import {
   createQwenReplyGenerator,
   qwenBotConfigFromEnv,
+  DEFAULT_MODEL_TRIES,
   type QwenBotConfig,
   type QwenReplyGenerator,
 } from "../../qwen-reply";
+
+/** What the user is told when the model gave no answer after every try. */
+export const MODEL_FAILED_TEXT =
+  "Sorry, I couldn't answer that just now. Please send it again.";
+// Wait before the second model call of a message; doubled before each further one.
+const MODEL_RETRY_DELAY_MS = 1_000;
+/** The history scope of the default thread with a peer: a message with no conversation ID. */
+const DEFAULT_THREAD = "default";
 
 const MAX_HISTORY_MESSAGES = 20;
 const MAX_HISTORY_CONTENT_BYTES = MAX_TEXT_STRING_BYTES;
@@ -65,15 +73,20 @@ function historyScope(msg: BotMessageContext, ctx: BotContext): HistoryScope {
       !validSubject(local, localAddress) ||
       !validSubject(peer, peerAddress) ||
       local === peer ||
-      typeof conversationId !== "string" ||
-      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(conversationId)
+      (conversationId !== undefined &&
+        (typeof conversationId !== "string" ||
+          !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(
+            conversationId
+          )))
     )
       return holdHistory();
+    // One history per conversation: an explicit conversation by its ID, the default thread
+    // (no ID on the message) by the peer alone.
     return Object.freeze([
       canonicalNetworkDescriptor(networkTag).network,
       local,
       peer,
-      conversationId,
+      conversationId ?? DEFAULT_THREAD,
     ] as const);
   } catch {
     return holdHistory();
@@ -137,31 +150,72 @@ export class QwenBot implements FrankBotDefinition {
     process.env.QWEN_BOT_IDENTITY_JSON ?? "/tmp/qwen-bot-identity.json";
 
   private readonly replyGenerator: QwenReplyGenerator;
+  private readonly modelTries: number;
+  private readonly retryDelayMs: number;
+  /** Display names already looked up, by peer address. */
+  private readonly names = new Map<string, string>();
 
+  /** Without a `generator`, the model is configured from the environment, and a missing
+   * variable is an error here, at startup, naming it. The offline stub answers only when
+   * `QWEN_BOT_MODE=stub` (or `config.mode`) asks for it; it is never a fallback. */
   constructor(options?: {
     generator?: QwenReplyGenerator;
     config?: Partial<QwenBotConfig>;
+    /** Model calls for one message before the failure reply. */
+    modelTries?: number;
+    retryDelayMs?: number;
   }) {
+    this.retryDelayMs = options?.retryDelayMs ?? MODEL_RETRY_DELAY_MS;
     if (options?.generator) {
       this.replyGenerator = options.generator;
+      this.modelTries = options.modelTries ?? DEFAULT_MODEL_TRIES;
     } else {
-      let cfg: QwenBotConfig;
-      try {
-        cfg = qwenBotConfigFromEnv(process.env);
-      } catch {
-        // Fallback to stub mode if environment variables are not set
-        cfg = {
-          mode: "stub",
-          model: "qwen-stub",
-          maxReplies: Infinity,
-          idleTimeoutMs: 0,
-        };
-      }
-      if (options?.config) {
-        cfg = { ...cfg, ...options.config };
-      }
+      const cfg = {
+        ...qwenBotConfigFromEnv({
+          ...process.env,
+          ...(options?.config?.mode
+            ? { QWEN_BOT_MODE: options.config.mode }
+            : {}),
+        }),
+        ...options?.config,
+      };
       this.replyGenerator = createQwenReplyGenerator(cfg);
+      this.modelTries = options?.modelTries ?? cfg.modelTries;
+      console.log(`[qwen] ${this.replyGenerator.describe()}`);
     }
+  }
+
+  /** The model's answer to `history`, or undefined when every try failed. A failed call sent
+   * nothing and paid nothing, so it is simply made again, a bounded number of times. */
+  private async answer(
+    history: HistoryMessage[],
+    stopping: AbortSignal | undefined,
+    userName: string | undefined
+  ): Promise<string | undefined> {
+    for (let attempt = 1; attempt <= this.modelTries; attempt++) {
+      if (stopping?.aborted) break;
+      try {
+        // The generator never owns the prompt snapshot from which stored turns are built.
+        const result = await this.replyGenerator.reply(
+          history.map((item) => ({ ...item })),
+          { signal: stopping, userName }
+        );
+        const content = boundedText(result?.content, MAX_HISTORY_CONTENT_BYTES);
+        if (content.trim()) return content;
+        throw new Error("the model returned an empty answer");
+      } catch (error) {
+        // The message only: a provider's response body is never logged.
+        console.warn(
+          `[qwen] Model call ${attempt} of ${this.modelTries} failed:`,
+          error instanceof Error ? error.message : "unknown error"
+        );
+        if (attempt < this.modelTries && !stopping?.aborted)
+          await new Promise((resolve) =>
+            setTimeout(resolve, this.retryDelayMs * 2 ** (attempt - 1))
+          );
+      }
+    }
+    return undefined;
   }
 
   readonly schedules = [
@@ -243,13 +297,38 @@ export class QwenBot implements FrankBotDefinition {
     }
   }
 
+  /** The name the person publishes in their profile, for the system prompt. Looked up once per
+   * peer; a profile that cannot be read just means the model is not told a name. */
+  private async displayName(
+    peerAddress: string,
+    ctx: BotContext
+  ): Promise<string | undefined> {
+    const known = this.names.get(peerAddress);
+    if (known) return known;
+    try {
+      const name = (await ctx.lookupPeer(peerAddress))?.displayName
+        ?.replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 64);
+      if (name) this.names.set(peerAddress, name);
+      return name || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Every message ends in one stored reply the host delivers: a subscription answer, a
+   * greeting, the model's answer, or a plain failure text when the model gave none. */
   async onMessage(
     msgCtx: BotMessageContext,
     ctx: BotContext
-  ): Promise<PreparedReply | void> {
+  ): Promise<PreparedReply> {
+    const text = (value: string): PreparedReply => ({
+      kind: "prepared-reply",
+      text: value,
+    });
     const scope = historyScope(msgCtx, ctx);
     const state = ctx.state;
-    const reply = msgCtx.reply;
     const items = structuredClone(msgCtx.items);
     const historyKey = "qwen-history:v1:" + JSON.stringify(scope);
     const userText = boundedText(
@@ -268,28 +347,26 @@ export class QwenBot implements FrankBotDefinition {
       msgCtx.peerAddress,
       "newsletter"
     );
-    if (subReply) {
-      await reply(subReply);
-      return;
-    }
-    if (!userText) {
-      await reply([
-        { type: "text", text: "Hello! I am Qwen. How can I help you today?" },
-      ]);
-      return;
-    }
+    if (subReply)
+      return text(
+        subReply
+          .flatMap((item) => (item.type === "text" ? [item.text] : []))
+          .join("\n")
+      );
+    if (!userText) return text("Hello! I am Qwen. How can I help you today?");
 
-    const stored = await state.get(historyKey);
-    const history = readHistory(stored, scope);
+    const history = readHistory(await state.get(historyKey), scope);
     const promptHistory: HistoryMessage[] = [
       ...history,
       { role: "user", content: userText },
     ];
-    // The generator never owns the prompt snapshot from which stored turns are built.
-    const result = await this.replyGenerator.reply(
-      promptHistory.map((item) => ({ ...item }))
+    const content = await this.answer(
+      promptHistory,
+      ctx.stopping,
+      await this.displayName(msgCtx.peerAddress, ctx)
     );
-    const content = boundedText(result?.content, MAX_HISTORY_CONTENT_BYTES);
+    // Nothing is remembered of a turn the model did not answer: the user sends it again.
+    if (content === undefined) return text(MODEL_FAILED_TEXT);
     const completed = validateHistory(
       {
         version: 1,
@@ -300,20 +377,13 @@ export class QwenBot implements FrankBotDefinition {
       },
       scope
     );
-    // The host stages the answer and these exact bounded bytes before the reply is first sent,
-    // and writes them at the history key only when that reply is delivered, provided the key
-    // still holds what was read above. Qwen does not write the key itself.
-    return {
-      kind: "prepared-reply",
-      text: content,
-      commit: {
-        key: historyKey,
-        expectedSha256:
-          stored === undefined
-            ? null
-            : createHash("sha256").update(stored, "utf8").digest("hex"),
-        value: boundedText(JSON.stringify(completed), MAX_HISTORY_RECORD_BYTES),
-      },
-    };
+    // The turn is remembered before its reply is handed to the host. The host stores that reply
+    // and delivers it, however many polls or restarts that takes, and does not start this
+    // conversation's next message until it has, so the next prompt reads this turn.
+    await state.put(
+      historyKey,
+      boundedText(JSON.stringify(completed), MAX_HISTORY_RECORD_BYTES)
+    );
+    return text(content);
   }
 }

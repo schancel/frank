@@ -447,10 +447,9 @@ describe("FrankBotHost Reliability Features", () => {
       payloadDigest: digit.repeat(64),
       receivedTime: Date.now() + 1000 + Number(digit),
     });
-    const prepared = (text: string, key = "plugin:shared"): PreparedReply => ({
+    const prepared = (text: string): PreparedReply => ({
       kind: "prepared-reply",
       text,
-      commit: { key, expectedSha256: null, value: "value of " + text },
     });
     const drain = async (instance: { tasks: Set<Promise<unknown>> }) => {
       for (
@@ -461,9 +460,9 @@ describe("FrankBotHost Reliability Features", () => {
         await Promise.allSettled(tasks);
     };
 
-    // T17. Pins the rule: a prepared reply is the invocation's only reply. On the base the
-    // returned object was not a reply at all and the invocation completed as if nothing was said.
-    it("holds a handler that returns a prepared reply after it already replied, staging and sending nothing more", async () => {
+    // Pins the rule: a stored reply is the invocation's only reply.
+    it("stores and sends nothing more for a handler that returns a prepared reply after it already replied, and finishes the message", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
       const dummyBot: FrankBotDefinition = {
         id: "both-bot",
         getProfile: () => ({ name: "BothBot", bot: true }),
@@ -488,178 +487,16 @@ describe("FrankBotHost Reliability Features", () => {
       expect(mockDirectMessagesSend.mock.calls[0][0].items).toEqual([
         { type: "text", text: "direct" },
       ]);
-      const row = instance.operations.get(message.payloadDigest);
-      expect(row).toMatchObject({
-        phase: "started",
-        replies: [{ observation: "delivered" }],
-      });
-      expect(row.prepared).toBeUndefined();
+      expect(instance.operations.get(message.payloadDigest)).toBeUndefined();
       expect(await instance.state.readEntries("host-prepared:")).toEqual([]);
-      expect(await instance.state.get("plugin:shared")).toBeUndefined();
-      expect(
-        await instance.state.get("digest:" + message.payloadDigest)
-      ).toBeUndefined();
-      await host.stop();
-    });
-
-    // T18. Pins the rule: one owed reply per commit key. On the base nothing was staged and no
-    // key was committed by the host at all.
-    it("refuses the second of two conversations that stage a commit to one key before any send, and completes the first", async () => {
-      let release!: () => void;
-      const gate = new Promise<void>((resolve) => (release = resolve));
-      const original = mockDirectMessagesSend.getMockImplementation()!;
-      mockDirectMessagesSend.mockImplementation(async (params: any) => {
-        await gate;
-        return original(params);
-      });
-      let handled = 0;
-      const dummyBot: FrankBotDefinition = {
-        id: "shared-key-bot",
-        getProfile: () => ({ name: "SharedKeyBot", bot: true }),
-        onMessage: async (msg) => {
-          handled++;
-          return prepared("answer " + (msg.items[0] as any).text);
-        },
-      };
-      const host = new FrankBotHost({
-        relayBaseUrl: "http://127.0.0.1:8098",
-        stateDir: `${stateDir}/shared-key`,
-      });
-      await host.register(dummyBot);
-      const instance = (host as any).instances.get("shared-key-bot");
-      const first = incoming("7", mockPeer);
-      const second = incoming("8", other);
-      mockDirectMessagesFetchSince.mockResolvedValue([first, second]);
-      await (host as any).pollAllBots();
-      // The first reply's send is in flight, slot persisted and not yet linked.
-      for (
-        let wait = 0;
-        wait < 100 && !mockDirectMessagesSend.mock.calls.length;
-        wait++
-      )
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      await instance.peerQueue.enqueue(other.address, async () => {});
-      expect(handled).toBe(2);
-      expect(instance.operations.get(first.payloadDigest)).toMatchObject({
-        prepared: { stateKey: "plugin:shared" },
-        replies: [{ stampValue: "10000000000000000" }],
-      });
-      expect(
-        instance.operations.get(second.payloadDigest).prepared
-      ).toBeUndefined();
-      release();
-      for (let pass = 0; pass < 3; pass++) {
-        await drain(instance);
-        await (host as any).pollAllBots();
-      }
-      await drain(instance);
-      expect(handled).toBe(2);
-      expect(mockDirectMessagesSend).toHaveBeenCalledTimes(1);
-      expect(mockDirectMessagesSend.mock.calls[0][0]).toMatchObject({
-        items: [{ type: "text", text: "answer 7" }],
-        stampValue: 10_000_000_000_000_000n,
-        conversationId: first.conversationId,
-      });
-      expect(await instance.state.get("plugin:shared")).toBe(
-        "value of answer 7"
-      );
-      expect(instance.operations.get(first.payloadDigest).phase).toBe(
+      expect(await instance.state.get("digest:" + message.payloadDigest)).toBe(
         "completed"
       );
-      expect(instance.operations.get(second.payloadDigest)).toMatchObject({
-        phase: "started",
-        replies: [],
-      });
-      expect(await instance.state.readEntries("host-prepared:")).toEqual([]);
-      await host.stop();
-    });
-
-    // #1323. The wallet now answers `dead` for an attempt its relay ended (before, such an
-    // attempt read `live` for good and every later reply was refused behind it). Pins what the
-    // host does with that answer: the reply keeps its slot, so it is never sent again as a fresh
-    // payment and never taken back, its staged answer and commit stay uncommitted, and a later
-    // reply is sent.
-    it("pin: records a relay-ended reply as dead, never sends it again or takes it back, and sends a later reply", async () => {
-      const endedDigest = "ee".repeat(32);
-      mockDirectMessagesSend.mockImplementationOnce(
-        async (params: {
-          onAttemptCreated?: (digest: string) => Promise<void>;
-        }) => {
-          await params.onAttemptCreated?.(endedDigest);
-          // The wallet's rejection for an ended attempt carries no not-attempted label.
-          throw new Error("The relay ended this payment set");
-        }
-      );
-      const dummyBot: FrankBotDefinition = {
-        id: "ended-reply-bot",
-        getProfile: () => ({ name: "EndedReplyBot", bot: true }),
-        onMessage: async (msg) => {
-          const text = (msg.items[0] as any).text;
-          return prepared("answer " + text, "plugin:" + text);
-        },
-      };
-      const host = new FrankBotHost({
-        relayBaseUrl: "http://127.0.0.1:8098",
-        stateDir: `${stateDir}/ended-reply`,
-      });
-      await host.register(dummyBot);
-      const instance = (host as any).instances.get("ended-reply-bot");
-      const reconcile = jest.fn(
-        async ({ payloadDigests }: { payloadDigests: string[] }) =>
-          Object.fromEntries(
-            payloadDigests.map((digest) => [
-              digest,
-              digest === endedDigest ? "dead" : "delivered",
-            ])
-          )
-      );
-      (host as any).chain.directMessages.reconcileAttempts = reconcile;
-      const retract = jest.spyOn(instance.operations, "retractReply");
-      const first = incoming("7", mockPeer);
-      mockDirectMessagesFetchSince.mockResolvedValue([first]);
-      for (let pass = 0; pass < 4; pass++) {
-        await (host as any).pollAllBots();
-        await drain(instance);
-      }
-      expect(mockDirectMessagesSend).toHaveBeenCalledTimes(1);
-      expect(reconcile).toHaveBeenCalledWith(
-        expect.objectContaining({ payloadDigests: [endedDigest] })
-      );
-      expect(instance.operations.get(first.payloadDigest)).toMatchObject({
-        phase: "started",
-        prepared: { stateKey: "plugin:7" },
-        replies: [{ digest: endedDigest, observation: "dead" }],
-      });
-      expect(await instance.state.get("plugin:7")).toBeUndefined();
-      // Its staged text and value are both kept.
-      expect(await instance.state.readEntries("host-prepared:")).toHaveLength(
-        2
-      );
-
-      const second = incoming("8", other);
-      mockDirectMessagesFetchSince.mockResolvedValue([first, second]);
-      for (let pass = 0; pass < 4; pass++) {
-        await (host as any).pollAllBots();
-        await drain(instance);
-      }
-      expect(mockDirectMessagesSend).toHaveBeenCalledTimes(2);
-      expect(mockDirectMessagesSend.mock.calls[1][0].items).toEqual([
-        { type: "text", text: "answer 8" },
-      ]);
-      expect(instance.operations.get(second.payloadDigest).phase).toBe(
-        "completed"
-      );
-      expect(await instance.state.get("plugin:8")).toBe("value of answer 8");
-      // The ended reply is exactly as it was.
-      expect(instance.operations.get(first.payloadDigest)).toMatchObject({
-        phase: "started",
-        replies: [{ digest: endedDigest, observation: "dead" }],
-      });
-      expect(await instance.state.get("plugin:7")).toBeUndefined();
-      expect(await instance.state.readEntries("host-prepared:")).toHaveLength(
-        2
-      );
-      expect(retract).not.toHaveBeenCalled();
+      expect(
+        error.mock.calls.some(([, detail]) =>
+          String(detail).includes("Prepared reply returned after a direct reply")
+        )
+      ).toBe(true);
       await host.stop();
     });
   });
@@ -824,63 +661,6 @@ describe("FrankBotHost Reliability Features", () => {
     });
   });
 
-  describe("Interrupted handler admission", () => {
-    it("holds a failed handler across every subsequent poll without marking it processed", async () => {
-      let callCount = 0;
-      const dummyBot: FrankBotDefinition = {
-        id: "failing-bot",
-        getProfile: () => ({ name: "FailingBot", bot: true }),
-        onMessage: async () => {
-          callCount++;
-          throw new Error("Simulated transient RPC failure");
-        },
-      };
-
-      const host = new FrankBotHost({
-        relayBaseUrl: "http://127.0.0.1:8098",
-        stateDir: `${stateDir}/poison-loop-test`,
-      });
-
-      await host.register(dummyBot);
-      const instance = (host as any).instances.get("failing-bot");
-
-      const messageTime = Date.now() + 5000;
-      const failingMsg = {
-        senderAddress: { raw: mockPeer.address.toLowerCase() },
-        senderPublicKey: getBytes(mockPeer.signingKey.compressedPublicKey),
-        recipientPublicKey: getBytes("0x" + mockLocalSubject),
-        messageId: "02020202-0202-0202-0202-020202020202",
-        recipientAddress: { raw: mockLocalAddress },
-        items: [{ type: "text", text: "Crash message" }],
-        conversationId: "01010101-0101-0101-0101-010101010101",
-        payloadDigest:
-          "4444444444444444444444444444444444444444444444444444444444444444",
-        receivedTime: messageTime,
-      };
-
-      for (let i = 0; i < 4; i++) {
-        mockDirectMessagesFetchSince.mockResolvedValueOnce([failingMsg]);
-        await (host as any).pollAllBots();
-        await instance.peerQueue.enqueue(
-          mockPeer.address.toLowerCase(),
-          async () => {}
-        );
-        expect(callCount).toBe(1);
-        expect(
-          await instance.state.get("digest:" + failingMsg.payloadDigest)
-        ).toBeUndefined();
-        expect(
-          await instance.state.get("fail:" + failingMsg.payloadDigest)
-        ).toBeUndefined();
-        expect(
-          await instance.state.get("cursor:lastPollTimestamp")
-        ).toBeUndefined();
-      }
-
-      await host.stop();
-    });
-  });
-
   // #1235 Stage 3. On main dce4bedf `pollOnce` never calls the wallet's re-observation: the
   // first three tests fail there (the mock is never called). The last is a pin: every other
   // test in this file already polls with a wallet handle that has no such method.
@@ -905,15 +685,17 @@ describe("FrankBotHost Reliability Features", () => {
       const { host, instance } = await registered("reobserve-order");
       const order: string[] = [];
       // One incomplete operation with a linked reply, so the recovery loop has work.
-      jest.spyOn(instance.operations, "listIncomplete").mockReturnValue([
+      jest.spyOn(instance.operations, "listStarted").mockReturnValue([
         {
           digest: "aa".repeat(32),
-          replies: [{ digest: "bb".repeat(32), observation: "unknown" }],
+          peerAddress: mockPeer.address.toLowerCase(),
+          reply: {
+            digest: "bb".repeat(32),
+            since: Date.now(),
+            stampValue: "1",
+          },
         },
       ]);
-      jest
-        .spyOn(instance.operations, "observe")
-        .mockImplementation(async () => void order.push("recovery recorded"));
       (host as any).chain.directMessages.reconcileAttempts = jest.fn(
         async () => {
           order.push("recovery read");
@@ -930,7 +712,6 @@ describe("FrankBotHost Reliability Features", () => {
       await (host as any).pollAllBots();
       expect(order).toEqual([
         "recovery read",
-        "recovery recorded",
         "reobserve",
         "fetch",
       ]);
@@ -1014,15 +795,17 @@ describe("FrankBotHost Reliability Features", () => {
       });
       const { host, instance } = await registered("order", fundAhead);
       expect(fundAhead).not.toHaveBeenCalled();
-      jest.spyOn(instance.operations, "listIncomplete").mockReturnValue([
+      jest.spyOn(instance.operations, "listStarted").mockReturnValue([
         {
           digest: "aa".repeat(32),
-          replies: [{ digest: "bb".repeat(32), observation: "unknown" }],
+          peerAddress: mockPeer.address.toLowerCase(),
+          reply: {
+            digest: "bb".repeat(32),
+            since: Date.now(),
+            stampValue: "1",
+          },
         },
       ]);
-      jest
-        .spyOn(instance.operations, "observe")
-        .mockImplementation(async () => void order.push("recovery recorded"));
       (host as any).chain.directMessages.reconcileAttempts = jest.fn(
         async () => {
           order.push("recovery read");
@@ -1036,7 +819,6 @@ describe("FrankBotHost Reliability Features", () => {
       await (host as any).pollAllBots();
       expect(order).toEqual([
         "recovery read",
-        "recovery recorded",
         "fund ahead",
         "fetch",
       ]);
@@ -1124,7 +906,8 @@ describe("FrankBotHost Reliability Features", () => {
     };
     const linkedRow = {
       digest: "aa".repeat(32),
-      replies: [{ digest: "bb".repeat(32), observation: "unknown" }],
+      peerAddress: mockPeer.address.toLowerCase(),
+      reply: { digest: "bb".repeat(32), since: Date.now(), stampValue: "1" },
     };
 
     it("never during registration; once per poll, about no reply in particular, before funding ahead and the mailbox fetch", async () => {
@@ -1159,11 +942,8 @@ describe("FrankBotHost Reliability Features", () => {
       const reconcileAttempts = jest.fn(async () => ({}));
       const { host, instance } = await registered("linked", reconcileAttempts);
       jest
-        .spyOn(instance.operations, "listIncomplete")
+        .spyOn(instance.operations, "listStarted")
         .mockReturnValue([linkedRow]);
-      jest
-        .spyOn(instance.operations, "observe")
-        .mockImplementation(async () => undefined);
       await (host as any).pollAllBots();
       expect(reconcileAttempts.mock.calls).toEqual([
         [{ wallet: instance.wallet, payloadDigests: ["bb".repeat(32)] }],
@@ -1174,7 +954,7 @@ describe("FrankBotHost Reliability Features", () => {
       const reconcileAttempts = jest.fn(async () => ({}));
       const { host, instance } = await registered("in-flight", reconcileAttempts);
       jest
-        .spyOn(instance.operations, "listIncomplete")
+        .spyOn(instance.operations, "listStarted")
         .mockReturnValue([linkedRow]);
       instance.inFlightDigests.add(linkedRow.digest);
       await (host as any).pollAllBots();

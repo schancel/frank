@@ -9,6 +9,7 @@ import {
 } from "ethers";
 
 import {
+  DirectMessageAlreadyAttemptedError,
   isDirectMessageNotAttempted,
   type ActiveChain,
 } from "@frank/wallet/chain/active-chain";
@@ -52,6 +53,7 @@ import {
   inboundIdentity,
   inboundOrder,
   conversationIdentity,
+  replyMessageId,
   type InboundIdentity,
 } from "./inbound-operation-store";
 import { admitBotProfile } from "./bot-profile-admission";
@@ -66,12 +68,45 @@ import { BotScheduler } from "./scheduler";
 // default poll intervals is past any brief relay or directory lapse and soon enough to act on.
 const UNMATCHED_WARN_MS = 60_000;
 
-// A direct reply the wallet refused without attempting is sent again on later polls: this many
-// sends in all, then it is held. A waiting reply keeps its handler suspended and its peer's lane
-// occupied, and the wallet puts the same label on refusals that never clear (an item type it
-// cannot carry, a recipient with no directory entry), so the bound is short. Five polls is past
-// an earlier payment settling or a directory lookup recovering.
+// A reply a handler sends itself and the wallet refused without attempting is sent again on later
+// polls: this many sends in all, then the handler is told it failed. A waiting reply keeps its
+// handler suspended and its peer's lane occupied, so the bound is short. Five polls is past an
+// earlier payment settling or a directory lookup recovering.
 const MAX_REPLY_SENDS = 5;
+
+// A stored reply is sent again on every poll until it is delivered, but not for ever: after this
+// long it is given up, at error level, and its conversation goes on.
+const REPLY_GIVE_UP_MS = 60 * 60_000;
+
+/** What a peer is told when its message could not be handled, so it is never met with silence. */
+export const FAILED_REPLY_TEXT =
+  "Sorry, I couldn't handle that message just now. Please send it again.";
+
+// A bot's account is topped up from the shared funding wallet when it holds less than this.
+const TOP_UP_BELOW_WEI = 100_000_000_000_000_000n;
+// Balances are looked at this often, and a failed top-up is tried again this soon.
+const TOP_UP_CHECK_MS = 30_000;
+// After a top-up was sent, none is sent for this long, whatever the balance reads meanwhile.
+const TOP_UP_INTERVAL_MS = 5 * 60_000;
+const TOP_UP_RECEIPT_MS = 60_000;
+
+// One relay or wallet question of a poll may take this long. Past it that bot's poll ends with
+// an error and its next poll starts afresh; the other bots never waited for it.
+const POLL_CALL_TIMEOUT_MS = 30_000;
+
+/** `call`, or a rejection naming `what` once it has taken `POLL_CALL_TIMEOUT_MS`. */
+function bounded<T>(call: Promise<T>, what: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(new Error(`${what} took over ${POLL_CALL_TIMEOUT_MS / 1000}s`)),
+      POLL_CALL_TIMEOUT_MS
+    );
+    timer.unref?.();
+  });
+  return Promise.race([call, late]).finally(() => clearTimeout(timer));
+}
 
 /** A replies-per-peer budget as configured: unset, or a non-negative integer. Anything else is a
  * configuration error, never silently the default. */
@@ -102,16 +137,25 @@ interface ActiveBotInstance {
   peerQueue: PeerLaneQueue;
   context: BotContext;
   lastPollTimestamp: number;
+  /** This bot's poll pass, while one runs. */
+  polling?: Promise<void>;
   lastAuthRecoveryMs?: number;
   inFlightDigests: Set<string>;
   /** Deferred digests no fetch has returned: when first missed, and when last warned. Log only. */
   unmatched: Map<string, { since: number; warned: number }>;
-  /** Prepared replies this process found held (changed plugin key, unreadable staged content). */
-  held: Set<string>;
-  /** A retry pass over refused first sends is running. */
+  /** Peers that reached the reply budget: whether their profile says they are a bot. */
+  botPeers: Map<string, boolean>;
+  /** Stored replies whose failed send was already logged. */
+  sendWarned: Set<string>;
+  /** A retry pass over unsent stored replies is running. */
   retrying: boolean;
-  /** The row whose first send the last retry pass ended on; the next pass starts after it. */
+  /** The row the last retry pass ended on; the next pass starts after it. */
   refused?: string;
+  /** The accounts the shared funding wallet keeps topped up. */
+  fundingTargets: { addr: string; label: string }[];
+  toppingUp: boolean;
+  /** No balance is read before this time. */
+  nextTopUpMs: number;
   /** Direct replies waiting for this bot's next poll pass before they are sent again. */
   pollWaiters: Set<() => void>;
   evmMainPrivateKey?: string;
@@ -137,8 +181,9 @@ export class FrankBotHost {
 
   private running = false;
   private closing = false;
+  /** Aborted when the host starts stopping; handlers hand it to what they wait on. */
+  private readonly stopController = new AbortController();
   private pollTimer?: NodeJS.Timeout;
-  private polling?: Promise<void>;
   private registrationTimer?: NodeJS.Timeout;
   private lastRegistrationPollMs = 0;
   private readonly scheduler = new BotScheduler();
@@ -215,6 +260,7 @@ export class FrankBotHost {
           ? "FRANK_BOT_MAX_REPLIES_PER_PEER"
           : "maxRepliesPerPeer"
       ),
+      replyGiveUpMs: options.replyGiveUpMs ?? REPLY_GIVE_UP_MS,
     };
 
     const cursorFile = join(this.options.stateDir, "registration-cursor.json");
@@ -257,6 +303,31 @@ export class FrankBotHost {
         `[bot-host] initialized shared funding wallet: ${this.fundingWallet.address}`
       );
     }
+  }
+
+  /** Registers several bots on this host, one after another. A bot that cannot be built or
+   * registered is reported by name and left out; the others are registered and served. Each
+   * entry is a definition or a function that makes one, so a bot whose own construction fails
+   * (a missing setting) is held to the same rule. Returns the ids that failed. */
+  async registerAll(
+    bots: readonly (FrankBotDefinition | (() => FrankBotDefinition))[]
+  ): Promise<string[]> {
+    const failed: string[] = [];
+    for (const [index, entry] of bots.entries()) {
+      let name = `#${index + 1}`;
+      try {
+        const definition = typeof entry === "function" ? entry() : entry;
+        name = definition.id;
+        await this.register(definition);
+      } catch (error) {
+        failed.push(name);
+        console.error(
+          `[bot-host] Bot "${name}" could not be started and is left out; the other bots keep running:`,
+          error instanceof Error ? error.message : error
+        );
+      }
+    }
+    return failed;
   }
 
   async register(definition: FrankBotDefinition): Promise<void> {
@@ -337,47 +408,29 @@ export class FrankBotHost {
         profile,
       });
 
-      // 6. Fund bot identity if shared funding wallet is present
-      if (this.fundingWallet && this.nonceSequencer) {
-        const receiveAddress = (await wallet.getReceiveAddress()).raw;
-        // The faucet sends its grants straight from the funding wallet, so its identity address
-        // needs nothing; its messages are still paid from its own receive address.
-        const targets = [
-          ...(definition.id === "faucet"
-            ? []
-            : [{ addr: botAddress, label: "Identity address" }]),
-          { addr: receiveAddress, label: "EVM main account" },
-        ];
-        for (const target of targets) {
-          try {
-            const bal = await this.provider.getBalance(target.addr);
-            if (bal < 100_000_000_000_000_000n) {
-              const funderBal = await this.provider.getBalance(
-                this.fundingWallet.address
-              );
-              const fundAmount =
-                funderBal > 1_000_000_000_000_000_000n
-                  ? 500_000_000_000_000_000n
-                  : funderBal / 4n;
-              if (fundAmount > 10_000_000_000_000_000n) {
-                await this.nonceSequencer.withNonce(async (nonce) => {
-                  const tx = await this.fundingWallet!.sendTransaction({
-                    to: target.addr,
-                    value: fundAmount,
-                    nonce,
-                  });
-                  await tx.wait();
-                });
-              }
-            }
-          } catch (fundErr) {
-            console.warn(
-              `[bot-host] Failed initial funding for ${target.label} (${target.addr}) of bot ${definition.id}:`,
-              fundErr
-            );
-          }
-        }
-      }
+      // 6. Fund the bot from the shared funding wallet, if there is one. The same top-up runs
+      // again on the poll whenever a balance has fallen under the threshold.
+      // The faucet sends its grants straight from the funding wallet, so its identity address
+      // needs nothing; its messages are still paid from its own receive address.
+      const fundingTargets = this.fundingWallet
+        ? [
+            ...(definition.id === "faucet"
+              ? []
+              : [{ addr: botAddress, label: "Identity address" }]),
+            {
+              addr: (await wallet.getReceiveAddress()).raw,
+              label: "EVM main account",
+            },
+          ].filter(
+            // One account under two names is topped up once.
+            (target, index, all) =>
+              all.findIndex(
+                (other) =>
+                  other.addr.toLowerCase() === target.addr.toLowerCase()
+              ) === index
+          )
+        : [];
+      await this.fundBot(definition.id, fundingTargets);
 
       // 7. Wire up loop guard and peer queue
       // The operator's setting first, then what the bot declares, then the guard's default.
@@ -391,6 +444,10 @@ export class FrankBotHost {
           ),
       });
       const peerQueue = new PeerLaneQueue();
+
+      // Transactions from the bot's own key are built one at a time: two built at once would
+      // read the same pending nonce.
+      const ownTransactions = new EVMNonceSequencer(this.provider, botAddress);
 
       // 8. Assemble BotContext
       const subscriptions = new LevelSubscriptionManager(
@@ -409,6 +466,7 @@ export class FrankBotHost {
         provider: this.provider,
         state,
         subscriptions,
+        stopping: this.stopController.signal,
 
         lookupPeer: (addr: string) => directory.lookupPeer(addr),
 
@@ -463,6 +521,7 @@ export class FrankBotHost {
             });
           }
 
+          return ownTransactions.runExclusive(async () => {
           const botWallet = new Wallet(
             wallet.identity.toPrivateKeyHex(),
             this.provider
@@ -516,6 +575,7 @@ export class FrankBotHost {
             }
           }
           return { txHash: tx.hash };
+          });
         },
 
         sendTransfer: async ({ to, valueWei }) => {
@@ -543,6 +603,7 @@ export class FrankBotHost {
             });
           }
 
+          return ownTransactions.runExclusive(async () => {
           const botWallet = new Wallet(
             wallet.identity.toPrivateKeyHex(),
             this.provider
@@ -576,6 +637,7 @@ export class FrankBotHost {
           const rawTx = await botWallet.signTransaction(populated);
           const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
           return { rawTx, txHash };
+          });
         },
 
         waitForReceipt: async (
@@ -629,8 +691,12 @@ export class FrankBotHost {
           savedCursor > 0 ? savedCursor : Date.now() - 24 * 3600_000,
         inFlightDigests: new Set<string>(),
         unmatched: new Map(),
-        held: new Set<string>(),
+        botPeers: new Map(),
+        sendWarned: new Set<string>(),
         retrying: false,
+        fundingTargets,
+        toppingUp: false,
+        nextTopUpMs: Date.now() + TOP_UP_CHECK_MS,
         pollWaiters: new Set(),
         evmMainPrivateKey,
       };
@@ -718,12 +784,18 @@ export class FrankBotHost {
     return this.stopPromise;
   }
 
-  // Single-flight: an overlapping tick joins the running pass, and stop() can await it.
+  /** One poll pass of every bot. Each bot polls on its own: a relay call that hangs or fails for
+   * one bot holds only that bot. Single flight per bot: a tick that finds a bot's pass still
+   * running joins it instead of starting a second one. Resolves when every pass has ended. */
   private pollAllBots(): Promise<void> {
-    this.polling ??= this.pollOnce().finally(() => {
-      this.polling = undefined;
-    });
-    return this.polling;
+    return Promise.all(
+      [...this.instances.entries()].map(
+        ([id, instance]) =>
+          (instance.polling ??= this.pollOnce(id, instance).finally(() => {
+            instance.polling = undefined;
+          }))
+      )
+    ).then(() => undefined);
   }
 
   /**
@@ -749,46 +821,144 @@ export class FrankBotHost {
     }
   }
 
-  private async pollOnce(): Promise<void> {
-    for (const [id, instance] of this.instances.entries()) {
+  /** Tops up, from the shared funding wallet, each of a bot's accounts that holds less than the
+   * threshold. "sent": a funding transaction was handed to the node. "failed": an account could
+   * not be looked at or funded; nothing is lost, the next call tries again. */
+  private async fundBot(
+    id: string,
+    targets: readonly { addr: string; label: string }[]
+  ): Promise<"sent" | "idle" | "failed"> {
+    if (!this.fundingWallet || !this.nonceSequencer) return "idle";
+    let outcome: "sent" | "idle" | "failed" = "idle";
+    for (const target of targets) {
+      let sent = false;
+      try {
+        const bal = await this.provider.getBalance(target.addr);
+        if (bal >= TOP_UP_BELOW_WEI) continue;
+        const funderBal = await this.provider.getBalance(
+          this.fundingWallet.address
+        );
+        const fundAmount =
+          funderBal > 1_000_000_000_000_000_000n
+            ? 500_000_000_000_000_000n
+            : funderBal / 4n;
+        if (fundAmount <= 10_000_000_000_000_000n) {
+          outcome = outcome === "sent" ? "sent" : "failed";
+          console.warn(
+            `[bot-host] Funding wallet ${this.fundingWallet.address} is too low to top up ${target.label} (${target.addr}) of bot ${id}`
+          );
+          continue;
+        }
+        await this.nonceSequencer.withNonce(async (nonce) => {
+          const tx = await this.fundingWallet!.sendTransaction({
+            to: target.addr,
+            value: fundAmount,
+            nonce,
+          });
+          sent = true;
+          outcome = "sent";
+          await tx.wait(1, TOP_UP_RECEIPT_MS);
+        });
+        console.log(
+          `[bot-host] Topped up ${target.label} (${target.addr}) of bot ${id}`
+        );
+      } catch (fundErr) {
+        if (!sent && outcome !== "sent") outcome = "failed";
+        console.warn(
+          `[bot-host] Failed funding ${target.label} (${target.addr}) of bot ${id}; it is tried again on a later poll:`,
+          fundErr instanceof Error ? fundErr.message : fundErr
+        );
+      }
+    }
+    return outcome;
+  }
+
+  /** The poll's top-up: every reply is paid from the bot's own account, so a bot funded only at
+   * registration runs dry. Not awaited. One at a time for a bot, balances read at most every
+   * `TOP_UP_CHECK_MS`, and nothing sent for `TOP_UP_INTERVAL_MS` after a top-up went out. */
+  private topUp(id: string, instance: ActiveBotInstance): void {
+    if (
+      !this.fundingWallet ||
+      instance.toppingUp ||
+      Date.now() < instance.nextTopUpMs
+    )
+      return;
+    instance.toppingUp = true;
+    void this.fundBot(id, instance.fundingTargets)
+      .catch(() => "failed" as const)
+      .then((outcome) => {
+        instance.toppingUp = false;
+        instance.nextTopUpMs =
+          Date.now() +
+          (outcome === "sent" ? TOP_UP_INTERVAL_MS : TOP_UP_CHECK_MS);
+      });
+  }
+
+  private async pollOnce(
+    id: string,
+    instance: ActiveBotInstance
+  ): Promise<void> {
+    {
       try {
         if (this.closing) return;
         instance.operations.assertOpen();
-        // Independently recover already linked operations, including rows behind the mailbox cursor.
+        this.topUp(id, instance);
+        // Stored replies the wallet already holds an attempt for: the wallet sends the same
+        // bytes again and says what became of them. Rows behind the mailbox cursor included.
         let asked = false;
         // Whether a question to the wallet failed in this poll: then nothing is funded ahead.
         let held = false;
-        for (const row of instance.operations.listIncomplete()) {
+        const now = Date.now();
+        for (const row of instance.operations.listStarted()) {
           if (this.closing) return;
           if (instance.inFlightDigests.has(row.digest)) continue;
-          const payloadDigests = row.replies.flatMap((call) =>
-            call.digest ? [call.digest] : []
-          );
-          if (!payloadDigests.length) continue;
+          if (!row.reply) {
+            // Started, no handler running and nothing owed: a restart interrupted its handler.
+            void this.track(instance, row, () =>
+              this.finishInterrupted(instance, row.digest)
+            );
+            continue;
+          }
+          const outbound = row.reply.digest;
+          // Not with the wallet yet: sent by the retry pass below.
+          if (!outbound) continue;
           asked = true;
+          let status: string;
           try {
-            const observations =
-              await this.chain.directMessages.reconcileAttempts({
-                wallet: instance.wallet,
-                payloadDigests,
-              });
-            for (let index = 0; index < row.replies.length; index++) {
-              const digest = row.replies[index].digest;
-              if (digest)
-                await instance.operations.observe(
-                  row.digest,
-                  index,
-                  digest,
-                  observations[digest] ?? "unknown"
-                );
-            }
+            status =
+              (
+                await bounded(
+                  this.chain.directMessages.reconcileAttempts({
+                    wallet: instance.wallet,
+                    payloadDigests: [outbound],
+                  }),
+                  "Asking the wallet about a reply"
+                )
+              )[outbound] ?? "unknown";
           } catch {
             held = true;
             instance.operations.assertOpen(); // a failed journal write faults admission, not just recovery
             console.warn(
               `[bot-host] [${id}] Original reply recovery held; preserve state`
             );
+            continue;
           }
+          if (status === "delivered")
+            void this.track(instance, row, () =>
+              this.finish(instance, row.digest, true)
+            );
+          else if (status === "dead")
+            void this.track(instance, row, () =>
+              this.giveUp(instance, row.digest, "the relay ended its delivery")
+            );
+          else if (now - row.reply.since >= this.options.replyGiveUpMs)
+            void this.track(instance, row, () =>
+              this.giveUp(
+                instance,
+                row.digest,
+                "it was paid for but not delivered in time; the wallet keeps its payment and may still deliver it"
+              )
+            );
         }
         if (this.closing) return;
         // A paid reply this host has no incomplete row for any more is still the wallet's to
@@ -799,10 +969,13 @@ export class FrankBotHost {
         // poll would only wait behind it. Never at registration.
         if (!asked && instance.inFlightDigests.size === 0) {
           try {
-            await this.chain.directMessages.reconcileAttempts({
-              wallet: instance.wallet,
-              payloadDigests: [],
-            });
+            await bounded(
+              this.chain.directMessages.reconcileAttempts({
+                wallet: instance.wallet,
+                payloadDigests: [],
+              }),
+              "Retrying the wallet's earlier payments"
+            );
             this.walletRetryWarned.delete(id);
           } catch (error) {
             held = true;
@@ -816,12 +989,6 @@ export class FrankBotHost {
           }
           if (this.closing) return;
         }
-        // A prepared reply observed delivered commits its plugin value and completes.
-        for (const row of instance.operations.listIncomplete())
-          if (row.prepared && row.replies[0]?.observation === "delivered")
-            void this.track(instance, row, () =>
-              this.completePrepared(instance, row.digest)
-            );
         // Native transfers this wallet broadcast and nothing has seen confirm: the wallet looks
         // again, within its own request bound (none when nothing is pending). Not awaited, and
         // its failure is not this poll's; a handle without the method has nothing to do.
@@ -837,10 +1004,13 @@ export class FrankBotHost {
         // registration: the wallet moves nothing by being opened. Not in a poll whose recovery
         // failed: until the wallet's earlier payments have been looked at, nothing new is funded.
         if (!held) this.fundAhead(id, instance);
-        const messages = await this.chain.directMessages.fetchSince({
-          wallet: instance.wallet,
-          sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
-        });
+        const messages = await bounded(
+          this.chain.directMessages.fetchSince({
+            wallet: instance.wallet,
+            sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
+          }),
+          "Reading the mailbox"
+        );
         const accepted: {
           identity: InboundIdentity;
           items: MessageItem[];
@@ -870,18 +1040,24 @@ export class FrankBotHost {
         // a later message must not move the cursor past one that is not durable yet.
         accepted.sort((a, b) => inboundOrder(a.identity, b.identity));
         const fetched = new Map<string, (typeof accepted)[number]>();
-        let full = false;
         for (const entry of accepted) {
           const { identity } = entry;
-          // At capacity nothing later is retained, but rows retained earlier are still matched.
+          // Finished earlier and read again because an older message still pins the scan.
+          if (await instance.operations.finished(identity.digest)) continue;
           if (!instance.operations.get(identity.digest)) {
-            if (full) continue;
-            const drop = instance.loopGuard.shouldDrop(identity.peerAddress);
+            let drop = instance.loopGuard.shouldDrop(identity.peerAddress);
+            // The reply budget exists to end two bots answering each other for ever. A person
+            // is never limited: only a peer whose own profile says it is a bot.
+            if (
+              drop === "rate-limited" &&
+              !(await this.peerIsBot(instance, identity.peerAddress))
+            )
+              drop = null;
             if (drop === "rate-limited")
               this.noticeRateLimited(instance, identity);
             if (drop) continue;
           }
-          let outcome: "retained" | "known" | "full";
+          let outcome: "retained" | "known" | "finished";
           try {
             outcome = await instance.operations.retain(identity);
           } catch {
@@ -891,16 +1067,9 @@ export class FrankBotHost {
             );
             continue;
           }
-          if (outcome === "full") {
-            full = true;
-            console.warn(
-              `[bot-host] [${id}] Inbound retention full; later messages are not retained`
-            );
-            continue;
-          }
+          if (outcome === "finished") continue;
           fetched.set(identity.digest, entry);
         }
-        const now = Date.now();
         for (const row of instance.operations.listDeferred()) {
           const match = fetched.get(row.digest);
           if (!match) {
@@ -922,7 +1091,7 @@ export class FrankBotHost {
             continue;
           }
           instance.unmatched.delete(row.digest);
-          // Start, handler, prepare and first send are one task. Once the start write has
+          // Start, handler, storing its reply and the first send are one task. Once the start write has
           // committed the handler runs, even if stop() landed meanwhile: stop() drains it.
           void this.track(instance, row, async () => {
             if (
@@ -934,7 +1103,7 @@ export class FrankBotHost {
             await this.dispatch(instance, row, match);
           });
         }
-        this.retryFirstSends(instance);
+        this.retryReplies(instance);
       } catch (err: unknown) {
         console.warn(
           `[bot-host] Failed polling messages for bot "${id}":`,
@@ -970,6 +1139,27 @@ export class FrankBotHost {
     }
   }
 
+  /** Whether the peer's published profile says it is a bot. Asked only for a peer that has used
+   * up the reply budget, and remembered once answered. A profile that cannot be read counts as
+   * a person: the bot answers. */
+  private async peerIsBot(
+    instance: ActiveBotInstance,
+    peerAddress: string
+  ): Promise<boolean> {
+    const known = instance.botPeers.get(peerAddress);
+    if (known !== undefined) return known;
+    let profile;
+    try {
+      profile = await instance.directory.lookupPeer(peerAddress);
+    } catch {
+      return false;
+    }
+    if (!profile) return false;
+    const isBot = profile.isBot === true;
+    instance.botPeers.set(peerAddress, isBot);
+    return isBot;
+  }
+
   /** Resolves once this bot's next poll pass has ended, or at once when the host is stopping. */
   private nextPoll(instance: ActiveBotInstance): Promise<void> {
     if (this.closing) return Promise.resolve();
@@ -982,50 +1172,51 @@ export class FrankBotHost {
     for (const wake of waiters) wake();
   }
 
-  /** Sends one journaled direct reply of a running invocation. A send the wallet refused with
-   * its not-attempted label, having reported no attempt, created nothing: the same reply, in the
-   * same slot, is sent again after the next poll pass. The handler stays suspended in its
-   * `reply()` meanwhile, so nothing it did before runs twice and what it does with the result
-   * runs once. Every other rejection, and the last of `MAX_REPLY_SENDS` refusals, rejects as
-   * before: the slot stays as it is, the invocation is held and nothing is sent again. The wait
-   * is process memory: a host that stops meanwhile leaves the invocation held. */
+  /** Sends one reply a running handler makes itself. A send the wallet refused with its
+   * not-attempted label, having reported no attempt, created nothing: the same reply is sent
+   * again after the next poll pass. The handler stays suspended in its `reply()` meanwhile, so
+   * nothing it did before runs twice and what it does with the result runs once. Every other
+   * rejection, and the last of `MAX_REPLY_SENDS` refusals, rejects to the handler, which may
+   * catch it and go on. `linked` is called once the wallet holds an attempt for the reply. */
   private async sendReply(
     instance: ActiveBotInstance,
-    inbound: string,
-    index: number,
+    inbound: InboundIdentity,
     captured: {
       recipient: string;
       conversationId?: string;
       stampValue: bigint;
       items: MessageItem[];
-    }
+    },
+    linked: () => Promise<void>
   ): Promise<DirectMessageSendResult> {
     for (let sends = 1; ; sends++) {
       let reported = false;
       try {
-        return await this.sendCanonicalMessage(
+        const result = await this.sendCanonicalMessage(
           instance.wallet,
           captured.recipient,
           captured.items,
           captured.conversationId,
           { stampValueWei: captured.stampValue },
-          (digest) => {
+          () => {
             reported = true;
-            return instance.operations.link(inbound, index, digest);
+            return linked();
           }
         );
+        if (!reported) await linked();
+        return result;
       } catch (error) {
         // The wallet's label is about this one call and is read from this rejection, here.
         if (!isDirectMessageNotAttempted(error) || reported) throw error;
         if (sends >= MAX_REPLY_SENDS) {
           console.error(
-            `[bot-host] [${instance.definition.id}] Reply to ${inbound} refused ${sends} times without an attempt; the message is held and will not be answered`
+            `[bot-host] [${instance.definition.id}] Reply to ${inbound.peerAddress} for message ${inbound.messageId} refused ${sends} times without an attempt`
           );
           throw error;
         }
         if (sends === 1)
           console.warn(
-            `[bot-host] [${instance.definition.id}] Reply to ${inbound} refused before any attempt; sending it again on later polls`
+            `[bot-host] [${instance.definition.id}] Reply to ${inbound.peerAddress} for message ${inbound.messageId} refused before any attempt; sending it again on later polls`
           );
         await this.nextPoll(instance);
         if (this.closing) throw new Error("Bot invocation is no longer active");
@@ -1033,7 +1224,7 @@ export class FrankBotHost {
     }
   }
 
-  /** Says, once per hour for each peer, that its messages are not being handled: one log line
+  /** Says, once per hour for each bot peer, that its messages are not being handled: one log line
    * and one plain text to the peer, in the conversation it wrote in. The message itself is not
    * retained or handled. The notice is outside the reply budget and is never repeated inside the
    * window, whether or not it could be sent, so it cannot keep two bots answering each other:
@@ -1082,11 +1273,12 @@ export class FrankBotHost {
     const task = instance.peerQueue.enqueue(row.peerAddress, async () => {
       try {
         return await work();
-      } catch {
-        // An interrupted handler may have generated content or paid. It is never retried,
-        // skipped as processed, or completed from a later wallet delivery observation.
-        console.warn(
-          `[bot-host] [${instance.definition.id}] Inbound invocation held; preserve original operation`
+      } catch (error) {
+        // The row stays as it is. A later poll finds it with no task running and finishes it:
+        // a stored reply is sent again, anything else is answered with the failure text.
+        console.error(
+          `[bot-host] [${instance.definition.id}] Handling of a message from ${row.peerAddress} was interrupted; a later poll finishes it:`,
+          error instanceof Error ? error.message : error
         );
         return undefined;
       } finally {
@@ -1098,128 +1290,144 @@ export class FrankBotHost {
     return task;
   }
 
-  /** Sends a prepared reply that has no slot: the only state a send starts from. The slot is
-   * persisted first, so a crash inside the wallet can never lead to a second send. It is taken
-   * back, leaving the staged answer to be sent later, only when the wallet labelled this very
-   * call as not attempted and reported no attempt during it. */
-  private async sendPrepared(
+  /** Stores the one text reply the host owes for a message and sends it. A text the store
+   * refuses (empty, too long, not well-formed) is replaced by the failure text. */
+  private async owe(
     instance: ActiveBotInstance,
-    digest: string
-  ): Promise<"refused" | undefined> {
-    const row = instance.operations.get(digest);
-    if (
-      this.closing ||
-      instance.held.has(digest) ||
-      row?.phase !== "started" ||
-      !row.prepared ||
-      row.replies.length
-    )
-      return undefined;
-    // Everything that can refuse runs before the slot is persisted. Between that write and the
-    // wallet call nothing may throw: an unlabelled refusal there would hold the reply for good.
-    const recipient = toChainAddress(row.peerAddress);
-    const stampValue = BigInt(row.prepared.stampValue);
-    let text: string;
+    digest: string,
+    text: string
+  ): Promise<void> {
+    const stamp = this.options.stampValueWei.toString();
     try {
-      text = await instance.operations.beginPreparedReply(digest);
+      await instance.operations.stageReply(digest, text, stamp, Date.now());
     } catch {
       instance.operations.assertOpen(); // a failed journal write holds everything
-      instance.held.add(digest);
-      console.warn(
-        `[bot-host] [${instance.definition.id}] Prepared reply for ${digest} held before sending; its commit key changed or its staged content is unreadable`
+      if (instance.operations.get(digest)?.reply) return;
+      console.error(
+        `[bot-host] [${instance.definition.id}] The reply for ${digest} could not be stored; the peer is told its message failed`
+      );
+      await instance.operations.stageReply(
+        digest,
+        FAILED_REPLY_TEXT,
+        stamp,
+        Date.now()
+      );
+    }
+    await this.deliver(instance, digest);
+  }
+
+  /** Sends the stored reply of a message. Every send of it, in any process lifetime, carries the
+   * same message identity, and the wallet makes at most one payment for one identity: a send
+   * that failed before the wallet journalled a payment (no funds, no directory entry, an earlier
+   * payment still open) paid nothing and is simply made again; once the wallet holds an attempt
+   * it answers with that attempt, which the poll then reconciles. "waiting": still owed. */
+  private async deliver(
+    instance: ActiveBotInstance,
+    digest: string
+  ): Promise<"waiting" | undefined> {
+    const row = instance.operations.get(digest);
+    if (this.closing || row?.phase !== "started" || !row.reply)
+      return undefined;
+    // With the wallet already: the poll asks the wallet what became of it.
+    if (row.reply.digest) return undefined;
+    if (Date.now() - row.reply.since >= this.options.replyGiveUpMs) {
+      await this.giveUp(
+        instance,
+        digest,
+        "it could not be sent in time; nothing was paid for it"
       );
       return undefined;
     }
-    let reported = false;
-    let result: DirectMessageSendResult;
+    const text = await instance.operations.replyText(digest);
     try {
-      result = await this.chain.directMessages.send({
+      await this.chain.directMessages.send({
         wallet: instance.wallet,
-        recipient,
+        recipient: toChainAddress(row.peerAddress),
         items: [{ type: "text", text }],
         conversationId: row.conversationId,
-        stampValue,
-        onAttemptCreated: (outbound) => {
-          reported = true;
-          return instance.operations.link(digest, 0, outbound);
-        },
+        messageId: replyMessageId(instance.operations.owner, digest),
+        stampValue: BigInt(row.reply.stampValue),
+        onAttemptCreated: (outbound) =>
+          instance.operations.linkReply(digest, outbound),
       });
     } catch (error) {
-      // The wallet's label is about this one call and is read from this rejection, here.
-      const notAttempted = isDirectMessageNotAttempted(error);
-      if (!notAttempted || reported) {
-        // Linked: reconciled on later polls. Unlinked: held, never sent again.
+      instance.operations.assertOpen(); // a failed journal write holds everything
+      if (error instanceof DirectMessageAlreadyAttemptedError)
+        await instance.operations.linkReply(digest, error.payloadDigest);
+      if (instance.operations.get(digest)?.reply?.digest) return undefined;
+      if (!instance.sendWarned.has(digest)) {
+        instance.sendWarned.add(digest);
         console.warn(
-          `[bot-host] [${instance.definition.id}] Prepared reply for ${digest} not delivered yet; preserve original operation`
+          `[bot-host] [${instance.definition.id}] Reply to ${row.peerAddress} for message ${row.messageId} was not sent; nothing was paid and it is sent again on later polls:`,
+          error instanceof Error ? error.message : error
         );
-        return undefined;
       }
-      await instance.operations.retractReply(digest);
-      return "refused";
+      return "waiting";
     }
-    // A send result cannot substitute for the durable pre-submission callback.
-    if (
-      instance.operations.get(digest)?.replies[0]?.digest !==
-      result.payloadDigest
-    )
-      throw new Error("Bot reply has no matching durable attempt");
-    await instance.operations.observe(
-      digest,
-      0,
-      result.payloadDigest,
-      "delivered"
-    );
-    await this.completePrepared(instance, digest);
+    await this.finish(instance, digest, true);
     return undefined;
   }
 
-  /** Commits the plugin value and completes the row, once its own reply is recorded delivered. */
-  private async completePrepared(
+  /** Finishes a started message: its row goes and the scan cursor moves past it. */
+  private async finish(
     instance: ActiveBotInstance,
-    digest: string
+    digest: string,
+    delivered: boolean
   ): Promise<void> {
     const row = instance.operations.get(digest);
-    if (
-      instance.held.has(digest) ||
-      row?.phase !== "started" ||
-      !row.prepared ||
-      row.replies[0]?.observation !== "delivered"
-    )
-      return;
-    let committedCursor: number;
-    try {
-      committedCursor = await instance.operations.complete(
-        digest,
-        Math.max(instance.lastPollTimestamp, row.receivedTime + 1)
-      );
-    } catch {
-      instance.operations.assertOpen(); // a failed journal write holds everything
-      instance.held.add(digest);
-      console.warn(
-        `[bot-host] [${instance.definition.id}] Reply for ${digest} delivered but its commit is held; the commit key changed or the staged value is unreadable, nothing was overwritten`
-      );
-      return;
-    }
+    if (row?.phase !== "started") return;
+    const committedCursor = await instance.operations.complete(
+      digest,
+      Math.max(instance.lastPollTimestamp, row.receivedTime + 1)
+    );
     instance.lastPollTimestamp = Math.max(
       instance.lastPollTimestamp,
       committedCursor
     );
-    instance.loopGuard.recordReply(row.peerAddress);
+    instance.sendWarned.delete(digest);
+    if (delivered) instance.loopGuard.recordReply(row.peerAddress);
   }
 
-  /** Retries first sends the wallet refused. One tracked pass at a time, in handling order
-   * starting after the row the previous pass ended on, each send on its peer's lane, ending at
-   * the first refusal: one extra wallet call per poll, and a row refused for its own recipient
-   * is overtaken. No lock and no queue: while the wallet refuses, the answers stay staged. */
-  private retryFirstSends(instance: ActiveBotInstance): void {
+  /** Stops trying to deliver a stored reply, and says so where an operator sees it. */
+  private async giveUp(
+    instance: ActiveBotInstance,
+    digest: string,
+    why: string
+  ): Promise<void> {
+    const row = instance.operations.get(digest);
+    if (row?.phase !== "started") return;
+    console.error(
+      `[bot-host] [${instance.definition.id}] Giving up on the reply to ${row.peerAddress} for message ${row.messageId}: ${why}`
+    );
+    await this.finish(instance, digest, false);
+  }
+
+  /** A started message with no handler running and no stored reply: a restart interrupted its
+   * handler. The handler is not run again, since it may have acted already. If a reply of its
+   * own reached the wallet, the wallet finishes delivering it; otherwise the peer is told. */
+  private async finishInterrupted(
+    instance: ActiveBotInstance,
+    digest: string
+  ): Promise<void> {
+    const row = instance.operations.get(digest);
+    if (this.closing || row?.phase !== "started" || row.reply) return;
+    console.error(
+      `[bot-host] [${instance.definition.id}] Handling of message ${row.messageId} from ${row.peerAddress} was interrupted`
+    );
+    if (row.replied) await this.finish(instance, digest, false);
+    else await this.owe(instance, digest, FAILED_REPLY_TEXT);
+  }
+
+  /** Sends stored replies that are not with the wallet yet. One tracked pass at a time, in
+   * handling order starting after the row the previous pass ended on, each send on its peer's
+   * lane, ending at the first that still cannot be sent: one extra wallet call per poll while
+   * the wallet cannot send, and a reply that cannot be sent for its own recipient is overtaken
+   * by the others. */
+  private retryReplies(instance: ActiveBotInstance): void {
     if (instance.retrying) return;
     const waiting = instance.operations
-      .listIncomplete()
-      .filter(
-        (row) =>
-          row.prepared && !row.replies.length && !instance.held.has(row.digest)
-      )
-      .sort(inboundOrder);
+      .listStarted()
+      .filter((row) => row.reply && !row.reply.digest);
     if (!waiting.length) return;
     const next =
       waiting.findIndex((row) => row.digest === instance.refused) + 1;
@@ -1230,9 +1438,9 @@ export class FrankBotHost {
           if (this.closing) return;
           instance.operations.assertOpen();
           const outcome = await this.track(instance, row, () =>
-            this.sendPrepared(instance, row.digest)
+            this.deliver(instance, row.digest)
           );
-          if (outcome === "refused") {
+          if (outcome === "waiting") {
             instance.refused = row.digest;
             return;
           }
@@ -1423,55 +1631,37 @@ export class FrankBotHost {
   ): Promise<void> {
     const replies: Promise<DirectMessageSendResult>[] = [];
     let accepting = true;
-    let failed = false;
+    // Whether the wallet holds an attempt for a reply this handler sent itself.
+    let linked = false;
     const send: BotContext["sendMessage"] = (
       recipient,
       items,
       conversationId,
       options
     ) => {
-      if (!accepting || failed || this.closing)
+      if (!accepting || this.closing)
         return Promise.reject(new Error("Bot invocation is no longer active"));
-      // Snapshot caller-owned values before any asynchronous journal work.
-      const captured = {
-        recipient: getAddress(recipient).toLowerCase(),
-        conversationId:
-          conversationId === undefined
-            ? undefined
-            : conversationIdentity(conversationId),
-        stampValue: options?.stampValueWei ?? this.options.stampValueWei,
-        items: structuredClone(items),
-      };
-      const reply = (async () => {
-        const index = await instance.operations.beginReply(identity.digest, {
-          recipient: captured.recipient,
-          conversationId: captured.conversationId,
-          stampValue: captured.stampValue.toString(),
-        });
-        const result = await this.sendReply(
-          instance,
-          identity.digest,
-          index,
-          captured
-        );
-        // A send result cannot substitute for the durable pre-submission callback.
-        if (
-          instance.operations.get(identity.digest)?.replies[index].digest !==
-          result.payloadDigest
-        )
-          throw new Error("Bot reply has no matching durable attempt");
-        await instance.operations.observe(
-          identity.digest,
-          index,
-          result.payloadDigest,
-          "delivered"
-        );
-        return result;
-      })();
+      // Snapshot caller-owned values before any asynchronous work. A send that fails rejects to
+      // the handler and to nothing else: a handler that catches it can still send.
+      const reply = this.sendReply(
+        instance,
+        identity,
+        {
+          recipient: getAddress(recipient).toLowerCase(),
+          conversationId:
+            conversationId === undefined
+              ? undefined
+              : conversationIdentity(conversationId),
+          stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+          items: structuredClone(items),
+        },
+        async () => {
+          linked = true;
+          await instance.operations.markReplied(identity.digest);
+        }
+      );
       replies.push(reply);
-      void reply.catch(() => {
-        failed = true;
-      });
+      void reply.catch(() => undefined);
       return reply;
     };
     const owner = instance.operations.owner;
@@ -1511,10 +1701,11 @@ export class FrankBotHost {
       reply: boundReply,
     });
     let prepared: PreparedReply | undefined;
+    let threw = false;
     try {
       const returned = await instance.definition.onMessage(msgCtx, context);
       if (returned && !Array.isArray(returned)) {
-        // A prepared reply is the invocation's only reply; it gets no subscription fallback.
+        // A stored reply is the invocation's only reply; it gets no subscription fallback.
         if (replies.length)
           throw new Error("Prepared reply returned after a direct reply");
         prepared = returned;
@@ -1528,37 +1719,24 @@ export class FrankBotHost {
             )) ?? undefined;
         if (reply?.length) await boundReply(reply);
       }
-    } catch {
-      failed = true;
+    } catch (error) {
+      threw = true;
+      prepared = undefined;
+      console.error(
+        `[bot-host] [${instance.definition.id}] Handler failed for message ${identity.messageId} from ${identity.peerAddress}:`,
+        error instanceof Error ? error.message : error
+      );
     } finally {
       accepting = false;
       await Promise.allSettled(replies);
     }
-    if (failed)
-      throw new Error("Bot invocation incomplete; preserve original operation");
-    if (prepared) {
-      // Durable before it is first sent; the stamp is authorised once, here. The row completes
-      // and the loop guard counts the reply when the commit lands, now or on a later poll.
-      await instance.operations.prepare(
-        identity.digest,
-        prepared,
-        this.options.stampValueWei.toString()
-      );
-      await this.sendPrepared(instance, identity.digest);
-      return;
-    }
-    const cursor = Math.max(
-      instance.lastPollTimestamp,
-      identity.receivedTime + 1
-    );
-    const committedCursor = await instance.operations.complete(
-      identity.digest,
-      cursor
-    );
-    instance.lastPollTimestamp = Math.max(
-      instance.lastPollTimestamp,
-      committedCursor
-    );
+    // A handler is run once. One that failed having sent nothing leaves the peer a plain
+    // failure reply, stored and delivered like any other; one that sent something is finished,
+    // and the wallet completes what it sent.
+    if (prepared) return this.owe(instance, identity.digest, prepared.text);
+    if (threw && !linked)
+      return this.owe(instance, identity.digest, FAILED_REPLY_TEXT);
+    await this.finish(instance, identity.digest, false);
   }
 
   private async sendCanonicalMessage(
@@ -1592,6 +1770,7 @@ export class FrankBotHost {
     if (!this.running && this.instances.size === 0) return;
     this.closing = true;
     this.running = false;
+    this.stopController.abort();
 
     if (this.resolveStop) {
       this.resolveStop();
@@ -1602,11 +1781,14 @@ export class FrankBotHost {
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);
     this.scheduler.stop();
-    // A reply waiting for a poll that will not come is released, and its invocation held.
+    // A reply waiting for a poll that will not come is released, and its handler told so.
     for (const instance of this.instances.values()) this.wakeReplies(instance);
 
-    // No time bound: an in-flight relay, wallet or model call is waited for, never abandoned.
-    await this.polling?.catch(() => undefined);
+    // An in-flight relay or wallet call is waited for, never abandoned. A handler's own slow
+    // call (a model request) is the handler's to end, on the `stopping` signal.
+    await Promise.allSettled(
+      [...this.instances.values()].map((instance) => instance.polling)
+    );
     for (const [id, instance] of this.instances.entries()) {
       try {
         while (instance.tasks.size)

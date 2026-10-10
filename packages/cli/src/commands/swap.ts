@@ -8,131 +8,136 @@
  * does today.
  */
 
-import { JsonRpcProvider, formatUnits, getAddress, parseUnits } from 'ethers'
+import { JsonRpcProvider, formatUnits, getAddress, parseUnits } from "ethers";
 import {
   getEvmDexDeployment,
   listEvmDexDeploymentChains,
   listEvmSwapVenues,
   type UniswapV4Deployment,
-} from '@frank/wallet/chain/dex-deployments'
-import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
+} from "@frank/wallet/chain/dex-deployments";
+import { PROTOCOL_CHAINS } from "@frank/wallet/chain/chains-registry";
 import {
   estimateCallFee,
   fetchSwapQuote,
   planSwap,
   type SwapChainReader,
-} from '@frank/wallet/swap/evm-swap'
-import { findToken, minimumOutput } from '@frank/wallet/swap/uniswap-v4'
+} from "@frank/wallet/swap/evm-swap";
+import { findToken, minimumOutput } from "@frank/wallet/swap/uniswap-v4";
 
-import { outputError, outputResult } from '../util'
+import { outputError, outputResult } from "../util";
 
 export interface SwapQuoteOptions {
-  chain?: string
+  chain?: string;
   /** Which of the chain's venues; its first when omitted. */
-  venue?: string
-  rpcUrl?: string
-  slippage?: string | number
+  venue?: string;
+  rpcUrl?: string;
+  slippage?: string | number;
   /** `build` only: the account that would send the swap. */
-  account?: string
-  json?: boolean
+  account?: string;
+  json?: boolean;
 }
 
-const DEFAULT_CHAIN = 'monad-testnet'
-const DEFAULT_SLIPPAGE_BPS = 50
+const DEFAULT_SLIPPAGE_BPS = 50;
 
 interface SwapTarget {
-  chainIdentifier: string
-  deployment: UniswapV4Deployment
-  reader: SwapChainReader
+  chainIdentifier: string;
+  deployment: UniswapV4Deployment;
+  reader: SwapChainReader;
 }
 
 /** Tests replace this to answer the node calls; production always builds a JSON-RPC provider. */
 export const swapNetwork = {
   async open(options: SwapQuoteOptions): Promise<SwapTarget> {
-    const chainIdentifier = options.chain ?? DEFAULT_CHAIN
-    const entry = PROTOCOL_CHAINS[chainIdentifier]
-    const deployment = getEvmDexDeployment(chainIdentifier, options.venue)
+    const chainIdentifier = options.chain;
+    if (!chainIdentifier)
+      throw new Error(
+        `Name the chain with --chain. Swaps are available on: ${listEvmDexDeploymentChains().join(
+          ", "
+        )}`
+      );
+    const entry = PROTOCOL_CHAINS[chainIdentifier];
+    const deployment = getEvmDexDeployment(chainIdentifier, options.venue);
     if (entry && !deployment && options.venue)
       throw new Error(
         `${chainIdentifier} has no venue "${options.venue}". Venues: ${
           listEvmSwapVenues(chainIdentifier)
-            .map(venue => venue.id)
-            .join(', ') || 'none'
-        }`,
-      )
+            .map((venue) => venue.id)
+            .join(", ") || "none"
+        }`
+      );
     if (!entry || !deployment)
       throw new Error(
         `No swap is available on ${chainIdentifier}. Available: ${listEvmDexDeploymentChains().join(
-          ', ',
-        )}`,
-      )
-    const url = options.rpcUrl ?? process.env.FRANK_SWAP_RPC_URL
+          ", "
+        )}`
+      );
+    const url = options.rpcUrl ?? process.env.FRANK_SWAP_RPC_URL;
     if (!url)
       throw new Error(
-        'A swap quote is read from the chain: pass --rpc-url (or set FRANK_SWAP_RPC_URL)',
-      )
-    const provider = new JsonRpcProvider(url, undefined, { batchMaxCount: 1 })
-    const { chainId } = await provider.getNetwork()
+        "A swap quote is read from the chain: pass --rpc-url (or set FRANK_SWAP_RPC_URL)"
+      );
+    const provider = new JsonRpcProvider(url, undefined, { batchMaxCount: 1 });
+    const { chainId } = await provider.getNetwork();
     if (chainId.toString() !== String(entry.nativeChainId))
       throw new Error(
-        `The RPC endpoint is chain ${chainId}, not ${chainIdentifier}`,
-      )
-    return { chainIdentifier, deployment, reader: provider }
+        `The RPC endpoint is chain ${chainId}, not ${chainIdentifier}`
+      );
+    return { chainIdentifier, deployment, reader: provider };
   },
-}
+};
 
 function slippageOf(options: SwapQuoteOptions): number {
   const bps =
     options.slippage === undefined
       ? DEFAULT_SLIPPAGE_BPS
-      : Number(options.slippage)
+      : Number(options.slippage);
   if (!Number.isInteger(bps))
-    throw new Error('--slippage is whole basis points')
-  return bps
+    throw new Error("--slippage is whole basis points");
+  return bps;
 }
 
 async function quoteFor(
   target: SwapTarget,
   fromAsset: string,
   toAsset: string,
-  amount: string,
+  amount: string
 ) {
-  const tokenIn = findToken(target.deployment, fromAsset)
-  const tokenOut = findToken(target.deployment, toAsset)
+  const tokenIn = findToken(target.deployment, fromAsset);
+  const tokenOut = findToken(target.deployment, toAsset);
   if (!tokenIn || !tokenOut)
     throw new Error(
       `Unknown asset. ${
         target.chainIdentifier
       } swaps: ${target.deployment.tokens
-        .map(token => token.symbol)
-        .join(', ')}`,
-    )
+        .map((token) => token.symbol)
+        .join(", ")}`
+    );
   const quote = await fetchSwapQuote(target.reader, target.deployment, {
     tokenIn,
     tokenOut,
     amountIn: parseUnits(amount.trim(), tokenIn.decimals),
-  })
-  return { tokenIn, tokenOut, quote }
+  });
+  return { tokenIn, tokenOut, quote };
 }
 
-const percent = (ppm: number) => `${(ppm / 10_000).toFixed(4)}%`
+const percent = (ppm: number) => `${(ppm / 10_000).toFixed(4)}%`;
 
 export async function swapQuoteCommand(
   fromAsset: string,
   toAsset: string,
   amount: string,
-  options: SwapQuoteOptions = {},
+  options: SwapQuoteOptions = {}
 ): Promise<void> {
   try {
-    const target = await swapNetwork.open(options)
+    const target = await swapNetwork.open(options);
     const { tokenIn, tokenOut, quote } = await quoteFor(
       target,
       fromAsset,
       toAsset,
-      amount,
-    )
-    const slippageBps = slippageOf(options)
-    const minimumAmountOut = minimumOutput(quote.amountOut, slippageBps)
+      amount
+    );
+    const slippageBps = slippageOf(options);
+    const minimumAmountOut = minimumOutput(quote.amountOut, slippageBps);
     const result = {
       chain: target.chainIdentifier,
       exchange: target.deployment.displayName,
@@ -151,29 +156,29 @@ export async function swapQuoteCommand(
         ? `${formatUnits(quote.interfaceFee.amount, tokenOut.decimals)} ${
             tokenOut.symbol
           } (${quote.interfaceFee.bps / 100}%)`
-        : 'none',
-    }
+        : "none",
+    };
     outputResult(
       result,
       () => {
         console.log(
-          `Quote from the Uniswap v4 quoter on ${result.chain} (deployment maintained by ${result.maintainer}):`,
-        )
-        console.log(`  Pay:              ${result.amountIn} ${result.from}`)
-        console.log(`  Receive:          ${result.amountOut} ${result.to}`)
+          `Quote from the Uniswap v4 quoter on ${result.chain} (deployment maintained by ${result.maintainer}):`
+        );
+        console.log(`  Pay:              ${result.amountIn} ${result.from}`);
+        console.log(`  Receive:          ${result.amountOut} ${result.to}`);
         console.log(
           `  Minimum received: ${result.minimumAmountOut} ${
             result.to
-          } (slippage ${result.slippageBps / 100}%)`,
-        )
-        console.log(`  Pool fee:         ${result.poolFee}`)
-        console.log(`  Price impact:     ${result.priceImpact}`)
-        console.log(`  Interface fee:    ${result.interfaceFee}`)
+          } (slippage ${result.slippageBps / 100}%)`
+        );
+        console.log(`  Pool fee:         ${result.poolFee}`);
+        console.log(`  Price impact:     ${result.priceImpact}`);
+        console.log(`  Interface fee:    ${result.interfaceFee}`);
       },
-      options.json,
-    )
+      options.json
+    );
   } catch (err) {
-    outputError(err, options.json)
+    outputError(err, options.json);
   }
 }
 
@@ -182,29 +187,31 @@ export async function swapBuildCommand(
   fromAsset: string,
   toAsset: string,
   amount: string,
-  options: SwapQuoteOptions = {},
+  options: SwapQuoteOptions = {}
 ): Promise<void> {
   try {
     if (!options.account)
-      throw new Error('--account <address> is required: the account that swaps')
-    const account = getAddress(options.account)
-    const target = await swapNetwork.open(options)
+      throw new Error(
+        "--account <address> is required: the account that swaps"
+      );
+    const account = getAddress(options.account);
+    const target = await swapNetwork.open(options);
     const { tokenIn, tokenOut, quote } = await quoteFor(
       target,
       fromAsset,
       toAsset,
-      amount,
-    )
+      amount
+    );
     const plan = await planSwap(target.reader, target.deployment, {
       quote,
       slippageBps: slippageOf(options),
       account,
-    })
+    });
     // An unapproved token swap cannot be gas-estimated yet; that is said, not guessed.
     const fee =
       plan.approvals.length === 0
         ? await estimateCallFee(target.reader, plan.swap, account)
-        : undefined
+        : undefined;
     const result = {
       chain: target.chainIdentifier,
       account,
@@ -214,7 +221,7 @@ export async function swapBuildCommand(
       quotedAmountOut: formatUnits(quote.amountOut, tokenOut.decimals),
       minimumAmountOut: formatUnits(plan.minimumAmountOut, tokenOut.decimals),
       deadline: plan.deadline,
-      approvals: plan.approvals.map(step => ({
+      approvals: plan.approvals.map((step) => ({
         kind: step.kind,
         to: step.call.to,
         data: step.call.data,
@@ -226,30 +233,30 @@ export async function swapBuildCommand(
       },
       gasLimit: fee?.gasLimit.toString() ?? null,
       maximumNetworkFeeWei: fee?.maximumFeeWei.toString() ?? null,
-    }
+    };
     outputResult(
       result,
       () => {
-        console.log(`Unsigned swap for ${account} on ${result.chain}:`)
-        console.log(`  Pay:              ${result.amountIn} ${result.from}`)
+        console.log(`Unsigned swap for ${account} on ${result.chain}:`);
+        console.log(`  Pay:              ${result.amountIn} ${result.from}`);
         console.log(
-          `  Minimum received: ${result.minimumAmountOut} ${result.to} (quoted ${result.quotedAmountOut})`,
-        )
-        console.log(`  Deadline:         ${result.deadline} (unix seconds)`)
+          `  Minimum received: ${result.minimumAmountOut} ${result.to} (quoted ${result.quotedAmountOut})`
+        );
+        console.log(`  Deadline:         ${result.deadline} (unix seconds)`);
         for (const approval of result.approvals)
-          console.log(`  Approval first:   ${approval.kind} -> ${approval.to}`)
-        console.log(`  To:               ${result.swap.to}`)
-        console.log(`  Value (wei):      ${result.swap.value}`)
-        console.log(`  Data:             ${result.swap.data}`)
+          console.log(`  Approval first:   ${approval.kind} -> ${approval.to}`);
+        console.log(`  To:               ${result.swap.to}`);
+        console.log(`  Value (wei):      ${result.swap.value}`);
+        console.log(`  Data:             ${result.swap.data}`);
         console.log(
           result.gasLimit
             ? `  Gas limit:        ${result.gasLimit} (max fee ${result.maximumNetworkFeeWei} wei)`
-            : '  Gas limit:        not estimated until the approvals above confirm',
-        )
+            : "  Gas limit:        not estimated until the approvals above confirm"
+        );
       },
-      options.json,
-    )
+      options.json
+    );
   } catch (err) {
-    outputError(err, options.json)
+    outputError(err, options.json);
   }
 }

@@ -312,7 +312,7 @@ export function createProgram(): Command {
   const swap = program
     .command('swap')
     .description(
-      'Swap quotes read from the chain (Uniswap v4 on Monad testnet); no interface fee',
+      'Swap quotes read from the chain named by --chain; no interface fee',
     )
 
   swap
@@ -320,7 +320,7 @@ export function createProgram(): Command {
     .description(
       "Ask the swap deployment's quoter contract what the amount buys now",
     )
-    .option('--chain <id>', 'Canonical chain identifier (default: monad-testnet)')
+    .option('--chain <id>', 'Canonical chain identifier (required)')
     .option('--venue <id>', "One of the chain's swap venues (default: its first)")
     .option('--rpc-url <url>', 'JSON-RPC endpoint for that chain')
     .option('--slippage <bps>', 'Slippage in basis points (default: 50)')
@@ -339,7 +339,7 @@ export function createProgram(): Command {
       'Print the unsigned transactions for a swap from --account (signs and sends nothing)',
     )
     .requiredOption('--account <address>', 'The account that would swap')
-    .option('--chain <id>', 'Canonical chain identifier (default: monad-testnet)')
+    .option('--chain <id>', 'Canonical chain identifier (required)')
     .option('--venue <id>', "One of the chain's swap venues (default: its first)")
     .option('--rpc-url <url>', 'JSON-RPC endpoint for that chain')
     .option('--slippage <bps>', 'Slippage in basis points (default: 50)')

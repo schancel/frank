@@ -78,13 +78,14 @@ const PANELS: SwapPanels = {
 export default defineComponent({
   name: 'DAppSwapView',
   props: {
+    // Which wallet and which of its networks are always given: there is no default network.
     selectedWallet: {
       type: String,
-      default: 'monad',
+      required: true,
     },
     isTestnet: {
       type: Boolean,
-      default: true,
+      required: true,
     },
   },
   setup(props) {

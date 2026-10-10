@@ -4,8 +4,9 @@
 //   terminal 2:  node app/test/autonomous-fullstack-e2e.mjs
 //
 // It drives a real headless Chrome through account creation, funds the new account with a real
-// transfer from the demo's funding wallet (E2E_FUND_MON, default 0.3 MON, through
-// packages/bot/demo/fund.ts), then Qwen (the answer's content is checked), a full blackjack hand
+// transfer from FRANK_TEST_WALLET_JSON, a second funded testnet wallet (E2E_FUND_MON, default
+// 0.3 MON, through packages/bot/demo/fund.ts; never the demo's own funding wallet, which only the
+// running bot host may spend from), then Qwen (the answer's content is checked), a full blackjack hand
 // to its outcome, the picture shop, quick sends across a reload, a native send and the other bots
 // (each must answer with what that command produces). It exits non-zero if any scenario fails OR
 // the browser logged an error, a request failed, or the relay/bot logs gained an error line.
@@ -425,7 +426,7 @@ async function timedSend(text, timeoutMs) {
   return { sent, reply }
 }
 
-/** Sends `fundMon` real testnet MON from the demo's funding wallet to `address` and waits for the
+/** Sends `fundMon` real testnet MON from the test wallet to `address` and waits for the
  * transfer to confirm (packages/bot/demo/fund.ts). Rejects with the command's message. */
 function fundAccount(address) {
   return new Promise((resolveFund, reject) => {

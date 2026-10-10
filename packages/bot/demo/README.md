@@ -27,7 +27,10 @@ await stack.stop()                               // returns what is left, stops 
 ```
 
 Settings (process environment first, then `<repo>/.env` or `FRANK_DEMO_ENV_FILE`):
-`MONAD_TESTNET_HTTP_RPC_URL` (required), `E2E_DEMO_MAIN_WALLET_JSON` (required to fund),
+`MONAD_TESTNET_HTTP_RPC_URL` (required), `FRANK_TEST_WALLET_JSON` (the wallet `fund` spends from;
+`E2E_DEMO_MAIN_WALLET_JSON` is used when it is unset, which is only safe while no demo is running:
+the demo's bot host counts that wallet's nonces in memory and its next payment fails if anyone else
+sends from it),
 `CASHWEBD_BIN` (a prebuilt relay; otherwise this checkout's Cargo build), `FRANK_REAL_STACK_RELAY_PORT`
 (default: a free port), `FRANK_REAL_STACK_DIR` (default: a new temp directory; every wallet's
 account root is kept there, mode 0600, so its funds can be recovered). Pass `relayUrl` to

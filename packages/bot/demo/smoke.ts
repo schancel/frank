@@ -75,7 +75,10 @@ export async function runSmoke(env: Record<string, string | undefined>): Promise
     const results: SmokeCheck[] = await runSmokeChecks(handle, { timeoutMs: 180_000, env })
     results.push(await checkProtectedRelayRpc(handle).catch(err => ({ name: 'protected-relay-rpc', ok: false, detail: String(err) })))
     for (const r of results) {
-      console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}: ${redact(r.detail, config.secrets)}`)
+      // Only the configured secrets are removed: the general scrubber reads a long plain sentence
+      // as a recovery phrase and would blank the detail.
+      const detail = config.secrets.reduce((text, secret) => text.split(secret).join('<redacted>'), r.detail)
+      console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}: ${detail}`)
     }
     ok = results.length > 0 && results.every(r => r.ok)
   } catch (err) {

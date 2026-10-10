@@ -239,6 +239,14 @@ export const DEMO_VARS: readonly DemoVar[] = [
     secret: true,
   },
   {
+    name: 'FRANK_TEST_WALLET_JSON',
+    scope: 'checks',
+    default: 'required for yarn demo:smoke and the browser check',
+    description:
+      'Path of a SECOND funded testnet wallet file, used only by the checks that run beside a demo (they lend a test user a little MON). It must not be E2E_DEMO_MAIN_WALLET_JSON: the bot host counts that wallet\'s nonces in memory, so a transfer sent from it by another process makes the host\'s next payment fail. Never given to the bots.',
+    secret: true,
+  },
+  {
     name: 'FRANK_DEMO_NO_FAUCET',
     scope: 'faucet',
     default: '0',
@@ -479,6 +487,8 @@ export interface DemoConfig {
   /** Port the app's dev server serves on (fixed by app/quasar.config.js). */
   appPort: number
   mainWalletJson: string
+  /** A second wallet for the checks that run beside the demo (never the bots'). */
+  testWalletJson?: string
   cashwebdBin?: string
   /** Toolchain variables for the relay build (only those that are set). */
   toolchainEnv: Record<string, string>
@@ -797,6 +807,7 @@ export function resolveDemoConfig(params: {
     faucetAmountWei: noFaucet ? undefined : faucetAmountWei,
     appPort: APP_DEV_PORT,
     mainWalletJson,
+    testWalletJson: merged.FRANK_TEST_WALLET_JSON ? resolve(cwd, merged.FRANK_TEST_WALLET_JSON) : undefined,
     cashwebdBin: merged.CASHWEBD_BIN || undefined,
     toolchainEnv: Object.fromEntries(
       TOOLCHAIN_VARS.flatMap(name =>

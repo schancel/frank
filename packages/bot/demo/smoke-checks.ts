@@ -240,13 +240,22 @@ export async function runSmokeChecks(
   const stampValueWei = BigInt(config.minStampWei) * 10n
   let stack: RealStack | undefined
   try {
-    // The same chain and funding wallet the demo was started with.
+    // The demo's funding wallet belongs to the running bot host (it counts that wallet's nonces
+    // in memory): the test user is funded from a second wallet, never from that one.
+    if (!config.testWalletJson) {
+      throw new Error(
+        'FRANK_TEST_WALLET_JSON is required: a second funded testnet wallet for the test user (the demo funding wallet must not be spent from by anything but the bot host)',
+      )
+    }
     stack = await startRealStack({
-      env: { ...options.env, MONAD_TESTNET_HTTP_RPC_URL: config.rpcUrl, E2E_DEMO_MAIN_WALLET_JSON: config.mainWalletJson },
+      env: { ...options.env, MONAD_TESTNET_HTTP_RPC_URL: config.rpcUrl, FRANK_TEST_WALLET_JSON: config.testWalletJson },
       relayUrl,
       stateDir: `${config.stateDir}/smoke-${Date.now()}`,
     })
     // A new human profile, registered AFTER the bots started: the faucet pays its address.
+    if (stack.fundingAddress.toLowerCase() === handle.fundingAddress.toLowerCase()) {
+      throw new Error('FRANK_TEST_WALLET_JSON is the same wallet as E2E_DEMO_MAIN_WALLET_JSON; it must be a different one')
+    }
     const user = await stack.openWallet('smoke-user', { stampValueWei })
     await stack.fund(user.mainAccount, SMOKE_USER_FUND_WEI)
 

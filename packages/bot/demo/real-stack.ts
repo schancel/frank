@@ -11,7 +11,13 @@
  *
  * Configuration comes from the process environment, then the repo's `.env`:
  *   MONAD_TESTNET_HTTP_RPC_URL   required (may be a comma-separated list)
- *   E2E_DEMO_MAIN_WALLET_JSON    required for `fund`: {"address","privateKey"} of a testnet wallet
+ *   FRANK_TEST_WALLET_JSON       {"address","privateKey"} of a funded testnet wallet that `fund`
+ *                                spends from. Use it whenever a demo is running: the demo's bot
+ *                                host is the only user of E2E_DEMO_MAIN_WALLET_JSON and counts its
+ *                                nonces in memory, so a transfer sent from that wallet by anyone
+ *                                else makes the host's next payment fail.
+ *   E2E_DEMO_MAIN_WALLET_JSON    what `fund` spends from when FRANK_TEST_WALLET_JSON is unset
+ *                                (fine while no demo is running)
  *   CASHWEBD_BIN                 a prebuilt relay; otherwise this worktree's Cargo build is used
  *   FRANK_REAL_STACK_RELAY_PORT  relay port (default: a free port)
  *   FRANK_REAL_STACK_DIR         where state and logs go (default: a new temp directory)
@@ -65,8 +71,8 @@ export function realStackEnv(env: Record<string, string | undefined> = process.e
   const file = env.FRANK_DEMO_ENV_FILE ? resolve(env.FRANK_DEMO_ENV_FILE) : join(REPO_ROOT, '.env')
   const fromFile = readEnvFile(file)
   // A relative wallet path in the file means relative to the file.
-  if (fromFile.E2E_DEMO_MAIN_WALLET_JSON) {
-    fromFile.E2E_DEMO_MAIN_WALLET_JSON = resolve(dirname(file), fromFile.E2E_DEMO_MAIN_WALLET_JSON)
+  for (const name of ['E2E_DEMO_MAIN_WALLET_JSON', 'FRANK_TEST_WALLET_JSON']) {
+    if (fromFile[name]) fromFile[name] = resolve(dirname(file), fromFile[name])
   }
   return { ...fromFile, ...Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) }
 }
@@ -323,7 +329,8 @@ export async function startRealStack(options: {
   if (id !== MONAD_TESTNET_CHAIN_ID) {
     throw new Error(`MONAD_TESTNET_HTTP_RPC_URL answers chain id ${id}, not Monad testnet (${MONAD_TESTNET_CHAIN_ID})`)
   }
-  const walletJsonPath = env.E2E_DEMO_MAIN_WALLET_JSON ? resolve(REPO_ROOT, env.E2E_DEMO_MAIN_WALLET_JSON) : undefined
+  const walletJson = env.FRANK_TEST_WALLET_JSON || env.E2E_DEMO_MAIN_WALLET_JSON
+  const walletJsonPath = walletJson ? resolve(REPO_ROOT, walletJson) : undefined
   const fundingAddress = walletJsonPath
     ? (JSON.parse(readFileSync(walletJsonPath, 'utf8')) as { address: string }).address
     : ''
@@ -375,7 +382,7 @@ export async function startRealStack(options: {
       return wallet
     },
     async fund(to, valueWei) {
-      if (!walletJsonPath) throw new Error('E2E_DEMO_MAIN_WALLET_JSON is required to fund a wallet')
+      if (!walletJsonPath) throw new Error('FRANK_TEST_WALLET_JSON (or E2E_DEMO_MAIN_WALLET_JSON) is required to fund a wallet')
       return (await fundFromWallet({ rpcUrl, walletJsonPath, to, valueWei })).txHash
     },
     stop: () =>

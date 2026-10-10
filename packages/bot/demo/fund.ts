@@ -1,5 +1,6 @@
 /**
- * Sends testnet MON from the funding wallet to one address, on the real chain, and waits for it:
+ * Sends testnet MON from the test wallet (FRANK_TEST_WALLET_JSON; E2E_DEMO_MAIN_WALLET_JSON only
+ * when that is unset and no demo is running) to one address, on the real chain, and waits for it:
  *
  *   TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/fund.ts <address> <MON>
  *
@@ -17,12 +18,13 @@ async function main(argv: string[]): Promise<void> {
     throw new Error('Usage: fund.ts <0x address> <amount in MON, e.g. 0.2>')
   }
   const env = realStackEnv()
-  if (!env.MONAD_TESTNET_HTTP_RPC_URL || !env.E2E_DEMO_MAIN_WALLET_JSON) {
-    throw new Error('MONAD_TESTNET_HTTP_RPC_URL and E2E_DEMO_MAIN_WALLET_JSON are required (environment or .env)')
+  const walletJsonPath = env.FRANK_TEST_WALLET_JSON || env.E2E_DEMO_MAIN_WALLET_JSON
+  if (!env.MONAD_TESTNET_HTTP_RPC_URL || !walletJsonPath) {
+    throw new Error('MONAD_TESTNET_HTTP_RPC_URL and FRANK_TEST_WALLET_JSON are required (environment or .env)')
   }
   const { txHash, from } = await fundFromWallet({
     rpcUrl: env.MONAD_TESTNET_HTTP_RPC_URL,
-    walletJsonPath: env.E2E_DEMO_MAIN_WALLET_JSON,
+    walletJsonPath,
     to,
     valueWei: parseEther(amount),
   })

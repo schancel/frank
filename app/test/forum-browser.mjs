@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // Run against the app served for a running `yarn demo` (Monad testnet). No account is reused; the
-// new account is funded with a real transfer from the demo's funding wallet (FORUM_FUND_MON).
+// new account is funded with a real transfer from FRANK_TEST_WALLET_JSON (FORUM_FUND_MON).
 const origin = process.env.FORUM_APP_ORIGIN ?? 'http://127.0.0.1:9699'
 assert.ok(
   ['localhost', '127.0.0.1', '[::1]'].includes(new URL(origin).hostname),

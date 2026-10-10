@@ -2,6 +2,8 @@
 import { mount } from '@vue/test-utils'
 import AvuExplainerDialog from './AvuExplainerDialog.vue'
 import en from '../../i18n/en-us'
+import { createPinia, setActivePinia } from 'pinia'
+import { useOracleStore } from '../../stores/oracle'
 
 const t = (key: string) =>
   key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
@@ -49,30 +51,60 @@ describe('AvuExplainerDialog component', () => {
     expect(wrapper.text()).toContain('Truly "Oracle-Less"')
   })
 
-  test('renders live 1-unit physical compute equivalencies across 6 chains and USD', () => {
+  test('with no fetched prices every coin row says unavailable: nothing stands in for a price', () => {
+    setActivePinia(createPinia())
     const wrapper = mountDialog()
-    expect(wrapper.find('[data-test="avu-rates-table"]').exists()).toBe(true)
-    expect(wrapper.find('[data-test="avu-rate-row-monad"]').text()).toContain(
-      '1 MON ≈ 41.67 AVU',
-    )
-    expect(wrapper.find('[data-test="avu-rate-row-solana"]').text()).toContain(
-      '1 SOL ≈ 1,785.71 AVU',
-    )
-    expect(
-      wrapper.find('[data-test="avu-rate-row-ethereum"]').text(),
-    ).toContain('1 ETH ≈ 30,952.38 AVU')
-    expect(
-      wrapper.find('[data-test="avu-rate-row-hyperliquid"]').text(),
-    ).toContain('1 HYPE ≈ 476.19 AVU')
-    expect(wrapper.find('[data-test="avu-rate-row-tempo"]').text()).toContain(
-      '1 TUSD ≈ 11.90 AVU',
-    )
-    expect(wrapper.find('[data-test="avu-rate-row-ecash"]').text()).toContain(
-      '1M XEC ≈ 416.67 AVU',
-    )
+    for (const asset of [
+      'monad',
+      'solana',
+      'ethereum',
+      'hyperliquid',
+      'ecash',
+      'bitcoin',
+    ]) {
+      const row = wrapper.find(`[data-test="avu-rate-row-${asset}"]`).text()
+      expect(row).toContain('Unavailable')
+      expect(row).not.toContain('≈')
+      expect(row).not.toContain('$')
+    }
+  })
+
+  test('shows the fetched price of each coin, in AVU and in dollars', () => {
+    setActivePinia(createPinia())
+    const oracle = useOracleStore()
+    oracle.snapshot.prices.solana = 110.06
+    oracle.snapshot.rates.solana = 110.06 * 12
+    oracle.snapshot.fetchedAt.solana = Date.now()
+    oracle.snapshot.avuHash = {
+      kwhPerDollar: 12,
+      entries: [],
+      leftOut: [],
+      basketSize: 5,
+      efficiencyMonth: '2026-09',
+      pricesAsOf: Date.now(),
+      chainsAsOf: Date.now(),
+    }
+    const wrapper = mountDialog()
+    const row = wrapper.find('[data-test="avu-rate-row-solana"]').text()
+    expect(row).toContain('1 SOL ≈ 1,320.72 AVU')
+    expect(row).toContain('$110.060')
+    // The dollar row is AVU_hash: the kWh a dollar is worth as mining prices it.
     expect(wrapper.find('[data-test="avu-rate-row-usd"]').text()).toContain(
-      '1 USD ≈ 11.90 AVU',
+      '1 USD = 12.00 AVU',
     )
+  })
+
+  test('lists no row for a coin without a price source, and none for AVU itself', () => {
+    setActivePinia(createPinia())
+    const wrapper = mountDialog()
+    expect(wrapper.find('[data-test="avu-rate-row-tempo"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-test="avu-rate-row-avu"]').exists()).toBe(false)
+    // Without AVU_hash the dollar row has no figure: there is no fixed rate to fall back on.
+    const usdRow = wrapper.find('[data-test="avu-rate-row-usd"]').text()
+    expect(usdRow).toContain('Unavailable')
+    expect(usdRow).not.toContain('1 USD =')
   })
 
   test('does not render when modelValue is false', () => {

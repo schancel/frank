@@ -14,9 +14,6 @@ jest.mock('../components/dialogs/ClearHistoryDialog.vue', () => ({
 jest.mock('../components/dialogs/DeleteChatDialog.vue', () => ({
   template: '<i />',
 }))
-jest.mock('../components/dialogs/SendFileDialog.vue', () => ({
-  template: '<i />',
-}))
 jest.mock('src/stores/contacts', () => ({
   useContactStore: () => ({
     getContact: () => ({
@@ -80,7 +77,6 @@ describe('ChatLayout self-chat identity (#420)', () => {
             ChatInfoView: true,
             ClearHistoryDialog: true,
             DeleteChatDialog: true,
-            SendFileDialog: true,
           },
         },
       })

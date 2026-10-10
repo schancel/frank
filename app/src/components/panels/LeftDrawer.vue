@@ -128,6 +128,7 @@
       <wallet-panel
         v-if="$status.setup"
         v-show="tab == 'wallet'"
+        :shown="tab == 'wallet'"
         v-bind="panelAttrs('wallet')"
       />
 

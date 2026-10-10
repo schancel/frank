@@ -160,22 +160,76 @@ The derived Proof-of-Work energy baseline ($\approx \mathbf{\$0.084 / \text{kWh}
 
 ### 7.1 Package Layout
 The oracle resides in `@frank/wallet/oracle` with zero UI dependencies:
-* `energy-basket.ts`: Thermodynamic constants ($1\text{ AVU} = 1\text{ kWh} = 3.6\text{ MJ}$), multi-chain PoW configs, and weighting models.
-* `price-oracle.ts`: High-precision integer conversion (`convertRawToAvu`), formatting (`formatAvu`), atomic swap parity calculations, and Pyth Network Hermes public feed integration.
+* `energy-basket.ts`: the basket of mined coins, the per-coin formula (`miningDollarsPerKwh`), the weights (`basketWeights`), `computeAvuHash`, and AVU_spot (`latestAvuSpot`).
+* `price-oracle.ts`: the fetch of prices and chain statistics (`fetchOracleSnapshot`), `rateOracleSnapshot`, integer conversion (`convertRawToAvu`), formatting (`formatAvu`), and atomic swap parity.
 * `index.ts`: Public module exports.
 
-### 7.2 Genesis Baseline Reference Rates ($1\text{ AVU} = 1\text{ kWh}$)
+### 7.2 How the app computes AVU values
 
-$$\text{AVU Rate} = \text{Spot Price} \times 11.90476\text{ AVU / \$}$$
+AVU is a unit of account, not a coin or token: 1 AVU = 1 kWh. Two readings say how many kWh
+a dollar is worth, and the app shows both.
 
-| Asset | Precision Decimals | Genesis Spot Price | Genesis AVU Rate | Physical Interpretation |
-| :--- | :--- | :--- | :--- | :--- |
-| **Monad (`monad`)** | 18 | \$3.50 | **`41.67 AVU`** | 1 MON buys 41.7 kWh of energy |
-| **Tempo USD (`tempo`)**| 6 | \$1.00 | **`11.90 AVU`** | \$1 buys 11.9 kWh of energy |
-| **eCash (`ecash`)** | 2 | \$0.000035 | **`0.000417 AVU`** | 100k XEC buys 41.7 kWh of energy |
-| **Solana (`solana`)** | 9 | \$150.00 | **`1,785.71 AVU`** | 1 SOL buys 1,786 kWh of energy |
-| **Ethereum (`ethereum`)** | 18 | \$2,600.00 | **`30,952.38 AVU`** | 1 ETH buys 30,952 kWh of energy |
-| **Hyperliquid (`hyperliquid`)** | 18 | \$40.00 | **`476.19 AVU`** | 1 HYPE buys 476.2 kWh of energy |
+**AVU_hash** is read off proof-of-work mining and needs no electricity price. For each entry
+$c$ of a basket of mined coins at time $t$, the dollars one kWh of mining earns are
+
+$$\$/\text{kWh}_c(t) = \text{price}_c(t)\left[\tfrac{\$}{\text{coin}}\right] \times \text{subsidy}_c(t)\left[\tfrac{\text{coins}}{\text{block}}\right] \div \text{hashes per block}_c(t) \times \text{efficiency}_c(t)\left[\tfrac{\text{hashes}}{\text{kWh}}\right]$$
+
+and AVU_hash is the weighted average of the inverses, in kWh per dollar:
+
+$$\text{AVU\_hash}(t) = \sum_c w_c(t) \times \left(\$/\text{kWh}_c(t)\right)^{-1}$$
+
+The AVU value of any coin is $\text{price}(t) \times \text{AVU\_hash}(t)$: kWh per coin. That
+is every "≈ N AVU" figure in the app.
+
+**AVU_spot** is kWh per dollar from a published electricity price: $1 \div (\$/\text{kWh})$.
+It depends on whoever publishes that price; AVU_hash does not. The two should roughly agree,
+because miners buy electricity. The Parity tab shows both and the gap between them.
+
+Weights (`basketWeights`). Each entry's weight is its share of the basket's total market
+capitalisation. If Bitcoin's share is above 60% it is set to 60% and the other 40% is divided
+among the other entries in proportion to their market capitalisations. Weights sum to 1.
+Bitcoin alone has weight 1.
+
+The basket (`AVU_HASH_BASKET`) has five entries: BTC, BCH, XEC, merge-mined LTC+DOGE, and
+XMR. Merge-mined chains are one entry: one hash earns on both, so their pay per hash is
+summed and the energy is counted once. An entry whose inputs are not all known is left out
+and the weights are taken over the rest; the app shows how many entries were used and why
+each other one was not. With none, there is no AVU_hash and no AVU value: nothing falls back
+to a fixed rate.
+
+Where each input comes from:
+
+| Input | Source | Kind |
+| :--- | :--- | :--- |
+| Coin price | `PriceFeedsClient` in `packages/price-feeds`: the median of the providers that answered (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance). The number of providers is kept in `priceSources`. | fetched, every 5 minutes |
+| Coins per block | Blockchair `/stats`: `inflation_24h ÷ blocks_24h`, the subsidy the chain actually minted, so halvings need no schedule. For eCash the miner's 58% is used (consensus sends 32% to the miner fund and 10% to staking rewards). Monero publishes no issuance there; its consensus tail emission of 0.6 XMR is configured in `MINED_CHAINS`. | fetched, every 30 minutes, one source |
+| Hashes per block | Blockchair `/stats` `difficulty` × 2³² (Monero: the difficulty itself). | fetched, every 30 minutes, one source |
+| Market capitalisation | Blockchair `/stats` `circulation` × the oracle's price. | fetched |
+| Hashing efficiency (hashes per kWh) | SHA-256: Cambridge Bitcoin Electricity Consumption Index, best-guess network power demand ÷ network hashrate, by month, bundled in `packages/price-feeds/src/historical/btc-mining-monthly.json`. The latest bundled month is used for the present. | **curated estimate, bundled** |
+| Electricity price (AVU_spot) | US EIA Table 9.8, industrial, bundled in `us-electricity-gold.json`; the latest published month. | bundled |
+
+The efficiency series is the one input that is neither a chain reading nor a market price.
+It is Cambridge's model of which machines are running, and its best guess assumes miners pay
+0.05 USD/kWh when deciding which machines are still profitable; the bundle also carries the
+lower and upper bounds. No efficiency series is bundled for scrypt (LTC+DOGE) or RandomX
+(XMR), so those two entries are left out today and AVU_hash is computed over BTC, BCH and XEC.
+
+History. `scripts/build-btc-mining-history.py` builds the monthly Bitcoin inputs (price,
+difficulty, subsidy, efficiency) from blockchain.com's charts API and the Cambridge download,
+from October 2010; `BTC_MONTHLY_AVU_HASH` applies the same formula to them. It is Bitcoin's
+term alone, not the basket. Short-range price lines (24h to 1y) are each price times today's
+AVU_hash, and the chart says so. `scripts/build-historical.py` builds the EIA and World Bank
+figures. Both files carry their source URLs and retrieval date.
+
+Staleness. A coin's price that has missed several refreshes (15 minutes) or chain statistics
+older than two hours make AVU_hash stale; every value computed with it then shows the age of
+the oldest input. There are no stand-in prices: a coin whose price was not fetched has no AVU
+value, and a coin no provider prices (the Tempo test dollar) never has one. MON is priced as
+mainnet MON; a testnet MON balance is not valued.
+
+The tables in the sections above (per-network rates, the $0.084 "composite", the grid
+comparison, the purchasing-power eras) are illustrations written with the original text. No
+code reads them and their figures were not computed from sources.
 
 ---
 

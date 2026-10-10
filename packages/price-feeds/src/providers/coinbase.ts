@@ -1,12 +1,17 @@
 import type { PriceFeedProvider, PriceSample } from '../types'
+import { ORACLE_ENDPOINTS } from '../config'
 
 export const COINBASE_PAIRS: Record<string, string> = {
   ETH: 'ETH-USD',
   SOL: 'SOL-USD',
   BTC: 'BTC-USD',
+  BCH: 'BCH-USD',
+  DOGE: 'DOGE-USD',
+  HYPE: 'HYPE-USD',
+  MON: 'MON-USD',
 }
 
-export const COINBASE_API_BASE = 'https://api.coinbase.com/v2/prices'
+export const COINBASE_API_BASE = ORACLE_ENDPOINTS.coinbase.spotPrice
 
 export class CoinbaseProvider implements PriceFeedProvider {
   readonly id = 'coinbase' as const

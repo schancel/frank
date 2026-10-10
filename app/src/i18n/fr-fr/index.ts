@@ -97,6 +97,10 @@ export default {
     sendStealth: 'Envoi furtif',
     offerSwap: 'Proposer un échange atomique',
     attachImage: 'Attacher une image',
+    removeAttachment: 'Retirer {name}',
+    imageRefused: '{name} ne peut pas être envoyée : {reason}.',
+    messageTooLarge:
+      'Ce message est trop volumineux pour être envoyé. Retirez une image ou raccourcissez le texte.',
     blackjackChallenge: 'Défi de blackjack',
     placeHolder: 'Ecrire un message...',
     emojiPickerTitle: 'Choisir un emoji',
@@ -124,6 +128,8 @@ export default {
     fulfilled: 'Voici votre achat ({itemId}) :',
   },
   chatImage: {
+    onePhoto: '📷 Photo',
+    manyPhotos: '📷 {count} photos',
     notShown: 'Image non affichée ({reason})',
     reasonNotAnImage: "ce n'est pas une image",
     reasonTooLarge: 'trop volumineuse',
@@ -302,7 +308,6 @@ export default {
     choosePhoto: 'Choisir une photo de profil',
     previousAvatar: 'Avatar précédent',
     nextAvatar: 'Avatar suivant',
-    chooseFile: 'Choisir un fichier',
     openInExplorer: "Ouvrir la transaction dans l'explorateur de blocs",
     copyTxHash: 'Copier le hash de transaction',
     backToForum: 'Retour au forum',
@@ -441,7 +446,7 @@ export default {
     avuDialogTitle: 'Unité de Valeur Arbitraire (AVU)',
     avuDialogSubtitle: '1 AVU ≡ 1 Kilowattheure (kWh) d’énergie physique',
     avuDialogDesc:
-      'Frank élimine les monnaies fiduciaires de son interface principale. Les soldes sont mesurés en AVU, où 1 AVU représente 1 kWh de travail physique calculé directement à partir des réseaux de minage en preuve de travail (Proof-of-Work).',
+      'Frank écarte les monnaies fiduciaires de son interface principale. Les soldes sont comparés en AVU, une unité de compte : 1 AVU vaut 1 kWh d’énergie. Le nombre de kWh que vaut un dollar est lu sur le minage par preuve de travail (prix, subvention de bloc, difficulté et efficacité du matériel d’un panier de cryptos minées), et la valeur en AVU d’une crypto est son prix multiplié par ce nombre. Ce n’est ni une crypto ni un jeton ; il permet de comparer deux cryptos quelconques par un seul nombre.',
     avuMemeHeading: 'Refuser le mème du dollar (USD)',
     avuMemeDesc:
       'Le dollar américain est un mème social entretenu par les logiciels par défaut et les décrets des banques centrales. Refuser d’afficher l’USD dans les portefeuilles auto-détenus brise ce monopole psychologique et affaiblit ce mème, réancrant la valeur dans les lois invariantes de la thermodynamique.',
@@ -450,13 +455,13 @@ export default {
       'Chaque bien physique — nourriture, eau potable, logement, semi-conducteurs et transport — est fondamentalement de l’énergie organisée. En libellant la valeur en énergie physique, le pouvoir d’achat est mesuré par rapport au coût fondamental de la réalité physique.',
     avuCpiHeading: 'Contourner l’IPC pour révéler la valeur réelle du dollar',
     avuCpiDesc:
-      'L’indice des prix à la consommation (IPC) gouvernemental masque l’inflation par le biais de biais de substitution et d’ajustements hédoniques. Un billet de 100 $ affiche toujours « 100 $ », dissimulant son érosion. Dans les années 1930, 1 $ achetait environ 143 kWh ; aujourd’hui, il n’en achète qu’environ 12 kWh. Suivre l’AVU au fil du temps expose le taux réel de dépréciation de la monnaie fiduciaire.',
+      'L’indice des prix à la consommation (IPC) gouvernemental masque l’inflation par le biais de biais de substitution et d’ajustements hédoniques. Un billet de 100 $ affiche toujours « 100 $ », dissimulant son érosion. En 1960, 1 $ achetait environ 91 kWh d’électricité industrielle américaine ; en 2025, environ 12 kWh (EIA). Suivre l’énergie au fil du temps expose le taux de dépréciation de la monnaie fiduciaire.',
     avuOracleLessHeading: 'Véritablement « sans oracle »',
     avuOracleLessDesc:
       'Contrairement aux oracles DeFi traditionnels qui dépendent de flux tiers de confiance, la difficulté de minage et les calendriers d’émission du Proof-of-Work sont vérifiés directement sur la chaîne par les nœuds complets et ancrés dans la thermodynamique concurrentielle.',
     avuDialogClose: 'Fermer',
     avuDrawerHeader: '1 AVU ≡ 1 kWh (?)',
-    avuRatesTitle: 'Équivalences de calcul physique en direct',
+    avuRatesTitle: 'Prix de marché récupérés, en AVU',
     avuRatesAsset: 'Actif',
     avuRatesRate: 'Calcul physique (AVU / kWh)',
     avuRatesRefUsd: 'Référence USD',
@@ -491,51 +496,91 @@ export default {
     viewInExplorer: 'Voir dans l’explorateur',
     avuTooltip:
       '1 AVU ≡ 1 kWh (3,6 MJ) d’énergie physique. Un étalon thermodynamique infalsifiable de pouvoir d’achat réel.',
-    avuHashLabel: 'AVU (Réseau PoW)',
-    avuSpotLabel: 'AVU (Réseau électrique)',
-    tpiLabel: 'Indice de parité thermodynamique (TPI)',
-    macroHistory: 'Macro historique (1930 - Aujourd’hui)',
-    networkComparison: 'Arbitrage des cryptos minées',
-    arbitrageMargin: 'Marge d’arbitrage minier',
-    macroTab: 'Macro historique',
-    networksTab: 'Parité des réseaux',
-    chartUsdKwh: 'Pouvoir d’achat USD (kWh/$)',
-    chartGoldAvu: 'Épuisement du minerai d’or (AVU/oz)',
-    chartPowEmergence: 'Émergence du PoW',
-    chartHashCost: 'Coût énergétique implicite ($/kWh)',
-    chartArbitrageYield: 'Prime de rendement',
-    chartHardwareEff: 'Efficacité matérielle',
+    avuHashLabel: 'AVU_hash : kWh par dollar, d’après le minage',
+    avuHashNote:
+      'Moyenne pondérée par la capitalisation sur {used} des {total} entrées du panier, Bitcoin plafonné à 60 % : {weights}. Efficacité du matériel : estimation de Cambridge pour {month}, une donnée sélectionnée ; tout le reste est récupéré.',
+    avuSpotLabel: 'AVU_spot : kWh par dollar, d’après le réseau',
+    avuSpotNote:
+      'Moyenne industrielle américaine, {cents} ¢/kWh, {month} (EIA). Dépend d’un prix publié ; AVU_hash non.',
+    avuUnitLabel: '1 AVU = 1 kWh',
+    avuUnitNote:
+      'Un kWh en dollars tel que le minage le valorise : 1 ÷ AVU_hash. Une unité de compte, ni une crypto ni un jeton.',
+    avuUnavailable: 'Indisponible',
+    sourceEfficiency:
+      'Efficacité du matériel (donnée sélectionnée, pas une lecture en direct) : {efficiency} Récupéré le {retrieved}.',
+    chartNoteNoHash:
+      'AVU_hash est indisponible : les prix ne peuvent pas être exprimés en AVU et rien n’est tracé.',
+    chartNoteCurrentHash:
+      'Chaque point est ce prix multiplié par l’AVU_hash du jour ({rate} kWh/$) ; AVU_hash n’est pas recalculé le long de la courbe.',
+    chartNoteAnnualHash:
+      'AVU_hash est tracé de {from} à {to}, chaque année étant la moyenne de douze valeurs mensuelles calculées à partir du prix, de la subvention et de la difficulté de Bitcoin et de l’estimation d’efficacité de Cambridge. Bitcoin seul : l’historique d’aucune autre crypto n’est intégré.',
+    chartHashKwh: 'AVU_hash, Bitcoin seul (kWh/$)',
+    avuPriceSingleSource: 'Un seul fournisseur.',
+    avuPriceSources: 'Médiane de {count} fournisseurs.',
+    avuHashVsSpotNote:
+      'Écart de la lecture du minage au-dessus (+) ou au-dessous (−) de celle du réseau. Les deux devraient à peu près concorder.',
+    avuHashVsSpotLabel: 'AVU_hash face à AVU_spot',
+    avuHashStale: 'Périmé : donnée la plus ancienne récupérée il y a {age}.',
+    avuHashLeftOutEfficiency: 'pas de données d’efficacité du matériel',
+    avuHashLeftOutPrice: 'pas de prix récupéré',
+    avuHashLeftOutChain: 'pas de statistiques de chaîne',
+    avuHashLeftOut: 'Omis : {coins}.',
+    avuHashUnavailableNote:
+      'AVU_hash n’a pas pu être calculé : aucune crypto minée du panier n’a de prix récupéré et de statistiques de chaîne. Aucune valeur en AVU n’est affichée d’ici là.',
+    avuNoPriceSource:
+      'Aucun fournisseur ne publie de prix de marché pour cette crypto.',
+    avuPriceNotFetched: 'Le prix n’a pas pu être récupéré.',
+    avuPriceFreshNote: 'Prix de marché {usd}, récupéré il y a {age}.',
+    avuPriceStaleNote:
+      'Périmé : dernier prix de marché {usd}, récupéré il y a {age}.',
+    avuMainnetPrice:
+      '{rate} (prix mainnet ; les cryptos de testnet n’ont pas de valeur de marché)',
+    avuStalePrice: '{rate} (vieux de {age})',
+    resetZoom: 'Réinitialiser le zoom',
+    arbitrageMargin: 'Rémunération du minage eCash vs Bitcoin',
+    arbitrageNote:
+      'Dollars gagnés par kWh de minage sur eCash rapportés à Bitcoin, d’après le prix, la subvention et la difficulté de chaque chaîne. Les mineurs eCash reçoivent 58 % de la subvention ; frais non comptés.',
+    miningBaseline: 'Référence',
+    chartUsdKwh: 'AVU_spot (kWh/$)',
+    chartGoldAvu: 'Or à AVU_spot (kWh/oz)',
     rangeAll: 'Tout',
     range5Y: '5 ans',
     range1Y: '1 an',
     range30D: '30 j',
     range7D: '7 j',
     range24H: '24 h',
-    rangePow: 'Ère PoW (2009 - Aujourd’hui)',
-    rangeAsic: 'ASIC Moderne (2020 - Aujourd’hui)',
-    rangeRecent: '24h récent (Détaillé)',
     rangeNetworks: 'Réseaux',
-    resetZoom: 'Réinitialiser le zoom',
+    chartNoteAnnual:
+      'Chiffres annuels publiés, de {from} à {to} : AVU_spot, les kWh qu’un dollar achetait au prix industriel américain de l’électricité, et une once d’or exprimée dans cette énergie. Les années qu’une source ne couvre pas sont omises.',
+    chartNoteProvider:
+      '{count} prix de marché publiés par {provider}, depuis {first}.',
+    chartNoteJoined:
+      '{count} prix de marché depuis {first} : {recorded} récupérés et enregistrés par cette application, les autres publiés par {provider}.',
+    chartNoteObserved:
+      '{count} prix récupérés et enregistrés par cette application, depuis {first} ; aucun historique de fournisseur n’y est ajouté.',
+    chartNoteNoHistory:
+      'Aucun historique de prix n’a pu être récupéré pour {symbol} : aucune courbe n’est tracée.',
+    chartNoteNoSource:
+      'Aucun fournisseur ne publie de prix de marché pour {symbol} : il n’y a rien à tracer.',
+    chartNoteMainnetPrice:
+      'C’est le prix de marché de la crypto mainnet ; les cryptos de testnet n’ont pas de valeur de marché.',
+    chartNoteNetworks:
+      'Dollars gagnés par kWh de minage pour chaque entrée du panier : prix × subvention du mineur ÷ hashs par bloc × hashs par kWh, avec son poids dans AVU_hash. L’efficacité du matériel est l’estimation de Cambridge pour {month}. Les pourcentages comparent à Bitcoin.',
+    chartNoteNetworksUnavailable:
+      'AVU_hash n’a pas pu être calculé : rien n’est tracé.',
     sourcesTitle: 'Méthodologie et sources de données',
+    sourceUnit:
+      'AVU : 1 AVU = 1 kWh. AVU_hash est le nombre de kWh que vaut un dollar, moyenné sur un panier de cryptos minées selon leur capitalisation, Bitcoin plafonné à 60 % ; pour chacune, dollars par kWh = prix × subvention ÷ hashs par bloc × hashs par kWh. Chaque valeur en AVU est un prix récupéré multiplié par AVU_hash.',
     sourceFeeds:
-      'Flux d’oracles en direct : Prix au comptant en temps réel issus des API publiques CoinGecko et Pyth Network pour les cryptomonnaies actives (ETH, SOL, XEC) ; réseaux testnet et émergents (MON, HYPE, TUSD) ancrés aux indices de parité testnet.',
+      'Prix : récupérés auprès de Coinbase, Kraken, CoinGecko, Binance (Binance.US lorsque Binance ne répond pas), Pyth et Chainlink (lu via le RPC public d’Arbitrum) ; la valeur médiane est retenue, et deux sources en fort désaccord ne donnent aucun prix. Une crypto sans prix récupéré n’affiche aucune valeur.',
     sourceHistorical:
-      'Résolution historique et intrajournalière : Points horaires sur 24h pour une analyse récente détaillée, et séries pluriannuelles (1930 à aujourd’hui) issues de St. Louis FRED, CoinGecko et de la genèse blockchain.',
-    sourceGrid:
-      'Énergie de référence : Tableaux tarifaires industriels publiés par l’US Energy Information Administration (EIA) Electric Power Monthly (référence à 0,082 $/kWh).',
+      'Historique des prix : les chandeliers publiés par un seul fournisseur pour la période (Coinbase, Kraken, Binance.US ou CoinGecko). Rien n’est interpolé.',
+    sourceGrid: 'Données de long terme, intégrées : {electricity}. {gold}',
     sourceHash:
-      'Référence PoW : Dérivée des calendriers de halving et des spécifications CBECI du parc matériel (ancre empirique à 0,084 $/kWh).',
-    sourceHardware:
-      'Efficacité matérielle : Cambridge Bitcoin Electricity Consumption Index (CBECI) et fiches techniques Bitmain/MicroBT.',
-    hardwareMilestones: 'Jalons d’efficacité matérielle',
-    chartTokenAvu: 'AVU / kWh',
-    activeTokenCardTitle: 'Parité {name} ({symbol})',
+      'Minage, en direct : subvention, difficulté et offre issues des statistiques publiques de Blockchair (une seule source), prix issus des flux ci-dessus. Minage, historique : {chain} {subsidy}',
+    activeTokenCardTitle: '{symbol} en AVU',
     inspectingDate: 'Inspection',
     latestValue: 'Dernière valeur',
-    hoverChartHint: 'Survolez le graphique pour inspecter l’historique',
-    hoverActiveHint: 'Inspection des valeurs historiques des actifs',
-    networkSelected: 'Réseau / Crypto',
-    energyCost: 'Coût énergétique',
   },
   chatList: {
     senderPrefix: '{name} : {text}',
@@ -661,15 +706,6 @@ export default {
     usernameReassigned:
       "Vous avez ajouté ce contact sous {'@'}{username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.",
   },
-  sendLotusDialog: {
-    sendLotusTo: 'Envoyer des Lotus à',
-    amountHint: 'Combien de Lotus voulez vous transmettre.',
-    amountPlaceholder: 'Entrez le nombre de Lotus...',
-    memoHint: 'Ajouter un mémo au paiement.',
-    memoPlaceholder: 'Entrez le texte...',
-    sendBtnLabel: 'Envoyer',
-    cancelBtnLabel: 'Annuler',
-  },
   sendStealthDialog: {
     sendStealthTo: 'Envoyer furtivement à',
     subtitle: 'Transfert direct chiffré (invisible pour le relais)',
@@ -725,13 +761,6 @@ export default {
     viewInExplorer: 'Voir la transaction dans l’explorateur',
     viewTransaction: 'Voir la transaction',
     directCreditHint: 'Directement crédité au solde disponible',
-  },
-  sendFileDialog: {
-    sendFile: 'Envoyer un fichier',
-    captionHint: 'Attacher un memo au fichier.',
-    captionPlaceholder: 'Entrez le texte...',
-    sendBtnLabel: 'Envoyer',
-    cancelBtnLabel: 'Annuler',
   },
   topicDrawer: {
     offering: 'Offre:',
@@ -957,7 +986,6 @@ export default {
     receiveMonad: 'Recevoir des MON',
     profile: 'Profil',
     settings: 'Configuration',
-    wipeAndSave: 'Supprimer les messages du relais',
     changeLog: 'Journal des modifications',
     showSeed: 'Montrer la phrase de passe',
     confirmSeed: 'Confirmer la phrase de récupération',
@@ -1093,14 +1121,12 @@ export default {
     gateways: 'Passerelles',
     networkModeTitle: 'Environnement réseau & Chaînes',
     testnetMode: 'Mode Testnet',
-    testnetModeLockedHint:
-      'Applique le testnet sur Monad et tous les réseaux de règlement secondaires.',
     testnetActiveBanner:
       'Le réseau de test est actif sur Monad et tous les réseaux de règlement secondaires.',
     mainnetActiveBanner:
       'Le réseau principal est actif. De vrais actifs sont utilisés pour les transactions et règlements.',
     mainnetLockedBanner:
-      'Le passage au réseau principal est verrouillé par sécurité pendant la version bêta.',
+      'Le passage au réseau principal est verrouillé pour l’instant.',
     supportedChainsTitle: 'Réseaux de règlement pris en charge',
     chainSendReceive: 'Envoi et réception',
     chainUnsupported: 'Non pris en charge',
@@ -1238,15 +1264,6 @@ export default {
       'Besoin de recevoir des pièces ou jetons ? Votre adresse de réception est gérée dans votre portefeuille.',
     goToWallet: 'Aller au portefeuille',
     scanPrompt: 'Scannez pour ajouter comme contact sur Frank',
-  },
-  wipeWallet: {
-    warning: 'Supprimer tous les messages du relais ?',
-    warningMsg:
-      'Cette opération supprime définitivement tous les messages stockés sur le serveur relais, ainsi que les copies locales dans cette application. Votre portefeuille, votre phrase de récupération et vos fonds ne sont pas concernés.',
-    cannotBeUndone: 'Cette opération est irréversible.',
-    cancel: 'Annuler',
-    wipe: 'Supprimer tous les messages',
-    spinnerText: 'Suppression des messages…',
   },
   seedPhraseDialog: {
     close: 'Fermer',

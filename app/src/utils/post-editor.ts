@@ -363,6 +363,29 @@ export function applyMarkdownFormat(
   }
 }
 
+/** `![alt](attachment:ID)`: a picture carried beside the text and shown where it is referenced. */
+const ATTACHMENT_REFERENCE = /!\[(.*?)\]\(attachment:([a-zA-Z0-9_-]+)\)/g
+
+/**
+ * Rewrites each attachment reference with `replace(alt, id)`; a reference it returns
+ * `undefined` for is left as written.
+ */
+export function replaceAttachmentReferences(
+  text: string,
+  replace: (alt: string, id: string) => string | undefined,
+): string {
+  if (!text) return text
+  return text.replace(
+    ATTACHMENT_REFERENCE,
+    (match, alt: string, id: string) => replace(alt, id) ?? match,
+  )
+}
+
+/** The IDs referenced in the text, in order of appearance. */
+export function attachmentReferenceIds(text: string): string[] {
+  return Array.from((text || '').matchAll(ATTACHMENT_REFERENCE), m => m[2])
+}
+
 /**
  * Replaces attachment references like `![alt](attachment:1)` with their full data URIs.
  */
@@ -375,16 +398,20 @@ export function expandAttachmentTokens(
   for (const att of attachments) {
     map.set(att.id, att.dataUrl)
   }
-  return text.replace(
-    /!\[(.*?)\]\(attachment:([a-zA-Z0-9_-]+)\)/g,
-    (match, alt, id) => {
-      const dataUrl = map.get(id)
-      if (dataUrl) {
-        return `![${alt}](${dataUrl})`
-      }
-      return match
-    },
+  return replaceAttachmentReferences(text, (alt, id) => {
+    const dataUrl = map.get(id)
+    return dataUrl ? `![${alt}](${dataUrl})` : undefined
+  })
+}
+
+/** Removes every reference to the attachment, and the line it had to itself. */
+export function removeAttachmentReferences(text: string, id: string): string {
+  const lineRegex = new RegExp(
+    `(?:^|\\n)!?\\[[^\\]]*\\]\\(attachment:${id}\\)(?=\\n|$)`,
+    'g',
   )
+  const inlineRegex = new RegExp(`!?\\[[^\\]]*\\]\\(attachment:${id}\\)`, 'g')
+  return text.replace(lineRegex, '').replace(inlineRegex, '')
 }
 
 /**

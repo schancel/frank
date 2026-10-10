@@ -155,6 +155,49 @@ describe('message items across the canonical path, two wallets', () => {
     expect(message.items).toEqual(items)
   })
 
+  // The app's composer holds one message to 512,000 bytes (`MAX_SENT_MESSAGE_BYTES`,
+  // app/src/utils/image-data-uri.ts): the text's UTF-8 bytes plus each picture's data URI, plus
+  // 64 bytes for each of those items. A reply reference comes on top. Above about 523,000 bytes
+  // the message is refused only at sealing, after funding, so the composer's bound has to hold.
+  it('text and three pictures at the composer bound, with a reply, arrive whole', async () => {
+    const text =
+      'one ![a](attachment:1) two ![b](attachment:2) three ![c](attachment:3) ' +
+      '\u{1F600}'.repeat(500)
+    const textBytes = new TextEncoder().encode(text).length
+    const pictures = 512_000 - 4 * 64 - textBytes
+    const third = Math.floor(pictures / 3)
+    const items: MessageItem[] = [
+      { type: 'reply', payloadDigest: 'ab'.repeat(32) },
+      { type: 'text', text },
+      { type: 'image', image: 'A'.repeat(third) },
+      { type: 'image', image: 'B'.repeat(third) },
+      { type: 'image', image: 'C'.repeat(pictures - 2 * third) },
+    ]
+    const { message, frames } = await roundTrip(items)
+    expect(message.items).toEqual(items)
+    // The 64 bytes counted per item cover what a frame adds to its content (25 and 44 here).
+    expect(frames[1].length - textBytes).toBeLessThanOrEqual(64)
+    expect(frames[2].length - third).toBeLessThanOrEqual(64)
+  })
+
+  it('one picture as large as the composer allows, alone, arrives whole', async () => {
+    const items: MessageItem[] = [
+      { type: 'image', image: 'A'.repeat(512_000 - 64) },
+    ]
+    const { message } = await roundTrip(items)
+    expect(message.items).toEqual(items)
+  })
+
+  it('as many small pictures as the composer bound allows arrive whole', async () => {
+    // 200 pictures of 2,496 bytes: 200 * (2,496 + 64) = 512,000.
+    const items: MessageItem[] = Array.from({ length: 200 }, (_, i) => ({
+      type: 'image' as const,
+      image: String.fromCharCode(65 + (i % 26)).repeat(2_496),
+    }))
+    const { message } = await roundTrip(items)
+    expect(message.items).toEqual(items)
+  })
+
   describe('refusals happen before anything is paid', () => {
     async function refused(items: MessageItem[]) {
       const requests = f.requests.length

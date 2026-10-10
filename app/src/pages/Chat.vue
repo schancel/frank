@@ -42,7 +42,6 @@
                   :style="messageScrollMarginStyle"
                   :ref="msg.payloadDigest"
                   :focus-after-retry="focusComposerAfterRetry"
-                  :focus-failed-after-retry="focusFailedAfterRetry"
                   @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
                   @forwardClicked="handleForwardClicked"
                   @replyDivClick="scrollToMessage"
@@ -126,12 +125,12 @@
       </div>
       <!-- Message box -->
       <chat-input
-        @sendFileClicked="toSendFileDialog"
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
         @sendStealthClicked="stealthDialog = true"
         ref="chatInput"
         v-model:message="message"
+        v-model:attachments="attachments"
         v-model:stamp-amount="stampAmount"
         :suggested-stamp-amount="suggestedStampAmount"
         :is-overridden="isStampOverridden"
@@ -240,6 +239,8 @@ import {
 } from '@frank/wallet/chain'
 import { formatDisplayNumber } from '../utils/chain-amount'
 import { nextFollowBottom } from '../utils/follow-bottom'
+import { composeChatItems, fitsOneMessage } from '../utils/chat-attachments'
+import type { PostAttachment } from '../utils/post-editor'
 import type { MessageItem, EmailItem } from '@frank/cashweb/types/messages'
 
 import { debounce, QScrollArea } from 'quasar'
@@ -292,6 +293,8 @@ export default defineComponent({
       scrollDigest: null as string | null,
       chatWidth: 0,
       message: '',
+      // Pictures held by the composer for the next message (see utils/chat-attachments.ts).
+      attachments: [] as PostAttachment[],
       stampPreparationStatus: null as string | null,
       sendingMessage: false,
       activeSendCount: 0,
@@ -327,7 +330,7 @@ export default defineComponent({
       chatScroll: ref<QScrollArea | null>(null),
     }
   },
-  emits: ['giveLotusClicked', 'sendFileClicked'],
+  emits: ['giveLotusClicked'],
   mounted() {
     if (
       this.address &&
@@ -409,16 +412,6 @@ export default defineComponent({
         ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
       })
     },
-    focusFailedAfterRetry() {
-      void this.$nextTick(() => {
-        if (!this.retryFocusLost()) return
-        const failed = [...this.messages]
-          .reverse()
-          .find(message => message.outbound && message.status === 'error')
-        if (!failed) return
-        this.focusMessageStatus(failed.payloadDigest)
-      })
-    },
     /** True when keyed removal left focus on the viewport, not on a live control. */
     retryFocusLost() {
       const active = document.activeElement
@@ -430,17 +423,6 @@ export default defineComponent({
         return true
       }
       return !active.isConnected
-    },
-    focusMessageStatus(digest: string) {
-      const raw = this.$refs[digest] as
-        | { focusRetryStatus?: () => void }
-        | Array<{ focusRetryStatus?: () => void }>
-        | undefined
-      const message = Array.isArray(raw) ? raw[0] : raw
-      message?.focusRetryStatus?.()
-    },
-    toSendFileDialog(args: unknown) {
-      this.$emit('sendFileClicked', args)
     },
     resizeHandler() {
       const chatScroll = this.chatScroll
@@ -606,7 +588,14 @@ export default defineComponent({
       if (stampValue < acceptancePrice) {
         insufficientStampNotify()
       }
-      if (!message) {
+      const attachmentsToSend = this.attachments
+      if (!message.trim() && attachmentsToSend.length === 0) {
+        return
+      }
+      // The text and its pictures must fit one message. Refused here, before anything is paid:
+      // the wallet would refuse an oversized message only after funding it.
+      if (!fitsOneMessage(message, attachmentsToSend)) {
+        errorNotify(new Error(this.$t('chatInput.messageTooLarge')))
         return
       }
       // Move the submitted text into the optimistic outbox bubble immediately. The user should
@@ -617,21 +606,16 @@ export default defineComponent({
       this.activeSendCount = (this.activeSendCount || 0) + 1
       this.sendingMessage = true
       this.message = ''
+      this.attachments = []
       this.replyDigest = null
 
-      const items: MessageItem[] = []
-      if (replyDigestToSend) {
-        items.push({ type: 'reply', payloadDigest: replyDigestToSend })
-      }
-      items.push({ type: 'text', text: submittedMessage })
+      // The reply, the text, then the pictures the text refers to by position.
+      const items = composeChatItems(
+        submittedMessage,
+        attachmentsToSend,
+        replyDigestToSend,
+      )
 
-      // Was calling the old Lotus `$relayClient.sendMessage` directly, completely bypassing
-      // `stores/chats.ts`'s `sendMessage` (ticket #42's real, tested `activeChain.directMessages.send`
-      // wiring) -- that store action always existed and worked, but nothing in the actual UI ever
-      // called it. Explicitly flagged as ticket #44's job in `utils/clients.ts`'s own doc comment
-      // ("any UI wiring to it") and missed there too. Found live tonight (autonomous overnight
-      // session, 2026-09-27) by actually clicking Send in a real browser and finding the message
-      // never left the input box.
       try {
         await this.sendDirectMessage({
           wallet: useMonadWallet(),

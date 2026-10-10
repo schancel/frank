@@ -1,10 +1,8 @@
-import RelayClient from '@frank/cashweb/relay'
 import { Wallet } from '@frank/cashweb/legacy-wallet'
 
 declare module '@vue/runtime-core' {
   interface ComponentCustomProperties {
     $wallet: Wallet
-    $relayClient: RelayClient
     $relay: {
       connected: boolean
     }

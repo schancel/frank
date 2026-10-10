@@ -6,11 +6,7 @@
  * `LotusChain`, once one is actually built for real -- see issue #41's "Non-goals"), never a
  * runtime branch anywhere else in the app.
  */
-import {
-  MonadChain,
-  createEvmChain,
-  loadMonadChainConfigFromEnv,
-} from "./monad-chain";
+import { MonadChain } from "./monad-chain";
 import { ActiveChain } from "./active-chain";
 export { createChain } from "./chain-factory";
 export type { ChainFactoryConfig } from "./chain-factory";
@@ -101,14 +97,6 @@ export function onActiveChainChange(
   return () => {
     activeChainListeners.delete(listener);
   };
-}
-
-export function setNetworkMode(mode: "testnet" | "mainnet"): ActiveChain {
-  const isTestnet = mode === "testnet";
-  const config = loadMonadChainConfigFromEnv({ isTestnet });
-  const newChain = createEvmChain(config);
-  setActiveChain(newChain);
-  return newChain;
 }
 
 export {

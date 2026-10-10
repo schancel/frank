@@ -593,9 +593,7 @@ describe('native Solana AVU presentation', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const oracle = useOracleStore()
-    jest
-      .spyOn(oracle, 'startBackgroundWorker')
-      .mockImplementation(() => undefined)
+    jest.spyOn(oracle, 'acquire').mockImplementation(() => () => undefined)
     oracle.snapshot.rates.solana = 37
     await fetchChainBalance('solana', true)
 
@@ -645,7 +643,6 @@ describe('native Solana AVU presentation', () => {
     } finally {
       detail.unmount()
       drawer.unmount()
-      oracle.stopBackgroundWorker()
       setActivePinia(undefined)
     }
   })
@@ -661,9 +658,7 @@ describe('Solana token availability in both views', () => {
       const pinia = createPinia()
       setActivePinia(pinia)
       const oracle = useOracleStore()
-      jest
-        .spyOn(oracle, 'startBackgroundWorker')
-        .mockImplementation(() => undefined)
+      jest.spyOn(oracle, 'acquire').mockImplementation(() => () => undefined)
       const error = jest
         .spyOn(console, 'error')
         .mockImplementation(() => undefined)
@@ -723,7 +718,6 @@ describe('Solana token availability in both views', () => {
         await flushPromises()
         detail.unmount()
         drawer.unmount()
-        oracle.stopBackgroundWorker()
         setActivePinia(undefined)
         error.mockRestore()
       }
@@ -737,9 +731,7 @@ describe('Solana token availability in both views', () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const oracle = useOracleStore()
-    jest
-      .spyOn(oracle, 'startBackgroundWorker')
-      .mockImplementation(() => undefined)
+    jest.spyOn(oracle, 'acquire').mockImplementation(() => () => undefined)
     const error = jest
       .spyOn(console, 'error')
       .mockImplementation(() => undefined)
@@ -846,7 +838,6 @@ describe('Solana token availability in both views', () => {
       await flushPromises()
       detail.unmount()
       drawer.unmount()
-      oracle.stopBackgroundWorker()
       setActivePinia(undefined)
       error.mockRestore()
     }

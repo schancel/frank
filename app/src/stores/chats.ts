@@ -9,6 +9,7 @@ import {
 import { sha1 } from '@noble/hashes/sha1'
 import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
+import { picturePreview, picturePreviewText } from '../utils/chat-attachments'
 import { desktopNotify } from '../utils/notifications'
 import { store } from '../adapters/level-message-store'
 import {
@@ -51,7 +52,6 @@ import type {
   OutgoingDelivery,
   OutgoingFailureReason,
   TextItem,
-  ImageItem,
   StealthItem,
   SwapRecordItem,
   EmailItem,
@@ -1545,10 +1545,14 @@ export const useChatStore = defineStore('chats', {
         return null
       }
 
+      // A message with pictures is previewed as its picture count and its text, not as the
+      // attachment references the text carries. `photos` is 0 for any other message.
+      const pictures = picturePreview(items)
       return {
         outbound: lastMessage.outbound,
         senderAddress: lastMessage.senderAddress,
-        text: messageItems.previewText(lastItem),
+        photos: pictures?.photos ?? 0,
+        text: pictures ? pictures.text : messageItems.previewText(lastItem),
       }
     },
     getLastReceived(state) {
@@ -3980,15 +3984,19 @@ export const useChatStore = defineStore('chats', {
         const stealthItem: StealthItem = (newMsg.items.find(
           item => item.type === 'stealth',
         ) as StealthItem) ?? { amount: 0 }
-        const imageItem: ImageItem = (newMsg.items.find(
-          item => item.type === 'image',
-        ) as ImageItem) ?? { image: '' }
+        const pictures = picturePreview(newMsg.items)
         let body = ''
         if (stealthItem.amount > 0) {
           body = `[${formatBalance(stealthItem.amount)}] `
         }
-        if (imageItem.image.length > 0) body += '[Image] '
-        body += textItem.text
+        // This store has no translator (the name fallback below is English too).
+        body += pictures
+          ? picturePreviewText(pictures, (key, params) =>
+              key === 'chatImage.onePhoto'
+                ? '\u{1F4F7} Photo'
+                : `\u{1F4F7} ${params?.count} photos`,
+            )
+          : textItem.text
         if (contact?.notify) {
           desktopNotify(
             senderName,

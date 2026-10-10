@@ -21,6 +21,11 @@ import {
 import { getBytes } from 'ethers'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
+import {
+  allocateOpeningConversationId,
+  formatConversationId,
+} from '@frank/cashweb/relay/conversation-id'
+import { conversationIdSaltOf } from './monad-chain'
 import domainVectors from '../../domain-roots/vectors/domain-roots-v1.json'
 import type { MonadRootBundle } from '../monad-wallet-material'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
@@ -355,8 +360,33 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect(opened).toHaveLength(2)
     for (const message of opened) expect(message.messageId).toMatch(UUID)
     expect(opened[0].messageId).not.toBe(opened[1].messageId)
-    // No conversation supplied: the wire's own default, the message's ID.
-    expect(opened[0].conversationId).toBe(opened[0].messageId)
+    // No conversation supplied: the one this account opens with the recipient, allocated
+    // from the sender's private salt. Never a new conversation named after the message.
+    expect(opened[0].conversationId).not.toBe(opened[0].messageId)
+    const senderSalt = conversationIdSaltOf(f.alice)!
+    expect(opened[0].conversationId).toBe(
+      formatConversationId(
+        allocateOpeningConversationId(
+          senderSalt,
+          f.bob.identity.address.raw.toLowerCase(),
+        ),
+      ),
+    )
+    // The recipient's own salt gives a different ID for the same pair: the recipient learns
+    // the sender's ID only by receiving it, and no third account can compute it.
+    const recipientSalt = conversationIdSaltOf(f.bob)!
+    expect(toHex(recipientSalt)).not.toBe(toHex(senderSalt))
+    expect(
+      formatConversationId(
+        allocateOpeningConversationId(
+          recipientSalt,
+          f.bob.identity.address.raw.toLowerCase(),
+        ),
+      ),
+    ).not.toBe(opened[0].conversationId)
+    // A fresh derivation for the same wallet is the same salt, and it is not the root.
+    expect(toHex(conversationIdSaltOf(f.alice)!)).toBe(toHex(senderSalt))
+    expect(senderSalt).toHaveLength(16)
     expect(opened[1].conversationId).toBe(CONVERSATION)
     expect((await links()).map(row => row.consumerId)).toEqual(
       opened.map(m => consumerOf(m.messageId!)),

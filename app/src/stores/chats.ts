@@ -6,7 +6,6 @@ import {
   defaultStampAmount,
   displayNetwork,
 } from '../utils/constants'
-import { sha1 } from '@noble/hashes/sha1'
 import { randomBytes } from '@noble/hashes/utils'
 import { stampPrice } from '@frank/cashweb/legacy-wallet/helpers'
 import { picturePreview, picturePreviewText } from '../utils/chat-attachments'
@@ -62,6 +61,11 @@ import {
   type RelayReceiptIdentity,
 } from '@frank/cashweb/relay/storage/storage'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
+import {
+  allocateOpeningConversationId,
+  formatConversationId,
+  uuidv5Bytes,
+} from '@frank/cashweb/relay/conversation-id'
 import { accountSession } from '../accounts/session'
 import { useProfileStore } from './my-profile'
 import { useSettingsStore } from './settings'
@@ -220,37 +224,16 @@ export function makeParticipantsKey(participants: string[]): string {
 export const NULL_CONVERSATION_NAMESPACE =
   '00000000-0000-0000-0000-000000000000'
 
+/** A UUIDv5 as text. The one implementation is shared with the sending layer
+ * (`@frank/cashweb/relay/conversation-id`). */
 export function uuidv5(namespaceUuid: string, name: string): string {
-  const cleanNs = namespaceUuid.replace(/-/g, '')
-  const nsBytes = new Uint8Array(16)
-  for (let i = 0; i < 16; i++) {
-    nsBytes[i] = parseInt(cleanNs.slice(i * 2, i * 2 + 2), 16)
-  }
-  const nameBytes = new TextEncoder().encode(name)
-  const input = new Uint8Array(nsBytes.length + nameBytes.length)
-  input.set(nsBytes, 0)
-  input.set(nameBytes, nsBytes.length)
-
-  const digest = sha1(input)
-  digest[6] = (digest[6] & 0x0f) | 0x50 // version 5
-  digest[8] = (digest[8] & 0x3f) | 0x80 // RFC 4122 variant
-
-  const hex = Array.from(digest.slice(0, 16))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('')
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
-    12,
-    16,
-  )}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
-}
-
-export function makeConversationId(
-  participants: string[],
-  topicId?: string,
-): string {
-  const pKey = makeParticipantsKey(participants)
-  const name = topicId ? `${pKey}#${topicId}` : pKey
-  return uuidv5(NULL_CONVERSATION_NAMESPACE, name)
+  const hex = namespaceUuid.replace(/-/g, '')
+  if (!/^[0-9a-fA-F]{32}$/.test(hex))
+    throw new Error('UUID namespace must contain exactly 16 bytes')
+  const namespace = new Uint8Array(16)
+  for (let i = 0; i < 16; i++)
+    namespace[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  return formatConversationId(uuidv5Bytes(namespace, name))
 }
 
 /** A message ID is chosen by its sender, so two different messages can arrive with the same
@@ -882,6 +865,43 @@ function canonicalConversationId(value: string): string {
   )}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+/** The active account's private conversation-ID salt. Installed by the host when a wallet
+ * becomes active and cleared when it goes ({@link setConversationIdSalt}); never persisted. */
+let conversationIdSalt: Uint8Array | null = null
+
+/** Installs (or, with nothing, removes) the active account's conversation-ID salt. */
+export function setConversationIdSalt(salt?: Uint8Array | null): void {
+  conversationIdSalt = salt ? Uint8Array.from(salt) : null
+}
+
+/**
+ * The ID of the conversation this account opens with `peer`, and the ID a message from `peer`
+ * that carries none is filed under. From the account's private salt it is the same on every
+ * device and unknown to everyone else.
+ *
+ * With no salt installed the ID is random, and this device remembers it as its thread with the
+ * peer; it is never derived from anything public. That happens for a wallet without typed
+ * messaging roots, and when a chat is opened before the identity session has installed the
+ * wallet (a deep link followed at startup).
+ */
+function allocateOpeningConversationIdFor(peer: string): string {
+  return conversationIdSalt
+    ? formatConversationId(
+        allocateOpeningConversationId(conversationIdSalt, peer.toLowerCase()),
+      )
+    : freshConversationId()
+}
+
+/** Whether any conversation with exactly this peer exists yet, default or not. */
+function hasConversationWith(
+  conversations: Record<string, Conversation>,
+  peer: string,
+): boolean {
+  return Object.values(conversations).some(
+    c => c.kind !== 'group' && sameCanonicalAddress(c.address, peer),
+  )
+}
+
 function freshConversationId(): string {
   const bytes = randomBytes(16)
   bytes[6] = (bytes[6] & 15) | 64
@@ -1019,9 +1039,16 @@ function openDefaultConversation(
     reopenConversation(existing)
     return existing
   }
-  const derivedId = makeConversationId(participants)
-  // An explicitly supplied ID never becomes the default merely because it equals this value.
-  const id = conversations[derivedId] ? freshConversationId() : derivedId
+  const id = allocateOpeningConversationIdFor(peer)
+  const allocated = conversations[id]
+  if (allocated) {
+    // Only a conversation this same account opened carries this ID (another of its devices
+    // sent in it first): it is this peer's thread, and there is never a second one.
+    assertConversationPeer(allocated, peer)
+    allocated.defaultDirect = true
+    reopenConversation(allocated)
+    return allocated
+  }
   const conversation = newConversation({
     id,
     address: peer,
@@ -3588,8 +3615,24 @@ export const useChatStore = defineStore('chats', {
         const created = !conv
         if (!conv) {
           const participants = ownAddress ? [ownAddress, peer] : [peer]
+          // A message is filed under the ID it carries. That conversation becomes the peer's
+          // thread (what Contacts opens) only if it is the first one with this peer AND the
+          // message really is from that peer: nobody else's use of an ID can make it so. With
+          // a thread of our own already there it is a second conversation, which is accepted
+          // and not merged. A message that carries no ID is filed under the conversation this
+          // account opens with its sender.
+          const fromPeer =
+            wrapper.outbound !== true &&
+            sameCanonicalAddress(wrapper.senderAddress, peer)
           conv = id
-            ? newConversation({ id, address: peer, participants })
+            ? newConversation({
+                id,
+                address: peer,
+                participants,
+                ...(fromPeer && !hasConversationWith(preparedConversations, peer)
+                  ? { defaultDirect: true }
+                  : {}),
+              })
             : openDefaultConversation(preparedConversations, peer, participants)
         }
         // What deleting a conversation means is decided here, before anything is saved: a row

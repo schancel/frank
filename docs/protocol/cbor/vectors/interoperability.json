@@ -19,7 +19,7 @@
   },
   "format": "frank-cbor-v1-interoperability",
   "hostile_manifest": {
-    "case_count": 426,
+    "case_count": 427,
     "reject_category_counts": {
       "frame": 13,
       "malformed": 31,

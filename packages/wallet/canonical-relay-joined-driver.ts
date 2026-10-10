@@ -29,6 +29,7 @@ import {
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import type { CanonicalFetch } from '@frank/cashweb/relay/canonical-dm-transport'
+import { allocateOpeningConversationId } from '@frank/cashweb/relay/conversation-id'
 import {
   createDirectoryClient,
   type DirectoryFetch,
@@ -386,6 +387,10 @@ async function senderFreeze(config: DriverConfig, fetch: CanonicalFetch) {
       senderCurrent: sender.current,
       recipientCurrent: recipient.current,
       messageId: new Uint8Array(16).fill(0x77),
+      conversationId: allocateOpeningConversationId(
+        wallet.material.canonicalRoles!.conversationIdSalt(),
+        config.principals[1].subject,
+      ),
       items: [directMessageText(config.text)],
       roles: wallet.material.canonicalRoles!.create(NETWORK, sender.current),
     })

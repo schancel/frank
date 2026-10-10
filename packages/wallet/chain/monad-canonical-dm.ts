@@ -53,6 +53,7 @@ import {
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
+import { allocateOpeningConversationId } from '@frank/cashweb/relay/conversation-id'
 import {
   connectCanonicalMailboxStream,
   fetchCanonicalInboxPage,
@@ -986,7 +987,13 @@ async function send(
         senderCurrent,
         recipientCurrent: recipient.current,
         messageId,
-        conversationId: conversationIdBytes,
+        // The caller named no conversation: the one this account opens with this recipient.
+        conversationId:
+          conversationIdBytes ??
+          allocateOpeningConversationId(
+            owner.roles.conversationIdSalt(),
+            params.recipient.raw.toLowerCase(),
+          ),
         items,
         roles,
       })

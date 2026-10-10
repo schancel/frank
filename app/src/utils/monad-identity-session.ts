@@ -21,6 +21,8 @@ import {
 } from '@frank/wallet/chain/monad-chain'
 import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
 import { messageItems } from './message-items'
+import { conversationIdSaltOf } from '@frank/wallet/chain/monad-chain'
+import { setConversationIdSalt } from '../stores/chats'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
 import {
@@ -192,7 +194,10 @@ function productionDeps(): MessagingDeps {
       )
       try {
         const removeDirectory = installCanonicalDirectory(wallet, directory)
+        // The chat store allocates conversation IDs from this account's private salt.
+        setConversationIdSalt(conversationIdSaltOf(wallet))
         return () => {
+          setConversationIdSalt(null)
           removeDirectory()
           removeMessageItems()
         }

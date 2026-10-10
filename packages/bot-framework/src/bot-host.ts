@@ -773,6 +773,8 @@ export class FrankBotHost {
           stampValueWei: bigint;
         }[] = [];
         for (const msg of messages) {
+          // The scan also returns what this bot sent; that is not inbound work.
+          if (msg.outbound) continue;
           try {
             accepted.push({
               identity: inboundIdentity(msg, instance.operations.owner),

@@ -779,6 +779,49 @@ describe("FrankBotHost Reliability Features", () => {
     });
   });
 
+  describe("A bot's own sent messages in its mailbox", () => {
+    // The mailbox scan returns what the bot sent as well as what it received. Its own sends are
+    // not inbound work and not an anomaly: every poll used to warn about each of them.
+    it("are skipped without a warning and without running a handler", async () => {
+      const onMessage = jest.fn();
+      const bot: FrankBotDefinition = {
+        id: "own-sends-bot",
+        getProfile: () => ({ name: "OwnSends", bot: true }),
+        onMessage,
+      };
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/own-sends-test`,
+      });
+      await host.register(bot);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        mockDirectMessagesFetchSince.mockResolvedValueOnce([
+          {
+            outbound: true,
+            senderAddress: { raw: mockLocalAddress },
+            senderPublicKey: getBytes("0x" + mockLocalSubject),
+            recipientPublicKey: getBytes(
+              mockPeer.signingKey.compressedPublicKey
+            ),
+            recipientAddress: { raw: mockPeer.address.toLowerCase() },
+            messageId: "03030303-0303-0303-0303-030303030303",
+            conversationId: "01010101-0101-0101-0101-010101010101",
+            items: [{ type: "text", text: "welcome" }],
+            payloadDigest: "55".repeat(32),
+            receivedTime: Date.now(),
+          },
+        ]);
+        await (host as any).pollAllBots();
+        expect(onMessage).not.toHaveBeenCalled();
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+        await host.stop();
+      }
+    });
+  });
+
   describe("Interrupted handler admission", () => {
     it("holds a failed handler across every subsequent poll without marking it processed", async () => {
       let callCount = 0;

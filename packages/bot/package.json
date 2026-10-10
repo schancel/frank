@@ -22,6 +22,8 @@
     "curated-defaults": "tsx print-curated-defaults.ts",
     "demo": "node --import tsx demo/demo.ts",
     "demo:smoke": "node --import tsx demo/smoke.ts",
+    "funds:report": "node --import tsx demo/funds.ts report",
+    "funds:sweep": "node --import tsx demo/funds.ts sweep",
     "regtest:fetch": "node --import tsx demo/regtest/bitcoin-abc.ts",
     "regtest:check": "node --import tsx demo/regtest/regtest-stack.livecheck.ts",
     "regtest:ecash-send": "node --import tsx demo/regtest/ecash-send.livecheck.ts",

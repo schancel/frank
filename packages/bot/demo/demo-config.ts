@@ -615,6 +615,10 @@ function wei(name: string, raw: string | undefined, dflt: string, problems: stri
 export function resolveDemoConfig(params: {
   env: Record<string, string | undefined>
   envFile: Record<string, string>
+  /** The directory holding the env file. A relative wallet-file path written IN that file means
+   * relative to it (the repository root for the repo's `.env`), wherever the launcher was
+   * started from; one given in the process environment is relative to `cwd`. */
+  envFileDir?: string
   ngrokFlag?: boolean
   /** `--allow-draw`: this start may draw whatever funding the bots need. */
   allowDrawFlag?: boolean
@@ -627,6 +631,12 @@ export function resolveDemoConfig(params: {
   const merged: Record<string, string | undefined> = {}
   for (const name of DEMO_VAR_NAMES) {
     merged[name] = params.env[name] ?? params.envFile[name]
+  }
+  const walletPath = (name: string): string | undefined => {
+    const fromEnv = params.env[name]
+    if (fromEnv) return resolve(cwd, fromEnv)
+    const fromFile = params.envFile[name]
+    return fromFile ? resolve(params.envFileDir ?? cwd, fromFile) : undefined
   }
   const problems: string[] = []
   const noFaucet = merged.FRANK_DEMO_NO_FAUCET === '1'
@@ -666,7 +676,7 @@ export function resolveDemoConfig(params: {
 
   const rpcUrl = merged.MONAD_TESTNET_HTTP_RPC_URL ?? ''
   const wsRpcUrl = merged.MONAD_TESTNET_WS_RPC_URL || undefined
-  const mainWalletJson = merged.E2E_DEMO_MAIN_WALLET_JSON ? resolve(cwd, merged.E2E_DEMO_MAIN_WALLET_JSON) : ''
+  const mainWalletJson = walletPath('E2E_DEMO_MAIN_WALLET_JSON') ?? ''
   if (!rpcUrl) {
     problems.push('MONAD_TESTNET_HTTP_RPC_URL is required (set it in the environment or your .env file)')
   } else if (
@@ -811,7 +821,7 @@ export function resolveDemoConfig(params: {
     mainWalletJson,
     maxStartDrawWei: params.allowDrawFlag ? undefined : BigInt(maxStartDraw),
     funding,
-    testWalletJson: merged.FRANK_TEST_WALLET_JSON ? resolve(cwd, merged.FRANK_TEST_WALLET_JSON) : undefined,
+    testWalletJson: walletPath('FRANK_TEST_WALLET_JSON'),
     relayDbPath: merged.FRANK_DEMO_RELAY_DB_PATH ? resolve(cwd, merged.FRANK_DEMO_RELAY_DB_PATH) : undefined,
     cashwebdBin: merged.CASHWEBD_BIN || undefined,
     toolchainEnv: Object.fromEntries(

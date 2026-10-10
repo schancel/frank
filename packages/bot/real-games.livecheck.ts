@@ -11,7 +11,9 @@
  * funding wallet (FRANK_TEST_WALLET_JSON, else E2E_DEMO_MAIN_WALLET_JSON; do not use the latter
  * while a demo is running) from the environment or the repo's `.env`; CASHWEBD_BIN for a
  * prebuilt relay. Stakes are 0.0005 MON. Two player accounts are funded (0.08 and 0.03 MON) and
- * what they have left is sent back to the funding wallet at the end.
+ * what they have left is sent back to the funding wallet at the end, also when the run fails.
+ * The bots in FUNDED_BOT_HOST_DIR keep what they hold: when the copy is no longer needed,
+ * `yarn --cwd packages/bot funds:sweep <dir> --send` returns it.
  *
  * Per game it checks what a player's app checks, and that the money is on chain:
  *   dice      table -> bet (stake as message value) -> result; reveal verified; payout on chain
@@ -38,6 +40,7 @@ import {
   type HandEvent,
 } from "@frank/wallet/message-item-plugins/blackjack/hand";
 import {
+  describeSweep,
   realStackEnv,
   startRealStack,
   type RealWallet,
@@ -62,6 +65,8 @@ const randomHex32 = () =>
 const say = (...a: unknown[]) =>
   console.log(new Date().toISOString().slice(11, 19), ...a);
 
+let cleanup: () => Promise<void> = async () => undefined;
+
 async function main() {
   const env = realStackEnv();
   process.env.MONAD_TESTNET_HTTP_RPC_URL = env.MONAD_TESTNET_HTTP_RPC_URL;
@@ -75,6 +80,26 @@ async function main() {
   env.FRANK_TEST_WALLET_JSON ??= env.E2E_DEMO_MAIN_WALLET_JSON;
   const stack = await startRealStack({ env });
   say("relay", stack.relayUrl, "state", stack.stateDir);
+  let stopHost: (() => Promise<void>) | undefined;
+  let cleaned: Promise<void> | undefined;
+  // Runs when the games finish AND when the run fails: what the players have left goes back to
+  // the funding wallet, with a line for anything that could not be moved.
+  cleanup = () =>
+    (cleaned ??= (async () => {
+      await stopHost?.().catch(() => undefined);
+      const lines = await stack.sweep().then(
+        (outcome) => describeSweep(outcome, stack.fundingAddress),
+        (e) => [
+          `players' leftovers NOT returned (${
+            e instanceof Error ? e.message : e
+          }); their keys are under ${
+            stack.stateDir
+          }: yarn --cwd packages/bot funds:sweep ${stack.stateDir} --send`,
+        ]
+      );
+      for (const line of lines) say(line);
+      await stack.stop();
+    })());
   const before = await stack.provider.getBalance(stack.fundingAddress);
   const botDir = process.env.FUNDED_BOT_HOST_DIR;
   if (!botDir)
@@ -103,6 +128,7 @@ async function main() {
     watchRegistrations: false,
     pollIntervalMs: 2000,
   });
+  stopHost = () => host.stop();
   const image =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
   const bots = {
@@ -404,19 +430,7 @@ async function main() {
       )} wei`;
     });
 
-  await host.stop().catch(() => undefined);
-  // What the players have left goes back to the funding wallet.
-  const returned = await stack.sweep().catch((e) => {
-    say(
-      "players' leftovers NOT returned:",
-      e instanceof Error ? e.message : e,
-      "- their keys are under",
-      stack.stateDir
-    );
-    return 0n;
-  });
-  say("returned to the funding wallet (wei):", returned.toString());
-  await stack.stop();
+  await cleanup();
   const after = await new (
     await import("ethers")
   ).JsonRpcProvider(stack.rpcUrl.split(",")[0]).getBalance(
@@ -427,15 +441,19 @@ async function main() {
     "funding wallet spent (wei):",
     (before - after).toString(),
     "bot state kept in",
-    botDir
+    botDir,
+    "(its bots keep their funds; to return them: yarn --cwd packages/bot funds:sweep",
+    botDir,
+    "--send)"
   );
   process.exit(
     Object.values(results).some((r) => r.startsWith("FAILED")) ? 1 : 0
   );
 }
 if (require.main === module) {
-  main().catch((e) => {
+  main().catch(async (e) => {
     console.error("run failed:", e instanceof Error ? e.message : e);
+    await cleanup().catch(() => undefined);
     process.exit(1);
   });
 }

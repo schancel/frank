@@ -16,7 +16,7 @@
  * Exit code 0 only if every check passes, every bot started funded, and the supervised processes
  * stayed up until shutdown.
  */
-import { join, resolve } from 'path'
+import { dirname, join, resolve } from 'path'
 
 import { createMonadJsonRpcProvider } from '@frank/wallet/monad-provider'
 
@@ -66,6 +66,7 @@ export async function runSmoke(env: Record<string, string | undefined>): Promise
     const config = resolveDemoConfig({
       env,
       envFile: readEnvFile(envFilePath),
+      envFileDir: dirname(envFilePath),
       cwd: env.INIT_CWD ?? process.cwd(),
       allowDrawFlag: process.argv.includes('--allow-draw'),
     })

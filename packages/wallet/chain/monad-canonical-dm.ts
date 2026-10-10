@@ -50,6 +50,7 @@ import {
   installedCanonicalOrigin,
   restoreCanonicalRequest,
   submitCanonicalRequest,
+  CanonicalTransportError,
   type CanonicalAcceptedBody,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
@@ -177,7 +178,7 @@ export class CanonicalRelayCannotForwardError extends Error {
 export class CanonicalRecipientUndeliverableError extends MonadStampTerminalError {
   constructor() {
     super(
-      'Your relay could not deliver to the relay this address lives on. This message was not sent. The relay reports that it broadcast no payment; the payment stays reserved in your wallet.',
+      'Your relay could not deliver to the relay this address lives on. This message was not sent and nothing was paid.',
       422,
       'mailbox_terminal',
       false,
@@ -231,8 +232,11 @@ export interface StoredPayment {
    * - `spent` / `reverted`: the chain shows it in a block (a revert consumes the nonce too).
    * - `failed`: the chain shows the account's nonce consumed by another transaction, so this
    *   payment can never land. It is never paid again.
+   * - `unsent`: the relay refused the message for good before it stored or broadcast anything,
+   *   so these bytes never reached anything that could broadcast them. They are dropped
+   *   (`rawTx` is empty) and the coin was freed at once.
    */
-  state: 'pending' | 'spent' | 'reverted' | 'failed'
+  state: 'pending' | 'spent' | 'reverted' | 'failed' | 'unsent'
 }
 
 /**
@@ -793,10 +797,23 @@ async function submitStored(
       fetch: directory.fetch,
     })
   } catch (error) {
+    // The relay's own "this request is not acceptable": nothing was stored and nothing was
+    // broadcast, and sending the same bytes again can never succeed.
+    if (
+      error instanceof CanonicalTransportError &&
+      error.status !== undefined &&
+      REFUSED_FOR_GOOD.has(error.status)
+    )
+      return {
+        row: await refuseUnexposed(owner, row, `refused_${error.status}`),
+        error,
+      }
     return { row, error }
   }
   // An older relay's "kept, not delivered yet" is not an answer: submit again later.
   if (accepted.phase === 'retained') return { row }
+  if (accepted.phase === 'dead' && DEAD_BEFORE_EXPOSURE.has(accepted.reason))
+    return { row: await refuseUnexposed(owner, row, accepted.reason) }
   // The relay has answered for these exact bytes: the request body has done its work.
   const { request: _request, ...kept } = owner.messages.get(row.consumerId)!
   const answered: StoredMessage =
@@ -806,6 +823,47 @@ async function submitStored(
   await owner.messages.put(answered)
   return { row: answered }
 }
+
+/** HTTP answers that refuse the request itself: malformed, too large, unprocessable. */
+const REFUSED_FOR_GOOD = new Set([400, 413, 422])
+/** `dead` reasons the relay decides before it stores or broadcasts anything. Every other dead
+ * reason may follow a broadcast, so its payments stay claimed until the chain decides. */
+const DEAD_BEFORE_EXPOSURE = new Set<string>(['undeliverable', 'sender_unpublished'])
+
+/**
+ * The relay refused this message for good, before anything could broadcast its payments. The
+ * message is failed, its signed bytes are dropped, and every coin it claimed is free again:
+ * nothing was exposed, so nothing waits for the chain. The record is written first, the claims
+ * released after.
+ */
+async function refuseUnexposed(
+  owner: CanonicalMessagingOwner,
+  row: StoredMessage,
+  reason: string,
+): Promise<StoredMessage> {
+  const { request: _request, ...kept } = owner.messages.get(row.consumerId)!
+  const refused: StoredMessage = {
+    ...kept,
+    outcome: 'dead',
+    reason,
+    payments: kept.payments.map(payment =>
+      payment.state === 'pending'
+        ? { ...payment, rawTx: '', state: 'unsent' }
+        : payment,
+    ),
+  }
+  await owner.messages.put(refused)
+  const holder = holderOf(owner, row.consumerId)
+  for (const payment of row.payments)
+    if (payment.state === 'pending') owner.payer().releasePayment(holder, payment)
+  return refused
+}
+
+/** How long a payment must keep looking replaced (nonce consumed, no receipt) before it is
+ * recorded as failed: a node that lags shows a landed payment the same way for a while. */
+export const REPLACED_AFTER_MS = { value: 60_000 }
+/** Payment transaction hash -> when it first looked replaced. Process memory. */
+const replacedSince = new Map<string, number>()
 
 /**
  * One look at the chain for every payment of `row` that is still pending, and the only place a
@@ -831,9 +889,13 @@ async function settlePayments(
           return seen.reverted ? 'reverted' : 'spent'
         }
         if (seen.state === 'replaced') {
+          const since = replacedSince.get(payment.rawTx) ?? Date.now()
+          replacedSince.set(payment.rawTx, since)
+          if (Date.now() - since < REPLACED_AFTER_MS.value) return 'pending'
           await payer.recordFailed(holder, payment)
           return 'failed'
         }
+        replacedSince.delete(payment.rawTx)
         if (broadcast) await payer.broadcast(payment.rawTx)
       } catch {
         // The chain could not be read or reached: nothing is known, so nothing changes.
@@ -849,8 +911,43 @@ async function settlePayments(
       state: states[i],
     })),
   }
+  // The record first, the claim after: until the record says what became of a payment, its
+  // claim is what keeps the coin from a second spender, across a crash too.
   await owner.messages.put(next)
+  row.payments.forEach((payment, i) => {
+    if (states[i] !== 'pending') {
+      replacedSince.delete(payment.rawTx)
+      payer.releasePayment(holder, payment)
+    }
+  })
   return next
+}
+
+/**
+ * One look at the chain, and only the chain, for the one message that holds a coin another
+ * operation is waiting for. `holder` is the claim's holder; anything that is not an unsettled
+ * message of this wallet is left alone. No relay request is made.
+ */
+async function settleHolder(
+  owner: CanonicalMessagingOwner,
+  holder: string,
+): Promise<void> {
+  const prefix = `${owner.subject}:`
+  if (!holder.startsWith(prefix)) return
+  const consumerId = holder.slice(prefix.length)
+  const row = owner.messages.get(consumerId)
+  if (!row || !row.payments.some(isPending)) return
+  const work = workOf(owner, consumerId)
+  if (work.creating) return
+  if (work.busy) return void (await work.busy)
+  let ended!: () => void
+  work.busy = new Promise<void>(resolve => (ended = resolve))
+  try {
+    await settlePayments(owner, row, row.outcome === 'delivered')
+  } finally {
+    work.busy = undefined
+    ended()
+  }
 }
 
 /**
@@ -931,8 +1028,16 @@ export function restoreOutgoingClaims(owner: CanonicalMessagingOwner): void {
   const payer = owner.payer()
   for (const row of owner.messages.all()) {
     const pending = row.payments.filter(isPending)
-    if (pending.length > 0)
-      payer.restore(holderOf(owner, row.consumerId), pending)
+    if (pending.length === 0) continue
+    // Two records naming one coin must never stop the wallet from opening: the first keeps the
+    // claim, both stay in the resend pass, and the chain says which payment landed.
+    const contested = payer.restore(holderOf(owner, row.consumerId), pending)
+    if (contested.length > 0)
+      console.warn(
+        `[monad-canonical-dm] sent message ${row.digest} names ${contested.join(
+          ', ',
+        )}, which another unsettled message also pays from. Both are kept; the chain decides.`,
+      )
   }
 }
 
@@ -1150,9 +1255,10 @@ async function send(
       payer.claim({
         holder,
         stampValueWei,
-        // The only coin that could pay is spent by an earlier payment of this wallet: ask the
-        // chain about it now instead of waiting for the host's next tick.
-        whileBusy: () => resend(owner, directory, { now: true }),
+        // The only coin that could pay is spent by an earlier payment: this send waits its
+        // turn, and meanwhile asks the chain about that one payment (never the relay).
+        whileBusy: busyHolder => settleHolder(owner, busyHolder),
+        onWaiting: () => params.onPreparationProgress?.({ stage: 'checking' }),
       }),
     )
     // Fresh snapshots after any wait: the message is sealed to the Current pair in force.
@@ -1243,7 +1349,9 @@ async function send(
         if (row.reason === 'sender_unpublished')
           throw new CanonicalSenderUnpublishedError()
         throw new MonadStampTerminalError(
-          `The relay ended this payment set (${row.reason ?? 'no reason given'}); it can never be delivered. Its payments are kept reserved.`,
+          row.payments.some(isPending)
+            ? `The relay ended this payment set (${row.reason ?? 'no reason given'}); it can never be delivered. Its payments stay claimed until the chain shows what became of them.`
+            : `The relay refused this message (${row.reason ?? 'no reason given'}). It was not sent and nothing was paid.`,
           422,
           'mailbox_terminal',
           undefined,
@@ -1755,12 +1863,10 @@ export function canonicalDirectMessages(
         params.payloadDigests.map(digest => [digest, statusOf(owner, digest)]),
       )
     },
-    /** Drives every unresolved message one step now, for an operation that is waiting for a
-     * coin one of them holds (a native send waiting for the main account). */
-    settleNow: async () => {
-      const directory = owner.directory()
-      if (directory) await owner.lifetime(() => resend(owner, directory, { now: true }))
-    },
+    /** One look at the chain for the message that holds a coin another operation is waiting
+     * for (a native send waiting for the main account). No relay request. */
+    settleHolder: (holder: string) =>
+      owner.lifetime(() => settleHolder(owner, holder)),
     /** The smallest paid stamp right now: one transfer's fee at the node's gas price. */
     minimumStamp: () => owner.lifetime(() => owner.payer().minimumPaymentWei()),
     /** What the chain has shown of the payments of one sent message. No request is made. */

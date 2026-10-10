@@ -254,7 +254,8 @@ export type DirectMessagePaymentState =
   | "pending"
   | "spent"
   | "reverted"
-  | "failed";
+  | "failed"
+  | "unsent";
 export type DirectMessageAttemptStatus =
   | "live"
   | "delivered"
@@ -473,6 +474,8 @@ export interface DirectMessageClient {
    * - `spent` / `reverted`: in a block. A reverted payment consumed its account all the same.
    * - `failed`: the account's nonce was consumed by another transaction; this payment can never
    *   land. It is never paid again.
+   * - `unsent`: the relay refused the message for good before storing or broadcasting anything;
+   *   the payment was dropped and its coin freed.
    * Delivery (`DirectMessageAttemptStatus`) and payment are separate facts.
    */
   paymentsOf?(params: {

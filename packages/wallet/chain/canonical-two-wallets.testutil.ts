@@ -90,6 +90,8 @@ export function useProviderStandIns(enabled = true) {
 export const offlineChain = {
   mined: new Map<string, string>(),
   nodeDown: false,
+  /** Only broadcasts fail; reads answer. */
+  broadcastDown: false,
   relayBroadcasts: true,
   walletBroadcasts: [] as string[],
   /** What the node answers for `eth_gasPrice`: what a transfer is charged per gas. Zero by
@@ -100,6 +102,7 @@ export const offlineChain = {
     this.gasPrice = 0n
     this.mined.clear()
     this.nodeDown = false
+    this.broadcastDown = false
     this.relayBroadcasts = true
     this.walletBroadcasts.length = 0
   },
@@ -147,7 +150,8 @@ export function offlineProviderModule() {
             .signedTransaction
           const tx = ethers.Transaction.from(raw)
           offlineChain.walletBroadcasts.push(raw)
-          if (offlineChain.nodeDown) throw new Error('node unreachable')
+          if (offlineChain.nodeDown || offlineChain.broadcastDown)
+            throw new Error('node unreachable')
           if (offlineChain.mined.has(tx.hash)) throw new Error('already known')
           offlineChain.mine(raw)
           providerBroadcasts.push({

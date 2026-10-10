@@ -274,6 +274,7 @@ export class MonadSubAccountPool {
   /** Lower-case address of the main or identity account -> the operation holding it. */
   private readonly accountClaims = new Map<string, string>();
   private readonly accountGenerations = new Map<string, number>();
+  private readonly accountWaiters = new Map<string, Array<() => void>>();
   private spendApplier?: SubAccountSpendApplier;
   accountUtxoPool?: ChainUtxoPool;
 
@@ -479,6 +480,21 @@ export class MonadSubAccountPool {
     if (this.accountClaims.get(key) !== holder) return;
     this.accountClaims.delete(key);
     this.accountGenerations.set(key, (this.accountGenerations.get(key) ?? 0) + 1);
+    const waiting = this.accountWaiters.get(key);
+    this.accountWaiters.delete(key);
+    for (const wake of waiting ?? []) wake();
+  }
+
+  /** Resolves when the account at `address` is next released (at once if nobody holds it).
+   * Operations waiting for the same account are woken in the order they began to wait. */
+  accountReleased(address: string): Promise<void> {
+    const key = address.toLowerCase();
+    if (!this.accountClaims.has(key)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const waiting = this.accountWaiters.get(key) ?? [];
+      waiting.push(resolve);
+      this.accountWaiters.set(key, waiting);
+    });
   }
 
   /** The operation holding sub-account `index`, if any. */

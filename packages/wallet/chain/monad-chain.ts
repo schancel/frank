@@ -1054,20 +1054,30 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             pool.claimAccount(holder, address, pool.accountGeneration(address));
           return true;
         };
+        // Held by a message payment: wait for that account to be released, asking the chain
+        // about that one payment at most once a second. No relay request, no polling storm.
         const deadline = Date.now() + MAIN_ACCOUNT_WAIT_MS;
         while (!claimAll()) {
-          // Ask the chain about the payment that holds the account, rather than wait for the
-          // host's next tick to do it.
-          await canonicalMessaging
-            .get(wallet)
-            ?.settleNow()
-            .catch(() => undefined);
+          const held = addresses.find(
+            (a) => pool.accountClaimedBy(a) !== undefined
+          )!;
+          const holderOfIt = pool.accountClaimedBy(held);
+          if (holderOfIt !== undefined)
+            await canonicalMessaging
+              .get(wallet)
+              ?.settleHolder(holderOfIt)
+              .catch(() => undefined);
           if (claimAll()) break;
           if (Date.now() >= deadline)
             throw new Error(
               "The main account is still spent by a message payment the chain has not shown; try again shortly"
             );
-          await new Promise((resolve) => setTimeout(resolve, 250));
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([
+            pool.accountReleased(held),
+            new Promise((resolve) => (timer = setTimeout(resolve, 1_000))),
+          ]);
+          clearTimeout(timer);
         }
         try {
           return await task();

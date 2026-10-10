@@ -671,8 +671,11 @@ describe('derived EVM input admission', () => {
       await reopened.close()
     }
   })
+  // Not here any more: a direct member the node does not know at all, whose nonce another
+  // transaction consumed, can never land. It has failed for good and frees its account (see
+  // `nativeMemberSuperseded`, and the composition test of a native send whose nonce was
+  // consumed). A pending one, and every dependent hold, is kept as before.
   it.each([
-    ['direct', 'missing'],
     ['direct', 'pending'],
     ['dependent', 'missing'],
     ['dependent', 'revert'],

@@ -8,6 +8,7 @@ import type {
 import { PROTOCOL_CHAINS } from './chain/chains-registry'
 import {
   EvmNativeJournalError,
+  nativeMemberSuperseded,
   type EvmNativeOperationJournal,
   type EvmNativeBinding,
   type EvmNativePlan,
@@ -299,7 +300,10 @@ class AdmissionOwner implements EvmInputAdmission {
         const unresolved = m.dependencies.length
           ? m.observation.state !== 'included-success'
           : m.observation.state !== 'included-success' &&
-            m.observation.state !== 'included-revert'
+            m.observation.state !== 'included-revert' &&
+            // Its nonce went to another transaction: it holds its address no longer (the
+            // journal's own `canSelect` says the same).
+            !nativeMemberSuperseded(m)
         add(
           {
             kind: 'native',
@@ -312,7 +316,8 @@ class AdmissionOwner implements EvmInputAdmission {
           m.source.address,
           unresolved ? [{ kind: 'address', address: m.source.address }] : [],
           m.observation.state === 'included-success' ||
-            m.observation.state === 'included-revert',
+            m.observation.state === 'included-revert' ||
+            nativeMemberSuperseded(m),
         )
       })
     }

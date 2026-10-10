@@ -298,6 +298,43 @@ test('the background poll re-sends a lost contract call, and once it lands the m
   }
 })
 
+test('a native send whose nonce was consumed by another transaction has failed for good: the main account sends again', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const wallet = (await createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 1_000_000n)
+    // The transfer is signed and handed over, and never reaches the node.
+    node.loseReplies(true)
+    await expect(
+      wallet.sendNative({ recipient: { raw: ROUTER }, value: 1n }),
+    ).rejects.toThrow(/outcome is unknown/)
+    expect(wallet.getUnresolvedNativeTransaction!()).toBeDefined()
+    expect((await wallet.getContractCallFunds!()).mainBusy).toBe(true)
+    // Another transaction of this account (signed elsewhere with the same key) takes nonce 0.
+    jest.spyOn(wallet.provider, 'getTransactionCount').mockResolvedValue(1)
+    node.loseReplies(false)
+    node.broadcast.mockClear()
+    // One look shows it: the node knows neither the transfer nor a receipt, and the nonce is
+    // gone. Nothing is left to resolve, and the account is free.
+    expect((await wallet.getContractCallFunds!()).mainBusy).toBe(false)
+    expect(wallet.getUnresolvedNativeTransaction!()).toBeUndefined()
+    const sent = await wallet.sendNative({
+      recipient: { raw: ROUTER },
+      value: 1n,
+    })
+    expect(
+      Transaction.from(node.broadcast.mock.calls[0]![0] as string),
+    ).toMatchObject({ hash: sent.txHash, from: MAIN, nonce: 1 })
+  } finally {
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 /** Notes are started, not waited for: resolves once every note started so far has settled. */
 function watchNotes() {
   const started = jest.spyOn(EvmLegacyConsolidator.prototype, 'startSync')

@@ -1,7 +1,7 @@
 import { createServer } from 'net'
 
 import { resolveDemoConfig } from './demo-config'
-import { checkPrerequisites, main } from './demo'
+import { appCommand, checkPrerequisites, main } from './demo'
 
 const REAL_ENV = {
   MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc.example.invalid/v2/dummy-key',
@@ -36,6 +36,27 @@ describe('demo launcher', () => {
     const code = await main(['--some-other-chain'], { FRANK_DEMO_ENV_FILE: '/nonexistent/dummy.env' })
     expect(code).toBe(1)
     expect(errors.join('\n')).toMatch(/unknown argument\(s\): --some-other-chain/)
+  })
+
+  // 2026-10-10: started with FRANK_DEMO_RELAY_PORT=28198, the launcher printed an app command
+  // that left the app's dev server forwarding relay routes to port 8098: every one was 502.
+  it('the printed app command makes the app dev server forward to the relay this launcher started', () => {
+    const config = resolveDemoConfig({
+      env: { ...REAL_ENV, FRANK_DEMO_RELAY_PORT: '28198' },
+      envFile: {},
+      home: '/home/dummy',
+      cwd: '/work',
+    })
+    expect(config.relayUrl).toBe('http://127.0.0.1:28198')
+    const command = appCommand(config, config.relayUrl).join('\n')
+    const env = Object.fromEntries(
+      [...command.matchAll(/\b([A-Z][A-Z0-9_]*)=(\S+)/g)].map(match => [match[1], match[2]]),
+    )
+    // The app's own rule for which relay its dev server forwards to (app/quasar.config.js).
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { relayProxyTarget } = require('../../../app/config/relay-dev-proxy.cjs')
+    expect(relayProxyTarget(env)).toBe(config.relayUrl)
+    expect(env.QCLI_MONAD_RELAY_BASE_URL).toBe(config.relayUrl)
   })
 
   it('a missing funding wallet file is one clear line', async () => {

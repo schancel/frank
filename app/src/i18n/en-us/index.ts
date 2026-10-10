@@ -107,16 +107,16 @@ export default {
     stampQuickSelection:
       'Quick selection across orders of magnitude (1× to 10,000×)',
     stampMultiplierValue: '{multiplier}× default ({amount})',
-    suggestedStamp: 'Suggested: {amount}',
-    resetToSuggested: 'Reset to suggested',
-    convergedPill: 'Suggested',
-    overridePill: 'Your choice',
+    defaultStamp: 'Default: {amount}',
+    resetToDefault: 'Reset to default',
+    stampFree: 'Free',
+    stampChipFree: 'No stamp: this message is free',
     stampChip: 'Stamp: {amount}',
-    stampChipMultiple: 'Stamp: {amount}, {multiplier}× the minimum',
+    stampChipMultiple: 'Stamp: {amount}, {multiplier}× the default',
     stampWhat:
       'A stamp is a small payment sent with your message to the person you are writing to. It pays for their attention.',
     stampWhy:
-      'The suggested stamp for this chat sits midway (the geometric mean) between the last stamp you paid them and the last one they paid you. It never goes below the minimum, and it rises above your last stamp only as far as they have paid you more than you paid them.',
+      'Each message carries the default stamp unless you choose another amount for this chat. Enter 0 to send free messages.',
   },
   digitalGoods: {
     catalog: 'Catalog',
@@ -152,6 +152,8 @@ export default {
     balanceUnknown: 'Your balance is not known yet.',
   },
   gameFairness: {
+    moveNotSent:
+      'Not sent. Use Retry on your message below, or discard it to choose again.',
     notVerified: 'NOT VERIFIED.',
     diceVerified:
       'Verified: the secret matches the commitment you bet on, and the number, outcome and payout follow from it and your own random value.',
@@ -490,8 +492,8 @@ export default {
     splToken: 'SPL Token',
     tokenMint: 'Token Mint',
     tokenContract: 'Token contract',
-    recentActivity: 'Recent Activity',
-    noRecentActivity: 'No recent transactions on this chain.',
+    recentActivity: 'Recent swaps',
+    noRecentActivity: 'No swaps on this chain yet.',
     swapAction: 'Swap',
     viewInExplorer: 'View in Explorer',
     avuTooltip:
@@ -703,7 +705,7 @@ export default {
     sendStealthTo: 'Send Stealth to',
     subtitle:
       'Paid from your wallet to a one-time address only this contact can spend from',
-    balanceLabel: 'Spendable Balance:',
+    balanceLabel: 'Available for this payment:',
     amountHint: 'Amount to pay',
     amountPlaceholder: '0.0',
     memoHint: 'Memo, sent with the payment (optional)',
@@ -763,7 +765,7 @@ export default {
     other: 'Sending accounts',
     otherNote:
       'Kept by the wallet in its own accounts to pay for your messages, and change from earlier payments. Not counted in the balance above.',
-    total: 'Total in this wallet',
+    total: 'Balance',
     yours:
       'Every one of these accounts belongs to this wallet and comes back from your recovery phrase.',
     unavailable: 'The accounts could not be read just now.',
@@ -1100,6 +1102,7 @@ export default {
     failedSendTransaction: 'Failed to send Monad transaction',
   },
   sendContactDialog: {
+    available: 'Available for this payment: {amount}',
     title: 'Send to Contact',
     selectContact: 'Select Contact',
     searchContacts: 'Search contacts...',
@@ -1433,7 +1436,7 @@ export default {
     progressSigning: 'Signing the swap…',
     progressSubmitted: 'Submitted. Waiting for the network to confirm…',
     progressKeepOpen:
-      'You can leave this page: the swap is recorded and appears in Recent Activity.',
+      'You can leave this page: the swap is recorded and appears in Recent swaps.',
     resultConfirmed: 'Swap complete',
     resultConfirmedDetail: 'Received in your wallet, as recorded on chain.',
     resultConfirmedUnknown:
@@ -1447,7 +1450,7 @@ export default {
       'The network rejected the swap. You kept your funds and paid only the network fee.',
     resultPending: 'Submitted, not confirmed yet',
     resultPendingDetail:
-      'The network has not confirmed this swap yet. It may still complete; its status updates in Recent Activity. Do not send it again.',
+      'The network has not confirmed this swap yet. It may still complete; its status updates in Recent swaps. Do not send it again.',
     unavailableNetwork: 'No swap is available for this wallet on this network.',
     unavailableSolana: 'Swaps for this Solana wallet are not available yet.',
     unavailableWallet: 'This wallet cannot swap yet. Open it and try again.',
@@ -1472,7 +1475,7 @@ export default {
     errorAccountChanged: 'The account changed. Review the swap again.',
     errorQuote: 'Could not get a price from the network. Try again.',
     errorExecution:
-      'The swap was not sent. Nothing was swapped; check Recent Activity before trying again.',
+      'The swap was not sent. Nothing was swapped; check Recent swaps before trying again.',
     warnHighImpact:
       'This amount is large for the pool: you receive noticeably less than the market rate.',
     status: {

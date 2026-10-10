@@ -655,6 +655,7 @@
                 outlined
                 class="q-mt-sm"
                 :label="$t('accountRecovery.display_name')"
+                :hint="$t('accountRecovery.display_name_required')"
                 :maxlength="80"
                 autocomplete="off"
                 data-test="display-name"
@@ -770,6 +771,7 @@ import {
   retryLegacyInspection,
 } from '../accounts/legacy'
 import { usePersistentStorageStore } from '../stores/persistent-storage'
+import { useProfileStore } from '../stores/my-profile'
 import { useTabCoordinatorStore } from '../stores/tab-coordinator'
 import {
   getDefaultRelayBaseUrl,
@@ -1130,6 +1132,9 @@ function activate() {
       pending.expectedActive,
     )
     if (account.status !== 'ready') return
+    // The name typed at setup is the profile's name, unless the profile already has one.
+    const profile = useProfileStore().profile
+    if (!profile.name) profile.name = pending.account.displayName
     void usePersistentStorageStore().afterActivation()
     emit('setupCompleted')
     await router.push('/wallet')

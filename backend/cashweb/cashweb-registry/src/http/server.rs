@@ -10,7 +10,7 @@ use crate::{
     http::evm_rpc::{
         handle_issue_rpc_capability, handle_issue_rpc_capability_challenge,
         handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, handle_proxy_ws,
-        EvmRpcRuntime, RPC_CORS_HEADERS,
+        EvmRpcRuntime, RPC_CORS_HEADERS, SOLANA_CLIENT_CORS_HEADER,
     },
     http::monad_profile::{
         fetch_profile_raw_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
@@ -668,6 +668,9 @@ impl RegistryServer {
                         header::HeaderName::from_static(BITCOIN_PROXY_CORS_HEADERS[0]),
                         header::HeaderName::from_static("ngrok-skip-browser-warning"),
                         header::HeaderName::from_static("access-control-request-private-network"),
+                        // Sent by @solana/web3.js on every call: a browser on another origin
+                        // could not reach `/chain-rpc/solana-*/rpc` without it.
+                        header::HeaderName::from_static(SOLANA_CLIENT_CORS_HEADER),
                     ])
                     .expose_headers([
                         header::CONTENT_TYPE,

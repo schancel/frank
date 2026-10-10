@@ -132,9 +132,6 @@
         v-model:message="message"
         v-model:attachments="attachments"
         v-model:stamp-amount="stampAmount"
-        :suggested-stamp-amount="suggestedStampAmount"
-        :is-overridden="isStampOverridden"
-        @resetStampToSuggested="resetStampToSuggested"
         @sendMessage="sendMessage"
       />
     </q-footer>
@@ -208,7 +205,6 @@ import { errorNotify, insufficientStampNotify } from '../utils/notifications'
 import {
   defaultAcceptancePrice,
   defaultEmailGatewayAddress,
-  defaultStampAmount,
 } from '../utils/constants'
 import { useSettingsStore } from '../stores/settings'
 import {
@@ -319,8 +315,6 @@ export default defineComponent({
     return {
       refreshBalance,
       getAcceptancePrice: contacts.getAcceptancePrice,
-      getStampAmount: chats.getStampAmount,
-      setStampAmount: chats.setStampAmount,
       getContactVuex: contacts.getContact,
       contactStore: contacts,
       ownAddress: useReactiveOwnCanonicalAddress(),
@@ -570,12 +564,6 @@ export default defineComponent({
         this.$nextTick(() => message.$el.scrollIntoView({ behavior: 'smooth' }))
       }, 50)()
     },
-    resetStampToSuggested() {
-      const target = this.conversation?.id || this.recipientAddress
-      if (target && typeof this.chatStore?.clearStampOverride === 'function') {
-        this.chatStore.clearStampOverride(target)
-      }
-    },
     async sendMessage(message: string) {
       const recipient = this.recipientAddress || this.address
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
@@ -586,7 +574,8 @@ export default defineComponent({
           : typeof rawPrice === 'bigint'
           ? rawPrice
           : BigInt(defaultAcceptancePrice)
-      if (stampValue < acceptancePrice) {
+      // A message deliberately sent free is not a stamp that fell short: nothing is said.
+      if (stampValue > 0n && stampValue < acceptancePrice) {
         insufficientStampNotify()
       }
       const attachmentsToSend = this.attachments
@@ -626,13 +615,6 @@ export default defineComponent({
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })
-        const target = this.conversation?.id || recipient
-        if (
-          target &&
-          typeof this.chatStore?.clearStampOverride === 'function'
-        ) {
-          this.chatStore.clearStampOverride(target)
-        }
       } catch (err) {
         // Send failures do not throw: the message stays in the conversation, marked failed with a
         // Retry and Discard (#269/#270). Only a precondition failure (e.g. an invalid recipient)
@@ -1044,9 +1026,7 @@ export default defineComponent({
       }
       this.sendingMessage = true
       try {
-        const stampValue = activeChain.fromDisplayAmount(
-          this.getStampAmount(targetAddress),
-        )
+        const stampValue = this.chatStore.getStampWei(targetAddress)
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: targetAddress,
@@ -1184,88 +1164,35 @@ export default defineComponent({
 
       return this.messages.slice(start, end)
     },
-    suggestedStampAmount(): string {
-      const target = this.conversation?.id || this.recipientAddress
-      if (
-        !target ||
-        typeof this.chatStore?.getPeerStampSuggestion !== 'function'
-      ) {
-        return activeChain.toDisplayAmount(activeChain.defaultStampValue)
-      }
-      try {
-        const suggested = this.chatStore.getPeerStampSuggestion(target)
-        return activeChain.toDisplayAmount(suggested)
-      } catch {
-        return activeChain.toDisplayAmount(activeChain.defaultStampValue)
-      }
-    },
-    isStampOverridden(): boolean {
-      const target = this.conversation?.id || this.recipientAddress
-      if (
-        !target ||
-        typeof this.chatStore?.getStampOverrideWei !== 'function'
-      ) {
-        return false
-      }
-      return this.chatStore.getStampOverrideWei(target) !== undefined
-    },
+    /** The stamp the next message carries, in the chain's display unit. It is the user's own
+     * choice for this conversation (zero is a free message), else the chain's default. */
     stampAmount: {
-      set(stampAmount: string | undefined) {
+      set(stampAmount: string | number | null | undefined) {
+        // An empty box or half-typed text is not an amount: the last valid one stands.
+        const text = String(stampAmount ?? '').trim()
+        if (!text) return
         let rawAmount: bigint
         try {
-          rawAmount = activeChain.fromDisplayAmount(stampAmount ?? '')
+          rawAmount = activeChain.fromDisplayAmount(text)
         } catch {
           return
         }
-        rawAmount =
-          rawAmount < activeChain.defaultStampValue
-            ? activeChain.defaultStampValue
-            : rawAmount
-
+        if (rawAmount < 0n) return
         const target = this.conversation?.id || this.recipientAddress
-        if (
-          target &&
-          typeof this.chatStore?.getPeerStampSuggestion === 'function'
-        ) {
-          const suggested = this.chatStore.getPeerStampSuggestion(target)
-          if (rawAmount === suggested) {
-            this.chatStore.clearStampOverride?.(target)
-          } else {
-            this.chatStore.setStampOverride?.({
-              address: target,
-              overrideWei: rawAmount,
-            })
-          }
-        }
-
-        this.setStampAmount({ address: target, stampAmount: Number(rawAmount) })
+        if (!target) return
+        this.chatStore.setStampWei({
+          address: target,
+          stampWei:
+            rawAmount === activeChain.defaultStampValue ? undefined : rawAmount,
+        })
       },
-      get() {
+      get(): string {
         const target = this.conversation?.id || this.recipientAddress
-        const override =
-          target && typeof this.chatStore?.getStampOverrideWei === 'function'
-            ? this.chatStore.getStampOverrideWei(target)
-            : undefined
-        if (override !== undefined) {
-          return activeChain.toDisplayAmount(override)
-        }
-        if (
-          target &&
-          typeof this.chatStore?.getPeerStampSuggestion === 'function'
-        ) {
-          const suggested = this.chatStore.getPeerStampSuggestion(target)
-          return activeChain.toDisplayAmount(suggested)
-        }
-        const stored = this.getStampAmount(target)
-        const storedRaw = BigInt(stored)
-        // Values persisted by the old Lotus-denominated control (and the earlier Monad preview)
-        // are not meaningful wei defaults. Upgrade them in-place at display/send time.
-        const raw =
-          stored === defaultStampAmount ||
-          storedRaw < activeChain.defaultStampValue
-            ? activeChain.defaultStampValue
-            : storedRaw
-        return activeChain.toDisplayAmount(raw)
+        return activeChain.toDisplayAmount(
+          target
+            ? this.chatStore.getStampWei(target)
+            : activeChain.defaultStampValue,
+        )
       },
     },
   },

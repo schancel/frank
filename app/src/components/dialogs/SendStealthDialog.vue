@@ -107,7 +107,9 @@ export default defineComponent({
   },
   emits: ['send'],
   setup() {
-    const { formattedBalance, loaded: balanceLoaded } = useBalance()
+    // What a payment to a contact can draw on: the wallet's own figure, not the shown total.
+    const { formattedSpendable: formattedBalance, loaded: balanceLoaded } =
+      useBalance()
     return {
       formattedBalance,
       balanceLoaded,
@@ -123,7 +125,7 @@ export default defineComponent({
     currentUnit(): string {
       return activeChain.unit
     },
-    /** The wallet's real balance, or nothing while it is not known. Never a placeholder figure. */
+    /** What this payment can draw on, or nothing while it is not known. Never a placeholder. */
     currentWalletBalanceDisplay(): string {
       return this.balanceLoaded ? this.formattedBalance : '…'
     },

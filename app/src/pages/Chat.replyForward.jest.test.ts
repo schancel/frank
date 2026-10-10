@@ -45,14 +45,16 @@ jest.mock('../stores/chats', () => ({
       },
     },
     sendMessage: mockSendMessage,
-    getStampAmount: () => 0,
+    getStampWei: () => 1n,
     readAll: jest.fn(),
   }),
 }))
 
+let mockAcceptancePrice = 0
+let mockStampWei = 1n
 jest.mock('../stores/contacts', () => ({
   useContactStore: () => ({
-    getAcceptancePrice: () => 0,
+    getAcceptancePrice: () => mockAcceptancePrice,
     getContact: () => ({ profile: { name: 'Peer' } }),
   }),
 }))
@@ -74,15 +76,19 @@ jest.mock('../composables/useActiveWallet', () => ({
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     defaultStampValue: 1n,
-    fromDisplayAmount: () => 1n,
+    fromDisplayAmount: () => mockStampWei,
     toDisplayAmount: () => '1',
     unit: 'MON',
   },
 }))
 
+const { insufficientStampNotify } = jest.requireMock('../utils/notifications')
+
 describe('Chat Reply and Forward flows', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    mockAcceptancePrice = 0
+    mockStampWei = 1n
   })
 
   function mountChat() {
@@ -127,6 +133,25 @@ describe('Chat Reply and Forward flows', () => {
 
     await nextTick()
     expect(focus).toHaveBeenCalled()
+  })
+
+  it('a free message to a contact with a price is sent without the short-stamp notice', async () => {
+    mockAcceptancePrice = 100
+    mockStampWei = 0n
+    const { wrapper } = mountChat()
+    await (wrapper.vm as any).sendMessage('free on purpose')
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ stampValue: 0n }),
+    )
+    expect(insufficientStampNotify).not.toHaveBeenCalled()
+  })
+
+  it('a stamp that is paid but below the contact’s price still gets the notice', async () => {
+    mockAcceptancePrice = 100
+    mockStampWei = 50n
+    const { wrapper } = mountChat()
+    await (wrapper.vm as any).sendMessage('paid, but short')
+    expect(insufficientStampNotify).toHaveBeenCalledTimes(1)
   })
 
   it('sendMessage includes reply item and clears replyDigest', async () => {

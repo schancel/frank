@@ -15,6 +15,9 @@ export interface ChatGameItem<T> {
   stampValueWei: bigint
   /** When the message was sent or received, in milliseconds; 0 if unknown. */
   timeMs: number
+  /** True for an own message whose send failed: it is in the chat with its Retry and Discard,
+   * and the peer has not received it. */
+  failed: boolean
 }
 
 /** How long a card waits for the bot's answer before it says plainly that none has come. */
@@ -33,6 +36,7 @@ export function chatGameItems<T extends MessageItem['type']>(
   const messages = (useChatStore().activeConversation?.messages ??
     []) as readonly {
     outbound?: boolean
+    status?: string
     items?: readonly MessageItem[]
     stampValueWei?: bigint
     senderAddress?: string
@@ -54,6 +58,7 @@ export function chatGameItems<T extends MessageItem['type']>(
           outbound: !!message.outbound,
           stampValueWei: message.stampValueWei ?? 0n,
           timeMs: message.serverTime || message.receivedTime || 0,
+          failed: !!message.outbound && message.status === 'error',
         })),
     )
 }

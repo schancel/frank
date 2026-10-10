@@ -24,7 +24,7 @@
  * the whole jest process with an unhandled LevelUP lock error.
  */
 import { createPinia, setActivePinia } from 'pinia'
-import { createApp } from 'vue'
+import { createApp, watch } from 'vue'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ;(global as any).document = { hasFocus: () => true }
@@ -2751,16 +2751,6 @@ describe('stores/chats.ts (ticket #42)', () => {
           })
         })
       })
-
-      it('what a third person paid does not move the price suggested for the peer', async () => {
-        const { chats } = withPeer()
-        const before = chats.getPeerStampSuggestion(firstId)
-        await chats.receiveMessages([fromThird('rich-third', 200, 10n ** 18n)])
-        expect(chats.getPeerStampSuggestion(firstId)).toBe(before)
-        expect(chats.getPeerStampMetrics(firstId)).toEqual(
-          chats.getPeerStampMetrics(secondId),
-        )
-      })
     })
   })
 
@@ -4916,69 +4906,97 @@ describe('stores/chats.ts (ticket #42)', () => {
     })
   })
 
-  describe('ticket #819 / #820: converging geometric stamp suggestion and override lifecycle', () => {
-    it('computes geometric stamp suggestion from conversation messages and handles override lifecycle', () => {
+  describe("a conversation's stamp is the user's choice, and the conversation list is ordered by its newest message", () => {
+    const peerAddress = '0x1111111111111111111111111111111111111111'
+    const otherAddress = '0x5555555555555555555555555555555555555555'
+    const ONE_MON = 1_000_000_000_000_000_000n
+
+    function inbound(index: string, from: string, time: number, paid: bigint) {
+      return {
+        outbound: false,
+        senderAddress: from,
+        copartyAddress: from,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        copartyPubKey: {} as any,
+        index,
+        stampValue: Number(paid),
+        message: {
+          outbound: false,
+          status: 'confirmed',
+          items: [{ type: 'text' as const, text: `text of ${index}` }],
+          serverTime: time,
+          receivedTime: time,
+          outpoints: [],
+          stampValueWei: paid,
+          senderAddress: from,
+          destinationAddress: SENDER_ADDRESS,
+        },
+      }
+    }
+
+    it('the stamp does not rise because the peer paid more', async () => {
       const store = useChatStore()
-      const peerAddress = '0x1111111111111111111111111111111111111111'
-      const convId = '33333333-3333-4333-8333-000000000002'
-      const ONE_MON = 1_000_000_000_000_000_000n
-
-      store.conversations[convId] = {
-        id: convId,
-        kind: 'direct',
-        address: peerAddress,
-        participants: [peerAddress],
-        messages: [
-          // A opened with 5.0 MON
-          {
-            outbound: true,
-            stampValueWei: 5n * ONE_MON,
-            status: 'confirmed',
-            items: [],
-            outpoints: [],
-            receivedTime: 100,
-            serverTime: 100,
-            senderAddress: '0x0000000000000000000000000000000000000001',
-            payloadDigest: 'd1',
-          },
-          // B replied with 0.1 MON
-          {
-            outbound: false,
-            stampValueWei: ONE_MON / 10n,
-            status: 'confirmed',
-            items: [],
-            outpoints: [],
-            receivedTime: 200,
-            serverTime: 200,
-            senderAddress: peerAddress,
-            payloadDigest: 'd2',
-          },
-        ],
-        totalUnreadMessages: 0,
-        totalUnreadValue: 0,
-        totalValue: 0,
-        lastReceived: 200,
-        lastRead: 200,
-        stampAmount: 0,
-      } as any
-
-      // Expected suggestion is ~0.7071 MON (707106781186547524n)
-      const suggestion = store.getPeerStampSuggestion(convId)
-      expect(suggestion).toBe(707_106_781_186_547_524n)
-
-      // Override is initially undefined
-      expect(store.getStampOverrideWei(convId)).toBeUndefined()
-
-      // Set manual override
-      const customOverride = 2n * ONE_MON
-      store.setStampOverride({ address: convId, overrideWei: customOverride })
-      expect(store.getStampOverrideWei(convId)).toBe(customOverride)
-
-      // Clear override
-      store.clearStampOverride(convId)
-      expect(store.getStampOverrideWei(convId)).toBeUndefined()
+      const conv = store.openDirectConversation(peerAddress)
+      expect(store.getStampWei(conv.id)).toBe(activeChain.defaultStampValue)
+      // The peer pays 100 times the default: the next message still carries the default.
+      await store.receiveMessages([
+        inbound('rich', peerAddress, 100, activeChain.defaultStampValue * 100n),
+      ])
+      expect(store.getStampWei(conv.id)).toBe(activeChain.defaultStampValue)
+      expect(store.getStampWei(peerAddress)).toBe(activeChain.defaultStampValue)
     })
 
+    it('keeps the amount the user chose, zero included, and saves it with the conversation', async () => {
+      const store = useChatStore()
+      const conv = store.openDirectConversation(peerAddress)
+      store.setStampWei({ address: conv.id, stampWei: 0n })
+      expect(store.getStampWei(conv.id)).toBe(0n)
+      store.setStampWei({ address: conv.id, stampWei: 2n * ONE_MON })
+      await store.receiveMessages([inbound('later', peerAddress, 100, 1n)])
+      expect(store.getStampWei(conv.id)).toBe(2n * ONE_MON)
+      // The conversation is saved as JSON: the choice must be something JSON can hold.
+      const saved = JSON.parse(
+        JSON.stringify({ ...store.conversations[conv.id], messages: [] }),
+      )
+      expect(saved.stampWei).toBe((2n * ONE_MON).toString())
+      store.setStampWei({ address: conv.id, stampWei: undefined })
+      expect(store.getStampWei(conv.id)).toBe(activeChain.defaultStampValue)
+    })
+
+    it('lists the conversation with the newest message first, and opening one does not move it', async () => {
+      const store = useChatStore()
+      // The older message pays far more: money does not decide the order.
+      await store.receiveMessages([inbound('a', peerAddress, 100, ONE_MON)])
+      await store.receiveMessages([inbound('b', otherAddress, 200, 1n)])
+      const order = () => store.getSortedChatOrder.map(c => c.address)
+      expect(order()).toEqual([otherAddress, peerAddress])
+      // Reading a conversation changes its unread count and read time, not its place.
+      store.setActiveConversation(store.chats[peerAddress]!.id)
+      expect(order()).toEqual([otherAddress, peerAddress])
+      store.setActiveConversation(store.chats[otherAddress]!.id)
+      expect(order()).toEqual([otherAddress, peerAddress])
+      // A new message moves its conversation to the top.
+      await store.receiveMessages([inbound('c', peerAddress, 300, 1n)])
+      expect(order()).toEqual([peerAddress, otherAddress])
+    })
+
+    it('a first message from a new peer reaches the screen: the list preview updates without a reload', async () => {
+      const store = useChatStore()
+      const seen: (string | undefined)[][] = []
+      // What the conversation list renders, re-run on every change the store announces.
+      const stop = watch(
+        () =>
+          store.getSortedChatOrder.map(c => store.getLatestMessage(c.id)?.text),
+        previews => seen.push(previews),
+        { flush: 'sync' },
+      )
+      await store.receiveMessages([inbound('first', peerAddress, 100, 1n)])
+      stop()
+      expect(seen[seen.length - 1]).toEqual(['text of first'])
+    })
+  })
+
+  describe('hydration accounting', () => {
     it('heals corrupted or stale accumulated unread counts and values during hydration', async () => {
       const convId = '33333333-3333-4333-8333-000000000003'
       const peerAddress = '0x4444444444444444444444444444444444444444'

@@ -29,7 +29,7 @@
         </q-avatar>
       </q-item-section>
       <q-item-section @click="contactClick(address, contact)">
-        <div class="row items-center no-wrap">
+        <div class="name-with-badge">
           <q-item-label lines="1">{{ contact.profile.name }}</q-item-label>
           <account-badge
             :address="address"

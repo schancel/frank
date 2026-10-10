@@ -58,7 +58,7 @@
             <q-item-section>
               <q-item-label
                 :data-test="wallet.nameDataTest"
-                class="row items-center no-wrap"
+                class="name-with-badge"
               >
                 <span
                   class="ellipsis cursor-pointer"

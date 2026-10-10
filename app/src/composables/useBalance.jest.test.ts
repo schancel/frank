@@ -562,7 +562,7 @@ describe('useBalance', () => {
       expect(await readCordonedBalance({ seed: 'a' })).toBe(0n)
     })
 
-    it('reports them beside the balance without adding them to the spendable amount', async () => {
+    it("counts them in the one balance every screen shows, and keeps the wallet's own figure for the payment screens", async () => {
       mockSeed = 'cordoned'
       mockWallets.cordoned = Promise.resolve(typed(25n))
       mockGetBalance.mockResolvedValue(100n)
@@ -576,11 +576,14 @@ describe('useBalance', () => {
         }),
       )
       await advance(0)
-      expect(api.balance.value).toBe(100n) // what a send may be compared against
-      expect(api.formattedBalance.value).toBe('100 MON')
+      // The wallet's own figure: what its checks compare a payment against.
+      expect(api.balance.value).toBe(100n)
+      expect(api.formattedSpendable.value).toBe('100 MON')
       expect(api.cordoned.value).toBe(25n)
-      expect(api.formattedCordoned.value).toBe('25 MON')
-      expect(api.formattedTotal.value).toBe('125 MON')
+      // The balance that is shown: the wallet's figure plus the profile address.
+      expect(api.total.value).toBe(125n)
+      expect(api.formattedBalance.value).toBe('125 MON')
+      expect(api.isEmpty.value).toBe(false)
     })
 
     it('asks for the profile balance at most once per CORDONED_POLL_MS while the loop ticks every 3 s', async () => {

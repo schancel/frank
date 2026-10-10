@@ -83,7 +83,7 @@
               </q-avatar>
             </q-item-section>
             <q-item-section class="col" style="min-width: 0">
-              <div class="row items-center no-wrap">
+              <div class="name-with-badge">
                 <q-item-label lines="1" class="text-weight-medium ellipsis">
                   {{ contactDisplayName(item) }}
                 </q-item-label>
@@ -167,7 +167,7 @@
               </q-avatar>
             </q-item-section>
             <q-item-section class="col" style="min-width: 0">
-              <div class="row items-center no-wrap">
+              <div class="name-with-badge">
                 <q-item-label lines="1" class="text-weight-medium ellipsis">
                   {{ res.name || formatAddrCompact(res.address) }}
                 </q-item-label>
@@ -295,7 +295,7 @@ export default defineComponent({
     const router = useRouter()
     const contactStore = useContactStore()
     const { getContacts } = storeToRefs(contactStore)
-    const search = ref('')
+    const search = ref<string | null>('')
     const showMyQrDialog = ref(false)
     const networkResults = ref<NetworkSearchResult[]>([])
     const isSearchingNetwork = ref(false)
@@ -324,8 +324,11 @@ export default defineComponent({
       )
     })
 
+    // What is typed in the search box. The clear button sets the box to null, not ''.
+    const query = computed(() => (search.value ?? '').trim())
+
     const filteredContacts = computed(() => {
-      const q = search.value.trim().toLowerCase()
+      const q = query.value.toLowerCase()
       if (!q) {
         return contactEntries.value.map(([address, contact]) => ({
           address,
@@ -340,7 +343,17 @@ export default defineComponent({
             rawName === pendingRelayData.profile.name.toLowerCase()
               ? ''
               : rawName
-          return name.includes(q) || address.toLowerCase().includes(q)
+          // A username is found with or without its leading "@".
+          const usernames = [
+            contact.profile?.username,
+            contact.profile?.addedByUsername,
+          ].map(value => value?.toLowerCase() ?? '')
+          const handle = q.startsWith('@') ? q.slice(1) : q
+          return (
+            name.includes(q) ||
+            (handle !== '' && usernames.some(u => u.includes(handle))) ||
+            address.toLowerCase().includes(q)
+          )
         })
         .map(([address, contact]) => ({ address, contact }))
     })
@@ -395,7 +408,7 @@ export default defineComponent({
       return Boolean(contacts[addr] || contacts[addr.toLowerCase()])
     }
 
-    watch(search, (newVal: string) => {
+    watch(search, newVal => {
       if (searchTimer) {
         clearTimeout(searchTimer)
         searchTimer = null
@@ -502,16 +515,16 @@ export default defineComponent({
               })
             }
           }
-          if (search.value.trim() === rawQ) {
+          if (query.value === rawQ) {
             networkResults.value = results
           }
         } catch (err) {
           console.warn('Network contact search error', err)
-          if (search.value.trim() === rawQ) {
+          if (query.value === rawQ) {
             networkResults.value = []
           }
         } finally {
-          if (search.value.trim() === rawQ) {
+          if (query.value === rawQ) {
             isSearchingNetwork.value = false
           }
         }

@@ -25,10 +25,10 @@ export interface FaucetBotOptions {
 /**
  * Grants each profile testnet funds once: when it registers, or when it asks.
  *
- * The grant goes to the profile's own address, the only address of a user a sender can learn. For
- * an account whose wallet spends from a separate receive address the app shows such funds as
- * "cordoned" and does not spend them; nothing a profile or a message carries names that receive
- * address, so the faucet cannot pay it. The welcome message says where the money went.
+ * The grant goes to the profile's own address, the only address of a user a sender can learn:
+ * nothing a profile or a message carries names a wallet's separate deposit address. The app
+ * counts money there in the balance it shows, and the wallet pays message stamps from it. The
+ * welcome message says where the money went.
  */
 export class FaucetBot implements FrankBotDefinition {
   readonly id = "faucet";
@@ -103,7 +103,7 @@ export class FaucetBot implements FrankBotDefinition {
   private sentText(address: string, txHash: string): string {
     return `Sent ${formatMon(
       this.amountWei
-    )} to your profile address ${address} (transaction ${txHash}). If your wallet spends from a separate receive address, the app shows this as cordoned and cannot spend it yet.`;
+    )} to your profile address ${address} (transaction ${txHash}). It is part of the balance your wallet shows.`;
   }
 
   async onNewUser(user: NewUserEvent, ctx: BotContext): Promise<void> {

@@ -194,9 +194,8 @@ describe('BackupAccount page', () => {
     expect(wrapper.find('[data-test="backup-reveal-warning"]').text()).toBe(
       'accountRecovery.show_recovery_shares_warning',
     )
-    expect(
-      wrapper.find('[data-test="backup-earlier-shares-warning"]').text(),
-    ).toBe('accountRecovery.codex32_earlier_settings_shares_invalid')
+    // No note about shares from "before this update": there is no earlier version in use.
+    expect(wrapper.text()).not.toContain('earlier_settings_shares')
 
     // Choosing a scheme is not asking for shares.
     await wrapper.find('[data-test="codex32-scheme-btn"]').trigger('click')
@@ -303,9 +302,8 @@ describe('BackupAccount page', () => {
     expect(wrapper.find('[data-test="codex32-scheme-btn"]').exists()).toBe(
       false,
     )
-    expect(
-      wrapper.find('[data-test="backup-earlier-shares-warning"]').text(),
-    ).toBe('accountRecovery.codex32_earlier_settings_shares_invalid')
+    // No note about shares from "before this update": there is no earlier version in use.
+    expect(wrapper.text()).not.toContain('earlier_settings_shares')
   })
 
   it("shows an error and no shares when the stored root is not this account's", async () => {

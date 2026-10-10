@@ -614,3 +614,66 @@ describe('Chat.vue automatic dealer steps', () => {
     }
   })
 })
+
+describe("Chat.vue: the conversation's stamp is the user's own choice", () => {
+  // The harness's chain: 1 display unit is 1e18 base units, the default stamp is 1 base unit.
+  function stampThis(chosen?: bigint) {
+    const chatStore = {
+      getStampWei: jest.fn(() => chosen ?? activeChain.defaultStampValue),
+      setStampWei: jest.fn(),
+    }
+    return {
+      conversation: { id: 'conv-1' },
+      recipientAddress: '0xPeer',
+      chatStore,
+    }
+  }
+
+  it('accepts 0: the conversation sends free messages', () => {
+    const self = stampThis()
+    computed.stampAmount.set.call(self, '0')
+    expect(self.chatStore.setStampWei).toHaveBeenCalledWith({
+      address: 'conv-1',
+      stampWei: 0n,
+    })
+  })
+
+  it('keeps an amount below the default instead of raising it', () => {
+    const self = stampThis()
+    computed.stampAmount.set.call(self, '0.000000000000000000')
+    expect(self.chatStore.setStampWei).toHaveBeenCalledWith({
+      address: 'conv-1',
+      stampWei: 0n,
+    })
+  })
+
+  it('leaves the choice alone while the box holds no amount, and refuses a negative one', () => {
+    const self = stampThis()
+    computed.stampAmount.set.call(self, null)
+    computed.stampAmount.set.call(self, 'abc')
+    computed.stampAmount.set.call(self, '-1')
+    expect(self.chatStore.setStampWei).not.toHaveBeenCalled()
+  })
+
+  it('shows the chosen amount, and a follow-up message with no price of its own carries it', async () => {
+    const self = fakeThis()
+    Object.assign(self, stampThis(0n))
+    Object.defineProperty(self, 'stampAmount', {
+      get: () => computed.stampAmount.get.call(self),
+    })
+    expect(self.stampAmount).toBe('0')
+    await methods.sendFollowUpItems.call(self, {
+      items: [{ type: 'text', text: 'hello' }],
+    })
+    expect(self.sendDirectMessage.mock.calls[0][0].stampValue).toBe(0n)
+  })
+
+  it('a free game move (a price of 0) carries no stamp whatever the chat is set to', async () => {
+    const self = fakeThis({ stampAmount: '0.01' })
+    await methods.sendFollowUpItems.call(self, {
+      items: [{ type: 'rps', action: 'move' }],
+      stampValueWei: 0n,
+    })
+    expect(self.sendDirectMessage.mock.calls[0][0].stampValue).toBe(0n)
+  })
+})

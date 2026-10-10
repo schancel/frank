@@ -121,9 +121,7 @@
                     >
                       {{
                         balanceObservation
-                          ? balanceObservation.cordoned
-                            ? balanceObservation.cordoned.formattedTotal
-                            : balanceObservation.formattedBalance
+                          ? balanceObservation.formattedBalance
                           : $t(
                               balancePresentation.status === 'loading'
                                 ? 'walletPanel.balanceLoading'
@@ -749,11 +747,7 @@ export default defineComponent({
     // Every digit, on hover: the balance line itself is shortened for reading.
     const balanceTitle = computed(() => {
       const observation = balanceObservation.value
-      return (
-        (observation?.cordoned
-          ? observation.cordoned.exactTotal
-          : observation?.exactBalance) ?? undefined
-      )
+      return observation?.exactBalance ?? undefined
     })
     // No balance reader exists for this network: said once and quietly, not as a failed fetch.
     const balanceUnsupported = computed(() => {

@@ -52,19 +52,11 @@ export interface ChainBalanceState {
 }
 
 export interface BalanceObservation {
-  /** Spendable balance: the only amount a send may be compared against. */
+  /** The balance shown for the chain, in base units. For Monad it is `useBalance().total`. */
   balance: bigint
   formattedBalance: string
   /** Every digit of `balance`, for a title; absent where the formatted text is already exact. */
   exactBalance?: string
-  /** Present only while funds sit at the profile address: watched, never spent. */
-  cordoned?: {
-    formattedAmount: string
-    formattedTotal: string
-    /** Every digit of the two amounts above, for a title. */
-    exactAmount?: string
-    exactTotal?: string
-  }
 }
 
 export type BalancePresentation =
@@ -93,19 +85,11 @@ function getBalancePresentation(
   monad: ReturnType<typeof useBalance>,
 ): BalancePresentation {
   let state: ChainBalanceState
-  let cordoned: BalanceObservation['cordoned']
   let exactBalance: string | undefined
   if (chain === 'monad') {
     exactBalance = monad.exactBalance?.value
-    if ((monad.cordoned?.value ?? 0n) > 0n)
-      cordoned = {
-        formattedAmount: monad.formattedCordoned.value,
-        formattedTotal: monad.formattedTotal.value,
-        exactAmount: monad.exactCordoned?.value,
-        exactTotal: monad.exactTotal?.value,
-      }
     state = {
-      balance: monad.balance.value,
+      balance: monad.total.value,
       formattedBalance: monad.formattedBalance.value,
       loaded: monad.loaded.value,
       hasError: monad.hasError.value,
@@ -120,7 +104,6 @@ function getBalancePresentation(
           balance: state.balance,
           formattedBalance: state.formattedBalance,
           ...(exactBalance ? { exactBalance } : {}),
-          ...(cordoned ? { cordoned } : {}),
         }
       : undefined
   if (state.hasError) {

@@ -13,7 +13,8 @@ const mockLoaded = ref(true)
 jest.mock('../../composables/useBalance', () => ({
   useBalance: () => ({
     balance: mockBalance,
-    formattedBalance: mockFormattedBalance,
+    // The dialog shows what this payment can draw on, not the wallet's shown total.
+    formattedSpendable: mockFormattedBalance,
     loaded: mockLoaded,
   }),
 }))

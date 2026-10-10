@@ -149,11 +149,17 @@ function played(seed = 'c3'.repeat(16)) {
 }
 
 function chat(
-  ...messages: { outbound: boolean; item: SatoshiDiceItem; paid?: bigint }[]
+  ...messages: {
+    outbound: boolean
+    item: SatoshiDiceItem
+    paid?: bigint
+    status?: string
+  }[]
 ) {
   store.activeConversation = {
     messages: messages.map(m => ({
       outbound: m.outbound,
+      status: m.status ?? 'confirmed',
       items: [m.item],
       stampValueWei: m.paid ?? 0n,
     })),
@@ -325,5 +331,36 @@ describe('ChatMessageDice.vue', () => {
     expect(
       wrapper.find('[data-testid="dice-roll-btn"]').attributes('disabled'),
     ).toBeDefined()
+  })
+
+  test('a free roll carries no stamp', async () => {
+    const wrapper = mountCard({
+      type: 'dice',
+      action: 'table',
+      rollId: 'r1',
+      commitment,
+    })
+    await wrapper.find('[data-testid="dice-chip-free"]').trigger('click')
+    await wrapper.find('[data-testid="dice-roll-btn"]').trigger('click')
+    const [payload] = wrapper.emitted('sendFollowUp')![0] as [any]
+    // An explicit zero: left out, the chat's ordinary stamp was charged for a free roll.
+    expect(payload.stampValueWei).toBe(0n)
+    expect(payload.items[0].wagerWei).toBe('0')
+  })
+
+  test('a bet whose send failed is shown as not sent, not as awaited', () => {
+    const { bet } = played()
+    chat({ outbound: true, item: bet, status: 'error' })
+    const table = mountCard({
+      type: 'dice',
+      action: 'table',
+      rollId: 'r1',
+      commitment,
+    })
+    expect(table.find('[data-testid="dice-bet-not-sent"]').text()).toBe(
+      enUS.gameFairness.moveNotSent,
+    )
+    const bubble = mountCard(store.activeConversation.messages[0].items[0])
+    expect(bubble.find('[data-testid="dice-waiting"]').exists()).toBe(false)
   })
 })

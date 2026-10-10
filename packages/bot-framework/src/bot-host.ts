@@ -897,6 +897,31 @@ export class FrankBotHost {
       });
   }
 
+  /** A write to the bot's journal failed, and the bot answers nothing while that stands. Said
+   * at error level on every poll it lasts, and mended by reading the journal back from disk:
+   * a row whose write landed is then seen as written, one whose write did not is as it was, and
+   * the poll goes on to finish both. Throws, by name, while the journal cannot be read. */
+  private async recoverJournal(
+    id: string,
+    instance: ActiveBotInstance
+  ): Promise<void> {
+    console.error(
+      `[bot-host] BOT "${id}" IS NOT ANSWERING: a write to its message journal failed. Reading the journal back from disk...`
+    );
+    try {
+      await instance.operations.recover();
+    } catch (error) {
+      throw new Error(
+        `Bot "${id}" still cannot read its message journal and answers nothing; check the disk under its state directory, then restart it (${
+          error instanceof Error ? error.message : error
+        })`
+      );
+    }
+    console.error(
+      `[bot-host] Bot "${id}" read its message journal back and is answering again`
+    );
+  }
+
   private async pollOnce(
     id: string,
     instance: ActiveBotInstance
@@ -904,6 +929,7 @@ export class FrankBotHost {
     {
       try {
         if (this.closing) return;
+        if (instance.operations.isFaulted) await this.recoverJournal(id, instance);
         instance.operations.assertOpen();
         this.topUp(id, instance);
         // Stored replies the wallet already holds an attempt for: the wallet sends the same
@@ -1111,7 +1137,8 @@ export class FrankBotHost {
         }
         this.retryReplies(instance);
       } catch (err: unknown) {
-        console.warn(
+        // A bot that cannot use its journal is not a passing warning.
+        (instance.operations.isFaulted ? console.error : console.warn)(
           `[bot-host] Failed polling messages for bot "${id}":`,
           err
         );

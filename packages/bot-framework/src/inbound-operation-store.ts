@@ -334,6 +334,34 @@ export class InboundOperationStore {
       );
     await this.persist(ops);
   }
+  /** A journal write failed: nothing is admitted or changed until `recover` succeeds. */
+  get isFaulted(): boolean {
+    return this.faulted && !this.closed;
+  }
+  /** After a failed write, what is in memory may not be what is on disk (the write may have
+   * landed). Reads the rows back from disk and, if they read cleanly, serves again from them.
+   * Rejects, still faulted, when the store cannot be read. */
+  recover(): Promise<void> {
+    const task = this.tail.then(async () => {
+      if (this.closed || !this.faulted) return;
+      const rows = new Map<string, InboundDispatch>();
+      const entries = await this.state.readEntries(
+        "host-inbound:",
+        Number.MAX_SAFE_INTEGER
+      );
+      for (const [key, value] of entries) {
+        if (key === OWNER) continue;
+        const row = validateRow(parse(value));
+        if (key !== ROW + row.digest) return hold();
+        rows.set(row.digest, row);
+      }
+      this.rows.clear();
+      for (const [digest, row] of rows) this.rows.set(digest, row);
+      this.faulted = false;
+    });
+    this.tail = task.catch(() => undefined);
+    return task;
+  }
   assertOpen(): void {
     if (this.faulted || this.closed) hold();
   }

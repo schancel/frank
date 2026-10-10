@@ -1029,6 +1029,96 @@ describe("FrankBotHost replies", () => {
     });
   });
 
+  // On 16218e9f one failed journal write left the bot answering nothing until it was restarted,
+  // with warnings only.
+  describe("a failed write to the bot's journal", () => {
+    const { LevelBotStateStore } = jest.requireActual<
+      typeof import("../src/state-store")
+    >("../src/state-store");
+
+    it.each([
+      ["was lost", false],
+      ["landed and only its acknowledgement was lost", true],
+    ])(
+      "is said loudly and mended on the next poll when the write %s: every message is answered once",
+      async (_label, landed) => {
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        jest.spyOn(console, "warn").mockImplementation(() => {});
+        const seen: string[] = [];
+        const { host, instance } = await start(
+          bot("journal-bot", async (message) => {
+            seen.push((message.items[0] as { text: string }).text);
+            return { kind: "prepared-reply", text: "answer" };
+          })
+        );
+        const original = LevelBotStateStore.prototype.durableBatch;
+        let cut = false;
+        jest
+          .spyOn(LevelBotStateStore.prototype, "durableBatch")
+          .mockImplementation(async function (this: unknown, ops) {
+            // The write that finishes the first message.
+            if (!cut && ops.some((op) => op.key.startsWith("digest:"))) {
+              cut = true;
+              if (landed) await original.call(this, ops);
+              throw new Error("EIO: i/o error, write");
+            }
+            return original.call(this, ops);
+          });
+        // The wallet knows what the journal lost: that reply was delivered.
+        mockReconcile.mockImplementation(async ({ payloadDigests }) =>
+          Object.fromEntries(
+            payloadDigests.map((digest: string) => [digest, "delivered"])
+          )
+        );
+        const one = inbound("one");
+        const two = inbound("two", { from: otherPeer });
+
+        await poll(host, [one]);
+        await drain(instance);
+        expect(instance.operations.isFaulted).toBe(true);
+        await poll(host, [one, two]);
+        await drain(instance);
+        await poll(host, [one, two]);
+        await drain(instance);
+
+        expect(instance.operations.isFaulted).toBe(false);
+        expect(
+          error.mock.calls.some(([line]) =>
+            String(line).includes('BOT "journal-bot" IS NOT ANSWERING')
+          )
+        ).toBe(true);
+        expect(seen).toEqual(["one", "two"]);
+        expect(await finished(instance, one)).toBe(true);
+        expect(await finished(instance, two)).toBe(true);
+        // The first reply was delivered before the cut and is not sent a second time.
+        expect(textsSent()).toEqual(["answer", "answer"]);
+      }
+    );
+
+    it("keeps saying so, by name and at error level, while the journal cannot be read back", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(bot("dead-disk-bot", async () => {}));
+      jest
+        .spyOn(LevelBotStateStore.prototype, "durableBatch")
+        .mockRejectedValue(new Error("EIO"));
+      jest
+        .spyOn(LevelBotStateStore.prototype, "readEntries")
+        .mockRejectedValue(new Error("EIO"));
+      await poll(host, [inbound("one")]);
+      await drain(instance);
+      await poll(host);
+      await poll(host);
+      const loud = error.mock.calls.filter(([, detail]) =>
+        String(detail).includes(
+          'Bot "dead-disk-bot" still cannot read its message journal'
+        )
+      );
+      expect(loud).toHaveLength(2);
+      expect(mockFetchSince).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // On 05c93db0 a bot was funded once, at registration; when its account ran dry every reply
   // failed and nothing funded it again.
   describe("topping up from the shared funding wallet", () => {

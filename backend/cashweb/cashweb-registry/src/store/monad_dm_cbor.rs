@@ -141,6 +141,8 @@ pub(crate) struct Owner {
     db: Mutex<Option<rocksdb::DB>>,
     directory: Mutex<Weak<DirectoryRuntime>>,
     broadcast: tokio::sync::broadcast::Sender<FinalizedEnvelope>,
+    /// When each message's payments were last handed to the node. In memory only.
+    payment_broadcasts: Mutex<std::collections::HashMap<[u8; 32], std::time::Instant>>,
 }
 impl Owner {
     pub(crate) fn new(legacy: PathBuf) -> Self {
@@ -150,7 +152,27 @@ impl Owner {
             db: Mutex::new(None),
             directory: Mutex::new(Weak::new()),
             broadcast,
+            payment_broadcasts: Default::default(),
         }
+    }
+    /// Whether this message's payments may be handed to the node now: at most once per
+    /// `interval`, so a client repeating one message cannot make the relay hammer the node.
+    /// Nothing is remembered across a restart, so the first resend after one always sends.
+    pub(crate) fn may_broadcast_payments(
+        &self,
+        payload_hash: &[u8; 32],
+        interval: std::time::Duration,
+    ) -> bool {
+        let Ok(mut sent) = self.payment_broadcasts.lock() else {
+            return true;
+        };
+        let now = std::time::Instant::now();
+        sent.retain(|_, at| now.duration_since(*at) < interval);
+        if sent.contains_key(payload_hash) {
+            return false;
+        }
+        sent.insert(*payload_hash, now);
+        true
     }
     pub(crate) fn subscribe_finalized(
         &self,

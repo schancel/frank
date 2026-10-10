@@ -731,9 +731,16 @@ async fn a_repeated_submit_stores_once_and_broadcasts_again() {
     let relay = Relay::start(|_| Answer::Accepted).await;
     let request = message(20, 2);
     let first = relay.put(&request).await;
-    let second = relay.put(&request).await;
     delivered(&first, &request);
-    // Same message, same answer, including when it was delivered.
+    // A client repeating the message straight away gets the same answer, including when it
+    // was delivered, and the node is not asked again so soon.
+    for _ in 0..5 {
+        assert_eq!(relay.put(&request).await, first);
+    }
+    assert_eq!(relay.broadcasts().len(), 2);
+    // A repeat after the interval sends the payments again, once.
+    tokio::time::sleep(REBROADCAST_INTERVAL).await;
+    let second = relay.put(&request).await;
     assert_eq!(first, second);
     relay.assert_delivered_to_both(&request);
     let sent = relay.broadcasts();
@@ -746,6 +753,7 @@ async fn a_repeated_submit_stores_once_and_broadcasts_again() {
     let (left, right) = tokio::join!(relay.put(&twin), relay.put(&twin));
     delivered(&left, &twin);
     assert_eq!(left, right);
+    assert_eq!(relay.broadcasts().len(), 5);
     assert_eq!(relay.inbox().len(), 2);
     assert_eq!(relay.mailbox(relay.sender()).len(), 2);
     relay.stop().await;

@@ -139,21 +139,40 @@ pub(crate) async fn handle_put(
     };
     // The message is in the recipient's inbox from here on. Nothing below can undo that.
     if let Ok(recipient) = claim.policy.recipient() {
-        let _ = server
-            .event_bus
-            .publish_message_arrival(&recipient.to_hex(), &claim.policy.payload_hash)
-            .await;
+        // The notification is a courtesy to connected readers. A slow event bus must not
+        // hold up the payments or the answer.
+        let _ = tokio::time::timeout(
+            EVENT_BUS_TIMEOUT,
+            server
+                .event_bus
+                .publish_message_arrival(&recipient.to_hex(), &claim.policy.payload_hash),
+        )
+        .await;
     }
-    broadcast_payments(runtime, &claim).await;
+    if owner.may_broadcast_payments(&claim.policy.payload_hash, REBROADCAST_INTERVAL) {
+        broadcast_payments(runtime, &claim).await;
+    }
     accepted_response(&claim)
 }
+
+/// Longest the relay waits on the event bus to announce a delivered message.
+const EVENT_BUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A message's payments are handed to the node at most once in this long. A repeat of the
+/// same message inside it is answered `delivered` without sending them again.
+pub(crate) const REBROADCAST_INTERVAL: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(300)
+} else {
+    std::time::Duration::from_secs(5)
+};
 
 /// Longest the relay waits on the node for one payment before answering the sender anyway.
 const BROADCAST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Hand every payment of a delivered message to the node once, all at the same time. The
 /// results are logged and nothing else: a payment the node refused, or one that could not be
-/// sent in time, is simply not sent. A resend of the same message sends them again.
+/// sent in time, is simply not sent. A resend of the same message sends them again, once
+/// [`REBROADCAST_INTERVAL`] has passed.
 ///
 /// Returns what was logged for each payment: the outcome of one that went out, or the reason
 /// one did not.

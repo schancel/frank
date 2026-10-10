@@ -1173,6 +1173,7 @@ async fn one_signed_payment_cannot_be_claimed_for_a_second_message() {
         // Refused before anything is stored or broadcast.
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         replay_hash(&fixture);
+        tokio::time::sleep(REBROADCAST_INTERVAL).await;
         let (status, retried) = put(url.clone(), genuine.clone()).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(retried, accepted);

@@ -114,6 +114,13 @@ export interface EvmDex<
     onProgress?: (progress: SwapProgress) => void
     timing?: SwapTiming
   }): Promise<SwapResult>
+  /** What the chain says a recorded swap did, from its receipt alone. Sends nothing: for a
+   * swap another frontend of the account made. */
+  observe(input: {
+    transactionId: string
+    account: string
+    route: unknown
+  }): Promise<SwapResult>
   /** Finishes a recorded swap: what the chain says it did, re-sending its same signed bytes
    * if the chain never saw it. */
   reconcile(input: {

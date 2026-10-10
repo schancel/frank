@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { getActivePinia } from 'pinia'
 import { useSwapStore, type SwapRecord } from '../stores/swaps'
+import { sendSwapNote } from '../swap/swap-note'
 
 export type { SwapRecord }
 
@@ -43,7 +44,11 @@ export function useSwapHistory() {
             swapStore.getSwapsForChain(chainName, chainIdentifier),
           ),
         saveLocal: (record: SwapRecord) => swapStore.saveLocal(record),
-        noteToSelf: (record: SwapRecord) => swapStore.noteToSelf(record),
+        /** Sends the swap's note to the account's own mailbox and remembers that it went. */
+        noteToSelf: async (record: SwapRecord) => {
+          await sendSwapNote(record)
+          swapStore.markNoted(record.id)
+        },
         logSwap: (params: Parameters<typeof swapStore.recordSwap>[0]) =>
           swapStore.recordSwap(params),
       }

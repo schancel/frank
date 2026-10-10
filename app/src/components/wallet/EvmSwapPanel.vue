@@ -1051,7 +1051,9 @@ export default defineComponent({
      * That note never holds up or repeats the swap: if it fails, only the note is owed.
      */
     const signedAt = new Map<string, number>()
-    async function recordSigned(signed: SignedContractCallRecord): Promise<void> {
+    async function recordSigned(
+      signed: SignedContractCallRecord,
+    ): Promise<void> {
       const { record } = signed
       signedAt.set(signed.transactionId, signed.signedAtMs)
       const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
@@ -1063,10 +1065,12 @@ export default defineComponent({
         fromAsset: record.assetIn.symbol,
         toAsset: record.assetOut.symbol,
         fromAmount: exactTokenAmount(record.amountIn, record.assetIn.decimals),
-        toAmount: `≥${readableTokenAmount(
+        // The least that may arrive, as a plain number: the note to self carries it, and what
+        // actually arrived is read from the chain.
+        toAmount: exactTokenAmount(
           record.minimumAmountOut,
           record.assetOut.decimals,
-        )}`,
+        ),
         txHash: signed.transactionId,
         route: session.value?.dex.entry.displayName ?? record.venueId,
         feeDisplay: `${readableTokenAmount(
@@ -1089,8 +1093,12 @@ export default defineComponent({
         .then(() => history.noteToSelf(pending))
         .catch(() => undefined)
     }
-    /** The same id on every frontend of the account: it is the transaction's. */
-    const swapRecordId = (transactionId: string) => `swap-${transactionId}`
+    /**
+     * The same id on every frontend of the account, derived from the transaction: its hash
+     * without the prefix (the record's id field holds at most 64 characters).
+     */
+    const swapRecordId = (transactionId: string) =>
+      transactionId.replace(/^0x/, '').slice(0, 64)
 
     function recordOf(
       timestamp: number,
@@ -1140,7 +1148,7 @@ export default defineComponent({
         }
       return {
         ...base,
-        toAmount: `≥${readableTokenAmount(minimumOut, q.tokenOut.decimals)}`,
+        toAmount: exactTokenAmount(minimumOut, q.tokenOut.decimals),
         feeDisplay,
         status: 'pending',
         recovery: {
@@ -1283,13 +1291,22 @@ export default defineComponent({
       for (const record of pending) {
         const recovery = record.recovery!
         try {
-          const result = await current.dex.reconcile({
-            transactionId: record.txHash,
-            operationId: recovery.operationId,
-            account: recovery.account,
-            route: recovery.route,
-            call: recovery.call,
-          })
+          // A swap this device made can be re-sent as recorded; one learned from the mailbox
+          // (another device made it) is only read from the chain.
+          const result =
+            recovery.operationId && recovery.call
+              ? await current.dex.reconcile({
+                  transactionId: record.txHash,
+                  operationId: recovery.operationId,
+                  account: recovery.account,
+                  route: recovery.route,
+                  call: recovery.call,
+                })
+              : await current.dex.observe({
+                  transactionId: record.txHash,
+                  account: recovery.account,
+                  route: recovery.route,
+                })
           if (!alive || result.status === 'pending') continue
           const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
           const rest: SwapRecord = { ...record }
@@ -1317,6 +1334,18 @@ export default defineComponent({
       }
       // A contract call that was signed and never seen in a block (an approval whose broadcast
       // was lost) holds the account until it lands: hand the same bytes to the network again.
+      // A swap whose note to self has not reached the mailbox yet: only the note is owed.
+      for (const record of history
+        .getSwapsForChain(props.walletId, props.chainIdentifier)
+        .value.filter(
+          record =>
+            !record.noted &&
+            record.txHash &&
+            record.chainIdentifier === props.chainIdentifier,
+        ))
+        void Promise.resolve()
+          .then(() => history.noteToSelf(record))
+          .catch(() => undefined)
       for (const call of current.unresolvedContractCalls())
         await current.resumeOperation(call.operationId).catch(() => undefined)
       void refreshBalances()

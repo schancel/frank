@@ -16,6 +16,7 @@ import {
   consolidationNeeded,
   estimateSwapCost,
   executeSwap,
+  readSwapResult,
   reconcileSwap,
 } from './swap-execution'
 import type { PoolRoute } from './uniswap-v4'
@@ -112,6 +113,24 @@ export class UniswapV4Dex implements Dex {
         interfaceFeeAmount: quote.interfaceFee?.amount ?? 0n,
         route: quote.route,
       },
+    })
+  }
+
+  async observe(input: Parameters<Dex['observe']>[0]) {
+    if (!isPoolRoute(input.route))
+      throw new Error('The recorded swap does not belong to this exchange')
+    const handle = { operationId: '', txHash: input.transactionId }
+    const receipt = await this.wallet.reader.getTransactionReceipt(
+      input.transactionId,
+    )
+    if (!receipt) return { status: 'pending' as const, ...handle }
+    return readSwapResult({
+      reader: this.wallet.reader,
+      deployment: this.entry,
+      route: input.route,
+      account: input.account,
+      handle,
+      receipt,
     })
   }
 

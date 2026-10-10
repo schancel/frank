@@ -4,6 +4,7 @@ import {
   useSwapStore,
   encodeSwapRecord,
   decodeSwapRecord,
+  swapRecordItem,
   type SwapRecord,
 } from './swaps'
 import { useChatStore } from './chats'
@@ -211,5 +212,77 @@ describe('useSwapStore and typed CBOR swap records', () => {
     expect(store.getSwapsForChain('monad', 'monad-testnet')).toHaveLength(1)
     expect(store.getSwapsForChain('monad', 'monad-mainnet')).toHaveLength(0)
     expect(store.getSwapsForChain('monad')).toHaveLength(1)
+  })
+
+  test('a note read back from the mailbox rebuilds the swap on a device that never saw it', () => {
+    const made = useSwapStore()
+    const item = swapRecordItem({
+      ...pending,
+      recovery: {
+        operationId: 'op-1',
+        venueId: 'uniswap-v4',
+        account: '0xMain',
+        route: { zeroForOne: true },
+        call: { to: '0xRouter', data: '0x00', value: '1' },
+        toDecimals: 6,
+      },
+    })
+    setActivePinia(createPinia())
+    window.localStorage.clear()
+    const other = useSwapStore()
+    expect(other.swaps).toEqual([])
+    other.handleSwapItem(item)
+    expect(other.getSwapsForChain('monad', 'monad-testnet')).toHaveLength(1)
+    expect(other.swaps[0]).toMatchObject({
+      id: 'swap-pending',
+      status: 'pending',
+      chainIdentifier: 'monad-testnet',
+      txHash: '0xabc',
+      recovery: {
+        venueId: 'uniswap-v4',
+        account: '0xMain',
+        route: { zeroForOne: true },
+        toDecimals: 6,
+      },
+    })
+    // Only the device that made the swap can re-send it.
+    expect(other.swaps[0].recovery?.operationId).toBeUndefined()
+    expect(made).toBeDefined()
+  })
+
+  test('a note never undoes what this device has read from the chain or knows of its own operation', () => {
+    const store = useSwapStore()
+    const recovery = {
+      operationId: 'op-1',
+      venueId: 'uniswap-v4',
+      account: '0xMain',
+      route: { zeroForOne: true },
+      call: { to: '0xRouter', data: '0x00', value: '1' },
+      toDecimals: 6,
+    }
+    store.saveLocal({
+      ...pending,
+      status: 'confirmed',
+      toAmount: '0.019996',
+      feeDisplay: '0.0211 MON',
+      recovery,
+      noted: true,
+    })
+    store.handleSwapItem(swapRecordItem({ ...pending, recovery }))
+    expect(store.swaps).toHaveLength(1)
+    expect(store.swaps[0]).toMatchObject({
+      status: 'confirmed',
+      toAmount: '0.019996',
+      feeDisplay: '0.0211 MON',
+      noted: true,
+      recovery: { operationId: 'op-1' },
+    })
+  })
+
+  test('markNoted remembers that the note reached the relay', () => {
+    const store = useSwapStore()
+    store.saveLocal(pending)
+    store.markNoted('swap-pending')
+    expect(store.swaps[0].noted).toBe(true)
   })
 })

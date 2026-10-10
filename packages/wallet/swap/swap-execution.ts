@@ -494,7 +494,8 @@ export async function readSwapResult(params: {
   deployment: UniswapV4Deployment
   route: PoolRoute
   account: string
-  swap: EncodedCall
+  /** The call that was sent, when known: a reverted swap is asked why with it. */
+  swap?: EncodedCall
   handle: Handle
   receipt: SwapReceipt
   /** Fees already charged for this swap's earlier transactions. */
@@ -516,6 +517,8 @@ export async function readSwapResult(params: {
   // failed in (that block's time and prices). Asked later, at the latest block, every expired
   // swap would read as "deadline" whatever actually stopped it.
   let reason: SwapRevertReason | undefined
+  if (!params.swap)
+    return { status: 'reverted', ...handle, feeWei, totalFeeWei }
   try {
     await params.reader.call({
       ...params.swap,

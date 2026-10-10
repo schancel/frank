@@ -535,7 +535,8 @@
                           <q-item-section>
                             <q-item-label class="text-weight-bold">
                               {{ swap.fromAmount }} {{ swap.fromAsset }} →
-                              {{ swap.toAmount }} {{ swap.toAsset }}
+                              {{ swap.status === 'pending' ? '≥' : ''
+                              }}{{ swap.toAmount }} {{ swap.toAsset }}
                             </q-item-label>
                             <q-item-label caption class="text-grey-7">
                               {{ swap.route }} ·

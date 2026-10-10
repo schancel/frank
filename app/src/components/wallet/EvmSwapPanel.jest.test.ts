@@ -583,7 +583,7 @@ describe('confirming and executing', () => {
     expect(text(view, 'swap-result')).toContain('Do not send it again')
     expect(mockSaved[mockSaved.length - 1]).toMatchObject({
       status: 'pending',
-      toAmount: '≥0.019896',
+      toAmount: '0.019896',
     })
     expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
   })
@@ -669,10 +669,7 @@ describe('confirming and executing', () => {
     await click(view, 'swap-review-btn')
     await click(view, 'swap-confirm-btn')
     expect(s.events).toEqual(['broadcast 0xhash2 after 1 saved'])
-    expect(mockSaved.map(record => record.id)).toEqual([
-      'swap-0xhash2',
-      'swap-0xhash2',
-    ])
+    expect(mockSaved.map(record => record.id)).toEqual(['hash2', 'hash2'])
     expect(text(view, 'swap-result')).toContain('Swap complete')
   })
 
@@ -827,14 +824,14 @@ describe('the record of a swap', () => {
     expect(s.events).toEqual(['broadcast 0xhash1 after 1 saved'])
     expect(mockNotes).toHaveLength(1)
     expect(mockNotes[0]).toMatchObject({
-      id: 'swap-0xhash1',
+      id: 'hash1',
       status: 'pending',
       chainIdentifier: 'monad-testnet',
       txHash: '0xhash1',
       fromAsset: 'MON',
       fromAmount: '0.05',
       toAsset: 'USDC',
-      toAmount: '≥0.049746',
+      toAmount: '0.049746',
       route: 'Uniswap v4',
       feeDisplay: '0.023 MON',
       recovery: { venueId: 'uniswap-v4', operationId: 'op-1' },
@@ -855,7 +852,7 @@ describe('the record of a swap', () => {
     expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(3)
     expect(mockNotes).toHaveLength(1)
     expect(mockNotes[0]).toMatchObject({
-      id: 'swap-0xhash3',
+      id: 'hash3',
       fromAsset: 'USDC',
       toAsset: 'MON',
     })
@@ -872,9 +869,75 @@ describe('the record of a swap', () => {
     expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
     expect(text(view, 'swap-result')).toContain('Swap complete')
     expect(mockSaved[mockSaved.length - 1]).toMatchObject({
-      id: 'swap-0xhash1',
+      id: 'hash1',
       status: 'confirmed',
     })
+  })
+})
+
+describe('swaps known from the account’s mailbox', () => {
+  it('reads the outcome of a swap another device made from the chain, and sends nothing', async () => {
+    const s = scene()
+    s.receipts.set('0xother', receipt(vectors.swapNativeIn))
+    const route = routesFor(deployment, MON, USDC)[0]!
+    mockHistory.value = [
+      {
+        id: 'swap-0xother',
+        timestamp: 1,
+        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
+        fromAsset: 'MON',
+        toAsset: 'USDC',
+        fromAmount: '0.02',
+        toAmount: '≥0.019796',
+        txHash: '0xother',
+        route: 'Uniswap v4',
+        feeDisplay: '',
+        status: 'pending',
+        noted: true,
+        // As a note carries it: no operation and no call of this device.
+        recovery: {
+          venueId: 'uniswap-v4',
+          account,
+          route: { key: { ...route.key }, zeroForOne: true },
+          toDecimals: 6,
+        },
+      },
+    ]
+    await mountPanel()
+    await flushPromises()
+    expect(mockSaved[0]).toMatchObject({
+      id: 'swap-0xother',
+      status: 'confirmed',
+      toAmount: '0.019996',
+    })
+    expect(s.wallet.resumeNativeOperation).not.toHaveBeenCalled()
+    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
+    expect(mockNotes).toEqual([])
+  })
+
+  it('on opening, sends the note that is still owed for an earlier swap, and only the note', async () => {
+    const s = scene()
+    mockHistory.value = [
+      {
+        id: 'swap-0xowed',
+        timestamp: 1,
+        chain: 'monad',
+        chainIdentifier: 'monad-testnet',
+        fromAsset: 'MON',
+        toAsset: 'USDC',
+        fromAmount: '0.02',
+        toAmount: '0.019996',
+        txHash: '0xowed',
+        route: 'Uniswap v4',
+        feeDisplay: '0.0211 MON',
+        status: 'confirmed',
+      },
+    ]
+    await mountPanel()
+    await flushPromises()
+    expect(mockNotes.map(note => note.id)).toEqual(['swap-0xowed'])
+    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
   })
 })
 

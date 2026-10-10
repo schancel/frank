@@ -32,16 +32,21 @@ export interface SwapRecord {
    * recorded operation and the exact call. Removed once the outcome is known.
    */
   recovery?: SwapRecovery
+  /** True once the note to self carrying this record has been accepted by the relay. */
+  noted?: boolean
 }
 
 export interface SwapRecovery {
-  operationId: string
+  /** This device's wallet operation. Absent on a record learned from the account's mailbox:
+   * another device made the swap, and only it can re-send it. */
+  operationId?: string
   /** The venue the swap was made on; it is finished there and nowhere else. */
   venueId: string
   account: string
   /** The venue's own description of the route, as its quote gave it. */
   route: unknown
-  call: { to: string; data: string; value: string }
+  /** The exact call, on the device that made the swap. */
+  call?: { to: string; data: string; value: string }
   toDecimals: number
 }
 
@@ -78,8 +83,71 @@ export function encodeSwapRecord(record: SwapRecord): Uint8Array {
       [9, BigInt(record.timestamp)],
       [10, record.status],
       [11, record.destinationAddress || ''],
+      // What another frontend of the account needs to show this swap on its own network and
+      // read its outcome from the chain: the canonical chain, the venue, the account, the route.
+      [12, record.chainIdentifier || ''],
+      [
+        13,
+        record.recovery
+          ? JSON.stringify({
+              venueId: record.recovery.venueId,
+              account: record.recovery.account,
+              route: record.recovery.route,
+              toDecimals: record.recovery.toDecimals,
+            })
+          : '',
+      ],
     ]),
   )
+}
+
+function decodedExtras(
+  map: Map<number | bigint, any>,
+): Pick<SwapRecord, 'chainIdentifier' | 'recovery'> {
+  const chainIdentifier = map.get(12n) ?? map.get(12)
+  const recovery = map.get(13n) ?? map.get(13)
+  const extras: Pick<SwapRecord, 'chainIdentifier' | 'recovery'> = {}
+  if (typeof chainIdentifier === 'string' && chainIdentifier)
+    extras.chainIdentifier = chainIdentifier
+  if (typeof recovery === 'string' && recovery) {
+    try {
+      const parsed = JSON.parse(recovery)
+      if (
+        typeof parsed?.venueId === 'string' &&
+        typeof parsed.account === 'string' &&
+        typeof parsed.toDecimals === 'number'
+      )
+        extras.recovery = {
+          venueId: parsed.venueId,
+          account: parsed.account,
+          route: parsed.route,
+          toDecimals: parsed.toDecimals,
+        }
+    } catch {
+      /* A record without usable extras is still a record. */
+    }
+  }
+  return extras
+}
+
+/** The record as the typed item a note to self carries. */
+export function swapRecordItem(record: SwapRecord): SwapRecordItem {
+  return {
+    type: 'swap-record',
+    swapId: record.id,
+    chain: record.chain,
+    fromAsset: record.fromAsset,
+    toAsset: record.toAsset,
+    fromAmount: record.fromAmount,
+    toAmount: record.toAmount,
+    txHash: record.txHash,
+    route: record.route,
+    feeDisplay: record.feeDisplay,
+    destinationAddress: record.destinationAddress,
+    status: record.status,
+    timestamp: record.timestamp,
+    cborPayload: toHex(encodeSwapRecord(record)),
+  }
 }
 
 export function decodeSwapRecord(bytes: Uint8Array): Partial<SwapRecord> {
@@ -99,6 +167,7 @@ export function decodeSwapRecord(bytes: Uint8Array): Partial<SwapRecord> {
       map.get(10) ??
       'confirmed') as SwapRecord['status'],
     destinationAddress: map.get(11n) ?? map.get(11) ?? undefined,
+    ...decodedExtras(map),
   }
 }
 
@@ -217,6 +286,14 @@ export const useSwapStore = defineStore('swaps', {
       }
     },
 
+    /** Marks a swap's note to self as accepted by the relay. */
+    markNoted(id: string): void {
+      const index = this.swaps.findIndex(s => s.id === id)
+      if (index < 0) return
+      this.swaps[index] = { ...this.swaps[index], noted: true }
+      this.saveToStorage()
+    },
+
     async recordSwap(
       params: Omit<SwapRecord, 'id' | 'timestamp' | 'status'> & {
         id?: string
@@ -307,9 +384,21 @@ export const useSwapStore = defineStore('swaps', {
         s => s.id === record.id || (s.txHash && s.txHash === record.txHash),
       )
       if (existingIdx >= 0) {
+        const existing = this.swaps[existingIdx]
         this.swaps[existingIdx] = {
-          ...this.swaps[existingIdx],
+          ...existing,
           ...record,
+          // A note says what was signed. What this device has since read from the chain, and
+          // what only this device knows about its own operation, are not undone by it.
+          ...(existing.status !== 'pending'
+            ? {
+                status: existing.status,
+                toAmount: existing.toAmount,
+                feeDisplay: existing.feeDisplay,
+              }
+            : {}),
+          recovery: existing.recovery ?? record.recovery,
+          noted: existing.noted,
         }
       } else {
         this.swaps = [record, ...this.swaps.slice(0, 99)]

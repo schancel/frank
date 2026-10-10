@@ -454,6 +454,16 @@ describe('Blackjack with 2-party threshold ECDSA escrow settlement', () => {
         hash === txHash ? ({ status: 1 } as never) : null,
       )
 
+    // The payout is a call to the escrow contract, not a transfer to the one-time address:
+    // the named transaction proves nothing by itself, and the money at the address decides.
+    jest
+      .spyOn(playerSeat.wallet.provider, 'getTransaction')
+      .mockImplementation(async hash =>
+        hash === txHash
+          ? ({ to: '0x' + 'e5'.repeat(20), value: 0n } as never)
+          : null,
+      )
+
     // Player's total balance includes this stealth account
     const totalBal = await playerSeat.wallet.getBalance()
     expect(totalBal).toBeGreaterThanOrEqual(payout.playerPayoutWei)

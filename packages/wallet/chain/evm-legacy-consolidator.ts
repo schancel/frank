@@ -123,6 +123,14 @@ export interface EvmLegacyConsolidatorConfig {
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
   now?: () => number
+  /** Resolves at the wallet's next look at the chain (its one block watcher). With it, a
+   * transfer that was just broadcast is watched until the chain shows it in a block, for at most
+   * `inclusionWaitMs`. Without it (an executor on its own) the transfer is looked at once. */
+  nextLook?: () => Promise<unknown>
+  /** How long a send watches its own broadcast transfer for a block. Default 30 s. After it
+   * the transfer stays in the journal, holding its account, and is watched from outside
+   * (`lookAtOperation`). */
+  inclusionWaitMs?: number
 }
 /**
  * The id every frontend of the account derives for a swap: from its chain and the transaction
@@ -378,12 +386,20 @@ export class EvmLegacyConsolidator {
     let account: EvmNativeAccountObservation | null = null
     try {
       const expected = Transaction.from(member.signed.rawTransaction)
-      const [transaction, receipt, state] = await Promise.all([
-        provider.getTransaction(member.signed.transactionHash),
-        provider.getTransactionReceipt(member.signed.transactionHash),
-        this.account(member.source.address),
+      const hash = member.signed.transactionHash
+      let [transaction, receipt] = await Promise.all([
+        provider.getTransaction(hash),
+        provider.getTransactionReceipt(hash),
       ])
-      account = state
+      // Blocks come faster than these reads: a transaction mined between two of them was read
+      // unmined by one and mined by the other. That is not an inconsistency of the chain, so
+      // the transaction is read again, and the account is read AFTER the receipt (its block is
+      // then never behind the receipt's). Without this a mined transfer was recorded `unknown`.
+      if (receipt !== null && (transaction === null || !transaction.blockHash))
+        transaction = await provider.getTransaction(hash)
+      if (receipt === null && transaction?.blockHash)
+        receipt = await provider.getTransactionReceipt(hash)
+      account = await this.account(member.source.address)
       if (transaction === null && receipt === null)
         observation = { state: 'missing' }
       else if (
@@ -805,7 +821,7 @@ export class EvmLegacyConsolidator {
         // A transfer or a contract call is one transaction: once handed to the network the
         // journal holds it, and the caller watches for its inclusion.
         if (row.kind !== 'legacy') return journal.get(id)
-        await this.observe(id, i, lifetime)
+        await this.watchForInclusion(id, i, lifetime)
         row = journal.get(id)
         member = row.members[i]!
         if (member.observation.state !== 'included-success')
@@ -818,6 +834,92 @@ export class EvmLegacyConsolidator {
       }
     }
     return journal.get(id)
+  }
+  /**
+   * After a member was handed to the network: looks at it now and at each look of the wallet's
+   * block watcher until the chain shows it in a block (succeeded or reverted), for at most
+   * `inclusionWaitMs`. A transfer the node does not know on two looks running is handed to it
+   * again, the same bytes. Returns with whatever was last recorded; the caller decides on that.
+   * A node asked the instant after a broadcast answers "pending" or "not known" for a transfer
+   * that is mined a block later: one look was not enough to learn that it was sent.
+   */
+  private async watchForInclusion(
+    id: string,
+    index: number,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<void> {
+    const { nextLook } = this.config
+    const until =
+      Date.now() + (nextLook ? this.config.inclusionWaitMs ?? 30_000 : 0)
+    let missed = false
+    for (;;) {
+      await this.observe(id, index, lifetime)
+      const member = this.config.journal.get(id).members[index]!
+      const state = member.observation.state
+      if (state === 'included-success' || state === 'included-revert') return
+      if (!nextLook || this.reobserveStopped || Date.now() >= until) return
+      if (state === 'missing' && missed && member.signed)
+        await this.config.provider
+          .broadcastTransaction(member.signed.rawTransaction)
+          .catch(() => undefined)
+      missed = state === 'missing'
+      try {
+        await nextLook()
+      } catch {
+        // The watcher was stopped: the wallet is closing.
+        return
+      }
+    }
+  }
+  /**
+   * One look at the chain for each transaction of one operation that was handed to the network
+   * and is not yet seen in a block; one the node does not know on two looks running is handed
+   * to it again (the same bytes). What a host calls, at each look of the block watcher, while
+   * it shows a transfer that is not final. Never rejects: a read that fails records nothing.
+   */
+  async lookAtOperation(operationId: string): Promise<void> {
+    const pass = async (lifetime?: WalletOperationLifetime) => {
+      const row = this.config.journal.get(operationId)
+      if (row.cancelled) return
+      for (let index = 0; index < row.members.length; index++) {
+        const before = this.config.journal.get(operationId).members[index]!
+        if (
+          !before.signed ||
+          !before.exposed ||
+          before.observation.state === 'included-success' ||
+          before.observation.state === 'included-revert'
+        )
+          continue
+        await this.observe(
+          operationId,
+          index,
+          lifetime,
+          () => !this.reobserveStopped,
+        )
+        const member = this.config.journal.get(operationId).members[index]!
+        const key = `${operationId}:${index}`
+        if (member.observation.state === 'included-success')
+          // Applied to this device's own state by the next re-observation tick or send.
+          this.localPassOwed = true
+        if (member.observation.state !== 'missing' || !member.signed) {
+          this.missedOnce.delete(key)
+          continue
+        }
+        if (!this.missedOnce.has(key)) {
+          this.missedOnce.add(key)
+          continue
+        }
+        await this.config.provider
+          .broadcastTransaction(member.signed.rawTransaction)
+          .catch(() => undefined)
+      }
+    }
+    try {
+      if (this.reobserveStopped) return
+      await (this.config.runLifetime ? this.config.runLifetime(pass) : pass())
+    } catch {
+      /* Closed, or the chain could not be read: nothing is known, nothing changes. */
+    }
   }
   /**
    * The local pass: applies every included member of EVERY operation in the journal to this

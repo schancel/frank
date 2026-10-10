@@ -38,6 +38,7 @@ import { LevelSubAccountPoolStore } from '../storage/level-sub-account-pool-stor
 import { InMemoryChangePoolStore } from '../storage/change-pool-storage'
 import { InMemoryTopicOperationJournal } from '../storage/topic-operation-journal'
 import { validateMonadWalletState } from '../storage/monad-wallet-state-validator'
+import { summarizeEvmNativeOperation } from './evm-native-operation-status'
 
 const recipient = new Wallet('0x' + '11'.repeat(32)).address.toLowerCase()
 const wallets = [1, 2, 3].map(
@@ -2660,5 +2661,124 @@ describe('wallet-lifetime EVM native operations', () => {
     expect(providerCalls(state)).toBe(before)
     expect(unreadable.applied).not.toHaveBeenCalled()
     expect(ended.applied).not.toHaveBeenCalled()
+  })
+
+  // ---------------------------------------------------------------------------------------
+  // A transfer is watched until the chain shows it. Seen in the browser on Monad testnet: the
+  // Send page said "outcome is unresolved, funds may have moved" for a transfer that was mined
+  // (status 1) a block later, because the send looked at the chain once, the instant after its
+  // broadcast, and nothing looked again.
+  // ---------------------------------------------------------------------------------------
+  /** As a node holds a transaction it has not mined: known by its hash, in no block. */
+  const inMempool = (state: ReturnType<typeof chain>, raw: string) => {
+    const tx = Transaction.from(raw)
+    state.transactions.set(
+      tx.hash!,
+      Object.assign(tx, { blockHash: null, blockNumber: null, index: 0 }) as never,
+    )
+  }
+  it('a transfer mined a block after its broadcast: the send watches at each look of the block watcher and resolves with the block and fee', async () => {
+    const state = chain([200000n])
+    state.setMode('retained')
+    let looks = 0
+    const executor = new EvmLegacyConsolidator({
+      journal,
+      provider: state.provider as unknown as Provider,
+      transactionBuilder: new NativeEvmTransactionBuilder(),
+      getSources: async () => sources(),
+      sign: async (source, raw) =>
+        wallets
+          .find(w => w.address.toLowerCase() === source.address)!
+          .signTransaction(Transaction.from(raw)),
+      // The wallet's block watcher: the first look finds it in the mempool, the second mined.
+      nextLook: async () => {
+        looks++
+        if (looks === 1) inMempool(state, state.raws[0]!)
+        else state.mine(state.raws[0]!)
+      },
+    })
+    const result = await executor.sendLegacy({
+      recipient: { raw: recipient },
+      value: 100000n,
+    })
+    expect(looks).toBe(2)
+    // The same bytes, handed over once: nothing was signed or sent again while it waited.
+    expect(state.raws).toHaveLength(1)
+    const [row] = journal.list()
+    expect(result.txHash).toBe(row!.members[0]!.signed!.transactionHash)
+    expect(row!.members[0]!.observation).toMatchObject({
+      state: 'included-success',
+      blockNumber: 1,
+      feeWei: '21000',
+    })
+    expect(summarizeEvmNativeOperation(row!)).toMatchObject({
+      payment: 'included',
+      feeCoverage: 'complete',
+      observedFeeWei: '21000',
+      members: [{ state: 'included-success', blockNumber: 1 }],
+    })
+  })
+  it('after the send gave up watching and the wallet was reopened: one look at the operation records the mined transfer; a transfer the node does not know is "missing", never "unknown", and is offered again on the second such look', async () => {
+    const state = chain([200000n])
+    state.setMode('retained')
+    const first = owner(state)
+    await expect(
+      first.executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const id = journal.list()[0]!.operationId
+    const raw = journal.list()[0]!.members[0]!.signed!.rawTransaction
+    // The node answers and has never heard of it.
+    expect(summarizeEvmNativeOperation(journal.get(id)).payment).toBe('missing')
+    await reopen()
+    const second = owner(state, { sources: [], noPoolRows: true })
+    await second.executor.lookAtOperation(id)
+    expect(summarizeEvmNativeOperation(journal.get(id)).payment).toBe('missing')
+    expect(state.raws).toEqual([raw])
+    // Missing twice running: the same bytes go back to the node. Never a new transaction.
+    await second.executor.lookAtOperation(id)
+    expect(state.raws).toEqual([raw, raw])
+    expect(second.sign).not.toHaveBeenCalled()
+    inMempool(state, raw)
+    await second.executor.lookAtOperation(id)
+    expect(summarizeEvmNativeOperation(journal.get(id)).payment).toBe('pending')
+    state.mine(raw)
+    await second.executor.lookAtOperation(id)
+    expect(summarizeEvmNativeOperation(journal.get(id))).toMatchObject({
+      payment: 'included',
+      observedFeeWei: '21000',
+      members: [{ state: 'included-success', blockNumber: 1 }],
+    })
+    // Final: further looks ask the node nothing.
+    const asked = state.provider.getTransactionReceipt.mock.calls.length
+    await second.executor.lookAtOperation(id)
+    expect(state.provider.getTransactionReceipt.mock.calls.length).toBe(asked)
+    // A reverted transfer is a state the chain shows too.
+    expect(state.balances.get(recipient)).toBe(100000n)
+  })
+  it('a transfer mined between two reads of one look (read unmined by its hash, mined by its receipt) is recorded mined, not "unknown"', async () => {
+    const state = chain([200000n])
+    state.setMode('retained')
+    const { executor } = owner(state)
+    await expect(
+      executor.sendLegacy({ recipient: { raw: recipient }, value: 100000n }),
+    ).rejects.toBeInstanceOf(EvmNativeOperationPendingError)
+    const row = journal.list()[0]!
+    const raw = row.members[0]!.signed!.rawTransaction
+    state.mine(raw)
+    const mined = state.transactions.get(Transaction.from(raw).hash!)!
+    // The read by hash was answered before the block; the receipt after it.
+    state.provider.getTransaction.mockImplementationOnce(
+      async () =>
+        Object.assign(Transaction.from(raw), {
+          blockHash: null,
+          blockNumber: null,
+          index: 0,
+        }) as never,
+    )
+    await executor.observe(row.operationId, 0)
+    expect(mined.blockNumber).toBe(1)
+    expect(journal.get(row.operationId).members[0]!.observation.state).toBe(
+      'included-success',
+    )
   })
 })

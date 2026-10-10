@@ -2769,6 +2769,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 // What those looks showed frees the main account for whoever waits for it.
                 .then(() => releaseSettledMainAccounts(wallet, false));
             },
+            async watchNativeOperation(operationId) {
+              requireOpenWallet(wallet);
+              const owner = nativeOperationOwner(wallet);
+              const watcher = blockWatchers.get(wallet);
+              // The wallet's one block watcher paces the looks; a wallet without one waits a
+              // second. A watcher that was stopped means the wallet is closing.
+              if (watcher) await watcher.next().catch(() => undefined);
+              else await new Promise((resolve) => setTimeout(resolve, 1_000));
+              requireOpenWallet(wallet);
+              await owner.lookAtOperation(operationId);
+              primaryBalanceCache = undefined;
+              // What the look showed frees the main account for whoever waits for it.
+              await releaseSettledMainAccounts(wallet, false);
+            },
             getUnresolvedNativeTransaction() {
               requireOpenWallet(wallet);
               const unsupported = nativeAttemptStore.get(nativeAttemptKey);
@@ -3159,6 +3173,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               journal: topicOwner.nativeJournal!,
               inputAdmission: topicOwner.inputAdmission,
               runLifetime: (operation) => topicOwner!.runLifetime(operation),
+              // A transfer just broadcast is watched for its block on the wallet's one watcher.
+              nextLook: () =>
+                blockWatchers.get(wallet)?.next() ??
+                new Promise((resolve) => setTimeout(resolve, 500)),
               transactionBuilder,
               getSources,
               sourceHeld: (source) =>

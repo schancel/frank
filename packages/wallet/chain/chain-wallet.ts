@@ -364,6 +364,13 @@ export interface NativeWalletHandle {
    */
   reobserveNativeOperations?(): Promise<void>;
   /**
+   * Waits for the wallet's next look at the chain (its block watcher), then looks at the
+   * transactions of one native operation that are not yet seen in a block. A host showing a
+   * transfer that is not final calls this in a loop and reads `getNativeOperations` after each
+   * turn. Resolves when the look is done, whatever it found; rejects only for a closed wallet.
+   */
+  watchNativeOperation?(operationId: string): Promise<void>;
+  /**
    * One call to a contract from the wallet's main account (which holds the tokens such a call
    * moves), recorded before it is signed and re-submitted byte-for-byte by
    * `resumeNativeOperation`. Resolves once the call is handed to the network; the caller watches

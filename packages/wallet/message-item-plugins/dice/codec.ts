@@ -9,7 +9,6 @@ import {
   oneOf,
   opt,
   req,
-  token,
 } from '../shared/cbor-fields'
 import { diceRoll, id, multiplier, secret } from '../shared/limits'
 
@@ -23,8 +22,9 @@ export const diceCodec = cborItemCodec<SatoshiDiceItem>('dice', {
   luckyNumber: opt(5, diceRoll),
   isWin: opt(6, bool),
   serverSecret: opt(7, secret),
-  // `<16 hex of the message digest>_<milliseconds>`: about 30 characters.
-  userNonce: opt(8, token(96)),
+  clientSeed: opt(8, secret),
   payoutWei: opt(9, amount),
-  txHash: opt(10, hash32),
+  commitment: opt(10, hash32),
+  nextRollId: opt(11, id),
+  nextCommitment: opt(12, hash32),
 })

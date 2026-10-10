@@ -74,9 +74,11 @@ export const GENERIC_SAMPLES: MessageItem[] = [
     luckyNumber: 1234,
     isWin: true,
     serverSecret: '0123456789abcdef0123456789abcdef',
-    userNonce: '0123456789abcdef_1760000000000',
+    clientSeed: 'fedcba9876543210fedcba9876543210',
     payoutWei: '19620000000000000',
-    txHash: TX,
+    commitment: HASH,
+    nextRollId: '8899aabbccddeeff',
+    nextCommitment: HASH,
   },
   {
     type: 'rps',

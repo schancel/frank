@@ -34,13 +34,17 @@ import type { MessageItem } from "@frank/cashweb/types/messages";
 import { installMessageItemRegistry } from "@frank/wallet/chain/monad-canonical-dm";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
-import type { DirectMessageSendResult } from "@frank/wallet/chain/active-chain";
+import type {
+  DirectMessageSendResult,
+  StampPaymentInfo,
+} from "@frank/wallet/chain/active-chain";
 
 import {
   toChainAddress,
   type BotContext,
   type BotHostOptions,
   type BotMessageContext,
+  type BotSendOptions,
   type FrankBotDefinition,
   type NewUserEvent,
   type PreparedReply,
@@ -414,7 +418,7 @@ export class FrankBotHost {
           recipientAddress: string,
           items,
           conversationId?: string,
-          options?: { stampValueWei?: bigint }
+          options?: BotSendOptions
         ) => {
           return this.sendCanonicalMessage(
             wallet,
@@ -429,7 +433,7 @@ export class FrankBotHost {
           recipientAddress: string,
           items,
           conversationId?: string,
-          options?: { stampValueWei?: bigint }
+          options?: BotSendOptions
         ) => {
           return this.sendCanonicalMessage(
             wallet,
@@ -812,6 +816,7 @@ export class FrankBotHost {
           identity: InboundIdentity;
           items: MessageItem[];
           stampValueWei: bigint;
+          stampPayments: readonly StampPaymentInfo[];
         }[] = [];
         for (const msg of messages) {
           // The scan also returns what this bot sent; that is not inbound work.
@@ -826,6 +831,7 @@ export class FrankBotHost {
                 typeof msg.stampValueWei === "bigint" && msg.stampValueWei > 0n
                   ? msg.stampValueWei
                   : 0n,
+              stampPayments: structuredClone(msg.stampPayments ?? []),
             });
           } catch {
             console.warn(
@@ -964,6 +970,7 @@ export class FrankBotHost {
       recipient: string;
       conversationId?: string;
       stampValue: bigint;
+      messageId?: string;
       items: MessageItem[];
     }
   ): Promise<DirectMessageSendResult> {
@@ -975,7 +982,7 @@ export class FrankBotHost {
           captured.recipient,
           captured.items,
           captured.conversationId,
-          { stampValueWei: captured.stampValue },
+          { stampValueWei: captured.stampValue, messageId: captured.messageId },
           (digest) => {
             reported = true;
             return instance.operations.link(inbound, index, digest);
@@ -1386,7 +1393,15 @@ export class FrankBotHost {
   private async dispatch(
     instance: ActiveBotInstance,
     identity: InboundIdentity,
-    { items, stampValueWei }: { items: MessageItem[]; stampValueWei: bigint }
+    {
+      items,
+      stampValueWei,
+      stampPayments,
+    }: {
+      items: MessageItem[];
+      stampValueWei: bigint;
+      stampPayments: readonly StampPaymentInfo[];
+    }
   ): Promise<void> {
     const replies: Promise<DirectMessageSendResult>[] = [];
     let accepting = true;
@@ -1407,6 +1422,7 @@ export class FrankBotHost {
             ? undefined
             : conversationIdentity(conversationId),
         stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+        messageId: options?.messageId,
         items: structuredClone(items),
       };
       const reply = (async () => {
@@ -1475,6 +1491,7 @@ export class FrankBotHost {
       timestampMs: identity.receivedTime,
       items,
       stampValueWei,
+      stampPayments,
       reply: boundReply,
     });
     let prepared: PreparedReply | undefined;
@@ -1533,7 +1550,7 @@ export class FrankBotHost {
     recipientAddress: string,
     items: MessageItem[],
     conversationId?: string,
-    options?: { stampValueWei?: bigint },
+    options?: BotSendOptions,
     onAttemptCreated?: (digest: string) => Promise<void>
   ): Promise<DirectMessageSendResult> {
     const instance = [...this.instances.values()].find(
@@ -1551,6 +1568,7 @@ export class FrankBotHost {
           ? undefined
           : conversationIdentity(conversationId),
       stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+      ...(options?.messageId ? { messageId: options.messageId } : {}),
       onAttemptCreated,
     });
   }

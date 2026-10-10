@@ -5,10 +5,23 @@ import {
 } from "ethers";
 import type { MessageItem } from "@frank/cashweb/types/messages";
 import type { DirectMessageSendResult } from "@frank/wallet/chain";
+import type { StampPaymentInfo } from "@frank/wallet/chain/active-chain";
 import type { ForumMessageEntry } from "@frank/wallet/forum-model";
 
 import type { AccountType, BotRole } from "@frank/codec";
-export type { MessageItem, DirectMessageSendResult, ForumMessageEntry };
+export type {
+  MessageItem,
+  DirectMessageSendResult,
+  ForumMessageEntry,
+  StampPaymentInfo,
+};
+
+/** `messageId` (16 bytes as lowercase `8-4-4-4-12` hex) is the wallet's own repeat rule: it never
+ * makes a second attempt, so never pays twice, for an ID it already has one for. */
+export interface BotSendOptions {
+  stampValueWei?: bigint;
+  messageId?: string;
+}
 
 export function toChainAddress(raw: string): { raw: string } {
   return { raw: getAddress(raw) };
@@ -63,9 +76,12 @@ export interface BotMessageContext {
    * read from the stamp payments delivered with it, never a number the message's content states.
    * `0n` when the wallet reported no payment. It is not proof the transfers have confirmed. */
   readonly stampValueWei: bigint;
+  /** The transfers `stampValueWei` is the sum of, as the wallet reported them: what a bot looks
+   * up on chain before it acts on the money. */
+  readonly stampPayments: readonly StampPaymentInfo[];
   reply(
     items: MessageItem[],
-    options?: { stampValueWei?: bigint }
+    options?: BotSendOptions
   ): Promise<DirectMessageSendResult>;
 }
 
@@ -109,13 +125,13 @@ export interface BotContext {
     recipientAddress: string,
     items: MessageItem[],
     conversationId?: string,
-    options?: { stampValueWei?: bigint }
+    options?: BotSendOptions
   ): Promise<DirectMessageSendResult>;
   sendDirectMessage(
     recipientAddress: string,
     items: MessageItem[],
     conversationId?: string,
-    options?: { stampValueWei?: bigint }
+    options?: BotSendOptions
   ): Promise<DirectMessageSendResult>;
   onNewUserRegistered(
     callback: (user: NewUserEvent) => void | Promise<void>

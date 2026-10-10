@@ -1302,6 +1302,40 @@ function indexStealthItemIfRecipient(
   }
 }
 
+/** The payment members of a received delivery that pay THIS wallet: a member's address must be
+ * the stamp child of one of the wallet's own stamp keys (current or previous) for the message's
+ * shared point. The delivery frame is written by the sender, so a member paying any other address
+ * is somebody else's money and is never reported as received. Not a chain check: whether a
+ * reported transfer was mined is for the caller to look up. */
+function paymentsToSelf<T extends { address: Uint8Array; childIndex: number }>(
+  network: string,
+  self: Current,
+  sharedPoint: Uint8Array,
+  payments: readonly T[],
+): T[] {
+  const keys = [self.stampKey, self.previousStamp].filter(
+    (key): key is NonNullable<typeof key> => !!key,
+  )
+  return payments.filter(member =>
+    keys.some(stampKey => {
+      try {
+        return (
+          toHex(
+            canonicalStampDestination({
+              network,
+              stampKey,
+              sharedPoint,
+              childIndex: member.childIndex,
+            }).address,
+          ) === toHex(member.address)
+        )
+      } catch {
+        return false
+      }
+    }),
+  )
+}
+
 async function fetchSince(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['fetchSince']>[0],
@@ -1464,7 +1498,15 @@ async function fetchSince(
       } finally {
         roles.dispose()
       }
-      const stampPayments = deliveryTyped.payments.map(member => ({
+      const paidHere = isOutbound
+        ? deliveryTyped.payments
+        : paymentsToSelf(
+            directory.network,
+            self,
+            payload.sharedPoint,
+            deliveryTyped.payments,
+          )
+      const stampPayments = paidHere.map(member => ({
         txHash: hexlify(member.transactionId),
         destinationAddress: getAddress(hexlify(member.address)),
         valueWei:
@@ -1472,7 +1514,7 @@ async function fetchSince(
             ? member.value
             : BigInt(hexlify(member.value)),
       }))
-      const paymentTransfers = deliveryTyped.payments.map(member =>
+      const paymentTransfers = paidHere.map(member =>
         constructPaymentTransferFromMember(member, deliveryTyped.network),
       )
       const peerAddress: ChainAddress = {
@@ -1658,7 +1700,15 @@ export function canonicalDirectMessages(
                 } finally {
                   roles.dispose()
                 }
-                const stampPayments = deliveryTyped.payments.map(member => ({
+                const paidHere = isOutbound
+                  ? deliveryTyped.payments
+                  : paymentsToSelf(
+                      directory.network,
+                      self,
+                      payload.sharedPoint,
+                      deliveryTyped.payments,
+                    )
+                const stampPayments = paidHere.map(member => ({
                   txHash: hexlify(member.transactionId),
                   destinationAddress: getAddress(hexlify(member.address)),
                   valueWei:
@@ -1666,7 +1716,7 @@ export function canonicalDirectMessages(
                       ? member.value
                       : BigInt(hexlify(member.value)),
                 }))
-                const paymentTransfers = deliveryTyped.payments.map(member =>
+                const paymentTransfers = paidHere.map(member =>
                   constructPaymentTransferFromMember(
                     member,
                     deliveryTyped.network,

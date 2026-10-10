@@ -10,7 +10,11 @@ import {
   type Encodable,
 } from "@frank/codec";
 import type { BotContext, BotMessageContext } from "@frank/bot-framework";
-import type { MessageItem } from "@frank/cashweb/types/messages";
+import type {
+  MessageItem,
+  RpsItem,
+  SatoshiDiceItem,
+} from "@frank/cashweb/types/messages";
 import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
 import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
 import {
@@ -19,6 +23,7 @@ import {
   encodeItemFrames,
 } from "@frank/wallet/message-item-plugins/wire";
 
+import { harness as botHarness } from "./bot-harness.testutil";
 import { LiarsDiceBot } from "./liars-dice-bot";
 import { PokerBot } from "./poker-bot";
 import { RaffleBot } from "./raffle-bot";
@@ -60,75 +65,32 @@ function overTheWire(items: MessageItem[]): MessageItem[] {
   );
 }
 
+/** A bot's table: `say` delivers one message from a player, with the payments it came with, and
+ * `sent` is every message the bot sent, in order. */
 function harness() {
-  const state = new Map<string, string>();
+  const h = botHarness();
   const sent: MessageItem[][] = [];
-  let transfers = 0;
-  let digests = 0;
-  const ctx = {
-    botId: "game",
-    address: BOT,
-    subject: BOT,
-    relayBaseUrl: "http://127.0.0.1:8098",
-    networkTag: "MONT",
-    provider: {},
-    state: {
-      get: async (k: string) => state.get(k),
-      put: async (k: string, v: string) => void state.set(k, v),
-      set: async (k: string, v: string) => void state.set(k, v),
-      del: async (k: string) => void state.delete(k),
-      list: async () => [],
-      batch: async () => undefined,
-      sublevel: () => undefined,
-      close: async () => undefined,
-    },
-    subscriptions: {},
-    lookupPeer: async () => undefined,
-    sendMessage: async (_to: string, items: MessageItem[]) => {
-      sent.push(items);
-      return { ok: true };
-    },
-    sendDirectMessage: async (_to: string, items: MessageItem[]) => {
-      sent.push(items);
-      return { ok: true };
-    },
-    onNewUserRegistered: () => undefined,
-    // What the host returns for a payout: a real transaction hash.
-    sendTransfer: async () => ({
-      txHash: "0x" + (++transfers).toString(16).padStart(64, "0"),
-    }),
-    sendTransaction: async () => ({
-      txHash: "0x" + (++transfers).toString(16).padStart(64, "0"),
-    }),
-    buildAndSignTransfer: async () => undefined,
-    waitForReceipt: async () => undefined,
-    getBalance: async () => 10n ** 18n,
-  } as unknown as BotContext;
+  const sync = () => {
+    sent.length = 0;
+    sent.push(...h.sent.map((message) => message.items));
+  };
   const say = async (
     bot: { onMessage(m: BotMessageContext, c: BotContext): Promise<void> },
     from: string,
-    input: string | MessageItem
+    input: string | MessageItem,
+    paidWei = 0n
   ) => {
     await bot.onMessage(
-      {
-        conversationId: "c1",
-        peerAddress: from,
-        peerSubject: from,
-        timestampMs: 1_760_000_000_000 + digests,
-        // As the host supplies it: 64 lowercase hex characters, no prefix.
-        payloadDigest: (++digests).toString(16).padStart(64, "0"),
-        stampValueWei: 10n ** 17n,
-        items: [
-          typeof input === "string" ? { type: "text", text: input } : input,
-        ],
-        reply: async (items: MessageItem[]) => {
-          sent.push(items);
-        },
-      } as unknown as BotMessageContext,
-      ctx
+      h.message(
+        [typeof input === "string" ? { type: "text", text: input } : input],
+        paidWei > 0n ? [h.pay(paidWei)] : [],
+        from
+      ),
+      h.ctx
     );
+    sync();
   };
-  return { ctx, sent, say };
+  return { ...h, sent, say, sync };
 }
 
 /** Every reply crosses the wire unchanged, and at least one item of `type` was produced. */
@@ -149,23 +111,55 @@ describe("game bot replies cross the canonical wire", () => {
     jest.useRealTimers();
   });
 
-  it("dice: a roll at every preset target, win or lose", async () => {
-    for (const lucky of [0, 65_535]) {
-      const bot = new SatoshiDiceBot({ luckyNumberOverride: lucky });
-      const { sent, say } = harness();
-      for (const target of [64000, 32768, 16384, 6553, 655, 65, 1, 65535])
-        await say(bot, ALICE, `/roll 0.01 ${target}`);
-      await say(bot, ALICE, "/roll");
-      expectCarried(sent, "dice", ["result"]);
+  it("dice: the table, a paid bet at several targets, and a refused bet", async () => {
+    const bot = new SatoshiDiceBot();
+    const { sent, say } = harness();
+    await say(bot, ALICE, "/roll 0.01 100");
+    for (const target of [64000, 32768, 655, 1, 65535]) {
+      const offer = sent[sent.length - 1].find(
+        (i) => i.type === "dice"
+      ) as SatoshiDiceItem;
+      await say(
+        bot,
+        ALICE,
+        {
+          type: "dice",
+          action: "roll",
+          rollId: offer.nextRollId ?? offer.rollId,
+          commitment: offer.nextCommitment ?? offer.commitment,
+          clientSeed: "c3".repeat(16),
+          target,
+          wagerWei: "1000",
+        },
+        1000n
+      );
     }
+    // A bet on a roll that is not on offer: refused, with a new table.
+    await say(bot, ALICE, { type: "dice", action: "roll", rollId: "gone" });
+    expectCarried(sent, "dice", ["table", "result"]);
   });
 
-  it("rps: a wagered match through every move", async () => {
-    for (const move of ["/rock", "/paper", "/scissors"]) {
+  it("rps: a staked match through every move, and a typed one", async () => {
+    for (const move of ["rock", "paper", "scissors"] as const) {
       const bot = new RpsBot();
       const { sent, say } = harness();
       await say(bot, ALICE, "/rps 0.01");
-      await say(bot, ALICE, move);
+      const start = sent[0].find((i) => i.type === "rps") as RpsItem;
+      await say(
+        bot,
+        ALICE,
+        {
+          type: "rps",
+          action: "move",
+          matchId: start.matchId,
+          commitHash: start.commitHash,
+          playerMove: move,
+          wagerWei: "1000",
+        },
+        1000n
+      );
+      await say(bot, ALICE, "/rps");
+      await say(bot, ALICE, `/${move}`);
       expectCarried(sent, "rps", ["start", "resolve"]);
     }
   });

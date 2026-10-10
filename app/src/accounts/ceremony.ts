@@ -7,6 +7,7 @@ import {
   randomCodex32Identifier,
   type PendingCodex32Signup,
   type PendingCodex32Restore,
+  type Codex32ShareRecovery,
   type RecoveredCodex32Account,
 } from '@frank/account-recovery'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
@@ -31,8 +32,12 @@ export function createAccountCeremony() {
       }
     | undefined
   let epoch = 0
+  /** Accounts awaiting the user's explicit pick; wiped on choose or cancel. */
+  let choice: RecoveredCodex32Account[] | undefined
   const cancel = () => {
     ++epoch
+    choice?.forEach(destroyRecoveredAccount)
+    choice = undefined
     signup?.cancel()
     restore?.cancel()
     signup = undefined
@@ -61,6 +66,67 @@ export function createAccountCeremony() {
       accountId: crypto.randomUUID(),
       expectedActive: expected,
       legacyRevision,
+    }
+  }
+  async function finish(
+    take: () => RecoveredCodex32Account | undefined,
+    isRestore: boolean,
+    displayName: string,
+  ) {
+    if (!attempt) throw new Error('Start an account ceremony first')
+    const captured = attempt
+    const token = epoch
+    let recovered: RecoveredCodex32Account | undefined
+    try {
+      recovered = take()
+      if (!recovered) throw new Error('Start an account ceremony first')
+      let discoveredRelayUrl: string | undefined
+      let identityDetails: { subject: string; address: string } | undefined
+      if (isRestore) {
+        try {
+          const authRoot = recovered.roots['identity-authentication']
+          if (authRoot) {
+            const identity = MonadIdentity.fromDomainRoot(authRoot)
+            const subject = toHex(identity.compressedPubKey)
+            const address = identity.displayAddress
+            identityDetails = { subject, address }
+            discoveredRelayUrl = await probeDirectoryRelay({
+              subject,
+              address,
+            })
+            if (discoveredRelayUrl) {
+              setCustomRelayBaseUrl(discoveredRelayUrl)
+            }
+          }
+        } catch {
+          // probe failure should never block account recovery
+        }
+      }
+      await assertLegacyUnchanged(captured.legacyRevision)
+      if (token !== epoch) throw new Error('Ceremony cancelled')
+      // Custody keeps the account root only; every purpose root is derived from it
+      // each time the account is opened.
+      await accountSession.stage({
+        ...captured,
+        displayName,
+        custodyEpoch: 1,
+        metadata: recovered.metadata,
+        accountRoot: recovered.accountRoot,
+      })
+      if (token !== epoch)
+        await accountSession.cancelPending(captured.attemptId)
+      return {
+        isRestore,
+        subject: identityDetails?.subject,
+        address: identityDetails?.address,
+        discoveredRelayUrl,
+      }
+    } catch (error) {
+      // A mismatch/failure consumes this presentation ceremony; retry starts explicitly.
+      cancel()
+      throw error
+    } finally {
+      if (recovered) destroyRecoveredAccount(recovered)
     }
   }
   return {
@@ -102,68 +168,74 @@ export function createAccountCeremony() {
       restore = beginCodex32Restore(descriptor)
       return descriptor ? encodeRecoveryDescriptor(descriptor) : ''
     },
+    /**
+     * Verify the entered shares and stage the account they reconstruct.
+     *
+     * Restore accepts the threshold number of shares or more and reports what each share
+     * turned out to be. If the shares contain complete backups of more than one account,
+     * nothing is staged: the candidates come back with their identity addresses and the
+     * user picks one explicitly through `choose`. This never picks for them.
+     */
     async confirm(shares: readonly string[], name: string) {
       const displayName = requireValidProfileDisplayName(name)
       if (!attempt) throw new Error('Start an account ceremony first')
-      const captured = attempt
-      const token = epoch
-      let recovered: RecoveredCodex32Account | undefined
-      try {
-        const isRestore = !signup && Boolean(restore)
-        recovered = signup
-          ? signup.confirmWithMetadata(shares)
-          : restore?.recover(shares)
-        if (!recovered) throw new Error('Start an account ceremony first')
-        let discoveredRelayUrl: string | undefined
-        let identityDetails: { subject: string; address: string } | undefined
-        if (isRestore) {
-          try {
-            const authRoot = recovered.roots['identity-authentication']
-            if (authRoot) {
-              const identity = MonadIdentity.fromDomainRoot(authRoot)
-              const subject = toHex(identity.compressedPubKey)
-              const address = identity.displayAddress
-              identityDetails = { subject, address }
-              discoveredRelayUrl = await probeDirectoryRelay({
-                subject,
-                address,
-              })
-              if (discoveredRelayUrl) {
-                setCustomRelayBaseUrl(discoveredRelayUrl)
-              }
-            }
-          } catch {
-            // probe failure should never block account recovery
-          }
-        }
-        signup = undefined
-        restore = undefined
-        await assertLegacyUnchanged(captured.legacyRevision)
-        if (token !== epoch) throw new Error('Ceremony cancelled')
-        // Custody keeps the account root only; every purpose root is derived from it
-        // each time the account is opened.
-        await accountSession.stage({
-          ...captured,
+      if (signup) {
+        return finish(
+          () => {
+            const recovered = signup?.confirmWithMetadata(shares)
+            signup = undefined
+            return recovered
+          },
+          false,
           displayName,
-          custodyEpoch: 1,
-          metadata: recovered.metadata,
-          accountRoot: recovered.accountRoot,
-        })
-        if (token !== epoch)
-          await accountSession.cancelPending(captured.attemptId)
-        return {
-          isRestore,
-          subject: identityDetails?.subject,
-          address: identityDetails?.address,
-          discoveredRelayUrl,
-        }
+        )
+      }
+      let recovery: Codex32ShareRecovery
+      try {
+        if (!restore) throw new Error('Start an account ceremony first')
+        recovery = restore.recoverAny(shares)
+        restore = undefined
       } catch (error) {
-        // A mismatch/failure consumes this presentation ceremony; retry starts explicitly.
         cancel()
         throw error
-      } finally {
-        if (recovered) destroyRecoveredAccount(recovered)
       }
+      if (recovery.candidates.length > 1) {
+        choice = recovery.candidates.map(candidate => candidate.account)
+        return {
+          isRestore: true,
+          report: recovery.shares,
+          candidates: recovery.candidates.map(candidate => ({
+            address: MonadIdentity.fromDomainRoot(
+              candidate.account.roots['identity-authentication'],
+            ).displayAddress,
+            descriptor: encodeRecoveryDescriptor(
+              candidate.account.metadata.descriptor,
+            ),
+            supporting: candidate.supporting,
+          })),
+        }
+      }
+      const outcome = await finish(
+        () => recovery.candidates[0]?.account,
+        true,
+        displayName,
+      )
+      return { ...outcome, report: recovery.shares }
+    },
+    /** Stage the candidate the user picked after `confirm` returned several. */
+    async choose(index: number, name: string) {
+      const displayName = requireValidProfileDisplayName(name)
+      const candidates = choice
+      choice = undefined
+      const chosen = candidates?.[index]
+      candidates?.forEach(candidate => {
+        if (candidate !== chosen) destroyRecoveredAccount(candidate)
+      })
+      if (!chosen) {
+        cancel()
+        throw new Error('Start an account ceremony first')
+      }
+      return finish(() => chosen, true, displayName)
     },
   }
 }
@@ -176,7 +248,9 @@ export function recoveryErrorMessage(error: unknown): string {
     'confirmation-mismatch':
       'These shares do not reconstruct the account you just backed up. Start again.',
     'not-account-backup':
-      'These shares do not contain a Frank account, so nothing was restored. They may come from different backups, or from something that is not an account backup. Enter shares from one backup set.',
+      'These shares do not reconstruct a Frank account, so nothing was restored. At least one share is wrong, or they are not an account backup. Enter one more share from the same backup and the app can identify which share is wrong.',
+    'too-many-inconsistent-shares':
+      'Too many of these shares are inconsistent to determine a valid set, so nothing was restored. Remove shares you are unsure of and try again.',
     'duplicate-share': 'Each backup share must have a different index.',
     'wrong-share-count': 'Enter exactly the required number of backup shares.',
     'inconsistent-share':

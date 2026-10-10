@@ -45,6 +45,25 @@
           >
             {{ error }}
           </p>
+          <div
+            v-if="shareReport.length && mode !== 'restore-choose'"
+            role="status"
+            data-test="share-report"
+          >
+            <p class="q-mb-xs">
+              {{ $t('accountRecovery.share_report_title') }}
+            </p>
+            <ul class="q-mt-none">
+              <li
+                v-for="line in shareReportLines"
+                :key="line.position"
+                :class="line.ok ? '' : 'text-negative'"
+                :data-test="`share-report-${line.status}`"
+              >
+                {{ line.text }}
+              </li>
+            </ul>
+          </div>
           <template
             v-if="tabCoordinator.otherTabActive || account.status === 'standby'"
           >
@@ -535,6 +554,51 @@
                 />
               </div>
             </template>
+            <template v-else-if="mode === 'restore-choose'">
+              <p class="text-negative" data-test="restore-choose-warning">
+                {{ $t('accountRecovery.restore_choose_explained') }}
+              </p>
+              <div
+                v-for="(candidate, index) in restoreCandidates"
+                :key="candidate.descriptor"
+                class="q-mb-md"
+                data-test="restore-candidate"
+              >
+                <p class="q-mb-xs">
+                  {{ $t('accountRecovery.restore_choose_identity') }}
+                </p>
+                <p class="recovery-text" data-test="restore-candidate-address">
+                  {{ candidate.address }}
+                </p>
+                <p class="recovery-text">{{ candidate.descriptor }}</p>
+                <p data-test="restore-candidate-shares">
+                  {{
+                    $t('accountRecovery.restore_choose_shares', {
+                      shares: candidate.supporting
+                        .map(position => position + 1)
+                        .join(', '),
+                    })
+                  }}
+                </p>
+                <q-btn
+                  color="primary"
+                  no-caps
+                  :label="$t('accountRecovery.restore_choose_pick')"
+                  data-test="restore-candidate-pick"
+                  :disable="busy"
+                  @click="chooseCandidate(index)"
+                />
+              </div>
+              <q-btn
+                outline
+                color="primary"
+                no-caps
+                :label="$t('accountRecovery.cancel_and_start_again')"
+                data-test="cancel-ceremony"
+                :disable="busy"
+                @click="cancel"
+              />
+            </template>
             <q-form
               v-else-if="
                 mode === 'confirm' ||
@@ -554,7 +618,7 @@
               <p v-else>
                 {{
                   $t(
-                    'accountRecovery.enter_exactly_the_threshold_number_printed_in',
+                    'accountRecovery.enter_at_least_the_threshold_number_of_shares',
                   )
                 }}
               </p>
@@ -676,6 +740,7 @@
 </template>
 
 <script setup lang="ts">
+import type { ShareVerdict } from '@frank/account-recovery'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTranslate } from '../composables/useTranslate'
@@ -766,6 +831,7 @@ type Mode =
   | 'confirm'
   | 'restore'
   | 'restore-shares'
+  | 'restore-choose'
 const mode = ref<Mode>('choice')
 const heading = ref<HTMLElement>()
 const busy = ref(false)
@@ -783,6 +849,32 @@ const descriptor = ref('')
 const descriptorInput = ref('')
 const descriptorSaved = ref(false)
 const shareInput = ref('')
+/** What the last restore found in each entered share. Public facts only, never contents. */
+const shareReport = ref<readonly ShareVerdict[]>([])
+const restoreCandidates = ref<
+  { address: string; descriptor: string; supporting: readonly number[] }[]
+>([])
+/** Which reconstructed account the report is about, once there is exactly one. */
+const reportCandidate = ref(0)
+const shareReportLines = computed(() =>
+  shareReport.value.map(share => {
+    // A share of an account the user did not restore is, for them, a share that does not fit.
+    const status =
+      share.status === 'supports' && share.candidate !== reportCandidate.value
+        ? 'inconsistent'
+        : share.status
+    return {
+      position: share.position,
+      status,
+      ok: status === 'supports',
+      text: t(`accountRecovery.share_report_${status.replace('-', '_')}`, {
+        n: share.position + 1,
+        index: share.index ?? '?',
+        identifier: share.identifier ?? '?',
+      }),
+    }
+  }),
+)
 const displayName = ref('')
 const legacyPhrase = ref('')
 const legacyAddress = ref('')
@@ -834,6 +926,8 @@ function cancel() {
   request++
   ceremony.cancel()
   clearSecrets()
+  shareReport.value = []
+  restoreCandidates.value = []
   descriptor.value = ''
   descriptorInput.value = ''
   descriptorSaved.value = false
@@ -865,6 +959,9 @@ async function run(work: () => Promise<void>) {
         mode.value = 'choice'
       }
       error.value = recoveryErrorMessage(failure)
+      // Which share was wrong is worth knowing even when nothing could be restored.
+      shareReport.value = (failure as { shares?: ShareVerdict[] })?.shares ?? []
+      reportCandidate.value = 0
       focus()
     }
   } finally {
@@ -873,6 +970,7 @@ async function run(work: () => Promise<void>) {
 }
 function beginNew() {
   return run(async () => {
+    shareReport.value = []
     if (!mayBegin.value || !policy.value) return
     const cleanedRelay = customRelayUrl.value?.trim()
     if (cleanedRelay && cleanedRelay !== defaultRelayUrl) {
@@ -904,6 +1002,7 @@ function nextShare() {
 }
 function startRestore() {
   return run(async () => {
+    shareReport.value = []
     if (!mayBegin.value) return
     descriptor.value = await ceremony.beginRestore()
     if (alive) changeMode('restore-shares')
@@ -911,6 +1010,7 @@ function startRestore() {
 }
 function pinDescriptor() {
   return run(async () => {
+    shareReport.value = []
     if (!mayBegin.value) return
     descriptor.value = await ceremony.beginRestore(descriptorInput.value)
     descriptorInput.value = ''
@@ -926,6 +1026,38 @@ function confirm() {
     shownShare.value = ''
     try {
       const outcome = (await ceremony.confirm(shares, displayName.value)) as any
+      shareReport.value = outcome?.report ?? []
+      reportCandidate.value = 0
+      if (outcome?.candidates) {
+        // Complete backups of more than one account: the user picks, with the addresses shown.
+        restoreCandidates.value = outcome.candidates
+        if (alive) changeMode('restore-choose')
+        return
+      }
+      await applyDiscoveredRelay(outcome)
+    } finally {
+      shares = []
+    }
+    if (alive) {
+      changeMode('choice')
+      focus()
+    }
+  })
+}
+function chooseCandidate(index: number) {
+  return run(async () => {
+    restoreCandidates.value = []
+    reportCandidate.value = index
+    await applyDiscoveredRelay(await ceremony.choose(index, displayName.value))
+    if (alive) {
+      changeMode('choice')
+      focus()
+    }
+  })
+}
+async function applyDiscoveredRelay(outcome: any) {
+  {
+    {
       let discovered = outcome?.discoveredRelayUrl
       if (
         outcome?.isRestore &&
@@ -946,14 +1078,8 @@ function confirm() {
         customRelayUrl.value = discovered
         discoveredRelay.value = discovered
       }
-    } finally {
-      shares = []
     }
-    if (alive) {
-      changeMode('choice')
-      focus()
-    }
-  })
+  }
 }
 function submitLegacyPhrase() {
   return run(async () => {

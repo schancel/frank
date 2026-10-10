@@ -71,8 +71,22 @@ export const en = {
   re_enter_exactly: 'Re-enter exactly',
   saved_frank_account_backup_shares_we_reconstruct:
     'saved Frank account backup shares. We reconstruct and compare the complete account before staging.',
-  enter_exactly_the_threshold_number_printed_in:
-    'Enter exactly the threshold number printed in your consistent backup family, one share per line. Too few, extra, duplicate, inconsistent or damaged shares are rejected.',
+  enter_at_least_the_threshold_number_of_shares:
+    'Enter at least the threshold number printed in your backup, one share per line. Extra shares from the same backup let the app detect a wrong one and tell you which.',
+  share_report_title: 'What the app found in the shares you entered:',
+  share_report_supports: 'Share {n} (index {index}): used.',
+  share_report_inconsistent:
+    'Share {n} (index {index}): does not belong to this backup. It is wrong or damaged.',
+  share_report_different_set:
+    'Share {n} (set {identifier}): from a different backup set.',
+  share_report_duplicate: 'Share {n}: entered more than once.',
+  share_report_invalid:
+    'Share {n}: could not be read. Check it for a typing error.',
+  restore_choose_explained:
+    'These shares contain complete backups of more than one account. Frank will not choose for you. If you did not expect this, someone may have given you shares of an account they control. Restore only the address you recognise.',
+  restore_choose_identity: 'Account with this identity address:',
+  restore_choose_shares: 'Built from shares {shares}.',
+  restore_choose_pick: 'Restore this account',
   expected_account: 'Expected account:',
   saved_codex32_shares_one_per_line: 'Saved Codex32 shares, one per line',
   display_name: 'Display name',
@@ -213,8 +227,22 @@ export const fr = {
   re_enter_exactly: 'Saisissez à nouveau exactement',
   saved_frank_account_backup_shares_we_reconstruct:
     'parts de sauvegarde enregistrées du compte Frank. Le compte complet est reconstruit et comparé avant sa préparation.',
-  enter_exactly_the_threshold_number_printed_in:
-    'Saisissez exactement le nombre de parts indiqué par le seuil de votre famille de sauvegardes, une par ligne. Les parts insuffisantes, supplémentaires, dupliquées, incohérentes ou endommagées sont rejetées.',
+  enter_at_least_the_threshold_number_of_shares:
+    'Saisissez au moins le nombre seuil indiqué sur votre sauvegarde, une part par ligne. Des parts supplémentaires de la même sauvegarde permettent à l’application de détecter une part erronée et de vous dire laquelle.',
+  share_report_title: 'Ce que l’application a trouvé dans les parts saisies :',
+  share_report_supports: 'Part {n} (index {index}) : utilisée.',
+  share_report_inconsistent:
+    'Part {n} (index {index}) : n’appartient pas à cette sauvegarde. Elle est erronée ou endommagée.',
+  share_report_different_set:
+    'Part {n} (jeu {identifier}) : provient d’un autre jeu de sauvegarde.',
+  share_report_duplicate: 'Part {n} : saisie plusieurs fois.',
+  share_report_invalid:
+    'Part {n} : illisible. Vérifiez qu’elle ne contient pas de faute de frappe.',
+  restore_choose_explained:
+    'Ces parts contiennent les sauvegardes complètes de plusieurs comptes. Frank ne choisira pas à votre place. Si vous ne vous y attendiez pas, quelqu’un vous a peut-être remis des parts d’un compte qu’il contrôle. Ne restaurez que l’adresse que vous reconnaissez.',
+  restore_choose_identity: 'Compte ayant cette adresse d’identité :',
+  restore_choose_shares: 'Construit à partir des parts {shares}.',
+  restore_choose_pick: 'Restaurer ce compte',
   expected_account: 'Compte attendu :',
   saved_codex32_shares_one_per_line:
     'Parts Codex32 enregistrées, une par ligne',

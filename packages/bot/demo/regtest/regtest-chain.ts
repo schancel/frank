@@ -1,7 +1,7 @@
 /**
  * A local regtest network of a real chain client, as the regtest stack drives it. Every network
- * the stack runs has this shape (eCash today; a Monad solonet is to be added the same way), so a
- * test starts, funds, mines and stops any of them alike.
+ * the stack runs has this shape (eCash in ecash-regtest.ts, Monad in monad-regtest.ts), so a test
+ * starts, funds, mines and stops any of them alike.
  */
 import { createServer, connect } from 'net'
 
@@ -14,16 +14,30 @@ export interface RegtestChain {
    */
   readonly checkpoint: { readonly height: number; readonly hash: string }
   /** What the relay needs to serve this network: one config row and the upstream it names. */
-  readonly relay: {
-    readonly section: 'bitcoin_proxy'
-    readonly row: string
-    readonly env: Record<string, string>
-  }
+  readonly relay:
+    | {
+        readonly section: 'bitcoin_proxy'
+        readonly row: string
+        readonly env: Record<string, string>
+      }
+    | {
+        readonly section: 'evm_rpc'
+        readonly row: string
+        readonly env: Record<string, string>
+        /** The relay's message mailbox runs on this network: stamps are paid here. */
+        readonly mailbox: {
+          readonly rpcUrl: string
+          readonly expectedChainId: bigint
+          readonly minValueWei: bigint
+          readonly networkTag: string
+        }
+      }
   /** Pays `amount` (base units) from the network's faucet and confirms it. Returns the txid. */
   fund(address: string, amount: bigint): Promise<string>
   /** Produces blocks now. Blocks also appear on a timer, as on a live network. */
   mine(blocks?: number): Promise<void>
-  /** Stops the node and checks that its ports are closed. Safe to call more than once. */
+  /** Stops what this stack started for the network (a node it shares with other runs keeps
+   * running) and checks that its ports are closed. Safe to call more than once. */
   stop(): Promise<void>
 }
 

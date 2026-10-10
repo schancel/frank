@@ -235,11 +235,26 @@ first run downloads the eCash node into the git-ignored `.regtest-cache/` and ch
   package's funded send check (`packages/wallet/utxo-funded-send.livecheck.ts`) runs on
   `xec-regtest`, funded from the node's faucet.
 
+- `yarn --cwd packages/bot regtest:monad-check`: a local Monad network (monad-solonet, the real
+  Monad client; network `monad-regtest`, chain ID 20143) with the real relay's mailbox and EVM
+  proxy on it. Deploys GenericHTLC and StateChannel, then two wallets exchange a paid and a free
+  message each way and every stamp payment is read back from the chain.
+- `yarn --cwd packages/bot regtest:monad-reserve`: a wallet whose main account holds 5 MON sends
+  paid messages in turn and all at once; fails if any of its transactions reverted (Monad's
+  reserve balance, `docs/protocol/chains/monad-reserve-balance.md`) or a message was not delivered.
+- `regtest:monad-status`, `regtest:monad-start`, `regtest:monad-stop`: the solonet itself. It
+  needs `brew install lima colima lima-additional-guestagents` once. A cold start takes 5 to 8
+  minutes (an emulated x86_64 VM, then the chain) and it then uses about two cores and 8.6 GB,
+  so checks REUSE a running solonet and only `regtest:monad-stop` stops it. The VM is started
+  with `--activate=false`: your Docker context does not change. Not run in CI.
+
 The harness is `packages/bot/demo/regtest/regtest-stack.ts`: `startRegtestStack()` returns
 `relayUrl`, `chains['xec-regtest']` (`checkpoint`, `fund`, `mine`, `stop`) and `stop`. Blocks
 arrive every 3 seconds on their own and at once from `mine()`. `ecash-send.livecheck.ts` exports
 both send checks (`ecashWalletsPayEachOther(stack)`, `walletFundedSendCheck(stack)`) for scripts
-that start their own stack. How a regtest network proves its identity is in
+that start their own stack. `startRegtestStack({ chains: ['monad-regtest'] })` gives a stack with
+the Monad network (`monad-wallets.ts`: `openMonadWallet`, `deployMonadContracts`, `monadOf(stack)`
+for `fund` and the chain's provider). How a regtest network proves its identity is in
 `docs/protocol/chains/README.md`.
 
 #### Variables

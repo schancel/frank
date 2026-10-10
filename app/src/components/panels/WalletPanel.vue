@@ -215,14 +215,7 @@
 </template>
 
 <script setup lang="ts">
-import {
-  ref,
-  computed,
-  getCurrentInstance,
-  onMounted,
-  onUnmounted,
-  watch,
-} from 'vue'
+import { ref, computed, getCurrentInstance, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { activeChain } from '@frank/wallet/chain'
 import { accountSession, accountStatus } from '../../accounts/session'
@@ -232,6 +225,7 @@ import { openPage } from '../../utils/routes'
 import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
 import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
+import { useOracleFeed } from '../../composables/useOracleFeed'
 import { formatAvu } from '@frank/wallet/oracle'
 import { formatCompactCryptoBalance } from '../../utils/formatting'
 import {
@@ -385,12 +379,8 @@ function getWalletTokenStatusKey(wallet: WalletItemConfig): string {
 }
 
 const oracle = useSafeOracleStore()
-onMounted(() => {
-  oracle.startBackgroundWorker?.()
-})
-onUnmounted(() => {
-  oracle.stopBackgroundWorker?.()
-})
+// Prices are kept current only while this panel is the one showing in the drawer.
+useOracleFeed()
 
 function getWalletAvu(wallet: WalletItemConfig): string {
   if (wallet.isMain) {

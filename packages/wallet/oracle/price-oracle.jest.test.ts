@@ -19,7 +19,7 @@ import {
   HASHING_EFFICIENCY,
   US_MONTHLY_INDUSTRIAL_ELECTRICITY,
   ASSET_FEED_SYMBOLS,
-  fetchOracleSnapshot,
+  fetchPrices,
   PriceFeedsClient,
   type HashingEfficiency,
   type MiningStats,
@@ -410,15 +410,33 @@ describe('AVU_hash and the price oracle (@frank/wallet/oracle)', () => {
     })
   })
 
-  describe('fetchOracleSnapshot', () => {
+  describe('fetchPrices', () => {
     function clientReturning(prices: Record<string, number>) {
       return {
         getSnapshot: jest.fn(async (symbols: string[]) =>
           Object.fromEntries(
-            symbols.map(symbol => [
-              symbol,
-              { price: prices[symbol] ?? 0, sampleCount: symbol === 'XEC' ? 1 : 4 },
-            ]),
+            symbols.map(symbol => {
+              const price = prices[symbol] ?? 0
+              const providers = symbol === 'XEC' ? ['coingecko'] : ['kraken', 'coinbase', 'coingecko']
+              return [
+                symbol,
+                {
+                  price,
+                  sampleCount: price > 0 ? providers.length : 0,
+                  // Each provider's own answer: one a little under, one a little over.
+                  samples:
+                    price > 0
+                      ? providers.map((provider, index) => ({
+                          provider,
+                          asset: symbol,
+                          price: price * (1 + (index - 1) / 1000),
+                          timestamp: NOW,
+                          latencyMs: 1,
+                        }))
+                      : [],
+                },
+              ]
+            }),
           ),
         ),
       } as unknown as PriceFeedsClient
@@ -428,16 +446,37 @@ describe('AVU_hash and the price oracle (@frank/wallet/oracle)', () => {
       'bitcoin-cash': stats('bitcoin-cash', 3.125, 2e21, 20_000_000),
       'ecash': stats('ecash', 3_125_000, 2.5e19, 20_000_000_000_000),
     }
-    const fetchStats = (scale = 1) =>
-      jest.fn(async (chain: string) => ({
-        ...chainStats[chain],
-        hashesPerBlock: chainStats[chain].hashesPerBlock * scale,
-      }))
     const market = { SOL: 110, MON: 0.025, BTC: 82000, BCH: 300, XEC: 0.00001 }
+
+    /** The snapshot the app builds from fetched prices and chain statistics. */
+    async function snapshotOf(
+      prices: Record<string, number>,
+      mining: Record<string, MiningStats>,
+    ) {
+      const fetched = await fetchPrices({ client: clientReturning(prices) })
+      const snapshot = unavailableOracleSnapshot()
+      snapshot.timestamp = fetched.timestamp
+      for (const [asset, price] of Object.entries(fetched.prices) as Array<
+        [keyof typeof fetched.prices, NonNullable<(typeof fetched.prices)['solana']>]
+      >) {
+        snapshot.prices[asset] = price.usd
+        snapshot.fetchedAt[asset] = fetched.timestamp
+        snapshot.priceSources[asset] = price.sources
+      }
+      snapshot.mining = mining
+      return rateOracleSnapshot(snapshot)
+    }
+    const scaled = (scale: number) =>
+      Object.fromEntries(
+        Object.entries(chainStats).map(([chain, s]) => [
+          chain,
+          { ...s, hashesPerBlock: s.hashesPerBlock * scale },
+        ]),
+      )
 
     it('asks for a market price for every asset in the table, including MON, HYPE, BTC, BCH and DOGE', async () => {
       const client = clientReturning({})
-      await fetchOracleSnapshot({ client, fetchStats: fetchStats() })
+      await fetchPrices({ client })
       const asked = (client.getSnapshot as jest.Mock).mock.calls[0][0]
       expect(asked.sort()).toEqual(
         ['BCH', 'BTC', 'DOGE', 'ETH', 'HYPE', 'MON', 'SOL', 'XEC'].sort(),
@@ -445,20 +484,27 @@ describe('AVU_hash and the price oracle (@frank/wallet/oracle)', () => {
       expect(ASSET_FEED_SYMBOLS.tempo).toBeUndefined()
     })
 
+    it('returns each asset’s median with every provider’s own answer and how many it rests on', async () => {
+      const fetched = await fetchPrices({ client: clientReturning(market) })
+      expect(Object.keys(fetched.prices).sort()).toEqual(
+        ['bitcoin', 'bitcoincash', 'ecash', 'monad', 'solana'].sort(),
+      )
+      expect(fetched.prices.solana).toEqual({
+        usd: 110,
+        sources: 3,
+        providers: {
+          kraken: 110 * 0.999,
+          coinbase: 110,
+          coingecko: 110 * 1.001,
+        },
+      })
+      expect(fetched.prices.ecash!.sources).toBe(1)
+      expect(Object.keys(fetched.prices.ecash!.providers)).toEqual(['coingecko'])
+      expect(fetched.timestamp).toBeGreaterThan(0)
+    })
+
     it('states each fetched price in AVU by multiplying it by AVU_hash', async () => {
-      const snapshot = await fetchOracleSnapshot({
-        client: clientReturning(market),
-        fetchStats: fetchStats(),
-      })
-      expect(snapshot.prices.solana).toBe(110)
-      // How many providers each median price rests on is carried with it.
-      expect(snapshot.priceSources).toEqual({
-        solana: 4,
-        monad: 4,
-        bitcoin: 4,
-        bitcoincash: 4,
-        ecash: 1,
-      })
+      const snapshot = await snapshotOf(market, chainStats)
       const kwhPerDollar = snapshot.avuHash!.kwhPerDollar
       expect(kwhPerDollar).toBeGreaterThan(0)
       expect(snapshot.avuHash!.entries.map(e => e.id)).toEqual([
@@ -468,7 +514,6 @@ describe('AVU_hash and the price oracle (@frank/wallet/oracle)', () => {
       ])
       expect(snapshot.rates.solana).toBeCloseTo(110 * kwhPerDollar, 6)
       expect(snapshot.rates.monad).toBeCloseTo(0.025 * kwhPerDollar, 9)
-      expect(snapshot.fetchedAt.solana).toBe(snapshot.timestamp)
       // Any two coins compare through the unit: the ratio of rates is the ratio of prices.
       expect(snapshot.rates.bitcoin! / snapshot.rates.solana!).toBeCloseTo(
         82000 / 110,
@@ -477,14 +522,8 @@ describe('AVU_hash and the price oracle (@frank/wallet/oracle)', () => {
     })
 
     it('has no constant in the path: doubling every chain’s hashes per block doubles every AVU value', async () => {
-      const before = await fetchOracleSnapshot({
-        client: clientReturning(market),
-        fetchStats: fetchStats(),
-      })
-      const after = await fetchOracleSnapshot({
-        client: clientReturning(market),
-        fetchStats: fetchStats(2),
-      })
+      const before = await snapshotOf(market, chainStats)
+      const after = await snapshotOf(market, scaled(2))
       expect(Object.keys(after.rates).sort()).toEqual(
         Object.keys(before.rates).sort(),
       )
@@ -496,13 +535,9 @@ describe('AVU_hash and the price oracle (@frank/wallet/oracle)', () => {
       }
     })
 
-    it('computes over the basket coins that resolved when one chain’s statistics fail', async () => {
-      const snapshot = await fetchOracleSnapshot({
-        client: clientReturning(market),
-        fetchStats: jest.fn(async (chain: string) =>
-          chain === 'bitcoin-cash' ? null : chainStats[chain],
-        ),
-      })
+    it('computes over the basket coins that resolved when one chain’s statistics are missing', async () => {
+      const { 'bitcoin-cash': _missing, ...rest } = chainStats
+      const snapshot = await snapshotOf(market, rest)
       expect(snapshot.avuHash!.entries.map(e => e.id)).toEqual([
         'bitcoin',
         'ecash',
@@ -515,39 +550,15 @@ describe('AVU_hash and the price oracle (@frank/wallet/oracle)', () => {
       expect(snapshot.rates.solana).toBeGreaterThan(0)
     })
 
-    it('has prices but no AVU value for anything when no chain statistics arrive', async () => {
-      const snapshot = await fetchOracleSnapshot({
-        client: clientReturning(market),
-        fetchStats: jest.fn().mockRejectedValue(new Error('offline')),
-      })
+    it('has prices but no AVU value for anything without chain statistics', async () => {
+      const snapshot = await snapshotOf(market, {})
       expect(snapshot.prices.solana).toBe(110)
       expect(snapshot.avuHash).toBeUndefined()
       expect(snapshot.rates).toEqual({})
     })
 
-    it('does not refetch chain statistics it is handed', async () => {
-      const fetcher = fetchStats()
-      const snapshot = await fetchOracleSnapshot({
-        client: clientReturning(market),
-        fetchStats: fetcher,
-        knownMining: { bitcoin: chainStats.bitcoin },
-      })
-      expect(fetcher.mock.calls.map(call => call[0])).toEqual([
-        'bitcoin-cash',
-        'ecash',
-      ])
-      expect(Object.keys(snapshot.mining).sort()).toEqual([
-        'bitcoin',
-        'bitcoin-cash',
-        'ecash',
-      ])
-    })
-
     it('gives an asset whose price did not come back no rate at all', async () => {
-      const snapshot = await fetchOracleSnapshot({
-        client: clientReturning({ ...market, MON: 0 }),
-        fetchStats: fetchStats(),
-      })
+      const snapshot = await snapshotOf({ ...market, MON: 0 }, chainStats)
       expect(snapshot.rates.monad).toBeUndefined()
       expect(snapshot.prices.ethereum).toBeUndefined()
     })
@@ -570,29 +581,17 @@ describe('AVU_hash and the price oracle (@frank/wallet/oracle)', () => {
       const failing = {
         getSnapshot: jest.fn().mockRejectedValue(new Error('offline')),
       } as unknown as PriceFeedsClient
-      const snapshot = await fetchOracleSnapshot({
-        client: failing,
-        fetchStats: fetchStats(),
-      })
-      expect(snapshot).toMatchObject({
-        prices: {},
-        priceSources: {},
-        rates: {},
-        mining: {},
-      })
-      expect(snapshot.avuHash).toBeUndefined()
+      expect((await fetchPrices({ client: failing })).prices).toEqual({})
     })
 
     it('has no prices when every request fails over HTTP', async () => {
       const fetchFn = jest.fn().mockRejectedValue(new Error('network down'))
-      const snapshot = await fetchOracleSnapshot({
+      const fetched = await fetchPrices({
         fetchFn: fetchFn as unknown as typeof fetch,
         timeoutMs: 500,
       })
       expect(fetchFn).toHaveBeenCalled()
-      expect(snapshot.prices).toEqual({})
-      expect(snapshot.rates).toEqual({})
-      expect(snapshot.avuHash).toBeUndefined()
+      expect(fetched.prices).toEqual({})
     })
   })
 })

@@ -13,7 +13,9 @@ import * as oracleSdk from '@frank/wallet/oracle'
 jest.mock('@frank/wallet/oracle', () => ({
   ...jest.requireActual('@frank/wallet/oracle'),
   fetchPriceHistory: jest.fn(),
-  fetchOracleSnapshot: jest.fn(),
+  // No live prices or chain statistics arrive: each test states the ones it shows.
+  fetchPrices: jest.fn(async () => ({ timestamp: Date.now(), prices: {} })),
+  fetchMiningStats: jest.fn(async () => null),
 }))
 
 const fetchPriceHistory = oracleSdk.fetchPriceHistory as jest.Mock
@@ -288,17 +290,115 @@ describe('the drawn lines are data, never a formula', () => {
   it('falls back to the prices this app recorded itself, and shows only as many as exist', async () => {
     const wrapper = mountChart({ selectedWallet: 'ecash' })
     const oracle = useOracleStore()
-    oracle.observations = [
-      { timestamp: NOW - 5 * HOUR, prices: { ecash: 7.3e-6 } },
-      { timestamp: NOW - 4 * HOUR, prices: { solana: 110 } },
-      { timestamp: NOW - 3 * HOUR, prices: { ecash: 7.24e-6 } },
-      { timestamp: NOW - 400 * 24 * HOUR, prices: { ecash: 9e-6 } },
+    const recorded = (usd: number) => ({
+      usd,
+      sources: 1,
+      providers: { coingecko: usd },
+    })
+    oracle.priceObservations = [
+      { timestamp: NOW - 400 * 24 * HOUR, prices: { ecash: recorded(9e-6) } },
+      { timestamp: NOW - 9 * HOUR, prices: { ecash: recorded(7.3e-6) } },
+      { timestamp: NOW - 8 * HOUR, prices: { solana: recorded(110) } },
+      { timestamp: NOW - HOUR, prices: { ecash: recorded(7.24e-6) } },
     ]
     await openRange(wrapper, '7d')
     expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(2)
     expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
-      '2 prices this app fetched itself',
+      '2 prices this app fetched and recorded itself',
     )
+  })
+
+  it('joins the app’s own recorded prices with the provider’s candles into one line, and says which is which', async () => {
+    const hour = Math.floor(NOW / HOUR) * HOUR
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'kraken',
+      points: [3, 2, 1].map(h => ({
+        timestamp: hour - h * HOUR,
+        price: 100 + h,
+      })),
+    })
+    const recorded = (usd: number) => ({
+      usd,
+      sources: 3,
+      providers: { kraken: usd, coinbase: usd, coingecko: usd },
+    })
+    useOracleStore().priceObservations = [
+      // In the same hour as the candle of two hours ago: the app's own record stands for it.
+      {
+        timestamp: hour - 2 * HOUR + 60_000,
+        prices: { solana: recorded(120) },
+      },
+      { timestamp: NOW, prices: { solana: recorded(121) } },
+    ]
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    expect(columns).toHaveLength(4)
+    const values = []
+    for (const column of columns) {
+      await column.trigger('mouseenter')
+      values.push(wrapper.find('[data-test="inspection-cell-token"]').text())
+    }
+    expect(values.map(v => v.match(/[\d,.]+ AVU/)?.[0])).toEqual(
+      [103, 120, 101, 121].map(
+        usd =>
+          `${(usd * 12).toLocaleString('en-US', {
+            minimumFractionDigits: 1,
+            maximumFractionDigits: 1,
+          })} AVU`,
+      ),
+    )
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      '4 market prices from',
+    )
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      '2 fetched and recorded by this app, the rest published by kraken.',
+    )
+  })
+
+  it('continues the bundled Bitcoin kWh-per-dollar months with the app’s own recorded inputs', async () => {
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '1y')
+    const hashPoints = () =>
+      wrapper.findAll('[data-test="chart-point-hash"]').length
+    const bundledMonths = hashPoints()
+    expect(bundledMonths).toBeGreaterThan(0)
+
+    // One recorded bitcoin price with chain statistics recorded just before it.
+    const oracle = useOracleStore()
+    oracle.miningObservations = {
+      bitcoin: [
+        chainStats(
+          'bitcoin',
+          3.125,
+          15 * BTC_USD * 3.125 * HASHES_PER_KWH,
+          20_000_000,
+          NOW - 60_000,
+        ),
+      ],
+    }
+    oracle.priceObservations = [
+      {
+        timestamp: NOW,
+        prices: {
+          bitcoin: { usd: BTC_USD, sources: 1, providers: { kraken: BTC_USD } },
+        },
+      },
+    ]
+    await flushPromises()
+    expect(hashPoints()).toBe(bundledMonths + 1)
+    const columns = wrapper.findAll('[data-test="chart-hover-point"]')
+    await columns[columns.length - 1].trigger('mouseenter')
+    expect(wrapper.find('[data-test="inspection-cell-hash"]').text()).toContain(
+      '15.0 kWh/$',
+    )
+
+    // The shorter ranges have no bundled month: only what the app recorded.
+    await openRange(wrapper, '24h')
+    expect(hashPoints()).toBe(1)
   })
 
   it('contains no curve generator: the component computes no sine, cosine or random points', () => {

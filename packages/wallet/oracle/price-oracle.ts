@@ -8,8 +8,8 @@ import {
 } from "./energy-basket";
 import {
   PriceFeedsClient,
-  fetchMiningStats,
   type MiningStats,
+  type PriceProviderId,
 } from "@frank/price-feeds";
 
 export type SupportedAsset =
@@ -212,75 +212,74 @@ export function calculateSwapParity(
   return { parityPercent, status, sendAvu, receiveAvu };
 }
 
-export interface FetchOracleOptions {
+/** One asset's price as one fetch returned it. */
+export interface FetchedPrice {
+  /** The median across the providers that answered, in US dollars. */
+  usd: number;
+  /** How many providers' prices that median is of, after outliers are set aside. */
+  sources: number;
+  /** What each provider that answered returned, in US dollars. */
+  providers: Partial<Record<PriceProviderId, number>>;
+}
+
+/** The prices one fetch returned. An asset whose price did not come back is absent. */
+export interface FetchedPrices {
+  /** When the fetch finished (Unix ms). */
+  timestamp: number;
+  prices: Partial<Record<SupportedAsset, FetchedPrice>>;
+}
+
+export interface FetchPricesOptions {
   fetchFn?: typeof fetch;
   timeoutMs?: number;
   client?: PriceFeedsClient;
-  /** Chain statistics still fresh enough to reuse; these chains are not refetched. */
-  knownMining?: Record<string, MiningStats>;
-  /** Reads one chain's statistics. The seam tests stub. */
-  fetchStats?: (chain: string) => Promise<MiningStats | null>;
 }
 
 /**
  * Fetches the market price of every asset in ASSET_FEED_SYMBOLS across the configured
- * providers (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance) and the chain
- * statistics of the mined coins in the basket, computes AVU_hash from them
- * (energy-basket.ts) and states each price in AVU: price times AVU_hash, kWh per coin.
+ * providers (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance): each provider's own
+ * answer and their median.
  *
- * Nothing is substituted. An asset whose price did not come back is absent from the
- * snapshot. Without AVU_hash no asset has an AVU rate. If the price fetch fails the
- * snapshot is the unavailable one.
+ * Nothing is substituted: an asset no provider answered for is absent, and a fetch that
+ * fails altogether returns no prices. Chain statistics are fetched separately
+ * (fetchMiningStats); AVU_hash is computed from both by rateOracleSnapshot.
  */
-export async function fetchOracleSnapshot(
-  options: FetchOracleOptions = {}
-): Promise<OracleSnapshot> {
+export async function fetchPrices(
+  options: FetchPricesOptions = {}
+): Promise<FetchedPrices> {
   const fetchFn = options.fetchFn ?? globalThis.fetch;
-  const timeoutMs = options.timeoutMs ?? 4000;
-  if (typeof fetchFn !== "function" && !options.client) {
-    return unavailableOracleSnapshot();
-  }
+  const fetched: FetchedPrices = { timestamp: Date.now(), prices: {} };
+  if (typeof fetchFn !== "function" && !options.client) return fetched;
 
   try {
     const feedsClient =
       options.client ||
       new PriceFeedsClient({
         fetchFn,
-        timeoutMs,
+        timeoutMs: options.timeoutMs ?? 4000,
         defaultStrategy: "median",
       });
-    const fetchStats =
-      options.fetchStats ??
-      ((chain: string) => fetchMiningStats(chain, { fetchFn }));
-    const knownMining = options.knownMining ?? {};
-
     const assets = Object.entries(ASSET_FEED_SYMBOLS) as Array<
       [SupportedAsset, string]
     >;
-    const [sampled, stats] = await Promise.all([
-      feedsClient.getSnapshot(assets.map(([, symbol]) => symbol)),
-      Promise.all(
-        AVU_HASH_CHAINS.filter((chain) => !knownMining[chain]).map((chain) =>
-          fetchStats(chain).catch(() => null)
-        )
-      ),
-    ]);
-
-    const snapshot = unavailableOracleSnapshot();
+    const sampled = await feedsClient.getSnapshot(
+      assets.map(([, symbol]) => symbol)
+    );
+    fetched.timestamp = Date.now();
     for (const [asset, symbol] of assets) {
-      const price = sampled[symbol]?.price;
-      if (typeof price === "number" && Number.isFinite(price) && price > 0) {
-        snapshot.prices[asset] = price;
-        snapshot.fetchedAt[asset] = snapshot.timestamp;
-        snapshot.priceSources[asset] = sampled[symbol].sampleCount;
+      const result = sampled[symbol];
+      const usd = result?.price;
+      if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) {
+        continue;
       }
+      const providers: FetchedPrice["providers"] = {};
+      for (const sample of result.samples ?? []) {
+        providers[sample.provider] = sample.price;
+      }
+      fetched.prices[asset] = { usd, sources: result.sampleCount, providers };
     }
-    snapshot.mining = { ...knownMining };
-    for (const chainStats of stats) {
-      if (chainStats) snapshot.mining[chainStats.chain] = chainStats;
-    }
-    return rateOracleSnapshot(snapshot);
   } catch {
-    return unavailableOracleSnapshot();
+    // No prices: the caller keeps what it last fetched.
   }
+  return fetched;
 }

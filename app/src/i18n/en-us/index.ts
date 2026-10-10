@@ -543,8 +543,10 @@ export default {
       'Yearly published figures, {from} to {to}: AVU_spot, the kWh a dollar bought at the US industrial electricity price, and an ounce of gold priced in that energy. Years a source does not cover are left out.',
     chartNoteProvider:
       '{count} market prices published by {provider}, from {first}.',
+    chartNoteJoined:
+      '{count} market prices from {first}: {recorded} fetched and recorded by this app, the rest published by {provider}.',
     chartNoteObserved:
-      'No provider has history for this coin. {count} prices this app fetched itself, from {first}; that is all the history there is.',
+      '{count} prices this app fetched and recorded itself, from {first}; no provider’s history is drawn with them.',
     chartNoteNoHistory:
       'No price history could be fetched for {symbol}, so no line is drawn.',
     chartNoteNoSource:

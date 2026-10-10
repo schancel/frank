@@ -553,8 +553,10 @@ export default {
       'Chiffres annuels publiés, de {from} à {to} : AVU_spot, les kWh qu’un dollar achetait au prix industriel américain de l’électricité, et une once d’or exprimée dans cette énergie. Les années qu’une source ne couvre pas sont omises.',
     chartNoteProvider:
       '{count} prix de marché publiés par {provider}, depuis {first}.',
+    chartNoteJoined:
+      '{count} prix de marché depuis {first} : {recorded} récupérés et enregistrés par cette application, les autres publiés par {provider}.',
     chartNoteObserved:
-      'Aucun fournisseur n’a d’historique pour cette crypto. {count} prix récupérés par cette application, depuis {first} ; c’est tout l’historique existant.',
+      '{count} prix récupérés et enregistrés par cette application, depuis {first} ; aucun historique de fournisseur n’y est ajouté.',
     chartNoteNoHistory:
       'Aucun historique de prix n’a pu être récupéré pour {symbol} : aucune courbe n’est tracée.',
     chartNoteNoSource:

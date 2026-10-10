@@ -3,70 +3,92 @@ import {
   type AvuHash,
   type AvuRates,
   type HistoryRange,
-  type MiningStats,
   type OracleSnapshot,
   type PriceHistoryPoint,
   type PriceProviderId,
   type SupportedAsset,
-  type UsdPrices,
   ASSET_FEED_SYMBOLS,
   AVU_HASH_CHAINS,
   HISTORY_RANGES,
+  ORACLE_REFRESH_INTERVAL_MS,
   convertRawToAvu,
-  fetchOracleSnapshot,
+  fetchMiningStats,
   fetchPriceHistory,
+  fetchPrices,
   formatAvu,
-  rateOracleSnapshot,
+  latestHashingEfficiency,
+  miningDollarsPerKwh,
   unavailableOracleSnapshot,
 } from '@frank/wallet/oracle'
 import { translateMessage } from 'src/i18n'
 import { UNIT_RATE_ASSET_METRICS } from 'src/utils/avu-units'
 import { useSettingsStore } from './settings'
+import {
+  type OracleSeries,
+  joinPriceSeries,
+  restoreOracleSeries,
+  saveOracleSeries,
+  snapshotFromSeries,
+  thinOldObservations,
+} from './oracle-series'
 
-/** One hourly record of the prices the oracle itself fetched. */
-export interface PriceObservation {
-  timestamp: number
-  prices: UsdPrices
-}
+export type { PriceObservation, ProviderCandles } from './oracle-series'
 
-/** A price line for one asset over one range, and where every point came from. */
+/** A price line for one asset over one range, and where its points came from. */
 export interface AssetHistory {
-  /**
-   * The provider whose candles these are; 'observed' when no provider had history and
-   * the points are this app's own past fetches; null when there is nothing at all.
-   */
-  source: PriceProviderId | 'observed' | null
+  /** Oldest first, one per step of the range at most. */
   points: PriceHistoryPoint[]
-  fetchedAt: number
+  /** How many of the points are prices this app fetched and recorded itself. */
+  recorded: number
+  /** The provider whose candles the other points are; null when there are none. */
+  provider: PriceProviderId | null
 }
 
-export interface OracleState {
+export interface OracleState extends OracleSeries {
+  /**
+   * The current prices, chain statistics, AVU_hash and AVU rates. A view of the series
+   * (snapshotFromSeries), replaced whenever an observation is recorded or restored.
+   */
   snapshot: OracleSnapshot
-  observations: PriceObservation[]
-  histories: Record<string, AssetHistory>
-  lastFetched: number
-  isRefreshing: boolean
 }
 
-// v3: the snapshot now holds the mined chains' statistics AVU_hash is computed from.
-// Earlier records are never read.
-const STORAGE_KEY_SNAPSHOT = 'frank_oracle_snapshot_v3'
-const STORAGE_KEY_OBSERVATIONS = 'frank_oracle_observations_v2'
-const HOUR_MS = 60 * 60 * 1000
-/** A year of hourly records is the longest range the chart draws. */
-const OBSERVATION_RETENTION_MS = 366 * 24 * HOUR_MS
-/** Prices are refetched every five minutes; one this old has missed several refreshes. */
-export const STALE_AFTER_MS = 15 * 60 * 1000
-const HISTORY_TTL_MS: Record<HistoryRange, number> = {
-  '24h': 10 * 60 * 1000,
-  '7d': 30 * 60 * 1000,
-  '30d': 6 * HOUR_MS,
-  '1y': 6 * HOUR_MS,
+/**
+ * What a view on screen needs kept current: 'live' is the prices and the mined chains'
+ * statistics every AVU value is computed from; a history feed is one coin's candles for
+ * one chart range.
+ */
+export type OracleFeed = 'live' | `history:${SupportedAsset}:${HistoryRange}`
+
+export function historyFeed(
+  asset: SupportedAsset,
+  range: HistoryRange,
+): OracleFeed {
+  return `history:${asset}:${range}`
 }
-/** Difficulty, subsidy and supply move slowly: chain statistics are refetched this often. */
-const MINING_TTL_MS = 30 * 60 * 1000
-/** Chain statistics this old have missed several refetches. */
+
+const HOUR_MS = 60 * 60 * 1000
+/** A price this old has missed a refresh. */
+export const STALE_AFTER_MS = 2 * ORACLE_REFRESH_INTERVAL_MS
+/** Difficulty, subsidy and supply move slowly: chain statistics this old are stale. */
 export const MINING_STALE_AFTER_MS = 2 * HOUR_MS
+/**
+ * While something is on screen, how often the store looks for a series that has come due.
+ * Looking costs nothing; a series is still fetched once per ORACLE_REFRESH_INTERVAL_MS.
+ */
+const CHECK_EVERY_MS = 60 * 1000
+/**
+ * After a failed fetch the wait before the next try doubles: one interval, then two,
+ * four, eight, and sixteen from then on (10, 20, 40, 80, 160 minutes at the default).
+ * A successful fetch returns the series to one interval.
+ */
+const MAX_BACKOFF_INTERVALS = 16
+
+export function retryDelayMs(consecutiveFailures: number): number {
+  return (
+    ORACLE_REFRESH_INTERVAL_MS *
+    Math.min(2 ** Math.max(0, consecutiveFailures - 1), MAX_BACKOFF_INTERVALS)
+  )
+}
 
 /**
  * Assets whose wallet here holds test-network coins while the fetched price is the
@@ -74,80 +96,64 @@ export const MINING_STALE_AFTER_MS = 2 * HOUR_MS
  */
 const MAINNET_PRICE_ONLY_ON_TESTNET: readonly SupportedAsset[] = ['monad']
 
-function readJson(key: string): unknown {
-  try {
-    if (typeof localStorage === 'undefined') return null
-    const stored = localStorage.getItem(key)
-    return stored ? JSON.parse(stored) : null
-  } catch {
-    return null
-  }
-}
-
-function writeJson(key: string, value: unknown): void {
-  try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(key, JSON.stringify(value))
-    }
-  } catch {
-    // Storage full or disabled: the value stays in memory only.
-  }
-}
-
 function isPositive(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
-function isMiningStats(value: unknown): value is MiningStats {
-  const stats = value as MiningStats | null
-  return (
-    typeof stats?.chain === 'string' &&
-    isPositive(stats.subsidyCoinsPerBlock) &&
-    isPositive(stats.difficulty) &&
-    isPositive(stats.hashesPerBlock) &&
-    isPositive(stats.circulatingCoins) &&
-    isPositive(stats.fetchedAt)
-  )
+// ---- What is fetched, and when ---------------------------------------------------------------
+//
+// A series is one of: 'prices' (one request round to the price providers, every coin),
+// 'mining:<chain>' (one chain's statistics) or 'history:<asset>:<range>' (one coin's
+// candles). Each is fetched on its own schedule, shared by everything that shows it.
+
+function seriesOf(feed: OracleFeed): string[] {
+  if (feed === 'live') {
+    return ['prices', ...AVU_HASH_CHAINS.map(chain => `mining:${chain}`)]
+  }
+  // A coin with no price source has no history to ask anyone for.
+  const asset = feed.split(':')[1] as SupportedAsset
+  return ASSET_FEED_SYMBOLS[asset] ? [feed] : []
 }
 
-/**
- * Keeps only what a real fetch can have written: an asset needs a positive price and the
- * time it was fetched; a chain needs every statistic. AVU_hash and the AVU rates are
- * recomputed from those, never read back.
- */
-function loadStoredSnapshot(): OracleSnapshot {
-  const snapshot = unavailableOracleSnapshot()
-  const stored = readJson(
-    STORAGE_KEY_SNAPSHOT,
-  ) as Partial<OracleSnapshot> | null
-  if (!stored?.prices || !stored.fetchedAt) return snapshot
-  for (const asset of Object.keys(ASSET_FEED_SYMBOLS) as SupportedAsset[]) {
-    const price = stored.prices[asset]
-    const fetchedAt = stored.fetchedAt[asset]
-    if (isPositive(price) && isPositive(fetchedAt)) {
-      snapshot.prices[asset] = price
-      snapshot.fetchedAt[asset] = fetchedAt
-      const sources = stored.priceSources?.[asset]
-      if (isPositive(sources)) snapshot.priceSources[asset] = sources
-    }
-  }
-  for (const chain of AVU_HASH_CHAINS) {
-    const stats = stored.mining?.[chain]
-    if (isMiningStats(stats) && stats.chain === chain) {
-      snapshot.mining[chain] = stats
-    }
-  }
-  snapshot.timestamp = isPositive(stored.timestamp) ? stored.timestamp : 0
-  return rateOracleSnapshot(snapshot)
+interface Schedule {
+  /** How many mounted, visible views want each series. */
+  wanted: Map<string, number>
+  /** The request under way for a series, shared by everyone who asks meanwhile. */
+  inFlight: Map<string, Promise<void>>
+  /** Consecutive failures of a series and the earliest time of its next try. */
+  failed: Map<string, { count: number; retryAt: number }>
+  timer: ReturnType<typeof setInterval> | null
+  onVisibilityChange: (() => void) | null
 }
 
-function loadStoredObservations(): PriceObservation[] {
-  const stored = readJson(STORAGE_KEY_OBSERVATIONS)
-  if (!Array.isArray(stored)) return []
-  return stored.filter(
-    (o): o is PriceObservation =>
-      isPositive(o?.timestamp) && typeof o?.prices === 'object' && o.prices,
-  )
+/** Per store instance; none of it is state and none of it is saved. */
+const schedules = new WeakMap<object, Schedule>()
+
+function scheduleOf(store: object): Schedule {
+  let schedule = schedules.get(store)
+  if (!schedule) {
+    schedule = {
+      wanted: new Map(),
+      inFlight: new Map(),
+      failed: new Map(),
+      timer: null,
+      onVisibilityChange: null,
+    }
+    schedules.set(store, schedule)
+  }
+  return schedule
+}
+
+function tabHidden(): boolean {
+  return typeof document !== 'undefined' && document.hidden
+}
+
+function translate(key: string, params: Record<string, string>): string {
+  let message = translateMessage(key)
+  for (const [name, value] of Object.entries(params)) {
+    message = message.replaceAll(`{${name}}`, value)
+  }
+  return message
 }
 
 /**
@@ -176,27 +182,15 @@ export function formatAge(ageMs: number): string {
   return `${Math.round(hours / 24)} d`
 }
 
-function translate(key: string, params: Record<string, string>): string {
-  let message = translateMessage(key)
-  for (const [name, value] of Object.entries(params)) {
-    message = message.replaceAll(`{${name}}`, value)
-  }
-  return message
-}
-
-function historyKey(asset: SupportedAsset, range: HistoryRange): string {
-  return `${asset}:${range}`
-}
-
-let workerIntervalId: ReturnType<typeof setInterval> | null = null
-
 export const useOracleStore = defineStore('oracle', {
   state: (): OracleState => ({
-    snapshot: loadStoredSnapshot(),
-    observations: loadStoredObservations(),
-    histories: {},
-    lastFetched: 0,
-    isRefreshing: false,
+    snapshot: snapshotFromSeries({
+      priceObservations: [],
+      miningObservations: {},
+    }),
+    priceObservations: [],
+    miningObservations: {},
+    candles: {},
   }),
 
   getters: {
@@ -324,8 +318,10 @@ export const useOracleStore = defineStore('oracle', {
     },
 
     /**
-     * The price line to draw for an asset and range: the provider's candles when it has
-     * any, otherwise this app's own hourly records inside the range, otherwise nothing.
+     * The price line to draw for an asset and range: the prices this app recorded inside
+     * the range, with the provider's candles wherever the app has no record of its own
+     * (joinPriceSeries). Every point is a fetched price; where there is neither, there
+     * is no point.
      */
     historyFor(state) {
       return (
@@ -333,119 +329,264 @@ export const useOracleStore = defineStore('oracle', {
         range: HistoryRange,
         now = Date.now(),
       ): AssetHistory => {
-        const fetched = state.histories[historyKey(asset, range)]
-        if (fetched && fetched.points.length > 0) return fetched
-        const oldest = now - HISTORY_RANGES[range].spanSeconds * 1000
-        const points = state.observations.flatMap(o => {
+        const { spanSeconds, stepSeconds } = HISTORY_RANGES[range]
+        const oldest = now - spanSeconds * 1000
+        const recorded = state.priceObservations.flatMap(o => {
           const price = o.prices[asset]
-          return o.timestamp >= oldest && isPositive(price)
-            ? [{ timestamp: o.timestamp, price }]
+          return o.timestamp >= oldest && o.timestamp <= now && price
+            ? [{ timestamp: o.timestamp, price: price.usd }]
             : []
         })
+        const candles = state.candles[`${asset}:${range}`]
+        const joined = joinPriceSeries(
+          recorded,
+          (candles?.points ?? []).filter(p => p.timestamp >= oldest),
+          stepSeconds * 1000,
+        )
         return {
-          source: points.length > 0 ? 'observed' : null,
-          points,
-          fetchedAt: fetched?.fetchedAt ?? 0,
+          ...joined,
+          provider:
+            candles && joined.points.length > joined.recorded
+              ? candles.provider
+              : null,
         }
+      }
+    },
+
+    /**
+     * Bitcoin's kWh per dollar at each time this app recorded a bitcoin price, inside a
+     * range: that price with the chain statistics recorded at or before it, by the same
+     * formula and efficiency figure as the bundled months. It continues the bundled
+     * monthly line with the app's own record. A price with no chain statistics recorded
+     * shortly before it has no point. One point per step of the range at most.
+     */
+    bitcoinAvuHashHistory(state) {
+      return (
+        range: HistoryRange,
+        now = Date.now(),
+      ): Array<{ timestamp: number; kwhPerDollar: number }> => {
+        const efficiency = latestHashingEfficiency('sha256')
+        const chain = state.miningObservations.bitcoin ?? []
+        if (!efficiency || chain.length === 0) return []
+        const { spanSeconds, stepSeconds } = HISTORY_RANGES[range]
+        const oldest = now - spanSeconds * 1000
+        const points: PriceHistoryPoint[] = []
+        let next = 0
+        for (const observation of state.priceObservations) {
+          const priceUsd = observation.prices.bitcoin?.usd
+          while (
+            next < chain.length &&
+            chain[next].fetchedAt <= observation.timestamp
+          ) {
+            next++
+          }
+          const stats = chain[next - 1]
+          if (
+            !priceUsd ||
+            !stats ||
+            observation.timestamp < oldest ||
+            observation.timestamp - stats.fetchedAt > MINING_STALE_AFTER_MS
+          ) {
+            continue
+          }
+          const dollarsPerKwh = miningDollarsPerKwh({
+            priceUsd,
+            coinsPerBlock: stats.subsidyCoinsPerBlock,
+            hashesPerBlock: stats.hashesPerBlock,
+            hashesPerKwh: efficiency.hashesPerKwh,
+          })
+          if (dollarsPerKwh !== undefined) {
+            points.push({
+              timestamp: observation.timestamp,
+              price: 1 / dollarsPerKwh,
+            })
+          }
+        }
+        return joinPriceSeries(points, [], stepSeconds * 1000).points.map(
+          p => ({ timestamp: p.timestamp, kwhPerDollar: p.price }),
+        )
       }
     },
   },
 
   actions: {
     /**
-     * Fetches prices and, when they are due, the mined chains' statistics. An asset whose
-     * price came back is replaced; one that did not keeps its last fetched price and that
-     * price's own time, so it shows as stale, never fresh. Chain statistics are kept the
-     * same way. AVU_hash and every AVU rate are then recomputed from what is held.
+     * Says a view on screen is showing a feed, and returns the function that says it no
+     * longer is. While at least one view holds a feed, its series are fetched when they
+     * are older than ORACLE_REFRESH_INTERVAL_MS and the tab is visible. With no holder
+     * nothing is fetched and no timer runs.
      */
-    async refresh(): Promise<void> {
-      if (this.isRefreshing) return
-      this.isRefreshing = true
-
-      try {
-        const now = Date.now()
-        const knownMining = Object.fromEntries(
-          Object.entries(this.snapshot.mining).filter(
-            ([, stats]) => now - stats.fetchedAt < MINING_TTL_MS,
-          ),
+    acquire(feed: OracleFeed): () => void {
+      const schedule = scheduleOf(this)
+      const series = seriesOf(feed)
+      for (const name of series) {
+        schedule.wanted.set(name, (schedule.wanted.get(name) ?? 0) + 1)
+      }
+      if (schedule.wanted.size > 0 && schedule.timer === null) {
+        schedule.timer = setInterval(
+          () => void this.refreshDue(),
+          CHECK_EVERY_MS,
         )
-        const fetched = await fetchOracleSnapshot({ knownMining })
-        if (Object.keys(fetched.prices).length === 0) return
-
-        this.snapshot = rateOracleSnapshot({
-          ...fetched,
-          prices: { ...this.snapshot.prices, ...fetched.prices },
-          fetchedAt: { ...this.snapshot.fetchedAt, ...fetched.fetchedAt },
-          priceSources: {
-            ...this.snapshot.priceSources,
-            ...fetched.priceSources,
-          },
-          mining: { ...this.snapshot.mining, ...fetched.mining },
-        })
-        this.lastFetched = fetched.timestamp
-        writeJson(STORAGE_KEY_SNAPSHOT, {
-          timestamp: this.snapshot.timestamp,
-          prices: this.snapshot.prices,
-          fetchedAt: this.snapshot.fetchedAt,
-          priceSources: this.snapshot.priceSources,
-          mining: this.snapshot.mining,
-        })
-
-        // One record an hour, of the prices this fetch returned and nothing else.
-        const last = this.observations[this.observations.length - 1]
-        if (!last || fetched.timestamp - last.timestamp >= HOUR_MS) {
-          const oldest = fetched.timestamp - OBSERVATION_RETENTION_MS
-          this.observations = [
-            ...this.observations.filter(o => o.timestamp >= oldest),
-            { timestamp: fetched.timestamp, prices: { ...fetched.prices } },
-          ]
-          writeJson(STORAGE_KEY_OBSERVATIONS, this.observations)
+        if (typeof document !== 'undefined') {
+          schedule.onVisibilityChange = () => void this.refreshDue()
+          document.addEventListener(
+            'visibilitychange',
+            schedule.onVisibilityChange,
+          )
         }
+      }
+      void this.refreshDue()
+
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        for (const name of series) {
+          const holders = (schedule.wanted.get(name) ?? 1) - 1
+          if (holders > 0) schedule.wanted.set(name, holders)
+          else schedule.wanted.delete(name)
+        }
+        if (schedule.wanted.size > 0) return
+        if (schedule.timer !== null) clearInterval(schedule.timer)
+        schedule.timer = null
+        if (schedule.onVisibilityChange) {
+          document.removeEventListener(
+            'visibilitychange',
+            schedule.onVisibilityChange,
+          )
+          schedule.onVisibilityChange = null
+        }
+      }
+    },
+
+    /**
+     * Fetches every series a view on screen wants that has come due. A series fetched
+     * within the interval is served from the cache; one whose last fetch failed waits out
+     * its back-off (retryDelayMs). Nothing happens while the tab is hidden or nothing
+     * wants anything.
+     */
+    async refreshDue(): Promise<void> {
+      const schedule = scheduleOf(this)
+      if (schedule.wanted.size === 0 || tabHidden()) return
+      try {
+        // What is cached is shown, and decides what is due, before anything is fetched.
+        await this.restored
       } catch {
-        // Keep what was last fetched; its age shows it is no longer current.
-      } finally {
-        this.isRefreshing = false
+        // The cache could not be read: carry on with what is fetched from here.
       }
+      if (tabHidden()) return
+      const now = Date.now()
+      await Promise.all(
+        Array.from(schedule.wanted.keys())
+          .filter(name => now >= this.nextFetchAt(name))
+          .map(name => this.fetchSeries(name)),
+      )
     },
 
-    /** Loads an asset's price history from the providers, at most once per TTL. */
-    async loadHistory(
-      asset: SupportedAsset,
-      range: HistoryRange,
-    ): Promise<void> {
-      const symbol = ASSET_FEED_SYMBOLS[asset]
-      if (!symbol) return
-      const key = historyKey(asset, range)
-      const cached = this.histories[key]
-      if (cached && Date.now() - cached.fetchedAt < HISTORY_TTL_MS[range])
-        return
-      const history = await fetchPriceHistory(symbol, range)
-      // A failed reload keeps the candles already fetched; it never blanks or invents them.
-      if (history.points.length === 0 && cached) return
-      this.histories[key] = {
-        source: history.provider,
-        points: history.points,
-        fetchedAt: Date.now(),
+    /** The earliest time a series may be fetched again. */
+    nextFetchAt(name: string): number {
+      const [kind, ...rest] = name.split(':')
+      let fetchedAt = 0
+      if (kind === 'prices') {
+        const observations = this.priceObservations
+        fetchedAt = observations[observations.length - 1]?.timestamp ?? 0
+      } else if (kind === 'mining') {
+        const observations = this.miningObservations[rest[0]] ?? []
+        fetchedAt = observations[observations.length - 1]?.fetchedAt ?? 0
+      } else {
+        fetchedAt = this.candles[rest.join(':')]?.fetchedAt ?? 0
       }
+      return Math.max(
+        fetchedAt ? fetchedAt + ORACLE_REFRESH_INTERVAL_MS : 0,
+        scheduleOf(this).failed.get(name)?.retryAt ?? 0,
+      )
     },
 
-    startBackgroundWorker(intervalMs = 300000): void {
-      if (workerIntervalId !== null) return
-      // Trigger initial async refresh in background if visible
-      if (typeof document === 'undefined' || !document.hidden) {
-        void this.refresh()
-      }
-      workerIntervalId = setInterval(() => {
-        if (typeof document !== 'undefined' && document.hidden) return
-        void this.refresh()
-      }, intervalMs)
+    /** One request for a series, however many ask while it is under way. */
+    fetchSeries(name: string): Promise<void> {
+      const schedule = scheduleOf(this)
+      const underWay = schedule.inFlight.get(name)
+      if (underWay) return underWay
+      const request = this.fetchAndRecord(name)
+        .catch(() => false)
+        .then(recorded => {
+          schedule.inFlight.delete(name)
+          if (recorded) {
+            schedule.failed.delete(name)
+            return
+          }
+          // What was last recorded stays, with its own time; the next try waits.
+          const count = (schedule.failed.get(name)?.count ?? 0) + 1
+          schedule.failed.set(name, {
+            count,
+            retryAt: Date.now() + retryDelayMs(count),
+          })
+        })
+      schedule.inFlight.set(name, request)
+      return request
     },
 
-    stopBackgroundWorker(): void {
-      if (workerIntervalId !== null) {
-        clearInterval(workerIntervalId)
-        workerIntervalId = null
+    /**
+     * Fetches one series and appends what came back to the cache. False when nothing came
+     * back: nothing is recorded then, and nothing already recorded is touched.
+     */
+    async fetchAndRecord(name: string): Promise<boolean> {
+      const [kind, ...rest] = name.split(':')
+      if (kind === 'prices') {
+        const fetched = await fetchPrices()
+        const last = this.priceObservations[this.priceObservations.length - 1]
+        if (
+          Object.keys(fetched.prices).length === 0 ||
+          (last && fetched.timestamp <= last.timestamp)
+        ) {
+          return false
+        }
+        this.priceObservations = thinOldObservations(
+          [...this.priceObservations, fetched],
+          o => o.timestamp,
+          fetched.timestamp,
+        )
+      } else if (kind === 'mining') {
+        const stats = await fetchMiningStats(rest[0])
+        const recorded = this.miningObservations[rest[0]] ?? []
+        const last = recorded[recorded.length - 1]
+        if (!stats || (last && stats.fetchedAt <= last.fetchedAt)) return false
+        this.miningObservations = {
+          ...this.miningObservations,
+          [rest[0]]: thinOldObservations(
+            [...recorded, stats],
+            o => o.fetchedAt,
+            stats.fetchedAt,
+          ),
+        }
+      } else {
+        const [asset, range] = rest as [SupportedAsset, HistoryRange]
+        const symbol = ASSET_FEED_SYMBOLS[asset]
+        if (!symbol) return false
+        const history = await fetchPriceHistory(symbol, range)
+        if (!history.provider || history.points.length === 0) return false
+        this.candles = {
+          ...this.candles,
+          [`${asset}:${range}`]: {
+            provider: history.provider,
+            points: history.points,
+            fetchedAt: Date.now(),
+          },
+        }
+        return true
       }
+      this.snapshot = snapshotFromSeries(this)
+      return true
+    },
+  },
+
+  storage: {
+    save(storage, _mutation, state): Promise<void> {
+      return saveOracleSeries(storage, state)
+    },
+    async restore(storage): Promise<Partial<OracleState>> {
+      const series = await restoreOracleSeries(storage)
+      return { ...series, snapshot: snapshotFromSeries(series) }
     },
   },
 })
@@ -454,7 +595,7 @@ export type OracleStore = ReturnType<typeof useOracleStore>
 
 /**
  * The oracle store, or, where no Pinia is active, a stand-in that knows no prices: every
- * value it reports is "none", never a default.
+ * value it reports is "none", never a default, and it fetches nothing.
  */
 export function useSafeOracleStore(): OracleStore {
   try {
@@ -464,13 +605,12 @@ export function useSafeOracleStore(): OracleStore {
   } catch {
     // Pinia not active or uninitialized
   }
-  const none: AssetHistory = { source: null, points: [], fetchedAt: 0 }
+  const none: AssetHistory = { points: [], recorded: 0, provider: null }
   return {
     snapshot: unavailableOracleSnapshot(),
-    observations: [],
-    histories: {},
-    lastFetched: 0,
-    isRefreshing: false,
+    priceObservations: [],
+    miningObservations: {},
+    candles: {},
     rates: {},
     avuHash: undefined,
     avuHashStaleAgeMs: () => undefined,
@@ -481,9 +621,8 @@ export function useSafeOracleStore(): OracleStore {
     formatAvuAmount: () => '',
     formatUnitRate: () => '',
     historyFor: () => none,
-    refresh: async () => undefined,
-    loadHistory: async () => undefined,
-    startBackgroundWorker: () => undefined,
-    stopBackgroundWorker: () => undefined,
+    bitcoinAvuHashHistory: () => [],
+    acquire: () => () => undefined,
+    refreshDue: async () => undefined,
   } as unknown as OracleStore
 }

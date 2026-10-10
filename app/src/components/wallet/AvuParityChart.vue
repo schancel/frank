@@ -411,6 +411,7 @@ import {
 } from 'src/stores/oracle'
 import { UNIT_RATE_ASSET_METRICS } from 'src/utils/avu-units'
 import { useTranslate } from 'src/composables/useTranslate'
+import { useOracleFeed } from 'src/composables/useOracleFeed'
 import {
   ASSET_FEED_SYMBOLS,
   BITCOIN_ENTRY_ID,
@@ -831,9 +832,21 @@ const rangeSeries = computed<Series[]>(() => {
       value: kwhPerDollar(m.centsPerKwh),
     })),
   )
-  const monthlyHash = lastYear(
-    BTC_MONTHLY_AVU_HASH.map(m => ({ month: m.month, value: m.kwhPerDollar })),
-  )
+  // Bitcoin's kWh per dollar: the bundled months up to where this app's own record of
+  // it begins, then that record. One line, each point from one of the two.
+  const recordedHash = (
+    oracle.bitcoinAvuHashHistory?.(fetchedRange.value ?? '1y') ?? []
+  ).map(p => ({ at: p.timestamp, value: p.kwhPerDollar }))
+  const recordedFrom = recordedHash[0]?.at ?? Infinity
+  const monthlyHash = [
+    ...lastYear(
+      BTC_MONTHLY_AVU_HASH.map(m => ({
+        month: m.month,
+        value: m.kwhPerDollar,
+      })),
+    ).filter(p => p.at < recordedFrom),
+    ...recordedHash,
+  ]
   const hash = avuHash.value
 
   return [
@@ -1084,14 +1097,21 @@ const dataNote = computed(() => {
   }
   if (!avuHash.value) return t('walletPanel.chartNoteNoHash')
   const first = formatAt(history.points[0].timestamp)
-  const note =
-    history.source === 'observed'
-      ? t('walletPanel.chartNoteObserved', { count, first })
-      : t('walletPanel.chartNoteProvider', {
-          count,
-          first,
-          provider: history.source ?? '',
-        })
+  let note = t('walletPanel.chartNoteObserved', { count, first })
+  if (history.provider && history.recorded === 0) {
+    note = t('walletPanel.chartNoteProvider', {
+      count,
+      first,
+      provider: history.provider,
+    })
+  } else if (history.provider) {
+    note = t('walletPanel.chartNoteJoined', {
+      count,
+      first,
+      recorded: history.recorded,
+      provider: history.provider,
+    })
+  }
   const testnet = oracle.balanceHasMarketValue?.(asset.value)
     ? ''
     : ` ${t('walletPanel.chartNoteMainnetPrice')}`
@@ -1101,13 +1121,10 @@ const dataNote = computed(() => {
   return `${note} ${currentHash}${testnet}`
 })
 
-// Fetch what the open view needs. Nothing is drawn until real data arrives.
-watch(
-  [asset, fetchedRange],
-  ([currentAsset, range]) => {
-    if (range) void oracle.loadHistory?.(currentAsset, range)
-  },
-  { immediate: true },
+// While this chart is on screen the oracle keeps its prices current, and the candles of
+// the coin and range that are open. Nothing is drawn until real data is there.
+useOracleFeed(() =>
+  fetchedRange.value ? { asset: asset.value, range: fetchedRange.value } : null,
 )
 </script>
 

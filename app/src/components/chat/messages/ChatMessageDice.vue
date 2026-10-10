@@ -111,9 +111,15 @@
       </template>
 
       <template v-if="offer">
-        <div class="text-caption text-grey-8 q-mb-xs" style="font-size: 11px">
-          The bot has committed to its secret for the next roll:
-          <span class="text-mono">{{ offer.commitment.slice(0, 16) }}…</span>
+        <!-- The commitment itself is a long hash: it is on hover here, and in full under
+        "how this was checked" on the result. -->
+        <div
+          class="text-caption text-grey-8 q-mb-xs"
+          style="font-size: 11px"
+          :title="offer.commitment"
+          data-testid="dice-committed"
+        >
+          The bot has committed to its secret for the next roll.
         </div>
         <div class="text-caption text-weight-medium q-mb-xs">1. Target:</div>
         <div class="row q-gutter-xs q-mb-sm">
@@ -122,7 +128,7 @@
             :key="preset.target"
             dense
             no-caps
-            size="xs"
+            size="sm"
             :color="target === preset.target ? 'primary' : 'grey-8'"
             :outline="target !== preset.target"
             :label="`${preset.label} (${preset.multiplier}x)`"
@@ -137,10 +143,10 @@
             v-for="chip in wagerChips"
             :key="chip.label"
             dense
-            size="xs"
+            no-caps
+            size="sm"
             :outline="wagerInput !== chip.value"
-            color="amber-10"
-            text-color="white"
+            color="primary"
             :label="chip.label"
             :data-testid="`dice-chip-${chip.value || 'free'}`"
             @click="wagerInput = chip.value"

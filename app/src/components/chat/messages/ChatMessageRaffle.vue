@@ -2,13 +2,14 @@
   <div class="raffle-move q-pa-sm" style="min-width: 220px">
     <template v-if="item.action === 'announce'">
       <div class="text-caption text-weight-bold q-mb-xs">
-        Raffle open -- {{ item.entryCount ?? 0 }}/{{ item.maxEntries ?? '?' }}
+        Raffle open: {{ item.entryCount ?? 0 }}/{{ item.maxEntries ?? '?' }}
         entered
       </div>
       <div class="text-caption q-mb-xs">
         Entry: {{ displayPrice(item.entryPriceWei) }}
       </div>
       <q-btn
+        no-caps
         v-if="!confirming"
         :label="$t('raffle.enter')"
         dense
@@ -46,6 +47,7 @@
         </div>
         <div class="q-gutter-xs q-mt-xs">
           <q-btn
+            no-caps
             :label="$t('raffle.confirm')"
             dense
             color="primary"
@@ -55,6 +57,7 @@
             @click="confirmAndEnter"
           />
           <q-btn
+            no-caps
             :label="$t('raffle.cancel')"
             dense
             flat
@@ -69,9 +72,7 @@
       Entered the raffle
     </div>
     <div v-else-if="item.action === 'joined'" class="text-caption">
-      Joined the raffle -- {{ item.entryCount ?? 0 }}/{{
-        item.maxEntries ?? '?'
-      }}
+      Joined the raffle: {{ item.entryCount ?? 0 }}/{{ item.maxEntries ?? '?' }}
       entered. Waiting for the round to fill...
     </div>
     <template v-else-if="item.action === 'draw'">
@@ -194,7 +195,7 @@ export default defineComponent({
     outcomeText(): string {
       if (this.didIWin === true) return 'You won the raffle!'
       if (this.didIWin === false)
-        return 'Raffle drawn -- you did not win this time.'
+        return 'Raffle drawn: you did not win this time.'
       return 'Raffle drawn'
     },
     outcomeClass(): string {

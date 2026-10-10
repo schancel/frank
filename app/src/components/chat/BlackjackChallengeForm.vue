@@ -36,6 +36,7 @@
       {{ error }}
     </div>
     <q-btn
+      no-caps
       class="q-mt-sm"
       dense
       color="primary"

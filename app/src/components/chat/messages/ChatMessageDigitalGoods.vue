@@ -16,9 +16,13 @@
             style="object-fit: cover; border-radius: 4px"
           />
           <div class="col text-caption">
-            {{ entry.description }} -- {{ displayPrice(entry.priceWei) }}
+            {{ entry.description }}
+            <span class="text-weight-medium catalog-price">{{
+              displayPrice(entry.priceWei)
+            }}</span>
           </div>
           <q-btn
+            no-caps
             v-if="confirmingItemId !== entry.itemId"
             :label="$t('digitalGoods.buy')"
             dense
@@ -55,6 +59,7 @@
           </div>
           <div class="q-gutter-xs q-mt-xs">
             <q-btn
+              no-caps
               :label="
                 $t('digitalGoods.confirmBuy', {
                   price: displayPrice(entry.priceWei),
@@ -68,6 +73,7 @@
               @click="confirmAndBuy(entry)"
             />
             <q-btn
+              no-caps
               :label="$t('digitalGoods.cancel')"
               dense
               flat

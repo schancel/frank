@@ -67,6 +67,7 @@
           }}
         </div>
         <q-btn
+          no-caps
           dense
           color="primary"
           class="q-mt-sm"
@@ -87,6 +88,7 @@
         }}
       </div>
       <q-btn
+        no-caps
         v-if="state.phase === 'refunded'"
         dense
         color="primary"
@@ -106,6 +108,7 @@
       </div>
       <!-- This user's own message of the hand that the other side does not have. -->
       <q-btn
+        no-caps
         v-if="undelivered === 'failed'"
         dense
         color="primary"
@@ -134,6 +137,7 @@
           inputmode="decimal"
         />
         <q-btn
+          no-caps
           dense
           color="primary"
           class="q-mt-xs"
@@ -156,6 +160,7 @@
           inputmode="decimal"
         />
         <q-btn
+          no-caps
           dense
           color="primary"
           class="q-mt-xs"
@@ -174,6 +179,7 @@
       </div>
       <div v-if="moves.length" class="q-gutter-sm q-mt-sm">
         <q-btn
+          no-caps
           v-for="move in moves"
           :key="move"
           dense
@@ -186,6 +192,7 @@
       </div>
       <!-- Dealer messages that pay need the dealer's confirmation. -->
       <q-btn
+        no-caps
         v-if="payStep"
         dense
         color="primary"
@@ -196,6 +203,7 @@
         @click="onPay"
       />
       <q-btn
+        no-caps
         v-if="refundBet"
         dense
         flat
@@ -293,6 +301,7 @@
         }}
       </div>
       <q-btn
+        no-caps
         dense
         color="primary"
         class="q-mt-sm"
@@ -310,6 +319,7 @@
         }}
       </div>
       <q-btn
+        no-caps
         dense
         color="primary"
         class="q-mt-sm"

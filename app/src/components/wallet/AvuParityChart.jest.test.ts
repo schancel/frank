@@ -293,6 +293,27 @@ describe('the lines', () => {
     )
   })
 
+  it('have their scale labels anchored inside the picture, where a long figure cannot run off the side', async () => {
+    receive(twoEntryFeed())
+    const wrapper = mountChart()
+    await openRange(wrapper, '24h')
+    const svg = wrapper.get('[data-test="macro-chart-svg"]')
+    const width = Number(svg.attributes('viewBox')!.split(' ')[2])
+    const labels = svg.findAll(
+      '[data-test^="chart-max-label-"], [data-test^="chart-min-label-"]',
+    )
+    expect(labels.length).toBeGreaterThanOrEqual(2)
+    for (const label of labels) {
+      const x = Number(label.attributes('x'))
+      const left = label.attributes('data-test')!.endsWith('left')
+      // Text grows away from the edge it is anchored to, into the picture.
+      expect(label.attributes('text-anchor')).toBe(left ? 'start' : 'end')
+      expect(x).toBeGreaterThanOrEqual(0)
+      expect(x).toBeLessThanOrEqual(width)
+      expect(left ? x < width / 2 : x > width / 2).toBe(true)
+    }
+  })
+
   it('have no point where an input is missing: the first value is not extended backwards', async () => {
     const feed = twoEntryFeed()
     // Monad's price exists only from a minute ago.

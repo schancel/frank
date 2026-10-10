@@ -209,21 +209,25 @@
               stroke-width="1"
               :data-test="`chart-point-${line.id}`"
             />
+            <!-- The scale's ends, above and below the plot and anchored to the picture's own
+            edges: beside the plot a long figure ("33.1586 kAVU/oz") ran off the side. -->
             <text
-              :x="line.axis === 'left' ? 50 : 630"
-              y="35"
+              :x="line.axis === 'left' ? 4 : 676"
+              y="14"
               font-size="10"
-              :text-anchor="line.axis === 'left' ? 'end' : 'start'"
+              :text-anchor="line.axis === 'left' ? 'start' : 'end'"
               :fill="line.color"
+              :data-test="`chart-max-label-${line.axis}`"
             >
               {{ line.maxLabel }}
             </text>
             <text
-              :x="line.axis === 'left' ? 50 : 630"
-              y="230"
+              :x="line.axis === 'left' ? 4 : 676"
+              y="266"
               font-size="10"
-              :text-anchor="line.axis === 'left' ? 'end' : 'start'"
+              :text-anchor="line.axis === 'left' ? 'start' : 'end'"
               :fill="line.color"
+              :data-test="`chart-min-label-${line.axis}`"
             >
               {{ line.minLabel }}
             </text>

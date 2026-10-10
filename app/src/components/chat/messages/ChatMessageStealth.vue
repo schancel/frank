@@ -195,7 +195,9 @@ export default defineComponent({
   },
   computed: {
     cardBg(): string {
-      return this.isDark ? 'bg-grey-10' : 'bg-grey-1'
+      // The card sets its own text colour with its background: inside the sender's bubble it
+      // would otherwise inherit the bubble's (white on a near-white card).
+      return this.isDark ? 'bg-grey-10 text-white' : 'bg-grey-1 text-dark'
     },
     /** The hash of the transfer the item carries: a bare hash, or a signed transaction's. */
     primaryTx(): string | undefined {

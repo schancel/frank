@@ -461,6 +461,42 @@ describe('the player', () => {
     expect(wrapper.emitted('playAgain')).toHaveLength(1)
   })
 
+  it('shows a resolved hand as rows of card chips with totals and a result block', async () => {
+    const wrapper = await mountLast(hand(false, WIN, 400n, ['stand'], 'reveal'))
+    const rows = wrapper.findAll('[data-testid="blackjack-row"]')
+    expect(rows).toHaveLength(2)
+    // Dealer over player, each a sentence for screen readers plus its chips and total.
+    expect(rows[0].find('.q-sr-only').text()).toMatch(/^Dealer: .+ \(\d+\)$/)
+    expect(rows[1].find('.q-sr-only').text()).toMatch(/^Player: .+ \(\d+\)$/)
+    for (const row of rows) {
+      expect(
+        row.findAll('[data-testid="blackjack-card"]').length,
+      ).toBeGreaterThanOrEqual(2)
+      expect(row.find('[data-testid="blackjack-card-back"]').exists()).toBe(
+        false,
+      )
+    }
+    const total = wrapper.get('[data-testid="blackjack-player-total"]').text()
+    expect(rows[1].find('.q-sr-only').text()).toContain(`(${total})`)
+    const result = wrapper.get('.bj-result')
+    expect(result.classes()).toContain('bj-result--win')
+    expect(result.find('[data-testid="blackjack-outcome"]').exists()).toBe(true)
+    expect(result.find('[data-testid="blackjack-payout"]').exists()).toBe(true)
+  })
+
+  it('shows the dealer one card and one face-down card while the hand is open', async () => {
+    const wrapper = await mountLast(hand(false, WIN, 400n, []))
+    const dealer = wrapper.findAll('[data-testid="blackjack-row"]')[0]
+    expect(dealer.find('.q-sr-only').text()).toContain('Dealer shows:')
+    expect(dealer.findAll('[data-testid="blackjack-card"]')).toHaveLength(1)
+    expect(dealer.findAll('[data-testid="blackjack-card-back"]')).toHaveLength(
+      1,
+    )
+    expect(
+      wrapper.find('[data-testid="blackjack-dealer-total"]').exists(),
+    ).toBe(false)
+  })
+
   it('sees a short payment as such', async () => {
     const messages = hand(false, WIN, 400n, ['stand'], 'reveal')
     messages[messages.length - 1].stampValueWei = 10n
@@ -655,6 +691,8 @@ describe('the dealer', () => {
     expect(wrapper.find('[data-testid="blackjack-outcome"]').text()).toBe(
       'The player wins.',
     )
+    // The same result is a loss on the dealer's side.
+    expect(wrapper.get('.bj-result').classes()).toContain('bj-result--lose')
   })
 })
 

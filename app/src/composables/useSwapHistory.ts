@@ -39,7 +39,9 @@ export function useSwapHistory() {
       return {
         allSwaps: computed(() => swapStore.allSwaps),
         getSwapsForChain: (chainName: string, chainIdentifier?: string) =>
-          computed(() => swapStore.getSwapsForChain(chainName, chainIdentifier)),
+          computed(() =>
+            swapStore.getSwapsForChain(chainName, chainIdentifier),
+          ),
         saveLocal: (record: SwapRecord) => swapStore.saveLocal(record),
         logSwap: (params: Parameters<typeof swapStore.recordSwap>[0]) =>
           swapStore.recordSwap(params),

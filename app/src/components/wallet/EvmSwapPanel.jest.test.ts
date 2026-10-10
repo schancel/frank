@@ -12,11 +12,7 @@ import {
   cannedNode,
   tooLittleReceived,
 } from '@frank/wallet/swap/swap-reader.testutil'
-import {
-  findToken,
-  poolId,
-  routesFor,
-} from '@frank/wallet/swap/uniswap-v4'
+import { findToken, poolId, routesFor } from '@frank/wallet/swap/uniswap-v4'
 import vectors from '@frank/wallet/swap/monad-testnet-swap-vectors.json'
 import en from '../../i18n/en-us'
 import fr from '../../i18n/fr-fr'
@@ -138,7 +134,9 @@ function scene(
           txHash: `0xhash${wallet.sendContractCall.mock.calls.length}`,
         }
         await params.onSigned?.(handle)
-        events.push(`broadcast ${handle.txHash} after ${mockSaved.length} saved`)
+        events.push(
+          `broadcast ${handle.txHash} after ${mockSaved.length} saved`,
+        )
         return handle
       },
     ),
@@ -279,7 +277,9 @@ describe('the swap form', () => {
     await type(view, '0.02')
     await view.get('[data-testid="swap-pay-amount"]').setValue('0.05')
     expect(view.find('[data-testid="swap-details"]').exists()).toBe(false)
-    expect(view.find('[data-testid="swap-receive-amount"]').exists()).toBe(false)
+    expect(view.find('[data-testid="swap-receive-amount"]').exists()).toBe(
+      false,
+    )
     jest.advanceTimersByTime(400)
     await flushPromises()
     expect(text(view, 'swap-receive-amount')).toBe('0.049996')

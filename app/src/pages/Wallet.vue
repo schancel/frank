@@ -281,7 +281,14 @@
                               network: operation.chainIdentifier,
                             })
                           }}
-                          — {{ $t('nativeOperation.viewTransfer') }}
+                          —
+                          {{
+                            $t(
+                              operation.kind === 'contract'
+                                ? 'nativeOperation.contractCall'
+                                : 'nativeOperation.viewTransfer',
+                            )
+                          }}
                         </summary>
                         <p>{{ operation.operationId }}</p>
                         <p>

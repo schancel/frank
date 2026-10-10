@@ -13,7 +13,10 @@
       <div class="row items-center justify-between q-px-xs">
         <div class="row items-center q-gutter-x-xs">
           <q-icon name="swap_horiz" color="primary" size="18px" />
-          <span class="text-subtitle2 text-weight-bold" data-testid="swap-venue">
+          <span
+            class="text-subtitle2 text-weight-bold"
+            data-testid="swap-venue"
+          >
             {{ $t('swap.venue') }}
           </span>
         </div>
@@ -503,9 +506,9 @@ const IMPACT_WARN_PPM = 10_000
 const IMPACT_BAD_PPM = 50_000
 
 const FAILURE_KEYS: Record<SwapFailure, string> = {
-  slippage: 'swap.errorPriceMoved',
-  deadline: 'swap.errorExpired',
-  allowance: 'swap.errorAllowance',
+  'slippage': 'swap.errorPriceMoved',
+  'deadline': 'swap.errorExpired',
+  'allowance': 'swap.errorAllowance',
   'insufficient-funds': 'swap.errorInsufficientNative',
   'insufficient-native': 'swap.errorInsufficientNative',
   'account-busy': 'swap.errorAccountBusy',
@@ -559,7 +562,9 @@ export default defineComponent({
     const tokenOptions = computed(() =>
       tokens.value.map((token, value) => ({ label: token.symbol, value })),
     )
-    const maintainer = computed(() => session.value?.deployment.maintainer ?? '')
+    const maintainer = computed(
+      () => session.value?.deployment.maintainer ?? '',
+    )
     const locked = computed(
       () => phase.value === 'working' || phase.value === 'review',
     )
@@ -670,7 +675,11 @@ export default defineComponent({
       if (!current) return
       try {
         const [next, funds] = await Promise.all([
-          readTokenBalances(current.reader, current.deployment, current.account),
+          readTokenBalances(
+            current.reader,
+            current.deployment,
+            current.account,
+          ),
           current.wallet.getContractCallFunds(),
         ])
         if (!alive || session.value !== current) return
@@ -946,7 +955,10 @@ export default defineComponent({
       flowProblem.value = undefined
       try {
         if (!current.isCurrent()) {
-          flowProblem.value = { key: 'swap.errorAccountChanged', blocking: true }
+          flowProblem.value = {
+            key: 'swap.errorAccountChanged',
+            blocking: true,
+          }
           phase.value = 'form'
           return
         }
@@ -967,7 +979,9 @@ export default defineComponent({
           slippageBps: slippageBps.value,
           account: current.account,
         })
-        const id = `swap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+        const id = `swap-${Date.now()}-${Math.random()
+          .toString(36)
+          .slice(2, 8)}`
         const timestamp = Date.now()
         phase.value = 'working'
         progress.value = undefined

@@ -1,6 +1,9 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { readTokenBalances } from '@frank/wallet/swap/evm-swap'
-import { evmSwapDeployment, openEvmSwapSession } from 'src/swap/evm-swap-session'
+import {
+  evmSwapDeployment,
+  openEvmSwapSession,
+} from 'src/swap/evm-swap-session'
 import { exactTokenAmount, readableTokenAmount } from 'src/swap/amounts'
 
 export interface EvmTokenRow {

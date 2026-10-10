@@ -1,0 +1,231 @@
+/**
+ * A contract call through the composed EVM wallet handle: the wallet queue, the main-account
+ * coordination, the input admission and the on-disk native journal, as the app reaches it. Only
+ * the node is stubbed (the provider's JSON-RPC methods). The same call path against the real
+ * network, without this composition, is `swap/swap-real.livecheck.ts`.
+ */
+import {
+  Transaction,
+  keccak256,
+  type Block,
+  type TransactionReceipt,
+  type TransactionResponse,
+} from 'ethers'
+import { mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import vectors from '../../domain-roots/vectors/domain-roots-v1.json'
+import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
+import { createEvmChain } from './monad-chain'
+import type { EvmChainConfig } from './evm-chain-config'
+import type { EvmChainWalletHandle } from '../evm-wallet-handle'
+import type { MonadRootBundle } from './active-chain'
+import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
+
+const config: EvmChainConfig = {
+  networkId: 'monad-test',
+  chainId: 10143,
+  rpcChain: 'monad-testnet',
+  relayBaseUrl: 'http://127.0.0.1:1',
+  networkTag: 'MONT',
+  stampBurnAddress: '0x000000000000000000000000000000000000dEaD',
+  defaultStampValueWei: 1n,
+  defaultTopicVoteValueWei: 1n,
+  subAccountPoolSize: 2,
+  walletStorageLocation: false,
+}
+/** The main account the frozen domain-root vector 0 derives (see monad-domain-wallet tests). */
+const MAIN = '0x4669EFf913A3c595CeA5FA92a600201e8e9E75d8'
+const ROUTER = '0x1b7bFCd2870329B987191910D85c22C7287f3c22'
+const CALLDATA = '0x3593564c' + '00'.repeat(32)
+
+function roots(): MonadRootBundle {
+  const root = <P extends DomainPurpose>(purpose: P): DomainRoot<P> => ({
+    registry: 'frank-domain-roots-v1',
+    purpose,
+    bytes: Uint8Array.from(
+      Buffer.from(vectors.vectors[0].outputs[purpose], 'hex'),
+    ),
+  })
+  return {
+    evm: root('evm-wallet'),
+    authentication: root('identity-authentication'),
+    messaging: root('messaging-encryption'),
+  }
+}
+
+function stubNode(wallet: EvmChainWalletHandle, mainBalance: bigint) {
+  const balances = new Map([[MAIN.toLowerCase(), mainBalance]])
+  const nonces = new Map<string, number>()
+  const transactions = new Map<string, TransactionResponse>()
+  const receipts = new Map<string, TransactionReceipt>()
+  const blockHash = '0x' + 'ab'.repeat(32)
+  let lose = false
+  const p = wallet.provider
+  jest
+    .spyOn(p, 'getBlock')
+    .mockResolvedValue({ hash: blockHash, number: 1 } as Block)
+  jest
+    .spyOn(p, 'getBalance')
+    .mockImplementation(async a => balances.get(String(a).toLowerCase()) ?? 0n)
+  jest
+    .spyOn(p, 'getTransactionCount')
+    .mockImplementation(async a => nonces.get(String(a).toLowerCase()) ?? 0)
+  jest.spyOn(p, 'getFeeData').mockResolvedValue({
+    gasPrice: 1n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 1n,
+  } as never)
+  jest
+    .spyOn(p, 'getTransaction')
+    .mockImplementation(async hash => transactions.get(hash) ?? null)
+  jest
+    .spyOn(p, 'getTransactionReceipt')
+    .mockImplementation(async hash => receipts.get(hash) ?? null)
+  const broadcast = jest
+    .spyOn(p, 'broadcastTransaction')
+    .mockImplementation(async raw => {
+      if (lose) throw new Error('reply lost')
+      const tx = Transaction.from(raw)
+      const from = tx.from!.toLowerCase()
+      nonces.set(from, tx.nonce + 1)
+      balances.set(from, (balances.get(from) ?? 0n) - tx.value - tx.gasLimit)
+      transactions.set(
+        tx.hash!,
+        Object.assign(tx, {
+          blockHash,
+          blockNumber: 1,
+          index: 0,
+        }) as unknown as TransactionResponse,
+      )
+      receipts.set(tx.hash!, {
+        hash: tx.hash,
+        from: tx.from,
+        to: tx.to,
+        blockHash,
+        blockNumber: 1,
+        index: 0,
+        status: 1,
+        gasPrice: 1n,
+        gasUsed: tx.gasLimit,
+      } as TransactionReceipt)
+      return { hash: keccak256(raw) } as TransactionResponse
+    })
+  return {
+    broadcast,
+    loseReplies: (value: boolean) => {
+      lose = value
+    },
+    carryOver: (next: EvmChainWalletHandle) => {
+      const again = stubNode(next, balances.get(MAIN.toLowerCase())!)
+      return again
+    },
+  }
+}
+
+afterEach(() => jest.restoreAllMocks())
+
+test('the wallet handle sends a contract call from its main account and reports its funds', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const wallet = (await createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }).createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 1_000_000n)
+    expect((await wallet.getReceiveAddress()).raw).toBe(MAIN)
+    expect(await wallet.getContractCallFunds!()).toEqual({
+      mainAddress: MAIN.toLowerCase(),
+      mainBalance: 1_000_000n,
+      otherBalance: 0n,
+      mainBusy: false,
+    })
+    const order: string[] = []
+    const sent = await wallet.sendContractCall!({
+      to: { raw: ROUTER },
+      data: CALLDATA,
+      value: 5_000n,
+      gasLimit: 250_000n,
+      onSigned: async signed => {
+        order.push(`signed ${signed.operationId}`)
+        expect(node.broadcast).not.toHaveBeenCalled()
+        const row = wallet
+          .getNativeOperations!()
+          .find(r => r.operationId === signed.operationId)!
+        expect(row.kind).toBe('contract')
+        expect(row.members[0]!.signed!.transactionHash).toBe(signed.txHash)
+      },
+    })
+    expect(order).toEqual([`signed ${sent.operationId}`])
+    const raw = node.broadcast.mock.calls[0]![0] as string
+    const tx = Transaction.from(raw)
+    expect(tx.hash).toBe(sent.txHash)
+    expect(tx.from).toBe(MAIN)
+    expect(tx.to).toBe(ROUTER)
+    expect(tx.data).toBe(CALLDATA)
+    expect(tx.value).toBe(5_000n)
+    expect(tx.gasLimit).toBe(250_000n)
+    expect(tx.chainId).toBe(10143n)
+    // A contract call is not a native transfer awaiting resolution in the Send page's sense.
+    expect(wallet.getUnresolvedNativeTransaction!()).toBeUndefined()
+    expect(wallet.evmReader).toBe(wallet.provider)
+  } finally {
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a contract call whose broadcast reply was lost is resent byte for byte after the wallet reopens', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  const first = (await createEvmChain(cfg).createWallet(
+    roots(),
+  )) as EvmChainWalletHandle
+  let second: EvmChainWalletHandle | undefined
+  try {
+    const node = stubNode(first, 1_000_000n)
+    node.loseReplies(true)
+    const failure = await first.sendContractCall!({
+      to: { raw: ROUTER },
+      data: CALLDATA,
+      value: 5_000n,
+      gasLimit: 250_000n,
+    }).catch(error => error)
+    const operationId = failure.operation.operationId as string
+    const signed = first
+      .getNativeOperations!()
+      .find(r => r.operationId === operationId)!.members[0]!.signed!
+    expect(failure.transaction.txHash).toBe(signed.transactionHash)
+    // Unknown outcome: the account must not build another transaction over it.
+    expect((await first.getContractCallFunds!()).mainBusy).toBe(true)
+    await expect(
+      first.sendContractCall!({
+        to: { raw: ROUTER },
+        data: CALLDATA,
+        value: 5_000n,
+        gasLimit: 250_000n,
+      }),
+    ).rejects.toThrow(/Insufficient unreserved native funds/)
+    await first.close()
+
+    second = (await createEvmChain(cfg).createWallet(
+      roots(),
+    )) as EvmChainWalletHandle
+    const again = node.carryOver(second)
+    await second.resumeNativeOperation!(operationId)
+    expect(again.broadcast).toHaveBeenCalledTimes(1)
+    expect(again.broadcast).toHaveBeenCalledWith(signed.rawTransaction)
+    expect(
+      second.getNativeOperations!().filter(r => r.kind === 'contract'),
+    ).toHaveLength(1)
+  } finally {
+    await second?.close()
+    await first.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})

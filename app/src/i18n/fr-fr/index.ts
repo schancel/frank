@@ -1036,6 +1036,7 @@ export default {
     unavailable: 'Les informations du transfert natif sont indisponibles.',
     empty: 'Aucun transfert natif conservé.',
     viewTransfer: 'Voir le transfert',
+    contractCall: 'Appel de contrat (un échange ou son approbation)',
     back: 'Retour',
     stale:
       'Le compte ou la page a changé. Consultez le transfert initial depuis son portefeuille.',

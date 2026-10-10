@@ -1011,6 +1011,7 @@ export default {
     unavailable: 'Native transfer evidence is unavailable.',
     empty: 'No retained native transfers.',
     viewTransfer: 'View transfer',
+    contractCall: 'Contract call (a swap or its approval)',
     back: 'Back',
     stale:
       'The account or page changed. View the original transfer from its wallet.',
@@ -1374,8 +1375,7 @@ export default {
     errorInsufficientNative:
       'Not enough of the network’s coin to pay for this swap and its fee.',
     errorNoRoute: 'These two tokens cannot be swapped here.',
-    errorNoLiquidity:
-      'The pool cannot fill this amount. Try a smaller amount.',
+    errorNoLiquidity: 'The pool cannot fill this amount. Try a smaller amount.',
     errorPriceMoved:
       'The price moved beyond your slippage tolerance. Review the new amount.',
     errorExpired: 'The swap expired before it was sent. Review it again.',

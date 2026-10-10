@@ -393,6 +393,83 @@ describe('Orca devnet quote (recorded devnet responses)', () => {
     expect(message.staticAccountKeys[0].equals(OWNER)).toBe(true)
   })
 
+  /** The recorded chain, counting calls; reads no recording has are answered from what it holds. */
+  function counted(calls: RecordedCall[]) {
+    const made: string[] = []
+    const held = new Map<string, any>()
+    for (const call of calls) {
+      if (call.method === 'getMultipleAccountsInfo') {
+        call.args[0].forEach((address: string, i: number) =>
+          held.set(address, call.result[i]),
+        )
+      } else if (call.method === 'getTokenAccountsByOwner') {
+        for (const entry of call.result.value) {
+          held.set(entry.pubkey.$pubkey, entry.account)
+        }
+      }
+    }
+    const recorded = replay(calls)
+    const chain = new Proxy(recorded, {
+      get:
+        (target, method: keyof SolanaSwapConnection) =>
+        async (...args: any[]) => {
+          made.push(method)
+          try {
+            return await (target[method] as any)(...args)
+          } catch (error) {
+            if (method !== 'getMultipleAccountsInfo') throw error
+            return (args[0] as PublicKey[]).map(address =>
+              revive(held.get(address.toBase58()) ?? null),
+            )
+          }
+        },
+    })
+    return { chain, made }
+  }
+
+  it("simulates once for a quote, and lists the wallet's token accounts once for a run of quotes", async () => {
+    const first = counted(solToDevUsdc.calls)
+    const cycle = {}
+    const quote = await createSolanaDex(
+      'solana-devnet',
+      DEVNET,
+      walletOver(first.chain),
+    ).quote(request(solToDevUsdc), cycle)
+    const count = (made: string[], method: string) =>
+      made.filter(name => name === method).length
+    // The simulation that finds the expected output is the quote's check; the transaction
+    // with the minimum in it is simulated when it is about to be signed.
+    expect(count(first.made, 'simulateTransaction')).toBe(1)
+    expect(count(first.made, 'getTokenAccountsByOwner')).toBe(2)
+    expect(first.made).toHaveLength(10)
+
+    // The next quote of the same run: no listing, and the accounts found by the first are
+    // read again (their balances are not remembered) in the one read of the wallet's accounts.
+    const second = counted(solToDevUsdc.calls)
+    const again = await createSolanaDex(
+      'solana-devnet',
+      DEVNET,
+      walletOver(second.chain),
+    ).quote(request(solToDevUsdc), cycle)
+    expect(count(second.made, 'getTokenAccountsByOwner')).toBe(0)
+    expect(count(second.made, 'simulateTransaction')).toBe(1)
+    expect(second.made).toHaveLength(8)
+    expect(again.expectedOutputAmount).toBe(quote.expectedOutputAmount)
+    expect(again.check.walletAccounts.map(a => a.address.toBase58())).toEqual(
+      quote.check.walletAccounts.map(a => a.address.toBase58()),
+    )
+    expect(again.check.walletAccounts.map(a => a.state.amount)).toEqual(
+      quote.check.walletAccounts.map(a => a.state.amount),
+    )
+
+    // A run for another wallet starts over.
+    const other = counted(solToDevUsdc.calls)
+    await createSolanaDex('solana-devnet', DEVNET, walletOver(other.chain))
+      .quote({ ...request(solToDevUsdc), owner: STRANGER }, cycle)
+      .catch(() => undefined)
+    expect(other.made).toContain('getTokenAccountsByOwner')
+  })
+
   it('quotes selling a token for SOL, counting what arrives after the fee', async () => {
     const quote = await orca(devUsdcToSol.calls).quote(request(devUsdcToSol))
     expect(quote.expectedOutputAmount).toBe(
@@ -511,17 +588,13 @@ describe('the safety check on what a transaction would do (recorded simulations,
   const quoteWith = (
     swap: typeof devUsdcToSol,
     alter: (accounts: any[]) => void,
-    /** Leave the first simulation (which finds the expected output) as recorded. */
-    onlyFinal = false,
   ) => {
-    let simulations = 0
     return createSolanaDex(
       'solana-devnet',
       DEVNET,
       walletOver(
         replay(swap.calls, (method, result) => {
           if (method !== 'simulateTransaction') return result
-          if (++simulations === 1 && onlyFinal) return result
           const accounts = result.value.accounts.map((account: any) =>
             account ? { ...account, data: [...account.data] } : account,
           )
@@ -613,7 +686,7 @@ describe('the safety check on what a transaction would do (recorded simulations,
     })
   })
 
-  it('refuses a transaction that takes extra SOL, or returns less SOL than the minimum', async () => {
+  it('refuses a transaction that takes extra SOL', async () => {
     const takeSol = (lamports: bigint) => (accounts: any[]) => {
       accounts[0] = {
         ...accounts[0],
@@ -626,12 +699,8 @@ describe('the safety check on what a transaction would do (recorded simulations,
       code: 'unsafe-transaction',
       detail: expect.stringMatching(/more SOL than the swap needs/),
     })
-    await expect(
-      quoteWith(devUsdcToSol, takeSol(2_000_000n), true),
-    ).rejects.toMatchObject({
-      code: 'unsafe-transaction',
-      detail: expect.stringMatching(/less SOL than the agreed minimum/),
-    })
+    // "Less than the minimum" is decided when the transaction that carries the minimum is
+    // simulated, which is at signing (see the wallet's legacy send below).
   })
 
   it('refuses a transaction that changes who controls the wallet account', async () => {

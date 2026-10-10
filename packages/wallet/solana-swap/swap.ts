@@ -252,10 +252,15 @@ function validate(request: SolanaSwapRequest): void {
   }
 }
 
+/**
+ * The wallet's SOL and its two token accounts for the swap. `known` are token accounts of the
+ * wallet found earlier (see `SolanaQuoteCycle`): they are read again in the same call.
+ */
 async function readWalletState(
   connection: SolanaSwapConnection,
   request: SolanaSwapRequest,
-): Promise<WalletState> {
+  known: readonly PublicKey[] = [],
+): Promise<SolanaWalletSnapshot> {
   const mints = [request.inputMint, request.outputMint].map(
     mint => new PublicKey(mint),
   )
@@ -269,7 +274,7 @@ async function readWalletState(
     ),
   )
   const [accounts, lamports] = await Promise.all([
-    connection.getMultipleAccountsInfo(tokenAccounts),
+    connection.getMultipleAccountsInfo([...tokenAccounts, ...known]),
     connection.getBalance(request.owner),
   ])
   const state = (i: number): MintState => ({
@@ -281,7 +286,14 @@ async function readWalletState(
     tokenAccountLamports: BigInt(accounts[i]?.lamports ?? 0),
     account: decodeTokenAccount(accounts[i]),
   })
-  return { lamports: BigInt(lamports), input: state(0), output: state(1) }
+  return {
+    state: { lamports: BigInt(lamports), input: state(0), output: state(1) },
+    // One that no longer exists has been closed since: there is nothing left of it to watch.
+    walletAccounts: known.flatMap((address, i) => {
+      const account = decodeTokenAccount(accounts[tokenAccounts.length + i])
+      return account ? [{ address, state: account }] : []
+    }),
+  }
 }
 
 export function classifySwapFailure(
@@ -330,6 +342,18 @@ interface SimulatedOutcome {
 export interface WalletTokenAccount {
   readonly address: PublicKey
   readonly state: TokenAccountState
+}
+
+/**
+ * What one run of quotes keeps between them: a run is the quotes for one amount on screen,
+ * repeated while it stays there. The first quote lists the wallet's token accounts (two
+ * `getTokenAccountsByOwner` calls, the costliest reads of a quote); the later ones read those
+ * same accounts again, for their current balances, without listing. An account opened during
+ * the run is picked up at signing, where the wallet is always listed afresh. The caller makes
+ * an empty object for each run and passes it to every quote of that run.
+ */
+export interface SolanaQuoteCycle {
+  tokenAccounts?: { readonly owner: string; readonly addresses: PublicKey[] }
 }
 
 /** The wallet as read from the chain just before quoting. */
@@ -766,7 +790,13 @@ export type PreparedSolanaSwap = Omit<
   | 'accountRentLamports'
   | 'fetchedAt'
   | 'blocker'
->
+> & {
+  /**
+   * Set by an exchange whose quote already is a simulation of the swap (the expected output
+   * is what the simulation delivered): the quote is then not simulated a second time.
+   */
+  readonly simulated?: { readonly accountRentLamports: bigint }
+}
 
 export async function prepareOrcaSwap(
   deps: SolanaSwapDeps,
@@ -919,10 +949,15 @@ export async function prepareOrcaSwap(
     feeAccount,
     feeAccountIsNew,
   })
-  // The expected output IS what the pool's swap delivers in simulation.
-  const expected = (
-    await simulateAndCheckSwap(connection, probe, check(0n, probe))
-  ).outputAmount
+  // The expected output IS what the pool's swap delivers in simulation, and that simulation
+  // is the quote's safety check. The transaction returned differs from it only in carrying the
+  // minimum; it is simulated when it is about to be signed.
+  const simulated = await simulateAndCheckSwap(
+    connection,
+    probe,
+    check(0n, probe),
+  )
+  const expected = simulated.outputAmount
   const minOutputAmount = requireMinimum(
     minimumOutput(expected, request.slippageBps),
   )
@@ -966,6 +1001,7 @@ export async function prepareOrcaSwap(
     transaction,
     lastValidBlockHeight: BigInt(latest.lastValidBlockHeight),
     check: check(minOutputAmount, transaction),
+    simulated,
   }
 }
 
@@ -1289,28 +1325,41 @@ export async function quoteSolanaSwap<V extends SolanaSwapVenue>(
   deps: SolanaSwapDeps & { venue: V },
   request: SolanaSwapRequest,
   prepare: PrepareSolanaSwap<V>,
+  cycle: SolanaQuoteCycle = {},
 ): Promise<SolanaSwapQuote> {
   validate(request)
   const venue = validateSolanaSwapVenue(deps.venue)
-  const [state, walletAccounts] = await Promise.all([
-    readWalletState(deps.connection, request),
-    readWalletTokenAccounts(deps.connection, request.owner),
+  const owner = request.owner.toBase58()
+  const known =
+    cycle.tokenAccounts?.owner === owner
+      ? cycle.tokenAccounts.addresses
+      : undefined
+  const [{ state, walletAccounts: reread }, listed] = await Promise.all([
+    readWalletState(deps.connection, request, known),
+    known ? undefined : readWalletTokenAccounts(deps.connection, request.owner),
   ])
-  const prepared = await prepare(deps, venue, request, {
+  const walletAccounts = listed ?? reread
+  cycle.tokenAccounts = {
+    owner,
+    addresses: walletAccounts.map(account => account.address),
+  }
+  const { simulated, ...prepared } = await prepare(deps, venue, request, {
     state,
     walletAccounts,
   })
   // The one safety check every venue's transaction passes, whoever built it: simulate, and
-  // compare what it would do to the wallet with the swap that was quoted.
+  // compare what it would do to the wallet with the swap that was quoted. One simulation per
+  // quote: an exchange whose quote is itself that simulation has already run it.
   let blocker: SolanaSwapError | undefined
   let accountRentLamports = 0n
   try {
     accountRentLamports = (
-      await simulateAndCheckSwap(
+      simulated ??
+      (await simulateAndCheckSwap(
         deps.connection,
         prepared.transaction,
         prepared.check,
-      )
+      ))
     ).accountRentLamports
   } catch (error) {
     // The quote itself is real; this wallet just cannot execute it (usually: not funded).

@@ -66,8 +66,10 @@ jest.mock('src/composables/useBalance', () => ({
   useBalance: () => balance,
 }))
 
+const mockRefreshCordoned = jest.fn()
 jest.mock('src/composables/useChainBalance', () => ({
   useChainBalance: (chain: any) => ({
+    refreshCordoned: () => mockRefreshCordoned(),
     tokens: ref([]),
     tokenObservation: ref(undefined),
     presentation: jest.requireActual('vue').computed(() => {
@@ -285,6 +287,14 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.get('[data-testid="wallet-balance-error"]').text()).toBe(
       'walletPanel.balanceUnavailable',
     )
+    wrapper.unmount()
+  })
+
+  it('asks for a fresh cordoned amount once when the page opens', async () => {
+    mockRefreshCordoned.mockClear()
+    const wrapper = mountWallet()
+    await flush()
+    expect(mockRefreshCordoned).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 

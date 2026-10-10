@@ -533,6 +533,7 @@ import {
   computed,
   defineComponent,
   onBeforeUnmount,
+  onMounted,
   ref,
   shallowRef,
   watch,
@@ -627,7 +628,10 @@ export default defineComponent({
       presentation: balancePresentation,
       tokens: activeTokens,
       tokenObservation,
+      refreshCordoned,
     } = useChainBalance(selectedWallet)
+    // The cordoned amount is otherwise read at a slow cadence; opening this page shows it fresh.
+    onMounted(() => void refreshCordoned?.())
     const tokenStatusKey = computed(() => {
       const observation = tokenObservation.value
       if (!observation || observation.status === 'available') return ''

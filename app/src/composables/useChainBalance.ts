@@ -448,6 +448,9 @@ export function useChainBalance(chainRef: Ref<string> | string) {
     tokens,
     loaded,
     hasError,
+    /** Reads the cordoned (profile address) amount now instead of at its slow cadence. */
+    refreshCordoned: () =>
+      chain.value === 'monad' ? monad.refreshCordoned?.() : undefined,
     refresh: () => {
       if (chain.value === 'monad') return monad.refresh()
       return fetchChainBalance(chain.value, true)

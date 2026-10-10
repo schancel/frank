@@ -39,6 +39,11 @@ import { formatDisplayAmount, formatRawAmount } from 'src/utils/chain-amount'
 export const APP_STATE_EVENT = 'frank:app-state'
 
 export const BALANCE_POLL_MS = 15000
+/** The profile address is read at most this often by the polling loop. The loop ticks every 3 s
+ * while the spendable balance is zero, which is exactly when an account holds only cordoned
+ * funds; without this bound that account asked the RPC for the same balance every tick, forever.
+ * `refreshCordoned()` (the Wallet page opening) reads at once regardless. */
+export const CORDONED_POLL_MS = 30000
 export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 
 // null until the first successful fetch for the active wallet (so consumers can tell "not
@@ -95,6 +100,8 @@ export async function readCordonedBalance(wallet: unknown): Promise<bigint> {
 }
 
 let consumers = 0
+// When the profile address was last asked for (success or failure); undefined: ask on next fetch.
+let cordonedReadAtMs: number | undefined
 let requestId = 0
 let pending = false
 let failures = 0
@@ -156,6 +163,7 @@ async function fetchBalance(force: boolean) {
     walletKey = key
     balance.value = null
     cordoned.value = 0n
+    cordonedReadAtMs = undefined
     hasError.value = false
     failures = 0
     requestId++
@@ -174,9 +182,17 @@ async function fetchBalance(force: boolean) {
     if (!isCurrent()) return
     balance.value = next
     // Best effort: a failed read keeps the last cordoned amount and never fails the balance.
-    const held = await readCordonedBalance(wallet).catch(() => undefined)
-    if (!isCurrent()) return
-    if (held !== undefined) cordoned.value = held
+    // Throttled (`CORDONED_POLL_MS`); a failed read also waits out the interval.
+    const now = Date.now()
+    if (
+      cordonedReadAtMs === undefined ||
+      now - cordonedReadAtMs >= CORDONED_POLL_MS
+    ) {
+      cordonedReadAtMs = now
+      const held = await readCordonedBalance(wallet).catch(() => undefined)
+      if (!isCurrent()) return
+      if (held !== undefined) cordoned.value = held
+    }
     hasError.value = false
     failures = 0
   } catch (err) {
@@ -263,6 +279,7 @@ function acquire() {
         if (newRev !== oldRev || newAccStatus !== oldAccStatus) {
           balance.value = null
           cordoned.value = 0n
+          cordonedReadAtMs = undefined
           hasError.value = false
           requestId++
           pending = false
@@ -290,6 +307,7 @@ function release() {
   backgrounded = false
   balance.value = null
   cordoned.value = 0n
+  cordonedReadAtMs = undefined
   hasError.value = false
   walletKey = undefined
   // Invalidate anything in flight so a fresh first consumer never inherits a stale guard.
@@ -316,5 +334,10 @@ export function useBalance() {
     isEmpty,
     hasError,
     refresh: () => fetchBalance(true),
+    /** Refreshes now and reads the profile address too, whenever it was last read. */
+    refreshCordoned: () => {
+      cordonedReadAtMs = undefined
+      return fetchBalance(true)
+    },
   }
 }

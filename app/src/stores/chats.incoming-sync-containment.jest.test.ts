@@ -158,7 +158,11 @@ it('preserves the exclusive cancellation exit without interpreting abandoned ite
     ME,
     { isCancelled: () => true },
   )
-  expect(result).toEqual({ suppressedReceipts: [], cancelled: true })
+  expect(result).toEqual({
+    suppressedReceipts: [],
+    refusedReceipts: [],
+    cancelled: true,
+  })
   expect(database.saveMessage).not.toHaveBeenCalled()
   expect(mockRoute).not.toHaveBeenCalled()
 })

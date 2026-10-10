@@ -34,6 +34,7 @@ import {
   rehydateChat,
   rehydrateState,
   useChatStore,
+  collidedMessageId,
   makeConversationId,
   type Conversation,
   uuidv5,
@@ -1510,6 +1511,7 @@ describe('stores/chats.ts (ticket #42)', () => {
             receivedTime: wrapper.message.receivedTime,
           },
         ],
+        refusedReceipts: [],
         cancelled: false,
       })
       expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
@@ -1982,7 +1984,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       return { chats, first: create(firstId), second: create(secondId) }
     }
 
-    it('renames only the exact owner metadata and refuses empty or unknown subjects', async () => {
+    it('renames only the exact owner metadata, refuses unknown conversations, and clears a subject', async () => {
       const { chats, first, second } = independentPair()
       const defaultThread = chats.openDirectConversation(RECIPIENT_ADDRESS)
       await chats.receiveMessages([incoming(first.id, 'rename-receipt', 100)])
@@ -2006,10 +2008,12 @@ describe('stores/chats.ts (ticket #42)', () => {
             /conversation/i,
           )
         }
-        expect(() => chats.renameConversation(first.id, '  ')).toThrow(
-          /subject/i,
-        )
         expect(JSON.stringify(chats.$state)).toBe(unchanged)
+        // An empty subject clears it; the conversation and its sibling are otherwise as before.
+        chats.renameConversation(first.id, '  ')
+        expect(first.name).toBeUndefined()
+        expect(first.id).toBe(firstId)
+        expect(second.name).toBe('Equal subject')
       } finally {
         now.mockRestore()
       }
@@ -2132,41 +2136,198 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.messages['second-keep']).toBeDefined()
     })
 
-    it.each([false, true])(
-      'rejects conflicting logical owners within one batch before any persistence (existing conversations: %s)',
-      async existingConversations => {
-        const chats = existingConversations
-          ? independentPair().chats
-          : useChatStore()
-        const before = JSON.stringify(chats.$state)
-        const first = incoming(firstId, 'batch-first', 100)
-        const second = incoming(secondId, 'batch-second', 200)
-        first.message.logicalMessageId = 'shared-logical-id'
-        second.message.logicalMessageId = 'shared-logical-id'
-        await expect(chats.receiveMessages([first, second])).rejects.toThrow(
-          /Logical message.*another conversation/,
-        )
-        expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
-        expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
-        expect(JSON.stringify(chats.$state)).toBe(before)
+    describe('two different messages that name the same message ID', () => {
+      const quarantine = () =>
+        (
+          mockMessageStore as unknown as {
+            quarantineRelayReceipts: jest.Mock
+          }
+        ).quarantineRelayReceipts
+      beforeEach(() => quarantine().mockClear())
 
-        // Rejection must release receipt claims and leave a valid later batch usable.
-        second.message.logicalMessageId = 'second-logical-id'
+      it('stores both: the first keeps the ID, the second gets one derived from the ID and its own hash, the same on every receive and after a reload', async () => {
+        const { chats } = independentPair()
+        const first = incoming(firstId, 'collide-first', 100)
+        const second = incoming(secondId, 'collide-second', 200)
+        first.message.logicalMessageId = 'shared-id'
+        second.message.logicalMessageId = 'shared-id'
+        const derived = collidedMessageId('shared-id', 'collide-second')
+        expect(derived).toBe(collidedMessageId('shared-id', 'collide-second'))
+        expect(derived).not.toBe(
+          collidedMessageId('shared-id', 'collide-first'),
+        )
+
+        const result = await chats.receiveMessages([first, second])
+        expect(result.refusedReceipts).toEqual([])
+        expect(chats.conversations[firstId].messages).toEqual([
+          expect.objectContaining({
+            payloadDigest: 'collide-first',
+            logicalMessageId: 'shared-id',
+          }),
+        ])
+        expect(chats.conversations[secondId].messages).toEqual([
+          expect.objectContaining({
+            payloadDigest: 'collide-second',
+            logicalMessageId: derived,
+            senderAddress: RECIPIENT_ADDRESS,
+          }),
+        ])
+        // Whatever names the shared ID finds the first holder, untouched.
+        expect(chats.logicalMessages['shared-id']).toMatchObject({
+          conversationId: firstId,
+          activeRevisionDigest: 'collide-first',
+        })
+        expect(chats.logicalMessages['shared-id']?.revisions).toHaveLength(1)
+        expect(chats.logicalMessages[derived]?.conversationId).toBe(secondId)
+
+        // The mailbox read again: the same two rows, nothing new, the same IDs.
         await chats.receiveMessages([first, second])
-        expect(mockMessageStore.saveMessage).toHaveBeenCalledTimes(2)
-        const rows = mockMessageStore.saveMessage.mock.calls.map(([row]) => row)
-        mockMessageStore.getIterator.mockResolvedValueOnce(rows)
+        await chats.receiveMessages([second])
+        expect(chats.conversations[firstId].messages).toHaveLength(1)
+        expect(chats.conversations[secondId].messages).toHaveLength(1)
+        expect(chats.conversations[secondId].messages[0].logicalMessageId).toBe(
+          derived,
+        )
+        expect(Object.keys(chats.logicalMessages).sort()).toEqual(
+          ['shared-id', derived].sort(),
+        )
+        expect(quarantine()).not.toHaveBeenCalled()
+
+        const rows = new Map(
+          mockMessageStore.saveMessage.mock.calls.map(([row]) => [
+            row.index,
+            row,
+          ]),
+        )
+        mockMessageStore.getIterator.mockResolvedValueOnce([...rows.values()])
         const reopened = await rehydrateState(chats.$state)
         expect(reopened.conversations[firstId].messages).toHaveLength(1)
         expect(reopened.conversations[secondId].messages).toHaveLength(1)
+        expect(reopened.logicalMessages['shared-id']?.conversationId).toBe(
+          firstId,
+        )
+        expect(reopened.logicalMessages[derived]?.conversationId).toBe(secondId)
+      })
+
+      it('does not let another sender take over an ID in the same conversation', async () => {
+        const { chats } = independentPair()
+        const mine = incoming(firstId, 'holder', 100)
+        mine.message.logicalMessageId = 'shared-id'
+        const theirs = incoming(firstId, 'intruder', 200)
+        theirs.senderAddress = THIRD_ADDRESS
+        theirs.copartyAddress = THIRD_ADDRESS
+        theirs.message.senderAddress = THIRD_ADDRESS
+        theirs.message.logicalMessageId = 'shared-id'
+        await chats.receiveMessages([mine, theirs])
         expect(
-          reopened.logicalMessages['shared-logical-id']?.conversationId,
-        ).toBe(firstId)
-        expect(
-          reopened.logicalMessages['second-logical-id']?.conversationId,
-        ).toBe(secondId)
-      },
-    )
+          chats.conversations[firstId].messages.map(m => [
+            m.payloadDigest,
+            m.senderAddress,
+            m.logicalMessageId,
+          ]),
+        ).toEqual([
+          ['holder', RECIPIENT_ADDRESS, 'shared-id'],
+          [
+            'intruder',
+            THIRD_ADDRESS,
+            collidedMessageId('shared-id', 'intruder'),
+          ],
+        ])
+        expect(chats.logicalMessages['shared-id']).toMatchObject({
+          senderAddress: RECIPIENT_ADDRESS,
+          activeRevisionDigest: 'holder',
+        })
+        expect(chats.logicalMessages['shared-id']?.revisions).toHaveLength(1)
+      })
+
+      it('the same message received twice is one row under its own ID', async () => {
+        const { chats } = independentPair()
+        const once = incoming(firstId, 'same-twice', 100)
+        once.message.logicalMessageId = 'only-id'
+        await chats.receiveMessages([once, once])
+        await chats.receiveMessages([once])
+        expect(chats.conversations[firstId].messages).toEqual([
+          expect.objectContaining({
+            payloadDigest: 'same-twice',
+            logicalMessageId: 'only-id',
+          }),
+        ])
+        expect(Object.keys(chats.logicalMessages)).toEqual(['only-id'])
+      })
+
+      it('a batch with a collision and a row that cannot be filed delivers the rest in order, reports the bad row once, and does not look at it again', async () => {
+        const { chats } = independentPair()
+        const good = (index: string, time: number) =>
+          incoming(firstId, index, time)
+        const collides = incoming(secondId, 'mixed-collision', 200)
+        const holder = good('mixed-1', 100)
+        holder.message.logicalMessageId = 'mixed-shared'
+        collides.message.logicalMessageId = 'mixed-shared'
+        // Our own message, filed by the relay under a conversation with a different peer.
+        const misfiled = incoming(firstId, 'mixed-own-wrong-peer', 400)
+        misfiled.outbound = true
+        misfiled.senderAddress = SENDER_ADDRESS
+        misfiled.copartyAddress = THIRD_ADDRESS
+        misfiled.message.outbound = true
+        misfiled.message.senderAddress = SENDER_ADDRESS
+        const batch = [
+          holder,
+          collides,
+          good('mixed-3', 300),
+          misfiled,
+          good('mixed-5', 500),
+        ]
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {
+          /* the refused row is reported here */
+        })
+        try {
+          const result = await chats.receiveMessages(batch, SENDER_ADDRESS)
+          expect(result).toEqual({
+            suppressedReceipts: [],
+            refusedReceipts: [
+              { payloadDigest: 'mixed-own-wrong-peer', receivedTime: 400 },
+            ],
+            cancelled: false,
+          })
+          expect(
+            mockMessageStore.saveMessage.mock.calls.map(([row]) => row.index),
+          ).toEqual(['mixed-1', 'mixed-collision', 'mixed-3', 'mixed-5'])
+          expect(
+            chats.conversations[firstId].messages.map(m => m.payloadDigest),
+          ).toEqual(['mixed-1', 'mixed-3', 'mixed-5'])
+          expect(chats.conversations[secondId].messages).toEqual([
+            expect.objectContaining({
+              payloadDigest: 'mixed-collision',
+              logicalMessageId: collidedMessageId(
+                'mixed-shared',
+                'mixed-collision',
+              ),
+            }),
+          ])
+          expect(chats.messages['mixed-own-wrong-peer']).toBeUndefined()
+          expect(quarantine()).toHaveBeenCalledTimes(1)
+          expect(quarantine()).toHaveBeenCalledWith(SENDER_ADDRESS, [
+            { payloadDigest: 'mixed-own-wrong-peer', receivedTime: 400 },
+          ])
+          expect(warn).toHaveBeenCalledTimes(1)
+
+          // A later poll hands the same rows back: nothing is stored or reported again.
+          mockMessageStore.saveMessage.mockClear()
+          const again = await chats.receiveMessages(batch, SENDER_ADDRESS)
+          expect(again.refusedReceipts).toEqual([])
+          expect(
+            mockMessageStore.saveMessage.mock.calls.map(([row]) => row.index),
+          ).not.toContain('mixed-own-wrong-peer')
+          expect(chats.messages['mixed-own-wrong-peer']).toBeUndefined()
+          expect(quarantine()).toHaveBeenCalledTimes(1)
+          expect(warn).toHaveBeenCalledTimes(1)
+          expect(chats.conversations[firstId].messages).toHaveLength(3)
+          expect(chats.conversations[secondId].messages).toHaveLength(1)
+        } finally {
+          warn.mockRestore()
+        }
+      })
+    })
 
     it('accepts same-conversation logical revisions in a single batch and on replay', async () => {
       const chats = useChatStore()
@@ -2305,7 +2466,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect(conversation.totalUnreadMessages).toBe(0)
       })
 
-      it('still refuses our own message into a conversation with a different peer', async () => {
+      it('skips our own message filed under a conversation with a different peer, without failing the batch', async () => {
         const chats = useChatStore()
         const foreign = chats.createConversation({
           participants: [SENDER_ADDRESS, THIRD_ADDRESS],
@@ -2317,11 +2478,127 @@ describe('stores/chats.ts (ticket #42)', () => {
         own.senderAddress = SENDER_ADDRESS
         own.message.outbound = true
         own.message.senderAddress = SENDER_ADDRESS
-        await expect(chats.receiveMessages([own])).rejects.toThrow(
-          /conversation.*(peer|recipient|participant)/i,
-        )
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {
+          /* reported here */
+        })
+        try {
+          const result = await chats.receiveMessages([own])
+          expect(result.refusedReceipts).toEqual([
+            { payloadDigest: 'own-misfiled', receivedTime: 100 },
+          ])
+        } finally {
+          warn.mockRestore()
+        }
         expect(foreign.messages).toHaveLength(0)
         expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
+      })
+
+      it('a note to self that arrives as an inbound row is ours and not unread', async () => {
+        const chats = useChatStore()
+        const note = incoming(firstId, 'self-note', 100)
+        note.senderAddress = SENDER_ADDRESS
+        note.copartyAddress = SENDER_ADDRESS
+        note.message.senderAddress = SENDER_ADDRESS
+        note.message.destinationAddress = SENDER_ADDRESS
+        await chats.receiveMessages([note], SENDER_ADDRESS)
+        expect(chats.conversations[firstId].messages).toHaveLength(1)
+        expect(chats.conversations[firstId].totalUnreadMessages).toBe(0)
+        const rows = mockMessageStore.saveMessage.mock.calls.map(([row]) => row)
+        mockMessageStore.getIterator.mockResolvedValueOnce(rows)
+        const reopened = await rehydrateState(chats.$state)
+        expect(reopened.conversations[firstId].totalUnreadMessages).toBe(0)
+      })
+
+      describe("what a third person's message may change about the conversation: nothing", () => {
+        const emailFromThird = (index: string, time: number) => {
+          const wrapper = fromThird(index, time)
+          wrapper.message.items = [
+            {
+              type: 'email',
+              subject: 'Urgent: from your bank',
+              from: { name: 'Peer', address: 'peer@example.com' },
+              to: [],
+              body: 'x',
+            } as never,
+          ]
+          return wrapper
+        }
+        const expectUntouched = (conversation: {
+          kind?: string
+          name?: string
+          verifiedGateway?: boolean
+          address: string
+          deletedAt?: number
+        }) => {
+          expect(conversation.kind).toBe('direct')
+          expect(conversation.name).toBe('Plans')
+          expect(conversation.verifiedGateway).toBeUndefined()
+          expect(conversation.address).toBe(RECIPIENT_ADDRESS)
+        }
+        const namedWithPeer = () => {
+          const chats = useChatStore()
+          const conversation = chats.createConversation({
+            participants: [SENDER_ADDRESS, RECIPIENT_ADDRESS],
+            address: RECIPIENT_ADDRESS,
+            conversationId: firstId,
+            name: 'Plans',
+          })
+          return { chats, conversation }
+        }
+
+        it('an email item does not turn the chat into an email thread or rename it; the message is stored as theirs', async () => {
+          const { chats, conversation } = namedWithPeer()
+          await chats.receiveMessages([
+            incoming(firstId, 'peer-says', 100),
+            emailFromThird('third-email', 200),
+          ])
+          expectUntouched(conversation)
+          expect(
+            conversation.messages.map(m => [m.payloadDigest, m.senderAddress]),
+          ).toEqual([
+            ['peer-says', RECIPIENT_ADDRESS],
+            ['third-email', THIRD_ADDRESS],
+          ])
+          // The same when the relay hands the row back.
+          await chats.receiveMessages([emailFromThird('third-email', 200)])
+          expectUntouched(conversation)
+        })
+
+        it('the same after a reload', async () => {
+          const { chats } = namedWithPeer()
+          await chats.receiveMessages([
+            incoming(firstId, 'peer-says', 100),
+            emailFromThird('third-email', 200),
+          ])
+          const rows = mockMessageStore.saveMessage.mock.calls.map(
+            ([row]) => row,
+          )
+          mockMessageStore.getIterator.mockResolvedValueOnce(rows)
+          const reopened = await rehydrateState(chats.$state)
+          expectUntouched(reopened.conversations[firstId])
+          expect(reopened.conversations[firstId].messages).toHaveLength(2)
+        })
+
+        it("the peer's own email item still does", async () => {
+          const { chats, conversation } = namedWithPeer()
+          const fromPeer = emailFromThird('peer-email', 200)
+          fromPeer.senderAddress = RECIPIENT_ADDRESS
+          fromPeer.copartyAddress = RECIPIENT_ADDRESS
+          fromPeer.message.senderAddress = RECIPIENT_ADDRESS
+          await chats.receiveMessages([fromPeer])
+          expect(conversation.kind).toBe('email')
+          expect(conversation.name).toBe('Urgent: from your bank')
+        })
+
+        it('a deleted conversation is not brought back by a third person', async () => {
+          const { chats, conversation } = namedWithPeer()
+          await chats.deleteConversation(firstId, 150)
+          await chats.receiveMessages([fromThird('third-after-delete', 200)])
+          expect(conversation.deletedAt).toBe(150)
+          expect(conversation.messages).toHaveLength(0)
+          await chats.receiveMessages([incoming(firstId, 'peer-returns', 300)])
+          expect(conversation.deletedAt).toBeUndefined()
+        })
       })
 
       it('what a third person paid does not move the price suggested for the peer', async () => {

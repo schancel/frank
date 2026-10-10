@@ -943,6 +943,7 @@ import { openNodeDirectoryStore } from "@frank/directory-admission/node";
 import type { Context, DirectoryStore } from "@frank/directory-admission";
 import {
   freezeCanonicalRequest,
+  inspectCanonicalPair,
   type CanonicalFetch,
   type CanonicalStreamResponse,
 } from "./canonical-dm-transport";
@@ -993,6 +994,23 @@ function canonicalDelivery(): Uint8Array {
     { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
     payload
   );
+}
+/** The fixture delivery as an unpaid message: schema 2 with an empty payment list. */
+function canonicalUnpaidDelivery(): Uint8Array {
+  const parsed = validateFrame(canonicalDelivery(), defaultContext());
+  if (parsed.kind !== "parsed" || !(parsed.payload instanceof Map))
+    throw new Error("fixture");
+  const payload = new Map(parsed.payload);
+  payload.set(4n, []);
+  return encodeFrame(
+    { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+    payload
+  );
+}
+function canonicalPayloadBytes(frame: Uint8Array): Uint8Array {
+  const parsed = validateFrame(frame, defaultContext());
+  if (parsed.kind !== "parsed") throw new Error("fixture");
+  return parsed.payloadBytes;
 }
 /** A page of pair records, framed as the relay frames them. */
 function canonicalRecordsPage(
@@ -1297,6 +1315,39 @@ describe("canonical private mailbox", () => {
   test("requires direction on the combined mailbox while accepting the directionless inbox wire", async () => {
     await expect(fetchCanonicalMailboxPage(auth)).rejects.toThrow(/direction/);
     expect((await fetchCanonicalInboxPage(auth)).records).toHaveLength(1);
+  });
+  test("an unpaid delivery (schema 2, no payment) is an ordinary record on both readers", async () => {
+    const unpaid = {
+      delivery: canonicalUnpaidDelivery(),
+      context: fromHex(canonicalWire.context),
+      identity: "dd".repeat(32),
+      timestampMs: 1700000100005,
+    };
+    expect(
+      inspectCanonicalPair({ delivery: unpaid.delivery, context: unpaid.context })
+        .transaction_hashes
+    ).toEqual([]);
+    page = canonicalRecordsPage([{ ...unpaid, direction: "in" }]);
+    const mailbox = await fetchCanonicalMailboxPage(auth);
+    expect(mailbox.records.map((r) => r.delivery)).toEqual([unpaid.delivery]);
+    expect(mailbox.unreadable).toEqual([]);
+    page = canonicalRecordsPage([unpaid]);
+    const inbox = await fetchCanonicalInboxPage(auth);
+    expect(inbox.records.map((r) => r.delivery)).toEqual([unpaid.delivery]);
+    expect(inbox.unreadable).toEqual([]);
+    // Schema 1 still requires a payment: that record is not readable.
+    page = canonicalRecordsPage([
+      {
+        ...unpaid,
+        delivery: encodeFrame(
+          { typeId: 1, schemaVersion: 1, minReaderVersion: 1 },
+          { bytes: canonicalPayloadBytes(unpaid.delivery) }
+        ),
+      },
+    ]);
+    const old = await fetchCanonicalInboxPage(auth);
+    expect(old.records).toEqual([]);
+    expect(old.unreadable).toHaveLength(1);
   });
   describe("a record this client cannot decode", () => {
     const good = (direction?: string) => ({

@@ -201,11 +201,11 @@ describe('type-specific limits (R2-R4)', () => {
     expect(outcome(fr(5, production, 2, 2))).toBe('resource@8.1')
   })
 
-  /** A newer type-1 root projected through schema 1 with one padding field. */
+  /** A newer type-1 root (schema 3) projected through the reader's schema 2 with one padding field. */
   const paddedDelivery = (pad: number): Uint8Array => {
     const payload = deliveryPayload({ payments: 2 })
     payload.set(7, new Uint8Array(pad))
-    return fr(1, payload, 2, 1)
+    return fr(1, payload, 3, 1)
   }
 
   it('bounds a type-1 frame at 1 MiB (R2) using the root frame length', () => {

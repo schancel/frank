@@ -3260,6 +3260,55 @@ describe('two typed wallets on the open directory', () => {
     }
   })
 
+  it('delivers a message that carries no payment as a normal message with no stamp', async () => {
+    await online('alice', f.alice)
+    const bobDirectory = await online('bob', f.bob)
+    await f.chain.directMessages.send({
+      wallet: f.alice,
+      recipient: f.bob.identity.address,
+      items: text('free of charge'),
+    })
+    // The same sealed message as the relay stores an unpaid one: schema 2, empty payment list.
+    const paid = inboxRecord(0, 7)
+    const parsed = parseFrame(paid.delivery)
+    if (parsed.kind !== 'parsed' || !(parsed.payload instanceof Map))
+      throw new Error('fixture')
+    const payload = new Map(parsed.payload)
+    payload.set(4n, [])
+    const unpaid = {
+      ...paid,
+      delivery: encodeFrame(
+        { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+        payload,
+      ),
+      submissionIdentity: 'cd'.repeat(32),
+    }
+    const restore = productionPageReaders()
+    try {
+      installCanonicalDirectory(f.bob, {
+        ...bobDirectory,
+        fetch: relayMailbox([unpaid]),
+      })
+      const quarantined: number[] = []
+      const received = await f.chain.directMessages.fetchSince({
+        wallet: f.bob,
+        sinceMs: 0,
+        onQuarantinedTimestamp: time => void quarantined.push(time),
+      })
+      expect(quarantined).toEqual([])
+      expect(received).toHaveLength(1)
+      expect(received[0].items).toEqual(text('free of charge'))
+      expect(received[0].outbound).toBe(false)
+      expect(received[0].receivedTime).toBe(7)
+      // Nothing about it is a received payment.
+      expect(received[0].stampValueWei).toBe(0n)
+      expect(received[0].stampPayments).toEqual([])
+      expect(received[0].paymentTransfers).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
   describe('a mailbox record the client cannot decode', () => {
     /** Three paid messages from Alice in Bob's mailbox; the middle one is replaced. */
     async function mailboxWithOneUnreadable(

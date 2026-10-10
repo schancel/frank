@@ -430,8 +430,8 @@ export function inspectCanonicalPair(
     )
   )
     invalid('Payload digest mismatch')
+  // No payment is a valid delivery (type 1 at schema 2): an unpaid message.
   if (
-    delivery.payments.length < 1 ||
     delivery.payments.length > 64 ||
     delivery.payments.some((member, i) => member.childIndex !== i)
   )

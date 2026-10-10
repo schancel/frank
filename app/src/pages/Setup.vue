@@ -153,14 +153,24 @@
           </template>
           <template v-else-if="account.pending && mode !== 'legacy'">
             <p
-              v-if="account.pendingError"
+              v-if="account.pendingError === 'outdated-attempt'"
+              role="status"
+              data-test="pending-outdated"
+            >
+              {{ $t('accountRecovery.pending_outdated_cancel_and_redo') }}
+            </p>
+            <p
+              v-else-if="account.pendingError"
               role="status"
               data-test="pending-error"
             >
               {{ $t('accountRecovery.pending_retry') }}
             </p>
             <q-btn
-              v-if="account.pendingError"
+              v-if="
+                account.pendingError &&
+                account.pendingError !== 'outdated-attempt'
+              "
               outline
               color="primary"
               no-caps

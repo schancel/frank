@@ -10,6 +10,8 @@ export type CustodyErrorCode =
   | 'storage-failed'
   | 'closed'
   | 'capacity'
+  /** A staged attempt saved before account roots were kept: it can only be cancelled and redone. */
+  | 'outdated-attempt'
 
 export class CustodyError extends Error {
   constructor(readonly code: CustodyErrorCode) {

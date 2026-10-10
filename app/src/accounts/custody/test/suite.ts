@@ -532,6 +532,29 @@ async function regressions() {
     erase(input)
   })
 
+  await test('an attempt staged before account roots were kept cannot be activated, only cancelled', async () => {
+    const api = await open('outdated-attempt'),
+      input = fixture('outdated-attempt', undefined, 24)
+    const staged = await api.stage(input)
+    const older = new Uint8Array(2 + input.roots.length * 33)
+    older[0] = 1
+    older[1] = input.roots.length
+    input.roots.forEach((root, i) => {
+      older[2 + i * 33] = DOMAIN_PURPOSES.indexOf(root.purpose) + 1
+      older.set(root.bytes, 3 + i * 33)
+    })
+    await reseal('outdated-attempt', staged.pending!.account.receipt, older)
+    await rejects(() => api.reconcile(input.attemptId), 'outdated-attempt')
+    await rejects(
+      () => api.activate(input.attemptId, input.expectedActive),
+      'outdated-attempt',
+    )
+    const cancelled = await api.cancel(input.attemptId)
+    equal(cancelled.pending, null, 'the outdated attempt can be cancelled')
+    equal(cancelled.active, null, 'and nothing was activated')
+    erase(input)
+  })
+
   await test('an account stored before account roots were kept reports that it has none', async () => {
     const api = await open('backup-older'),
       input = fixture('backup-older', undefined, 22)

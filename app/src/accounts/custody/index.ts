@@ -126,16 +126,18 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       throw new CustodyError('conflict')
     return state.pending
   }
-  /** A stored account root must be the root of the account its record names. */
-  const accountRootIntact = async (
-    account: PublicAccount,
-  ): Promise<boolean> => {
+  /**
+   * A stored account root must be the root of the account its record names. A record with
+   * no account root at all was staged before roots were kept and cannot be activated.
+   */
+  const requireAccountRoot = async (account: PublicAccount): Promise<void> => {
     const stored = await vault.openAccountRoot(account.receipt)
     try {
-      return (
-        stored !== null &&
-        isAccountRootOf(stored, decodeRecoveryDescriptor(account.descriptor))
+      if (stored === null) throw new CustodyError('outdated-attempt')
+      if (
+        !isAccountRootOf(stored, decodeRecoveryDescriptor(account.descriptor))
       )
+        throw new CustodyError('conflict')
     } finally {
       stored?.fill(0)
     }
@@ -148,8 +150,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       wipe(roots)
     }
     // Staged material that cannot reproduce its account is never ready to activate.
-    if (!(await accountRootIntact(pending.account)))
-      throw new CustodyError('conflict')
+    await requireAccountRoot(pending.account)
   }
   const discard = async (pending: PendingChange): Promise<CustodySnapshot> => {
     await vault.discardIntent(writeIntent(pending.account))
@@ -213,8 +214,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           wipe(await vault.open(account.receipt))
           // A record that cannot reproduce this account must surface now, not at the
           // first open or the first backup.
-          if (!(await accountRootIntact(account)))
-            throw new CustodyError('conflict')
+          await requireAccountRoot(account)
           const latest = await read()
           if (!same(latest.pending, pending)) throw new CustodyError('conflict')
           return latest

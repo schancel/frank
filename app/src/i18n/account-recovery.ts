@@ -1,4 +1,6 @@
 export const en = {
+  pending_outdated_cancel_and_redo:
+    'This attempt was saved by an earlier version of Frank and cannot be activated. Cancel it, then create or restore the account again. The shares you wrote down still restore the account.',
   pending_retry:
     'Pending account cleanup could not finish. Your active account is unchanged. Retry or cancel this attempt before starting another.',
   balance_loading: 'Loading balance…',
@@ -154,6 +156,8 @@ export const en = {
 }
 
 export const fr = {
+  pending_outdated_cancel_and_redo:
+    'Cette tentative a été enregistrée par une version antérieure de Frank et ne peut pas être activée. Annulez-la, puis créez ou restaurez le compte à nouveau. Les parts que vous avez notées restaurent toujours le compte.',
   pending_retry:
     'Le nettoyage du compte en attente a échoué. Le compte actif est inchangé. Réessayez ou annulez cette tentative avant d’en commencer une autre.',
   balance_loading: 'Chargement du solde…',

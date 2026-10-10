@@ -396,3 +396,26 @@ test('offers no Activate button while the identity of the attempt is unknown', a
   expect(view.find('[data-test="pending-identity"]').exists()).toBe(false)
   expect(view.find('[data-test="activate-account"]').exists()).toBe(false)
 })
+
+test.each(['en', 'fr'] as const)(
+  'an attempt saved before account roots were kept says it must be cancelled and redone (%s)',
+  async locale => {
+    Object.assign(mockAccount, {
+      status: 'pending',
+      pending,
+      pendingReady: false,
+      pendingIdentityAddress: null,
+      pendingError: 'outdated-attempt',
+    })
+    const view = render(locale)
+    expect(view.get('[data-test="pending-outdated"]').text()).toBe(
+      (locale === 'fr' ? fr : en).accountRecovery
+        .pending_outdated_cancel_and_redo,
+    )
+    // Retrying cannot help, so it is not offered; cancelling is.
+    expect(view.find('[data-test="pending-error"]').exists()).toBe(false)
+    expect(view.find('[data-test="retry-pending"]').exists()).toBe(false)
+    expect(view.find('[data-test="activate-account"]').exists()).toBe(false)
+    expect(view.find('[data-test="cancel-pending"]').exists()).toBe(true)
+  },
+)

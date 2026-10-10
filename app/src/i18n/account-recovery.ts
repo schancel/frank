@@ -28,7 +28,7 @@ export const en = {
     'The attempt is incomplete or awaiting cleanup. Cancel it explicitly before starting another account.',
   cancel_pending_attempt: 'Cancel',
   create_a_frank_account_backup_or_restore:
-    'Create a Frank account backup or restore one using your saved public descriptor and Codex32 shares. No funds are required to activate locally.',
+    'Create a Frank account and its backup, or restore one from your saved Codex32 shares. No funds are required to activate locally.',
   an_existing_legacy_account_is_quarantined_its:
     'An existing legacy account is quarantined. Its saved data remains untouched and is not opened as the normal account.',
   changing_accounts_replaces_the_active_local_account:
@@ -92,6 +92,8 @@ export const en = {
   expected_account: 'Expected account:',
   saved_codex32_shares_one_per_line: 'Saved Codex32 shares, one per line',
   display_name: 'Display name',
+  display_name_required:
+    'Required. This is the name people you message will see; you can change it later in your profile.',
   verify_backups_and_stage_account: 'Verify backups and stage account',
   cancel_and_start_again: 'Cancel',
   browser_preview_encrypted_local_storage_does_not:
@@ -119,8 +121,6 @@ export const en = {
     'Write down each paper share. Any {threshold} of these {count} shares restore this account: the same identity, addresses and funds.',
   codex32_backup_sets_do_not_mix:
     'This is a new set. Shares from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
-  codex32_earlier_settings_shares_invalid:
-    'Recovery shares copied from this Settings page before this update do NOT restore this account. Destroy them. Shares shown when the account was created are not affected.',
   show_recovery_shares: 'Show recovery shares',
   show_recovery_shares_warning:
     'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
@@ -182,7 +182,7 @@ export const fr = {
     'La tentative est incomplète ou en attente de nettoyage. Annulez-la explicitement avant de créer un autre compte.',
   cancel_pending_attempt: 'Annuler',
   create_a_frank_account_backup_or_restore:
-    'Créez une sauvegarde de compte Frank ou restaurez-en une avec votre descripteur public enregistré et vos parts Codex32. Aucun fonds n’est nécessaire pour l’activation locale.',
+    'Créez un compte Frank et sa sauvegarde, ou restaurez-en un avec vos parts Codex32 enregistrées. Aucun fonds n’est nécessaire pour l’activation locale.',
   an_existing_legacy_account_is_quarantined_its:
     'Un ancien compte est en quarantaine. Ses données enregistrées restent intactes et ne sont pas ouvertes comme compte courant.',
   changing_accounts_replaces_the_active_local_account:
@@ -248,6 +248,8 @@ export const fr = {
   saved_codex32_shares_one_per_line:
     'Parts Codex32 enregistrées, une par ligne',
   display_name: 'Nom affiché',
+  display_name_required:
+    'Obligatoire. C’est le nom que verront les personnes à qui vous écrivez ; vous pourrez le modifier plus tard dans votre profil.',
   verify_backups_and_stage_account:
     'Vérifier les sauvegardes et préparer le compte',
   cancel_and_start_again: 'Annuler',
@@ -276,8 +278,6 @@ export const fr = {
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:
     'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles affichées à la création du compte, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
-  codex32_earlier_settings_shares_invalid:
-    'Les parts de récupération copiées depuis cette page des réglages avant cette mise à jour ne restaurent PAS ce compte. Détruisez-les. Les parts affichées à la création du compte ne sont pas concernées.',
   show_recovery_shares: 'Afficher les parts de récupération',
   show_recovery_shares_warning:
     'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',

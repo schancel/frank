@@ -9,6 +9,7 @@ import {
   getDefaultRelayBaseUrl,
 } from '@frank/wallet/chain'
 import en from '../i18n/en-us'
+import { useProfileStore } from '../stores/my-profile'
 
 jest.mock('../accounts/session', () => ({
   accountStatus: jest.requireActual('vue').reactive({
@@ -66,7 +67,9 @@ jest.mock('../accounts/ceremony', () => ({
 const mockPush = jest.fn(async () => undefined)
 jest.mock('vue-router', () => ({ useRouter: () => ({ push: mockPush }) }))
 
-const { accountStatus: mockAccount } = jest.requireMock('../accounts/session')
+const { accountStatus: mockAccount, accountSession } = jest.requireMock(
+  '../accounts/session',
+)
 
 const t = (key: string, params?: Record<string, unknown>) => {
   let str = key
@@ -137,6 +140,7 @@ function render() {
                 @input="$emit('update:modelValue', $event.target.value)"
               />
               <slot name="append" />
+              <span v-if="hint" class="q-input-hint">{{ hint }}</span>
             </div>
           `,
         },
@@ -308,6 +312,73 @@ describe('Setup page advanced relay configuration', () => {
     const relayInput = view.get('[data-test="custom-relay-input"] input')
     expect((relayInput.element as HTMLInputElement).value).toBe(discoveredRelay)
 
+    view.unmount()
+  })
+
+  test('the name typed at setup becomes the profile name on activation, and the field says it is required', async () => {
+    mockConfirm.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, {
+        status: 'fresh',
+        pending: {
+          status: 'staging',
+          account: {
+            displayName: 'Tester A',
+            descriptor: 'PUBLIC-DESC',
+            receipt: { operationId: 'op-1' },
+          },
+          expectedActive: { revision: 0, accountId: null },
+        },
+        pendingReady: true,
+        pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
+      })
+      return { isRestore: false, discoveredRelayUrl: undefined }
+    })
+    accountSession.activatePending.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, { status: 'ready', pending: null })
+    })
+
+    const view = render()
+    await view.get('[data-test="restore-account"]').trigger('click')
+    await flushPromises()
+    // Verify is disabled until a name is typed: the field says so itself.
+    expect(view.html()).toContain(en.accountRecovery.display_name_required)
+    await view.get('[data-test="confirm-shares"] input').setValue('s1\ns2')
+    await view.get('[data-test="display-name"] input').setValue('Tester A')
+    await view.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(useProfileStore().profile.name).toBeUndefined()
+    await view.get('[data-test="activate-account"]').trigger('click')
+    await flushPromises()
+    expect(useProfileStore().profile.name).toBe('Tester A')
+
+    view.unmount()
+  })
+
+  test('a profile that already has a name keeps it on activation', async () => {
+    useProfileStore().profile.name = 'Existing Name'
+    Object.assign(mockAccount, {
+      status: 'fresh',
+      pending: {
+        status: 'staging',
+        account: {
+          displayName: 'Typed At Setup',
+          descriptor: 'PUBLIC-DESC',
+          receipt: { operationId: 'op-2' },
+        },
+        expectedActive: { revision: 0, accountId: null },
+      },
+      pendingReady: true,
+      pendingIdentityAddress: '0x00000000000000000000000000000000000000Aa',
+    })
+    accountSession.activatePending.mockImplementationOnce(async () => {
+      Object.assign(mockAccount, { status: 'ready', pending: null })
+    })
+    const view = render()
+    await flushPromises()
+    await view.get('[data-test="activate-account"]').trigger('click')
+    await flushPromises()
+    expect(useProfileStore().profile.name).toBe('Existing Name')
     view.unmount()
   })
 

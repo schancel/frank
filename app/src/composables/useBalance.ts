@@ -57,14 +57,13 @@ const hasError = ref(false)
 // messages queue meanwhile.
 const chainUnreachable = ref(false)
 const loaded = computed(() => balance.value !== null)
-// Money at the profile address of an account whose deposit address is a different one (what a
-// faucet or anyone who only knows the profile pays to). The wallet's `getBalance` leaves it out,
-// although the wallet does pay message stamps from it when the main account is empty. Zero when
-// the two addresses are the same.
+// Nothing is added beside the wallet's figure any more: `getBalance` is itself the sum of every
+// coin a send can draw on (the main account, the profile address, received coins, funded
+// sending accounts), so adding the profile address here would count it twice. Always zero.
 const cordoned = ref<bigint>(0n)
-// THE wallet balance every screen shows (Wallet page, wallet list, chat sidebar, Receive): what
-// the wallet reports plus the profile address. One figure, computed here only, until the wallet
-// exposes a single total of its own. null while not loaded.
+// THE wallet balance every screen shows (Wallet page, wallet list, chat sidebar, Receive, and
+// "Available for this payment" on Send to Contact): what the wallet reports, which is what its
+// sends, bets and payments can draw on. null while not loaded.
 const total = computed(() =>
   balance.value === null ? null : balance.value + cordoned.value,
 )

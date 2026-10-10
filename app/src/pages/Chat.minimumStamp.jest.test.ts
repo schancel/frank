@@ -53,8 +53,7 @@ function fakeThis(over: Record<string, unknown> = {}) {
     recipientAddress: '0xPeer',
     conversation: undefined,
     chatStore: {
-      getStampOverrideWei: () => undefined,
-      getPeerStampSuggestion: () => 1_000n,
+      getStampWei: () => 1_000n,
     },
     getStampAmount: () => '1000',
     ...over,
@@ -79,26 +78,16 @@ describe('Chat.vue minimum stamp', () => {
     expect(self.minimumStampWei).toBe(42_000n)
   })
 
-  it('shows, and so sends, no less than the minimum: a suggestion or a stored choice below it is raised', () => {
-    const suggested = fakeThis({ minimumStampWei: 42_000n })
-    expect(page.computed.stampAmount.get.call(suggested)).toBe('42000')
-    expect(page.computed.suggestedStampAmount.call(suggested)).toBe('42000')
-    const overridden = fakeThis({
-      minimumStampWei: 42_000n,
-      chatStore: {
-        getStampOverrideWei: () => 5_000n,
-        getPeerStampSuggestion: () => 1_000n,
-      },
-    })
-    expect(page.computed.stampAmount.get.call(overridden)).toBe('42000')
+  it('shows, and so sends, no less than the minimum for a paid stamp: a stored choice below it is raised; zero stays zero, a free message', () => {
+    const chosen = (stampWei: bigint) =>
+      fakeThis({
+        minimumStampWei: 42_000n,
+        chatStore: { getStampWei: () => stampWei },
+      })
+    expect(page.computed.stampAmount.get.call(chosen(5_000n))).toBe('42000')
     // A choice above the minimum is left as it is.
-    const above = fakeThis({
-      minimumStampWei: 42_000n,
-      chatStore: {
-        getStampOverrideWei: () => 90_000n,
-        getPeerStampSuggestion: () => 1_000n,
-      },
-    })
-    expect(page.computed.stampAmount.get.call(above)).toBe('90000')
+    expect(page.computed.stampAmount.get.call(chosen(90_000n))).toBe('90000')
+    // No stamp at all is the user's choice of a free message: never raised.
+    expect(page.computed.stampAmount.get.call(chosen(0n))).toBe('0')
   })
 })

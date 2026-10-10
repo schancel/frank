@@ -441,26 +441,9 @@ export function destroyRecoveredAccount(
   account.accountRoot.fill(0)
 }
 
-/**
- * Interpolate a share set. Shares that are each well formed and agree on their header,
- * but do not interpolate to canonical bytes, are not an account backup (for example two
- * backups mixed under a colliding identifier); say that instead of "bad format".
- */
+/** Interpolate an exact threshold set; codec errors keep their own codes. */
 function recoverMaster(shares: readonly string[]): RecoveredCodex32 {
-  const recovered = recoverCodex32Exact(shares)
-  if (recovered.ok) return recovered.value
-  if (recovered.error.code === 'bad-format' && shares.every(wellFormedShare)) {
-    throw new AccountRecoveryError('not-account-backup')
-  }
-  throw new AccountRecoveryError(recovered.error.code)
-}
-
-function wellFormedShare(text: string): boolean {
-  const share = decodeCodex32(text)
-  if (!share.ok) return false
-  share.value.payload.fill(0)
-  share.value.seed?.fill(0)
-  return true
+  return unwrap(recoverCodex32Exact(shares))
 }
 
 /**

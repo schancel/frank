@@ -544,7 +544,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     const prebuiltBin = existsSync(releaseBin) ? releaseBin : (existsSync(debugBin) ? debugBin : undefined)
     const effectiveCashwebdBin = config.cashwebdBin ?? prebuiltBin
 
-    const relayDb = join(config.stateDir, 'relay', 'registry.rocksdb')
+    const relayDb = config.relayDbPath ?? join(config.stateDir, 'relay', 'registry.rocksdb')
     mkdirSync(dirname(relayDb), { recursive: true, mode: 0o700 })
     const relay = supervisor.start({
       name: 'relay',

@@ -17,11 +17,11 @@ pub(crate) mod forum;
 pub mod http;
 pub mod lotus_adapter;
 pub mod monad_adapter;
+pub(crate) mod monad_dm_payment;
 pub mod monad_dm_verify;
 pub mod monad_evm_tx;
 pub mod monad_http;
 pub mod monad_mailbox;
-pub mod monad_outbox;
 pub mod monad_pop_verify;
 pub mod monad_profile_verify;
 pub mod monad_stamp_relay;
@@ -42,6 +42,3 @@ pub mod proto {
     //! Protobuf structs for SignedPayload.
     include!(concat!(env!("OUT_DIR"), "/cashweb.registry.rs"));
 }
-
-#[cfg(test)]
-mod monad_dm_economics_tests;

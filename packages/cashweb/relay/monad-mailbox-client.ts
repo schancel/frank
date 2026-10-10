@@ -125,8 +125,9 @@ export interface MailboxChallenge {
   limit: number;
   max_bytes: number;
   network_tag: string;
-  recovery_payload_hash: string | null;
-  recovery_obligation_id: string | null;
+  /** Present only in challenges of the earlier protobuf readers below. */
+  recovery_payload_hash?: string | null;
+  recovery_obligation_id?: string | null;
 }
 
 /** DER ECDSA signer over a 32-byte digest, e.g. `digest => identity.signHash(Buffer.from(digest))`. */
@@ -1369,8 +1370,6 @@ async function canonicalSignedRequestWithin(
           "limit",
           "max_bytes",
           "network_tag",
-          "recovery_payload_hash",
-          "recovery_obligation_id",
         ]
       );
       const challenge = raw as unknown as MailboxChallenge;
@@ -1383,11 +1382,7 @@ async function canonicalSignedRequestWithin(
         challenge.expires_at_ms <= Date.now() ||
         challenge.expires_at_ms > Date.now() + 60000 ||
         challenge.network_tag !==
-          bytesToHex(new TextEncoder().encode(descriptor.tag)) ||
-        challenge.recovery_payload_hash !==
-          (request.recoveryPayloadHashHex ?? null) ||
-        challenge.recovery_obligation_id !==
-          (request.recoveryObligationIdHex ?? null)
+          bytesToHex(new TextEncoder().encode(descriptor.tag))
       )
         canonicalProtocol(
           "Malformed or foreign canonical challenge; refusing to sign"
@@ -1659,8 +1654,6 @@ export async function connectCanonicalMailboxStream(
     "limit",
     "max_bytes",
     "network_tag",
-    "recovery_payload_hash",
-    "recovery_obligation_id",
   ]);
   const challenge = raw as unknown as MailboxChallenge;
   const preimage = buildMailboxAuthPreimage(challenge, params.recipient);
@@ -1751,164 +1744,4 @@ export async function connectCanonicalMailboxStream(
   return {
     close: cleanup,
   };
-}
-/**
- * Complete recovery page.
- * @deprecated Recovery endpoint is retired; stamp recovery is unified through the mailbox.
- */
-export async function fetchCanonicalRecoveryPage(
-  params: CanonicalMailboxPageParams
-): Promise<CanonicalMailboxPage<CanonicalRecoveryRecord>> {
-  const binding = canonicalPageBinding(params, "recovery");
-  let response: MailboxHttpResponse;
-  try {
-    response = await canonicalSignedRequest(
-      params,
-      binding,
-      `recovery/${params.recipient}`
-    );
-  } catch (err) {
-    if (err instanceof MonadMailboxRecoveryRetiredError) {
-      return Object.freeze({ records: Object.freeze([]) });
-    }
-    throw err;
-  }
-  if (response.status === 410) {
-    return Object.freeze({ records: Object.freeze([]) });
-  }
-  const seen = new Set<string>();
-  const records = canonicalPageRecords(response, binding.limit!).map(
-    (outer) => {
-      const parts = canonicalRecordParts(outer, 4);
-      const ranges: CanonicalExactParts = {
-        delivery: parts[0].bytes,
-        context: parts[1].bytes,
-        transactions: decodeCanonicalTransactions(parts[2].bytes),
-      };
-      const identity = describeCanonicalParts(ranges);
-      const metadata = canonicalObject(parseCanonicalJSON(parts[3].bytes), [
-        "version",
-        "submission_identity",
-        "payload_hash",
-        "obligation_id",
-        "confirmed_children",
-        "lifecycle",
-      ]);
-      const indices = metadata.confirmed_children,
-        lifecycle = metadata.lifecycle;
-      const terminal =
-        typeof lifecycle === "string" &&
-        lifecycle.startsWith("terminal:") &&
-        CANONICAL_TERMINAL_REASONS.some(
-          (reason) => lifecycle === `terminal:${reason}`
-        );
-      if (
-        identity.network !==
-          canonicalNetworkDescriptor(params.expectedNetworkTag).network ||
-        identity.recipient !== params.recipient ||
-        metadata.version !== 1 ||
-        metadata.submission_identity !== identity.submission_identity ||
-        outer.headers["x-frank-submission-identity"] !==
-          identity.submission_identity ||
-        metadata.payload_hash !== identity.payload_hash ||
-        !canonicalHex32(metadata.obligation_id) ||
-        !Array.isArray(indices) ||
-        indices.some(
-          (index, i) =>
-            !Number.isSafeInteger(index) ||
-            index < 0 ||
-            index >= ranges.transactions.length ||
-            (i > 0 && index <= indices[i - 1])
-        ) ||
-        typeof lifecycle !== "string" ||
-        !(
-          ["pending", "fully_confirmed", "delivered"].includes(lifecycle) ||
-          terminal
-        ) ||
-        seen.has(metadata.obligation_id)
-      )
-        canonicalProtocol("Canonical recovery identity/metadata mismatch");
-      seen.add(metadata.obligation_id);
-      const exact: CanonicalExactParts = {
-        delivery: Uint8Array.from(ranges.delivery),
-        context: Uint8Array.from(ranges.context),
-        transactions: Object.freeze(
-          ranges.transactions.map((raw) => Uint8Array.from(raw))
-        ),
-      };
-      return Object.freeze({
-        delivery: exact.delivery,
-        context: exact.context,
-        parts: Object.freeze(exact),
-        identity,
-        submissionIdentity: identity.submission_identity,
-        timestampMs: Number(outer.headers["x-frank-mailbox-timestamp-ms"]),
-        obligationId: metadata.obligation_id,
-        confirmedChildren: Object.freeze([...indices]) as readonly number[],
-        lifecycle,
-      });
-    }
-  );
-  canonicalCheckAbort(params.signal);
-  return Object.freeze({
-    records: Object.freeze(records),
-    nextCursor: response.headers[MAILBOX_NEXT_CURSOR_HEADER],
-  });
-}
-/**
- * Caller must durably import recovery before ack. This never acknowledges a wallet workflow.
- * @deprecated Recovery endpoint is retired; stamp recovery is unified through the mailbox.
- */
-export async function ackCanonicalRecovery(
-  params: CanonicalMailboxAuthParams & {
-    payloadHashHex: string;
-    obligationIdHex: string;
-  }
-): Promise<void> {
-  if (
-    !canonicalHex32(params.payloadHashHex) ||
-    !canonicalHex32(params.obligationIdHex)
-  )
-    canonicalProtocol("Exact recovery T3/obligation required");
-  let response: MailboxHttpResponse;
-  try {
-    response = await canonicalSignedRequest(
-      params,
-      {
-        resource: "recovery_ack",
-        since: 0,
-        limit: 1,
-        maxBytes: 0,
-        recoveryPayloadHashHex: params.payloadHashHex,
-        recoveryObligationIdHex: params.obligationIdHex,
-      },
-      `recovery/${params.recipient}/${params.payloadHashHex}/${params.obligationIdHex}/ack`
-    );
-  } catch (err) {
-    if (err instanceof MonadMailboxRecoveryRetiredError) return;
-    throw err;
-  }
-  if (response.status === 410) return;
-  if (
-    response.status !== 200 ||
-    (response.headers["content-type"] ?? "")
-      .split(";")[0]
-      .trim()
-      .toLowerCase() !== "application/json"
-  )
-    canonicalProtocol("Exact durable canonical acknowledgement required");
-  const body = canonicalObject(parseCanonicalJSON(bodyBytes(response.data)), [
-    "version",
-    "acknowledged",
-    "payload_hash",
-    "obligation_id",
-  ]);
-  if (
-    body.version !== 1 ||
-    body.acknowledged !== true ||
-    body.payload_hash !== params.payloadHashHex ||
-    body.obligation_id !== params.obligationIdHex
-  )
-    canonicalProtocol("Canonical acknowledgement identity mismatch");
-  canonicalCheckAbort(params.signal);
 }

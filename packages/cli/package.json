@@ -14,8 +14,10 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@frank/bot-framework": "*",
     "@frank/cashweb": "*",
     "@frank/codec": "*",
+    "@frank/domain-roots": "*",
     "@frank/wallet": "*",
     "axios": "^0.24.0",
     "bip39": "^3.0.2",

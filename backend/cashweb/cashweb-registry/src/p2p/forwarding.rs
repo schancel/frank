@@ -282,7 +282,7 @@ impl<S: BundleClaimStore> ClusteredBundleForwarder<S> {
                 let bytes = resp
                     .bytes()
                     .await
-                    .map_err(|e| ClusterError::ForwardingFailed(e.to_string()))?
+                    .map_err(|e| ClusterError::ForwardingFailed(e.without_url().to_string()))?
                     .to_vec();
 
                 if (200..=299).contains(&status) {
@@ -310,7 +310,10 @@ impl<S: BundleClaimStore> ClusteredBundleForwarder<S> {
                     .claim_store
                     .release_claim(&bundle.bundle_id, &self.worker_id)
                     .await;
-                Err(ClusterError::ForwardingFailed(err.to_string()))
+                // Without the peer's URL: a relay behind a secret path must not appear in logs.
+                Err(ClusterError::ForwardingFailed(
+                    err.without_url().to_string(),
+                ))
             }
         }
     }

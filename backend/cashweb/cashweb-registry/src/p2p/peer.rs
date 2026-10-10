@@ -151,7 +151,7 @@ impl Peer {
         let response = match response {
             Ok(response) => response,
             Err(err) => {
-                state.last_error = Some(err.into());
+                state.last_error = Some(err.without_url().into());
                 return RelayAction::SendError;
             }
         };
@@ -160,7 +160,7 @@ impl Peer {
         let response = match response.bytes().await {
             Ok(response) => response,
             Err(err) => {
-                state.last_error = Some(err.into());
+                state.last_error = Some(err.without_url().into());
                 return RelayAction::ResponseError;
             }
         };
@@ -206,7 +206,7 @@ impl Peer {
         let response = match response {
             Ok(response) => response,
             Err(err) => {
-                state.last_error = Some(err.into());
+                state.last_error = Some(err.without_url().into());
                 return RelayAction::SendError;
             }
         };
@@ -215,7 +215,7 @@ impl Peer {
         let response = match response.bytes().await {
             Ok(response) => response,
             Err(err) => {
-                state.last_error = Some(err.into());
+                state.last_error = Some(err.without_url().into());
                 return RelayAction::ResponseError;
             }
         };
@@ -249,7 +249,7 @@ impl Peer {
         let response = match response {
             Ok(response) => response,
             Err(err) => {
-                state.last_error = Some(err.into());
+                state.last_error = Some(err.without_url().into());
                 return Err(FetchError::SendError);
             }
         };
@@ -258,7 +258,7 @@ impl Peer {
         let response = match response.bytes().await {
             Ok(response) => response,
             Err(err) => {
-                state.last_error = Some(err.into());
+                state.last_error = Some(err.without_url().into());
                 return Err(FetchError::ResponseError);
             }
         };
@@ -502,9 +502,8 @@ mod tests {
             let state = offline_peer.state.lock().await;
             let last_err = state.last_error.as_ref().unwrap();
             assert!(
-                last_err
-                    .to_string()
-                    .starts_with("error sending request for url"),
+                last_err.to_string().starts_with("error sending request")
+                    && !last_err.to_string().contains("127.0.0.1"),
                 "Error doesn't start with expected string: {}",
                 last_err,
             );
@@ -681,9 +680,8 @@ mod tests {
             let state = offline_peer.state.lock().await;
             let last_err = state.last_error.as_ref().unwrap();
             assert!(
-                last_err
-                    .to_string()
-                    .starts_with("error sending request for url"),
+                last_err.to_string().starts_with("error sending request")
+                    && !last_err.to_string().contains("127.0.0.1"),
                 "Error doesn't start with expected string: {}",
                 last_err,
             );

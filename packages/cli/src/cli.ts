@@ -81,7 +81,7 @@ export function createProgram(): Command {
   program
     .command('send <recipient> <message>')
     .description(
-      'Encrypt payload via ECDH, derive recipient stamp-child stealth address, construct and sign Monad stamp payment tx, submit envelope to relay',
+      'Send a direct message from the messaging account (a separate address from the identity: see `identity show`). Encrypt payload via ECDH, derive recipient stamp-child stealth address, construct and sign Monad stamp payment tx, submit envelope to relay',
     )
     .option(
       '-s, --stamp <amount>',
@@ -145,7 +145,7 @@ export function createProgram(): Command {
   program
     .command('inbox')
     .description(
-      'Fetch, decrypt, and display direct messages from relay mailbox',
+      'Fetch, decrypt, and display the messaging account\'s direct messages (a separate address from the identity: see `identity show`)',
     )
     .option('-l, --limit <n>', 'Maximum number of messages to display')
     .option('-u, --unread', 'Only show unread messages since last check')

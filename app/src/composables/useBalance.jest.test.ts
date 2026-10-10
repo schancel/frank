@@ -580,7 +580,8 @@ describe('useBalance', () => {
       expect(api.formattedBalance.value).toBe('100 MON')
       expect(api.cordoned.value).toBe(25n)
       expect(api.formattedCordoned.value).toBe('25 MON')
-      expect(api.formattedTotal.value).toBe('125 MON')
+      // There is one balance figure; nothing here offers a second total with them added in.
+      expect('formattedTotal' in api).toBe(false)
     })
 
     it('asks for the profile balance at most once per CORDONED_POLL_MS while the loop ticks every 3 s', async () => {

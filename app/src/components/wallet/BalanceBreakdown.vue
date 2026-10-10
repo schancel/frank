@@ -58,6 +58,12 @@
           {{ display(total) }}
         </div>
       </div>
+      <div
+        class="text-caption balance-breakdown-muted q-mt-xs"
+        data-testid="balance-breakdown-total-note"
+      >
+        {{ $t('balanceBreakdown.totalNote') }}
+      </div>
       <div class="text-caption balance-breakdown-muted q-mt-xs">
         {{ $t('balanceBreakdown.yours') }}
       </div>

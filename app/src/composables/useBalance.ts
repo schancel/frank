@@ -71,12 +71,6 @@ const formattedCordoned = computed(() =>
 const exactCordoned = computed(() =>
   formatRawAmount(activeChain, cordoned.value),
 )
-const formattedTotal = computed(() =>
-  formatDisplayAmount(activeChain, (balance.value ?? 0n) + cordoned.value),
-)
-const exactTotal = computed(() =>
-  formatRawAmount(activeChain, (balance.value ?? 0n) + cordoned.value),
-)
 
 /** The profile address's current balance for an account whose receive address differs from it
  * (a typed account); zero when they are the same address, which the wallet balance already
@@ -328,8 +322,6 @@ export function useBalance() {
     cordoned: readonly(cordoned),
     formattedCordoned,
     exactCordoned,
-    formattedTotal,
-    exactTotal,
     loaded,
     isEmpty,
     hasError,

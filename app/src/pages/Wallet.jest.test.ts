@@ -63,9 +63,7 @@ const balance = {
   balance: ref(1_000_000_000_000_000_000n),
   loaded: ref(true),
   hasError: ref(false),
-  cordoned: ref<
-    { formattedAmount: string; formattedTotal: string } | undefined
-  >(undefined),
+  cordoned: ref<{ formattedAmount: string } | undefined>(undefined),
 }
 const openPage = jest.fn()
 const mockCopyToClipboard = jest.fn()
@@ -271,18 +269,21 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
-  it('includes funds at the profile address in the balance, with no bracket beside it', async () => {
+  it('shows the same balance as the wallet list and the chat sidebar, with funds at the profile address said beside it', async () => {
     const wrapper = mountWallet()
     await nextTick()
     const region = wrapper.get('[data-testid="wallet-balance"]')
     expect(region.text()).toBe('1 MON')
-    balance.cordoned.value = {
-      formattedAmount: '0.25 MON',
-      formattedTotal: '1.25 MON',
-    }
+    expect(
+      wrapper.find('[data-testid="wallet-balance-cordoned"]').exists(),
+    ).toBe(false)
+    balance.cordoned.value = { formattedAmount: '0.25 MON' }
     await nextTick()
-    expect(region.text()).toBe('1.25 MON')
-    expect(wrapper.text()).not.toContain('cordoned')
+    // The headline stays the wallet's one balance figure: nothing is added into it here.
+    expect(region.text()).toBe('1 MON')
+    expect(wrapper.get('[data-testid="wallet-balance-cordoned"]').text()).toBe(
+      'walletPanel.cordonedNote',
+    )
     balance.cordoned.value = undefined
     await nextTick()
     expect(region.text()).toBe('1 MON')

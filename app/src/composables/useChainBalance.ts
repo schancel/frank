@@ -60,10 +60,8 @@ export interface BalanceObservation {
   /** Present only while funds sit at the profile address: watched, never spent. */
   cordoned?: {
     formattedAmount: string
-    formattedTotal: string
-    /** Every digit of the two amounts above, for a title. */
+    /** Every digit of the amount above, for a title. */
     exactAmount?: string
-    exactTotal?: string
   }
 }
 
@@ -100,9 +98,7 @@ function getBalancePresentation(
     if ((monad.cordoned?.value ?? 0n) > 0n)
       cordoned = {
         formattedAmount: monad.formattedCordoned.value,
-        formattedTotal: monad.formattedTotal.value,
         exactAmount: monad.exactCordoned?.value,
-        exactTotal: monad.exactTotal?.value,
       }
     state = {
       balance: monad.balance.value,

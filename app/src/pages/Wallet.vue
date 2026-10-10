@@ -121,9 +121,7 @@
                     >
                       {{
                         balanceObservation
-                          ? balanceObservation.cordoned
-                            ? balanceObservation.cordoned.formattedTotal
-                            : balanceObservation.formattedBalance
+                          ? balanceObservation.formattedBalance
                           : $t(
                               balancePresentation.status === 'loading'
                                 ? 'walletPanel.balanceLoading'
@@ -131,6 +129,21 @@
                                 ? 'walletPanel.balanceUnsupported'
                                 : 'walletPanel.balanceUnavailable',
                             )
+                      }}
+                    </div>
+                    <!-- Money at the profile address is this account's, but the wallet does not
+                    spend from there: said beside the balance, never added into it, so the
+                    balance is the same figure here, in the wallet list and beside the chats. -->
+                    <div
+                      v-if="balanceObservation?.cordoned"
+                      class="text-caption text-grey-7 text-center"
+                      data-testid="wallet-balance-cordoned"
+                      :title="balanceObservation.cordoned.exactAmount"
+                    >
+                      {{
+                        $t('walletPanel.cordonedNote', {
+                          amount: balanceObservation.cordoned.formattedAmount,
+                        })
                       }}
                     </div>
                     <!-- Opens where the balance is: which accounts hold it. -->
@@ -749,11 +762,7 @@ export default defineComponent({
     // Every digit, on hover: the balance line itself is shortened for reading.
     const balanceTitle = computed(() => {
       const observation = balanceObservation.value
-      return (
-        (observation?.cordoned
-          ? observation.cordoned.exactTotal
-          : observation?.exactBalance) ?? undefined
-      )
+      return observation?.exactBalance ?? undefined
     })
     // No balance reader exists for this network: said once and quietly, not as a failed fetch.
     const balanceUnsupported = computed(() => {

@@ -617,10 +617,8 @@ export class Outbox {
             messageId: messageIdFor(this.botId, id, owed.tries),
           }
         );
-        return sent(
-          result?.payloadDigest ?? "",
-          value > 0n ? value : result?.stampValueWei ?? 0n
-        );
+        // What it actually carried: an amount below the chain's fee floor goes out unpaid.
+        return sent(result?.payloadDigest ?? "", result?.stampValueWei ?? value);
       } catch (error) {
         // The wallet already holds an attempt for this message ID. That is not delivery: the
         // attempt may still be on its way, or the relay may have ended it.

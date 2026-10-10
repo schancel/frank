@@ -563,6 +563,10 @@ export class FrankBotHost {
         stopping: this.stopController.signal,
 
         lookupPeer: (addr: string) => directory.lookupPeer(addr),
+        minimumStampWei: async () =>
+          (await this.chain.directMessages
+            .minimumStamp?.({ wallet })
+            .catch(() => 0n)) ?? 0n,
 
         sendMessage: async (
           recipientAddress: string,
@@ -1353,6 +1357,8 @@ export class FrankBotHost {
       recipient: string;
       conversationId?: string;
       stampValue: bigint;
+      /** The handler named the amount (a payout or refund), as opposed to the reply stamp. */
+      namedAmount: boolean;
       messageId?: string;
       items: MessageItem[];
     },
@@ -1370,7 +1376,8 @@ export class FrankBotHost {
           () => {
             reported = true;
             return linked();
-          }
+          },
+          captured.namedAmount
         );
         if (!reported) await linked();
         return result;
@@ -1613,7 +1620,11 @@ export class FrankBotHost {
           items: [{ type: "text", text }],
           conversationId: row.conversationId,
           messageId: replyMessageId(instance.operations.owner, digest),
-          stampValue: BigInt(row.reply.stampValue),
+          // Paid only if what it carries is at or above the chain's fee floor right now.
+          stampValue: await this.atLeastTheFloor(
+            instance.wallet,
+            BigInt(row.reply.stampValue)
+          ),
           onAttemptCreated: (outbound) =>
             // The row may be finished by the time an abandoned call reports.
             instance.operations.linkReply(digest, outbound).catch(() => {}),
@@ -1957,6 +1968,7 @@ export class FrankBotHost {
           // while answering this message carries the reply stamp.
           stampValue:
             options?.stampValueWei ?? this.replyStampWei(paidWei),
+          namedAmount: options?.stampValueWei !== undefined,
           messageId: options?.messageId,
           items: structuredClone(items),
         },
@@ -2046,13 +2058,31 @@ export class FrankBotHost {
     await this.finish(instance, identity.digest, false);
   }
 
+  /**
+   * A bot never sends a nonzero stamp smaller than what the chain charges to move it (the
+   * wallet's `minimumStamp`, read from the node's gas price): such an amount is sent as no stamp
+   * at all. An unreadable floor changes nothing here; the wallet still refuses a dust stamp.
+   */
+  private async atLeastTheFloor(
+    wallet: EvmChainWalletHandle,
+    valueWei: bigint
+  ): Promise<bigint> {
+    if (valueWei <= 0n) return 0n;
+    const floor = await this.chain.directMessages
+      .minimumStamp?.({ wallet })
+      .catch(() => 0n);
+    return valueWei < (floor ?? 0n) ? 0n : valueWei;
+  }
+
   private async sendCanonicalMessage(
     wallet: EvmChainWalletHandle,
     recipientAddress: string,
     items: MessageItem[],
     conversationId?: string,
     options?: BotSendOptions,
-    onAttemptCreated?: (digest: string) => Promise<void>
+    onAttemptCreated?: (digest: string) => Promise<void>,
+    /** `options.stampValueWei` is an amount the bot's handler named, not a reply stamp. */
+    namedAmount = true
   ): Promise<DirectMessageSendResult> {
     const instance = [...this.instances.values()].find(
       (value) => value.wallet === wallet
@@ -2060,6 +2090,18 @@ export class FrankBotHost {
     if (!instance || this.closing)
       throw new Error("Bot send admission unavailable");
     instance.operations.assertOpen();
+    const wanted = options?.stampValueWei ?? this.options.stampValueWei;
+    const stampValue = await this.atLeastTheFloor(wallet, wanted);
+    // An amount the bot named (a payout, a refund) that costs more to move than it is: the
+    // message goes out unpaid and says so.
+    if (stampValue === 0n && wanted > 0n && options?.stampValueWei !== undefined && namedAmount)
+      items = [
+        ...items,
+        {
+          type: "text",
+          text: `(The amount this message was to carry, ${wanted} wei, is too small to send: moving it would cost more than it is. It is not returned.)`,
+        },
+      ];
     return this.chain.directMessages.send({
       wallet,
       recipient: toChainAddress(recipientAddress),
@@ -2068,7 +2110,7 @@ export class FrankBotHost {
         conversationId === undefined
           ? undefined
           : conversationIdentity(conversationId),
-      stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+      stampValue,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
       onAttemptCreated,
     });

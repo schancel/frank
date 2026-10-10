@@ -2,6 +2,7 @@ import { parseEther, formatEther } from 'ethers'
 import {
   displayToRawAmount,
   formatRawAmount,
+  compactAmountText,
   formatCompactAmount,
   formatDisplayAmount,
   formatDisplayNumber,
@@ -163,5 +164,69 @@ describe('formatDisplayAmount, the one formatter for amounts a user reads', () =
     expect(shortenDisplayAmount('0.0')).toBe('0')
     expect(shortenDisplayAmount('-0.0')).toBe('0')
     expect(shortenDisplayAmount('007.5')).toBe('7.5')
+  })
+})
+
+describe('compactAmountText (amount text from a balance observation)', () => {
+  it('formats kilo eCash as ktXEC and kXEC to save space', () => {
+    expect(compactAmountText('10000 tXEC')).toBe('10 ktXEC')
+    expect(compactAmountText('10000 XEC')).toBe('10 kXEC')
+    expect(compactAmountText('25500 tXEC')).toBe('25.5 ktXEC')
+  })
+
+  it('formats mega balances with M prefix', () => {
+    expect(compactAmountText('1000000 XEC')).toBe('1 MXEC')
+    expect(compactAmountText('2500000 tXEC')).toBe('2.5 MtXEC')
+  })
+
+  it('formats standard balances with trimmed decimals (max 4)', () => {
+    expect(compactAmountText('4.72734053 MONT')).toBe('4.7273 MONT')
+    expect(compactAmountText('1.500000 MON')).toBe('1.5 MON')
+    expect(compactAmountText('10 MON')).toBe('10 MON')
+  })
+
+  it('handles zero balances gracefully', () => {
+    expect(compactAmountText('0 tSOL')).toBe('0 tSOL')
+    expect(compactAmountText('0 tXEC')).toBe('0 tXEC')
+    expect(compactAmountText('0')).toBe('0')
+  })
+
+  it('formats small balances with milli and micro metric prefixes', () => {
+    expect(compactAmountText('0.005 MONT')).toBe('5 mMONT')
+    expect(compactAmountText('0.000025 MONT')).toBe('25 μMONT')
+  })
+
+  it('preserves loading and status text as-is', () => {
+    expect(compactAmountText('Loading balance…')).toBe(
+      'Loading balance…',
+    )
+    expect(compactAmountText('Balance unavailable')).toBe(
+      'Balance unavailable',
+    )
+    expect(compactAmountText('')).toBe('')
+  })
+})
+
+describe('the compact and the full form agree', () => {
+  it('cut the same digits of one amount, never rounding up', () => {
+    // 0.0227199... : the full form keeps 0.02271, the compact form 22.71 m: the same digits.
+    const raw = 22_719_999_999_999_999n
+    expect(formatDisplayAmount(monad, raw)).toBe('0.02271 MON')
+    expect(formatCompactAmount(monad, raw)).toBe('22.71 mMON')
+    expect(compactAmountText('0.022719999999999999 MON')).toBe('22.71 mMON')
+    // The old list rule rounded 0.08849 up to "88.5 m" beside "0.0884" elsewhere.
+    expect(compactAmountText('0.08849 MONT')).toBe('88.49 mMONT')
+    expect(formatDisplayAmount(monad, parseEther('0.08849'))).toBe('0.08849 MON')
+  })
+
+  it('never shows a non-zero amount as zero and keeps exact prefix boundaries', () => {
+    expect(formatCompactAmount(monad, 1n)).toBe('1 aMON')
+    expect(formatCompactAmount(monad, parseEther('0.001'))).toBe('1 mMON')
+    expect(formatCompactAmount(monad, parseEther('0.000999'))).toBe('999 μMON')
+    expect(formatCompactAmount(monad, parseEther('999.99999'))).toBe(
+      '999.9999 MON',
+    )
+    expect(formatCompactAmount(monad, parseEther('1000'))).toBe('1 kMON')
+    expect(formatCompactAmount(monad, parseEther('-0.0125'))).toBe('-12.5 mMON')
   })
 })

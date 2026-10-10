@@ -250,7 +250,7 @@
               :title="minimumExact"
               data-testid="swap-minimum-received"
             >
-              {{ minimumText }} {{ receiveToken.symbol }}
+              {{ minimumText }} {{ symbolOf(receiveToken) }}
             </span>
           </div>
           <div class="swap-row">
@@ -264,7 +264,7 @@
               {{ $t('swap.interfaceFee', { rate: interfaceFeeRate }) }}
             </span>
             <span class="text-weight-medium" data-testid="swap-interface-fee">
-              {{ interfaceFeeText }} {{ receiveToken.symbol }}
+              {{ interfaceFeeText }} {{ symbolOf(receiveToken) }}
             </span>
           </div>
           <div
@@ -277,7 +277,7 @@
               {{
                 $t('swap.approvalNeeded', {
                   count: approvalsNeeded,
-                  asset: payToken.symbol,
+                  asset: symbolOf(payToken),
                 })
               }}
             </span>
@@ -348,7 +348,7 @@
             {{
               $t('swap.reviewReceive', {
                 receive: receiveText,
-                asset: receiveToken.symbol,
+                asset: symbolOf(receiveToken),
                 minimum: minimumText,
               })
             }}
@@ -476,6 +476,7 @@ import {
   type EvmSwapSession,
   type EvmSwapUnavailable,
 } from 'src/swap/evm-swap-session'
+import { swapAssetSymbol } from 'src/swap/asset-symbol'
 import {
   exactTokenAmount,
   outputPerUnit,
@@ -579,14 +580,18 @@ export default defineComponent({
     const nativeIndex = computed(() =>
       tokens.value.findIndex(token => token.address === null),
     )
-    const nativeSymbol = computed(
-      () => tokens.value[nativeIndex.value]?.symbol ?? '',
-    )
+    /** The symbol shown for a token: the registry's unit for the chain's native coin. */
+    const symbolOf = (token: { symbol: string; address?: string | null }) =>
+      swapAssetSymbol(props.chainIdentifier, token)
+    const nativeSymbol = computed(() => {
+      const native = tokens.value[nativeIndex.value]
+      return native ? symbolOf(native) : ''
+    })
     const tokenOptions = (testTokenLabel: string) =>
       tokens.value.map((token, value) => ({
         label: token.testToken
-          ? `${token.symbol} · ${testTokenLabel}`
-          : token.symbol,
+          ? `${symbolOf(token)} · ${testTokenLabel}`
+          : symbolOf(token),
         value,
       }))
     const locked = computed(
@@ -605,7 +610,7 @@ export default defineComponent({
       const token = tokens.value[index]
       return value === undefined || !token
         ? '…'
-        : `${readableTokenAmount(value, token.decimals)} ${token.symbol}`
+        : `${readableTokenAmount(value, token.decimals)} ${symbolOf(token)}`
     }
     const balanceExact = (index: number) => {
       const value = balanceOf(index)
@@ -641,7 +646,7 @@ export default defineComponent({
             amount.value <= spendable.value
               ? 'swap.errorInsufficientForFee'
               : 'swap.errorInsufficientBalance',
-          params: { asset: payToken.value.symbol },
+          params: { asset: symbolOf(payToken.value) },
           blocking: true,
         }
       if (quoteProblem.value) return quoteProblem.value
@@ -688,7 +693,7 @@ export default defineComponent({
       if (!q) return { key: 'swap.reviewPayNoFee', params: {} }
       const params = {
         amount: exactTokenAmount(q.amountIn, q.tokenIn.decimals),
-        asset: q.tokenIn.symbol,
+        asset: symbolOf(q.tokenIn),
         fee: c ? nativeAmount(c.networkFeeWei) : '',
         unit: nativeSymbol.value,
         total: c ? nativeAmount(q.amountIn + c.networkFeeWei) : '',
@@ -719,7 +724,7 @@ export default defineComponent({
       const fee = readableTokenAmount(totalFeeWei, nativeDecimals)
       const params = {
         amount: exactTokenAmount(amountIn, q.tokenIn.decimals),
-        asset: q.tokenIn.symbol,
+        asset: symbolOf(q.tokenIn),
         fee,
         unit: nativeSymbol.value,
         total: readableTokenAmount(amountIn + totalFeeWei, nativeDecimals),
@@ -743,10 +748,10 @@ export default defineComponent({
     const rateText = computed(() => {
       const q = quote.value
       if (!q) return ''
-      return `1 ${q.tokenIn.symbol} ≈ ${readableTokenAmount(
+      return `1 ${symbolOf(q.tokenIn)} ≈ ${readableTokenAmount(
         outputPerUnit(q.amountIn, q.amountOut, q.tokenIn.decimals),
         q.tokenOut.decimals,
-      )} ${q.tokenOut.symbol}`
+      )} ${symbolOf(q.tokenOut)}`
     })
     const impactClass = computed(() => {
       const ppm = quote.value?.priceImpactPpm ?? 0
@@ -1074,7 +1079,7 @@ export default defineComponent({
       return {
         status: result.status,
         txHash: result.txHash,
-        toSymbol: q.tokenOut.symbol,
+        toSymbol: symbolOf(q.tokenOut),
         explorerUrl: explorerUrlOf(result.txHash),
         ...(result.status === 'confirmed' && result.amountOut !== undefined
           ? {
@@ -1343,6 +1348,7 @@ export default defineComponent({
         asset: outcome.value?.toSymbol ?? '',
       })),
       nativeSymbol,
+      symbolOf,
       insufficient,
       amountText,
       locked,
@@ -1362,7 +1368,7 @@ export default defineComponent({
           ? `${readableTokenAmount(
               otherAccounts.value,
               payToken.value.decimals,
-            )} ${payToken.value.symbol}`
+            )} ${symbolOf(payToken.value)}`
           : '',
       ),
       flip,
@@ -1433,7 +1439,8 @@ export default defineComponent({
           ? 'swap.errorInsufficientBalance'
           : 'swap.review',
       ),
-      actionParams: computed(() => ({ asset: payToken.value?.symbol ?? '' })),
+      actionParams: computed(() => ({ asset: payToken.value ? symbolOf(payToken.value) : '',
+      })),
     }
   },
 })

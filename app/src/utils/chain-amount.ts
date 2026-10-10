@@ -71,70 +71,72 @@ export function formatDisplayAmount(
   return `${formatDisplayNumber(chain, raw)} ${chain.unit}`
 }
 
+/** SI prefixes the compact form may use, largest first, as powers of ten of the display unit. */
+const COMPACT_PREFIXES: ReadonlyArray<readonly [string, number]> = [
+  ['G', 9],
+  ['M', 6],
+  ['k', 3],
+  ['', 0],
+  ['m', -3],
+  ['μ', -6],
+  ['n', -9],
+  ['p', -12],
+  ['f', -15],
+  ['a', -18],
+]
+
 /**
- * Formats a raw chain amount compactly using standard SI prefixes:
- * G (10^9), M (10^6), k (10^3), base (1), m (10^-3), μ (10^-6), n (10^-9), p (10^-12), f (10^-15), a (10^-18).
- *
- * For example:
- * 10^12 wei (10^-6 MONT) -> "1 μMONT"
- * 10^15 wei (10^-3 MONT) -> "1 mMONT"
- * 2.5 * 10^12 wei -> "2.5 μMONT"
- * 0 wei -> "0 MONT"
+ * The compact form of an exact decimal string, for places where space is tight (lists, chips,
+ * table cells). It is the full form (`shortenDisplayAmount`: digits cut, never rounded) with its
+ * decimal point moved to an SI prefix ("0.02271" reads "22.71" with prefix "m"), so one amount
+ * never shows different digits in two places; a large amount is then cut once more to the same
+ * limit ("1234.5678" reads "1.2345" with prefix "k"). Text that is not a plain decimal number is
+ * returned unchanged with no prefix.
  */
+export function compactDisplayNumber(exact: string): {
+  number: string
+  prefix: string
+} {
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(
+    shortenDisplayAmount(exact.trim()),
+  )
+  if (!match) return { number: exact, prefix: '' }
+  const [, sign, wholeRaw, fraction = ''] = match
+  const whole = wholeRaw.replace(/^0+/, '')
+  const digits = whole + fraction
+  const first = digits.search(/[1-9]/)
+  if (first < 0) return { number: '0', prefix: '' }
+  // The value is at least 10^magnitude and below 10^(magnitude + 1).
+  const magnitude = whole.length - 1 - first
+  const [prefix, power] =
+    COMPACT_PREFIXES.find(([, p]) => p <= magnitude) ??
+    COMPACT_PREFIXES[COMPACT_PREFIXES.length - 1]
+  const point = whole.length - power
+  const scaled =
+    point <= 0
+      ? `0.${'0'.repeat(-point)}${digits}`
+      : point >= digits.length
+      ? digits + '0'.repeat(point - digits.length)
+      : `${digits.slice(0, point)}.${digits.slice(point)}`
+  return { number: shortenDisplayAmount(sign + scaled), prefix }
+}
+
+/** The compact twin of `formatDisplayAmount`: "20 mMONT" where that reads "0.02 MONT". */
 export function formatCompactAmount(
-  chain: ChainAmountAdapter,
+  chain: Pick<ChainAmountAdapter, 'unit' | 'toDisplayAmount'>,
   raw: string | bigint,
-  maxFractionDigits = 3,
 ): string {
-  const value = BigInt(raw)
-  if (value === 0n) return `0 ${chain.unit}`
+  const { number, prefix } = compactDisplayNumber(
+    chain.toDisplayAmount(BigInt(raw)),
+  )
+  return `${number} ${prefix}${chain.unit}`
+}
 
-  const negative = value < 0n
-  const abs = negative ? -value : value
-  const sign = negative ? '-' : ''
-
-  // 1 display unit in raw wei (e.g. 10^18)
-  const oneUnit = chain.fromDisplayAmount('1')
-
-  const scales: Array<{ prefix: string; rawThreshold: bigint }> = [
-    { prefix: 'G', rawThreshold: oneUnit * 1_000_000_000n },
-    { prefix: 'M', rawThreshold: oneUnit * 1_000_000n },
-    { prefix: 'k', rawThreshold: oneUnit * 1_000n },
-    { prefix: '', rawThreshold: oneUnit },
-    { prefix: 'm', rawThreshold: oneUnit / 1_000n },
-    { prefix: 'μ', rawThreshold: oneUnit / 1_000_000n },
-    { prefix: 'n', rawThreshold: oneUnit / 1_000_000_000n },
-    { prefix: 'p', rawThreshold: oneUnit / 1_000_000_000_000n },
-    { prefix: 'f', rawThreshold: oneUnit / 1_000_000_000_000_000n },
-    { prefix: 'a', rawThreshold: 1n },
-  ]
-
-  let chosen = scales[scales.length - 1]
-  for (const scale of scales) {
-    if (scale.rawThreshold > 0n && abs >= scale.rawThreshold) {
-      chosen = scale
-      break
-    }
-  }
-
-  const divisor = chosen.rawThreshold > 0n ? chosen.rawThreshold : 1n
-  const whole = abs / divisor
-  const remainder = abs % divisor
-
-  if (remainder === 0n || maxFractionDigits <= 0) {
-    return `${sign}${whole} ${chosen.prefix}${chain.unit}`
-  }
-
-  const factor = 10n ** BigInt(maxFractionDigits)
-  const frac = (remainder * factor) / divisor
-  if (frac === 0n) {
-    return `${sign}${whole} ${chosen.prefix}${chain.unit}`
-  }
-
-  const fracStr = frac
-    .toString()
-    .padStart(maxFractionDigits, '0')
-    .replace(/0+$/, '')
-
-  return `${sign}${whole}.${fracStr} ${chosen.prefix}${chain.unit}`
+/** `formatCompactAmount` for an amount that already arrives as "<exact number> <unit>" text
+ * (the multichain balance observations). Anything else (a status line) is returned unchanged. */
+export function compactAmountText(text: string): string {
+  const match = /^(-?\d+(?:\.\d+)?)\s*(\S.*)?$/.exec(text.trim())
+  if (!match) return text
+  const { number, prefix } = compactDisplayNumber(match[1])
+  return `${number} ${prefix}${match[2] ?? ''}`.trim()
 }

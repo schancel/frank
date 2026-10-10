@@ -20,7 +20,6 @@ import {
   addressColor,
   addressColorFromStr,
   pubKeyToColor,
-  formatCompactCryptoBalance,
 } from './formatting'
 
 function digestOf(bytes: Uint8Array): Buffer {
@@ -194,45 +193,5 @@ describe('address string colors', () => {
         ]),
       ),
     )
-  })
-})
-
-describe('formatCompactCryptoBalance', () => {
-  it('formats kilo eCash as ktXEC and kXEC to save space', () => {
-    expect(formatCompactCryptoBalance('10000 tXEC')).toBe('10 ktXEC')
-    expect(formatCompactCryptoBalance('10000 XEC')).toBe('10 kXEC')
-    expect(formatCompactCryptoBalance('25500 tXEC')).toBe('25.5 ktXEC')
-  })
-
-  it('formats mega balances with M prefix', () => {
-    expect(formatCompactCryptoBalance('1000000 XEC')).toBe('1 MXEC')
-    expect(formatCompactCryptoBalance('2500000 tXEC')).toBe('2.5 MtXEC')
-  })
-
-  it('formats standard balances with trimmed decimals (max 4)', () => {
-    expect(formatCompactCryptoBalance('4.72734053 MONT')).toBe('4.7273 MONT')
-    expect(formatCompactCryptoBalance('1.500000 MON')).toBe('1.5 MON')
-    expect(formatCompactCryptoBalance('10 MON')).toBe('10 MON')
-  })
-
-  it('handles zero balances gracefully', () => {
-    expect(formatCompactCryptoBalance('0 tSOL')).toBe('0 tSOL')
-    expect(formatCompactCryptoBalance('0 tXEC')).toBe('0 tXEC')
-    expect(formatCompactCryptoBalance('0')).toBe('0')
-  })
-
-  it('formats small balances with milli and micro metric prefixes', () => {
-    expect(formatCompactCryptoBalance('0.005 MONT')).toBe('5 mMONT')
-    expect(formatCompactCryptoBalance('0.000025 MONT')).toBe('25 µMONT')
-  })
-
-  it('preserves loading and status text as-is', () => {
-    expect(formatCompactCryptoBalance('Loading balance…')).toBe(
-      'Loading balance…',
-    )
-    expect(formatCompactCryptoBalance('Balance unavailable')).toBe(
-      'Balance unavailable',
-    )
-    expect(formatCompactCryptoBalance('')).toBe('')
   })
 })

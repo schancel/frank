@@ -237,7 +237,7 @@ import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
 import { useOracleFeed } from '../../composables/useOracleFeed'
 import { formatAvu } from '@frank/wallet/oracle'
-import { formatCompactCryptoBalance } from '../../utils/formatting'
+import { compactAmountText } from '../../utils/chain-amount'
 import {
   WALLET_CONFIGS,
   WalletItemConfig,
@@ -295,7 +295,7 @@ function getWalletBalance(wallet: WalletItemConfig): string {
       ? presentation.lastKnown
       : undefined
   return observation
-    ? formatCompactCryptoBalance(observation.formattedBalance)
+    ? compactAmountText(observation.formattedBalance)
     : getTranslation(
         presentation.status === 'loading'
           ? 'walletPanel.balanceLoading'

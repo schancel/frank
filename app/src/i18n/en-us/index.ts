@@ -1055,7 +1055,7 @@ export default {
   sendAddressDialog: {
     sendToAddress: 'Send to Address',
     enterBitcoinCashAddress: 'Enter address (0x...)',
-    enterAmount: 'Enter Amount (MON)',
+    enterAmount: 'Enter Amount ({unit})',
     cancel: 'Cancel',
     send: 'Send',
     review: 'Review',

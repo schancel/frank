@@ -33,49 +33,6 @@ export function formatBalance(balance: number) {
   return isNegative + (sats / 1_000_000).toFixed(2) + ' Lotus'
 }
 
-/**
- * Formats a crypto balance with SI metric prefixes (e.g. 10000 tXEC -> 10 ktXEC)
- * to save horizontal and vertical space in constrained views such as the sidebar drawer.
- * Preserves non-numeric status messages (loading, unavailable) as-is.
- */
-export function formatCompactCryptoBalance(text: string): string {
-  if (!text) return ''
-  const trimmed = text.trim()
-  const match = /^([0-9]+(?:\.[0-9]+)?)\s*(.*)$/.exec(trimmed)
-  if (!match) return text
-
-  const num = parseFloat(match[1])
-  const unit = match[2]
-  if (isNaN(num) || num === 0) {
-    return `0 ${unit}`.trim()
-  }
-
-  const trimDecimals = (n: number, maxDec = 4): string => {
-    const fixed = n.toFixed(maxDec)
-    return fixed.replace(/\.?0+$/, '')
-  }
-
-  if (num >= 1e9) {
-    return `${trimDecimals(num / 1e9, 2)} G${unit}`
-  }
-  if (num >= 1e6) {
-    return `${trimDecimals(num / 1e6, 2)} M${unit}`
-  }
-  if (num >= 1e3) {
-    return `${trimDecimals(num / 1e3, 2)} k${unit}`
-  }
-  if (num >= 1) {
-    return `${trimDecimals(num, 4)} ${unit}`
-  }
-  if (num >= 1e-3) {
-    return `${trimDecimals(num * 1e3, 2)} m${unit}`
-  }
-  if (num >= 1e-6) {
-    return `${trimDecimals(num * 1e6, 2)} µ${unit}`
-  }
-  return `${trimDecimals(num * 1e9, 2)} n${unit}`
-}
-
 /** `Address.toBuffer()` is one version byte plus hash160. Livenet pubkeyhash
  * is 0 and scripthash is 5. Testnet and regtest are 0x6f and 0xc4. XPI
  * `decodeAddress` rejects legacy base58, so cashaddr and base58 use the BCH

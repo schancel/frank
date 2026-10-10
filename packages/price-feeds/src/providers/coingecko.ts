@@ -1,14 +1,18 @@
 import type { PriceFeedProvider, PriceSample } from '../types'
+import { ORACLE_ENDPOINTS } from '../config'
 
 export const COINGECKO_IDS: Record<string, string> = {
   ETH: 'ethereum',
   SOL: 'solana',
   XEC: 'ecash',
   BTC: 'bitcoin',
+  BCH: 'bitcoin-cash',
+  DOGE: 'dogecoin',
+  HYPE: 'hyperliquid',
+  MON: 'monad',
 }
 
-export const COINGECKO_API_BASE =
-  'https://api.coingecko.com/api/v3/simple/price'
+export const COINGECKO_API_BASE = ORACLE_ENDPOINTS.coingecko.simplePrice
 
 export class CoinGeckoProvider implements PriceFeedProvider {
   readonly id = 'coingecko' as const

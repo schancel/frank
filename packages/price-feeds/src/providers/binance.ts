@@ -1,14 +1,24 @@
 import type { PriceFeedProvider, PriceSample } from '../types'
+import { ORACLE_ENDPOINTS } from '../config'
 
 export const BINANCE_SYMBOLS: Record<string, string> = {
   XEC: 'XECUSDT',
   ETH: 'ETHUSDT',
   SOL: 'SOLUSDT',
   BTC: 'BTCUSDT',
+  BCH: 'BCHUSDT',
+  DOGE: 'DOGEUSDT',
+  HYPE: 'HYPEUSDT',
 }
 
-export const BINANCE_API_BASE = 'https://api.binance.com/api/v3/ticker/price'
-export const BINANCE_US_API_BASE = 'https://api.binance.us/api/v3/ticker/price'
+/**
+ * Symbols binance.us must not be asked for: its XECUSDT market has no trades (zero
+ * volume, the same price hour after hour), so its "price" is not a market price.
+ */
+export const BINANCE_US_UNTRADED = new Set(['XECUSDT'])
+
+export const BINANCE_API_BASE = ORACLE_ENDPOINTS.binance.ticker
+export const BINANCE_US_API_BASE = ORACLE_ENDPOINTS.binance.tickerUs
 
 export class BinanceProvider implements PriceFeedProvider {
   readonly id = 'binance' as const
@@ -42,6 +52,9 @@ export class BinanceProvider implements PriceFeedProvider {
     const startTime = Date.now()
     // Try main endpoint first, then fallback
     for (const endpoint of [this.baseUrl, this.fallbackUrl]) {
+      if (endpoint === BINANCE_US_API_BASE && BINANCE_US_UNTRADED.has(symbol)) {
+        continue
+      }
       try {
         const url = `${endpoint}?symbol=${symbol}`
         const response = await this.fetchFn(url, {

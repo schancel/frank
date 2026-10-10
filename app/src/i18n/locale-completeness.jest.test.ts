@@ -26,6 +26,8 @@ const fr = flatten(frFR)
 const SAME_IN_FRENCH = new Set([
   'leftDrawer.contacts',
   'leftDrawer.forum',
+  'walletPanel.avuUnitLabel',
+  'walletPanel.chartUsdKwh',
   'walletPanel.monad',
   'walletPanel.monadTestnet',
   'walletPanel.ecash',
@@ -68,6 +70,8 @@ const SAME_IN_FRENCH = new Set([
   'chatRightDrawer.notifications',
   'transactionDialog.txType',
   'sendStealthDialog.amountPlaceholder',
+  'chatImage.onePhoto',
+  'chatImage.manyPhotos',
   'profile.linkTypeX',
   'profile.linkTypeGithub',
   'profile.linkTypeNostr',

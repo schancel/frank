@@ -65,8 +65,8 @@ jest.mock('../../composables/useChainBalance', () => ({
   }),
 }))
 
-const mockStartBackgroundWorker = jest.fn()
-const mockStopBackgroundWorker = jest.fn()
+const mockReleaseOracle = jest.fn()
+const mockAcquireOracle = jest.fn((_feed: string) => mockReleaseOracle)
 
 jest.mock('../../stores/oracle', () => ({
   useSafeOracleStore: () => ({
@@ -82,8 +82,7 @@ jest.mock('../../stores/oracle', () => ({
       return ''
     },
     snapshot: { totalConstituents: 0, constituents: [] },
-    startBackgroundWorker: mockStartBackgroundWorker,
-    stopBackgroundWorker: mockStopBackgroundWorker,
+    acquire: mockAcquireOracle,
   }),
 }))
 
@@ -124,8 +123,8 @@ beforeEach(() => {
   localStorage.clear()
   const { clearAllCustomNames } = useWalletNames()
   clearAllCustomNames()
-  mockStartBackgroundWorker.mockClear()
-  mockStopBackgroundWorker.mockClear()
+  mockAcquireOracle.mockClear()
+  mockReleaseOracle.mockClear()
 })
 
 afterEach(() => {
@@ -390,13 +389,13 @@ test('renders universal AVU tooltips on portfolio total and drawer header', () =
   ).toBe(true)
 })
 
-test('starts background worker on mount and stops it on unmount', () => {
+test('holds the oracle’s live prices while mounted and releases them on unmount', () => {
   const view = render()
-  expect(mockStartBackgroundWorker).toHaveBeenCalledTimes(1)
-  expect(mockStopBackgroundWorker).not.toHaveBeenCalled()
+  expect(mockAcquireOracle.mock.calls).toEqual([['live']])
+  expect(mockReleaseOracle).not.toHaveBeenCalled()
 
   view.unmount()
-  expect(mockStopBackgroundWorker).toHaveBeenCalledTimes(1)
+  expect(mockReleaseOracle).toHaveBeenCalledTimes(1)
 })
 
 test('the drawer header keeps the title and the AVU note as two unbroken groups of one wrapping row', () => {

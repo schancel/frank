@@ -1,10 +1,16 @@
 import {
-  computeEnergyBasketIndex,
-  calculateAvuRate,
-  POW_BASELINE_DOLLARS_PER_KWH,
-  AVU_PER_DOLLAR,
-  AVU_ENERGY_ANCHOR_NOMINAL,
+  AVU_HASH_BASKET,
+  HASHING_EFFICIENCY,
+  avuPerCoin,
+  computeAvuHash,
+  type AvuHash,
+  type PriceReading,
 } from "./energy-basket";
+import {
+  PriceFeedsClient,
+  type MiningStats,
+  type PriceProviderId,
+} from "@frank/price-feeds";
 
 export type SupportedAsset =
   | "monad"
@@ -30,42 +36,49 @@ export const ASSET_DECIMALS: Record<SupportedAsset, number> = {
 };
 
 /**
- * Baseline anchor spot rates (in nominal base units, e.g. USD) at epoch genesis.
- * Used for offline cold-start fallback when external oracle network is unreachable.
+ * The market each asset's price is fetched under. An asset absent from this table has no
+ * price source, so it has no rate and nothing shows an AVU value for it. There are no
+ * stand-in prices: a number is always one a provider returned.
+ *
+ * `monad` is priced as mainnet MON. Tempo's test dollar is absent: no provider prices it,
+ * and "one dollar" would be a peg assumption, not a price.
  */
-export const DEFAULT_ANCHOR_SPOT_PRICES: Record<SupportedAsset, number> = {
-  monad: 3.5, // $3.50
-  ecash: 0.000035, // $0.000035 (1,000,000 XEC = $35)
-  solana: 150.0, // $150.00
-  tempo: 1.0, // $1.00 (stablecoin)
-  ethereum: 2600.0, // $2,600.00
-  hyperliquid: 40.0, // $40.00
-  bitcoin: 65000.0, // $65,000.00
-  bitcoincash: 350.0, // $350.00
-  dogecoin: 0.15, // $0.15
+export const ASSET_FEED_SYMBOLS: Partial<Record<SupportedAsset, string>> = {
+  monad: "MON",
+  ethereum: "ETH",
+  solana: "SOL",
+  ecash: "XEC",
+  hyperliquid: "HYPE",
+  bitcoin: "BTC",
+  bitcoincash: "BCH",
+  dogecoin: "DOGE",
 };
 
-/**
- * Default AVU exchange rates derived from baseline anchor prices:
- * 1 AVU = 1 kWh energy equivalent ≈ $0.084 nominal PoW baseline (11.90476 AVU / $).
- */
-export const DEFAULT_AVU_RATES: Record<SupportedAsset, number> = {
-  monad: DEFAULT_ANCHOR_SPOT_PRICES.monad * AVU_PER_DOLLAR, // ~41.67 AVU
-  ecash: DEFAULT_ANCHOR_SPOT_PRICES.ecash * AVU_PER_DOLLAR, // ~0.0004167 AVU
-  solana: DEFAULT_ANCHOR_SPOT_PRICES.solana * AVU_PER_DOLLAR, // ~1,785.71 AVU
-  tempo: DEFAULT_ANCHOR_SPOT_PRICES.tempo * AVU_PER_DOLLAR, // ~11.90 AVU
-  ethereum: DEFAULT_ANCHOR_SPOT_PRICES.ethereum * AVU_PER_DOLLAR, // ~30,952.38 AVU
-  hyperliquid: DEFAULT_ANCHOR_SPOT_PRICES.hyperliquid * AVU_PER_DOLLAR, // ~476.19 AVU
-  bitcoin: DEFAULT_ANCHOR_SPOT_PRICES.bitcoin * AVU_PER_DOLLAR, // ~773,809.52 AVU
-  bitcoincash: DEFAULT_ANCHOR_SPOT_PRICES.bitcoincash * AVU_PER_DOLLAR, // ~4,166.67 AVU
-  dogecoin: DEFAULT_ANCHOR_SPOT_PRICES.dogecoin * AVU_PER_DOLLAR, // ~1.79 AVU
-};
+/** AVU per whole unit of an asset, only for assets whose price was fetched. */
+export type AvuRates = Partial<Record<SupportedAsset, number>>;
+
+/** US dollars per whole unit of an asset, only for assets whose price was fetched. */
+export type UsdPrices = Partial<Record<SupportedAsset, number>>;
 
 export interface OracleSnapshot {
   epoch: string;
+  /** When the fetch that produced this snapshot finished. */
   timestamp: number;
-  basketIndex: number;
-  rates: Record<SupportedAsset, number>;
+  /** Fetched market prices. */
+  prices: UsdPrices;
+  /** The same prices in AVU (kWh per coin): price times AVU_hash. Empty without AVU_hash. */
+  rates: AvuRates;
+  /** When each asset's price was fetched (Unix ms). An old time means a stale price. */
+  fetchedAt: Partial<Record<SupportedAsset, number>>;
+  /**
+   * How many providers' prices each asset's price is the median of. One means the price
+   * rests on a single source.
+   */
+  priceSources: Partial<Record<SupportedAsset, number>>;
+  /** Fetched chain statistics of the mined coins in the basket, by Blockchair chain name. */
+  mining: Record<string, MiningStats>;
+  /** kWh per dollar read off mining. Absent when no basket entry has all its inputs. */
+  avuHash?: AvuHash;
 }
 
 export interface SwapParityResult {
@@ -75,27 +88,68 @@ export interface SwapParityResult {
   receiveAvu: number;
 }
 
-export function getDefaultOracleSnapshot(): OracleSnapshot {
+/** What is known when nothing has been fetched, or a fetch failed: no prices at all. */
+export function unavailableOracleSnapshot(): OracleSnapshot {
   return {
     epoch: "pow-energy-standard-v1",
     timestamp: Date.now(),
-    basketIndex: 1.0,
-    rates: { ...DEFAULT_AVU_RATES },
+    prices: {},
+    rates: {},
+    fetchedAt: {},
+    priceSources: {},
+    mining: {},
   };
 }
 
+/** The Blockchair chains of every basket entry that has an efficiency series to compute with. */
+export const AVU_HASH_CHAINS: readonly string[] = AVU_HASH_BASKET.filter(
+  (entry) => HASHING_EFFICIENCY[entry.algorithm]
+).flatMap((entry) => entry.chains.map((chain) => chain.chain));
+
 /**
- * Converts a raw base-unit integer (wei, satoshis, lamports) to its equivalent in AVU.
+ * Computes AVU_hash from the snapshot's prices and chain statistics and restates every
+ * price in AVU with it. Whatever `rates` and `avuHash` held before is discarded: they are
+ * only ever derived from the prices and statistics beside them.
+ */
+export function rateOracleSnapshot(snapshot: OracleSnapshot): OracleSnapshot {
+  const readings: Record<string, PriceReading> = {};
+  const assets = Object.entries(ASSET_FEED_SYMBOLS) as Array<
+    [SupportedAsset, string]
+  >;
+  for (const [asset, symbol] of assets) {
+    const usd = snapshot.prices[asset];
+    const fetchedAt = snapshot.fetchedAt[asset];
+    if (usd !== undefined && fetchedAt !== undefined) {
+      readings[symbol] = { usd, fetchedAt };
+    }
+  }
+  const avuHash = computeAvuHash(readings, snapshot.mining);
+  const rates: AvuRates = {};
+  for (const [asset] of assets) {
+    const rate = avuPerCoin(snapshot.prices[asset] ?? 0, avuHash);
+    if (rate !== undefined) rates[asset] = rate;
+  }
+  const rated: OracleSnapshot = { ...snapshot, rates };
+  if (avuHash) rated.avuHash = avuHash;
+  else delete rated.avuHash;
+  return rated;
+}
+
+/**
+ * Converts a raw base-unit integer (wei, satoshis, lamports) to its equivalent in AVU at `rate`.
+ * Returns undefined when there is no rate for the asset: an unknown price is not zero.
  */
 export function convertRawToAvu(
   rawAmount: bigint | null | undefined,
   asset: SupportedAsset,
-  customRate?: number
-): number {
+  rate: number | undefined
+): number | undefined {
+  if (rate === undefined || !Number.isFinite(rate) || rate <= 0) {
+    return undefined;
+  }
   if (rawAmount === null || rawAmount === undefined || rawAmount <= 0n) {
     return 0;
   }
-  const rate = customRate ?? DEFAULT_AVU_RATES[asset];
   const decimals = ASSET_DECIMALS[asset];
   const scale = 10n ** BigInt(decimals);
 
@@ -122,21 +176,23 @@ export function formatAvu(avu: number): string {
 }
 
 /**
- * Evaluates the economic parity of an atomic swap offer relative to current energy basket AVU rates.
+ * Evaluates the economic parity of an atomic swap offer at the given AVU rates. Undefined when
+ * either asset has no rate: parity against an unknown price cannot be stated.
  */
 export function calculateSwapParity(
   sendRaw: bigint,
   sendAsset: SupportedAsset,
   receiveRaw: bigint,
   receiveAsset: SupportedAsset,
-  rates: Record<SupportedAsset, number> = DEFAULT_AVU_RATES
-): SwapParityResult {
+  rates: AvuRates
+): SwapParityResult | undefined {
   const sendAvu = convertRawToAvu(sendRaw, sendAsset, rates[sendAsset]);
   const receiveAvu = convertRawToAvu(
     receiveRaw,
     receiveAsset,
     rates[receiveAsset]
   );
+  if (sendAvu === undefined || receiveAvu === undefined) return undefined;
 
   if (sendAvu <= 0) {
     return { parityPercent: 0, status: "fair", sendAvu: 0, receiveAvu };
@@ -156,102 +212,74 @@ export function calculateSwapParity(
   return { parityPercent, status, sendAvu, receiveAvu };
 }
 
-/**
- * Pyth Network public price feed IDs (32-byte hex strings).
- */
-export const PYTH_FEED_IDS = {
-  // Commodities
-  gold: "0x765d2ba906da5188bb6811c0f9d250760786520b41259398f6912f7166396344",
-  brent: "0x27f547c8702b80053e1a74288b832b8519cf2d815777a164f0b2fbe8eb2eb471",
-  // Crypto
-  solana: "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
-  ethereum:
-    "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
-};
+/** One asset's price as one fetch returned it. */
+export interface FetchedPrice {
+  /** The median across the providers that answered, in US dollars. */
+  usd: number;
+  /** How many providers' prices that median is of, after outliers are set aside. */
+  sources: number;
+  /** What each provider that answered returned, in US dollars. */
+  providers: Partial<Record<PriceProviderId, number>>;
+}
 
-export const COINGECKO_PRICE_URL =
-  "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,solana,ecash&vs_currencies=usd";
+/** The prices one fetch returned. An asset whose price did not come back is absent. */
+export interface FetchedPrices {
+  /** When the fetch finished (Unix ms). */
+  timestamp: number;
+  prices: Partial<Record<SupportedAsset, FetchedPrice>>;
+}
+
+export interface FetchPricesOptions {
+  fetchFn?: typeof fetch;
+  timeoutMs?: number;
+  client?: PriceFeedsClient;
+}
 
 /**
- * Asynchronously fetches public price feeds from Pyth Hermes and computes
- * an updated OracleSnapshot. Returns a default snapshot on error or timeout.
+ * Fetches the market price of every asset in ASSET_FEED_SYMBOLS across the configured
+ * providers (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance): each provider's own
+ * answer and their median.
+ *
+ * Nothing is substituted: an asset no provider answered for is absent, and a fetch that
+ * fails altogether returns no prices. Chain statistics are fetched separately
+ * (fetchMiningStats); AVU_hash is computed from both by rateOracleSnapshot.
  */
-import { PriceFeedsClient } from "@frank/price-feeds";
-
-/**
- * Asynchronously fetches public price feeds across multi-provider consensus (Chainlink,
- * Pyth, Coinbase, Kraken, CoinGecko, Binance) and computes an updated OracleSnapshot.
- * Returns a default snapshot on error or timeout.
- */
-export async function fetchOracleSnapshot(
-  fetchFn: typeof fetch = globalThis.fetch,
-  timeoutMs = 4000,
-  client?: PriceFeedsClient
-): Promise<OracleSnapshot> {
-  const defaultSnapshot = getDefaultOracleSnapshot();
-  if (typeof fetchFn !== "function") {
-    return defaultSnapshot;
-  }
+export async function fetchPrices(
+  options: FetchPricesOptions = {}
+): Promise<FetchedPrices> {
+  const fetchFn = options.fetchFn ?? globalThis.fetch;
+  const fetched: FetchedPrices = { timestamp: Date.now(), prices: {} };
+  if (typeof fetchFn !== "function" && !options.client) return fetched;
 
   try {
     const feedsClient =
-      client ||
+      options.client ||
       new PriceFeedsClient({
         fetchFn,
-        timeoutMs,
+        timeoutMs: options.timeoutMs ?? 4000,
         defaultStrategy: "median",
       });
-
-    const snapshot = await feedsClient.getSnapshot([
-      "ETH",
-      "SOL",
-      "XEC",
-      "GOLD",
-      "BRENT",
-    ]);
-
-    const goldSpot = snapshot.GOLD?.price || 2650.0;
-    const brentSpot = snapshot.BRENT?.price || 75.0;
-    const solSpot = snapshot.SOL?.price || 150.0;
-    const ethSpot = snapshot.ETH?.price || 2600.0;
-    const ecashSpot = snapshot.XEC?.price || DEFAULT_ANCHOR_SPOT_PRICES.ecash;
-
-    const basketIndex = computeEnergyBasketIndex({
-      gold: goldSpot,
-      brentCrude: brentSpot,
-    });
-
-    const rates: Record<SupportedAsset, number> = {
-      monad: calculateAvuRate(DEFAULT_ANCHOR_SPOT_PRICES.monad, basketIndex),
-      ecash: calculateAvuRate(ecashSpot, basketIndex),
-      solana: calculateAvuRate(solSpot, basketIndex),
-      tempo: calculateAvuRate(1.0, basketIndex),
-      ethereum: calculateAvuRate(ethSpot, basketIndex),
-      hyperliquid: calculateAvuRate(
-        DEFAULT_ANCHOR_SPOT_PRICES.hyperliquid,
-        basketIndex
-      ),
-      bitcoin: calculateAvuRate(
-        DEFAULT_ANCHOR_SPOT_PRICES.bitcoin,
-        basketIndex
-      ),
-      bitcoincash: calculateAvuRate(
-        DEFAULT_ANCHOR_SPOT_PRICES.bitcoincash,
-        basketIndex
-      ),
-      dogecoin: calculateAvuRate(
-        DEFAULT_ANCHOR_SPOT_PRICES.dogecoin,
-        basketIndex
-      ),
-    };
-
-    return {
-      epoch: "pow-energy-standard-v1",
-      timestamp: Date.now(),
-      basketIndex,
-      rates,
-    };
+    const assets = Object.entries(ASSET_FEED_SYMBOLS) as Array<
+      [SupportedAsset, string]
+    >;
+    const sampled = await feedsClient.getSnapshot(
+      assets.map(([, symbol]) => symbol)
+    );
+    fetched.timestamp = Date.now();
+    for (const [asset, symbol] of assets) {
+      const result = sampled[symbol];
+      const usd = result?.price;
+      if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) {
+        continue;
+      }
+      const providers: FetchedPrice["providers"] = {};
+      for (const sample of result.samples ?? []) {
+        providers[sample.provider] = sample.price;
+      }
+      fetched.prices[asset] = { usd, sources: result.sampleCount, providers };
+    }
   } catch {
-    return defaultSnapshot;
+    // No prices: the caller keeps what it last fetched.
   }
+  return fetched;
 }

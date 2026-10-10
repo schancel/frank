@@ -319,6 +319,7 @@ import {
   compressPostImage,
   insertImageMarkdown,
   expandAttachmentTokens,
+  removeAttachmentReferences,
   tokenizeAttachmentDataUrls,
   formatAttachmentSize,
   type MarkdownFormatAction,
@@ -1067,17 +1068,7 @@ export default defineComponent({
     },
     removeAttachment(id: string) {
       this.attachments = this.attachments.filter(a => a.id !== id)
-      const lineRegex = new RegExp(
-        `(?:^|\\n)!?\\[[^\\]]*\\]\\(attachment:${id}\\)(?=\\n|$)`,
-        'g',
-      )
-      let cleaned = this.message.replace(lineRegex, '')
-      const inlineRegex = new RegExp(
-        `!?\\[[^\\]]*\\]\\(attachment:${id}\\)`,
-        'g',
-      )
-      cleaned = cleaned.replace(inlineRegex, '')
-      this.message = cleaned
+      this.message = removeAttachmentReferences(this.message, id)
     },
     formatAttachmentSize(bytes: number) {
       return formatAttachmentSize(bytes)

@@ -81,15 +81,10 @@ const mockSetEmailGatewayAddress = jest.fn((address: string) => {
 const mockResetEmailGatewayAddress = jest.fn(() => {
   mockSettingsStore.emailGatewayAddress = defaultEmailGatewayAddress
 })
-const mockSetNetworkMode = jest.fn((mode: 'testnet' | 'mainnet') => {
-  mockSettingsStore.networkMode = mode
-})
 const mockSettingsStore = jest.requireActual('vue').reactive({
   emailGatewayAddress: defaultEmailGatewayAddress,
-  networkMode: 'testnet',
   setEmailGatewayAddress: mockSetEmailGatewayAddress,
   resetEmailGatewayAddress: mockResetEmailGatewayAddress,
-  setNetworkMode: mockSetNetworkMode,
 })
 jest.mock('src/stores/settings', () => ({
   useSettingsStore: () => mockSettingsStore,
@@ -458,46 +453,27 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
   })
 
   describe('Network Environment & Chains Section', () => {
-    it('renders the testnet mode toggle and allows switching to mainnet', async () => {
-      mockSettingsStore.networkMode = 'testnet'
+    it('shows the Testnet toggle on and locked, and says mainnet switching is locked', async () => {
       const router = await openDirectly('#/settings')
-      const wrapper = mountSettings(router)
+      const wrapper = mountSettings(router, {}, true)
 
+      const toggle = wrapper.get('[data-test="testnet-mode-toggle"]')
+      expect(toggle.attributes('model-value')).toBe('true')
+      expect(toggle.attributes('disable')).toBeDefined()
+      expect(wrapper.get('[data-test="mainnet-locked-hint"]').text()).toBe(
+        'settings.mainnetLockedBanner',
+      )
+      // Nothing to call: the page has no way to change the network.
       expect((wrapper.vm as any).isTestnetMode).toBe(true)
-      const toggle = wrapper.find('[data-test="testnet-mode-toggle"]')
-      expect(toggle.exists()).toBe(true)
-      expect(toggle.attributes('disable')).toBeUndefined()
+      expect(mockSettingsStore.setNetworkMode).toBeUndefined()
 
-      // Toggle off to mainnet
-      ;(wrapper.vm as any).isTestnetMode = false
-      expect(mockSettingsStore.networkMode).toBe('mainnet')
-      expect(mockSetNetworkMode).toHaveBeenCalledWith('mainnet')
-
-      // Toggle back to testnet
-      ;(wrapper.vm as any).isTestnetMode = true
-      expect(mockSettingsStore.networkMode).toBe('testnet')
-      expect(mockSetNetworkMode).toHaveBeenCalledWith('testnet')
-
+      const captions = wrapper
+        .findAll('[caption]')
+        .map(caption => caption.text())
+      expect(captions).toContain('Solana Devnet')
+      expect(captions).toContain('walletPanel.monadTestnet')
       wrapper.unmount()
     })
-
-    it.each([
-      ['testnet', 'Solana Devnet', 'walletPanel.monadTestnet'],
-      ['mainnet', 'Solana', 'walletPanel.monad'],
-    ])(
-      'shows configured settlement captions in %s mode',
-      async (mode, solanaName, monadKey) => {
-        mockSettingsStore.networkMode = mode
-        const router = await openDirectly('#/settings')
-        const wrapper = mountSettings(router, {}, true)
-        const captions = wrapper
-          .findAll('[caption]')
-          .map(caption => caption.text())
-        expect(captions).toContain(solanaName)
-        expect(captions).toContain(monadKey)
-        wrapper.unmount()
-      },
-    )
 
     it('renders the supported settlement networks list', async () => {
       const router = await openDirectly('#/settings')

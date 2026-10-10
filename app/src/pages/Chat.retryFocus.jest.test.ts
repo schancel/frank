@@ -29,7 +29,6 @@ let mockChatStore: any
 let mockOriginalMessage: any
 const mockDeleteMessage = jest.fn()
 const mockRetryOutgoing = jest.fn()
-const mockSendMessageImpl = jest.fn()
 
 jest.mock('../stores/chats', () => ({
   useChatStore: () => mockChatStore,
@@ -123,7 +122,7 @@ const InputStub = defineComponent({
 
 const Blank = defineComponent({ render: () => h('i') })
 
-function failedMessage(monad: boolean) {
+function failedMessage() {
   return {
     payloadDigest: 'failed',
     outbound: true,
@@ -133,7 +132,7 @@ function failedMessage(monad: boolean) {
     items: [{ type: 'text', text: 'hello' }],
     outpoints: [],
     senderAddress: '0xME',
-    ...(monad ? { stampValueWei: 5n } : {}),
+    stampValueWei: 5n,
     delivery: { failureReason: 'unavailable' },
   }
 }
@@ -150,26 +149,6 @@ function replaceFailedWithFinal() {
   mockChatStore.messages.final = finalMessage
 }
 
-function removeFailed() {
-  const messages = mockChatStore.chats[PEER].messages
-  const index = messages.findIndex(
-    (message: { payloadDigest: string }) => message.payloadDigest === 'failed',
-  )
-  if (index >= 0) messages.splice(index, 1)
-  delete mockChatStore.messages.failed
-}
-
-function appendRecord(payloadDigest: string, status: string) {
-  const message = {
-    ...mockOriginalMessage,
-    payloadDigest,
-    status,
-  }
-  mockChatStore.chats[PEER].messages.push(message)
-  mockChatStore.messages[payloadDigest] = message
-  return message
-}
-
 function openGate() {
   let release: () => void = () => undefined
   let markReady: () => void = () => undefined
@@ -182,8 +161,8 @@ function openGate() {
   return { opened, gate, markReady, release }
 }
 
-async function mountFailed(monad: boolean) {
-  const message = failedMessage(monad)
+async function mountFailed() {
+  const message = failedMessage()
   mockOriginalMessage = message
   const messages = reactive([message])
   mockChatStore = reactive({
@@ -235,9 +214,6 @@ async function mountFailed(monad: boolean) {
           dialog: () => ({ onOk: () => undefined }),
         },
         $t: (key: string) => key,
-        $relayClient: {
-          sendMessageImpl: mockSendMessageImpl,
-        },
       },
     },
   })
@@ -247,160 +223,77 @@ async function mountFailed(monad: boolean) {
 
 describe('Retry focus after keyed message replacement (#429)', () => {
   let composerHandoff: jest.SpyInstance
-  let failedHandoff: jest.SpyInstance
 
   beforeEach(() => {
     jest.clearAllMocks()
     mockDeleteMessage.mockReset()
     mockRetryOutgoing.mockReset()
-    mockSendMessageImpl.mockReset()
     document.body.innerHTML = ''
     const methods = (
       ChatPage as unknown as {
         methods: {
           focusComposerAfterRetry: () => void
-          focusFailedAfterRetry: () => void
         }
       }
     ).methods
     composerHandoff = jest.spyOn(methods, 'focusComposerAfterRetry')
-    failedHandoff = jest.spyOn(methods, 'focusFailedAfterRetry')
   })
 
   afterEach(() => {
     composerHandoff.mockRestore()
-    failedHandoff.mockRestore()
   })
 
-  it.each([
-    [
-      'Monad rekey',
-      true,
-      () =>
-        mockRetryOutgoing.mockImplementation(async () => {
-          replaceFailedWithFinal()
-          await nextTick()
-          return { state: 'sent', payloadDigest: 'final' }
-        }),
-    ],
-    [
-      'legacy Lotus deletion',
-      false,
-      () => {
-        mockDeleteMessage.mockImplementation(async () => {
-          removeFailed()
-          await nextTick()
-        })
-        mockSendMessageImpl.mockImplementation(async () => {
-          appendRecord('final', 'confirmed')
-          return ['txid']
-        })
-      },
-    ],
-  ])(
-    '%s hands focus to the visible stable composer after the focused bubble unmounts',
-    async (_name, monad, arrange) => {
-      arrange()
-      const wrapper = await mountFailed(monad)
-      const retry = wrapper.get('[data-testid="outgoing-retry"]')
-      retry.element.focus()
-      expect(document.activeElement).toBe(retry.element)
+  it('Monad rekey hands focus to the visible stable composer after the focused bubble unmounts', async () => {
+    mockRetryOutgoing.mockImplementation(async () => {
+      replaceFailedWithFinal()
+      await nextTick()
+      return { state: 'sent', payloadDigest: 'final' }
+    })
+    const wrapper = await mountFailed()
+    const retry = wrapper.get('[data-testid="outgoing-retry"]')
+    retry.element.focus()
+    expect(document.activeElement).toBe(retry.element)
 
-      await retry.trigger('click')
-      await flushPromises()
+    await retry.trigger('click')
+    await flushPromises()
 
-      expect(wrapper.find('[data-testid="outgoing-retry"]').exists()).toBe(
-        false,
-      )
-      const composer = wrapper.get('[data-testid="stable-chat-composer"]')
-      expect(document.activeElement).toBe(composer.element)
-      expect(composer.isVisible()).toBe(true)
-      expect(composerHandoff).toHaveBeenCalled()
-      expect(failedHandoff).not.toHaveBeenCalled()
-      if (!monad) {
-        expect(mockDeleteMessage).toHaveBeenCalledWith({
-          address: PEER,
-          payloadDigest: 'failed',
-        })
-        expect(mockSendMessageImpl).toHaveBeenCalledWith({
-          address: PEER,
-          items: [{ type: 'text', text: 'hello' }],
-          stampAmount: 1,
-        })
-        expect(mockDeleteMessage.mock.invocationCallOrder[0]).toBeLessThan(
-          mockSendMessageImpl.mock.invocationCallOrder[0],
-        )
-        expect(
-          mockChatStore.chats[PEER].messages.map(
-            (message: { payloadDigest: string; status: string }) => ({
-              payloadDigest: message.payloadDigest,
-              status: message.status,
-            }),
-          ),
-        ).toEqual([{ payloadDigest: 'final', status: 'confirmed' }])
-        expect(mockChatStore.messages.failed).toBeUndefined()
-        expect(mockChatStore.messages.final.status).toBe('confirmed')
-      }
-      wrapper.unmount()
-    },
-  )
+    expect(wrapper.find('[data-testid="outgoing-retry"]').exists()).toBe(false)
+    const composer = wrapper.get('[data-testid="stable-chat-composer"]')
+    expect(document.activeElement).toBe(composer.element)
+    expect(composer.isVisible()).toBe(true)
+    expect(composerHandoff).toHaveBeenCalled()
+    wrapper.unmount()
+  })
 
-  it.each([
-    [
-      'Monad rekey',
-      true,
-      (gate: ReturnType<typeof openGate>) => {
-        mockRetryOutgoing.mockImplementation(async () => {
-          gate.markReady()
-          await gate.gate
-          replaceFailedWithFinal()
-          await nextTick()
-          return { state: 'sent', payloadDigest: 'final' }
-        })
-      },
-    ],
-    [
-      'legacy Lotus deletion',
-      false,
-      (gate: ReturnType<typeof openGate>) => {
-        mockDeleteMessage.mockImplementation(async () => {
-          gate.markReady()
-          await gate.gate
-          removeFailed()
-          await nextTick()
-        })
-        mockSendMessageImpl.mockImplementation(async () => {
-          appendRecord('final', 'confirmed')
-          return ['txid']
-        })
-      },
-    ],
-  ])(
-    '%s keeps a competing control focused when Retry finishes later',
-    async (_name, monad, arrange) => {
-      const gate = openGate()
-      arrange(gate)
-      const wrapper = await mountFailed(monad)
-      const retry = wrapper.get('[data-testid="outgoing-retry"]')
-      retry.element.focus()
-      const pending = retry.trigger('click')
-      await gate.opened
-      const other = document.createElement('button')
-      other.setAttribute('data-testid', 'competing-control')
-      document.body.appendChild(other)
-      other.focus()
-      expect(document.activeElement).toBe(other)
+  it('Monad rekey keeps a competing control focused when Retry finishes later', async () => {
+    const gate = openGate()
+    mockRetryOutgoing.mockImplementation(async () => {
+      gate.markReady()
+      await gate.gate
+      replaceFailedWithFinal()
+      await nextTick()
+      return { state: 'sent', payloadDigest: 'final' }
+    })
+    const wrapper = await mountFailed()
+    const retry = wrapper.get('[data-testid="outgoing-retry"]')
+    retry.element.focus()
+    const pending = retry.trigger('click')
+    await gate.opened
+    const other = document.createElement('button')
+    other.setAttribute('data-testid', 'competing-control')
+    document.body.appendChild(other)
+    other.focus()
+    expect(document.activeElement).toBe(other)
 
-      gate.release()
-      await pending
-      await flushPromises()
+    gate.release()
+    await pending
+    await flushPromises()
 
-      expect(composerHandoff).toHaveBeenCalled()
-      expect(document.activeElement).toBe(other)
-      wrapper.unmount()
-      other.remove()
-    },
-  )
+    expect(composerHandoff).toHaveBeenCalled()
+    expect(document.activeElement).toBe(other)
+    wrapper.unmount()
+    other.remove()
+  })
 
   it.each([
     ['payment-pending', { state: 'payment-pending' }],
@@ -412,7 +305,7 @@ describe('Retry focus after keyed message replacement (#429)', () => {
     ],
   ])('Monad %s does not hand focus to the composer', async (_name, outcome) => {
     mockRetryOutgoing.mockResolvedValue(outcome)
-    const wrapper = await mountFailed(true)
+    const wrapper = await mountFailed()
     await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
     await flushPromises()
     expect(composerHandoff).not.toHaveBeenCalled()
@@ -424,86 +317,9 @@ describe('Retry focus after keyed message replacement (#429)', () => {
 
   it('Monad retry rejection does not hand focus to the composer', async () => {
     mockRetryOutgoing.mockRejectedValue(new Error('retry failed'))
-    const wrapper = await mountFailed(true)
+    const wrapper = await mountFailed()
     await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
     await flushPromises()
-    expect(composerHandoff).not.toHaveBeenCalled()
-    expect(document.activeElement).not.toBe(
-      wrapper.get('[data-testid="stable-chat-composer"]').element,
-    )
-    wrapper.unmount()
-  })
-
-  it('legacy fulfilled undefined focuses the replacement failed status', async () => {
-    mockDeleteMessage.mockImplementation(async () => {
-      removeFailed()
-      await nextTick()
-    })
-    mockSendMessageImpl.mockImplementation(async () => {
-      appendRecord('failed-again', 'error')
-      return undefined
-    })
-    const wrapper = await mountFailed(false)
-    await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
-    await flushPromises()
-    expect(mockDeleteMessage).toHaveBeenCalledWith({
-      address: PEER,
-      payloadDigest: 'failed',
-    })
-    expect(mockSendMessageImpl).toHaveBeenCalledWith({
-      address: PEER,
-      items: [{ type: 'text', text: 'hello' }],
-      stampAmount: 1,
-    })
-    expect(mockDeleteMessage.mock.invocationCallOrder[0]).toBeLessThan(
-      mockSendMessageImpl.mock.invocationCallOrder[0],
-    )
-    expect(composerHandoff).not.toHaveBeenCalled()
-    expect(failedHandoff).toHaveBeenCalled()
-    expect(document.activeElement).toBe(
-      wrapper.get('[data-testid="outgoing-focus-target"]').element,
-    )
-    expect(
-      mockChatStore.chats[PEER].messages.map(
-        (message: { payloadDigest: string; status: string }) => ({
-          payloadDigest: message.payloadDigest,
-          status: message.status,
-        }),
-      ),
-    ).toEqual([{ payloadDigest: 'failed-again', status: 'error' }])
-    wrapper.unmount()
-  })
-
-  it('legacy send rejection focuses the replacement failed status', async () => {
-    mockDeleteMessage.mockImplementation(async () => {
-      removeFailed()
-      await nextTick()
-    })
-    mockSendMessageImpl.mockImplementation(async () => {
-      appendRecord('failed-again', 'error')
-      throw new Error('broadcast failed')
-    })
-    const wrapper = await mountFailed(false)
-    await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
-    await flushPromises()
-    expect(mockSendMessageImpl).toHaveBeenCalled()
-    expect(composerHandoff).not.toHaveBeenCalled()
-    expect(failedHandoff).toHaveBeenCalled()
-    expect(document.activeElement).toBe(
-      wrapper.get('[data-testid="outgoing-focus-target"]').element,
-    )
-    expect(document.activeElement).not.toBe(
-      wrapper.get('[data-testid="stable-chat-composer"]').element,
-    )
-    wrapper.unmount()
-  })
-
-  it('legacy delete rejection does not hand focus to the composer or send', async () => {
-    mockDeleteMessage.mockRejectedValue(new Error('delete failed'))
-    const wrapper = await mountFailed(false)
-    await wrapper.get('[data-testid="outgoing-retry"]').trigger('click')
-    await flushPromises()
-    expect(mockSendMessageImpl).not.toHaveBeenCalled()
     expect(composerHandoff).not.toHaveBeenCalled()
     expect(document.activeElement).not.toBe(
       wrapper.get('[data-testid="stable-chat-composer"]').element,

@@ -1,11 +1,5 @@
 <template>
   <div>
-    <!-- Send file dialog -->
-    <!-- TODO: Move this up.  We don't need a copy of this dialog for each address (likely) -->
-    <q-dialog v-model="sendFileOpen">
-      <send-file-dialog :address="address" :file="image" />
-    </q-dialog>
-
     <q-header>
       <q-toolbar class="q-pl-sm">
         <!-- Info is a full-pane swap (see `infoOpen` below), not a side drawer, so its own
@@ -245,7 +239,7 @@
     amount of room a chat gets, and on a narrow/mobile viewport there's no room for both panes at
     once anyway, so a single view stack (never two panes fighting for space) is the one layout
     that already works at every width. -->
-    <router-view v-if="!infoOpen" @sendFileClicked="toSendFileDialog" />
+    <router-view v-if="!infoOpen" />
     <chat-info-view
       v-else
       :address="effectiveAddress || address"
@@ -264,7 +258,6 @@ import { RouteLocationNormalized } from 'vue-router'
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import ClearHistoryDialog from '../components/dialogs/ClearHistoryDialog.vue'
 import DeleteChatDialog from '../components/dialogs/DeleteChatDialog.vue'
-import SendFileDialog from '../components/dialogs/SendFileDialog.vue'
 import AccountBadge from '../components/contacts/AccountBadge.vue'
 import { useMyDrawerOpen } from '../composables/useMyDrawerOpen'
 import { useContactStore } from 'src/stores/contacts'
@@ -289,7 +282,6 @@ export default defineComponent({
     ChatInfoView,
     ClearHistoryDialog,
     DeleteChatDialog,
-    SendFileDialog,
     AccountBadge,
   },
   // `chatSelectMode`: read by ChatMessageSuffixButtons.vue (several component layers below,
@@ -319,7 +311,6 @@ export default defineComponent({
   },
   data() {
     return {
-      sendFileOpen: false as boolean,
       address: (this.$route.params.address as string) || '',
       // Full-pane Info swap, not a side drawer -- see this file's template header comment above
       // `router-view`/`chat-info-view` for why. Can be directly opened via ?info=true query param.
@@ -333,7 +324,6 @@ export default defineComponent({
       selectMode: false,
       confirmClearOpen: false,
       confirmDeleteOpen: false,
-      image: null as unknown | null,
     }
   },
   watch: {
@@ -390,10 +380,6 @@ export default defineComponent({
         delete query.info
         void this.$router.replace({ query })
       }
-    },
-    toSendFileDialog(args: unknown) {
-      this.image = args
-      this.sendFileOpen = true
     },
     // DeleteChatDialog (opened either from the overflow menu or from within the full-pane Info
     // view) emits this once the chat is actually gone -- neither the chat route nor an Info view

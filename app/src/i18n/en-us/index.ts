@@ -95,6 +95,10 @@ export default {
     sendStealth: 'Send Stealth',
     offerSwap: 'Offer Atomic Swap',
     attachImage: 'Attach Image',
+    removeAttachment: 'Remove {name}',
+    imageRefused: '{name} cannot be sent: {reason}.',
+    messageTooLarge:
+      'This message is too large to send. Remove a picture or shorten the text.',
     blackjackChallenge: 'Blackjack challenge',
     placeHolder: 'Write a message...',
     emojiPickerTitle: 'Select an emoji',
@@ -122,6 +126,8 @@ export default {
     fulfilled: "Here's your purchase ({itemId}):",
   },
   chatImage: {
+    onePhoto: '📷 Photo',
+    manyPhotos: '📷 {count} photos',
     notShown: 'Image not shown ({reason})',
     reasonNotAnImage: 'not an image',
     reasonTooLarge: 'too large',
@@ -294,7 +300,6 @@ export default {
     choosePhoto: 'Choose profile photo',
     previousAvatar: 'Previous avatar',
     nextAvatar: 'Next avatar',
-    chooseFile: 'Choose a file',
     openInExplorer: 'Open transaction in block explorer',
     copyTxHash: 'Copy transaction hash',
     backToForum: 'Back to forum',
@@ -432,7 +437,7 @@ export default {
     avuDialogTitle: 'Arbitrary Value Unit (AVU)',
     avuDialogSubtitle: '1 AVU ≡ 1 Kilowatt-Hour (kWh) of Physical Compute',
     avuDialogDesc:
-      'Frank eliminates fiat currencies from the core interface. Balances are measured in AVUs, where 1 AVU represents 1 kWh of physical work derived directly from global Proof-of-Work mining networks.',
+      'Frank keeps fiat currencies out of the core interface. Balances are compared in AVU, a unit of account: 1 AVU is 1 kWh of energy. How many kWh a dollar is worth is read off proof-of-work mining (the coin price, block subsidy, difficulty and mining hardware efficiency of a basket of mined coins), and a coin’s AVU value is its price times that number. It is not a coin or token; it lets any two coins be compared through one number.',
     avuMemeHeading: 'Refusing the USD Meme',
     avuMemeDesc:
       'The US Dollar is a social meme sustained by software defaults and central bank decree. Refusing to display USD in self-custodial wallets breaks that psychological monopoly and weakens the meme, re-anchoring wealth in the invariant laws of thermodynamics.',
@@ -441,13 +446,13 @@ export default {
       'Every physical good—food, clean water, housing, semiconductors, and transportation—is fundamentally organized energy. By denominating value in physical energy, purchasing power is measured against the root cost of physical reality.',
     avuCpiHeading: 'Bypassing the CPI to Reveal the Real Worth of the Dollar',
     avuCpiDesc:
-      'Government Consumer Price Index (CPI) metrics obscure inflation through substitution bias and hedonic tweaks. A $100 bill still says "$100", masking its decay. In the 1930s, $1 bought ~143 kWh; today it buys only ~12 kWh. Tracking AVU over time exposes the true, unvarnished rate of fiat currency debasement.',
+      'Government Consumer Price Index (CPI) metrics obscure inflation through substitution bias and hedonic tweaks. A $100 bill still says "$100", masking its decay. In 1960, $1 bought about 91 kWh of US industrial electricity; in 2025 it bought about 12 kWh (EIA). Tracking energy over time exposes the rate of fiat currency debasement.',
     avuOracleLessHeading: 'Truly "Oracle-Less"',
     avuOracleLessDesc:
       'Unlike traditional DeFi oracles that rely on trusted third-party feeds, Proof-of-Work difficulty and emission schedules are verified directly on-chain by full nodes and anchored by competitive thermodynamics.',
     avuDialogClose: 'Close',
     avuDrawerHeader: '1 AVU ≡ 1 kWh (?)',
-    avuRatesTitle: 'Live Physical Compute Equivalencies',
+    avuRatesTitle: 'Fetched market prices in AVU',
     avuRatesAsset: 'Asset',
     avuRatesRate: 'Physical Compute (AVU / kWh)',
     avuRatesRefUsd: 'USD Reference',
@@ -482,51 +487,89 @@ export default {
     viewInExplorer: 'View in Explorer',
     avuTooltip:
       '1 AVU ≡ 1 kWh (3.6 MJ) of physical compute. An unforgeable thermodynamic standard of real purchasing power.',
-    avuHashLabel: 'AVU (Hash-Derived)',
-    avuSpotLabel: 'AVU (Grid Spot)',
-    tpiLabel: 'Thermodynamic Parity Index (TPI)',
-    macroHistory: 'Historical Macro (1930 - Present)',
-    networkComparison: 'Mined Coins Arbitrage',
-    arbitrageMargin: 'Mining Arbitrage Spread',
-    macroTab: 'Historical Macro',
-    networksTab: 'Network Parity',
-    chartUsdKwh: 'USD Purchasing Power (kWh/$)',
-    chartGoldAvu: 'Gold Ore Depletion (AVU/oz)',
-    chartPowEmergence: 'PoW Emergence',
-    chartHashCost: 'Implied Energy Cost ($/kWh)',
-    chartArbitrageYield: 'Yield Premium',
-    chartHardwareEff: 'Hardware Efficiency',
+    avuHashLabel: 'AVU_hash: kWh per dollar, from mining',
+    avuHashNote:
+      'Market-cap-weighted average over {used} of {total} basket entries, Bitcoin capped at 60%: {weights}. Hardware efficiency: Cambridge estimate for {month}, a curated figure; everything else is fetched.',
+    avuSpotLabel: 'AVU_spot: kWh per dollar, from the grid',
+    avuSpotNote:
+      'US industrial average, {cents}¢/kWh, {month} (EIA). Depends on a published price; AVU_hash does not.',
+    avuUnitLabel: '1 AVU = 1 kWh',
+    avuUnitNote:
+      'One kWh in dollars as mining prices it: 1 ÷ AVU_hash. A unit of account, not a coin or token.',
+    avuUnavailable: 'Unavailable',
+    sourceEfficiency:
+      'Hardware efficiency (curated, not a live reading): {efficiency} Retrieved {retrieved}.',
+    chartNoteNoHash:
+      'AVU_hash is unavailable, so prices cannot be stated in AVU and no line is drawn.',
+    chartNoteCurrentHash:
+      'Each point is that price times today’s AVU_hash ({rate} kWh/$); AVU_hash is not recomputed along the line.',
+    chartNoteAnnualHash:
+      'AVU_hash is drawn for {from} to {to}, each year the mean of twelve monthly values computed from Bitcoin’s price, subsidy, difficulty and Cambridge’s efficiency estimate. Bitcoin only: no other coin’s history is bundled.',
+    chartHashKwh: 'AVU_hash, Bitcoin only (kWh/$)',
+    avuPriceSingleSource: 'One provider only.',
+    avuPriceSources: 'Median of {count} providers.',
+    avuHashVsSpotNote:
+      'How far the mining reading is above (+) or below (−) the grid reading. The two should roughly agree.',
+    avuHashVsSpotLabel: 'AVU_hash against AVU_spot',
+    avuHashStale: 'Stale: oldest input fetched {age} ago.',
+    avuHashLeftOutEfficiency: 'no hardware efficiency data',
+    avuHashLeftOutPrice: 'no fetched price',
+    avuHashLeftOutChain: 'no chain statistics',
+    avuHashLeftOut: 'Left out: {coins}.',
+    avuHashUnavailableNote:
+      'AVU_hash could not be computed: no mined coin in the basket has a fetched price and chain statistics. No AVU value is shown until one does.',
+    avuNoPriceSource: 'No provider publishes a market price for this coin.',
+    avuPriceNotFetched: 'The price could not be fetched.',
+    avuPriceFreshNote: 'Market price {usd}, fetched {age} ago.',
+    avuPriceStaleNote: 'Stale: last market price {usd}, fetched {age} ago.',
+    avuMainnetPrice:
+      '{rate} (mainnet price; testnet coins have no market value)',
+    avuStalePrice: '{rate} ({age} old)',
+    resetZoom: 'Reset zoom',
+    arbitrageMargin: 'eCash vs Bitcoin mining pay',
+    arbitrageNote:
+      'Dollars a kWh of mining earns on eCash over Bitcoin, from each chain’s price, subsidy and difficulty. eCash miners receive 58% of the subsidy; fees not counted.',
+    miningBaseline: 'Baseline',
+    chartUsdKwh: 'AVU_spot (kWh/$)',
+    chartGoldAvu: 'Gold at AVU_spot (kWh/oz)',
     rangeAll: 'ALL',
     range5Y: '5Y',
     range1Y: '1Y',
     range30D: '30D',
     range7D: '7D',
     range24H: '24H',
-    rangePow: 'PoW Era (2009-Present)',
-    rangeAsic: 'Modern ASIC (2020-Present)',
-    rangeRecent: 'Recent (24h / Finer)',
     rangeNetworks: 'Networks',
-    resetZoom: 'Reset Zoom',
+    chartNoteAnnual:
+      'Yearly published figures, {from} to {to}: AVU_spot, the kWh a dollar bought at the US industrial electricity price, and an ounce of gold priced in that energy. Years a source does not cover are left out.',
+    chartNoteProvider:
+      '{count} market prices published by {provider}, from {first}.',
+    chartNoteJoined:
+      '{count} market prices from {first}: {recorded} fetched and recorded by this app, the rest published by {provider}.',
+    chartNoteObserved:
+      '{count} prices this app fetched and recorded itself, from {first}; no provider’s history is drawn with them.',
+    chartNoteNoHistory:
+      'No price history could be fetched for {symbol}, so no line is drawn.',
+    chartNoteNoSource:
+      'No provider publishes a market price for {symbol}, so there is nothing to draw.',
+    chartNoteMainnetPrice:
+      'This is the mainnet coin’s market price; testnet coins have no market value.',
+    chartNoteNetworks:
+      'Dollars a kWh of mining earns on each basket entry: price × miner’s subsidy ÷ hashes per block × hashes per kWh, with its weight in AVU_hash. Hardware efficiency is Cambridge’s estimate for {month}. Percentages compare with Bitcoin.',
+    chartNoteNetworksUnavailable:
+      'AVU_hash could not be computed, so nothing is drawn.',
     sourcesTitle: 'Methodology & Data Sources',
+    sourceUnit:
+      'AVU: 1 AVU = 1 kWh. AVU_hash is the kWh a dollar is worth, averaged over a basket of mined coins by market capitalisation with Bitcoin capped at 60%; for each, dollars per kWh = price × subsidy ÷ hashes per block × hashes per kWh. Every AVU value is a fetched price times AVU_hash.',
     sourceFeeds:
-      'Live Oracle Feeds: Real-time market spot prices streamed from CoinGecko & Pyth Network public APIs for active cryptocurrencies (ETH, SOL, XEC); testnet and emerging networks (MON, HYPE, TUSD) anchored to protocol testnet parity indices.',
+      'Prices: fetched from Coinbase, Kraken, CoinGecko, Binance (Binance.US where Binance does not answer), Pyth and Chainlink (read through the public Arbitrum RPC); the middle value is used, and two sources that disagree widely give no price. A coin with no fetched price shows no value.',
     sourceHistorical:
-      'Historical & Intraday Resolution: Intraday 24h hourly points for fine-grained recent analysis, plus multi-year bundled archives (1930–present) from St. Louis FRED, CoinGecko, and blockchain genesis records.',
-    sourceGrid:
-      'Grid Benchmark: US Energy Information Administration (EIA) Electric Power Monthly published industrial tariff tables ($0.082/kWh benchmark).',
+      'Price history: the candles one provider published for the range (Coinbase, Kraken, Binance.US or CoinGecko). Nothing is interpolated.',
+    sourceGrid: 'Long-range data, bundled: {electricity}. {gold}',
     sourceHash:
-      'PoW Baseline: Derived from consensus halving schedules and CBECI hardware fleet specifications ($0.084/kWh empirical anchor).',
-    sourceHardware:
-      'Hardware Efficiency: Cambridge Bitcoin Electricity Consumption Index (CBECI) & Bitmain/MicroBT hardware spec sheets.',
-    hardwareMilestones: 'Hardware Efficiency Milestones',
-    chartTokenAvu: 'AVU / kWh',
-    activeTokenCardTitle: '{name} ({symbol}) Parity',
+      'Mining, live: subsidy, difficulty and supply from Blockchair’s public chain statistics (one source), prices from the feeds above. Mining, history: {chain} {subsidy}',
+    activeTokenCardTitle: '{symbol} in AVU',
     inspectingDate: 'Inspecting',
     latestValue: 'Latest',
-    hoverChartHint: 'Hover chart to inspect historical dates',
-    hoverActiveHint: 'Inspecting historical values across assets',
-    networkSelected: 'Network / Coin',
-    energyCost: 'Energy Cost',
   },
   chatList: {
     senderPrefix: '{name}: {text}',
@@ -646,15 +689,6 @@ export default {
     usernameReassigned:
       "You added this contact as {'@'}{username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.",
   },
-  sendLotusDialog: {
-    sendLotusTo: 'Send Lotus to',
-    amountHint: 'Set the amount of Lotus to be sent.',
-    amountPlaceholder: 'Enter number of Lotus...',
-    memoHint: 'Attach a memo to the payment.',
-    memoPlaceholder: 'Enter the memo...',
-    sendBtnLabel: 'Send',
-    cancelBtnLabel: 'Cancel',
-  },
   sendStealthDialog: {
     sendStealthTo: 'Send Stealth to',
     subtitle: 'Encrypted direct transfer (invisible to relay)',
@@ -709,13 +743,6 @@ export default {
     viewInExplorer: 'View transaction in block explorer',
     viewTransaction: 'View transaction',
     directCreditHint: 'Indexed into spendable balance',
-  },
-  sendFileDialog: {
-    sendFile: 'Send File',
-    captionHint: 'Attach a memo to the payment.',
-    captionPlaceholder: 'Enter the memo...',
-    sendBtnLabel: 'Send',
-    cancelBtnLabel: 'Cancel',
   },
   setup: {
     loginOrSignUp: 'Login/Sign Up',
@@ -934,7 +961,6 @@ export default {
     receiveMonad: 'Receive MON',
     profile: 'Profile',
     settings: 'Settings',
-    wipeAndSave: 'Delete relay messages',
     changeLog: 'Changelog',
     showSeed: 'Show Seed',
     confirmSeed: 'Confirm Recovery Phrase',
@@ -1062,14 +1088,11 @@ export default {
     gateways: 'Gateways',
     networkModeTitle: 'Network Environment & Chains',
     testnetMode: 'Testnet Mode',
-    testnetModeLockedHint:
-      'Enforces testnet across Monad and all secondary settlement networks.',
     testnetActiveBanner:
       'Testnet is active across Monad and all secondary settlement networks.',
     mainnetActiveBanner:
       'Mainnet is active. Real assets are used for transactions and settlements.',
-    mainnetLockedBanner:
-      'Mainnet switching is locked for safety during protocol beta.',
+    mainnetLockedBanner: 'Mainnet switching is locked for now.',
     supportedChainsTitle: 'Supported Settlement Networks',
     chainActive: 'Active',
   },
@@ -1201,15 +1224,6 @@ export default {
       'Need to receive coins or tokens instead? Your Receive Address is managed in your Wallet.',
     goToWallet: 'Go to Wallet',
     scanPrompt: 'Scan to add as a contact on Frank',
-  },
-  wipeWallet: {
-    warning: 'Delete all relay messages?',
-    warningMsg:
-      'This permanently deletes every message stored on the relay server, along with the local copies in this app. Your wallet, seed phrase, and funds are not touched.',
-    cannotBeUndone: 'This cannot be undone.',
-    cancel: 'Cancel',
-    wipe: 'Delete All Messages',
-    spinnerText: 'Deleting messages…',
   },
   seedPhraseDialog: {
     seedPhrase: 'Recovery Phrase',

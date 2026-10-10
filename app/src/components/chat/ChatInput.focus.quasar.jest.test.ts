@@ -11,8 +11,10 @@ import { flushPromises, mount, VueWrapper } from '@vue/test-utils'
 import { defineComponent, h, nextTick, ref } from 'vue'
 
 import ChatInput from './ChatInput.vue'
-import { processInput } from '../../utils/chat'
 import enUS from '../../i18n/en-us'
+import { MAX_SENT_MESSAGE_BYTES } from '../../utils/image-data-uri'
+import { png } from '../../utils/image-data-uri.fixtures'
+import type { PostAttachment } from '../../utils/post-editor'
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -22,7 +24,6 @@ jest.mock('@frank/wallet/chain', () => ({
     fromDisplayAmount: (s: string) => BigInt(s),
   },
 }))
-jest.mock('../../utils/chat', () => ({ processInput: jest.fn() }))
 
 const translate = (k: string) =>
   k
@@ -203,8 +204,7 @@ describe('ChatInput compose box focus and first character (#396)', () => {
     expect(w.emitted('sendMessage')).toEqual([['pending text']])
   })
 
-  it('ignores paste and drop of a file while a send is in flight, handles them otherwise', async () => {
-    ;(processInput as jest.Mock).mockResolvedValue({ blob: true })
+  it('ignores paste and drop of a picture while a send is in flight, attaches it otherwise', async () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     const w = mount(ChatInput, {
@@ -214,27 +214,15 @@ describe('ChatInput compose box focus and first character (#396)', () => {
     })
     mounted.push(w as unknown as VueWrapper)
     const box = w.element.querySelector('textarea') as HTMLTextAreaElement
-    const fire = (type: 'paste' | 'drop') => {
-      const ev = new Event(type, { bubbles: true, cancelable: true })
-      const data = { items: [{ kind: 'file' }] }
-      Object.defineProperty(
-        ev,
-        type === 'paste' ? 'clipboardData' : 'dataTransfer',
-        { value: data },
-      )
-      box.dispatchEvent(ev)
-      return ev
-    }
-    const dropped = fire('drop')
-    fire('paste')
-    await flushPromises()
-    expect(processInput).not.toHaveBeenCalled()
-    expect(w.emitted('sendFileClicked')).toBeUndefined()
+    const dropped = fire(box, 'drop', [pictureFile('a.png')])
+    fire(box, 'paste', [pictureFile('a.png')])
+    await settle()
+    expect(w.emitted('update:attachments')).toBeUndefined()
     expect(dropped.defaultPrevented).toBe(true) // the browser must not navigate to the file
     await w.setProps({ disable: false })
-    fire('paste')
-    await flushPromises()
-    expect(w.emitted('sendFileClicked')).toEqual([[{ blob: true }]])
+    fire(box, 'paste', [pictureFile('a.png')])
+    await settle()
+    expect(w.emitted('update:attachments')).toHaveLength(1)
   })
 
   it('keeps the attach and stamp buttons disabled during a send', () => {
@@ -359,5 +347,182 @@ describe('ChatInput compose box focus and first character (#396)', () => {
     expect(c.sent).toEqual(['hello'])
     // Pressing Send must not move focus out of the box (mousedown default is prevented).
     expect(down.defaultPrevented).toBe(true)
+  })
+})
+
+/** A file whose bytes are a real PNG header declaring the given size. */
+function pictureFile(name: string, width = 2, height = 2) {
+  const bytes = Buffer.from(png(width, height).split(',')[1], 'base64')
+  return new File([bytes], name, { type: 'image/png' })
+}
+/** A paste or drop carrying files, as the browser delivers it to the text box. */
+function fire(box: Element, type: 'paste' | 'drop', files: File[]) {
+  const ev = new Event(type, { bubbles: true, cancelable: true })
+  Object.defineProperty(
+    ev,
+    type === 'paste' ? 'clipboardData' : 'dataTransfer',
+    { value: { files } },
+  )
+  box.dispatchEvent(ev)
+  return ev
+}
+/** Lets the file reads (FileReader) and the re-renders after them finish. */
+async function settle() {
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+    await flushPromises()
+  }
+}
+
+/** Mirrors Chat.vue: the page owns the text and the attachments. */
+function mountWithAttachments(text = '') {
+  const message = ref(text)
+  const attachments = ref<PostAttachment[]>([])
+  const sent: string[] = []
+  const Parent = defineComponent({
+    setup() {
+      return () =>
+        h(ChatInput, {
+          'message': message.value,
+          'onUpdate:message': (v: string) => (message.value = v),
+          'attachments': attachments.value,
+          'onUpdate:attachments': (v: PostAttachment[]) =>
+            (attachments.value = v),
+          'onSendMessage': (v: string) => sent.push(v),
+        })
+    },
+  })
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const wrapper = mount(Parent, {
+    attachTo: host,
+    global: {
+      plugins: [loadQuasar()],
+      mocks: {
+        $t: (key: string, named: Record<string, string> = {}) =>
+          String(translate(key)).replace(
+            /\{(\w+)\}/g,
+            (whole, name: string) => named[name] ?? whole,
+          ),
+      },
+    },
+  })
+  mounted.push(wrapper)
+  const box = () =>
+    wrapper.element.querySelector('textarea') as HTMLTextAreaElement
+  return { wrapper, message, attachments, sent, box }
+}
+
+describe('ChatInput holds pictures for the message', () => {
+  it('a pasted picture becomes an attachment, referenced in the text at the cursor', async () => {
+    const c = mountWithAttachments('before after')
+    await flushPromises()
+    c.box().focus()
+    c.box().setSelectionRange(7, 7)
+    const ev = fire(c.box(), 'paste', [pictureFile('cat.png')])
+    await settle()
+    expect(ev.defaultPrevented).toBe(true)
+    expect(c.attachments.value).toEqual([
+      expect.objectContaining({ id: '1', name: 'cat.png', dataUrl: png(2, 2) }),
+    ])
+    expect(c.message.value).toBe('before \n![cat](attachment:1)\nafter')
+    const chips = c.wrapper.findAll('[data-testid="chat-attachment-chip"]')
+    expect(chips).toHaveLength(1)
+    expect(chips[0].text()).toContain('cat.png')
+  })
+
+  it('pasted text is left to the text box', async () => {
+    const c = mountWithAttachments()
+    const ev = fire(c.box(), 'paste', [])
+    await settle()
+    expect(ev.defaultPrevented).toBe(false)
+    expect(c.attachments.value).toEqual([])
+  })
+
+  it('several pictures dropped or picked are each attached and referenced, in order', async () => {
+    const c = mountWithAttachments('hi')
+    fire(c.box(), 'drop', [pictureFile('a.png'), pictureFile('b.png', 3, 3)])
+    await settle()
+    const picker = c.wrapper.element.querySelector(
+      '[data-testid="chat-attachment-picker"]',
+    ) as HTMLInputElement
+    Object.defineProperty(picker, 'files', {
+      value: [pictureFile('c.png', 4, 4)],
+      configurable: true,
+    })
+    picker.dispatchEvent(new Event('change'))
+    await settle()
+    expect(c.attachments.value.map(a => [a.id, a.name, a.dataUrl])).toEqual([
+      ['1', 'a.png', png(2, 2)],
+      ['2', 'b.png', png(3, 3)],
+      ['3', 'c.png', png(4, 4)],
+    ])
+    const order = ['attachment:1', 'attachment:2', 'attachment:3'].map(r =>
+      c.message.value.indexOf(r),
+    )
+    expect(order.every(i => i > 0)).toBe(true)
+    expect([...order].sort((x, y) => x - y)).toEqual(order)
+  })
+
+  it('removing an attachment removes its reference and leaves the others', async () => {
+    const c = mountWithAttachments('hi')
+    fire(c.box(), 'drop', [pictureFile('a.png'), pictureFile('b.png', 3, 3)])
+    await settle()
+    const remove = c.wrapper.element.querySelector(
+      '[data-attachment-id="1"] .q-chip__icon--remove',
+    ) as HTMLElement
+    remove.click()
+    await flushPromises()
+    expect(c.attachments.value.map(a => a.id)).toEqual(['2'])
+    expect(c.message.value).not.toContain('attachment:1')
+    expect(c.message.value).toContain('![b](attachment:2)')
+  })
+
+  it('refuses a picture it cannot bring within bounds, with the reason, and attaches nothing', async () => {
+    // No canvas here, so nothing is downscaled: the picture stays 9000 pixels wide.
+    const c = mountWithAttachments('hi')
+    fire(c.box(), 'paste', [pictureFile('huge.png', 9000, 9000)])
+    await settle()
+    expect(c.attachments.value).toEqual([])
+    expect(c.message.value).toBe('hi')
+    expect(
+      c.wrapper.get('[data-testid="chat-attachment-refused"]').text(),
+    ).toBe('huge.png cannot be sent: dimensions too large.')
+  })
+
+  it('does not send a message too large for one message, and says so', async () => {
+    const c = mountWithAttachments('hi')
+    c.attachments.value = [
+      {
+        id: '1',
+        name: 'a.png',
+        dataUrl: 'A'.repeat(MAX_SENT_MESSAGE_BYTES),
+        sizeBytes: 1,
+      },
+    ]
+    await flushPromises()
+    expect(c.wrapper.get('[data-testid="chat-message-too-large"]').text()).toBe(
+      enUS.chatInput.messageTooLarge,
+    )
+    c.box().focus()
+    enter()
+    await flushPromises()
+    expect(c.sent).toEqual([])
+    c.attachments.value = []
+    await flushPromises()
+    enter()
+    await flushPromises()
+    expect(c.sent).toEqual(['hi'])
+  })
+
+  it('sends a message that is only pictures', async () => {
+    const c = mountWithAttachments('')
+    fire(c.box(), 'drop', [pictureFile('a.png')])
+    await settle()
+    c.box().focus()
+    enter()
+    await flushPromises()
+    expect(c.sent).toHaveLength(1)
+    expect(c.sent[0]).toContain('attachment:1')
   })
 })

@@ -568,6 +568,7 @@ import {
 } from 'src/accounts/native-transfer'
 import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
+import { useOracleFeed } from 'src/composables/useOracleFeed'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { getExplorerUrl } from 'src/utils/explorer'
 import type { SwapRecord } from 'src/stores/swaps'
@@ -601,6 +602,7 @@ export default defineComponent({
     const isTestnet = computed(() => network.value.isTestnet ?? false)
     const { getCustomName } = useWalletNames()
     const oracle = useSafeOracleStore()
+    useOracleFeed()
     const showAvuDialog = ref(false)
     const activeTab = ref<'balance' | 'parity'>('balance')
 

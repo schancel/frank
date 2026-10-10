@@ -621,6 +621,20 @@ export default defineComponent({
           }
           if (err instanceof NativeTransactionSubmissionError)
             signedTxHash = err.transaction.txHash
+          // Nothing was signed (the wallet reports a signature before it hands anything to the
+          // network, and it reported none): the transfer was refused while it was being
+          // planned, so nothing can have moved. Say so, with the reason, and go back to the
+          // review. Shown as "unresolved, funds may have moved" before, with nothing on chain.
+          if (
+            reviewed.binding.wallet.family === 'evm' &&
+            signedTxHash === undefined
+          ) {
+            dispatched.value = false
+            errorNotify(err, {
+              fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
+            })
+            return
+          }
           if (!(await current())) return
           inspect()
           void watch()

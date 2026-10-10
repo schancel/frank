@@ -854,7 +854,43 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     },
   )
 
-  it.each(['no-hash', 'unmatched', 'ambiguous', 'wrong-chain'])(
+  // Seen in Chrome on testnet: the review could not estimate a fee, Confirm was pressed, the
+  // wallet refused the transfer while planning it, and the page said "outcome is unresolved,
+  // funds may have moved" with no transaction anywhere. The wallet reports a signature before
+  // it hands anything to the network; with none reported, nothing was sent.
+  it('a transfer the wallet refuses before signing anything is said to be not sent, and the same review can be confirmed again', async () => {
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => [],
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => true,
+    })
+    mockSend.mockRejectedValueOnce(new RangeError('Insufficient native funds'))
+    const wrapper = mountSend()
+    try {
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      expect(
+        wrapper.find('[data-test="native-operation-outcome"]').exists(),
+      ).toBe(false)
+      expect(errorNotify).toHaveBeenCalledWith(expect.any(RangeError), {
+        fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
+      })
+      // Back on the review: it can be confirmed again, and that is a first payment.
+      mockSend.mockResolvedValueOnce({ txHash: '0x' + 'cd'.repeat(32) })
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      expect(mockSend).toHaveBeenCalledTimes(2)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each(['unmatched', 'ambiguous', 'wrong-chain'])(
     'keeps a dispatched %s outcome held without recipient/amount association',
     async mode => {
       const fixture = await includedNativeTransfer()
@@ -879,11 +915,9 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         isCurrent: () => true,
       })
       mockSend.mockImplementation(async ({ onSigned }) => {
-        if (mode !== 'no-hash')
-          await onSigned({
-            txHash:
-              mode === 'unmatched' ? '0x' + 'ab'.repeat(32) : fixture.hash,
-          })
+        await onSigned({
+          txHash: mode === 'unmatched' ? '0x' + 'ab'.repeat(32) : fixture.hash,
+        })
         throw new Error('dispatch failed')
       })
       const wrapper = mountSend()

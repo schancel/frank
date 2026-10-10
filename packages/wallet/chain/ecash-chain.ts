@@ -119,6 +119,9 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         chainUtxoPool: config.chainUtxoPool,
         getTransactionStatus: (transaction) =>
           getEcashTransactionStatus(config, transaction),
+        rebroadcast: async (rawTransactions) => {
+          await config.chronik.broadcastTxs([...rawTransactions]);
+        },
       });
     },
     nativeTransfers: {

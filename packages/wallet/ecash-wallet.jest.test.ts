@@ -12,6 +12,7 @@ import {
   NativeTransactionSubmissionError,
 } from "./chain/chain-wallet";
 import type { ChronikClient } from "chronik-client";
+import { Address } from "ecash-lib/dist/address/address";
 import type { DomainRoot } from "../domain-roots/src";
 
 const ADDRESS = "ecash:qq86jv6h0y97q8l63ndynvk3fn9aq8fqru3exew8gl";
@@ -796,6 +797,136 @@ describe("EcashWallet", () => {
     });
   });
 
+  describe("a send interrupted by a restart", () => {
+    const RAW = "0200beef";
+    const signedBackend = (result?: EcashBroadcastResult) => {
+      const backend = makeBackend(result);
+      backend.action.mockImplementation(() => ({
+        build: () => ({
+          builtTxs: [
+            { txid: "attempted", tx: { ser: () => Buffer.from(RAW, "hex") } },
+          ],
+          broadcast: backend.broadcast,
+        }),
+      }));
+      return backend;
+    };
+    const interrupt = async () => {
+      const first = await EcashWallet.fromDomainRoot({
+        domainRoot: ROOT,
+        chronik: makeChronik(),
+        networkId: "ecash-mainnet",
+        nativeAttemptStore,
+        walletFactory: () =>
+          signedBackend({ success: false, broadcasted: [], errors: ["lost"] }),
+      });
+      await expect(
+        first.sendNative({ recipient: { raw: ADDRESS }, value: 1n })
+      ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+    };
+    const restart = (options: {
+      status: "pending" | "confirmed" | "unknown";
+      rebroadcast: jest.Mock;
+    }) => {
+      const backend = makeBackend();
+      return EcashWallet.fromDomainRoot({
+        domainRoot: ROOT,
+        chronik: makeChronik(),
+        networkId: "ecash-mainnet",
+        nativeAttemptStore,
+        walletFactory: () => backend,
+        getTransactionStatus: async () => options.status,
+        rebroadcast: options.rebroadcast,
+      }).then((wallet) => ({ wallet, backend }));
+    };
+
+    it("records the signed bytes before broadcasting", async () => {
+      await interrupt();
+      const [key] = [...(nativeAttemptStore as any).attempts.keys()];
+      expect(nativeAttemptStore.get(key)).toEqual({
+        txHash: "attempted",
+        rawTransactions: [RAW],
+      });
+    });
+
+    it("sends the same bytes again when the indexer never saw them", async () => {
+      await interrupt();
+      const rebroadcast = jest.fn().mockResolvedValue(undefined);
+      const { wallet, backend } = await restart({ status: "unknown", rebroadcast });
+      expect(rebroadcast).toHaveBeenCalledTimes(1);
+      expect(rebroadcast).toHaveBeenCalledWith([RAW]);
+      expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+      // Nothing was signed to finish the old send.
+      expect(backend.action).not.toHaveBeenCalled();
+      await expect(
+        wallet.sendNative({ recipient: { raw: ADDRESS }, value: 2n })
+      ).resolves.toMatchObject({ txHash: "requested" });
+    });
+
+    it("does not send again a transaction the indexer already has", async () => {
+      await interrupt();
+      const rebroadcast = jest.fn();
+      const { wallet } = await restart({ status: "pending", rebroadcast });
+      expect(rebroadcast).not.toHaveBeenCalled();
+      expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    });
+
+    it("stays unresolved and signs nothing new while the node cannot be reached", async () => {
+      await interrupt();
+      const rebroadcast = jest
+        .fn()
+        .mockRejectedValue(new Error("Error connecting to known Chronik instances"));
+      const { wallet, backend } = await restart({ status: "unknown", rebroadcast });
+      expect(wallet.getUnresolvedNativeTransaction()).toMatchObject({
+        txHash: "attempted",
+      });
+      await expect(
+        wallet.sendNative({ recipient: { raw: ADDRESS }, value: 2n })
+      ).rejects.toBeInstanceOf(NativeTransactionSubmissionError);
+      expect(backend.action).not.toHaveBeenCalled();
+      // The node comes back: the next send first finishes the old one, then proceeds.
+      rebroadcast.mockResolvedValue(undefined);
+      await expect(
+        wallet.sendNative({ recipient: { raw: ADDRESS }, value: 2n })
+      ).resolves.toMatchObject({ txHash: "requested" });
+      expect(rebroadcast).toHaveBeenLastCalledWith([RAW]);
+    });
+
+    it("drops a transaction the node refuses, since its inputs are gone", async () => {
+      await interrupt();
+      const rebroadcast = jest
+        .fn()
+        .mockRejectedValue(
+          new Error("Failed getting /broadcast-txs: upstream Chronik error")
+        );
+      const { wallet } = await restart({ status: "unknown", rebroadcast });
+      expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    });
+  });
+
+  it("asks the backend for testnet addresses on the testnet", async () => {
+    const chronik = makeChronik();
+    jest.spyOn(chronik, "block").mockResolvedValue({
+      blockInfo: { hash: ECASH_TESTNET_CHECKPOINT_HASH },
+    } as Awaited<ReturnType<ChronikClient["block"]>>);
+    const factory = jest.fn(() =>
+      makeBackend(
+        undefined,
+        Address.fromCashAddress(ADDRESS).withPrefix("ectest").toString()
+      )
+    );
+    await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
+      chronik,
+      networkId: "xec-testnet",
+      nativeAttemptStore,
+      walletFactory: factory,
+    });
+    expect(factory).toHaveBeenCalledWith(
+      expect.objectContaining({ addressPrefix: "ectest" })
+    );
+  });
+
   it("shares the unresolved guard across backend address case aliases", async () => {
     const failedBackend = makeBackend({
       success: false,
@@ -865,8 +996,7 @@ describe("EcashWallet", () => {
       recipient: { raw: ADDRESS },
       value: 2n,
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let tick = 0; tick < 10; tick++) await Promise.resolve();
     expect(backend.action).toHaveBeenCalledTimes(1);
 
     releaseFirst!();

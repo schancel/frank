@@ -10,6 +10,12 @@ export interface ChainTransaction {
   readonly txHash: string;
   /** Ordered prerequisite/action ids when one logical action required more than one transaction. */
   readonly relatedTxHashes?: ReadonlyArray<string>;
+  /**
+   * The exact signed bytes (hex), in broadcast order, for wallets whose transaction can be sent
+   * again unchanged (UTXO chains). Recorded before broadcast so a restart rebroadcasts the same
+   * transaction instead of leaving the attempt unresolved or paying a second time.
+   */
+  readonly rawTransactions?: ReadonlyArray<string>;
 }
 
 /**
@@ -98,11 +104,21 @@ function parseStoredTransaction(
     ) {
       return undefined;
     }
+    if (
+      value.rawTransactions !== undefined &&
+      (!Array.isArray(value.rawTransactions) ||
+        value.rawTransactions.some((raw) => typeof raw !== "string"))
+    ) {
+      return undefined;
+    }
     return {
       txHash: value.txHash,
       ...(value.relatedTxHashes === undefined
         ? {}
         : { relatedTxHashes: value.relatedTxHashes }),
+      ...(value.rawTransactions === undefined
+        ? {}
+        : { rawTransactions: value.rawTransactions }),
     };
   } catch {
     return undefined;

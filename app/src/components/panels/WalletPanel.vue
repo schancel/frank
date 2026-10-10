@@ -96,6 +96,15 @@
               <q-item-label caption :data-test="wallet.chainDataTest">
                 {{ getWalletChainLabel(wallet) }}
               </q-item-label>
+              <!-- A network the app has no wallet for says so. -->
+              <q-item-label
+                v-if="getWalletStatus(wallet) === 'unsupported'"
+                caption
+                class="wallet-muted"
+                :data-test="`${wallet.id}-wallet-capability`"
+              >
+                {{ $t('walletPanel.notSupported') }}
+              </q-item-label>
               <q-item-label
                 caption
                 :role="wallet.isMain ? 'status' : undefined"
@@ -222,6 +231,7 @@ import { accountSession, accountStatus } from '../../accounts/session'
 import { useMultichainBalance } from '../../composables/useChainBalance'
 import { useWalletNames } from '../../composables/useWalletNames'
 import { openPage } from '../../utils/routes'
+import { walletSupport } from '../../utils/wallet-support'
 import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
 import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
@@ -298,19 +308,23 @@ function getWalletHasStaleBalance(wallet: WalletItemConfig): boolean {
   return presentation.status === 'unavailable' && !!presentation.lastKnown
 }
 
+function getWalletStatus(wallet: WalletItemConfig) {
+  return walletSupport(wallet.id, isTestnet.value).status
+}
+
+// Derive ahead of time only the addresses that are shown as-is. Bitcoin-family wallets hand out
+// their own rotating receive address, and unsupported rows show none.
 const prewarmChains = () => {
   if (accountStatus?.status === 'ready') {
-    for (const chain of [
-      'ecash',
-      'solana',
-      'tempo',
-      'ethereum',
-      'hyperliquid',
-      'bitcoin',
-      'bitcoincash',
-      'dogecoin',
-    ]) {
-      accountSession?.getChainAddress?.(chain)?.catch(() => undefined)
+    for (const { id } of WALLET_CONFIGS) {
+      const support = walletSupport(id, isTestnet.value)
+      if (
+        id === 'monad' ||
+        support.status === 'unsupported' ||
+        support.entry.family === 'bitcoin'
+      )
+        continue
+      accountSession?.getChainAddress?.(id)?.catch(() => undefined)
     }
   }
 }

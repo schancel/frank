@@ -193,6 +193,18 @@ describe("direct protocol registry projection", () => {
     expect(BigInt(result)).toBe(BigInt(native));
   });
 
+  it("rejects a client wallet that reads through a capability the protocol does not permit", () => {
+    const wallet = (indexer: string) => ({
+      "monad-testnet": { ...extensions["monad-testnet"], wallet: { indexer } },
+    });
+    expect(
+      projectProtocolChains(fixture(), wallet("json-rpc"))["monad-testnet"]
+    ).toMatchObject({ wallet: { indexer: "json-rpc" } });
+    expect(() => projectProtocolChains(fixture(), wallet("electrum"))).toThrow(
+      "wallet indexer not permitted for monad-testnet"
+    );
+  });
+
   it("returns isolated deeply immutable facts and client metadata without freezing inputs", () => {
     const document = fixture();
     const metadata = {

@@ -42,10 +42,16 @@ const { filterPublicClientEnv } = publicClientEnv
 // `include: null` on `nodePolyfills` (rather than its default, `node_modules/**/*.js` only):
 // `local_modules/bn.js`/`local_modules/bitcore-lib-xpi` are aliased in but physically live
 // *outside* `node_modules`, and need the exact same transform.
-const globalPolyfills = nodePolyfills({ include: null })
+// Neither plugin may touch a `.cjs` file: the `import` they insert makes it unparseable for the
+// production bundler (Rolldown reads `.cjs` strictly as CommonJS). That failed `quasar build` on
+// chronik-client's `axios/dist/browser/axios.cjs`, which mentions `process` and `global` only
+// behind `typeof` checks and needs no polyfill.
+const CJS_FILES = ['**/*.cjs']
+const globalPolyfills = nodePolyfills({ include: null, exclude: CJS_FILES })
 const globalInject = inject({
   Buffer: ['buffer', 'Buffer'],
   process: 'process',
+  exclude: CJS_FILES,
 })
 
 // A *third* mechanism, needed on top of the two above: confirmed live, Vite's dev server has its

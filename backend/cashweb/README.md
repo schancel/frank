@@ -128,7 +128,6 @@ provider-controlled message is replaced with `upstream Chronik error` so credent
 [registry.bitcoin_proxy]
 enabled = true
 anonymous_chronik_requests_per_hour = 20000
-anonymous_broadcasts_per_hour = 20
 
 [[registry.bitcoin_proxy.chains]]
 id = "xec-mainnet"

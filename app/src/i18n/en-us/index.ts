@@ -401,6 +401,9 @@ export default {
     balanceLoading: 'Loading balance…',
     balanceUnavailable: 'Balance unavailable.',
     balanceUnsupported: 'Balance not shown for this network yet.',
+    walletUnsupported:
+      'This network is not supported yet. No address is shown because the app could not see money sent to it.',
+    notSupported: 'Not supported',
     cordoned: '{amount} cordoned',
     cordonedTooltip:
       'Received at your profile address. The wallet watches these funds but does not spend them.',
@@ -443,9 +446,7 @@ export default {
     zeroTbch: '0 tBCH',
     zeroDoge: '0 DOGE',
     zeroTdoge: '0 tDOGE',
-    sendXec: 'Send XEC',
     receiveXec: 'Receive XEC',
-    sendTxec: 'Send tXEC',
     receiveTxec: 'Receive tXEC',
     sendAsset: 'Send {unit}',
     sendSol: 'Send SOL',
@@ -1041,6 +1042,9 @@ export default {
     amount: 'Amount',
     estimatedFee: 'Estimated Fee',
     feeUnavailable: 'Unavailable',
+    refused: 'The network refused this transaction. Nothing was sent.',
+    feeChanged:
+      'The network fee went up. Nothing was sent. Check the new fee and confirm again.',
     maxTotal: 'Amount + network fee',
     maxTotalWithFee: '{amount} {unit} (+ network fee)',
     irreversibleWarning:
@@ -1114,7 +1118,8 @@ export default {
       'Mainnet is active. Real assets are used for transactions and settlements.',
     mainnetLockedBanner: 'Mainnet switching is locked for now.',
     supportedChainsTitle: 'Supported Settlement Networks',
-    chainActive: 'Active',
+    chainSendReceive: 'Send and receive',
+    chainUnsupported: 'Not supported',
   },
   profile: {
     name: "Character's Public Name",

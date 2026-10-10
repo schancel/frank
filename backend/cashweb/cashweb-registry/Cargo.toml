@@ -74,6 +74,10 @@ tempfile = "3"
 # Alchemy. Already present in the workspace lockfile (pulled in transitively by axum's "ws"
 # feature); adding it directly here just adds the "native-tls" feature so we can dial `wss://`.
 tokio-tungstenite = { version = "0.17", features = ["native-tls"] }
+# Electrum servers reached over `ssl://` (TLS carrying newline-delimited JSON, not WebSocket).
+# Both packages are already locked through tokio-tungstenite's "native-tls" feature.
+native-tls = "=0.2.10"
+tokio-native-tls = "0.3"
 
 # HTTP Middleware
 tower = { version = "0.4", features = ["full"] }

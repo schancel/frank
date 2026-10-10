@@ -153,10 +153,19 @@
                         </q-item-label>
                       </q-item-section>
                       <q-item-section side>
+                        <!-- What the app can actually do on each network now, from the
+                        chain registry. -->
                         <q-badge
-                          :color="isTestnetMode ? 'warning' : 'primary'"
+                          :color="
+                            chainStatus(chain) === 'available'
+                              ? isTestnetMode
+                                ? 'warning'
+                                : 'primary'
+                              : 'grey-7'
+                          "
                           outline
-                          :label="$t('settings.chainActive')"
+                          :label="$t(chainStatusKey(chain))"
+                          :data-test="`settings-chain-${chain.id}-status`"
                         />
                       </q-item-section>
                     </q-item>
@@ -311,6 +320,7 @@ import { storeToRefs } from 'pinia'
 import PersistentStoragePanel from 'src/components/settings/PersistentStoragePanel.vue'
 import { activeChain } from '@frank/wallet/chain'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
+import { walletSupport } from 'src/utils/wallet-support'
 const msToMinutes = 60000
 
 export default defineComponent({
@@ -380,6 +390,8 @@ export default defineComponent({
     // Stated, not chosen: the toggle shows the network the app is running on and cannot be
     // flipped. Swapping the chain under an open wallet breaks every call that wallet makes.
     const isTestnetMode = activeChain.isTestnet ?? false
+    const chainStatus = (chain: { id: string }) =>
+      walletSupport(chain.id, isTestnetMode).status
 
     return {
       appearanceStore,
@@ -404,6 +416,11 @@ export default defineComponent({
       resetEmailGateway,
       getWalletNetworkLabel,
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
+      chainStatus,
+      chainStatusKey: (chain: { id: string }) =>
+        chainStatus(chain) === 'available'
+          ? 'settings.chainSendReceive'
+          : 'settings.chainUnsupported',
     }
   },
   data() {

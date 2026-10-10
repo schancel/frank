@@ -12,15 +12,6 @@ export { createChain } from "./chain-factory";
 export type { ChainFactoryConfig } from "./chain-factory";
 export type { EcashChainConfig } from "./ecash-chain";
 export {
-  fetchEcashBalance,
-  getEcashChronikUrls,
-  DEFAULT_CHRONIK_UPSTREAMS,
-} from "./ecash-balance";
-export type {
-  FetchEcashBalanceOptions,
-  EcashBalanceResult,
-} from "./ecash-balance";
-export {
   canonicalEcashNetworkId,
   ECASH_CHECKPOINTS,
   ECASH_MAINNET_CHECKPOINT_HEIGHT,
@@ -126,6 +117,7 @@ export {
 } from "./chains-registry";
 export type {
   ChainRegistryEntry,
+  ChainWalletSupport,
   ChainExchangeConfig,
   ExchangeAdapterType,
   SupportedChainFamily,
@@ -220,7 +212,11 @@ export type {
   SolanaStealthPaymentResult,
 } from "../solana-stealth";
 
-export { ElectrumClient, toElectrumScriptHash } from "./electrum-client";
+export {
+  ElectrumClient,
+  ElectrumRpcError,
+  toElectrumScriptHash,
+} from "./electrum-client";
 export type {
   ElectrumUtxo,
   ElectrumHistoryItem,
@@ -228,17 +224,15 @@ export type {
   ElectrumClientOptions,
 } from "./electrum-client";
 
+export { electrumIndexer, relayElectrumUrl } from "./electrum-indexer";
 export {
-  ElectrumUtxoIndexer,
-  ChronikUtxoIndexer,
-  createUtxoIndexer,
-  resolveElectrumScriptHash,
-} from "./utxo-indexer";
-export type {
-  UtxoItem,
-  UtxoIndexer,
-  CreateUtxoIndexerOptions,
-} from "./utxo-indexer";
+  NativeFeeExceededError,
+  NativeTransactionRefusedError,
+} from "./chain-wallet";
+export { createUtxoChain } from "./utxo-chain";
+export { openRelayUtxoChain } from "./utxo-family";
+export type { RelayUtxoChain } from "./utxo-family";
+export type { UtxoChain, UtxoChainConfig } from "./utxo-chain";
 
 export {
   summarizeEvmNativeOperation,

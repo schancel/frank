@@ -8,6 +8,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import Send from './Send.vue'
 import {
   activeChain,
+  NativeFeeExceededError,
+  NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
 } from '@frank/wallet/chain'
 import { createSolanaChain } from '@frank/wallet/chain/solana-chain'
@@ -37,6 +39,11 @@ jest.mock('@frank/wallet/chain', () => ({
   NativeTransactionSubmissionError: jest.requireActual(
     '@frank/wallet/chain/chain-wallet',
   ).NativeTransactionSubmissionError,
+  NativeTransactionRefusedError: jest.requireActual(
+    '@frank/wallet/chain/chain-wallet',
+  ).NativeTransactionRefusedError,
+  NativeFeeExceededError: jest.requireActual('@frank/wallet/chain/chain-wallet')
+    .NativeFeeExceededError,
   activeChain: {
     chainIdentifier: 'monad-testnet',
     name: 'monad',
@@ -449,6 +456,76 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       false,
     )
     expect(errorNotify).not.toHaveBeenCalled()
+  })
+
+  it('shows the node reason when the network refuses, and lets the same review be confirmed again', async () => {
+    mockSend.mockRejectedValueOnce(
+      new NativeTransactionRefusedError('min relay fee not met'),
+    )
+
+    const wrapper = mountSend()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.5')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+
+    const refused = wrapper.get('[data-test="send-refused"]').text()
+    expect(refused).toContain('Nothing was sent')
+    expect(refused).toContain('min relay fee not met')
+    // Not presented as a payment that may have moved funds.
+    expect(
+      wrapper.find('[data-test="native-operation-outcome"]').exists(),
+    ).toBe(false)
+    expect(sentTransactionNotify).not.toHaveBeenCalled()
+    // Nothing was sent, so confirming again is offered and clears the notice.
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-test="send-refused"]').exists()).toBe(false)
+  })
+
+  it('sends with the reviewed fee as a ceiling and returns to review when the fee has risen', async () => {
+    mockSelectedChain = {
+      ...activeChain,
+      nativeTransfers: {
+        ...activeChain.nativeTransfers,
+        estimateLegacyFee: jest.fn().mockResolvedValue({
+          totalFee: 1_000_000_000_000_000n,
+          inputCount: 1,
+          deliveryFee: 1_000_000_000_000_000n,
+        }),
+      },
+    }
+    mockSend.mockRejectedValueOnce(
+      new NativeFeeExceededError(2_000_000_000_000_000n),
+    )
+
+    const wrapper = mountSend()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.5')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    const reviewedFee = wrapper.get('[data-test="review-fee"]').text()
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+
+    expect(mockSend.mock.calls[0][0].maxFee).toBe(1_000_000_000_000_000n)
+    // Nothing sent: back on the review screen with the new fee and a notice.
+    expect(wrapper.find('[data-test="send-fee-changed"]').exists()).toBe(true)
+    expect(
+      wrapper.find('[data-test="native-operation-outcome"]').exists(),
+    ).toBe(false)
+    expect(wrapper.get('[data-test="review-fee"]').text()).not.toBe(reviewedFee)
+    // Confirming again accepts the new fee as the ceiling.
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockSend.mock.calls[1][0].maxFee).toBe(2_000_000_000_000_000n)
   })
 
   it('renders review state and warnings in French (fr-FR parity)', async () => {

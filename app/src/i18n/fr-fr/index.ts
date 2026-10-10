@@ -409,6 +409,9 @@ export default {
     balanceLoading: 'Chargement du solde…',
     balanceUnavailable: 'Solde indisponible.',
     balanceUnsupported: 'Le solde de ce réseau n’est pas encore affiché.',
+    walletUnsupported:
+      'Ce réseau n’est pas encore pris en charge. Aucune adresse n’est affichée, car l’application ne pourrait pas voir l’argent qui y serait envoyé.',
+    notSupported: 'Non pris en charge',
     cordoned: '{amount} mis à l’écart',
     cordonedTooltip:
       'Reçu à votre adresse de profil. Le portefeuille surveille ces fonds mais ne les dépense pas.',
@@ -451,9 +454,7 @@ export default {
     zeroTbch: '0 tBCH',
     zeroDoge: '0 DOGE',
     zeroTdoge: '0 tDOGE',
-    sendXec: 'Envoyer des XEC',
     receiveXec: 'Recevoir des XEC',
-    sendTxec: 'Envoyer des tXEC',
     receiveTxec: 'Recevoir des tXEC',
     sendAsset: 'Envoyer des {unit}',
     sendSol: 'Envoyer des SOL',
@@ -1066,6 +1067,9 @@ export default {
     amount: 'Montant',
     estimatedFee: 'Frais estimés',
     feeUnavailable: 'Indisponible',
+    refused: 'Le réseau a refusé cette transaction. Rien n’a été envoyé.',
+    feeChanged:
+      'Les frais de réseau ont augmenté. Rien n’a été envoyé. Vérifiez les nouveaux frais et confirmez à nouveau.',
     maxTotal: 'Montant + frais de réseau',
     maxTotalWithFee: '{amount} {unit} (+ frais de réseau)',
     irreversibleWarning:
@@ -1144,7 +1148,8 @@ export default {
     mainnetLockedBanner:
       'Le passage au réseau principal est verrouillé pour l’instant.',
     supportedChainsTitle: 'Réseaux de règlement pris en charge',
-    chainActive: 'Actif',
+    chainSendReceive: 'Envoi et réception',
+    chainUnsupported: 'Non pris en charge',
   },
   profile: {
     name: 'Pseudonyme',

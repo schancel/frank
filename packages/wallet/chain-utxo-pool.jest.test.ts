@@ -14,7 +14,6 @@ import {
 import { orderOfMagnitude2 } from './monad-change-distribution'
 import { SolanaWallet } from './solana-wallet'
 import { EcashWallet } from './ecash-wallet'
-import { UtxoIndexer, UtxoItem, syncIndexerUtxosToPool } from './chain/utxo-indexer'
 
 describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
   const base58Decoder = getBase58Decoder()
@@ -645,36 +644,6 @@ describe('ChainUtxoPool Unified Chain-Agnostic Pool System', () => {
       expect(res.selected).toHaveLength(2)
       expect(res.totalSelectedWei).toBe(80_000n)
       expect(res.changeWei).toBe(14_500n)
-    })
-
-    it('integrates with UtxoIndexer via syncIndexerUtxosToPool', async () => {
-      const mockUtxos: UtxoItem[] = [
-        { txId: 'chronikTx1', outputIndex: 0, satoshis: 15_000n },
-        { txId: 'chronikTx1', outputIndex: 1, satoshis: 45_000n },
-      ]
-
-      const mockIndexer: UtxoIndexer = {
-        chainId: 'xec-mainnet',
-        fetchUtxos: jest.fn().mockResolvedValue(mockUtxos),
-        fetchBalance: jest.fn().mockResolvedValue({ confirmed: 60_000n, unconfirmed: 0n }),
-        broadcastTx: jest.fn().mockResolvedValue('txid_mock'),
-        subscribe: jest.fn().mockResolvedValue(() => {}),
-        close: jest.fn().mockResolvedValue(undefined),
-      }
-
-      const synced = await syncIndexerUtxosToPool({
-        indexer: mockIndexer,
-        address: 'ecash:qz2708636sn2st080sfs53q9fa2z6q5925d40gv4e5',
-        privateKey: '0x' + 'cc'.repeat(32),
-        pool,
-      })
-
-      expect(synced).toHaveLength(2)
-      expect(synced[0].outpoint?.txid).toBe('chronikTx1')
-      expect(synced[0].outpoint?.vout).toBe(0)
-      expect(synced[1].outpoint?.txid).toBe('chronikTx1')
-      expect(synced[1].outpoint?.vout).toBe(1)
-      expect(pool.getTotalBalance('xec-mainnet')).toBe(60_000n)
     })
   })
 

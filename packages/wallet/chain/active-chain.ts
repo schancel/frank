@@ -465,6 +465,8 @@ export interface NativeTransferClient {
     wallet: NativeWalletHandle;
     recipient: ChainAddress;
     value: bigint;
+    /** The fee the user reviewed, as a ceiling, for chains that estimate one before sending. */
+    maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
   }): Promise<ChainTransaction>;
   getTransactionStatus(params: {

@@ -28,7 +28,6 @@ function entryScripts(dir: string, found: string[] = []): string[] {
     else if (
       entry.name.endsWith('.livecheck.ts') ||
       (dir.endsWith('/targets') && entry.name.endsWith('.ts')) ||
-      path.endsWith('demo/directory-trust/cli.ts') ||
       entry.name === 'print-curated-defaults.ts'
     )
       found.push(path)

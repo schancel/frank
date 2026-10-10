@@ -60,6 +60,10 @@ const MAX_SUBSCRIPTIONS: usize = 256;
 const HEADER_BYTES: usize = 80;
 const IDENTITY_REQUEST_ID: &str = "frank-relay-identity";
 const HEADERS_SUBSCRIPTION: &str = "__headers__";
+/// JSON-RPC error code: the node refused the broadcast; the message is its reason.
+const UPSTREAM_REFUSED_BROADCAST: i64 = -32000;
+/// JSON-RPC error code: the upstream server answered with any other error.
+const UPSTREAM_ERROR: i64 = -32001;
 
 /// Who pays for the requests of one WebSocket session.
 #[derive(Clone, Copy, Debug)]
@@ -605,9 +609,15 @@ async fn forward(
                     }
                 }
                 sanitize_response_errors(&mut value);
-                // A wallet must be able to say why its transaction was refused.
-                if let (Some(reason), Some(error)) = (refusal, value.get_mut("error")) {
-                    *error = json!({ "code": -32000, "message": reason });
+                // Codes tell a wallet who answered. UPSTREAM_REFUSED_BROADCAST: the node refused
+                // this transaction, with its reason. UPSTREAM_ERROR: the server answered some
+                // other error. Every other code is this relay's own (quota, busy, bad request)
+                // and says nothing about the chain.
+                if let Some(error) = value.get_mut("error").filter(|error| !error.is_null()) {
+                    *error = match refusal {
+                        Some(reason) => json!({ "code": UPSTREAM_REFUSED_BROADCAST, "message": reason }),
+                        None => json!({ "code": UPSTREAM_ERROR, "message": "upstream RPC error" }),
+                    };
                 }
                 reply!(ClientWsMessage::Text(value.to_string()));
             }

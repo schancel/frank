@@ -103,7 +103,6 @@ pub struct BitcoinProxyRuntime {
     max_response_bytes: usize,
     timeout: Duration,
     chronik_quota: FixedHourQuota<IpAddr>,
-    broadcast_quota: FixedHourQuota<IpAddr>,
     capability_ttl: Duration,
     cooldowns: UpstreamCooldownTracker,
     customer_quota: Arc<FixedHourQuota<Address>>,
@@ -271,7 +270,6 @@ impl BitcoinProxyRuntime {
             max_response_bytes: conf.max_response_bytes,
             timeout: Duration::from_millis(conf.timeout_ms),
             chronik_quota: FixedHourQuota::new(conf.anonymous_chronik_requests_per_hour),
-            broadcast_quota: FixedHourQuota::new(conf.anonymous_broadcasts_per_hour),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
             cooldowns: UpstreamCooldownTracker::default(),
             customer_quota: Arc::new(FixedHourQuota::new(10_000)),
@@ -314,19 +312,19 @@ impl BitcoinProxyRuntime {
         Arc::clone(&self.permits).try_acquire_owned().ok()
     }
 
-    /// Charge one Electrum request to its payer with the quotas the Chronik routes use: reads and
-    /// broadcasts per source address when anonymous, units per customer with a capability.
+    /// Charge one Electrum read to its payer: per source address when anonymous (the quota the
+    /// public Chronik reads use), per customer with a capability. Broadcasts are not rationed.
     pub(crate) fn charge_electrum(
         &self,
         payer: ElectrumPayer,
         units: u32,
         broadcast: bool,
     ) -> bool {
+        if broadcast {
+            return true;
+        }
         let now = unix_seconds();
         match payer {
-            ElectrumPayer::Anonymous(ip) if broadcast => {
-                self.broadcast_quota.charge(ip, 1, now).is_ok()
-            }
             ElectrumPayer::Anonymous(ip) => self.chronik_quota.charge(ip, units, now).is_ok(),
             ElectrumPayer::Customer(customer) => {
                 self.customer_quota.charge(customer, units, now).is_ok()
@@ -883,12 +881,8 @@ async fn proxy_rpc_inner(
                 false,
             )
         })?;
-    if let Some(ip) = anonymous_ip {
-        runtime
-            .broadcast_quota
-            .charge(ip, 1, unix_seconds())
-            .map_err(|denial| quota_error("rpc_hourly_quota", true, denial))?;
-    }
+    // Anonymous callers may only broadcast here, and broadcasts are not rationed.
+    let _ = anonymous_ip;
     let deadline = tokio::time::Instant::now() + runtime.timeout;
     let ordered_upstreams = runtime.cooldowns.splay_order(target_upstreams);
     if ordered_upstreams.is_empty() {
@@ -1504,15 +1498,12 @@ async fn proxy_chronik_inner(
                 false,
             )
         })?;
-    if let Some((is_broadcast, ip, units)) = anonymous_charge {
-        let quota = if is_broadcast {
-            &runtime.broadcast_quota
-        } else {
-            &runtime.chronik_quota
-        };
-        quota
+    // Reads are rationed per source address; broadcasts are not.
+    if let Some((false, ip, units)) = anonymous_charge {
+        runtime
+            .chronik_quota
             .charge(ip, units, unix_seconds())
-            .map_err(|denial| quota_error("rpc_hourly_quota", is_broadcast, denial))?;
+            .map_err(|denial| quota_error("rpc_hourly_quota", false, denial))?;
     }
     let deadline = tokio::time::Instant::now() + runtime.timeout;
     let ordered_upstreams = runtime.cooldowns.splay_order(&chain.chronik_urls);
@@ -1622,6 +1613,15 @@ async fn proxy_chronik_inner(
     };
     let body = if upstream.status.is_success() {
         upstream.body
+    } else if broadcast && !upstream.status.is_client_error() {
+        // Only a 4xx is the node saying no. Anything else leaves the outcome unknown, and the
+        // wallet must keep its record of the transaction.
+        return Err(broadcast_error(
+            StatusCode::BAD_GATEWAY,
+            "rpc_upstream_unavailable",
+            broadcast,
+            true,
+        ));
     } else {
         let upstream_error = proto::Error::decode(upstream.body.as_ref()).map_err(|_| {
             broadcast_error(
@@ -1954,7 +1954,6 @@ mod tests {
             max_response_bytes: 1024,
             timeout: Duration::from_secs(1),
             chronik_quota: FixedHourQuota::new(100),
-            broadcast_quota: FixedHourQuota::new(10),
             capability_ttl: Duration::from_secs(60 * 60),
             cooldowns: UpstreamCooldownTracker::default(),
             customer_quota: Arc::new(FixedHourQuota::new(10_000)),
@@ -2159,7 +2158,6 @@ mod tests {
             max_response_bytes: 1024,
             timeout: Duration::from_secs(1),
             chronik_quota: FixedHourQuota::new(100),
-            broadcast_quota: FixedHourQuota::new(10),
             capability_ttl: Duration::from_secs(60 * 60),
             cooldowns: UpstreamCooldownTracker::default(),
             customer_quota: Arc::new(FixedHourQuota::new(10_000)),
@@ -2331,6 +2329,117 @@ mod tests {
         assert_eq!(upstream_calls.load(Ordering::SeqCst), 5);
     }
 
+    /// Only the node's own 4xx is a refusal a wallet may act on. A 5xx leaves the outcome
+    /// unknown even when its body decodes as a Chronik error.
+    #[tokio::test]
+    async fn chronik_broadcast_refusal_is_only_an_upstream_4xx() {
+        async fn relay_answer(upstream_status: StatusCode) -> (StatusCode, Vec<u8>) {
+            let upstream = Router::new().route(
+                "/broadcast-tx",
+                routing::post(move || async move {
+                    (
+                        upstream_status,
+                        proto::Error {
+                            msg: "Transaction rejected by mempool: bad-txns-inputs-missingorspent"
+                                .to_string(),
+                        }
+                        .encode_to_vec(),
+                    )
+                }),
+            );
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(
+                axum::Server::from_tcp(listener)
+                    .unwrap()
+                    .serve(upstream.into_make_service()),
+            );
+            let runtime = Arc::new(BitcoinProxyRuntime {
+                chains: HashMap::from([(
+                    "xec-mainnet".to_string(),
+                    Chain {
+                        id: "xec-mainnet".to_string(),
+                        rpc_urls: vec![],
+                        chronik_urls: vec![format!("http://{addr}").parse().unwrap()],
+                        electrum_urls: vec![],
+                        checkpoint_height: 1,
+                        checkpoint_hash: "00".repeat(32),
+                    },
+                )]),
+                client: reqwest::Client::new(),
+                auth: RpcAuthState::new(),
+                network_tag: vec![],
+                permits: Arc::new(Semaphore::new(4)),
+                ingress_permits: Arc::new(Semaphore::new(4)),
+                max_request_bytes: 1024,
+                max_response_bytes: 1024,
+                timeout: Duration::from_secs(2),
+                chronik_quota: FixedHourQuota::new(100),
+                capability_ttl: Duration::from_secs(60 * 60),
+                cooldowns: UpstreamCooldownTracker::default(),
+                customer_quota: Arc::new(FixedHourQuota::new(10_000)),
+            });
+            let (capability, _) = runtime.auth.issue_capability(
+                Address([1; 20]),
+                "xec-mainnet",
+                now_ms(),
+                60 * 60 * 1000,
+            );
+            let tempdir = TempDir::new("cashweb-registry--broadcast-refusal-test").unwrap();
+            let registry = Registry::new(
+                Db::open(tempdir.path().join("db.rocksdb")).unwrap(),
+                Arc::new(DisabledChainAdapter),
+                Net::Regtest,
+            );
+            let event_bus = registry.event_bus().clone();
+            let server = RegistryServer {
+                registry: Arc::new(registry),
+                peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
+                pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
+                curated_defaults: Arc::new(vec![]),
+                monad_mailbox: crate::monad_mailbox::MonadMailboxRuntime::Disabled,
+                evm_rpc: None,
+                bitcoin_proxy: Some(runtime),
+                solana_proxy: None,
+                spa_dir: None,
+                event_bus,
+            };
+            let body = proto::BroadcastTxRequest {
+                raw_tx: vec![1, 2, 3],
+                ..Default::default()
+            }
+            .encode_to_vec();
+            let response = server
+                .into_router()
+                .oneshot(
+                    Request::post(format!(
+                        "/chain-rpc/xec-mainnet/cap/{capability}/chronik/broadcast-tx"
+                    ))
+                    .header(axum::http::header::CONTENT_TYPE, "application/x-protobuf")
+                    .body(Body::from(body))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
+            (status, bytes.to_vec())
+        }
+
+        let (status, body) = relay_answer(StatusCode::BAD_REQUEST).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            proto::Error::decode(body.as_slice()).unwrap().msg,
+            "Transaction rejected by mempool: bad-txns-inputs-missingorspent"
+        );
+
+        let (status, body) = relay_answer(StatusCode::INTERNAL_SERVER_ERROR).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        let answer: Value = serde_json::from_slice(&body).expect("a relay error, not Chronik's");
+        assert_eq!(answer["broadcast_state"], "unknown", "{answer}");
+    }
+
     #[tokio::test]
     async fn test_multi_upstream_rpc_failover() {
         let failing_upstream = Router::new().route(
@@ -2390,7 +2499,6 @@ mod tests {
             max_response_bytes: 1024,
             timeout: Duration::from_secs(2),
             chronik_quota: FixedHourQuota::new(100),
-            broadcast_quota: FixedHourQuota::new(10),
             capability_ttl: Duration::from_secs(60 * 60),
             cooldowns: UpstreamCooldownTracker::default(),
             customer_quota: Arc::new(FixedHourQuota::new(10_000)),

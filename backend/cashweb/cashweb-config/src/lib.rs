@@ -916,9 +916,6 @@ pub struct BitcoinProxyConf {
     /// High, burstable fixed-hour Chronik bootstrap allowance per source IP.
     #[serde(default = "default_chronik_anonymous_requests_per_hour")]
     pub anonymous_chronik_requests_per_hour: u32,
-    /// Small, burstable fixed-hour raw-transaction broadcast allowance per source IP.
-    #[serde(default = "default_anonymous_broadcasts_per_hour")]
-    pub anonymous_broadcasts_per_hour: u32,
     /// Lifetime of a registered-customer bearer capability URL.
     #[serde(default = "default_rpc_capability_ttl_ms")]
     pub capability_ttl_ms: u64,
@@ -934,7 +931,6 @@ impl Default for BitcoinProxyConf {
             max_concurrency: default_rpc_concurrency(),
             timeout_ms: default_rpc_timeout_ms(),
             anonymous_chronik_requests_per_hour: default_chronik_anonymous_requests_per_hour(),
-            anonymous_broadcasts_per_hour: default_anonymous_broadcasts_per_hour(),
             capability_ttl_ms: default_rpc_capability_ttl_ms(),
         }
     }
@@ -948,9 +944,6 @@ const fn default_bitcoin_response_bytes() -> usize {
 }
 const fn default_chronik_anonymous_requests_per_hour() -> u32 {
     20_000
-}
-const fn default_anonymous_broadcasts_per_hour() -> u32 {
-    20
 }
 
 /// One Bitcoin-family chain and its optional node/indexer upstreams.

@@ -479,6 +479,20 @@ export interface DirectMessageClient {
     wallet: WalletHandle;
     knownDigests: string[];
   }): Promise<string[]>;
+  /**
+   * What this wallet durably holds for the message a caller named `messageId` when it called
+   * `send`: the payload digest of the one attempt made under that ID, and whether it is a paid
+   * one. `paid`: the complete signed message is stored, and `reconcileAttempts` finishes it with
+   * those same bytes. Not `paid`: the sealed envelope of a free message that was handed to the
+   * relay and is not known delivered; `send` with the same ID sends those same bytes again.
+   * `undefined`: nothing was stored for that ID, so nothing of it was signed or handed out. Reads
+   * the wallet's own record: no request. A host that finds a message cut off mid-send (a
+   * reload) asks this before it shows the message as failed.
+   */
+  attemptOf?(params: {
+    wallet: WalletHandle;
+    messageId: string;
+  }): Promise<{ payloadDigest: string; paid: boolean } | undefined>;
   /** Durably records the user's answer for delivered attempts reported by
    * `unattributedAttempts`: they stop being reported. Call it only after the user explicitly
    * chose what to do about them. Attempts with no outcome yet are left as they are. */

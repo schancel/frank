@@ -1535,6 +1535,16 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       return result;
     },
 
+    async attemptOf(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const canonical = canonicalMessagingFor(wallet);
+      if (!canonical)
+        throw new CanonicalMessagingPendingError(
+          "Canonical direct messages require persistent typed wallet custody on a Monad network."
+        );
+      return canonical.attemptOf(params);
+    },
+
     async unattributedAttempts(params) {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);

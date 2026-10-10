@@ -1249,6 +1249,47 @@ describe('parallel paid messages', () => {
       expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(1)
     })
 
+    // What a host needs after a reload: its own message row may not have learned the digest
+    // (the page went between the wallet's record and the host's), and the wallet answers by
+    // the message's ID. Seen in the browser: such a message was shown "interrupted before it
+    // was sent" while the wallet delivered and paid it.
+    it('the host asks by message ID what is stored: nothing before the record; after it, across a restart, the digest of the one attempt, which the tick then delivers with the same bytes', async () => {
+      const [row] = await fundAccounts(1)
+      const attemptOf = (n: number) =>
+        f.chain.directMessages.attemptOf!({ wallet: alice, messageId: ID(n) })
+      expect(await attemptOf(1)).toBeUndefined()
+      // Cut off before the record: nothing is stored, and a restart finds nothing.
+      jest
+        .spyOn(EvmStampPayer.prototype, 'sign')
+        .mockRejectedValueOnce(new Error('page closed before the record'))
+      await expect(send(1)).rejects.toThrow('page closed before the record')
+      await reopen()
+      expect(await attemptOf(1)).toBeUndefined()
+      // Cut off after the record, before the host learned of it or the relay saw a byte.
+      mockMessageWrite.mode = 'written-then-reported-failed'
+      await expect(send(1)).rejects.toThrow('written-then-reported-failed')
+      expect(relay.bodies).toHaveLength(0)
+      await reopen()
+      const held = await attemptOf(1)
+      expect(held).toEqual({ payloadDigest: expect.any(String), paid: true })
+      expect(await attemptOf(2)).toBeUndefined()
+      // The host links the digest and ticks: delivered once, paid once, the same bytes.
+      expect((await tick([held!.payloadDigest]))[held!.payloadDigest]).toBe(
+        'delivered',
+      )
+      await tick()
+      expect(bobMailbox).toHaveLength(1)
+      expect(relay.bodies).toHaveLength(1)
+      expect(statusOf(row.index)).toBe('spent')
+      expect(new Set(relayPayments().map(tx => tx.hash)).size).toBe(1)
+      // And a retry under the same ID can never pay again.
+      await expect(send(1)).rejects.toMatchObject({
+        name: 'DirectMessageAlreadyAttemptedError',
+        payloadDigest: held!.payloadDigest,
+      })
+      expect(relay.bodies).toHaveLength(1)
+    })
+
     it('after the relay accepted, before the wallet\'s own broadcast: the restart broadcasts the same bytes', async () => {
       const [row] = await fundAccounts(1)
       offlineChain.relayBroadcasts = false

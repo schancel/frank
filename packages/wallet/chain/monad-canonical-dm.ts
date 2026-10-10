@@ -2081,6 +2081,24 @@ export function canonicalDirectMessages(
         target === '*' || target === 'all' || clean(row.digest) === target,
       )
     },
+    /** What is stored for the message a caller named `messageId`. No request. */
+    attemptOf: async (params: {
+      messageId: string
+    }): Promise<{ payloadDigest: string; paid: boolean } | undefined> => {
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          params.messageId,
+        )
+      )
+        throw new DirectMessageArgumentError('messageId')
+      const id = fromHex(params.messageId.replace(/-/g, ''))
+      const row = owner.messages.get(consumerOf(id))
+      if (row) return { payloadDigest: row.digest, paid: true }
+      const envelope = owner.messages.unpaid(toHex(id))
+      return envelope?.boundary
+        ? { payloadDigest: envelope.digest, paid: false }
+        : undefined
+    },
     /** The attempts no host message accounts for. Reads the wallet's own record: no request. */
     unattributedAttempts: async (
       params: Parameters<DirectMessageClient['unattributedAttempts']>[0],

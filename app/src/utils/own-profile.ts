@@ -117,7 +117,7 @@ export async function syncOwnProfile(options: {
   store: OwnProfileStore
   address: string
   fetchPublished: () => Promise<ProfileInfo | undefined>
-  publish: (profile: MonadProfileFields) => Promise<void>
+  publish: (profile: StoredProfile) => Promise<void>
 }): Promise<OwnProfileOutcome> {
   const { store, address } = options
   claimProfileStore(store, address)
@@ -196,7 +196,7 @@ export function syncOwnProfileWithRelay(options: {
         await registerMonadIdentityCbor({
           relayBaseUrl,
           identity,
-          profile: { ...profile, avatar },
+          profile: { ...profile, avatar } as MonadProfileFields,
           network,
         })
       },

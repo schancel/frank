@@ -18,7 +18,7 @@
     </div>
     <template v-else>
       <div
-        v-for="row in rows"
+        v-for="row in countedRows"
         :key="row.id"
         class="balance-breakdown-row"
         :data-testid="`balance-breakdown-${row.id}`"
@@ -58,11 +58,33 @@
           {{ display(total) }}
         </div>
       </div>
+      <!-- Held by the wallet besides the balance: listed under the total, not added into it. -->
       <div
-        class="text-caption balance-breakdown-muted q-mt-xs"
-        data-testid="balance-breakdown-total-note"
+        v-for="row in otherRows"
+        :key="row.id"
+        class="balance-breakdown-row"
+        :data-testid="`balance-breakdown-${row.id}`"
       >
-        {{ $t('balanceBreakdown.totalNote') }}
+        <div class="balance-breakdown-label">
+          <div class="text-body2">
+            {{ $t(`balanceBreakdown.${row.id}`, { count: row.count ?? 0 }) }}
+            <span
+              v-if="row.address"
+              class="text-caption balance-breakdown-muted"
+              :title="row.address"
+              >{{ shortAddress(row.address) }}</span
+            >
+          </div>
+          <div class="text-caption balance-breakdown-muted">
+            {{ $t(`balanceBreakdown.${row.id}Note`) }}
+          </div>
+        </div>
+        <div
+          class="text-body2 text-weight-medium balance-breakdown-amount"
+          :title="exact(row.amount)"
+        >
+          {{ display(row.amount) }}
+        </div>
       </div>
       <div class="text-caption balance-breakdown-muted q-mt-xs">
         {{ $t('balanceBreakdown.yours') }}
@@ -72,7 +94,7 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, onMounted, ref } from 'vue'
+import { computed, defineComponent, onMounted, ref } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import {
@@ -105,6 +127,8 @@ export default defineComponent({
     return {
       state,
       rows,
+      countedRows: computed(() => rows.value.filter(r => r.id !== 'other')),
+      otherRows: computed(() => rows.value.filter(r => r.id === 'other')),
       total,
       shortAddress,
       display: (amount: bigint) => formatDisplayAmount(activeChain, amount),

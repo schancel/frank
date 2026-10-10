@@ -26,7 +26,7 @@ export interface BalanceBreakdownRow {
 
 export interface BalanceBreakdown {
   readonly rows: readonly BalanceBreakdownRow[]
-  /** The sum of the rows. */
+  /** The sum of the rows that make up the shown balance: every row but `other`. */
   readonly total: bigint
 }
 
@@ -98,5 +98,10 @@ export async function readBalanceBreakdown(
     const other = funds.otherBalance - (profile ?? 0n) - received
     if (other > 0n) rows.push({ id: 'other', amount: other })
   }
-  return { rows, total: rows.reduce((sum, row) => sum + row.amount, 0n) }
+  return {
+    rows,
+    total: rows
+      .filter(row => row.id !== 'other')
+      .reduce((sum, row) => sum + row.amount, 0n),
+  }
 }

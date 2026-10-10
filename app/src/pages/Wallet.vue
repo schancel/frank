@@ -131,22 +131,6 @@
                             )
                       }}
                     </div>
-                    <!-- Money at the profile address is this account's, but it is not part of the
-                    wallet's balance figure: said beside the balance, never added into it, so
-                    the balance is the same figure here, in the wallet list and beside the
-                    chats. -->
-                    <div
-                      v-if="balanceObservation?.cordoned"
-                      class="text-caption text-grey-7 text-center"
-                      data-testid="wallet-balance-cordoned"
-                      :title="balanceObservation.cordoned.exactAmount"
-                    >
-                      {{
-                        $t('walletPanel.cordonedNote', {
-                          amount: balanceObservation.cordoned.formattedAmount,
-                        })
-                      }}
-                    </div>
                     <!-- Opens where the balance is: which accounts hold it. -->
                     <div v-if="canBreakDownBalance" class="text-center">
                       <q-btn

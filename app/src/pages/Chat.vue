@@ -574,7 +574,8 @@ export default defineComponent({
           : typeof rawPrice === 'bigint'
           ? rawPrice
           : BigInt(defaultAcceptancePrice)
-      if (stampValue < acceptancePrice) {
+      // A message deliberately sent free is not a stamp that fell short: nothing is said.
+      if (stampValue > 0n && stampValue < acceptancePrice) {
         insufficientStampNotify()
       }
       const attachmentsToSend = this.attachments

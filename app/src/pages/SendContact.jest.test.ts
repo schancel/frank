@@ -14,6 +14,8 @@ import {
 import { navigateBack } from 'src/utils/navigate-back'
 import enUS from '../i18n/en-us'
 
+// The stamp chosen for the conversation with the contact; free unless a test says otherwise.
+let mockStampWei = 0n
 const mockPrepare = jest.fn()
 const mockSendMessage = jest.fn()
 const PREPARED = {
@@ -30,7 +32,7 @@ jest.mock('src/stores/chats', () => ({
   useChatStore: () => ({
     sendMessage: mockSendMessage,
     // The stamp chosen for the conversation with the contact: here, free messages.
-    getStampWei: () => 0n,
+    getStampWei: () => mockStampWei,
   }),
 }))
 
@@ -64,7 +66,10 @@ jest.mock('src/composables/useActiveWallet', () => ({
 
 jest.mock('src/composables/useBalance', () => ({
   useBalance: () => ({
-    formattedBalance: { value: '10.5 MON' },
+    // The shown balance (with the profile address) and what a contact payment can draw on.
+    formattedBalance: { value: '10.6 MON' },
+    formattedSpendable: { value: '10.5 MON' },
+    exactSpendable: { value: '10.5 MON' },
     loaded: { value: true },
   }),
 }))
@@ -311,6 +316,38 @@ describe('SendContact.vue (dual-send model)', () => {
       'Payment sent',
     )
     expect(navigateBack).toHaveBeenCalled()
+  })
+
+  it('with a stamp chosen for the chat, the payment and its stamp are two separate amounts', async () => {
+    mockStampWei = 20_000_000_000_000_000n // 0.02
+    try {
+      mockPrepare.mockResolvedValueOnce(PREPARED)
+      mockSendMessage.mockResolvedValueOnce({
+        state: 'sent',
+        payloadDigest: 'dd',
+      })
+      await confirm()
+      // The amount typed is the payment; the stamp is the message's price, beside it.
+      expect(mockPrepare.mock.calls[0][0]).toEqual({
+        recipient: { raw: aliceAddress },
+        value: 1500000000000000000n,
+        memo: undefined,
+        stampValue: 20_000_000_000_000_000n,
+      })
+      const sent = mockSendMessage.mock.calls[0][0]
+      expect(sent.stampValue).toBe(20_000_000_000_000_000n)
+      expect(sent.items).toEqual([PREPARED.item])
+    } finally {
+      mockStampWei = 0n
+    }
+  })
+
+  it('shows what this payment can draw on, labelled, not the wallet’s shown total', async () => {
+    const wrapper = mountSendContact()
+    await flushPromises()
+    const available = wrapper.get('[data-test="send-contact-available"]').text()
+    expect(available).toBe('Available for this payment: 10.5 MON')
+    expect(wrapper.text()).not.toContain('10.6 MON')
   })
 
   it('Confirm never does nothing: details that are no longer a payment are said, and the form returns', async () => {

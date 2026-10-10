@@ -46,30 +46,42 @@ export const BALANCE_POLL_MS = 15000
 export const CORDONED_POLL_MS = 30000
 export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 
-// null until the first successful fetch for the active wallet (so consumers can tell "not
-// loaded" from a real zero); cleared when the wallet changes or the last consumer unmounts.
+// What the wallet itself reports as its balance (`getBalance`): the figure its own checks compare
+// a native send or a payment to a contact against. null until the first successful fetch for the
+// active wallet (so consumers can tell "not loaded" from a real zero); cleared when the wallet
+// changes or the last consumer unmounts.
 const balance = ref<bigint | null>(null)
 const hasError = ref(false)
 const loaded = computed(() => balance.value !== null)
+// Money at the profile address of an account whose deposit address is a different one (what a
+// faucet or anyone who only knows the profile pays to). The wallet's `getBalance` leaves it out,
+// although the wallet does pay message stamps from it when the main account is empty. Zero when
+// the two addresses are the same.
+const cordoned = ref<bigint>(0n)
+// THE wallet balance every screen shows (Wallet page, wallet list, chat sidebar, Receive): what
+// the wallet reports plus the profile address. One figure, computed here only, until the wallet
+// exposes a single total of its own. null while not loaded.
+const total = computed(() =>
+  balance.value === null ? null : balance.value + cordoned.value,
+)
 // True only for a real, loaded zero (never for "not loaded yet" or a failed fetch).
-const isEmpty = computed(() => balance.value === 0n)
-// Shortened for reading (`formatDisplayAmount`); the `exact…` twins carry every digit for a
-// title or a detail view. Neither is an input to arithmetic: that is `balance` itself.
+const isEmpty = computed(() => total.value === 0n)
+// The shown balance, shortened for reading (`formatDisplayAmount`); the `exact…` twin carries
+// every digit for a title. Neither is an input to arithmetic.
 const formattedBalance = computed(() =>
-  formatDisplayAmount(activeChain, balance.value ?? 0n),
+  formatDisplayAmount(activeChain, total.value ?? 0n),
 )
 const exactBalance = computed(() =>
+  formatRawAmount(activeChain, total.value ?? 0n),
+)
+// The narrower figure, for the screens whose payment the wallet checks against `balance` alone
+// (a payment to a contact): shown there under its own label, so the screen never offers a total
+// the wallet will then refuse.
+const formattedSpendable = computed(() =>
+  formatDisplayAmount(activeChain, balance.value ?? 0n),
+)
+const exactSpendable = computed(() =>
   formatRawAmount(activeChain, balance.value ?? 0n),
-)
-// Funds sitting at a typed account's profile address. The wallet watches them but never spends
-// them, and they are NOT part of `balance`: anything deciding whether a send is affordable keeps
-// reading `balance`. Only the balance display adds them, marked as cordoned.
-const cordoned = ref<bigint>(0n)
-const formattedCordoned = computed(() =>
-  formatDisplayAmount(activeChain, cordoned.value),
-)
-const exactCordoned = computed(() =>
-  formatRawAmount(activeChain, cordoned.value),
 )
 
 /** The profile address's current balance for an account whose receive address differs from it
@@ -319,9 +331,10 @@ export function useBalance() {
     balance: readonly(balance),
     formattedBalance,
     exactBalance,
+    total,
+    formattedSpendable,
+    exactSpendable,
     cordoned: readonly(cordoned),
-    formattedCordoned,
-    exactCordoned,
     loaded,
     isEmpty,
     hasError,

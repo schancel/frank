@@ -390,8 +390,6 @@ export default {
     iframeTitle: 'Frank Documentation',
   },
   walletPanel: {
-    cordonedNote:
-      'Plus {amount} at your profile address, not counted in the balance above.',
     title: 'Wallets',
     mainWallet: 'Main wallet',
     renameWallet: 'Rename wallet',
@@ -707,7 +705,7 @@ export default {
     sendStealthTo: 'Send Stealth to',
     subtitle:
       'Paid from your wallet to a one-time address only this contact can spend from',
-    balanceLabel: 'Spendable Balance:',
+    balanceLabel: 'Available for this payment:',
     amountHint: 'Amount to pay',
     amountPlaceholder: '0.0',
     memoHint: 'Memo, sent with the payment (optional)',
@@ -767,9 +765,7 @@ export default {
     other: 'Sending accounts',
     otherNote:
       'Kept by the wallet in its own accounts to pay for your messages, and change from earlier payments. Not counted in the balance above.',
-    total: 'All accounts together',
-    totalNote:
-      'More than the balance above when the sending accounts or the profile address hold money: the balance counts what you can send now.',
+    total: 'Balance',
     yours:
       'Every one of these accounts belongs to this wallet and comes back from your recovery phrase.',
     unavailable: 'The accounts could not be read just now.',
@@ -1106,6 +1102,7 @@ export default {
     failedSendTransaction: 'Failed to send Monad transaction',
   },
   sendContactDialog: {
+    available: 'Available for this payment: {amount}',
     title: 'Send to Contact',
     selectContact: 'Select Contact',
     searchContacts: 'Search contacts...',

@@ -117,8 +117,13 @@
             }}</span>
             <span
               class="text-caption text-grey-7"
-              :title="balanceText ? exactBalance : undefined"
-              >{{ balanceText }}</span
+              :title="balanceText ? exactSpendable : undefined"
+              data-test="send-contact-available"
+              >{{
+                balanceText
+                  ? $t('sendContactDialog.available', { amount: balanceText })
+                  : ''
+              }}</span
             >
           </div>
           <q-input
@@ -274,7 +279,8 @@ export default defineComponent({
     const router = useRouter()
     const contactStore = useContactStore()
     const chatStore = useChatStore()
-    const { formattedBalance, exactBalance, loaded } = useBalance()
+    // What a payment to a contact can draw on: the wallet's own figure, not the shown total.
+    const { formattedSpendable, exactSpendable, loaded } = useBalance()
 
     const search = ref('')
     const selectedContactAddress = ref<string>(
@@ -286,7 +292,7 @@ export default defineComponent({
     const sending = ref(false)
 
     const balanceText = computed(() =>
-      loaded.value ? formattedBalance.value : '',
+      loaded.value ? formattedSpendable.value : '',
     )
     const unit = computed(() => activeChain.unit)
 
@@ -363,7 +369,7 @@ export default defineComponent({
       isReviewing,
       sending,
       balanceText,
-      exactBalance,
+      exactSpendable,
       unit,
       filteredContacts,
       isValid,

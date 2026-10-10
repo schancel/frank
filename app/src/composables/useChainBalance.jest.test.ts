@@ -6,6 +6,8 @@ import { useOracleStore } from '../stores/oracle'
 
 const mockMonadBalance = {
   balance: ref<bigint | null>(1000n),
+  // The balance that is shown: the wallet's figure plus the profile address.
+  total: ref<bigint | null>(1000n),
   formattedBalance: ref('10 MON'),
   loaded: ref(true),
   hasError: ref(false),
@@ -242,6 +244,22 @@ describe('useChainBalance', () => {
       expect(useMultichainBalance().getPresentation(chain)).toEqual(expected)
     },
   )
+
+  it('the Monad balance in the list and the headline is the shown total, profile address included', () => {
+    mockMonadBalance.balance.value = 0n // a new account: only the faucet's grant
+    mockMonadBalance.total.value = 100n
+    try {
+      const expected = {
+        status: 'available',
+        observation: { balance: 100n, formattedBalance: '10 MON' },
+      }
+      expect(useChainBalance('monad').presentation.value).toEqual(expected)
+      expect(useMultichainBalance().getPresentation('monad')).toEqual(expected)
+    } finally {
+      mockMonadBalance.balance.value = 1000n
+      mockMonadBalance.total.value = 1000n
+    }
+  })
 
   it('delegates to useBalance for monad', () => {
     const { formattedBalance, loaded } = useChainBalance('monad')

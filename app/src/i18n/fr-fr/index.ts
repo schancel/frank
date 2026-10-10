@@ -398,8 +398,6 @@ export default {
     iframeTitle: 'Documentation de Frank',
   },
   walletPanel: {
-    cordonedNote:
-      'Plus {amount} à votre adresse de profil, non compté dans le solde ci-dessus.',
     title: 'Portefeuilles',
     mainWallet: 'Portefeuille principal',
     renameWallet: 'Renommer le portefeuille',
@@ -722,7 +720,7 @@ export default {
     sendStealthTo: 'Envoyer furtivement à',
     subtitle:
       'Payé depuis votre portefeuille vers une adresse à usage unique que seul ce contact peut dépenser',
-    balanceLabel: 'Solde disponible :',
+    balanceLabel: 'Disponible pour ce paiement :',
     amountHint: 'Montant à payer',
     amountPlaceholder: '0.0',
     memoHint: 'Mémo, envoyé avec le paiement (optionnel)',
@@ -782,9 +780,7 @@ export default {
     other: 'Comptes d’envoi',
     otherNote:
       'Gardé par le portefeuille dans ses propres comptes pour payer vos messages, et la monnaie de paiements précédents. Non compté dans le solde ci-dessus.',
-    total: 'Tous les comptes réunis',
-    totalNote:
-      'Supérieur au solde ci-dessus lorsque les comptes d’envoi ou l’adresse de profil contiennent de l’argent : le solde compte ce que vous pouvez envoyer maintenant.',
+    total: 'Solde',
     yours:
       'Chacun de ces comptes appartient à ce portefeuille et se retrouve avec votre phrase de récupération.',
     unavailable: 'Les comptes n’ont pas pu être lus pour le moment.',
@@ -1132,6 +1128,7 @@ export default {
     failedSendTransaction: 'Échec de l’envoi de la transaction Monad',
   },
   sendContactDialog: {
+    available: 'Disponible pour ce paiement : {amount}',
     title: 'Envoyer au contact',
     selectContact: 'Sélectionner un contact',
     searchContacts: 'Rechercher des contacts...',

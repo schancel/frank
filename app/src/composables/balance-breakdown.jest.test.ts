@@ -33,7 +33,8 @@ describe('readBalanceBreakdown', () => {
         { id: 'received', amount: 30n, count: 2 },
         { id: 'other', amount: 180n },
       ],
-      total: 257n,
+      // The balance: every row but the sending accounts, which the wallet's figure leaves out.
+      total: 77n,
     })
   })
 

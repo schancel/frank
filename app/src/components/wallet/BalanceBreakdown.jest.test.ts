@@ -34,7 +34,7 @@ function mountBreakdown() {
 }
 
 describe('BalanceBreakdown', () => {
-  it('lists each place the wallet holds money, in the chain’s unit, and their sum', async () => {
+  it('lists each place the wallet holds money, in the chain’s unit; the rows above the total add up to it', async () => {
     mockUseActiveWallet.mockResolvedValue({
       identity: { address: { raw: MAIN } },
       getReceiveAddress: async () => ({ raw: MAIN }),
@@ -60,7 +60,15 @@ describe('BalanceBreakdown', () => {
     expect(row('received')).toContain('balanceBreakdown.received(1)')
     expect(row('received')).toContain('0.02 MONT')
     expect(row('other')).toContain('0.18 MONT')
-    expect(row('total')).toContain('0.24 MONT')
+    // Main + received: the balance the Wallet page shows. The sending accounts are listed
+    // under the total, not added into it.
+    expect(row('total')).toContain('0.06 MONT')
+    const order = wrapper
+      .findAll('[data-testid^="balance-breakdown-"]')
+      .map(el => el.attributes('data-testid'))
+    expect(order.indexOf('balance-breakdown-other')).toBeGreaterThan(
+      order.indexOf('balance-breakdown-total'),
+    )
     expect(
       wrapper.find('[data-testid="balance-breakdown-profile"]').exists(),
     ).toBe(false)
@@ -69,7 +77,7 @@ describe('BalanceBreakdown', () => {
       wrapper
         .get('[data-testid="balance-breakdown-total"] [title]')
         .attributes('title'),
-    ).toBe(`${formatEther(parseEther('0.24'))} MONT`)
+    ).toBe(`${formatEther(parseEther('0.06'))} MONT`)
     expect(wrapper.text()).not.toMatch(/cordon/i)
   })
 

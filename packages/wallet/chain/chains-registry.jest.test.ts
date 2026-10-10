@@ -894,6 +894,7 @@ describe("wallet support", () => {
       "solana-devnet": { indexer: "json-rpc" },
       "solana-mainnet": { indexer: "json-rpc" },
       "xec-testnet": { indexer: "chronik" },
+      "xec-regtest": { indexer: "chronik" },
       "btc-testnet": { indexer: "electrum" },
       "bch-testnet": { indexer: "electrum" },
     });

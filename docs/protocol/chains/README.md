@@ -132,4 +132,8 @@ run's checkpoint, and returns `chains['xec-regtest']` with `fund`, `mine`, `chec
 
 ```sh
 yarn --cwd packages/bot regtest:check
+yarn --cwd packages/bot regtest:ecash-send   # two wallets pay each other through the relay
 ```
+
+The app's eCash wallet opens on `xec-regtest` like on any other network (`openRelayUtxoChain`),
+given that run's checkpoint. It is refused without one, and a public network refuses to take one.

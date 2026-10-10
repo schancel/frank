@@ -7,9 +7,13 @@
  */
 import { ChronikClient } from "chronik-client";
 import type { NativeAssetChain } from "./active-chain";
-import type { NativeWalletHandle } from "./chain-wallet";
+import type {
+  NativeTransactionAttemptStore,
+  NativeWalletHandle,
+} from "./chain-wallet";
 import { getChainRegistryEntry } from "./chains-registry";
 import { createEcashChain } from "./ecash-chain";
+import type { EcashCheckpoint } from "../ecash-wallet";
 import { ElectrumClient } from "./electrum-client";
 import { electrumIndexer, relayElectrumUrl } from "./electrum-indexer";
 import { createUtxoChain } from "./utxo-chain";
@@ -30,8 +34,12 @@ export interface RelayUtxoChain {
 export function openRelayUtxoChain(params: {
   chainIdentifier: string;
   relayBaseUrl: string;
+  /** For a regtest network: the checkpoint block of the node the relay serves. */
+  checkpoint?: EcashCheckpoint;
   /** Durable storage for one Electrum wallet; browser storage when omitted. */
   storeFor?: (chainIdentifier: string, firstAddress: string) => UtxoWalletStore;
+  /** Where a Chronik wallet records a send before broadcasting it; browser storage when omitted. */
+  nativeAttemptStore?: NativeTransactionAttemptStore;
 }): RelayUtxoChain {
   const { chainIdentifier } = params;
   const entry = getChainRegistryEntry(chainIdentifier);
@@ -40,11 +48,17 @@ export function openRelayUtxoChain(params: {
   }
   const relay = params.relayBaseUrl.replace(/\/+$/, "");
   if (entry.wallet.indexer === "chronik") {
-    if (chainIdentifier !== "xec-testnet" && chainIdentifier !== "xec-mainnet") {
+    if (
+      chainIdentifier !== "xec-testnet" &&
+      chainIdentifier !== "xec-mainnet" &&
+      chainIdentifier !== "xec-regtest"
+    ) {
       throw new Error(`No Chronik wallet is available for ${chainIdentifier}`);
     }
     const chain = createEcashChain({
       networkId: chainIdentifier,
+      checkpoint: params.checkpoint,
+      nativeAttemptStore: params.nativeAttemptStore,
       chronik: new ChronikClient([`${relay}/chain-rpc/${chainIdentifier}/chronik`]),
     });
     return {

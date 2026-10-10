@@ -8,7 +8,8 @@ import { formatBaseUnit, parseBaseUnit } from "./base-unit";
 import { NativeTransactionAttemptStore } from "./chain-wallet";
 import {
   canonicalEcashNetworkId,
-  EcashAddressPrefix,
+  ECASH_ADDRESS_PREFIXES,
+  EcashCheckpoint,
   EcashNetworkId,
   EcashWallet,
   EcashWalletFactory,
@@ -21,6 +22,8 @@ export interface EcashChainConfig {
   readonly chainIdentifier?: string;
   /** eCash network identity. Additional networks require a reviewed genesis/prefix profile. */
   networkId: EcashNetworkId;
+  /** The node's checkpoint block: required for `xec-regtest`, refused for other networks. */
+  checkpoint?: EcashCheckpoint;
   /** Initialized SDK-compatible Chronik client; callers own endpoint selection and lifecycle. */
   chronik: ChronikClient;
   /** Test/embedding seam; production uses ecash-wallet's HD wallet implementation. */
@@ -29,8 +32,11 @@ export interface EcashChainConfig {
   chainUtxoPool?: ChainUtxoPool;
 }
 
-const ECASH_MAINNET_PREFIX: EcashAddressPrefix = "ecash";
-const ECASH_TESTNET_PREFIX: EcashAddressPrefix = "ectest";
+const ECASH_NETWORKS = {
+  "xec-mainnet": { name: "eCash", unit: "XEC", network: "mainnet" },
+  "xec-testnet": { name: "eCash Testnet", unit: "tXEC", network: "testnet" },
+  "xec-regtest": { name: "eCash Regtest", unit: "rXEC", network: "regtest" },
+} as const;
 
 async function getEcashTransactionStatus(
   config: EcashChainConfig,
@@ -60,11 +66,8 @@ function parseEcashAddress(
 ): { raw: string } | undefined {
   try {
     const parsed = Address.fromCashAddress(input.toLowerCase());
-    const isTestnet =
-      canonicalEcashNetworkId(config.networkId) === "xec-testnet";
-    const expectedPrefix = isTestnet
-      ? ECASH_TESTNET_PREFIX
-      : ECASH_MAINNET_PREFIX;
+    const expectedPrefix =
+      ECASH_ADDRESS_PREFIXES[canonicalEcashNetworkId(config.networkId)];
     if (parsed.prefix !== expectedPrefix) return undefined;
     return { raw: parsed.toString().toLowerCase() };
   } catch {
@@ -80,11 +83,9 @@ export interface EcashChain extends Omit<NativeAssetChain, "createWallet"> {
 
 export function createEcashChain(config: EcashChainConfig): EcashChain {
   const canonicalNetwork = canonicalEcashNetworkId(config.networkId);
-  const isTestnet = canonicalNetwork === "xec-testnet";
   const chainIdentifier = config.chainIdentifier ?? canonicalNetwork;
-  const name = isTestnet ? "eCash Testnet" : "eCash";
-  const unit = isTestnet ? "tXEC" : "XEC";
-  const network = isTestnet ? "testnet" : "mainnet";
+  const { name, unit, network } = ECASH_NETWORKS[canonicalNetwork];
+  const isTestnet = network !== "mainnet";
 
   return {
     family: "bitcoin",
@@ -113,6 +114,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         domainRoot,
         chronik: config.chronik,
         networkId: canonicalNetwork,
+        checkpoint: config.checkpoint,
         walletFactory: config.walletFactory,
         nativeAttemptStore: config.nativeAttemptStore,
         chainUtxoPool: config.chainUtxoPool,

@@ -24,6 +24,7 @@
     "demo:smoke": "node --import tsx demo/smoke.ts",
     "regtest:fetch": "node --import tsx demo/regtest/bitcoin-abc.ts",
     "regtest:check": "node --import tsx demo/regtest/regtest-stack.livecheck.ts",
+    "regtest:ecash-send": "node --import tsx demo/regtest/ecash-send.livecheck.ts",
     "demo:directory-browser": "node demo/directory-trust/check-admission-browser.cjs",
     "send-demo": "tsx qwen-bot-send-demo.livecheck.ts",
     "ui-verify": "tsx monad-ui-verify.livecheck.ts",

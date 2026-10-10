@@ -178,6 +178,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
     // A local eCash node in regtest mode (packages/bot/demo/regtest). Each run is a new chain, so
     // there are no public endpoints and the checkpoint block is given by whoever started it.
     "xec-regtest": Object.freeze({
+      wallet: Object.freeze({ indexer: "chronik" }),
       kind: "ecash",
       curve: "secp256k1",
       keyType: 1,

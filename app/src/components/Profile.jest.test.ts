@@ -176,6 +176,31 @@ describe('Profile.vue component avatar handling', () => {
     expect(wrapper.emitted('update:username')?.[0]).toEqual(['alice_99'])
   })
 
+  it("shows the relay's refusal of a username on the username field, and nothing when there is none", async () => {
+    const wrapper = mount(ProfileComponent, {
+      props: {
+        username: 'alice',
+        usernameError: 'That username is already taken.',
+      },
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+        },
+        stubs: defaultStubs,
+      },
+    })
+    const field = wrapper.find('[data-test="profile-input-username"]')
+    expect(field.attributes('error')).toBe('true')
+    expect(field.attributes('error-message')).toBe(
+      'That username is already taken.',
+    )
+
+    await wrapper.setProps({ usernameError: '' })
+    expect(
+      wrapper.find('[data-test="profile-input-username"]').attributes('error'),
+    ).toBe('false')
+  })
+
   it('manages interactive links list (add, remove, emit)', async () => {
     const wrapper = mount(ProfileComponent, {
       props: {

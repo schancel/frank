@@ -1111,6 +1111,11 @@ export default {
       'Identifiant unique (3 à 32 caractères, lettres minuscules, chiffres, tirets, tirets bas)',
     invalidUsername:
       "L'identifiant doit comporter entre 3 et 32 caractères et ne contenir que des lettres minuscules, chiffres, tirets et tirets bas.",
+    usernameTaken: 'Cet identifiant est déjà pris. Choisissez-en un autre.',
+    usernameNotPublished:
+      "Votre compte n'est pas encore publié sur le relais. Attendez que la messagerie soit active, puis enregistrez à nouveau.",
+    usernameUnavailable:
+      "L'identifiant n'a pas pu être défini : le relais est injoignable ou a refusé la demande. Réessayez.",
     location: 'Localisation',
     locationHint: 'Où vous vous situez (facultatif)',
     links: 'Liens et réseaux',

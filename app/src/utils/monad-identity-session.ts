@@ -31,6 +31,7 @@ import {
   type OpenDirectory,
   type OpenDirectoryDeps,
 } from '@frank/cashweb/relay/open-directory'
+import { claimUsername } from '@frank/cashweb/relay/username-client'
 import { toHex } from '@frank/codec'
 import { accountSession, accountStatus } from '../accounts/session'
 import {
@@ -92,6 +93,12 @@ export interface MessagingDeps {
   /** Registers the identity profile with the relay so authenticated inbox reads succeed. */
   registerProfile?: (options: {
     relayBaseUrl: string
+    wallet: NativeWalletHandle
+  }) => Promise<void>
+  /** Claims the saved username again once this account's entry is published. */
+  claimUsername?: (options: {
+    relayBaseUrl: string
+    network: string
     wallet: NativeWalletHandle
   }) => Promise<void>
 }
@@ -255,6 +262,29 @@ function productionDeps(): MessagingDeps {
         })
       } catch (err) {
         console.warn('[startMessaging] registerMonadIdentityCbor failed:', err)
+      }
+    },
+    // The relay keeps the name, but a relay started on a fresh database has forgotten it.
+    // Claiming a name this account already holds changes nothing.
+    claimUsername: async ({ relayBaseUrl, network, wallet }) => {
+      const identity = (wallet as unknown as { identity?: MonadIdentity })
+        .identity
+      let username: string | undefined
+      try {
+        username = useProfileStore().profile.username
+      } catch {
+        // Pinia store not available (e.g. non-Vue test environment)
+      }
+      if (!identity || !username) return
+      try {
+        await claimUsername({
+          relayBaseUrl,
+          network,
+          signer: identity,
+          username,
+        })
+      } catch (err) {
+        console.warn('[startMessaging] username claim failed:', err)
       }
     },
   }
@@ -426,6 +456,11 @@ export async function startMessaging(): Promise<void> {
       failures = 0
       state.status = 'ready'
       state.reason = null
+      void d.claimUsername?.({
+        relayBaseUrl: d.relayBaseUrl,
+        network: networkOf(d.networkTag),
+        wallet,
+      })
       return
     } catch (err) {
       console.error('[startMessaging] install failed:', err)

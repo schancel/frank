@@ -55,6 +55,8 @@
                     lazy-rules
                     style="width: 100%"
                     :rules="[usernameRule]"
+                    :error="usernameError !== ''"
+                    :error-message="usernameError"
                     data-test="profile-input-username"
                   />
                 </div>
@@ -377,6 +379,11 @@ export default defineComponent({
     username: {
       type: String,
       default: () => '',
+    },
+    /** Why the relay refused this username (taken, not valid), shown under the field. */
+    usernameError: {
+      type: String,
+      default: '',
     },
     location: {
       type: String,

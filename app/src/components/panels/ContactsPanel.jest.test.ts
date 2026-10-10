@@ -41,9 +41,11 @@ jest.mock('src/utils/own-address', () => ({
   isOwnAddress: jest.fn(async () => false),
 }))
 
-const mockAxiosGet = jest.fn(async () => ({ data: null }))
-jest.mock('axios', () => ({
-  get: (...args: any[]) => mockAxiosGet(...args),
+const mockSearchUsernames = jest.fn(async (..._args: any[]) => [] as any[])
+const mockUsernamesOfAddresses = jest.fn(async (..._args: any[]) => [] as any[])
+jest.mock('@frank/cashweb/relay/username-client', () => ({
+  searchUsernames: (...args: any[]) => mockSearchUsernames(...args),
+  usernamesOfAddresses: (...args: any[]) => mockUsernamesOfAddresses(...args),
 }))
 
 jest.mock('pinia', () => ({
@@ -359,32 +361,87 @@ describe('ContactsPanel navigation', () => {
       )
     })
 
-    it('searches by exact username handle and displays handle alongside name', async () => {
+    it('finds accounts by username prefix and shows the handle', async () => {
       mockSearchMonadProfiles.mockResolvedValueOnce([])
-      mockAxiosGet.mockResolvedValueOnce({
-        data: {
+      mockSearchUsernames.mockResolvedValueOnce([
+        {
           username: 'charlie',
           address: '0x4444444444444444444444444444444444444444',
-          status: 'active',
-          entry: null,
+          subject: '02' + '44'.repeat(32),
         },
-      })
+      ])
 
       const wrapper = mountPanel()
       await flushPromises()
 
       const input = wrapper.find('input')
-      await input.setValue('@charlie')
+      await input.setValue('@Cha')
       jest.advanceTimersByTime(350)
       await flushPromises()
 
-      expect(mockAxiosGet).toHaveBeenCalledWith(
-        'http://relay.test/directory/user/charlie',
-      )
+      expect(mockSearchUsernames).toHaveBeenCalledWith({
+        relayBaseUrl: 'http://relay.test',
+        prefix: 'Cha',
+        limit: 10,
+      })
 
       const results = wrapper.findAll('[data-test="directory-search-result"]')
       expect(results.length).toBe(1)
       expect(results[0].text()).toContain('@charlie')
+    })
+
+    it('shows the handle the relay says an account holds, never the one its profile claims', async () => {
+      const impostor = '0x5555555555555555555555555555555555555555'
+      const real = '0x6666666666666666666666666666666666666666'
+      // Both profiles are named "Qwen" and both claim the username "qwen" for themselves.
+      mockSearchMonadProfiles.mockResolvedValueOnce([
+        { address: impostor, rawBytes: new Uint8Array([1]) },
+        { address: real, rawBytes: new Uint8Array([2]) },
+      ])
+      mockDecodeProfileBytes.mockReturnValue({ name: 'Qwen', username: 'qwen' })
+      mockSearchUsernames.mockResolvedValueOnce([])
+      // Only one of them holds a name on the relay.
+      mockUsernamesOfAddresses.mockResolvedValueOnce([
+        { username: 'qwen', address: real, subject: '02' + '66'.repeat(32) },
+      ])
+
+      const wrapper = mountPanel()
+      await flushPromises()
+      await wrapper.find('input').setValue('Qwe')
+      jest.advanceTimersByTime(350)
+      await flushPromises()
+
+      expect(mockUsernamesOfAddresses).toHaveBeenCalledWith({
+        relayBaseUrl: 'http://relay.test',
+        addresses: [impostor, real],
+      })
+      const results = wrapper.findAll('[data-test="directory-search-result"]')
+      expect(results.length).toBe(2)
+      expect(results[0].text()).toContain('Qwen')
+      expect(results[0].text()).not.toContain('@qwen')
+      expect(results[1].text()).toContain('@qwen')
+    })
+
+    it('lists an account once when both its username and its display name match', async () => {
+      const address = '0x7777777777777777777777777777777777777777'
+      mockSearchMonadProfiles.mockResolvedValueOnce([
+        { address, rawBytes: new Uint8Array([1]) },
+      ])
+      mockDecodeProfileBytes.mockReturnValue({ name: 'Dana' })
+      mockSearchUsernames.mockResolvedValueOnce([
+        { username: 'dana', address, subject: '02' + '77'.repeat(32) },
+      ])
+
+      const wrapper = mountPanel()
+      await flushPromises()
+      await wrapper.find('input').setValue('dan')
+      jest.advanceTimersByTime(350)
+      await flushPromises()
+
+      const results = wrapper.findAll('[data-test="directory-search-result"]')
+      expect(results.length).toBe(1)
+      expect(results[0].text()).toContain('@dana')
+      expect(mockUsernamesOfAddresses).not.toHaveBeenCalled()
     })
   })
 })

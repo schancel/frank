@@ -32,6 +32,15 @@ jest.mock('@frank/wallet/monad-identity', () => {
   }
 })
 
+jest.mock('@frank/cashweb/relay/username-client', () => ({
+  ...jest.requireActual('@frank/cashweb/relay/username-client'),
+  claimUsername: jest.fn(),
+}))
+import {
+  UsernameError,
+  claimUsername,
+} from '@frank/cashweb/relay/username-client'
+
 import { errorNotify } from 'src/utils/notifications'
 
 jest.mock('src/utils/notifications', () => ({
@@ -50,6 +59,7 @@ const defaultStubs = {
     props: [
       'name',
       'username',
+      'usernameError',
       'location',
       'bio',
       'avatar',
@@ -301,6 +311,14 @@ describe('Profile.vue', () => {
 
     await (wrapper.vm as any).updateRelayData()
 
+    // The name is claimed on the relay, signed by this account's identity key.
+    expect(claimUsername).toHaveBeenCalledWith({
+      relayBaseUrl: 'https://127.0.0.1:18443',
+      network: 'monad-testnet',
+      signer: mockWallet.identity,
+      username: 'alice_crypt',
+    })
+    expect((wrapper.vm as any).usernameError).toBe('')
     expect(mockSetRelayData).toHaveBeenCalledWith({
       profile: expect.objectContaining({
         username: 'alice_crypt',
@@ -358,6 +376,82 @@ describe('Profile.vue', () => {
     expect(mockSetRelayData).not.toHaveBeenCalled()
     expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
   })
+  it.each([
+    ['taken', 'profile.usernameTaken'],
+    ['not-published', 'profile.usernameNotPublished'],
+    ['unreachable', 'profile.usernameUnavailable'],
+    ['invalid-username', 'profile.invalidUsername'],
+  ] as const)(
+    'a username the relay refuses as %s is shown on the field and nothing is saved or published',
+    async (code, message) => {
+      ;(useActiveWallet as jest.Mock).mockResolvedValue({
+        identity: {
+          address: { raw: '0x1234567890123456789012345678901234567890' },
+        },
+        relayBaseUrl: 'https://127.0.0.1:18443',
+      })
+      ;(claimUsername as jest.Mock).mockRejectedValueOnce(
+        new UsernameError(code),
+      )
+
+      const wrapper = mount(ProfilePage, {
+        global: {
+          mocks: {
+            $t: (key: string) => key,
+            $router: { push: jest.fn() },
+            $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+          },
+          stubs: defaultStubs,
+        },
+      })
+      ;(wrapper.vm as any).username = 'alice'
+      await (wrapper.vm as any).updateRelayData()
+      await wrapper.vm.$nextTick()
+
+      expect(
+        wrapper.findComponent({ name: 'Profile' }).props('usernameError'),
+      ).toBe(message)
+      expect(errorNotify).toHaveBeenCalledWith(
+        expect.any(UsernameError),
+        expect.objectContaining({ safeMessage: message }),
+      )
+      expect(mockSetRelayData).not.toHaveBeenCalled()
+      expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+
+      // Saving again with a name the relay accepts clears the error and saves.
+      ;(wrapper.vm as any).username = 'alice2'
+      await (wrapper.vm as any).updateRelayData()
+      await wrapper.vm.$nextTick()
+      expect(
+        wrapper.findComponent({ name: 'Profile' }).props('usernameError'),
+      ).toBe('')
+      expect(mockSetRelayData).toHaveBeenCalled()
+      expect(registerMonadIdentityCbor).toHaveBeenCalled()
+    },
+  )
+
+  it('claims no username when none is entered', async () => {
+    ;(useActiveWallet as jest.Mock).mockResolvedValue({
+      identity: {
+        address: { raw: '0x1234567890123456789012345678901234567890' },
+      },
+      relayBaseUrl: 'https://127.0.0.1:18443',
+    })
+    const wrapper = mount(ProfilePage, {
+      global: {
+        mocks: {
+          $t: (key: string) => key,
+          $router: { push: jest.fn() },
+          $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+        },
+        stubs: defaultStubs,
+      },
+    })
+    await (wrapper.vm as any).updateRelayData()
+    expect(claimUsername).not.toHaveBeenCalled()
+    expect(registerMonadIdentityCbor).toHaveBeenCalled()
+  })
+
   it('updateRelayData saves profile, stays on profile page without navigating back, and shows notify (#1041)', async () => {
     const mockWallet = {
       identity: {

@@ -1083,6 +1083,11 @@ export default {
       'Unique handle (3–32 characters, lowercase letters, numbers, hyphens, underscores)',
     invalidUsername:
       'Username must be 3–32 characters and contain only lowercase letters, numbers, hyphens, and underscores.',
+    usernameTaken: 'That username is already taken. Choose another.',
+    usernameNotPublished:
+      'Your account is not published on the relay yet. Wait until messaging is on, then save again.',
+    usernameUnavailable:
+      'The username could not be set: the relay could not be reached or refused the request. Try again.',
     location: 'Location',
     locationHint: 'Where you are based (optional)',
     links: 'Links & Socials',

@@ -200,6 +200,11 @@ test('a ready account publishes its own entry and starts messaging with no user 
   const d = device(alice)
   const registerProfile = jest.fn(async () => undefined)
   d.deps.registerProfile = registerProfile
+  // The username is claimed only once the entry it points to has been published.
+  const claimUsername = jest.fn(async () => {
+    expect(relay.chain(subjectOf(alice))).toHaveLength(1)
+  })
+  d.deps.claimUsername = claimUsername
   await configureMessagingForTest(d.deps)
   mockStatus.status = 'ready'
   expect(await initializeMonadIdentity()).toBe('started')
@@ -208,6 +213,13 @@ test('a ready account publishes its own entry and starts messaging with no user 
     relayBaseUrl: RELAY,
     wallet: alice,
   })
+  expect(claimUsername).toHaveBeenCalledTimes(1)
+  expect(claimUsername).toHaveBeenCalledWith({
+    relayBaseUrl: RELAY,
+    network: 'monad-testnet',
+    wallet: alice,
+  })
+  await claimUsername.mock.results[0].value
   // Exactly one self-signed revision zero, on the configured relay.
   expect(signedZero).toHaveBeenCalledTimes(1)
   expect(signedNext).not.toHaveBeenCalled()

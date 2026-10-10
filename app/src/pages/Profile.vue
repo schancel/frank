@@ -10,6 +10,7 @@
         <profile
           v-model:name="name"
           v-model:username="username"
+          :username-error="usernameError"
           v-model:location="location"
           v-model:bio="bio"
           v-model:avatar="avatar"
@@ -67,6 +68,7 @@ import { downscaleImage } from '../utils/image-resize'
 import Profile, { type ProfileLinkItem } from '../components/Profile.vue'
 import { errorNotify } from '../utils/notifications'
 import { navigateBack } from '../utils/navigate-back'
+import { claimOwnUsername, usernameErrorKey } from '../utils/username-claim'
 
 type ProfileData = {
   name?: string
@@ -103,6 +105,7 @@ export default defineComponent({
     return {
       name: myProfile.profile.name,
       username: myProfile.profile.username,
+      usernameError: '',
       location: myProfile.profile.location,
       bio: myProfile.profile.bio,
       avatar: myProfile.profile.avatar,
@@ -201,6 +204,18 @@ export default defineComponent({
           return
         }
         this.username = usernameResult.normalized
+        // The relay gives a name to one account only. A name that is taken or refused stops
+        // the save here, before it is stored or published as this account's.
+        try {
+          await claimOwnUsername(usernameResult.normalized ?? '')
+          this.usernameError = ''
+        } catch (err: unknown) {
+          this.usernameError = this.$t(usernameErrorKey(err))
+          errorNotify(err, { safeMessage: this.usernameError })
+          return
+        }
+      } else {
+        this.usernameError = ''
       }
 
       // Avatar downscaling and compression before submitting

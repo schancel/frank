@@ -165,7 +165,7 @@
               :y1="y"
               x2="625"
               :y2="y"
-              :stroke="themeColors.grid"
+              :stroke="themeColors.gridLines"
               stroke-width="1"
               stroke-dasharray="3 3"
             />
@@ -366,35 +366,12 @@
         <span>{{ $t('walletPanel.sourcesTitle') }}</span>
       </div>
       <div class="text-caption text-grey-7 q-gutter-y-xs">
-        <div>• {{ $t('walletPanel.sourceUnit') }}</div>
-        <div>• {{ $t('walletPanel.sourceFeeds') }}</div>
-        <div>• {{ $t('walletPanel.sourceHistorical') }}</div>
-        <div>
-          •
-          {{
-            $t('walletPanel.sourceGrid', {
-              electricity: HISTORICAL_SOURCES.centsPerKwh,
-              gold: HISTORICAL_SOURCES.goldUsd,
-            })
-          }}
-        </div>
-        <div>
-          •
-          {{
-            $t('walletPanel.sourceHash', {
-              chain: BTC_MINING_SOURCES.chain,
-              subsidy: BTC_MINING_SOURCES.subsidy,
-            })
-          }}
-        </div>
-        <div data-test="source-efficiency">
-          •
-          {{
-            $t('walletPanel.sourceEfficiency', {
-              efficiency: BTC_MINING_SOURCES.efficiency,
-              retrieved: BTC_MINING_SOURCES.retrieved,
-            })
-          }}
+        <div
+          v-for="line in sourceLines"
+          :key="line.id"
+          :data-test="`source-${line.id}`"
+        >
+          • {{ line.text }}
         </div>
       </div>
     </q-card>
@@ -411,19 +388,18 @@ import {
 } from 'src/stores/oracle'
 import { UNIT_RATE_ASSET_METRICS } from 'src/utils/avu-units'
 import { useTranslate } from 'src/composables/useTranslate'
-import { useOracleFeed } from 'src/composables/useOracleFeed'
+import { useOracleHistory } from 'src/composables/useOracleFeed'
 import {
-  ASSET_FEED_SYMBOLS,
-  BITCOIN_ENTRY_ID,
-  BTC_MINING_SOURCES,
-  BTC_MONTHLY_AVU_HASH,
-  HISTORICAL_SOURCES,
+  ELECTRICITY_AGGREGATE,
   US_ANNUAL_ELECTRICITY_AND_GOLD,
-  US_MONTHLY_INDUSTRIAL_ELECTRICITY,
+  at as valueAt,
+  avuHashAt,
   avuPerCoin,
-  kwhPerDollar,
-  latestAvuSpot,
-  type HistoryRange,
+  avuSpotAt,
+  formatAvu,
+  priceAssetId,
+  seriesName,
+  type OracleInputs,
   type SupportedAsset,
 } from '@frank/wallet/oracle'
 
@@ -446,22 +422,20 @@ const cardBgHex = computed(() => (isDark.value ? '#121212' : '#ffffff'))
 const themeColors = computed(() =>
   isDark.value
     ? {
-        usd: '#38bdf8',
-        hash: '#4ade80',
+        grid: '#38bdf8',
         gold: '#f59e0b',
         token: '#c084fc',
-        grid: '#334155',
+        gridLines: '#334155',
         axis: '#64748b',
         text: '#94a3b8',
         textPrimary: '#f8fafc',
         barBase: '#0284c7',
       }
     : {
-        usd: '#0284c7',
-        hash: '#16a34a',
+        grid: '#0284c7',
         gold: '#d97706',
         token: '#7c3aed',
-        grid: '#e2e8f0',
+        gridLines: '#e2e8f0',
         axis: '#94a3b8',
         text: '#64748b',
         textPrimary: '#0f172a',
@@ -469,13 +443,23 @@ const themeColors = computed(() =>
       },
 )
 
-export type TimeRange = 'all' | '5y' | HistoryRange | 'networks'
-const FETCHED_RANGES: readonly HistoryRange[] = ['1y', '30d', '7d', '24h']
+const DAY = 86_400
+/** How far back each range reaches and how fine its points are, in seconds. */
+const RANGES = {
+  // Bitcoin's bundled history begins in 2010; nothing older can be asked for.
+  'all': { span: Infinity, step: 30 * DAY },
+  '5y': { span: 5 * 365 * DAY, step: 30 * DAY },
+  '1y': { span: 365 * DAY, step: DAY },
+  '30d': { span: 30 * DAY, step: 6 * 3600 },
+  '7d': { span: 7 * DAY, step: 3600 },
+  '24h': { span: DAY, step: 600 },
+} as const
+const EARLIEST = Date.UTC(2010, 0, 1) / 1000
+
+export type TimeRange = keyof typeof RANGES | 'networks'
 const selectedRange = ref<TimeRange>('all')
-const fetchedRange = computed<HistoryRange | null>(() =>
-  (FETCHED_RANGES as readonly string[]).includes(selectedRange.value)
-    ? (selectedRange.value as HistoryRange)
-    : null,
+const timeRange = computed(() =>
+  selectedRange.value === 'networks' ? null : RANGES[selectedRange.value],
 )
 
 const rangeToggleOptions = computed(() => [
@@ -487,6 +471,20 @@ const rangeToggleOptions = computed(() => [
   { label: t('walletPanel.range24H'), value: '24h' },
   { label: t('walletPanel.rangeNetworks'), value: 'networks' },
 ])
+
+/** The start of the selected range, fixed when the range is chosen. Unix seconds. */
+const rangeStart = ref(EARLIEST)
+watch(
+  selectedRange,
+  () => {
+    const range = timeRange.value
+    rangeStart.value =
+      range && Number.isFinite(range.span)
+        ? Math.floor(Date.now() / 1000) - range.span
+        : EARLIEST
+  },
+  { immediate: true },
+)
 
 // ---- The coin whose wallet is open ---------------------------------------------------
 
@@ -500,7 +498,10 @@ const unit = computed(
       multiplier: 1,
     },
 )
-const hasPriceSource = computed(() => Boolean(ASSET_FEED_SYMBOLS[asset.value]))
+const tokenPriceSeries = computed(() => {
+  const id = priceAssetId(asset.value)
+  return id ? seriesName('price', id) : ''
+})
 
 function formatNumber(value: number, digits = 2): string {
   return value.toLocaleString('en-US', {
@@ -509,37 +510,53 @@ function formatNumber(value: number, digits = 2): string {
   })
 }
 
-/** Enough digits to tell neighbouring values apart, whatever the coin's scale. */
-function formatAvuValue(value: number): string {
-  if (value >= 1000) return formatNumber(value, 1)
-  if (value >= 1) return formatNumber(value, 2)
-  return value.toPrecision(3)
-}
-
-// ---- AVU_hash and AVU_spot ---------------------------------------------------------------
-
-/** kWh per dollar read off mining, with the basket entries it was computed from. */
-const avuHash = computed(() => oracle.snapshot?.avuHash)
-/** kWh per dollar at the latest published electricity price. */
-const avuSpot = latestAvuSpot()
-
-const miningRows = computed(() => {
-  const entries = avuHash.value?.entries ?? []
-  const bitcoin = entries.find(entry => entry.id === BITCOIN_ENTRY_ID)
-  return entries.map(entry => ({
-    ...entry,
-    // Against Bitcoin's dollars per kWh. Entries on one algorithm share an efficiency
-    // figure, so between them this ratio does not depend on it.
-    spreadPercent:
-      bitcoin && entry.id !== BITCOIN_ENTRY_ID
-        ? (entry.dollarsPerKwh / bitcoin.dollarsPerKwh - 1) * 100
-        : undefined,
-  }))
-})
-
 function formatSpread(percent: number): string {
   return `${percent >= 0 ? '+' : ''}${formatNumber(percent, 1)}%`
 }
+
+function formatWeight(weight: number): string {
+  return `${formatNumber(weight * 100, weight < 0.1 ? 1 : 0)}%`
+}
+
+function formatDay(seconds: number): string {
+  return new Date(seconds * 1000).toISOString().slice(0, 10)
+}
+
+// ---- AVU_hash and AVU_spot, now -----------------------------------------------------------
+
+const inputs = computed<OracleInputs | undefined>(() => oracle.inputs)
+/** Energy per unit of value read off mining, with the basket entries it was computed from. */
+const avuHash = computed(() => oracle.current?.avuHash)
+/** Energy per unit of value at the mean wholesale electricity price. */
+const avuSpot = computed(() => oracle.current?.avuSpot)
+
+/**
+ * What a kWh of wholesale electricity costs, in AVU: its price times AVU_hash, which is
+ * AVU_hash divided by AVU_spot. At 1 the two readings agree: mining pays for a kWh
+ * exactly what the grid charges for one. Stated without any currency.
+ */
+function gridKwhInAvu(
+  hash: { kwhPerValue: number } | undefined,
+  spot: { kwhPerValue?: number } | undefined,
+): number | undefined {
+  return hash && spot?.kwhPerValue
+    ? hash.kwhPerValue / spot.kwhPerValue
+    : undefined
+}
+
+const miningRows = computed(() => {
+  const hash = avuHash.value
+  return (hash?.entries ?? []).map(entry => {
+    // AVU a kWh of this entry's mining earns: its pay per kWh priced by the basket.
+    const avuPerKwh = entry.valuePerKwh * hash!.kwhPerValue
+    return {
+      ...entry,
+      avuPerKwh,
+      // Against the basket: 1 AVU per kWh is the basket's own (weighted harmonic) pay.
+      spreadPercent: (avuPerKwh - 1) * 100,
+    }
+  })
+})
 
 const LEFT_OUT_REASON_KEYS = {
   efficiency: 'walletPanel.avuHashLeftOutEfficiency',
@@ -547,22 +564,15 @@ const LEFT_OUT_REASON_KEYS = {
   chain: 'walletPanel.avuHashLeftOutChain',
 } as const
 
-function formatWeight(weight: number): string {
-  return `${formatNumber(weight * 100, weight < 0.1 ? 1 : 0)}%`
-}
-
 /** Which basket entries AVU_hash used and with what weight, which it left out, and its age. */
-const avuHashNote = computed(() => {
+const basketNote = computed(() => {
   const current = avuHash.value
   if (!current) return t('walletPanel.avuHashUnavailableNote')
   const parts = [
     t('walletPanel.avuHashNote', {
-      used: current.entries.length,
-      total: current.basketSize,
       weights: current.entries
         .map(entry => `${entry.label} ${formatWeight(entry.weight)}`)
         .join(', '),
-      month: current.efficiencyMonth,
     }),
   ]
   if (current.leftOut.length > 0) {
@@ -577,6 +587,9 @@ const avuHashNote = computed(() => {
       }),
     )
   }
+  if (current.entries.some(entry => entry.estimated)) {
+    parts.push(t('walletPanel.avuHashEstimated'))
+  }
   const staleAge = oracle.avuHashStaleAgeMs?.()
   if (staleAge !== undefined) {
     parts.push(t('walletPanel.avuHashStale', { age: formatAge(staleAge) }))
@@ -586,10 +599,10 @@ const avuHashNote = computed(() => {
 
 const networkBars = computed(() => {
   const rows = miningRows.value
-  const top = Math.max(...rows.map(r => r.dollarsPerKwh), 0)
+  const top = Math.max(...rows.map(r => r.avuPerKwh), 0)
   const step = 520 / Math.max(rows.length, 1)
   return rows.map((row, index) => {
-    const height = top > 0 ? (row.dollarsPerKwh / top) * 170 : 0
+    const height = top > 0 ? (row.avuPerKwh / top) * 170 : 0
     return {
       ...row,
       name: `${row.label} · ${formatWeight(row.weight)}`,
@@ -597,11 +610,8 @@ const networkBars = computed(() => {
       y: 230 - height,
       width: 60,
       height,
-      costLabel: `$${formatNumber(row.dollarsPerKwh, 3)}/kWh`,
-      spreadLabel:
-        row.spreadPercent === undefined
-          ? t('walletPanel.miningBaseline')
-          : formatSpread(row.spreadPercent),
+      costLabel: `${formatNumber(row.avuPerKwh, 2)} AVU/kWh`,
+      spreadLabel: formatSpread(row.spreadPercent),
     }
   })
 })
@@ -620,33 +630,43 @@ interface Tile {
 }
 
 const tiles = computed<Tile[]>(() => {
-  const price = oracle.snapshot?.prices?.[asset.value]
   const age = oracle.priceAgeMs?.(asset.value)
   const hash = avuHash.value
+  const spot = avuSpot.value
   const rateLine = oracle.formatUnitRate?.(asset.value) ?? ''
-  let rateNote = t('walletPanel.avuNoPriceSource')
-  if (rateLine && price !== undefined && age !== undefined) {
+  let rateNote = t('walletPanel.avuNoPrice')
+  if (rateLine && age !== undefined) {
     rateNote = t(
       age > STALE_AFTER_MS
         ? 'walletPanel.avuPriceStaleNote'
         : 'walletPanel.avuPriceFreshNote',
-      { usd: `$${price.toPrecision(6)}`, age: formatAge(age) },
+      { age: formatAge(age) },
     )
-    const sources = oracle.snapshot?.priceSources?.[asset.value]
-    if (sources !== undefined) {
-      rateNote += ` ${
-        sources > 1
-          ? t('walletPanel.avuPriceSources', { count: sources })
-          : t('walletPanel.avuPriceSingleSource')
-      }`
-    }
-  } else if (price !== undefined && !hash) {
+  } else if (!hash) {
     rateNote = t('walletPanel.avuHashUnavailableNote')
-  } else if (hasPriceSource.value) {
-    rateNote = t('walletPanel.avuPriceNotFetched')
   }
 
-  const ecash = miningRows.value.find(row => row.id === 'ecash')
+  const grid = gridKwhInAvu(hash, spot)
+  let spotNote = ''
+  if (spot?.kwhPerValue) {
+    spotNote = t('walletPanel.avuSpotNote', {
+      days: spot.days,
+      window: inputs.value?.electricity.windowDays ?? 30,
+      latest: formatDay(spot.latestAt),
+    })
+    const spotAge = Date.now() - spot.latestAt * 1000
+    if (spot.stale || spotAge > 3 * DAY * 1000) {
+      spotNote += ` ${t('walletPanel.avuSpotStale', {
+        age: formatAge(spotAge),
+      })}`
+    }
+  } else if (spot && 'unavailable' in spot) {
+    spotNote = t(
+      spot.unavailable === 'not-positive'
+        ? 'walletPanel.avuSpotNotPositive'
+        : 'walletPanel.avuSpotNoData',
+    )
+  }
 
   return [
     {
@@ -665,31 +685,32 @@ const tiles = computed<Tile[]>(() => {
       label: t('walletPanel.avuHashLabel'),
       icon: 'memory',
       color: 'positive',
-      value: hash ? `${formatNumber(hash.kwhPerDollar, 2)} kWh/$` : '',
-      note: avuHashNote.value,
+      value: hash
+        ? t('walletPanel.avuHashValue', {
+            used: hash.entries.length,
+            total: hash.basketSize,
+          })
+        : '',
+      note: basketNote.value,
     },
     {
       id: 'avu-spot',
       label: t('walletPanel.avuSpotLabel'),
       icon: 'bolt',
       color: 'amber-9',
-      value: avuSpot ? `${formatNumber(avuSpot.kwhPerDollar, 2)} kWh/$` : '',
-      note: avuSpot
-        ? t('walletPanel.avuSpotNote', {
-            cents: avuSpot.centsPerKwh,
-            month: avuSpot.month,
-          })
-        : '',
+      value:
+        grid === undefined
+          ? ''
+          : t('walletPanel.avuSpotValue', { avu: formatNumber(grid, 2) }),
+      note: spotNote,
     },
     {
       id: 'hash-vs-spot',
       label: t('walletPanel.avuHashVsSpotLabel'),
       icon: 'compare_arrows',
       color: 'primary',
-      value:
-        hash && avuSpot
-          ? formatSpread((hash.kwhPerDollar / avuSpot.kwhPerDollar - 1) * 100)
-          : '',
+      // How far a kWh of mining pay is above (+) or below (-) the wholesale price of a kWh.
+      value: grid === undefined ? '' : formatSpread((1 / grid - 1) * 100),
       note: t('walletPanel.avuHashVsSpotNote'),
     },
     {
@@ -697,20 +718,8 @@ const tiles = computed<Tile[]>(() => {
       label: t('walletPanel.avuUnitLabel'),
       icon: 'straighten',
       color: 'primary',
-      // One kWh in dollars as mining prices it: the inverse of AVU_hash.
-      value: hash ? `1 AVU = $${formatNumber(1 / hash.kwhPerDollar, 4)}` : '',
+      value: t('walletPanel.avuUnitValue'),
       note: t('walletPanel.avuUnitNote'),
-    },
-    {
-      id: 'arbitrage',
-      label: t('walletPanel.arbitrageMargin'),
-      icon: 'trending_up',
-      color: 'secondary',
-      value:
-        ecash?.spreadPercent === undefined
-          ? ''
-          : formatSpread(ecash.spreadPercent),
-      note: t('walletPanel.arbitrageNote'),
     },
   ]
 })
@@ -718,173 +727,103 @@ const tiles = computed<Tile[]>(() => {
 // ---- Lines ------------------------------------------------------------------------------
 
 interface DataPoint {
-  /** Position along the time axis: a year, or a Unix time in milliseconds. */
+  /** Unix seconds. */
   at: number
   value: number
 }
 
 interface Series {
-  id: 'usd' | 'hash' | 'gold' | 'token'
+  id: 'grid' | 'gold' | 'token'
   label: string
   color: string
   axis: 'left' | 'right'
-  /** Series with the same scale are drawn against one shared axis, so they compare. */
-  scale: 'kwhPerDollar' | 'gold' | 'token'
   format: (value: number) => string
   points: DataPoint[]
 }
 
-const longRangePoints = computed(() => {
-  const lastYear =
-    US_ANNUAL_ELECTRICITY_AND_GOLD[US_ANNUAL_ELECTRICITY_AND_GOLD.length - 1]
-      .year
-  const firstYear = selectedRange.value === '5y' ? lastYear - 4 : -Infinity
-  return US_ANNUAL_ELECTRICITY_AND_GOLD.filter(p => p.year >= firstYear)
+/**
+ * The times the lines are evaluated at: the times of the points the local series actually
+ * hold inside the range (the selected coin's price, the basket's prices, the electricity
+ * price), the last one in each step of the range. Every line is the same functions that
+ * give today's figures, evaluated at these times; no time is made up between them.
+ */
+const sampleTimes = computed<number[]>(() => {
+  const feed = inputs.value
+  const range = timeRange.value
+  if (!feed || !range) return []
+  const names = new Set<string>([ELECTRICITY_AGGREGATE])
+  if (tokenPriceSeries.value) names.add(tokenPriceSeries.value)
+  for (const entry of feed.basket.entries) {
+    for (const chain of entry.chains)
+      names.add(seriesName('price', chain.chain))
+  }
+  const now = Math.floor(Date.now() / 1000)
+  const lastInStep = new Map<number, number>()
+  names.forEach(name => {
+    for (const point of feed.series[name]?.points ?? []) {
+      if (point[0] < rangeStart.value || point[0] > now) continue
+      const bucket = Math.floor(point[0] / range.step)
+      if ((lastInStep.get(bucket) ?? -1) < point[0]) {
+        lastInStep.set(bucket, point[0])
+      }
+    }
+  })
+  return Array.from(lastInStep.values()).sort((a, b) => a - b)
 })
 
-/**
- * AVU_hash for each calendar year the bundled months cover completely: the mean of that
- * year's twelve monthly values. Bitcoin only.
- */
-const annualAvuHash = (() => {
-  const byYear = new Map<number, number[]>()
-  for (const month of BTC_MONTHLY_AVU_HASH) {
-    const year = Number(month.month.slice(0, 4))
-    byYear.set(year, [...(byYear.get(year) ?? []), month.kwhPerDollar])
-  }
-  return Array.from(byYear.entries())
-    .filter(([, values]) => values.length === 12)
-    .map(([year, values]) => ({
-      year,
-      kwhPerDollar: values.reduce((sum, v) => sum + v, 0) / 12,
-    }))
-})()
-
-function monthMidpoint(month: string): number {
-  return Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 15)
-}
-
-const tokenHistory = computed(() =>
-  fetchedRange.value
-    ? oracle.historyFor?.(asset.value, fetchedRange.value) ?? null
-    : null,
-)
-
 const rangeSeries = computed<Series[]>(() => {
-  if (selectedRange.value === 'networks') return []
-
-  if (!fetchedRange.value) {
-    const annual = longRangePoints.value
-    return [
-      {
-        id: 'usd',
-        label: t('walletPanel.chartUsdKwh'),
-        color: themeColors.value.usd,
-        axis: 'left',
-        scale: 'kwhPerDollar',
-        format: value => `${formatNumber(value, 1)} kWh/$`,
-        points: annual.map(p => ({
-          at: p.year,
-          value: kwhPerDollar(p.centsPerKwh),
-        })),
-      },
-      {
-        id: 'hash',
-        label: t('walletPanel.chartHashKwh'),
-        color: themeColors.value.hash,
-        axis: 'left',
-        scale: 'kwhPerDollar',
-        format: value => `${formatNumber(value, 1)} kWh/$`,
-        points: annualAvuHash
-          .filter(p => p.year >= annual[0].year)
-          .map(p => ({ at: p.year, value: p.kwhPerDollar })),
-      },
-      {
-        id: 'gold',
-        label: t('walletPanel.chartGoldAvu'),
-        color: themeColors.value.gold,
-        axis: 'right',
-        scale: 'gold',
-        format: value => `${formatNumber(value, 0)} kWh/oz`,
-        // A year without a published gold price has no gold point.
-        points: annual.flatMap(p =>
-          p.goldUsd === undefined
-            ? []
-            : [{ at: p.year, value: p.goldUsd * kwhPerDollar(p.centsPerKwh) }],
-        ),
-      },
-    ]
+  const feed = inputs.value
+  if (!feed || selectedRange.value === 'networks') return []
+  const grid: DataPoint[] = []
+  const token: DataPoint[] = []
+  for (const time of sampleTimes.value) {
+    const hash = avuHashAt(feed, time)
+    if (!hash) continue
+    const kwh = gridKwhInAvu(hash, avuSpotAt(feed, time))
+    if (kwh !== undefined) grid.push({ at: time, value: kwh })
+    const price = valueAt(feed.series[tokenPriceSeries.value]?.points, time)
+    const value = price ? avuPerCoin(price[1], hash) : undefined
+    if (value !== undefined) {
+      token.push({ at: time, value: value * unit.value.multiplier })
+    }
   }
-
-  // The bundled monthly electricity prices reach into the last year; no shorter range has
-  // any. Gold has no history here finer than a year, so it has no line on these ranges.
-  const oldest = Date.now() - 366 * 24 * 3_600_000
-  const lastYear = (months: readonly { month: string; value: number }[]) =>
-    fetchedRange.value === '1y'
-      ? months.flatMap(m => {
-          const at = monthMidpoint(m.month)
-          return at >= oldest ? [{ at, value: m.value }] : []
-        })
-      : []
-  const monthlyGrid = lastYear(
-    US_MONTHLY_INDUSTRIAL_ELECTRICITY.map(m => ({
-      month: m.month,
-      value: kwhPerDollar(m.centsPerKwh),
-    })),
-  )
-  // Bitcoin's kWh per dollar: the bundled months up to where this app's own record of
-  // it begins, then that record. One line, each point from one of the two.
-  const recordedHash = (
-    oracle.bitcoinAvuHashHistory?.(fetchedRange.value ?? '1y') ?? []
-  ).map(p => ({ at: p.timestamp, value: p.kwhPerDollar }))
-  const recordedFrom = recordedHash[0]?.at ?? Infinity
-  const monthlyHash = [
-    ...lastYear(
-      BTC_MONTHLY_AVU_HASH.map(m => ({
-        month: m.month,
-        value: m.kwhPerDollar,
-      })),
-    ).filter(p => p.at < recordedFrom),
-    ...recordedHash,
-  ]
-  const hash = avuHash.value
-
-  return [
+  const lines: Series[] = [
     {
-      id: 'usd' as const,
-      label: t('walletPanel.chartUsdKwh'),
-      color: themeColors.value.usd,
-      axis: 'right' as const,
-      scale: 'kwhPerDollar' as const,
-      format: (value: number) => `${formatNumber(value, 1)} kWh/$`,
-      points: monthlyGrid,
-    },
-    {
-      id: 'hash' as const,
-      label: t('walletPanel.chartHashKwh'),
-      color: themeColors.value.hash,
-      axis: 'right' as const,
-      scale: 'kwhPerDollar' as const,
-      format: (value: number) => `${formatNumber(value, 1)} kWh/$`,
-      points: monthlyHash,
+      id: 'grid',
+      label: t('walletPanel.chartGridAvu'),
+      color: themeColors.value.grid,
+      axis: 'left',
+      format: value => `${formatNumber(value, 2)} AVU`,
+      points: grid,
     },
     {
       id: 'token',
       label: `${unit.value.symbol} (AVU)`,
       color: themeColors.value.token,
-      axis: 'left',
-      scale: 'token',
-      format: value => `${formatAvuValue(value)} AVU`,
-      // Each point is a price a provider published (or this app fetched) times the
-      // current AVU_hash. Without AVU_hash there is no AVU value and so no point.
-      points: (tokenHistory.value?.points ?? []).flatMap(p => {
-        const value = avuPerCoin(p.price, hash)
-        return value === undefined
-          ? []
-          : [{ at: p.timestamp, value: value * unit.value.multiplier }]
-      }),
+      axis: 'right',
+      format: value => formatAvu(value),
+      points: token,
     },
   ]
+  if (selectedRange.value === 'all' || selectedRange.value === '5y') {
+    lines.push({
+      id: 'gold',
+      label: t('walletPanel.chartGoldAvu'),
+      color: themeColors.value.gold,
+      axis: 'right',
+      format: value => `${formatAvu(value)}/oz`,
+      // The published yearly gold price times AVU_hash at the middle of that year: an
+      // ounce's AVU value, as any coin's. A year with no gold price or no AVU_hash has
+      // no point.
+      points: US_ANNUAL_ELECTRICITY_AND_GOLD.flatMap(year => {
+        const middle = Date.UTC(year.year, 6, 1) / 1000
+        if (year.goldUsd === undefined || middle < rangeStart.value) return []
+        const value = avuPerCoin(year.goldUsd, avuHashAt(feed, middle))
+        return value === undefined ? [] : [{ at: middle, value }]
+      }),
+    })
+  }
+  return lines
 })
 
 // Drag across the chart to zoom to that stretch. Zooming only hides points outside it.
@@ -901,14 +840,19 @@ const series = computed<Series[]>(() => {
 const legend = computed(() => series.value.filter(s => s.points.length > 0))
 
 function formatAt(at: number): string {
-  if (!fetchedRange.value) return String(at)
-  const date = new Date(at)
-  return fetchedRange.value === '24h'
+  const date = new Date(at * 1000)
+  if (selectedRange.value === 'all' || selectedRange.value === '5y') {
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      year: 'numeric',
+    })
+  }
+  return selectedRange.value === '24h'
     ? date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
     : date.toLocaleDateString(undefined, {
         month: 'short',
         day: 'numeric',
-        ...(fetchedRange.value === '1y' ? { year: '2-digit' } : {}),
+        ...(selectedRange.value === '1y' ? { year: '2-digit' } : {}),
       })
 }
 
@@ -936,10 +880,7 @@ const drawnLines = computed(() =>
   series.value
     .filter(s => s.points.length > 0)
     .map(s => {
-      // One scale for every series measured in the same unit.
-      const values = series.value
-        .filter(other => other.scale === s.scale)
-        .flatMap(other => other.points.map(p => p.value))
+      const values = s.points.map(p => p.value)
       const low = Math.min(...values)
       const high = Math.max(...values)
       // Pad the scale so a flat or single-point series sits mid-chart instead of on an edge.
@@ -1040,7 +981,7 @@ const inspectedCells = computed(() => {
       id: row.id,
       label: row.label,
       color: themeColors.value.textPrimary,
-      value: `$${formatNumber(row.dollarsPerKwh, 3)}/kWh`,
+      value: `${formatNumber(row.avuPerKwh, 2)} AVU/kWh`,
     }))
   }
   const column = inspected.value
@@ -1060,72 +1001,102 @@ const inspectedCells = computed(() => {
   })
 })
 
+/** Whether any point drawn rests on an efficiency figure that is an estimate. */
+const drawsEstimates = computed(() => {
+  const feed = inputs.value
+  const first = sampleTimes.value[0]
+  if (!feed || first === undefined) return false
+  return feed.basket.entries.some(entry => {
+    const one = feed.series[seriesName('efficiency', entry.algorithm)]
+    const step = valueAt(one?.points, first)
+    return (
+      one?.estimatedBefore !== undefined &&
+      step !== undefined &&
+      step[0] < one.estimatedBefore
+    )
+  })
+})
+
 /** Says what is drawn, from where, and when that is little or nothing. */
 const dataNote = computed(() => {
   if (selectedRange.value === 'networks') {
     return avuHash.value
-      ? t('walletPanel.chartNoteNetworks', {
-          month: avuHash.value.efficiencyMonth,
-        })
+      ? t('walletPanel.chartNoteNetworks')
       : t('walletPanel.chartNoteNetworksUnavailable')
   }
-  if (!fetchedRange.value) {
-    const years = longRangePoints.value
-    const hashYears = annualAvuHash.filter(p => p.year >= years[0].year)
-    return [
-      t('walletPanel.chartNoteAnnual', {
-        from: years[0].year,
-        to: years[years.length - 1].year,
-      }),
-      hashYears.length > 0
-        ? t('walletPanel.chartNoteAnnualHash', {
-            from: hashYears[0].year,
-            to: hashYears[hashYears.length - 1].year,
-          })
-        : '',
-    ]
-      .filter(Boolean)
-      .join(' ')
+  if (!inputs.value) return t('walletPanel.chartNoteNoFeed')
+  const drawn = columns.value
+  if (drawn.length === 0) return t('walletPanel.chartNoteNoHistory')
+  const parts = [
+    t('walletPanel.chartNoteLines', {
+      count: drawn.length,
+      first: drawn[0].label,
+    }),
+  ]
+  if (!legend.value.some(line => line.id === 'token')) {
+    parts.push(
+      t('walletPanel.chartNoteNoTokenPrice', { symbol: unit.value.symbol }),
+    )
   }
-  if (!hasPriceSource.value) {
-    return t('walletPanel.chartNoteNoSource', { symbol: unit.value.symbol })
-  }
-  const history = tokenHistory.value
-  const count = history?.points.length ?? 0
-  if (!history || count === 0) {
-    return t('walletPanel.chartNoteNoHistory', { symbol: unit.value.symbol })
-  }
-  if (!avuHash.value) return t('walletPanel.chartNoteNoHash')
-  const first = formatAt(history.points[0].timestamp)
-  let note = t('walletPanel.chartNoteObserved', { count, first })
-  if (history.provider && history.recorded === 0) {
-    note = t('walletPanel.chartNoteProvider', {
-      count,
-      first,
-      provider: history.provider,
-    })
-  } else if (history.provider) {
-    note = t('walletPanel.chartNoteJoined', {
-      count,
-      first,
-      recorded: history.recorded,
-      provider: history.provider,
-    })
-  }
-  const testnet = oracle.balanceHasMarketValue?.(asset.value)
-    ? ''
-    : ` ${t('walletPanel.chartNoteMainnetPrice')}`
-  const currentHash = t('walletPanel.chartNoteCurrentHash', {
-    rate: formatNumber(avuHash.value.kwhPerDollar, 2),
-  })
-  return `${note} ${currentHash}${testnet}`
+  if (drawsEstimates.value) parts.push(t('walletPanel.chartNoteEstimated'))
+  if (oracle.valuesAreTestnet) parts.push(t('walletPanel.chartNoteTestnet'))
+  return parts.join(' ')
 })
 
-// While this chart is on screen the oracle keeps its prices current, and the candles of
-// the coin and range that are open. Nothing is drawn until real data is there.
-useOracleFeed(() =>
-  fetchedRange.value ? { asset: asset.value, range: fetchedRange.value } : null,
-)
+// ---- Sources ----------------------------------------------------------------------------
+
+/** One line per kind of input, naming where the feed says its values come from. */
+const sourceLines = computed(() => {
+  const feed = inputs.value
+  const labels = (kind: string) =>
+    Array.from(
+      new Set(
+        Object.entries(feed?.series ?? {}).flatMap(([name, one]) =>
+          name.startsWith(`${kind}/`) && one
+            ? [(one as { source?: string }).source ?? '']
+            : [],
+        ),
+      ),
+    )
+      .filter(Boolean)
+      .join('; ')
+  const lines = [{ id: 'unit', text: t('walletPanel.sourceUnit') }]
+  if (!feed) return lines
+  lines.push(
+    {
+      id: 'prices',
+      text: t('walletPanel.sourcePrices', { sources: labels('price') }),
+    },
+    {
+      id: 'chains',
+      text: t('walletPanel.sourceChains', { sources: labels('difficulty') }),
+    },
+    {
+      id: 'efficiency',
+      text: t('walletPanel.sourceEfficiency', {
+        sources: labels('efficiency'),
+      }),
+    },
+    {
+      id: 'electricity',
+      text: t('walletPanel.sourceElectricity', {
+        sources: feed.electricity.regions
+          .map(region => `${region.label} (${region.attribution})`)
+          .join('; '),
+      }),
+    },
+    { id: 'gold', text: t('walletPanel.sourceGold') },
+  )
+  return lines
+})
+
+// While this chart is on screen, the oracle's local series are made to hold the range it
+// shows: the feed is asked only for the stretches they lack. Nothing is drawn until real
+// data is there.
+useOracleHistory(() => {
+  const range = timeRange.value
+  return range ? { since: rangeStart.value, step: range.step } : null
+})
 </script>
 
 <style scoped>

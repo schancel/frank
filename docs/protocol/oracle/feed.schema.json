@@ -171,6 +171,10 @@
               "minItems": 2,
               "maxItems": 2
             }
+          },
+          "estimatedBefore": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       }

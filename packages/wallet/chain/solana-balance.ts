@@ -37,28 +37,25 @@ export interface SolanaTokenAccount {
 
 export const KNOWN_SOLANA_DEVNET_TOKENS: Record<
   string,
-  { symbol: string; name: string; decimals: number; priceUsd: number }
+  { symbol: string; name: string; decimals: number }
 > = {
   // Official Circle USDC devnet mint
   '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU': {
     symbol: 'tUSDC',
     name: 'USD Coin (Devnet)',
     decimals: 6,
-    priceUsd: 1.0,
   },
   // Mainnet USDC
   'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': {
     symbol: 'USDC',
     name: 'USD Coin',
     decimals: 6,
-    priceUsd: 1.0,
   },
   // Mainnet USDT
   'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': {
     symbol: 'USDT',
     name: 'Tether USD',
     decimals: 6,
-    priceUsd: 1.0,
   },
 }
 
@@ -188,7 +185,7 @@ export async function fetchSolanaBalance(
 /**
  * Public, read-only Solana SPL token accounts fetcher by owner address via standard JSON-RPC.
  * Queries `getTokenAccountsByOwner` for SPL Token Program (Tokenkeg...).
- * Automatically parses token amounts, decimals, symbols, and computes thermodynamic AVU value.
+ * Parses token amounts, decimals and symbols. Tokens carry no AVU value: nothing prices them.
  */
 export async function fetchSolanaTokenAccounts(
   options: FetchSolanaBalanceOptions,
@@ -302,16 +299,9 @@ export async function fetchSolanaTokenAccounts(
         const symbol =
           known?.symbol ?? `${mint.slice(0, 4)}...${mint.slice(-4)}`
         const name = known?.name ?? `SPL Token (${mint.slice(0, 4)}...)`
-        const priceUsd = known?.priceUsd ?? 0
-        const avuPerUsd = 11.90476
-        const avuTotal = uiAmount * priceUsd * avuPerUsd
-        const avuFormatted =
-          avuTotal > 0
-            ? `≈ ${avuTotal.toLocaleString('en-US', {
-                minimumFractionDigits: 1,
-                maximumFractionDigits: 1,
-              })} AVU`
-            : ''
+        // No oracle prices devnet tokens, so a token row has no AVU value: an assumed
+        // price would be a made-up figure.
+        const avuFormatted = ''
 
         tokens.push({
           mint,

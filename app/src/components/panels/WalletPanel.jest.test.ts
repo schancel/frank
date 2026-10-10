@@ -66,12 +66,13 @@ jest.mock('../../composables/useChainBalance', () => ({
 }))
 
 const mockReleaseOracle = jest.fn()
-const mockAcquireOracle = jest.fn((_feed: string) => mockReleaseOracle)
+const mockAcquireOracle = jest.fn(() => mockReleaseOracle)
 
 jest.mock('../../stores/oracle', () => ({
   useSafeOracleStore: () => ({
     getAvu: () => 0,
     formatAvuAmount: () => '',
+    formatAvuValue: () => '',
     formatUnitRate: (asset: string) => {
       if (asset === 'monad') return '1 MON ≈ 41.67 AVU'
       if (asset === 'ecash') return '1M XEC ≈ 416.67 AVU'
@@ -404,13 +405,11 @@ test('renders universal AVU tooltips on portfolio total and drawer header', () =
   ).toBe(true)
 })
 
-test('holds the oracle’s live prices while mounted and releases them on unmount', () => {
+test('does not hold the oracle feed itself: the app shell holds it for every screen', () => {
   const view = render()
-  expect(mockAcquireOracle.mock.calls).toEqual([['live']])
-  expect(mockReleaseOracle).not.toHaveBeenCalled()
-
+  expect(mockAcquireOracle).not.toHaveBeenCalled()
   view.unmount()
-  expect(mockReleaseOracle).toHaveBeenCalledTimes(1)
+  expect(mockReleaseOracle).not.toHaveBeenCalled()
 })
 
 test('the drawer header keeps the title and the AVU note as two unbroken groups of one wrapping row', () => {

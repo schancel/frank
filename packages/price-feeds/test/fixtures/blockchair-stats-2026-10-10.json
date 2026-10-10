@@ -1,0 +1,28 @@
+{
+ "about": "What https://api.blockchair.com/<chain>/stats answered on 2026-10-10 at about 16:50 UTC, cut to the fields the app reads (and hashrate_24h, market_price_usd for the unit checks in the test). Recorded once; not refetched by tests.",
+ "litecoin": {
+  "blocks_24h": 563,
+  "difficulty": 95937773.26992714,
+  "inflation_24h": 351875851979,
+  "circulation": 7770041714498554,
+  "hashrate_24h": "2693134624091972",
+  "market_price_usd": 64.28,
+  "best_block_height": 3192808
+ },
+ "dogecoin": {
+  "blocks_24h": 1361,
+  "difficulty": 45261326.03663414,
+  "inflation_24h": 1361000000000000,
+  "circulation": 1.5626859638370523e+19,
+  "hashrate_24h": "3085649443549118",
+  "market_price_usd": 0.086169,
+  "best_block_height": 6409609
+ },
+ "monero": {
+  "difficulty": 735582551412,
+  "circulation": 1.881584949018812e+19,
+  "hashrate_24h": 6129854595,
+  "market_price_usd": 523.83,
+  "best_block_height": 3781122
+ }
+}

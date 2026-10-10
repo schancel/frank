@@ -63,12 +63,16 @@ import { isChainAddress, toChainDisplayAddress } from 'src/utils/chain-address'
 import ContactBookDialog from 'src/components/dialogs/ContactBookDialog.vue'
 import { useTabCoordinatorStore } from 'src/stores/tab-coordinator'
 import { accountStatus } from './accounts/session'
+import { useAppOracleFeed } from 'src/composables/useOracleFeed'
 
 export default defineComponent({
   components: {
     ContactBookDialog,
   },
   setup() {
+    // AVU values stand beside balances and amounts on every screen: the oracle feed is
+    // held here, once, for the life of the app (and paused while the window is hidden).
+    useAppOracleFeed()
     // Setup chats, contacts, etc.
     const chatStore = useChatStore()
     const relayClient = useRelayClientStore()

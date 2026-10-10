@@ -377,6 +377,20 @@ export function requireChainContract(
   return address;
 }
 
+/**
+ * The canonical id of a chain kind's main network. A coin is priced under this id by the
+ * oracle feed, on every network of the kind: a test network's coin is valued at its main
+ * network's price (and shown marked as testnet). Undefined when the kind has no main
+ * network in the client registry.
+ */
+export function mainnetChainIdOfKind(
+  kind: SupportedChainKind
+): string | undefined {
+  return Object.values(PROTOCOL_CHAINS).find(
+    (c) => c.kind === kind && c.network === "mainnet"
+  )?.id;
+}
+
 export function getChainRegistryByKind(
   kind: SupportedChainKind,
   isTestnet: boolean

@@ -1,225 +1,283 @@
 /**
- * The oracle's local time series: what the app has fetched, kept on the device.
+ * The oracle's local timeseries: every point the app has received from the oracle feed,
+ * kept on the device, one series per feed series name.
  *
- * Every successful fetch is one more timestamped record:
- *   - a price observation: for each coin, every provider's answer and their median;
- *   - a mining observation per chain: difficulty, issuance and supply;
- *   - a provider's candles for a coin and chart range, replaced whole when refetched.
+ * A "latest" answer adds one point to each series; a range answer adds history. They are
+ * the same kind of point and live in the same series: a point received later for a time
+ * already held replaces it (mergeSeries). The Parity chart draws from these series and
+ * asks the feed only for the stretches they lack (missingRanges).
  *
- * They are stored in the app's LevelDB (the one the Pinia storage plugin hands every
- * store), one key per observation. An append is then one small write and trimming is a
- * few deletes; localStorage would mean rewriting the whole history as one string on every
- * fetch, inside a quota of a few megabytes shared with everything else.
+ * Stored in the app's LevelDB (the one the Pinia storage plugin hands every store), one
+ * key per point, so an append is a few small writes.
  *
- * Nothing here fetches, and nothing here invents a value: these functions only select
- * among records that were fetched.
+ * Nothing here fetches, and nothing here invents a value.
  */
 import type { LevelBatchOperation, LevelDB } from 'level'
 import {
-  ASSET_FEED_SYMBOLS,
-  AVU_HASH_CHAINS,
-  rateOracleSnapshot,
-  unavailableOracleSnapshot,
-  type FetchedPrice,
-  type MiningStats,
-  type OracleSnapshot,
-  type PriceHistoryPoint,
-  type PriceProviderId,
-  type SupportedAsset,
+  mergeSeries,
+  type FeedBasket,
+  type FeedElectricity,
+  type OracleFeed,
+  type OracleInputs,
+  type SeriesPoint,
 } from '@frank/wallet/oracle'
 
-/** The prices one fetch returned, and when. */
-export interface PriceObservation {
-  timestamp: number
-  prices: Partial<Record<SupportedAsset, FetchedPrice>>
+/** One local series: the feed's metadata as last received, and every point held. */
+export interface LocalSeries {
+  unit: string
+  source: string
+  asOf: number
+  stale: boolean
+  estimatedBefore?: number
+  points: SeriesPoint[]
 }
 
-/** One provider's candles for a coin and chart range, as last fetched. */
-export interface ProviderCandles {
-  provider: PriceProviderId
-  points: PriceHistoryPoint[]
-  fetchedAt: number
+/** A stretch of time the local series are known to hold at a resolution. Unix seconds. */
+export interface Coverage {
+  from: number
+  until: number
+  /** One point per this many seconds, or finer. */
+  step: number
 }
 
-export interface OracleSeries {
-  /** Oldest first, no two with the same timestamp. */
-  priceObservations: PriceObservation[]
-  /** By Blockchair chain name; each oldest first. */
-  miningObservations: Record<string, MiningStats[]>
-  /** By `${asset}:${range}`. */
-  candles: Record<string, ProviderCandles>
+export interface OracleCache {
+  /** The basket and electricity definitions of the feed last received. */
+  basket?: FeedBasket
+  electricity?: FeedElectricity
+  series: Record<string, LocalSeries>
+  coverage: Coverage[]
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000
+export function emptyOracleCache(): OracleCache {
+  return { series: {}, coverage: [] }
+}
+
+/** What the formulas read from the cache, or undefined before any feed was received. */
+export function oracleInputs(cache: OracleCache): OracleInputs | undefined {
+  return cache.basket && cache.electricity
+    ? {
+        basket: cache.basket,
+        electricity: cache.electricity,
+        series: cache.series,
+      }
+    : undefined
+}
+
+const DAY_SECONDS = 24 * 60 * 60
 
 /**
- * Every observation is kept for this long. The finest line the chart draws further back
- * than a week has one point a day, so nothing drawn needs more than that from older data.
+ * Every point is kept for this long. The finest line the chart draws further back than a
+ * week has one point a day, so nothing drawn needs more than that from older data.
  */
-export const FULL_RESOLUTION_MS = 14 * DAY_MS
+export const FULL_RESOLUTION_SECONDS = 14 * DAY_SECONDS
 
 /**
- * Bounds what is stored: observations older than FULL_RESOLUTION_MS are thinned to the
- * first one recorded in each UTC day. What remains are observations exactly as fetched;
- * none is averaged or moved. Nothing depends on the bound being reached: at ten-minute
- * fetches it is about 2,000 recent records per series plus one a day of history.
+ * Bounds what is stored: points older than FULL_RESOLUTION_SECONDS are thinned to the
+ * first one of each UTC day. What remains are points exactly as received; none is
+ * averaged or moved. The floor lookup works the same on a thinned series.
  */
-export function thinOldObservations<T>(
-  observations: readonly T[],
-  timestampOf: (observation: T) => number,
-  now: number,
-): T[] {
-  const cutoff = now - FULL_RESOLUTION_MS
+export function thinOldPoints(
+  points: readonly SeriesPoint[],
+  nowSeconds: number,
+): SeriesPoint[] {
+  const cutoff = nowSeconds - FULL_RESOLUTION_SECONDS
   let lastDayKept = -Infinity
-  return observations.filter(observation => {
-    const timestamp = timestampOf(observation)
-    if (timestamp >= cutoff) return true
-    const day = Math.floor(timestamp / DAY_MS)
+  return points.filter(point => {
+    if (point[0] >= cutoff) return true
+    const day = Math.floor(point[0] / DAY_SECONDS)
     if (day === lastDayKept) return false
     lastDayKept = day
     return true
   })
 }
 
-function isPositive(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0
-}
-
-/**
- * The current prices and chain statistics, read from the series: for each coin the newest
- * observation that has it, with that observation's own time; for each chain its newest
- * statistics. AVU_hash and every AVU rate are computed from those. This is the only way
- * a snapshot is made, so computing AVU never asks the network for anything.
- */
-export function snapshotFromSeries(
-  series: Pick<OracleSeries, 'priceObservations' | 'miningObservations'>,
-): OracleSnapshot {
-  const snapshot = unavailableOracleSnapshot()
-  const observations = series.priceObservations
-  const missing = new Set(Object.keys(ASSET_FEED_SYMBOLS) as SupportedAsset[])
-  for (let i = observations.length - 1; i >= 0 && missing.size > 0; i--) {
-    for (const asset of Array.from(missing)) {
-      const price = observations[i].prices[asset]
-      if (!price) continue
-      snapshot.prices[asset] = price.usd
-      snapshot.fetchedAt[asset] = observations[i].timestamp
-      snapshot.priceSources[asset] = price.sources
-      missing.delete(asset)
+/** The cache with a feed answer's points and metadata added to it. */
+export function mergeFeed(
+  cache: OracleCache,
+  feed: OracleFeed,
+  nowSeconds: number,
+): OracleCache {
+  const series = { ...cache.series }
+  for (const [name, received] of Object.entries(feed.series)) {
+    const held = series[name]
+    const points = thinOldPoints(
+      mergeSeries(held?.points ?? [], received.points),
+      nowSeconds,
+    )
+    // The metadata describes the newest data: an answer about the past (a range) does
+    // not overwrite what a later answer said about the present.
+    const newer = !held || received.asOf >= held.asOf
+    series[name] = {
+      ...(newer
+        ? {
+            unit: received.unit,
+            source: received.source,
+            asOf: received.asOf,
+            stale: received.stale,
+          }
+        : {
+            unit: held.unit,
+            source: held.source,
+            asOf: held.asOf,
+            stale: held.stale,
+          }),
+      ...(received.estimatedBefore !== undefined
+        ? { estimatedBefore: received.estimatedBefore }
+        : held?.estimatedBefore !== undefined
+        ? { estimatedBefore: held.estimatedBefore }
+        : {}),
+      points,
     }
   }
-  for (const chain of AVU_HASH_CHAINS) {
-    const recorded = series.miningObservations[chain]
-    const latest = recorded?.[recorded.length - 1]
-    if (latest) snapshot.mining[chain] = latest
-  }
-  if (observations.length > 0) {
-    snapshot.timestamp = observations[observations.length - 1].timestamp
-  }
-  return rateOracleSnapshot(snapshot)
-}
-
-/**
- * One line from two sets of real points: the last recorded point in each step of the
- * range, and, in a step with none, the provider's last candle in that step. A step with
- * neither has no point. Sorted, one point per step, so no timestamp appears twice.
- */
-export function joinPriceSeries(
-  recorded: readonly PriceHistoryPoint[],
-  candles: readonly PriceHistoryPoint[],
-  stepMs: number,
-): { points: PriceHistoryPoint[]; recorded: number } {
-  const lastInStep = (points: readonly PriceHistoryPoint[]) => {
-    const steps = new Map<number, PriceHistoryPoint>()
-    for (const point of points) {
-      const step = Math.floor(point.timestamp / stepMs)
-      const held = steps.get(step)
-      if (!held || point.timestamp >= held.timestamp) steps.set(step, point)
-    }
-    return steps
-  }
-  const own = lastInStep(recorded)
-  const joined = new Map(lastInStep(candles))
-  own.forEach((point, step) => joined.set(step, point))
   return {
-    points: Array.from(joined.values()).sort(
-      (a, b) => a.timestamp - b.timestamp,
-    ),
-    recorded: own.size,
+    basket: feed.basket,
+    electricity: feed.electricity,
+    series,
+    coverage: cache.coverage,
   }
+}
+
+function normalise(coverage: Coverage[]): Coverage[] {
+  const sorted = coverage
+    .slice()
+    .sort((a, b) => a.step - b.step || a.from - b.from)
+  const merged: Coverage[] = []
+  for (const one of sorted) {
+    const last = merged[merged.length - 1]
+    if (last && last.step === one.step && one.from <= last.until) {
+      last.until = Math.max(last.until, one.until)
+    } else {
+      merged.push({ ...one })
+    }
+  }
+  return merged
+}
+
+/**
+ * Records that a latest answer was received at `at`. Consecutive polls no further apart
+ * than three intervals are one covered stretch at the poll interval; a longer silence
+ * (the app was closed) starts a new stretch and leaves a gap between them.
+ */
+export function coverLatest(
+  coverage: Coverage[],
+  at: number,
+  pollSeconds: number,
+): Coverage[] {
+  const open = coverage.find(
+    c =>
+      c.step === pollSeconds &&
+      at >= c.until &&
+      at - c.until <= 3 * pollSeconds,
+  )
+  return normalise(
+    open
+      ? coverage.map(c => (c === open ? { ...c, until: at } : c))
+      : [...coverage, { from: at, until: at, step: pollSeconds }],
+  )
+}
+
+/** Records that a range answer for [since, until] at `step` was received and stored. */
+export function coverRange(
+  coverage: Coverage[],
+  since: number,
+  until: number,
+  step: number,
+): Coverage[] {
+  return normalise([...coverage, { from: since, until, step }])
+}
+
+/**
+ * The stretches of [since, until] the local series do not hold at `step` or finer, oldest
+ * first. A stretch shorter than one step is not worth a request and is left out.
+ */
+export function missingRanges(
+  coverage: readonly Coverage[],
+  since: number,
+  until: number,
+  step: number,
+): Array<{ since: number; until: number }> {
+  const held = coverage
+    .filter(c => c.step <= step && c.until > since && c.from < until)
+    .sort((a, b) => a.from - b.from)
+  const missing: Array<{ since: number; until: number }> = []
+  let cursor = since
+  for (const one of held) {
+    if (one.from - cursor >= step)
+      missing.push({ since: cursor, until: one.from })
+    cursor = Math.max(cursor, one.until)
+  }
+  if (until - cursor >= step) missing.push({ since: cursor, until })
+  return missing
 }
 
 // ---- Persistence ---------------------------------------------------------------------------
 
-// v1 of the series. The localStorage records the oracle kept before (frank_oracle_*) are
-// never read.
-const PREFIX = 'oracle:v1:'
-const PRICE_PREFIX = `${PREFIX}price:`
-const MINING_PREFIX = `${PREFIX}mining:`
-const CANDLES_PREFIX = `${PREFIX}candles:`
+// v2 of the local series: feed points. The v1 records (price and mining observations,
+// provider candles) are never read; a development install drops them by clearing the
+// app's site data.
+const PREFIX = 'oracle:v2:'
+const META_KEY = `${PREFIX}meta`
+const POINT_PREFIX = `${PREFIX}pt:`
 
-/** Unix milliseconds as text that sorts in time order. */
-function timeKey(timestamp: number): string {
-  return String(Math.floor(timestamp)).padStart(15, '0')
+/** Unix seconds as text that sorts in time order. */
+function timeKey(seconds: number): string {
+  return String(Math.floor(seconds)).padStart(12, '0')
 }
 
-/** Every record the series should have on disk: key, a stamp that changes with its value, and the value. */
-function records(
-  series: OracleSeries,
-): Map<string, { stamp: number; value: () => string }> {
-  const wanted = new Map<string, { stamp: number; value: () => string }>()
-  for (const observation of series.priceObservations) {
-    wanted.set(`${PRICE_PREFIX}${timeKey(observation.timestamp)}`, {
-      stamp: observation.timestamp,
-      value: () => JSON.stringify(observation),
-    })
+interface StoredMeta {
+  basket?: FeedBasket
+  electricity?: FeedElectricity
+  coverage: Coverage[]
+  series: Record<string, Omit<LocalSeries, 'points'>>
+}
+
+function metaOf(cache: OracleCache): string {
+  const meta: StoredMeta = {
+    basket: cache.basket,
+    electricity: cache.electricity,
+    coverage: cache.coverage,
+    series: Object.fromEntries(
+      Object.entries(cache.series).map(([name, one]) => {
+        const { points: _points, ...rest } = one
+        return [name, rest]
+      }),
+    ),
   }
-  for (const [chain, observations] of Object.entries(
-    series.miningObservations,
-  )) {
-    for (const stats of observations) {
-      wanted.set(`${MINING_PREFIX}${chain}:${timeKey(stats.fetchedAt)}`, {
-        stamp: stats.fetchedAt,
-        value: () => JSON.stringify(stats),
-      })
-    }
-  }
-  for (const [key, candles] of Object.entries(series.candles)) {
-    wanted.set(`${CANDLES_PREFIX}${key}`, {
-      stamp: candles.fetchedAt,
-      value: () => JSON.stringify(candles),
-    })
-  }
-  return wanted
+  return JSON.stringify(meta)
 }
 
 /** What each database is known to hold, so a save writes only what changed. */
-const written = new WeakMap<LevelDB, Map<string, number>>()
+const written = new WeakMap<LevelDB, Map<string, string>>()
 
-/** Writes the records the database lacks and deletes the ones the series dropped. */
-export async function saveOracleSeries(
+/** Writes the records the database lacks and deletes the ones the cache dropped. */
+export async function saveOracleCache(
   storage: LevelDB,
-  series: OracleSeries,
+  cache: OracleCache,
 ): Promise<void> {
-  const onDisk = written.get(storage) ?? new Map<string, number>()
+  const onDisk = written.get(storage) ?? new Map<string, string>()
   written.set(storage, onDisk)
-  const wanted = records(series)
-  const operations: LevelBatchOperation[] = []
-  wanted.forEach((record, key) => {
-    if (onDisk.get(key) !== record.stamp) {
-      operations.push({ type: 'put', key, value: record.value() })
+  const wanted = new Map<string, string>()
+  wanted.set(META_KEY, metaOf(cache))
+  for (const [name, one] of Object.entries(cache.series)) {
+    for (const point of one.points) {
+      wanted.set(
+        `${POINT_PREFIX}${name}:${timeKey(point[0])}`,
+        String(point[1]),
+      )
     }
+  }
+  const operations: LevelBatchOperation[] = []
+  wanted.forEach((value, key) => {
+    if (onDisk.get(key) !== value) operations.push({ type: 'put', key, value })
   })
-  onDisk.forEach((_stamp, key) => {
+  onDisk.forEach((_value, key) => {
     if (!wanted.has(key)) operations.push({ type: 'del', key })
   })
   if (operations.length === 0) return
   // Marked before the write so a second save in the same tick does not repeat it.
   for (const operation of operations) {
-    if (operation.type === 'put') {
-      onDisk.set(operation.key, wanted.get(operation.key)!.stamp)
-    } else {
-      onDisk.delete(operation.key)
-    }
+    if (operation.type === 'put') onDisk.set(operation.key, operation.value)
+    else onDisk.delete(operation.key)
   }
   try {
     await storage.batch(operations)
@@ -230,79 +288,50 @@ export async function saveOracleSeries(
   }
 }
 
-function isPriceObservation(value: unknown): value is PriceObservation {
-  const observation = value as PriceObservation | null
-  return (
-    isPositive(observation?.timestamp) &&
-    typeof observation?.prices === 'object' &&
-    observation.prices !== null &&
-    Object.values(observation.prices).every(
-      price =>
-        isPositive(price?.usd) &&
-        isPositive(price?.sources) &&
-        typeof price?.providers === 'object',
-    )
-  )
-}
-
-function isMiningStats(value: unknown): value is MiningStats {
-  const stats = value as MiningStats | null
-  return (
-    typeof stats?.chain === 'string' &&
-    isPositive(stats.subsidyCoinsPerBlock) &&
-    isPositive(stats.difficulty) &&
-    isPositive(stats.hashesPerBlock) &&
-    isPositive(stats.circulatingCoins) &&
-    isPositive(stats.fetchedAt)
-  )
-}
-
-function isProviderCandles(value: unknown): value is ProviderCandles {
-  const candles = value as ProviderCandles | null
-  return (
-    typeof candles?.provider === 'string' &&
-    isPositive(candles.fetchedAt) &&
-    Array.isArray(candles.points) &&
-    candles.points.every(p => isPositive(p?.timestamp) && isPositive(p?.price))
-  )
-}
-
 /**
- * Reads the series back. A record that is not a complete fetched observation is left out
- * (and deleted by the next save); it is never repaired or filled in.
+ * Reads the cache back. A record that is not a point of a series the metadata names is
+ * left out (and deleted by the next save); it is never repaired or filled in.
  */
-export async function restoreOracleSeries(
+export async function restoreOracleCache(
   storage: LevelDB,
-): Promise<OracleSeries> {
-  const series: OracleSeries = {
-    priceObservations: [],
-    miningObservations: {},
-    candles: {},
-  }
-  const onDisk = new Map<string, number>()
+): Promise<OracleCache> {
+  const cache = emptyOracleCache()
+  const onDisk = new Map<string, string>()
+  let meta: StoredMeta | null = null
+  const points = new Map<string, SeriesPoint[]>()
   // ';' is the character after ':', so this range is every key under the prefix, in order.
   const range = { gte: PREFIX, lt: `${PREFIX.slice(0, -1)};` }
   for await (const [key, text] of storage.iterator(range)) {
-    let value: unknown
-    try {
-      value = JSON.parse(text)
-    } catch {
-      value = null
-    }
-    // Known to be on disk whatever it holds; a stamp of 0 never matches a real record.
-    onDisk.set(key, 0)
-    if (key.startsWith(PRICE_PREFIX) && isPriceObservation(value)) {
-      series.priceObservations.push(value)
-      onDisk.set(key, value.timestamp)
-    } else if (key.startsWith(MINING_PREFIX) && isMiningStats(value)) {
-      const chain = (series.miningObservations[value.chain] ??= [])
-      chain.push(value)
-      onDisk.set(key, value.fetchedAt)
-    } else if (key.startsWith(CANDLES_PREFIX) && isProviderCandles(value)) {
-      series.candles[key.slice(CANDLES_PREFIX.length)] = value
-      onDisk.set(key, value.fetchedAt)
+    onDisk.set(key, text)
+    if (key === META_KEY) {
+      try {
+        meta = JSON.parse(text) as StoredMeta
+      } catch {
+        meta = null
+      }
+    } else if (key.startsWith(POINT_PREFIX)) {
+      const rest = key.slice(POINT_PREFIX.length)
+      const split = rest.lastIndexOf(':')
+      const time = Number(rest.slice(split + 1))
+      const value = Number(text)
+      if (split > 0 && Number.isFinite(time) && Number.isFinite(value)) {
+        const name = rest.slice(0, split)
+        const list = points.get(name) ?? []
+        list.push([time, value])
+        points.set(name, list)
+      }
     }
   }
   written.set(storage, onDisk)
-  return series
+  if (!meta || typeof meta !== 'object' || typeof meta.series !== 'object') {
+    return cache
+  }
+  cache.basket = meta.basket
+  cache.electricity = meta.electricity
+  cache.coverage = Array.isArray(meta.coverage) ? meta.coverage : []
+  for (const [name, described] of Object.entries(meta.series ?? {})) {
+    const held = points.get(name)
+    if (held) cache.series[name] = { ...described, points: held }
+  }
+  return cache
 }

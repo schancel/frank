@@ -100,6 +100,9 @@ point, makes what depends on it unavailable; the client never substitutes a valu
   monthly series this is the retrieval date, not the point's time.
 - `stale`: true when the relay could not refresh the series within its normal interval. The
   client then shows the age of the value beside it.
+- `estimatedBefore` (optional): unix seconds; points before it are estimates and the client
+  marks them so (the RandomX efficiency steps before the first ASIC are processors rated at
+  their package power limit, not a measured wall figure).
 
 ### What a response must contain
 

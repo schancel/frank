@@ -235,8 +235,6 @@ import { walletSupport } from '../../utils/wallet-support'
 import RenameWalletDialog from '../wallet/RenameWalletDialog.vue'
 import AvuExplainerDialog from '../wallet/AvuExplainerDialog.vue'
 import { useSafeOracleStore } from '../../stores/oracle'
-import { useOracleFeed } from '../../composables/useOracleFeed'
-import { formatAvu } from '@frank/wallet/oracle'
 import { compactAmountText } from '../../utils/chain-amount'
 import {
   WALLET_CONFIGS,
@@ -397,8 +395,6 @@ function getWalletTokenStatusKey(wallet: WalletItemConfig): string {
 const props = withDefaults(defineProps<{ shown?: boolean }>(), { shown: true })
 
 const oracle = useSafeOracleStore()
-// Prices are kept current only while this panel is the one showing in the drawer.
-useOracleFeed(undefined, () => props.shown)
 
 function getWalletAvu(wallet: WalletItemConfig): string {
   if (wallet.isMain) {
@@ -423,7 +419,7 @@ const portfolioTotalAvu = computed(() => {
       }
     }
   }
-  return total > 0 ? `≈ ${formatAvu(total)}` : ''
+  return oracle.formatAvuValue('monad', total)
 })
 
 function getRouter() {

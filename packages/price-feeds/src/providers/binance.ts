@@ -8,6 +8,7 @@ export const BINANCE_SYMBOLS: Record<string, string> = {
   BTC: 'BTCUSDT',
   BCH: 'BCHUSDT',
   DOGE: 'DOGEUSDT',
+  LTC: 'LTCUSDT',
   HYPE: 'HYPEUSDT',
 }
 

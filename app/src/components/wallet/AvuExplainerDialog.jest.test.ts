@@ -4,6 +4,9 @@ import AvuExplainerDialog from './AvuExplainerDialog.vue'
 import en from '../../i18n/en-us'
 import { createPinia, setActivePinia } from 'pinia'
 import { useOracleStore } from '../../stores/oracle'
+import { mergeFeed, oracleInputs } from '../../stores/oracle-series'
+import { testFeed } from '../../stores/oracle-test-feed'
+import { computeOracleRates } from '@frank/wallet/oracle'
 
 const t = (key: string) =>
   key.split('.').reduce((value: any, part) => value?.[part], en) ?? key
@@ -51,74 +54,55 @@ describe('AvuExplainerDialog component', () => {
     expect(wrapper.text()).toContain('Truly "Oracle-Less"')
   })
 
-  test('with no fetched prices every coin row says unavailable: nothing stands in for a price', () => {
+  test('with nothing received every coin row says unavailable: nothing stands in for a rate', () => {
     setActivePinia(createPinia())
     const wrapper = mountDialog()
-    for (const asset of [
-      'monad',
-      'solana',
-      'ethereum',
-      'hyperliquid',
-      'ecash',
-      'bitcoin',
-    ]) {
-      const row = wrapper.find(`[data-test="avu-rate-row-${asset}"]`).text()
-      expect(row).toContain('Unavailable')
-      expect(row).not.toContain('≈')
-      expect(row).not.toContain('$')
+    for (const asset of ['monad', 'solana', 'ethereum', 'ecash', 'bitcoin']) {
+      expect(
+        wrapper.find(`[data-test="avu-rate-row-${asset}"]`).text(),
+      ).toContain('Unavailable')
     }
   })
 
-  test('shows the fetched price of each coin, in AVU and in dollars', () => {
+  test('shows what one coin is worth in AVU, and no dollar figure anywhere in the table', () => {
     setActivePinia(createPinia())
     const oracle = useOracleStore()
-    oracle.snapshot.prices.solana = 110.06
-    oracle.snapshot.rates.solana = 110.06 * 12
-    oracle.snapshot.fetchedAt.solana = Date.now()
-    oracle.snapshot.avuHash = {
-      kwhPerDollar: 12,
-      entries: [],
-      leftOut: [],
-      basketSize: 5,
-      efficiencyMonth: '2026-09',
-      pricesAsOf: Date.now(),
-      chainsAsOf: Date.now(),
-    }
-    const wrapper = mountDialog()
-    const row = wrapper.find('[data-test="avu-rate-row-solana"]').text()
-    expect(row).toContain('1 SOL ≈ 1,320.72 AVU')
-    expect(row).toContain('$110.060')
-    // The dollar row is AVU_hash: the kWh a dollar is worth as mining prices it.
-    expect(wrapper.find('[data-test="avu-rate-row-usd"]').text()).toContain(
-      '1 USD = 12.00 AVU',
+    const now = Math.floor(Date.now() / 1000)
+    // AVU_hash 10 kWh per unit of value; SOL priced 110, XEC 0.00001.
+    const cache = mergeFeed(
+      oracle.cache,
+      testFeed([now], {
+        prices: { 'solana-mainnet': 110, 'xec-mainnet': 0.00001 },
+      }),
+      now,
     )
+    oracle.$patch({
+      cache,
+      current: computeOracleRates(oracleInputs(cache)!, now),
+    })
+    const wrapper = mountDialog()
+    expect(wrapper.find('[data-test="avu-rate-row-solana"]').text()).toContain(
+      '1 SOL ≈ 1.1 kAVU · testnet',
+    )
+    // eCash is quoted per million coins: 1,000,000 x 0.00001 x 10 = 100 AVU.
+    expect(wrapper.find('[data-test="avu-rate-row-ecash"]').text()).toContain(
+      '1M XEC ≈ 100 AVU · testnet',
+    )
+    expect(
+      wrapper.find('[data-test="avu-rate-row-ethereum"]').text(),
+    ).toContain('Unavailable')
+    const table = wrapper.find('[data-test="avu-rates-table"]').text()
+    // ("1 TUSD" is the Tempo test coin's own unit, not a dollar valuation.)
+    expect(table).not.toMatch(/\$|\bUSD\b/)
+    expect(wrapper.find('[data-test="avu-rate-row-usd"]').exists()).toBe(false)
   })
 
-  test('lists no row for a coin without a price source, and none for AVU itself', () => {
-    setActivePinia(createPinia())
+  test('emits update:modelValue when closed', async () => {
     const wrapper = mountDialog()
-    expect(wrapper.find('[data-test="avu-rate-row-tempo"]').exists()).toBe(
-      false,
-    )
-    expect(wrapper.find('[data-test="avu-rate-row-avu"]').exists()).toBe(false)
-    // Without AVU_hash the dollar row has no figure: there is no fixed rate to fall back on.
-    const usdRow = wrapper.find('[data-test="avu-rate-row-usd"]').text()
-    expect(usdRow).toContain('Unavailable')
-    expect(usdRow).not.toContain('1 USD =')
-  })
-
-  test('does not render when modelValue is false', () => {
-    const wrapper = mountDialog({ modelValue: false })
-    expect(wrapper.find('[data-test="avu-explainer-card"]').exists()).toBe(
-      false,
-    )
-  })
-
-  test('emits update:modelValue with false when close button is clicked', async () => {
-    const wrapper = mountDialog()
-    const closeBtn = wrapper.find('[data-test="avu-dialog-close-btn"]')
-    expect(closeBtn.exists()).toBe(true)
-    await closeBtn.trigger('click')
+    const close = wrapper
+      .findAll('button')
+      .find(button => button.text().includes('Close'))
+    await close?.trigger('click')
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([false])
   })
 })

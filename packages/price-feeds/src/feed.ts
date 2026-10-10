@@ -20,6 +20,8 @@ export interface FeedSeries {
   asOf: number
   /** The relay could not refresh the series within its normal interval. */
   stale: boolean
+  /** Points before this time (unix seconds) are estimates, to be marked as such. */
+  estimatedBefore?: number
   points: SeriesPoint[]
 }
 
@@ -112,11 +114,17 @@ function parseSeries(value: unknown): FeedSeries | undefined {
     previous = point[0]
     points.push([point[0], point[1]])
   }
+  if (value.estimatedBefore !== undefined && !isTime(value.estimatedBefore)) {
+    return undefined
+  }
   return {
     unit: value.unit,
     source: value.source,
     asOf: value.asOf,
     stale: value.stale,
+    ...(value.estimatedBefore === undefined
+      ? {}
+      : { estimatedBefore: value.estimatedBefore }),
     points,
   }
 }

@@ -1,16 +1,13 @@
 import {
-  AVU_HASH_BASKET,
-  HASHING_EFFICIENCY,
+  avuHashAt,
   avuPerCoin,
-  computeAvuHash,
+  avuSpotAt,
   type AvuHash,
-  type PriceReading,
+  type AvuSpot,
+  type OracleInputs,
 } from "./energy-basket";
-import {
-  PriceFeedsClient,
-  type MiningStats,
-  type PriceProviderId,
-} from "@frank/price-feeds";
+import { at, seriesName } from "@frank/price-feeds";
+import { mainnetChainIdOfKind } from "../chain/chains-registry";
 
 export type SupportedAsset =
   | "monad"
@@ -36,103 +33,72 @@ export const ASSET_DECIMALS: Record<SupportedAsset, number> = {
 };
 
 /**
- * The market each asset's price is fetched under. An asset absent from this table has no
- * price source, so it has no rate and nothing shows an AVU value for it. There are no
- * stand-in prices: a number is always one a provider returned.
- *
- * `monad` is priced as mainnet MON. Tempo's test dollar is absent: no provider prices it,
- * and "one dollar" would be a peg assumption, not a price.
+ * The feed asset id an asset is priced under: its main network's canonical chain id,
+ * whichever network the wallet is on. Undefined for an asset with no main network in the
+ * registry; an asset the feed carries no price series for simply has no rate.
  */
-export const ASSET_FEED_SYMBOLS: Partial<Record<SupportedAsset, string>> = {
-  monad: "MON",
-  ethereum: "ETH",
-  solana: "SOL",
-  ecash: "XEC",
-  hyperliquid: "HYPE",
-  bitcoin: "BTC",
-  bitcoincash: "BCH",
-  dogecoin: "DOGE",
-};
+export function priceAssetId(asset: SupportedAsset): string | undefined {
+  return mainnetChainIdOfKind(asset);
+}
 
-/** AVU per whole unit of an asset, only for assets whose price was fetched. */
+/** AVU per whole unit of an asset, only for assets the feed has a price for. */
 export type AvuRates = Partial<Record<SupportedAsset, number>>;
 
-/** US dollars per whole unit of an asset, only for assets whose price was fetched. */
-export type UsdPrices = Partial<Record<SupportedAsset, number>>;
+export const SUPPORTED_ASSETS = Object.keys(
+  ASSET_DECIMALS
+) as SupportedAsset[];
 
-export interface OracleSnapshot {
-  epoch: string;
-  /** When the fetch that produced this snapshot finished. */
-  timestamp: number;
-  /** Fetched market prices. */
-  prices: UsdPrices;
-  /** The same prices in AVU (kWh per coin): price times AVU_hash. Empty without AVU_hash. */
+/**
+ * Everything the app shows about value, computed once from the feed for one time: the
+ * AVU rate of each asset, and the two readings behind them. Balances and amounts read
+ * `rates`; nothing recomputes per component.
+ */
+export interface OracleRates {
+  /** The time (unix seconds) the rates are for. */
+  at: number;
+  /** AVU (kWh) per whole coin: price x AVU_hash. Empty without AVU_hash. */
   rates: AvuRates;
-  /** When each asset's price was fetched (Unix ms). An old time means a stale price. */
-  fetchedAt: Partial<Record<SupportedAsset, number>>;
-  /**
-   * How many providers' prices each asset's price is the median of. One means the price
-   * rests on a single source.
-   */
-  priceSources: Partial<Record<SupportedAsset, number>>;
-  /** Fetched chain statistics of the mined coins in the basket, by Blockchair chain name. */
-  mining: Record<string, MiningStats>;
-  /** kWh per dollar read off mining. Absent when no basket entry has all its inputs. */
+  /** The time (unix seconds) of the price each rate was computed from. */
+  priceAt: Partial<Record<SupportedAsset, number>>;
+  /** The price series of an asset was flagged stale by whoever served it. */
+  priceStale: Partial<Record<SupportedAsset, boolean>>;
   avuHash?: AvuHash;
+  avuSpot: AvuSpot;
 }
 
-export interface SwapParityResult {
-  parityPercent: number;
-  status: "fair" | "premium" | "discount" | "warning";
-  sendAvu: number;
-  receiveAvu: number;
-}
-
-/** What is known when nothing has been fetched, or a fetch failed: no prices at all. */
-export function unavailableOracleSnapshot(): OracleSnapshot {
+/** No feed: no rates. Never a default value. */
+export function unavailableOracleRates(at = 0): OracleRates {
   return {
-    epoch: "pow-energy-standard-v1",
-    timestamp: Date.now(),
-    prices: {},
+    at,
     rates: {},
-    fetchedAt: {},
-    priceSources: {},
-    mining: {},
+    priceAt: {},
+    priceStale: {},
+    avuSpot: { unavailable: "no-data" },
   };
 }
 
-/** The Blockchair chains of every basket entry that has an efficiency series to compute with. */
-export const AVU_HASH_CHAINS: readonly string[] = AVU_HASH_BASKET.filter(
-  (entry) => HASHING_EFFICIENCY[entry.algorithm]
-).flatMap((entry) => entry.chains.map((chain) => chain.chain));
-
-/**
- * Computes AVU_hash from the snapshot's prices and chain statistics and restates every
- * price in AVU with it. Whatever `rates` and `avuHash` held before is discarded: they are
- * only ever derived from the prices and statistics beside them.
- */
-export function rateOracleSnapshot(snapshot: OracleSnapshot): OracleSnapshot {
-  const readings: Record<string, PriceReading> = {};
-  const assets = Object.entries(ASSET_FEED_SYMBOLS) as Array<
-    [SupportedAsset, string]
-  >;
-  for (const [asset, symbol] of assets) {
-    const usd = snapshot.prices[asset];
-    const fetchedAt = snapshot.fetchedAt[asset];
-    if (usd !== undefined && fetchedAt !== undefined) {
-      readings[symbol] = { usd, fetchedAt };
-    }
+/** The rates at a time, from the feed's series by floor lookup. */
+export function computeOracleRates(
+  inputs: OracleInputs,
+  t: number
+): OracleRates {
+  const avuHash = avuHashAt(inputs, t);
+  const computed: OracleRates = {
+    ...unavailableOracleRates(t),
+    avuSpot: avuSpotAt(inputs, t),
+  };
+  if (avuHash) computed.avuHash = avuHash;
+  for (const asset of SUPPORTED_ASSETS) {
+    const id = priceAssetId(asset);
+    const series = id ? inputs.series[seriesName("price", id)] : undefined;
+    const price = at(series?.points, t);
+    const rate = price ? avuPerCoin(price[1], avuHash) : undefined;
+    if (!price || rate === undefined) continue;
+    computed.rates[asset] = rate;
+    computed.priceAt[asset] = price[0];
+    computed.priceStale[asset] = Boolean(series?.stale);
   }
-  const avuHash = computeAvuHash(readings, snapshot.mining);
-  const rates: AvuRates = {};
-  for (const [asset] of assets) {
-    const rate = avuPerCoin(snapshot.prices[asset] ?? 0, avuHash);
-    if (rate !== undefined) rates[asset] = rate;
-  }
-  const rated: OracleSnapshot = { ...snapshot, rates };
-  if (avuHash) rated.avuHash = avuHash;
-  else delete rated.avuHash;
-  return rated;
+  return computed;
 }
 
 /**
@@ -159,127 +125,28 @@ export function convertRawToAvu(
   return nominal * rate;
 }
 
+const AVU_PREFIXES: ReadonlyArray<[number, string]> = [
+  [1e9, "G"],
+  [1e6, "M"],
+  [1e3, "k"],
+  [1, ""],
+  [1e-3, "m"],
+  [1e-6, "μ"],
+  [1e-9, "n"],
+];
+
 /**
- * Formats an AVU numeric value for human display in the UI.
+ * An AVU figure in the app's compact style: three significant digits and an SI prefix,
+ * "1.31 kAVU", "92.5 AVU", "4.2 mAVU". Short enough for a list row. Empty for nothing or
+ * for a value that is not a positive number: an unknown value is not "0 AVU".
  */
 export function formatAvu(avu: number): string {
-  if (!Number.isFinite(avu) || avu <= 0) {
-    return "0 AVU";
-  }
-  if (avu < 0.01) {
-    return "< 0.01 AVU";
-  }
-  if (avu >= 1000) {
-    return `${avu.toLocaleString("en-US", { maximumFractionDigits: 1 })} AVU`;
-  }
-  return `${avu.toFixed(2)} AVU`;
-}
-
-/**
- * Evaluates the economic parity of an atomic swap offer at the given AVU rates. Undefined when
- * either asset has no rate: parity against an unknown price cannot be stated.
- */
-export function calculateSwapParity(
-  sendRaw: bigint,
-  sendAsset: SupportedAsset,
-  receiveRaw: bigint,
-  receiveAsset: SupportedAsset,
-  rates: AvuRates
-): SwapParityResult | undefined {
-  const sendAvu = convertRawToAvu(sendRaw, sendAsset, rates[sendAsset]);
-  const receiveAvu = convertRawToAvu(
-    receiveRaw,
-    receiveAsset,
-    rates[receiveAsset]
-  );
-  if (sendAvu === undefined || receiveAvu === undefined) return undefined;
-
-  if (sendAvu <= 0) {
-    return { parityPercent: 0, status: "fair", sendAvu: 0, receiveAvu };
-  }
-
-  const parityPercent = ((receiveAvu - sendAvu) / sendAvu) * 100;
-  let status: "fair" | "premium" | "discount" | "warning" = "fair";
-
-  if (parityPercent < -20) {
-    status = "warning";
-  } else if (parityPercent < -5) {
-    status = "discount";
-  } else if (parityPercent > 5) {
-    status = "premium";
-  }
-
-  return { parityPercent, status, sendAvu, receiveAvu };
-}
-
-/** One asset's price as one fetch returned it. */
-export interface FetchedPrice {
-  /** The median across the providers that answered, in US dollars. */
-  usd: number;
-  /** How many providers' prices that median is of, after outliers are set aside. */
-  sources: number;
-  /** What each provider that answered returned, in US dollars. */
-  providers: Partial<Record<PriceProviderId, number>>;
-}
-
-/** The prices one fetch returned. An asset whose price did not come back is absent. */
-export interface FetchedPrices {
-  /** When the fetch finished (Unix ms). */
-  timestamp: number;
-  prices: Partial<Record<SupportedAsset, FetchedPrice>>;
-}
-
-export interface FetchPricesOptions {
-  fetchFn?: typeof fetch;
-  timeoutMs?: number;
-  client?: PriceFeedsClient;
-}
-
-/**
- * Fetches the market price of every asset in ASSET_FEED_SYMBOLS across the configured
- * providers (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance): each provider's own
- * answer and their median.
- *
- * Nothing is substituted: an asset no provider answered for is absent, and a fetch that
- * fails altogether returns no prices. Chain statistics are fetched separately
- * (fetchMiningStats); AVU_hash is computed from both by rateOracleSnapshot.
- */
-export async function fetchPrices(
-  options: FetchPricesOptions = {}
-): Promise<FetchedPrices> {
-  const fetchFn = options.fetchFn ?? globalThis.fetch;
-  const fetched: FetchedPrices = { timestamp: Date.now(), prices: {} };
-  if (typeof fetchFn !== "function" && !options.client) return fetched;
-
-  try {
-    const feedsClient =
-      options.client ||
-      new PriceFeedsClient({
-        fetchFn,
-        timeoutMs: options.timeoutMs ?? 4000,
-        defaultStrategy: "median",
-      });
-    const assets = Object.entries(ASSET_FEED_SYMBOLS) as Array<
-      [SupportedAsset, string]
-    >;
-    const sampled = await feedsClient.getSnapshot(
-      assets.map(([, symbol]) => symbol)
-    );
-    fetched.timestamp = Date.now();
-    for (const [asset, symbol] of assets) {
-      const result = sampled[symbol];
-      const usd = result?.price;
-      if (typeof usd !== "number" || !Number.isFinite(usd) || usd <= 0) {
-        continue;
-      }
-      const providers: FetchedPrice["providers"] = {};
-      for (const sample of result.samples ?? []) {
-        providers[sample.provider] = sample.price;
-      }
-      fetched.prices[asset] = { usd, sources: result.sampleCount, providers };
-    }
-  } catch {
-    // No prices: the caller keeps what it last fetched.
-  }
-  return fetched;
+  if (!Number.isFinite(avu) || avu <= 0) return "";
+  const [scale, prefix] =
+    AVU_PREFIXES.find(([threshold]) => avu >= threshold) ??
+    AVU_PREFIXES[AVU_PREFIXES.length - 1];
+  const scaled = avu / scale;
+  if (scaled < 0.001) return "< 0.001 nAVU";
+  // toPrecision can round 999.6 up to 1000: Number() drops the exponent and zeros.
+  return `${Number(scaled.toPrecision(3))} ${prefix}AVU`;
 }

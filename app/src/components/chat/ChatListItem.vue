@@ -374,10 +374,9 @@ export default defineComponent({
       const previewText = info.photos
         ? picturePreviewText({ photos: info.photos, text: plain }, this.$t)
         : plain
+      // Whole words: a long one wraps inside the row (`.chat-list-preview`) instead of being
+      // cut at a fixed length, which read as a clipped word ("Rock-Paper-Scis").
       const slicedText = previewText
-        .split(' ')
-        .map(word => word.slice(0, 15))
-        .join(' ')
       if (info.outbound) {
         return this.$t('chatList.youPrefix', { text: slicedText })
       }
@@ -497,6 +496,8 @@ export default defineComponent({
 .chat-list-preview {
   color: inherit;
   opacity: 0.7;
+  /* An unbroken run (an address, a link) breaks where it must; the row never grows sideways. */
+  overflow-wrap: anywhere;
 }
 
 .chat-list-title {

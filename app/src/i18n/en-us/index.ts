@@ -765,7 +765,7 @@ export default {
       'Payments and stamps people sent you, each at its own one-time address, confirmed on the network.',
     other: 'Sending accounts',
     otherNote:
-      'Kept by the wallet in its own accounts to pay for your messages, and change from earlier payments.',
+      'Kept by the wallet in its own accounts to pay for your messages, and change from earlier payments. Not counted in the balance above.',
     total: 'Total in this wallet',
     yours:
       'Every one of these accounts belongs to this wallet and comes back from your recovery phrase.',

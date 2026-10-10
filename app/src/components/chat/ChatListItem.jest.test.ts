@@ -103,6 +103,16 @@ describe('ChatListItem message preview (ticket #274)', () => {
     expect(preview('en-us')).toBe(expected)
   })
 
+  it('keeps a long word whole (it wraps in the row; it is not cut mid-word)', () => {
+    latest = {
+      text: 'Rock-Paper-Scissors. I pick my move first',
+      outbound: false,
+    }
+    expect(preview('en-us')).toBe(
+      'Them: Rock-Paper-Scissors. I pick my move first',
+    )
+  })
+
   // The text of a message with pictures carries `![name](attachment:1)`; the row shows a count.
   it.each([
     [1, 'look at this', 'Them: 📷 Photo look at this'],

@@ -455,6 +455,13 @@ function openBackup() {
   opacity: 0.75;
 }
 
+/* The network name and the balance under a wallet's name: Quasar's caption colour is a fixed
+   dark grey, which could not be read on the dark drawer. */
+.wallet-list-item :deep(.q-item__label--caption) {
+  color: inherit;
+  opacity: 0.7;
+}
+
 .wallet-header-row {
   display: flex;
   flex-wrap: wrap;

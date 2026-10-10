@@ -1439,7 +1439,8 @@ export default defineComponent({
           ? 'swap.errorInsufficientBalance'
           : 'swap.review',
       ),
-      actionParams: computed(() => ({ asset: payToken.value ? symbolOf(payToken.value) : '',
+      actionParams: computed(() => ({
+        asset: payToken.value ? symbolOf(payToken.value) : '',
       })),
     }
   },

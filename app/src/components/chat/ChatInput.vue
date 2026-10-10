@@ -185,7 +185,8 @@
                 :suffix="chainUnit"
                 :label="$t('chatInput.stampPayment')"
               />
-              <div class="q-mt-sm">
+              <!-- Side room for the first and last marker labels, which are centred on the ends. -->
+              <div class="q-mt-sm q-px-md">
                 <q-slider
                   v-model="decadeIndex"
                   class="q-mt-md"
@@ -667,7 +668,7 @@ export default defineComponent({
 /* Secondary to the amount; the first thing to go when the composer is narrow. */
 .chat-stamp-pill-multiple {
   font-size: 10px;
-  opacity: 0.65;
+  opacity: 0.8;
   white-space: nowrap;
 
   @media (max-width: 480px) {

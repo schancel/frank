@@ -654,4 +654,70 @@ describe('contract calls through the native operation journal', () => {
     )
     expect(state.raws).toHaveLength(2)
   })
+
+  it('keeps a contract call’s record in the journal row, and refuses one anywhere else or malformed', async () => {
+    const state = node({ main: 10_000_000n, spend: 10_000_000n })
+    const { executor } = owner(state)
+    const record = {
+      kind: 'swap' as const,
+      venueId: 'uniswap-v4',
+      account: main.address,
+      assetIn: { symbol: 'MON', address: null, decimals: 18 },
+      amountIn: '1000',
+      assetOut: { symbol: 'USDC', address: router, decimals: 6 },
+      quotedAmountOut: '999',
+      minimumAmountOut: '989',
+      interfaceFeeAmount: '0',
+      networkFeeWei: '500000',
+      route: { zeroForOne: true },
+    }
+    const sent = await executor.sendContractCall({
+      ...call,
+      gasLimit: 250_000n,
+      record,
+    })
+    expect(journal.get(sent.operationId).record).toEqual(record)
+    await journal.Close()
+    await open()
+    expect(journal.get(sent.operationId).record).toEqual(record)
+    // A call with no record has none; a transfer can never carry one.
+    const plain = await owner(state).executor.sendContractCall({
+      ...call,
+      gasLimit: 250_000n,
+    })
+    expect(journal.get(plain.operationId).record).toBeNull()
+    const transfer = (extra: object) =>
+      journal.prepare({
+        kind: 'native',
+        recipient: router,
+        intendedValueWei: '1',
+        members: [
+          {
+            source: sources[1]!,
+            unsignedTransaction: Transaction.from({
+              type: 2,
+              to: router,
+              chainId: 10143n,
+              nonce: 0,
+              value: 1n,
+              gasLimit: 21_000n,
+              maxFeePerGas: 2n,
+              maxPriorityFeePerGas: 1n,
+            }).unsignedSerialized,
+            dependencies: [],
+          },
+        ],
+        ...extra,
+      })
+    await expect(transfer({ record })).rejects.toBeInstanceOf(
+      EvmNativeJournalError,
+    )
+    await expect(
+      owner(state).executor.sendContractCall({
+        ...call,
+        gasLimit: 250_000n,
+        record: { ...record, amountIn: '1.5' },
+      }),
+    ).rejects.toBeInstanceOf(EvmNativeJournalError)
+  })
 })

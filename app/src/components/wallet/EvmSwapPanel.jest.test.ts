@@ -16,7 +16,9 @@ import { findToken, poolId, routesFor } from '@frank/wallet/swap/uniswap-v4'
 import vectors from '@frank/wallet/swap/monad-testnet-swap-vectors.json'
 import en from '../../i18n/en-us'
 import fr from '../../i18n/fr-fr'
-import type { SwapRecord } from '../../stores/swaps'
+import type { SwapRecordItem } from '@frank/cashweb/types/messages'
+import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
+import { Transaction } from 'ethers'
 
 enableAutoUnmount(afterEach)
 
@@ -29,11 +31,8 @@ const USDC = findToken(deployment, 'USDC')!
 const account = vectors.account
 const E18 = 10n ** 18n
 
-const mockNotes: SwapRecord[] = []
-let mockNoteFails = false
-const mockSaved: SwapRecord[] = []
-let mockStorageFull = false
-const mockHistory = ref<SwapRecord[]>([])
+const mockItems: SwapRecordItem[] = []
+const mockOutcomes: Record<string, unknown>[] = []
 // The composition is real: only the account session (the wallet handle it returns) and the
 // node behind it are stand-ins.
 const mockSession = {
@@ -53,14 +52,12 @@ jest.mock('@frank/wallet/chain/dex-deployments', () => {
 })
 jest.mock('src/composables/useSwapHistory', () => ({
   useSwapHistory: () => ({
-    getSwapsForChain: () => mockHistory,
-    saveLocal: (record: SwapRecord) => {
-      if (mockStorageFull) throw new Error('QuotaExceededError')
-      mockSaved.push(JSON.parse(JSON.stringify(record)))
+    swapsForChain: () => ({ value: [] }),
+    handleSwapItem: (item: SwapRecordItem) => {
+      mockItems.push(item)
     },
-    noteToSelf: async (record: SwapRecord) => {
-      if (mockNoteFails) throw new Error('message store unavailable')
-      mockNotes.push(JSON.parse(JSON.stringify(record)))
+    cacheOutcome: (id: string, outcome: Record<string, unknown>) => {
+      mockOutcomes.push({ id, ...outcome })
     },
   }),
 }))
@@ -153,6 +150,8 @@ function scene(
     },
   )
   const receipts = new Map<string, unknown>()
+  // The wallet journal's rows, as `getNativeOperations` returns them.
+  const rows: Record<string, unknown>[] = []
   const events: string[] = []
   const wallet = {
     sendContractCall: jest.fn(
@@ -165,9 +164,7 @@ function scene(
           txHash: `0xhash${wallet.sendContractCall.mock.calls.length}`,
         }
         await params.onSigned?.(handle)
-        events.push(
-          `broadcast ${handle.txHash} after ${mockSaved.length} saved`,
-        )
+        events.push(`broadcast ${handle.txHash}`)
         return handle
       },
     ),
@@ -184,6 +181,7 @@ function scene(
       () => [] as { operationId: string; txHash: string }[],
     ),
     reobserveNativeOperations: jest.fn(async () => undefined),
+    getNativeOperations: jest.fn(() => rows),
   }
   mockVenueOverride = options.feeBps ? venue : undefined
   mockSession.state = { status: 'ready', account: { id: 'a' }, revision: 1 }
@@ -210,6 +208,7 @@ function scene(
     receipts,
     events,
     reader,
+    rows,
     signOut: () => {
       mockSession.state = { ...mockSession.state, revision: 2 }
     },
@@ -259,11 +258,8 @@ const receipt = (
 beforeEach(() => {
   jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
   jest.setSystemTime(1_800_000_000_000)
-  mockSaved.length = 0
-  mockStorageFull = false
-  mockHistory.value = []
-  mockNotes.length = 0
-  mockNoteFails = false
+  mockItems.length = 0
+  mockOutcomes.length = 0
   mockVenueOverride = undefined
   mockSession.getWallet.mockReset()
 })
@@ -456,7 +452,7 @@ describe('confirming and executing', () => {
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
   })
 
-  it('records the swap before broadcast, then shows the amount from the receipt, not the quote', async () => {
+  it('shows the amount from the receipt, not the quote, hands the wallet the record, and remembers the outcome', async () => {
     const s = scene()
     // The real receipt of 0.02 MON -> 0.019996 USDC; the form will be quoting a different amount.
     s.receipts.set('0xhash1', receipt(vectors.swapNativeIn))
@@ -467,29 +463,32 @@ describe('confirming and executing', () => {
     await click(view, 'swap-confirm-btn')
 
     expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
-    expect(s.events).toEqual(['broadcast 0xhash1 after 1 saved'])
-    expect(mockSaved[0]).toMatchObject({
-      status: 'pending',
-      chain: 'monad',
-      chainIdentifier: 'monad-testnet',
-      fromAsset: 'MON',
-      toAsset: 'USDC',
-      fromAmount: '0.05',
-      txHash: '0xhash1',
-      recovery: {
-        operationId: 'op-1',
-        venueId: 'uniswap-v4',
-        account,
-        route: { zeroForOne: true },
+    // The record is an argument of the wallet's contract send. Nothing else records the swap:
+    // the wallet journals it and its note to self carries it.
+    expect(
+      (s.wallet.sendContractCall.mock.calls[0]![0] as { record?: unknown })
+        .record,
+    ).toMatchObject({
+      kind: 'swap',
+      venueId: 'uniswap-v4',
+      account,
+      assetIn: { symbol: 'MON', address: null, decimals: 18 },
+      amountIn: '50000000000000000',
+      assetOut: { symbol: 'USDC', decimals: 6 },
+      quotedAmountOut: '49996',
+      minimumAmountOut: '49746',
+      interfaceFeeAmount: '0',
+      networkFeeWei: '23000000000000000',
+    })
+    // What the chain said it did, remembered under the id every frontend derives.
+    expect(mockOutcomes).toEqual([
+      {
+        id: swapRecordId('monad-testnet', '0xhash1'),
+        status: 'confirmed',
+        amountOut: '19996',
+        feeWei: '26520000000000000',
       },
-    })
-    expect(mockSaved[1]).toMatchObject({
-      id: mockSaved[0]!.id,
-      status: 'confirmed',
-      toAmount: '0.019996',
-      feeDisplay: '0.02652 MON',
-    })
-    expect(mockSaved[1]!.recovery).toBeUndefined()
+    ])
     expect(text(view, 'swap-result')).toContain('Swap complete')
     expect(text(view, 'swap-result-received')).toBe('0.019996 USDC')
     // What was actually charged and paid, from the receipt: 0.02 MON in, 0.02652 MON fee.
@@ -501,6 +500,23 @@ describe('confirming and executing', () => {
     ).toBe('https://explorer.test/monad-testnet/tx/0xhash1')
     await click(view, 'swap-new-btn')
     expect(text(view, 'swap-review-btn')).toBe('Enter an amount')
+  })
+
+  it('gives approvals no record of their own', async () => {
+    const s = scene()
+    for (const hash of ['0xhash1', '0xhash2'])
+      s.receipts.set(hash, receipt({ logs: [] }))
+    s.receipts.set('0xhash3', receipt(vectors.swapTokenIn))
+    const view = await mountPanel()
+    await click(view, 'swap-flip-btn')
+    await type(view, '0.015')
+    await click(view, 'swap-review-btn')
+    await click(view, 'swap-confirm-btn')
+    expect(
+      s.wallet.sendContractCall.mock.calls.map(
+        call => (call[0] as { record?: unknown }).record !== undefined,
+      ),
+    ).toEqual([false, false, true])
   })
 
   it('reads the price again before signing when the quote is more than a few seconds old', async () => {
@@ -545,7 +561,7 @@ describe('confirming and executing', () => {
     s.node.gasEstimate = callRevert(tooLittleReceived(19_896n, 19_000n))
     await click(view, 'swap-confirm-btn')
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
-    expect(mockSaved).toEqual([])
+    expect(mockOutcomes).toEqual([])
     expect(text(view, 'swap-problem')).toBe(
       'The price moved beyond your slippage tolerance. Review the new amount.',
     )
@@ -562,7 +578,10 @@ describe('confirming and executing', () => {
     expect(view.find('[data-testid="swap-result-received"]').exists()).toBe(
       false,
     )
-    expect(mockSaved[1]).toMatchObject({ status: 'failed', toAmount: '0' })
+    expect(mockOutcomes[0]).toMatchObject({
+      status: 'failed',
+      reason: 'reverted',
+    })
   })
 
   it('shows a swap the network has not confirmed as pending and tells the user not to resend', async () => {
@@ -581,10 +600,8 @@ describe('confirming and executing', () => {
     }
     expect(text(view, 'swap-result')).toContain('Submitted, not confirmed yet')
     expect(text(view, 'swap-result')).toContain('Do not send it again')
-    expect(mockSaved[mockSaved.length - 1]).toMatchObject({
-      status: 'pending',
-      toAmount: '0.019896',
-    })
+    // Nothing is claimed about a swap the chain has not shown yet.
+    expect(mockOutcomes).toEqual([])
     expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
   })
 
@@ -601,76 +618,62 @@ describe('confirming and executing', () => {
     )
   })
 
-  it('finishes a swap recorded as pending when the page opens again', async () => {
+  it('finishes a swap the wallet journaled as broadcast when the page opens again, and lists it at once', async () => {
     const s = scene()
     s.receipts.set('0xold', receipt(vectors.swapNativeIn))
     const route = routesFor(deployment, MON, USDC)[0]!
-    mockHistory.value = [
-      {
-        id: 'swap-old',
-        timestamp: 1,
-        chain: 'monad',
-        chainIdentifier: 'monad-testnet',
-        fromAsset: 'MON',
-        toAsset: 'USDC',
-        fromAmount: '0.02',
-        toAmount: '≥0.019796',
-        txHash: '0xold',
-        route: 'Uniswap v4',
-        feeDisplay: '',
-        status: 'pending',
-        recovery: {
-          operationId: 'op-old',
-          venueId: 'uniswap-v4',
-          account,
-          route: { key: { ...route.key }, zeroForOne: true },
-          call: { to: deployment.universalRouter, data: '0x00', value: '1' },
-          toDecimals: 6,
-        },
+    // As the wallet's journal holds it: the record with the signed, broadcast transaction.
+    s.rows.push({
+      operationId: 'op-old',
+      kind: 'contract',
+      cancelled: false,
+      binding: { chainIdentifier: 'monad-testnet' },
+      record: {
+        kind: 'swap',
+        venueId: 'uniswap-v4',
+        account,
+        assetIn: { symbol: 'MON', address: null, decimals: 18 },
+        amountIn: '20000000000000000',
+        assetOut: { symbol: 'USDC', address: USDC.address, decimals: 6 },
+        quotedAmountOut: '19996',
+        minimumAmountOut: '19796',
+        interfaceFeeAmount: '0',
+        networkFeeWei: '23000000000000000',
+        route: { key: { ...route.key }, zeroForOne: true },
       },
-    ]
+      members: [
+        {
+          signed: { transactionHash: '0xold', rawTransaction: '0x00' },
+          exposed: true,
+          observation: { state: 'pending' },
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            to: deployment.universalRouter,
+            chainId: 10143n,
+            nonce: 0,
+            value: 20_000_000_000_000_000n,
+            data: '0x3593564c',
+            gasLimit: 230_000n,
+            maxFeePerGas: 2n,
+            maxPriorityFeePerGas: 1n,
+          }).unsignedSerialized,
+        },
+      ],
+    })
     await mountPanel()
     await flushPromises()
-    expect(mockSaved).toHaveLength(1)
-    expect(mockSaved[0]).toMatchObject({
-      id: 'swap-old',
-      status: 'confirmed',
-      toAmount: '0.019996',
-    })
-    expect(mockSaved[0]!.recovery).toBeUndefined()
+    // In the history from the wallet's own journal, before any note has gone round.
+    expect(mockItems.map(item => item.swapId)).toContain(
+      swapRecordId('monad-testnet', '0xold'),
+    )
+    expect(mockOutcomes).toEqual([
+      expect.objectContaining({
+        id: swapRecordId('monad-testnet', '0xold'),
+        status: 'confirmed',
+        amountOut: '19996',
+      }),
+    ])
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
-  })
-
-  it('does not broadcast when the swap cannot first be written to the history', async () => {
-    const s = scene()
-    const view = await mountPanel()
-    await type(view, '0.02')
-    await click(view, 'swap-review-btn')
-    mockStorageFull = true
-    await click(view, 'swap-confirm-btn')
-    // The wallet stub broadcasts only after `onSigned` returns; it threw.
-    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
-    expect(s.events).toEqual([])
-    expect(view.find('[data-testid="swap-result"]').exists()).toBe(false)
-    expect(text(view, 'swap-problem')).toContain('The swap was not sent')
-  })
-
-  it('a quick retry after a swap that could not be recorded sends one swap, not two', async () => {
-    const s = scene()
-    const view = await mountPanel()
-    await type(view, '0.02')
-    await click(view, 'swap-review-btn')
-    mockStorageFull = true
-    await click(view, 'swap-confirm-btn')
-    expect(s.events).toEqual([])
-    // The device can store again; the user goes straight back and confirms.
-    mockStorageFull = false
-    s.receipts.set('0xhash2', receipt(vectors.swapNativeIn))
-    await click(view, 'swap-review-btn')
-    await click(view, 'swap-confirm-btn')
-    expect(s.events).toEqual(['broadcast 0xhash2 after 1 saved'])
-    expect(mockSaved.map(record => record.id)).toEqual(['hash2', 'hash2'])
-    expect(text(view, 'swap-result')).toContain('Swap complete')
   })
 
   it('shows on the review card what will be moved into the main account, and moves exactly that once', async () => {
@@ -809,135 +812,6 @@ describe('how much the form asks of the network', () => {
     await view.get('[data-testid="evm-swap-panel"]').trigger('pointerdown')
     await flushPromises()
     expect(quoterCalls(s)).toBe(1)
-  })
-})
-
-describe('the record of a swap', () => {
-  it('is kept and noted to self when the swap is signed, before it is broadcast, under the transaction’s own id', async () => {
-    const s = scene()
-    s.receipts.set('0xhash1', receipt(vectors.swapNativeIn))
-    const view = await mountPanel()
-    await type(view, '0.05')
-    await click(view, 'swap-review-btn')
-    await click(view, 'swap-confirm-btn')
-    // Saved once before the broadcast; the note carries that same pending record.
-    expect(s.events).toEqual(['broadcast 0xhash1 after 1 saved'])
-    expect(mockNotes).toHaveLength(1)
-    expect(mockNotes[0]).toMatchObject({
-      id: 'hash1',
-      status: 'pending',
-      chainIdentifier: 'monad-testnet',
-      txHash: '0xhash1',
-      fromAsset: 'MON',
-      fromAmount: '0.05',
-      toAsset: 'USDC',
-      toAmount: '0.049746',
-      route: 'Uniswap v4',
-      feeDisplay: '0.023 MON',
-      recovery: { venueId: 'uniswap-v4', operationId: 'op-1' },
-    })
-  })
-
-  it('gives approvals no record of their own', async () => {
-    const s = scene()
-    for (const hash of ['0xhash1', '0xhash2'])
-      s.receipts.set(hash, receipt({ logs: [] }))
-    s.receipts.set('0xhash3', receipt(vectors.swapTokenIn))
-    const view = await mountPanel()
-    await click(view, 'swap-flip-btn')
-    await type(view, '0.015')
-    await click(view, 'swap-review-btn')
-    await click(view, 'swap-confirm-btn')
-    // Three transactions were sent; the one record is the swap's.
-    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(3)
-    expect(mockNotes).toHaveLength(1)
-    expect(mockNotes[0]).toMatchObject({
-      id: 'hash3',
-      fromAsset: 'USDC',
-      toAsset: 'MON',
-    })
-  })
-
-  it('a note that cannot be written neither stops the swap nor sends it twice', async () => {
-    const s = scene()
-    s.receipts.set('0xhash1', receipt(vectors.swapNativeIn))
-    mockNoteFails = true
-    const view = await mountPanel()
-    await type(view, '0.02')
-    await click(view, 'swap-review-btn')
-    await click(view, 'swap-confirm-btn')
-    expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
-    expect(text(view, 'swap-result')).toContain('Swap complete')
-    expect(mockSaved[mockSaved.length - 1]).toMatchObject({
-      id: 'hash1',
-      status: 'confirmed',
-    })
-  })
-})
-
-describe('swaps known from the account’s mailbox', () => {
-  it('reads the outcome of a swap another device made from the chain, and sends nothing', async () => {
-    const s = scene()
-    s.receipts.set('0xother', receipt(vectors.swapNativeIn))
-    const route = routesFor(deployment, MON, USDC)[0]!
-    mockHistory.value = [
-      {
-        id: 'swap-0xother',
-        timestamp: 1,
-        chain: 'monad',
-        chainIdentifier: 'monad-testnet',
-        fromAsset: 'MON',
-        toAsset: 'USDC',
-        fromAmount: '0.02',
-        toAmount: '≥0.019796',
-        txHash: '0xother',
-        route: 'Uniswap v4',
-        feeDisplay: '',
-        status: 'pending',
-        noted: true,
-        // As a note carries it: no operation and no call of this device.
-        recovery: {
-          venueId: 'uniswap-v4',
-          account,
-          route: { key: { ...route.key }, zeroForOne: true },
-          toDecimals: 6,
-        },
-      },
-    ]
-    await mountPanel()
-    await flushPromises()
-    expect(mockSaved[0]).toMatchObject({
-      id: 'swap-0xother',
-      status: 'confirmed',
-      toAmount: '0.019996',
-    })
-    expect(s.wallet.resumeNativeOperation).not.toHaveBeenCalled()
-    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
-    expect(mockNotes).toEqual([])
-  })
-
-  it('on opening, sends the note that is still owed for an earlier swap, and only the note', async () => {
-    const s = scene()
-    mockHistory.value = [
-      {
-        id: 'swap-0xowed',
-        timestamp: 1,
-        chain: 'monad',
-        chainIdentifier: 'monad-testnet',
-        fromAsset: 'MON',
-        toAsset: 'USDC',
-        fromAmount: '0.02',
-        toAmount: '0.019996',
-        txHash: '0xowed',
-        route: 'Uniswap v4',
-        feeDisplay: '0.0211 MON',
-        status: 'confirmed',
-      },
-    ]
-    await mountPanel()
-    await flushPromises()
-    expect(mockNotes.map(note => note.id)).toEqual(['swap-0xowed'])
-    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
   })
 })
 

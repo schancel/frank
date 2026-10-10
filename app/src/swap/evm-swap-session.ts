@@ -4,10 +4,8 @@
  * wallet as a narrow interface. The adapter key in configuration is mapped to its class here,
  * explicitly; nothing registers itself.
  *
- * The wallet's contract send takes the swap's record as an argument. The wallet handle must not
- * depend on messaging (custody does not acquire transport), so the part of that send that keeps
- * the record and writes the note to self is wired here, around the handle's journaled send: the
- * adapter sees one wallet operation.
+ * The wallet's contract send takes the swap's record as an argument: the wallet journals it
+ * with the call and its note to self carries it. Nothing is recorded here.
  */
 import {
   getEvmDexDeployment,
@@ -15,11 +13,12 @@ import {
   type EvmDexEntry,
 } from '@frank/wallet/chain/dex-deployments'
 import type { EvmDex, EvmDexWallet } from '@frank/wallet/swap/evm-dex'
-import type {
-  ContractCallRecord,
-  SwapExecutionReader,
-} from '@frank/wallet/swap/swap-execution'
+import type { SwapExecutionReader } from '@frank/wallet/swap/swap-execution'
 import { UniswapV4Dex } from '@frank/wallet/swap/uniswap-v4-dex'
+import type { EvmContractCallRecord } from '@frank/wallet/storage/evm-native-operation-journal'
+import { swapRecordItemOf } from '@frank/wallet/chain/evm-legacy-consolidator'
+import type { SwapRecordItem } from '@frank/cashweb/types/messages'
+import { Transaction } from 'ethers'
 import { accountSession } from 'src/accounts/session'
 
 /** Adapter key (a dex entry's `adapter`) to the class that speaks to that exchange. */
@@ -42,6 +41,10 @@ export interface EvmSwapSession {
   readonly reader: SwapExecutionReader
   /** Contract calls of this wallet that were signed and are not yet in a block. */
   unresolvedContractCalls(): { operationId: string; txHash: string }[]
+  /** Every swap this wallet broadcast, as the records its journal holds. */
+  ownSwapRecords(): SwapRecordItem[]
+  /** This wallet's swaps that are signed and not yet seen in a block, from its journal. */
+  pendingSwaps(): PendingSwap[]
   /** Re-submits a recorded operation's same signed bytes. */
   resumeOperation(operationId: string): Promise<unknown>
   /** What the wallet's other accounts hold. Walks every account: not for a timer. */
@@ -50,13 +53,12 @@ export interface EvmSwapSession {
   isCurrent(): boolean
 }
 
-/** A contract call's record with what the wallet knows once it has signed. */
-export interface SignedContractCallRecord {
-  readonly record: ContractCallRecord
-  readonly transactionId: string
+/** A swap the wallet journaled and broadcast whose outcome it has not seen yet. */
+export interface PendingSwap {
   readonly operationId: string
+  readonly transactionId: string
+  readonly record: EvmContractCallRecord
   readonly call: { to: string; data: string; value: string }
-  readonly signedAtMs: number
 }
 
 export type EvmSwapUnavailable = 'no-deployment' | 'wrong-network' | 'no-wallet'
@@ -78,11 +80,6 @@ export function evmSwapVenues(
 export async function openEvmSwapSession(
   chainIdentifier: string,
   venueId?: string,
-  /**
-   * Keeps a signed contract call's record, called before the call is broadcast. If it throws,
-   * nothing is broadcast. Writing the note to self is its own to retry and never fails it.
-   */
-  keepRecord?: (signed: SignedContractCallRecord) => Promise<void>,
 ): Promise<EvmSwapSession> {
   const entry = getEvmDexDeployment(chainIdentifier, venueId)
   if (!entry) throw new EvmSwapUnavailableError('no-deployment')
@@ -99,27 +96,9 @@ export async function openEvmSwapSession(
   ) => (method ? (...args: A) => method.apply(wallet, args) : undefined)
   const calls: EvmDexWallet = {
     reader,
-    // "Send a legacy transaction to a contract", with its record: signed and journaled by the
-    // handle, the record kept before the handle broadcasts.
-    sendContractCall: ({ record, onSigned, ...call }) =>
-      sendContractCall.call(wallet, {
-        ...call,
-        onSigned: async signed => {
-          if (record && keepRecord)
-            await keepRecord({
-              record,
-              transactionId: signed.txHash,
-              operationId: signed.operationId,
-              call: {
-                to: call.to.raw,
-                data: call.data,
-                value: call.value.toString(),
-              },
-              signedAtMs: Date.now(),
-            })
-          await onSigned?.(signed)
-        },
-      }),
+    // "Send a legacy transaction to a contract", with its record. The wallet journals the record
+    // with the call and its own note to self carries it; nothing is recorded here.
+    sendContractCall: params => sendContractCall.call(wallet, params),
     getContractCallFunds: () => getContractCallFunds.call(wallet),
     estimateLegacyFee: optional(wallet.estimateLegacyFee),
     fundMainAccount: optional(wallet.fundMainAccount),
@@ -137,6 +116,38 @@ export async function openEvmSwapSession(
     account: (await wallet.getReceiveAddress()).raw,
     reader,
     unresolvedContractCalls: () => calls.getUnresolvedContractCalls?.() ?? [],
+    ownSwapRecords: () =>
+      (wallet.getNativeOperations?.() ?? []).flatMap(row => {
+        const item = row.members[0]?.exposed ? swapRecordItemOf(row) : undefined
+        return item && !row.cancelled ? [item] : []
+      }),
+    pendingSwaps: () =>
+      (wallet.getNativeOperations?.() ?? []).flatMap(row => {
+        const member = row.members[0]
+        if (
+          row.kind !== 'contract' ||
+          row.cancelled ||
+          !row.record ||
+          !member?.signed ||
+          !member.exposed ||
+          'transactionHash' in member.observation ||
+          row.record.venueId !== entry.id
+        )
+          return []
+        const tx = Transaction.from(member.unsignedTransaction)
+        return [
+          {
+            operationId: row.operationId,
+            transactionId: member.signed.transactionHash,
+            record: row.record,
+            call: {
+              to: tx.to ?? '',
+              data: tx.data,
+              value: tx.value.toString(),
+            },
+          },
+        ]
+      }),
     resumeOperation: async id => calls.resumeNativeOperation?.(id),
     otherAccountsBalance: async () =>
       (await calls.getContractCallFunds()).otherBalance,

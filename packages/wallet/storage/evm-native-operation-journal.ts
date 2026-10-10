@@ -56,6 +56,67 @@ export interface EvmNativeMember extends EvmNativeMemberPlan {
   account: EvmNativeAccountObservation | null
   syncApplied: boolean
 }
+/**
+ * What a contract call is, kept with its signed transaction: the record a swap carries. Plain
+ * JSON, amounts as decimal strings in each asset's smallest unit. The chain is the journal's
+ * binding. The wallet's sync event turns it into the note the account sends itself.
+ */
+export interface EvmContractCallRecord {
+  kind: 'swap'
+  venueId: string
+  account: string
+  assetIn: { symbol: string; address: string | null; decimals: number }
+  amountIn: string
+  assetOut: { symbol: string; address: string | null; decimals: number }
+  quotedAmountOut: string
+  minimumAmountOut: string
+  /** Frank's fee, in the output asset; "0" when the exchange has none. */
+  interfaceFeeAmount: string
+  /** The network fee the transaction reserves, in the native coin. */
+  networkFeeWei: string
+  /** The exchange's own description of the route; needed to read the outcome later. */
+  route: unknown
+}
+const MAX_RECORD_BYTES = 8 * 1024
+function validateRecord(
+  value: unknown,
+  kind: unknown,
+): EvmContractCallRecord | null {
+  if (value === null) return null
+  if (kind !== 'contract') fail()
+  const row = object(value, [
+    'kind',
+    'venueId',
+    'account',
+    'assetIn',
+    'amountIn',
+    'assetOut',
+    'quotedAmountOut',
+    'minimumAmountOut',
+    'interfaceFeeAmount',
+    'networkFeeWei',
+    'route',
+  ])
+  if (row.kind !== 'swap' || typeof row.venueId !== 'string' || !row.venueId)
+    fail()
+  if (typeof row.account !== 'string') fail()
+  for (const asset of [row.assetIn, row.assetOut]) {
+    const a = object(asset, ['symbol', 'address', 'decimals'])
+    if (typeof a.symbol !== 'string' || !a.symbol) fail()
+    if (a.address !== null && typeof a.address !== 'string') fail()
+    integer(a.decimals)
+  }
+  for (const amount of [
+    row.amountIn,
+    row.quotedAmountOut,
+    row.minimumAmountOut,
+    row.interfaceFeeAmount,
+    row.networkFeeWei,
+  ])
+    uint(amount)
+  if (encodedBytes(value) > MAX_RECORD_BYTES) fail('capacity')
+  return clone(value) as EvmContractCallRecord
+}
 export interface EvmNativeOperation {
   version: 1
   operationId: string
@@ -67,12 +128,15 @@ export interface EvmNativeOperation {
   members: EvmNativeMember[]
   cancelled: boolean
   reservedBytes: number
+  /** A contract call's record, written with the plan and so before anything is signed. */
+  record: EvmContractCallRecord | null
 }
 export interface EvmNativePlan {
   kind: EvmNativeOperationKind
   recipient: string
   intendedValueWei: string
   members: EvmNativeMemberPlan[]
+  record?: EvmContractCallRecord | null
 }
 export class EvmNativeJournalError extends Error {
   constructor(
@@ -288,7 +352,9 @@ function validateRow(
     'members',
     'cancelled',
     'reservedBytes',
+    'record',
   ])
+  validateRecord(row.record, row.kind)
   if (
     row.version !== 1 ||
     typeof row.operationId !== 'string' ||
@@ -649,6 +715,7 @@ export class EvmNativeOperationJournal {
         })),
         cancelled: false,
         reservedBytes: 0,
+        record: frozen.record ?? null,
       }
       row.reservedBytes = reservation(row)
       const validated = validateRow(row, this.binding)

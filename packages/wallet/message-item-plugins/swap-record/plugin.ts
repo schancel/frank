@@ -16,9 +16,7 @@ export function initSwapRecordPlugin(
     type: 'swap-record',
     hydrate: raw => raw,
     previewText: raw =>
-      `Instant Swap: ${raw.fromAmount} ${raw.fromAsset} → ${raw.toAmount} ${
-        raw.toAsset
-      } on ${raw.chain.toUpperCase()}`,
+      `Swap: ${raw.assetIn.symbol} → ${raw.assetOut.symbol} on ${raw.chainIdentifier}`,
     encode: swapRecordCodec.encode,
     decode: swapRecordCodec.decode,
   })

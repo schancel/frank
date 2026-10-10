@@ -110,7 +110,11 @@ jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(),
 }))
 jest.mock('src/composables/useSwapHistory', () => ({
-  useSwapHistory: () => ({ getSwapsForChain: () => ref([]) }),
+  useSwapHistory: () => ({
+    swapsForChain: () => ref([]),
+    handleSwapItem: jest.fn(),
+    cacheOutcome: jest.fn(),
+  }),
 }))
 jest.mock('src/utils/routes', () => ({ openPage: jest.fn() }))
 jest.mock('src/utils/native-transfer', () => ({

@@ -6,6 +6,7 @@
  */
 
 import type { UniswapV4Deployment } from '../chain/dex-deployments'
+import type { EvmContractCallRecord } from '../storage/evm-native-operation-journal'
 import {
   chargedGasPrice,
   estimateCallFee,
@@ -75,32 +76,13 @@ export interface SwapWallet {
 }
 
 /**
- * The record a swap's contract send carries. The same fields on every chain family: where, on
- * which exchange, what goes in, what was quoted and the least that may come out, the fees. The
- * transaction id is the wallet's to add once it has signed; what the swap then did is read
- * from the chain by that id and is not part of the record.
+ * The record a swap's contract send carries: what goes in, what was quoted and the least that
+ * may come out, the fees, the route. The wallet writes it to its journal with the call, before
+ * anything is signed, and its note to self carries it once the call is included. The chain is
+ * the wallet's own; the transaction id is the wallet's to add; what the swap then did is read
+ * from the chain and is not part of the record.
  */
-export interface ContractCallRecord {
-  readonly kind: 'swap'
-  readonly chainIdentifier: string
-  readonly venueId: string
-  readonly account: string
-  readonly assetIn: { symbol: string; address: string | null; decimals: number }
-  readonly amountIn: bigint
-  readonly assetOut: {
-    symbol: string
-    address: string | null
-    decimals: number
-  }
-  readonly quotedAmountOut: bigint
-  readonly minimumAmountOut: bigint
-  /** Frank's fee, in the output asset; zero when the exchange has none. */
-  readonly interfaceFeeAmount: bigint
-  /** The network fee the swap transaction reserves, in the chain's native coin. */
-  readonly networkFeeWei: bigint
-  /** The exchange's own description of the route; needed to read the outcome later. */
-  readonly route: unknown
-}
+export type ContractCallRecord = EvmContractCallRecord
 
 export type SwapFailure =
   | SwapRevertReason
@@ -605,12 +587,21 @@ export async function executeSwap(params: {
     fee.gasLimit,
     params.onSigned,
     params.record
-      ? { ...params.record, networkFeeWei: fee.chargedFeeWei }
+      ? { ...params.record, networkFeeWei: fee.chargedFeeWei.toString() }
       : undefined,
   )
   onProgress?.({ stage: 'submitted', txHash: handle.txHash })
   const receipt = await settle(reader, wallet, handle, timing)
-  await wallet.reobserveNativeOperations?.()
+  // The wallet now reads the same inclusion into its journal and starts the note to self that
+  // carries the swap's record. Nothing is re-sent for a transaction already in a block, and
+  // the note is the wallet's to retry: neither can change what the swap did.
+  if (receipt)
+    try {
+      await wallet.resumeNativeOperation?.(handle.operationId)
+    } catch {
+      /* A reverted call, or a note not sent yet: the result below is still the chain's. */
+    }
+  else await wallet.reobserveNativeOperations?.()
   if (!receipt) return { status: 'pending', ...handle }
   return readSwapResult({
     reader,

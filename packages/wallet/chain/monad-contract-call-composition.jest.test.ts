@@ -21,6 +21,7 @@ import type { EvmChainConfig } from './evm-chain-config'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import type { MonadRootBundle } from './active-chain'
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
+import { EvmLegacyConsolidator, swapRecordId } from './evm-legacy-consolidator'
 
 const config: EvmChainConfig = {
   networkId: 'monad-test',
@@ -54,8 +55,17 @@ function roots(): MonadRootBundle {
   }
 }
 
-function stubNode(wallet: EvmChainWalletHandle, mainBalance: bigint) {
-  const balances = new Map([[MAIN.toLowerCase(), mainBalance]])
+function stubNode(
+  wallet: EvmChainWalletHandle,
+  mainBalance: bigint,
+  others: Record<string, bigint> = {},
+) {
+  const balances = new Map([
+    [MAIN.toLowerCase(), mainBalance],
+    ...Object.entries(others).map(
+      ([address, value]) => [address.toLowerCase(), value] as [string, bigint],
+    ),
+  ])
   const nonces = new Map<string, number>()
   const transactions = new Map<string, TransactionResponse>()
   const receipts = new Map<string, TransactionReceipt>()
@@ -90,6 +100,8 @@ function stubNode(wallet: EvmChainWalletHandle, mainBalance: bigint) {
       const from = tx.from!.toLowerCase()
       nonces.set(from, tx.nonce + 1)
       balances.set(from, (balances.get(from) ?? 0n) - tx.value - tx.gasLimit)
+      const to = tx.to!.toLowerCase()
+      balances.set(to, (balances.get(to) ?? 0n) + tx.value)
       transactions.set(
         tx.hash!,
         Object.assign(tx, {
@@ -280,6 +292,202 @@ test('the background poll re-sends a lost contract call, and once it lands the m
       from: MAIN,
       nonce: 1,
     })
+  } finally {
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+/** Notes are started, not waited for: resolves once every note started so far has settled. */
+function watchNotes() {
+  const started = jest.spyOn(EvmLegacyConsolidator.prototype, 'startSync')
+  return async () => {
+    for (const result of started.mock.results)
+      await Promise.resolve(result.value as unknown).catch(() => undefined)
+    for (const owner of new Set(started.mock.contexts)) await owner.drain()
+  }
+}
+
+const SWAP_RECORD = {
+  kind: 'swap' as const,
+  venueId: 'uniswap-v4',
+  account: MAIN,
+  assetIn: { symbol: 'MON', address: null, decimals: 18 },
+  amountIn: '5000',
+  assetOut: {
+    symbol: 'USDC',
+    address: '0x534b2f3A21130d7a60830c2Df862319e593943A3',
+    decimals: 6,
+  },
+  quotedAmountOut: '4997',
+  minimumAmountOut: '4947',
+  interfaceFeeAmount: '0',
+  networkFeeWei: '250000',
+  route: { zeroForOne: true },
+}
+
+test('a swap is recorded by the wallet: journaled with the call before signing, then carried by its free note to self', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const cfg = {
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  }
+  const chain = createEvmChain(cfg)
+  const notesSettled = watchNotes()
+  const transport = jest
+    .spyOn(chain.directMessages, 'send')
+    .mockResolvedValue({} as never)
+  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  let reopened: EvmChainWalletHandle | undefined
+  try {
+    const node = stubNode(wallet, 1_000_000n)
+    const sent = await wallet.sendContractCall!({
+      to: { raw: ROUTER },
+      data: CALLDATA,
+      value: 5_000n,
+      gasLimit: 250_000n,
+      record: SWAP_RECORD,
+      onSigned: async signed => {
+        // In the wallet's own journal, with the signed bytes, before anything is broadcast.
+        expect(node.broadcast).not.toHaveBeenCalled()
+        expect(
+          wallet.getNativeOperations!().find(
+            r => r.operationId === signed.operationId,
+          )!.record,
+        ).toEqual(SWAP_RECORD)
+      },
+    })
+    // Not yet seen in a block by the wallet: no note yet.
+    await notesSettled()
+    expect(transport).not.toHaveBeenCalled()
+
+    // The swap flow asks the wallet to take the inclusion in; the wallet starts its note.
+    await wallet.resumeNativeOperation!(sent.operationId)
+    await notesSettled()
+    expect(node.broadcast).toHaveBeenCalledTimes(1)
+    expect(transport).toHaveBeenCalledTimes(1)
+    const [note] = transport.mock.calls[0]!
+    expect(note.stampValue).toBe(0n)
+    expect(note.recipient.raw.toLowerCase()).toBe(
+      wallet.identity.address.raw.toLowerCase(),
+    )
+    expect(note.items).toEqual([
+      expect.objectContaining({ type: 'wallet-sync', txHash: sent.txHash }),
+      {
+        type: 'swap-record',
+        swapId: swapRecordId('monad-testnet', sent.txHash),
+        chainIdentifier: 'monad-testnet',
+        venueId: 'uniswap-v4',
+        txHash: sent.txHash,
+        account: MAIN,
+        assetIn: { symbol: 'MON', decimals: 18 },
+        amountIn: '5000',
+        assetOut: {
+          symbol: 'USDC',
+          address: '0x534b2f3A21130d7a60830c2Df862319e593943A3',
+          decimals: 6,
+        },
+        quotedAmountOut: '4997',
+        minimumAmountOut: '4947',
+        interfaceFee: '0',
+        networkFee: '250000',
+        route: '{"zeroForOne":true}',
+        timestamp: expect.any(Number),
+      },
+    ])
+    // The id is derived, and the same whatever the case of the hash.
+    expect(swapRecordId('monad-testnet', sent.txHash.toUpperCase())).toBe(
+      swapRecordId('monad-testnet', sent.txHash),
+    )
+    expect(swapRecordId('monad-mainnet', sent.txHash)).not.toBe(
+      swapRecordId('monad-testnet', sent.txHash),
+    )
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(true)
+
+    // The record is the wallet's: it is still there after the wallet is closed and reopened.
+    await wallet.close()
+    reopened = (await createEvmChain(cfg).createWallet(
+      roots(),
+    )) as EvmChainWalletHandle
+    expect(reopened.getNativeOperations!()[0]!.record).toEqual(SWAP_RECORD)
+  } finally {
+    await reopened?.close()
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a note that cannot be sent leaves the swap as it was and is owed, not repeated as a swap', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const chain = createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  })
+  const notesSettled = watchNotes()
+  const transport = jest
+    .spyOn(chain.directMessages, 'send')
+    .mockRejectedValueOnce(new Error('relay unreachable'))
+    .mockResolvedValue({} as never)
+  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const node = stubNode(wallet, 1_000_000n)
+    const sent = await wallet.sendContractCall!({
+      to: { raw: ROUTER },
+      data: CALLDATA,
+      value: 5_000n,
+      gasLimit: 250_000n,
+      record: SWAP_RECORD,
+    })
+    await wallet.resumeNativeOperation!(sent.operationId)
+    await notesSettled()
+    expect(transport).toHaveBeenCalledTimes(1)
+    const member = () => wallet.getNativeOperations!()[0]!.members[0]!
+    expect(member().observation.state).toBe('included-success')
+    expect(member().syncApplied).toBe(false)
+    // The wallet's own retry sends the note again; the swap is never broadcast again.
+    await wallet.resumeNativeOperation!(sent.operationId)
+    await notesSettled()
+    expect(transport).toHaveBeenCalledTimes(2)
+    expect(member().syncApplied).toBe(true)
+    expect(node.broadcast).toHaveBeenCalledTimes(1)
+  } finally {
+    await wallet.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('the move into the main account notes itself like any legacy send', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'frank-contract-composition-'))
+  const chain = createEvmChain({
+    ...config,
+    walletStorageLocation: join(dir, 'wallet'),
+    nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+  })
+  const notesSettled = watchNotes()
+  const transport = jest
+    .spyOn(chain.directMessages, 'send')
+    .mockResolvedValue({} as never)
+  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
+  try {
+    const identity = wallet.identity.address.raw
+    stubNode(wallet, 0n, { [identity]: 1_000_000n })
+    const moved = await wallet.fundMainAccount!({ value: 400_000n })
+    await notesSettled()
+    expect(transport).toHaveBeenCalledTimes(1)
+    const [note] = transport.mock.calls[0]!
+    expect(note.stampValue).toBe(0n)
+    expect(note.recipient.raw.toLowerCase()).toBe(identity.toLowerCase())
+    // An ordinary transfer: its transaction, and no swap record.
+    expect(note.items).toEqual([
+      expect.objectContaining({
+        type: 'wallet-sync',
+        txHash: moved.txHash,
+        createdOutputs: [expect.objectContaining({ valueWei: '400000' })],
+      }),
+    ])
+    expect((await wallet.getContractCallFunds!()).mainBalance).toBe(400_000n)
   } finally {
     await wallet.close()
     await rm(dir, { recursive: true, force: true })

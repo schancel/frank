@@ -155,7 +155,9 @@ describe('executing a swap', () => {
         gasLimit: 230_000n,
       }),
     )
-    expect(s.wallet.reobserveNativeOperations).toHaveBeenCalled()
+    // Once the receipt is in, the wallet is asked to take the inclusion into its journal and
+    // start its note to self: the swap's own operation, nothing new.
+    expect(s.wallet.resumeNativeOperation).toHaveBeenCalledWith('op-1')
   })
 
   it('sends exact approvals first, each confirmed before the next transaction', async () => {
@@ -272,6 +274,8 @@ describe('executing a swap', () => {
       'resumed op-lost',
       'signed op-1',
       'broadcast op-1',
+      // After its receipt: the wallet journals the inclusion and starts its note.
+      'resumed op-1',
     ])
     expect(stages[0]).toBe('recovering')
     expect(result.status).toBe('confirmed')
@@ -302,7 +306,10 @@ describe('executing a swap', () => {
       timing,
     })
     expect(s.events[0]).toBe('resumed op-approve1')
-    expect(s.wallet.resumeNativeOperation).toHaveBeenCalledTimes(1)
+    // The lost approval once, and the swap's own operation after its receipt.
+    expect(s.wallet.resumeNativeOperation.mock.calls.map(([id]) => id)).toEqual(
+      ['op-approve1', 'op-2'],
+    )
     expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(3)
     expect(result.status).toBe('confirmed')
   })
@@ -619,17 +626,16 @@ describe('the exchange adapter and the wallet it is given', () => {
     expect(records.slice(0, 2)).toEqual([undefined, undefined])
     expect(records[2]).toEqual({
       kind: 'swap',
-      chainIdentifier: 'monad-testnet',
       venueId: 'uniswap-v4',
       account,
       assetIn: { symbol: 'USDC', address: USDC.address, decimals: 6 },
-      amountIn: 1_000n,
+      amountIn: '1000',
       assetOut: { symbol: 'MON', address: null, decimals: 18 },
-      quotedAmountOut: quote.amountOut,
-      minimumAmountOut: plan.minimumAmountOut,
-      interfaceFeeAmount: 0n,
+      quotedAmountOut: quote.amountOut.toString(),
+      minimumAmountOut: plan.minimumAmountOut.toString(),
+      interfaceFeeAmount: '0',
       // What the swap transaction reserves: 230,000 gas at the price charged.
-      networkFeeWei: 230_000n * 100n * 10n ** 9n,
+      networkFeeWei: (230_000n * 100n * 10n ** 9n).toString(),
       route: quote.route,
     })
   })

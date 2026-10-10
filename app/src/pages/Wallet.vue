@@ -627,10 +627,9 @@ import {
 import { activeChain, onActiveChainChange } from '@frank/wallet/chain'
 import { useSafeOracleStore } from 'src/stores/oracle'
 import { useOracleFeed } from 'src/composables/useOracleFeed'
-import { useSwapHistory } from 'src/composables/useSwapHistory'
+import { useSwapActivity, type SwapActivityRow } from 'src/swap/useSwapActivity'
 import { useEvmTokenBalances } from 'src/composables/useEvmTokenBalances'
 import { getExplorerUrl } from 'src/utils/explorer'
-import type { SwapRecord } from 'src/stores/swaps'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import { walletSupport } from 'src/utils/wallet-support'
@@ -779,13 +778,9 @@ export default defineComponent({
       if (tab === 'balance') void refreshEvmTokens()
     })
 
-    const swapHistory = useSwapHistory()
-    const recentSwaps = computed(() => {
-      return swapHistory.getSwapsForChain(
-        selectedWallet.value,
-        sendChainIdentifier.value,
-      ).value
-    })
+    // The account's swaps on this network, as its own notes record them, with what each did
+    // read from the chain.
+    const { rows: recentSwaps } = useSwapActivity(sendChainIdentifier)
 
     const formatSwapTime = (timestamp: number) => {
       try {
@@ -799,10 +794,10 @@ export default defineComponent({
       }
     }
 
-    const getExplorerLink = (swap: SwapRecord) => {
+    const getExplorerLink = (swap: SwapActivityRow) => {
       if (!swap.txHash) return undefined
       // A swap that names its network links to that network's explorer.
-      return getExplorerUrl(swap.txHash, swap.chainIdentifier ?? swap.chain, {
+      return getExplorerUrl(swap.txHash, swap.chainIdentifier, {
         isTestnet: isTestnet.value,
       })
     }

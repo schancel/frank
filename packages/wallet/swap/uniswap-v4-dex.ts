@@ -102,15 +102,14 @@ export class UniswapV4Dex implements Dex {
       // it and writes the note to self; this class does neither.
       record: {
         kind: 'swap',
-        chainIdentifier: this.chainIdentifier,
         venueId: this.entry.id,
         account,
         assetIn: asset(quote.tokenIn),
-        amountIn: quote.amountIn,
+        amountIn: quote.amountIn.toString(),
         assetOut: asset(quote.tokenOut),
-        quotedAmountOut: quote.amountOut,
-        minimumAmountOut: plan.minimumAmountOut,
-        interfaceFeeAmount: quote.interfaceFee?.amount ?? 0n,
+        quotedAmountOut: quote.amountOut.toString(),
+        minimumAmountOut: plan.minimumAmountOut.toString(),
+        interfaceFeeAmount: (quote.interfaceFee?.amount ?? 0n).toString(),
         route: quote.route,
       },
     })

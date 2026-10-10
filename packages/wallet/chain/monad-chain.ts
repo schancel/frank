@@ -2506,11 +2506,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // reports, so a repeat is the same message; applying it twice changes nothing.
               // Best effort: a failure leaves the member not sync-applied and a later flush
               // sends it again. The other devices apply it in `consumeSelfNotes`.
-              onSyncTransaction: async (item) => {
+              onSyncTransaction: async (item, swapRecord) => {
                 await directMessages.send({
                   wallet,
                   recipient: toChainAddress(identity.address.raw),
-                  items: [item],
+                  // A swap's record rides in the same note as its transaction: one free
+                  // message, the same identity, sent and retried the same way.
+                  items: swapRecord ? [item, swapRecord] : [item],
                   stampValue: 0n,
                   messageId: getBytes(
                     keccak256(

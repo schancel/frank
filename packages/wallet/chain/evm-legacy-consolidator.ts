@@ -11,6 +11,8 @@ import {
 import {
   getAddress,
   hexlify,
+  keccak256,
+  toUtf8Bytes,
   resolveAddress,
   Transaction,
   type Provider,
@@ -25,9 +27,13 @@ import type {
 } from './chain-wallet'
 import { NativeTransactionSubmissionError } from './chain-wallet'
 import type { EvmTransactionBuilder } from './evm-transaction-builder'
-import type { WalletSyncItem } from '@frank/cashweb/types/messages'
+import type {
+  SwapRecordItem,
+  WalletSyncItem,
+} from '@frank/cashweb/types/messages'
 import {
   EvmNativeOperationJournal,
+  type EvmContractCallRecord,
   nativeMaximumFee,
   type EvmNativeSource,
   type EvmNativeMemberPlan,
@@ -51,6 +57,12 @@ export interface ContractCallParams {
   value: bigint
   /** The gas limit the caller quoted to the user. Estimated here when omitted. */
   gasLimit?: bigint
+  /**
+   * What this call is (a swap's record). It is written to the journal with the plan, so before
+   * anything is signed or broadcast, and once the call is included the sync event carries it:
+   * composition sends it in the account's note to itself. The caller records nothing itself.
+   */
+  record?: EvmContractCallRecord
   /** After signing and before broadcast, so the caller can record the exact operation first. */
   onSigned?: (signed: ContractCallResult) => Promise<void>
 }
@@ -89,11 +101,54 @@ export interface EvmLegacyConsolidatorConfig {
    * wires none, nothing is transported: a locally recorded member stays not sync-applied and the
    * send is not failed for it. A transport that rejects does not fail anything either: the member
    * stays not sync-applied and a later flush sends it again. */
-  onSyncTransaction?: (item: WalletSyncItem) => Promise<void>
+  onSyncTransaction?: (
+    item: WalletSyncItem,
+    /** The swap this transaction made, when its contract call carried a record. */
+    record?: SwapRecordItem,
+  ) => Promise<void>
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
   now?: () => number
 }
+/** The id every frontend of the account derives for a swap: from its chain and transaction. */
+export function swapRecordId(chainIdentifier: string, txHash: string): string {
+  return keccak256(
+    toUtf8Bytes(`frank-swap:${chainIdentifier}:${txHash.toLowerCase()}`),
+  ).slice(2)
+}
+
+/** The swap-record item of an included contract call that carried a record, else undefined. */
+export function swapRecordItemOf(
+  row: EvmNativeOperation,
+): SwapRecordItem | undefined {
+  const signed = row.members[0]?.signed
+  const { record } = row
+  if (row.kind !== 'contract' || !record || !signed) return undefined
+  const asset = (a: EvmContractCallRecord['assetIn']) => ({
+    symbol: a.symbol,
+    ...(a.address === null ? {} : { address: a.address }),
+    decimals: a.decimals,
+  })
+  const route = JSON.stringify(record.route)
+  return {
+    type: 'swap-record',
+    swapId: swapRecordId(row.binding.chainIdentifier, signed.transactionHash),
+    chainIdentifier: row.binding.chainIdentifier,
+    venueId: record.venueId,
+    txHash: signed.transactionHash,
+    account: record.account,
+    assetIn: asset(record.assetIn),
+    amountIn: record.amountIn,
+    assetOut: asset(record.assetOut),
+    quotedAmountOut: record.quotedAmountOut,
+    minimumAmountOut: record.minimumAmountOut,
+    interfaceFee: record.interfaceFeeAmount,
+    networkFee: record.networkFeeWei,
+    ...(route !== undefined && route.length <= 1024 ? { route } : {}),
+    timestamp: Date.now(),
+  }
+}
+
 export class EvmNativeOperationPendingError extends NativeTransactionSubmissionError {
   constructor(readonly operation: EvmNativeOperation, reason: unknown) {
     const signed = operation.members.flatMap(m =>
@@ -684,11 +739,7 @@ export class EvmLegacyConsolidator {
         })
       }
       const stillHeld = (hold: RememberedHold | undefined, basis: string) => {
-        if (
-          !hold ||
-          hold.basis !== basis ||
-          hold.skipped >= HELD_RETRY_PASSES
-        )
+        if (!hold || hold.basis !== basis || hold.skipped >= HELD_RETRY_PASSES)
           return false
         hold.skipped++
         return true
@@ -1170,24 +1221,31 @@ export class EvmLegacyConsolidator {
           // and it stays not sync-applied; that is an outcome, not a failure of the send.
           if (!this.config.onSyncTransaction) continue
           const tx = Transaction.from(member.signed!.rawTransaction)
-          this.transport(id, i, {
-            type: 'wallet-sync',
-            direction: 'out',
-            chainIdentifier: journal.binding.chainIdentifier,
-            txHash: member.signed!.transactionHash,
-            rawTx: member.signed!.rawTransaction,
-            spentInputs: [
-              {
-                address: member.source.address,
-                nonce: tx.nonce,
-                valueWei: (
-                  tx.value + BigInt(member.observation.feeWei)
-                ).toString(),
-              },
-            ],
-            createdOutputs: [{ address: tx.to!, valueWei: tx.value.toString() }],
-            timestamp: Date.now(),
-          })
+          this.transport(
+            id,
+            i,
+            {
+              type: 'wallet-sync',
+              direction: 'out',
+              chainIdentifier: journal.binding.chainIdentifier,
+              txHash: member.signed!.transactionHash,
+              rawTx: member.signed!.rawTransaction,
+              spentInputs: [
+                {
+                  address: member.source.address,
+                  nonce: tx.nonce,
+                  valueWei: (
+                    tx.value + BigInt(member.observation.feeWei)
+                  ).toString(),
+                },
+              ],
+              createdOutputs: [
+                { address: tx.to!, valueWei: tx.value.toString() },
+              ],
+              timestamp: Date.now(),
+            },
+            swapRecordItemOf(row),
+          )
         }
       }
     if (unapplied !== undefined)
@@ -1204,6 +1262,7 @@ export class EvmLegacyConsolidator {
     operationId: string,
     memberIndex: number,
     item: WalletSyncItem,
+    record?: SwapRecordItem,
   ): void {
     const key = `${operationId}:${memberIndex}`
     if (this.transporting.has(key)) return
@@ -1212,7 +1271,7 @@ export class EvmLegacyConsolidator {
       this.journal(lifetime).markSyncApplied(operationId, memberIndex)
     this.transportTail = this.transportTail
       .then(async () => {
-        await this.config.onSyncTransaction!(item)
+        await this.config.onSyncTransaction!(item, record)
         await (this.config.runLifetime
           ? this.config.runLifetime(lifetime => mark(lifetime))
           : mark())
@@ -1392,9 +1451,7 @@ export class EvmLegacyConsolidator {
    * wallet's other accounts could move into it first (`fundMainAccount`). `mainBusy` is true
    * while an earlier transaction from the main account has not been seen included.
    */
-  async contractCallFunds(
-    lifetime?: WalletOperationLifetime,
-  ): Promise<{
+  async contractCallFunds(lifetime?: WalletOperationLifetime): Promise<{
     mainAddress: string
     mainBalance: bigint
     otherBalance: bigint
@@ -1426,7 +1483,8 @@ export class EvmLegacyConsolidator {
     lifetime?: WalletOperationLifetime,
   ): Promise<EvmNativeOperation> {
     const to = getAddress(params.to.raw).toLowerCase()
-    if (params.value < 0n) throw new RangeError('Call value must not be negative')
+    if (params.value < 0n)
+      throw new RangeError('Call value must not be negative')
     if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(params.data))
       throw new Error('A contract call needs calldata')
     if (this.config.transactionBuilder.supportsNativeConsolidation !== true)
@@ -1463,6 +1521,7 @@ export class EvmLegacyConsolidator {
       kind: 'contract',
       recipient: to,
       intendedValueWei: params.value.toString(),
+      ...(params.record ? { record: params.record } : {}),
       members: [
         {
           source: source.source,

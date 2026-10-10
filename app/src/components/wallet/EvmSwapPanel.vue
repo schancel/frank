@@ -474,7 +474,6 @@ import {
   EvmSwapUnavailableError,
   openEvmSwapSession,
   type EvmSwapSession,
-  type SignedContractCallRecord,
   type EvmSwapUnavailable,
 } from 'src/swap/evm-swap-session'
 import {
@@ -485,7 +484,7 @@ import {
   readableTokenAmount,
 } from 'src/swap/amounts'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
-import type { SwapRecord } from 'src/stores/swaps'
+import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
 import { getExplorerUrl } from 'src/utils/explorer'
 
 interface Problem {
@@ -1044,126 +1043,30 @@ export default defineComponent({
       }
     }
 
-    /**
-     * Keeps the record the wallet's contract send was given, once the swap is signed and before
-     * it is broadcast. The record is first kept on this device (if that fails this throws and
-     * the swap is not sent), then a note carrying it is written to the account's own messages.
-     * That note never holds up or repeats the swap: if it fails, only the note is owed.
-     */
-    const signedAt = new Map<string, number>()
-    async function recordSigned(
-      signed: SignedContractCallRecord,
-    ): Promise<void> {
-      const { record } = signed
-      signedAt.set(signed.transactionId, signed.signedAtMs)
-      const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
-      const pending: SwapRecord = {
-        id: swapRecordId(signed.transactionId),
-        timestamp: signed.signedAtMs,
-        chain: props.walletId,
-        chainIdentifier: record.chainIdentifier,
-        fromAsset: record.assetIn.symbol,
-        toAsset: record.assetOut.symbol,
-        fromAmount: exactTokenAmount(record.amountIn, record.assetIn.decimals),
-        // The least that may arrive, as a plain number: the note to self carries it, and what
-        // actually arrived is read from the chain.
-        toAmount: exactTokenAmount(
-          record.minimumAmountOut,
-          record.assetOut.decimals,
-        ),
-        txHash: signed.transactionId,
-        route: session.value?.dex.entry.displayName ?? record.venueId,
-        feeDisplay: `${readableTokenAmount(
-          record.networkFeeWei,
-          nativeDecimals,
-        )} ${nativeSymbol.value}`,
-        destinationAddress: record.account,
-        status: 'pending',
-        recovery: {
-          operationId: signed.operationId,
-          venueId: record.venueId,
-          account: record.account,
-          route: record.route,
-          call: signed.call,
-          toDecimals: record.assetOut.decimals,
-        },
-      }
-      history.saveLocal(pending)
-      void Promise.resolve()
-        .then(() => history.noteToSelf(pending))
-        .catch(() => undefined)
+    /** What the chain said a swap did, remembered so it is not asked again on every display. */
+    function rememberOutcome(result: SwapResult): void {
+      if (result.status === 'pending') return
+      history.cacheOutcome(
+        swapRecordId(props.chainIdentifier, result.txHash),
+        result.status === 'confirmed'
+          ? {
+              status: 'confirmed',
+              ...(result.amountOut === undefined
+                ? {}
+                : { amountOut: result.amountOut.toString() }),
+              feeWei: result.totalFeeWei.toString(),
+            }
+          : {
+              status: 'failed',
+              feeWei: result.totalFeeWei.toString(),
+              reason: result.reason ?? 'reverted',
+            },
+      )
     }
-    /**
-     * The same id on every frontend of the account, derived from the transaction: its hash
-     * without the prefix (the record's id field holds at most 64 characters).
-     */
-    const swapRecordId = (transactionId: string) =>
-      transactionId.replace(/^0x/, '').slice(0, 64)
-
-    function recordOf(
-      timestamp: number,
-      q: EvmDexQuote,
-      minimumOut: bigint,
-      result: SwapResult,
-      swapCall: { to: string; data: string; value: bigint },
-    ): SwapRecord {
-      const current = session.value!
-      const base = {
-        id: swapRecordId(result.txHash),
-        timestamp,
-        chain: props.walletId,
-        chainIdentifier: props.chainIdentifier,
-        fromAsset: q.tokenIn.symbol,
-        toAsset: q.tokenOut.symbol,
-        fromAmount: exactTokenAmount(q.amountIn, q.tokenIn.decimals),
-        txHash: result.txHash,
-        route: current.dex.entry.displayName,
-        destinationAddress: current.account,
-      }
-      const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
-      const feeDisplay =
-        'totalFeeWei' in result
-          ? `${readableTokenAmount(result.totalFeeWei, nativeDecimals)} ${
-              nativeSymbol.value
-            }`
-          : ''
-      if (result.status === 'confirmed')
-        return {
-          ...base,
-          // From the receipt. When the receipt did not show it, nothing is claimed.
-          toAmount:
-            result.amountOut === undefined
-              ? '?'
-              : readableTokenAmount(result.amountOut, q.tokenOut.decimals),
-          feeDisplay,
-          status: 'confirmed',
-        }
-      if (result.status === 'reverted')
-        return {
-          ...base,
-          toAmount: '0',
-          feeDisplay,
-          status: 'failed',
-          failureReason: result.reason ?? 'reverted',
-        }
-      return {
-        ...base,
-        toAmount: exactTokenAmount(minimumOut, q.tokenOut.decimals),
-        feeDisplay,
-        status: 'pending',
-        recovery: {
-          operationId: result.operationId,
-          venueId: current.dex.entry.id,
-          account: current.account,
-          route: q.route,
-          call: {
-            to: swapCall.to,
-            data: swapCall.data,
-            value: swapCall.value.toString(),
-          },
-          toDecimals: q.tokenOut.decimals,
-        },
-      }
+    /** This device's own swaps, straight from the wallet's journal: in the history at once,
+     * before their note to self has gone round. The note later says the same thing. */
+    function listOwnSwaps(current: EvmSwapSession): void {
+      for (const item of current.ownSwapRecords()) history.handleSwapItem(item)
     }
 
     function outcomeOf(result: SwapResult, q: EvmDexQuote): Outcome {
@@ -1226,8 +1129,8 @@ export default defineComponent({
         })
         phase.value = 'working'
         progress.value = undefined
-        // The wallet keeps the swap's record (`recordSigned`) once it is signed and before it
-        // is broadcast; if the record cannot be kept, nothing is broadcast.
+        // The record goes to the wallet with the swap's transaction: the wallet journals it
+        // before signing and its note to self carries it. Nothing is recorded here.
         const result = await current.dex.execute({
           plan,
           account: current.account,
@@ -1236,15 +1139,8 @@ export default defineComponent({
             progress.value = next
           },
         })
-        history.saveLocal(
-          recordOf(
-            signedAt.get(result.txHash) ?? Date.now(),
-            q,
-            plan.minimumAmountOut,
-            result,
-            plan.swap,
-          ),
-        )
+        listOwnSwaps(current)
+        rememberOutcome(result)
         outcome.value = outcomeOf(result, q)
         phase.value = 'done'
         amountText.value = ''
@@ -1275,77 +1171,28 @@ export default defineComponent({
       phase.value = 'form'
     }
 
-    /** Swaps this device recorded as submitted and never saw finish: ask the chain now. */
+    /**
+     * Swaps this wallet broadcast and has not seen in a block (the page closed, the node timed
+     * out): each is finished from the wallet's own journal, re-sending its same signed bytes
+     * if the chain never saw it. Then any other contract call left unresolved (an approval).
+     */
     async function reconcilePending(current: EvmSwapSession): Promise<void> {
-      const pending = history
-        .getSwapsForChain(props.walletId, props.chainIdentifier)
-        .value.filter(
-          record =>
-            record.status === 'pending' &&
-            record.recovery &&
-            record.recovery.venueId === current.dex.entry.id &&
-            record.chainIdentifier === props.chainIdentifier &&
-            record.recovery.account.toLowerCase() ===
-              current.account.toLowerCase(),
-        )
-      for (const record of pending) {
-        const recovery = record.recovery!
+      listOwnSwaps(current)
+      for (const pending of current.pendingSwaps()) {
         try {
-          // A swap this device made can be re-sent as recorded; one learned from the mailbox
-          // (another device made it) is only read from the chain.
-          const result =
-            recovery.operationId && recovery.call
-              ? await current.dex.reconcile({
-                  transactionId: record.txHash,
-                  operationId: recovery.operationId,
-                  account: recovery.account,
-                  route: recovery.route,
-                  call: recovery.call,
-                })
-              : await current.dex.observe({
-                  transactionId: record.txHash,
-                  account: recovery.account,
-                  route: recovery.route,
-                })
-          if (!alive || result.status === 'pending') continue
-          const nativeDecimals = tokens.value[nativeIndex.value]?.decimals ?? 18
-          const rest: SwapRecord = { ...record }
-          delete rest.recovery
-          history.saveLocal({
-            ...rest,
-            status: result.status === 'confirmed' ? 'confirmed' : 'failed',
-            toAmount:
-              result.status !== 'confirmed'
-                ? '0'
-                : result.amountOut === undefined
-                ? '?'
-                : readableTokenAmount(result.amountOut, recovery.toDecimals),
-            feeDisplay: `${readableTokenAmount(
-              result.feeWei,
-              nativeDecimals,
-            )} ${nativeSymbol.value}`,
-            ...(result.status === 'reverted'
-              ? { failureReason: result.reason ?? 'reverted' }
-              : {}),
+          const result = await current.dex.reconcile({
+            transactionId: pending.transactionId,
+            operationId: pending.operationId,
+            account: pending.record.account,
+            route: pending.record.route,
+            call: pending.call,
           })
+          if (!alive) return
+          rememberOutcome(result)
         } catch {
-          /* Still unknown: the record stays pending and is looked at again next time. */
+          /* Still unknown: it stays pending and is looked at again next time. */
         }
       }
-      // A contract call that was signed and never seen in a block (an approval whose broadcast
-      // was lost) holds the account until it lands: hand the same bytes to the network again.
-      // A swap whose note to self has not reached the mailbox yet: only the note is owed.
-      for (const record of history
-        .getSwapsForChain(props.walletId, props.chainIdentifier)
-        .value.filter(
-          record =>
-            !record.noted &&
-            record.txHash &&
-            record.chainIdentifier === props.chainIdentifier,
-        ))
-        void Promise.resolve()
-          .then(() => history.noteToSelf(record))
-          .catch(() => undefined)
       for (const call of current.unresolvedContractCalls())
         await current.resumeOperation(call.operationId).catch(() => undefined)
       void refreshBalances()
@@ -1356,7 +1203,6 @@ export default defineComponent({
         const opened = await openEvmSwapSession(
           props.chainIdentifier,
           props.venueId,
-          recordSigned,
         )
         if (!alive) return
         session.value = opened

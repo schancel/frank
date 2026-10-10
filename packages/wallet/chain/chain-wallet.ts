@@ -303,6 +303,8 @@ export interface NativeWalletHandle {
     data: string;
     value: bigint;
     gasLimit?: bigint;
+    /** What the call is (a swap's record): journaled with it and carried by its note to self. */
+    record?: import("../storage/evm-native-operation-journal").EvmContractCallRecord;
     onSigned?: (signed: ContractCallHandle) => Promise<void>;
   }): Promise<ContractCallHandle>;
   /** What a contract call can spend: the main account's balance and what could be moved into it. */

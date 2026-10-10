@@ -52,10 +52,11 @@ const stubs: Record<string, any> = Object.fromEntries(
     .filter(n => /^Q[A-Z]/.test(n))
     .map(n => [n, keepClass()]),
 )
+const setScrollPosition = jest.fn()
 stubs.QScrollArea = defineComponent({
   methods: {
-    getScrollTarget: () => ({ scrollTop: 0 }),
-    setScrollPosition: () => undefined,
+    getScrollTarget: () => ({ scrollTop: 0, scrollHeight: 900 }),
+    setScrollPosition: (...args: unknown[]) => setScrollPosition(...args),
   },
   render() {
     return h(
@@ -93,6 +94,12 @@ const ResizeObserverStub = defineComponent({
   emits: ['resize'],
   setup: () => () => h('span', { 'data-testid': 'banner-resize-observer' }),
 })
+
+// The page has two observers: the banner overlay's and the message list's.
+const bannerObserver = (wrapper: { get: (selector: string) => any }) =>
+  wrapper.get('.chat-banner-overlay').getComponent(ResizeObserverStub)
+const listObserver = (wrapper: { get: (selector: string) => any }) =>
+  wrapper.get('.chat-message-list').getComponent(ResizeObserverStub)
 
 function message(payloadDigest: string) {
   return {
@@ -185,7 +192,7 @@ describe('Chat.vue layout structure (mounted)', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.findAll('[data-testid$="banner"]')).toHaveLength(2)
 
-    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+    bannerObserver(wrapper).vm.$emit('resize', {
       width: 375,
       height: 96,
     })
@@ -209,7 +216,7 @@ describe('Chat.vue layout structure (mounted)', () => {
       wrapper.vm as unknown as { stampPreparationStatus: string | null }
     ).stampPreparationStatus = 'checking'
     await wrapper.vm.$nextTick()
-    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+    bannerObserver(wrapper).vm.$emit('resize', {
       width: 375,
       height: 96,
     })
@@ -224,7 +231,7 @@ describe('Chat.vue layout structure (mounted)', () => {
       wrapper.vm as unknown as { stampPreparationStatus: string | null }
     ).stampPreparationStatus = 'checking'
     await wrapper.vm.$nextTick()
-    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+    bannerObserver(wrapper).vm.$emit('resize', {
       width: 375,
       height: 96,
     })
@@ -252,12 +259,38 @@ describe('Chat.vue layout structure (mounted)', () => {
       wrapper.vm as unknown as { stampPreparationStatus: string | null }
     ).stampPreparationStatus = 'checking'
     await wrapper.vm.$nextTick()
-    wrapper.getComponent(ResizeObserverStub).vm.$emit('resize', {
+    bannerObserver(wrapper).vm.$emit('resize', {
       width: 375,
       height: 96,
     })
     await wrapper.vm.$nextTick()
     // q-py-md is already 16px. Clearance 112 replaces it, so the list grows by 96.
     expect(target.scrollTop).toBe(40 + 96)
+  })
+
+  it('stays on the newest message when a bubble grows, unless the user scrolled up', async () => {
+    const wrapper = await mountChat([message('a'), message('b')])
+    const vm = wrapper.vm as unknown as {
+      scrollHandler(details: {
+        verticalSize: number
+        verticalContainerSize: number
+        verticalPosition: number
+      }): void
+    }
+    const size = { verticalSize: 900, verticalContainerSize: 500 }
+    vm.scrollHandler({ ...size, verticalPosition: 400 }) // at the bottom
+    setScrollPosition.mockClear()
+
+    // The last bubble renders its result: the content is taller, the view has not moved.
+    vm.scrollHandler({ ...size, verticalSize: 1080, verticalPosition: 400 })
+    listObserver(wrapper).vm.$emit('resize', { width: 375, height: 1080 })
+    expect(setScrollPosition).toHaveBeenCalledTimes(1)
+    expect(setScrollPosition).toHaveBeenCalledWith('vertical', 900, 0)
+
+    // Reading history: a bubble that grows must not pull the view down.
+    vm.scrollHandler({ ...size, verticalSize: 1080, verticalPosition: 200 })
+    setScrollPosition.mockClear()
+    listObserver(wrapper).vm.$emit('resize', { width: 375, height: 1200 })
+    expect(setScrollPosition).not.toHaveBeenCalled()
   })
 })

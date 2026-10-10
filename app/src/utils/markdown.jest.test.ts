@@ -164,3 +164,34 @@ describe('purify', () => {
     expect(result).not.toContain('onerror')
   })
 })
+
+describe('renderMarkdown line breaks', () => {
+  const help = '**Commands**\n\n• `/join` - Join a room\n• `/leave` - Leave it'
+
+  it('keeps single newlines as line breaks when asked to (chat messages)', () => {
+    clearMarkdownCache()
+    const html = renderMarkdown(help, false, true)
+    expect(html).toContain('<br>')
+    expect(html.match(/<br>/g)).toHaveLength(1)
+    expect(html).toContain('<code>/join</code>')
+  })
+
+  it('joins them into one paragraph by default (posts, email)', () => {
+    clearMarkdownCache()
+    expect(renderMarkdown(help, false)).not.toContain('<br>')
+  })
+
+  it('caches the two renderings of the same text separately', () => {
+    clearMarkdownCache()
+    const withBreaks = renderMarkdown(help, false, true)
+    const without = renderMarkdown(help, false)
+    expect(withBreaks).not.toBe(without)
+    expect(renderMarkdown(help, false, true)).toBe(withBreaks)
+  })
+
+  it('still sanitizes with line breaks on', () => {
+    clearMarkdownCache()
+    const html = renderMarkdown('a\n<img src=x onerror=alert(1)>', false, true)
+    expect(html).not.toContain('onerror')
+  })
+})

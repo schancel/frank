@@ -22,7 +22,8 @@ export default defineComponent({
     markedMessage() {
       return this.isReply
         ? purify(this.text)
-        : renderMarkdown(this.text, this.$q.dark.isActive)
+        : // A chat message keeps the line breaks it was written with.
+          renderMarkdown(this.text, this.$q.dark.isActive, true)
     },
   },
 })

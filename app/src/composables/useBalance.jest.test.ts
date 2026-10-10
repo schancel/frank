@@ -8,6 +8,7 @@ import {
   APP_STATE_EVENT,
   BALANCE_BACKOFF_MAX_MS,
   BALANCE_POLL_MS,
+  CORDONED_POLL_MS,
   nextBalanceDelay,
   readCordonedBalance,
   useBalance,
@@ -580,6 +581,64 @@ describe('useBalance', () => {
       expect(api.cordoned.value).toBe(25n)
       expect(api.formattedCordoned.value).toBe('25 MON')
       expect(api.formattedTotal.value).toBe('125 MON')
+    })
+
+    it('asks for the profile balance at most once per CORDONED_POLL_MS while the loop ticks every 3 s', async () => {
+      // Only cordoned funds: the spendable balance is zero, so the loop is at its fastest.
+      mockSeed = 'cordoned-only'
+      const wallet = typed(25n)
+      mockWallets['cordoned-only'] = Promise.resolve(wallet)
+      mockGetBalance.mockResolvedValue(0n)
+      let api!: ReturnType<typeof useBalance>
+      mount(
+        defineComponent({
+          setup() {
+            api = useBalance()
+            return () => h('span')
+          },
+        }),
+      )
+      await advance(0)
+      expect(api.cordoned.value).toBe(25n)
+      const profileReads = () =>
+        wallet.provider.getBalance.mock.calls.filter(
+          ([address]) => address === '0xAAAA',
+        ).length
+      expect(profileReads()).toBe(1)
+
+      // One minute of 3 s ticks: 20 spendable reads, but the profile address only at 30 s and 60 s.
+      const spendableBefore = mockGetBalance.mock.calls.length
+      for (let elapsed = 0; elapsed < 60_000; elapsed += 3000)
+        await advance(3000)
+      expect(mockGetBalance.mock.calls.length - spendableBefore).toBe(20)
+      expect(CORDONED_POLL_MS).toBe(30_000)
+      expect(profileReads()).toBe(3)
+      expect(api.cordoned.value).toBe(25n)
+    })
+
+    it('reads the profile balance at once when asked to (the Wallet page opening)', async () => {
+      mockSeed = 'cordoned-now'
+      const wallet = typed(25n)
+      mockWallets['cordoned-now'] = Promise.resolve(wallet)
+      mockGetBalance.mockResolvedValue(0n)
+      let api!: ReturnType<typeof useBalance>
+      mount(
+        defineComponent({
+          setup() {
+            api = useBalance()
+            return () => h('span')
+          },
+        }),
+      )
+      await advance(0)
+      expect(wallet.provider.getBalance).toHaveBeenCalledTimes(1)
+      // An ordinary refresh inside the interval does not ask again...
+      await advance(1000)
+      await api.refresh()
+      expect(wallet.provider.getBalance).toHaveBeenCalledTimes(1)
+      // ...the explicit one does.
+      await api.refreshCordoned()
+      expect(wallet.provider.getBalance).toHaveBeenCalledTimes(2)
     })
 
     it('a failed read of the profile address does not fail the balance', async () => {

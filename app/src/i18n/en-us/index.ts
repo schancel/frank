@@ -125,6 +125,15 @@ export default {
     reasonEmpty: 'empty image',
     reasonDimensionsTooLarge: 'dimensions too large',
   },
+  raffle: {
+    enter: 'Enter',
+    confirmGroupLabel: 'Confirm raffle entry',
+    confirmPrompt: 'Pay {amount} to enter?',
+    confirm: 'Confirm',
+    cancel: 'Cancel',
+    insufficient: 'That is more than you can spend now ({balance}).',
+    balanceUnknown: 'Your balance is not known yet.',
+  },
   raffleDraw: {
     verified: 'Draw matches the seed commitment',
     failed: 'Verification failed: {reason}',
@@ -201,6 +210,9 @@ export default {
     playerHand: 'Player: {cards} ({total})',
     dealerHand: 'Dealer: {cards} ({total})',
     dealerShows: 'Dealer shows: {card}',
+    rowPlayer: 'Player',
+    rowDealer: 'Dealer',
+    rowCard: 'Card',
     wager: 'At stake: {amount}',
     accept: 'Accept and deal',
     betAmount: 'Your bet (at most {max})',
@@ -358,6 +370,7 @@ export default {
     confirmSeed: 'Confirm recovery phrase',
     balanceLoading: 'Loading balance…',
     balanceUnavailable: 'Balance unavailable.',
+    balanceUnsupported: 'Balance not shown for this network yet.',
     cordoned: '{amount} cordoned',
     cordonedTooltip:
       'Received at your profile address. The wallet watches these funds but does not spend them.',

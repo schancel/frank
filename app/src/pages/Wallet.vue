@@ -53,7 +53,13 @@
 
     <q-page-container>
       <q-page class="q-ma-none q-pa-none">
-        <q-scroll-area class="absolute full-width full-height">
+        <!-- The content is held to the viewport width: the tab bar scrolls inside it instead of
+        widening the whole page past a phone's screen. -->
+        <q-scroll-area
+          class="absolute full-width full-height"
+          :content-style="{ width: '100%', minWidth: '100%' }"
+          :content-active-style="{ width: '100%', minWidth: '100%' }"
+        >
           <div class="wallet-scroll-content">
             <q-card
               flat
@@ -69,6 +75,7 @@
                 indicator-color="primary"
                 align="justify"
                 narrow-indicator
+                outside-arrows
                 data-testid="wallet-tabs"
               >
                 <q-tab
@@ -101,10 +108,16 @@
                 <q-tab-panel name="balance" class="q-pa-none">
                   <q-card-section class="q-py-sm">
                     <div
-                      class="text-bold text-subtitle1 text-center"
+                      class="text-subtitle1 text-center"
+                      :class="
+                        balanceUnsupported
+                          ? 'text-body2 text-grey-7'
+                          : 'text-bold'
+                      "
                       role="status"
                       aria-live="polite"
                       data-testid="wallet-balance"
+                      :title="balanceTitle"
                     >
                       {{
                         balanceObservation
@@ -114,12 +127,14 @@
                           : $t(
                               balancePresentation.status === 'loading'
                                 ? 'walletPanel.balanceLoading'
+                                : balanceUnsupported
+                                ? 'walletPanel.balanceUnsupported'
                                 : 'walletPanel.balanceUnavailable',
                             )
                       }}
                       <span
                         v-if="balanceObservation && balanceObservation.cordoned"
-                        class="text-weight-regular text-grey-7"
+                        class="text-weight-regular text-grey-7 wallet-balance-bracket"
                         data-testid="wallet-balance-cordoned"
                       >
                         ({{
@@ -518,6 +533,7 @@ import {
   computed,
   defineComponent,
   onBeforeUnmount,
+  onMounted,
   ref,
   shallowRef,
   watch,
@@ -612,7 +628,10 @@ export default defineComponent({
       presentation: balancePresentation,
       tokens: activeTokens,
       tokenObservation,
+      refreshCordoned,
     } = useChainBalance(selectedWallet)
+    // The cordoned amount is otherwise read at a slow cadence; opening this page shows it fresh.
+    onMounted(() => void refreshCordoned?.())
     const tokenStatusKey = computed(() => {
       const observation = tokenObservation.value
       if (!observation || observation.status === 'available') return ''
@@ -630,8 +649,28 @@ export default defineComponent({
         ? presentation.lastKnown
         : undefined
     })
+    // Every digit, on hover: the balance line itself is shortened for reading.
+    const balanceTitle = computed(() => {
+      const observation = balanceObservation.value
+      return (
+        (observation?.cordoned
+          ? observation.cordoned.exactTotal
+          : observation?.exactBalance) ?? undefined
+      )
+    })
+    // No balance reader exists for this network: said once and quietly, not as a failed fetch.
+    const balanceUnsupported = computed(() => {
+      const presentation = balancePresentation.value
+      return (
+        presentation.status === 'unavailable' &&
+        presentation.reason === 'unsupported' &&
+        !presentation.lastKnown
+      )
+    })
     const currentWalletHasError = computed(
-      () => balancePresentation.value.status === 'unavailable',
+      () =>
+        balancePresentation.value.status === 'unavailable' &&
+        !balanceUnsupported.value,
     )
 
     const currentUnitRateAvu = computed(() => {
@@ -783,6 +822,8 @@ export default defineComponent({
       displayAddress,
       balancePresentation,
       balanceObservation,
+      balanceTitle,
+      balanceUnsupported,
       currentWalletHasError,
       currentWalletAvu,
       currentUnitRateAvu,
@@ -833,6 +874,12 @@ export default defineComponent({
   width: 100%;
   max-width: 680px;
   margin: 0 auto;
+}
+
+/* The bracket wraps whole under the total instead of breaking in the middle. */
+.wallet-balance-bracket {
+  display: inline-block;
+  white-space: nowrap;
 }
 
 @media (max-width: 600px) {

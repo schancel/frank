@@ -24,6 +24,9 @@
               class="chat-message-list row q-px-lg q-py-md"
               :style="bannerClearanceStyle"
             >
+              <!-- A bubble can grow after it arrived (a blackjack hand renders its result a
+              moment later); a view that was following the newest message stays on it. -->
+              <q-resize-observer @resize="onMessageListResize" />
               <template
                 v-for="(msg, index) in chunkedMessages"
                 :key="msg.payloadDigest"
@@ -210,6 +213,8 @@ import {
   activeChain,
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
+import { formatDisplayNumber } from '../utils/chain-amount'
+import { nextFollowBottom } from '../utils/follow-bottom'
 import type { MessageItem, EmailItem } from '@frank/cashweb/types/messages'
 
 import { debounce, QScrollArea } from 'quasar'
@@ -254,6 +259,9 @@ export default defineComponent({
       bannerClearance: 0,
       // While a clearance change settles, stay pinned instead of flashing jump-to-bottom.
       keepBottomForBanner: false,
+      // Whether the view follows the newest message; see `nextFollowBottom`.
+      followBottom: true,
+      lastScrollPosition: 0,
       messagesToShow: 30,
       replyDigest: null as string | null,
       scrollDigest: null as string | null,
@@ -419,6 +427,15 @@ export default defineComponent({
       verticalContainerSize: number
       verticalPosition: number
     }) {
+      this.followBottom = nextFollowBottom(
+        this.followBottom,
+        this.lastScrollPosition,
+        details.verticalPosition,
+        details.verticalSize -
+          details.verticalPosition -
+          details.verticalContainerSize,
+      )
+      this.lastScrollPosition = details.verticalPosition
       if (
         // Ten pixels from top
         details.verticalPosition <= 10
@@ -464,6 +481,9 @@ export default defineComponent({
         // Reading history: grow the top pad without shifting the visible bubbles.
         if (target && prevTop > 10) target.scrollTop = prevTop + delta
       })
+    },
+    onMessageListResize() {
+      if (this.followBottom) this.pinScrollToBottom()
     },
     pinScrollToBottom() {
       const scrollArea = this.chatScroll
@@ -753,7 +773,7 @@ export default defineComponent({
         this.stampPreparationStatus = this.$t('chat.stampPreparationFunding', {
           completed: progress.completed,
           total: progress.total,
-          feeReserve: activeChain.toDisplayAmount(progress.feeReserveWei),
+          feeReserve: formatDisplayNumber(activeChain, progress.feeReserveWei),
           unit: activeChain.unit,
         })
       } else {
@@ -1192,6 +1212,9 @@ export default defineComponent({
       ) {
         this.chatStore.setActiveConversation(newAddr)
       }
+      // Another conversation opens on its newest message, wherever the last one was left.
+      this.followBottom = true
+      this.$nextTick(() => this.pinScrollToBottom())
       this.focusComposeOnOpen()
       void this.runBlackjackDealer()
     },

@@ -50,6 +50,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from '../../utils/chain-amount'
 import {
   challengeLimitWei,
   type HandRole,
@@ -88,7 +89,7 @@ export default defineComponent({
     limitDisplay(): string {
       return this.limitWei === null
         ? '…'
-        : `${activeChain.toDisplayAmount(this.limitWei)} ${activeChain.unit}`
+        : formatDisplayAmount(activeChain, this.limitWei)
     },
     maxBetWei(): bigint | null {
       try {
@@ -104,9 +105,10 @@ export default defineComponent({
         return this.$t('blackjackP2p.enterAmount')
       if (this.maxBetWei < activeChain.defaultStampValue)
         return this.$t('blackjackP2p.belowStamp', {
-          amount: `${activeChain.toDisplayAmount(
+          amount: formatDisplayAmount(
+            activeChain,
             activeChain.defaultStampValue,
-          )} ${activeChain.unit}`,
+          ),
         })
       if (this.maxBetWei > this.limitWei)
         return this.$t('blackjackP2p.aboveOwnLimit', {

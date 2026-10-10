@@ -1,5 +1,5 @@
 <template>
-  <div class="blackjack-hand q-pa-sm" style="min-width: 220px">
+  <div class="blackjack-hand q-pa-sm">
     <!-- What this message was. -->
     <div class="text-caption text-weight-bold" data-testid="blackjack-line">
       {{ itemLine }}
@@ -7,51 +7,64 @@
 
     <!-- On the latest message of the hand, render the current running hand state -->
     <template v-if="state && isLatest">
-      <div v-if="view.playerCards.length" class="text-caption">
-        {{
+      <!-- The table: the dealer's row over the player's, then the stake. -->
+      <blackjack-cards
+        v-if="state.phase === 'resolved'"
+        :label="$t('blackjackP2p.rowDealer')"
+        :cards="state.dealerCards"
+        :total="dealerTotal"
+        :sentence="
+          $t('blackjackP2p.dealerHand', {
+            cards: cardLabels(state.dealerCards),
+            total: dealerTotal,
+          })
+        "
+        total-testid="blackjack-dealer-total"
+      />
+      <blackjack-cards
+        v-else-if="view.dealerUpCard !== undefined"
+        :label="$t('blackjackP2p.rowDealer')"
+        :cards="[view.dealerUpCard]"
+        :hidden="1"
+        :sentence="
+          $t('blackjackP2p.dealerShows', {
+            card: cardLabel(view.dealerUpCard),
+          })
+        "
+      />
+      <blackjack-cards
+        v-if="view.playerCards.length"
+        :label="$t('blackjackP2p.rowPlayer')"
+        :cards="view.playerCards"
+        :total="playerTotal"
+        :sentence="
           $t('blackjackP2p.playerHand', {
             cards: cardLabels(view.playerCards),
             total: playerTotal,
           })
-        }}
-      </div>
-      <div
-        v-if="view.dealerUpCard !== undefined && state.phase !== 'resolved'"
-        class="text-caption"
-      >
-        {{
-          $t('blackjackP2p.dealerShows', {
-            card: cardLabel(view.dealerUpCard),
-          })
-        }}
-      </div>
+        "
+        total-testid="blackjack-player-total"
+      />
       <div
         v-if="state.wagerWei > 0n"
-        class="text-caption"
+        class="text-caption q-mt-xs"
         data-testid="blackjack-wager"
       >
         {{ $t('blackjackP2p.wager', { amount: display(stake) }) }}
       </div>
       <template v-if="state.phase === 'resolved'">
-        <div class="text-caption">
-          {{
-            $t('blackjackP2p.dealerHand', {
-              cards: cardLabels(state.dealerCards),
-              total: dealerTotal,
-            })
+        <div class="bj-result" :class="`bj-result--${outcomeTone}`">
+          <div class="bj-result__outcome" data-testid="blackjack-outcome">
+            {{ outcomeText }}
+          </div>
+          <div class="bj-result__payout" data-testid="blackjack-payout">
+            {{ payoutText }}
+          </div>
+        </div>
+        <div class="bj-verified text-caption">
+          <q-icon name="verified" size="14px" class="q-mr-xs" />{{
+            $t('blackjackP2p.verified')
           }}
-        </div>
-        <div
-          class="text-caption text-weight-bold"
-          data-testid="blackjack-outcome"
-        >
-          {{ outcomeText }}
-        </div>
-        <div class="text-caption" data-testid="blackjack-payout">
-          {{ payoutText }}
-        </div>
-        <div class="text-caption text-positive">
-          {{ $t('blackjackP2p.verified') }}
         </div>
         <q-btn
           dense
@@ -199,63 +212,85 @@
 
     <!-- For earlier messages in the hand, keep what was dealt permanently in the chat log -->
     <template v-else-if="item.action === 'deal'">
-      <div v-if="dealPlayerCards.length" class="text-caption">
-        {{
+      <blackjack-cards
+        v-if="dealUpCard !== undefined"
+        :label="$t('blackjackP2p.rowDealer')"
+        :cards="[dealUpCard]"
+        :hidden="1"
+        :sentence="
+          $t('blackjackP2p.dealerShows', { card: cardLabel(dealUpCard) })
+        "
+      />
+      <blackjack-cards
+        v-if="dealPlayerCards.length"
+        :label="$t('blackjackP2p.rowPlayer')"
+        :cards="dealPlayerCards"
+        :total="dealPlayerTotal"
+        :sentence="
           $t('blackjackP2p.playerHand', {
             cards: cardLabels(dealPlayerCards),
             total: dealPlayerTotal,
           })
-        }}
-      </div>
-      <div v-if="dealUpCard !== undefined" class="text-caption">
-        {{
-          $t('blackjackP2p.dealerShows', {
-            card: cardLabel(dealUpCard),
-          })
-        }}
-      </div>
+        "
+      />
     </template>
     <template v-else-if="item.action === 'card'">
-      <div v-if="itemCard !== undefined" class="text-caption">
-        {{ $t('blackjackP2p.cardDealtN', { card: cardLabel(itemCard) }) }}
-      </div>
-      <div v-if="cardPlayerCards.length" class="text-caption">
-        {{
+      <blackjack-cards
+        v-if="itemCard !== undefined"
+        :label="$t('blackjackP2p.rowCard')"
+        :cards="[itemCard]"
+        :sentence="$t('blackjackP2p.cardDealtN', { card: cardLabel(itemCard) })"
+      />
+      <blackjack-cards
+        v-if="cardPlayerCards.length"
+        :label="$t('blackjackP2p.rowPlayer')"
+        :cards="cardPlayerCards"
+        :total="cardPlayerTotal"
+        :sentence="
           $t('blackjackP2p.playerHand', {
             cards: cardLabels(cardPlayerCards),
             total: cardPlayerTotal,
           })
-        }}
-      </div>
+        "
+      />
     </template>
     <template v-else-if="item.action === 'reveal' && state">
-      <div v-if="state.playerCards.length" class="text-caption">
-        {{
-          $t('blackjackP2p.playerHand', {
-            cards: cardLabels(state.playerCards),
-            total: playerTotal,
-          })
-        }}
-      </div>
-      <div v-if="state.dealerCards.length" class="text-caption">
-        {{
+      <blackjack-cards
+        v-if="state.dealerCards.length"
+        :label="$t('blackjackP2p.rowDealer')"
+        :cards="state.dealerCards"
+        :total="dealerTotal"
+        :sentence="
           $t('blackjackP2p.dealerHand', {
             cards: cardLabels(state.dealerCards),
             total: dealerTotal,
           })
+        "
+      />
+      <blackjack-cards
+        v-if="state.playerCards.length"
+        :label="$t('blackjackP2p.rowPlayer')"
+        :cards="state.playerCards"
+        :total="playerTotal"
+        :sentence="
+          $t('blackjackP2p.playerHand', {
+            cards: cardLabels(state.playerCards),
+            total: playerTotal,
+          })
+        "
+      />
+      <div class="bj-result" :class="`bj-result--${outcomeTone}`">
+        <div class="bj-result__outcome" data-testid="blackjack-outcome">
+          {{ outcomeText }}
+        </div>
+        <div class="bj-result__payout" data-testid="blackjack-payout">
+          {{ payoutText }}
+        </div>
+      </div>
+      <div class="bj-verified text-caption">
+        <q-icon name="verified" size="14px" class="q-mr-xs" />{{
+          $t('blackjackP2p.verified')
         }}
-      </div>
-      <div
-        class="text-caption text-weight-bold"
-        data-testid="blackjack-outcome"
-      >
-        {{ outcomeText }}
-      </div>
-      <div class="text-caption" data-testid="blackjack-payout">
-        {{ payoutText }}
-      </div>
-      <div class="text-caption text-positive">
-        {{ $t('blackjackP2p.verified') }}
       </div>
       <q-btn
         dense
@@ -291,6 +326,7 @@ import { defineComponent, PropType } from 'vue'
 
 import type { BlackjackHandItem } from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from '../../../utils/chain-amount'
 import {
   cardLabel,
   handValue,
@@ -316,6 +352,7 @@ import {
   type HandState,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 
+import BlackjackCards from './BlackjackCards.vue'
 import { useChatStore } from '../../../stores/chats'
 import { useBalance } from '../../../composables/useBalance'
 import { getOwnCanonicalAddress } from '../../../utils/own-address'
@@ -344,6 +381,7 @@ type Move = 'hit' | 'stand' | 'double'
  */
 export default defineComponent({
   name: 'ChatMessageBlackjack',
+  components: { BlackjackCards },
   props: {
     item: {
       type: Object as PropType<BlackjackHandItem>,
@@ -692,6 +730,13 @@ export default defineComponent({
       if (!outcome || !this.role) return ''
       return this.$t(`blackjackP2p.outcome.${this.role}.${outcome}`)
     },
+    /** How the result reads for this user: only the colour of the result block follows it. */
+    outcomeTone(): 'win' | 'lose' | 'push' {
+      const outcome = this.state?.outcome
+      if (!outcome || !this.role || outcome === 'push') return 'push'
+      const playerWon = outcome !== 'dealer_win'
+      return playerWon === (this.role === 'player') ? 'win' : 'lose'
+    },
     payoutText(): string {
       const state = this.state
       if (!state || state.owedWei === undefined) return ''
@@ -720,7 +765,7 @@ export default defineComponent({
       return cards.map(cardLabel).join(' ')
     },
     display(wei: bigint): string {
-      return `${activeChain.toDisplayAmount(wei)} ${activeChain.unit}`
+      return formatDisplayAmount(activeChain, wei)
     },
     displayText(wei: string): string {
       return /^[0-9]{1,40}$/.test(wei) ? this.display(BigInt(wei)) : '?'
@@ -798,3 +843,47 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.blackjack-hand {
+  min-width: min(220px, 100%);
+}
+
+/* The outcome and what was paid: the two lines a player looks for. */
+.bj-result {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-left: 4px solid rgba(127, 127, 127, 0.7);
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.14);
+}
+
+.bj-result--win {
+  border-left-color: #2e9d48;
+  background: rgba(46, 157, 72, 0.16);
+}
+
+.bj-result--lose {
+  border-left-color: #d9362b;
+  background: rgba(217, 54, 43, 0.13);
+}
+
+.bj-result__outcome {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.bj-result__payout {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.bj-verified {
+  display: flex;
+  align-items: flex-start;
+  margin-top: 6px;
+  opacity: 0.75;
+}
+</style>

@@ -164,9 +164,14 @@ test('renders list of wallets without recovery banners or demo buttons', () => {
   expect(view.find('[data-test="dogecoin-testnet-badge"]').exists()).toBe(true)
   expect(view.find('[data-test="ecash-testnet-badge"]').exists()).toBe(true)
   expect(view.find('[data-test="solana-testnet-badge"]').exists()).toBe(true)
+  // No balance reader for these networks: a quiet dash that names its reason, not the
+  // wording of a failed fetch.
   for (const chain of ['bitcoin', 'bitcoincash', 'dogecoin']) {
-    expect(view.get(`[data-test="${chain}-wallet-balance"]`).text()).toBe(
-      t('walletPanel.balanceUnavailable'),
+    const region = view.get(`[data-test="${chain}-wallet-balance"]`)
+    expect(region.text()).toBe('\u2014')
+    expect(region.attributes('title')).toBe(t('walletPanel.balanceUnsupported'))
+    expect(region.attributes('aria-label')).toBe(
+      t('walletPanel.balanceUnsupported'),
     )
   }
   for (const chain of ['ecash', 'solana']) {
@@ -392,4 +397,16 @@ test('starts background worker on mount and stops it on unmount', () => {
 
   view.unmount()
   expect(mockStopBackgroundWorker).toHaveBeenCalledTimes(1)
+})
+
+test('the drawer header keeps the title and the AVU note as two unbroken groups of one wrapping row', () => {
+  const view = render()
+  const row = view.get('.wallet-header-row')
+  const [title, note] = Array.from(row.element.children)
+  expect(title.classList.contains('wallet-header-title')).toBe(true)
+  expect(title.textContent).toContain(t('walletPanel.title'))
+  expect(note.getAttribute('data-test')).toBe('drawer-avu-explainer-link')
+  expect(note.textContent).toContain(t('walletPanel.avuDrawerHeader'))
+  // The note is no longer a side column squeezed beside the title.
+  expect(note.closest('.q-item-section--side')).toBeNull()
 })

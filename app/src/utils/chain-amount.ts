@@ -20,6 +20,57 @@ export function formatRawAmount(
   return `${chain.toDisplayAmount(BigInt(raw))} ${chain.unit}`
 }
 
+/** Decimals kept for an amount of one unit or more. */
+export const DISPLAY_MAX_DECIMALS = 4
+/** Significant digits kept for an amount below one unit. */
+export const DISPLAY_SIGNIFICANT_DIGITS = 4
+
+/**
+ * Shortens an exact decimal string ("0.86192379322624184") for reading. Display only: never feed
+ * the result back into arithmetic, validation or an amount input.
+ *
+ * - one unit or more: at most `DISPLAY_MAX_DECIMALS` decimals;
+ * - below one unit: the leading zeros plus `DISPLAY_SIGNIFICANT_DIGITS` significant digits, so a
+ *   non-zero amount never reads as "0";
+ * - digits are cut, never rounded up (a balance is never shown larger than it is), and trailing
+ *   zeros are dropped ("1.0" reads "1").
+ *
+ * Text that is not a plain decimal number is returned unchanged.
+ */
+export function shortenDisplayAmount(exact: string): string {
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(exact.trim())
+  if (!match) return exact
+  const [, sign, whole, fraction = ''] = match
+  const firstDigit = fraction.search(/[1-9]/)
+  const kept = /^0+$/.test(whole)
+    ? firstDigit < 0
+      ? ''
+      : fraction.slice(0, firstDigit + DISPLAY_SIGNIFICANT_DIGITS)
+    : fraction.slice(0, DISPLAY_MAX_DECIMALS)
+  const decimals = kept.replace(/0+$/, '')
+  const integer = whole.replace(/^0+(?=\d)/, '')
+  if (decimals === '') return /^0+$/.test(integer) ? '0' : `${sign}${integer}`
+  return `${sign}${integer}.${decimals}`
+}
+
+/** The one formatter for amounts a user reads (balances, stamps, bets, payouts, prices): the
+ * shortened number without its unit. The exact value stays available through `formatRawAmount`,
+ * which is what a `title` or a detail view shows. */
+export function formatDisplayNumber(
+  chain: Pick<ChainAmountAdapter, 'toDisplayAmount'>,
+  raw: string | bigint,
+): string {
+  return shortenDisplayAmount(chain.toDisplayAmount(BigInt(raw)))
+}
+
+/** `formatDisplayNumber` with the chain's unit: "0.8619 MONT". */
+export function formatDisplayAmount(
+  chain: Pick<ChainAmountAdapter, 'unit' | 'toDisplayAmount'>,
+  raw: string | bigint,
+): string {
+  return `${formatDisplayNumber(chain, raw)} ${chain.unit}`
+}
+
 /**
  * Formats a raw chain amount compactly using standard SI prefixes:
  * G (10^9), M (10^6), k (10^3), base (1), m (10^-3), μ (10^-6), n (10^-9), p (10^-12), f (10^-15), a (10^-18).

@@ -212,6 +212,7 @@ import {
   type RafflePayload,
 } from '@frank/codec'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from '../../../utils/chain-amount'
 
 export default defineComponent({
   name: 'ChatMessageChannel',
@@ -382,7 +383,7 @@ export default defineComponent({
       }
       try {
         const bi = typeof val === 'bigint' ? val : BigInt(val)
-        return `${activeChain.toDisplayAmount(bi)} ${activeChain.unit}`
+        return formatDisplayAmount(activeChain, bi)
       } catch {
         return String(val)
       }
@@ -395,7 +396,7 @@ export default defineComponent({
       try {
         const val = BigInt(balance)
         if (networkTag.toLowerCase().includes('monad')) {
-          return `${activeChain.toDisplayAmount(val)} ${activeChain.unit}`
+          return formatDisplayAmount(activeChain, val)
         }
         return val.toString()
       } catch {

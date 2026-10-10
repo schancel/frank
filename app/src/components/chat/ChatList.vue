@@ -74,6 +74,7 @@ import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { isNarrowWidth } from '../../utils/layout'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayAmount } from 'src/utils/chain-amount'
 
 export default defineComponent({
   emits: ['closeDrawer'],
@@ -127,9 +128,7 @@ export default defineComponent({
         if (!amount) {
           return
         }
-        return `${activeChain.toDisplayAmount(BigInt(Math.trunc(amount)))} ${
-          activeChain.unit
-        }`
+        return formatDisplayAmount(activeChain, BigInt(Math.trunc(amount)))
       },
     }
   },

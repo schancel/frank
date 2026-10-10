@@ -36,7 +36,9 @@
         :datetime="stampDatetime || undefined"
         >{{ stamp }}</time
       >
-      <span data-testid="outgoing-amount">{{ amount }}</span>
+      <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
+        amount
+      }}</span>
       <chat-message-suffix-buttons
         v-if="status === 'confirmed'"
         :status="status"
@@ -124,7 +126,9 @@
           <span data-testid="outgoing-stamp">{{ stamp }}</span>
           <br />
         </template>
-        <span data-testid="outgoing-amount">{{ amount }}</span>
+        <span data-testid="outgoing-amount" :title="amountExact || undefined">{{
+          amount
+        }}</span>
       </div>
       <!-- Button placement for received mssages -->
       <div v-if="!outbound" :class="buttonPlacement">
@@ -170,6 +174,12 @@ export default defineComponent({
     amount: {
       type: String,
       required: true,
+    },
+    /** Every digit of `amount`, for its title, when `amount` is a shortened figure. */
+    amountExact: {
+      type: String,
+      required: false,
+      default: '',
     },
     status: {
       type: String,

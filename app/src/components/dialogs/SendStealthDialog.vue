@@ -99,6 +99,7 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
+import { formatDisplayNumber } from 'src/utils/chain-amount'
 import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
 import { useWalletNames } from '../../composables/useWalletNames'
 import { useBalance } from '../../composables/useBalance'
@@ -249,7 +250,7 @@ export default defineComponent({
           return this.formattedBalance
         }
         if (this.balance !== null && this.balance !== undefined) {
-          return `${activeChain.toDisplayAmount(this.balance)} ${
+          return `${formatDisplayNumber(activeChain, this.balance)} ${
             this.currentUnit
           }`
         }

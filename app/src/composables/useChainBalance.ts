@@ -51,8 +51,16 @@ export interface BalanceObservation {
   /** Spendable balance: the only amount a send may be compared against. */
   balance: bigint
   formattedBalance: string
+  /** Every digit of `balance`, for a title; absent where the formatted text is already exact. */
+  exactBalance?: string
   /** Present only while funds sit at the profile address: watched, never spent. */
-  cordoned?: { formattedAmount: string; formattedTotal: string }
+  cordoned?: {
+    formattedAmount: string
+    formattedTotal: string
+    /** Every digit of the two amounts above, for a title. */
+    exactAmount?: string
+    exactTotal?: string
+  }
 }
 
 export type BalancePresentation =
@@ -82,11 +90,15 @@ function getBalancePresentation(
 ): BalancePresentation {
   let state: ChainBalanceState
   let cordoned: BalanceObservation['cordoned']
+  let exactBalance: string | undefined
   if (chain === 'monad') {
+    exactBalance = monad.exactBalance?.value
     if ((monad.cordoned?.value ?? 0n) > 0n)
       cordoned = {
         formattedAmount: monad.formattedCordoned.value,
         formattedTotal: monad.formattedTotal.value,
+        exactAmount: monad.exactCordoned?.value,
+        exactTotal: monad.exactTotal?.value,
       }
     state = {
       balance: monad.balance.value,
@@ -103,6 +115,7 @@ function getBalancePresentation(
       ? {
           balance: state.balance,
           formattedBalance: state.formattedBalance,
+          ...(exactBalance ? { exactBalance } : {}),
           ...(cordoned ? { cordoned } : {}),
         }
       : undefined
@@ -435,6 +448,9 @@ export function useChainBalance(chainRef: Ref<string> | string) {
     tokens,
     loaded,
     hasError,
+    /** Reads the cordoned (profile address) amount now instead of at its slow cadence. */
+    refreshCordoned: () =>
+      chain.value === 'monad' ? monad.refreshCordoned?.() : undefined,
     refresh: () => {
       if (chain.value === 'monad') return monad.refresh()
       return fetchChainBalance(chain.value, true)

@@ -11,8 +11,17 @@ export function clearMarkdownCache() {
   cache.clear()
 }
 
-export function renderMarkdown(input: string, linkColor: boolean) {
-  const cacheKey = `${linkColor ? 1 : 0}:${input}`
+/**
+ * `lineBreaks` renders a single newline as a line break, the way a chat reads (a bot's list of
+ * commands, a message typed on several lines); without it a newline inside a paragraph is a
+ * space, as Markdown documents (posts, email) expect.
+ */
+export function renderMarkdown(
+  input: string,
+  linkColor: boolean,
+  lineBreaks = false,
+) {
+  const cacheKey = `${linkColor ? 1 : 0}${lineBreaks ? 'b' : ''}:${input}`
   const cached = cache.get(cacheKey)
   if (cached !== undefined) {
     cache.delete(cacheKey)
@@ -41,7 +50,7 @@ export function renderMarkdown(input: string, linkColor: boolean) {
     )
   }
   const result = DOMPurify.sanitize(
-    marked.marked(input, { renderer: renderer }),
+    marked.marked(input, { renderer: renderer, breaks: lineBreaks }),
     {
       ADD_ATTR: ['target'],
       RETURN_DOM: false,

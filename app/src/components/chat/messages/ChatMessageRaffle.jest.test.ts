@@ -24,6 +24,13 @@ jest.mock('../../../composables/useActiveWallet', () => ({
   })),
 }))
 jest.mock('../../../utils/notifications', () => ({ errorNotify: jest.fn() }))
+// The spendable balance, as `useBalance().balance` (null: not known yet).
+const mockBalance = jest.requireActual('vue').ref(null) as {
+  value: bigint | null
+}
+jest.mock('../../../composables/useBalance', () => ({
+  useBalance: () => ({ balance: mockBalance }),
+}))
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
     unit: 'MON',
@@ -284,5 +291,95 @@ describe('ChatMessageRaffle draw verification', () => {
     expect(w.text()).toContain(enUS.raffleDraw.explainerCountUnverified)
     const sized = await renderDraw([fromBot(announce())], botDraw())
     expect(sized.text()).not.toContain(enUS.raffleDraw.explainerCountUnverified)
+  })
+})
+
+describe('ChatMessageRaffle entering pays the sender, so it is confirmed first', () => {
+  const PRICE = 20000000000000000n // what `announce()` states: 0.02 MON
+  const card = () => mountAt([fromBot(announce())])
+  const find = (w: Awaited<ReturnType<typeof card>>, id: string) =>
+    w.find(`[data-testid="${id}"]`)
+
+  beforeEach(() => {
+    mockBalance.value = 10n ** 18n
+  })
+
+  it('one click on Enter sends nothing and asks, showing the amount and its exact value', async () => {
+    const w = await card()
+    expect(find(w, 'raffle-confirm').exists()).toBe(false)
+    await find(w, 'raffle-enter').trigger('click')
+    expect(w.emitted('sendFollowUp')).toBeUndefined()
+    const group = find(w, 'raffle-confirm')
+    expect(group.attributes('role')).toBe('group')
+    expect(group.text()).toContain('Pay 0.02 MON to enter?')
+    expect(group.find('[title]').attributes('title')).toBe('0.02 MON')
+    // Enter is replaced by Confirm / Cancel while the question is open.
+    expect(find(w, 'raffle-enter').exists()).toBe(false)
+  })
+
+  it('Confirm sends one entry with exactly the stated amount as its stamp', async () => {
+    const w = await card()
+    await find(w, 'raffle-enter').trigger('click')
+    await find(w, 'raffle-confirm-enter').trigger('click')
+    await flushPromises()
+    expect(w.emitted('sendFollowUp')).toEqual([
+      [
+        {
+          items: [{ type: 'raffle', raffleId: 'r1', action: 'enter' }],
+          stampValueWei: PRICE,
+        },
+      ],
+    ])
+    // The question is closed again: a second entry needs a second confirmation.
+    expect(find(w, 'raffle-confirm').exists()).toBe(false)
+    expect(find(w, 'raffle-enter').exists()).toBe(true)
+  })
+
+  it('Cancel sends nothing and returns to Enter', async () => {
+    const w = await card()
+    await find(w, 'raffle-enter').trigger('click')
+    await find(w, 'raffle-confirm-cancel').trigger('click')
+    expect(w.emitted('sendFollowUp')).toBeUndefined()
+    expect(find(w, 'raffle-confirm').exists()).toBe(false)
+    expect(find(w, 'raffle-enter').exists()).toBe(true)
+  })
+
+  it('cannot be confirmed when the amount is above the spendable balance', async () => {
+    mockBalance.value = PRICE - 1n
+    const w = await card()
+    await find(w, 'raffle-enter').trigger('click')
+    const confirm = find(w, 'raffle-confirm-enter')
+    expect(confirm.attributes('disable')).toBe('true')
+    expect(find(w, 'raffle-confirm-blocked').text()).toContain(
+      'more than you can spend',
+    )
+    // Even a click that reaches the handler pays nothing.
+    await confirm.trigger('click')
+    expect(w.emitted('sendFollowUp')).toBeUndefined()
+  })
+
+  it('can be confirmed with exactly the amount, and not while the balance is unknown', async () => {
+    mockBalance.value = PRICE
+    let w = await card()
+    await find(w, 'raffle-enter').trigger('click')
+    expect(find(w, 'raffle-confirm-enter').attributes('disable')).toBe('false')
+    expect(find(w, 'raffle-confirm-blocked').exists()).toBe(false)
+
+    mockBalance.value = null
+    w = await card()
+    await find(w, 'raffle-enter').trigger('click')
+    expect(find(w, 'raffle-confirm-enter').attributes('disable')).toBe('true')
+    await find(w, 'raffle-confirm-enter').trigger('click')
+    expect(w.emitted('sendFollowUp')).toBeUndefined()
+  })
+
+  it('a card whose price is not a plain amount cannot be entered at all', async () => {
+    const w = await mountAt([
+      fromBot({ ...announce(), entryPriceWei: '-5; DROP' }),
+    ])
+    expect(find(w, 'raffle-enter').attributes('disable')).toBe('true')
+    await find(w, 'raffle-enter').trigger('click')
+    expect(find(w, 'raffle-confirm').exists()).toBe(false)
+    expect(w.emitted('sendFollowUp')).toBeUndefined()
   })
 })

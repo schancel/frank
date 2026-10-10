@@ -32,12 +32,18 @@ import { accountStatus } from '../accounts/session'
 import { messagingState } from '../utils/messaging-state'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { isWalletNotReady } from 'src/composables/wallet-not-ready'
+import { formatDisplayAmount, formatRawAmount } from 'src/utils/chain-amount'
 
 /** Window event the capacitor-only boot file dispatches on native app pause/resume, so this
  * composable needs no Capacitor import (the SPA/Electron builds deliberately never load it). */
 export const APP_STATE_EVENT = 'frank:app-state'
 
 export const BALANCE_POLL_MS = 15000
+/** The profile address is read at most this often by the polling loop. The loop ticks every 3 s
+ * while the spendable balance is zero, which is exactly when an account holds only cordoned
+ * funds; without this bound that account asked the RPC for the same balance every tick, forever.
+ * `refreshCordoned()` (the Wallet page opening) reads at once regardless. */
+export const CORDONED_POLL_MS = 30000
 export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 
 // null until the first successful fetch for the active wallet (so consumers can tell "not
@@ -47,22 +53,29 @@ const hasError = ref(false)
 const loaded = computed(() => balance.value !== null)
 // True only for a real, loaded zero (never for "not loaded yet" or a failed fetch).
 const isEmpty = computed(() => balance.value === 0n)
-const formattedBalance = computed(
-  () =>
-    `${activeChain.toDisplayAmount(balance.value ?? 0n)} ${activeChain.unit}`,
+// Shortened for reading (`formatDisplayAmount`); the `exact…` twins carry every digit for a
+// title or a detail view. Neither is an input to arithmetic: that is `balance` itself.
+const formattedBalance = computed(() =>
+  formatDisplayAmount(activeChain, balance.value ?? 0n),
+)
+const exactBalance = computed(() =>
+  formatRawAmount(activeChain, balance.value ?? 0n),
 )
 // Funds sitting at a typed account's profile address. The wallet watches them but never spends
 // them, and they are NOT part of `balance`: anything deciding whether a send is affordable keeps
 // reading `balance`. Only the balance display adds them, marked as cordoned.
 const cordoned = ref<bigint>(0n)
-const formattedCordoned = computed(
-  () => `${activeChain.toDisplayAmount(cordoned.value)} ${activeChain.unit}`,
+const formattedCordoned = computed(() =>
+  formatDisplayAmount(activeChain, cordoned.value),
 )
-const formattedTotal = computed(
-  () =>
-    `${activeChain.toDisplayAmount((balance.value ?? 0n) + cordoned.value)} ${
-      activeChain.unit
-    }`,
+const exactCordoned = computed(() =>
+  formatRawAmount(activeChain, cordoned.value),
+)
+const formattedTotal = computed(() =>
+  formatDisplayAmount(activeChain, (balance.value ?? 0n) + cordoned.value),
+)
+const exactTotal = computed(() =>
+  formatRawAmount(activeChain, (balance.value ?? 0n) + cordoned.value),
 )
 
 /** The profile address's current balance for an account whose receive address differs from it
@@ -87,6 +100,8 @@ export async function readCordonedBalance(wallet: unknown): Promise<bigint> {
 }
 
 let consumers = 0
+// When the profile address was last asked for (success or failure); undefined: ask on next fetch.
+let cordonedReadAtMs: number | undefined
 let requestId = 0
 let pending = false
 let failures = 0
@@ -148,6 +163,7 @@ async function fetchBalance(force: boolean) {
     walletKey = key
     balance.value = null
     cordoned.value = 0n
+    cordonedReadAtMs = undefined
     hasError.value = false
     failures = 0
     requestId++
@@ -166,9 +182,17 @@ async function fetchBalance(force: boolean) {
     if (!isCurrent()) return
     balance.value = next
     // Best effort: a failed read keeps the last cordoned amount and never fails the balance.
-    const held = await readCordonedBalance(wallet).catch(() => undefined)
-    if (!isCurrent()) return
-    if (held !== undefined) cordoned.value = held
+    // Throttled (`CORDONED_POLL_MS`); a failed read also waits out the interval.
+    const now = Date.now()
+    if (
+      cordonedReadAtMs === undefined ||
+      now - cordonedReadAtMs >= CORDONED_POLL_MS
+    ) {
+      cordonedReadAtMs = now
+      const held = await readCordonedBalance(wallet).catch(() => undefined)
+      if (!isCurrent()) return
+      if (held !== undefined) cordoned.value = held
+    }
     hasError.value = false
     failures = 0
   } catch (err) {
@@ -255,6 +279,7 @@ function acquire() {
         if (newRev !== oldRev || newAccStatus !== oldAccStatus) {
           balance.value = null
           cordoned.value = 0n
+          cordonedReadAtMs = undefined
           hasError.value = false
           requestId++
           pending = false
@@ -282,6 +307,7 @@ function release() {
   backgrounded = false
   balance.value = null
   cordoned.value = 0n
+  cordonedReadAtMs = undefined
   hasError.value = false
   walletKey = undefined
   // Invalidate anything in flight so a fresh first consumer never inherits a stale guard.
@@ -298,12 +324,20 @@ export function useBalance() {
   return {
     balance: readonly(balance),
     formattedBalance,
+    exactBalance,
     cordoned: readonly(cordoned),
     formattedCordoned,
+    exactCordoned,
     formattedTotal,
+    exactTotal,
     loaded,
     isEmpty,
     hasError,
     refresh: () => fetchBalance(true),
+    /** Refreshes now and reads the profile address too, whenever it was last read. */
+    refreshCordoned: () => {
+      cordonedReadAtMs = undefined
+      return fetchBalance(true)
+    },
   }
 }

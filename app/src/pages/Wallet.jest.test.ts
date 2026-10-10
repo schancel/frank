@@ -66,8 +66,10 @@ jest.mock('src/composables/useBalance', () => ({
   useBalance: () => balance,
 }))
 
+const mockRefreshCordoned = jest.fn()
 jest.mock('src/composables/useChainBalance', () => ({
   useChainBalance: (chain: any) => ({
+    refreshCordoned: () => mockRefreshCordoned(),
     tokens: ref([]),
     tokenObservation: ref(undefined),
     presentation: jest.requireActual('vue').computed(() => {
@@ -288,6 +290,14 @@ describe('Wallet detail page (#570)', () => {
     wrapper.unmount()
   })
 
+  it('asks for a fresh cordoned amount once when the page opens', async () => {
+    mockRefreshCordoned.mockClear()
+    const wrapper = mountWallet()
+    await flush()
+    expect(mockRefreshCordoned).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('copies the address and keeps Send reachable', async () => {
     const wrapper = mountWallet()
     await flush()
@@ -442,9 +452,13 @@ describe('Wallet detail page (#570)', () => {
       mockRoute.value = { query: {}, path: `/wallet/${chain}` }
       const wrapper = mountWallet()
       await flush()
+      // Not the wording of a failed fetch, and no second error line under it.
       expect(wrapper.get('[data-testid="wallet-balance"]').text()).toBe(
-        'walletPanel.balanceUnavailable',
+        'walletPanel.balanceUnsupported',
       )
+      expect(
+        wrapper.find('[data-testid="wallet-balance-error"]').exists(),
+      ).toBe(false)
       expect(wrapper.text()).not.toContain('1 MON')
     },
   )

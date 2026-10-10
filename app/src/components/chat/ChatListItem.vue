@@ -14,7 +14,9 @@
       </q-avatar>
     </q-item-section>
     <q-item-section v-show="!compact">
-      <div class="row items-center no-wrap ellipsis">
+      <!-- The name keeps its line; a badge that does not fit beside it moves under it instead of
+      running over the time and unread count. -->
+      <div class="chat-list-title" data-testid="chat-list-title">
         <q-icon
           v-if="isEmail && isVerifiedGateway"
           name="mail"
@@ -491,3 +493,30 @@ export default defineComponent({
   },
 })
 </script>
+
+<style scoped>
+.chat-list-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-list-title > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The gap spaces the badges here; their own left margin would indent a wrapped one. */
+.chat-list-title > :deep(.q-badge),
+.chat-list-title > :deep(.q-icon) {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.chat-list-title > :deep(.q-badge) {
+  overflow: hidden;
+}
+</style>

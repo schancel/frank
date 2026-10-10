@@ -127,6 +127,16 @@ export default {
     reasonEmpty: 'image vide',
     reasonDimensionsTooLarge: 'dimensions trop grandes',
   },
+  raffle: {
+    enter: 'Participer',
+    confirmGroupLabel: 'Confirmer la participation à la tombola',
+    confirmPrompt: 'Payer {amount} pour participer ?',
+    confirm: 'Confirmer',
+    cancel: 'Annuler',
+    insufficient:
+      'C’est plus que ce que vous pouvez dépenser maintenant ({balance}).',
+    balanceUnknown: 'Votre solde n’est pas encore connu.',
+  },
   raffleDraw: {
     verified: "Le tirage correspond à l'engagement de la graine",
     failed: 'Échec de la vérification : {reason}',
@@ -208,6 +218,9 @@ export default {
     playerHand: 'Joueur : {cards} ({total})',
     dealerHand: 'Donneur : {cards} ({total})',
     dealerShows: 'Le donneur montre : {card}',
+    rowPlayer: 'Joueur',
+    rowDealer: 'Donneur',
+    rowCard: 'Carte',
     wager: 'En jeu : {amount}',
     accept: 'Accepter et distribuer',
     betAmount: 'Votre mise (au plus {max})',
@@ -365,6 +378,7 @@ export default {
     confirmSeed: 'Confirmer la phrase de récupération',
     balanceLoading: 'Chargement du solde…',
     balanceUnavailable: 'Solde indisponible.',
+    balanceUnsupported: 'Le solde de ce réseau n’est pas encore affiché.',
     cordoned: '{amount} mis à l’écart',
     cordonedTooltip:
       'Reçu à votre adresse de profil. Le portefeuille surveille ces fonds mais ne les dépense pas.',

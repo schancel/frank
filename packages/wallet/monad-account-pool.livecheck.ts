@@ -7,7 +7,7 @@
  * `yarn install`). `monad-account-pool.jest.test.ts` covers the same scenarios (and more, with
  * proper mocking) and will run unmodified once jest is installed for real.
  *
- * No network access: `fanOutFundSubAccounts` here is driven by a `MonadAccountTxSigner` against a
+ * No network access: funding here is driven by a `MonadAccountTxSigner` against a
  * stubbed `JsonRpcProvider._perform` (same technique as `monad-account-tx.jest.test.ts`), and the
  * `level` store checks use a real temp directory on disk (that's the whole point — proving
  * cross-"restart" persistence) but never touch the network.
@@ -31,7 +31,6 @@ import { JsonRpcProvider, Wallet } from 'ethers'
 import { MonadHdKeyring, subAccountPath } from './monad-hd-keyring'
 import {
   DEFAULT_TOPUP_BUFFER_SIZE,
-  fanOutFundSubAccounts,
   MonadSubAccountPool,
 } from './monad-account-pool'
 import { MonadAccountTxSigner, MonadTxSubmitter } from './monad-account-tx'
@@ -214,87 +213,6 @@ async function checkPoolSizingAndSelection() {
   )
 }
 
-async function checkFanOutFunding() {
-  console.log('\n== Fan-out funding: burnValue/gasReserve kept separate ==')
-  // Real, randomly-generated key, never funded, never used anywhere else — generated fresh here
-  // (rather than a hardcoded literal) to sidestep any risk of an accidentally-mistyped/truncated
-  // hex literal going unnoticed, the way `monad-account-tx.jest.test.ts`'s own `TEST_PRIVATE_KEY`
-  // constant turned out to be truncated to 63 hex chars (discovered while writing this livecheck,
-  // since that jest file has never actually been executed — see this file's header) — flagged in
-  // this ticket's handoff for ticket #11 to fix, not fixed here (out of this ticket's scope).
-  const mainPrivateKey = Wallet.createRandom().privateKey
-  let nonce = 100
-  const provider = makeStubProvider(async req => {
-    if (req.method === 'getTransactionCount')
-      return `0x${(nonce++).toString(16)}`
-    if (req.method === 'estimateGas') return '0x5208'
-    throw new Error(`unexpected _perform: ${req.method}`)
-  })
-  const mainAccountSigner = new MonadAccountTxSigner({
-    privateKey: mainPrivateKey,
-    provider,
-    httpClient: makeNoopHttpClient(),
-  })
-
-  const mnemonic = 'test test test test test test test test test test test junk'
-  const keyring = MonadHdKeyring.fromMnemonic(mnemonic)
-  const pool = new MonadSubAccountPool({ keyring })
-  const records = pool.ensureSize(3)
-
-  const burnValue = 1_000_000_000_000_000n // 0.001 MON
-  const gasReserve = 200_000_000_000_000n // 0.0002 MON
-  const results = await fanOutFundSubAccounts({
-    mainAccountSigner,
-    targets: records,
-    burnValue,
-    gasReserve,
-    overrides: {
-      maxFeePerGas: 2_000_000_000n,
-      maxPriorityFeePerGas: 1_000_000_000n,
-    },
-  })
-
-  assertEqual(results.length, 3, 'fanOutFundSubAccounts funds every target')
-  for (const [i, result] of results.entries()) {
-    assertEqual(
-      result.address,
-      records[i].address,
-      `result[${i}].address matches target`,
-    )
-    assertEqual(
-      result.fundedValue,
-      burnValue + gasReserve,
-      `result[${i}].fundedValue == burnValue + gasReserve`,
-    )
-    assertEqual(
-      result.signedTx.value,
-      burnValue + gasReserve,
-      `result[${i}] signed tx's on-chain value == burnValue + gasReserve`,
-    )
-  }
-  // Distinct, monotonically-increasing nonces prove the sends were sequenced (not raced) against
-  // the fresh-nonce-per-call chain read.
-  const nonces = results.map(r => r.signedTx.nonce)
-  assertEqual(
-    JSON.stringify(nonces),
-    JSON.stringify([100, 101, 102]),
-    'sequential distinct nonces across the fan-out',
-  )
-
-  let threw = false
-  try {
-    await fanOutFundSubAccounts({
-      mainAccountSigner,
-      targets: records,
-      burnValue: -1n,
-      gasReserve: 0n,
-    })
-  } catch {
-    threw = true
-  }
-  assertTrue(threw, 'fanOutFundSubAccounts rejects a negative burnValue')
-}
-
 async function checkTopUpPool() {
   console.log(
     '\n== topUpPool: indefinite growth + look-ahead funding buffer (ticket #34) ==',
@@ -408,7 +326,6 @@ async function checkLevelStorePersistsAcrossRestart() {
 async function main() {
   await checkDerivationDeterminism()
   await checkPoolSizingAndSelection()
-  await checkFanOutFunding()
   await checkTopUpPool()
   await checkLevelStorePersistsAcrossRestart()
   console.log('\nAll monad-account-pool livecheck assertions passed.')

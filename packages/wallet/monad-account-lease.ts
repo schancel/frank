@@ -207,7 +207,6 @@ export class SubAccountLeaseManager {
   releaseLease(
     handle: AccountLeaseHandle,
     outcome: LeaseOutcome,
-    notifyWarming = true,
   ): SubAccountRecord {
     const live = this.liveLeases.get(handle.index)
     if (live === undefined || live !== handle) {
@@ -224,7 +223,7 @@ export class SubAccountLeaseManager {
         : outcome === 'unused'
         ? 'available'
         : 'retired'
-    return this.pool.setStatus(handle.index, nextStatus, notifyWarming)
+    return this.pool.setStatus(handle.index, nextStatus)
   }
 }
 

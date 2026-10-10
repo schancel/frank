@@ -18,7 +18,7 @@
  *
  * - A real sub-account is HD-derived (`MonadHdKeyring`/`MonadSubAccountPool`, #14/#34) and funded
  *   from the real, pre-funded main testnet account via a real, broadcast-and-confirmed Monad
- *   transaction (`fanOutFundSubAccounts`, #14).
+ *   transaction (`MonadSubAccountPool.topUpPool`, the recorded funding path).
  * - `MonadStampClient.submitStampedMessage` (#13) leases that sub-account, builds + locally signs
  *   a real EIP-1559 payment committing to `SHA256(encrypted_payload)`, and `PUT`s it to
  *   the relay's live `PUT /message/monad` route.
@@ -92,27 +92,6 @@ function requiredEnv(name: string): string {
   return value
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms))
-}
-
-async function waitForConfirmation(
-  signer: MonadAccountTxSigner,
-  txHash: string,
-  label: string,
-): Promise<void> {
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const status = await signer.getStatus(txHash)
-    console.log(`  [${label}] status = ${status} (attempt ${attempt + 1})`)
-    if (status === 'confirmed') return
-    if (status === 'failed') {
-      throw new Error(`${label} (${txHash}) failed on-chain`)
-    }
-    await sleep(2000)
-  }
-  throw new Error(`${label} (${txHash}) did not confirm within the poll budget`)
-}
-
 async function main() {
   const rpcUrl = requiredEnv('MONAD_TESTNET_HTTP_RPC_URL')
   const minStampValueWei = BigInt(
@@ -164,19 +143,20 @@ async function main() {
   const changePool = new MonadChangePool({
     keyring: MonadChangeKeyring.fromMnemonic(mnemonic),
   })
-  pool.ensureSize(1)
 
   const gasReserve = BigInt('20000000000000000') // 0.02 MON headroom for gas fees
   console.log('\n== Funding sub-account 0 from the main account ==')
-  const [funded] = await pool.fundAll({
+  // Recorded path: the signed transfer is stored before it is submitted, and the account
+  // becomes available only once its receipt is seen.
+  const [funded] = await pool.topUpPool({
     mainAccountSigner,
     burnValue: minStampValueWei,
     gasReserve,
+    bufferSize: 1,
   })
   console.log(
     `Funded ${funded.address} with ${funded.fundedValue} wei, tx ${funded.txHash}`,
   )
-  await waitForConfirmation(mainAccountSigner, funded.txHash, 'funding tx')
   console.log('Funding tx confirmed on-chain.')
 
   // --- 2. Build the (opaque, unencrypted-for-this-demo -- see file header) message payload. ---

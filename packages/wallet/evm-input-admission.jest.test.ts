@@ -454,7 +454,7 @@ describe('derived EVM input admission', () => {
       ),
     ),
   )(
-    'canonical %s notifies warming only after a successful live commit: %s',
+    'canonical %s resolves only after a successful live commit: %s',
     async (transition, mode) => {
       const f = await fixture(location)
       const row = await f.admission.prepareNative(
@@ -480,9 +480,6 @@ describe('derived EVM input admission', () => {
       const entered = barrier(),
         release = barrier(),
         original = f.pool.flush.bind(f.pool)
-      const warm = jest
-        .spyOn(f.pool, 'triggerProactiveWarming')
-        .mockImplementation(() => undefined)
       const flush = jest.spyOn(f.pool, 'flush').mockImplementation(async () => {
         entered.resolve()
         await release.promise
@@ -500,24 +497,18 @@ describe('derived EVM input admission', () => {
       )
       try {
         await entered.promise
-        expect(warm).not.toHaveBeenCalled()
         release.resolve()
         const result = await outcome
-        if (mode === 'success') {
-          expect(result).toBe('success')
-          expect(warm).toHaveBeenCalledTimes(1)
-        } else {
+        if (mode === 'success') expect(result).toBe('success')
+        else
           expect(result).toContain(
             mode === 'expired' ? 'foreign lifetime' : 'commit response lost',
           )
-          expect(warm).not.toHaveBeenCalled()
-        }
         expect(f.pool.getRecord(0)?.lifecycle?.spend?.rawTx).toBe(raw)
       } finally {
         release.resolve()
         await outcome
         flush.mockRestore()
-        warm.mockRestore()
         await f.close()
       }
     },
@@ -975,7 +966,7 @@ describe('pool spend admission (#1235 Stage 1)', () => {
   })
 
   // Contract test 25.
-  it('recording the spend signs, broadcasts and warms nothing, and changes no admission answer: the same pair stays refused, a disjoint one admitted', async () => {
+  it('recording the spend signs and broadcasts nothing, and changes no admission answer: the same pair stays refused, a disjoint one admitted', async () => {
     const f = await start(location)
     const { id } = await member(f)
     await expect(
@@ -983,10 +974,8 @@ describe('pool spend admission (#1235 Stage 1)', () => {
     ).rejects.toThrow('conflicting-authorization')
     await f.admission.prepareNative(f.lifetime, f.epoch(), f.plan(1))
     const sign = jest.spyOn(SigningKey.prototype, 'sign')
-    const warm = jest.spyOn(f.pool, 'triggerProactiveWarming')
     expect((await spend(f).applyMember(id, 0)).kind).toBe('committed')
     expect(sign).not.toHaveBeenCalled()
-    expect(warm).not.toHaveBeenCalled()
     await expect(
       f.admission.prepareNative(f.lifetime, f.epoch(), f.plan()),
     ).rejects.toThrow('conflicting-authorization')

@@ -521,6 +521,23 @@ function reobserveNativeOperations(wallet: WalletHandle): void {
 }
 
 /**
+ * Asks the wallet to fund the next message's sender accounts ahead of time, if its chain has such
+ * accounts, so that message does not wait for its own funding (#1235). Never awaited: the wallet
+ * runs one pass at a time and answers at once when the accounts are ready. `onFailure` gets a
+ * rejection or a synchronous throw; whatever the wallet recorded is its own to resume.
+ */
+function fundAhead(
+  wallet: WalletHandle,
+  onFailure: (error: unknown) => void,
+): void {
+  try {
+    void activeChain.directMessages.fundAhead?.({ wallet }).catch(onFailure)
+  } catch (error) {
+    onFailure(error)
+  }
+}
+
+/**
  * Keeps settling outgoing messages whose stamp payment is still pending (#270). Every tick asks
  * the wallet to re-send the SAME exact bytes of each live payment attempt (free and idempotent,
  * never a new payment; see `stores/chats.ts`, `sendMessage`), and flips a message to sent when it
@@ -576,6 +593,21 @@ export function startOutgoingReconciliation({
 
   let ticking = false
   let resetRequested = false
+  // Funding ahead waits for the first reconciliation that resolved: until the wallet's earlier
+  // attempts have been looked at, nothing new is funded. Its failure is logged once.
+  let reconciled = false
+  let fundAheadWarned = false
+  const fundNextMessage = () => {
+    if (stopped || !reconciled) return
+    fundAhead(wallet, error => {
+      if (fundAheadWarned) return
+      fundAheadWarned = true
+      console.warn(
+        'funding ahead failed; messages fund their own accounts',
+        error,
+      )
+    })
+  }
   // What is pending now is not "new": seed before the first tick so a reload with a pending
   // message does not look like a fresh arrival.
   knownPending = pendingIds()
@@ -587,6 +619,9 @@ export function startOutgoingReconciliation({
     let pending = 0
     try {
       pending = (await chats.reconcileOutgoing({ wallet })).pending
+      reconciled = true
+      // Every tick that reconciled: this is also how a top-up is picked up.
+      fundNextMessage()
     } catch (err) {
       console.warn('outgoing message reconciliation failed', err)
       pending = 1
@@ -636,6 +671,9 @@ export function startOutgoingReconciliation({
   // A message that newly becomes payment-pending must not wait out a long backoff earned by an
   // older one: restart the ladder and look again after the base interval.
   const unsubscribe = chats.$onAction(({ name, after }) => {
+    // A message was delivered and its accounts are spent: fund the next one's now, not at the
+    // next idle tick.
+    if (name === 'confirmOutgoing') after(fundNextMessage)
     // Observe the serialized mutation action itself. `setOutgoingState` now delegates through
     // the delivery queue, so its outer action can settle after another action has already updated
     // `knownPending`; the exclusive action is the exact serialized state/persistence boundary.

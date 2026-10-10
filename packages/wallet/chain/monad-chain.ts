@@ -97,6 +97,7 @@ import {
   ChainAddress,
   ChainTransaction,
   DirectMessageClient,
+  DirectMessageFundAheadResult,
   DirectMessagePreparationProgress,
   DirectMessageReceived,
   DirectMessageSendResult,
@@ -122,7 +123,11 @@ import type {
 } from "../monad-wallet-material";
 import type { HDSeed } from "./active-chain";
 import { MonadChangePool } from "../monad-change-pool";
-import { MonadSubAccountPool } from "../monad-account-pool";
+import {
+  FundAheadRefusedError,
+  MonadSubAccountPool,
+  STAMP_PAIR_TRANSFERS,
+} from "../monad-account-pool";
 import { ChainUtxoPool } from "../chain-utxo-pool";
 import {
   BurnNotSentError,
@@ -534,6 +539,39 @@ const canonicalInventoryFunders = new WeakMap<
   object,
   CanonicalInventoryFunder
 >();
+/** Per live typed wallet: its fund-ahead pass (`DirectMessageClient.fundAhead`). */
+const stampFundersAhead = new WeakMap<
+  object,
+  () => Promise<DirectMessageFundAheadResult>
+>();
+/**
+ * A fund-ahead pass that could fund nothing (no money, a pair it cannot afford, an earlier
+ * transfer still unresolved, a failed read) is not repeated on every host tick: the next pass
+ * waits `FUND_AHEAD_BACKOFF_MIN_MS`, doubling while the reason stays the same, up to
+ * `FUND_AHEAD_BACKOFF_MAX_MS`. Until then a call answers what the last pass answered and makes
+ * no request; that is also the schedule on which a stuck transfer's bytes are offered again.
+ * The wait ends early when a send prepares its inventory or when the wallet's own balance read
+ * shows the main account grew. Process memory only: a restart starts with no wait.
+ */
+export const FUND_AHEAD_BACKOFF_MIN_MS = 4_000;
+export const FUND_AHEAD_BACKOFF_MAX_MS = 240_000;
+interface FundAheadBackoff {
+  result: DirectMessageFundAheadResult;
+  delayMs: number;
+  startedAtMs: number;
+  /** The main-account balance the pass saw, when it read one. */
+  mainBalanceWei?: bigint;
+}
+const fundAheadBackoffs = new WeakMap<object, FundAheadBackoff>();
+/** The main account was just read: more money than the last pass saw ends its wait. */
+function noteMainBalanceForFundAhead(wallet: object, balanceWei: bigint): void {
+  const waiting = fundAheadBackoffs.get(wallet);
+  if (
+    waiting?.mainBalanceWei !== undefined &&
+    balanceWei > waiting.mainBalanceWei
+  )
+    fundAheadBackoffs.delete(wallet);
+}
 /**
  * Funds receipt-confirmed single-use sender accounts for one canonical stamp of `stampValueWei`,
  * from the wallet's own EVM main account, through the same pool machinery and owner admission as
@@ -972,6 +1010,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           "Canonical direct messages require persistent typed wallet custody on a Monad network."
         );
       return canonical.reconcileAttempts(params);
+    },
+
+    async fundAhead(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      const fund = stampFundersAhead.get(wallet);
+      if (!fund) return { outcome: "unavailable", fundingTxHashes: [] };
+      return fund();
     },
 
     async discardAttempt(params) {
@@ -1851,6 +1896,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     provider,
                   });
                 }
+                noteMainBalanceForFundAhead(wallet, mainBalance);
 
                 if (
                   material.canonicalRoles !== undefined ||
@@ -2360,9 +2406,38 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   }, true),
               });
             });
-            // Fast in-memory coin selection using ChainUtxoPool (< 1ms, zero network calls)
             const defaultGasReserveWei =
               BigInt(21_000) * BigInt(2_000_000_000);
+            // What a stamp payment keeps back in each account for its own fee: the figure the
+            // payment intent subtracts (21,000 gas at the current fee cap). An inventory check
+            // made with any other figure can pass accounts the intent then finds too small.
+            const stampPaymentFeeReserve = async (): Promise<bigint> => {
+              try {
+                const feeData = await provider.getFeeData();
+                const feePerGas = feeData.maxFeePerGas ?? feeData.gasPrice;
+                if (feePerGas !== null && feePerGas !== undefined)
+                  return BigInt(21_000) * feePerGas;
+              } catch {
+                /* The fixed reserve below is the answer without a quote. */
+              }
+              return defaultGasReserveWei;
+            };
+            // Accounts a paid message already holds (a payment intent, or an attempt not yet
+            // cleaned up). The next intent does not select them, so they are not inventory.
+            const heldByMessages = (): Set<number> =>
+              new Set([
+                ...(topicOwner!.canonicalRetained
+                  ?.getIntents()
+                  .flatMap((intent) =>
+                    intent.members.map((m) => m.reservation.index)
+                  ) ?? []),
+                ...(topicOwner!.canonicalRetained
+                  ?.getAll()
+                  .filter((attempt) => !attempt.cleanupComplete)
+                  .flatMap((attempt) =>
+                    attempt.reservations.map((r) => r.index)
+                  ) ?? []),
+              ]);
 
             const prepareInventory: CanonicalInventoryFunder = ({
               stampValueWei,
@@ -2370,75 +2445,186 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               onProgress,
             }) =>
               runWalletExclusive(wallet, async () => {
-                const triggerReplenishment = async (): Promise<string[]> => {
-                  let fundingPrivateKey = mainAccount.privateKey;
-                  try {
-                    const mainBal = await provider.getBalance(mainAccount.address);
-                    if (
-                      mainBal === 0n &&
-                      identity.address.raw.toLowerCase() !==
-                        mainAccount.address.toLowerCase()
-                    ) {
-                      const identBal = await provider.getBalance(
-                        identity.address.raw
-                      );
-                      if (identBal > 0n) {
-                        fundingPrivateKey = identity.toPrivateKeyHex();
-                      }
-                    }
-                  } catch {}
-                  const mainAccountSigner = new MonadAccountTxSigner({
-                    privateKey: fundingPrivateKey,
-                    provider,
-                    httpClient,
-                  });
-                  const preparation = await runMainAccountExclusive(
-                    wallet,
-                    async () =>
-                      pool.prepareStampInventory({
-                        mainAccountSigner,
-                        provider,
-                        stampValueWei,
-                        gasReserveWei: await quoteMonadStampPaymentGasReserve({
-                          signer: mainAccountSigner,
-                          recipientPublicKey: recipientStampKey,
-                        }).catch(() => defaultGasReserveWei),
-                        onProgress,
-                      })
-                  );
-                  return preparation.fundingTxHashes;
-                };
-
-                // Verify that the sub-account pool actually has at least 2 funded sub-accounts ready
-                let hasSufficientCleanCoins = false;
+                // A send changes what there is to fund: the next fund-ahead call looks again.
+                fundAheadBackoffs.delete(wallet);
+                // Accounts funded ahead (or left by an earlier preparation) are ready: nothing
+                // is funded, quoted or reconciled, and the send goes straight to its payment.
+                let ready = false;
                 try {
-                  const accounts = await pool.fundedCapacities(
-                    provider,
-                    defaultGasReserveWei
-                  );
-                  const selection = accounts.filter(
-                    (a) => a.capacityWei >= (stampValueWei * BigInt(3)) / BigInt(8)
-                  );
-                  if (
-                    selection.length >= 2 ||
-                    (stampValueWei === BigInt(1) && selection.length === 1)
-                  ) {
-                    hasSufficientCleanCoins = true;
-                  }
+                  // No funded account, no fee quote: there is nothing to check.
+                  ready =
+                    pool
+                      .records()
+                      .some((record) => record.status === "available") &&
+                    (await pool.hasStampInventory({
+                      provider,
+                      stampValueWei,
+                      feeReserveWei: await stampPaymentFeeReserve(),
+                      heldIndices: heldByMessages(),
+                    }));
                 } catch {
-                  hasSufficientCleanCoins = false;
+                  ready = false;
                 }
+                if (ready) return [];
 
-                if (hasSufficientCleanCoins) {
-                  return [];
-                }
-
-                // If insufficient clean capacity for immediate payment, replenish synchronously
-                return await triggerReplenishment();
+                // Nothing ready (a first message, or a burst): fund this message's accounts now.
+                let fundingPrivateKey = mainAccount.privateKey;
+                try {
+                  const mainBal = await provider.getBalance(mainAccount.address);
+                  if (
+                    mainBal === 0n &&
+                    identity.address.raw.toLowerCase() !==
+                      mainAccount.address.toLowerCase()
+                  ) {
+                    const identBal = await provider.getBalance(
+                      identity.address.raw
+                    );
+                    if (identBal > 0n) {
+                      fundingPrivateKey = identity.toPrivateKeyHex();
+                    }
+                  }
+                } catch {}
+                const mainAccountSigner = new MonadAccountTxSigner({
+                  privateKey: fundingPrivateKey,
+                  provider,
+                  httpClient,
+                });
+                const preparation = await runMainAccountExclusive(
+                  wallet,
+                  async () =>
+                    pool.prepareStampInventory({
+                      mainAccountSigner,
+                      provider,
+                      stampValueWei,
+                      gasReserveWei: await quoteMonadStampPaymentGasReserve({
+                        signer: mainAccountSigner,
+                        recipientPublicKey: recipientStampKey,
+                      }).catch(() => defaultGasReserveWei),
+                      onProgress,
+                    })
+                );
+                return preparation.fundingTxHashes;
               });
             canonicalInventoryFunders.set(wallet, prepareInventory);
-            // Background pool warming is off until it records before it broadcasts (#1235);
-            // sends fund on demand through prepareInventory.
+
+            // Funding ahead (#1235): the same preparation, asked for by the host between
+            // messages. Never called from here: opening a wallet makes no request.
+            const stampValueAhead = config.defaultStampValueWei;
+            // The most one pass may move: the stamp value plus one fee reserve per transfer. A
+            // reserve above this ceiling (fees so high that it exceeds the stamp it serves)
+            // is not paid ahead; a send still funds its own accounts.
+            const reserveCeilingWei =
+              stampValueAhead > defaultGasReserveWei
+                ? stampValueAhead
+                : defaultGasReserveWei;
+            const maxValueAheadWei =
+              stampValueAhead + BigInt(STAMP_PAIR_TRANSFERS) * reserveCeilingWei;
+            const notFunded = (reason: string): DirectMessageFundAheadResult => ({
+              outcome: "not-funded",
+              fundingTxHashes: [],
+              reason,
+            });
+            const fundAheadPass = (): Promise<DirectMessageFundAheadResult> =>
+              runWalletExclusive(wallet, async () => {
+                let mainBalanceWei: bigint | undefined;
+                let result: DirectMessageFundAheadResult;
+                try {
+                  // An earlier transfer with no observed outcome is looked at before anything
+                  // else, whatever the inventory or the balance.
+                  const unresolved = pool
+                    .records()
+                    .some((record) => record.status === "funding");
+                  if (
+                    !unresolved &&
+                    (await pool.hasStampInventory({
+                      provider,
+                      stampValueWei: stampValueAhead,
+                      feeReserveWei: 0n,
+                      heldIndices: heldByMessages(),
+                      maxCacheAgeMs: Infinity,
+                    }))
+                  )
+                    return { outcome: "ready", fundingTxHashes: [] };
+                  // Only the main account pays ahead: it is the one account the lock taken
+                  // below orders. The identity-key fallback stays with a send's own funding.
+                  if (!unresolved)
+                    mainBalanceWei = await provider.getBalance(
+                      mainAccount.address
+                    );
+                  if (
+                    mainBalanceWei !== undefined &&
+                    mainBalanceWei < stampValueAhead
+                  )
+                    result = notFunded("insufficient-funds");
+                  else {
+                    const mainAccountSigner = new MonadAccountTxSigner({
+                      privateKey: mainAccount.privateKey,
+                      provider,
+                      httpClient,
+                    });
+                    const preparation = await runMainAccountExclusive(
+                      wallet,
+                      () =>
+                        pool.fundStampInventoryAhead({
+                          mainAccountSigner,
+                          provider,
+                          stampValueWei: stampValueAhead,
+                          // Quoted only once the pool has nothing unresolved to wait for. No
+                          // recipient yet: the wallet's own key stands in for the quote.
+                          gasReserveWei: () =>
+                            quoteMonadStampPaymentGasReserve({
+                              signer: mainAccountSigner,
+                              recipientPublicKey: identity.compressedPubKey,
+                            }).catch(() => defaultGasReserveWei),
+                          maxValueWei: maxValueAheadWei,
+                        })
+                    );
+                    result = {
+                      outcome:
+                        preparation.fundingTxHashes.length > 0
+                          ? "funded"
+                          : "ready",
+                      fundingTxHashes: preparation.fundingTxHashes,
+                    };
+                  }
+                } catch (error) {
+                  // A funding failure is not the caller's: whatever was recorded is resumed by
+                  // the next pass or the next send, and a send funds its own accounts regardless.
+                  result = notFunded(
+                    error instanceof FundAheadRefusedError
+                      ? error.code
+                      : error instanceof Error
+                      ? error.message
+                      : String(error)
+                  );
+                }
+                if (result.outcome === "not-funded") {
+                  const last = fundAheadBackoffs.get(wallet);
+                  fundAheadBackoffs.set(wallet, {
+                    result,
+                    delayMs:
+                      last !== undefined && last.result.reason === result.reason
+                        ? Math.min(last.delayMs * 2, FUND_AHEAD_BACKOFF_MAX_MS)
+                        : FUND_AHEAD_BACKOFF_MIN_MS,
+                    startedAtMs: Date.now(),
+                    mainBalanceWei,
+                  });
+                } else fundAheadBackoffs.delete(wallet);
+                return result;
+              });
+            // Single flight: a call made while a pass runs gets that pass's answer. A call made
+            // while the last pass's wait runs gets that pass's answer too, and nothing is asked.
+            let fundingAhead: Promise<DirectMessageFundAheadResult> | undefined;
+            stampFundersAhead.set(wallet, () => {
+              const waiting = fundAheadBackoffs.get(wallet);
+              const waited = Date.now() - (waiting?.startedAtMs ?? 0);
+              if (waiting && waited >= 0 && waited < waiting.delayMs)
+                return Promise.resolve(waiting.result);
+              fundingAhead ??= fundAheadPass().finally(() => {
+                fundingAhead = undefined;
+              });
+              return fundingAhead;
+            });
             const links =
               storageLocation !== undefined
                 ? await LevelCanonicalLinkStore.open(storageLocation)

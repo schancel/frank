@@ -124,6 +124,8 @@ export class FrankBotHost {
   private readonly fundingWallet?: Wallet;
   private readonly nonceSequencer?: EVMNonceSequencer;
   private readonly instances = new Map<string, ActiveBotInstance>();
+  /** Bots whose fund-ahead failure was already logged. */
+  private readonly fundAheadWarned = new Set<string>();
   private readonly registrationListeners = new Set<
     (user: NewUserEvent) => void | Promise<void>
   >();
@@ -710,6 +712,29 @@ export class FrankBotHost {
     return this.polling;
   }
 
+  /**
+   * Asks the wallet to fund the next message's sender accounts ahead of time, if its chain has
+   * such accounts. Not awaited: the wallet runs one pass at a time and answers at once when the
+   * accounts are ready. A failure is the wallet's to resume and is logged once per bot.
+   */
+  private fundAhead(id: string, instance: ActiveBotInstance): void {
+    const failed = (error: unknown) => {
+      if (this.fundAheadWarned.has(id)) return;
+      this.fundAheadWarned.add(id);
+      console.warn(
+        `[bot-host] [${id}] Funding ahead failed; replies fund their own accounts:`,
+        error instanceof Error ? error.message : error
+      );
+    };
+    try {
+      void this.chain.directMessages
+        .fundAhead?.({ wallet: instance.wallet })
+        .catch(failed);
+    } catch (error) {
+      failed(error);
+    }
+  }
+
   private async pollOnce(): Promise<void> {
     for (const [id, instance] of this.instances.entries()) {
       try {
@@ -763,6 +788,10 @@ export class FrankBotHost {
         } catch {
           /* Nothing to do. */
         }
+        // Sender accounts for the next reply, funded between polls so that reply does not wait
+        // for its own funding (#1235). Here, after this poll's recovery, and never at
+        // registration: the wallet moves nothing by being opened.
+        this.fundAhead(id, instance);
         const messages = await this.chain.directMessages.fetchSince({
           wallet: instance.wallet,
           sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),

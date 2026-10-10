@@ -29,7 +29,8 @@ import {
   serializeMessageItems,
 } from '@frank/wallet/chain/monad-chain'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
-import { getMessageItemPlugin } from '@frank/wallet/message-item-plugins'
+import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
 import {
   sendDirectMessageItems,
   sendDirectMessageText,
@@ -194,7 +195,9 @@ describe('blackjack move authorization', () => {
     })
     expect(decrypted).toBeDefined()
     const replayed = deserializeMessageItems(decrypted!)[0] as BlackjackMoveItem
-    const plugin = getMessageItemPlugin('blackjack-move')!
+    const plugin = createDefaultMessageItemRegistry(
+      pluginCapabilitiesNotYetAvailable,
+    ).get('blackjack-move')!
     const provider = {
       getTransaction: jest.fn(async () => ({
         from: playerIdentity.displayAddress,

@@ -1,9 +1,13 @@
-import { getMessageItemPlugin } from '../index'
-import '../built-in'
-import './plugin'
+import { MessageItemEncodeError } from '../registry'
+import {
+  describePluginContract,
+  registryWith,
+} from '../shared/plugin-contract.testutil'
+import { initBlackjackMovePlugin } from './plugin'
 
 const HASH = `0x${'ab'.repeat(32)}`
-const plugin = () => getMessageItemPlugin('blackjack-move')!
+const registry = registryWith('blackjack-move', initBlackjackMovePlugin)
+const plugin = () => registry.get('blackjack-move')!
 const bet = { type: 'blackjack-move', gameId: 'g', action: 'bet', wagerTxHash: HASH } as never
 
 function provider(over: Partial<Record<string, jest.Mock>> = {}) {
@@ -390,4 +394,41 @@ describe('explicit canonical blackjack boundary', () => {
       ).toBeUndefined()
     },
   )
+})
+
+const MOVE_PREVIEWS = [
+  'Placed a blackjack bet',
+  'Blackjack hand dealt',
+  'Hit',
+  'Hit',
+  'Stood',
+  'Doubled down',
+  'Doubled down',
+  'Blackjack hand resolved',
+  'Blackjack table open',
+]
+
+describePluginContract({
+  type: 'blackjack-move',
+  init: initBlackjackMovePlugin,
+  samples: canonicalItems.map((item, i) => ({
+    item: item as never,
+    preview: MOVE_PREVIEWS[i],
+  })),
+})
+
+describe('blackjack-move bytes', () => {
+  it('are the type-18 frame the codec already defines', () => {
+    for (const item of canonicalItems) {
+      expect(registry.encodeItem(item as never).bytes).toEqual(
+        encodeCanonicalBlackjackItem(item),
+      )
+    }
+  })
+
+  it('refuses a move outside the closed shapes with the typed error', () => {
+    expect(() =>
+      registry.encodeItem({ type: 'blackjack-move', gameId: 'g', action: 'bet' }),
+    ).toThrow(MessageItemEncodeError)
+  })
 })

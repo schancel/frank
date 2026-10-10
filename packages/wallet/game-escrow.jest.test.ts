@@ -4,8 +4,6 @@ import {
   buildChannelSettlementDigest,
   buildTableSettlementDigest,
   prepareTableStealthSettlement,
-  encodeChannelSettlementCall,
-  encodeTableSettlementCall,
   buildStateChannelCloseDigest,
   encodeStateChannelCloseCall,
   encodeBatchDistributeCall,
@@ -51,15 +49,6 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     // Verify recovered address matches jointSigner
     const recovered = ethers.recoverAddress(messageHash, sig)
     expect(recovered.toLowerCase()).toBe(jointSigner.address.toLowerCase())
-
-    // Calldata encoder test
-    const calldata = encodeChannelSettlementCall({
-      sessionId,
-      winnerAddress: winnerWallet.address,
-      payoutWei,
-      jointSig: sig,
-    })
-    expect(calldata.startsWith('0x')).toBe(true)
   })
 
   it('prepares multi-winner TablePotVault settlement with unique DKSAP stealth addresses', async () => {
@@ -89,14 +78,6 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
     const sig = await hostWallet.signMessage(plan.digest.digestBytes)
     const recovered = ethers.recoverAddress(plan.digest.messageHash, sig)
     expect(recovered.toLowerCase()).toBe(hostWallet.address.toLowerCase())
-
-    // Calldata encoder test
-    const calldata = encodeTableSettlementCall({
-      tableId,
-      payouts: plan.payouts,
-      hostSig: sig,
-    })
-    expect(calldata.startsWith('0x')).toBe(true)
   })
 
   it('indexes game escrow stealth payouts into winner wallet and allows immediate spend', async () => {

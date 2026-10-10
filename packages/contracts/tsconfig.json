@@ -14,5 +14,5 @@
     "rootDir": "./",
     "types": ["node", "jest"]
   },
-  "include": ["contracts/**/*", "scripts/**/*", "test/**/*", "index.ts", "artifacts/**/*"]
+  "include": ["contracts/**/*", "scripts/**/*", "test/**/*", "deployments/**/*", "index.ts", "solana-escrow.ts", "artifacts/**/*"]
 }

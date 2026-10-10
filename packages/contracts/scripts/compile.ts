@@ -5,20 +5,35 @@ import solc from 'solc'
 const contractsDir = path.resolve(__dirname, '../contracts')
 const artifactsDir = path.resolve(__dirname, '../artifacts')
 
-export function compileContracts() {
-  if (!fs.existsSync(artifactsDir)) {
-    fs.mkdirSync(artifactsDir, { recursive: true })
-  }
+/** The settings every Frank contract is compiled with. A deployment record carries a copy. */
+export const COMPILER_SETTINGS = {
+  optimizer: { enabled: true, runs: 200 },
+  evmVersion: 'cancun',
+} as const
 
+export interface CompilerInfo {
+  version: string
+  settings: typeof COMPILER_SETTINGS
+}
+
+export interface ContractArtifact {
+  contractName: string
+  sourceName: string
+  abi: any[]
+  bytecode: string
+  deployedBytecode: string
+  compiler: CompilerInfo
+}
+
+/** Compiles every `.sol` file in `sourceDirs` together and returns the artifacts by contract name. */
+export function compileSolidity(
+  sourceDirs: readonly string[],
+): Record<string, ContractArtifact> {
   const sources: Record<string, { content: string }> = {}
-  const contractFiles = fs
-    .readdirSync(contractsDir)
-    .filter(f => f.endsWith('.sol'))
-
-  for (const file of contractFiles) {
-    const fullPath = path.join(contractsDir, file)
-    sources[file] = {
-      content: fs.readFileSync(fullPath, 'utf8'),
+  for (const dir of sourceDirs) {
+    for (const file of fs.readdirSync(dir).filter(f => f.endsWith('.sol'))) {
+      if (sources[file]) throw new Error(`Duplicate Solidity file name: ${file}`)
+      sources[file] = { content: fs.readFileSync(path.join(dir, file), 'utf8') }
     }
   }
 
@@ -26,10 +41,7 @@ export function compileContracts() {
     language: 'Solidity',
     sources,
     settings: {
-      optimizer: {
-        enabled: true,
-        runs: 200,
-      },
+      ...COMPILER_SETTINGS,
       outputSelection: {
         '*': {
           '*': ['abi', 'evm.bytecode.object', 'evm.deployedBytecode.object'],
@@ -38,51 +50,52 @@ export function compileContracts() {
     },
   }
 
-  console.log(`Compiling ${contractFiles.length} Solidity contracts...`)
   const output = JSON.parse(solc.compile(JSON.stringify(input)))
-
-  if (output.errors && output.errors.length > 0) {
-    const fatalErrors = output.errors.filter(
-      (e: any) => e.severity === 'error',
+  const errors = (output.errors ?? []).filter((e: any) => e.severity === 'error')
+  if (errors.length > 0) {
+    throw new Error(
+      `Solidity compilation failed:\n${errors
+        .map((e: any) => e.formattedMessage)
+        .join('\n')}`,
     )
-    for (const err of output.errors) {
-      if (err.severity === 'error') {
-        console.error(err.formattedMessage)
-      } else {
-        console.warn(err.formattedMessage)
-      }
-    }
-    if (fatalErrors.length > 0) {
-      throw new Error(`Solidity compilation failed with ${fatalErrors.length} errors`)
-    }
   }
 
-  const compiledArtifacts: Record<
-    string,
-    { abi: any[]; bytecode: string; deployedBytecode: string }
-  > = {}
-
+  const compiler: CompilerInfo = {
+    version: solc.version(),
+    settings: COMPILER_SETTINGS,
+  }
+  const artifacts: Record<string, ContractArtifact> = {}
   for (const file in output.contracts) {
     for (const contractName in output.contracts[file]) {
       const contract = output.contracts[file][contractName]
-      const artifact = {
+      artifacts[contractName] = {
         contractName,
         sourceName: file,
         abi: contract.abi,
         bytecode: `0x${contract.evm.bytecode.object}`,
         deployedBytecode: `0x${contract.evm.deployedBytecode.object}`,
+        compiler,
       }
-
-      compiledArtifacts[contractName] = artifact
-      const outPath = path.join(artifactsDir, `${contractName}.json`)
-      fs.writeFileSync(outPath, JSON.stringify(artifact, null, 2), 'utf8')
-      console.log(`✓ Artifact generated: ${contractName} -> ${outPath}`)
     }
   }
+  return artifacts
+}
 
-  return compiledArtifacts
+/** Compiles `contracts/` and rewrites `artifacts/`, the bytecode that is tested and deployed. */
+export function compileContracts(): Record<string, ContractArtifact> {
+  const artifacts = compileSolidity([contractsDir])
+  fs.mkdirSync(artifactsDir, { recursive: true })
+  for (const artifact of Object.values(artifacts)) {
+    fs.writeFileSync(
+      path.join(artifactsDir, `${artifact.contractName}.json`),
+      `${JSON.stringify(artifact, null, 2)}\n`,
+      'utf8',
+    )
+  }
+  return artifacts
 }
 
 if (require.main === module) {
-  compileContracts()
+  const names = Object.keys(compileContracts())
+  console.log(`Compiled ${names.join(', ')} into ${artifactsDir}`)
 }

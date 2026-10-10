@@ -1,18 +1,20 @@
 {
   "name": "@frank/contracts",
   "version": "0.0.1",
-  "description": "Smart contracts for Frank: state channel vaults, multi-player table pots, and universal HTLCs with timelock escape hatches.",
+  "description": "Smart contracts for Frank: GenericHTLC and StateChannel, with the script that deploys them and records where.",
   "private": true,
   "main": "index.ts",
   "scripts": {
     "build": "tsx scripts/compile.ts",
     "test": "jest",
-    "deploy": "tsx scripts/deploy.ts"
+    "deploy": "tsx scripts/deploy.ts",
+    "htlc-round": "tsx scripts/htlc-round.ts"
   },
   "dependencies": {
     "ethers": "^6.17.0"
   },
   "devDependencies": {
+    "@foundry-rs/anvil": "1.7.1",
     "@types/jest": "^29",
     "@types/node": "^16.11.11",
     "jest": "^29",

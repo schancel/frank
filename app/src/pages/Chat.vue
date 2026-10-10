@@ -114,7 +114,6 @@
         @giveLotusClicked="$emit('giveLotusClicked')"
         @blackjackClicked="blackjackDialog = true"
         @sendStealthClicked="stealthDialog = true"
-        @offerSwapClicked="swapDialog = true"
         ref="chatInput"
         v-model:message="message"
         v-model:stamp-amount="stampAmount"

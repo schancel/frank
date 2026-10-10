@@ -102,13 +102,12 @@
         </a>
       </div>
 
-      <!-- A received offer moves no funds from this card (see `fundActionsWithheld`) -->
+      <!-- Swaps are not available yet: this card moves no funds in any state -->
       <div
-        v-if="fundActionsWithheld"
         class="text-caption text-grey-7 q-mt-xs"
         data-testid="swap-unavailable-note"
       >
-        {{ $t('walletPanel.swapUnavailableDescription') }}
+        {{ $t('chatMessageSwap.notAvailableYet') }}
       </div>
 
       <!-- Actions based on role & lifecycle phase -->
@@ -136,73 +135,6 @@
           data-testid="swap-accept-btn"
           @click="$emit('accept', swapId)"
         />
-
-        <!-- Deposit & Lock (Maker before locking Leg A) -->
-        <q-btn
-          v-if="canLockMaker"
-          flat
-          dense
-          color="primary"
-          size="sm"
-          :loading="busy"
-          :label="
-            $t('chatMessageSwap.lockDeposit', {
-              amount: offeredAmount,
-              asset: offeredAsset,
-            })
-          "
-          data-testid="swap-lock-btn"
-          @click="handleDepositLegA"
-        />
-
-        <!-- Accept & Lock (Taker locking Leg B) -->
-        <q-btn
-          v-if="canLockTaker"
-          flat
-          dense
-          color="primary"
-          size="sm"
-          :loading="busy"
-          :label="
-            $t('chatMessageSwap.acceptAndLock', {
-              amount: requestedAmount,
-              asset: requestedAsset,
-            })
-          "
-          data-testid="swap-lock-btn"
-          @click="handleDepositLegB"
-        />
-
-        <!-- Claim funds (Maker claiming Leg B or Taker claiming Leg A) -->
-        <q-btn
-          v-if="canClaimFunds"
-          flat
-          dense
-          color="positive"
-          size="sm"
-          :loading="busy"
-          :label="
-            $t('chatMessageSwap.claimFunds', {
-              amount: outbound ? requestedAmount : offeredAmount,
-              asset: outbound ? requestedAsset : offeredAsset,
-            })
-          "
-          data-testid="swap-claim-btn"
-          @click="handleClaim"
-        />
-
-        <!-- Refund (when expired) -->
-        <q-btn
-          v-if="canRefundFunds"
-          flat
-          dense
-          color="warning"
-          size="sm"
-          :loading="busy"
-          :label="$t('chatMessageSwap.refundDeposit')"
-          data-testid="swap-refund-btn"
-          @click="handleRefund"
-        />
       </div>
     </q-card>
   </div>
@@ -213,7 +145,6 @@ import { defineComponent } from 'vue'
 import { useQuasar } from 'quasar'
 import { multiChainExplorerUrl } from '../../../utils/explorer'
 import { useLeaderStore } from '../../../stores/leader'
-import { useSwapEscrow } from '../../../composables/useSwapEscrow'
 
 export default defineComponent({
   name: 'ChatMessageSwap',
@@ -283,12 +214,7 @@ export default defineComponent({
       default: '',
     },
   },
-  emits: ['accept', 'cancel', 'deposit', 'claim', 'refund'],
-  data() {
-    return {
-      busy: false,
-    }
-  },
+  emits: ['accept', 'cancel'],
   setup() {
     const $q = useQuasar()
     let leaderStore: any
@@ -305,21 +231,9 @@ export default defineComponent({
       }
     }
 
-    let escrow: any
-    try {
-      escrow = useSwapEscrow()
-    } catch {
-      escrow = {
-        depositLock: async () => ({ txHash: '0x' }),
-        claimLock: async () => ({ txHash: '0x' }),
-        refundLock: async () => ({ txHash: '0x' }),
-      }
-    }
-
     return {
       cardBg: $q?.dark?.isActive ? 'bg-grey-9' : 'bg-grey-2',
       leaderStore,
-      escrow,
     }
   },
   computed: {
@@ -351,39 +265,6 @@ export default defineComponent({
     canAccept(): boolean {
       return this.status === 'pending' && !this.outbound
     },
-    canLockMaker(): boolean {
-      return this.outbound && this.status === 'pending' && !this.legATxHash
-    },
-    /**
-     * A received offer is whatever its sender wrote: its status, amounts, hash lock and
-     * transaction hashes are that person's claims, and nothing has checked them. Until the swap
-     * flow validates an offer and asks for confirmation, no action that moves funds (deposit and
-     * lock, claim, refund) is offered on an inbound item, whatever state it says it is in.
-     */
-    fundActionsWithheld(): boolean {
-      return (
-        !this.outbound &&
-        (this.status === 'accepted' ||
-          this.status === 'locked' ||
-          this.status === 'expired')
-      )
-    },
-    canLockTaker(): boolean {
-      // The taker's deposit is driven entirely by a received item: withheld (see above).
-      return false
-    },
-    canClaimFunds(): boolean {
-      // Maker can claim Leg B once Leg B is locked and not yet claimed
-      return (
-        this.outbound &&
-        this.status === 'locked' &&
-        !!this.legBTxHash &&
-        !this.claimTxHash
-      )
-    },
-    canRefundFunds(): boolean {
-      return this.outbound && this.status === 'expired'
-    },
     legATxUrl(): string | undefined {
       return multiChainExplorerUrl(this.legATxHash, this.offeredChain)
     },
@@ -403,103 +284,6 @@ export default defineComponent({
   methods: {
     takeOverActiveRole() {
       this.leaderStore?.claimMasterRole()
-    },
-    async handleDepositLegA() {
-      this.busy = true
-      try {
-        const res = await this.escrow.depositLock({
-          swapId: this.swapId,
-          chain: this.offeredChain,
-          amount: this.offeredAmount,
-          recipient: this.recipientAddress,
-          hashLock: this.hashLock || undefined,
-        })
-        this.$emit('deposit', {
-          swapId: this.swapId,
-          chain: this.offeredChain,
-          amount: this.offeredAmount,
-          txHash: res.txHash,
-          hashLock: res.hashLock,
-          preimage: res.preimageHex,
-        })
-      } catch (err) {
-        console.error('[ChatMessageSwap] Deposit Leg A error:', err)
-      } finally {
-        this.busy = false
-      }
-    },
-    async handleDepositLegB() {
-      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
-      if (!this.outbound) return
-      this.busy = true
-      try {
-        const res = await this.escrow.depositLock({
-          swapId: this.swapId,
-          chain: this.requestedChain,
-          amount: this.requestedAmount,
-          recipient: this.recipientAddress,
-          hashLock: this.hashLock || undefined,
-        })
-        this.$emit('deposit', {
-          swapId: this.swapId,
-          chain: this.requestedChain,
-          amount: this.requestedAmount,
-          txHash: res.txHash,
-        })
-      } catch (err) {
-        console.error('[ChatMessageSwap] Deposit Leg B error:', err)
-      } finally {
-        this.busy = false
-      }
-    },
-    async handleClaim() {
-      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
-      if (!this.outbound) return
-      this.busy = true
-      try {
-        const targetChain = this.outbound
-          ? this.requestedChain
-          : this.offeredChain
-        const res = await this.escrow.claimLock({
-          swapId: this.swapId,
-          chain: targetChain,
-          preimage: this.preimage || undefined,
-          recipient: this.recipientAddress,
-        })
-        this.$emit('claim', {
-          swapId: this.swapId,
-          chain: targetChain,
-          txHash: res.txHash,
-        })
-      } catch (err) {
-        console.error('[ChatMessageSwap] Claim error:', err)
-      } finally {
-        this.busy = false
-      }
-    },
-    async handleRefund() {
-      // Never from a received offer, whatever rendered the call (see `fundActionsWithheld`).
-      if (!this.outbound) return
-      this.busy = true
-      try {
-        const targetChain = this.outbound
-          ? this.offeredChain
-          : this.requestedChain
-        const res = await this.escrow.refundLock({
-          swapId: this.swapId,
-          chain: targetChain,
-          recipient: this.recipientAddress,
-        })
-        this.$emit('refund', {
-          swapId: this.swapId,
-          chain: targetChain,
-          txHash: res.txHash,
-        })
-      } catch (err) {
-        console.error('[ChatMessageSwap] Refund error:', err)
-      } finally {
-        this.busy = false
-      }
     },
   },
 })

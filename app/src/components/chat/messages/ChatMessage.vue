@@ -106,9 +106,6 @@
               :recipient-address="address"
               @accept="handleSwapAccept"
               @cancel="handleSwapCancel"
-              @deposit="handleSwapDeposit"
-              @claim="handleSwapClaim"
-              @refund="handleSwapRefund"
             />
             <chat-message-rps
               v-else-if="item.type == 'rps'"
@@ -328,51 +325,6 @@ export default defineComponent({
           {
             type: 'text',
             text: `/swap cancel ${swapId}`,
-          },
-        ],
-      })
-    },
-    handleSwapDeposit(payload: {
-      swapId: string
-      chain: string
-      amount: string
-      txHash: string
-      hashLock?: string
-      preimage?: string
-    }) {
-      this.$emit('sendFollowUp', {
-        items: [
-          {
-            type: 'text',
-            text: `/swap deposit ${payload.swapId} ${payload.chain} ${payload.txHash}`,
-          },
-        ],
-      })
-    },
-    handleSwapClaim(payload: {
-      swapId: string
-      chain: string
-      txHash: string
-    }) {
-      this.$emit('sendFollowUp', {
-        items: [
-          {
-            type: 'text',
-            text: `/swap claim ${payload.swapId} ${payload.chain} ${payload.txHash}`,
-          },
-        ],
-      })
-    },
-    handleSwapRefund(payload: {
-      swapId: string
-      chain: string
-      txHash: string
-    }) {
-      this.$emit('sendFollowUp', {
-        items: [
-          {
-            type: 'text',
-            text: `/swap refund ${payload.swapId} ${payload.chain} ${payload.txHash}`,
           },
         ],
       })

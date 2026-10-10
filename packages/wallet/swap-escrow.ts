@@ -17,9 +17,8 @@ import { sha256 } from "@noble/hashes/sha256";
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { fromHex, toHex } from "@frank/codec";
 import {
-  CANONICAL_EVM_CONTRACTS,
-  CANONICAL_SOLANA_CONTRACTS,
   PROTOCOL_CHAINS,
+  requireChainContract,
 } from "./chain/chains-registry";
 import {
   buildSolanaHtlcLockInstruction,
@@ -80,22 +79,26 @@ export type SwapStepPhase =
 export interface EvmHtlcLockTxParams {
   lockId: string | Uint8Array;
   recipient: string;
-  refundAddress?: string;
+  /** Where the funds return after the timelock: the sender's own address. Never the recipient. */
+  refundAddress: string;
   hashLock: string | Uint8Array;
   durationSeconds: bigint | number;
   amountWei: bigint;
-  contractAddress?: string;
+  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
+  contractAddress: string;
 }
 
 export interface EvmHtlcWithdrawTxParams {
   lockId: string | Uint8Array;
   preimage: string | Uint8Array;
-  contractAddress?: string;
+  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
+  contractAddress: string;
 }
 
 export interface EvmHtlcRefundTxParams {
   lockId: string | Uint8Array;
-  contractAddress?: string;
+  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
+  contractAddress: string;
 }
 
 /**
@@ -123,11 +126,14 @@ export function toBytes32Hex(input: string | Uint8Array): string {
 }
 
 /**
- * Derives a cryptographic preimage and SHA256 hashlock from a swapId and optional seed.
+ * Derives a preimage and SHA256 hashlock from a swapId and a secret seed.
+ *
+ * The seed is what makes the preimage secret: the swapId is in the offer and on chain. It
+ * must be 32 bytes that only the party creating the hash lock knows. There is no default.
  */
 export function deriveSwapSecret(params: {
   swapId: string | Uint8Array;
-  seed?: Uint8Array;
+  seed: Uint8Array;
 }): {
   preimage: Uint8Array;
   hashLock: Uint8Array;
@@ -136,7 +142,13 @@ export function deriveSwapSecret(params: {
 } {
   const swapIdBytes = to32ByteHash(params.swapId);
   const tag = toUtf8Bytes("frank:swap-secret:v1:");
-  const entropy = params.seed ?? new Uint8Array(32);
+  const entropy = params.seed;
+  if (!(entropy instanceof Uint8Array) || entropy.length !== 32) {
+    throw new Error("deriveSwapSecret needs a 32-byte secret seed");
+  }
+  if (entropy.every((byte) => byte === 0)) {
+    throw new Error("deriveSwapSecret refuses an all-zero seed");
+  }
 
   const preimage = sha256(concat([tag, swapIdBytes, entropy]));
   const hashLock = sha256(preimage);
@@ -150,35 +162,24 @@ export function deriveSwapSecret(params: {
 }
 
 /**
- * Resolves the HTLC contract or program ID for a given chain.
+ * Resolves the HTLC contract or program ID for a canonical `chainIdentifier`.
+ * Throws for an unknown identifier, for a chain family without an HTLC, and for a network
+ * the contract is not deployed on. There is no default network and no default address.
  */
 export function resolveHtlcContract(chainIdentifier: string): {
-  family: "evm" | "solana" | "bitcoin";
+  family: "evm" | "solana";
   contractAddress: string;
 } {
   const entry = PROTOCOL_CHAINS[chainIdentifier];
-  if (entry?.family === "solana") {
-    return {
-      family: "solana",
-      contractAddress:
-        entry.contracts?.htlc ??
-        CANONICAL_SOLANA_CONTRACTS.htlc ??
-        SOLANA_GENERIC_HTLC_PROGRAM_ID,
-    };
+  if (!entry) {
+    throw new Error(`Unknown chain identifier "${chainIdentifier}"`);
   }
-  if (entry?.family === "evm") {
-    return {
-      family: "evm",
-      contractAddress:
-        entry.contracts?.htlc ??
-        CANONICAL_EVM_CONTRACTS.htlc ??
-        "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5",
-    };
+  if (entry.family !== "evm" && entry.family !== "solana") {
+    throw new Error(`HTLC swaps are not supported on ${chainIdentifier}`);
   }
   return {
-    family: entry?.family ?? "evm",
-    contractAddress:
-      entry?.contracts?.htlc ?? CANONICAL_EVM_CONTRACTS.htlc ?? "",
+    family: entry.family,
+    contractAddress: requireChainContract(chainIdentifier, "htlc"),
   };
 }
 
@@ -190,13 +191,16 @@ export function encodeEvmHtlcLock(params: EvmHtlcLockTxParams): {
   data: string;
   value: bigint;
 } {
-  const htlc =
-    params.contractAddress ??
-    CANONICAL_EVM_CONTRACTS.htlc ??
-    "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5";
+  const htlc = params.contractAddress;
   const lockId = toBytes32Hex(params.lockId);
   const hashLock = toBytes32Hex(params.hashLock);
-  const refund = params.refundAddress ?? params.recipient;
+  const refund = params.refundAddress;
+  if (!refund) {
+    throw new Error("encodeEvmHtlcLock needs the sender's refund address");
+  }
+  if (refund.toLowerCase() === params.recipient.toLowerCase()) {
+    throw new Error("The refund address of a lock must not be its recipient");
+  }
 
   const data = evmHtlcInterface.encodeFunctionData(
     "lock(bytes32,address,address,bytes32,uint256)",
@@ -217,10 +221,7 @@ export function encodeEvmHtlcWithdraw(params: EvmHtlcWithdrawTxParams): {
   to: string;
   data: string;
 } {
-  const htlc =
-    params.contractAddress ??
-    CANONICAL_EVM_CONTRACTS.htlc ??
-    "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5";
+  const htlc = params.contractAddress;
   const lockId = toBytes32Hex(params.lockId);
   const preimageBytes =
     typeof params.preimage === "string"
@@ -249,10 +250,7 @@ export function encodeEvmHtlcRefund(params: EvmHtlcRefundTxParams): {
   to: string;
   data: string;
 } {
-  const htlc =
-    params.contractAddress ??
-    CANONICAL_EVM_CONTRACTS.htlc ??
-    "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5";
+  const htlc = params.contractAddress;
   const lockId = toBytes32Hex(params.lockId);
 
   const data = evmHtlcInterface.encodeFunctionData("refund", [lockId]);

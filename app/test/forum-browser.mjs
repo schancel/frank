@@ -1,17 +1,13 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Run only against a coordinator-owned built-in fake demo. No account is reused.
-assert.equal(
-  process.env.FORUM_FAKE_DEMO,
-  'true',
-  'set FORUM_FAKE_DEMO=true for the local synthetic fixture',
-)
+// Run against the app served for a running `yarn demo` (Monad testnet). No account is reused; the
+// new account is funded with a real transfer from the demo's funding wallet (FORUM_FUND_MON).
 const origin = process.env.FORUM_APP_ORIGIN ?? 'http://127.0.0.1:9699'
 assert.ok(
   ['localhost', '127.0.0.1', '[::1]'].includes(new URL(origin).hostname),
@@ -303,10 +299,25 @@ try {
   await until(`document.querySelector('[data-test="activate-account"]')`)
   await click('activate-account')
   await until(`location.hash==='#/wallet'`)
-  await until(`document.querySelector('[data-test="demo-fund"]')`)
-  await click('demo-fund')
+  // Fund the new account's receive address on the real chain and wait until the wallet sees it.
+  const receive = await evaluate(
+    `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getReceiveAddress()).raw)`,
+  )
+  await new Promise((resolveFund, reject) =>
+    execFile(
+      process.execPath,
+      ['--import', 'tsx', 'packages/bot/demo/fund.ts', receive, process.env.FORUM_FUND_MON ?? '0.1'],
+      {
+        cwd: resolve(fileURLToPath(new URL('../..', import.meta.url))),
+        env: { ...process.env, TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json' },
+        timeout: 180000,
+      },
+      (error, _stdout, stderr) =>
+        error ? reject(new Error(`funding failed: ${(stderr || error.message).trim()}`)) : resolveFund(),
+    ),
+  )
   await until(
-    `document.querySelector('[data-test="fund-status"]').textContent.includes('Simulated credit confirmed')`,
+    `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getBalance()) > 0n)`,
   )
   await evaluate(`location.hash='#/forum'`)
   await until(`document.querySelector('[data-test="forum-threshold"]')`)

@@ -141,12 +141,8 @@ export class WelcomeBot implements FrankBotDefinition {
 
 ## 6. One-Command Full Demo Stack
 
-You can launch the entire stack (relays, bots, and simulated chain) with:
+You can launch the entire stack (the relay and every bot, on Monad testnet) with:
 
 ```bash
-# Offline demo with local fake Monad RPC (zero funds/network required)
-yarn demo --fake-chain
-
-# Live demo against Monad testnet
 yarn demo
 ```

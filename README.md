@@ -142,8 +142,7 @@ historical transition constraints; their protobuf and exact-wire sketches are no
 
 ```bash
 yarn install --frozen-lockfile
-yarn demo --fake-chain      # relay + blackjack, raffle, picture shop, Qwen (stub) and faucet, no keys or funds
-yarn demo                   # the same against Monad testnet, from your own .env (never committed)
+yarn demo                   # relay + every bot on Monad testnet, from your own .env (never committed)
 ```
 
 It creates the bot identities, starts the relay and the bots, waits until they are ready, prints

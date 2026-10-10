@@ -16,7 +16,7 @@ This is a Chrome browser preview, not proof of Electron/Capacitor support. Encry
 
 - From `app`: `yarn test:unit:ci --runInBand`, `yarn lint`, `quasar build`, `yarn test:custody`.
 - Run a Quasar browser server on port 9699, then from the repository root: `node app/test/accounts-browser.mjs`. The runner uses a real disposable Chrome profile, retains its profile path, and checks keyboard/focus/live status, double-submit, pending restart, exact confirmation, bounded restore rejection, separate-profile restoration, labelled legacy migration, quarantine bytes, and storage/state/log/network/URL secret exports.
-- Set `ACCOUNT_APP_ORIGIN` for another browser server. `ACCOUNT_FAKE_DEMO=true` additionally requires the isolated fake service on port 9701 and its relay on port 9700, with the app launched using the explicit public fake-demo configuration printed by the launcher. It asserts zero-balance activation, EVM-only funding, and native Send.
+- Set `ACCOUNT_APP_ORIGIN` for another browser server.
 
 The last assertion is intentionally **not waived**: before #751, the relay's RPC capability endpoint rejects an unregistered typed identity with HTTP 401 `rpc_auth_failed`. Fake funding itself succeeds at the distinct EVM receive address, but native balance/Send remains blocked. Do not work around this by publishing a typed identity via the legacy directory or disabling production RPC authentication.
 

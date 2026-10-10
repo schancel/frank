@@ -60,8 +60,11 @@ jobs:
         with:
           node-version: "26"
       - run: yarn install
-      - name: Bot demo suites
-        run: yarn workspace @frank/bot test --ci --runInBand demo/smoke.jest.test.ts demo/demo-funding.jest.test.ts qwen-host-safety.jest.test.ts qwen-bot-common.jest.test.ts
+      # Unit suites only. The demo's real checks (`yarn test:two-wallets`, `yarn demo:smoke`) need the
+      # relay binary, a Monad testnet RPC URL and a funded testnet wallet, which this job does not
+      # have; they are not run here, and nothing here stands in for them.
+      - name: Bot host unit suites
+        run: yarn workspace @frank/bot test --ci --runInBand qwen-host-safety.jest.test.ts qwen-bot-common.jest.test.ts
 
   cashweb-message-store:
     runs-on: ubuntu-latest

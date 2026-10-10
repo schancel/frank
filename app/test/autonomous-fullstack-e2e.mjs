@@ -1,5 +1,18 @@
+// Browser end-to-end check of the app against a running demo stack on Monad testnet.
+//
+//   terminal 1:  yarn demo                              (relay + every bot, real chain; starts the app too)
+//   terminal 2:  node app/test/autonomous-fullstack-e2e.mjs
+//
+// It drives a real headless Chrome through account creation, funds the new account with a real
+// transfer from the demo's funding wallet (E2E_FUND_MON, default 0.3 MON, through
+// packages/bot/demo/fund.ts), then Qwen (the answer's content is checked), a full blackjack hand
+// to its outcome, the picture shop, quick sends across a reload, a native send and the other bots
+// (each must answer with what that command produces). It exits non-zero if any scenario fails OR
+// the browser logged an error, a request failed, or the relay/bot logs gained an error line.
+// It spends real testnet funds: the transfer above, of which stamps, bets and gas are used.
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import {
   mkdir,
   mkdtemp,
@@ -27,8 +40,8 @@ const logsDir = resolve(
       'logs',
     ),
 )
-// The fake chain started by `yarn demo --fake-chain`; only used to request simulated funds.
-const fakeRpcUrl = process.env.E2E_FAKE_RPC_URL ?? 'http://127.0.0.1:8545'
+const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
+const fundMon = process.env.E2E_FUND_MON ?? '0.3'
 const executable =
   process.env.CUSTODY_CHROME ??
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -300,8 +313,9 @@ async function getLogOffsets() {
 
 async function inspectBackendLogs(startOffsets = new Map()) {
   const logFiles = await readdir(logsDir).catch(() => {
-    console.warn(`⚠️ No backend logs at ${logsDir}; set E2E_BACKEND_LOGS_DIR`)
-    return []
+    // Without the logs the "no backend errors" claim cannot be made: that is a failure, not a pass.
+    console.error(`No backend logs at ${logsDir}; set E2E_BACKEND_LOGS_DIR or FRANK_DEMO_STATE_DIR`)
+    return [`no backend logs could be read at ${logsDir}`]
   })
   const backendErrors = []
   for (const file of logFiles) {
@@ -411,28 +425,31 @@ async function timedSend(text, timeoutMs) {
   return { sent, reply }
 }
 
-/** Fake chain only: asks the launcher's local funding service for 1 simulated MON at `address`
- * (what `packages/bot/demo/fund-demo.ts` does). False when there is no such service. */
-async function demoCredit(address) {
-  try {
-    const url = `${fakeRpcUrl}/_ctl/demo-funding`
-    const capability = await (await fetch(url)).json()
-    if (capability?.kind !== 'frank-simulated-ledger-v1') return false
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-frank-demo-funding': capability.token,
+/** Sends `fundMon` real testnet MON from the demo's funding wallet to `address` and waits for the
+ * transfer to confirm (packages/bot/demo/fund.ts). Rejects with the command's message. */
+function fundAccount(address) {
+  return new Promise((resolveFund, reject) => {
+    execFile(
+      process.execPath,
+      ['--import', 'tsx', 'packages/bot/demo/fund.ts', address, fundMon],
+      {
+        cwd: repoRoot,
+        env: { ...process.env, TSX_TSCONFIG_PATH: 'packages/bot/tsconfig.json' },
+        timeout: 180000,
       },
-      body: JSON.stringify({
-        evmReceiveAddress: address,
-        amountWei: capability.amountWei,
-      }),
-    })
-    return response.ok
-  } catch {
-    return false
-  }
+      (error, stdout, stderr) =>
+        error
+          ? reject(new Error(`funding ${address} failed: ${(stderr || error.message).trim()}`))
+          : resolveFund(stdout.trim()),
+    )
+  })
+}
+
+/** Text of the newest message received in the open conversation. */
+function lastReceivedText() {
+  return evaluate(
+    `(() => { const all = [...document.querySelectorAll('.chat-message-list .q-message-received')]; return all.length ? all[all.length - 1].innerText.replace(/\\s+/g, ' ').trim() : '' })()`,
+  )
 }
 
 // ---------------------- TEST SUITE EXECUTION ----------------------
@@ -559,21 +576,18 @@ async function run() {
       )
       let note = `wallet page shows "${shown}"; spendable ${spendable} wei`
       if (spendable === 0n) {
-        // Nothing reaches the receive address on its own. With the fake chain, credit it
-        // explicitly (the documented fund-demo step) so the remaining scenarios can run.
-        const credited = await demoCredit(ids.receive)
-        if (!credited)
-          throw new Error(
-            `${note}; no fake-chain funding service at ${fakeRpcUrl}`,
-          )
+        // Nothing reaches the receive address on its own (the faucet pays the profile address):
+        // fund it with a real transfer so the paid scenarios can run, and say so.
+        const transfer = await fundAccount(ids.receive)
+        console.log(transfer)
         await until(
-          `parseFloat(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '0') >= 1`,
-          30000,
-          'simulated credit on the wallet page',
+          `parseFloat(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '0') > 0`,
+          60000,
+          'the transfer shown on the wallet page',
         )
-        await captureScreenshot('02_wallet_after_simulated_credit.png')
+        await captureScreenshot('02_wallet_after_funding.png')
         throw new Error(
-          `${note}. NOT spendable without a manual step; continued after an explicit simulated credit of the receive address`,
+          `${note}. A new account cannot pay for anything on its own; continued after funding its receive address with ${fundMon} MON`,
         )
       }
       return note
@@ -588,9 +602,16 @@ async function run() {
       await captureScreenshot('03_qwen.png')
       if (timings.some(t => t.reply === undefined))
         throw new Error('no reply: ' + JSON.stringify(timings))
-      return timings
-        .map(t => `sent ${t.sent} ms, reply ${t.reply} ms`)
-        .join('; ')
+      // The answer must be an answer to the question: either the labelled offline stub echoing
+      // it, or a model's sentence about Frank. "Slow down", an error line or an empty bubble fail.
+      const answer = await lastReceivedText()
+      const stub = answer.includes('[STUB -- no model, offline canned reply]')
+      if (stub ? !answer.includes('What is Frank?') : !(answer.length >= 20 && /frank/i.test(answer)))
+        throw new Error(`Qwen's reply does not answer the question: ${JSON.stringify(answer.slice(0, 160))}`)
+      return (
+        timings.map(t => `sent ${t.sent} ms, reply ${t.reply} ms`).join('; ') +
+        `; ${stub ? 'stub' : 'model'} answer: ${JSON.stringify(answer.slice(0, 80))}`
+      )
     })
 
     // SCENARIO 4: blackjack against the hosted dealer, from the dealer's own challenge card
@@ -632,6 +653,9 @@ async function run() {
         `[...document.querySelectorAll('[data-testid="blackjack-outcome"], [data-testid="blackjack-payout"]')].map(e => e.innerText).join(' ')`,
       )
       if (!outcome) throw new Error('hand did not reach an outcome')
+      // A finished hand states who won (or a push); anything else is not an outcome.
+      if (!/win|won|lose|lost|push|bust|blackjack/i.test(outcome))
+        throw new Error(`the hand ended without a result: ${JSON.stringify(outcome)}`)
       return outcome
     })
 
@@ -788,12 +812,13 @@ async function run() {
     })
 
     // SCENARIO 8: the other hosted bots
-    for (const [name, text] of [
-      ['Lobby', '/help'],
-      ['Satoshi Dice', '/roll 0.01'],
-      ['RPS Arena', '/rps'],
-      ['Texas Hold', '/poker create'],
-      ["Liar's Dice", '/table create'],
+    // Each must answer with what its command produces, not just with something.
+    for (const [name, text, expected] of [
+      ['Lobby', '/help', /Lobby Group Chat Commands/i],
+      ['Satoshi Dice', '/roll 0.01', /roll|dice|win|lose|lost|won/i],
+      ['RPS Arena', '/rps', /rock|paper|scissors/i],
+      ['Texas Hold', '/poker create', /table|poker/i],
+      ["Liar's Dice", '/table create', /table|dice/i],
     ]) {
       await scenario(`8 ${name} "${text}"`, async () => {
         await openConversation(name)
@@ -803,7 +828,10 @@ async function run() {
         )
         if (t.reply === undefined)
           throw new Error(`sent in ${t.sent} ms, no reply in 25 s`)
-        return `reply in ${t.reply} ms`
+        const answer = await lastReceivedText()
+        if (!expected.test(answer))
+          throw new Error(`the reply is not an answer to "${text}": ${JSON.stringify(answer.slice(0, 160))}`)
+        return `reply in ${t.reply} ms: ${JSON.stringify(answer.slice(0, 60))}`
       })
     }
 
@@ -843,19 +871,23 @@ async function run() {
       console.error(
         '❌ ZERO ERROR POLICY FAILED: Encountered frontend exceptions/errors',
       )
+      process.exitCode = 1
     }
 
     if (networkFailures.length === 0) {
       console.log('🏆 ZERO NETWORK ERRORS: PASS')
     } else {
       console.error('❌ ZERO ERROR POLICY FAILED: Encountered network failures')
+      process.exitCode = 1
     }
 
     if (backendLogs.length === 0) {
       console.log('🏆 ZERO BACKEND ERRORS: PASS')
     } else {
       console.error('❌ ZERO ERROR POLICY FAILED: Encountered backend errors')
+      process.exitCode = 1
     }
+    console.log(process.exitCode ? '\nE2E FAILED' : '\nE2E OK')
   } catch (err) {
     console.error('❌ E2E TEST RUNNER ERROR:', err)
     if (frontendErrors.length) console.error('Frontend errors:', frontendErrors)

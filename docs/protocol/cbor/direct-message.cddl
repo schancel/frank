@@ -7,7 +7,10 @@ direct-message-delivery = {
   1: account-ref, ; stamp key P' the sender used, key type 1 (README S9); directory binding is S10a.3
   2: framed-object, ; recipient-specific encrypted-payload frame
   3: digest-32, ; T3 digest of the exact field-2 frame
-  4: [1*64 payment-member], ; two or more preferred, one permitted
+  ; Schema version 2 and later: a message may carry no payment; field 4 absent and field 4
+  ; empty both mean no payment. Schema version 1: field 4 is required with at least one
+  ; member. When paying, two or more preferred, one permitted.
+  ? 4: [0*64 payment-member],
   ? 5: account-ref, ; long-term recipient identity P (key type 1)
   ? 6: dleq-proof, ; Chaum-Pedersen DLEQ proof
   * uint => frank-value, ; additive fields retained only under README.md rules

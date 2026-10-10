@@ -7,14 +7,13 @@ import {
   readFileSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from 'fs'
 import { createServer } from 'net'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-import { DemoBot, DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
+import { DemoConfig, DemoConfigError, resolveDemoConfig } from './demo-config'
 import {
   appCommand,
   DemoAborted,
@@ -113,9 +112,6 @@ process.stdin.on('end', () => {
     pidFile + '.env',
   )}, process.env.MONAD_STAMP_BURN_ADDRESS || 'unset')
   fs.writeFileSync(${JSON.stringify(
-    pidFile + '.checkpoint',
-  )}, process.env.FRANK_EVM_CHECKPOINT_HASH || 'unset')
-  fs.writeFileSync(${JSON.stringify(
     pidFile + '.ws-rpc',
   )}, process.env.MONAD_TESTNET_WS_RPC_URL || 'unset')
   if (${kind === 'stubborn'}) process.on('SIGTERM', () => {})
@@ -132,35 +128,44 @@ process.stdin.on('end', () => {
     return path
   }
 
-  function fakeBot(name: string, body: string): DemoBot {
-    const script = join(dir, `${name}.js`)
+  /** A stand-in for the one bot process (`targets/all-bots.ts`): a script the launcher starts in
+   * its place. The launcher reads its `[all-bots] ...` lines. */
+  function botProcess(body: string): string {
+    const script = join(dir, `bots-${Math.random().toString(36).slice(2)}.js`)
     writeFileSync(script, body)
-    return { name: name as never, script, env: {}, readyLine: /READY/ }
+    return script
   }
+  const RUNNING = "console.log('[all-bots] running: none'); setInterval(() => {}, 1000)"
 
-  async function config(
-    over: Record<string, string> = {},
-    bots: DemoBot[] = [],
-    fake = true,
-  ): Promise<DemoConfig> {
+  /** A demo configuration with dummy chain settings (the chain is never contacted: balances come
+   * from `opts.getBalance`), no identity bots, and a stand-in bot process. */
+  async function config(over: Record<string, string> = {}, botScript?: string): Promise<DemoConfig> {
+    const wallet = join(dir, 'wallet.json')
+    writeFileSync(wallet, JSON.stringify({ address: '0x' + '1a'.repeat(20) }), { mode: 0o600 })
     const c = resolveDemoConfig({
       env: {
         FRANK_DEMO_STATE_DIR: join(dir, 'state'),
         FRANK_DEMO_RELAY_PORT: String(await freePort()),
-        FRANK_DEMO_FAKE_RPC_PORT: String(await freePort()),
+        MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:9',
+        E2E_DEMO_MAIN_WALLET_JSON: wallet,
         ...over,
       },
       envFile: {},
-      fakeChainFlag: fake,
       home: dir,
       cwd: dir,
     })
-    return { ...c, bots }
+    return {
+      ...c,
+      bots: [],
+      botProcess: { script: botScript ?? botProcess(RUNNING), env: {}, hostStateDir: join(dir, 'state', 'bot-host') },
+    }
   }
   const opts = {
     print,
     env: { PATH: process.env.PATH, HOME: dir } as Record<string, string | undefined>,
     pollMs: 50,
+    getBalance: async () => 10n ** 21n,
+    getGasPrice: async () => 10n ** 11n,
   }
 
   describe('redact', () => {
@@ -283,18 +288,10 @@ process.stdin.on('end', () => {
     })
 
     it('a startup failure never echoes the RPC URL credential or key-shaped strings', async () => {
-      const wallet = join(dir, 'wallet.json')
-      writeFileSync(wallet, '{}', { mode: 0o600 })
-      const c = await config(
-        {
-          MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc.example.invalid/v2/CREDPATH?key=abc123',
-          E2E_DEMO_MAIN_WALLET_JSON: wallet,
-          FRANK_DEMO_NO_FAUCET: '1',
-          CASHWEBD_BIN: relayStub('leak'),
-        },
-        [],
-        false,
-      )
+      const c = await config({
+        MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc.example.invalid/v2/CREDPATH?key=abc123',
+        CASHWEBD_BIN: relayStub('leak'),
+      })
       expect(c.secrets).toContain('https://rpc.example.invalid/v2/CREDPATH?key=abc123')
       let message = ''
       try {
@@ -319,27 +316,25 @@ process.stdin.on('end', () => {
       await waitFor(() => existsSync(pidFile))
       const pid = Number(readFileSync(pidFile, 'utf8'))
       await waitFor(() => !alive(pid), 5000)
-      expect(await portFree(c.fakeRpcPort)).toBe(true)
+      expect(await portFree(c.relayPort)).toBe(true)
     }, 30000)
 
-    it('a bot that never becomes ready times out and is killed', async () => {
-      const bot = fakeBot('silent', 'setInterval(() => {}, 1000)')
-      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+    it('a bot process that never finishes starting times out and is killed', async () => {
+      const c = await config({ CASHWEBD_BIN: relayStub('http') }, botProcess('setInterval(() => {}, 1000)'))
       await expect(startDemo(c, { ...opts, botTimeoutS: 2 })).rejects.toThrow(
-        /silent did not become ready in time/,
+        /the bot process did not finish starting in time/,
       )
       await waitFor(() => !alive(Number(readFileSync(pidFile, 'utf8'))), 5000)
     }, 30000)
 
-    it('a bot that exits during startup is reported as exited, with its output', async () => {
-      const bot = fakeBot('crasher', "console.log('boom line'); process.exit(3)")
-      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+    it('a bot process that exits during startup is reported as exited, with its output', async () => {
+      const c = await config({ CASHWEBD_BIN: relayStub('http') }, botProcess("console.log('boom line'); process.exit(3)"))
       const err: Error = await startDemo(c, opts).then(
         () => new Error('expected failure'),
         e => e,
       )
       expect(err).toBeInstanceOf(DemoConfigError)
-      expect(err.message).toMatch(/crasher did not become ready \(it exited\)/)
+      expect(err.message).toMatch(/the bot process exited during startup/)
       expect(err.message).toContain('boom line')
     }, 30000)
   })
@@ -359,14 +354,13 @@ process.stdin.on('end', () => {
       expect(err).toBeInstanceOf(DemoAborted)
       expect((err as DemoAborted).exitCode).toBe(129)
       await waitFor(() => !alive(pid), 5000)
-      expect(await portFree(c.fakeRpcPort)).toBe(true)
+      expect(await portFree(c.relayPort)).toBe(true)
       expect(existsSync(join(c.stateDir, 'demo.pid'))).toBe(false)
       expect(existsSync(join(c.stateDir, 'demo.lock'))).toBe(false)
     }, 30000)
 
     it('a signal while bots are still starting also stops everything', async () => {
-      const bot = fakeBot('slow', 'setInterval(() => {}, 1000)')
-      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+      const c = await config({ CASHWEBD_BIN: relayStub('http') }, botProcess('setInterval(() => {}, 1000)'))
       const outcome = startDemo(c, { ...opts, botTimeoutS: 60 }).then(
         () => 'started',
         e => e,
@@ -379,47 +373,46 @@ process.stdin.on('end', () => {
     }, 30000)
 
     async function running(): Promise<{ handle: DemoHandle; c: DemoConfig }> {
-      const bot = fakeBot('worker', "console.log('READY'); setInterval(() => {}, 1000)")
-      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+      const c = await config({ CASHWEBD_BIN: relayStub('http') })
       return { handle: await startDemo(c, opts), c }
     }
 
     it('the relay is started with the burn address the bots and the app command use (#364)', async () => {
       const { handle, c } = await running()
       expect(readFileSync(pidFile + '.env', 'utf8')).toBe(c.stampBurnAddress)
-      // The launcher supplies the protocol registry's checkpoint by default.
-      expect(readFileSync(pidFile + '.checkpoint', 'utf8')).toBe('unset')
       expect(c.stampBurnAddress).toBe('0x000000000000000000000000000000000000dEaD')
       await handle.stop()
       await handle.done
     }, 30000)
 
-    // Supply a real built cashwebd-exe to exercise the generated TOML's production validator
-    // and startup. Ordinary lifecycle tests continue to use the small relay stand-in.
-    const realRelayTest = process.env.CASHWEBD_BIN ? it : it.skip
+    // Supply a real built cashwebd-exe (and a real Monad testnet RPC URL) to exercise the shipped
+    // configuration through the production validator and a real start: the relay itself checks
+    // the upstream's chain id and genesis block.
+    const realRelayTest = process.env.CASHWEBD_BIN && process.env.MONAD_TESTNET_HTTP_RPC_URL ? it : it.skip
     realRelayTest(
-      'starts the real relay with the generated fake-chain configuration',
+      'starts the real relay from the shipped configuration, with the message and directory routes',
       async () => {
-        const c = await config({ CASHWEBD_BIN: process.env.CASHWEBD_BIN! })
-        const handle = await startDemo(c, { ...opts, relayTimeoutS: 15 })
+        const c = await config({
+          CASHWEBD_BIN: process.env.CASHWEBD_BIN!,
+          MONAD_TESTNET_HTTP_RPC_URL: process.env.MONAD_TESTNET_HTTP_RPC_URL!,
+        })
+        const handle = await startDemo(c, { ...opts, relayTimeoutS: 60 })
         try {
-          expect(handle.fakeRpc?.host).toBe('127.0.0.1')
           expect((await fetch(`${handle.relayUrl}/metadata/monad?since=0`)).ok).toBe(true)
-          expect(output.some(line => line.includes('fake chain'))).toBe(true)
+          const info = (await (await fetch(`${handle.relayUrl}/relay/v1/info`)).json()) as { network: string; endpoint: string }
+          expect(info.network).toBe('monad-testnet')
+          expect(info.endpoint).toBe(handle.relayUrl)
         } finally {
           await handle.stop()
           await handle.done
         }
       },
-      30000,
+      90000,
     )
 
     it('a custom burn address reaches the relay too', async () => {
       const other = '0x2222222222222222222222222222222222222222'
-      const bot = fakeBot('worker', "console.log('READY'); setInterval(() => {}, 1000)")
-      const c = await config({ CASHWEBD_BIN: relayStub('http'), MONAD_STAMP_BURN_ADDRESS: other }, [
-        bot,
-      ])
+      const c = await config({ CASHWEBD_BIN: relayStub('http'), MONAD_STAMP_BURN_ADDRESS: other })
       const handle = await startDemo(c, opts)
       expect(readFileSync(pidFile + '.env', 'utf8')).toBe(other)
       await handle.stop()
@@ -427,12 +420,17 @@ process.stdin.on('end', () => {
     }, 30000)
 
     it('passes the optional WebSocket RPC only to the relay process', async () => {
-      const bot = fakeBot('worker', "console.log('READY'); setInterval(() => {}, 1000)")
-      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+      const full = resolveDemoConfig({
+        env: { MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:9', E2E_DEMO_MAIN_WALLET_JSON: 'w.json', MONAD_TESTNET_WS_RPC_URL: 'wss://rpc.example.invalid/v2/sentinel-key' },
+        envFile: {},
+        home: dir,
+        cwd: dir,
+      })
+      expect(full.botProcess.env.MONAD_TESTNET_WS_RPC_URL).toBeUndefined()
+      const c = await config({ CASHWEBD_BIN: relayStub('http') })
       c.wsRpcUrl = 'wss://rpc.example.invalid/v2/sentinel-key'
       const handle = await startDemo(c, opts)
       expect(readFileSync(pidFile + '.ws-rpc', 'utf8')).toBe(c.wsRpcUrl)
-      expect(c.bots[0].env.MONAD_TESTNET_WS_RPC_URL).toBeUndefined()
       await handle.stop()
       await handle.done
     }, 30000)
@@ -450,10 +448,9 @@ process.stdin.on('end', () => {
       expect(text).toContain(`QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${c.minStampWei}`)
       expect(text).toContain('yarn dev:browser')
       expect(text).toContain(`launcher pid ${process.pid}`)
-      expect(appCommand(c, handle.relayUrl)).toHaveLength(4)
-      expect(appCommand(c, handle.relayUrl)[0]).toBe(
-        `export QCLI_FRANK_FAKE_DEMO=true QCLI_FRANK_DEMO_CONTROL_URL=${c.rpcUrl}`,
-      )
+      expect(text).toContain('Chain:   Monad testnet')
+      expect(text).toContain(`Funding: ${handle.fundingAddress}`)
+      expect(appCommand(c, handle.relayUrl)).toHaveLength(3)
       await handle.stop()
       await handle.done
     }, 30000)
@@ -488,10 +485,10 @@ process.stdin.on('end', () => {
         name: string
         pid: number
       }>
-      const worker = pids.find(p => p.name === 'worker')!
+      const worker = pids.find(p => p.name === 'bots')!
       process.kill(worker.pid, 'SIGKILL')
-      await waitFor(() => handle.unhealthy().includes('worker'))
-      expect(output.join('\n')).toMatch(/worker exited and is NOT restarted; see .*worker\.log/)
+      await waitFor(() => handle.unhealthy().includes('bots'))
+      expect(output.join('\n')).toMatch(/bots exited and is NOT restarted; see .*bots\.log/)
       expect(await Promise.race([handle.done, sleep(600).then(() => 'still-running')])).toBe(
         'still-running',
       )
@@ -501,8 +498,7 @@ process.stdin.on('end', () => {
     }, 30000)
 
     it('stops like a closed terminal when the process that started it (yarn) goes away', async () => {
-      const bot = fakeBot('worker', "console.log('READY'); setInterval(() => {}, 1000)")
-      const c = await config({ CASHWEBD_BIN: relayStub('http') }, [bot])
+      const c = await config({ CASHWEBD_BIN: relayStub('http') })
       let parent = 4242
       const handle = await startDemo(c, {
         ...opts,
@@ -527,65 +523,162 @@ process.stdin.on('end', () => {
     }, 30000)
   })
 
-  describe('state dir mode marker', () => {
-    it('refuses to start on a state dir made for the other mode, before starting anything', async () => {
-      const c = await config({ CASHWEBD_BIN: relayStub('http') })
-      mkdirSync(c.stateDir, { recursive: true, mode: 0o700 })
-      writeFileSync(join(c.stateDir, 'demo-mode.json'), '{"mode":"real","chainId":10143}')
-      const err = await startDemo(c, opts).then(
-        () => undefined,
+  describe('one bot process, each bot reported by name', () => {
+    it('starts ONE process for all bots; a bot that failed to start is named and not waited for, the others are', async () => {
+      const c = await config(
+        { CASHWEBD_BIN: relayStub('http') },
+        botProcess(
+          "console.log('[all-bots] rps registered'); console.error('[all-bots] dice FAILED to start: no dice today'); console.log('[all-bots] running: rps'); setInterval(() => {}, 1000)",
+        ),
+      )
+      // Two real bot profiles (keys made by the launcher's own identity step).
+      const full = resolveDemoConfig({
+        env: { FRANK_DEMO_STATE_DIR: c.stateDir, MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:9', E2E_DEMO_MAIN_WALLET_JSON: c.mainWalletJson },
+        envFile: {},
+        home: dir,
+        cwd: dir,
+      })
+      const two = { ...c, bots: full.bots.filter(b => b.name === 'rps' || b.name === 'dice') }
+      // The relay stand-in lists no profiles, so rps (registered with the host) is never visible
+      // on the relay and the start times out waiting for it; dice already failed and is not waited for.
+      const err: Error = await startDemo(two, { ...opts, botTimeoutS: 3 }).then(
+        () => new Error('expected a timeout'),
         e => e,
       )
-      expect(err).toBeInstanceOf(DemoConfigError)
-      expect((err as DemoConfigError).message).toMatch(/created for a real network/)
-      expect(existsSync(pidFile)).toBe(false) // the relay was never started
-      expect(existsSync(join(c.stateDir, 'demo.lock'))).toBe(false)
+      expect(err.message).toMatch(/still waiting for: rps\)/)
+      const pids = output.filter(l => l.includes('starting 2 bots in one process'))
+      expect(pids).toHaveLength(1)
     }, 30000)
-  })
 
-  describe('a failed start does not claim the state dir (first-run trap)', () => {
-    it('a real-network start that fails its prerequisites leaves no marker, so --fake-chain still works', async () => {
-      const real = await config(
-        {
-          MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:9',
-          E2E_DEMO_MAIN_WALLET_JSON: join(dir, 'missing-wallet.json'),
-          FRANK_DEMO_NO_FAUCET: '1',
-          CASHWEBD_BIN: relayStub('http'),
-        },
-        [],
-        false,
-      )
-      const err = await startDemo(real, opts).then(
-        () => undefined,
-        e => e,
-      )
-      expect(err).toBeInstanceOf(DemoConfigError)
-      expect((err as DemoConfigError).message).toMatch(/E2E_DEMO_MAIN_WALLET_JSON does not exist/)
-      expect(existsSync(join(real.stateDir, 'demo-mode.json'))).toBe(false)
-
-      const fake = await config({ CASHWEBD_BIN: relayStub('http') }, [])
-      const handle = await startDemo(fake, opts)
-      expect(JSON.parse(readFileSync(join(fake.stateDir, 'demo-mode.json'), 'utf8')).mode).toBe(
-        'fake-chain',
-      )
+    it('funds are checked per bot account: identity address and stamp account, the faucet\'s stamp account only', async () => {
+      const c = await config({ CASHWEBD_BIN: relayStub('http') })
+      const { fundingTargets } = await import('./demo')
+      expect(fundingTargets('faucet', { faucet: '0xF' }, { faucet: '0xM' })).toEqual([
+        { label: 'stamp account', address: '0xM' },
+      ])
+      expect(fundingTargets('rps', { rps: '0xI' }, { rps: '0xM' }).map(t => t.label)).toEqual([
+        'identity address',
+        'stamp account',
+      ])
+      const handle = await startDemo(c, opts)
+      expect(handle.botProblems).toEqual([])
+      expect(output.join('\n')).toContain('all 0 bots funded and registered')
       await handle.stop()
       await handle.done
     }, 30000)
   })
 
+  describe('the funding wallet is checked before anything is started', () => {
+    it('works out the draw by the host\'s rules, with gas, and refuses above the limit or when the wallet cannot cover draw plus reserve', async () => {
+      const { fundingNeed, fundingRefusal } = await import('./demo')
+      const c = await config()
+      const bots = [{ name: 'rps' as const, identityJson: 'x' }, { name: 'faucet' as const, identityJson: 'y' }]
+      const balances: Record<string, bigint> = {}
+      const MON = 10n ** 18n
+      const params = {
+        addresses: { rps: '0xrps', faucet: '0xfaucet' },
+        mainAccounts: { rps: '0xrpsmain', faucet: '0xfaucetmain' },
+        getBalance: async (a: string) => balances[a] ?? 0n,
+        gasPriceWei: 100n * 10n ** 9n, // 100 gwei: 0.0021 MON a transfer, doubled as margin
+      }
+      // Fresh bots: three accounts to 0.5 MON each (the faucet's identity address is not funded).
+      const fresh = await fundingNeed({ ...c, bots }, params)
+      expect(fresh.low).toEqual(['rps identity address', 'rps stamp account', 'faucet stamp account'])
+      expect(fresh.transfersWei).toBe(15n * MON / 10n)
+      expect(fresh.gasWei).toBe(3n * 21_000n * 100n * 10n ** 9n * 2n)
+      expect(fresh.drawWei).toBe(fresh.transfersWei + fresh.gasWei)
+
+      // Over the default 1 MON limit: refused, with the exact amount, the address and the way to allow it.
+      const over = await fundingRefusal({ ...c, bots }, fresh, '0xfund', 100n * MON)
+      expect(over![0]).toMatch(/3 bot accounts need funding: starting would draw 1\.5126 testnet MON \(1\.5 in transfers, up to 0\.0126 gas\) from the funding wallet 0xfund, more than the 1\.0 MON one start may draw/)
+      expect(over![1]).toContain('--allow-draw')
+      expect(over![1]).toContain(`FRANK_DEMO_MAX_START_DRAW_WEI to at least ${fresh.drawWei}`)
+      expect(over!.join('\n')).toContain('Nothing was started and nothing was spent')
+      expect(over!.join('\n')).not.toMatch(/new FRANK_DEMO_STATE_DIR/)
+
+      // Allowed (the flag): the wallet must hold the draw AND the host's 0.1 MON reserve.
+      const allowed = { ...c, bots, maxStartDrawWei: undefined }
+      expect(await fundingRefusal(allowed, fresh, '0xfund', fresh.drawWei + MON / 10n)).toBeUndefined()
+      const short = await fundingRefusal(allowed, fresh, '0xfund', fresh.drawWei + MON / 10n - 1n)
+      expect(short![0]).toMatch(/keeps 0\.1 MON in it as a reserve: it needs 1\.6126 MON and holds 1\.6125999/)
+      expect(short![1]).toMatch(/Send testnet MON to 0xfund/)
+
+      // A transfer account between 0.1 and the 0.3 refill mark is topped up by the difference only;
+      // funded accounts draw nothing, and then nothing is refused even with an empty wallet.
+      balances['0xrps'] = 2n * MON / 10n
+      balances['0xrpsmain'] = MON / 10n
+      balances['0xfaucetmain'] = MON / 10n
+      const partial = await fundingNeed({ ...c, bots }, params)
+      expect(partial.low).toEqual(['rps identity address'])
+      expect(partial.transfersWei).toBe(3n * MON / 10n)
+      expect(await fundingRefusal({ ...c, bots }, partial, '0xfund', MON)).toBeUndefined()
+      balances['0xrps'] = 3n * MON / 10n
+      const none = await fundingNeed({ ...c, bots }, params)
+      expect(none).toMatchObject({ low: [], drawWei: 0n })
+      expect(await fundingRefusal({ ...c, bots }, none, '0xfund', 0n)).toBeUndefined()
+    })
+
+    it('a start that would fund fresh bots is refused before the relay starts, unless the draw is allowed', async () => {
+      const full = resolveDemoConfig({
+        env: { FRANK_DEMO_STATE_DIR: join(dir, 'state'), MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:9', E2E_DEMO_MAIN_WALLET_JSON: join(dir, 'wallet.json') },
+        envFile: {},
+        home: dir,
+        cwd: dir,
+      })
+      const c = { ...(await config({ CASHWEBD_BIN: relayStub('http') })), bots: full.bots.filter(b => b.name === 'rps' || b.name === 'dice') }
+      // Every balance reads zero: two fresh bots, four accounts, 2 MON.
+      const err = await startDemo(c, { ...opts, getBalance: async () => 0n }).then(
+        () => undefined,
+        e => e,
+      )
+      expect(err).toBeInstanceOf(DemoConfigError)
+      expect((err as DemoConfigError).message).toMatch(/4 bot accounts need funding: starting would draw 2\.0\d* testnet MON/)
+      expect((err as DemoConfigError).message).toContain('--allow-draw')
+      expect(existsSync(pidFile)).toBe(false) // the relay was never started
+    }, 30000)
+
+    it('a missing wallet file stops the start before the relay is started', async () => {
+      const c = await config({ CASHWEBD_BIN: relayStub('http'), E2E_DEMO_MAIN_WALLET_JSON: join(dir, 'missing-wallet.json') })
+      const err = await startDemo(c, opts).then(
+        () => undefined,
+        e => e,
+      )
+      expect(err).toBeInstanceOf(DemoConfigError)
+      expect((err as DemoConfigError).message).toMatch(/E2E_DEMO_MAIN_WALLET_JSON does not exist/)
+      expect(existsSync(pidFile)).toBe(false) // the relay was never started
+      expect(existsSync(join(c.stateDir, 'demo.lock'))).toBe(false)
+    }, 30000)
+  })
+
   describe('the real CLI (separate process)', () => {
+    // These tests are about signals while the relay is starting. The separate launcher process
+    // reads balances before that, so it is given an endpoint that answers every request with one
+    // fixed balance: a stand-in for that single read, nothing more.
+    let balanceEndpoint: import('http').Server | undefined
+    afterEach(() => balanceEndpoint?.close())
+    async function cliEnvFile(): Promise<string> {
+      const { createServer: http } = await import('http')
+      balanceEndpoint = http((_q, r) => r.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x3635c9adc5dea00000' })))
+      await new Promise<void>(r => balanceEndpoint!.listen(0, '127.0.0.1', () => r()))
+      const wallet = join(dir, 'cli-wallet.json')
+      writeFileSync(wallet, JSON.stringify({ address: '0x' + '1a'.repeat(20) }), { mode: 0o600 })
+      const envFile = join(dir, 'dummy.env')
+      writeFileSync(
+        envFile,
+        `FRANK_NETWORK_TAG=MONT\nMONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:${(balanceEndpoint.address() as { port: number }).port}\nE2E_DEMO_MAIN_WALLET_JSON=${wallet}\n`,
+      )
+      return envFile
+    }
     async function runCli(
       signal: NodeJS.Signals,
       expectedCode: number,
       opts2: { stubborn?: boolean; twice?: boolean } = {},
     ): Promise<void> {
       const relayPort = await freePort()
-      const rpcPort = await freePort()
-      const envFile = join(dir, 'dummy.env')
-      writeFileSync(envFile, 'FRANK_NETWORK_TAG=MONT\n')
+      const envFile = await cliEnvFile()
       const cli = spawn(
         process.execPath,
-        ['--import', 'tsx', join(__dirname, 'demo.ts'), '--fake-chain'],
+        ['--import', 'tsx', join(__dirname, 'demo.ts'), '--no-app'],
         {
           env: {
             PATH: process.env.PATH,
@@ -594,7 +687,6 @@ process.stdin.on('end', () => {
             FRANK_DEMO_ENV_FILE: envFile,
             FRANK_DEMO_STATE_DIR: join(dir, 'cli-state'),
             FRANK_DEMO_RELAY_PORT: String(relayPort),
-            FRANK_DEMO_FAKE_RPC_PORT: String(rpcPort),
           },
           cwd: join(__dirname, '..'),
           stdio: 'ignore',
@@ -613,15 +705,12 @@ process.stdin.on('end', () => {
       expect(await exit).toBe(expectedCode)
       if (opts2.twice) expect(Date.now() - t0).toBeLessThan(7000) // well inside the 8 s grace
       await waitFor(() => !alive(relayPid), 5000)
-      expect(await portFree(rpcPort)).toBe(true)
       expect(await portFree(relayPort)).toBe(true)
     }
 
     it('kill -INT on the wrapper that started it (yarn exits without forwarding) still stops the stack', async () => {
       const relayPort = await freePort()
-      const rpcPort = await freePort()
-      const envFile = join(dir, 'dummy.env')
-      writeFileSync(envFile, 'FRANK_NETWORK_TAG=MONT\n')
+      const envFile = await cliEnvFile()
       const cliPidFile = join(dir, 'cli.pid')
       const wrapper = join(dir, 'wrapper.js')
       // Stands in for `yarn`: starts the launcher, dies on SIGINT WITHOUT forwarding it.
@@ -630,7 +719,7 @@ process.stdin.on('end', () => {
         `const { spawn } = require('child_process')
 const child = spawn(process.execPath, ['--import', 'tsx', ${JSON.stringify(
           join(__dirname, 'demo.ts'),
-        )}, '--fake-chain'], { stdio: 'ignore', cwd: ${JSON.stringify(join(__dirname, '..'))} })
+        )}, '--no-app'], { stdio: 'ignore', cwd: ${JSON.stringify(join(__dirname, '..'))} })
 require('fs').writeFileSync(${JSON.stringify(cliPidFile)}, String(child.pid))
 process.on('SIGINT', () => process.exit(0))
 setInterval(() => {}, 1000)
@@ -645,7 +734,6 @@ setInterval(() => {}, 1000)
           FRANK_DEMO_ENV_FILE: envFile,
           FRANK_DEMO_STATE_DIR: join(dir, 'cli-state'),
           FRANK_DEMO_RELAY_PORT: String(relayPort),
-          FRANK_DEMO_FAKE_RPC_PORT: String(rpcPort),
         },
         stdio: 'ignore',
       })
@@ -659,7 +747,6 @@ setInterval(() => {}, 1000)
         expect(alive(cliPid)).toBe(true) // yarn is gone; the launcher was not signalled
         await waitFor(() => !alive(cliPid), 10000) // it notices and stops
         await waitFor(() => !alive(relayPid), 5000)
-        expect(await portFree(rpcPort)).toBe(true)
         expect(await portFree(relayPort)).toBe(true)
       } finally {
         for (const pid of [cliPid, relayPid]) {
@@ -849,52 +936,12 @@ setInterval(() => {}, 1000)
       expect(walletAddress(join(dir, 'missing.json'))).toBeUndefined()
     })
 
-    it('refuses a copy or a symlink of the same wallet as the faucet wallet, allows a different one', async () => {
-      const main = join(dir, 'main.json')
-      writeFileSync(main, JSON.stringify({ address: `0x${'ab'.repeat(20)}`, privateKey: '0x1' }), {
-        mode: 0o600,
-      })
-      const copy = join(dir, 'copy.json')
-      writeFileSync(copy, readFileSync(main), { mode: 0o600 })
-      const link = join(dir, 'link.json')
-      symlinkSync(main, link)
-      const other = join(dir, 'other.json')
-      writeFileSync(other, JSON.stringify({ address: `0x${'cd'.repeat(20)}`, privateKey: '0x2' }), {
-        mode: 0o600,
-      })
-
-      const withBots = async (faucet: string) => {
-        const c = resolveDemoConfig({
-          env: {
-            FRANK_DEMO_STATE_DIR: join(dir, 'state'),
-            FRANK_DEMO_RELAY_PORT: String(await freePort()),
-            MONAD_TESTNET_HTTP_RPC_URL: 'http://127.0.0.1:1',
-            E2E_DEMO_MAIN_WALLET_JSON: main,
-            FRANK_DEMO_FAUCET_WALLET_JSON: faucet,
-            CASHWEBD_BIN: relayStub('hang'),
-          },
-          envFile: {},
-          fakeChainFlag: false,
-          home: dir,
-          cwd: dir,
-        })
-        return c
-      }
-      for (const same of [copy, link]) {
-        const problems = await checkPrerequisites(await withBots(same))
-        expect(problems.join('\n')).toMatch(/is the same wallet as the stamp wallet/)
-      }
-      // the same wallet written keystore-style (no 0x, different case) is still the same wallet
-      const keystore = join(dir, 'keystore.json')
-      writeFileSync(keystore, JSON.stringify({ address: 'AB'.repeat(20) }), { mode: 0o600 })
-      expect((await checkPrerequisites(await withBots(keystore))).join('\n')).toMatch(
-        /is the same wallet/,
-      )
-      // an address that is not 40 hex fails closed
+    it('a funding wallet file without a valid address is refused before anything starts', async () => {
       const junk = join(dir, 'junk.json')
       writeFileSync(junk, JSON.stringify({ address: '0x1234' }), { mode: 0o600 })
-      expect((await checkPrerequisites(await withBots(junk))).join('\n')).toMatch(/valid "address"/)
-      expect(await checkPrerequisites(await withBots(other))).toEqual([])
+      const c = await config({ CASHWEBD_BIN: relayStub('hang'), E2E_DEMO_MAIN_WALLET_JSON: junk })
+      expect((await checkPrerequisites(c)).join('\n')).toMatch(/valid "address"/)
+      expect(await checkPrerequisites(await config({ CASHWEBD_BIN: relayStub('hang') }))).toEqual([])
     })
   })
 

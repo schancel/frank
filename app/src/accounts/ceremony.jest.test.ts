@@ -1,5 +1,6 @@
 import { webcrypto } from 'crypto'
 import { splitCodex32 } from '@frank/codex32'
+import { decodeRecoveryDescriptor } from '@frank/account-recovery'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
 import { accountSession } from './session'
 import { assertLegacyUnchanged } from './legacy'
@@ -39,16 +40,15 @@ async function signup() {
     shares: [0, 1, 2].map(index => ceremony.share(index)),
   }
 }
-test('does not stage before exact confirmation; wipes all caller roots after staging', async () => {
+test('does not stage before exact confirmation; stages only the account root and wipes it after', async () => {
   const f = await signup()
   expect(accountSession.stage).not.toHaveBeenCalled()
   await f.ceremony.confirm(f.shares.slice(0, 2), '  Synthetic account  ')
   const staged = jest.mocked(accountSession.stage).mock.calls[0][0]
   expect(staged.displayName).toBe('Synthetic account')
   expect(staged.expectedActive).toEqual({ revision: 0, accountId: null })
-  expect(staged.roots.every(root => root.bytes.every(byte => byte === 0))).toBe(
-    true,
-  )
+  expect(staged.accountRoot.every(byte => byte === 0)).toBe(true)
+  expect('roots' in staged).toBe(false)
   expect(f.ceremony.share(0)).toBe('')
   await expect(
     f.ceremony.confirm(f.shares.slice(0, 2), 'Again'),
@@ -153,6 +153,132 @@ test.each([
     expect(accountSession.stage).not.toHaveBeenCalled()
   },
 )
+/** A well-formed share with the same header and index but wrong contents. */
+function poisoned(share: string): string {
+  const split = splitCodex32({
+    threshold: Number(share[3]) as 2,
+    identifier: share.slice(4, 8),
+    indices: [
+      share[8],
+      ...Array.from('qpzry9x8gf').filter(i => i !== share[8]),
+    ],
+    secret: webcrypto.getRandomValues(new Uint8Array(64)),
+    randomBytes: n => webcrypto.getRandomValues(new Uint8Array(n)),
+  })
+  if (!split.ok) throw new Error('fixture')
+  return split.value[0]
+}
+test('restore accepts more shares than the threshold, stages the account and reports the bad share', async () => {
+  const f = await signup()
+  const restore = createAccountCeremony()
+  await restore.beginRestore()
+  const outcome = await restore.confirm(
+    [poisoned(f.shares[0]), f.shares[1], f.shares[2]],
+    'Restored',
+  )
+  expect(accountSession.stage).toHaveBeenCalledTimes(1)
+  expect(outcome.report?.map(share => share.status)).toEqual([
+    'inconsistent',
+    'supports',
+    'supports',
+  ])
+  expect('candidates' in outcome).toBe(false)
+  f.ceremony.cancel()
+})
+test('exactly the threshold with a bad share is refused and says one more share would identify it', async () => {
+  const f = await signup()
+  const restore = createAccountCeremony()
+  await restore.beginRestore()
+  const error = await restore
+    .confirm([poisoned(f.shares[0]), f.shares[1]], 'Restored')
+    .then(
+      () => undefined,
+      (failure: unknown) => failure,
+    )
+  expect(error).toMatchObject({ code: 'not-account-backup' })
+  expect((error as { shares: unknown[] }).shares).toHaveLength(2)
+  expect(recoveryErrorMessage(error)).toMatch(/one more share/)
+  expect(accountSession.stage).not.toHaveBeenCalled()
+  f.ceremony.cancel()
+})
+test('complete share sets of two accounts: nothing is staged until the user picks, and only the pick is staged', async () => {
+  const a = await signup(),
+    b = await signup()
+  for (const pick of [0, 1]) {
+    jest.mocked(accountSession.stage).mockClear()
+    const restore = createAccountCeremony()
+    await restore.beginRestore()
+    const outcome = await restore.confirm(
+      [a.shares[0], b.shares[0], a.shares[1], b.shares[1]],
+      'Restored',
+    )
+    expect(accountSession.stage).not.toHaveBeenCalled()
+    if (!('candidates' in outcome)) throw new Error('expected a choice')
+    expect(outcome.candidates.map(c => c.supporting)).toEqual([
+      [0, 2],
+      [1, 3],
+    ])
+    expect(outcome.candidates.map(c => c.descriptor)).toEqual([
+      a.descriptor,
+      b.descriptor,
+    ])
+    expect(new Set(outcome.candidates.map(c => c.address)).size).toBe(2)
+    let fingerprint: number[] = []
+    jest.mocked(accountSession.stage).mockImplementationOnce(async input => {
+      fingerprint = Array.from(
+        input.metadata.descriptor.publicRecoveryFingerprint,
+      )
+    })
+    await restore.choose(pick, 'Restored')
+    expect(accountSession.stage).toHaveBeenCalledTimes(1)
+    const expected = decodeRecoveryDescriptor([a, b][pick].descriptor)
+    expect(fingerprint).toEqual(Array.from(expected.publicRecoveryFingerprint))
+    // The pick is spent: a second choose cannot stage the other account.
+    await expect(restore.choose(1 - pick, 'Again')).rejects.toThrow()
+    expect(accountSession.stage).toHaveBeenCalledTimes(1)
+  }
+  a.ceremony.cancel()
+  b.ceremony.cancel()
+})
+test('more shares of one backup than the app checks are refused with the number allowed', async () => {
+  const f = await signup()
+  const restore = createAccountCeremony()
+  await restore.beginRestore()
+  // A 2-of-n backup allows 31; 32 entries is over any limit.
+  const error = await restore
+    .confirm(
+      Array.from({ length: 32 }, () => f.shares[0]),
+      'Restored',
+    )
+    .then(
+      () => undefined,
+      (failure: unknown) => failure,
+    )
+  expect(error).toMatchObject({ code: 'too-many-shares', maxShares: 31 })
+  expect(recoveryErrorMessage(error)).toMatch(/Enter at most 31 shares/)
+  expect(accountSession.stage).not.toHaveBeenCalled()
+  f.ceremony.cancel()
+})
+test('a pinned descriptor selects its account from a pile holding two, without asking', async () => {
+  const a = await signup(),
+    b = await signup()
+  const restore = createAccountCeremony()
+  await restore.beginRestore(b.descriptor)
+  const outcome = await restore.confirm(
+    [a.shares[0], b.shares[0], a.shares[1], b.shares[1]],
+    'Restored',
+  )
+  expect('candidates' in outcome).toBe(false)
+  expect(accountSession.stage).toHaveBeenCalledTimes(1)
+  expect(outcome.report?.map(share => share.status)).toEqual([
+    'inconsistent',
+    'supports',
+    'inconsistent',
+    'supports',
+  ])
+  a.ceremony.cancel()
+  b.ceremony.cancel()
+})
 test('cancel during legacy-state check never stages recovered roots', async () => {
   const f = await signup()
   let resolve!: () => void

@@ -1,12 +1,12 @@
 /**
  * One-command demo (#312): `yarn demo` from the repo root (or `yarn demo` in packages/bot).
  *
- * Starts, in order: an optional fake chain RPC (`--fake-chain`), the local relay (through the
- * existing `backend/cashweb/run-local-monad.sh`), then the blackjack dealer, raffle, picture shop,
- * Qwen (stub mode unless QWEN_API_KEY is set) and the testnet faucet. Creates any missing bot
- * identity, prints the relay's curated-default config lines, waits until the relay answers and
- * every bot is up (identity bots: their profile is visible on the relay), prints the addresses,
- * and tears everything down on Ctrl-C.
+ * Runs on Monad testnet, the only mode. Starts, in order: the local relay (through
+ * `backend/cashweb/run-local-monad.sh`), then ONE process that runs every bot on one bot host
+ * (`targets/all-bots.ts`), so the funding wallet has one user and one source of nonces. Creates
+ * any missing bot identity, checks the funding wallet can fund the bots, waits until the relay
+ * answers and every bot is registered and funded on chain, prints the addresses, and tears
+ * everything down on Ctrl-C. A bot that fails to start or is not funded is reported by name.
  *
  * Configuration comes ONLY from environment variables and the user's `.env` file (see
  * `demo-config.ts`, the README table). Missing prerequisites print one clear line each, never a
@@ -17,17 +17,16 @@ import { chmodSync, closeSync, constants, existsSync, fstatSync, mkdirSync, open
 import { createServer } from 'net'
 import { dirname, join, resolve } from 'path'
 
-import { formatEther, Wallet } from 'ethers'
+import { formatEther } from 'ethers'
 
 import { fetchMonadProfilesSince } from '@frank/wallet/monad-identity'
 
 import { ensurePrivateDir } from '../stamp-pool-seed'
 import { renderCuratedDefaultsToml } from '../print-curated-defaults'
 import { prepareBotIdentities } from './demo-identities'
-import { DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig, resolveDirectoryDemoConfig } from './demo-config'
-import { checkDemoMode, writeDemoMode } from './demo-mode'
+import { chainBalanceWei, rpcCall } from './chain-rpc'
+import { DEMO_MIN_BOT_BALANCE_WEI, HOST_STAMP_TOP_UP_BELOW_WEI, HOST_STAMP_TOP_UP_TO_WEI, DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig, resolveDirectoryDemoConfig } from './demo-config'
 import { EnvFileError, readEnvFile } from './env-file'
-import { startFakeRpc, FakeRpc } from './fake-rpc'
 import {
   acquireLock,
   HeldLock,
@@ -49,9 +48,14 @@ export interface DemoHandle {
   relayUrl: string
   publicRelayUrl?: string
   publicAppUrl?: string
-  /** Identity bots' addresses by bot name. */
+  /** Bots' identity addresses by bot name. */
   addresses: Record<string, string>
-  fakeRpc?: FakeRpc
+  /** The account each bot pays stamps from, by bot name. */
+  mainAccounts: Record<string, string>
+  /** Address of the one funding wallet. */
+  fundingAddress: string
+  /** One line per bot that failed to start or is not funded on chain. Empty when all is well. */
+  botProblems: string[]
   logDir: string
   /** Stops everything (idempotent, safe at any point). */
   stop(): Promise<void>
@@ -92,6 +96,10 @@ export interface StartOptions {
    * Whether to launch the Quasar dev server. Default false in startDemo options unless explicitly passed.
    */
   startApp?: boolean
+  /** Reads an address's balance from the chain (tests replace it; the default asks the RPC). */
+  getBalance?: (address: string) => Promise<bigint>
+  /** Reads the chain's gas price in wei (tests replace it; the default asks the RPC). */
+  getGasPrice?: () => Promise<bigint>
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -207,40 +215,21 @@ export async function checkPrerequisites(config: DemoConfig): Promise<string[]> 
       'the relay is built with Cargo, but `cargo` was not found: install Rust (rustup.rs) or set CASHWEBD_BIN to a prebuilt cashwebd-exe',
     )
   }
-  if (!config.fakeChain) {
-    if (!existsSync(config.mainWalletJson)) {
-      problems.push(`E2E_DEMO_MAIN_WALLET_JSON does not exist: ${config.mainWalletJson}`)
-    } else if ((statSync(config.mainWalletJson).mode & 0o077) !== 0) {
-      problems.push(
-        `E2E_DEMO_MAIN_WALLET_JSON (${config.mainWalletJson}) is readable by other users; run: chmod 600 ${config.mainWalletJson}`,
-      )
-    }
-  }
-  if (!config.fakeChain) {
-    const faucet = config.bots.find(b => b.name === 'faucet')
-    const faucetPath = faucet?.env.E2E_DEMO_MAIN_WALLET_JSON
-    if (faucetPath && existsSync(config.mainWalletJson) && existsSync(faucetPath)) {
-      // Paths can differ (a copy, a symlink) while the wallet is the same: compare ADDRESSES.
-      const main = walletAddress(config.mainWalletJson)
-      const other = walletAddress(faucetPath)
-      if (!main || !other) {
-        problems.push(
-          'the stamp wallet and the faucet wallet files must each be JSON with a valid "address" (40 hex characters, with or without 0x)',
-        )
-      } else if (main === other) {
-        problems.push(
-          `the faucet wallet (${faucetPath}) is the same wallet as the stamp wallet (${config.mainWalletJson}); the faucet needs its own funded testnet wallet`,
-        )
-      }
-    }
+  if (!existsSync(config.mainWalletJson)) {
+    problems.push(`E2E_DEMO_MAIN_WALLET_JSON does not exist: ${config.mainWalletJson}`)
+  } else if ((statSync(config.mainWalletJson).mode & 0o077) !== 0) {
+    problems.push(
+      `E2E_DEMO_MAIN_WALLET_JSON (${config.mainWalletJson}) is readable by other users; run: chmod 600 ${config.mainWalletJson}`,
+    )
+  } else if (!walletAddress(config.mainWalletJson)) {
+    problems.push(
+      `E2E_DEMO_MAIN_WALLET_JSON (${config.mainWalletJson}) must be JSON with a valid "address" (40 hex characters, with or without 0x)`,
+    )
   }
   if (!(await portIsFree(config.relayPort))) {
     problems.push(
       `port ${config.relayPort} is in use; is another demo (or relay) running? Set FRANK_DEMO_RELAY_PORT to use another`,
     )
-  }
-  if (config.fakeChain && !(await portIsFree(config.fakeRpcPort))) {
-    problems.push(`port ${config.fakeRpcPort} is in use; set FRANK_DEMO_FAKE_RPC_PORT to use another`)
   }
   if (config.ngrok) {
     if (spawnSync(config.ngrokBin, ['version']).error) {
@@ -280,6 +269,93 @@ function tsxArgs(script: string): string[] {
   return ['--import', 'tsx', script]
 }
 
+/** The addresses the bot host funds for a bot: its identity address (payouts and transfers; the
+ * faucet pays straight from the funding wallet, so not for it) and its stamp account. */
+export function fundingTargets(
+  bot: string,
+  addresses: Record<string, string>,
+  mainAccounts: Record<string, string>,
+): Array<{ label: string; address: string }> {
+  return [
+    ...(bot === 'faucet' ? [] : [{ label: 'identity address', address: addresses[bot] }]),
+    { label: 'stamp account', address: mainAccounts[bot] },
+  ]
+}
+
+export interface FundingNeed {
+  /** What the bot host will send to bot accounts. */
+  transfersWei: bigint
+  /** Gas for those transfers, with a margin. */
+  gasWei: bigint
+  /** transfersWei + gasWei: what this start draws from the funding wallet. */
+  drawWei: bigint
+  /** The accounts that will be funded, `<bot> <which account>`. */
+  low: string[]
+}
+
+/** What the bot host will draw from the funding wallet when the bots start, read from the chain
+ * and worked out by the host's own rules: a transfer account under its refill mark is brought up
+ * to the refill amount, a stamp account under 0.1 MON to 0.5; each is one plain transfer. Reads
+ * balances only; nothing is sent. */
+export async function fundingNeed(
+  config: DemoConfig,
+  params: {
+    addresses: Record<string, string>
+    mainAccounts: Record<string, string>
+    getBalance: (address: string) => Promise<bigint>
+    gasPriceWei: bigint
+  },
+): Promise<FundingNeed> {
+  let transfersWei = 0n
+  const low: string[] = []
+  for (const bot of config.bots) {
+    for (const target of fundingTargets(bot.name, params.addresses, params.mainAccounts)) {
+      const balance = await params.getBalance(target.address)
+      const stamp = target.label === 'stamp account'
+      const below = stamp ? HOST_STAMP_TOP_UP_BELOW_WEI : config.funding.topUpBelowWei
+      const to = stamp ? HOST_STAMP_TOP_UP_TO_WEI : config.funding.topUpToWei
+      if (balance >= below) continue
+      transfersWei += to - balance
+      low.push(`${bot.name} ${target.label}`)
+    }
+  }
+  // A plain transfer costs 21000 x the gas price; twice that, in case the price moves.
+  const gasWei = BigInt(low.length) * 21_000n * params.gasPriceWei * 2n
+  return { transfersWei, gasWei, drawWei: transfersWei + gasWei, low }
+}
+
+/** Lines explaining why this start may not go ahead, or undefined when it may: either the start
+ * would draw more than the operator allowed, or the funding wallet cannot cover the draw and the
+ * reserve the host keeps in it. Nothing has been started or spent when this speaks. */
+export async function fundingRefusal(
+  config: DemoConfig,
+  need: FundingNeed,
+  fundingAddress: string,
+  fundingBalanceWei: bigint,
+): Promise<string[] | undefined> {
+  if (need.low.length === 0) return undefined
+  const what = `${need.low.length} bot accounts need funding: starting would draw ${formatEther(need.drawWei)} testnet MON (${formatEther(need.transfersWei)} in transfers, up to ${formatEther(need.gasWei)} gas) from the funding wallet ${fundingAddress}`
+  if (config.maxStartDrawWei !== undefined && need.drawWei > config.maxStartDrawWei) {
+    return [
+      `${what}, more than the ${formatEther(config.maxStartDrawWei)} MON one start may draw.`,
+      `  To allow it, run with --allow-draw (or set FRANK_DEMO_MAX_START_DRAW_WEI to at least ${need.drawWei}). Nothing was started and nothing was spent.`,
+      `  A state directory whose bots are already funded draws nothing: check that FRANK_DEMO_STATE_DIR (${config.stateDir}) is the one you meant.`,
+      `  Unfunded: ${need.low.join(', ')}`,
+    ]
+  }
+  const required = need.drawWei + config.funding.reserveWei
+  if (fundingBalanceWei < required) {
+    return [
+      `${what}, and the host keeps ${formatEther(config.funding.reserveWei)} MON in it as a reserve: it needs ${formatEther(required)} MON and holds ${formatEther(fundingBalanceWei)}.`,
+      `  Send testnet MON to ${fundingAddress} (E2E_DEMO_MAIN_WALLET_JSON) and start again. Nothing was started and nothing was spent.`,
+      `  Unfunded: ${need.low.join(', ')}`,
+    ]
+  }
+  return undefined
+}
+
+const KNOWN_FLAGS = new Set(['--ngrok', '--app', '--no-app', '--allow-draw'])
+
 export async function startDemo(config: DemoConfig, options: StartOptions = {}): Promise<DemoHandle> {
   const print = options.print ?? ((line: string) => console.log(line))
   const baseEnv = options.env ?? process.env
@@ -290,10 +366,13 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
   const unhealthy: string[] = []
   let started = false
   let exitCode: number | undefined
-  let fakeRpc: FakeRpc | undefined
   let stopped: Promise<void> | undefined
   let resolveDone: (code: number) => void = () => {}
   const done = new Promise<number>(r => (resolveDone = r))
+
+  const getBalance = options.getBalance ?? ((address: string) => chainBalanceWei(config.rpcUrl, address))
+  const getGasPrice =
+    options.getGasPrice ?? (async () => BigInt(await rpcCall<string>(config.rpcUrl, 'eth_gasPrice', [])))
 
   const supervisor: Supervisor = new Supervisor(baseEnv, print, (child: SupervisedChild) => {
     unhealthy.push(child.name)
@@ -315,7 +394,6 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       // Guards stay installed until everything is dead, so a second signal during the grace
       // period is handled (see onSignal) instead of falling to the default action.
       await supervisor.stopAll()
-      await fakeRpc?.close()
       if (lock) removeRunRecord(config.stateDir)
       lock?.release()
       removeGuards()
@@ -395,8 +473,6 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       if (err instanceof LockError) throw new DemoConfigError([err.message])
       throw err
     }
-    const modeProblem = checkDemoMode(config.stateDir, config.fakeChain ? 'fake-chain' : 'real')
-    if (modeProblem) throw new DemoConfigError([modeProblem])
     const stale = takeStaleRecord(config.stateDir)
     const staleLines = stale ? staleAdvice(stale) : []
     if (stale) for (const line of staleLines) print(`[demo] ${line}`)
@@ -404,56 +480,26 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     if (problems.length > 0) {
       throw new DemoConfigError(problems.some(p => p.includes('is in use')) ? [...problems, ...staleLines] : problems)
     }
-    // Only now is the run real enough to claim the directory for this mode.
-    writeDemoMode(config.stateDir, config.fakeChain ? 'fake-chain' : 'real')
     prepareStateDir(logDir)
 
-    if (config.fakeChain) {
-      const walletPaths = new Set([
-        config.mainWalletJson,
-        ...config.bots.map(b => b.env.E2E_DEMO_MAIN_WALLET_JSON).filter(Boolean),
-      ])
-      const funded: string[] = []
-      for (const path of walletPaths) {
-        if (!existsSync(path)) {
-          const wallet = Wallet.createRandom()
-          mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-          writeFileSync(
-            path,
-            JSON.stringify({
-              address: wallet.address,
-              privateKey: wallet.privateKey,
-            }),
-            { mode: 0o600 },
-          )
-          chmodSync(path, 0o600)
-        }
-        // Only the address is read, to fund it on the fake chain; the key never leaves the file.
-        funded.push((JSON.parse(readFileSync(path, 'utf8')) as { address: string }).address)
-      }
-      fakeRpc = await startFakeRpc({
-        port: config.fakeRpcPort,
-        funded,
-        stateFile: config.fakeChainLedger,
-        demoFunding: true,
-      })
-      print(`[demo] fake chain RPC on ${fakeRpc.url} (no real funds, no keys)`)
-      print(
-        fakeRpc.restoredTransactions > 0
-          ? `[demo] fake chain restored from ${config.fakeChainLedger} (${
-              fakeRpc.restoredTransactions
-            } transactions): balances and the faucet's records survive restarts; delete ${dirname(
-              config.fakeChainLedger as string,
-            )} to start a fresh chain`
-          : `[demo] fake chain starts empty; it is saved to ${config.fakeChainLedger} and reloaded on the next start`,
-      )
+    // Identities first: the relay's curated defaults are config, so they must exist before it starts.
+    const { addresses, mainAccounts, curated } = await prepareBotIdentities(config)
+    for (const bot of config.bots) {
+      print(`[demo] ${bot.name} identity ${addresses[bot.name]}, stamp account ${mainAccounts[bot.name]}`)
     }
 
-    // Identities first: the relay's curated defaults are config, so they must exist before it starts.
-    const { addresses, curated } = await prepareBotIdentities(config)
-    for (const bot of config.bots) {
-      if (addresses[bot.name]) print(`[demo] ${bot.name} identity ${addresses[bot.name]}`)
-    }
+    // Before anything is started or spent: can the one funding wallet fund the bots at all?
+    const fundingAddress = `0x${walletAddress(config.mainWalletJson) as string}`
+    const need = await fundingNeed(config, { addresses, mainAccounts, getBalance, gasPriceWei: await getGasPrice() })
+    const refusal = await fundingRefusal(config, need, fundingAddress, await getBalance(fundingAddress))
+    if (refusal) throw new DemoConfigError(refusal)
+    print(
+      need.low.length === 0
+        ? '[demo] every bot account is already funded: this start draws nothing from the funding wallet'
+        : `[demo] ${need.low.length} bot accounts need funding: this start DRAWS ${formatEther(need.drawWei)} testnet MON from ${fundingAddress} (allowed${config.maxStartDrawWei === undefined ? ' by --allow-draw' : `: the limit is ${formatEther(config.maxStartDrawWei)} MON`})`,
+    )
+    abortIfStopping()
+
     let publicRelayUrl = config.publicRelayUrl
     let publicAppUrl = config.publicAppUrl
 
@@ -481,22 +527,16 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     }
     abortIfStopping()
 
-    const effectivePublicRelayUrl = publicRelayUrl ?? config.publicRelayUrl
-    const directoryToml = [
-      '',
-      '[registry.directory]',
-      'network = "monad-testnet"',
-      'relay_id = "0102030405060708090a0b0c0d0e0f10"',
-      'relay_identity = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"',
-      `endpoint = "${effectivePublicRelayUrl ?? config.relayUrl}"`,
-      'binding_expiry_ns = "1893456000000000000"',
-      'enrollments_per_source_per_hour = 100000',
-      '',
-    ].join('\n')
+    // The shipped relay config carries the directory section; only the curated defaults are extra.
+    //
+    // RESERVED USERNAMES GO HERE (PR #1374, not on main when this was written): for each bot call
+    // `reservedUsernamesTomlLine([{ username, compressedPubKey }])` from
+    // `packages/bot-framework/src/reserved-usernames.ts` with its identity's compressed public key
+    // and `getProfile().username ?? id`. The returned line belongs INSIDE `[registry.directory]`,
+    // which is in the shipped base config, not in this appended file: pass it to
+    // run-local-monad.sh through a new override (as FRANK_RELAY_ID is) rather than appending it.
     const curatedPath = join(config.stateDir, 'relay-curated.toml')
-    const curatedToml = renderCuratedDefaultsToml(curated)
-    const combinedToml = [directoryToml, curatedToml].filter(Boolean).join('\n')
-    writeFileSync(curatedPath, combinedToml, { mode: 0o600 })
+    writeFileSync(curatedPath, renderCuratedDefaultsToml(curated), { mode: 0o600 })
     abortIfStopping()
 
     const releaseBin = join(REPO_ROOT, 'backend', 'cashweb', 'target', 'release', 'cashwebd-exe')
@@ -524,6 +564,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         FRANK_RELAY_LISTEN: `127.0.0.1:${config.relayPort}`,
         FRANK_RELAY_DB_PATH: relayDb,
         FRANK_RELAY_EXTRA_TOML: curatedPath,
+        ...(publicRelayUrl ? { FRANK_RELAY_PUBLIC_URL: publicRelayUrl.replace(/\/+$/, '') } : {}),
         FRANK_RUN_LOCAL_SKIP_DOTENV: '1',
         ...(effectiveCashwebdBin ? { CASHWEBD_BIN: effectiveCashwebdBin } : {}),
         ...config.toolchainEnv,
@@ -554,57 +595,92 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     abortIfStopping()
     print(`[demo] relay is up at ${config.relayUrl}`)
 
-    const readyLines = new Set<string>()
-    for (const bot of config.bots) {
-      mkdirSync(join(config.stateDir, 'bots', bot.name), {
-        recursive: true,
-        mode: 0o700,
-      })
-      supervisor.start({
-        name: bot.name,
-        command: process.execPath,
-        args: tsxArgs(bot.script),
-        cwd: BOT_DIR,
-        logPath: join(logDir, `${bot.name}.log`),
-        env: bot.env,
-        onLine: line => {
-          if (bot.readyLine.test(line)) readyLines.add(bot.name)
-        },
-      })
-      writePidFile()
-    }
+    // ONE process runs every bot: one bot host, one funding wallet, one nonce counter.
+    const registered = new Set<string>()
+    const failed = new Map<string, string>()
+    let allStarted = false
+    mkdirSync(config.botProcess.hostStateDir, { recursive: true, mode: 0o700 })
+    const bots = supervisor.start({
+      name: 'bots',
+      command: process.execPath,
+      args: tsxArgs(config.botProcess.script),
+      cwd: BOT_DIR,
+      logPath: join(logDir, 'bots.log'),
+      env: config.botProcess.env,
+      onLine: line => {
+        const ok = /\[all-bots\] (\S+) registered/.exec(line)
+        if (ok) registered.add(ok[1])
+        // The host's line carries the reason; the entry point's line marks the bot as failed.
+        const why = /Bot "([^"]+)" could not be started and is left out[^:]*: (.*)$/.exec(line)
+        if (why) failed.set(why[1], why[2])
+        const bad = /\[all-bots\] (\S+) FAILED to start/.exec(line)
+        if (bad && !failed.has(bad[1])) failed.set(bad[1], `see ${join(logDir, 'bots.log')}`)
+        if (/\[all-bots\] running: /.test(line)) allStarted = true
+      },
+    })
+    writePidFile()
+    print(`[demo] starting ${config.bots.length} bots in one process (each registers and is funded in turn) ...`)
 
-    const botDeadline = Date.now() + (options.botTimeoutS ?? 240) * 1000
+    const botDeadline = Date.now() + (options.botTimeoutS ?? 900) * 1000
     const waiting = new Set<DemoBot>(config.bots)
-    while (waiting.size > 0) {
+    const botLog = join(logDir, 'bots.log')
+    for (;;) {
       abortIfStopping()
-      const registered = await registeredAddresses(config.relayUrl).catch(() => new Set<string>())
+      const visible = await registeredAddresses(config.relayUrl).catch(() => new Set<string>())
       for (const bot of [...waiting]) {
-        const address = addresses[bot.name]?.toLowerCase()
-        // Started (its loop is running) AND, for identity bots, visible to users on the relay.
-        const ready = readyLines.has(bot.name) && (!address || registered.has(address))
-        if (ready) {
+        if (failed.has(bot.name)) {
           waiting.delete(bot)
-          print(`[demo] ${bot.name} is ready`)
+          continue
+        }
+        // Registered with the host AND visible to users on the relay.
+        if (registered.has(bot.name) && visible.has(addresses[bot.name].toLowerCase())) {
+          waiting.delete(bot)
+          print(`[demo] ${bot.name} is registered`)
         }
       }
-      if (waiting.size === 0) break
-      const dead = [...waiting].find(b => supervisor.get(b.name)?.hasExited())
-      if (dead || Date.now() > botDeadline) {
-        const name = (dead ?? [...waiting][0]).name
-        const child = supervisor.get(name)
+      if (waiting.size === 0 && allStarted) break
+      if (bots.hasExited() || Date.now() > botDeadline) {
         throw new DemoConfigError([
-          `${name} did not become ready${dead ? ' (it exited)' : ' in time'}. Last output (${join(
-            logDir,
-            `${name}.log`,
-          )}):`,
-          ...redactLines(child?.tail().slice(-15) ?? [], config.secrets).map(l => `  ${l}`),
+          bots.hasExited()
+            ? `the bot process exited during startup. Last output (${botLog}):`
+            : `the bot process did not finish starting in time (still waiting for: ${
+                [...waiting].map(b => b.name).join(', ') || 'its poll loop'
+              }). Last output (${botLog}):`,
+          ...redactLines(bots.tail().slice(-15), config.secrets).map(l => `  ${l}`),
         ])
       }
       await sleep(options.pollMs ?? 1000)
     }
     abortIfStopping()
 
+    // A bot that did not start, or whose accounts the host could not fund, is an error naming the
+    // bot. The others keep running.
+    const botProblems = [...failed].map(([name, reason]) => `${name} FAILED to start: ${reason}`)
+    for (const bot of config.bots) {
+      if (failed.has(bot.name)) continue
+      for (const target of fundingTargets(bot.name, addresses, mainAccounts)) {
+        const balance = await getBalance(target.address)
+        if (balance < DEMO_MIN_BOT_BALANCE_WEI) {
+          botProblems.push(
+            `${bot.name} is NOT funded: its ${target.label} ${target.address} holds ${formatEther(balance)} MON (needs ${formatEther(DEMO_MIN_BOT_BALANCE_WEI)})`,
+          )
+        }
+      }
+    }
+    if (botProblems.length > 0) {
+      const fundingBalance = await getBalance(fundingAddress).catch(() => undefined)
+      print('')
+      print('!!!!!!!! DEMO BOT ERRORS !!!!!!!!')
+      for (const problem of botProblems) print(`!! ${problem}`)
+      print(
+        `!! funding wallet ${fundingAddress} holds ${
+          fundingBalance === undefined ? 'an unknown amount of' : formatEther(fundingBalance)
+        } MON; bot log: ${botLog}`,
+      )
+      print('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+    } else {
+      print(`[demo] all ${config.bots.length} bots funded and registered`)
+    }
 
     let appStarted = false
     if (options.startApp) {
@@ -616,12 +692,6 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         QCLI_MONAD_RPC_CHAIN: 'monad-testnet',
         QCLI_MONAD_STAMP_BURN_ADDRESS: config.stampBurnAddress,
         QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI: config.minStampWei,
-        ...(config.fakeChain
-          ? {
-              QCLI_FRANK_FAKE_DEMO: 'true',
-              QCLI_FRANK_DEMO_CONTROL_URL: config.rpcUrl,
-            }
-          : {}),
       }
       const quasarBin = join(REPO_ROOT, 'node_modules', '@quasar', 'app-vite', 'bin', 'quasar.js')
       const appCommandPath = existsSync(quasarBin) ? process.execPath : 'yarn'
@@ -656,7 +726,9 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
       publicRelayUrl,
       publicAppUrl,
       addresses,
-      fakeRpc,
+      mainAccounts,
+      fundingAddress,
+      botProblems,
       logDir,
       stop,
       done,
@@ -673,7 +745,6 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
 /** The exact shell command that starts the app so its browser can reach this stack. */
 export function appCommand(config: DemoConfig, relayUrl: string): string[] {
   return [
-    ...(config.fakeChain ? [`export QCLI_FRANK_FAKE_DEMO=true QCLI_FRANK_DEMO_CONTROL_URL=${config.rpcUrl}`] : ['unset QCLI_FRANK_FAKE_DEMO QCLI_FRANK_DEMO_CONTROL_URL']),
     `cd app && QCLI_MONAD_RELAY_BASE_URL=${relayUrl} QCLI_MONAD_RPC_CHAIN=monad-testnet \\`,
     `  QCLI_MONAD_STAMP_BURN_ADDRESS=${config.stampBurnAddress} QCLI_CASHWEB_STAMP_MIN_BURN_VALUE_WEI=${config.minStampWei} \\`,
     '  yarn dev:browser',
@@ -687,21 +758,10 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
   print(`Frank demo is running (launcher pid ${process.pid}).`)
   print(`  Relay:   ${handle.relayUrl}${handle.publicRelayUrl ? ` (public: ${handle.publicRelayUrl})` : ''}`)
   print(
-    `  Chain:   ${
-      config.fakeChain
-        ? `FAKE chain at ${config.rpcUrl} (no real funds; saved in ${config.fakeChainLedger}, so balances survive a restart)`
-        : 'Monad testnet (RPC URL hidden)'
-    }`,
+    '  Chain:   Monad testnet (RPC URL hidden)',
   )
+  print(`  Funding: ${handle.fundingAddress} (the one wallet that funds every bot and the faucet)`)
   print(`  Burn:    ${config.stampBurnAddress} (relay, bots and the app command below all use it)`)
-  if (config.fakeChain) {
-    print(
-      '  Typed wallet: setup may start at zero. To ensure 1 simulated MON at its EVM receive address:',
-    )
-    print(
-      `    TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/fund-demo.ts --fake-chain --port ${config.fakeRpcPort} <EVM_RECEIVE_ADDRESS>`,
-    )
-  }
   if (config.faucetAmountWei) {
     const needed = minBlackjackFundsWei()
     print(
@@ -717,11 +777,11 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
   print('  Bots:')
   for (const bot of config.bots) {
     const address = handle.addresses[bot.name]
-    print(`    ${bot.name.padEnd(10)} ${address ?? '(no profile; sends transfers only)'}`)
+    print(`    ${bot.name.padEnd(10)} ${address}`)
   }
   print(
     config.qwenMode === 'stub'
-      ? '  Qwen:    STUB mode (offline canned replies; set QWEN_API_KEY for a real model)'
+      ? '  Qwen:    STUB mode, as asked (offline canned replies; unset QWEN_BOT_MODE for the model)'
       : '  Qwen:    live model',
   )
   if (handle.appStarted) {
@@ -735,13 +795,10 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
     print('  Start the app in another terminal, from the repo root, with exactly this:')
     for (const line of appCommand(config, handle.publicRelayUrl ?? handle.relayUrl)) print(`    ${line}`)
   }
-  print(
-    config.fakeChain
-      ? '  The fake chain and the relay accept requests from any origin, so the browser reaches them directly.'
-      : '  The relay accepts requests from any origin; your RPC provider must allow the app origin.',
-  )
+  print('  The relay accepts requests from any origin; the app reaches the chain through the relay.')
   const bad = handle.unhealthy()
   if (bad.length > 0) print(`  UNHEALTHY: ${bad.join(', ')} exited (see the logs above)`)
+  for (const problem of handle.botProblems) print(`  ERROR: ${problem}`)
   print(
     `Press Ctrl-C to stop everything (or kill -INT ${process.pid}; also stops if the yarn process that started it is killed).`,
   )
@@ -852,14 +909,20 @@ export async function main(argv: string[], env: Record<string, string | undefine
         }
       }
     }
+    const unknown = argv.filter(arg => !KNOWN_FLAGS.has(arg))
+    if (unknown.length > 0) {
+      throw new DemoConfigError([
+        `unknown argument(s): ${unknown.join(' ')}. The demo runs on Monad testnet; its options are --ngrok, --app, --no-app and --allow-draw.`,
+      ])
+    }
     const envFilePath = env.FRANK_DEMO_ENV_FILE
       ? resolve(env.INIT_CWD ?? process.cwd(), env.FRANK_DEMO_ENV_FILE)
       : join(REPO_ROOT, '.env')
     const config = resolveDemoConfig({
       env,
       envFile: readEnvFile(envFilePath),
-      fakeChainFlag: argv.includes('--fake-chain'),
       ngrokFlag: argv.includes('--ngrok'),
+      allowDrawFlag: argv.includes('--allow-draw'),
       // `yarn demo` runs inside packages/bot; relative paths mean relative to where the user typed it.
       cwd: env.INIT_CWD ?? process.cwd(),
     })

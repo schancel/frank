@@ -5,16 +5,70 @@ import {
   type MonadIdentity,
   type MonadProfileFields,
 } from "@frank/wallet/monad-identity";
+import {
+  UsernameError,
+  claimUsername,
+} from "@frank/cashweb/relay/username-client";
 import type { BotProfile } from "./types";
 
 export class RelayProfileManager {
+  /**
+   * Claims the bot's unique username on the relay, signed by the bot's identity key. The name
+   * is `profile.username`, or the bot's id (`label`). Call after the bot's directory entry is
+   * published: the relay gives names only to published accounts. Claiming a name the bot
+   * already holds changes nothing. A refusal is logged and does not stop the bot.
+   */
+  static async claimUsername(params: {
+    relayBaseUrl: string;
+    /** Canonical network of the relay's directory, e.g. `monad-testnet`. */
+    network: string;
+    identity: MonadIdentity;
+    label: string;
+    profile: BotProfile;
+  }): Promise<void> {
+    const username = params.profile.username ?? params.label;
+    try {
+      const held = await claimUsername({
+        relayBaseUrl: params.relayBaseUrl,
+        network: params.network,
+        signer: params.identity,
+        username,
+      });
+      console.log(
+        `[${params.label}] username @${held.username} points to ${params.identity.displayAddress}`
+      );
+    } catch (err) {
+      console.warn(
+        err instanceof UsernameError && err.code === "taken"
+          ? `[${params.label}] username @${username} is held by another account; this bot has no username`
+          : `[${params.label}] could not claim username @${username}: ${
+              err instanceof UsernameError
+                ? `${err.code}${err.detail ? ` (${err.detail})` : ""}`
+                : (err as Error).message
+            }`
+      );
+    }
+  }
+
   static async registerProfile(params: {
     relayBaseUrl: string;
     identity: MonadIdentity;
     label: string;
     profile: BotProfile;
     force?: boolean;
+    /** When given, the bot's username is claimed on this network before the profile is sent. */
+    network?: string;
   }): Promise<void> {
+    if (params.network !== undefined) {
+      await RelayProfileManager.claimUsername({
+        relayBaseUrl: params.relayBaseUrl,
+        network: params.network,
+        identity: params.identity,
+        label: params.label,
+        profile: params.profile,
+      });
+    }
+
     let avatarStr: string | undefined = undefined;
     if (typeof params.profile.avatarPng === "string") {
       avatarStr = params.profile.avatarPng;

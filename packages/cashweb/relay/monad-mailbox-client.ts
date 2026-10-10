@@ -1072,7 +1072,32 @@ export interface CanonicalRecoveryRecord extends CanonicalInboxRecord {
 }
 export interface CanonicalMailboxPage<T> {
   readonly records: readonly T[];
+  /** Records the relay served whose delivery or context this client cannot decode or validate
+   * (a shape or schema it does not read, or corrupt bytes). They are not messages and carry no
+   * payment facts; they are listed so a reader can report them and move past them. Absent means
+   * none. */
+  readonly unreadable?: readonly CanonicalUnreadableRecord[];
   readonly nextCursor?: string;
+}
+/** What the relay's own record headers say about a record this client could not read. */
+export interface CanonicalUnreadableRecord {
+  readonly submissionIdentity: string;
+  readonly timestampMs: number;
+}
+/** One record's pair, or undefined when this client cannot decode or validate it. That is a fact
+ * about the one record, which any sender can cause; it must not fail the page it arrived on. The
+ * page's own framing, limits and record headers are checked elsewhere and still fail the read. */
+function canonicalReadablePair(
+  parts: readonly CanonicalMultipartPart[]
+): ReturnType<typeof inspectCanonicalPair> | undefined {
+  try {
+    return inspectCanonicalPair({
+      delivery: parts[0].bytes,
+      context: parts[1].bytes,
+    });
+  } catch {
+    return undefined;
+  }
 }
 const canonicalHex32 = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
@@ -1486,34 +1511,38 @@ export async function fetchCanonicalInboxPage(
     `inbox/${params.recipient}`
   );
   const seen = new Set<string>();
-  const records = canonicalPageRecords(response, binding.limit!).map(
-    (outer) => {
-      const parts = canonicalRecordParts(outer, 2);
-      const pair = inspectCanonicalPair({
-        delivery: parts[0].bytes,
-        context: parts[1].bytes,
-      });
-      if (
-        pair.network !==
-          canonicalNetworkDescriptor(params.expectedNetworkTag).network ||
-        pair.recipient !== params.recipient ||
-        seen.has(pair.payload_hash)
-      )
-        canonicalProtocol(
-          "Canonical inbox recipient/network/duplicate mismatch"
-        );
-      seen.add(pair.payload_hash);
-      return Object.freeze({
+  const records: CanonicalInboxRecord[] = [];
+  const unreadable: CanonicalUnreadableRecord[] = [];
+  for (const outer of canonicalPageRecords(response, binding.limit!)) {
+    const parts = canonicalRecordParts(outer, 2);
+    const submissionIdentity = outer.headers["x-frank-submission-identity"];
+    const timestampMs = Number(outer.headers["x-frank-mailbox-timestamp-ms"]);
+    const pair = canonicalReadablePair(parts);
+    if (pair === undefined) {
+      unreadable.push(Object.freeze({ submissionIdentity, timestampMs }));
+      continue;
+    }
+    if (
+      pair.network !==
+        canonicalNetworkDescriptor(params.expectedNetworkTag).network ||
+      pair.recipient !== params.recipient ||
+      seen.has(pair.payload_hash)
+    )
+      canonicalProtocol("Canonical inbox recipient/network/duplicate mismatch");
+    seen.add(pair.payload_hash);
+    records.push(
+      Object.freeze({
         delivery: Uint8Array.from(parts[0].bytes),
         context: Uint8Array.from(parts[1].bytes),
-        submissionIdentity: outer.headers["x-frank-submission-identity"],
-        timestampMs: Number(outer.headers["x-frank-mailbox-timestamp-ms"]),
-      });
-    }
-  );
+        submissionIdentity,
+        timestampMs,
+      })
+    );
+  }
   canonicalCheckAbort(params.signal);
   return Object.freeze({
     records: Object.freeze(records),
+    unreadable: Object.freeze(unreadable),
     nextCursor: response.headers[MAILBOX_NEXT_CURSOR_HEADER],
   });
 }
@@ -1537,37 +1566,42 @@ export async function fetchCanonicalMailboxPage(
     `mailbox/${params.recipient}`
   );
   const seen = new Set<string>();
-  const records = canonicalPageRecords(response, binding.limit!).map(
-    (outer) => {
-      const parts = canonicalRecordParts(outer, 2);
-      const pair = inspectCanonicalPair({
-        delivery: parts[0].bytes,
-        context: parts[1].bytes,
-      });
-      const direction = outer.headers["x-frank-mailbox-direction"];
-      if (direction !== "in" && direction !== "out")
-        canonicalProtocol(
-          "Combined mailbox requires explicit in/out direction"
-        );
-      const expectedNetwork = canonicalNetworkDescriptor(
-        params.expectedNetworkTag
-      ).network;
-      if (pair.network !== expectedNetwork || seen.has(pair.payload_hash)) {
-        canonicalProtocol("Canonical mailbox network or duplicate mismatch");
-      }
-      seen.add(pair.payload_hash);
-      return Object.freeze({
+  const expectedNetwork = canonicalNetworkDescriptor(
+    params.expectedNetworkTag
+  ).network;
+  const records: CanonicalMailboxRecord[] = [];
+  const unreadable: CanonicalUnreadableRecord[] = [];
+  for (const outer of canonicalPageRecords(response, binding.limit!)) {
+    const parts = canonicalRecordParts(outer, 2);
+    // The relay's own framing is checked for every record, readable or not.
+    const direction = outer.headers["x-frank-mailbox-direction"];
+    if (direction !== "in" && direction !== "out")
+      canonicalProtocol("Combined mailbox requires explicit in/out direction");
+    const submissionIdentity = outer.headers["x-frank-submission-identity"];
+    const timestampMs = Number(outer.headers["x-frank-mailbox-timestamp-ms"]);
+    const pair = canonicalReadablePair(parts);
+    if (pair === undefined) {
+      unreadable.push(Object.freeze({ submissionIdentity, timestampMs }));
+      continue;
+    }
+    if (pair.network !== expectedNetwork || seen.has(pair.payload_hash)) {
+      canonicalProtocol("Canonical mailbox network or duplicate mismatch");
+    }
+    seen.add(pair.payload_hash);
+    records.push(
+      Object.freeze({
         direction,
         delivery: Uint8Array.from(parts[0].bytes),
         context: Uint8Array.from(parts[1].bytes),
-        submissionIdentity: outer.headers["x-frank-submission-identity"],
-        timestampMs: Number(outer.headers["x-frank-mailbox-timestamp-ms"]),
-      });
-    }
-  );
+        submissionIdentity,
+        timestampMs,
+      })
+    );
+  }
   canonicalCheckAbort(params.signal);
   return Object.freeze({
     records: Object.freeze(records),
+    unreadable: Object.freeze(unreadable),
     nextCursor: response.headers[MAILBOX_NEXT_CURSOR_HEADER],
   });
 }

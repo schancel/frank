@@ -756,6 +756,9 @@ The type-1 delivery contains one type-5 recipient-encrypted-payload frame, its
 T3 digest, and a sorted payment set. The decrypted plaintext of type 5 is a
 complete type-6 message-content frame. One valid payment member is
 permitted when the wallet cannot economically source the preferred two or more.
+A delivery written at `schema_version` 2 may carry no payment at all; whether
+a recipient shows an unpaid message is that recipient's policy, not a validity
+rule.
 `message_id`, the type-8 plaintext revision frame, and its T1a content digest
 belong inside encrypted content; they are not relay-visible delivery identity.
 Each recipient may therefore have different encrypted bytes and a different
@@ -819,7 +822,12 @@ one. The construction is multiplicative rather than additive, and uses no BIP32,
 chain code, or HMAC. A cryptographic review of the DLEQ construction is
 required before any implementation ships it.
 
-`schema_version` stays 1 for type 1. Type 5 schema 1 remains the proof-only
+Type 1 keeps `schema_version` 1 for a paid delivery. Its `schema_version` 2
+lets the payment set be empty (or field 4 be absent): a message that carries
+no payment. It keeps `min_reader_version` 1 per V1; a reader that supports
+type 1 only at schema 1 reads it through the schema-1 projection (V6.3), which
+requires a payment, and so rejects it as `schema` instead of reading it as
+paid. Type 5 schema 1 remains the proof-only
 nonce/ciphertext layout; production writers MUST emit type 5 with
 `schema_version = 2` and `min_reader_version = 2`, carrying the complete
 crypto-box envelope in field 4 and stamp fields in 5 through 7. Type 4 gets

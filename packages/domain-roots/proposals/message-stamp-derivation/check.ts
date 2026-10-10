@@ -374,7 +374,7 @@ function generate() {
     'packages/wallet/monad-wallet-material.ts',
     'packages/wallet/monad-hd-keyring.ts',
     'packages/wallet/monad-change-keyring.ts',
-    'packages/wallet/chain/monad-domain-wallet.jest.test.ts',
+    'packages/wallet/bip32-domain-root.ts',
     'docs/protocol/proposals/suite1-directory/README.md',
   ].map(path => ({ path, sha256: sha(readFileSync(resolve(ROOT, path))) }))
   return {

@@ -86,8 +86,22 @@ const REPLY_GIVE_UP_MS = 60 * 60_000;
 export const FAILED_REPLY_TEXT =
   "Sorry, I couldn't handle that message just now. Please send it again.";
 
-// A bot's account is topped up from the shared funding wallet when it holds less than this.
-const TOP_UP_BELOW_WEI = 100_000_000_000_000_000n;
+// The account a bot pays transfers (game payouts) from: topped up from the shared funding wallet
+// when it holds less than the first amount, up to the second. Defaults; see `BotHostOptions`.
+// 0.3 / 0.5 MON: above the largest payout the games advertise (about 0.25 MON), and ten bots
+// starting from nothing draw under 10 MON.
+const TOP_UP_BELOW_WEI = 300_000_000_000_000_000n;
+const TOP_UP_TO_WEI = 500_000_000_000_000_000n;
+// What bot top-ups leave in the shared funding wallet: the faucet pays its grants from the same
+// wallet and keeps this reserve itself (`FAUCET_MIN_RESERVE_WEI`, 0.1 MON when unset; the
+// faucet's own default lives in packages/bot/faucet-core.ts and must stay the same figure).
+const FUNDING_RESERVE_WEI = 100_000_000_000_000_000n;
+// The account a bot's wallet pays message stamps from spends far less.
+const STAMP_TOP_UP_BELOW_WEI = 100_000_000_000_000_000n;
+const STAMP_TOP_UP_TO_WEI = 500_000_000_000_000_000n;
+// How long a look at a message's payment transactions may take before the reply is stamped as
+// if nothing was confirmed. Short: the reply does not wait for a slow node.
+const PAYMENT_CHECK_MS = 3_000;
 // Balances are looked at this often, and a failed top-up is tried again this soon.
 const TOP_UP_CHECK_MS = 30_000;
 // After a top-up was sent, none is sent for this long, whatever the balance reads meanwhile.
@@ -98,18 +112,45 @@ const TOP_UP_RECEIPT_MS = 60_000;
 // an error and its next poll starts afresh; the other bots never waited for it.
 const POLL_CALL_TIMEOUT_MS = 30_000;
 
-/** `call`, or a rejection naming `what` once it has taken `POLL_CALL_TIMEOUT_MS`. */
-function bounded<T>(call: Promise<T>, what: string): Promise<T> {
+/** `call`, or a rejection naming `what` once it has taken `limitMs`. */
+function bounded<T>(
+  call: Promise<T>,
+  what: string,
+  limitMs: number
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () =>
-        reject(new Error(`${what} took over ${POLL_CALL_TIMEOUT_MS / 1000}s`)),
-      POLL_CALL_TIMEOUT_MS
+      () => reject(new Error(`${what} took over ${limitMs / 1000}s`)),
+      limitMs
     );
     timer.unref?.();
   });
   return Promise.race([call, late]).finally(() => clearTimeout(timer));
+}
+
+/** A bot's own account cannot pay for a transaction its handler asked for. Nothing was signed or
+ * sent. The host tops the account up on its poll, a bounded amount at a time; the payout is the
+ * handler's to keep and make again once the balance covers it. */
+export class BotBalanceShortError extends Error {
+  constructor(
+    readonly botId: string,
+    readonly balanceWei: bigint,
+    readonly neededWei: bigint
+  ) {
+    super(
+      `Bot "${botId}" holds ${balanceWei} wei and this transaction needs ${neededWei}. Nothing was sent; it can be made again after the bot's account is topped up.`
+    );
+    this.name = "BotBalanceShortError";
+  }
+}
+
+/** An account the shared funding wallet keeps topped up: to `toWei` when under `belowWei`. */
+interface FundingTarget {
+  addr: string;
+  label: string;
+  belowWei: bigint;
+  toWei: bigint;
 }
 
 /** A replies-per-peer budget as configured: unset, or a non-negative integer. Anything else is a
@@ -156,7 +197,9 @@ interface ActiveBotInstance {
   /** The row the last retry pass ended on; the next pass starts after it. */
   refused?: string;
   /** The accounts the shared funding wallet keeps topped up. */
-  fundingTargets: { addr: string; label: string }[];
+  fundingTargets: FundingTarget[];
+  /** What each unfinished message was confirmed to have paid, once looked up. */
+  confirmedPaid: Map<string, bigint>;
   toppingUp: boolean;
   /** No balance is read before this time. */
   nextTopUpMs: number;
@@ -253,6 +296,9 @@ export class FrankBotHost {
         options.stampValueWei ??
         envConfig.defaultStampValueWei ??
         10_000_000_000_000_000n,
+      minStampValueWei:
+        options.minStampValueWei ??
+        BigInt(process.env.CASHWEB_STAMP_MIN_BURN_VALUE_WEI || "1000000000000"),
       pollIntervalMs: options.pollIntervalMs ?? 3000,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30 * 60 * 1000,
       watchRegistrations: options.watchRegistrations ?? true,
@@ -265,7 +311,22 @@ export class FrankBotHost {
           : "maxRepliesPerPeer"
       ),
       replyGiveUpMs: options.replyGiveUpMs ?? REPLY_GIVE_UP_MS,
+      callTimeoutMs: options.callTimeoutMs ?? POLL_CALL_TIMEOUT_MS,
+      topUpBelowWei:
+        options.topUpBelowWei ??
+        BigInt(process.env.FRANK_BOT_TOP_UP_BELOW_WEI || TOP_UP_BELOW_WEI),
+      topUpToWei:
+        options.topUpToWei ??
+        BigInt(process.env.FRANK_BOT_TOP_UP_TO_WEI || TOP_UP_TO_WEI),
+      fundingReserveWei:
+        options.fundingReserveWei ??
+        BigInt(process.env.FAUCET_MIN_RESERVE_WEI || FUNDING_RESERVE_WEI),
     };
+
+    if (this.options.topUpToWei <= this.options.topUpBelowWei)
+      throw new Error(
+        `Bot top-up target (${this.options.topUpToWei} wei, FRANK_BOT_TOP_UP_TO_WEI) must be greater than its threshold (${this.options.topUpBelowWei} wei, FRANK_BOT_TOP_UP_BELOW_WEI)`
+      );
 
     const cursorFile = join(this.options.stateDir, "registration-cursor.json");
     if (existsSync(cursorFile)) {
@@ -410,23 +471,35 @@ export class FrankBotHost {
         identity: wallet.identity,
         label: definition.id,
         profile,
+        network: directory.network,
       });
 
       // 6. Fund the bot from the shared funding wallet, if there is one. The same top-up runs
       // again on the poll whenever a balance has fallen under the threshold.
       // The faucet sends its grants straight from the funding wallet, so its identity address
       // needs nothing; its messages are still paid from its own receive address.
-      const fundingTargets = this.fundingWallet
+      const fundingTargets: FundingTarget[] = this.fundingWallet
         ? [
             ...(definition.id === "faucet"
               ? []
-              : [{ addr: botAddress, label: "Identity address" }]),
+              : [
+                  {
+                    // Pays the bot's transfers: `sendTransfer`, a game's payouts.
+                    addr: botAddress,
+                    label: "Identity address",
+                    belowWei: this.options.topUpBelowWei,
+                    toWei: this.options.topUpToWei,
+                  },
+                ]),
             {
+              // Pays the stamps on the bot's messages.
               addr: (await wallet.getReceiveAddress()).raw,
               label: "EVM main account",
+              belowWei: STAMP_TOP_UP_BELOW_WEI,
+              toWei: STAMP_TOP_UP_TO_WEI,
             },
           ].filter(
-            // One account under two names is topped up once.
+            // One account under two names is topped up once, by the larger rule (the first).
             (target, index, all) =>
               all.findIndex(
                 (other) =>
@@ -434,6 +507,22 @@ export class FrankBotHost {
               ) === index
           )
         : [];
+      // A payout larger than the threshold can find the account holding less than it owes
+      // and above the threshold, where no top-up follows. Said at start, by name.
+      if (
+        definition.maxPayoutWei !== undefined &&
+        (!this.fundingWallet ||
+          definition.maxPayoutWei > this.options.topUpBelowWei)
+      )
+        console.warn(
+          `[bot-host] Bot "${definition.id}" can owe a single payout of ${
+            definition.maxPayoutWei
+          } wei, but ${
+            this.fundingWallet
+              ? `its account is only topped up when under ${this.options.topUpBelowWei} wei: raise FRANK_BOT_TOP_UP_BELOW_WEI (and FRANK_BOT_TOP_UP_TO_WEI) to at least that payout`
+              : "no funding wallet is configured to top its account up"
+          }. Such a payout can fail until the account is funded.`
+        );
       await this.fundBot(definition.id, fundingTargets);
 
       // 7. Wire up loop guard and peer queue
@@ -536,21 +625,10 @@ export class FrankBotHost {
           const gasLimit = data && data !== "0x" ? 250_000n : 21_000n;
           const needed = valueWei + gasLimit * gasPrice;
 
-          if (
-            botBalance < needed &&
-            this.fundingWallet &&
-            this.nonceSequencer
-          ) {
-            const topUp = needed - botBalance + 50_000_000_000_000_000n;
-            await this.nonceSequencer.withNonce(async (nonce) => {
-              const tx = await this.fundingWallet!.sendTransaction({
-                to: botAddress,
-                value: topUp,
-                nonce,
-              });
-              await tx.wait();
-            });
-          }
+          // A bot pays from its own balance. A handler cannot make the shared funding wallet
+          // pay: that wallet only makes the host's bounded top-up, on the poll.
+          if (botBalance < needed)
+            throw new BotBalanceShortError(definition.id, botBalance, needed);
 
           let tx: any;
           for (let attempt = 1; attempt <= 3; attempt++) {
@@ -618,21 +696,10 @@ export class FrankBotHost {
           const gasLimit = 21_000n;
           const needed = valueWei + gasLimit * gasPrice;
 
-          if (
-            botBalance < needed &&
-            this.fundingWallet &&
-            this.nonceSequencer
-          ) {
-            const topUp = needed - botBalance + 50_000_000_000_000_000n;
-            await this.nonceSequencer.withNonce(async (nonce) => {
-              const tx = await this.fundingWallet!.sendTransaction({
-                to: botAddress,
-                value: topUp,
-                nonce,
-              });
-              await tx.wait();
-            });
-          }
+          // A bot pays from its own balance. A handler cannot make the shared funding wallet
+          // pay: that wallet only makes the host's bounded top-up, on the poll.
+          if (botBalance < needed)
+            throw new BotBalanceShortError(definition.id, botBalance, needed);
 
           const populated = await botWallet.populateTransaction({
             to,
@@ -680,6 +747,31 @@ export class FrankBotHost {
         },
       };
 
+      // A transfer that fails, for whatever reason, is said at error level here, whatever the
+      // handler then does with the rejection: money a bot owed was not sent.
+      const transfers = context as {
+        -readonly [K in "sendTransaction" | "buildAndSignTransfer"]: BotContext[K];
+      };
+      for (const name of ["sendTransaction", "buildAndSignTransfer"] as const) {
+        const inner = transfers[name] as (params: {
+          to: string;
+          valueWei?: bigint;
+        }) => Promise<never>;
+        transfers[name] = (async (params: { to: string; valueWei?: bigint }) => {
+          try {
+            return await inner(params);
+          } catch (error) {
+            console.error(
+              `[bot-host] [${definition.id}] TRANSFER FAILED: ${
+                params.valueWei ?? 0n
+              } wei to ${params.to} was not sent:`,
+              error instanceof Error ? error.message : error
+            );
+            throw error;
+          }
+        }) as never;
+      }
+
       let savedCursor = 0;
       try {
         const cursorStr = await state.get("cursor:lastPollTimestamp");
@@ -707,6 +799,7 @@ export class FrankBotHost {
         sendWarned: new Set<string>(),
         retrying: false,
         fundingTargets,
+        confirmedPaid: new Map(),
         toppingUp: false,
         nextTopUpMs: Date.now() + TOP_UP_CHECK_MS,
         pollWaiters: new Set(),
@@ -838,7 +931,7 @@ export class FrankBotHost {
    * not be looked at or funded; nothing is lost, the next call tries again. */
   private async fundBot(
     id: string,
-    targets: readonly { addr: string; label: string }[]
+    targets: readonly FundingTarget[]
   ): Promise<"sent" | "idle" | "failed"> {
     if (!this.fundingWallet || !this.nonceSequencer) return "idle";
     let outcome: "sent" | "idle" | "failed" = "idle";
@@ -846,31 +939,41 @@ export class FrankBotHost {
       let sent = false;
       try {
         const bal = await this.provider.getBalance(target.addr);
-        if (bal >= TOP_UP_BELOW_WEI) continue;
+        if (bal >= target.belowWei) continue;
         const funderBal = await this.provider.getBalance(
           this.fundingWallet.address
         );
-        const fundAmount =
-          funderBal > 1_000_000_000_000_000_000n
-            ? 500_000_000_000_000_000n
-            : funderBal / 4n;
+        // Up to the target, and never into the funding wallet's reserve.
+        const wanted = target.toWei - bal;
+        const spare = funderBal - this.options.fundingReserveWei;
+        const fundAmount = wanted < spare ? wanted : spare;
         if (fundAmount <= 10_000_000_000_000_000n) {
           outcome = outcome === "sent" ? "sent" : "failed";
-          console.warn(
-            `[bot-host] Funding wallet ${this.fundingWallet.address} is too low to top up ${target.label} (${target.addr}) of bot ${id}`
+          console.error(
+            `[bot-host] FUNDING WALLET EXHAUSTED: ${this.fundingWallet.address} holds ${funderBal} wei, of which ${this.options.fundingReserveWei} is the reserve left for the faucet. ${target.label} (${target.addr}) of bot ${id} was not topped up`
           );
           continue;
         }
-        await this.nonceSequencer.withNonce(async (nonce) => {
-          const tx = await this.fundingWallet!.sendTransaction({
+        // The shared sequence is held only while the transfer is built and handed to the
+        // node, never while it is mined: one slow transfer must not stall every bot's top-up
+        // and the faucet.
+        const tx = await this.nonceSequencer.withNonce((nonce) =>
+          this.fundingWallet!.sendTransaction({
             to: target.addr,
             value: fundAmount,
             nonce,
-          });
-          sent = true;
-          outcome = "sent";
+          })
+        );
+        sent = true;
+        outcome = "sent";
+        try {
           await tx.wait(1, TOP_UP_RECEIPT_MS);
-        });
+        } catch (waitError) {
+          // Not seen mined in time: it may still land, or the node may have dropped it. The
+          // next transfer takes its nonce from the node's pending count, which says which.
+          this.nonceSequencer.resetNonce();
+          throw waitError;
+        }
         console.log(
           `[bot-host] Topped up ${target.label} (${target.addr}) of bot ${id}`
         );
@@ -906,6 +1009,32 @@ export class FrankBotHost {
       });
   }
 
+  /** A write to the bot's journal failed, and the bot answers nothing while that stands. Said
+   * at error level on every poll it lasts, and mended by reading the journal back from disk:
+   * a row whose write landed is then seen as written, one whose write did not is as it was, and
+   * the poll goes on to finish both. Throws, by name, while the journal cannot be read. */
+  private async recoverJournal(
+    id: string,
+    instance: ActiveBotInstance
+  ): Promise<void> {
+    console.error(
+      `[bot-host] BOT "${id}" IS NOT ANSWERING: a write to its message journal failed. Reading the journal back from disk...`
+    );
+    try {
+      await instance.operations.recover();
+    } catch (error) {
+      throw new Error(
+        `Bot "${id}" still cannot read its message journal and answers nothing; check the disk under its state directory, then restart it (${
+          error instanceof Error ? error.message : error
+        })`
+      );
+    }
+    // `recover` resolved: the journal was read AND took a write again.
+    console.error(
+      `[bot-host] Bot "${id}" read its message journal back, wrote to it again, and is answering`
+    );
+  }
+
   private async pollOnce(
     id: string,
     instance: ActiveBotInstance
@@ -913,6 +1042,7 @@ export class FrankBotHost {
     {
       try {
         if (this.closing) return;
+        if (instance.operations.isFaulted) await this.recoverJournal(id, instance);
         instance.operations.assertOpen();
         this.topUp(id, instance);
         // Stored replies the wallet already holds an attempt for: the wallet sends the same
@@ -944,16 +1074,20 @@ export class FrankBotHost {
                     wallet: instance.wallet,
                     payloadDigests: [outbound],
                   }),
-                  "Asking the wallet about a reply"
+                  "Asking the wallet about a reply",
+          this.options.callTimeoutMs
                 )
               )[outbound] ?? "unknown";
-          } catch {
+          } catch (error) {
             held = true;
             instance.operations.assertOpen(); // a failed journal write faults admission, not just recovery
             console.warn(
-              `[bot-host] [${id}] Original reply recovery held; preserve state`
+              `[bot-host] [${id}] The wallet could not be asked about the reply to ${row.peerAddress}; asked again on the next poll:`,
+              error instanceof Error ? error.message : error
             );
-            continue;
+            // Not known this poll. The bound below still applies: a question that keeps failing
+            // must not keep its conversation waiting for ever.
+            status = "unknown";
           }
           if (status === "delivered")
             void this.track(instance, row, () =>
@@ -986,7 +1120,8 @@ export class FrankBotHost {
                 wallet: instance.wallet,
                 payloadDigests: [],
               }),
-              "Retrying the wallet's earlier payments"
+              "Retrying the wallet's earlier payments",
+          this.options.callTimeoutMs
             );
             this.walletRetryWarned.delete(id);
           } catch (error) {
@@ -1021,12 +1156,14 @@ export class FrankBotHost {
             wallet: instance.wallet,
             sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
           }),
-          "Reading the mailbox"
+          "Reading the mailbox",
+          this.options.callTimeoutMs
         );
         const accepted: {
           identity: InboundIdentity;
           items: MessageItem[];
           stampValueWei: bigint;
+          paymentTxHashes: string[];
           stampPayments: readonly StampPaymentInfo[];
         }[] = [];
         for (const msg of messages) {
@@ -1042,6 +1179,9 @@ export class FrankBotHost {
                 typeof msg.stampValueWei === "bigint" && msg.stampValueWei > 0n
                   ? msg.stampValueWei
                   : 0n,
+              paymentTxHashes: (msg.stampPayments ?? []).map(
+                (payment) => payment.txHash
+              ),
               stampPayments: structuredClone(msg.stampPayments ?? []),
             });
           } catch {
@@ -1108,18 +1248,21 @@ export class FrankBotHost {
           // Start, handler, storing its reply and the first send are one task. Once the start write has
           // committed the handler runs, even if stop() landed meanwhile: stop() drains it.
           void this.track(instance, row, async () => {
-            if (
-              this.closing ||
-              !(await instance.operations.start(match.identity))
-            )
+            if (this.closing) return;
+            // What a reply may carry is settled before the handler starts and kept with the
+            // row, so a reply owed after a restart is stamped the same.
+            const paidWei = await this.confirmedPaidWei(instance, match);
+            if (!(await instance.operations.start(match.identity, paidWei)))
               return;
+            instance.confirmedPaid.delete(row.digest);
             // The retained identity, not this fetch's relay time, is the invocation's.
-            await this.dispatch(instance, row, match);
+            await this.dispatch(instance, row, { ...match, paidWei });
           });
         }
         this.retryReplies(instance);
       } catch (err: unknown) {
-        console.warn(
+        // A bot that cannot use its journal is not a passing warning.
+        (instance.operations.isFaulted ? console.error : console.warn)(
           `[bot-host] Failed polling messages for bot "${id}":`,
           err
         );
@@ -1264,7 +1407,8 @@ export class FrankBotHost {
           text: `Slow down: you have had ${limit} replies from me in the last hour, which is my limit for one account. Messages you send now may go unanswered. Please try again later.`,
         },
       ],
-      identity.conversationId
+      identity.conversationId,
+      { stampValueWei: this.replyStampWei(0n) }
     ).then(
       () => undefined,
       () =>
@@ -1305,14 +1449,79 @@ export class FrankBotHost {
     return task;
   }
 
-  /** Stores the one text reply the host owes for a message and sends it. A text the store
-   * refuses (empty, too long, not well-formed) is replaced by the failure text. */
+  /** What a message is CONFIRMED to have paid: the amount its delivery states, if every one of
+   * its payment transactions is mined and succeeded; otherwise nothing. The relay may deliver a
+   * message before its payments confirm, and a sender can sign payments from empty accounts,
+   * so the stated amount alone is never matched.
+   *
+   * It does not wait: a payment not confirmed when the message is handled counts as nothing,
+   * and the reply goes out at once with the minimum stamp. A node that cannot be asked, or
+   * does not answer in `PAYMENT_CHECK_MS`, counts the same.
+   *
+   * THE ONE PLACE that decides this. SWITCH HERE to the wallet's own "has this message's
+   * payment landed" call when it exists; this uses `nativeTransfers.getTransactionStatus`. */
+  private async confirmedPaidWei(
+    instance: ActiveBotInstance,
+    message: {
+      identity: InboundIdentity;
+      stampValueWei: bigint;
+      paymentTxHashes: string[];
+    }
+  ): Promise<bigint> {
+    // At or under the minimum the reply carries the minimum anyway: nothing to look up.
+    if (
+      message.stampValueWei <= this.options.minStampValueWei ||
+      !message.paymentTxHashes.length
+    )
+      return 0n;
+    const known = instance.confirmedPaid.get(message.identity.digest);
+    if (known !== undefined) return known;
+    try {
+      const statuses = await bounded(
+        Promise.all(
+          message.paymentTxHashes.map((txHash) =>
+            this.chain.nativeTransfers.getTransactionStatus({
+              wallet: instance.wallet,
+              transaction: { txHash },
+            })
+          )
+        ),
+        "Checking a message's payment",
+        PAYMENT_CHECK_MS
+      );
+      if (!statuses.every((status) => status === "confirmed")) return 0n;
+    } catch {
+      return 0n;
+    }
+    instance.confirmedPaid.set(message.identity.digest, message.stampValueWei);
+    return message.stampValueWei;
+  }
+
+  /** The stamp a bot puts on what it sends in answer to a message, when the handler names no
+   * amount: what the sender is confirmed to have paid with that message (`confirmedPaidWei`),
+   * and never more, so answering can never pay out more than came in. Never above the bot's
+   * configured stamp either.
+   *
+   * A message that paid nothing confirmed, or less than the relay accepts for a paid message,
+   * is answered at the relay's minimum. SWITCH HERE to 0n (no stamp at all) once the wallet's
+   * unpaid send has landed. */
+  private replyStampWei(paidWei: bigint): bigint {
+    const { stampValueWei, minStampValueWei } = this.options;
+    if (paidWei < minStampValueWei)
+      return minStampValueWei < stampValueWei ? minStampValueWei : stampValueWei;
+    return paidWei < stampValueWei ? paidWei : stampValueWei;
+  }
+
+  /** Stores the one text reply the host owes for a message and sends it, stamped by
+   * `replyStampWei` of what the message paid. A text the store refuses (empty, too long, not
+   * well-formed) is replaced by the failure text. */
   private async owe(
     instance: ActiveBotInstance,
     digest: string,
-    text: string
+    text: string,
+    paidWei: bigint
   ): Promise<void> {
-    const stamp = this.options.stampValueWei.toString();
+    const stamp = this.replyStampWei(paidWei).toString();
     try {
       await instance.operations.stageReply(digest, text, stamp, Date.now());
     } catch {
@@ -1355,16 +1564,25 @@ export class FrankBotHost {
     }
     const text = await instance.operations.replyText(digest);
     try {
-      await this.chain.directMessages.send({
-        wallet: instance.wallet,
-        recipient: toChainAddress(row.peerAddress),
-        items: [{ type: "text", text }],
-        conversationId: row.conversationId,
-        messageId: replyMessageId(instance.operations.owner, digest),
-        stampValue: BigInt(row.reply.stampValue),
-        onAttemptCreated: (outbound) =>
-          instance.operations.linkReply(digest, outbound),
-      });
+      // Bounded like the poll's other calls: a send that hangs must not hold this peer's lane
+      // and the retry pass. The call left behind cannot lead to a second payment: the next
+      // send carries the same message identity, the wallet runs sends one at a time, and it
+      // answers the repeat with the first attempt or refuses it while that one is unresolved.
+      await bounded(
+        this.chain.directMessages.send({
+          wallet: instance.wallet,
+          recipient: toChainAddress(row.peerAddress),
+          items: [{ type: "text", text }],
+          conversationId: row.conversationId,
+          messageId: replyMessageId(instance.operations.owner, digest),
+          stampValue: BigInt(row.reply.stampValue),
+          onAttemptCreated: (outbound) =>
+            // The row may be finished by the time an abandoned call reports.
+            instance.operations.linkReply(digest, outbound).catch(() => {}),
+        }),
+        "Sending a reply",
+          this.options.callTimeoutMs
+      );
     } catch (error) {
       instance.operations.assertOpen(); // a failed journal write holds everything
       if (error instanceof DirectMessageAlreadyAttemptedError)
@@ -1430,7 +1648,8 @@ export class FrankBotHost {
       `[bot-host] [${instance.definition.id}] Handling of message ${row.messageId} from ${row.peerAddress} was interrupted`
     );
     if (row.replied) await this.finish(instance, digest, false);
-    else await this.owe(instance, digest, FAILED_REPLY_TEXT);
+    else
+      await this.owe(instance, digest, FAILED_REPLY_TEXT, BigInt(row.paid ?? "0"));
   }
 
   /** Sends stored replies that are not with the wallet yet. One tracked pass at a time, in
@@ -1511,6 +1730,7 @@ export class FrankBotHost {
         label: instance.definition.id,
         profile: instance.definition.getProfile(),
         force: true,
+        network: instance.directory.network,
       });
       console.info(
         `[bot-host] Successfully re-registered profile on relay for bot "${id}"`
@@ -1646,10 +1866,12 @@ export class FrankBotHost {
       items,
       stampValueWei,
       stampPayments,
+      paidWei,
     }: {
       items: MessageItem[];
       stampValueWei: bigint;
       stampPayments: readonly StampPaymentInfo[];
+      paidWei: bigint;
     }
   ): Promise<void> {
     const replies: Promise<DirectMessageSendResult>[] = [];
@@ -1675,7 +1897,10 @@ export class FrankBotHost {
             conversationId === undefined
               ? undefined
               : conversationIdentity(conversationId),
-          stampValue: options?.stampValueWei ?? this.options.stampValueWei,
+          // An amount the handler names (a payout) is the handler's. Anything else it sends
+          // while answering this message carries the reply stamp.
+          stampValue:
+            options?.stampValueWei ?? this.replyStampWei(paidWei),
           messageId: options?.messageId,
           items: structuredClone(items),
         },
@@ -1758,9 +1983,10 @@ export class FrankBotHost {
     // A handler is run once. One that failed having sent nothing leaves the peer a plain
     // failure reply, stored and delivered like any other; one that sent something is finished,
     // and the wallet completes what it sent.
-    if (prepared) return this.owe(instance, identity.digest, prepared.text);
+    if (prepared)
+      return this.owe(instance, identity.digest, prepared.text, paidWei);
     if (threw && !linked)
-      return this.owe(instance, identity.digest, FAILED_REPLY_TEXT);
+      return this.owe(instance, identity.digest, FAILED_REPLY_TEXT, paidWei);
     await this.finish(instance, identity.digest, false);
   }
 

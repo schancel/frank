@@ -655,6 +655,8 @@ export default {
     clearHistory: 'Clear History',
     deleteChat: 'Delete Chat',
     unknownContact: 'Unknown',
+    usernameReassigned:
+      "You added this contact as {'@'}{username}. That username is now held by a different account. This contact is still the account you added, and your messages still go to it.",
   },
   sendLotusDialog: {
     sendLotusTo: 'Send Lotus to',
@@ -979,8 +981,9 @@ export default {
     feeunknown: 'Observed network fees unavailable.',
     block: 'Block {block}',
     syncNotShared: 'Not yet shared with your other devices.',
-    syncRecorded:
-      'Sync callback completion recorded. This does not confirm synchronization on other devices.',
+    syncShared: 'Sent to your other devices.',
+    syncFailed:
+      'Could not be sent to your other devices yet. It will be tried again; your payment is not affected.',
     recoveryUnavailable: 'Recovery is currently unavailable.',
     reviewHeld: 'This review cannot send another payment.',
     unsupported: 'Native transfer history is unavailable for this wallet.',
@@ -1103,6 +1106,20 @@ export default {
       'Unique handle (3–32 characters, lowercase letters, numbers, hyphens, underscores)',
     invalidUsername:
       'Username must be 3–32 characters and contain only lowercase letters, numbers, hyphens, and underscores.',
+    usernameTaken: 'That username is already taken. Choose another.',
+    usernameNotPublished:
+      'Your account is not published on the relay yet. Wait until messaging is on, then save again.',
+    usernameUnavailable:
+      'The username could not be set: the relay could not be reached or refused the request. Try again.',
+    usernameConfirmedTitle: 'Username confirmed by the relay',
+    usernameNoWallet:
+      'Unlock your account before setting a username: the request has to be signed by it.',
+    usernameNotHeld:
+      'Your saved username is not held by this account on the relay. Open your profile to see why.',
+    usernameStillHeld:
+      "This account holds {'@'}{username}. A username cannot be given up: it stays yours until you claim another one.",
+    nameStartsWithAt:
+      "A name cannot start with {'@'}. That is how usernames are written; set yours in the Username field.",
     location: 'Location',
     locationHint: 'Where you are based (optional)',
     links: 'Links & Socials',

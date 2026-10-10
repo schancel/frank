@@ -100,10 +100,6 @@ pub(crate) const CF_MONAD_PROFILES_BY_TIME: &str = "monad_profiles_by_time";
 /// `CF_MONAD_PROFILES_BY_TIME`'s `timestamp ++ address` key. See
 /// `crate::store::monad_profiles`'s module docs for how this is maintained/queried.
 pub(crate) const CF_MONAD_PROFILES_BY_NAME: &str = "monad_profiles_by_name";
-/// Ticket 1.1 / Track C: stores unique routable username records and tombstones (`cf_usernames`).
-pub const CF_USERNAMES: &str = "directory_usernames";
-/// Backward-compatible alias for [`CF_USERNAMES`].
-pub const CF_DIRECTORY_USERNAMES: &str = CF_USERNAMES;
 
 pub(crate) type CF = rocksdb::ColumnFamily;
 
@@ -118,6 +114,8 @@ pub struct Db {
     monad_profile_lock: Mutex<()>,
     /// Serializes compare-and-batch topic-author admission inside this process.
     monad_topic_lock: Mutex<()>,
+    /// Serializes the check-then-write of a username claim inside this process.
+    username_lock: Mutex<()>,
     /// Lazy separate store; ordinary legacy startup never opens or modifies preview storage.
     directory_preview_owner: super::directory_preview_owner::Owner,
     /// Lazy separate store of self-published subjects. Kept out of the registry's own column
@@ -244,14 +242,9 @@ impl Db {
         DbMonadTopicVotes::new(self)
     }
 
-    /// Returns `DbDirectoryUsernames`, allowing access to unique routable username store.
+    /// Returns `DbDirectoryUsernames`, the store of unique usernames.
     pub fn directory_usernames(&self) -> DbDirectoryUsernames<'_> {
         DbDirectoryUsernames::new(self)
-    }
-
-    /// Returns the column family handle for `cf_usernames` / `directory_usernames`.
-    pub fn cf_usernames(&self) -> Result<&CF> {
-        self.cf(CF_USERNAMES)
     }
 
     pub(crate) fn open_with_cfs(
@@ -268,6 +261,7 @@ impl Db {
             monad_outbox_lock: Mutex::new(()),
             monad_profile_lock: Mutex::new(()),
             monad_topic_lock: Mutex::new(()),
+            username_lock: Mutex::new(()),
             directory_preview_owner: super::directory_preview_owner::Owner::new(registry_path),
             directory_subjects: std::sync::OnceLock::new(),
             directory_subjects_lock: Mutex::new(()),
@@ -327,6 +321,12 @@ impl Db {
 
     pub(crate) fn lock_monad_topics(&self) -> std::sync::MutexGuard<'_, ()> {
         self.monad_topic_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn lock_usernames(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.username_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }

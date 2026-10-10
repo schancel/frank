@@ -1,7 +1,6 @@
 # Account vault
 
-`@frank/account-vault` is the bounded browser preview storage seam for typed domain
-roots. Import only the package facade. It depends on the frozen domain-root
+`@frank/account-vault` is the bounded browser preview storage seam for the account root. Import only the package facade. It depends on the frozen domain-root
 registry; storage, framing and WebCrypto implementation modules are private.
 There are no wallet, UI, ceremony, network or DOM dependencies.
 
@@ -14,7 +13,7 @@ import { createVaultWriteIntent, openPreviewVault } from '@frank/account-vault'
 const vault = await openPreviewVault({ namespace: 'account-preview' })
 const intent = createVaultWriteIntent({ context, expected: null, operationId })
 // #699 must first durably save this public intent with its pending account creation.
-const receipt = await vault.stage(intent, typedPurposeRoots, accountRoot)
+const receipt = await vault.stage(intent, accountRoot)
 // #699 must atomically activate the account referencing this receipt before network use.
 const ownedRoots = await vault.open(receipt)
 // Caller owns these new byte arrays and should erase them when finished.
@@ -24,16 +23,16 @@ vault.close()
 
 `context` is a `VaultContext`: stable public account/creation IDs, fixed recovery
 format and registry, ordered purpose subset, custody epoch, public recovery
-fingerprint and retirement context. `typedPurposeRoots` is an ordered array of
-`DomainRoot` values matching those purposes. `accountRoot` is the 32-byte root
-they were derived from; it is sealed in the same record so the account can issue
-new backup shares, and comes back only from `openAccountRoot(receipt)`, never
-from `open`. A record stored before account roots were kept returns `null`
-there: it has nothing to back up from, and callers must say so rather than
-split anything else. The facade does not accept master payloads, shares or
-mnemonic phrases. It validates the typed shape; the caller is responsible for
-supplying the real account root and its derived domain material rather than
-falsely labeling other 32-byte data.
+fingerprint and retirement context. `accountRoot` is the account's 32-byte root and the
+only secret in the record. `open(receipt)` derives, in memory, the `DomainRoot`
+for every purpose in the registry as it is at that moment, so a purpose added
+after the account was created is there on its next open; nothing is written.
+`openAccountRoot(receipt)` returns the root itself, for issuing backup shares
+only. A record stored before account roots were kept holds five typed roots
+instead: `open` returns exactly those, `openAccountRoot` returns `null`, and the
+record is never rewritten. The facade does not accept master payloads, shares or
+mnemonic phrases. It validates the shape; the caller is responsible for supplying
+the account's real root rather than other 32-byte data.
 
 For replacement, create a new intent with the current receipt as `expected` and
 a distinct operation ID. Revision and authenticated context are checked together.

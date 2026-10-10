@@ -429,7 +429,8 @@ export interface DirectMessageClient {
    * transport failure). The row is absent from the returned array and will stay so, so callers
    * durably quarantine the reported receipt and let their cursor pass it; keeping it in the
    * replay window would let one paid envelope from an unregistered sender pin the bounded inbox
-   * scan forever. */
+   * scan forever. A row this client cannot decode or validate at all is reported the same way;
+   * having no readable payload digest, it is identified by the relay's submission identity. */
   fetchSince(params: {
     wallet: WalletHandle;
     sinceMs: number;

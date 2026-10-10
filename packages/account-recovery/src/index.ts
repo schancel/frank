@@ -19,7 +19,10 @@ import {
   type DomainPurpose,
   type DomainRoot,
 } from '@frank/domain-roots'
-import { AccountRecoveryError } from './errors.js'
+import { AccountRecoveryError, type ShareVerdict } from './errors.js'
+import { searchShares } from './share-search.js'
+
+export { maxSharesForThreshold } from './share-search.js'
 import {
   deriveRecoveryPublicMetadata,
   snapshotBytes,
@@ -31,6 +34,8 @@ import {
 export {
   AccountRecoveryError,
   type AccountRecoveryErrorCode,
+  type ShareStatus,
+  type ShareVerdict,
 } from './errors.js'
 export {
   decodeRecoveryDescriptor,
@@ -109,7 +114,31 @@ export interface PendingCodex32Restore<
   readonly descriptor: T
   /** Invalid M can retry; a valid M with a different fingerprint consumes the ceremony. */
   recover(shares: readonly string[]): RecoveredCodex32Account
+  /**
+   * Recover from the threshold number of shares or more, tolerating bad ones. See
+   * recoverFromAnyShares. With a pinned descriptor only the matching account is returned.
+   * Success consumes the ceremony.
+   */
+  recoverAny(shares: readonly string[]): Codex32ShareRecovery
   cancel(): void
+}
+
+/** One account that a threshold-sized subset of the supplied shares reconstructs. */
+export interface Codex32RecoveryCandidate {
+  /** Caller-owned; wipe every candidate, chosen or not, with destroyRecoveredAccount. */
+  readonly account: RecoveredCodex32Account
+  /** Positions of the supplied shares that belong to this account's share set. */
+  readonly supporting: readonly number[]
+}
+
+/**
+ * The outcome of examining a pile of shares. One candidate is the normal case. More than
+ * one means the pile contains complete share sets of different accounts: the caller must
+ * show them and let the user choose; nothing here prefers one.
+ */
+export interface Codex32ShareRecovery {
+  readonly candidates: readonly Codex32RecoveryCandidate[]
+  readonly shares: readonly ShareVerdict[]
 }
 
 export interface BeginCodex32SignupInput {
@@ -260,6 +289,83 @@ export function recoverCodex32Shares(
 }
 
 /**
+ * Recover from any number of shares from the threshold up, some of which may be wrong.
+ *
+ * Every share is decoded on its own; shares are grouped by backup set (identifier and
+ * threshold) and never mixed across sets; every threshold-sized subset of each set is tried
+ * for one that reconstructs a valid Frank master; and every share is then classified against
+ * what was found. To keep that exhaustive search small, one set may hold at most
+ * maxSharesForThreshold(threshold) shares (`too-many-shares` otherwise). Throws an
+ * AccountRecoveryError carrying the per-share findings when no account can be reconstructed.
+ *
+ * Without `expected`, every reconstructible account is returned and the caller must not
+ * choose between several on the user's behalf. With `expected`, only the account with that
+ * fingerprint is returned (`descriptor-mismatch` if none has it).
+ */
+export function recoverFromAnyShares(
+  candidateShares: readonly string[],
+  options: { readonly expected?: PublicRecoveryDescriptor } = {},
+): Codex32ShareRecovery {
+  if (Array.isArray(candidateShares) && candidateShares.length > 31) {
+    throw new AccountRecoveryError('too-many-shares', undefined, 31)
+  }
+  const shares = snapshotShares(candidateShares)
+  const expected =
+    options.expected !== undefined
+      ? snapshotPublicDescriptor(options.expected).publicRecoveryFingerprint
+      : undefined
+  const found = searchShares(shares)
+  const candidates: Codex32RecoveryCandidate[] = []
+  try {
+    for (const { master, supporting } of found.masters) {
+      candidates.push({ account: accountFrom(master), supporting })
+    }
+    if (expected === undefined) {
+      const result = Object.freeze({
+        candidates: Object.freeze(
+          candidates.map(value => Object.freeze(value)),
+        ),
+        shares: found.shares,
+      })
+      candidates.length = 0 // ownership moved to the caller
+      return result
+    }
+    const wanted = candidates.findIndex(candidate =>
+      equalBytes(
+        candidate.account.metadata.descriptor.publicRecoveryFingerprint,
+        expected,
+      ),
+    )
+    if (wanted < 0) {
+      throw new AccountRecoveryError('descriptor-mismatch', found.shares)
+    }
+    const [chosen] = candidates.splice(wanted, 1)
+    const mine = new Set((chosen as Codex32RecoveryCandidate).supporting)
+    return Object.freeze({
+      candidates: Object.freeze([
+        Object.freeze(chosen as Codex32RecoveryCandidate),
+      ]),
+      // Shares of any other account in the pile are simply not part of this one.
+      shares: Object.freeze(
+        found.shares.map(share =>
+          share.status !== 'supports'
+            ? share
+            : Object.freeze({
+                ...share,
+                status: mine.has(share.position) ? 'supports' : 'inconsistent',
+                candidates: Object.freeze(mine.has(share.position) ? [0] : []),
+              } as ShareVerdict),
+        ),
+      ),
+    })
+  } finally {
+    for (const { master } of found.masters) master.fill(0)
+    for (const candidate of candidates)
+      destroyRecoveredAccount(candidate.account)
+  }
+}
+
+/**
  * Pin an independently trusted decoded descriptor before accepting shares.
  * The caller owns descriptor provenance and ceremony/account binding. This API
  * checks equality with that authority; decoding a descriptor does not authenticate it.
@@ -302,6 +408,21 @@ export function beginCodex32Restore(
       } finally {
         recovered.secret.fill(0)
         recovered.payloadSymbols.fill(0)
+      }
+    },
+    recoverAny(candidateShares: readonly string[]): Codex32ShareRecovery {
+      if (!active) throw new AccountRecoveryError('ceremony-consumed')
+      try {
+        const recovery = recoverFromAnyShares(candidateShares, {
+          expected: descriptor,
+        })
+        active = false
+        return recovery
+      } catch (error) {
+        // As with recover: a wrong account for a pinned descriptor ends the ceremony.
+        if ((error as AccountRecoveryError)?.code === 'descriptor-mismatch')
+          active = false
+        throw error
       }
     },
     cancel(): void {
@@ -364,11 +485,13 @@ export function exportCodex32Backup(
         randomBytes: length => secureRandom(randomBytes, length),
       }),
     )
-    // Read back both ends of the set: every share is covered once shareCount >= threshold.
-    for (const subset of [
-      shares.slice(0, threshold),
-      shares.slice(-threshold),
-    ]) {
+    // Read every share back: each one, together with the threshold - 1 shares that
+    // follow it (wrapping round), must reconstruct exactly the master that was split.
+    for (let first = 0; first < shares.length; first += 1) {
+      const subset = Array.from(
+        { length: threshold },
+        (_, offset) => shares[(first + offset) % shares.length] ?? '',
+      )
       const check = recoverMaster(subset)
       try {
         if (!equalBytes(check.secret, master)) {
@@ -439,26 +562,9 @@ export function destroyRecoveredAccount(
   account.accountRoot.fill(0)
 }
 
-/**
- * Interpolate a share set. Shares that are each well formed and agree on their header,
- * but do not interpolate to canonical bytes, are not an account backup (for example two
- * backups mixed under a colliding identifier); say that instead of "bad format".
- */
+/** Interpolate an exact threshold set; codec errors keep their own codes. */
 function recoverMaster(shares: readonly string[]): RecoveredCodex32 {
-  const recovered = recoverCodex32Exact(shares)
-  if (recovered.ok) return recovered.value
-  if (recovered.error.code === 'bad-format' && shares.every(wellFormedShare)) {
-    throw new AccountRecoveryError('not-account-backup')
-  }
-  throw new AccountRecoveryError(recovered.error.code)
-}
-
-function wellFormedShare(text: string): boolean {
-  const share = decodeCodex32(text)
-  if (!share.ok) return false
-  share.value.payload.fill(0)
-  share.value.seed?.fill(0)
-  return true
+  return unwrap(recoverCodex32Exact(shares))
 }
 
 /**

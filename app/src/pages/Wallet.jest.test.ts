@@ -730,10 +730,19 @@ describe('Wallet detail page (#570)', () => {
 
     wrapper.unmount()
   })
-  it.each([en, fr])(
-    'lists paid but unsynced native history from the reopened owner without financial effects',
-    async messages => {
+  it.each(
+    [en, fr].flatMap(messages =>
+      (['not-shared', 'failed', 'shared'] as const).map(
+        sharing => [messages, sharing] as const,
+      ),
+    ),
+  )(
+    'lists paid native history from the reopened owner without financial effects, with its sharing state (%#)',
+    async (messages, sharing) => {
       const fixture = await includedNativeTransfer()
+      if (sharing === 'shared')
+        for (const [index] of fixture.journal.list()[0]!.members.entries())
+          await fixture.journal.markSyncApplied(fixture.operationId, index)
       await fixture.reopen()
       const getNativeOperations = jest.fn(() => fixture.journal.list())
       const forbidden = jest.fn(() => {
@@ -744,6 +753,7 @@ describe('Wallet detail page (#570)', () => {
         chainIdentifier: 'monad-testnet',
         identity: { displayAddress: '0xabc' },
         getNativeOperations,
+        nativeOperationSyncFailed: () => sharing === 'failed',
         getUnresolvedLegacySend: forbidden,
         resumeNativeOperation: forbidden,
         sendLegacy: forbidden,
@@ -774,13 +784,19 @@ describe('Wallet detail page (#570)', () => {
         )
         expect(history.text()).toContain(fixture.hash)
         expect(history.text()).toContain(fixture.operationId)
-        // Included reads as sent; the unshared state is a muted note, and recovery is not
-        // mentioned for a transfer that needs none.
+        // Included reads as sent; the sharing state is a muted note in every case, and recovery
+        // is not mentioned for a transfer that needs none.
         expect(translate('nativeOperation.included', { network: 'n' })).toMatch(
           /^(Sent on|Envoyé sur) n\.$/,
         )
         const sync = wrapper.get('[data-testid="wallet-native-operation-sync"]')
-        expect(sync.text()).toBe(messages.nativeOperation.syncNotShared)
+        expect(sync.text()).toBe(
+          {
+            'not-shared': messages.nativeOperation.syncNotShared,
+            'failed': messages.nativeOperation.syncFailed,
+            'shared': messages.nativeOperation.syncShared,
+          }[sharing],
+        )
         expect(sync.classes()).toEqual(
           expect.arrayContaining(['text-caption', 'text-grey-7']),
         )

@@ -317,28 +317,6 @@ pub struct RegistryConf {
     /// Cluster configuration for high-availability multi-node deployments (ticket #981 / #982 / Track C).
     #[serde(default)]
     pub cluster: Option<ClusterConf>,
-    /// Optional explicit username store configuration (defaults to embedded RocksDB).
-    #[serde(default)]
-    pub username_store: Option<UsernameStoreConf>,
-}
-
-/// Backing store driver for username uniqueness and directory handles.
-#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum UsernameStoreConf {
-    /// Embedded RocksDB (in-process, zero-dependency default).
-    RocksDb,
-    /// Redis RESP protocol (connecting to Apache Kvrocks on port 6666 or Redis-XC on 6379).
-    Resp {
-        /// Redis URL (e.g. `redis://127.0.0.1:6666`).
-        url: String,
-    },
-}
-
-impl Default for UsernameStoreConf {
-    fn default() -> Self {
-        Self::RocksDb
-    }
 }
 
 /// Clustered relay configuration for multi-node deployments.
@@ -420,21 +398,6 @@ impl ClusterConf {
 }
 
 impl RegistryConf {
-    /// Determine effective username store configuration based on `username_store` or `cluster`.
-    pub fn effective_username_store_conf(&self) -> UsernameStoreConf {
-        if let Some(store) = &self.username_store {
-            return store.clone();
-        }
-        if let Some(cluster) = &self.cluster {
-            if cluster.enabled {
-                if let Some(url) = &cluster.kvrocks_url {
-                    return UsernameStoreConf::Resp { url: url.clone() };
-                }
-            }
-        }
-        UsernameStoreConf::RocksDb
-    }
-
     /// Whether Core NATS notification bus is enabled.
     pub fn is_nats_enabled(&self) -> bool {
         self.cluster.as_ref().map_or(false, |c| c.is_nats_enabled())
@@ -502,6 +465,11 @@ pub struct DirectoryConf {
     /// proxy must append that element itself. Empty: the connecting address is the client.
     #[serde(default)]
     pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// Usernames only one key may claim: name -> that key (compressed secp256k1, lowercase
+    /// hex). Anyone else claiming a listed name is told it is taken, whether or not the key
+    /// has claimed it yet. For names people would trust, such as an operator's bots.
+    #[serde(default)]
+    pub reserved_usernames: std::collections::BTreeMap<String, String>,
     /// Removed. Present only to explain the change to operators with an old file.
     #[serde(default, skip_serializing)]
     pub clock_file: Option<RemovedSetting>,
@@ -1952,7 +1920,6 @@ continuity_file = "/var/lib/frank/continuity"
                     curated_defaults: vec![],
                     spa_dir: None,
                     cluster: None,
-                    username_store: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2033,7 +2000,6 @@ continuity_file = "/var/lib/frank/continuity"
                     curated_defaults: vec![],
                     spa_dir: None,
                     cluster: None,
-                    username_store: None,
                 },
                 bitcoin_rpc: Some(BitcoindRpcClientConf {
                     url: "https://bitcoin.rpc".to_string(),
@@ -2320,85 +2286,9 @@ continuity_file = "/var/lib/frank/continuity"
     }
 
     #[test]
-    fn test_username_store_and_cluster_config() {
+    fn test_cluster_config_parses() {
         use super::*;
 
-        // 1. Defaults to RocksDb when nothing is configured
-        let default_conf = RegistryConf {
-            db_path: "/tmp/db".into(),
-            directory: None,
-            net: bitcoinsuite_core::Net::Mainnet,
-            peers: vec![],
-            public_relay_urls: vec![],
-            imd: Default::default(),
-            pop: PopConf {
-                enabled: false,
-                monad_rpc_url: "http://unused.invalid".parse().unwrap(),
-                hmac_secret: "secret".to_string(),
-                payment_recipient: "0x0000000000000000000000000000000000000000".to_string(),
-                min_value_wei: "0".to_string(),
-            },
-            monad_mailbox: MonadMailboxConf {
-                enabled: false,
-                rpc_url: None,
-                min_value_wei: None,
-                expected_chain_id: None,
-            },
-            evm_rpc: EvmRpcConf::default(),
-            bitcoin_proxy: BitcoinProxyConf::default(),
-            solana_proxy: SolanaProxyConf::default(),
-            curated_defaults: vec![],
-            spa_dir: None,
-            cluster: None,
-            username_store: None,
-        };
-        assert_eq!(
-            default_conf.effective_username_store_conf(),
-            UsernameStoreConf::RocksDb
-        );
-
-        // 2. Explicit username_store takes precedence
-        let mut explicit_resp = default_conf.clone();
-        explicit_resp.username_store = Some(UsernameStoreConf::Resp {
-            url: "redis://127.0.0.1:6666".to_string(),
-        });
-        assert_eq!(
-            explicit_resp.effective_username_store_conf(),
-            UsernameStoreConf::Resp {
-                url: "redis://127.0.0.1:6666".to_string()
-            }
-        );
-
-        // 3. Clustered mode with kvrocks_url
-        let mut cluster_conf = default_conf.clone();
-        cluster_conf.cluster = Some(ClusterConf {
-            enabled: true,
-            driver: "kvrocks".to_string(),
-            kvrocks_url: Some("redis://kvrocks-cluster:6666".to_string()),
-            nats_url: Some("nats://nats-cluster:4222".to_string()),
-            nats: None,
-            cluster_name: Some("frank-prod-us".to_string()),
-            cluster_id: Some("550e8400-e29b-41d4-a716-446655440000".to_string()),
-            authority_pubkey: Some("02abcd".to_string()),
-        });
-        assert_eq!(
-            cluster_conf.effective_username_store_conf(),
-            UsernameStoreConf::Resp {
-                url: "redis://kvrocks-cluster:6666".to_string()
-            }
-        );
-
-        // 4. Cluster disabled falls back to RocksDb
-        let mut cluster_disabled = cluster_conf.clone();
-        if let Some(ref mut c) = cluster_disabled.cluster {
-            c.enabled = false;
-        }
-        assert_eq!(
-            cluster_disabled.effective_username_store_conf(),
-            UsernameStoreConf::RocksDb
-        );
-
-        // 5. TOML deserialization of ClusterConf
         let toml_str = r#"
             enabled = true
             driver = "kvrocks"

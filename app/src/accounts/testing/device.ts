@@ -114,8 +114,10 @@ export async function restore(session: Session, shares: readonly string[]) {
   const ceremony = createAccountCeremony()
   await ceremony.beginRestore()
   const outcome = await ceremony.confirm(shares, 'Restored')
+  // What the pending screen shows the user before they choose Activate.
+  const shownBeforeActivate = session.state.pendingIdentityAddress
   await activate(session)
-  return outcome
+  return { ...outcome, shownBeforeActivate }
 }
 
 /** Everything that makes it "the same account": identity, all five roots, addresses. */

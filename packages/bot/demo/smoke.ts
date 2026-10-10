@@ -1,120 +1,92 @@
 /**
- * Smoke test for the one-command demo (#312): starts the whole stack against the built-in fake
- * chain (no keys, no funds, no network), then plays a new user against every bot and checks that
- * each one answers:
+ * Smoke test for the one-command demo, on Monad testnet with the real relay binary:
  *
- *   yarn demo:smoke                       # builds the relay with Cargo (slow the first time)
- *   CASHWEBD_BIN=/path/to/cashwebd-exe yarn demo:smoke
+ *   yarn demo:smoke
  *
- * It uses a throwaway state directory and a dummy env file, so it never reads a real `.env`
- * (FRANK_DEMO_ENV_FILE is always pointed at the dummy). Exit code 0 only if every check passes
- * and the supervised run stays healthy through shutdown.
+ * Starts exactly what `yarn demo` starts (same `.env`, same state directory unless
+ * FRANK_DEMO_STATE_DIR says otherwise, so bots funded by an earlier run are not funded again),
+ * then a new user with a real wallet messages each bot and every reply is checked for its
+ * content; the faucet's payment and the relay's proxied chain RPC are checked on chain. It spends
+ * real testnet funds: whatever the start draws for the bots (refused above
+ * FRANK_DEMO_MAX_START_DRAW_WEI, as for `yarn demo`; `--allow-draw` allows it) and, from
+ * FRANK_TEST_WALLET_JSON, 0.05 MON for the one persistent test user whenever it has run dry.
+ * Stop a running demo first (one launcher per state directory).
+ *
+ * Exit code 0 only if every check passes, every bot started funded, and the supervised processes
+ * stayed up until shutdown.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
-import { createServer } from 'net'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { join, resolve } from 'path'
 
-import { runSmokeChecks, SmokeCheck } from './smoke-checks'
+import { createMonadJsonRpcProvider } from '@frank/wallet/monad-provider'
+
 import { resolveDemoConfig } from './demo-config'
 import { DemoHandle, redact, startDemo } from './demo'
-import { MonadIdentity } from '../../wallet/monad-identity'
-import { createMonadJsonRpcProvider } from '../../wallet/monad-provider'
-import { registerAndLog } from '../qwen-bot-common'
+import { readEnvFile } from './env-file'
+import type { RealWallet } from './real-stack'
+import { runSmokeChecks, SmokeCheck } from './smoke-checks'
 
-/** Keep protected proxy coverage independent of the opt-in typed UI demo transport. */
-export async function checkProtectedRelayRpc(
-  handle: DemoHandle,
-): Promise<SmokeCheck> {
-  // Public synthetic fixture, registered only for this legacy protected-proxy smoke check.
-  const identity = MonadIdentity.fromPrivateKeyHex(`0x${'07'.repeat(32)}`)
-  await registerAndLog({
-    relayBaseUrl: handle.relayUrl,
-    identity,
-    label: 'proxy-smoke',
-  })
+const REPO_ROOT = resolve(__dirname, '..', '..', '..')
+
+/** The relay's authenticated chain proxy, as the app uses it: a registered account obtains a
+ * capability and reads a balance from the real chain through the relay. */
+export async function checkProtectedRelayRpc(handle: DemoHandle, user: RealWallet): Promise<SmokeCheck> {
+  const name = 'protected-relay-rpc'
+  const identity = user.handle.identity
   const provider = createMonadJsonRpcProvider({
     rpcUrl: `${handle.relayUrl}/chain-rpc/monad-testnet/rpc`,
     chainId: 10143,
     relayAuth: {
       chain: 'monad-testnet',
       customer: identity.address.raw,
+      subject: Buffer.from(identity.compressedPubKey).toString('hex'),
       networkTag: 'MONT',
       signDigest: digest => identity.signHash(Buffer.from(digest)),
     },
   })
   try {
-    await provider.getBalance(identity.address.raw)
-    return {
-      name: 'protected-relay-rpc',
-      ok: true,
-      detail: 'authenticated capability and balance through relay proxy',
-    }
+    const viaRelay = await provider.getBalance(handle.fundingAddress)
+    return { name, ok: true, detail: `the funding wallet's balance (${viaRelay} wei) was read from the chain through the relay proxy` }
+  } catch (err) {
+    return { name, ok: false, detail: err instanceof Error ? err.message : String(err) }
   } finally {
     provider.destroy()
   }
 }
 
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer()
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      const port = (server.address() as { port: number }).port
-      server.close(() => resolve(port))
-    })
-  })
-}
-
-export async function runSmoke(
-  env: Record<string, string | undefined>,
-): Promise<boolean> {
-  const dir = mkdtempSync(join(tmpdir(), 'frank-demo-smoke-'))
+export async function runSmoke(env: Record<string, string | undefined>): Promise<boolean> {
   let handle: DemoHandle | undefined
   let ok = false
   const reportError = (phase: string, err: unknown) =>
-    console.error(
-      `FAIL  smoke ${phase}: ${redact(
-        err instanceof Error ? err.message : 'unknown error',
-        [],
-      )}`,
-    )
+    console.error(`FAIL  smoke ${phase}: ${redact(err instanceof Error ? err.message : 'unknown error', [])}`)
   try {
-    const dummyEnvFile = join(dir, 'dummy.env')
-    writeFileSync(dummyEnvFile, 'FRANK_NETWORK_TAG=MONT\n')
-    const smokeEnv: Record<string, string | undefined> = {
-      PATH: env.PATH,
-      HOME: env.HOME,
-      TMPDIR: env.TMPDIR,
-      CASHWEBD_BIN: env.CASHWEBD_BIN,
-      PROTOC: env.PROTOC,
-      CARGO_TARGET_DIR: env.CARGO_TARGET_DIR,
-      CARGO_HOME: env.CARGO_HOME,
-      RUSTUP_HOME: env.RUSTUP_HOME,
-      FRANK_DEMO_ENV_FILE: dummyEnvFile,
-      FRANK_DEMO_STATE_DIR: join(dir, 'state'),
-      FRANK_DEMO_FAKE_CHAIN: '1',
-      FRANK_DEMO_RELAY_PORT: String(await freePort()),
-      FRANK_DEMO_FAKE_RPC_PORT: String(await freePort()),
-    }
+    const envFilePath = env.FRANK_DEMO_ENV_FILE
+      ? resolve(env.INIT_CWD ?? process.cwd(), env.FRANK_DEMO_ENV_FILE)
+      : join(REPO_ROOT, '.env')
     const config = resolveDemoConfig({
-      env: smokeEnv,
-      envFile: {}, // never a real .env
-      fakeChainFlag: true,
-      cwd: dir,
+      env,
+      envFile: readEnvFile(envFilePath),
+      cwd: env.INIT_CWD ?? process.cwd(),
+      allowDrawFlag: process.argv.includes('--allow-draw'),
     })
-    handle = await startDemo(config, {
-      env: smokeEnv,
-      print: l => console.log(l),
-    })
+    handle = await startDemo(config, { env, print: l => console.log(l) })
+    // The proxy check runs as the same test user, while that user's wallet is open.
+    const started = handle
+    let proxy: SmokeCheck = { name: 'protected-relay-rpc', ok: false, detail: 'not reached: the test user could not be opened' }
     const results: SmokeCheck[] = await runSmokeChecks(handle, {
-      timeoutMs: 120_000,
+      timeoutMs: 180_000,
+      env,
+      onUser: async user => {
+        proxy = await checkProtectedRelayRpc(started, user)
+      },
     })
-    results.push(await checkProtectedRelayRpc(handle))
+    results.push(proxy)
     for (const r of results) {
-      console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}: ${r.detail}`)
+      // Only the configured secrets are removed: the general scrubber reads a long plain sentence
+      // as a recovery phrase and would blank the detail.
+      const detail = config.secrets.reduce((text, secret) => text.split(secret).join('<redacted>'), r.detail)
+      console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}: ${detail}`)
     }
-    ok = results.every(r => r.ok)
+    ok = results.length > 0 && results.every(r => r.ok)
   } catch (err) {
     reportError('setup or checks', err)
   } finally {
@@ -129,22 +101,9 @@ export async function runSmoke(
     const unhealthy = handle?.unhealthy() ?? []
     if (unhealthy.length) {
       ok = false
-      console.log(
-        `FAIL  supervised children exited unexpectedly: ${unhealthy.join(
-          ', ',
-        )}`,
-      )
+      console.log(`FAIL  supervised children exited unexpectedly: ${unhealthy.join(', ')}`)
     }
-    // Keep the logs when something failed: they are the evidence.
-    if (ok) {
-      try {
-        rmSync(dir, { recursive: true, force: true })
-      } catch (err) {
-        ok = false
-        reportError('cleanup', err)
-      }
-    }
-    if (!ok) console.log(`\nstate and logs kept in ${dir}`)
+    if (handle) console.log(`\nstate and logs: ${handle.config.stateDir}`)
   }
   console.log(ok ? '\nSMOKE OK' : '\nSMOKE FAILED')
   return ok
@@ -154,10 +113,7 @@ if (require.main === module) {
   runSmoke(process.env).then(
     ok => process.exit(ok ? 0 : 1),
     err => {
-      console.error(
-        'smoke test error:',
-        err instanceof Error ? err.message : err,
-      )
+      console.error('smoke test error:', err instanceof Error ? err.message : err)
       process.exit(1)
     },
   )

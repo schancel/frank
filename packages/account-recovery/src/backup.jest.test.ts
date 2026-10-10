@@ -1,4 +1,5 @@
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
+import * as codex32 from '@frank/codex32'
 import {
   createMasterPayload,
   decodeCodex32,
@@ -281,4 +282,53 @@ describe('restore refuses share sets that are not an account backup', () => {
       fingerprintOf(created.account).descriptor,
     )
   })
+})
+
+describe('every issued share is read back before the set is returned', () => {
+  afterEach(() => jest.restoreAllMocks())
+
+  it.each([
+    [2, 5],
+    [3, 7],
+  ] as const)(
+    'a %i-of-%i set restores the account from every window of shares',
+    (threshold, shareCount) => {
+      const created = signup()
+      const shares = backup(created.account, threshold, shareCount)
+      for (let first = 0; first < shareCount; first += 1) {
+        const subset = Array.from(
+          { length: threshold },
+          (_, offset) => shares[(first + offset) % shareCount]!,
+        )
+        expect(fingerprintOf(recoverCodex32Shares(subset))).toEqual(
+          fingerprintOf(created.account),
+        )
+      }
+    },
+  )
+
+  it.each([
+    [2, 5, 2],
+    [3, 7, 3],
+    [2, 5, 0],
+    [3, 7, 6],
+  ] as const)(
+    'a %i-of-%i split with a wrong share at position %i is caught, not handed out',
+    (threshold, shareCount, position) => {
+      const created = signup()
+      const realSplit = codex32.splitCodex32
+      jest.spyOn(codex32, 'splitCodex32').mockImplementation(input => {
+        const good = realSplit(input)
+        // A well-formed share with the same header from a different polynomial.
+        const other = realSplit({ ...input, randomBytes })
+        if (!good.ok || !other.ok) throw new Error('fixture')
+        const shares = [...good.value]
+        shares[position] = other.value[position]!
+        return { ok: true, value: shares }
+      })
+      expect(code(() => backup(created.account, threshold, shareCount))).toBe(
+        'confirmation-mismatch',
+      )
+    },
+  )
 })

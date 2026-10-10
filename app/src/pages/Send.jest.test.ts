@@ -682,16 +682,26 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     await flushPromises()
   }
 
-  it.each([enUS, frFR])(
-    'holds the original included payment after sync rejection with localized public evidence',
-    async messages => {
+  it.each(
+    [enUS, frFR].flatMap(messages =>
+      (['not-shared', 'failed', 'shared'] as const).map(
+        sharing => [messages, sharing] as const,
+      ),
+    ),
+  )(
+    'holds the original included payment after sync rejection with localized public evidence (%#)',
+    async (messages, sharing) => {
       const fixture = await includedNativeTransfer()
+      if (sharing === 'shared')
+        for (const [index] of fixture.journal.list()[0]!.members.entries())
+          await fixture.journal.markSyncApplied(fixture.operationId, index)
       const getNativeOperations = jest.fn(() => fixture.journal.list())
       mockCaptureWallet.mockResolvedValue({
         wallet: {
           family: 'evm',
           chainIdentifier: 'monad-testnet',
           getNativeOperations,
+          nativeOperationSyncFailed: () => sharing === 'failed',
         },
         assertCurrent: mockAssertCurrent,
         isCurrent: () => mockCurrent.value,
@@ -717,10 +727,17 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         expect(outcome.text()).toContain(fixture.operationId)
         expect(outcome.text()).toContain('69526794')
         expect(outcome.text()).toContain('0.002142 MON')
-        // The payment is included: the outcome reads as sent. That the wallet's other devices
-        // have not been told is a muted note, and nothing speaks of recovery.
+        // The payment is included: the outcome reads as sent. Whether the wallet's other devices
+        // were told (yes, not yet, or the last try failed and is repeated) is a muted note in
+        // every case, and nothing speaks of recovery.
         const sync = wrapper.get('[data-test="native-operation-sync"]')
-        expect(sync.text()).toBe(messages.nativeOperation.syncNotShared)
+        expect(sync.text()).toBe(
+          {
+            'not-shared': messages.nativeOperation.syncNotShared,
+            'failed': messages.nativeOperation.syncFailed,
+            'shared': messages.nativeOperation.syncShared,
+          }[sharing],
+        )
         expect(sync.classes()).toEqual(
           expect.arrayContaining(['text-caption', 'text-grey-7']),
         )

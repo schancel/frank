@@ -7,6 +7,15 @@ jest.mock('@frank/wallet/monad-identity', () => ({
   registerMonadIdentityCbor: jest.fn(),
 }))
 
+jest.mock('@frank/cashweb/relay/username-client', () => ({
+  ...jest.requireActual('@frank/cashweb/relay/username-client'),
+  claimUsername: jest.fn(),
+}))
+import {
+  UsernameError,
+  claimUsername,
+} from '@frank/cashweb/relay/username-client'
+
 describe('RelayProfileManager', () => {
   const dummyIdentity = {
     address: '0x1111111111111111111111111111111111111111',
@@ -190,5 +199,69 @@ describe('RelayProfileManager', () => {
       },
     })
   })
-})
 
+  describe('username', () => {
+    const register = (profile: { name: string; username?: string }) =>
+      RelayProfileManager.registerProfile({
+        relayBaseUrl: 'https://relay.example.com',
+        identity: dummyIdentity,
+        label: 'qwen',
+        profile,
+        network: 'monad-testnet',
+      })
+
+    beforeEach(() => {
+      ;(monadIdentity.fetchMonadProfile as jest.Mock).mockResolvedValue({
+        name: 'Qwen',
+        bot: true,
+      })
+    })
+
+    it('claims the bot id as its username, signed by the bot identity, even when the profile is already current', async () => {
+      ;(claimUsername as jest.Mock).mockResolvedValueOnce({ username: 'qwen' })
+      await register({ name: 'Qwen' })
+      expect(claimUsername).toHaveBeenCalledWith({
+        relayBaseUrl: 'https://relay.example.com',
+        network: 'monad-testnet',
+        signer: dummyIdentity,
+        username: 'qwen',
+      })
+      expect(monadIdentity.registerMonadIdentityCbor).not.toHaveBeenCalled()
+    })
+
+    it('claims the username the profile names instead of the id', async () => {
+      ;(claimUsername as jest.Mock).mockResolvedValueOnce({ username: 'ask' })
+      await register({ name: 'Qwen', username: 'ask' })
+      expect(claimUsername).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'ask' }),
+      )
+    })
+
+    it('a taken or unreachable username is reported and the profile is still registered', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+      ;(monadIdentity.fetchMonadProfile as jest.Mock).mockResolvedValue(undefined)
+      for (const code of ['taken', 'unreachable'] as const) {
+        ;(claimUsername as jest.Mock).mockRejectedValueOnce(
+          new UsernameError(code),
+        )
+        await register({ name: 'Qwen' })
+      }
+      expect(warn.mock.calls.map(call => String(call[0]))).toEqual([
+        '[qwen] username @qwen is held by another account; this bot has no username',
+        '[qwen] could not claim username @qwen: unreachable',
+      ])
+      expect(monadIdentity.registerMonadIdentityCbor).toHaveBeenCalledTimes(2)
+      warn.mockRestore()
+    })
+
+    it('claims nothing when no network is given', async () => {
+      await RelayProfileManager.registerProfile({
+        relayBaseUrl: 'https://relay.example.com',
+        identity: dummyIdentity,
+        label: 'qwen',
+        profile: { name: 'Qwen' },
+      })
+      expect(claimUsername).not.toHaveBeenCalled()
+    })
+  })
+})

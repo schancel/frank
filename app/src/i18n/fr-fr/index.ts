@@ -669,6 +669,8 @@ export default {
     clearHistory: 'Effacer l’historique',
     deleteChat: 'Supprimer la discussion',
     unknownContact: 'Inconnu',
+    usernameReassigned:
+      "Vous avez ajouté ce contact sous {'@'}{username}. Cet identifiant est maintenant détenu par un autre compte. Ce contact reste le compte que vous avez ajouté, et vos messages lui sont toujours envoyés.",
   },
   sendLotusDialog: {
     sendLotusTo: 'Envoyer des Lotus à',
@@ -1001,8 +1003,9 @@ export default {
     feeunknown: 'Frais de réseau observés indisponibles.',
     block: 'Bloc {block}',
     syncNotShared: 'Pas encore partagé avec vos autres appareils.',
-    syncRecorded:
-      'Exécution du rappel de synchronisation enregistrée. Cela ne confirme pas la synchronisation sur les autres appareils.',
+    syncShared: 'Envoyé à vos autres appareils.',
+    syncFailed:
+      'L’envoi à vos autres appareils n’a pas encore abouti. Il sera retenté ; votre paiement n’est pas concerné.',
     recoveryUnavailable: 'La reprise est actuellement indisponible.',
     reviewHeld: 'Cette vérification ne permet pas d’envoyer un autre paiement.',
     unsupported:
@@ -1131,6 +1134,20 @@ export default {
       'Identifiant unique (3 à 32 caractères, lettres minuscules, chiffres, tirets, tirets bas)',
     invalidUsername:
       "L'identifiant doit comporter entre 3 et 32 caractères et ne contenir que des lettres minuscules, chiffres, tirets et tirets bas.",
+    usernameTaken: 'Cet identifiant est déjà pris. Choisissez-en un autre.',
+    usernameNotPublished:
+      "Votre compte n'est pas encore publié sur le relais. Attendez que la messagerie soit active, puis enregistrez à nouveau.",
+    usernameUnavailable:
+      "L'identifiant n'a pas pu être défini : le relais est injoignable ou a refusé la demande. Réessayez.",
+    usernameConfirmedTitle: 'Identifiant confirmé par le relais',
+    usernameNoWallet:
+      'Déverrouillez votre compte avant de définir un identifiant : la demande doit être signée par lui.',
+    usernameNotHeld:
+      "Votre identifiant enregistré n'est pas détenu par ce compte sur le relais. Ouvrez votre profil pour savoir pourquoi.",
+    usernameStillHeld:
+      "Ce compte détient {'@'}{username}. Un identifiant ne peut pas être abandonné : il reste le vôtre jusqu'à ce que vous en preniez un autre.",
+    nameStartsWithAt:
+      "Un nom ne peut pas commencer par {'@'}. C'est ainsi que s'écrivent les identifiants ; définissez le vôtre dans le champ Identifiant.",
     location: 'Localisation',
     locationHint: 'Où vous vous situez (facultatif)',
     links: 'Liens et réseaux',

@@ -37,8 +37,16 @@ export interface VaultWriteIntent {
 }
 
 export interface PreviewVault {
-  /** `accountRoot` is the 32-byte root R the typed roots were derived from; the caller vouches for that. */
-  stage(intent: VaultWriteIntent, roots: readonly DomainRoot[], accountRoot: Uint8Array): Promise<VaultReceipt>
+  /**
+   * Store the 32-byte account root R. It is the record's only secret and the source of
+   * truth; the caller vouches that it is this account's root.
+   */
+  stage(intent: VaultWriteIntent, accountRoot: Uint8Array): Promise<VaultReceipt>
+  /**
+   * Caller-owned roots for every purpose in the registry today, derived in memory from the
+   * stored account root. Nothing is written. A record from before account roots were kept
+   * returns the roots stored in it, for the purposes in its context, and no others.
+   */
   open(receipt: VaultReceipt): Promise<readonly DomainRoot[]>
   /**
    * The account root stored with this record, as a caller-owned copy, for issuing a new

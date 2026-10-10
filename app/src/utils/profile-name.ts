@@ -11,6 +11,9 @@ export function profileNameError(
   value: string,
   t: Translate,
 ): string | undefined {
+  // "@name" is how a username is written. A display name may not start that way, so it cannot
+  // be mistaken for one.
+  if ((value ?? '').trim().startsWith('@')) return t('profile.nameStartsWithAt')
   const result = validateProfileDisplayName(value ?? '')
   switch (result.reason) {
     case undefined:

@@ -201,8 +201,10 @@
             >
               {{
                 $t(
-                  operation.syncCallbackComplete
-                    ? 'nativeOperation.syncRecorded'
+                  operation.sharing === 'shared'
+                    ? 'nativeOperation.syncShared'
+                    : operation.sharing === 'failed'
+                    ? 'nativeOperation.syncFailed'
                     : 'nativeOperation.syncNotShared',
                 )
               }}

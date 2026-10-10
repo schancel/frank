@@ -127,6 +127,32 @@ const expected = [
 
 afterEach(() => jest.restoreAllMocks())
 
+/** After a native send the wallet tells the account's other devices with a free note to itself.
+ * The note is started, not waited for: call this at wallet open, and its result when a test needs
+ * the notes started so far to have settled. */
+function watchNotes() {
+  // Every flush goes through `startSync`.
+  const started = jest.spyOn(EvmLegacyConsolidator.prototype, 'startSync')
+  return async () => {
+    for (const result of started.mock.results)
+      await Promise.resolve(result.value as unknown).catch(() => undefined)
+    for (const owner of new Set(started.mock.contexts)) await owner.drain()
+  }
+}
+/** Everything a native send hands the message path is that note: free, to the wallet itself. */
+function expectOnlyFreeNotes(
+  transport: jest.SpyInstance,
+  wallet: EvmChainWalletHandle,
+) {
+  for (const [params] of transport.mock.calls) {
+    expect(params.stampValue).toBe(0n)
+    expect(params.recipient.raw.toLowerCase()).toBe(
+      wallet.identity.address.raw.toLowerCase(),
+    )
+    expect(params.items).toEqual([expect.objectContaining({ type: 'wallet-sync' })])
+  }
+}
+
 test.each([
   ['pool', LevelSubAccountPoolStore.prototype],
   ['change', LevelChangePoolStore.prototype],
@@ -622,26 +648,9 @@ test.each([false, true])(
   },
 )
 
-test.each([false, true])(
-  'close drains an in-flight native operation and rejects further work (demo: %s)',
-  async demo => {
-    if (demo)
-      jest.spyOn(globalThis, 'fetch').mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          kind: 'frank-simulated-ledger-v1',
-          amountWei: '1000000000000000000',
-          token: 'ab'.repeat(32),
-        }),
-      } as Response)
+test('close drains an in-flight native operation and rejects further work', async () => {
     const chain = createEvmChain({
       ...config,
-      ...(demo
-        ? {
-            networkId: 'monad-testnet',
-            fakeDemo: { enabled: true, controlUrl: 'http://127.0.0.1:8545' },
-          }
-        : {}),
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     })
     const wallet = await chain.createWallet(roots())
@@ -676,8 +685,7 @@ test.each([false, true])(
     await close
     expect(rpc.broadcast).toHaveBeenCalledTimes(1)
     expect(destroyHttp).toHaveBeenCalledTimes(1)
-  },
-)
+})
 
 test('cached callers serialize signing through the same durable native owner', async () => {
   const chain = createEvmChain({
@@ -1137,52 +1145,6 @@ test('construction failure closes opened stores and wipes owned messaging root',
   }
 })
 
-test('failed fake discovery creates no providers, wipes owned material and releases ownership for retry', async () => {
-  const original = materialModule.createMonadWalletMaterial
-  const materials: materialModule.MonadWalletMaterial[] = []
-  jest
-    .spyOn(materialModule, 'createMonadWalletMaterial')
-    .mockImplementation(input => {
-      const material = original(input)
-      materials.push(material)
-      return material
-    })
-  const provider = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
-  const open = jest.spyOn(LevelSubAccountPoolStore.prototype, 'Open')
-  const fetcher = jest
-    .spyOn(globalThis, 'fetch')
-    .mockResolvedValue({ ok: false } as Response)
-  const chain = createEvmChain({
-    ...config,
-    networkId: 'monad-testnet',
-    fakeDemo: { enabled: true, controlUrl: 'http://127.0.0.1:8545' },
-  })
-  await expect(chain.createWallet(roots())).rejects.toThrow('capability')
-  expect(provider).not.toHaveBeenCalled()
-  expect(open).not.toHaveBeenCalled()
-  expect(materials[0].messagingRoot!.every(byte => byte === 0)).toBe(true)
-  fetcher.mockResolvedValue({
-    ok: true,
-    json: async () => ({
-      kind: 'frank-simulated-ledger-v1',
-      amountWei: '1000000000000000000',
-      token: 'ab'.repeat(32),
-    }),
-  } as Response)
-  const wallet = (await chain.createWallet(roots())) as EvmChainWalletHandle
-  expect(
-    provider.mock.calls.map(([options]) => [options.rpcUrl, options.relayAuth]),
-  ).toEqual([
-    ['http://127.0.0.1:8545', undefined],
-    ['http://127.0.0.1:8545', undefined],
-  ])
-  const destroy = jest.spyOn(MonadHttpClient.prototype, 'destroy')
-  await wallet.close()
-  expect(destroy).toHaveBeenCalledTimes(1)
-  expect(wallet.provider.destroyed).toBe(true)
-  expect(materials[1].messagingRoot!.every(byte => byte === 0)).toBe(true)
-})
-
 test('construction failure after both clients exist destroys both providers', async () => {
   const providers = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
   jest
@@ -1200,93 +1162,7 @@ test('construction failure after both clients exist destroys both providers', as
   )
 })
 
-test('demo wallet close cancels dispatched balance and HTTP reads and closes their sockets', async () => {
-  const methods = new Set<string>()
-  let readsStarted!: () => void
-  const started = new Promise<void>(resolve => {
-    readsStarted = resolve
-  })
-  const socketClosures: Promise<void>[] = []
-  const server = createServer((req, res) => {
-    if (req.url === '/_ctl/demo-funding') {
-      res.setHeader('content-type', 'application/json')
-      res.end(
-        JSON.stringify({
-          kind: 'frank-simulated-ledger-v1',
-          amountWei: '1000000000000000000',
-          token: 'ab'.repeat(32),
-        }),
-      )
-      return
-    }
-    let body = ''
-    req.on('data', chunk => {
-      body += chunk
-    })
-    req.on('end', () => {
-      socketClosures.push(
-        new Promise<void>(resolve => res.on('close', resolve)),
-      )
-      const payload = JSON.parse(body)
-      for (const item of Array.isArray(payload) ? payload : [payload])
-        methods.add(item.method)
-      if (methods.has('eth_getBalance') && methods.has('eth_blockNumber'))
-        readsStarted()
-      // Both dispatched client reads intentionally wait forever for a response.
-    })
-  })
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
-  const controlUrl = `http://127.0.0.1:${
-    (server.address() as AddressInfo).port
-  }`
-  const wallet = (await createEvmChain({
-    ...config,
-    networkId: 'monad-testnet',
-    fakeDemo: { enabled: true, controlUrl },
-  }).createWallet(roots())) as EvmChainWalletHandle
-  let timeout: ReturnType<typeof setTimeout> | undefined
-  try {
-    const reads = Promise.allSettled([
-      wallet.getBalance(),
-      wallet.httpClient.getBlockNumber(),
-    ])
-    await started
-    await wallet.close()
-    const outcomes = await Promise.race([
-      reads,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error('dispatched demo reads stayed pending')),
-          300,
-        )
-      }),
-    ])
-    expect(outcomes.every(outcome => outcome.status === 'rejected')).toBe(true)
-    for (const outcome of outcomes) {
-      if (outcome.status === 'rejected')
-        expect(outcome.reason.message).toMatch(/cancel|destroy/i)
-    }
-    await Promise.race([
-      Promise.all(socketClosures),
-      new Promise<never>((_resolve, reject) => {
-        clearTimeout(timeout)
-        timeout = setTimeout(
-          () => reject(new Error('demo RPC socket stayed open')),
-          300,
-        )
-      }),
-    ])
-  } finally {
-    clearTimeout(timeout)
-    await wallet.close()
-    server.closeAllConnections()
-    await new Promise<void>(resolve => server.close(() => resolve()))
-  }
-})
-
-test.each([undefined, false])(
-  'production capability 401 never probes or retries direct (flag %s)',
-  async enabled => {
+test('a capability 401 from the relay is reported; the wallet asks nothing but the relay', async () => {
     const paths: string[] = []
     const server = createServer((req, res) => {
       paths.push(req.url!)
@@ -1316,8 +1192,6 @@ test.each([undefined, false])(
     const wallet = await createEvmChain({
       ...config,
       relayBaseUrl: url,
-      fakeDemo:
-        enabled === undefined ? undefined : { enabled, controlUrl: url },
     }).createWallet(roots())
     try {
       await expect(wallet.getBalance()).rejects.toThrow('401')
@@ -1329,8 +1203,7 @@ test.each([undefined, false])(
       await wallet.close()
       await new Promise<void>(resolve => server.close(() => resolve()))
     }
-  },
-)
+})
 
 test.each([
   'main',
@@ -1525,6 +1398,7 @@ async function sendLegacyFromProductionFundedPoolRow(dir: string) {
       bundle,
       // Calls through: the real transport step, observed.
       transport: jest.spyOn(chain.directMessages, 'send'),
+      notesSettled: watchNotes(),
       admission: () =>
         bundle.runLifetime(lifetime =>
           Promise.resolve(bundle.inputAdmission.inspect(lifetime)),
@@ -1601,12 +1475,15 @@ async function sendLegacyFromProductionFundedPoolRow(dir: string) {
   // callback dispatched its own item to the pool (`processed` called once). This device's own
   // record is written by the local pass inside the send.
   //
-  // Changed again, on purpose: the send used to hand a wallet-sync note to the message path
-  // afterwards. A note is a paid message, so the wallet no longer sends one: nothing reaches the
-  // message path, and the member stays not sync-applied.
+  // Changed again, on purpose, twice. The send used to hand a PAID wallet-sync note to the
+  // message path; then none at all. It now sends a free note to itself, after it has resolved.
+  // No directory is installed here, so that note cannot be sent: the member stays not
+  // sync-applied, and the send is unaffected.
   expect(processed).not.toHaveBeenCalled()
-  expect(first.transport).not.toHaveBeenCalled()
-  expect(member.syncApplied).toBe(false)
+  await first.notesSettled()
+  expect(first.transport).toHaveBeenCalledTimes(1)
+  expectOnlyFreeNotes(first.transport, wallet)
+  expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(false)
   return { ...first, rpc, sent, operation, open }
 }
 
@@ -1785,7 +1662,9 @@ test('a pool-sourced legacy send whose transfer is included resolves, with the r
       ).toMatchObject({
         txHash: first.operation.members[0]!.signed!.transactionHash,
       })
-    expect(first.transport).not.toHaveBeenCalled()
+    // Each resume tries the unsent note again; nothing else reaches the message path.
+    await first.notesSettled()
+    expectOnlyFreeNotes(first.transport, wallet)
     expect(sign).not.toHaveBeenCalled()
     expect(first.rpc.broadcast).not.toHaveBeenCalled()
     expect(putMany).not.toHaveBeenCalled()
@@ -1878,6 +1757,7 @@ async function composedWithProductionFundedPoolRow(dir: string) {
       bundle,
       rpc,
       transport: jest.spyOn(chain.directMessages, 'send'),
+      notesSettled: watchNotes(),
       admission: snapshot,
       /** The ready projection as plain data, so two sessions or two wallets can be compared. */
       obligations: async () => {
@@ -2020,8 +1900,16 @@ describe('recording a native spend from the journal under the input admission (#
       spentByMember(wallet.getNativeOperations!()[0]!),
     )
     expect(putMany).toHaveBeenCalledTimes(1)
-    // The later call transported nothing of the earlier operation.
-    expect(f.transport).not.toHaveBeenCalled()
+    // The later send is also where the earlier operation's note goes out: its pool member is
+    // recorded now, so the free note for it is sent. The main-sourced member has no pool row to
+    // tell other devices about and sends none.
+    await f.notesSettled()
+    expectOnlyFreeNotes(f.transport, wallet)
+    expect(
+      f.transport.mock.calls.map(([params]) => params.items[0].txHash),
+    ).toEqual([
+      wallet.getNativeOperations!()[0]!.members[0]!.signed!.transactionHash,
+    ])
     expect(await f.admission()).toMatchObject({ status: 'ready' })
     expect(wallet.pool.selectForStamp()).toBeUndefined()
     await wallet.close()
@@ -2056,10 +1944,10 @@ describe('recording a native spend from the journal under the input admission (#
       totalFeePaid: 21000n,
     })
     expect(seen).toEqual([spentByMember(operation!)])
-    // No note is sent after the send, so nothing reaches the message path and the member is
-    // not marked sync-applied.
-    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(false)
-    expect(f.transport).not.toHaveBeenCalled()
+    // The free note is sent after the send has resolved; the member is then marked.
+    await f.notesSettled()
+    expectOnlyFreeNotes(f.transport, wallet)
+    expect(wallet.getNativeOperations!()[0]!.members[0]!.syncApplied).toBe(true)
   })
 
   // Contract test 26: restores what Stage 0b's test 10 refused. On main 72631f36 the item is

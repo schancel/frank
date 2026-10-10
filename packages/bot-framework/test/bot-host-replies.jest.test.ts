@@ -43,6 +43,7 @@ jest.mock("../src/directory-manager", () => ({
 const mockSend = jest.fn();
 const mockFetchSince = jest.fn();
 const mockReconcile = jest.fn();
+const mockTxStatus = jest.fn();
 let mockLocalAddress = "";
 let mockLocalSubject = "";
 jest.mock("@frank/wallet/chain/monad-chain", () => {
@@ -56,6 +57,7 @@ jest.mock("@frank/wallet/chain/monad-chain", () => {
         send: mockSend,
         reconcileAttempts: mockReconcile,
       },
+      nativeTransfers: { getTransactionStatus: mockTxStatus },
       topics: { post: jest.fn() },
       createWallet: jest.fn(async (roots: MonadRootBundle) => {
         const { MonadIdentity } = jest.requireActual<
@@ -134,7 +136,14 @@ describe("FrankBotHost replies", () => {
       items: [{ type: "text", text }],
       payloadDigest: byte.repeat(32),
       stampValueWei: options.stampValueWei,
-      stampPayments: [],
+      // A paid message arrives with the transactions that paid it.
+      stampPayments:
+        typeof options.stampValueWei === "bigint" && options.stampValueWei > 0n
+          ? [
+              { txHash: "0x" + byte.repeat(31) + "a1" },
+              { txHash: "0x" + byte.repeat(31) + "a2" },
+            ]
+          : [],
       receivedTime: 1_700_000_000_000 + sequence,
     };
   };
@@ -214,6 +223,7 @@ describe("FrankBotHost replies", () => {
     mockSend.mockReset().mockImplementation(accept);
     mockFetchSince.mockReset().mockResolvedValue([]);
     mockReconcile.mockReset().mockResolvedValue({});
+    mockTxStatus.mockReset().mockResolvedValue("confirmed");
     stateDir = mkdtempSync(join(tmpdir(), "bot-host-replies-"));
   });
 
@@ -303,6 +313,137 @@ describe("FrankBotHost replies", () => {
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("Unsupported inbound identity")
       );
+    });
+  });
+
+  // On 16218e9f every reply carried the bot's default stamp (0.01 MON) whatever the sender had
+  // paid, so each message, paid or not, drew 0.01 MON out of the bot, refilled from the shared
+  // funding wallet.
+  describe("the stamp on a reply", () => {
+    const MIN = 1_000_000_000_000n;
+    const stampsSent = (): bigint[] =>
+      mockSend.mock.calls.map(([params]) => params.stampValue);
+
+    it.each([
+      ["what the sender paid, when that is less than the bot's own stamp", 4_000_000_000_000_000n, 4_000_000_000_000_000n],
+      ["the bot's own stamp at most, however much the sender paid", 5_000_000_000_000_000_000n, STAMP],
+      ["the relay's minimum for a message that paid nothing", 0n, MIN],
+      ["the relay's minimum for a message whose payment the wallet did not report", undefined, MIN],
+      ["the relay's minimum for a message that paid less than a paid message may", MIN - 1n, MIN],
+    ])("is %s", async (_label, paid, expected) => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      const { host, instance } = await start(
+        bot("stamp-reply-bot", async (message, ctx) => {
+          const said = (message.items[0] as { text: string }).text;
+          if (said === "return") return [{ type: "text", text: "returned" }];
+          if (said === "stored")
+            return { kind: "prepared-reply", text: "stored" };
+          if (said === "throw") throw new Error("a check failed");
+          // Anything sent while answering, to anyone, is covered: not only `reply()`.
+          await message.reply([{ type: "text", text: "replied" }]);
+          await ctx.sendMessage(otherPeer.address, [
+            { type: "text", text: "to a table mate" },
+          ]);
+        })
+      );
+      for (const said of ["return", "stored", "throw", "send"]) {
+        await poll(host, [inbound(said, { stampValueWei: paid })]);
+        await drain(instance);
+      }
+      expect(textsSent()).toEqual([
+        "returned",
+        "stored",
+        FAILED_REPLY_TEXT,
+        "replied",
+        "to a table mate",
+      ]);
+      expect(stampsSent()).toEqual(Array(5).fill(expected));
+    });
+
+    it("is the amount a handler names, when it names one: a payout is the handler's", async () => {
+      const { host, instance } = await start(
+        bot("payout-bot", async (message) => {
+          await message.reply([{ type: "text", text: "you won" }], {
+            stampValueWei: 70_000_000_000_000_000n,
+          });
+        })
+      );
+      await poll(host, [inbound("roll", { stampValueWei: 0n })]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([70_000_000_000_000_000n]);
+    });
+
+    // The rebuilt relay delivers a message before its payments confirm, and a sender can sign
+    // payments from empty accounts: the amount a delivery states is matched only once every
+    // one of its payment transactions is mined.
+    it.each([
+      ["are still pending", async () => "pending"],
+      ["are unknown to the node", async () => "unknown"],
+      ["failed", async () => "failed"],
+      [
+        "are confirmed in part",
+        async ({ transaction }: { transaction: { txHash: string } }) =>
+          transaction.txHash.endsWith("a1") ? "confirmed" : "pending",
+      ],
+      [
+        "cannot be looked up",
+        async () => {
+          throw new Error("RPC unreachable");
+        },
+      ],
+      ["are not answered for in time", () => new Promise(() => undefined)],
+    ])(
+      "is the relay's minimum, and the reply is still sent at once, when the stated payment's transactions %s",
+      async (_label, status) => {
+        mockTxStatus.mockImplementation(status as never);
+        const { host, instance } = await start(
+          bot("unconfirmed-bot", async () => [{ type: "text", text: "answer" }])
+        );
+        const message = inbound("hello", { stampValueWei: STAMP });
+        await poll(host, [message]);
+        await drain(instance);
+        expect(textsSent()).toEqual(["answer"]);
+        expect(stampsSent()).toEqual([MIN]);
+        expect(mockTxStatus).toHaveBeenCalledWith({
+          wallet: instance.wallet,
+          transaction: { txHash: message.stampPayments[0].txHash },
+        });
+      },
+      10_000
+    );
+
+    it("is the stated amount once every payment transaction is confirmed, and no node is asked about a message that states the minimum or less", async () => {
+      const { host, instance } = await start(
+        bot("confirmed-bot", async () => [{ type: "text", text: "answer" }])
+      );
+      await poll(host, [inbound("paid", { stampValueWei: STAMP })]);
+      await drain(instance);
+      expect(mockTxStatus).toHaveBeenCalledTimes(2);
+      await poll(host, [inbound("minimum", { stampValueWei: MIN })]);
+      await poll(host, [inbound("nothing", { stampValueWei: 0n })]);
+      await drain(instance);
+      expect(stampsSent()).toEqual([STAMP, MIN, MIN]);
+      expect(mockTxStatus).toHaveBeenCalledTimes(2);
+    });
+
+    it("is what the message was confirmed to have paid, also for the failure reply of a message whose handling was interrupted", async () => {
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      const { host, instance } = await start(bot("cut-bot", async () => {}));
+      // The handler ran and the write that finishes its message was lost.
+      const complete = jest
+        .spyOn(instance.operations, "complete")
+        .mockRejectedValueOnce(new Error("killed"));
+      const message = inbound("hello", { stampValueWei: STAMP });
+      await poll(host, [message]);
+      await drain(instance);
+      expect(complete).toHaveBeenCalledTimes(1);
+      expect(mockSend).not.toHaveBeenCalled();
+      await poll(host, [message]);
+      await drain(instance);
+      expect(textsSent()).toEqual([FAILED_REPLY_TEXT]);
+      expect(stampsSent()).toEqual([STAMP]);
+      // Kept with the row, not looked up again.
+      expect(mockTxStatus).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -878,6 +1019,45 @@ describe("FrankBotHost replies", () => {
       }
     );
 
+    // On 16218e9f a failing question skipped the bound: the conversation waited for ever.
+    it("is given up visibly after the bound when the wallet cannot be asked about it, poll after poll", async () => {
+      const seen: string[] = [];
+      const { host, instance } = await start(answering(seen));
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      mockSend
+        .mockReset()
+        .mockImplementationOnce(async (params) => {
+          await params.onAttemptCreated?.("ee".repeat(32));
+          throw new Error("the relay has not delivered it yet");
+        })
+        .mockImplementation(accept);
+      mockReconcile.mockRejectedValue(new Error("wallet journal unreadable"));
+      const one = inbound("one");
+      const two = inbound("two");
+
+      await poll(host, [one, two]);
+      await drain(instance);
+      await poll(host, [one]);
+      await drain(instance);
+      expect(await finished(instance, one)).toBe(false);
+      await new Promise((r) => setTimeout(r, 5));
+      (host as any).options.replyGiveUpMs = 1;
+      await poll(host, [one]);
+      await drain(instance);
+      (host as any).options.replyGiveUpMs = 60 * 60_000;
+      await poll(host, [one, two]);
+      await drain(instance);
+
+      expect(
+        error.mock.calls.filter(([line]) =>
+          String(line).includes("Giving up on the reply")
+        )
+      ).toHaveLength(1);
+      expect(await finished(instance, one)).toBe(true);
+      expect(seen).toEqual(["one", "two"]);
+    });
+
     it("that could never be sent is given up visibly after the bound, having paid nothing", async () => {
       const { host, instance } = await start(answering());
       const error = jest.spyOn(console, "error").mockImplementation(() => {});
@@ -901,6 +1081,65 @@ describe("FrankBotHost replies", () => {
       expect(await finished(instance, message)).toBe(true);
     });
 
+    // On 16218e9f this send had no bound: one that hung held its peer's lane and the single
+    // retry pass, so no other waiting reply was sent either.
+    it("whose send hangs is let go at the call bound and sent again; the wallet's one-payment rule covers the call left behind", async () => {
+      const seen: string[] = [];
+      const { host, instance } = await start(answering(seen), {
+        callTimeoutMs: 40,
+      });
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      // A wallet stand-in that keeps the wallet's rule, which is what makes letting go safe:
+      // one payment per message identity, sends one at a time. The first call hangs before
+      // it has journalled anything.
+      const paid = new Map<string, string>();
+      let release!: () => void;
+      mockSend.mockReset().mockImplementation(async (params) => {
+        if (mockSend.mock.calls.length === 1)
+          await new Promise<void>((resolve) => (release = resolve));
+        const original = paid.get(params.messageId);
+        if (original)
+          throw new DirectMessageAlreadyAttemptedError(
+            params.messageId,
+            original,
+            "02" + "aa".repeat(32)
+          );
+        const digest = (0xd0 + paid.size).toString(16).repeat(32);
+        paid.set(params.messageId, digest);
+        await params.onAttemptCreated?.(digest);
+        return { payloadDigest: digest, stampValueWei: STAMP, stampPayments: [], preparationTxHashes: [] };
+      });
+      mockReconcile.mockImplementation(async ({ payloadDigests }) =>
+        Object.fromEntries(
+          payloadDigests.map((d: string) => [d, "delivered"])
+        )
+      );
+      const stuck = inbound("one");
+      const other = inbound("two", { from: otherPeer });
+
+      await poll(host, [stuck]);
+      await drain(instance);
+      expect(await finished(instance, stuck)).toBe(false);
+      // The lane and the retry pass are free again: another peer is answered, and the reply is
+      // sent again under the same identity.
+      await poll(host, [stuck, other]);
+      await drain(instance);
+      expect(await finished(instance, other)).toBe(true);
+      expect(await finished(instance, stuck)).toBe(true);
+      // The call left behind finishes late: it finds the payment made and makes no other.
+      release();
+      await new Promise((r) => setTimeout(r, 10));
+      await poll(host, [stuck, other]);
+      await drain(instance);
+      expect(paid.size).toBe(2);
+      expect(seen).toEqual(["one", "two"]);
+      const ids = mockSend.mock.calls
+        .filter(([p]) => p.items[0].text === "re:one")
+        .map(([p]) => p.messageId);
+      expect(ids.length).toBeGreaterThan(1);
+      expect(new Set(ids).size).toBe(1);
+    });
+
     it("replaces a reply text the journal cannot store by the failure reply", async () => {
       jest.spyOn(console, "error").mockImplementation(() => {});
       const { host, instance } = await start(
@@ -911,6 +1150,121 @@ describe("FrankBotHost replies", () => {
       await drain(instance);
       expect(textsSent()).toEqual([FAILED_REPLY_TEXT]);
       expect(await finished(instance, message)).toBe(true);
+    });
+  });
+
+  // On 16218e9f one failed journal write left the bot answering nothing until it was restarted,
+  // with warnings only.
+  describe("a failed write to the bot's journal", () => {
+    const { LevelBotStateStore } = jest.requireActual<
+      typeof import("../src/state-store")
+    >("../src/state-store");
+
+    it.each([
+      ["was lost", false],
+      ["landed and only its acknowledgement was lost", true],
+    ])(
+      "is said loudly and mended on the next poll when the write %s: every message is answered once",
+      async (_label, landed) => {
+        const error = jest.spyOn(console, "error").mockImplementation(() => {});
+        jest.spyOn(console, "warn").mockImplementation(() => {});
+        const seen: string[] = [];
+        const { host, instance } = await start(
+          bot("journal-bot", async (message) => {
+            seen.push((message.items[0] as { text: string }).text);
+            return { kind: "prepared-reply", text: "answer" };
+          })
+        );
+        const original = LevelBotStateStore.prototype.durableBatch;
+        let cut = false;
+        jest
+          .spyOn(LevelBotStateStore.prototype, "durableBatch")
+          .mockImplementation(async function (this: unknown, ops) {
+            // The write that finishes the first message.
+            if (!cut && ops.some((op) => op.key.startsWith("digest:"))) {
+              cut = true;
+              if (landed) await original.call(this, ops);
+              throw new Error("EIO: i/o error, write");
+            }
+            return original.call(this, ops);
+          });
+        // The wallet knows what the journal lost: that reply was delivered.
+        mockReconcile.mockImplementation(async ({ payloadDigests }) =>
+          Object.fromEntries(
+            payloadDigests.map((digest: string) => [digest, "delivered"])
+          )
+        );
+        const one = inbound("one");
+        const two = inbound("two", { from: otherPeer });
+
+        await poll(host, [one]);
+        await drain(instance);
+        expect(instance.operations.isFaulted).toBe(true);
+        await poll(host, [one, two]);
+        await drain(instance);
+        await poll(host, [one, two]);
+        await drain(instance);
+
+        expect(instance.operations.isFaulted).toBe(false);
+        expect(
+          error.mock.calls.some(([line]) =>
+            String(line).includes('BOT "journal-bot" IS NOT ANSWERING')
+          )
+        ).toBe(true);
+        expect(seen).toEqual(["one", "two"]);
+        expect(await finished(instance, one)).toBe(true);
+        expect(await finished(instance, two)).toBe(true);
+        // The first reply was delivered before the cut and is not sent a second time.
+        expect(textsSent()).toEqual(["answer", "answer"]);
+      }
+    );
+
+    // On 8815aed8 a disk that still could not be written logged "is answering again" on every
+    // poll, because reading the journal back was taken for recovery.
+    it("does not say it is answering while the journal can be read but still not written", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(bot("full-disk-bot", async () => {}));
+      const full = jest
+        .spyOn(LevelBotStateStore.prototype, "durableBatch")
+        .mockRejectedValue(new Error("ENOSPC: no space left on device"));
+      await poll(host, [inbound("one")]);
+      await drain(instance);
+      await poll(host);
+      await poll(host);
+      const said = () => error.mock.calls.map((call) => call.join(" "));
+      expect(said().filter((line) => line.includes("IS NOT ANSWERING"))).toHaveLength(2);
+      expect(said().some((line) => line.includes("is answering"))).toBe(false);
+      expect(instance.operations.isFaulted).toBe(true);
+      // Space is freed: now it says so, once, and serves.
+      full.mockRestore();
+      await poll(host, [inbound("two", { from: otherPeer })]);
+      await drain(instance);
+      expect(said().filter((line) => line.includes("is answering"))).toHaveLength(1);
+      expect(instance.operations.isFaulted).toBe(false);
+    });
+
+    it("keeps saying so, by name and at error level, while the journal cannot be read back", async () => {
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      const { host, instance } = await start(bot("dead-disk-bot", async () => {}));
+      jest
+        .spyOn(LevelBotStateStore.prototype, "durableBatch")
+        .mockRejectedValue(new Error("EIO"));
+      jest
+        .spyOn(LevelBotStateStore.prototype, "readEntries")
+        .mockRejectedValue(new Error("EIO"));
+      await poll(host, [inbound("one")]);
+      await drain(instance);
+      await poll(host);
+      await poll(host);
+      const loud = error.mock.calls.filter(([, detail]) =>
+        String(detail).includes(
+          'Bot "dead-disk-bot" still cannot read its message journal'
+        )
+      );
+      expect(loud).toHaveLength(2);
+      expect(mockFetchSince).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -969,8 +1323,9 @@ describe("FrankBotHost replies", () => {
       clock += 31_000;
       await poll(host);
       await until(() => sendTransaction.mock.calls.length === 1);
+      // Topped up to 0.5 MON.
       expect(sendTransaction).toHaveBeenCalledWith(
-        expect.objectContaining({ value: 500_000_000_000_000_000n })
+        expect.objectContaining({ value: 450_000_000_000_000_000n })
       );
       // Its receipt is still awaited: later polls start nothing.
       clock += 31_000;
@@ -990,6 +1345,125 @@ describe("FrankBotHost replies", () => {
       await until(() => sendTransaction.mock.calls.length === 2);
       confirm();
       await settle(instance);
+    });
+
+    // The reviewer's sequence on 8815aed8: a dice bot at 0.5 MON pays 0.196 twice and holds
+    // 0.108; the third win needs 0.196, and nothing topped the bot up because 0.108 was not
+    // under the old 0.1 threshold. The payout failed until the balance happened to fall.
+    it("keeps the paying balance above what a game can owe: a bot at 0.108 MON is topped up to 0.5 MON", async () => {
+      let clock = Date.now();
+      jest.spyOn(Date, "now").mockImplementation(() => clock);
+      const sendTransaction = jest.fn(async () => ({ wait: async () => {} }));
+      const { host, balances, instance } = await funded(sendTransaction);
+      balances.bot = 108_000_000_000_000_000n;
+      clock += 31_000;
+      await poll(host);
+      await settle(instance);
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+      expect(sendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 392_000_000_000_000_000n })
+      );
+    });
+
+    it("refuses a top-up target that is not above its threshold, at construction", () => {
+      for (const [topUpBelowWei, topUpToWei] of [
+        [5n, 5n],
+        [5n, 4n],
+      ])
+        expect(
+          () =>
+            new FrankBotHost({
+              relayBaseUrl: "http://127.0.0.1:8098",
+              stateDir,
+              topUpBelowWei,
+              topUpToWei,
+            })
+        ).toThrow(/FRANK_BOT_TOP_UP_TO_WEI\) must be greater than its threshold/);
+    });
+
+    // On 2d54a52d a low funding wallet gave a quarter of what it had left, down to about
+    // 0.04 MON: below the 0.1 MON the faucet, which pays from the same wallet, keeps back.
+    it("never takes the funding wallet below the faucet's reserve, and says the wallet is exhausted", async () => {
+      let clock = Date.now();
+      jest.spyOn(Date, "now").mockImplementation(() => clock);
+      const error = jest.spyOn(console, "error").mockImplementation(() => {});
+      const sendTransaction = jest.fn(async () => ({ wait: async () => {} }));
+      const { host, balances, instance } = await funded(sendTransaction);
+      const funder = { wei: 350_000_000_000_000_000n };
+      (host as any).provider.getBalance = jest.fn(async (address: string) =>
+        address === "0x1111111111111111111111111111111111111111"
+          ? funder.wei
+          : balances.bot
+      );
+      balances.bot = 0n;
+      // 0.35 MON left: the bot gets what is above the 0.1 MON reserve, not the 0.5 it wants.
+      clock += 31_000;
+      await poll(host);
+      await settle(instance);
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+      expect(sendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 250_000_000_000_000_000n })
+      );
+      // Only the reserve (and dust) is left: nothing is sent, and it is said loudly.
+      funder.wei = 105_000_000_000_000_000n;
+      clock += 6 * 60_000;
+      await poll(host);
+      await settle(instance);
+      expect(sendTransaction).toHaveBeenCalledTimes(1);
+      expect(
+        error.mock.calls.filter(([line]) =>
+          String(line).includes("FUNDING WALLET EXHAUSTED")
+        )
+      ).toHaveLength(1);
+    });
+
+    it("takes its threshold and target from the host options, and warns at registration about a bot whose largest payout they cannot cover", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir,
+        watchRegistrations: false,
+        fundingPrivateKeyHex: "0x" + "22".repeat(32),
+        topUpBelowWei: 2_000_000_000_000_000_000n,
+        topUpToWei: 3_000_000_000_000_000_000n,
+      });
+      hosts.push(host);
+      const sendTransaction = jest.fn(async () => ({ wait: async () => {} }));
+      (host as any).provider = {
+        getBalance: jest.fn(async (address: string) =>
+          address === "0x1111111111111111111111111111111111111111"
+            ? 50_000_000_000_000_000_000n
+            : 1_500_000_000_000_000_000n
+        ),
+      };
+      (host as any).fundingWallet = {
+        address: "0x1111111111111111111111111111111111111111",
+        sendTransaction,
+      };
+      (host as any).nonceSequencer = {
+        withNonce: (run: (nonce: number) => Promise<unknown>) => run(0),
+      };
+      await host.register(
+        bot("covered-bot", async () => {}, {
+          maxPayoutWei: 2_000_000_000_000_000_000n,
+        })
+      );
+      expect(sendTransaction).toHaveBeenCalledWith(
+        expect.objectContaining({ value: 1_500_000_000_000_000_000n })
+      );
+      const warned = () =>
+        warn.mock.calls.filter(([line]) =>
+          String(line).includes("can owe a single payout")
+        );
+      expect(warned()).toHaveLength(0);
+      await host.register(
+        bot("big-bot", async () => {}, {
+          maxPayoutWei: 2_000_000_000_000_000_001n,
+        })
+      );
+      expect(warned()).toHaveLength(1);
+      expect(warned()[0][0]).toContain('Bot "big-bot"');
+      expect(warned()[0][0]).toContain("FRANK_BOT_TOP_UP_BELOW_WEI");
     });
 
     it("is tried again on a later poll after it failed, as when another bot's top-up took the nonce", async () => {

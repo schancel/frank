@@ -11,9 +11,20 @@ Related tracker decisions: #289, #288, #536, #655, #46, and #293
 
 Frank will use Codex32 to create checksummed, threshold-recoverable backups of a
 portable master secret. New-account setup must prove that the user can recover
-that exact secret before any account becomes durable. After deriving the
-initial domain secrets, Frank must remove the master secret from application
-state and must not offer to reveal it from a resident copy.
+that exact secret before any account becomes durable.
+
+Owner decision, 2026-10-09 (supersedes the earlier rule that the master must not
+be resident or re-offered): Frank keeps the 32-byte account root `R` in the local
+vault as the one stored secret of an account. Every domain root is derived from
+`R` each time the account is opened, so a purpose or chain added to the registry
+later gets its proper keys for every existing account automatically, and an
+unlocked account can issue a new, independent set of backup shares that restores
+the same account. The original shares are still never stored or shown again. `R`
+is read to derive at open and when the user explicitly asks for new shares, and is
+not held by the running session; anyone who can decrypt the local vault obtains
+`R` and with it every present and future key of the account. Where later sections say `M` is discarded or absent from
+resident state, read them subject to this paragraph: the master payload and the
+shares are discarded; `R` is retained in the vault.
 
 This document specifies the first implementation boundary. It does not claim
 that JavaScript can forensically erase memory, that a checksum authenticates a
@@ -817,10 +828,25 @@ descriptor and expected-account identity.
 
 ### 7.2 Reconstruction
 
-At exactly `k` accepted shares, the library reconstructs a candidate `M`.
-Additional shares are not opportunistically mixed into interpolation. The app
+Owner decision, 2026-10-09 (supersedes "exactly `k` shares"): restore accepts
+`k` shares or more, so that a wrong share among them can be found. Shares are
+decoded one by one and grouped by backup set (identifier and threshold); sets are
+never mixed. Within a set every `k`-sized subset is interpolated and a result is
+accepted only if its embedded `V` validates; every share of the set is then
+checked against each valid `M` at its own index. The user is told, by position,
+which shares were used, which do not belong to the restored backup, which come
+from a different set, which were entered twice and which could not be read. Because
+every subset is tried, one set may hold at most 31 shares for `k` of 2 or 3, 20 for
+`k` = 4, 16 for `k` = 5 and 14 for `k` from 6 to 9; more is refused with the number
+allowed. If the shares contain complete sets of more than one valid account,
+nothing is chosen automatically: every account is shown with its identity address
+and the user picks one, unless a pinned descriptor selects it. The identity
+address is shown again before activation.
+
+With exactly `k` shares the library reconstructs one candidate `M`. The app
 first validates the candidate's embedded `V`. Failure reports that the shares do
-not reconstruct a valid Frank master, without blaming a particular share. It
+not reconstruct a valid Frank master; with only `k` shares no particular share can
+be blamed, and the message says that one more share would identify it. It
 then increments the attempt generation to fence stale work; clears candidate
 `M`, accepted shares and strings, and all derived intermediates; retains only
 the complete immutable independently authenticated descriptor, including
@@ -1005,8 +1031,15 @@ Secret cleanup precedes normal networking in either case.
 
 ## 8. Backup management after signup
 
-Because `M` is absent from resident state, Frank cannot later display the master
-Codex32 shares. For Codex32-backed accounts, the existing “Show recovery phrase”
+Frank cannot later display the shares shown at signup. From Settings, an unlocked
+active account MAY issue a new share set: the app reads the stored account root
+`R`, confirms it reproduces the account's recorded public fingerprint, splits
+`M = R || V` under a fresh random identifier, reads every share back, and shows
+the set only after an explicit request. A new set restores the same account as
+the signup shares; shares from different sets do not combine and are refused on
+restore. An account stored before `R` was kept has nothing to split: the app says
+that only its signup shares restore it and issues none. A derived domain root is
+never offered as a backup. For Codex32-backed accounts, the existing “Show recovery phrase”
 action MUST be replaced with a backup-status view. An unlocked active account
 MUST be able to deterministically re-encode, display, and export its exact public
 recovery descriptor from the persisted format version, registry version, and

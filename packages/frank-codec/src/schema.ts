@@ -1183,16 +1183,26 @@ export function parseDraft(
   const P = 'root/payload'
   switch (typeId) {
     case TYPE_DIRECT_MESSAGE_DELIVERY: {
-      const m = fields(payload, P, [0, 1, 2, 3, 4], [5, 6], true, allow)
+      // Schema 2 carries an unpaid message: the payment list may be empty or absent. Schema 1
+      // keeps its required list of at least one member. Same rule as frank-cbor's `parse_draft`.
+      const unpaidAllowed = schema.effective >= 2
+      const m = unpaidAllowed
+        ? fields(payload, P, [0, 1, 2, 3], [4, 5, 6], true, allow)
+        : fields(payload, P, [0, 1, 2, 3, 4], [5, 6], true, allow)
       const res: DirectMessageDelivery<Uint8Array> = {
         type: 1,
         network: networkTag(m.get(0), `${P}.0`),
         destination: account(m.get(1), `${P}.1`),
         payloadFrame: framed(m.get(2), `${P}.2`),
         payloadDigest: bstr(m.get(3), `${P}.3`, 32, 32),
-        payments: asList(m.get(4), `${P}.4`, 1, MAX_PAYMENT_MEMBERS).map(
-          (e, i) => paymentMember(e, `${P}.4[${i}]`),
-        ),
+        payments: m.has(4)
+          ? asList(
+              m.get(4),
+              `${P}.4`,
+              unpaidAllowed ? 0 : 1,
+              MAX_PAYMENT_MEMBERS,
+            ).map((e, i) => paymentMember(e, `${P}.4[${i}]`))
+          : [],
         unknownFields: m.unknown,
       }
       if (m.has(5)) {

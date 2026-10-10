@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -20,6 +20,26 @@ describe('Supervisor', () => {
     dir = mkdtempSync(join(tmpdir(), 'supervisor-'))
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('a command that never starts is reported, and its log vanishing with the directory does not take the process down', async () => {
+    const sup = new Supervisor({ PATH: process.env.PATH }, () => {})
+    const gone = mkdtempSync(join(tmpdir(), 'supervisor-gone-'))
+    const child = sup.start({
+      name: 'missing',
+      command: join(gone, 'no-such-command'),
+      args: [],
+      cwd: dir,
+      env: {},
+      logPath: join(gone, 'logs', 'missing.log'),
+    })
+    // The directory goes away before the log stream has opened its file.
+    rmSync(gone, { recursive: true, force: true })
+    expect(await child.exited).toBe('error')
+    expect(child.hasExited()).toBe(true)
+    expect(child.tail().join('\n')).toMatch(/failed to start/)
+    await sleep(200) // an unhandled stream error would have thrown by now
+    await sup.stopAll(500)
+  })
 
   it('stopAll kills the whole process group, wrappers and grandchildren included', async () => {
     const sup = new Supervisor({ PATH: process.env.PATH }, () => {})
@@ -118,5 +138,12 @@ describe('Supervisor', () => {
     await stopping
     expect(unexpected).toHaveBeenCalledTimes(1)
     expect(unexpected).toHaveBeenCalledWith(child, 'error')
+    // The supervisor opens the child's log file asynchronously and, for a command that never
+    // started, never closes it. If the directory is removed (afterEach) before that open has
+    // happened, the stream fails with ENOENT, nothing listens for its error, and the whole
+    // jest process dies. Wait for the file so the open has completed.
+    const logPath = join(dir, 'missing.log')
+    for (let i = 0; i < 200 && !existsSync(logPath); i++) await sleep(5)
+    expect(existsSync(logPath)).toBe(true)
   })
 })

@@ -3,6 +3,11 @@ import { createServer } from 'net'
 import { resolveDemoConfig } from './demo-config'
 import { checkPrerequisites, main } from './demo'
 
+const REAL_ENV = {
+  MONAD_TESTNET_HTTP_RPC_URL: 'https://rpc.example.invalid/v2/dummy-key',
+  E2E_DEMO_MAIN_WALLET_JSON: 'wallet.json',
+}
+
 describe('demo launcher', () => {
   let errors: string[]
   beforeEach(() => {
@@ -25,6 +30,18 @@ describe('demo launcher', () => {
     expect(out).toMatch(/MONAD_TESTNET_HTTP_RPC_URL is required/)
     expect(out).toMatch(/E2E_DEMO_MAIN_WALLET_JSON is required/)
     expect(out).not.toMatch(/\n\s+at /)
+  })
+
+  it('refuses an argument it does not know (there is one mode: Monad testnet)', async () => {
+    const code = await main(['--some-other-chain'], { FRANK_DEMO_ENV_FILE: '/nonexistent/dummy.env' })
+    expect(code).toBe(1)
+    expect(errors.join('\n')).toMatch(/unknown argument\(s\): --some-other-chain/)
+  })
+
+  it('a missing funding wallet file is one clear line', async () => {
+    const config = resolveDemoConfig({ env: REAL_ENV, envFile: {}, home: '/home/dummy', cwd: '/work' })
+    const problems = await checkPrerequisites(config)
+    expect(problems).toContain('E2E_DEMO_MAIN_WALLET_JSON does not exist: /work/wallet.json')
   })
 
   it('a bad env file is reported by line number without echoing its content', async () => {
@@ -52,9 +69,8 @@ describe('demo launcher', () => {
     const busy = (server.address() as { port: number }).port
     try {
       const config = resolveDemoConfig({
-        env: { FRANK_DEMO_RELAY_PORT: String(busy), CASHWEBD_BIN: '/nonexistent/cashwebd-exe' },
+        env: { ...REAL_ENV, FRANK_DEMO_RELAY_PORT: String(busy), CASHWEBD_BIN: '/nonexistent/cashwebd-exe' },
         envFile: {},
-        fakeChainFlag: true,
         home: '/home/dummy',
         cwd: '/work',
       })
@@ -68,9 +84,8 @@ describe('demo launcher', () => {
 
   it('without CASHWEBD_BIN it says how to get a relay when cargo is missing', async () => {
     const config = resolveDemoConfig({
-      env: {},
+      env: REAL_ENV,
       envFile: {},
-      fakeChainFlag: true,
       home: '/home/dummy',
       cwd: '/work',
     })

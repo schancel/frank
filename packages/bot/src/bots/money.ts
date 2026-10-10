@@ -152,6 +152,10 @@ export interface Owed {
   sinceMs: number;
   /** The payload digest of the wallet's attempt for this message, once one is known to exist. */
   attempt?: string;
+  /** False: when it carries no value it is still sent with the bot's ordinary stamp, so the
+   * wallet journals it and a retry is the same message (a hand's messages are chained by digest).
+   * Otherwise a message that carries no value goes out unpaid. */
+  unpaidOk?: boolean;
   /** How many times an operator has sent this again after an attempt failed: each is a new
    * message to the wallet. */
   tries?: number;
@@ -302,6 +306,7 @@ export class Outbox {
       items: MessageItem[];
       valueWei?: bigint;
       awaits?: Payment[];
+      unpaidOk?: boolean;
     },
     settles?: { digest: string; writes?: BatchOp[] }
   ): Promise<void> {
@@ -318,6 +323,7 @@ export class Outbox {
           items: entry.items,
           valueWei: (entry.valueWei ?? 0n).toString(),
           ...(entry.awaits?.length ? { awaits: entry.awaits } : {}),
+          ...(entry.unpaidOk === false ? { unpaidOk: false } : {}),
           sinceMs: Date.now(),
         };
         index.owed.push(id);
@@ -535,7 +541,12 @@ export class Outbox {
           owed.items,
           owed.conversationId,
           {
-            ...(value > 0n ? { stampValueWei: value } : {}),
+            // What it pays, or nothing at all: an answer that carries no money is free.
+            ...(value > 0n
+              ? { stampValueWei: value }
+              : owed.unpaidOk === false
+              ? {}
+              : { stampValueWei: 0n }),
             messageId: messageIdFor(this.botId, id, owed.tries),
           }
         );

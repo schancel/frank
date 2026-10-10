@@ -231,6 +231,9 @@ export interface NativeWalletHandle {
   resumeLegacySend?(operationId: string): Promise<LegacySendResult>;
   /** EVM operation evidence; delivery and inclusion do not release its input claims. */
   getNativeOperations?(): readonly EvmNativeOperation[];
+  /** Whether this session's last attempt to tell the account's other devices about the operation
+   * failed. It is tried again on a later send or resume; the payment itself is unaffected. */
+  nativeOperationSyncFailed?(operationId: string): boolean;
   resumeNativeOperation?(operationId: string): Promise<EvmNativeOperation>;
   cancelUnsignedNativeOperation?(operationId: string): Promise<void>;
   /**

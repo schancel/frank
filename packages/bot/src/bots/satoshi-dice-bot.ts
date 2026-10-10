@@ -50,7 +50,8 @@ export class SatoshiDiceBot implements FrankBotDefinition {
 
   private readonly outbox = new Outbox("dice");
   readonly schedules = [this.outbox.schedule];
-  private readonly maxPayoutWei: bigint;
+  /** The table limit: also what the host sizes this bot's funding against. */
+  readonly maxPayoutWei: bigint;
 
   constructor(options?: { maxPayoutWei?: bigint }) {
     this.maxPayoutWei = options?.maxPayoutWei ?? DICE_DEFAULT_MAX_PAYOUT_WEI;

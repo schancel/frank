@@ -53,6 +53,23 @@ const { roots, metadata } = restore.recover(exactThresholdShares)
 destroyAccountDomainRoots(roots)
 ```
 
+`restore.recoverAny(shares)` (and `recoverFromAnyShares`) accept the threshold
+number of shares or more and tolerate wrong ones. Each share is decoded on its
+own; shares are grouped by backup set (identifier and threshold) and never mixed
+across sets; every threshold-sized subset of a set is tried for one whose
+reconstruction is a valid master `R || V`; every share of the set is then checked
+against each master found, at its own index. The result lists the reconstructed
+accounts and, for every supplied share by position, whether it `supports` one or
+more of them (a share can lie on two splits), is `inconsistent`, comes from a
+`different-set`, is a `duplicate` or is `invalid`; share contents never appear in
+results or errors. If complete share sets of more than one account are present,
+all are returned and the caller must let the user choose; a pinned descriptor
+selects its account. The search is always exhaustive, so the number of shares of
+one set is limited to keep it small: `maxSharesForThreshold(t)` is 31 for
+thresholds 2 and 3, 20 for 4, 16 for 5 and 14 for 6 to 9 (never fewer than the
+threshold plus two). More than that fails with `too-many-shares`, whose
+`maxShares` says how many may be entered.
+
 `beginCodex32Restore` snapshots the descriptor once. Recovery first validates
 `R || V`, compares all 32 fingerprint bytes, then derives the five purpose-tagged
 roots. Invalid shares or invalid `M` can retry against the same pinned descriptor

@@ -17,7 +17,9 @@ import { Transaction, computeAddress, getAddress, hexlify } from 'ethers'
 import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import {
+  cborMap,
   decodeDirectMessageCryptoContext,
+  encodeFrame,
   fromHex,
   isStealthMessageItemFrame,
   parseFrame,
@@ -38,13 +40,16 @@ import {
 import { randomBytes } from '@frank/crypto-box'
 import type { Current, HistoricalEvidence } from '../../directory-admission/src'
 import {
+  DirectMessageError,
   openDirectMessage,
   openOwnDirectMessage,
   prepareDirectMessage,
 } from '@frank/cashweb/relay/canonical-dm'
 import {
   describeCanonicalParts,
+  freezeCanonicalRequest,
   installedCanonicalOrigin,
+  submitCanonicalRequest,
   type CanonicalFetch,
 } from '@frank/cashweb/relay/canonical-dm-transport'
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
@@ -680,6 +685,64 @@ function possiblyAttempted(error: unknown): unknown {
   return error
 }
 
+/** The relay did not deliver a message sent with no stamp. Nothing was paid and nothing is kept
+ * to retry: the caller may send again. */
+export class UnpaidDirectMessageNotDeliveredError extends Error {
+  constructor(readonly answer: string) {
+    super(`The relay did not deliver this unpaid message (${answer}).`)
+    this.name = 'UnpaidDirectMessageNotDeliveredError'
+  }
+}
+
+/** Seals one message and frames it as an unpaid delivery: type 1 at schema 2 with an empty
+ * payment list and no transactions. Pure: nothing is stored, reserved or sent. */
+function sealUnpaid(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  message: Pick<
+    Parameters<typeof prepareDirectMessage>[0],
+    'senderCurrent' | 'recipientCurrent' | 'messageId' | 'conversationId' | 'items'
+  >,
+) {
+  const roles = owner.roles.create(directory.network, message.senderCurrent)
+  let sealed
+  try {
+    sealed = prepareDirectMessage({ network: directory.network, ...message, roles })
+  } finally {
+    roles.dispose()
+  }
+  const payload = parseFrame(sealed.payload)
+  if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
+    throw new CanonicalMessagingHoldError()
+  const digest = recipientPayloadDigest(directory.network, sealed.payload)
+  const account = (ref: { keyType: number; keyBytes: Uint8Array }) =>
+    cborMap([
+      [0, ref.keyType],
+      [1, ref.keyBytes],
+    ])
+  // The paid delivery's fields in the same order, without payment members.
+  const delivery = encodeFrame(
+    { typeId: 1, schemaVersion: 2, minReaderVersion: 1 },
+    cborMap([
+      [0, directory.network],
+      [1, account(decodeDirectMessageCryptoContext(sealed.context).stampKey)],
+      [2, sealed.payload],
+      [3, digest],
+      [4, []],
+      [5, account(payload.typed.recipient)],
+      [6, payload.typed.dleqProof],
+    ]),
+  )
+  return {
+    digest: toHex(digest),
+    request: freezeCanonicalRequest({
+      delivery,
+      context: sealed.context,
+      transactions: [],
+    }),
+  }
+}
+
 async function send(
   owner: CanonicalMessagingOwner,
   params: Parameters<DirectMessageClient['send']>[0],
@@ -777,6 +840,43 @@ async function send(
         params.recipient.raw,
         peer.endpoint,
       )
+    if (stampValueWei === 0n) {
+      // No stamp: the message is sealed and handed to the relay, and that is all. No account is
+      // funded or reserved, nothing is written to a journal or the link store, and earlier paid
+      // attempts are neither waited for nor touched.
+      const unpaid = sealUnpaid(owner, directory, {
+        senderCurrent: await directory.selfCurrent(),
+        recipientCurrent: peer.current,
+        messageId: suppliedMessageId ?? randomBytes(16),
+        conversationId: conversationIdBytes,
+        items,
+      })
+      // From here the relay may hold the message, whatever this call learns of it.
+      attempted = true
+      const accepted = await submitCanonicalRequest({
+        installedRelayOrigin: owner.relayBaseUrl,
+        expectedNetworkTag: owner.installedNetworkTag,
+        request: unpaid.request,
+        fetch: directory.fetch,
+      })
+      if (accepted.phase === 'dead') {
+        if (accepted.reason === 'undeliverable')
+          throw new CanonicalRecipientUndeliverableError()
+        if (accepted.reason === 'sender_unpublished')
+          throw new CanonicalSenderUnpublishedError()
+        throw new UnpaidDirectMessageNotDeliveredError(accepted.reason)
+      }
+      // Nothing is kept to finish later: anything but delivered is the caller's error to act on.
+      if (accepted.phase !== 'delivered')
+        throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
+      return {
+        payloadDigest: unpaid.digest,
+        stampValueWei: 0n,
+        stampPayments: [],
+        paymentTransfers: [],
+        preparationTxHashes: [],
+      }
+    }
     // Earlier attempts first: a live one is re-sent as-is, and an unmatched record holds everything.
     // An attempt the relay ended has an outcome and does not hold this send; its accounts stay
     // reserved, so this send is built from other accounts.
@@ -1383,6 +1483,7 @@ async function fetchSince(
             direction?: 'in' | 'out'
           }
       )[]
+      unreadable?: readonly { submissionIdentity: string; timestampMs: number }[]
       nextCursor?: string
     }
     try {
@@ -1413,6 +1514,14 @@ async function fetchSince(
         break
       }
     }
+    // A record this client cannot decode is never a message, never paid and never a received
+    // stamp. It is reported as terminal, under the relay's own identity for it, so the host's
+    // read position passes it instead of meeting it again on every read.
+    for (const skipped of page.unreadable ?? [])
+      params.onQuarantinedTimestamp?.(
+        skipped.timestampMs,
+        skipped.submissionIdentity,
+      )
     for (const record of page.records) {
       const delivery = parseFrame(record.delivery)
       if (delivery.kind !== 'parsed' || delivery.typed?.type !== 1) continue
@@ -1518,7 +1627,17 @@ async function fetchSince(
       } catch (error) {
         // Tampered, stale-keyed or foreign ciphertext never reaches display or payment import.
         // A message whose items together exceed its limits is refused as a whole and for good.
-        if (error instanceof MessageItemBudgetExceededError)
+        // So is one that fails at or after decryption: its sender, recipient, entries and keys
+        // all matched what this wallet holds, so no later read can open it. A forged message,
+        // also one addressed from this wallet to itself, ends here. Failures before decryption
+        // (an entry or key this wallet could not look up yet) are left for a later read.
+        if (
+          error instanceof MessageItemBudgetExceededError ||
+          (error instanceof DirectMessageError &&
+            (error.code === 'crypto' ||
+              error.code === 'network' ||
+              error.code === 'digest'))
+        )
           params.onQuarantinedTimestamp?.(record.timestampMs, digest)
         continue
       } finally {

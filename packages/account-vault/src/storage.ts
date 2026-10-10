@@ -198,8 +198,8 @@ export function discardIntent(db: IDBDatabase, target: VaultWriteIntent): Promis
   })
 }
 
-/** Ciphertext sizes: typed roots plus tag, without (framing 1) or with (framing 2) the 32-byte account root. */
+/** Ciphertext sizes including the 16-byte tag: the account root alone (framing 3), or typed roots without (1) or with (2) it. */
 function recordLengths(purposes: number): readonly number[] {
-  const withoutAccountRoot = 18 + 33 * purposes
-  return [withoutAccountRoot, withoutAccountRoot + 32]
+  const typedRoots = 18 + 33 * purposes
+  return [49, typedRoots, typedRoots + 32]
 }

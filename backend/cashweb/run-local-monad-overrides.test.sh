@@ -32,11 +32,24 @@ run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashw
     FRANK_RELAY_EXTRA_TOML="$work/extra.toml"
 grep -q '^host = "127.0.0.1:19098"$' "$work/out/run.toml" || fail "host override missing"
 grep -q '^url = "http://127.0.0.1:19098"$' "$work/out/run.toml" || fail "url override missing"
+grep -q '^\[registry.directory\]$' "$work/out/run.toml" || fail "directory section missing: the message and directory routes would not exist"
+grep -q '^endpoint = "http://127.0.0.1:19098"$' "$work/out/run.toml" || fail "directory endpoint does not follow the listen address"
+grep -q '^network = "monad-testnet"$' "$work/out/run.toml" || fail "directory network missing"
 grep -q "^db_path = \"$work/db\"$" "$work/out/run.toml" || fail "db_path override missing"
 grep -q '^\[\[registry.curated_defaults\]\]$' "$work/out/run.toml" || fail "extra toml not appended"
 grep -q '^enabled = true$' "$work/out/run.toml" || fail "mailbox not enabled"
 cmp -s "$work/out/run.toml" "$work/out/check.toml" || fail "checked config differs from the served one"
 grep -q 'rpc=http://127.0.0.1:9 tag=MONT' "$work/out/env.txt" || fail "daemon env not passed"
+
+# 1b. A second relay beside the first gets its own id, identity and public endpoint.
+rm -f "$work/out/"*
+run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" \
+    FRANK_RELAY_LISTEN=127.0.0.1:19099 FRANK_RELAY_PUBLIC_URL=https://relay-b.example.invalid \
+    FRANK_RELAY_ID=ffeeddccbbaa99887766554433221100 \
+    FRANK_RELAY_IDENTITY=02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5
+grep -q '^endpoint = "https://relay-b.example.invalid"$' "$work/out/run.toml" || fail "public endpoint override missing"
+grep -q '^relay_id = "ffeeddccbbaa99887766554433221100"$' "$work/out/run.toml" || fail "relay id override missing"
+grep -q '^relay_identity = "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"$' "$work/out/run.toml" || fail "relay identity override missing"
 
 # 2. Without overrides the checked-in host and db path are untouched.
 rm -f "$work/out/"*
@@ -61,7 +74,7 @@ grep -q 'tag=MON1' "$work/out/env.txt" || fail ".env not honoured by default"
 rm "$work/repo/.env"
 
 # 4. Bad override values are rejected with one clear message (exit 64), before anything starts.
-for bad in "FRANK_RELAY_LISTEN=not-a-port" "FRANK_RELAY_DB_PATH=a\"b" "FRANK_RELAY_EXTRA_TOML=$work/missing.toml"; do
+for bad in "FRANK_RELAY_LISTEN=not-a-port" "FRANK_RELAY_DB_PATH=a\"b" "FRANK_RELAY_EXTRA_TOML=$work/missing.toml" "FRANK_RELAY_PUBLIC_URL=relay.example" "FRANK_RELAY_ID=xyz" "FRANK_RELAY_IDENTITY=04abcd"; do
     if run MONAD_TESTNET_HTTP_RPC_URL=http://127.0.0.1:9 CASHWEBD_BIN="$work/stub-cashwebd" "$bad"; then
         fail "$bad was accepted"
     fi

@@ -110,6 +110,7 @@ describe('ChatInfoView contact profile display and actions', () => {
           QIcon: passthrough,
           QToggle: passthrough,
           QDialog: passthrough,
+          QBanner: passthrough,
         },
         mocks: {
           $t: (key: string) => {
@@ -236,5 +237,63 @@ describe('ChatInfoView contact profile display and actions', () => {
     expect(wrapper.find('[data-test="info-contact-links"]').exists()).toBe(
       false,
     )
+  })
+
+  it('shows the handle as the confirmed-username pill, which a display name starting with @ does not get', async () => {
+    const wrapper = mountView({
+      contact: {
+        profile: { name: '@qwen', avatar: null, pubKey: null },
+      },
+    })
+    await flushPromises()
+    // The name is plain text; there is no handle element at all.
+    expect(wrapper.find('[data-test="info-contact-name"]').text()).toBe('@qwen')
+    expect(wrapper.find('[data-test="username-handle"]').exists()).toBe(false)
+
+    const real = mountView({
+      contact: {
+        profile: { name: 'Qwen', username: 'qwen', avatar: null, pubKey: null },
+      },
+    })
+    await flushPromises()
+    expect(real.find('[data-test="username-handle"]').text()).toBe('@qwen')
+  })
+
+  it('tells the user when the username a contact was added by now belongs to a different account', async () => {
+    const wrapper = mountView({
+      contact: {
+        profile: {
+          name: 'Alice',
+          username: null,
+          addedByUsername: 'alice',
+          usernameReassigned: true,
+          avatar: null,
+          pubKey: null,
+        },
+      },
+    })
+    await flushPromises()
+    expect(
+      wrapper.find('[data-test="info-contact-username-reassigned"]').text(),
+    ).toBe('chatRightDrawer.usernameReassigned')
+    // The handle it no longer holds is not shown.
+    expect(wrapper.find('[data-test="username-handle"]').exists()).toBe(false)
+
+    const pinned = mountView({
+      contact: {
+        profile: {
+          name: 'Alice',
+          username: 'alice',
+          addedByUsername: 'alice',
+          usernameReassigned: false,
+          avatar: null,
+          pubKey: null,
+        },
+      },
+    })
+    await flushPromises()
+    expect(
+      pinned.find('[data-test="info-contact-username-reassigned"]').exists(),
+    ).toBe(false)
   })
 })

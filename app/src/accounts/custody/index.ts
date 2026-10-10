@@ -3,6 +3,10 @@ import {
   VaultError,
   type PreviewVault,
 } from '@frank/account-vault'
+import {
+  decodeRecoveryDescriptor,
+  isAccountRootOf,
+} from '@frank/account-recovery'
 import type { DomainRoot } from '@frank/domain-roots'
 import {
   capture,
@@ -21,6 +25,7 @@ import {
   type ActiveCustody,
   type CustodySnapshot,
   type PendingChange,
+  type PublicAccount,
 } from './types'
 
 export { CustodyError } from './types'
@@ -121,6 +126,22 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       throw new CustodyError('conflict')
     return state.pending
   }
+  /**
+   * A stored account root must be the root of the account its record names. A record with
+   * no account root at all was staged before roots were kept and cannot be activated.
+   */
+  const requireAccountRoot = async (account: PublicAccount): Promise<void> => {
+    const stored = await vault.openAccountRoot(account.receipt)
+    try {
+      if (stored === null) throw new CustodyError('outdated-attempt')
+      if (
+        !isAccountRootOf(stored, decodeRecoveryDescriptor(account.descriptor))
+      )
+        throw new CustodyError('conflict')
+    } finally {
+      stored?.fill(0)
+    }
+  }
   const authenticated = async (pending: PendingChange): Promise<void> => {
     const roots = await vault.open(pending.account.receipt)
     try {
@@ -128,6 +149,8 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
     } finally {
       wipe(roots)
     }
+    // Staged material that cannot reproduce its account is never ready to activate.
+    await requireAccountRoot(pending.account)
   }
   const discard = async (pending: PendingChange): Promise<CustodySnapshot> => {
     await vault.discardIntent(writeIntent(pending.account))
@@ -151,7 +174,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       const captured = capture(input)
       try {
         return await run(async () => {
-          const { account, expectedActive, roots, accountRoot } = captured
+          const { account, expectedActive, accountRoot } = captured
           const state = await update(current => {
             if (!matches(current, expectedActive))
               throw new CustodyError('conflict')
@@ -180,32 +203,23 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           const status = await vault.reconcile(account.receipt)
           if (status === 'absent') {
             try {
-              await vault.stage(writeIntent(account), roots, accountRoot)
+              await vault.stage(writeIntent(account), accountRoot)
             } catch (error) {
               // Concurrent same-intent writes and lost acknowledgements resolve by exact receipt.
               if ((await vault.reconcile(account.receipt)) !== 'committed')
                 throw error
             }
           } else if (status !== 'committed') throw new CustodyError('locked')
-          const opened = await vault.open(account.receipt)
-          try {
-            if (
-              opened.length !== roots.length ||
-              opened.some((root, i) =>
-                root.bytes.some((byte, j) => byte !== roots[i].bytes[j]),
-              )
-            ) {
-              throw new CustodyError('conflict')
-            }
-          } finally {
-            wipe(opened)
-          }
+          // The record must open, and (below) hold exactly this account's root.
+          wipe(await vault.open(account.receipt))
+          // A record that cannot reproduce this account must surface now, not at the
+          // first open or the first backup.
+          await requireAccountRoot(account)
           const latest = await read()
           if (!same(latest.pending, pending)) throw new CustodyError('conflict')
           return latest
         })
       } finally {
-        wipe(captured.roots)
         captured.accountRoot.fill(0)
       }
     },
@@ -330,25 +344,43 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           throw error
         }
       }),
-    exportAccountRoot: () =>
-      run(async () => {
+    async openPending(attemptId) {
+      let roots: readonly DomainRoot[] | undefined
+      try {
+        check()
+        const pending = pendingFor(await read(), id(attemptId))
+        if (pending.status !== 'staging') throw new CustodyError('conflict')
+        roots = await vault.open(pending.account.receipt)
+        if (!same((await read()).pending, pending))
+          throw new CustodyError('conflict')
+        check()
+        return roots
+      } catch (error) {
+        if (roots) wipe(roots)
+        throw normalized(error)
+      }
+    },
+    async exportAccountRoot() {
+      let accountRoot: Uint8Array | null = null
+      try {
+        check()
         const state = await read()
         if (!state.active) throw new CustodyError('locked')
-        const accountRoot = await vault.openAccountRoot(state.active.receipt)
-        try {
-          const latest = await read()
-          if (
-            latest.revision !== state.revision ||
-            !same(latest.active, state.active)
-          )
-            throw new CustodyError('conflict')
-          check()
-          return { account: state.active, accountRoot }
-        } catch (error) {
-          accountRoot?.fill(0)
-          throw error
-        }
-      }),
+        accountRoot = await vault.openAccountRoot(state.active.receipt)
+        const latest = await read()
+        if (
+          latest.revision !== state.revision ||
+          !same(latest.active, state.active)
+        )
+          throw new CustodyError('conflict')
+        // Last step before handing the copy over; any failure from here back wipes it.
+        check()
+        return { account: state.active, accountRoot }
+      } catch (error) {
+        accountRoot?.fill(0)
+        throw normalized(error)
+      }
+    },
     close() {
       closed = true
       for (const capability of capabilities) capability.close()

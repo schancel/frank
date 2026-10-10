@@ -125,7 +125,9 @@ export function defaultContext(
   return {
     operation: 'typed',
     routeByteLimit: MAX_FRAME_BYTES,
-    // Reader version 2 reads type 4 at schema 3 and the production type-5 DM at schema 2.
+    // Reader version 2 reads type 4 at schema 3 and the production type-5 DM at schema 2. Type 1
+    // is read at schema 2, whose payment list may be empty (an unpaid message); the relay admits
+    // deliveries under the same rule (frank-cbor's `relay_context`).
     readerVersion: 2,
     supportedSchemas: KNOWN_TYPES.map(typeId => ({
       typeId,
@@ -134,7 +136,8 @@ export function defaultContext(
           ? 3
           : typeId === TYPE_BLACKJACK_MESSAGE_ITEM
           ? 3
-          : typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
+          : typeId === TYPE_DIRECT_MESSAGE_DELIVERY ||
+            typeId === TYPE_RECIPIENT_ENCRYPTED_PAYLOAD ||
             typeId === TYPE_TOPIC_POST
           ? 2
           : 1,

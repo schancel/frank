@@ -197,6 +197,8 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       conversationId: hand.conversationId,
       items: [item as MessageItem, { type: "text", text }],
       valueWei: payWei,
+      // A hand's messages name each other by digest: each is one journaled message.
+      unpaidOk: false,
     });
     await this.outbox.settle(ctx);
     await this.events(ctx, hand);

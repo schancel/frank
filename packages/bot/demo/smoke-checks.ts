@@ -240,7 +240,12 @@ export async function runSmokeChecks(
   const stampValueWei = BigInt(config.minStampWei) * 10n
   let stack: RealStack | undefined
   try {
-    stack = await startRealStack({ env: options.env, relayUrl, stateDir: `${config.stateDir}/smoke-${Date.now()}` })
+    // The same chain and funding wallet the demo was started with.
+    stack = await startRealStack({
+      env: { ...options.env, MONAD_TESTNET_HTTP_RPC_URL: config.rpcUrl, E2E_DEMO_MAIN_WALLET_JSON: config.mainWalletJson },
+      relayUrl,
+      stateDir: `${config.stateDir}/smoke-${Date.now()}`,
+    })
     // A new human profile, registered AFTER the bots started: the faucet pays its address.
     const user = await stack.openWallet('smoke-user', { stampValueWei })
     await stack.fund(user.mainAccount, SMOKE_USER_FUND_WEI)

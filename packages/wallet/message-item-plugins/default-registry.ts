@@ -10,6 +10,7 @@
 import { initBlackjackHandPlugin } from './blackjack-hand/plugin'
 import { initBlackjackMovePlugin } from './blackjack-move/plugin'
 import { initChannelUpdatePlugin } from './channel-update/plugin'
+import { initConversationStatePlugin } from './conversation-state/plugin'
 import { initDeviceClaimPlugin } from './device-claim/plugin'
 import { initDicePlugin } from './dice/plugin'
 import { initDigitalGoodsPlugin } from './digital-goods/plugin'
@@ -53,6 +54,7 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['swap-offer', initSwapOfferPlugin],
   ['swap-record', initSwapRecordPlugin],
   ['received-coin', initReceivedCoinPlugin],
+  ['conversation-state', initConversationStatePlugin],
   ['digital-goods', initDigitalGoodsPlugin],
   ['raffle', initRafflePlugin],
   ['blackjack-move', initBlackjackMovePlugin],

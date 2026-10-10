@@ -313,6 +313,28 @@ export interface ReceivedCoinItem {
   timestamp: number
 }
 
+/**
+ * What one frontend of an account notes to the account's other frontends about one conversation,
+ * carried in a note the account sends itself. A frontend restored later from the seed reads the
+ * same notes from the account's mailbox, so all of them end with the same conversation list.
+ *
+ * Each fact is merged by its own rule, so a note may be applied twice and notes may be applied
+ * in any order:
+ * - `clearedBefore`: the conversation was deleted with everything up to this relay time (ms).
+ *   The latest wins. Messages no newer than it are gone; a newer message from the peer or from
+ *   this account brings the conversation back without them.
+ *
+ * `peer` is the conversation's peer address, so a frontend that has not seen the conversation
+ * yet can record the fact for it.
+ */
+export interface ConversationStateItem {
+  type: 'conversation-state'
+  /** 16 bytes as lowercase `8-4-4-4-12` text. */
+  conversationId: string
+  peer: string
+  clearedBefore?: number
+}
+
 export interface DeviceClaimItem {
   type: 'device-claim'
   instanceId: string
@@ -576,6 +598,7 @@ export type MessageItem =
   | SwapOfferItem
   | SwapRecordItem
   | ReceivedCoinItem
+  | ConversationStateItem
   | DeviceClaimItem
   | RpsItem
   | SatoshiDiceItem

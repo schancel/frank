@@ -250,6 +250,9 @@ export function startDirectMessagePolling({
       otherFailures = 0
       lastErrorKey = undefined
       mailboxStatus.setOk()
+      // The relay answers: what this device has to note to the account's other devices about
+      // its conversations (a deletion not sent yet) goes out now. Free, and not waited for.
+      void chats.noteConversationStates(wallet).catch(() => undefined)
       if (
         received.length === 0 &&
         quarantined.length === 0 &&

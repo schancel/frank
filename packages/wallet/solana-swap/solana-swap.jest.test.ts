@@ -692,8 +692,7 @@ describe('the safety check on a wallet described by hand', () => {
             : { preBalances: [after.preLamports] }),
           accounts: [
             {
-              lamports:
-                after.lamports ?? 1_000_000_000n - 10_000_000n - 5000n,
+              lamports: after.lamports ?? 1_000_000_000n - 10_000_000n - 5000n,
               owner: SystemProgram.programId.toBase58(),
               data: ['', 'base64'],
             },
@@ -959,6 +958,74 @@ describe('Jupiter quote (recorded API and mainnet responses)', () => {
         detail: expect.stringMatching(/quoted amounts and slippage/),
       })
     }
+  })
+
+  it("refuses a swap instruction that pays the output anywhere but this wallet's own token account", async () => {
+    /** Jupiter's recorded transaction with one account of its swap instruction replaced. */
+    const withSwapAccount = (position: number, keyIndex: number) => {
+      const copy = VersionedTransaction.deserialize(
+        fromBase64(built.swapTransaction),
+      )
+      const message = copy.message as any
+      const swap = message.compiledInstructions.find(
+        (ix: any) =>
+          message.staticAccountKeys[ix.programIdIndex]?.toBase58() ===
+          JUPITER.programId,
+      )
+      swap.accountKeyIndexes[position] = keyIndex
+      return toBase64(copy.serialize())
+    }
+    const original = VersionedTransaction.deserialize(
+      fromBase64(built.swapTransaction),
+    ).message
+    const usdcAccount = await findAssociatedTokenAddress(
+      OWNER,
+      new PublicKey(USDC),
+    )
+    const swap = original.compiledInstructions.find(
+      ix =>
+        original.staticAccountKeys[ix.programIdIndex]?.toBase58() ===
+        JUPITER.programId,
+    )!
+    // As recorded: the destination is the wallet's own USDC account, and no other is named.
+    expect(
+      original.staticAccountKeys[swap.accountKeyIndexes[3]].equals(usdcAccount),
+    ).toBe(true)
+    const someoneElses = original.staticAccountKeys.findIndex(
+      key => key.toBase58() === '3saT3dWGVR4nwfCZY5TB4ABoFMhsccKADt24MwyAN5yZ',
+    )
+    for (const tamperedTransaction of [
+      // The destination token account itself.
+      withSwapAccount(3, someoneElses),
+      // Jupiter's optional "send the output here instead" account.
+      withSwapAccount(4, someoneElses),
+      // The mint the destination is for.
+      withSwapAccount(5, someoneElses),
+    ]) {
+      await expect(
+        quoteWith(tampered(tamperedTransaction)),
+      ).rejects.toMatchObject({
+        code: 'unsafe-transaction',
+        detail: expect.stringMatching(
+          /output .* this wallet's own token account/,
+        ),
+      })
+    }
+    // A Jupiter instruction whose layout this wallet does not know is not guessed at.
+    const unknown = VersionedTransaction.deserialize(
+      fromBase64(built.swapTransaction),
+    )
+    const unknownSwap = (unknown.message as any).compiledInstructions.find(
+      (ix: any) => ix.programIdIndex === swap.programIdIndex,
+    )
+    unknownSwap.data = Uint8Array.from(unknownSwap.data)
+    unknownSwap.data.set([187, 100, 250, 204, 49, 196, 175, 20], 0) // route_v2
+    await expect(
+      quoteWith(tampered(toBase64(unknown.serialize()))),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/kind of swap instruction/),
+    })
   })
 
   it('refuses a transaction that needs anyone else to pay or sign', async () => {
@@ -1233,7 +1300,10 @@ describe("the wallet's legacy send: record, send, follow", () => {
 
   it('is expired only after several checks find the height passed and the signature unknown', async () => {
     const store = memoryJournal([record])
-    const { connection } = sender({ statuses: [null], heights: [99, 100, 101] })
+    const { connection } = sender({
+      statuses: [null],
+      heights: [99, 100, 101],
+    })
     let polls = 0
     await expect(
       trackSolanaSwap(connection, store, record, {

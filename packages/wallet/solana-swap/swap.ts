@@ -788,6 +788,34 @@ function readU64(data: Uint8Array, offset: number): bigint {
 }
 
 /**
+ * The Jupiter swap instructions this wallet accepts, by their 8-byte instruction tag, and where
+ * each one names the account the output is paid into and the mint of that account. Both were
+ * read from transactions the Jupiter API returned (2026-10-10). `route` also has an optional
+ * "pay the output here instead" account, which must be unset (Jupiter marks an unset optional
+ * account with its own program id). Any other Jupiter instruction is refused.
+ */
+const JUPITER_SWAP_INSTRUCTIONS: readonly {
+  readonly tag: readonly number[]
+  readonly destination: number
+  readonly destinationMint: number
+  readonly alternativeDestination?: number
+}[] = [
+  // route
+  {
+    tag: [229, 23, 203, 151, 122, 227, 173, 42],
+    destination: 3,
+    alternativeDestination: 4,
+    destinationMint: 5,
+  },
+  // shared_accounts_route
+  {
+    tag: [193, 32, 155, 51, 65, 214, 156, 129],
+    destination: 6,
+    destinationMint: 8,
+  },
+]
+
+/**
  * Reads a transaction Jupiter built, instruction by instruction, and refuses anything that is
  * not part of the quoted swap. Lookup tables are resolved from the chain here, not taken on
  * trust. Allowed, and nothing else:
@@ -795,8 +823,9 @@ function readU64(data: Uint8Array, offset: number): bigint {
  * - creating a token account that this wallet owns;
  * - wrapping SOL into the wallet's own wrapped-SOL account (no more than the input), and
  *   closing that account back into the wallet;
- * - exactly one call to Jupiter's program whose own arguments are the quoted input, the
- *   quoted output and the reviewed slippage, so the minimum is enforced on chain.
+ * - exactly one call to Jupiter's program, of a kind listed above, whose own arguments are the
+ *   quoted input, the quoted output and the reviewed slippage (so the minimum is enforced on
+ *   chain) and whose output is paid into this wallet's own token account for the output mint.
  * In particular a transfer to anyone else, an Approve or a SetAuthority is refused.
  */
 export async function assertJupiterTransactionIsTheQuotedSwap(
@@ -806,6 +835,9 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
     owner: PublicKey
     jupiterProgramId: string
     wrappedSolAccount: PublicKey
+    /** The wallet's own associated token account for the output mint. */
+    outputTokenAccount: PublicKey
+    outputMint: string
     inputIsSol: boolean
     inputAmount: bigint
     quotedOutputAmount: bigint
@@ -880,6 +912,22 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
       }
     } else if (program === expected.jupiterProgramId) {
       jupiterCalls++
+      const kind = JUPITER_SWAP_INSTRUCTIONS.find(candidate =>
+        candidate.tag.every((byte, i) => data[i] === byte),
+      )
+      if (!kind) {
+        return refuse(
+          'carries a kind of swap instruction this wallet does not know',
+        )
+      }
+      if (
+        account(kind.destination) !== expected.outputTokenAccount.toBase58() ||
+        account(kind.destinationMint) !== expected.outputMint ||
+        (kind.alternativeDestination !== undefined &&
+          account(kind.alternativeDestination) !== expected.jupiterProgramId)
+      ) {
+        refuse("output is not paid into this wallet's own token account")
+      }
       // Every Jupiter route instruction ends: input u64, quoted output u64, slippage u16,
       // platform fee u8.
       const tail = data.length - 19
@@ -972,6 +1020,8 @@ export async function prepareJupiterSwap(
       request.owner,
       new PublicKey(NATIVE_SOL_MINT),
     ),
+    outputTokenAccount: state.output.tokenAccount,
+    outputMint: request.outputMint,
     inputIsSol: state.input.native,
     inputAmount: request.amount,
     quotedOutputAmount: expected,

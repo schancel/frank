@@ -5,6 +5,10 @@ export const COINGECKO_IDS: Record<string, string> = {
   SOL: 'solana',
   XEC: 'ecash',
   BTC: 'bitcoin',
+  BCH: 'bitcoin-cash',
+  DOGE: 'dogecoin',
+  HYPE: 'hyperliquid',
+  MON: 'monad',
 }
 
 export const COINGECKO_API_BASE =

@@ -4,6 +4,10 @@ export const KRAKEN_PAIRS: Record<string, string> = {
   ETH: 'ETHUSD',
   SOL: 'SOLUSD',
   BTC: 'XBTUSD',
+  BCH: 'BCHUSD',
+  DOGE: 'XDGUSD',
+  HYPE: 'HYPEUSD',
+  MON: 'MONUSD',
 }
 
 export const KRAKEN_API_BASE = 'https://api.kraken.com/0/public/Ticker'

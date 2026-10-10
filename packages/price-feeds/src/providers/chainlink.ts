@@ -6,9 +6,10 @@ export const CHAINLINK_ARBITRUM_FEEDS: Record<
 > = {
   ETH: { address: '0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612', decimals: 8 },
   BTC: { address: '0x6ce185860a4963106506C203335A2910413708e9', decimals: 8 },
-  SOL: { address: '0x486B26b723F30BEebA88dC412d090aD368CeaD36', decimals: 8 },
-  GOLD: { address: '0x32A461ebEFe0451a376BcbA4980a3111f1Fa6947', decimals: 8 },
-  XAU: { address: '0x32A461ebEFe0451a376BcbA4980a3111f1Fa6947', decimals: 8 },
+  // XAU / USD proxy as listed in Chainlink's Arbitrum address table; the contract's
+  // own description() answers "XAU / USD".
+  GOLD: { address: '0x1F954Dc24a49708C26E0C1777f16750B5C6d5a2c', decimals: 8 },
+  XAU: { address: '0x1F954Dc24a49708C26E0C1777f16750B5C6d5a2c', decimals: 8 },
 }
 
 export const LATEST_ROUND_DATA_SELECTOR = '0xfeaf968c'
@@ -47,7 +48,7 @@ export class ChainlinkProvider implements PriceFeedProvider {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
+          Accept: 'application/json',
         },
         body: JSON.stringify({
           jsonrpc: '2.0',

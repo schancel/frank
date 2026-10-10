@@ -1,6 +1,10 @@
 /**
  * The Solana wallet's journal of legacy transactions in a browser: one durable list in
- * localStorage, like the wallet's native-send attempt record. See `SolanaLegacyJournal`.
+ * localStorage per account and network, like the wallet's native-send attempt record. See
+ * `SolanaLegacyJournal`.
+ *
+ * A journal belongs to one account on one network and is stored under a key that names both,
+ * so an account never sees, settles or clears another account's entries.
  */
 import type {
   SolanaLegacyJournal,
@@ -8,7 +12,8 @@ import type {
   SolanaSwapRecord,
 } from './execute'
 
-export const SOLANA_LEGACY_JOURNAL_KEY = 'frank:solana-legacy:v1'
+/** Storage key prefix; the network and the account's address follow it. */
+export const SOLANA_LEGACY_JOURNAL_KEY = 'frank:solana-legacy:v2'
 
 /** The journal exists but cannot be read. A transaction may be pending; none may be started. */
 export class SolanaLegacyJournalUnreadableError extends Error {
@@ -19,10 +24,15 @@ export class SolanaLegacyJournalUnreadableError extends Error {
 }
 
 export class BrowserSolanaLegacyJournal implements SolanaLegacyJournal {
+  private readonly key: string
+
   constructor(
     private readonly storage: Pick<Storage, 'getItem' | 'setItem'>,
-    private readonly key = SOLANA_LEGACY_JOURNAL_KEY,
-  ) {}
+    /** Whose transactions these are: the account's address, and the network. */
+    private readonly scope: { account: string; chainIdentifier: string },
+  ) {
+    this.key = `${SOLANA_LEGACY_JOURNAL_KEY}:${scope.chainIdentifier}:${scope.account}`
+  }
 
   list(): SolanaLegacyJournalEntry[] {
     const raw = this.storage.getItem(this.key)
@@ -42,6 +52,14 @@ export class BrowserSolanaLegacyJournal implements SolanaLegacyJournal {
   }
 
   put(record: SolanaSwapRecord): void {
+    if (
+      record.account !== this.scope.account ||
+      record.chainIdentifier !== this.scope.chainIdentifier
+    ) {
+      throw new Error(
+        'This transaction belongs to another account or network than this journal',
+      )
+    }
     this.write([
       ...this.list().filter(
         entry => entry.record.transactionId !== record.transactionId,

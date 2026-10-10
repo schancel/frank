@@ -16,21 +16,27 @@
  * seen the swap: everything it shows came from the mailbox and the chain.
  *
  * What it shows, in order:
- *  1. the swap is quoted and sent through the Orca exchange class and the Solana wallet's
- *     legacy send, with its record as an argument; every chain call goes through the relay;
- *  2. the wallet journals the signed transaction with the record before broadcasting, and once
- *     the chain has finalised it raises its sync event, which is sent as a free note from the
- *     account to itself; the journal entry leaves when the relay has accepted the note;
+ *  1. the swap is quoted (network fee and priority fee each on their own line) and sent through
+ *     the Orca exchange class and the Solana wallet's legacy send, with what was reviewed and
+ *     its record as arguments; every chain call goes through the relay. This runs in a child
+ *     process that is killed the moment the signed transaction is journaled and handed to the
+ *     network: a reload in the middle of a swap;
+ *  2. the account is opened again in this process from the same state, and the wallet's
+ *     account-open resume (`resumeSolanaLegacyTransactions`, what the app calls when the
+ *     account opens) follows the journaled transaction to its outcome and raises the sync
+ *     event, which is sent as a free note from the account to itself; the journal entry leaves
+ *     when the relay has accepted the note;
  *  3. a second wallet, opened from the same roots with empty state, reads its mailbox and finds
  *     the `swap-record` item under the id derived from the chain and the transaction;
  *  4. that wallet reads what the swap did from the chain, checking that the record's account
  *     paid for the transaction and that it called the exchange.
  */
+import { spawnSync } from 'child_process'
 import { randomBytes } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getBytes, keccak256, toUtf8Bytes } from 'ethers'
-import { Connection, PublicKey } from '@solana/web3.js'
+import { Connection, Keypair, PublicKey } from '@solana/web3.js'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import { formatBaseUnit } from '@frank/wallet/chain/base-unit'
@@ -51,6 +57,7 @@ import {
   getSolanaSwapVenue,
   NATIVE_SOL_MINT,
   observeSolanaSwapRecord,
+  resumeSolanaLegacyTransactions,
   trackSolanaSwap,
   type SolanaDexWallet,
   type SolanaLegacySync,
@@ -189,8 +196,13 @@ async function openAccount(relayBaseUrl: string, dir: string, state: string) {
     `${relayBaseUrl.replace(/\/+$/, '')}/chain-rpc/${CHAIN}/rpc`,
     'confirmed',
   )
+  // The journal of this account on this network, as the app scopes it.
+  const account = (
+    await Keypair.fromSeed(roots.solanaSeed)
+  ).publicKey.toBase58()
   const journal = new BrowserSolanaLegacyJournal(
     fileStorage(join(dir, state, 'solana-legacy.json')),
+    { account, chainIdentifier: CHAIN },
   )
   const solana = await SolanaWallet.fromSeed({
     connection,
@@ -213,6 +225,8 @@ async function openAccount(relayBaseUrl: string, dir: string, state: string) {
     chain,
     identity,
     connection,
+    sender,
+    onSync,
     journal,
     notes,
     entry,
@@ -230,17 +244,100 @@ async function openAccount(relayBaseUrl: string, dir: string, state: string) {
 const json = (value: unknown) =>
   JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))
 
+const sol = (lamports: bigint) => `${formatBaseUnit(lamports, 9)} SOL`
+
+/**
+ * Child process: quote, sign, journal, broadcast, and die there. Nothing follows the swap in
+ * this process; whatever finishes it has only the journal.
+ */
+async function sendAndDie(
+  relayBaseUrl: string,
+  dir: string,
+  state: string,
+  amount: string,
+): Promise<void> {
+  const account = await openAccount(relayBaseUrl, dir, state)
+  const tokens = await fetchSwapTokenBalances(
+    account.connection,
+    account.owner,
+    account.entry.tokens,
+  )
+  const [native, usdc] = tokens
+  const quote = await account.dex.quote({
+    owner: account.owner,
+    inputMint: NATIVE_SOL_MINT,
+    outputMint: usdc.mint,
+    amount: BigInt(amount),
+    slippageBps: 50,
+  })
+  console.log(
+    `   quote on ${quote.venueName}: ${sol(
+      quote.inputAmount,
+    )} -> ${formatBaseUnit(quote.expectedOutputAmount, usdc.decimals)} ${
+      usdc.symbol
+    }, minimum ${formatBaseUnit(quote.minOutputAmount, usdc.decimals)}`,
+  )
+  console.log(
+    `   network fee:  ${sol(
+      quote.networkFeeLamports - quote.priorityFeeLamports,
+    )}`,
+  )
+  console.log(`   priority fee: ${sol(quote.priorityFeeLamports)}`)
+  console.log(
+    `   (the most this exchange may charge the network: ${sol(
+      BigInt(account.entry.maxNetworkFeeLamports),
+    )})`,
+  )
+  await account.dex.execute(
+    quote,
+    {
+      assetIn: {
+        symbol: native.symbol,
+        address: null,
+        decimals: native.decimals,
+      },
+      assetOut: {
+        symbol: usdc.symbol,
+        address: usdc.mint,
+        decimals: usdc.decimals,
+      },
+    },
+    record => {
+      console.log(
+        `   journaled and handed to the network: ${
+          account.journal.list().length
+        } entry, ${record.transactionId}`,
+      )
+      console.log('   -- reload: this process stops here, mid-swap --')
+      process.exit(0)
+    },
+  )
+  throw new Error('The swap ended before it was submitted')
+}
+
 async function main(): Promise<void> {
   const relayBaseUrl = process.env.SWAP_LIVECHECK_RELAY_URL
   const dir = process.env.SWAP_LIVECHECK_WALLET_DIR
-  const [amount] = process.argv.slice(2)
+  const [amount, childState] = process.argv.slice(2)
   if (!relayBaseUrl || !dir)
     throw new Error(
       'Set SWAP_LIVECHECK_RELAY_URL and SWAP_LIVECHECK_WALLET_DIR',
     )
+  if (childState) return sendAndDie(relayBaseUrl, dir, childState, amount)
   const run = `run-${Date.now()}`
   console.log(`run ${run}`)
 
+  if (amount) {
+    console.log('1. quote and send, in a process of its own')
+    const child = spawnSync(
+      process.execPath,
+      [...process.execArgv, process.argv[1], amount, `${run}-a`],
+      { stdio: 'inherit' },
+    )
+    if (child.status !== 0) throw new Error('The swap was not submitted')
+  }
+
+  // The account opens again: same roots, same state, a process that never saw the swap sent.
   const first = await openAccount(relayBaseUrl, dir, `${run}-a`)
   let signature: string | undefined
   try {
@@ -256,47 +353,35 @@ async function main(): Promise<void> {
     )
     console.log(`messaging identity ${first.identity.identity.address.raw}`)
     if (!amount) return
-    const [sol, usdc] = tokens
-    const quote = await first.dex.quote({
-      owner: first.owner,
-      inputMint: NATIVE_SOL_MINT,
-      outputMint: usdc.mint,
-      amount: BigInt(amount),
-      slippageBps: 50,
-    })
+    const [unfinished] = first.journal.list()
+    if (!unfinished || unfinished.settled)
+      throw new Error('The journal does not hold the unfinished swap')
+    signature = unfinished.record.transactionId
     console.log(
-      `quote on ${quote.venueName}: ${formatBaseUnit(
-        quote.inputAmount,
-        sol.decimals,
-      )} SOL -> ${formatBaseUnit(quote.expectedOutputAmount, usdc.decimals)} ${
-        usdc.symbol
-      }, minimum ${formatBaseUnit(quote.minOutputAmount, usdc.decimals)}`,
+      `2. account reopened: its journal holds 1 unfinished transaction, ${signature}`,
     )
-    const outcome = await first.dex.execute(
-      quote,
-      {
-        assetIn: { symbol: sol.symbol, address: null, decimals: sol.decimals },
-        assetOut: {
-          symbol: usdc.symbol,
-          address: usdc.mint,
-          decimals: usdc.decimals,
-        },
-      },
-      record => {
-        signature = record.transactionId
-        console.log(
-          `   journaled before broadcast: ${
-            first.journal.list().length
-          } entry, ${record.transactionId}`,
-        )
-      },
+    // What the app does when the account opens. It returns at once and works in the background.
+    resumeSolanaLegacyTransactions(first.sender, first.journal, {
+      onSync: first.onSync,
+    })
+    // Joins that one follower (it starts no second one) to print what it concludes.
+    const outcome = await trackSolanaSwap(
+      first.sender,
+      first.journal,
+      unfinished.record,
+      { onSync: first.onSync },
     )
-    console.log('1. swap outcome', json(outcome))
+    console.log('   outcome reached by the resume:', json(outcome))
     if (outcome.status !== 'confirmed')
       throw new Error('The swap did not confirm')
-    // 2. The sync event was raised at the outcome; the entry leaves once the note is accepted.
     console.log(
-      `2. note to self accepted by the relay: ${
+      `   charged: network fee ${sol(
+        outcome.networkFeeLamports - outcome.priorityFeeLamports,
+      )}, priority fee ${sol(outcome.priorityFeeLamports)}`,
+    )
+    // The sync event was raised at the outcome; the entry leaves once the note is accepted.
+    console.log(
+      `   note to self accepted by the relay: ${
         first.notes.length === 1
       }; journal entries left: ${first.journal.list().length}`,
     )

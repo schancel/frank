@@ -170,7 +170,10 @@ export interface SolanaSwapQuote {
     readonly mint: string
     readonly bps: number
   }
+  /** Everything the network charges for the transaction: its base fee plus its priority fee. */
   readonly networkFeeLamports: bigint
+  /** The part of `networkFeeLamports` that is a priority fee; zero when the transaction has none. */
+  readonly priorityFeeLamports: bigint
   /** Rent the wallet pays to open token accounts this swap needs; it stays in those accounts. */
   readonly accountRentLamports: bigint
   /**
@@ -186,10 +189,10 @@ export interface SolanaSwapQuote {
   /** Present when the quote is real but this wallet cannot execute it as is. */
   readonly blocker?: SolanaSwapError
   /**
-   * Simulates the transaction again and re-applies the venue's checks. Called immediately
-   * before signing; throws a SolanaSwapError when the swap must not be signed.
+   * What was reviewed for `transaction`. The wallet's send takes it with the transaction and
+   * checks that exact transaction against it, on the chain as it then is, before signing.
    */
-  readonly recheck: () => Promise<void>
+  readonly check: SwapCheck
 }
 
 export interface SolanaSwapDeps {
@@ -249,10 +252,15 @@ function validate(request: SolanaSwapRequest): void {
   }
 }
 
+/**
+ * The wallet's SOL and its two token accounts for the swap. `known` are token accounts of the
+ * wallet found earlier (see `SolanaQuoteCycle`): they are read again in the same call.
+ */
 async function readWalletState(
   connection: SolanaSwapConnection,
   request: SolanaSwapRequest,
-): Promise<WalletState> {
+  known: readonly PublicKey[] = [],
+): Promise<SolanaWalletSnapshot> {
   const mints = [request.inputMint, request.outputMint].map(
     mint => new PublicKey(mint),
   )
@@ -266,7 +274,7 @@ async function readWalletState(
     ),
   )
   const [accounts, lamports] = await Promise.all([
-    connection.getMultipleAccountsInfo(tokenAccounts),
+    connection.getMultipleAccountsInfo([...tokenAccounts, ...known]),
     connection.getBalance(request.owner),
   ])
   const state = (i: number): MintState => ({
@@ -278,7 +286,14 @@ async function readWalletState(
     tokenAccountLamports: BigInt(accounts[i]?.lamports ?? 0),
     account: decodeTokenAccount(accounts[i]),
   })
-  return { lamports: BigInt(lamports), input: state(0), output: state(1) }
+  return {
+    state: { lamports: BigInt(lamports), input: state(0), output: state(1) },
+    // One that no longer exists has been closed since: there is nothing left of it to watch.
+    walletAccounts: known.flatMap((address, i) => {
+      const account = decodeTokenAccount(accounts[tokenAccounts.length + i])
+      return account ? [{ address, state: account }] : []
+    }),
+  }
 }
 
 export function classifySwapFailure(
@@ -329,19 +344,38 @@ export interface WalletTokenAccount {
   readonly state: TokenAccountState
 }
 
+/**
+ * What one run of quotes keeps between them: a run is the quotes for one amount on screen,
+ * repeated while it stays there. The first quote lists the wallet's token accounts (two
+ * `getTokenAccountsByOwner` calls, the costliest reads of a quote); the later ones read those
+ * same accounts again, for their current balances, without listing. An account opened during
+ * the run is picked up at signing, where the wallet is always listed afresh. The caller makes
+ * an empty object for each run and passes it to every quote of that run.
+ */
+export interface SolanaQuoteCycle {
+  tokenAccounts?: { readonly owner: string; readonly addresses: PublicKey[] }
+}
+
 /** The wallet as read from the chain just before quoting. */
 export interface SolanaWalletSnapshot {
   readonly state: WalletState
   readonly walletAccounts: readonly WalletTokenAccount[]
 }
 
+/**
+ * What was agreed for one swap transaction, as data: which transaction, what it may take and
+ * must deliver, and the wallet as it was read. `simulateAndCheckSwap` holds a transaction to it.
+ */
 export interface SwapCheck {
   readonly owner: PublicKey
+  /** The serialized message of the transaction this was reviewed for. */
+  readonly transactionMessage: Uint8Array
   readonly state: WalletState
   /** Exact amount of the input the wallet agreed to pay. */
   readonly inputAmount: bigint
   /** Least output the wallet accepts; zero only while probing for the expected output. */
   readonly minOutputAmount: bigint
+  /** The network fee that was reviewed. The transaction may be charged this and no more. */
   readonly networkFeeLamports: bigint
   /** Every token account the wallet has, so none can be touched unnoticed. */
   readonly walletAccounts: readonly WalletTokenAccount[]
@@ -353,7 +387,7 @@ export interface SwapCheck {
 const SYSTEM_PROGRAM = SystemProgram.programId.toBase58()
 
 async function readWalletTokenAccounts(
-  connection: SolanaSwapConnection,
+  connection: Pick<SolanaSwapConnection, 'getTokenAccountsByOwner'>,
   owner: PublicKey,
 ): Promise<WalletTokenAccount[]> {
   const lists = await Promise.all(
@@ -376,14 +410,15 @@ async function readWalletTokenAccounts(
  * Refused (`unsafe-transaction`) unless, from the simulation's own before/after state:
  * - the input is debited by no more than the agreed amount;
  * - the output is credited by at least the minimum;
- * - no other SOL leaves, beyond rent for token accounts opened by this swap;
+ * - no other SOL leaves, beyond the reviewed network fee and rent for token accounts opened by
+ *   this swap;
  * - no other token of the wallet moves, and no token account of the wallet changes owner,
  *   gains a delegate or a close authority, or disappears;
  * - the wallet remains an ordinary account.
  * A transaction that would fail throws the program's own reason instead.
  */
 export async function simulateAndCheckSwap(
-  connection: SolanaSwapConnection,
+  connection: Pick<SolanaSwapConnection, 'simulateTransaction'>,
   transaction: VersionedTransaction,
   check: SwapCheck,
 ): Promise<SimulatedOutcome> {
@@ -422,7 +457,6 @@ export async function simulateAndCheckSwap(
   // Every token account the wallet already has: only the swap's own two may change amount,
   // and none may change hands.
   const inputMint = input.mint.toBase58()
-  const outputMint = output.mint.toBase58()
   let inputDebited = 0n
   let wrappedBefore = 0n
   let wrappedAfter = 0n
@@ -446,7 +480,11 @@ export async function simulateAndCheckSwap(
       refuse('changes who may spend from or close a token account')
     }
     if (mint === inputMint) inputDebited += before.amount - now.amount
-    else if (mint !== outputMint && mint !== NATIVE_SOL_MINT) {
+    else if (
+      mint !== NATIVE_SOL_MINT &&
+      !account.address.equals(output.tokenAccount)
+    ) {
+      // Every other account, another account of the output token included.
       if (now.amount < before.amount) {
         refuse('moves a token that is not part of the swap')
       }
@@ -457,16 +495,29 @@ export async function simulateAndCheckSwap(
   }
 
   // Simulation charges the network fee to the payer like a real run (checked on devnet and
-  // mainnet RPCs); add it back so the amounts below are the swap's own.
-  const lamportsAfter =
-    BigInt(ownerAfter.lamports) + BigInt(value.fee ?? check.networkFeeLamports)
+  // mainnet RPCs). The fee that was reviewed is the allowance: a larger one is refused, and
+  // only what is within it is added back so the amounts below are the swap's own.
+  const charged =
+    value.fee === null || value.fee === undefined
+      ? check.networkFeeLamports
+      : BigInt(value.fee)
+  if (charged > check.networkFeeLamports) {
+    refuse('is charged a higher network fee than was reviewed')
+  }
+  const lamportsAfter = BigInt(ownerAfter.lamports) + charged
   const feeAccountAfter = check.feeAccount && afterOf(check.feeAccount)
   const feeAccountRent =
     feeAccountAfter && check.feeAccountIsNew
       ? BigInt(feeAccountAfter.lamports)
       : 0n
-  // SOL held by the wallet, wrapped or not, before and after.
-  const solBefore = state.lamports + wrappedBefore
+  // SOL held by the wallet, wrapped or not, before and after. The simulation's own balance
+  // before the run is used when the network reports it (the wallet pays, so it is account 0):
+  // it is the state the run started from, whatever arrived since the wallet was read.
+  const lamportsBefore =
+    value.preBalances?.length && value.preBalances[0] !== undefined
+      ? BigInt(value.preBalances[0])
+      : state.lamports
+  const solBefore = lamportsBefore + wrappedBefore
   const solAfter = lamportsAfter + wrappedAfter
 
   if (output.native) {
@@ -510,6 +561,169 @@ export async function simulateAndCheckSwap(
   return {
     outputAmount: credited,
     accountRentLamports: outputRent + feeAccountRent,
+  }
+}
+
+/** The reads the check before signing makes. A web3.js `Connection` satisfies it. */
+export type SwapCheckConnection = Pick<
+  SolanaSwapConnection,
+  'getMultipleAccountsInfo' | 'getTokenAccountsByOwner' | 'simulateTransaction'
+>
+
+/**
+ * The same review with the wallet read again now: its SOL, every token account it has, the
+ * output account and whether the fee account exists. What was agreed is unchanged.
+ */
+async function withWalletAsItIsNow(
+  connection: SwapCheckConnection,
+  check: SwapCheck,
+): Promise<SwapCheck> {
+  const { owner, state, feeAccount } = check
+  const [walletAccounts, [wallet, output, fee]] = await Promise.all([
+    readWalletTokenAccounts(connection, owner),
+    connection.getMultipleAccountsInfo([
+      owner,
+      state.output.tokenAccount,
+      ...(feeAccount ? [feeAccount] : []),
+    ]),
+  ])
+  return {
+    ...check,
+    state: {
+      ...state,
+      lamports: BigInt(wallet?.lamports ?? 0),
+      output: {
+        ...state.output,
+        tokenAccountLamports: BigInt(output?.lamports ?? 0),
+        account: decodeTokenAccount(output),
+      },
+    },
+    walletAccounts,
+    ...(feeAccount ? { feeAccountIsNew: fee === null } : {}),
+  }
+}
+
+/**
+ * The check the wallet's send runs itself, immediately before signing: `transaction` must be
+ * the one that was reviewed, byte for byte, and must pass the safety check against the wallet
+ * as it is at this moment (read afresh here, not as it was when quoted: SOL or tokens that
+ * arrived in between must not widen what the transaction may take). Throws a SolanaSwapError
+ * when the transaction must not be signed.
+ */
+export async function checkSwapBeforeSigning(
+  connection: SwapCheckConnection,
+  transaction: VersionedTransaction,
+  check: SwapCheck,
+): Promise<void> {
+  const message = transaction.message.serialize()
+  const reviewed = check.transactionMessage
+  if (
+    message.length !== reviewed.length ||
+    message.some((byte, i) => byte !== reviewed[i])
+  ) {
+    throw new SolanaSwapError(
+      'unsafe-transaction',
+      'is not the transaction that was reviewed',
+    )
+  }
+  await simulateAndCheckSwap(
+    connection,
+    transaction,
+    await withWalletAsItIsNow(connection, check),
+  )
+}
+
+const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111'
+/** Solana's fee rules, as every cluster applies them. */
+const LAMPORTS_PER_SIGNATURE = 5000n
+const MAX_COMPUTE_UNITS = 1_400_000n
+const DEFAULT_COMPUTE_UNITS_PER_INSTRUCTION = 200_000n
+const MICRO_LAMPORTS_PER_LAMPORT = 1_000_000n
+
+/**
+ * What a transaction can be charged, worked out from the transaction itself: the base fee for
+ * its signatures, and the priority fee its compute-budget instructions set (the compute-unit
+ * limit times the price per unit, rounded up; charged in full whatever the run consumes).
+ * A compute-budget instruction other than a limit, a price, a heap size or a loaded-data size
+ * is refused, as is a repeated limit or price.
+ */
+export function transactionFee(transaction: VersionedTransaction): {
+  baseFeeLamports: bigint
+  priorityFeeLamports: bigint
+} {
+  const refuse = (): never => {
+    throw new SolanaSwapError(
+      'unsafe-transaction',
+      'carries a compute-budget instruction that is not understood',
+    )
+  }
+  const { header, staticAccountKeys, compiledInstructions } =
+    transaction.message
+  let limit: bigint | undefined
+  let price: bigint | undefined
+  let otherInstructions = 0n
+  for (const instruction of compiledInstructions) {
+    const program = staticAccountKeys[instruction.programIdIndex]?.toBase58()
+    if (program !== COMPUTE_BUDGET_PROGRAM) {
+      otherInstructions++
+      continue
+    }
+    const data = instruction.data
+    if (data[0] === 2 && data.length === 5 && limit === undefined) {
+      limit = readU64(Uint8Array.of(...data.slice(1), 0, 0, 0, 0), 0)
+    } else if (data[0] === 3 && data.length === 9 && price === undefined) {
+      price = readU64(data, 1)
+    } else if (!((data[0] === 1 || data[0] === 4) && data.length === 5)) {
+      refuse()
+    }
+  }
+  const units = [
+    limit ?? otherInstructions * DEFAULT_COMPUTE_UNITS_PER_INSTRUCTION,
+    MAX_COMPUTE_UNITS,
+  ].reduce((a, b) => (a < b ? a : b))
+  return {
+    baseFeeLamports:
+      LAMPORTS_PER_SIGNATURE * BigInt(header.numRequiredSignatures),
+    priorityFeeLamports:
+      (units * (price ?? 0n) + MICRO_LAMPORTS_PER_LAMPORT - 1n) /
+      MICRO_LAMPORTS_PER_LAMPORT,
+  }
+}
+
+/**
+ * The network fee to review for a transaction, and how much of it is a priority fee. Refused
+ * when it is above what the exchange's entry allows, and when the network does not state the
+ * fee (an unknown fee is never shown as zero).
+ */
+async function reviewNetworkFee(
+  connection: SolanaSwapConnection,
+  venue: SolanaSwapVenue,
+  transaction: VersionedTransaction,
+): Promise<{ networkFeeLamports: bigint; priorityFeeLamports: bigint }> {
+  const allowed = BigInt(venue.maxNetworkFeeLamports)
+  const within = (fee: bigint): bigint => {
+    if (fee > allowed) {
+      throw new SolanaSwapError(
+        'unsafe-transaction',
+        `network fee of ${fee} lamports is above the ${allowed} this exchange may charge`,
+      )
+    }
+    return fee
+  }
+  const { baseFeeLamports, priorityFeeLamports } = transactionFee(transaction)
+  // From the transaction alone first: a fee this large is refused whatever the network says.
+  const own = within(baseFeeLamports + priorityFeeLamports)
+  const stated = (await connection.getFeeForMessage(transaction.message)).value
+  if (stated === null) {
+    throw new SolanaSwapError(
+      'simulation-failed',
+      'the network did not state the fee for this transaction',
+    )
+  }
+  const fee = BigInt(stated)
+  return {
+    networkFeeLamports: within(fee > own ? fee : own),
+    priorityFeeLamports,
   }
 }
 
@@ -576,8 +790,13 @@ export type PreparedSolanaSwap = Omit<
   | 'accountRentLamports'
   | 'fetchedAt'
   | 'blocker'
-  | 'recheck'
-> & { readonly check: SwapCheck }
+> & {
+  /**
+   * Set by an exchange whose quote already is a simulation of the swap (the expected output
+   * is what the simulation delivered): the quote is then not simulated a second time.
+   */
+  readonly simulated?: { readonly accountRentLamports: bigint }
+}
 
 export async function prepareOrcaSwap(
   deps: SolanaSwapDeps,
@@ -714,11 +933,14 @@ export async function prepareOrcaSwap(
   }
 
   const probe = await build(0n)
-  const fee = BigInt(
-    (await connection.getFeeForMessage(probe.message)).value ?? 0,
-  )
-  const check = (minimum: bigint): SwapCheck => ({
+  const { networkFeeLamports: fee, priorityFeeLamports } =
+    await reviewNetworkFee(connection, venue, probe)
+  const check = (
+    minimum: bigint,
+    transaction: VersionedTransaction,
+  ): SwapCheck => ({
     owner,
+    transactionMessage: transaction.message.serialize(),
     state,
     inputAmount: amount,
     minOutputAmount: minimum,
@@ -727,9 +949,15 @@ export async function prepareOrcaSwap(
     feeAccount,
     feeAccountIsNew,
   })
-  // The expected output IS what the pool's swap delivers in simulation.
-  const expected = (await simulateAndCheckSwap(connection, probe, check(0n)))
-    .outputAmount
+  // The expected output IS what the pool's swap delivers in simulation, and that simulation
+  // is the quote's safety check. The transaction returned differs from it only in carrying the
+  // minimum; it is simulated when it is about to be signed.
+  const simulated = await simulateAndCheckSwap(
+    connection,
+    probe,
+    check(0n, probe),
+  )
+  const expected = simulated.outputAmount
   const minOutputAmount = requireMinimum(
     minimumOutput(expected, request.slippageBps),
   )
@@ -768,10 +996,12 @@ export async function prepareOrcaSwap(
         }
       : {}),
     networkFeeLamports: fee,
+    priorityFeeLamports,
     temporaryRentLamports: temporaryRent,
     transaction,
     lastValidBlockHeight: BigInt(latest.lastValidBlockHeight),
-    check: check(minOutputAmount),
+    check: check(minOutputAmount, transaction),
+    simulated,
   }
 }
 
@@ -785,15 +1015,44 @@ function readU64(data: Uint8Array, offset: number): bigint {
 }
 
 /**
+ * The Jupiter swap instructions this wallet accepts, by their 8-byte instruction tag, and where
+ * each one names the account the output is paid into and the mint of that account. Both were
+ * read from transactions the Jupiter API returned (2026-10-10). `route` also has an optional
+ * "pay the output here instead" account, which must be unset (Jupiter marks an unset optional
+ * account with its own program id). Any other Jupiter instruction is refused.
+ */
+const JUPITER_SWAP_INSTRUCTIONS: readonly {
+  readonly tag: readonly number[]
+  readonly destination: number
+  readonly destinationMint: number
+  readonly alternativeDestination?: number
+}[] = [
+  // route
+  {
+    tag: [229, 23, 203, 151, 122, 227, 173, 42],
+    destination: 3,
+    alternativeDestination: 4,
+    destinationMint: 5,
+  },
+  // shared_accounts_route
+  {
+    tag: [193, 32, 155, 51, 65, 214, 156, 129],
+    destination: 6,
+    destinationMint: 8,
+  },
+]
+
+/**
  * Reads a transaction Jupiter built, instruction by instruction, and refuses anything that is
  * not part of the quoted swap. Lookup tables are resolved from the chain here, not taken on
  * trust. Allowed, and nothing else:
- * - compute-budget instructions;
+ * - compute-budget instructions (the fee they set is bounded by `reviewNetworkFee`);
  * - creating a token account that this wallet owns;
  * - wrapping SOL into the wallet's own wrapped-SOL account (no more than the input), and
  *   closing that account back into the wallet;
- * - exactly one call to Jupiter's program whose own arguments are the quoted input, the
- *   quoted output and the reviewed slippage, so the minimum is enforced on chain.
+ * - exactly one call to Jupiter's program, of a kind listed above, whose own arguments are the
+ *   quoted input, the quoted output and the reviewed slippage (so the minimum is enforced on
+ *   chain) and whose output is paid into this wallet's own token account for the output mint.
  * In particular a transfer to anyone else, an Approve or a SetAuthority is refused.
  */
 export async function assertJupiterTransactionIsTheQuotedSwap(
@@ -803,6 +1062,9 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
     owner: PublicKey
     jupiterProgramId: string
     wrappedSolAccount: PublicKey
+    /** The wallet's own associated token account for the output mint. */
+    outputTokenAccount: PublicKey
+    outputMint: string
     inputIsSol: boolean
     inputAmount: bigint
     quotedOutputAmount: bigint
@@ -849,7 +1111,8 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
     const program = key(instruction.programIdIndex)
     const account = (i: number) => key(instruction.accountKeyIndexes[i])
     const data = instruction.data
-    if (program === 'ComputeBudget111111111111111111111111111111') continue
+    // What these may cost is bounded where the fee is reviewed (`reviewNetworkFee`).
+    if (program === COMPUTE_BUDGET_PROGRAM) continue
     if (program === ASSOCIATED_TOKEN_PROGRAM_ID.toBase58()) {
       if (account(0) !== owner || account(2) !== owner) {
         refuse('creates a token account for someone else')
@@ -877,6 +1140,22 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
       }
     } else if (program === expected.jupiterProgramId) {
       jupiterCalls++
+      const kind = JUPITER_SWAP_INSTRUCTIONS.find(candidate =>
+        candidate.tag.every((byte, i) => data[i] === byte),
+      )
+      if (!kind) {
+        return refuse(
+          'carries a kind of swap instruction this wallet does not know',
+        )
+      }
+      if (
+        account(kind.destination) !== expected.outputTokenAccount.toBase58() ||
+        account(kind.destinationMint) !== expected.outputMint ||
+        (kind.alternativeDestination !== undefined &&
+          account(kind.alternativeDestination) !== expected.jupiterProgramId)
+      ) {
+        refuse("output is not paid into this wallet's own token account")
+      }
       // Every Jupiter route instruction ends: input u64, quoted output u64, slippage u16,
       // platform fee u8.
       const tail = data.length - 19
@@ -932,6 +1211,8 @@ export async function prepareJupiterSwap(
       quote,
       userPublicKey: request.owner.toBase58(),
       feeAccount: feeAccount?.toBase58(),
+      maxPriorityFeeLamports:
+        BigInt(venue.maxNetworkFeeLamports) - LAMPORTS_PER_SIGNATURE,
     })
   } catch (error) {
     if (error instanceof JupiterApiError) {
@@ -969,6 +1250,8 @@ export async function prepareJupiterSwap(
       request.owner,
       new PublicKey(NATIVE_SOL_MINT),
     ),
+    outputTokenAccount: state.output.tokenAccount,
+    outputMint: request.outputMint,
     inputIsSol: state.input.native,
     inputAmount: request.amount,
     quotedOutputAmount: expected,
@@ -976,10 +1259,9 @@ export async function prepareJupiterSwap(
     platformFeeBps: venue.interfaceFee?.bps ?? 0,
   })
 
-  // Includes the priority fee Jupiter set on the transaction.
-  const fee = BigInt(
-    (await connection.getFeeForMessage(transaction.message)).value ?? 0,
-  )
+  // Jupiter chose the priority fee: it is bounded by the entry's limit, and shown.
+  const { networkFeeLamports: fee, priorityFeeLamports } =
+    await reviewNetworkFee(connection, venue, transaction)
   // When this transaction can no longer land is decided from the chain, never from the API:
   // its blockhash cannot be newer than the chain's tip, so it expires no later than one
   // blockhash lifetime after the tip seen now (doubled, in case the API's node was ahead).
@@ -1010,11 +1292,13 @@ export async function prepareJupiterSwap(
         }
       : {}),
     networkFeeLamports: fee,
+    priorityFeeLamports,
     temporaryRentLamports: 0n,
     transaction,
     lastValidBlockHeight,
     check: {
       owner: request.owner,
+      transactionMessage: transaction.message.serialize(),
       state,
       inputAmount: request.amount,
       minOutputAmount,
@@ -1041,26 +1325,42 @@ export async function quoteSolanaSwap<V extends SolanaSwapVenue>(
   deps: SolanaSwapDeps & { venue: V },
   request: SolanaSwapRequest,
   prepare: PrepareSolanaSwap<V>,
+  cycle: SolanaQuoteCycle = {},
 ): Promise<SolanaSwapQuote> {
   validate(request)
   const venue = validateSolanaSwapVenue(deps.venue)
-  const [state, walletAccounts] = await Promise.all([
-    readWalletState(deps.connection, request),
-    readWalletTokenAccounts(deps.connection, request.owner),
+  const owner = request.owner.toBase58()
+  const known =
+    cycle.tokenAccounts?.owner === owner
+      ? cycle.tokenAccounts.addresses
+      : undefined
+  const [{ state, walletAccounts: reread }, listed] = await Promise.all([
+    readWalletState(deps.connection, request, known),
+    known ? undefined : readWalletTokenAccounts(deps.connection, request.owner),
   ])
-  const prepared = await prepare(deps, venue, request, {
+  const walletAccounts = listed ?? reread
+  cycle.tokenAccounts = {
+    owner,
+    addresses: walletAccounts.map(account => account.address),
+  }
+  const { simulated, ...prepared } = await prepare(deps, venue, request, {
     state,
     walletAccounts,
   })
   // The one safety check every venue's transaction passes, whoever built it: simulate, and
-  // compare what it would do to the wallet with the swap that was quoted.
-  const { check, ...body } = prepared
-  const verify = () =>
-    simulateAndCheckSwap(deps.connection, prepared.transaction, check)
+  // compare what it would do to the wallet with the swap that was quoted. One simulation per
+  // quote: an exchange whose quote is itself that simulation has already run it.
   let blocker: SolanaSwapError | undefined
   let accountRentLamports = 0n
   try {
-    accountRentLamports = (await verify()).accountRentLamports
+    accountRentLamports = (
+      simulated ??
+      (await simulateAndCheckSwap(
+        deps.connection,
+        prepared.transaction,
+        prepared.check,
+      ))
+    ).accountRentLamports
   } catch (error) {
     // The quote itself is real; this wallet just cannot execute it (usually: not funded).
     if (!(error instanceof SolanaSwapError)) throw error
@@ -1071,10 +1371,9 @@ export async function quoteSolanaSwap<V extends SolanaSwapVenue>(
     chainIdentifier: request.chainIdentifier,
     venueId: venue.id,
     venueName: venue.displayName,
-    ...body,
+    ...prepared,
     accountRentLamports,
     fetchedAt: (deps.now ?? Date.now)(),
     blocker,
-    recheck: async () => void (await verify()),
   }
 }

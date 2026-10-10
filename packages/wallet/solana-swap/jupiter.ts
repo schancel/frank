@@ -160,6 +160,8 @@ export async function fetchJupiterSwapTransaction(
     userPublicKey: string
     /** Token account that collects the platform fee the quote was made with. */
     feeAccount?: string
+    /** The most the transaction's priority fee may be, in lamports. */
+    maxPriorityFeeLamports: bigint
   },
 ): Promise<JupiterSwapResponse> {
   const swap = await request<JupiterSwapResponse>(options, '/swap', {
@@ -169,6 +171,14 @@ export async function fetchJupiterSwapTransaction(
       userPublicKey: params.userPublicKey,
       wrapAndUnwrapSol: true,
       dynamicComputeUnitLimit: true,
+      // A request, not a guarantee: the transaction that comes back is checked against the
+      // same limit before anything is shown.
+      prioritizationFeeLamports: {
+        priorityLevelWithMaxLamports: {
+          maxLamports: Number(params.maxPriorityFeeLamports),
+          priorityLevel: 'high',
+        },
+      },
       ...(params.feeAccount ? { feeAccount: params.feeAccount } : {}),
     }),
   })

@@ -89,6 +89,12 @@ export interface MessagingDeps {
   install: typeof installCanonicalDirectory
   startPolling: (options: { wallet: WalletHandle }) => Stoppable
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
+  /**
+   * Picks up what the account's wallets signed earlier and did not finish (a swap interrupted
+   * by a reload) once the account is open and can send its notes to itself. Costs no network
+   * request when nothing is unfinished.
+   */
+  resumeLegacy?: () => void
   /** Delay before the n-th retry (1-based) of a failed publish. */
   retryDelayMs(attempt: number): number
   /** Registers the identity profile with the relay so authenticated inbox reads succeed. */
@@ -203,6 +209,15 @@ function productionDeps(): MessagingDeps {
     },
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
+    resumeLegacy: () =>
+      void import('../composables/useSolanaSwap')
+        .then(swaps => swaps.resumeSolanaSwaps())
+        .catch(error =>
+          console.warn(
+            '[startMessaging] could not resume Solana swaps:',
+            error,
+          ),
+        ),
     // 5 s, 10 s, 20 s ... capped at 5 minutes.
     retryDelayMs: attempt => Math.min(5_000 * 2 ** (attempt - 1), 300_000),
     registerProfile: async ({ relayBaseUrl, wallet }) => {
@@ -465,6 +480,7 @@ export async function startMessaging(): Promise<void> {
       failures = 0
       state.status = 'ready'
       state.reason = null
+      d.resumeLegacy?.()
       void d.claimUsername?.({
         relayBaseUrl: d.relayBaseUrl,
         network: networkOf(d.networkTag),

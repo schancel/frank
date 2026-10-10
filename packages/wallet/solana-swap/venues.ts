@@ -18,10 +18,24 @@ export * from '../chain/solana-dex-entries'
 /** A Solana `dex` entry. */
 export type SolanaSwapVenue = SolanaDexEntry
 
-/** Refuses an entry whose interface fee is malformed or above the bound. */
+/** One signature's base fee: no transaction costs less. */
+const LEAST_NETWORK_FEE_LAMPORTS = 5000
+
+/**
+ * Refuses an entry with no usable limit on the network fee, or whose interface fee is malformed
+ * or above the bound.
+ */
 export function validateSolanaSwapVenue<T extends SolanaSwapVenue>(
   venue: T,
 ): T {
+  if (
+    !Number.isSafeInteger(venue.maxNetworkFeeLamports) ||
+    venue.maxNetworkFeeLamports < LEAST_NETWORK_FEE_LAMPORTS
+  ) {
+    throw new Error(
+      `Swap venue ${venue.id}: the most it may pay in network fees must be a whole number of lamports, at least ${LEAST_NETWORK_FEE_LAMPORTS}`,
+    )
+  }
   const fee = venue.interfaceFee
   if (fee !== undefined) {
     if (

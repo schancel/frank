@@ -1494,6 +1494,9 @@ export default {
     minimumReceived: 'Au strict minimum',
     tradeFee: 'Frais du pool (inclus dans le taux)',
     networkFee: 'Frais de réseau',
+    priorityFee: 'Frais de priorité',
+    priorityFeeHint:
+      'Fixés par la transaction pour être incluse plus vite ; facturés en entier si l’échange aboutit',
     accountRent: 'Dépôt pour ouvrir votre compte {token}',
     accountRentHint:
       'Payé une seule fois. Il reste sur votre propre compte et vous revient si vous le fermez un jour.',
@@ -1522,6 +1525,7 @@ export default {
     expected: 'Vous recevez environ',
     actuallyPaid: 'Vous avez payé',
     networkFeeCharged: 'Frais de réseau facturés',
+    priorityFeeCharged: 'Frais de priorité facturés',
     totalLeft: 'Total ayant quitté votre portefeuille',
     received: 'Vous avez reçu',
     checkAgain: 'Vérifier à nouveau',

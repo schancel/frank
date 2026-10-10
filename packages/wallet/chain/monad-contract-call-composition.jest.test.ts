@@ -396,8 +396,10 @@ test('a swap is recorded by the wallet: journaled with the call before signing, 
         timestamp: expect.any(Number),
       },
     ])
-    // The id is derived, and the same whatever the case of the hash.
-    expect(swapRecordId('monad-testnet', sent.txHash.toUpperCase())).toBe(
+    // The id is derived from the exact string it is given (a Solana signature is
+    // case-sensitive); an EVM hash is put in lower case by the caller, as here.
+    expect(sent.txHash).toBe(sent.txHash.toLowerCase())
+    expect(swapRecordId('monad-testnet', sent.txHash.toUpperCase())).not.toBe(
       swapRecordId('monad-testnet', sent.txHash),
     )
     expect(swapRecordId('monad-mainnet', sent.txHash)).not.toBe(

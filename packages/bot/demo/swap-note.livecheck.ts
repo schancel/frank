@@ -258,7 +258,7 @@ async function main(): Promise<void> {
         (item): item is SwapRecordItem => item.type === 'swap-record',
       ),
     )
-    const expected = swapRecordId(CHAIN, txHash)
+    const expected = swapRecordId(CHAIN, txHash.toLowerCase())
     const record = records.find(item => item.swapId === expected)
     console.log(
       `   mailbox: ${received.length} message(s), ${

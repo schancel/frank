@@ -157,6 +157,7 @@ function device(live: EvmChainWalletHandle) {
     }),
     startPolling: jest.fn(() => polling),
     startReconcile: jest.fn(() => reconcile),
+    resumeLegacy: jest.fn(),
     retryDelayMs: () => 20,
   }
   return { deps, saved, uninstall, polling, reconcile }
@@ -227,6 +228,9 @@ test('a ready account publishes its own entry and starts messaging with no user 
   expect(d.deps.install).toHaveBeenCalledTimes(1)
   expect(d.deps.startPolling).toHaveBeenCalledWith({ wallet: alice })
   expect(d.deps.startReconcile).toHaveBeenCalledWith({ wallet: alice })
+  // The account is open and can send its notes: transactions the wallet signed earlier and
+  // did not finish are picked up now, whatever screen is showing.
+  expect(d.deps.resumeLegacy).toHaveBeenCalledTimes(1)
   expect(messagingState.reason).toBeNull()
   expect(useMonadWallet()).toBe(alice)
 })
@@ -268,6 +272,7 @@ test('a relay that is down leaves messaging off with a plain reason, and the ret
   expect(messagingState.reason).toBe('relay-unreachable')
   expect(d.deps.install).not.toHaveBeenCalled()
   expect(d.deps.startPolling).not.toHaveBeenCalled()
+  expect(d.deps.resumeLegacy).not.toHaveBeenCalled()
   expect(signedZero).not.toHaveBeenCalled()
   // No legacy path: there is simply no messaging wallet.
   expect(() => useMonadWallet()).toThrow('Messaging is not available yet')

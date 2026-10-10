@@ -7,6 +7,10 @@
  * and raises the sync event once the chain has finalised the transaction. This module only
  * wires that event to the account's free note to itself, the same note a native send and an
  * EVM swap use, and offers the journal to whoever needs to read it.
+ *
+ * A journal is one account's on one network. A note is sent only by the account whose swap it
+ * records: after an account switch an unfinished swap's note stays owed in its own account's
+ * journal and goes out when that account is open again.
  */
 import { keccak256, getBytes, toUtf8Bytes } from 'ethers'
 import { activeChain } from '@frank/wallet/chain'
@@ -17,22 +21,55 @@ import {
 } from '@frank/wallet/solana-swap'
 import { accountSession } from './session'
 
-let journal: SolanaLegacyJournal | undefined
+/** The Solana address of the account that is open now. */
+export async function currentSolanaAccount(): Promise<string> {
+  return (
+    accountSession.getCachedChainAddress?.('solana') ??
+    (await accountSession.getChainAddress('solana'))
+  )
+}
 
-/** This device's journal of the Solana wallet's legacy transactions. */
-export function solanaLegacyJournal(): SolanaLegacyJournal {
-  journal ??= new BrowserSolanaLegacyJournal(window.localStorage)
-  return journal
+/** This device's journal of one account's legacy transactions on one Solana network. */
+export function solanaLegacyJournal(
+  account: string,
+  chainIdentifier: string,
+): SolanaLegacyJournal {
+  return new BrowserSolanaLegacyJournal(window.localStorage, {
+    account,
+    chainIdentifier,
+  })
+}
+
+/** The open account is not the one whose swap the note records. The note stays owed. */
+export class SolanaLegacyNoteForAnotherAccountError extends Error {
+  constructor() {
+    super(
+      'This swap was made by another account; its note is not sent from this one',
+    )
+    this.name = 'SolanaLegacyNoteForAnotherAccountError'
+  }
 }
 
 /**
  * The wallet's sync event, delivered: a free message (no stamp) from the account to its own
  * mailbox carrying the swap's record. The message's identity is fixed by the chain and the
- * transaction, so a repeat is the same message. Rejects when the note could not be sent; the
- * wallet then keeps it owed and offers it again at the next open.
+ * transaction, so a repeat is the same message. Rejects when the note could not be sent, or
+ * when the account now open is not the swap's own; the wallet then keeps it owed and offers it
+ * again at that account's next open.
  */
 export const sendSolanaLegacySyncNote: SolanaLegacySync = async item => {
+  const opened = accountSession.state.revision
+  const isSwapsAccount = async () =>
+    accountSession.state.revision === opened &&
+    (await currentSolanaAccount()) === item.account
+  if (!(await isSwapsAccount())) {
+    throw new SolanaLegacyNoteForAnotherAccountError()
+  }
   const wallet = await accountSession.getWallet()
+  // The messaging wallet is whichever account is open: make sure it is still the swap's.
+  if (!(await isSwapsAccount())) {
+    throw new SolanaLegacyNoteForAnotherAccountError()
+  }
   try {
     await activeChain.directMessages.send({
       wallet,
@@ -59,10 +96,16 @@ export const sendSolanaLegacySyncNote: SolanaLegacySync = async item => {
   }
 }
 
-/** What the Solana wallet is constructed with so that it can make legacy sends. */
-export function solanaLegacyWiring(): {
+/** What the Solana wallet of one account on one network is constructed with for legacy sends. */
+export function solanaLegacyWiring(
+  account: string,
+  chainIdentifier: string,
+): {
   journal: SolanaLegacyJournal
   onSync: SolanaLegacySync
 } {
-  return { journal: solanaLegacyJournal(), onSync: sendSolanaLegacySyncNote }
+  return {
+    journal: solanaLegacyJournal(account, chainIdentifier),
+    onSync: sendSolanaLegacySyncNote,
+  }
 }

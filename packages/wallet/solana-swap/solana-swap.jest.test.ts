@@ -48,8 +48,10 @@ import {
 import {
   minimumOutput,
   platformFeeAmount,
+  simulateAndCheckSwap,
   SolanaSwapError,
   type SolanaSwapConnection,
+  type SwapCheck,
 } from './swap'
 import {
   getSolanaSwapVenue,
@@ -185,6 +187,25 @@ describe('dex configuration', () => {
         )
         expect(entry.interfaceFee).toBeUndefined() // no fee anywhere today (#1375)
       }
+    }
+  })
+
+  it('every exchange states the most a swap through it may pay in network fees', () => {
+    for (const chain of ['solana-devnet', 'solana-mainnet']) {
+      for (const entry of listSolanaDexEntries(chain)) {
+        expect(Number.isSafeInteger(entry.maxNetworkFeeLamports)).toBe(true)
+        // At least one signature's base fee, and well under a hundredth of a SOL.
+        expect(entry.maxNetworkFeeLamports).toBeGreaterThanOrEqual(5000)
+        expect(entry.maxNetworkFeeLamports).toBeLessThan(10_000_000)
+      }
+    }
+    for (const bad of [0, -1, 1.5, undefined, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() =>
+        validateSolanaSwapVenue({
+          ...DEVNET,
+          maxNetworkFeeLamports: bad as number,
+        }),
+      ).toThrow(/network fee/)
     }
   })
 
@@ -333,6 +354,7 @@ describe('Orca devnet quote (recorded devnet responses)', () => {
     expect(quote.tradeFee).toEqual({ amount: 10_000n, mint: NATIVE_SOL_MINT })
     expect(quote.platformFee).toBeUndefined()
     expect(quote.networkFeeLamports).toBe(5000n)
+    expect(quote.priorityFeeLamports).toBe(0n)
     expect(quote.accountRentLamports).toBe(0n)
     expect(quote.temporaryRentLamports).toBe(
       BigInt(solToDevUsdc.expected.temporaryRentLamports),
@@ -371,6 +393,83 @@ describe('Orca devnet quote (recorded devnet responses)', () => {
     expect(message.staticAccountKeys[0].equals(OWNER)).toBe(true)
   })
 
+  /** The recorded chain, counting calls; reads no recording has are answered from what it holds. */
+  function counted(calls: RecordedCall[]) {
+    const made: string[] = []
+    const held = new Map<string, any>()
+    for (const call of calls) {
+      if (call.method === 'getMultipleAccountsInfo') {
+        call.args[0].forEach((address: string, i: number) =>
+          held.set(address, call.result[i]),
+        )
+      } else if (call.method === 'getTokenAccountsByOwner') {
+        for (const entry of call.result.value) {
+          held.set(entry.pubkey.$pubkey, entry.account)
+        }
+      }
+    }
+    const recorded = replay(calls)
+    const chain = new Proxy(recorded, {
+      get:
+        (target, method: keyof SolanaSwapConnection) =>
+        async (...args: any[]) => {
+          made.push(method)
+          try {
+            return await (target[method] as any)(...args)
+          } catch (error) {
+            if (method !== 'getMultipleAccountsInfo') throw error
+            return (args[0] as PublicKey[]).map(address =>
+              revive(held.get(address.toBase58()) ?? null),
+            )
+          }
+        },
+    })
+    return { chain, made }
+  }
+
+  it("simulates once for a quote, and lists the wallet's token accounts once for a run of quotes", async () => {
+    const first = counted(solToDevUsdc.calls)
+    const cycle = {}
+    const quote = await createSolanaDex(
+      'solana-devnet',
+      DEVNET,
+      walletOver(first.chain),
+    ).quote(request(solToDevUsdc), cycle)
+    const count = (made: string[], method: string) =>
+      made.filter(name => name === method).length
+    // The simulation that finds the expected output is the quote's check; the transaction
+    // with the minimum in it is simulated when it is about to be signed.
+    expect(count(first.made, 'simulateTransaction')).toBe(1)
+    expect(count(first.made, 'getTokenAccountsByOwner')).toBe(2)
+    expect(first.made).toHaveLength(10)
+
+    // The next quote of the same run: no listing, and the accounts found by the first are
+    // read again (their balances are not remembered) in the one read of the wallet's accounts.
+    const second = counted(solToDevUsdc.calls)
+    const again = await createSolanaDex(
+      'solana-devnet',
+      DEVNET,
+      walletOver(second.chain),
+    ).quote(request(solToDevUsdc), cycle)
+    expect(count(second.made, 'getTokenAccountsByOwner')).toBe(0)
+    expect(count(second.made, 'simulateTransaction')).toBe(1)
+    expect(second.made).toHaveLength(8)
+    expect(again.expectedOutputAmount).toBe(quote.expectedOutputAmount)
+    expect(again.check.walletAccounts.map(a => a.address.toBase58())).toEqual(
+      quote.check.walletAccounts.map(a => a.address.toBase58()),
+    )
+    expect(again.check.walletAccounts.map(a => a.state.amount)).toEqual(
+      quote.check.walletAccounts.map(a => a.state.amount),
+    )
+
+    // A run for another wallet starts over.
+    const other = counted(solToDevUsdc.calls)
+    await createSolanaDex('solana-devnet', DEVNET, walletOver(other.chain))
+      .quote({ ...request(solToDevUsdc), owner: STRANGER }, cycle)
+      .catch(() => undefined)
+    expect(other.made).toContain('getTokenAccountsByOwner')
+  })
+
   it('quotes selling a token for SOL, counting what arrives after the fee', async () => {
     const quote = await orca(devUsdcToSol.calls).quote(request(devUsdcToSol))
     expect(quote.expectedOutputAmount).toBe(
@@ -383,6 +482,17 @@ describe('Orca devnet quote (recorded devnet responses)', () => {
     expect(toBase64(quote.transaction.serialize())).toBe(
       devUsdcToSol.expected.transaction,
     )
+  })
+
+  it('gives no quote when the network does not state the fee, rather than showing a fee of zero', async () => {
+    await expect(
+      orca(solToDevUsdc.calls, DEVNET, (method, result) =>
+        method === 'getFeeForMessage' ? { ...result, value: null } : result,
+      ).quote(request(solToDevUsdc)),
+    ).rejects.toMatchObject({
+      code: 'simulation-failed',
+      detail: expect.stringMatching(/did not state the fee/),
+    })
   })
 
   it('does not quote an amount the wallet does not hold', async () => {
@@ -478,17 +588,13 @@ describe('the safety check on what a transaction would do (recorded simulations,
   const quoteWith = (
     swap: typeof devUsdcToSol,
     alter: (accounts: any[]) => void,
-    /** Leave the first simulation (which finds the expected output) as recorded. */
-    onlyFinal = false,
   ) => {
-    let simulations = 0
     return createSolanaDex(
       'solana-devnet',
       DEVNET,
       walletOver(
         replay(swap.calls, (method, result) => {
           if (method !== 'simulateTransaction') return result
-          if (++simulations === 1 && onlyFinal) return result
           const accounts = result.value.accounts.map((account: any) =>
             account ? { ...account, data: [...account.data] } : account,
           )
@@ -580,7 +686,7 @@ describe('the safety check on what a transaction would do (recorded simulations,
     })
   })
 
-  it('refuses a transaction that takes extra SOL, or returns less SOL than the minimum', async () => {
+  it('refuses a transaction that takes extra SOL', async () => {
     const takeSol = (lamports: bigint) => (accounts: any[]) => {
       accounts[0] = {
         ...accounts[0],
@@ -593,12 +699,8 @@ describe('the safety check on what a transaction would do (recorded simulations,
       code: 'unsafe-transaction',
       detail: expect.stringMatching(/more SOL than the swap needs/),
     })
-    await expect(
-      quoteWith(devUsdcToSol, takeSol(2_000_000n), true),
-    ).rejects.toMatchObject({
-      code: 'unsafe-transaction',
-      detail: expect.stringMatching(/less SOL than the agreed minimum/),
-    })
+    // "Less than the minimum" is decided when the transaction that carries the minimum is
+    // simulated, which is at signing (see the wallet's legacy send below).
   })
 
   it('refuses a transaction that changes who controls the wallet account', async () => {
@@ -609,6 +711,140 @@ describe('the safety check on what a transaction would do (recorded simulations,
     ).rejects.toMatchObject({
       code: 'unsafe-transaction',
       detail: expect.stringMatching(/controls the wallet/),
+    })
+  })
+})
+
+/**
+ * A wallet described by hand, for the cases no recording has: paying SOL for devUSDC, holding
+ * its devUSDC account (the swap's output) and a second devUSDC account that is not.
+ */
+describe('the safety check on a wallet described by hand', () => {
+  const mint = new PublicKey(DEV_USDC)
+  const outputAccount = new PublicKey(DEVNET.pools[1])
+  const secondAccount = new PublicKey(DEVNET.pools[2])
+  const RENT = 2_039_280n
+  const tokenAccount = (amount: bigint) => ({
+    mint,
+    owner: OWNER,
+    amount,
+    delegate: null,
+    closeAuthority: null,
+  })
+  const check: SwapCheck = {
+    owner: OWNER,
+    state: {
+      lamports: 1_000_000_000n,
+      input: {
+        mint: new PublicKey(NATIVE_SOL_MINT),
+        native: true,
+        decimals: 9,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenAccount: STRANGER,
+        tokenAccountLamports: 0n,
+        account: undefined,
+      },
+      output: {
+        mint,
+        native: false,
+        decimals: 6,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenAccount: outputAccount,
+        tokenAccountLamports: RENT,
+        account: tokenAccount(100n),
+      },
+    },
+    inputAmount: 10_000_000n,
+    minOutputAmount: 200n,
+    networkFeeLamports: 5000n,
+    walletAccounts: [
+      { address: outputAccount, state: tokenAccount(100n) },
+      { address: secondAccount, state: tokenAccount(500n) },
+    ],
+  }
+  const simulatedToken = (amount: bigint) => {
+    const data = Buffer.alloc(165)
+    Buffer.from(mint.toBytes()).copy(data, 0)
+    Buffer.from(OWNER.toBytes()).copy(data, 32)
+    data.writeBigUInt64LE(amount, 64)
+    return {
+      lamports: RENT,
+      owner: TOKEN_PROGRAM_ID.toBase58(),
+      data: [toBase64(data), 'base64'],
+    }
+  }
+  /** A chain whose simulation ends with these balances. */
+  const chain = (after: {
+    lamports?: bigint
+    output?: bigint
+    second?: bigint
+    fee?: bigint | null
+    preLamports?: bigint
+  }) =>
+    ({
+      simulateTransaction: async () => ({
+        value: {
+          err: null,
+          logs: [],
+          fee: after.fee === undefined ? 5000n : after.fee,
+          ...(after.preLamports === undefined
+            ? {}
+            : { preBalances: [after.preLamports] }),
+          accounts: [
+            {
+              lamports: after.lamports ?? 1_000_000_000n - 10_000_000n - 5000n,
+              owner: SystemProgram.programId.toBase58(),
+              data: ['', 'base64'],
+            },
+            simulatedToken(after.output ?? 322n),
+            simulatedToken(after.output ?? 322n),
+            simulatedToken(after.second ?? 500n),
+          ],
+        },
+      }),
+    } as unknown as SolanaSwapConnection)
+  const run = (
+    after: Parameters<typeof chain>[0],
+    overrides: Partial<SwapCheck> = {},
+  ) =>
+    simulateAndCheckSwap(chain(after), {} as VersionedTransaction, {
+      ...check,
+      ...overrides,
+    })
+
+  it('passes the swap as agreed', async () => {
+    await expect(run({})).resolves.toEqual({
+      outputAmount: 222n,
+      accountRentLamports: 0n,
+    })
+  })
+
+  it('allows the reviewed network fee and no more, whatever fee the transaction carries', async () => {
+    const paid = 1_000_000_000n - 10_000_000n
+    // The simulation charged 50 000 lamports where 5 000 were reviewed.
+    await expect(
+      run({ lamports: paid - 50_000n, fee: 50_000n }),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/network fee/),
+    })
+    // A network that does not state the simulated fee: the reviewed fee is the allowance.
+    await expect(
+      run({ lamports: paid - 5000n, fee: null }),
+    ).resolves.toMatchObject({ outputAmount: 222n })
+    await expect(
+      run({ lamports: paid - 50_000n, fee: null }),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/more SOL than the swap needs/),
+    })
+  })
+
+  it("refuses a transaction that takes from another of the wallet's accounts of the output token", async () => {
+    // 300 leave the second account while 222 arrive in the output account.
+    await expect(run({ second: 200n })).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/not part of the swap/),
     })
   })
 })
@@ -845,6 +1081,152 @@ describe('Jupiter quote (recorded API and mainnet responses)', () => {
     }
   })
 
+  /** Jupiter's recorded transaction with the data of its n-th compute-budget instruction replaced. */
+  function withComputeBudget(index: number, data: Uint8Array): string {
+    const copy = VersionedTransaction.deserialize(
+      fromBase64(built.swapTransaction),
+    )
+    const message = copy.message as any
+    const budget = message.compiledInstructions.filter(
+      (ix: any) =>
+        message.staticAccountKeys[ix.programIdIndex]?.toBase58() ===
+        'ComputeBudget111111111111111111111111111111',
+    )
+    budget[index].data = data
+    return toBase64(copy.serialize())
+  }
+  const u64 = (tag: number, value: bigint) => {
+    const data = Buffer.alloc(9)
+    data.writeUInt8(tag, 0)
+    data.writeBigUInt64LE(value, 1)
+    return Uint8Array.from(data)
+  }
+
+  it('shows the priority fee Jupiter set, separately, and asks Jupiter to keep it under the limit', async () => {
+    const pending = quoteWith()
+    const quote = await pending
+    // As recorded: 1 400 000 compute units at 71 428 micro-lamports each, rounded up.
+    expect(quote.priorityFeeLamports).toBe(100_000n)
+    expect(quote.networkFeeLamports).toBe(105_000n)
+    expect(pending.requests[1].body.prioritizationFeeLamports).toEqual({
+      priorityLevelWithMaxLamports: {
+        maxLamports: JUPITER.maxNetworkFeeLamports - 5000,
+        priorityLevel: 'high',
+      },
+    })
+  })
+
+  it('refuses a transaction whose priority fee would burn more than the exchange entry allows', async () => {
+    // The same swap with the compute-unit price raised a thousandfold: 100 SOL in fees.
+    await expect(
+      quoteWith(tampered(withComputeBudget(1, u64(3, 71_428_000n)))),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/network fee/),
+    })
+    // The limit is the entry's: the recorded 105 000 lamports is too much for a lower one.
+    await expect(
+      quoteWith(undefined, { ...JUPITER, maxNetworkFeeLamports: 104_999 }),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/network fee/),
+    })
+    // The old instruction that names an extra fee outright is not accepted at all.
+    const deprecated = Buffer.alloc(9)
+    deprecated.writeUInt32LE(200_000, 1)
+    deprecated.writeUInt32LE(1_000_000_000, 5)
+    await expect(
+      quoteWith(tampered(withComputeBudget(0, Uint8Array.from(deprecated)))),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/compute-budget instruction/),
+    })
+  })
+
+  it('gives no Jupiter quote when the network does not state the fee', async () => {
+    const { fetchImpl } = replayFetch()
+    await expect(
+      createSolanaDex(
+        'solana-mainnet',
+        JUPITER,
+        walletOver(
+          replay(jupiterFixture.calls, (method, result) =>
+            method === 'getFeeForMessage' ? { ...result, value: null } : result,
+          ),
+        ),
+        { fetch: fetchImpl },
+      ).quote(request),
+    ).rejects.toMatchObject({ code: 'simulation-failed' })
+  })
+
+  it("refuses a swap instruction that pays the output anywhere but this wallet's own token account", async () => {
+    /** Jupiter's recorded transaction with one account of its swap instruction replaced. */
+    const withSwapAccount = (position: number, keyIndex: number) => {
+      const copy = VersionedTransaction.deserialize(
+        fromBase64(built.swapTransaction),
+      )
+      const message = copy.message as any
+      const swap = message.compiledInstructions.find(
+        (ix: any) =>
+          message.staticAccountKeys[ix.programIdIndex]?.toBase58() ===
+          JUPITER.programId,
+      )
+      swap.accountKeyIndexes[position] = keyIndex
+      return toBase64(copy.serialize())
+    }
+    const original = VersionedTransaction.deserialize(
+      fromBase64(built.swapTransaction),
+    ).message
+    const usdcAccount = await findAssociatedTokenAddress(
+      OWNER,
+      new PublicKey(USDC),
+    )
+    const swap = original.compiledInstructions.find(
+      ix =>
+        original.staticAccountKeys[ix.programIdIndex]?.toBase58() ===
+        JUPITER.programId,
+    )!
+    // As recorded: the destination is the wallet's own USDC account, and no other is named.
+    expect(
+      original.staticAccountKeys[swap.accountKeyIndexes[3]].equals(usdcAccount),
+    ).toBe(true)
+    const someoneElses = original.staticAccountKeys.findIndex(
+      key => key.toBase58() === '3saT3dWGVR4nwfCZY5TB4ABoFMhsccKADt24MwyAN5yZ',
+    )
+    for (const tamperedTransaction of [
+      // The destination token account itself.
+      withSwapAccount(3, someoneElses),
+      // Jupiter's optional "send the output here instead" account.
+      withSwapAccount(4, someoneElses),
+      // The mint the destination is for.
+      withSwapAccount(5, someoneElses),
+    ]) {
+      await expect(
+        quoteWith(tampered(tamperedTransaction)),
+      ).rejects.toMatchObject({
+        code: 'unsafe-transaction',
+        detail: expect.stringMatching(
+          /output .* this wallet's own token account/,
+        ),
+      })
+    }
+    // A Jupiter instruction whose layout this wallet does not know is not guessed at.
+    const unknown = VersionedTransaction.deserialize(
+      fromBase64(built.swapTransaction),
+    )
+    const unknownSwap = (unknown.message as any).compiledInstructions.find(
+      (ix: any) => ix.programIdIndex === swap.programIdIndex,
+    )
+    unknownSwap.data = Uint8Array.from(unknownSwap.data)
+    unknownSwap.data.set([187, 100, 250, 204, 49, 196, 175, 20], 0) // route_v2
+    await expect(
+      quoteWith(tampered(toBase64(unknown.serialize()))),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/kind of swap instruction/),
+    })
+  })
+
   it('refuses a transaction that needs anyone else to pay or sign', async () => {
     const other = (await Keypair.generate()).publicKey
     const foreign = new VersionedTransaction(
@@ -1021,6 +1403,7 @@ describe("the wallet's legacy send: record, send, follow", () => {
     minimumAmountOut: '221089',
     interfaceFeeAmount: '0',
     networkFeeLamports: '5000',
+    priorityFeeLamports: '0',
     signedAtMs: 1,
     recovery: {
       signedTransaction: toBase64(Uint8Array.of(1, 2, 3)),
@@ -1061,9 +1444,18 @@ describe("the wallet's legacy send: record, send, follow", () => {
   }
 
   type Status = null | { err: unknown; confirmationStatus?: any } | Error
-  function sender(script: { statuses: Status[]; heights?: number[] }) {
+  /**
+   * `heights`: the finalized block height at each read; that node's slot is the height plus
+   * 1000. `statusSlots`: the slot of the node answering each status read (default: far ahead).
+   */
+  function sender(script: {
+    statuses: Status[]
+    heights?: number[]
+    statusSlots?: number[]
+  }) {
     const sent: Uint8Array[] = []
     let heightIndex = 0
+    let statusIndex = 0
     const connection: SolanaSwapSender = {
       sendRawTransaction: async raw => {
         sent.push(raw)
@@ -1075,11 +1467,16 @@ describe("the wallet's legacy send: record, send, follow", () => {
             ? script.statuses.shift()!
             : script.statuses[0]
         if (next instanceof Error) throw next
-        return { value: [next] }
+        const slots = script.statusSlots ?? [1_000_000]
+        return {
+          context: { slot: slots[Math.min(statusIndex++, slots.length - 1)] },
+          value: [next],
+        }
       },
-      getBlockHeight: async () => {
+      getEpochInfo: async () => {
         const heights = script.heights ?? [0]
-        return heights[Math.min(heightIndex++, heights.length - 1)]
+        const blockHeight = heights[Math.min(heightIndex++, heights.length - 1)]
+        return { absoluteSlot: blockHeight + 1000, blockHeight }
       },
       getTransaction: async () => ({
         meta: confirmedSwaps.transactions.solToDevUsdcCreatingTokenAccount
@@ -1103,6 +1500,7 @@ describe("the wallet's legacy send: record, send, follow", () => {
       receivedAmount: 222_201n,
       spentAmount: 10_000_000n,
       networkFeeLamports: 5000n,
+      priorityFeeLamports: 0n,
       accountRentLamports: 1_488_440n,
     })
     expect(sent.length).toBeGreaterThan(0)
@@ -1117,7 +1515,10 @@ describe("the wallet's legacy send: record, send, follow", () => {
 
   it('is expired only after several checks find the height passed and the signature unknown', async () => {
     const store = memoryJournal([record])
-    const { connection } = sender({ statuses: [null], heights: [99, 100, 101] })
+    const { connection } = sender({
+      statuses: [null],
+      heights: [99, 100, 101],
+    })
     let polls = 0
     await expect(
       trackSolanaSwap(connection, store, record, {
@@ -1130,6 +1531,43 @@ describe("the wallet's legacy send: record, send, follow", () => {
     // It never reached the chain: nothing is settled or announced, the entry just leaves.
     expect(store.settled).toEqual([])
     expect(store.list()).toEqual([])
+  })
+
+  it('a node that has not itself reached the expiry height cannot say the swap expired', async () => {
+    // The height passed 100 at slot 1101 on one node. The node answering the status reads is
+    // still at slot 1000: its "never seen it" says nothing about blocks it has not processed.
+    // Asked five times; then a node that is past the expiry answers, and has the swap.
+    const store = memoryJournal([record])
+    const { connection } = sender({
+      statuses: [
+        null,
+        null,
+        null,
+        null,
+        null,
+        { err: null, confirmationStatus: 'finalized' },
+      ],
+      heights: [101],
+      statusSlots: [1000, 1000, 1000, 1000, 1100, 1101],
+    })
+    await expect(
+      trackSolanaSwap(connection, store, record, track),
+    ).resolves.toMatchObject({ status: 'confirmed', finalized: true })
+
+    // The same lagging answers, then three from a node past the expiry: expired.
+    const lagging = sender({
+      statuses: [null],
+      heights: [101],
+      statusSlots: [1000, 1000, 1000, 1000, 1101],
+    })
+    let polls = 0
+    await expect(
+      trackSolanaSwap(lagging.connection, memoryJournal([record]), record, {
+        ...track,
+        sleep: async () => void polls++,
+      }),
+    ).resolves.toEqual({ status: 'expired', signature: 'sig' })
+    expect(polls).toBe(6)
   })
 
   it('does not expire a swap that one node had not seen and another then reports', async () => {
@@ -1169,6 +1607,22 @@ describe("the wallet's legacy send: record, send, follow", () => {
       trackSolanaSwap(finalized.connection, failing, record, track),
     ).resolves.toMatchObject({ status: 'failed', networkFeeLamports: 5000n })
     expect(failing.settled).toEqual([['sig', 'failed']])
+
+    // A swap that carried a priority fee reports it as its own part of what was charged.
+    const paidPriority = { ...record, priorityFeeLamports: '1200' }
+    await expect(
+      trackSolanaSwap(
+        sender({ statuses: [{ err: null, confirmationStatus: 'finalized' }] })
+          .connection,
+        memoryJournal([paidPriority]),
+        paidPriority,
+        track,
+      ),
+    ).resolves.toMatchObject({
+      status: 'confirmed',
+      networkFeeLamports: 5000n,
+      priorityFeeLamports: 1200n,
+    })
   })
 
   it('keeps the swap pending when the network cannot be asked', async () => {
@@ -1184,24 +1638,124 @@ describe("the wallet's legacy send: record, send, follow", () => {
   const signer = {
     address: OWNER.toBase58(),
     chainIdentifier: 'solana-devnet',
-    signSwapTransaction: jest.fn(async () => ({
+    sign: jest.fn(async () => ({
       signature: 'sig',
       rawTransaction: Uint8Array.of(1, 2, 3),
     })),
   }
-  const prepared = (
-    recheck: () => Promise<void> = async () => undefined,
-  ): PreparedLegacyTransaction => ({
-    transaction: {} as VersionedTransaction,
-    lastValidBlockHeight: 100n,
-    recheck,
-  })
+
+  /**
+   * A swap that was really quoted (the recorded devnet quote of 0.005 SOL for devUSDC): its
+   * transaction, what was reviewed, and the record of what it is for.
+   */
+  const { solToDevUsdc } = orcaFixture.swaps
+  async function reviewed() {
+    const quote = await createSolanaDex(
+      'solana-devnet',
+      DEVNET,
+      walletOver(replay(solToDevUsdc.calls)),
+    ).quote({
+      owner: OWNER,
+      inputMint: NATIVE_SOL_MINT,
+      outputMint: DEV_USDC,
+      amount: 5_000_000n,
+      slippageBps: 50,
+    })
+    const prepared: PreparedLegacyTransaction = {
+      transaction: quote.transaction,
+      lastValidBlockHeight: quote.lastValidBlockHeight,
+      check: quote.check,
+    }
+    const swapIntent: SolanaSwapIntent = {
+      ...intent,
+      amountIn: quote.inputAmount.toString(),
+      quotedAmountOut: quote.expectedOutputAmount.toString(),
+      minimumAmountOut: quote.minOutputAmount.toString(),
+    }
+    return { quote, prepared, intent: swapIntent }
+  }
+  /**
+   * The chain as the wallet's send reads it just before signing: the wallet's balance and token
+   * accounts, and the recorded simulation of the reviewed transaction. `now` stands in for a
+   * chain that has moved on since the quote.
+   */
+  function chainAtSigning(
+    now: {
+      /** SOL that arrived in the wallet after the quote. */
+      received?: bigint
+      /** Alters the simulation's outcome. */
+      simulated?: (value: any) => any
+    } = {},
+  ) {
+    const recorded = (method: string) =>
+      solToDevUsdc.calls.filter(call => call.method === method)
+    const balance =
+      (revive(recorded('getBalance')[0].result) as bigint) +
+      (now.received ?? 0n)
+    const tokenAccounts = recorded('getTokenAccountsByOwner').flatMap(
+      call => revive(call.result).value,
+    ) as { pubkey: PublicKey; account: any }[]
+    const reads: string[] = []
+    const chain = {
+      getTokenAccountsByOwner: async (
+        _owner: PublicKey,
+        filter: { programId: PublicKey },
+      ) => {
+        reads.push('getTokenAccountsByOwner')
+        return revive(
+          recorded('getTokenAccountsByOwner').find(
+            call => call.args[1] === filter.programId.toBase58(),
+          )!.result,
+        )
+      },
+      getMultipleAccountsInfo: async (addresses: PublicKey[]) => {
+        reads.push('getMultipleAccountsInfo')
+        return addresses.map(address =>
+          address.equals(OWNER)
+            ? {
+                owner: SystemProgram.programId,
+                lamports: balance,
+                data: new Uint8Array(),
+              }
+            : tokenAccounts.find(entry => entry.pubkey.equals(address))
+                ?.account ?? null,
+        )
+      },
+      simulateTransaction: async (transaction: VersionedTransaction) => {
+        reads.push('simulateTransaction')
+        const { value } = revive(
+          recorded('simulateTransaction').find(
+            call => call.args[0] === toBase64(transaction.serialize()),
+          )!.result,
+        )
+        // The simulation runs on the chain as it is now.
+        const moved = {
+          ...value,
+          preBalances: [
+            BigInt(value.preBalances[0]) + (now.received ?? 0n),
+            ...value.preBalances.slice(1),
+          ],
+          accounts: [
+            {
+              ...value.accounts[0],
+              lamports:
+                BigInt(value.accounts[0].lamports) + (now.received ?? 0n),
+            },
+            ...value.accounts.slice(1),
+          ],
+        }
+        return { value: now.simulated ? now.simulated(moved) : moved }
+      },
+    }
+    return { chain, reads }
+  }
   const legacy = (
     connection: SolanaSwapSender,
-    store: ReturnType<typeof memoryStore>,
+    store: ReturnType<typeof memoryJournal>,
+    chain = chainAtSigning().chain,
   ) =>
     createSolanaLegacySender({
-      connection,
+      connection: { ...connection, ...chain },
       signer: async () => signer,
       journal: store,
       track,
@@ -1228,6 +1782,11 @@ describe("the wallet's legacy send: record, send, follow", () => {
       timestamp: 1,
     })
 
+    // A signature is case-sensitive base58: two that differ only in case are two swaps.
+    expect(swapRecordId('solana-devnet', '5VERv8NMvzbJMEkV')).not.toBe(
+      swapRecordId('solana-devnet', '5verv8nmvzbjmekv'),
+    )
+
     // The note cannot be sent now: the swap is still confirmed, and the entry stays, settled.
     const store = memoryJournal([record])
     const confirmedNow = () =>
@@ -1247,12 +1806,10 @@ describe("the wallet's legacy send: record, send, follow", () => {
     // At the next open the wallet offers it again; nothing is sent to the chain for it.
     const delivered = jest.fn().mockResolvedValue(undefined)
     const later = confirmedNow()
-    resumeSolanaLegacyTransactions(
-      later.connection,
-      store,
-      { ...track, onSync: delivered },
-      new Set(),
-    )
+    resumeSolanaLegacyTransactions(later.connection, store, {
+      ...track,
+      onSync: delivered,
+    })
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(delivered).toHaveBeenCalledWith(item)
     expect(later.sent).toEqual([])
@@ -1265,12 +1822,9 @@ describe("the wallet's legacy send: record, send, follow", () => {
       statuses: [null, { err: null, confirmationStatus: 'finalized' }],
     })
     const onSync = jest.fn().mockResolvedValue(undefined)
-    resumeSolanaLegacyTransactions(
-      connection,
-      store,
-      { ...track, onSync },
-      new Set(),
-    )
+    resumeSolanaLegacyTransactions(connection, store, { ...track, onSync })
+    // A second open while the first is still following does not follow it twice.
+    resumeSolanaLegacyTransactions(connection, store, { ...track, onSync })
     await new Promise(resolve => setTimeout(resolve, 5))
     expect(sent.map(toBase64)).toEqual([record.recovery.signedTransaction])
     expect(onSync).toHaveBeenCalledTimes(1)
@@ -1283,12 +1837,16 @@ describe("the wallet's legacy send: record, send, follow", () => {
     const { connection } = sender({
       statuses: [{ err: null, confirmationStatus: 'confirmed' }],
     })
-    signer.signSwapTransaction.mockResolvedValueOnce({
+    signer.sign.mockResolvedValueOnce({
       signature: 'sig2',
       rawTransaction: Uint8Array.of(9),
     })
+    const swap = await reviewed()
     await expect(
-      legacy(connection, store).sendLegacyTransaction(prepared(), intent),
+      legacy(connection, store).sendLegacyTransaction(
+        swap.prepared,
+        swap.intent,
+      ),
     ).resolves.toMatchObject({ status: 'confirmed', signature: 'sig2' })
   })
 
@@ -1303,11 +1861,24 @@ describe("the wallet's legacy send: record, send, follow", () => {
       recordedWhenSent.push(store.list())
       return realSend(raw, options)
     }
+    const swap = await reviewed()
     const outcome = await legacy(connection, store).sendLegacyTransaction(
-      prepared(),
-      intent,
+      swap.prepared,
+      swap.intent,
     )
-    expect(recordedWhenSent[0]).toEqual([{ record }])
+    expect(recordedWhenSent[0]).toEqual([
+      {
+        record: {
+          ...swap.intent,
+          transactionId: 'sig',
+          signedAtMs: 1,
+          recovery: {
+            signedTransaction: record.recovery.signedTransaction,
+            lastValidBlockHeight: swap.quote.lastValidBlockHeight.toString(),
+          },
+        },
+      },
+    ])
     expect(sent).toHaveLength(1)
     expect(outcome).toMatchObject({
       status: 'confirmed',
@@ -1321,35 +1892,199 @@ describe("the wallet's legacy send: record, send, follow", () => {
       throw new Error('storage full')
     }
     const { connection, sent } = sender({ statuses: [null] })
+    const swap = await reviewed()
     await expect(
-      legacy(connection, store).sendLegacyTransaction(prepared(), intent),
+      legacy(connection, store).sendLegacyTransaction(
+        swap.prepared,
+        swap.intent,
+      ),
     ).rejects.toThrow('storage full')
     expect(sent).toEqual([])
   })
 
-  it('signs nothing when the check just before signing fails, and says why', async () => {
+  /** Rewrites the simulated balance of the wallet's devUSDC account (the swap's output). */
+  const creditOnly = (credited: bigint) => (value: any) => {
+    const before = Buffer.from(
+      fromBase64(value.accounts[1].data[0]),
+    ).readBigUInt64LE(64)
+    const expected = BigInt(solToDevUsdc.expected.expectedOutputAmount)
+    const accounts = value.accounts.map((account: any) => {
+      if (account?.data[0] !== value.accounts[1].data[0]) return account
+      const data = Buffer.from(fromBase64(account.data[0]))
+      data.writeBigUInt64LE(before - expected + credited, 64)
+      return { ...account, data: [toBase64(data), 'base64'] }
+    })
+    return { ...value, accounts }
+  }
+
+  it('checks the exact transaction itself, on the chain as it is now, immediately before signing', async () => {
+    const store = memoryJournal()
+    const { connection } = sender({
+      statuses: [{ err: null, confirmationStatus: 'confirmed' }],
+    })
+    const swap = await reviewed()
+    const { chain, reads } = chainAtSigning()
+    signer.sign.mockClear()
+    signer.sign.mockImplementationOnce(async () => {
+      // By the time the key is used the wallet has been read afresh and the transaction run.
+      expect(reads).toEqual(
+        expect.arrayContaining([
+          'getTokenAccountsByOwner',
+          'getMultipleAccountsInfo',
+          'simulateTransaction',
+        ]),
+      )
+      return { signature: 'sig', rawTransaction: Uint8Array.of(1, 2, 3) }
+    })
+    await expect(
+      legacy(connection, store, chain).sendLegacyTransaction(
+        swap.prepared,
+        swap.intent,
+      ),
+    ).resolves.toMatchObject({ status: 'confirmed' })
+    expect(signer.sign).toHaveBeenCalledWith(
+      swap.prepared.transaction,
+      swap.prepared.lastValidBlockHeight,
+    )
+  })
+
+  it('signs nothing when the swap would now deliver less than the reviewed minimum, and says why', async () => {
     const store = memoryJournal()
     const { connection, sent } = sender({ statuses: [null] })
-    signer.signSwapTransaction.mockClear()
+    const swap = await reviewed()
+    signer.sign.mockClear()
+    await expect(
+      legacy(
+        connection,
+        store,
+        chainAtSigning({
+          simulated: creditOnly(swap.quote.minOutputAmount - 1n),
+        }).chain,
+      ).sendLegacyTransaction(swap.prepared, swap.intent),
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/less than the agreed minimum/),
+    })
+    // A transaction the chain would now reject is not signed either.
+    await expect(
+      legacy(
+        connection,
+        store,
+        chainAtSigning({
+          simulated: value => ({
+            ...value,
+            err: { InstructionError: [3, { Custom: 6017 }] },
+            logs: ['Program log: AnchorError: AmountOutBelowMinimum'],
+          }),
+        }).chain,
+      ).sendLegacyTransaction(swap.prepared, swap.intent),
+    ).rejects.toMatchObject({ code: 'slippage' })
+    expect(signer.sign).not.toHaveBeenCalled()
+    expect(sent).toEqual([])
+    expect(store.list()).toEqual([])
+  })
+
+  it('SOL that arrived after the quote does not loosen the check', async () => {
+    const store = memoryJournal()
+    const { connection, sent } = sender({ statuses: [null] })
+    const swap = await reviewed()
+    signer.sign.mockClear()
+    // One SOL arrived since the quote, and the transaction would take half of it on top of
+    // the swap. Measured against the balance at quote time the wallet still ends up ahead.
+    const takesExtra = (value: any) => ({
+      ...value,
+      accounts: [
+        {
+          ...value.accounts[0],
+          lamports: BigInt(value.accounts[0].lamports) - 500_000_000n,
+        },
+        ...value.accounts.slice(1),
+      ],
+    })
+    for (const simulated of [
+      takesExtra,
+      // The same from a network whose simulation does not report balances before the run.
+      (value: any) => ({ ...takesExtra(value), preBalances: undefined }),
+    ]) {
+      await expect(
+        legacy(
+          connection,
+          store,
+          chainAtSigning({ received: 1_000_000_000n, simulated }).chain,
+        ).sendLegacyTransaction(swap.prepared, swap.intent),
+      ).rejects.toMatchObject({
+        code: 'unsafe-transaction',
+        detail: expect.stringMatching(/more SOL than the swap needs/),
+      })
+    }
+    expect(signer.sign).not.toHaveBeenCalled()
+    expect(sent).toEqual([])
+  })
+
+  it('signs only the transaction that was reviewed, for the swap that was reviewed', async () => {
+    const store = memoryJournal()
+    const { connection, sent } = sender({ statuses: [null] })
+    const swap = await reviewed()
+    const other = await createSolanaDex(
+      'solana-devnet',
+      DEVNET,
+      walletOver(replay(orcaFixture.swaps.devUsdcToSol.calls)),
+    ).quote({
+      owner: OWNER,
+      inputMint: DEV_USDC,
+      outputMint: NATIVE_SOL_MINT,
+      amount: BigInt(orcaFixture.swaps.devUsdcToSol.request.amount),
+      slippageBps: 50,
+    })
+    signer.sign.mockClear()
+    // Another transaction under this swap's review.
     await expect(
       legacy(connection, store).sendLegacyTransaction(
-        prepared(async () => {
-          throw new SolanaSwapError('slippage')
-        }),
-        intent,
+        { ...swap.prepared, transaction: other.transaction },
+        swap.intent,
       ),
-    ).rejects.toMatchObject({ code: 'slippage' })
-    expect(signer.signSwapTransaction).not.toHaveBeenCalled()
+    ).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/not the transaction that was reviewed/),
+    })
+    // A record that says something else than what was reviewed.
+    for (const changed of [
+      { amountIn: '1' },
+      { minimumAmountOut: '1' },
+      {
+        assetOut: {
+          symbol: 'devUSDT',
+          address: DEVNET.tokens[2].mint,
+          decimals: 6,
+        },
+      },
+      {
+        assetIn: {
+          symbol: 'devUSDT',
+          address: DEVNET.tokens[2].mint,
+          decimals: 6,
+        },
+      },
+    ]) {
+      await expect(
+        legacy(connection, store).sendLegacyTransaction(swap.prepared, {
+          ...swap.intent,
+          ...changed,
+        }),
+      ).rejects.toMatchObject({ code: 'invalid-request' })
+    }
+    expect(signer.sign).not.toHaveBeenCalled()
     expect(sent).toEqual([])
     expect(store.list()).toEqual([])
   })
 
   it('will not start a new swap while an earlier one may still land, or if the records cannot be read', async () => {
     const { connection, sent } = sender({ statuses: [null] })
+    const swap = await reviewed()
     await expect(
       legacy(connection, memoryJournal([record])).sendLegacyTransaction(
-        prepared(),
-        intent,
+        swap.prepared,
+        swap.intent,
       ),
     ).rejects.toMatchObject({ code: 'invalid-request' })
     const unreadable = memoryJournal()
@@ -1357,7 +2092,10 @@ describe("the wallet's legacy send: record, send, follow", () => {
       throw new Error('records unreadable')
     }
     await expect(
-      legacy(connection, unreadable).sendLegacyTransaction(prepared(), intent),
+      legacy(connection, unreadable).sendLegacyTransaction(
+        swap.prepared,
+        swap.intent,
+      ),
     ).rejects.toThrow('records unreadable')
     expect(sent).toEqual([])
   })
@@ -1365,13 +2103,14 @@ describe("the wallet's legacy send: record, send, follow", () => {
   it('will not sign for another wallet or network, and an exchange will not send a quote it cannot carry out', async () => {
     const store = memoryJournal()
     const { connection } = sender({ statuses: [null] })
-    signer.signSwapTransaction.mockClear()
+    signer.sign.mockClear()
+    const swap = await reviewed()
     for (const other of [
-      { ...intent, account: SystemProgram.programId.toBase58() },
-      { ...intent, chainIdentifier: 'solana-mainnet' },
+      { ...swap.intent, account: SystemProgram.programId.toBase58() },
+      { ...swap.intent, chainIdentifier: 'solana-mainnet' },
     ]) {
       await expect(
-        legacy(connection, store).sendLegacyTransaction(prepared(), other),
+        legacy(connection, store).sendLegacyTransaction(swap.prepared, other),
       ).rejects.toBeInstanceOf(SolanaSwapError)
     }
     const sendLegacyTransaction = jest.fn()
@@ -1389,7 +2128,7 @@ describe("the wallet's legacy send: record, send, follow", () => {
       ),
     ).rejects.toMatchObject({ code: 'insufficient-sol' })
     expect(sendLegacyTransaction).not.toHaveBeenCalled()
-    expect(signer.signSwapTransaction).not.toHaveBeenCalled()
+    expect(signer.sign).not.toHaveBeenCalled()
   })
 
   it('an exchange hands the wallet the transaction and the record of what it is for', async () => {
@@ -1412,12 +2151,26 @@ describe("the wallet's legacy send: record, send, follow", () => {
       expectedOutputAmount: 222_201n,
       minOutputAmount: 221_089n,
       networkFeeLamports: 5000n,
+      priorityFeeLamports: 0n,
+      transaction: { the: 'transaction' },
+      lastValidBlockHeight: 100n,
+      check: { what: 'was reviewed' },
     }
     await dex.execute(quote as never, {
       assetIn: record.assetIn,
       assetOut: record.assetOut,
     })
-    expect(sendLegacyTransaction).toHaveBeenCalledWith(quote, intent, undefined)
+    // The transaction, what was reviewed for it, and the record: nothing else, no callback
+    // of the exchange's own that the wallet would have to trust.
+    expect(sendLegacyTransaction).toHaveBeenCalledWith(
+      {
+        transaction: quote.transaction,
+        lastValidBlockHeight: 100n,
+        check: quote.check,
+      },
+      intent,
+      undefined,
+    )
   })
 })
 
@@ -1499,7 +2252,7 @@ describe('an interface fee, when one is configured (none is today)', () => {
   })
 })
 
-describe('SolanaWallet.signSwapTransaction', () => {
+describe('SolanaWallet signs a swap only through its checked send', () => {
   const GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG'
   const transfer = (payer: PublicKey, extraSigner?: PublicKey) =>
     new VersionedTransaction(
@@ -1516,27 +2269,81 @@ describe('SolanaWallet.signSwapTransaction', () => {
       }).compileToV0Message(),
     )
 
-  it('signs only a transaction this wallet alone pays for and signs', async () => {
+  it('has no method that signs a swap transaction without the check, and refuses one it does not alone pay for', async () => {
+    const asked: string[] = []
     const wallet = await SolanaWallet.fromSeed({
-      connection: { getGenesisHash: async () => GENESIS } as never,
+      connection: new Proxy(
+        { getGenesisHash: async () => GENESIS },
+        {
+          get: (target, method: string) =>
+            method in target
+              ? target[method as keyof typeof target]
+              : async () => {
+                  asked.push(method)
+                  throw new Error(`unexpected RPC call ${method}`)
+                },
+        },
+      ) as never,
       seed: new Uint8Array(32).fill(7),
       chainIdentifier: 'solana-devnet',
       networkId: 'solana-devnet',
       genesisHash: GENESIS,
+      legacy: {
+        journal: { list: () => [], put() {}, settle() {}, remove() {} },
+      },
     })
+    expect(
+      Object.getOwnPropertyNames(SolanaWallet.prototype).filter(name =>
+        /sign.*swap/i.test(name),
+      ),
+    ).toEqual([])
+
     const own = new PublicKey(wallet.address)
     const other = (await Keypair.generate()).publicKey
-
-    const signed = await wallet.signSwapTransaction(transfer(own), 100n)
-    expect(signed.signature.length).toBeGreaterThan(80)
-    expect(
-      VersionedTransaction.deserialize(signed.rawTransaction).signatures[0],
-    ).not.toEqual(new Uint8Array(64))
-    await expect(
-      wallet.signSwapTransaction(transfer(other), 100n),
-    ).rejects.toThrow(/this wallet alone/)
-    await expect(
-      wallet.signSwapTransaction(transfer(own, other), 100n),
-    ).rejects.toThrow(/this wallet alone/)
+    const mint = new PublicKey(DEV_USDC)
+    const send = (transaction: VersionedTransaction) =>
+      wallet.sendLegacyTransaction(
+        {
+          transaction,
+          lastValidBlockHeight: 100n,
+          check: {
+            owner: own,
+            transactionMessage: transaction.message.serialize(),
+            state: {
+              lamports: 1n,
+              input: { mint: new PublicKey(NATIVE_SOL_MINT) },
+              output: { mint },
+            },
+            inputAmount: 1n,
+            minOutputAmount: 1n,
+            networkFeeLamports: 5000n,
+            walletAccounts: [],
+          } as never,
+        },
+        {
+          chainIdentifier: 'solana-devnet',
+          venueId: 'orca-whirlpools',
+          venueName: 'Orca Whirlpools (devnet)',
+          route: 'Orca Whirlpool',
+          account: wallet.address,
+          assetIn: { symbol: 'SOL', address: null, decimals: 9 },
+          amountIn: '1',
+          assetOut: { symbol: 'devUSDC', address: DEV_USDC, decimals: 6 },
+          quotedAmountOut: '1',
+          minimumAmountOut: '1',
+          interfaceFeeAmount: '0',
+          networkFeeLamports: '5000',
+          priorityFeeLamports: '0',
+        },
+      )
+    await expect(send(transfer(other))).rejects.toThrow(/this wallet alone/)
+    await expect(send(transfer(own, other))).rejects.toThrow(
+      /this wallet alone/,
+    )
+    expect(asked).toEqual([])
+    // Its own transaction gets as far as the check, which asks the chain before any signing.
+    await expect(send(transfer(own))).rejects.toThrow(/unexpected RPC call/)
+    expect(asked.length).toBeGreaterThan(0)
+    expect(asked).not.toContain('sendRawTransaction')
   })
 })

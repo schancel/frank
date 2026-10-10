@@ -18,9 +18,11 @@
  *    what its swap delivers in simulation), then the safety check every transaction must pass
  *    whoever built it: simulate, and compare what it would do to the wallet with the quote
  *    (input debited no more than agreed, output credited at least the minimum, no other SOL or
- *    token leaves, no token account changes owner, delegate or close authority).
- * 2. `execute`: hands the transaction and its record to the wallet's legacy send, which runs
- *    the safety check again immediately before signing.
+ *    token leaves, no token account changes owner, delegate or close authority). A quote costs
+ *    one simulation.
+ * 2. `execute`: hands the transaction, what was reviewed for it (data, `SwapCheck`) and its
+ *    record to the wallet's legacy send. The send itself runs the safety check again, on that
+ *    exact transaction and the wallet as it then is, immediately before signing.
  * 3. `readOutcome`: the outcome of a swap sent earlier (after a reload); the amounts are read
  *    from the confirmed transaction's balance changes.
  */
@@ -35,6 +37,7 @@ import {
   prepareOrcaSwap,
   quoteSolanaSwap,
   type PrepareSolanaSwap,
+  type SolanaQuoteCycle,
   type SolanaSwapConnection,
   type SolanaSwapQuote,
   type SolanaSwapRequest,
@@ -65,8 +68,10 @@ export interface SolanaDex {
   readonly entry: SolanaSwapVenue
   /** One sentence for the user about how this exchange trades. */
   readonly description: string
+  /** `cycle`: one object per run of quotes for the same amount (see `SolanaQuoteCycle`). */
   quote(
     request: Omit<SolanaSwapRequest, 'chainIdentifier'>,
+    cycle?: SolanaQuoteCycle,
   ): Promise<SolanaSwapQuote>
   execute(
     quote: SolanaSwapQuote,
@@ -90,6 +95,7 @@ abstract class SolanaDexBase<V extends SolanaSwapVenue> implements SolanaDex {
 
   quote(
     request: Omit<SolanaSwapRequest, 'chainIdentifier'>,
+    cycle?: SolanaQuoteCycle,
   ): Promise<SolanaSwapQuote> {
     return quoteSolanaSwap(
       {
@@ -101,6 +107,7 @@ abstract class SolanaDexBase<V extends SolanaSwapVenue> implements SolanaDex {
       },
       { ...request, chainIdentifier: this.chainIdentifier },
       this.prepare,
+      cycle,
     )
   }
 
@@ -112,7 +119,11 @@ abstract class SolanaDexBase<V extends SolanaSwapVenue> implements SolanaDex {
     // A quote this wallet cannot carry out (for example: not enough SOL) is not sent.
     if (quote.blocker) throw quote.blocker
     return this.wallet.sendLegacyTransaction(
-      quote,
+      {
+        transaction: quote.transaction,
+        lastValidBlockHeight: quote.lastValidBlockHeight,
+        check: quote.check,
+      },
       {
         chainIdentifier: quote.chainIdentifier,
         venueId: quote.venueId,
@@ -125,6 +136,7 @@ abstract class SolanaDexBase<V extends SolanaSwapVenue> implements SolanaDex {
         minimumAmountOut: quote.minOutputAmount.toString(),
         interfaceFeeAmount: (quote.platformFee?.amount ?? 0n).toString(),
         networkFeeLamports: quote.networkFeeLamports.toString(),
+        priorityFeeLamports: quote.priorityFeeLamports.toString(),
       },
       onSubmitted,
     )

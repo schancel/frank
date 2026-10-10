@@ -8,9 +8,11 @@
  * - failed: the chain FINALIZED the transaction with an error (nothing swapped, fee paid).
  *   An error seen at a weaker commitment is not final: that fork can be dropped and the same
  *   transaction can still succeed, so it stays pending;
- * - expired: finalized block height passed the last valid height and the chain still has no
- *   record of the signature, on several separate checks (the relay rotates between RPC nodes,
- *   so one node's height and another's status are not proof together).
+ * - expired: a finalized slot is known whose block height is past the last valid height (slot
+ *   and height from one response), and a node that had itself reached that slot has no record
+ *   of the signature, on several separate checks. The relay rotates between RPC nodes, so one
+ *   node's height and another's status are not proof together: a lagging node's "never seen
+ *   it" counts for nothing until its own slot is past the expiry.
  * Until one of those, the same signed bytes may be re-sent (that cannot swap twice), but a
  * NEW swap must not be built in its place.
  *
@@ -22,7 +24,12 @@ import type { VersionedTransaction } from '@solana/web3.js'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 
 import { swapRecordId } from '../chain/evm-legacy-consolidator'
-import { SolanaSwapError } from './swap'
+import {
+  checkSwapBeforeSigning,
+  SolanaSwapError,
+  type SwapCheck,
+  type SwapCheckConnection,
+} from './swap'
 import { NATIVE_SOL_MINT } from './venues'
 
 /** One side of a swap. `address` is the token's mint; null is SOL, the chain's native coin. */
@@ -56,8 +63,10 @@ export interface SolanaSwapRecord {
   readonly minimumAmountOut: string
   /** Frank's fee, in the asset it is taken in; zero when the exchange has none. */
   readonly interfaceFeeAmount: string
-  /** The network fee the transaction is charged, in lamports. */
+  /** The network fee the transaction is charged, in lamports: base fee plus priority fee. */
   readonly networkFeeLamports: string
+  /** The part of it that is the priority fee the transaction sets; "0" when it sets none. */
+  readonly priorityFeeLamports: string
   readonly signedAtMs: number
   /** What the wallet needs to finish this exact swap: its signed bytes and their lifetime. */
   readonly recovery: {
@@ -73,12 +82,15 @@ export type SolanaSwapIntent = Omit<
   'transactionId' | 'signedAtMs' | 'recovery'
 >
 
-/** A transaction ready to sign, with the check to run immediately before signing. */
+/**
+ * A transaction ready to sign, with what was reviewed for it. The check is data, not a
+ * function of the caller's: the wallet's send runs the safety check itself, on this exact
+ * transaction, immediately before signing.
+ */
 export interface PreparedLegacyTransaction {
   readonly transaction: VersionedTransaction
   readonly lastValidBlockHeight: bigint
-  /** Simulates again and re-applies the safety check; throws when it must not be signed. */
-  readonly recheck: () => Promise<void>
+  readonly check: SwapCheck
 }
 
 /** What a confirmed swap actually did to the wallet, from the transaction itself. */
@@ -95,12 +107,15 @@ export type SolanaSwapOutcome =
       readonly status: 'confirmed'
       readonly signature: string
       readonly finalized: boolean
+      /** The part of `networkFeeLamports` that was the transaction's priority fee. */
+      readonly priorityFeeLamports: bigint
     } & ObservedSwap)
   | {
       readonly status: 'failed'
       readonly signature: string
       readonly reason: string
       readonly networkFeeLamports: bigint
+      readonly priorityFeeLamports: bigint
     }
   | { readonly status: 'expired'; readonly signature: string }
 
@@ -190,23 +205,32 @@ export interface SolanaSwapSender {
     signatures: string[],
     config: { searchTransactionHistory: boolean },
   ): Promise<{
+    /** The slot the answering node had reached. */
+    context: { slot: bigint | number }
     value: ({
       err: unknown
       confirmationStatus?: 'processed' | 'confirmed' | 'finalized' | null
     } | null)[]
   }>
-  getBlockHeight(commitment: 'finalized'): Promise<bigint | number>
+  /** One node's slot and the block height at that slot, from the same response. */
+  getEpochInfo(
+    commitment: 'finalized',
+  ): Promise<{ absoluteSlot: bigint | number; blockHeight?: bigint | number }>
   getTransaction(
     signature: string,
     config: { commitment: 'confirmed'; maxSupportedTransactionVersion: 0 },
   ): Promise<{ meta: SwapTransactionMeta | null } | null>
 }
 
-/** Signs with the wallet's own key; implemented by `SolanaWallet.signSwapTransaction`. */
+/**
+ * The wallet's key as the legacy send uses it. `SolanaWallet` hands this to the send it makes
+ * itself and has no public method that signs a swap transaction, so the only way to a
+ * signature is through the check in `sendLegacyTransaction`.
+ */
 export interface SolanaSwapSigner {
   readonly address: string
   readonly chainIdentifier: string
-  signSwapTransaction(
+  sign(
     transaction: VersionedTransaction,
     lastValidBlockHeight: bigint,
   ): Promise<{ signature: string; rawTransaction: Uint8Array }>
@@ -359,7 +383,7 @@ const mintOf = (asset: SwapAsset) => asset.address ?? NATIVE_SOL_MINT
 const defaultSleep = (ms: number) =>
   new Promise<void>(resolve => setTimeout(resolve, ms))
 
-/** Separate checks, each finding the height passed and the signature unknown, before expiry. */
+/** Separate checks, each by a node past the expiry that does not know the signature. */
 const EXPIRY_CONFIRMATIONS = 3
 /** The signed bytes are re-sent on every this-many-th poll while the chain has not seen them. */
 const RESEND_EVERY_POLLS = 5
@@ -386,11 +410,30 @@ export class SolanaSwapStillPendingError extends Error {
  * it can still land. The journal keeps the transaction until its outcome is definite and, when
  * it reached the chain, until the wallet's sync event for it has been delivered.
  */
-export async function trackSolanaSwap(
+export function trackSolanaSwap(
   connection: SolanaSwapSender,
   journal: SolanaLegacyJournal,
   swap: SolanaSwapRecord,
   options: TrackOptions = {},
+): Promise<SolanaSwapOutcome> {
+  // One follower per transaction, however many ask (the send itself, the resume at account
+  // open, a screen opened later): the others get the same outcome.
+  const running = following.get(swap.transactionId)
+  if (running) return running
+  const tracked = followSolanaSwap(connection, journal, swap, options).finally(
+    () => following.delete(swap.transactionId),
+  )
+  following.set(swap.transactionId, tracked)
+  return tracked
+}
+/** Transactions being followed in this realm, by signature. */
+const following = new Map<string, Promise<SolanaSwapOutcome>>()
+
+async function followSolanaSwap(
+  connection: SolanaSwapSender,
+  journal: SolanaLegacyJournal,
+  swap: SolanaSwapRecord,
+  options: TrackOptions,
 ): Promise<SolanaSwapOutcome> {
   const signature = swap.transactionId
   const sleep = options.sleep ?? defaultSleep
@@ -408,6 +451,8 @@ export async function trackSolanaSwap(
     }
     return outcome
   }
+  // A transaction that lands is charged the priority fee it sets, in full.
+  const priorityFeeLamports = BigInt(swap.priorityFeeLamports)
   const transactionMeta = async () =>
     (
       await connection.getTransaction(signature, {
@@ -418,21 +463,34 @@ export async function trackSolanaSwap(
 
   let failures = 0
   let expiredChecks = 0
+  /** A finalized slot at which the block height had passed the last valid height. */
+  let expiredAtSlot: bigint | undefined
   for (let poll = 0; ; poll++) {
     try {
-      const current = (
-        await connection.getSignatureStatuses([signature], {
-          searchTransactionHistory: true,
-        })
-      ).value[0]
+      const status = await connection.getSignatureStatuses([signature], {
+        searchTransactionHistory: true,
+      })
+      const current = status.value[0]
       if (current === null) {
-        const height = BigInt(await connection.getBlockHeight('finalized'))
-        if (height > lastValid) {
-          if (++expiredChecks >= EXPIRY_CONFIRMATIONS) {
+        if (expiredAtSlot === undefined) {
+          const tip = await connection.getEpochInfo('finalized')
+          if (
+            tip.blockHeight !== undefined &&
+            BigInt(tip.blockHeight) > lastValid
+          ) {
+            expiredAtSlot = BigInt(tip.absoluteSlot)
+          }
+        }
+        if (expiredAtSlot !== undefined) {
+          // Only a node that has itself processed every block the transaction could be in
+          // can say it is in none of them.
+          if (
+            BigInt(status.context.slot) >= expiredAtSlot &&
+            ++expiredChecks >= EXPIRY_CONFIRMATIONS
+          ) {
             return finish({ status: 'expired', signature: signature })
           }
         } else {
-          expiredChecks = 0
           if (poll % RESEND_EVERY_POLLS === 0) {
             // Not seen yet and still valid: sending the same signed bytes again is harmless.
             await connection
@@ -452,6 +510,7 @@ export async function trackSolanaSwap(
               signature: signature,
               reason: JSON.stringify(current.err),
               networkFeeLamports: BigInt(meta?.fee ?? swap.networkFeeLamports),
+              priorityFeeLamports,
             })
           }
         } else if (finalized || current.confirmationStatus === 'confirmed') {
@@ -461,6 +520,7 @@ export async function trackSolanaSwap(
               status: 'confirmed',
               signature: signature,
               finalized,
+              priorityFeeLamports,
               ...observeSwapTransaction(
                 meta,
                 swap.account,
@@ -490,45 +550,46 @@ export async function announceSolanaLegacyTransaction(
   record: SolanaSwapRecord,
   onSync: SolanaLegacySync | undefined,
 ): Promise<void> {
+  // One offer at a time per transaction.
+  if (announcing.has(record.transactionId)) return
+  announcing.add(record.transactionId)
   try {
     await onSync?.(swapRecordItemOf(record))
     journal.remove(record.transactionId)
   } catch {
     // Owed: offered again by `resumeSolanaLegacyTransactions`.
+  } finally {
+    announcing.delete(record.transactionId)
   }
 }
+const announcing = new Set<string>()
 
 /**
- * At wallet open: follows every journaled transaction that is not final yet (with its same
- * signed bytes) and offers again the sync events still owed. Needs no key. Returns at once;
- * the work continues in the background and reports through the journal and `onSync`.
+ * At account open: follows every journaled transaction that is not final yet (with its same
+ * signed bytes) and offers again the sync events still owed. Needs no key, and asks the
+ * network nothing when the journal is empty. Returns at once; the work continues in the
+ * background and reports through the journal and `onSync`. Safe to call again: a transaction
+ * already being followed is not followed twice.
  */
 export function resumeSolanaLegacyTransactions(
   connection: SolanaSwapSender,
   journal: SolanaLegacyJournal,
   options: TrackOptions = {},
-  following: Set<string> = resuming,
 ): void {
   for (const entry of journal.list()) {
-    const id = entry.record.transactionId
-    if (following.has(id)) continue
-    following.add(id)
     const work = entry.settled
       ? announceSolanaLegacyTransaction(journal, entry.record, options.onSync)
       : trackSolanaSwap(connection, journal, entry.record, options)
-    void work.then(
-      () => following.delete(id),
-      () => following.delete(id),
-    )
+    // Fails only when the network cannot be asked; the entry stays for the next open.
+    void work.catch(() => undefined)
   }
 }
-/** Transactions already being followed in this realm, so a second open does not double up. */
-const resuming = new Set<string>()
 
 /**
  * The wallet's legacy send, for a transaction that calls a program rather than paying another
- * Frank user: check, sign, record, send, and follow to its outcome. The record is an argument
- * of the send; whoever asked for the transaction never records it or talks to a relay.
+ * Frank user: check, sign, record, send, and follow to its outcome. The record and what was
+ * reviewed are arguments of the send; whoever asked for the transaction never checks it on the
+ * wallet's behalf, records it or talks to a relay.
  */
 export interface SolanaLegacySender {
   /** `onSubmitted` fires once the signed transaction is recorded and handed to the network. */
@@ -542,7 +603,7 @@ export interface SolanaLegacySender {
 }
 
 export function createSolanaLegacySender(parts: {
-  connection: SolanaSwapSender
+  connection: SolanaSwapSender & SwapCheckConnection
   /** Opens the signing key only when a transaction is actually sent. */
   signer: () => Promise<SolanaSwapSigner>
   journal: SolanaLegacyJournal
@@ -572,11 +633,36 @@ export function createSolanaLegacySender(parts: {
         // An earlier one may still land; resolve it before spending again.
         throw new SolanaSwapError('invalid-request', 'a swap is still pending')
       }
-      // Simulate once more, and re-apply the safety check on what the transaction would do,
-      // immediately before signing. Nothing has left the device, so a failure here is final.
-      await prepared.recheck()
-      const { signature, rawTransaction } = await wallet.signSwapTransaction(
-        prepared.transaction,
+      const { transaction, check } = prepared
+      const { header, staticAccountKeys } = transaction.message
+      if (
+        header.numRequiredSignatures !== 1 ||
+        staticAccountKeys[0]?.toBase58() !== wallet.address
+      ) {
+        throw new SolanaSwapError(
+          'unsafe-transaction',
+          'transaction is not paid and signed by this wallet alone',
+        )
+      }
+      // The record says what the review says: the same wallet, assets and amounts.
+      if (
+        check.owner.toBase58() !== intent.account ||
+        check.state.input.mint.toBase58() !== mintOf(intent.assetIn) ||
+        check.state.output.mint.toBase58() !== mintOf(intent.assetOut) ||
+        check.inputAmount.toString() !== intent.amountIn ||
+        check.minOutputAmount.toString() !== intent.minimumAmountOut ||
+        check.networkFeeLamports.toString() !== intent.networkFeeLamports
+      ) {
+        throw new SolanaSwapError(
+          'invalid-request',
+          'the record of the swap does not match what was reviewed',
+        )
+      }
+      // The safety check, run here on the exact transaction about to be signed, against the
+      // wallet as it is now. Nothing has left the device, so a failure here is final.
+      await checkSwapBeforeSigning(connection, transaction, check)
+      const { signature, rawTransaction } = await wallet.sign(
+        transaction,
         prepared.lastValidBlockHeight,
       )
       const record: SolanaSwapRecord = {

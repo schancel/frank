@@ -1443,6 +1443,9 @@ export default {
     minimumReceived: 'At the very least',
     tradeFee: 'Pool fee (included in the rate)',
     networkFee: 'Network fee',
+    priorityFee: 'Priority fee',
+    priorityFeeHint:
+      'Set by the transaction to be included sooner; charged in full if the swap lands',
     accountRent: 'Deposit to open your {token} account',
     accountRentHint:
       'Paid once. It stays in your own account and comes back if you ever close it.',
@@ -1470,6 +1473,7 @@ export default {
     expected: 'You receive about',
     actuallyPaid: 'You paid',
     networkFeeCharged: 'Network fee charged',
+    priorityFeeCharged: 'Priority fee charged',
     totalLeft: 'Total that left your wallet',
     received: 'You received',
     checkAgain: 'Check again',

@@ -1047,7 +1047,7 @@ export default defineComponent({
     function rememberOutcome(result: SwapResult): void {
       if (result.status === 'pending') return
       history.cacheOutcome(
-        swapRecordId(props.chainIdentifier, result.txHash),
+        swapRecordId(props.chainIdentifier, result.txHash.toLowerCase()),
         result.status === 'confirmed'
           ? {
               status: 'confirmed',

@@ -9,3 +9,4 @@ export * from "./subscription-manager";
 export * from "./scheduler";
 export * from "./bot-host";
 export * from "./bot-profile-admission";
+export * from "./reserved-usernames";

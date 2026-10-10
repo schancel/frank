@@ -95,6 +95,22 @@ pub fn normalize(raw: &str) -> std::result::Result<String, UsernameError> {
     Ok(name)
 }
 
+/// The operator's reserved names (`[registry.directory] reserved_usernames`: name -> key hex)
+/// with names in canonical form and keys decoded. `None` when a name is not a valid username,
+/// a key is not 33 bytes of hex starting 02 or 03, or two spellings give the same name.
+pub fn reserved(
+    configured: &std::collections::BTreeMap<String, String>,
+) -> Option<std::collections::BTreeMap<String, [u8; 33]>> {
+    let mut reserved = std::collections::BTreeMap::new();
+    for (name, key) in configured {
+        let key: [u8; 33] = hex::decode(key).ok()?.try_into().ok()?;
+        if !matches!(key[0], 2 | 3) || reserved.insert(normalize(name).ok()?, key).is_some() {
+            return None;
+        }
+    }
+    Some(reserved)
+}
+
 /// The text a key signs to claim `username` (already canonical) on `network`.
 pub fn claim_text(network: &str, username: &str, issued_ms: u64) -> String {
     format!("{CLAIM_DOMAIN}\n{network}\n{username}\n{issued_ms}")
@@ -280,20 +296,26 @@ impl<'a> DbDirectoryUsernames<'a> {
 
     /// Store a verified claim under the rules in the module docs. The outer error is storage;
     /// the inner one is a refusal.
+    ///
+    /// `reserved_for_claimant`: the operator reserved this name for the claiming key. Whoever
+    /// took it before it was reserved loses it to that key.
     pub fn claim(
         &self,
         record: &UsernameRecord,
         accepted_ms: u64,
+        reserved_for_claimant: bool,
     ) -> Result<std::result::Result<ClaimOutcome, UsernameError>> {
         let _guard = self.db.lock_usernames();
-        if let Some(holder) = self.get(&record.username)? {
-            return Ok(if holder.subject == record.subject {
-                Ok(ClaimOutcome::Unchanged)
-            } else {
-                Err(Taken)
-            });
-        }
         let mut batch = rocksdb::WriteBatch::default();
+        if let Some(holder) = self.get(&record.username)? {
+            if holder.subject == record.subject {
+                return Ok(Ok(ClaimOutcome::Unchanged));
+            }
+            if !reserved_for_claimant {
+                return Ok(Err(Taken));
+            }
+            batch.delete_cf(self.cf, address_key(&holder.address));
+        }
         if let Some(previous) = self.of_address(&record.address)? {
             if record.issued_ms <= previous.issued_ms {
                 return Ok(Err(Stale));
@@ -463,7 +485,10 @@ pub(crate) mod tests {
         let (_dir, db) = open();
         let names = db.directory_usernames();
         let alice = verified(1, "alice", NOW_MS);
-        assert_eq!(names.claim(&alice, NOW_MS + 5)?, Ok(ClaimOutcome::Claimed));
+        assert_eq!(
+            names.claim(&alice, NOW_MS + 5, false)?,
+            Ok(ClaimOutcome::Claimed)
+        );
 
         let stored = names.get("alice")?.unwrap();
         assert_eq!(stored.subject, alice.subject);
@@ -478,17 +503,17 @@ pub(crate) mod tests {
 
         // Another key is refused and changes nothing, however late its claim.
         let mallory = verified(2, "alice", NOW_MS + 60_000);
-        assert_eq!(names.claim(&mallory, NOW_MS + 60_000)?, Err(Taken));
+        assert_eq!(names.claim(&mallory, NOW_MS + 60_000, false)?, Err(Taken));
         assert_eq!(names.get("alice")?.unwrap(), stored);
         assert_eq!(names.of_address(&mallory.address)?, None);
 
         // The holder claiming again, with the same or a fresh claim, is a no-op.
         assert_eq!(
-            names.claim(&alice, NOW_MS + 9)?,
+            names.claim(&alice, NOW_MS + 9, false)?,
             Ok(ClaimOutcome::Unchanged)
         );
         assert_eq!(
-            names.claim(&verified(1, "alice", NOW_MS + 1), NOW_MS + 9)?,
+            names.claim(&verified(1, "alice", NOW_MS + 1), NOW_MS + 9, false)?,
             Ok(ClaimOutcome::Unchanged)
         );
         assert_eq!(names.get("alice")?.unwrap(), stored);
@@ -500,10 +525,13 @@ pub(crate) mod tests {
         let (_dir, db) = open();
         let names = db.directory_usernames();
         let first = verified(1, "alice", NOW_MS);
-        names.claim(&first, NOW_MS)?.unwrap();
+        names.claim(&first, NOW_MS, false)?.unwrap();
 
         let second = verified(1, "alice2", NOW_MS + 1);
-        assert_eq!(names.claim(&second, NOW_MS + 1)?, Ok(ClaimOutcome::Claimed));
+        assert_eq!(
+            names.claim(&second, NOW_MS + 1, false)?,
+            Ok(ClaimOutcome::Claimed)
+        );
         assert_eq!(names.get("alice")?, None);
         assert_eq!(
             names.of_address(&first.address)?.unwrap().username,
@@ -511,7 +539,7 @@ pub(crate) mod tests {
         );
 
         // Anyone holding the old signed claim cannot move the key back with it.
-        assert_eq!(names.claim(&first, NOW_MS + 2)?, Err(Stale));
+        assert_eq!(names.claim(&first, NOW_MS + 2, false)?, Err(Stale));
         assert_eq!(
             names.of_address(&first.address)?.unwrap().username,
             "alice2"
@@ -519,7 +547,10 @@ pub(crate) mod tests {
 
         // The released name is free for someone else.
         let bob = verified(2, "alice", NOW_MS + 3);
-        assert_eq!(names.claim(&bob, NOW_MS + 3)?, Ok(ClaimOutcome::Claimed));
+        assert_eq!(
+            names.claim(&bob, NOW_MS + 3, false)?,
+            Ok(ClaimOutcome::Claimed)
+        );
         assert_eq!(names.get("alice")?.unwrap().subject, bob.subject);
         Ok(())
     }
@@ -535,7 +566,7 @@ pub(crate) mod tests {
                 NETWORK,
                 NOW_MS,
             ) {
-                names.claim(&record, NOW_MS)?.unwrap();
+                names.claim(&record, NOW_MS, false)?.unwrap();
             }
         }
         let found = |prefix: &str, limit: usize| -> Result<Vec<String>> {

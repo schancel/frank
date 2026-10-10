@@ -29,6 +29,7 @@ import { createEvmChain } from '@frank/wallet/chain/monad-chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
 import { createRelayUsernameLookup } from '../mail-gateway/src/smtp/inbound-server'
+import { reservedUsernamesTomlLine } from '../bot-framework/src/reserved-usernames'
 import { openBotDirectory } from './bot-open-directory'
 
 const NETWORK = 'monad-testnet'
@@ -65,6 +66,10 @@ suite('usernames on the real relay', () => {
   let relayBaseUrl = ''
   const closers: (() => Promise<unknown>)[] = []
 
+  let issueClock = 0
+  /** The `reserved_usernames` line of the relay configuration, as a launcher writes it. */
+  let reservedLine = ''
+
   async function startRelay(port: number) {
     relayBaseUrl = `http://127.0.0.1:${port}`
     const config = join(root, 'cashwebd.toml')
@@ -87,6 +92,7 @@ endpoint = "${relayBaseUrl}"
 binding_expiry_ns = "${
         BigInt(Date.now() + 2 * 365 * 24 * 3600 * 1000) * 1_000_000n
       }"
+${reservedLine}
 
 [registry.monad_mailbox]
 enabled = false
@@ -171,6 +177,9 @@ min_value_wei = "0"
           network: NETWORK,
           signer: wallet.identity,
           username,
+          // Strictly increasing, so two claims by one account are never issued in the same
+          // millisecond (the relay orders an account's claims by issue time).
+          nowMs: (issueClock = Math.max(issueClock + 1, Date.now())),
         }),
     }
   }
@@ -193,9 +202,18 @@ min_value_wei = "0"
 
   it('one account registers a name, another cannot take it, and it is found by lookup and by prefix', async () => {
     const port = await freePort()
-    await startRelay(port)
+    relayBaseUrl = `http://127.0.0.1:${port}`
     const alice = await account('alice')
     const bob = await account('bob')
+    // The operator reserves one name for Bob's key, the way a launcher reserves bot names.
+    const reservedName = `helper-${randomBytes(4).toString('hex')}`
+    reservedLine = reservedUsernamesTomlLine([
+      {
+        username: reservedName,
+        compressedPubKey: bob.wallet.identity.compressedPubKey,
+      },
+    ])
+    await startRelay(port)
     // Unique per run so the assertions about search do not depend on anything else.
     const tag = randomBytes(4).toString('hex')
     const name = `alice-${tag}`
@@ -214,6 +232,13 @@ min_value_wei = "0"
 
     await alice.directory.publish()
     await bob.directory.publish()
+
+    // A reserved name is refused to anyone but the key it is reserved for, even before that
+    // key has claimed it.
+    expect(await refusal(alice.claim(reservedName))).toBe('taken')
+    expect(
+      await lookupUsername({ relayBaseUrl, username: reservedName }),
+    ).toBeUndefined()
 
     // Alice registers the name (typed with an @ and capitals, as a person would).
     const claimed = await alice.claim(`@${name.toUpperCase()}`)
@@ -272,6 +297,11 @@ min_value_wei = "0"
     expect(
       await createRelayUsernameLookup(relayBaseUrl)(`nobody-${tag}`),
     ).toBeUndefined()
+
+    // Bob renames to the name reserved for him; Alice still cannot have it.
+    expect((await bob.claim(reservedName)).address).toBe(bob.address)
+    expect(await refusal(alice.claim(reservedName))).toBe('taken')
+    expect((await bob.claim(bobName)).address).toBe(bob.address)
 
     // The name survives a relay restart on the same database.
     await stopRelay()

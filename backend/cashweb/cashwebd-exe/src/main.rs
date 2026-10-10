@@ -436,7 +436,8 @@ async fn main() -> Result<()> {
             bitcoinsuite_error::Report::msg(
                 "registry.directory is invalid: relay_id must be 32 hex characters, \
                  relay_identity a compressed secp256k1 key in hex, endpoint an https origin \
-                 without a trailing slash, binding_expiry_ns decimal Unix nanoseconds",
+                 without a trailing slash, binding_expiry_ns decimal Unix nanoseconds, \
+                 reserved_usernames valid usernames mapped to compressed keys in hex",
             )
         })?;
         let runtime = Arc::new(runtime);

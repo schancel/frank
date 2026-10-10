@@ -88,6 +88,14 @@ fn user(runtime: &DirectoryRuntime, record: &UsernameRecord) -> serde_json::Valu
     })
 }
 
+/// False for a reserved name in the hands of any key but the one it is reserved for: such a
+/// record (taken before the operator reserved the name) is never served and cannot be made.
+fn shown(runtime: &DirectoryRuntime, record: &UsernameRecord) -> bool {
+    runtime
+        .reserved_username(&record.username)
+        .map_or(true, |owner| *owner == record.subject)
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -127,6 +135,11 @@ async fn claim(
             record.username
         )));
     }
+    // A name the operator reserved is taken for everyone but the key it is reserved for.
+    let reserved = runtime.reserved_username(&name).is_some();
+    if !shown(&runtime, &record) {
+        return refused(UsernameError::Taken);
+    }
     // A name must resolve to someone who can be messaged, and that needs their directory entry.
     if !runtime.is_published(network, &hex::encode(record.subject)) {
         return refusal(
@@ -136,7 +149,7 @@ async fn claim(
         );
     }
     let names = registry.usernames();
-    match names.claim(&record, now) {
+    match names.claim(&record, now, reserved) {
         Err(error) => storage_failed(error),
         Ok(Err(error)) => refused(error),
         Ok(Ok(_)) => match names.get(&name) {
@@ -162,7 +175,14 @@ async fn lookup(
             "not-found",
             format!("Nobody has the username {name:?}"),
         ),
-        Ok(Some(record)) => json(StatusCode::OK, user(&runtime, &record)),
+        Ok(Some(record)) if shown(&runtime, &record) => {
+            json(StatusCode::OK, user(&runtime, &record))
+        }
+        Ok(Some(_)) => refusal(
+            StatusCode::NOT_FOUND,
+            "not-found",
+            format!("Nobody has the username {name:?}"),
+        ),
     }
 }
 
@@ -221,6 +241,7 @@ async fn search(
             serde_json::json!({
                 "users": records
                     .iter()
+                    .filter(|record| shown(&runtime, record))
                     .map(|record| user(&runtime, record))
                     .collect::<Vec<_>>(),
             }),

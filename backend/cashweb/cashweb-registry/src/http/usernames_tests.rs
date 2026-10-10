@@ -18,7 +18,19 @@ const NETWORK: &str = "monad-testnet";
 
 /// A relay with the directory and username routes, as the server mounts them.
 async fn relay(root: &std::path::Path) -> (DirectoryRuntime, Router) {
-    let (registry, config, clock) = setup(root);
+    relay_reserving(root, &[]).await
+}
+
+/// As [`relay`], with `reserved_usernames` set to the given (name, key hex) pairs.
+async fn relay_reserving(
+    root: &std::path::Path,
+    reserved: &[(&str, &str)],
+) -> (DirectoryRuntime, Router) {
+    let (registry, mut config, clock) = setup(root);
+    config.reserved_usernames = reserved
+        .iter()
+        .map(|(name, key)| (name.to_string(), key.to_string()))
+        .collect();
     let (runtime, ready) =
         DirectoryRuntime::start_with_clock(registry, config, clock.clock()).unwrap();
     ready.await.unwrap().unwrap();
@@ -292,6 +304,181 @@ async fn bad_claims_are_refused_and_claim_nothing() {
         names(&get(&routes, "/directory/users?prefix=").await.1),
         Vec::<&str>::new()
     );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn a_reserved_name_goes_only_to_the_key_it_is_reserved_for() {
+    let root = tempfile::tempdir().unwrap();
+    let bot = entry(42, |_| ());
+    // Reserved under a spelling the relay normalises.
+    let (runtime, routes) = relay_reserving(root.path(), &[("@Qwen", &bot.subject)]).await;
+    published(&routes, 42).await;
+    published(&routes, 43).await;
+    let t = now_ms();
+
+    // Before the bot has ever started, a squatter is told the name is taken.
+    let (status, body) = put(&routes, "qwen", claim(43, "qwen", t)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "taken");
+    assert_eq!(
+        get(&routes, "/directory/user/qwen").await.0,
+        StatusCode::NOT_FOUND
+    );
+    // Names that are not reserved are unaffected.
+    assert_eq!(
+        put(&routes, "qwen2", claim(43, "qwen2", t)).await.0,
+        StatusCode::OK
+    );
+
+    // The reserved key claims it.
+    let (status, body) = put(&routes, "QWEN", claim(42, "qwen", t)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["subject"], bot.subject);
+    assert_eq!(
+        get(&routes, "/directory/user/qwen").await.1["address"],
+        bot.address.to_lowercase()
+    );
+    assert_eq!(
+        put(&routes, "qwen", claim(43, "qwen", t + 5)).await.1["error"],
+        "taken"
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn reserving_a_name_someone_already_took_hides_it_and_gives_it_to_the_reserved_key() {
+    let root = tempfile::tempdir().unwrap();
+    let bot = entry(42, |_| ());
+    let squatter = entry(43, |_| ());
+    let t = now_ms();
+    // First run: nothing reserved, the squatter takes the name.
+    {
+        let (runtime, routes) = relay(root.path()).await;
+        published(&routes, 42).await;
+        published(&routes, 43).await;
+        assert_eq!(
+            put(&routes, "faucet", claim(43, "faucet", t)).await.0,
+            StatusCode::OK
+        );
+        runtime.begin_shutdown();
+        runtime.wait_stopped().await;
+    }
+    // The operator reserves it and restarts on the same database.
+    let (runtime, routes) = relay_reserving(root.path(), &[("faucet", &bot.subject)]).await;
+    assert_eq!(
+        get(&routes, "/directory/user/faucet").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        names(&get(&routes, "/directory/users?prefix=fau").await.1),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        names(
+            &get(
+                &routes,
+                &format!("/directory/users?addresses={}", squatter.address)
+            )
+            .await
+            .1
+        ),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        put(&routes, "faucet", claim(42, "faucet", t + 1)).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&routes, "/directory/user/faucet").await.1["subject"],
+        bot.subject
+    );
+    // The squatter holds nothing now and can claim another name.
+    assert_eq!(
+        names(
+            &get(
+                &routes,
+                &format!("/directory/users?addresses={}", squatter.address)
+            )
+            .await
+            .1
+        ),
+        Vec::<&str>::new()
+    );
+    assert_eq!(
+        put(&routes, "other", claim(43, "other", t + 2)).await.0,
+        StatusCode::OK
+    );
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn a_bad_reserved_names_table_stops_the_relay_from_starting() {
+    let key = entry(42, |_| ()).subject;
+    for reserved in [
+        vec![("ab", key.as_str())],
+        vec![("qwen", "nothex")],
+        vec![("qwen", "04aa")],
+        vec![("Qwen", key.as_str()), ("qwen", key.as_str())],
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (registry, mut config, clock) = setup(root.path());
+        config.reserved_usernames = reserved
+            .iter()
+            .map(|(name, key)| (name.to_string(), key.to_string()))
+            .collect();
+        assert!(
+            DirectoryRuntime::start_with_clock(registry, config, clock.clock()).is_err(),
+            "{reserved:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_keys_racing_for_one_name_have_exactly_one_winner() {
+    let root = tempfile::tempdir().unwrap();
+    let (runtime, routes) = relay(root.path()).await;
+    let keys: Vec<u32> = (50..58).collect();
+    for key in &keys {
+        published(&routes, *key).await;
+    }
+    let t = now_ms();
+    for round in 0..5 {
+        let name = format!("race{round}");
+        let attempts = keys.iter().map(|key| {
+            let body = claim(*key, &name, t);
+            let request = Request::put(format!("/directory/user/{name}"))
+                .header(header::CONTENT_LENGTH, body.len())
+                .body(Body::from(body))
+                .unwrap();
+            let service = routes.clone();
+            tokio::spawn(async move {
+                let response = service.oneshot(request).await.unwrap();
+                let status = response.status();
+                let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+                )
+            })
+        });
+        let mut won = 0;
+        for attempt in attempts.collect::<Vec<_>>() {
+            let (status, body) = attempt.await.unwrap();
+            match status {
+                StatusCode::OK => won += 1,
+                StatusCode::CONFLICT => assert!(
+                    body["error"] == "taken" || body["error"] == "stale-claim",
+                    "{body}"
+                ),
+                other => panic!("unexpected {other}: {body}"),
+            }
+        }
+        assert_eq!(won, 1, "round {round}");
+    }
     runtime.begin_shutdown();
     runtime.wait_stopped().await;
 }

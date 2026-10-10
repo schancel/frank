@@ -465,6 +465,11 @@ pub struct DirectoryConf {
     /// proxy must append that element itself. Empty: the connecting address is the client.
     #[serde(default)]
     pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// Usernames only one key may claim: name -> that key (compressed secp256k1, lowercase
+    /// hex). Anyone else claiming a listed name is told it is taken, whether or not the key
+    /// has claimed it yet. For names people would trust, such as an operator's bots.
+    #[serde(default)]
+    pub reserved_usernames: std::collections::BTreeMap<String, String>,
     /// Removed. Present only to explain the change to operators with an old file.
     #[serde(default, skip_serializing)]
     pub clock_file: Option<RemovedSetting>,

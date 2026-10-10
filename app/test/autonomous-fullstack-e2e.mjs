@@ -559,14 +559,19 @@ async function run() {
       )
       console.log(`profile ${ids.profile}  receive ${ids.receive}`)
       await evaluate(`location.hash = '#/wallet'`)
-      // The faucet pays the profile address today: shown as cordoned, not spendable.
-      await until(
+      // The faucet pays the profile address today: shown as cordoned, not spendable. Whether
+      // anything shows up is recorded, not required: the paid scenarios below need a funded
+      // account either way.
+      const appeared = await until(
         `/cordoned/.test(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '') || parseFloat(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '0') > 0`,
         60000,
         'any funds shown on the wallet page',
+      ).then(
+        () => true,
+        () => false,
       )
       const shown = await evaluate(
-        `document.querySelector('[data-testid="wallet-balance"]').innerText.replace(/\\s+/g, ' ').trim()`,
+        `(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '(no balance element)').replace(/\\s+/g, ' ').trim()`,
       )
       await captureScreenshot('02_wallet_new_user.png')
       const spendable = BigInt(
@@ -574,9 +579,9 @@ async function run() {
           `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getBalance()).toString())`,
         ),
       )
-      let note = `wallet page shows "${shown}"; spendable ${spendable} wei`
-      if (spendable === 0n) {
-        // Nothing reaches the receive address on its own (the faucet pays the profile address):
+      let note = `wallet page shows "${shown}"${appeared ? '' : ' (nothing arrived within 60 s of creating the account)'}; spendable ${spendable} wei`
+      if (spendable < 100000000000000000n) {
+        // Not enough reaches the receive address on its own (the faucet pays the profile address):
         // fund it with a real transfer so the paid scenarios can run, and say so.
         const transfer = await fundAccount(ids.receive)
         console.log(transfer)

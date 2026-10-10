@@ -60,6 +60,18 @@
         ]
       ]
     },
+    "price/usdc": {
+      "unit": "USD",
+      "source": "relay, smoothed over several providers",
+      "asOf": 1791649800,
+      "stale": false,
+      "points": [
+        [
+          1791649800,
+          0.9999
+        ]
+      ]
+    },
     "marketCap/btc-mainnet": {
       "unit": "USD",
       "source": "price x coins in existence",

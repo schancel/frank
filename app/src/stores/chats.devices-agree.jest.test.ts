@@ -670,6 +670,21 @@ describe('a conversation read on one device', () => {
     expect(shown(two).conversations[0].unread).toBe(1)
   })
 
+  it('what an account that was replaced on this device had read is not noted for the new one', async () => {
+    const { one } = await readOnDeviceOne()
+    // Another account is active on the device now; the store still holds the old
+    // conversation, whose messages were sent to the old account.
+    const replacement = {
+      identity: {
+        address: { raw: '0x7777777777777777777777777777777777777777' },
+      },
+    } as unknown as WalletHandle
+    one.chats.conversations[WITH_PEER].noted = undefined
+    const before = sent.length
+    await on(one, chats => chats.noteConversationStates(replacement))
+    expect(sent.length).toBe(before)
+  })
+
   it('reading and deleting are noted together and applied together', async () => {
     const { one } = await readOnDeviceOne()
     await on(one, chats => chats.deleteConversation(WITH_PEER, 5000))

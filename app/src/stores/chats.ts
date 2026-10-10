@@ -767,6 +767,7 @@ function clearedUpTo(conversation: Conversation): number | undefined {
  */
 function conversationStateToNote(
   conversation: Conversation,
+  ownAddress: string,
 ): ConversationStateItem | undefined {
   if (!isChainAddress(conversation.address)) return undefined
   const note: ConversationStateItem = {
@@ -780,7 +781,7 @@ function conversationStateToNote(
     cleared > (conversation.noted?.clearedBefore ?? -1)
   )
     note.clearedBefore = Math.trunc(cleared)
-  const read = readUpTo(conversation)
+  const read = readUpTo(conversation, ownAddress)
   if (read > (conversation.noted?.readUpTo ?? 0)) note.readUpTo = read
   if (conversation.subjectToNote && conversation.kind === 'direct') {
     note.subject = usableSubject(conversation.name) ?? ''
@@ -798,12 +799,17 @@ function conversationStateToNote(
  * relay time of the newest message from someone else that has been read here. (Our own messages
  * are never unread, and one still on its way carries this device's clock, so `lastRead` itself
  * is not a time the other devices share.) Zero when nothing of the peer's has been read.
+ *
+ * Only messages sent to `ownAddress` count: this device's store can still hold conversations of
+ * an account that was replaced here, and what was read there is not this account's to note.
  */
-function readUpTo(conversation: Conversation): number {
+function readUpTo(conversation: Conversation, ownAddress: string): number {
   let read = 0
   for (const message of conversation.messages)
     if (
       !isOwnMessage(message) &&
+      !!message.destinationAddress &&
+      sameCanonicalAddress(message.destinationAddress, ownAddress) &&
       message.serverTime <= conversation.lastRead &&
       message.serverTime > read
     )
@@ -3926,12 +3932,13 @@ export const useChatStore = defineStore('chats', {
         noteConversationsAgain = true
         return notingConversations
       }
+      const ownAddress = activeChain.formatAddress(wallet.identity.address)
       const pass = async (): Promise<void> => {
         do {
           noteConversationsAgain = false
           for (const id of Object.keys(this.conversations)) {
             const conv = this.conversations[id]
-            const note = conv && conversationStateToNote(conv)
+            const note = conv && conversationStateToNote(conv, ownAddress)
             if (!note) continue
             try {
               await activeChain.directMessages.send({

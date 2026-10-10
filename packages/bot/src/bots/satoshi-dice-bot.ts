@@ -30,11 +30,15 @@ export const DICE_DEFAULT_MAX_PAYOUT_WEI = 250_000_000_000_000_000n; // 0.25 MON
 /** Kept back from the bank's balance when it checks that it can cover a bet. */
 export const BANK_RESERVE_WEI = 20_000_000_000_000_000n; // 0.02 MON
 
-const HELP = `Satoshi Dice: pick a target, and you win if the number rolled (0 to 65,535) is below it. 1.9% house edge.
+/** What the bot says to anything that is not a bet. It names the table limit, so a player
+ * knows it before a bet is refused for it. */
+export function diceHelp(maxPayoutWei: bigint): string {
+  return `Satoshi Dice: pick a target, and you win if the number rolled (0 to 65,535) is below it. 1.9% house edge. The most one roll pays is ${formatMon(maxPayoutWei)}.
 
 How a roll is fair: I publish the hash of a secret before you bet. Your bet adds a random value of your own. The number is derived from both, and I reveal the secret with the result, so the app can check that the secret matches the hash and that the number, outcome and payout follow from it.
 
 Your stake is what your bet message pays me. Amounts typed in chat are not bets. Use the card below.`;
+}
 
 interface OfferedRoll {
   secret: string;
@@ -73,7 +77,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     try {
       await sendFree(ctx, user.address, [
         await this.offer(ctx, user.address),
-        { type: "text", text: `Welcome to Satoshi Dice.\n\n${HELP}` },
+        { type: "text", text: `Welcome to Satoshi Dice.\n\n${diceHelp(this.maxPayoutWei)}` },
       ]);
     } catch (err) {
       console.warn(`[dice] Failed to welcome ${user.address}:`, err);
@@ -112,7 +116,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     // is ever a stake.
     await replyFree(msgCtx, [
       await this.offer(ctx, msgCtx.peerAddress),
-      { type: "text", text: HELP },
+      { type: "text", text: diceHelp(this.maxPayoutWei) },
     ]);
   }
 

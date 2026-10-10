@@ -25,9 +25,13 @@ import { BANK_RESERVE_WEI } from "./satoshi-dice-bot";
 /** The most one match can be played for: the table limit. */
 export const RPS_DEFAULT_MAX_WAGER_WEI = 100_000_000_000_000_000n; // 0.1 MON
 
-const HELP = `Rock-Paper-Scissors. I pick my move first and send you its hash; you pick yours; I reveal my move and the salt, and the app checks they match the hash.
+/** What the bot says to anything that is not a move. It names the table limit, so a player
+ * knows it before a stake is refused for it. */
+export function rpsHelp(maxWagerWei: bigint): string {
+  return `Rock-Paper-Scissors. I pick my move first and send you its hash; you pick yours; I reveal my move and the salt, and the app checks they match the hash.
 
-Your stake is what your move message pays me: a win pays twice the stake, a tie returns it. Amounts typed in chat are not bets. Use the card below, or type rock, paper or scissors to play for nothing.`;
+Your stake is what your move message pays me, up to ${formatMon(maxWagerWei)}: a win pays twice the stake, a tie returns it. Amounts typed in chat are not bets. Use the card below, or type rock, paper or scissors to play for nothing.`;
+}
 
 interface Match {
   move: RpsMove;
@@ -66,7 +70,7 @@ export class RpsBot implements FrankBotDefinition {
     try {
       await sendFree(ctx, user.address, [
         await this.start(ctx, user.address),
-        { type: "text", text: `Welcome to RPS Arena.\n\n${HELP}` },
+        { type: "text", text: `Welcome to RPS Arena.\n\n${rpsHelp(this.maxWagerWei)}` },
       ]);
     } catch (err) {
       console.warn(`[rps] Failed to welcome ${user.address}:`, err);
@@ -136,7 +140,7 @@ export class RpsBot implements FrankBotDefinition {
     }
     await replyFree(msgCtx, [
       await this.start(ctx, peer),
-      { type: "text", text: HELP },
+      { type: "text", text: rpsHelp(this.maxWagerWei) },
     ]);
   }
 

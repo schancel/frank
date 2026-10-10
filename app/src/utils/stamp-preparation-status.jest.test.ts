@@ -34,9 +34,13 @@ describe('stampPreparationStatus', () => {
         },
         { stage: 'ready' as const, fundingTxHashes: [] },
         { stage: 'waiting-for-payment' as const },
+        { stage: 'waiting-for-payment' as const, blocksRemaining: 2 },
+        { stage: 'waiting-for-chain' as const },
       ]
       const texts = stages.map(p => stampPreparationStatus(p, t, fee))
-      expect(new Set(texts).size).toBe(4)
+      expect(new Set(texts).size).toBe(6)
+      expect(texts[4]).toContain('2')
+      expect(texts[5]).toBe(t('chat.chainUnreachable'))
       // Waiting for the previous payment has its own words, not the "checking" ones.
       expect(texts[3]).toBe(t('chat.stampPreparationWaiting'))
       for (const text of texts) expect(text).not.toMatch(/[{}]|undefined/)

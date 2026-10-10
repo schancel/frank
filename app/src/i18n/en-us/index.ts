@@ -22,6 +22,10 @@ export default {
       'Preparing private stamp accounts ({completed}/{total} on-chain transactions; up to {feeReserve} {unit} fee reserve each)…',
     stampPreparationReady: 'Private stamp accounts ready; sending message…',
     stampPreparationWaiting: 'Waiting for the previous payment to confirm…',
+    stampPreparationWaitingBlocks:
+      'Waiting for the previous payment to confirm ({blocks} blocks to go)…',
+    chainUnreachable:
+      'The network cannot be reached. Paid messages are queued and will be sent when it is back.',
     donationMessage:
       'Thank you for participating in our vision of the future of online communications. Please consider donating to our efforts by sending real BCH to bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a',
   },
@@ -607,6 +611,7 @@ export default {
       'Waiting for an earlier message to finish. This one will be sent after it.',
     paymentChecking: 'Checking payment status…',
     waitingForPreviousPayment: 'Waiting for the previous payment to confirm…',
+    waitingForChain: 'Queued: the network cannot be reached.',
     reasonUnreachable: "Can't reach the server.",
     reasonUnavailable: 'This relay does not offer messaging.',
     reasonRejected: 'The relay rejected it.',

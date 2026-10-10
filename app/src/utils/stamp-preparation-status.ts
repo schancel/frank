@@ -14,7 +14,12 @@ export function stampPreparationStatus(
 ): string {
   if (progress.stage === 'checking') return t('chat.stampPreparationChecking')
   if (progress.stage === 'waiting-for-payment')
-    return t('chat.stampPreparationWaiting')
+    return progress.blocksRemaining === undefined
+      ? t('chat.stampPreparationWaiting')
+      : t('chat.stampPreparationWaitingBlocks', {
+          blocks: progress.blocksRemaining,
+        })
+  if (progress.stage === 'waiting-for-chain') return t('chat.chainUnreachable')
   if (progress.stage === 'funding') {
     return t('chat.stampPreparationFunding', {
       completed: progress.completed,

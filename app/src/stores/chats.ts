@@ -14,7 +14,13 @@ import {
   toChainDisplayAddress,
 } from '../utils/chain-address'
 import { acquireOutgoingLock, withOutgoingLock } from '../utils/outgoing-lock'
-import { sendsWaitingForPreviousPayment } from '../utils/outgoing-waiting'
+import {
+  cancelWaitingSend,
+  cancellableSend,
+  endWaitingSend,
+  sendsWaitingForChain,
+  sendsWaitingForPreviousPayment,
+} from '../utils/outgoing-waiting'
 import { activeChain } from '@frank/wallet/chain'
 import { messageItems } from '../utils/message-items'
 
@@ -1778,6 +1784,8 @@ export const useChatStore = defineStore('chats', {
       attemptDigest?: string
       wallet?: WalletHandle
     }): Promise<void> {
+      // A send of this message that is still waiting is cancelled: nothing was signed for it.
+      cancelWaitingSend(payloadDigest)
       let message = this.messages[payloadDigest]
       if (!message) {
         if (this.conversations) {
@@ -3008,6 +3016,7 @@ export const useChatStore = defineStore('chats', {
 
       for (let sendAttempt = 1; sendAttempt <= maxSendAttempts; sendAttempt++) {
         if (!stillCurrent()) return { state: 'busy' }
+        const cancellable = cancellableSend(id)
         try {
           // The subject rides only on the first message of a conversation that has one and on
           // the first message after a rename; ordinary messages omit it.
@@ -3025,14 +3034,21 @@ export const useChatStore = defineStore('chats', {
             ...(message.stampValueWei === undefined
               ? {}
               : { stampValue: message.stampValueWei }),
+            // Deleting the bubble while its send still waits cancels the send: nothing was
+            // signed for it.
+            signal: cancellable.signal,
             onPreparationProgress: progress => {
-              // Its payment waits for the previous one to be mined: the bubble says so.
+              // Its payment waits for the previous one to be mined, or the chain cannot be
+              // reached and the send is queued: the bubble says which.
               if (progress.stage === 'waiting-for-payment')
                 sendsWaitingForPreviousPayment.add(id)
+              if (progress.stage === 'waiting-for-chain')
+                sendsWaitingForChain.add(id)
               onPreparationProgress?.(progress)
             },
             onAttemptCreated: async attemptDigest => {
               sendsWaitingForPreviousPayment.delete(id)
+              sendsWaitingForChain.delete(id)
               ownDigest = attemptDigest
               // Strict: this write must be durable before the relay sees any byte of the set.
               // If it fails, the send stops before any relay request. The wallet does NOT roll the
@@ -3055,7 +3071,7 @@ export const useChatStore = defineStore('chats', {
           break
         } catch (error) {
           lastSendError = error
-          sendsWaitingForPreviousPayment.delete(id)
+          cancellable.done()
           if (error instanceof MonadStampPendingAttemptError) {
             // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
             // bytes. Without an own set, an earlier attempt is still pending and this message has
@@ -3123,7 +3139,7 @@ export const useChatStore = defineStore('chats', {
         }
       }
 
-      sendsWaitingForPreviousPayment.delete(id)
+      endWaitingSend(id)
       if (!result) {
         const failure = classifySendFailure(lastSendError, ownDigest)
         await this.setOutgoingState(address, id, 'error', {

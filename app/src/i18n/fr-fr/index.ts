@@ -61,6 +61,10 @@ export default {
     stampPreparationReady: 'Comptes de timbre privés prêts ; envoi du message…',
     stampPreparationWaiting:
       'En attente de la confirmation du paiement précédent…',
+    stampPreparationWaitingBlocks:
+      'En attente de la confirmation du paiement précédent (encore {blocks} blocs)…',
+    chainUnreachable:
+      'Le réseau est injoignable. Les messages payants sont mis en file et partiront à son retour.',
     donationMessage:
       "Merci de participer à notre vision du futur des communications. Merci de considérer contribuer en envoyant une donation en BCH à l'adresse suivante : bitcoincash:qq7vt04md0pt6fk5szhcx4cgsfuzmppy5u4hxshr4a",
   },
@@ -618,6 +622,7 @@ export default {
     paymentChecking: "Vérification de l'état du paiement…",
     waitingForPreviousPayment:
       'En attente de la confirmation du paiement précédent…',
+    waitingForChain: 'En file : le réseau est injoignable.',
     reasonUnreachable: 'Impossible de joindre le serveur.',
     reasonUnavailable: 'Ce relais ne propose pas la messagerie.',
     reasonRejected: 'Le relais a refusé le message.',

@@ -794,6 +794,9 @@ export default defineComponent({
           feeReserve: formatDisplayNumber(activeChain, progress.feeReserveWei),
           unit: activeChain.unit,
         })
+      } else if (progress.stage === 'waiting-for-chain') {
+        // The chain's node cannot be reached: a visible warning, and the send is queued.
+        this.stampPreparationStatus = this.$t('chat.chainUnreachable')
       } else {
         this.stampPreparationStatus = null
       }

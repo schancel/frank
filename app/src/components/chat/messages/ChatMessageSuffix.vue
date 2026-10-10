@@ -196,6 +196,12 @@ export default defineComponent({
       required: false,
       default: 'checking',
     },
+    /** The send is queued: the chain's node cannot be reached. Nothing is signed for it. */
+    waitingForChain: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
     /** The send is waiting for the account's previous payment to be seen on chain. */
     waitingForPreviousPayment: {
       type: Boolean,
@@ -246,6 +252,7 @@ export default defineComponent({
     /** What a message being sent says: that it is being sent, or, while its payment waits for
      * the account's previous payment to be mined, that it is waiting for that. */
     sendingText(): string {
+      if (this.waitingForChain) return this.$t('outgoing.waitingForChain')
       return this.waitingForPreviousPayment
         ? this.$t('outgoing.waitingForPreviousPayment')
         : this.$t('outgoing.sending')

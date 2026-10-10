@@ -48,7 +48,10 @@ import {
   conversationIdSalt,
   formatConversationId,
 } from '@frank/cashweb/relay/conversation-id'
-import { sendsWaitingForPreviousPayment } from '../utils/outgoing-waiting'
+import {
+  sendsWaitingForChain,
+  sendsWaitingForPreviousPayment,
+} from '../utils/outgoing-waiting'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
@@ -1162,6 +1165,8 @@ describe('stores/chats.ts (ticket #42)', () => {
         // The store's own wrapper (it marks a waiting send); the caller's is called through it.
         onPreparationProgress: expect.any(Function),
         onAttemptCreated: expect.any(Function),
+        // So that deleting the bubble can cancel a send that is still waiting.
+        signal: expect.any(AbortSignal),
       })
       sendSpy.mock.calls[0]![0].onPreparationProgress!({ stage: 'checking' })
       expect(onPreparationProgress).toHaveBeenCalledWith({ stage: 'checking' })
@@ -1343,6 +1348,46 @@ describe('stores/chats.ts (ticket #42)', () => {
       ).resolves.toMatchObject({ state: 'sent' })
       expect(seen).toEqual([false, true, false])
       expect(sendsWaitingForPreviousPayment.size).toBe(0)
+    })
+
+    it('a send queued because the chain cannot be reached is marked, and deleting its bubble cancels it', async () => {
+      const chats = useChatStore()
+      const wallet = makeWallet(SENDER_ADDRESS)
+      jest.spyOn(console, 'error').mockImplementation(() => undefined)
+      let key = ''
+      let signal: AbortSignal | undefined
+      jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async params => {
+          key = Object.keys(chats.messages)[0]!
+          signal = params.signal
+          // The wallet: the chain's node does not answer; the send waits, nothing signed.
+          params.onPreparationProgress?.({ stage: 'waiting-for-chain' })
+          return new Promise((_resolve, reject) =>
+            params.signal!.addEventListener('abort', () =>
+              reject(
+                Object.assign(new Error('cancelled'), {
+                  name: 'ChainWaitCancelledError',
+                }),
+              ),
+            ),
+          )
+        })
+      const sending = chats.sendMessage({
+        wallet,
+        address: RECIPIENT_ADDRESS,
+        items: [{ type: 'text', text: 'queued' }],
+      })
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(sendsWaitingForChain.has(key)).toBe(true)
+      expect(signal?.aborted).toBe(false)
+      void chats.deleteMessage({
+        address: RECIPIENT_ADDRESS,
+        payloadDigest: key,
+      })
+      expect(signal?.aborted).toBe(true)
+      await sending
+      expect(sendsWaitingForChain.size).toBe(0)
     })
 
     it('a send that fails while waiting leaves no waiting mark behind', async () => {

@@ -11,9 +11,18 @@ Related tracker decisions: #289, #288, #536, #655, #46, and #293
 
 Frank will use Codex32 to create checksummed, threshold-recoverable backups of a
 portable master secret. New-account setup must prove that the user can recover
-that exact secret before any account becomes durable. After deriving the
-initial domain secrets, Frank must remove the master secret from application
-state and must not offer to reveal it from a resident copy.
+that exact secret before any account becomes durable.
+
+Owner decision, 2026-10-09 (supersedes the earlier rule that the master must not
+be resident or re-offered): Frank keeps the 32-byte account root `R` in the local
+vault, in the same encrypted record and under the same protection as the domain
+roots. It is kept so that an unlocked account can issue a new, independent set of
+backup shares that restores the same account; without it, the only honest answer
+to "back up my account" after signup is "you cannot". The original shares are
+still never stored or shown again, and `R` is read only when the user explicitly
+asks for new shares. Where later sections say `M` is discarded or absent from
+resident state, read them subject to this paragraph: the master payload and the
+shares are discarded; `R` is retained in the vault.
 
 This document specifies the first implementation boundary. It does not claim
 that JavaScript can forensically erase memory, that a checksum authenticates a
@@ -1005,8 +1014,15 @@ Secret cleanup precedes normal networking in either case.
 
 ## 8. Backup management after signup
 
-Because `M` is absent from resident state, Frank cannot later display the master
-Codex32 shares. For Codex32-backed accounts, the existing “Show recovery phrase”
+Frank cannot later display the shares shown at signup. From Settings, an unlocked
+active account MAY issue a new share set: the app reads the stored account root
+`R`, confirms it reproduces the account's recorded public fingerprint, splits
+`M = R || V` under a fresh random identifier, reads every share back, and shows
+the set only after an explicit request. A new set restores the same account as
+the signup shares; shares from different sets do not combine and are refused on
+restore. An account stored before `R` was kept has nothing to split: the app says
+that only its signup shares restore it and issues none. A derived domain root is
+never offered as a backup. For Codex32-backed accounts, the existing “Show recovery phrase”
 action MUST be replaced with a backup-status view. An unlocked active account
 MUST be able to deterministically re-encode, display, and export its exact public
 recovery descriptor from the persisted format version, registry version, and

@@ -16,23 +16,6 @@
       </div>
     </q-card-section>
 
-    <!-- Wallet Selection Dropdown -->
-    <q-card-section>
-      <q-select
-        v-model="selectedWalletId"
-        :options="walletOptions"
-        emit-value
-        map-options
-        filled
-        dense
-        :label="
-          $t('sendStealthDialog.walletLabel') ||
-          $t('sendStealthDialog.chainLabel')
-        "
-        data-testid="stealth-wallet-select"
-      />
-    </q-card-section>
-
     <!-- Spendable Balance Row -->
     <q-card-section class="q-pt-none q-pb-xs">
       <div
@@ -55,9 +38,7 @@
         filled
         dense
         :suffix="currentUnit"
-        :hint="amountHint"
-        :error="isBelowDustLimit"
-        :error-message="dustErrorMessage"
+        :hint="$t('sendStealthDialog.amountHint')"
         :placeholder="$t('sendStealthDialog.amountPlaceholder')"
         data-testid="stealth-amount-input"
         ref="amountInput"
@@ -99,22 +80,13 @@
 <script lang="ts">
 import { defineComponent } from 'vue'
 import { activeChain } from '@frank/wallet/chain'
-import { formatDisplayNumber } from 'src/utils/chain-amount'
-import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
-import { useWalletNames } from '../../composables/useWalletNames'
 import { useBalance } from '../../composables/useBalance'
 
-export interface WalletOptionItem {
-  value: string
-  label: string
-  chain: string
-  networkTag: string
-  curve: 'secp256k1' | 'ed25519'
-  keyType: 1 | 2
-  unit: string
-  minDust: number
-}
-
+/**
+ * Asks for the amount and memo of a payment to this contact, on the wallet's own chain: the one
+ * chain a payment to a contact works on. It sends nothing itself; the page pays through the
+ * wallet's `sendToContact`.
+ */
 export default defineComponent({
   name: 'SendStealthDialog',
   props: {
@@ -130,180 +102,51 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
-    /** Optional balance overrides for test or multi-wallet injection */
-    walletBalances: {
-      type: Object as () => Record<string, string | number>,
-      default: () => ({}),
-    },
   },
   emits: ['send'],
   setup() {
-    const { getCustomName } = useWalletNames()
-    const { balance, formattedBalance, loaded: balanceLoaded } = useBalance()
+    const { formattedBalance, loaded: balanceLoaded } = useBalance()
     return {
-      getCustomName,
-      balance,
       formattedBalance,
       balanceLoaded,
     }
   },
   data() {
     return {
-      selectedWalletId: 'monad',
-      selectedChainId: activeChain.networkName || 'monad-testnet',
       amount: '',
       memo: '',
     }
   },
-  watch: {
-    selectedChainId(newVal: string) {
-      if (!newVal) return
-      const lower = newVal.toLowerCase()
-      if (lower.includes('solana') && this.selectedWalletId !== 'solana') {
-        this.selectedWalletId = 'solana'
-      } else if (
-        (lower.includes('xec') || lower.includes('ecash')) &&
-        this.selectedWalletId !== 'ecash'
-      ) {
-        this.selectedWalletId = 'ecash'
-      } else if (lower.includes('monad') && this.selectedWalletId !== 'monad') {
-        this.selectedWalletId = 'monad'
-      }
-    },
-    selectedWalletId(newVal: string) {
-      const opt = this.walletOptions.find(o => o.value === newVal)
-      if (opt && this.selectedChainId !== opt.networkTag) {
-        this.selectedChainId = opt.networkTag
-      }
-    },
-  },
   computed: {
-    isTestnet(): boolean {
-      return activeChain.isTestnet ?? false
-    },
-    walletOptions(): WalletOptionItem[] {
-      const monadCustom = this.getCustomName('monad')
-      const solanaCustom = this.getCustomName('solana')
-      const ecashCustom = this.getCustomName('ecash')
-
-      return [
-        {
-          value: 'monad',
-          label:
-            monadCustom || (this.isTestnet ? 'Monad Testnet' : 'Monad Wallet'),
-          chain: 'monad',
-          networkTag: this.isTestnet ? 'monad-testnet' : 'monad-mainnet',
-          curve: 'secp256k1',
-          keyType: 1,
-          unit: this.isTestnet ? 'MONT' : 'MON',
-          minDust: 0,
-        },
-        {
-          value: 'solana',
-          label:
-            solanaCustom ||
-            (this.isTestnet ? 'Solana Testnet' : 'Solana Stash'),
-          chain: 'solana',
-          networkTag: this.isTestnet ? 'solana-devnet' : 'solana-mainnet',
-          curve: 'ed25519',
-          keyType: 2,
-          unit: this.isTestnet ? 'tSOL' : 'SOL',
-          minDust: 0.00089, // 890,880 lamports
-        },
-        {
-          value: 'ecash',
-          label:
-            ecashCustom || (this.isTestnet ? 'eCash Testnet' : 'eCash Wallet'),
-          chain: 'ecash',
-          networkTag: this.isTestnet ? 'xec-testnet' : 'xec-mainnet',
-          curve: 'secp256k1',
-          keyType: 1,
-          unit: this.isTestnet ? 'tXEC' : 'XEC',
-          minDust: 5.46,
-        },
-      ]
-    },
-    // Backwards-compatible alias for existing tests
-    chainOptions() {
-      return this.walletOptions.map(w => ({
-        label: `${w.label} (${w.unit})`,
-        value: w.networkTag,
-        unit: w.unit,
-      }))
-    },
-    selectedWallet(): WalletOptionItem {
-      return (
-        this.walletOptions.find(w => w.value === this.selectedWalletId) ||
-        this.walletOptions[0]
-      )
-    },
     currentUnit(): string {
-      return this.selectedWallet.unit
+      return activeChain.unit
     },
+    /** The wallet's real balance, or nothing while it is not known. Never a placeholder figure. */
     currentWalletBalanceDisplay(): string {
-      const customBal = this.walletBalances?.[this.selectedWalletId]
-      if (customBal !== undefined) {
-        return `${customBal} ${this.currentUnit}`
-      }
-      if (this.selectedWalletId === 'monad') {
-        if (this.formattedBalance) {
-          return this.formattedBalance
-        }
-        if (this.balance !== null && this.balance !== undefined) {
-          return `${formatDisplayNumber(activeChain, this.balance)} ${
-            this.currentUnit
-          }`
-        }
-        return `0.00 ${this.currentUnit}`
-      }
-      if (this.selectedWalletId === 'solana') {
-        return `0.00000000 ${this.currentUnit}`
-      }
-      return `0.00 ${this.currentUnit}`
+      return this.balanceLoaded ? this.formattedBalance : '…'
     },
-    isBelowDustLimit(): boolean {
-      const parsed = parseFloat(this.amount)
-      if (isNaN(parsed) || parsed <= 0) return false
-      return !!(
-        this.selectedWallet.minDust && parsed < this.selectedWallet.minDust
-      )
-    },
-    dustErrorMessage(): string {
-      if (this.isBelowDustLimit) {
-        return `Amount must be at least ${this.selectedWallet.minDust} ${this.currentUnit} (dust limit)`
+    /** The amount in the chain's base unit, or undefined when it is not a positive amount. */
+    value(): bigint | undefined {
+      const text = String(this.amount ?? '').trim()
+      if (text === '' || !(Number(text) > 0)) return undefined
+      try {
+        const value = activeChain.fromDisplayAmount(text)
+        return value > 0n ? value : undefined
+      } catch {
+        return undefined
       }
-      return ''
-    },
-    amountHint(): string {
-      if (this.selectedWallet.minDust > 0) {
-        return `Min: ${this.selectedWallet.minDust} ${this.currentUnit} (dust limit)`
-      }
-      return (
-        (this.$t('sendStealthDialog.amountHint') as string) || 'Amount to send'
-      )
     },
     canSend(): boolean {
-      const parsed = parseFloat(this.amount)
-      if (isNaN(parsed) || parsed <= 0) return false
-      if (this.isBelowDustLimit) return false
-      return true
+      return this.value !== undefined
     },
   },
   methods: {
     sendStealth() {
-      const numAmount = parseFloat(this.amount)
+      if (this.value === undefined) return
       this.$emit('send', {
         address: this.address,
-        chainId: this.selectedChainId,
-        amount: numAmount,
+        value: this.value,
         memo: this.memo.trim(),
-        wallet: this.selectedWalletId,
-        walletName: this.selectedWallet.label,
-        networkTag: this.selectedWallet.networkTag,
-        chain: this.selectedWallet.chain,
-        curve: this.selectedWallet.curve,
-        keyType: this.selectedWallet.keyType,
-        unit: this.currentUnit,
       })
     },
   },

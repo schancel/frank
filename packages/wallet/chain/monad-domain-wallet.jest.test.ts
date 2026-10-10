@@ -1243,17 +1243,18 @@ test.each([
           ephemeralPubKey: getBytes(ephemeral),
         })
         sourceAddress = derived.stealthAddress
-        await first.stealthKeyring!.addAccount({
-          address: sourceAddress,
-          // Deliberately wrong attached secret: provenance, not the construction view, owns signing.
-          privateKey: '0x' + '56'.repeat(32),
-          ephemeralPubKey: ephemeral,
+        await first.recordStealthPayment({
+          type: 'stealth',
           networkTag: 'MONT',
-          discoveredAtMs: 1,
-          balanceWei: 100000n,
+          keyType: 1,
+          ephemeralPubKey: ephemeral.slice(2),
+          transactions: [],
+          amount: 100000,
         })
       }
       const rpc = mockNativeRpc(first, { [sourceAddress]: 100000n })
+      // A received coin is a source once the chain shows it funded.
+      if (kind === 'identity-stealth-v1') await first.refreshReceivedPayments!()
       const cannotSign = jest
         .spyOn(Wallet.prototype, 'signTransaction')
         .mockRejectedValueOnce(new Error('interrupted before signature'))
@@ -1276,8 +1277,10 @@ test.each([
       if (kind === 'identity-stealth-v1')
         expect(
           second
-            .stealthKeyring!.getAccounts('MONT')
-            .some(a => a.address === sourceAddress),
+            .getReceivedPayments!()
+            .some(
+              a => a.address === sourceAddress.toLowerCase() && a.spendable,
+            ),
         ).toBe(true)
       const recovered = mockNativeRpc(second, { [sourceAddress]: 100000n })
       await second.sendNative({

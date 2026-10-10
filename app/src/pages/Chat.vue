@@ -237,6 +237,7 @@ import {
   activeChain,
   type DirectMessagePreparationProgress,
 } from '@frank/wallet/chain'
+import { useActiveWallet } from '../composables/useActiveWallet'
 import { formatDisplayNumber } from '../utils/chain-amount'
 import { nextFollowBottom } from '../utils/follow-bottom'
 import { composeChatItems, fitsOneMessage } from '../utils/chat-attachments'
@@ -702,49 +703,44 @@ export default defineComponent({
         this.sendingMessage = false
       }
     },
+    /** A payment to this contact. The wallet signs and saves the transfer (nothing is broadcast)
+     * and returns the item; the message carrying it goes through the conversation's ordinary
+     * send, so it has its outgoing bubble, its pending state and its Retry like any message.
+     * The wallet broadcasts the transfer when the relay has stored that message. The stamp is the
+     * message's price; the amount is the payment's own. */
     async sendStealthPayment({
-      chainId,
-      amount,
+      value,
       memo,
-      networkTag,
-      keyType,
     }: {
-      chainId: string
-      amount: number
+      value: bigint
       memo?: string
-      networkTag?: string
-      keyType?: 1 | 2
     }) {
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
-      const items: MessageItem[] = [
-        {
-          type: 'stealth',
-          chainId,
-          amount,
-          memo,
-          networkTag: networkTag || chainId,
-          keyType,
-        },
-      ]
-      if (memo) {
-        items.push({
-          type: 'text',
-          text: memo,
-        })
-      }
       this.sendingMessage = true
       const recipient = this.recipientAddress || this.address
       try {
+        const wallet = await useActiveWallet()
+        if (!wallet.prepareContactPayment)
+          throw new Error(
+            'Payments to a contact are not available on this chain',
+          )
+        const prepared = await wallet.prepareContactPayment({
+          recipient: { raw: recipient },
+          value,
+          memo: memo || undefined,
+          stampValue,
+        })
         await this.sendDirectMessage({
           wallet: useMonadWallet(),
           address: recipient,
           conversationId: this.conversation?.id,
-          items,
+          items: [prepared.item],
           stampValue,
           onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        // Refused before anything was signed: nothing was sent.
+        errorNotify(err, { fallbackKey: 'sendStealthDialog.notSent' })
       } finally {
         this.stampPreparationStatus = null
         this.sendingMessage = false

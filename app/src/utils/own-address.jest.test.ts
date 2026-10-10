@@ -141,9 +141,7 @@ describe('utils/own-address.ts', () => {
       changePool: {
         records: () => [{ index: 0, address: CHANGE1 }],
       },
-      stealthKeyring: {
-        getAccounts: () => [{ address: STEALTH1 }],
-      },
+      getReceivedPayments: () => [{ address: STEALTH1 }],
     })
 
     const addresses = await resolveOwnAddresses()

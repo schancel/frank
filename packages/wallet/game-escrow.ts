@@ -5,7 +5,7 @@
  * all game settlements (ChannelVault 2-of-2 state channels and TablePotVault table pots)
  * pay directly to one-time stealth addresses, ensuring complete on-chain identity privacy.
  *
- * Winning clients automatically index and attribute the payout into their MonadStealthKeyring,
+ * Winning clients record the payout as a coin in their wallet's coin list,
  * enabling immediate spendability without requiring sweeping.
  */
 import {
@@ -21,7 +21,6 @@ import {
   deriveEvmStealthAddress,
   deriveEvmStealthPrivateKey,
   type EvmStealthDestination,
-  type StealthAccountRecord,
 } from './monad-stealth'
 import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 import { parseAddressWithOptionalRelay } from './chain/active-chain'
@@ -329,17 +328,13 @@ export function encodeBatchDistributeCall(params: {
 }
 
 /**
- * Automatically indexes an incoming game escrow stealth payout into the winner's wallet.
- * Computes the one-time private key, registers the stealth account into `MonadStealthKeyring`,
- * and makes it immediately available for future balance checks and spends.
+ * Records a game escrow payout made to a one-time stealth address as a coin in the winner's
+ * wallet (its durable coin list). The amount the wallet shows is what the chain holds there.
  */
 export async function registerEscrowStealthPayout(
   params: RegisterEscrowStealthPayoutParams,
-): Promise<StealthAccountRecord> {
+): Promise<{ address: string }> {
   const { wallet, payoutWei } = params
-  if (!wallet.stealthKeyring) {
-    throw new Error('Wallet does not have an active stealth keyring')
-  }
   if (!wallet.identity) {
     throw new Error('Wallet does not have an active Frank identity')
   }
@@ -367,19 +362,13 @@ export async function registerEscrowStealthPayout(
     )
   }
 
-  const record: StealthAccountRecord = {
-    address: derived.stealthAddress,
-    privateKey: derived.stealthPrivateKey,
-    ephemeralPubKey:
-      typeof params.ephemeralPubKey === 'string'
-        ? params.ephemeralPubKey
-        : toHex(params.ephemeralPubKey),
+  await wallet.recordStealthPayment({
+    type: 'stealth',
     networkTag: params.networkTag ?? 'MONT',
-    discoveredAtMs: params.timestampMs ?? Date.now(),
-    initialAmountWei: payoutWei,
-    txHash: params.txHash,
-  }
-
-  await wallet.stealthKeyring.addAccount(record)
-  return record
+    keyType: 1,
+    ephemeralPubKey: toHex(ephemeralPubKeyBytes),
+    transactions: params.txHash ? [params.txHash] : [],
+    amount: Number(payoutWei),
+  })
+  return { address: derived.stealthAddress }
 }

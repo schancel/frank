@@ -72,7 +72,10 @@ import {
   getOwnCanonicalAddress,
   sameCanonicalAddress,
 } from '../utils/own-address'
-import { sweepMessageFundsOnDelete } from '../utils/sweep-on-delete'
+import {
+  MessageFundsNotSweptError,
+  sweepBeforeDelete,
+} from '../utils/sweep-on-delete'
 import { shortAddress } from '../utils/short-address'
 
 export type ChatMessage = {
@@ -1761,15 +1764,11 @@ export const useChatStore = defineStore('chats', {
           receivedTime: installedReceivedTime,
         })
       }
-      if (message && !message.outbound) {
-        try {
-          await sweepMessageFundsOnDelete({ message })
-        } catch (sweepErr) {
-          console.warn(
-            'Failed to sweep message funds during deleteMessage:',
-            sweepErr,
-          )
-        }
+      // The money the message brought is moved to a seed-derived address first. If it could
+      // not be (or is not in a block yet) the message stays, and the caller is told why.
+      if (message) {
+        const { kept } = await sweepBeforeDelete([message])
+        if (kept.size > 0) throw new MessageFundsNotSweptError(kept)
       }
       if (recipientAddress) {
         await messageStore.suppressAndDelete(
@@ -3102,9 +3101,15 @@ export const useChatStore = defineStore('chats', {
       }
       if (!chat) return
       const messageStore = await store
+      // The money these messages brought is moved to a seed-derived address first. A message
+      // whose money could not be moved (or is not in a block yet) is not cleared: it stays in the
+      // conversation, and the caller is told why once the rest is cleared.
+      const { kept: keptForFunds } = await sweepBeforeDelete(chat.messages)
       // This is Clear's atomic cutoff. Composer sends invoked while its durable deletes are in
       // flight may appear optimistically, but are queued after this mutation and must survive.
-      const clearingMessages = [...chat.messages]
+      const clearingMessages = chat.messages.filter(
+        message => !keptForFunds.has(message.payloadDigest),
+      )
       const groups = new Map<
         string,
         { digests: Set<string>; suppressions: RelayDeliverySuppression[] }
@@ -3169,6 +3174,8 @@ export const useChatStore = defineStore('chats', {
         message => !clearedPayloads.has(message.payloadDigest),
       )
       recomputeChatAccounting(chat, this.activeConversationId)
+      if (keptForFunds.size > 0)
+        throw new MessageFundsNotSweptError(keptForFunds)
     },
     openDirectConversation(
       address: string,

@@ -531,129 +531,38 @@ export interface SolanaStealthPaymentResult {
 }
 
 /**
- * Builds, signs, and broadcasts an on-chain Solana transfer to an ephemeral stealth address
- * enforcing the 890,880 lamports dust limit.
- * Generates the corresponding StealthItem for direct messages.
+ * A Solana payment to a contact is refused: it would not be the contact's money.
+ *
+ * `deriveSolanaStealthAddress` makes the one-time account's whole private key from the ECDH shared
+ * secret (`Keypair.fromSeed(hkdf(sharedSecret))`). The sender computes that secret too, so the
+ * sender holds the key and can take the payment back at any time. Nothing reads a Solana stealth
+ * item into the app's wallet either, so the contact would not even see it.
+ *
+ * What a correct version needs:
+ *  1. a one-time PUBLIC key the sender can compute and only the recipient can sign for: the
+ *     recipient's ed25519 point plus `H(sharedSecret)*G`, whose secret is the recipient's clamped
+ *     scalar plus that tweak. Such a key has no seed, so signing needs an ed25519 signer that
+ *     takes a raw scalar (`@solana/web3.js` `Keypair` cannot), for transfers out of the account;
+ *  2. the recipient's Solana spend key published where the sender can read it, bound to the
+ *     contact's identity (today the message directory publishes only secp256k1 keys);
+ *  3. the payment carried by a message and recorded as a coin in a durable Solana coin list, as the
+ *     EVM path does (`sendToContact` in chain/monad-chain.ts, storage/evm-coin-store.ts), with the
+ *     amount read from the chain.
+ */
+export class SolanaStealthSendRefusedError extends Error {
+  constructor() {
+    super(
+      'Payments to a contact are not available on Solana yet: the one-time account could be emptied by the sender. Nothing was sent.',
+    )
+    this.name = 'SolanaStealthSendRefusedError'
+  }
+}
+
+/**
+ * Refused before anything is derived, signed or broadcast: see `SolanaStealthSendRefusedError`.
  */
 export async function buildSolanaStealthPayment(
-  params: BuildSolanaStealthPaymentParams
+  _params: BuildSolanaStealthPaymentParams
 ): Promise<SolanaStealthPaymentResult> {
-  const { wallet, recipientSpendPubKey, amountLamports } = params;
-
-  if (amountLamports <= 0n) {
-    throw new RangeError("Transfer amount must be positive");
-  }
-  if (amountLamports < SOLANA_MIN_STEALTH_LAMPORTS) {
-    throw new RangeError(
-      `Transfer amount must be at least ${SOLANA_MIN_STEALTH_LAMPORTS} lamports (rent exemption dust limit)`
-    );
-  }
-
-  // 1. Derive one-time stealth destination address
-  const stealthDestination = await deriveSolanaStealthAddress({
-    recipientSpendPubKey,
-    paymentIndex: 0,
-    context: params.context,
-  });
-
-  // 2. Build and sign transaction bundle via wallet
-  let fromAddress = params.fromAddress;
-  let spendingStealthAddress: string | undefined;
-
-  if (fromAddress) {
-    if (wallet.stealthKeyring?.hasAccount(fromAddress)) {
-      spendingStealthAddress = fromAddress;
-    }
-  } else if (wallet.stealthKeyring) {
-    try {
-      const primaryBal = await wallet.getPrimaryBalance();
-      if (primaryBal < amountLamports) {
-        const selected = await wallet.stealthKeyring.selectAccountForSpend(
-          amountLamports,
-          wallet.connection,
-          params.networkTag ?? wallet.networkId
-        );
-        if (selected) {
-          fromAddress = selected.address;
-          spendingStealthAddress = selected.address;
-        }
-      }
-    } catch {
-      // ignore balance check error
-    }
-  }
-
-  const intentId = new Uint8Array(32);
-  const cryptoObj = (
-    globalThis as unknown as {
-      crypto?: { getRandomValues<T extends Uint8Array>(bytes: T): T };
-    }
-  ).crypto;
-  if (cryptoObj) {
-    cryptoObj.getRandomValues(intentId);
-  } else {
-    for (let i = 0; i < 32; i++) intentId[i] = Math.floor(Math.random() * 256);
-  }
-
-  const bundle = await wallet.buildTransactionBundle({
-    intentId,
-    transfers: [
-      {
-        destination: stealthDestination.stealthAddress,
-        lamports: amountLamports,
-      },
-    ],
-    fromAddress,
-  });
-
-  // 3. Submit transaction bundle
-  const submission = await wallet.submitTransactionBundle(bundle);
-  const txHash = submission.submitted[0]?.txId;
-  const rawTransaction = bundle.transactions[0].rawTransaction;
-
-  if (spendingStealthAddress && wallet.stealthKeyring) {
-    await wallet.stealthKeyring.recordSpend(spendingStealthAddress, {
-      valueLamports: amountLamports,
-      txHash,
-    });
-  }
-
-  // 4. Construct StealthItem
-  const stealthItem: StealthItem = {
-    type: "stealth",
-    networkTag: params.networkTag ?? wallet.networkId,
-    keyType: 2,
-    ephemeralPubKey: toHex(stealthDestination.ephemeralPubKey),
-    transactions: [txHash],
-    amount: Number(amountLamports),
-    ...(params.memo ? { memo: params.memo } : {}),
-    // Compatibility fields
-    chainId: params.networkTag ?? wallet.networkId,
-  };
-
-  const metadataBundle: SolanaTransactionBundle<
-    SolanaStealthTransactionMetadata<SolanaStealthMetadata>
-  > = {
-    ...bundle,
-    transactions: [
-      {
-        ...bundle.transactions[0],
-        metadata: {
-          stealth: {
-            ephemeralPubKey: stealthDestination.ephemeralPubKey,
-            paymentIndex: 0,
-            stealthPublicKey: stealthDestination.stealthPublicKey,
-          },
-        },
-      },
-    ],
-  };
-
-  return {
-    stealthDestination,
-    txHash,
-    rawTransaction,
-    stealthItem,
-    bundle: metadataBundle,
-  };
+  throw new SolanaStealthSendRefusedError();
 }

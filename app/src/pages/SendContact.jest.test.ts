@@ -6,11 +6,29 @@ import { createPinia, setActivePinia } from 'pinia'
 import SendContact from './SendContact.vue'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { useContactStore } from 'src/stores/contacts'
-import { sentTransactionNotify, errorNotify } from 'src/utils/notifications'
+import {
+  sentTransactionNotify,
+  errorNotify,
+  infoNotify,
+} from 'src/utils/notifications'
 import { navigateBack } from 'src/utils/navigate-back'
 import enUS from '../i18n/en-us'
 
-const mockSendToContact = jest.fn()
+const mockPrepare = jest.fn()
+const mockSendMessage = jest.fn()
+const PREPARED = {
+  item: { type: 'stealth', amount: 1.5e18, ephemeralPubKey: '02ab' },
+  txHash: '0xabc123',
+  stealthAddress: '0x9999999999999999999999999999999999999999',
+  value: 1500000000000000000n,
+}
+const mockMessagingWallet = { identity: { displayAddress: '0xmessaging' } }
+jest.mock('src/utils/clients', () => ({
+  useMonadWallet: () => mockMessagingWallet,
+}))
+jest.mock('src/stores/chats', () => ({
+  useChatStore: () => ({ sendMessage: mockSendMessage }),
+}))
 
 jest.mock('@frank/wallet/chain', () => ({
   activeChain: {
@@ -32,9 +50,6 @@ jest.mock('@frank/wallet/chain', () => ({
       }
       return undefined
     },
-    nativeTransfers: {
-      sendToContact: (args: unknown) => mockSendToContact(args),
-    },
   },
 }))
 
@@ -52,6 +67,7 @@ jest.mock('src/composables/useBalance', () => ({
 jest.mock('src/utils/notifications', () => ({
   sentTransactionNotify: jest.fn(),
   errorNotify: jest.fn(),
+  infoNotify: jest.fn(),
 }))
 
 jest.mock('src/utils/navigate-back', () => ({
@@ -83,6 +99,7 @@ function t(
 }
 
 const mockWallet = {
+  prepareContactPayment: (params: unknown) => mockPrepare(params),
   identity: {
     address: { raw: '0x1111111111111111111111111111111111111111' },
     displayAddress: '0x1111111111111111111111111111111111111111',
@@ -243,16 +260,9 @@ describe('SendContact.vue (dual-send model)', () => {
     )
   })
 
-  it('executes sendToContact upon confirmation and notifies success', async () => {
-    mockSendToContact.mockResolvedValueOnce({
-      txHash: '0xabc123',
-      stealthAddress: '0x9999999999999999999999999999999999999999',
-      value: 1500000000000000000n,
-    })
-
+  const confirm = async () => {
     const wrapper = mountSendContact()
     await flushPromises()
-
     await wrapper.find('[data-test="contact-item"]').trigger('click')
     await wrapper
       .find('[data-test="send-contact-amount-input"]')
@@ -261,46 +271,77 @@ describe('SendContact.vue (dual-send model)', () => {
       .find('[data-test="send-contact-review-button"]')
       .trigger('click')
     await flushPromises()
-
-    // Confirm send
     await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
     await flushPromises()
+  }
 
-    expect(mockSendToContact).toHaveBeenCalledWith(
-      expect.objectContaining({
-        recipient: expect.objectContaining({
-          address: { raw: aliceAddress },
-        }),
-        value: 1500000000000000000n,
-      }),
+  it('has the wallet prepare the payment, then sends its item as an ordinary message to the contact', async () => {
+    mockPrepare.mockResolvedValueOnce(PREPARED)
+    mockSendMessage.mockResolvedValueOnce({
+      state: 'sent',
+      payloadDigest: 'dd',
+    })
+    await confirm()
+
+    // The wallet is given the contact's address and the amount, nothing else: it finds the
+    // contact's key itself and signs from its own funds, without broadcasting.
+    expect(mockPrepare).toHaveBeenCalledTimes(1)
+    expect(mockPrepare.mock.calls[0][0]).toEqual({
+      recipient: { raw: aliceAddress },
+      value: 1500000000000000000n,
+      memo: undefined,
+    })
+    // The item goes through the conversation's own send (bubble, pending state, Retry).
+    expect(mockSendMessage).toHaveBeenCalledTimes(1)
+    expect(mockSendMessage).toHaveBeenCalledWith({
+      wallet: mockMessagingWallet,
+      address: aliceAddress,
+      items: [PREPARED.item],
+    })
+    expect(sentTransactionNotify).toHaveBeenCalledWith(
+      '0xabc123',
+      'Payment sent',
     )
-    expect(sentTransactionNotify).toHaveBeenCalledWith('0xabc123')
     expect(navigateBack).toHaveBeenCalled()
   })
 
-  it('handles sendToContact errors cleanly', async () => {
-    mockSendToContact.mockRejectedValueOnce(new Error('Network RPC timeout'))
+  it('a payment whose message is still being delivered is shown as saved, not as a failure', async () => {
+    mockPrepare.mockResolvedValueOnce(PREPARED)
+    mockSendMessage.mockResolvedValueOnce({ state: 'payment-pending' })
+    await confirm()
 
-    const wrapper = mountSendContact()
-    await flushPromises()
-
-    await wrapper.find('[data-test="contact-item"]').trigger('click')
-    await wrapper
-      .find('[data-test="send-contact-amount-input"]')
-      .setValue('1.5')
-    await wrapper
-      .find('[data-test="send-contact-review-button"]')
-      .trigger('click')
-    await flushPromises()
-
-    await wrapper.find('[data-test="review-confirm-button"]').trigger('click')
-    await flushPromises()
-
-    expect(errorNotify).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({
-        fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
-      }),
+    expect(infoNotify).toHaveBeenCalledWith(
+      'Payment saved. Its message is still being delivered; it is paid when the message arrives. Do not send it again.',
     )
+    expect(errorNotify).not.toHaveBeenCalled()
+    expect(sentTransactionNotify).not.toHaveBeenCalled()
+    // The form is left, so the same payment cannot be confirmed a second time.
+    expect(navigateBack).toHaveBeenCalled()
+  })
+
+  it('a message that failed stays in the chat for a retry: the user is told where, and the form is left', async () => {
+    mockPrepare.mockResolvedValueOnce(PREPARED)
+    mockSendMessage.mockResolvedValueOnce({
+      state: 'failed',
+      reason: 'rejected',
+    })
+    await confirm()
+
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendContactDialog.messageEnded',
+    })
+    expect(sentTransactionNotify).not.toHaveBeenCalled()
+    expect(navigateBack).toHaveBeenCalled()
+  })
+
+  it('a refusal before anything is signed sends no message and says nothing was sent', async () => {
+    mockPrepare.mockRejectedValueOnce(new Error('Insufficient funds'))
+    await confirm()
+
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      fallbackKey: 'sendContactDialog.notSent',
+    })
+    expect(navigateBack).not.toHaveBeenCalled()
   })
 })

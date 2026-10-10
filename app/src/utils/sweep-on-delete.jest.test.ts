@@ -1,230 +1,135 @@
-import { sweepMessageFundsOnDelete } from './sweep-on-delete'
+import type { NativeWalletHandle, ReceivedCoinSweep } from '@frank/wallet/chain'
+import { MessageFundsNotSweptError, sweepBeforeDelete } from './sweep-on-delete'
 import type { ChatMessage } from '../stores/chats'
 
-jest.mock('@frank/wallet/monad-stamp-stealth', () => ({
-  deriveMonadStampChildPrivate: jest.fn(() => ({
-    address: '0xChildAddress123',
-    privateKey: new Uint8Array(32).fill(7),
-  })),
+const mockGetWallet = jest.fn()
+jest.mock('../accounts/session', () => ({
+  accountSession: { getWallet: () => mockGetWallet() },
 }))
 
-jest.mock('@frank/wallet/monad-stamp-client', () => {
-  const actual = jest.requireActual('@frank/wallet/monad-stamp-client')
+const message = (overrides: Partial<ChatMessage>): ChatMessage =>
+  ({
+    outbound: false,
+    status: 'confirmed',
+    receivedTime: 1000,
+    serverTime: 1000,
+    items: [{ type: 'text', text: 'hi' }],
+    outpoints: [],
+    stampPayments: [
+      { txHash: '0xtx', destinationAddress: '0xchild', valueWei: 1000n },
+    ],
+    senderAddress: '0xsender',
+    payloadDigest: 'aa',
+    ...overrides,
+  } as ChatMessage)
+
+/** The wallet seam: its ONE typed operation. Nothing else of the wallet is touched. */
+function walletAnswering(answers: Record<string, ReceivedCoinSweep>) {
+  const sweepReceivedCoins = jest.fn(
+    async ({ payloadDigests }: { payloadDigests: readonly string[] }) =>
+      Object.fromEntries(
+        payloadDigests.flatMap(digest =>
+          digest in answers ? [[digest, answers[digest]]] : [],
+        ),
+      ),
+  )
   return {
-    ...actual,
-    sweepRecoveredMonadStampPayment: jest.fn(async () => ({
-      swept: true,
-      txHash: '0xSweepTxHash123',
-      valueWei: 1000000000000000000n,
-      destinationAddress: '0xChangeAddressBip44',
-    })),
+    wallet: { sweepReceivedCoins } as unknown as NativeWalletHandle,
+    sweepReceivedCoins,
   }
-})
+}
 
-jest.mock('@frank/cashweb/relay', () => ({
-  relayChangeAddressPublicKey: jest.fn(() => new Uint8Array(33).fill(2)),
-}))
+describe('sweepBeforeDelete', () => {
+  beforeEach(() => jest.clearAllMocks())
 
-describe('sweepMessageFundsOnDelete', () => {
-  it('does not sweep funds for outbound messages', async () => {
-    const message: ChatMessage = {
-      outbound: true,
-      status: 'sent',
-      receivedTime: 1000,
-      serverTime: 1000,
-      items: [{ type: 'text', text: 'Hello' }],
-      outpoints: [],
-      stampPayments: [
-        {
-          txHash: '0xTxHash1',
-          destinationAddress: '0xChildAddress123',
-          valueWei: 1000000000000000000n,
-        },
+  it('asks the wallet once, for every received message that can have brought money', async () => {
+    const { wallet, sweepReceivedCoins } = walletAnswering({
+      aa: { outcome: 'swept' },
+      bb: { outcome: 'none' },
+      cc: { outcome: 'swept' },
+    })
+    const clearance = await sweepBeforeDelete(
+      [
+        message({ payloadDigest: 'aa' }),
+        message({ payloadDigest: 'bb' }),
+        // A stealth payment with no stamp still brought money.
+        message({
+          payloadDigest: 'cc',
+          stampPayments: [],
+          items: [{ type: 'stealth', amount: 5 }],
+        }),
+        // None of these can hold a coin of this wallet: they need no wallet at all.
+        message({ payloadDigest: 'dd', outbound: true }),
+        message({ payloadDigest: 'ee', stampPayments: [] }),
+        message({ payloadDigest: 'pending:1' }),
       ],
-      senderAddress: '0xSender',
-      payloadDigest: '0xDigest1',
-    }
-
-    const outcome = await sweepMessageFundsOnDelete({ message })
-    expect(outcome.sweptCount).toBe(0)
-    expect(outcome.sweptWei).toBe(0n)
-    expect(outcome.txHashes).toEqual([])
+      wallet,
+    )
+    expect(sweepReceivedCoins).toHaveBeenCalledTimes(1)
+    expect(sweepReceivedCoins).toHaveBeenCalledWith({
+      payloadDigests: ['aa', 'bb', 'cc'],
+    })
+    expect(clearance.kept.size).toBe(0)
   })
 
-  it('sweeps Monad stamp payments to the ephemeral change account derived from seed', async () => {
-    const { deriveMonadStampChildPrivate } = jest.requireMock(
-      '@frank/wallet/monad-stamp-stealth',
-    )
-    const { sweepRecoveredMonadStampPayment } = jest.requireMock(
-      '@frank/wallet/monad-stamp-client',
-    )
-
-    const message: ChatMessage = {
-      outbound: false,
-      status: 'received',
-      receivedTime: 1000,
-      serverTime: 1000,
-      items: [{ type: 'text', text: 'Stamper payment' }],
-      outpoints: [],
-      stampPayments: [
-        {
-          txHash: '0xTxHash1',
-          destinationAddress: '0xChildAddress123',
-          valueWei: 1000000000000000000n,
-        },
+  it('keeps a message whose sweep failed or is not in a block yet, with the wallet reason', async () => {
+    const { wallet } = walletAnswering({
+      aa: { outcome: 'swept' },
+      bb: { outcome: 'failed', reason: 'node unreachable' },
+      cc: { outcome: 'pending', reason: 'not in a block yet' },
+    })
+    const clearance = await sweepBeforeDelete(
+      [
+        message({ payloadDigest: 'aa' }),
+        message({ payloadDigest: 'bb' }),
+        message({ payloadDigest: 'cc' }),
+        // The wallet gave no answer for this one: it stays too.
+        message({ payloadDigest: 'dd' }),
       ],
-      senderAddress: '0xSender',
-      payloadDigest:
-        '0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
-    }
-
-    const mockChangePool = {
-      peekNextChangeAddress: jest.fn(() => ({
-        index: 3,
-        address: '0xChangeAddressBip44',
-      })),
-      setNextUnusedIndex: jest.fn(),
-    }
-
-    const mockJournal = {
-      get: jest.fn(() => ({
-        payloadHashHex:
-          'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
-        childIndex: 0,
-        txHash: '0xTxHash1',
-        address: '0xChildAddress123',
-        valueWei: '1000000000000000000',
-        status: 'discovered',
-      })),
-      put: jest.fn().mockResolvedValue(undefined),
-    }
-
-    const mockWallet = {
-      identity: {
-        toPrivateKeyHex: () => '0x' + '11'.repeat(32),
-        displayAddress: '0xUserMainAddress',
-      },
-      changePool: mockChangePool,
-      stampPaymentJournal: mockJournal,
-      provider: {
-        getBalance: jest.fn().mockResolvedValue(1000000000000000000n),
-      },
-      httpClient: {
-        submit: jest.fn().mockResolvedValue('0xSweepTxHash123'),
-      },
-    }
-
-    const outcome = await sweepMessageFundsOnDelete({
-      message,
-      wallet: mockWallet as never,
-    })
-
-    expect(deriveMonadStampChildPrivate).toHaveBeenCalledWith({
-      payloadHash: expect.any(Uint8Array),
-      recipientPrivateKey: expect.any(Uint8Array),
-      paymentIndex: 0,
-    })
-
-    expect(sweepRecoveredMonadStampPayment).toHaveBeenCalledWith({
-      payment: expect.objectContaining({
-        childIndex: 0,
-        address: '0xChildAddress123',
-        txHash: '0xTxHash1',
-      }),
-      destinationAddress: '0xChangeAddressBip44',
-      provider: mockWallet.provider,
-      httpClient: mockWallet.httpClient,
-    })
-
-    expect(mockChangePool.setNextUnusedIndex).toHaveBeenCalledWith(4)
-    expect(mockJournal.put).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: 'swept',
-        sweepTxHash: '0xSweepTxHash123',
-        sweepDestinationAddress: '0xChangeAddressBip44',
-      }),
+      wallet,
     )
-
-    expect(outcome.sweptCount).toBe(1)
-    expect(outcome.sweptWei).toBe(1000000000000000000n)
-    expect(outcome.changeAddress).toBe('0xChangeAddressBip44')
-    expect(outcome.txHashes).toEqual(['0xSweepTxHash123'])
-
-    // Marked as swept
-    expect((message as any).fundsSwept).toBe(true)
+    expect([...clearance.kept]).toEqual([
+      ['bb', 'node unreachable'],
+      ['cc', 'not in a block yet'],
+      ['dd', 'the wallet gave no answer'],
+    ])
+    expect(new MessageFundsNotSweptError(clearance.kept).message).toBe(
+      "3 messages were not deleted: the money they brought could not be moved to your wallet's main account yet (node unreachable; not in a block yet; the wallet gave no answer).",
+    )
   })
 
-  it('sweeps Lotus outpoints to change address when present', async () => {
-    const mockLotusWallet = {
-      changeKeys: [
-        {
-          privKey: {
-            toBuffer: () => Buffer.from('22'.repeat(32), 'hex'),
-            compressed: true,
-          },
-        },
-      ],
-      forwardUTXOsToPubkey: jest.fn().mockResolvedValue({}),
-    }
+  it('keeps every such message when the wallet cannot be reached or throws', async () => {
+    mockGetWallet.mockRejectedValueOnce(new Error('wallet is locked'))
+    const locked = await sweepBeforeDelete([
+      message({ payloadDigest: 'aa' }),
+      message({ payloadDigest: 'bb', outbound: true }),
+    ])
+    expect([...locked.kept]).toEqual([['aa', 'wallet is locked']])
 
-    const message: ChatMessage = {
-      outbound: false,
-      status: 'received',
-      receivedTime: 1000,
-      serverTime: 1000,
-      items: [{ type: 'text', text: 'Lotus message' }],
-      outpoints: [
-        {
-          txHash: '0xLotusTx1',
-          outIdx: 0,
-          value: '1000',
-          script: 'p2pkh',
-        } as never,
-      ],
-      senderAddress: 'lotus_sender',
-      payloadDigest: '0xlotusdigest',
-    }
-
-    const outcome = await sweepMessageFundsOnDelete({
-      message,
-      lotusWallet: mockLotusWallet as never,
-    })
-
-    expect(mockLotusWallet.forwardUTXOsToPubkey).toHaveBeenCalledWith({
-      utxos: message.outpoints,
-      pubkey: expect.any(Uint8Array),
-    })
-    expect(outcome.sweptCount).toBe(1)
-    expect((message as any).fundsSwept).toBe(true)
+    const wallet = {
+      sweepReceivedCoins: jest
+        .fn()
+        .mockRejectedValue(new Error('storage failed')),
+    } as unknown as NativeWalletHandle
+    const thrown = await sweepBeforeDelete(
+      [message({ payloadDigest: 'aa' })],
+      wallet,
+    )
+    expect([...thrown.kept]).toEqual([['aa', 'storage failed']])
   })
 
-  it('skips message if already marked fundsSwept', async () => {
-    const { sweepRecoveredMonadStampPayment } = jest.requireMock(
-      '@frank/wallet/monad-stamp-client',
+  it('needs no wallet for messages that brought nothing, and none for a wallet with no coin list', async () => {
+    const nothing = await sweepBeforeDelete([
+      message({ payloadDigest: 'aa', outbound: true }),
+      message({ payloadDigest: 'bb', stampPayments: [] }),
+    ])
+    expect(nothing.kept.size).toBe(0)
+    expect(mockGetWallet).not.toHaveBeenCalled()
+
+    const other = await sweepBeforeDelete(
+      [message({ payloadDigest: 'aa' })],
+      {} as NativeWalletHandle,
     )
-    sweepRecoveredMonadStampPayment.mockClear()
-
-    const message: ChatMessage = {
-      outbound: false,
-      status: 'received',
-      receivedTime: 1000,
-      serverTime: 1000,
-      items: [{ type: 'text', text: 'Already swept' }],
-      outpoints: [],
-      stampPayments: [
-        {
-          txHash: '0xTxHash1',
-          destinationAddress: '0xChildAddress123',
-          valueWei: 1000000000000000000n,
-        },
-      ],
-      senderAddress: '0xSender',
-      payloadDigest: '0xalready',
-    }
-    ;(message as any).fundsSwept = true
-
-    const outcome = await sweepMessageFundsOnDelete({ message })
-    expect(outcome.sweptCount).toBe(0)
-    expect(sweepRecoveredMonadStampPayment).not.toHaveBeenCalled()
+    expect(other.kept.size).toBe(0)
   })
 })

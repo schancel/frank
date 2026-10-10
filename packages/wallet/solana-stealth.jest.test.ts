@@ -2,11 +2,15 @@ import { Keypair, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { getBase58Decoder } from "@solana/codecs-strings";
 import { toHex } from "@frank/codec";
 import type { StealthItem } from "@frank/cashweb/types/messages";
+import { edwardsToMontgomeryPub, x25519 } from "@noble/curves/ed25519";
+import { hkdf } from "@noble/hashes/hkdf";
+import { sha256 } from "@noble/hashes/sha256";
 
 import {
   SOLANA_MIN_STEALTH_LAMPORTS,
   SolanaEd25519StealthStrategy,
   SolanaStealthKeyring,
+  SolanaStealthSendRefusedError,
   buildSolanaStealthPayment,
   deriveSolanaStealthAddress,
   deriveSolanaStealthKeypair,
@@ -307,11 +311,10 @@ describe("Solana Stealth Engine (STEALTH-5)", () => {
     expect(connection.sentTransactions).toHaveLength(1);
   });
 
-  it("buildSolanaStealthPayment enforces the dust limit (>= 890,880 lamports)", async () => {
+  it("refuses a payment to a contact before anything is signed or sent: the sender could take it back", async () => {
     const connection = new MockSolanaConnection();
     const signer = await Keypair.generate();
     connection.balances.set(signer.publicKey.toBase58(), 10_000_000n);
-
     const wallet = new SolanaWallet({
       connection,
       signer,
@@ -319,37 +322,35 @@ describe("Solana Stealth Engine (STEALTH-5)", () => {
       genesisHash: connection.genesisHash,
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     });
-
     const recipient = await Keypair.generate();
 
-    // Below dust limit throws
     await expect(
       buildSolanaStealthPayment({
         wallet,
         recipientSpendPubKey: recipient.publicKey,
-        amountLamports: SOLANA_MIN_STEALTH_LAMPORTS - 1n,
+        amountLamports: SOLANA_MIN_STEALTH_LAMPORTS,
       })
-    ).rejects.toThrow("rent exemption dust limit");
+    ).rejects.toBeInstanceOf(SolanaStealthSendRefusedError);
+    expect(connection.balances.get(signer.publicKey.toBase58())).toBe(10_000_000n);
 
-    // At dust limit succeeds and builds StealthItem
-    const result = await buildSolanaStealthPayment({
-      wallet,
+    // Why: the one-time account's whole key comes from the shared secret, which the sender has.
+    const asSender = await deriveSolanaStealthAddress({
       recipientSpendPubKey: recipient.publicKey,
-      amountLamports: SOLANA_MIN_STEALTH_LAMPORTS,
-      memo: "stealth payment",
     });
-
-    expect(result.txHash).toBeDefined();
-    expect(result.stealthItem).toEqual({
-      type: "stealth",
-      networkTag: "solana-devnet",
-      keyType: 2,
-      ephemeralPubKey: toHex(result.stealthDestination.ephemeralPubKey),
-      transactions: [result.txHash],
-      amount: Number(SOLANA_MIN_STEALTH_LAMPORTS),
-      memo: "stealth payment",
-      chainId: "solana-devnet",
-    });
+    const sharedBySender = x25519.getSharedSecret(
+      asSender.ephemeralSecret!,
+      edwardsToMontgomeryPub(recipient.publicKey.toBytes())
+    );
+    const senderMade = await Keypair.fromSeed(
+      hkdf(
+        sha256,
+        sharedBySender,
+        new Uint8Array(0),
+        new TextEncoder().encode("frank:solana-stealth:v1:0"),
+        32
+      )
+    );
+    expect(senderMade.publicKey.toBase58()).toBe(asSender.stealthAddress);
   });
 
   describe("Solana Stealth UTXO inventory tracking & parallel balance resolution (#1170)", () => {
@@ -553,54 +554,6 @@ describe("Solana Stealth Engine (STEALTH-5)", () => {
       expect(keyring.getAccount(kp2.publicKey.toBase58())?.balanceLamports).toBe(
         4_000_000n
       );
-    });
-
-    it("buildSolanaStealthPayment invokes recordSpend on stealthKeyring when spending from stealth account", async () => {
-      const connection = new MockSolanaConnection();
-      const signer = await Keypair.generate();
-      // Primary account has 0 balance
-      connection.balances.set(signer.publicKey.toBase58(), 0n);
-
-      const keyring = new SolanaStealthKeyring();
-      const stealthKp = await Keypair.generate();
-      const stealthAddr = stealthKp.publicKey.toBase58();
-      // Stealth account has 5_000_000 lamports
-      connection.balances.set(stealthAddr, 5_000_000n);
-
-      await keyring.addAccount({
-        address: stealthAddr,
-        keypair: stealthKp,
-        seed: stealthKp.secretKey.slice(0, 32),
-        ephemeralPubKey: "99".repeat(32),
-        networkTag: "solana-devnet",
-        discoveredAtMs: 100,
-        initialAmountLamports: 5_000_000n,
-      });
-
-      const wallet = new SolanaWallet({
-        connection,
-        signer,
-        networkId: "solana-devnet",
-        genesisHash: connection.genesisHash,
-        stealthKeyring: keyring,
-        nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
-      });
-
-      const recipient = await Keypair.generate();
-      const result = await buildSolanaStealthPayment({
-        wallet,
-        recipientSpendPubKey: recipient.publicKey,
-        amountLamports: 1_500_000n,
-      });
-
-      expect(result.txHash).toBeDefined();
-
-      const record = keyring.getAccount(stealthAddr);
-      expect(record?.isSpent).toBe(true);
-      expect(record?.isClean).toBe(false);
-      expect(record?.nonce).toBe(1);
-      expect(record?.balanceLamports).toBe(3_500_000n);
-      expect(record?.txHash).toBe(result.txHash);
     });
 
     it("SolanaWallet.sendNative invokes recordSpend on stealthKeyring when spending from stealth account", async () => {

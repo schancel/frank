@@ -3,25 +3,14 @@
  */
 import { shallowMount } from '@vue/test-utils'
 import DeleteMessageDialog from './DeleteMessageDialog.vue'
+import { notifyDeleteFailure } from 'src/utils/sweep-on-delete'
 
-const mockDeleteMessage = jest.fn().mockResolvedValue(undefined)
-const mockSweepMessageFundsOnDelete = jest.fn().mockResolvedValue({
-  sweptCount: 1,
-  sweptWei: 1000n,
-  txHashes: ['0xtx1'],
-})
-
-const mockMessages: Record<string, any> = {
+const mockDeleteMessage = jest.fn()
+const mockMessages: Record<string, unknown> = {
   '0xmsg1': {
     outbound: false,
     payloadDigest: '0xmsg1',
-    stampPayments: [
-      {
-        txHash: '0xtx1',
-        destinationAddress: '0xchild1',
-        valueWei: 1000n,
-      },
-    ],
+    delivery: { attemptDigest: '0xattempt1' },
   },
 }
 
@@ -31,56 +20,43 @@ jest.mock('src/stores/chats', () => ({
     messages: mockMessages,
   }),
 }))
-
 jest.mock('src/utils/sweep-on-delete', () => ({
-  sweepMessageFundsOnDelete: (args: any) => mockSweepMessageFundsOnDelete(args),
+  notifyDeleteFailure: jest.fn(),
 }))
+
+const mountDialog = (payloadDigest = '0xmsg1') =>
+  shallowMount(DeleteMessageDialog, {
+    props: { address: '0xcontact1', payloadDigest, index: 0 },
+    global: { mocks: { $t: (key: string) => key } },
+  })
 
 describe('DeleteMessageDialog.vue', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    mockDeleteMessage.mockResolvedValue(undefined)
   })
 
-  const mountDialog = () =>
-    shallowMount(DeleteMessageDialog, {
-      props: { address: '0xcontact1', payloadDigest: '0xmsg1', index: 0 },
-      global: { mocks: { $t: (key: string) => key } },
-    })
-
-  it('sweeps the message funds, then deletes locally', async () => {
-    const callOrder: string[] = []
-    mockSweepMessageFundsOnDelete.mockImplementationOnce(async () => {
-      callOrder.push('sweep')
-      return { sweptCount: 1, sweptWei: 1000n, txHashes: ['0xtx1'] }
-    })
-    mockDeleteMessage.mockImplementationOnce(async () => {
-      callOrder.push('localDelete')
-    })
-
-    await (mountDialog().vm as any).deleteMessageBoth()
-
-    expect(callOrder).toEqual(['sweep', 'localDelete'])
-    expect(mockSweepMessageFundsOnDelete).toHaveBeenCalledWith({
-      message: mockMessages['0xmsg1'],
-    })
+  it('deletes through the store, which is what sweeps the message money first', async () => {
+    const wrapper = mountDialog()
+    await (
+      wrapper.vm as unknown as { deleteMessageBoth(): Promise<void> }
+    ).deleteMessageBoth()
+    expect(mockDeleteMessage).toHaveBeenCalledTimes(1)
     expect(mockDeleteMessage).toHaveBeenCalledWith({
       address: '0xcontact1',
       payloadDigest: '0xmsg1',
+      attemptDigest: '0xattempt1',
     })
+    expect(notifyDeleteFailure).not.toHaveBeenCalled()
   })
 
-  it('still deletes locally when the sweep fails', async () => {
-    mockSweepMessageFundsOnDelete.mockRejectedValueOnce(new Error('rpc down'))
-    const logged = jest
-      .spyOn(console, 'error')
-      .mockImplementation(() => undefined)
-
-    await (mountDialog().vm as any).deleteMessageBoth()
-
-    expect(mockDeleteMessage).toHaveBeenCalledWith({
-      address: '0xcontact1',
-      payloadDigest: '0xmsg1',
-    })
-    logged.mockRestore()
+  it('shows why when the store kept the message because its money could not be moved', async () => {
+    const refusal = new Error('The message was not deleted: node unreachable')
+    mockDeleteMessage.mockRejectedValueOnce(refusal)
+    const wrapper = mountDialog()
+    await (
+      wrapper.vm as unknown as { deleteMessageBoth(): Promise<void> }
+    ).deleteMessageBoth()
+    expect(notifyDeleteFailure).toHaveBeenCalledWith(refusal)
   })
 })

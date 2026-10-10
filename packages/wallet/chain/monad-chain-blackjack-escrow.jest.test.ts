@@ -440,19 +440,32 @@ describe('Blackjack with 2-party threshold ECDSA escrow settlement', () => {
     })
 
     expect(stealthRecord.address.toLowerCase()).toBe(stealthPayout.stealthAddress.toLowerCase())
-    expect(playerSeat.wallet.stealthKeyring.hasAccount(stealthPayout.stealthAddress)).toBe(true)
+    // Recorded as a coin: pending, and worth nothing, until the chain has been read.
+    const recorded = playerSeat.wallet
+      .getReceivedPayments!()
+      .find(p => p.address === stealthPayout.stealthAddress.toLowerCase())
+    expect(recorded).toMatchObject({ status: 'pending', amountWei: 0n, spendable: false })
+
+    // The node shows the payout transaction included (this suite's provider stub answers no
+    // receipts by itself).
+    jest
+      .spyOn(playerSeat.wallet.provider, 'getTransactionReceipt')
+      .mockImplementation(async hash =>
+        hash === txHash ? ({ status: 1 } as never) : null,
+      )
 
     // Player's total balance includes this stealth account
     const totalBal = await playerSeat.wallet.getBalance()
     expect(totalBal).toBeGreaterThanOrEqual(payout.playerPayoutWei)
 
     // Player can spend from this stealth account directly without sweeping
-    const spendable = await playerSeat.wallet.stealthKeyring.selectAccountForSpend(
-      WAGER,
-      playerSeat.wallet.provider,
-      'MONT',
-    )
-    expect(spendable).toBeDefined()
-    expect(spendable?.address.toLowerCase()).toBe(stealthPayout.stealthAddress.toLowerCase())
+    const spendable = playerSeat.wallet
+      .getReceivedPayments!()
+      .find(p => p.address === stealthPayout.stealthAddress.toLowerCase())
+    expect(spendable).toMatchObject({
+      status: 'received',
+      amountWei: payout.playerPayoutWei,
+      spendable: true,
+    })
   })
 })

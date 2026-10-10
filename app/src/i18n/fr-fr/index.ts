@@ -701,6 +701,8 @@ export default {
     sentTransaction: 'Transaction envoyée',
     unexpectedError: 'Une erreur s’est produite. Veuillez réessayer.',
     viewAction: 'Voir',
+    messagesKeptForFunds:
+      'Non supprimé : l’argent apporté par ces messages n’a pas encore pu être déplacé vers votre portefeuille. Réessayez dans un instant.',
   },
   chatRightDrawer: {
     stampPrice: 'Prix du timbre',
@@ -714,18 +716,21 @@ export default {
   },
   sendStealthDialog: {
     sendStealthTo: 'Envoyer furtivement à',
-    subtitle: 'Transfert direct chiffré (invisible pour le relais)',
-    chainLabel: 'Chaîne',
-    walletLabel: 'Portefeuille',
+    subtitle:
+      'Payé depuis votre portefeuille vers une adresse à usage unique que seul ce contact peut dépenser',
     balanceLabel: 'Solde disponible :',
-    amountHint: 'Montant à envoyer dans la charge utile du message',
+    amountHint: 'Montant à payer',
     amountPlaceholder: '0.0',
-    memoHint: 'Mémo du message chiffré (optionnel)',
+    memoHint: 'Mémo, envoyé avec le paiement (optionnel)',
     memoPlaceholder: 'Entrez un mémo...',
     sendBtnLabel: 'Envoyer furtivement',
     cancelBtnLabel: 'Annuler',
-    dustLimitError:
-      'Le montant doit être d’au moins {min} {unit} (seuil de poussière)',
+    sent: 'Paiement envoyé',
+    pending:
+      'Paiement enregistré. Son message est encore en cours de livraison ; il est payé à l’arrivée du message. Ne l’envoyez pas une seconde fois.',
+    notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
+    messageEnded:
+      'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
   },
   offerSwapDialog: {
     title: 'Proposer un échange atomique à',
@@ -763,10 +768,29 @@ export default {
     title: 'Paiement furtif',
     sentTitle: 'Paiement furtif envoyé',
     receivedTitle: 'Paiement furtif reçu',
-    confirmed: 'Confirmé',
     viewInExplorer: 'Voir la transaction dans l’explorateur',
     viewTransaction: 'Voir la transaction',
-    directCreditHint: 'Directement crédité au solde disponible',
+    sent: 'Envoyé',
+    pending: 'En attente',
+    received: 'Reçu',
+    unverified: 'Non vérifié',
+    pendingHint:
+      'En attente que la chaîne montre ce paiement. Il n’est pas encore dans votre solde.',
+    spendableHint: 'Dans votre solde disponible',
+    spentHint: 'Reçu, puis dépensé',
+    unverifiedHint:
+      'Votre portefeuille n’a pas vérifié ce paiement sur la chaîne.',
+    statedAmount:
+      'L’expéditeur a indiqué {stated} ; la chaîne montre {actual}.',
+    notReceived: 'Paiement non reçu',
+    notReceivedHint:
+      'L’expéditeur a annoncé ce paiement, et la chaîne ne montre aucun transfert de ce type. Il n’est pas dans votre solde. Votre portefeuille continue de vérifier.',
+    failed: 'Paiement échoué',
+    failedHint:
+      'Ce paiement ne peut plus arriver : sa transaction a échoué ou a été remplacée. Il n’est pas dans votre solde.',
+    claimedAmount: 'annoncé',
+    notReceivedNotice:
+      'Un paiement annoncé par un expéditeur ({amount}) n’est pas arrivé.',
   },
   topicDrawer: {
     offering: 'Offre:',
@@ -1084,7 +1108,7 @@ export default {
     reviewTransfer: 'Vérifier le transfert',
     recipient: 'Destinataire',
     stealthNotice:
-      'Envoyé via une adresse furtive à double clé (DKSAP) pour une confidentialité totale sur la chaîne.',
+      'Payé vers une adresse à usage unique que seul ce contact peut dépenser. Un message indique à son portefeuille où se trouve l’argent.',
     confirmAndSend: 'Confirmer et envoyer',
     sending: 'Envoi en cours...',
     cancel: 'Annuler',
@@ -1093,6 +1117,12 @@ export default {
     invalidAmount: 'Veuillez saisir un montant valide',
     missingSpendKey:
       'Le contact ne possède pas de clé publique furtive enregistrée',
+    sent: 'Paiement envoyé',
+    pending:
+      'Paiement enregistré. Son message est encore en cours de livraison ; il est payé à l’arrivée du message. Ne l’envoyez pas une seconde fois.',
+    notSent: 'Le paiement n’a pas pu être effectué. Rien n’a été envoyé.',
+    messageEnded:
+      'Le paiement est enregistré, et son message n’a pas pu être livré. Ouvrez la discussion avec ce contact et réessayez le message : rien n’a été payé, et rien n’est payé deux fois.',
   },
   contactBookDialog: {
     close: 'Fermer',

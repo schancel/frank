@@ -1316,6 +1316,127 @@ export class EvmLegacyConsolidator {
       )
     })
   }
+  /**
+   * Plans and signs one native transfer exactly as `sendNative` does (same sources, same journal,
+   * same reservation) and stops before the broadcast. The signed transaction is journalled and
+   * marked exposed, because the caller hands it to someone else (a message to the payee) who may
+   * broadcast it. `resumeOperation` broadcasts the same bytes; nothing ever signs another.
+   */
+  signNative(
+    params: SendLegacyParams,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<EvmNativeOperation> {
+    params = { ...params, recipient: { ...params.recipient } }
+    return this.runWithLocalPass(lifetime, async planned => {
+      const row = await this.plan(params, 'native', lifetime)
+      planned(row.operationId)
+      await this.sign(row, lifetime)
+      return this.journal(lifetime).markExposed(row.operationId, 0)
+    })
+  }
+  /**
+   * Moves everything each of `sources` holds, less its own fee, to `recipient`: one journalled
+   * native operation per source (planned, signed, checkpointed and broadcast exactly as
+   * `sendNative` does), each a single transfer straight to the recipient. A source whose move
+   * would cost more than it moves is left alone and named in `left`; one another operation holds
+   * is named in `held`. `pending` says a broadcast move is not in a block yet; `resumeOperation` re-observes
+   * it. Nothing is ever signed twice for a source: the journal holds the source while its
+   * operation is unresolved.
+   */
+  sweepSources(
+    params: { sources: readonly EvmNativeSource[]; recipient: ChainAddress },
+    lifetime?: WalletOperationLifetime,
+  ): Promise<{
+    operationIds: string[]
+    left: string[]
+    held: string[]
+    pending: boolean
+  }> {
+    const recipient = getAddress(params.recipient.raw).toLowerCase()
+    const sources = params.sources.map(source => ({ ...source }))
+    return this.runWithLocalPass(lifetime, async planned => {
+      const journal = this.journal(lifetime)
+      const fee = await this.config.provider.getFeeData()
+      const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
+      if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
+      const fees = {
+        maxFeePerGas,
+        maxPriorityFeePerGas:
+          fee.maxPriorityFeePerGas != null &&
+          fee.maxPriorityFeePerGas <= maxFeePerGas
+            ? fee.maxPriorityFeePerGas
+            : maxFeePerGas,
+      }
+      const operationIds: string[] = []
+      const left: string[] = []
+      const held: string[] = []
+      let pending = false
+      // What earlier operations on these accounts came to: an included one no longer holds it.
+      const wanted = new Set(sources.map(source => source.address))
+      for (const row of journal.list())
+        if (!row.cancelled)
+          for (let i = 0; i < row.members.length; i++)
+            if (row.members[i]!.signed && wanted.has(row.members[i]!.source.address))
+              await this.observe(row.operationId, i, lifetime)
+      for (const source of sources) {
+        const account = await this.account(source.address)
+        const balance = BigInt(account.balanceWei)
+        const available: AvailableSource = {
+          source,
+          account,
+          spendableValue: balance,
+        }
+        if (balance === 0n) {
+          left.push(source.address)
+          continue
+        }
+        if (!journal.canSelect(source.address, account.nonce)) {
+          held.push(source.address)
+          continue
+        }
+        const cost = nativeMaximumFee(
+          Transaction.from(await this.transaction(available, recipient, 0n, fees)),
+        )
+        // A move that costs more than it moves.
+        if (balance - cost <= cost) {
+          left.push(source.address)
+          continue
+        }
+        const row = await journal.prepare({
+          kind: 'native',
+          recipient,
+          intendedValueWei: (balance - cost).toString(),
+          members: [
+            {
+              source,
+              unsignedTransaction: await this.transaction(
+                available,
+                recipient,
+                balance - cost,
+                fees,
+              ),
+              dependencies: [],
+            },
+          ],
+        })
+        planned(row.operationId)
+        operationIds.push(row.operationId)
+        try {
+          await this.execute(row.operationId, undefined, lifetime)
+          await this.observe(row.operationId, 0, lifetime)
+        } catch (reason) {
+          // Signed and possibly broadcast: the journal keeps it, and the next source goes on.
+          if (!(reason instanceof EvmNativeOperationPendingError)) throw reason
+        }
+        if (
+          journal.get(row.operationId).members[0]!.observation.state !==
+          'included-success'
+        )
+          pending = true
+      }
+      return { operationIds, left, held, pending }
+    })
+  }
   sendLegacy(
     params: SendLegacyParams,
     lifetime?: WalletOperationLifetime,

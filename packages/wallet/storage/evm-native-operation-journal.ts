@@ -16,6 +16,8 @@ export type EvmNativeSource =
       identityPublicKey: string
       ephemeralPublicKey: string
     }
+  /** A received coin whose key the wallet's coin list holds (a stamp payment's account). */
+  | { kind: 'coin'; address: string }
 
 export interface EvmNativeBinding {
   readonly chainIdentifier: string
@@ -212,7 +214,7 @@ function validateSource(value: unknown): EvmNativeSource {
   if (!value || typeof value !== 'object') fail()
   const kind = (value as { kind?: unknown }).kind
   const keys =
-    kind === 'main'
+    kind === 'main' || kind === 'coin'
       ? ['kind', 'address']
       : kind === 'identity'
       ? ['kind', 'address', 'identityPublicKey']

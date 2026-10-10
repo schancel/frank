@@ -12,7 +12,7 @@ import type {
   MonadWalletOperationAdmission,
 } from "./storage/monad-wallet-bundle";
 import type { MonadCanonicalRoleOwner } from "./monad-wallet-material";
-import type { MonadStealthKeyring } from "./monad-stealth";
+import type { StealthItem } from "@frank/cashweb/types/messages";
 import type { MonadIdentity } from "./monad-identity";
 import type { AccountHygieneEngine } from "./account-hygiene";
 import type { ChainUtxoPool } from "./chain-utxo-pool";
@@ -23,8 +23,6 @@ export interface EvmWalletHandle {
   identity?: MonadIdentity;
   /** Explicit typed-root capability; absent until canonical composition is activated. */
   canonicalRoles?: MonadCanonicalRoleOwner;
-  /** Keyring tracking discovered stealth accounts and spend keys. */
-  stealthKeyring?: MonadStealthKeyring;
   /** Private active delegation from the existing owner; structural values are rejected. */
   walletOperationAdmission?: MonadWalletOperationAdmission;
   /** Autonomous account hygiene and lazy dirty sweeper (Ticket #925). Encapsulated beneath the wallet API. */
@@ -72,7 +70,13 @@ export interface EvmChainWalletHandle
   readonly chainIdentifier: string;
   readonly networkId: string;
   readonly identity: MonadIdentity;
-  readonly stealthKeyring: MonadStealthKeyring;
+  /** Records the one-time account of a stealth payment made to this wallet as a coin in its
+   * durable coin list. Recording a known one changes nothing. A mailbox read does this itself for
+   * every stealth item it returns; this is for a payment learned of some other way. */
+  recordStealthPayment(
+    item: StealthItem,
+    origin?: { payloadDigest?: string; timestampMs?: number }
+  ): Promise<void>;
   readonly mainAccount?: Wallet;
   readonly mainPrivateKey?: string;
   readonly chainUtxoPool?: ChainUtxoPool;

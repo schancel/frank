@@ -197,7 +197,7 @@ export function offlineMailboxModule() {
 
 const RELAY = 'https://relay-a.example'
 const NOW = { seconds: 100n, nanoseconds: 0 }
-function roots(index: number): MonadRootBundle {
+export function roots(index: number): MonadRootBundle {
   const outputs = domainVectors.vectors[index].outputs
   const root = <
     P extends 'evm-wallet' | 'identity-authentication' | 'messaging-encryption',
@@ -378,6 +378,8 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
   }
   return {
     chain,
+    /** The configuration both wallets were opened with. */
+    config,
     alice,
     bob,
     /** The temp directory holding the wallets' storage (`<root>/wallet-evm-<address>`). */

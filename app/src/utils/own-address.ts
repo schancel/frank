@@ -190,16 +190,11 @@ export async function resolveOwnAddresses(): Promise<string[]> {
       }
     }
 
-    if (
-      wallet?.stealthKeyring &&
-      typeof wallet.stealthKeyring.getAccounts === 'function'
-    ) {
+    // One-time accounts money arrived at (stealth payments, stamps): the wallet's coin list.
+    if (typeof wallet?.getReceivedPayments === 'function') {
       try {
-        const accounts = wallet.stealthKeyring.getAccounts()
-        if (Array.isArray(accounts)) {
-          for (const acc of accounts) {
-            if (acc?.address) addAddress(acc.address)
-          }
+        for (const payment of wallet.getReceivedPayments()) {
+          if (payment?.address) addAddress(payment.address)
         }
       } catch {
         // ignore

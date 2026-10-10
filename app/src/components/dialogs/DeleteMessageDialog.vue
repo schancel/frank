@@ -25,7 +25,7 @@
 
 <script lang="ts">
 import { useChatStore } from 'src/stores/chats'
-import { sweepMessageFundsOnDelete } from 'src/utils/sweep-on-delete'
+import { notifyDeleteFailure } from 'src/utils/sweep-on-delete'
 import { defineComponent } from 'vue'
 
 export default defineComponent({
@@ -51,29 +51,11 @@ export default defineComponent({
     },
   },
   methods: {
+    /** Deletes the message. The store first has the wallet move any money the message brought
+     * to a seed-derived address; if that could not be done the message stays and the reason is
+     * shown. */
     async deleteMessageBoth() {
-      const message =
-        this.chatStore.messages[this.payloadDigest] ||
-        (typeof this.chatStore.getMessageByPayload === 'function'
-          ? this.chatStore.getMessageByPayload(this.payloadDigest)
-          : undefined) ||
-        Object.values(this.chatStore.conversations ?? {})
-          .flatMap(c => c?.messages ?? [])
-          .find(m => m?.payloadDigest === this.payloadDigest)
-
-      // 1. Sweep funds of message into ephemeral change accounts before deleting (inbound messages only)
-      if (message && !message.outbound) {
-        try {
-          await sweepMessageFundsOnDelete({ message })
-        } catch (sweepErr) {
-          console.error(
-            'Failed to sweep message funds prior to delete:',
-            sweepErr,
-          )
-        }
-      }
-
-      // 2. Delete message locally      // 3. Delete message locally
+      const message = this.chatStore.messages[this.payloadDigest]
       try {
         await this.deleteMessage({
           address: this.address,
@@ -82,8 +64,8 @@ export default defineComponent({
             ? { attemptDigest: message.delivery.attemptDigest }
             : {}),
         })
-      } catch (err: any) {
-        console.error('Failed to delete message locally:', err)
+      } catch (err) {
+        notifyDeleteFailure(err)
       }
     },
   },

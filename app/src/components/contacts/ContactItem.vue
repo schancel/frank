@@ -66,6 +66,7 @@
 
 <script lang="ts">
 import { useContactStore } from 'src/stores/contacts'
+import { notifyDeleteFailure } from 'src/utils/sweep-on-delete'
 import { defineComponent } from 'vue'
 import type { ProfilePubKey } from 'src/utils/profile-pubkey'
 import { pubKeyToColor } from 'src/utils/formatting'
@@ -94,7 +95,9 @@ export default defineComponent({
   setup() {
     const contactStore = useContactStore()
     return {
-      deleteContact: contactStore.deleteContact,
+      // A message whose money could not be moved to the wallet stays, the contact with it.
+      deleteContact: (address: string) =>
+        contactStore.deleteContact(address).catch(notifyDeleteFailure),
       profileAvatar,
     }
   },

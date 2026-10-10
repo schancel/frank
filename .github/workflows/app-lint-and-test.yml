@@ -65,7 +65,7 @@ jobs:
       # RPC URL and funded testnet wallets, which this job does not have; they are not run here,
       # and nothing here stands in for them.
       - name: Bot launcher and host unit suites
-        run: yarn workspace @frank/bot test --ci --runInBand demo/ qwen-host-safety.jest.test.ts qwen-bot-common.jest.test.ts
+        run: yarn workspace @frank/bot test --ci --runInBand demo/ qwen-host-safety.jest.test.ts qwen-bot-common.jest.test.ts bot-entry-import.jest.test.ts
 
   cashweb-message-store:
     runs-on: ubuntu-latest

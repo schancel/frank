@@ -519,7 +519,13 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     const own = () =>
       alice.runOwnTransfer!(
         async () => {
-          const nonce = await chain.getTransactionCount(identity, 'pending')
+          // A fresh reader: the suite's provider may answer a count from its short cache.
+          const reader = new JsonRpcProvider(mockNode.url, 10143, {
+            staticNetwork: true,
+            cacheTimeout: -1,
+          })
+          const nonce = await reader.getTransactionCount(identity, 'pending')
+          reader.destroy()
           const tx = await signer.sendTransaction({ to, value: 9n, nonce })
           return { txHash: tx.hash, from: identity, nonce }
         },

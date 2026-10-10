@@ -595,7 +595,16 @@ interface MessageWork {
   busy?: Promise<void>
   submit: Pace
   chain: Pace
+  /** When a waiter last made the chain look at this message's payments, and how long the next
+   * waiter's look must wait after it. One look serves every waiter. */
+  lookedAtMs?: number
+  lookGapMs?: number
 }
+/** Waiters for a coin look at its holder's payment at most this often, all of them together. */
+export const HOLDER_LOOK_MS = 1_000
+/** ...and, while the holder's message is not delivered (its payment can land only if the relay
+ * broadcast it before an answer was lost), ever more rarely, up to this. */
+export const HOLDER_LOOK_MAX_MS = 16_000
 interface Pace {
   passes: number
   next: number
@@ -981,6 +990,24 @@ async function settleHolder(
   const work = workOf(owner, consumerId)
   if (work.creating) return
   if (work.busy) return void (await work.busy)
+  // One look per holder, however many sends wait for its coin: a waiter that comes within the
+  // gap of the last look makes none. Undelivered, the gap doubles from a second to sixteen.
+  const now = Date.now()
+  if (
+    work.lookedAtMs !== undefined &&
+    now - work.lookedAtMs < (work.lookGapMs ?? HOLDER_LOOK_MS)
+  )
+    return
+  work.lookedAtMs = now
+  work.lookGapMs =
+    row.outcome === 'delivered'
+      ? HOLDER_LOOK_MS
+      : Math.min(
+          work.lookedAtMs === undefined || work.lookGapMs === undefined
+            ? HOLDER_LOOK_MS
+            : work.lookGapMs * 2,
+          HOLDER_LOOK_MAX_MS,
+        )
   let ended!: () => void
   work.busy = new Promise<void>(resolve => (ended = resolve))
   try {

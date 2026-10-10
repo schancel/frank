@@ -652,6 +652,57 @@ describe('parallel paid messages', () => {
     expect(relayPayments().filter(tx => tx.from!.toLowerCase() === main).map(tx => tx.nonce)).toEqual([0, 1])
   })
 
+  it('five sends waiting for the main account, started at different moments, make one look a second between them, and fewer while the holder is undelivered', async () => {
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    offlineChain.relayBroadcasts = false
+    offlineChain.broadcastDown = true
+    await send(1) // delivered, paid from main; the payment cannot land while the node is down
+    const waiting: Promise<unknown>[] = []
+    providerRequests.length = 0
+    for (let n = 2; n <= 6; n++) {
+      waiting.push(send(n).catch(error => error))
+      await new Promise(resolve => setTimeout(resolve, 170))
+    }
+    await new Promise(resolve => setTimeout(resolve, 3_200))
+    // About four seconds, five waiters out of step with each other: one look a second in all
+    // (a look is one receipt read, and a nonce read when there is no receipt), not five.
+    const receipts = () =>
+      providerRequests.filter(m => m === 'getTransactionReceipt').length
+    expect(receipts()).toBeGreaterThanOrEqual(2)
+    expect(receipts()).toBeLessThanOrEqual(6)
+    offlineChain.broadcastDown = false
+    for (let i = 0; i < 12; i++) {
+      await tick()
+      await new Promise(resolve => setTimeout(resolve, 300))
+    }
+    await Promise.all(waiting)
+    expect(
+      relayPayments()
+        .filter(tx => tx.from!.toLowerCase() === main)
+        .map(tx => tx.nonce)
+        .sort((a, b) => a - b),
+    ).toEqual([0, 1, 2, 3, 4, 5])
+
+    // Undelivered holder: the relay is down for it, so its payment can land only if the relay
+    // broadcast it before an answer was lost. The waiters' looks thin out.
+    f.setPhase('fail')
+    offlineChain.broadcastDown = true
+    await send(7).catch(() => undefined) // stored, signed, undelivered: holds the main account
+    providerRequests.length = 0
+    const behind = [8, 9, 10].map(n => send(n).catch(error => error))
+    await new Promise(resolve => setTimeout(resolve, 5_200))
+    // Looks at 0 s, 2 s and 4 s after the first (the gap doubles), not five or fifteen.
+    expect(receipts()).toBeLessThanOrEqual(4)
+    f.setPhase('delivered')
+    offlineChain.broadcastDown = false
+    for (let i = 0; i < 20; i++) {
+      await tick()
+      await new Promise(resolve => setTimeout(resolve, 300))
+    }
+    await Promise.all(behind)
+  })
+
   it('one account the chain and the wallet disagree about goes out of use; every other send proceeds', async () => {
     REPLACED_AFTER_MS.value = 0
     const [bad, ...good] = await fundAccounts(4)

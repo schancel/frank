@@ -1055,6 +1055,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     ),
   ];
   const runningMainTasks = new WeakMap<EvmChainWalletHandle, number>();
+  const lastOwnLookMs = new WeakMap<EvmChainWalletHandle, number>();
   /** Address -> transfers signed from it outside the journal, not yet seen on chain. */
   const unjournalledTransfers = new WeakMap<
     EvmChainWalletHandle,
@@ -1101,6 +1102,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     const pool = wallet.pool;
     if (typeof pool.accountClaimedBy !== "function") return;
     const holder = mainAccountHolder(wallet);
+    // One look a second for the wallet, however many sends are waiting for the account.
+    if (look) {
+      const last = lastOwnLookMs.get(wallet);
+      if (last !== undefined && Date.now() - last < 1_000) look = false;
+      else lastOwnLookMs.set(wallet, Date.now());
+    }
     for (const address of mainAccountAddresses(wallet)) {
       if (pool.accountClaimedBy(address) !== holder) continue;
       if (look) await lookAtOwnTransactions(wallet, address);

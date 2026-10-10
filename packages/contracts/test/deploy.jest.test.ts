@@ -11,6 +11,7 @@ import { compileSolidity } from '../scripts/compile'
 import {
   DEPLOY_SALT,
   DETERMINISTIC_DEPLOYMENT_PROXY,
+  confirmedSender,
   createProvider,
   deployContracts,
   planDeployment,
@@ -178,6 +179,22 @@ describe('deploying to a local EVM node', () => {
       await deployContracts({ signer: deployer, chainIdentifier: 'local-31337', outDir }),
     ).toEqual(record)
     expect(await anvil.provider.getTransactionCount(deployer.address)).toBe(nonce)
+  }, 60_000)
+
+  it('reads the nonce before each send, so another process can send from the same wallet in between', async () => {
+    const [wallet, other] = anvil.accounts
+    const send = confirmedSender(wallet)
+    const start = await anvil.provider.getTransactionCount(wallet.address)
+
+    const first = await send({ to: other.address, value: 1n })
+    // Another process using the same key.
+    await (await wallet.sendTransaction({ to: other.address, value: 1n })).wait()
+    const second = await send({ to: other.address, value: 1n })
+
+    const nonceOf = async (hash: string) => (await anvil.provider.getTransaction(hash))!.nonce
+    expect(await nonceOf(first.hash)).toBe(start)
+    expect(await nonceOf(second.hash)).toBe(start + 2)
+    expect(second.status).toBe(1)
   }, 60_000)
 
   it('takes a canonical chain identifier and refuses a node that is another chain', async () => {

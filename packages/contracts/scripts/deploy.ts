@@ -124,6 +124,49 @@ export async function planDeployment(
   return plan
 }
 
+const NONCE_TAKEN = new Set([
+  'NONCE_EXPIRED',
+  'REPLACEMENT_UNDERPRICED',
+  'TRANSACTION_REPLACED',
+])
+
+/**
+ * Returns a function that sends one transaction and resolves with its successful receipt.
+ *
+ * The wallet may be shared with other processes, so the pending nonce is read immediately
+ * before each send, never below one past the last nonce this sender saw confirmed (a node
+ * can lag). When the node refuses the nonce, or another transaction is mined at it, ours
+ * did not land: the nonce is read again and the transaction is sent again.
+ */
+export function confirmedSender(signer: ethers.Signer) {
+  let floor = 0
+  return async (
+    request: ethers.TransactionRequest,
+    onSent?: (hash: string) => void,
+  ): Promise<ethers.TransactionReceipt> => {
+    const from = await signer.getAddress()
+    for (let attempt = 1; ; attempt++) {
+      const pending = await signer.provider!.getTransactionCount(from, 'pending')
+      const nonce = Math.max(pending, floor)
+      try {
+        const tx = await signer.sendTransaction({ ...request, nonce })
+        onSent?.(tx.hash)
+        const receipt = await tx.wait()
+        if (!receipt || receipt.status !== 1) {
+          throw new Error(`transaction ${tx.hash} failed`)
+        }
+        floor = nonce + 1
+        return receipt
+      } catch (err) {
+        const code = (err as { code?: string }).code
+        const repriced = (err as { reason?: string }).reason === 'repriced'
+        if (!code || !NONCE_TAKEN.has(code) || repriced || attempt >= 6) throw err
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+    }
+  }
+}
+
 type ContractEntries = Partial<Record<DeployedContractName, ContractDeployment>>
 
 function readEntries(file: string): ContractEntries {
@@ -165,9 +208,7 @@ export async function deployContracts(options: {
 
   const plan = await planDeployment(provider, deployer, salt)
   const contracts = {} as Record<DeployedContractName, ContractDeployment>
-  // Counted here rather than asked of the node before each send: a node (or a provider's
-  // short cache) can still report the old count right after the first transaction.
-  let nonce = await provider.getTransactionCount(deployer, 'pending')
+  const send = confirmedSender(signer)
   for (const item of plan) {
     const artifact = ARTIFACTS[item.contract]
     const previous = existing[item.contract]
@@ -184,13 +225,10 @@ export async function deployContracts(options: {
       continue
     }
 
-    const tx = await signer.sendTransaction({ ...item.transaction!, nonce })
-    nonce += 1
-    log(`${item.contract}: sent ${tx.hash}`)
-    const receipt = await tx.wait()
-    if (!receipt || receipt.status !== 1) {
-      throw new Error(`${item.contract}: deployment transaction ${tx.hash} failed`)
-    }
+    const receipt = await send(item.transaction!, hash =>
+      log(`${item.contract}: sent ${hash}`),
+    )
+    const tx = { hash: receipt.hash }
     const address = item.predictedAddress ?? receipt.contractAddress
     if (!address) {
       throw new Error(`${item.contract}: ${tx.hash} created no contract`)

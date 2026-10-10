@@ -12,7 +12,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { ethers } from 'ethers'
 import GenericHTLCArtifact from '../artifacts/GenericHTLC.json'
-import { resolveCliTarget, type DeploymentRecord } from './deploy'
+import { confirmedSender, resolveCliTarget, type DeploymentRecord } from './deploy'
 
 const LOCK = 'lock(bytes32,address,address,bytes32,uint256)'
 
@@ -38,23 +38,20 @@ export async function htlcRound(options: {
   const self = await signer.getAddress()
   const htlc = new ethers.Contract(htlcAddress, GenericHTLCArtifact.abi, signer)
 
-  // The nonce is counted here, and state is read at the block of the transaction that
-  // changed it: a node can still answer from before that transaction for a moment.
-  let nonce = await provider.getTransactionCount(self, 'pending')
+  // State is read at the block of the transaction that changed it: a node can still answer
+  // from before that transaction for a moment.
+  const confirmed = confirmedSender(signer)
   const send = async (
     label: string,
     method: string,
     args: unknown[],
     value?: bigint,
   ): Promise<ethers.TransactionReceipt> => {
-    const sent: ethers.ContractTransactionResponse = await htlc[method](...args, {
-      nonce,
+    const request = await htlc[method].populateTransaction(...args, {
       ...(value === undefined ? {} : { value }),
     })
-    nonce += 1
-    const receipt = await sent.wait()
-    if (!receipt || receipt.status !== 1) throw new Error(`${label} ${sent.hash} failed`)
-    log(`${label}: ${sent.hash}`)
+    const receipt = await confirmed(request)
+    log(`${label}: ${receipt.hash}`)
     return receipt
   }
   const lockAt = async (lockId: string, receipt: ethers.TransactionReceipt) => {

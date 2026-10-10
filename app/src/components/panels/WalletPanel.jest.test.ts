@@ -393,3 +393,15 @@ test('starts background worker on mount and stops it on unmount', () => {
   view.unmount()
   expect(mockStopBackgroundWorker).toHaveBeenCalledTimes(1)
 })
+
+test('the drawer header keeps the title and the AVU note as two unbroken groups of one wrapping row', () => {
+  const view = render()
+  const row = view.get('.wallet-header-row')
+  const [title, note] = Array.from(row.element.children)
+  expect(title.classList.contains('wallet-header-title')).toBe(true)
+  expect(title.textContent).toContain(t('walletPanel.title'))
+  expect(note.getAttribute('data-test')).toBe('drawer-avu-explainer-link')
+  expect(note.textContent).toContain(t('walletPanel.avuDrawerHeader'))
+  // The note is no longer a side column squeezed beside the title.
+  expect(note.closest('.q-item-section--side')).toBeNull()
+})

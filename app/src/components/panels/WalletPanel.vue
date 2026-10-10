@@ -8,30 +8,32 @@
       <q-list class="full-width">
         <q-separator />
         <q-item class="wallet-header-item">
+          <!-- Title with the total, then the AVU note: each stays on one line, and the note
+          moves to a second line when the drawer is too narrow for both. -->
           <q-item-section>
-            <div class="row items-center no-wrap">
-              <span class="text-subtitle1 text-weight-bold">{{
-                $t('walletPanel.title')
-              }}</span>
-              <span
-                v-if="portfolioTotalAvu"
-                class="text-caption text-weight-medium text-grey-8 q-ml-sm"
-                data-test="portfolio-total-avu"
+            <div class="wallet-header-row">
+              <div class="wallet-header-title">
+                <span class="text-subtitle1 text-weight-bold">{{
+                  $t('walletPanel.title')
+                }}</span>
+                <span
+                  v-if="portfolioTotalAvu"
+                  class="text-caption text-weight-medium text-grey-8 q-ml-sm"
+                  data-test="portfolio-total-avu"
+                >
+                  ({{ portfolioTotalAvu }})
+                  <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+                </span>
+              </div>
+              <div
+                class="wallet-header-note text-caption text-weight-medium text-primary cursor-pointer"
+                data-test="drawer-avu-explainer-link"
+                @click.stop="showAvuDialog = true"
               >
-                ({{ portfolioTotalAvu }})
+                <span>{{ $t('walletPanel.avuDrawerHeader') }}</span>
+                <q-icon name="help_outline" size="13px" class="q-ml-xs" />
                 <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
-              </span>
-            </div>
-          </q-item-section>
-          <q-item-section side>
-            <div
-              class="text-caption text-weight-medium text-primary cursor-pointer row items-center no-wrap q-gutter-xs"
-              data-test="drawer-avu-explainer-link"
-              @click.stop="showAvuDialog = true"
-            >
-              <span>{{ $t('walletPanel.avuDrawerHeader') }}</span>
-              <q-icon name="help_outline" size="13px" />
-              <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
+              </div>
             </div>
           </q-item-section>
         </q-item>
@@ -97,17 +99,18 @@
               <q-item-label
                 caption
                 :role="wallet.isMain ? 'status' : undefined"
-                class="row items-center no-wrap ellipsis text-grey-8"
+                class="wallet-balance-line text-grey-8"
               >
                 <span :data-test="wallet.balanceDataTest">{{
                   getWalletBalance(wallet)
                 }}</span>
                 <span
                   v-if="getWalletAvu(wallet)"
-                  class="text-grey-7 q-ml-xs no-shrink"
+                  class="text-grey-7 no-shrink"
                   :data-test="`${wallet.id}-wallet-avu`"
                 >
-                  · {{ getWalletAvu(wallet) }}
+                  <span class="wallet-avu-separator" aria-hidden="true">· </span
+                  >{{ getWalletAvu(wallet) }}
                   <q-tooltip>{{ $t('walletPanel.avuTooltip') }}</q-tooltip>
                 </span>
               </q-item-label>
@@ -413,6 +416,44 @@ function openBackup() {
 
 .no-shrink {
   flex-shrink: 0;
+}
+
+.wallet-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 8px;
+}
+
+.wallet-header-title,
+.wallet-header-note {
+  white-space: nowrap;
+}
+
+.wallet-header-note {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The balance, then its AVU value on a line of its own: side by side they do not fit the
+   drawer and the AVU value was cut off. */
+.wallet-balance-line {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.wallet-balance-line > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Only separates the two values when they are read as one run of text. */
+.wallet-avu-separator {
+  display: none;
 }
 
 .rename-wallet-btn {

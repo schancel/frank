@@ -53,7 +53,13 @@
 
     <q-page-container>
       <q-page class="q-ma-none q-pa-none">
-        <q-scroll-area class="absolute full-width full-height">
+        <!-- The content is held to the viewport width: the tab bar scrolls inside it instead of
+        widening the whole page past a phone's screen. -->
+        <q-scroll-area
+          class="absolute full-width full-height"
+          :content-style="{ width: '100%', minWidth: '100%' }"
+          :content-active-style="{ width: '100%', minWidth: '100%' }"
+        >
           <div class="wallet-scroll-content">
             <q-card
               flat
@@ -69,6 +75,7 @@
                 indicator-color="primary"
                 align="justify"
                 narrow-indicator
+                outside-arrows
                 data-testid="wallet-tabs"
               >
                 <q-tab
@@ -120,7 +127,7 @@
                       }}
                       <span
                         v-if="balanceObservation && balanceObservation.cordoned"
-                        class="text-weight-regular text-grey-7"
+                        class="text-weight-regular text-grey-7 wallet-balance-bracket"
                         data-testid="wallet-balance-cordoned"
                       >
                         ({{
@@ -844,6 +851,12 @@ export default defineComponent({
   width: 100%;
   max-width: 680px;
   margin: 0 auto;
+}
+
+/* The bracket wraps whole under the total instead of breaking in the middle. */
+.wallet-balance-bracket {
+  display: inline-block;
+  white-space: nowrap;
 }
 
 @media (max-width: 600px) {

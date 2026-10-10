@@ -2459,48 +2459,110 @@ export class MonadCanonicalStampClient {
     })
   }
 
+  /**
+   * Replays one promoted attempt: the identical frozen bytes, once, to the installed relay.
+   *
+   * Three steps, so that the wallet queue is never held while the relay is being waited on:
+   *
+   *   1. Inside the wallet queue: check the permit against the whole journal, correlate, pass the
+   *      input admission, and mark the attempt as being replayed in the journal. A second `submit`
+   *      of the same attempt is refused here, with no request, for as long as the mark is set.
+   *   2. Outside the wallet queue, under the wallet lifetime only: send the frozen request.
+   *      Nothing is selected, signed, released or written, and no store is touched.
+   *   3. Inside the wallet queue again, and only when the relay gave an authenticated final
+   *      answer: record it against the same record, if that record is still unanswered. A kept
+   *      ("retained") answer and an unknown outcome record nothing and take no queue entry.
+   *
+   * The wallet lifetime spans all three steps. Close therefore waits for the request (bounded by
+   * the transport's deadline) and the journal stays open until the mark is cleared. A close that
+   * begins between steps 1 and 2 makes no request; one that begins during step 2 has step 3
+   * refused, so the answer is dropped, nothing is written, and `submit` rejects. The mark is
+   * memory only and is cleared on every exit, whether or not step 3 was admitted.
+   */
   submit(
     eligibility: CanonicalWalletEligibility,
     options: { fetch?: CanonicalFetch; signal?: AbortSignal } = {},
   ): Promise<CanonicalAcceptedBody> {
-    return this.wallet.runCanonicalExclusive(async lifetime => {
-      const token = this.tokens.get(eligibility)
-      this.tokens.delete(eligibility)
-      if (!token || token.snapshot !== this.snapshot())
-        throw new Error('canonical-wallet:reconcile-required')
-      const found = this.lookup(token.link.prepared)
-      if (!found || found.kind !== 'attempt' || found.record.terminal !== null)
-        throw new Error('canonical-wallet:attempt-required')
-      const attempt = found.record
-      const results = this.journal.reconcile(
-        this.journal.getAll().map(a => ({
-          attemptRef: a.attemptRef,
-          prepared: a.prepared,
-          request: a.request,
-          reservations: a.reservations,
-          consumerId: a.consumerId,
-        })),
-      )
-      const result = results.find(r => r.attemptRef === attempt.attemptRef)
-      if (!result || result.state !== 'ready')
-        throw new Error('canonical-wallet:replay-hold')
-      // Admission must be durable-owner confirmed before any byte reaches the relay.
-      await this.writer(lifetime).beginReplay(result.eligibility)
+    return this.wallet.walletState.runLifetime(async session => {
+      // Set only once the journal holds the mark, so every later exit knows to clear it.
+      let marked: CanonicalWalletEligibility | undefined
       try {
+        // Step 1.
+        const attempt = await this.wallet.runCanonicalExclusive(
+          async lifetime => {
+            const token = this.tokens.get(eligibility)
+            this.tokens.delete(eligibility)
+            // The whole journal, as for `finishIntent`: a record that appeared, changed or went
+            // away after the permit was issued requires a new correlation first.
+            if (!token || token.snapshot !== this.snapshot())
+              throw new Error('canonical-wallet:reconcile-required')
+            const found = this.lookup(token.link.prepared)
+            if (
+              !found ||
+              found.kind !== 'attempt' ||
+              found.record.terminal !== null
+            )
+              throw new Error('canonical-wallet:attempt-required')
+            const results = this.journal.reconcile(
+              this.journal.getAll().map(a => ({
+                attemptRef: a.attemptRef,
+                prepared: a.prepared,
+                request: a.request,
+                reservations: a.reservations,
+                consumerId: a.consumerId,
+              })),
+            )
+            const result = results.find(
+              r => r.attemptRef === found.record.attemptRef,
+            )
+            if (!result || result.state !== 'ready')
+              throw new Error('canonical-wallet:replay-hold')
+            // Admission must be durable-owner confirmed before any byte reaches the relay.
+            await this.writer(lifetime).beginReplay(result.eligibility)
+            marked = result.eligibility
+            return found.record
+          },
+        )
+        // Step 2. No queue is held from here until step 3.
+        this.wallet.walletState.assertOpen()
         const accepted = await submitCanonicalRequest({
           installedRelayOrigin: this.wallet.relayBaseUrl,
           expectedNetworkTag: this.wallet.installedNetworkTag,
           request: attempt.request,
           ...options,
         })
-        if (accepted.phase !== 'retained')
-          await this.writer(lifetime).recordTerminal(
-            attempt.attemptRef,
-            accepted,
+        if (accepted.phase === 'retained') return accepted
+        // Step 3. A refused queue entry (the wallet closed meanwhile) drops the answer.
+        return await this.wallet.runCanonicalExclusive(async lifetime => {
+          this.assertOwner()
+          const current = this.journal
+            .getAll()
+            .find(a => a.attemptRef === attempt.attemptRef)
+          // An answer for a record that was meanwhile answered, cleaned up or replaced is not
+          // written over what the journal holds; the caller reads the journal for the outcome.
+          if (
+            current &&
+            current.terminal === null &&
+            equalCanonicalRequests(current.request, attempt.request)
           )
-        return accepted
+            await this.writer(lifetime).recordTerminal(
+              attempt.attemptRef,
+              accepted,
+            )
+          const replay = marked!
+          marked = undefined
+          this.writer(lifetime).endReplay(replay)
+          return accepted
+        })
       } finally {
-        this.writer(lifetime).endReplay(result.eligibility)
+        if (marked !== undefined) {
+          try {
+            this.writer(session).endReplay(marked)
+          } catch {
+            // Only a faulted, closed or reopened journal refuses, and each of those has already
+            // dropped every mark. The error that brought us here is the one to report.
+          }
+        }
       }
     })
   }

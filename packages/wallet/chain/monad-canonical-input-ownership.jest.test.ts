@@ -27,6 +27,8 @@
  * reached the wallet's journal and the relay, not only which error came back.
  *
  * Tests labelled "pin" assert today's blocking and are inverted by the stage named in the label.
+ * The Stage 0 pin for the wallet queue (row 0.1) has been inverted by Stage 1 into a proof: the
+ * wallet queue is no longer held while a relay request is in flight.
  * The last test is the proof for #1323: an attempt the relay ended no longer blocks later sends.
  */
 // First: the mock factories below load this file while the wallet modules are still loading.
@@ -1112,12 +1114,13 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
     } as WalletSyncItem
   }
 
-  // PIN, contract row 0.1 - Stage 1 of #1236 inverts this: while paid message A's relay request is
-  // entered and unanswered, a native send and an incoming sync spend do not start; after the relay
-  // answers both complete. "Not started" is shown by the operation's own first observable effect
-  // (the signing callback, the chain reads, the broadcast, the pool row's write) not having
-  // happened after many macrotask turns, while the held request is provably the thing in flight.
-  it('pin (Stage 1 of #1236 inverts this): with A\'s relay request unanswered, a native send and a sync spend do not start until it answers', async () => {
+  // PROOF, #1236 Stage 1 (contract row 1.1; this was the Stage 0 pin, row 0.1, inverted). On main
+  // the relay request ran inside the wallet queue, so with A's request entered and unanswered a
+  // native send and an incoming sync spend took no first step until the relay answered (up to the
+  // transport's 60 seconds). Now both run to completion while the request is still unanswered, on
+  // inputs that are not A's, and A then completes normally. A is still in flight throughout: its
+  // record is byte-identical, it made one relay request, and its `send` has not settled.
+  it('#1236 Stage 1: with A\'s relay request unanswered, a native send and a sync spend both complete on inputs disjoint from A\'s, and A completes when the relay answers', async () => {
     const hold = f.holdNextRelayRequest()
     const a = watch(send('message A'))
     await hold.entered
@@ -1125,46 +1128,59 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
     // A's payments are signed and journaled; its relay request is in flight and unanswered.
     expect(counts()).toMatchObject({ intents: 0, attempts: 1, relayRequests: 1 })
     expect(a.seen.settled).toBe(false)
+    const heldByA = heldIndices()
+    const [attemptA] = journal().getAll()
+    const sendersOfA = (
+      attemptA.request as { parts: { transactions: Uint8Array[] } }
+    ).parts.transactions.map(raw => Transaction.from(hexlify(raw)).from!.toLowerCase())
+    expect(sendersOfA).toHaveLength(heldByA.size)
+    expect(heldByA.size).toBeGreaterThan(0)
+    const recordA = JSON.stringify(attemptA)
+    const rowsOfA = [...heldByA].map(status)
     // A row A does not hold, for the sync item to spend.
     const [spare] = extraRows(1)
-    expect(heldIndices().has(spare)).toBe(false)
+    expect(heldByA.has(spare)).toBe(false)
     const item = await syncSpendOf(spare)
     expect(status(spare)).toBe('available')
-    const rpcBefore = providerRequests.length
     let nativeSigned = false
+    sign.mockClear()
 
-    const native = watch(
+    const [native, synced] = await Promise.all([
       alice.sendNative({
         recipient: f.bob.identity.address,
         value: 1_000n,
         onSigned: async () => void (nativeSigned = true),
       }),
-    )
-    const synced = watch(applyWalletSyncItem(alice, item))
-    await turns(10)
+      applyWalletSyncItem(alice, item),
+    ])
 
-    // Neither has taken a first step: no signature, no chain read, no broadcast, no pool write.
-    expect(nativeSigned).toBe(false)
-    expect(providerRequests.length).toBe(rpcBefore)
-    expect(providerBroadcasts).toHaveLength(0)
-    expect(status(spare)).toBe('available')
-    expect(native.seen.settled).toBe(false)
-    expect(synced.seen.settled).toBe(false)
+    // Both finished, and the relay still has not answered A.
     expect(a.seen.settled).toBe(false)
     expect(relayBodies).toHaveLength(1)
+    expect(native.txHash).toMatch(/^0x[0-9a-f]{64}$/)
+    expect(nativeSigned).toBe(true)
+    expect(providerBroadcasts).toHaveLength(1)
+    expect(synced).toEqual({ affectedIndices: [spare] })
+    expect(status(spare)).toBe('spent')
+    // Disjoint inputs: the native send spent from no account A's payments spend from, the sync
+    // spend consumed a row A does not hold, and neither moved A's rows or its record.
+    expect(sendersOfA).not.toContain(providerBroadcasts[0].from)
+    expect(sendersOfA).not.toContain(alice.pool.getRecord(spare)!.address.toLowerCase())
+    expect(heldIndices()).toEqual(heldByA)
+    expect([...heldByA].map(status)).toEqual(rowsOfA)
+    expect(JSON.stringify(journal().getAll()[0])).toBe(recordA)
+    // Nothing of A's was signed again while its request was in flight.
+    expect(sign).not.toHaveBeenCalled()
+    expect(counts()).toMatchObject({ intents: 0, attempts: 1, relayRequests: 1, paymentSets: 1 })
 
     hold.release('delivered')
-    await Promise.all([a.done, native.done, synced.done])
+    await a.done
 
     expect(a.seen.value?.error).toBeUndefined()
     expect(a.seen.value?.result).toBeDefined()
-    expect(native.seen.error).toBeUndefined()
-    expect(synced.seen.error).toBeUndefined()
-    expect(nativeSigned).toBe(true)
+    expect(bobInbox).toHaveLength(1)
     expect(providerBroadcasts).toHaveLength(1)
-    expect(status(spare)).toBe('spent')
-    expect(synced.seen.value).toEqual({ affectedIndices: [spare] })
-    expect(counts()).toMatchObject({ intents: 0, attempts: 0, paymentSets: 1 })
+    expect(counts()).toMatchObject({ intents: 0, attempts: 0, relayRequests: 1, paymentSets: 1 })
   })
 
   // PIN, contract row 0.2 - Stage 2 of #1236 inverts this: with A's relay request unanswered inside

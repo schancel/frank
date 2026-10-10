@@ -399,7 +399,7 @@ export default {
   },
   walletPanel: {
     cordonedNote:
-      'Plus {amount} à votre adresse de profil, que ce portefeuille ne dépense pas.',
+      'Plus {amount} à votre adresse de profil, non compté dans le solde ci-dessus.',
     title: 'Portefeuilles',
     mainWallet: 'Portefeuille principal',
     renameWallet: 'Renommer le portefeuille',

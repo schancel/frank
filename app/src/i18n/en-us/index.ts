@@ -391,7 +391,7 @@ export default {
   },
   walletPanel: {
     cordonedNote:
-      'Plus {amount} at your profile address, which this wallet does not spend from.',
+      'Plus {amount} at your profile address, not counted in the balance above.',
     title: 'Wallets',
     mainWallet: 'Main wallet',
     renameWallet: 'Rename wallet',

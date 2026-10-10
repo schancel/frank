@@ -131,9 +131,10 @@
                             )
                       }}
                     </div>
-                    <!-- Money at the profile address is this account's, but the wallet does not
-                    spend from there: said beside the balance, never added into it, so the
-                    balance is the same figure here, in the wallet list and beside the chats. -->
+                    <!-- Money at the profile address is this account's, but it is not part of the
+                    wallet's balance figure: said beside the balance, never added into it, so
+                    the balance is the same figure here, in the wallet list and beside the
+                    chats. -->
                     <div
                       v-if="balanceObservation?.cordoned"
                       class="text-caption text-grey-7 text-center"

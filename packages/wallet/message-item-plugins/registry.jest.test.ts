@@ -1,3 +1,4 @@
+import { standaloneDecodeContext } from './shared/plugin-contract.testutil'
 import type { MessageItem, TextItem } from '@frank/cashweb/types/messages'
 
 import {
@@ -57,7 +58,13 @@ describe('message item registry', () => {
       type: 'text',
       bytes: Uint8Array.of(0x68, 0x69),
     })
-    expect(registry.decodeItem('text', Uint8Array.of(0x68, 0x69))).toEqual({
+    expect(
+      registry.decodeItem(
+        'text',
+        Uint8Array.of(0x68, 0x69),
+        standaloneDecodeContext(),
+      ),
+    ).toEqual({
       kind: 'item',
       item: { type: 'text', text: 'hi' },
     })
@@ -74,7 +81,9 @@ describe('message item registry', () => {
       }),
     )
     expect(registry.encodeItem({ type: 'text', text: 'x' }).bytes).toBe(bytes)
-    expect(registry.decodeItem('text', bytes)).toEqual({
+    expect(
+      registry.decodeItem('text', bytes, standaloneDecodeContext()),
+    ).toEqual({
       kind: 'item',
       item: { type: 'text', text: 'x' },
     })
@@ -83,9 +92,9 @@ describe('message item registry', () => {
   it('lets a malformed item of a known type fail with the typed error', () => {
     const registry = createMessageItemRegistry()
     registry.register(textPlugin())
-    expect(() => registry.decodeItem('text', new Uint8Array())).toThrow(
-      MessageItemDecodeError,
-    )
+    expect(() =>
+      registry.decodeItem('text', new Uint8Array(), standaloneDecodeContext()),
+    ).toThrow(MessageItemDecodeError)
   })
 
   it('preserves an unregistered type and its bytes instead of interpreting them', () => {
@@ -93,7 +102,11 @@ describe('message item registry', () => {
     const decode = jest.fn()
     registry.register(textPlugin({ decode }))
     const bytes = Uint8Array.of(1, 2, 3)
-    const result = registry.decodeItem('hologram', bytes)
+    const result = registry.decodeItem(
+      'hologram',
+      bytes,
+      standaloneDecodeContext(),
+    )
     expect(result).toEqual({
       kind: 'unsupported',
       type: 'hologram',

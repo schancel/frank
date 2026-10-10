@@ -38,7 +38,12 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'wallet-sync': true,
   'payment-transfer': true,
   'email': true,
+  // Not a plugin: what a reader keeps in place of an item it cannot interpret.
+  'unsupported': true,
 }
+
+/** `MessageItem` members that deliberately have no plugin. */
+const NOT_PLUGINS = new Set(['unsupported'])
 
 /** The `type` literals of `MessageItem`, read from the declaration by the TypeScript checker, so
  * this does not depend on the list above being kept in step by hand. */
@@ -101,8 +106,13 @@ describe('default message item registry', () => {
     const declared = declaredItemTypes()
     expect(Object.keys(EVERY_ITEM_TYPE).sort()).toEqual(declared)
     expect(DEFAULT_MESSAGE_ITEM_PLUGINS.map(([type]) => type).sort()).toEqual(
-      declared,
+      declared.filter(type => !NOT_PLUGINS.has(type)),
     )
+    // An item no reader could interpret is never given a plugin, so it can never be sent.
+    const registry = createDefaultMessageItemRegistry(
+      pluginCapabilitiesNotYetAvailable,
+    )
+    for (const type of NOT_PLUGINS) expect(registry.has(type)).toBe(false)
   }, 120_000)
 
   it('has exactly one directory per plugin, each with plugin.ts and codec.ts', () => {
@@ -180,5 +190,33 @@ describe('default message item registry', () => {
     }
     visit(walletRoot)
     expect(offenders).toEqual([])
+  })
+
+  it('the canonical message path takes its items from the registry contract and the wire rule only', () => {
+    const importsOf = (file: string) =>
+      [
+        ...readFileSync(join(__dirname, '..', file), 'utf8').matchAll(
+          /from\s+['"]([^'"]*message-item-plugins[^'"]*|\.\/[^'"]*)['"]/g,
+        ),
+      ].map(match => match[1])
+    expect(
+      importsOf('chain/monad-canonical-dm.ts').filter(path =>
+        path.includes('message-item-plugins'),
+      ),
+    ).toEqual([
+      '../message-item-plugins/registry',
+      '../message-item-plugins/wire',
+    ])
+    // The contract and the wire rule themselves name no plugin and no composition.
+    expect(importsOf('message-item-plugins/registry.ts')).toEqual([])
+    expect(importsOf('message-item-plugins/wire.ts')).toEqual(['./registry'])
+    // The old hard-coded chain is gone: the path encodes and projects no item type itself.
+    const source = readFileSync(
+      join(__dirname, '..', 'chain/monad-canonical-dm.ts'),
+      'utf8',
+    )
+    expect(source).not.toMatch(
+      /encode(BlackjackHandV3|ChannelUpdate|EmailMessage|StealthMessage)Item|directMessageText|cannot carry/,
+    )
   })
 })

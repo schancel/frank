@@ -43,6 +43,7 @@ import {
   type HandItem,
   type HandState,
 } from '../message-item-plugins/blackjack/hand'
+import { withDefaultMessageItems } from './message-items.testutil'
 
 export const START_BALANCE = 10n ** 18n
 export const STAMP = 1_000n
@@ -231,7 +232,7 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
     walletStorageLocation: join(directory, 'wallet'),
     ...overrides,
   }
-  const chain = createEvmChain(config)
+  const chain = withDefaultMessageItems(createEvmChain(config))
   const alice = (await chain.createWallet(roots(0))) as EvmChainWalletHandle,
     bob = (await chain.createWallet(roots(1))) as EvmChainWalletHandle
   // Both players hold spendable money in their own account; stamps are funded from it.

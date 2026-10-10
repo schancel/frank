@@ -14,7 +14,11 @@ import type {
   CanonicalBlackjackMoveItem,
 } from '@frank/cashweb/types/messages'
 
-import { MessageItemDecodeError, MessageItemEncodeError } from '../registry'
+import {
+  MessageItemDecodeError,
+  MessageItemEncodeError,
+  type MessageItemDecodeContext,
+} from '../registry'
 import { detailOf } from '../shared/cbor-fields'
 import { decodeWith, openItemFrame } from '../shared/frame'
 
@@ -26,8 +30,11 @@ export function encodeBlackjackMove(item: BlackjackMoveItem): Uint8Array {
   }
 }
 
-export function decodeBlackjackMove(bytes: Uint8Array): BlackjackMoveItem {
-  const parsed = openItemFrame('blackjack-move', bytes)
+export function decodeBlackjackMove(
+  bytes: Uint8Array,
+  context: MessageItemDecodeContext,
+): BlackjackMoveItem {
+  const parsed = openItemFrame('blackjack-move', bytes, context)
   if (isBlackjackHandFrame(parsed) || isBlackjackHandV3Frame(parsed))
     throw new MessageItemDecodeError(
       'blackjack-move',

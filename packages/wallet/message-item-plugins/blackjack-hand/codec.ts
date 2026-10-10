@@ -10,15 +10,21 @@ import {
   type BlackjackHandV3Item,
 } from '@frank/codec'
 
-import { MessageItemDecodeError } from '../registry'
+import {
+  MessageItemDecodeError,
+  type MessageItemDecodeContext,
+} from '../registry'
 import { decodeWith, openItemFrame } from '../shared/frame'
 
 export function encodeBlackjackHand(item: BlackjackHandV3Item): Uint8Array {
   return encodeBlackjackHandV3Item(item)
 }
 
-export function decodeBlackjackHand(bytes: Uint8Array): BlackjackHandV3Item {
-  const parsed = openItemFrame('blackjack-hand', bytes)
+export function decodeBlackjackHand(
+  bytes: Uint8Array,
+  context: MessageItemDecodeContext,
+): BlackjackHandV3Item {
+  const parsed = openItemFrame('blackjack-hand', bytes, context)
   if (!isBlackjackHandV3Frame(parsed))
     throw new MessageItemDecodeError(
       'blackjack-hand',

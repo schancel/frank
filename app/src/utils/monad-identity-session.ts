@@ -19,6 +19,8 @@ import {
   prepareMonadNextRevisionExport,
   prepareMonadRevisionZeroExport,
 } from '@frank/wallet/chain/monad-chain'
+import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
+import { messageItems } from './message-items'
 import { openBrowserDirectoryStore } from '@frank/directory-admission/browser'
 import type { DirectoryFetch } from '@frank/cashweb/relay/directory-client'
 import {
@@ -174,7 +176,23 @@ function productionDeps(): MessagingDeps {
         },
       },
     },
-    install: installCanonicalDirectory,
+    // The wallet's directory and the message-item plugins it sends and receives with.
+    install: (wallet, directory) => {
+      const removeMessageItems = installMessageItemRegistry(
+        wallet,
+        messageItems,
+      )
+      try {
+        const removeDirectory = installCanonicalDirectory(wallet, directory)
+        return () => {
+          removeDirectory()
+          removeMessageItems()
+        }
+      } catch (error) {
+        removeMessageItems()
+        throw error
+      }
+    },
     startPolling: startDirectMessagePolling,
     startReconcile: startOutgoingReconciliation,
     // 5 s, 10 s, 20 s ... capped at 5 minutes.

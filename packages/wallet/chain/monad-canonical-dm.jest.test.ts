@@ -15,6 +15,7 @@ import {
   decodePokerGamePayload,
   decodeRafflePayload,
   decodeSwapOfferPayload,
+  defaultContext,
   encodeChannelUpdateItem,
   encodeDiceGamePayload,
   encodeFrame,
@@ -25,6 +26,7 @@ import {
   isChannelUpdateItemFrame,
   parseFrame,
   projectChannelUpdateItem,
+  standaloneItemBudget,
   toHex,
   validateChannelSequence,
   validateChannelTransition,
@@ -52,6 +54,7 @@ import {
 import type { ChannelUpdateItem, MessageItem } from '@frank/cashweb/types/messages'
 import { createDefaultMessageItemRegistry } from '../message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '../message-item-plugins/registry'
+import { decodeItemFrames } from '../message-item-plugins/wire'
 import corpus from '../../../docs/protocol/cbor/vectors/dm-runtime.json'
 
 describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
@@ -907,23 +910,21 @@ describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
       const textFrameBytes = directMessageText('hello world')
       const parsedText = parseFrame(textFrameBytes)
 
-      const opaqueUnknown = {
-        kind: 'opaque' as const,
-        typeId: 9999,
-        frame: new Uint8Array(4),
-      }
+      // A frame type this reader has no item for, as the codec returns it: retained exactly.
+      const unknownFrame = fromHex(
+        '46524e4b010000000ea4001affff0001010102010341a0',
+      )
+      const retainedUnknown = parseFrame(
+        unknownFrame,
+        defaultContext({ opaqueRetentionAllowed: true }),
+      )
 
-      // Simulate mapping from monad-canonical-dm.ts lines 924-946
-      const mapItem = (item: any): MessageItem => {
-        return item.kind === 'parsed' && item.typed?.type === 17
-          ? { type: 'text' as const, text: item.typed.text }
-          : item.kind === 'parsed' && isChannelUpdateItemFrame(item)
-          ? projectChannelUpdateItem(item)
-          : {
-              type: 'text' as const,
-              text: '[This message item is not supported yet]',
-            }
-      }
+      // The receive path's own projection: every item goes through the installed registry.
+      const registry = createDefaultMessageItemRegistry(
+        pluginCapabilitiesNotYetAvailable,
+      )
+      const mapItem = (item: any): MessageItem =>
+        decodeItemFrames(registry, [item], standaloneItemBudget())[0]
 
       const mappedChannel = mapItem(parsedChannel)
       expect(mappedChannel.type).toBe('channel-update')
@@ -939,11 +940,13 @@ describe('canonical DM pipeline: Type 24 channel-update items (#965)', () => {
         expect(mappedText.text).toBe('hello world')
       }
 
-      const mappedUnknown = mapItem(opaqueUnknown)
-      expect(mappedUnknown.type).toBe('text')
-      if (mappedUnknown.type === 'text') {
-        expect(mappedUnknown.text).toBe('[This message item is not supported yet]')
-      }
+      // Never dropped and never shown as text: kept with its original bytes.
+      expect(mapItem(retainedUnknown)).toEqual({
+        type: 'unsupported',
+        reason: 'unknown-type',
+        frameType: 0xffff0001,
+        frame: toHex(unknownFrame),
+      })
     })
 
   })

@@ -7,17 +7,16 @@
  * refuses an unknown key, a missing required key and a value of the wrong shape. Pure: no I/O, no
  * wallet state.
  *
- * The bytes are the bare CBOR map, not a FRNK frame. No protocol type identifier is allocated for
- * these item types yet, so nothing here invents one.
+ * The bytes are the bare CBOR map, not a FRNK frame. On the canonical direct message path they
+ * travel inside the generic plugin item frame (type 27), which names the item type.
  */
-import {
-  decodeCanonical,
-  encodeCanonical,
-  type Encodable,
-  type FrankValue,
-} from '@frank/codec'
+import { encodeCanonical, type Encodable, type FrankValue } from '@frank/codec'
 
-import { MessageItemDecodeError, MessageItemEncodeError } from '../registry'
+import {
+  MessageItemDecodeError,
+  MessageItemEncodeError,
+  type MessageItemDecodeContext,
+} from '../registry'
 
 export interface Field<T> {
   enc(value: T, path: string): Encodable
@@ -247,7 +246,7 @@ export function struct<T>(spec: Spec<T>): Field<T> {
 
 export interface ItemCodec<T> {
   encode(item: T): Uint8Array
-  decode(bytes: Uint8Array): T
+  decode(bytes: Uint8Array, context: MessageItemDecodeContext): T
 }
 
 /**
@@ -269,9 +268,14 @@ export function cborItemCodec<T extends { type: string }>(
         throw new MessageItemEncodeError(type, detailOf(error))
       }
     },
-    decode(bytes) {
+    decode(bytes, context) {
       try {
-        const body = decodeStruct(entries, decodeCanonical(bytes), 'item')
+        // Under the enclosing message's counters and depth, never a fresh budget.
+        const body = decodeStruct(
+          entries,
+          context.budget.decodeCbor(bytes, type),
+          'item',
+        )
         return { type, ...body } as T
       } catch (error) {
         throw new MessageItemDecodeError(type, detailOf(error))

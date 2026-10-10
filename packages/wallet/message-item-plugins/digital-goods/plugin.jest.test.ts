@@ -3,6 +3,7 @@ import type { DigitalGoodsItem } from '@frank/cashweb/types/messages'
 
 import { MessageItemDecodeError } from '../registry'
 import {
+  standaloneDecodeContext,
   describePluginContract,
   registryWith,
 } from '../shared/plugin-contract.testutil'
@@ -67,42 +68,34 @@ describePluginContract({
 describe('digital-goods wire bytes', () => {
   const registry = registryWith('digital-goods', initDigitalGoodsPlugin)
 
-  it('are the JSON text frame the canonical path writes today', () => {
+  it('are a CBOR map, no longer JSON in a text frame', () => {
     for (const item of [catalog, request]) {
-      expect(registry.encodeItem(item).bytes).toEqual(
-        directMessageText(JSON.stringify(item)),
-      )
+      const { bytes } = registry.encodeItem(item)
+      expect(bytes).not.toEqual(directMessageText(JSON.stringify(item)))
+      // Major type 5 (a map), not the "FRNK" magic of a frame.
+      expect(bytes[0] >> 5).toBe(5)
     }
   })
 
+  // The old form is not read: there is no second reader.
   it.each([
+    ['the old JSON text frame of a request', JSON.stringify(request)],
+    ['the old JSON text frame of a catalog', JSON.stringify(catalog)],
     ['plain text', 'hello'],
-    [
-      'JSON of another type',
-      JSON.stringify({ type: 'raffle', action: 'enter' }),
-    ],
-    [
-      'an unknown action',
-      JSON.stringify({ type: 'digital-goods', action: 'steal' }),
-    ],
-    ['an unknown field', JSON.stringify({ ...request, priceWei: '1' })],
-    ['a non-text itemId', JSON.stringify({ ...request, itemId: 7 })],
-    [
-      'a catalog that is not an array',
-      JSON.stringify({ ...catalog, catalog: {} }),
-    ],
-    [
-      'a catalog entry without a price',
-      JSON.stringify({
-        ...catalog,
-        catalog: [{ itemId: 'a', description: 'b' }],
-      }),
-    ],
-    ['a JSON array', '[]'],
-    ['JSON null', 'null'],
-  ])('rejects a text frame holding %s', (_, text) => {
+  ])('rejects %s', (_, text) => {
     expect(() =>
-      registry.decodeItem('digital-goods', directMessageText(text)),
+      registry.decodeItem(
+        'digital-goods',
+        directMessageText(text),
+        standaloneDecodeContext(),
+      ),
+    ).toThrow(MessageItemDecodeError)
+    expect(() =>
+      registry.decodeItem(
+        'digital-goods',
+        new TextEncoder().encode(text),
+        standaloneDecodeContext(),
+      ),
     ).toThrow(MessageItemDecodeError)
   })
 

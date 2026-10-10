@@ -1,0 +1,335 @@
+/**
+ * How a registered message item travels on the canonical direct message path, stated once.
+ *
+ * - An item type with a dedicated frame keeps it, byte for byte: the plugin's bytes ARE that frame.
+ * - Every other registered type travels in the generic plugin item frame (type 27,
+ *   docs/protocol/cbor), which names the type and carries the plugin's opaque bytes. A new plugin
+ *   needs no protocol allocation and no entry here.
+ * - A few types are not carried at all yet (see {@link NOT_CARRIED_ITEM_TYPES}).
+ *
+ * The send and receive code calls {@link encodeItemFrames} and {@link decodeItemFrames} and names
+ * no item type. Frame type identifiers are protocol allocations and stay in this one table; a
+ * plugin does not choose its own. This file imports the registry contract and the core codec only,
+ * never a plugin.
+ */
+import {
+  FrankCodecError,
+  TYPE_BLACKJACK_MESSAGE_ITEM,
+  TYPE_CHANNEL_UPDATE,
+  TYPE_EMAIL_MESSAGE_ITEM,
+  TYPE_PLUGIN_MESSAGE_ITEM,
+  TYPE_STEALTH_MESSAGE_ITEM,
+  TYPE_TEXT_MESSAGE_ITEM,
+  defaultContext,
+  encodeFrame,
+  encodePluginMessageItem,
+  isPluginMessageItemFrame,
+  standaloneItemBudget,
+  toHex,
+  validateFrame,
+  type ChildFrame,
+  type NestedItemBudget,
+  type ParsedFrame,
+} from '@frank/codec'
+import type {
+  MessageItem,
+  UnsupportedItem,
+} from '@frank/cashweb/types/messages'
+
+import {
+  MessageItemDecodeError,
+  MessageItemEncodeError,
+  MessageItemUnsupportedError,
+  type MessageItemRegistry,
+} from './registry'
+
+/** Item types that own a frame type. Their bytes on the wire are exactly that frame. */
+export const DEDICATED_ITEM_FRAMES: ReadonlyMap<string, number> = new Map([
+  ['text', TYPE_TEXT_MESSAGE_ITEM],
+  ['blackjack-hand', TYPE_BLACKJACK_MESSAGE_ITEM],
+  ['stealth', TYPE_STEALTH_MESSAGE_ITEM],
+  ['channel-update', TYPE_CHANNEL_UPDATE],
+  ['email', TYPE_EMAIL_MESSAGE_ITEM],
+])
+
+const ITEM_TYPE_OF_FRAME: ReadonlyMap<number, string> = new Map(
+  [...DEDICATED_ITEM_FRAMES].map(([type, frameType]) => [frameType, type]),
+)
+
+/**
+ * Registered types the canonical direct message path does not carry, in either direction. Sending
+ * one is refused before anything is paid, as it always was; one that arrives is kept as an
+ * unsupported item and is not interpreted.
+ *
+ * Each is a record a wallet writes for itself, and none has a safe receiver on this path yet:
+ * - `wallet-sync`, `payment-transfer`: must enter through `applyWalletSyncItem` with wallet and
+ *   chain affinity checked. The app refuses a whole received batch that holds one, so a single such
+ *   item from any peer would stop its inbox.
+ * - `swap-record`: the app writes a received one into the local swap history without checking who
+ *   sent it.
+ * - `device-claim`: the app sends one to itself on every leadership claim; carrying it would turn
+ *   each claim into a paid message.
+ * - `p2pkh`: a UTXO-era item whose self-reported amount counts toward a conversation's value.
+ * Carrying any of them is a separate decision with its own receiver.
+ */
+export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
+  'wallet-sync',
+  'payment-transfer',
+  'swap-record',
+  'device-claim',
+  'p2pkh',
+])
+
+export type ItemFrameRule =
+  | { carried: 'dedicated'; frameType: number }
+  | { carried: 'generic'; frameType: typeof TYPE_PLUGIN_MESSAGE_ITEM }
+  | { carried: 'no' }
+
+/** The one dispatch rule. */
+export function itemFrameRule(type: string): ItemFrameRule {
+  if (NOT_CARRIED_ITEM_TYPES.has(type)) return { carried: 'no' }
+  const frameType = DEDICATED_ITEM_FRAMES.get(type)
+  if (frameType !== undefined) return { carried: 'dedicated', frameType }
+  return { carried: 'generic', frameType: TYPE_PLUGIN_MESSAGE_ITEM }
+}
+
+/** The canonical direct message path was asked to send an item it cannot carry: its type has no
+ * plugin, or is one of {@link NOT_CARRIED_ITEM_TYPES}. Nothing was encoded, paid or sent. */
+export class MessageItemNotCarriedError extends MessageItemUnsupportedError {
+  constructor(type: string) {
+    super(type)
+    this.name = 'MessageItemNotCarriedError'
+    this.message = `Canonical direct messages cannot carry '${type}' items yet; nothing was paid or sent.`
+    Object.setPrototypeOf(this, MessageItemNotCarriedError.prototype)
+  }
+}
+
+/** A received message whose items together cost more than one message may. The whole message is
+ * refused: no item of it is delivered. */
+export class MessageItemBudgetExceededError extends Error {
+  constructor(detail: string) {
+    super(`The items of this message exceed its validation limits: ${detail}`)
+    this.name = 'MessageItemBudgetExceededError'
+    Object.setPrototypeOf(this, MessageItemBudgetExceededError.prototype)
+  }
+}
+
+interface WatchedBudget {
+  budget: NestedItemBudget
+  /** Set once any use of the budget was refused for a resource limit. A plugin cannot hide it. */
+  exceeded(): string | undefined
+}
+
+function watch(budget: NestedItemBudget): WatchedBudget {
+  let exceeded: string | undefined
+  const guard = <T>(run: () => T): T => {
+    try {
+      return run()
+    } catch (error) {
+      if (error instanceof FrankCodecError && error.category === 'resource')
+        exceeded ??= error.message
+      throw error
+    }
+  }
+  return {
+    budget: {
+      decodeCbor: (bytes, location) =>
+        guard(() => budget.decodeCbor(bytes, location)),
+      openFrame: (bytes, location) =>
+        guard(() => budget.openFrame(bytes, location)),
+    },
+    exceeded: () => exceeded,
+  }
+}
+
+const detailOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
+
+function frameTypeOf(bytes: Uint8Array): number | undefined {
+  try {
+    const parsed = validateFrame(
+      bytes,
+      defaultContext({ operation: 'generic' }),
+    )
+    return parsed.kind === 'parsed' ? parsed.typeId : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The item frames of one outgoing message, in order. Pure: nothing is funded, reserved or sent.
+ *
+ * Throws {@link MessageItemNotCarriedError} for a type with no plugin or one this path does not
+ * carry, and {@link MessageItemEncodeError} for an item its plugin refuses, an item whose own
+ * bytes its plugin would not read back, or a set of items a reader would refuse as a whole. A
+ * caller must do this before it pays for anything.
+ */
+export function encodeItemFrames(
+  registry: MessageItemRegistry,
+  items: readonly MessageItem[],
+): Uint8Array[] {
+  if (items.length === 0) throw new Error('A direct message needs content')
+  const watched = watch(standaloneItemBudget())
+  const frames = items.map(item => {
+    const type = (item as { type?: unknown } | null)?.type
+    if (typeof type !== 'string')
+      throw new MessageItemNotCarriedError(String(type))
+    const rule = itemFrameRule(type)
+    if (rule.carried === 'no' || !registry.has(type))
+      throw new MessageItemNotCarriedError(type)
+    const { bytes } = registry.encodeItem(item)
+    let frame: Uint8Array
+    if (rule.carried === 'dedicated') {
+      if (frameTypeOf(bytes) !== rule.frameType)
+        throw new MessageItemEncodeError(
+          type,
+          `its plugin did not write a type-${rule.frameType} frame`,
+        )
+      frame = bytes
+    } else {
+      try {
+        frame = encodePluginMessageItem({ itemType: type, data: bytes })
+      } catch (error) {
+        throw new MessageItemEncodeError(type, detailOf(error))
+      }
+    }
+    return { type, frame }
+  })
+  // What a reader will do with these frames, done here first: the frames are opened as one
+  // message's items and each item is read back by its plugin under one shared budget. A message
+  // the recipient would refuse or show as unsupported is never paid for.
+  let children: ChildFrame[]
+  try {
+    const revision = validateFrame(
+      encodeFrame(
+        { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+        new Map<number, string | Uint8Array[]>([
+          [0, 'frank'],
+          [1, frames.map(f => f.frame)],
+        ]),
+      ),
+    )
+    if (revision.kind !== 'parsed' || revision.typed?.type !== 8)
+      throw new Error('the items do not form a message revision')
+    children = revision.typed.items
+  } catch (error) {
+    throw new MessageItemEncodeError(frames[0].type, detailOf(error))
+  }
+  children.forEach((child, index) => {
+    const { type } = frames[index]
+    let read: ReadItem
+    try {
+      read = readItemFrame(registry, child, watched)
+    } catch (error) {
+      // Together the items cost more than one message may: a reader would refuse them all.
+      throw new MessageItemEncodeError(type, detailOf(error))
+    }
+    if (read.type === 'unsupported') {
+      const detail = (read as { detail?: string }).detail
+      throw new MessageItemEncodeError(
+        type,
+        `the encoded item does not read back${detail ? `: ${detail}` : ''}`,
+      )
+    }
+  })
+  return frames.map(f => f.frame)
+}
+
+type ReadItem = MessageItem | (UnsupportedItem & { detail?: string })
+
+function unsupported(
+  child: ChildFrame,
+  reason: UnsupportedItem['reason'],
+  itemType?: string,
+  detail?: string,
+): UnsupportedItem & { detail?: string } {
+  return {
+    type: 'unsupported',
+    reason,
+    ...(itemType === undefined ? {} : { itemType }),
+    ...(child.typeId === undefined ? {} : { frameType: child.typeId }),
+    frame: toHex(child.frame),
+    ...(detail === undefined ? {} : { detail }),
+  }
+}
+
+function readItemFrame(
+  registry: MessageItemRegistry,
+  child: ChildFrame,
+  watched: WatchedBudget,
+): ReadItem {
+  // A frame type or version this reader does not know: kept exactly, never interpreted.
+  if (child.kind !== 'parsed') return unsupported(child, 'unknown-type')
+  let type: string
+  let bytes: Uint8Array
+  let frame: ParsedFrame | undefined
+  if (isPluginMessageItemFrame(child)) {
+    type = child.typed.itemType
+    bytes = child.typed.data
+    // One wire form per type: a type with a dedicated frame is not read from the generic one.
+    if (DEDICATED_ITEM_FRAMES.has(type))
+      return unsupported(
+        child,
+        'malformed',
+        type,
+        'this type travels in its own frame',
+      )
+  } else {
+    const owner = ITEM_TYPE_OF_FRAME.get(child.typeId)
+    if (owner === undefined) return unsupported(child, 'unknown-type')
+    type = owner
+    bytes = child.frame
+    frame = child
+  }
+  if (NOT_CARRIED_ITEM_TYPES.has(type) || !registry.has(type))
+    return unsupported(child, 'unknown-type', type)
+  try {
+    const decoded = registry.decodeItem(type, bytes, {
+      budget: watched.budget,
+      ...(frame === undefined ? {} : { frame }),
+    })
+    if (decoded.kind !== 'item') return unsupported(child, 'unknown-type', type)
+    return decoded.item
+  } catch (error) {
+    const exceeded = watched.exceeded()
+    if (exceeded !== undefined)
+      throw new MessageItemBudgetExceededError(exceeded)
+    // A known type whose bytes its plugin refused. Only this item is affected.
+    return unsupported(
+      child,
+      'malformed',
+      type,
+      error instanceof MessageItemDecodeError ? error.detail : detailOf(error),
+    )
+  }
+}
+
+/**
+ * The items of one received message, in order, from the child frames its validation opened.
+ * `budget` is that validation's own budget (`OpenedDirectMessage.itemBudget`); every item is
+ * decoded under it.
+ *
+ * Never throws for one bad item: an unknown type, an unknown frame, or bytes a plugin refuses
+ * becomes an `unsupported` item holding the original frame, and the other items are unaffected.
+ * Throws {@link MessageItemBudgetExceededError} when the items together exceed the message's
+ * limits; then no item is returned.
+ */
+export function decodeItemFrames(
+  registry: MessageItemRegistry,
+  children: readonly ChildFrame[],
+  budget: NestedItemBudget,
+): MessageItem[] {
+  const watched = watch(budget)
+  const items = children.map((child): MessageItem => {
+    const read = readItemFrame(registry, child, watched)
+    if (read.type !== 'unsupported') return read
+    const item = { ...read } as UnsupportedItem & { detail?: string }
+    delete item.detail
+    return item
+  })
+  // A plugin that swallowed a refused budget still fails the message.
+  const exceeded = watched.exceeded()
+  if (exceeded !== undefined) throw new MessageItemBudgetExceededError(exceeded)
+  return items
+}

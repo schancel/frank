@@ -18,14 +18,7 @@ import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import {
   decodeDirectMessageCryptoContext,
-  encodeBlackjackHandV3Item,
-  encodeChannelUpdateItem,
-  encodeEmailMessageItem,
-  encodeStealthMessageItem,
   fromHex,
-  isBlackjackHandV3Frame,
-  isChannelUpdateItemFrame,
-  isEmailMessageItemFrame,
   isStealthMessageItemFrame,
   parseFrame,
   paymentCommitment,
@@ -33,22 +26,18 @@ import {
   paymentTransferFromStealthItem,
   paymentTransferToMember,
   paymentTransferToStealthItem,
-  projectBlackjackHandV3Item,
-  projectChannelUpdateItem,
-  projectEmailMessageItem,
   projectStealthMessageItem,
   recipientPayloadDigest,
   toHex,
-  type CanonicalChannelUpdateItem,
   type CanonicalStealthItem,
-  type EmailMessageItem,
+  type ChildFrame,
+  type NestedItemBudget,
   type PaymentMember,
   type PaymentTransfer,
 } from '@frank/codec'
 import { randomBytes } from '@frank/crypto-box'
 import type { Current, HistoricalEvidence } from '../../directory-admission/src'
 import {
-  directMessageText,
   openDirectMessage,
   openOwnDirectMessage,
   prepareDirectMessage,
@@ -67,12 +56,13 @@ import {
   type CanonicalMailboxAuthParams,
   type CanonicalMailboxRecord,
 } from '@frank/cashweb/relay/monad-mailbox-client'
-import type {
-  ChannelUpdateItem,
-  EmailItem,
-  MessageItem,
-  StealthItem,
-} from '@frank/cashweb/types/messages'
+import type { MessageItem, StealthItem } from '@frank/cashweb/types/messages'
+import type { MessageItemRegistry } from '../message-item-plugins/registry'
+import {
+  MessageItemBudgetExceededError,
+  decodeItemFrames,
+  encodeItemFrames,
+} from '../message-item-plugins/wire'
 export { applyWalletSyncItem } from '../sync-dispatcher'
 import {
   DirectMessageAlreadyAttemptedError,
@@ -332,6 +322,53 @@ export interface CanonicalMessagingOwner {
     >[0]['onPreparationProgress']
   }): Promise<string[]>
   directory(): CanonicalDirectory | undefined
+  /** The message-item registry composition installed for this wallet
+   * ({@link installMessageItemRegistry}). Every item sent or received goes through it. */
+  messageItems(): MessageItemRegistry | undefined
+}
+
+/** No message-item registry has been installed for this wallet. Nothing is sent, and nothing is
+ * read from the mailbox, until the host installs one; the mailbox is left as it is. */
+export class CanonicalMessageItemsNotInstalledError extends Error {
+  constructor() {
+    super(
+      'No message item registry is installed for this wallet. Nothing was paid, sent or read.',
+    )
+    this.name = 'CanonicalMessageItemsNotInstalledError'
+  }
+}
+
+const installedMessageItems = new WeakMap<object, MessageItemRegistry>()
+
+/**
+ * Composition installs the registry of message-item plugins a live wallet sends and receives
+ * with, the same way it installs the wallet's directory. The canonical workflow never builds one
+ * and never imports a plugin. Returns the removal.
+ */
+export function installMessageItemRegistry(
+  wallet: object,
+  registry: MessageItemRegistry,
+): () => void {
+  installedMessageItems.set(wallet, registry)
+  return () => {
+    if (installedMessageItems.get(wallet) === registry)
+      installedMessageItems.delete(wallet)
+  }
+}
+
+/** The registry installed for `wallet`, for the composition root that builds its workflow. */
+export function installedMessageItemRegistry(
+  wallet: object,
+): MessageItemRegistry | undefined {
+  return installedMessageItems.get(wallet)
+}
+
+function requireMessageItems(
+  owner: CanonicalMessagingOwner,
+): MessageItemRegistry {
+  const registry = owner.messageItems()
+  if (!registry) throw new CanonicalMessageItemsNotInstalledError()
+  return registry
 }
 
 const MAX_INBOX_PAGES = 8
@@ -362,64 +399,6 @@ function requireDirectory(owner: CanonicalMessagingOwner): CanonicalDirectory {
 function formatUuid(bytes: Uint8Array): string {
   const hex = toHex(bytes)
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`
-}
-
-function textItems(items: readonly MessageItem[]): Uint8Array[] {
-  if (items.length === 0) throw new Error('A direct message needs content')
-  return items.map(item => {
-    if (item.type === 'blackjack-hand') return encodeBlackjackHandV3Item(item)
-    if (item.type === 'channel-update') {
-      return encodeChannelUpdateItem(item as ChannelUpdateItem)
-    }
-    if (item.type === 'email') {
-      return encodeEmailMessageItem({
-        messageId: item.messageId,
-        from: item.from,
-        to: item.to,
-        cc: item.cc,
-        subject: item.subject,
-        textBody: item.textBody,
-        htmlBody: item.htmlBody,
-        inReplyTo: item.inReplyTo,
-        references: item.references,
-        attachments: item.attachments,
-        replyTo: item.replyTo,
-      })
-    }
-    if (item.type === 'stealth') {
-      const networkTag = item.networkTag ?? item.chainId
-      if (!networkTag) {
-        throw new Error('Stealth item must have networkTag or chainId')
-      }
-      const ephemeralPubKey = item.ephemeralPubKey
-      if (!ephemeralPubKey) {
-        throw new Error('Stealth item must have ephemeralPubKey')
-      }
-      const rawTxs =
-        item.transactions ??
-        (item.rawTx ? [item.rawTx] : item.solanaTx ? [item.solanaTx] : [])
-      if (rawTxs.length === 0) {
-        throw new Error('Stealth item must have at least one transaction')
-      }
-      return encodeStealthMessageItem({
-        type: 'stealth',
-        networkTag,
-        keyType: item.keyType ?? 1,
-        ephemeralPubKey,
-        transactions: rawTxs,
-        amount: item.amount,
-        memo: item.memo,
-      })
-    }
-    if (item.type === 'digital-goods') {
-      return directMessageText(JSON.stringify(item))
-    }
-    if (item.type !== 'text')
-      throw new Error(
-        `Canonical direct messages cannot carry '${item.type}' items yet; nothing was paid or sent.`,
-      )
-    return directMessageText(item.text)
-  })
 }
 
 function payments(transactions: readonly Uint8Array[]): StampPaymentInfo[] {
@@ -756,7 +735,10 @@ async function send(
   let attempted = false
   try {
     const directory = requireDirectory(owner)
-    const items = textItems(params.items)
+    // Encoded before anything is funded, reserved or journalled: an unregistered type, an item
+    // its plugin refuses, or a set of items a reader would refuse rejects here, labelled as not
+    // attempted. Nothing was paid or sent.
+    const items = encodeItemFrames(requireMessageItems(owner), params.items)
     const stampValueWei = params.stampValue ?? defaultStampValueWei
     const peer = await directory.peerCurrent({ address: params.recipient.raw })
     if (!peer) throw new CanonicalRecipientNotPublishedError(params.recipient.raw)
@@ -1237,6 +1219,38 @@ async function recoverHistoricalDelivery(
   })
 }
 
+/** The items of an opened message through the installed registry, in order. One item that cannot
+ * be read becomes an `unsupported` item; it never fails the message. */
+function receivedItems(
+  registry: MessageItemRegistry,
+  opened: {
+    readonly items: readonly ChildFrame[]
+    readonly itemBudget: NestedItemBudget
+  },
+  wallet: WalletHandle,
+  isOutbound: boolean,
+  timestampMs: number,
+): MessageItem[] {
+  const children = opened.items
+  const items = decodeItemFrames(registry, children, opened.itemBudget)
+  // A wallet effect, not a plugin's: a received stealth payment is added to this wallet's keys.
+  // It reads the validated frame, so the amount is exact.
+  children.forEach((child, index) => {
+    if (
+      items[index].type === 'stealth' &&
+      child.kind === 'parsed' &&
+      isStealthMessageItemFrame(child)
+    )
+      indexStealthItemIfRecipient(
+        wallet,
+        isOutbound,
+        projectStealthMessageItem(child),
+        timestampMs,
+      )
+  })
+  return items
+}
+
 function indexStealthItemIfRecipient(
   wallet: WalletHandle,
   isOutbound: boolean,
@@ -1293,6 +1307,8 @@ async function fetchSince(
   params: Parameters<DirectMessageClient['fetchSince']>[0],
 ): Promise<DirectMessageReceived[]> {
   const directory = requireDirectory(owner)
+  // Before any request: with no registry nothing is read, so nothing is consumed or dropped.
+  const registry = requireMessageItems(owner)
   const auth = mailboxAuth(owner, directory)
   const self = await directory.selfCurrent()
   const received: DirectMessageReceived[] = []
@@ -1432,39 +1448,18 @@ async function fetchSince(
         if (opened.messageId) {
           messageIdStr = formatUuid(opened.messageId)
         }
-        items = opened.items.map(item =>
-          item.kind === 'parsed' && item.typed?.type === 17
-            ? { type: 'text' as const, text: item.typed.text }
-            : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
-            ? projectBlackjackHandV3Item(item).item
-            : item.kind === 'parsed' && isStealthMessageItemFrame(item)
-            ? (() => {
-                const projected = projectStealthMessageItem(item)
-                indexStealthItemIfRecipient(
-                  params.wallet,
-                  isOutbound,
-                  projected,
-                  record.timestampMs,
-                )
-                return {
-                  ...projected,
-                  amount: Number(projected.amount),
-                }
-              })()
-            : item.kind === 'parsed' && isChannelUpdateItemFrame(item)
-            ? projectChannelUpdateItem(item)
-            : item.kind === 'parsed' && isEmailMessageItemFrame(item)
-            ? {
-                ...projectEmailMessageItem(item),
-                type: 'email' as const,
-              }
-            : {
-                type: 'text' as const,
-                text: '[This message item is not supported yet]',
-              },
+        items = receivedItems(
+          registry,
+          opened,
+          params.wallet,
+          isOutbound,
+          record.timestampMs,
         )
-      } catch {
+      } catch (error) {
         // Tampered, stale-keyed or foreign ciphertext never reaches display or payment import.
+        // A message whose items together exceed its limits is refused as a whole and for good.
+        if (error instanceof MessageItemBudgetExceededError)
+          params.onQuarantinedTimestamp?.(record.timestampMs, digest)
         continue
       } finally {
         roles.dispose()
@@ -1580,6 +1575,7 @@ export function canonicalDirectMessages(
       onError?: (error: Error) => void
     }) => {
       const directory = requireDirectory(owner)
+      const registry = requireMessageItems(owner)
       const auth = mailboxAuth(owner, directory)
       let active = true
       let streamHandle: { close: () => void } | undefined
@@ -1652,37 +1648,12 @@ export function canonicalDirectMessages(
                   if (opened.messageId) {
                     messageIdStr = formatUuid(opened.messageId)
                   }
-                  items = opened.items.map(item =>
-                    item.kind === 'parsed' && item.typed?.type === 17
-                    ? { type: 'text' as const, text: item.typed.text }
-                    : item.kind === 'parsed' && isBlackjackHandV3Frame(item)
-                      ? projectBlackjackHandV3Item(item).item
-                      : item.kind === 'parsed' &&
-                        isStealthMessageItemFrame(item)
-                      ? (() => {
-                          const projected = projectStealthMessageItem(item)
-                          indexStealthItemIfRecipient(
-                            params.wallet,
-                            isOutbound,
-                            projected,
-                            record.timestampMs,
-                          )
-                          return {
-                            ...projected,
-                            amount: Number(projected.amount),
-                          }
-                        })()
-                      : item.kind === 'parsed' && isChannelUpdateItemFrame(item)
-                      ? projectChannelUpdateItem(item)
-                      : item.kind === 'parsed' && isEmailMessageItemFrame(item)
-                      ? {
-                          ...projectEmailMessageItem(item),
-                          type: 'email' as const,
-                        }
-                      : {
-                          type: 'text' as const,
-                          text: '[This message item is not supported yet]',
-                        },
+                  items = receivedItems(
+                    registry,
+                    opened,
+                    params.wallet,
+                    isOutbound,
+                    record.timestampMs,
                   )
                 } finally {
                   roles.dispose()

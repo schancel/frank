@@ -32,6 +32,9 @@ import {
 } from "@frank/wallet/chain/monad-chain";
 import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 import { BET_MESSAGE_FEE_RESERVE_WEI } from '@frank/wallet/message-item-plugins/blackjack/game'
+import { installMessageItemRegistry } from '@frank/wallet/chain/monad-canonical-dm'
+import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
+import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
 
 import {
   BlackjackP2pBot,
@@ -229,7 +232,15 @@ export async function main(deps: LauncherDeps = {}) {
     if (stop.signal.aborted) return
     throw error
   }
-  const uninstall = installCanonicalDirectory(wallet, directory)
+  const uninstallDirectory = installCanonicalDirectory(wallet, directory)
+  const uninstallMessageItems = installMessageItemRegistry(
+    wallet,
+    createDefaultMessageItemRegistry(pluginCapabilitiesNotYetAvailable),
+  )
+  const uninstall = () => {
+    uninstallDirectory()
+    uninstallMessageItems()
+  }
   const feedUrl = process.env.BLACKJACK_P2P_NEW_ACCOUNTS_URL
   const newAccounts = feedUrl
     ? sinceFeed((deps.relayNewAccounts ?? relayNewAccounts)(feedUrl))

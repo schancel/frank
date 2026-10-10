@@ -3,6 +3,7 @@
  * its type, cannot be installed without capabilities, round-trips its samples through its own
  * bytes, keeps its preview text, and rejects malformed bytes with the typed error.
  */
+import { standaloneItemBudget } from '@frank/codec'
 import type { MessageItem } from '@frank/cashweb/types/messages'
 
 import {
@@ -10,6 +11,7 @@ import {
   MessageItemPluginCapabilitiesMissingError,
   createMessageItemRegistry,
   pluginCapabilitiesNotYetAvailable,
+  type MessageItemDecodeContext,
   type MessageItemPluginCapabilities,
   type MessageItemPluginInit,
   type MessageItemRegistry,
@@ -23,6 +25,11 @@ export interface PluginSample {
   decoded?: MessageItem
   /** The decoded item may carry more than the sample (a projection's bookkeeping fields). */
   decodedHasExtras?: boolean
+}
+
+/** A decode context for a test that holds one item outside any message: one whole budget. */
+export function standaloneDecodeContext(): MessageItemDecodeContext {
+  return { budget: standaloneItemBudget() }
 }
 
 export function registryWith(
@@ -85,7 +92,11 @@ export function describePluginContract(params: {
         const encoded = registry.encodeItem(sample.item)
         expect(encoded.type).toBe(type)
         expect(encoded.bytes).toBeInstanceOf(Uint8Array)
-        const decoded = registry.decodeItem(type, encoded.bytes)
+        const decoded = registry.decodeItem(
+          type,
+          encoded.bytes,
+          standaloneDecodeContext(),
+        )
         const expected = { kind: 'item', item: sample.decoded ?? sample.item }
         if (sample.decodedHasExtras) expect(decoded).toMatchObject(expected)
         else expect(decoded).toEqual(expected)
@@ -97,19 +108,27 @@ export function describePluginContract(params: {
 
     it.each(ALWAYS_MALFORMED)('rejects %s with the typed error', (_, bytes) => {
       const registry = registryWith(type, init)
-      expect(() => registry.decodeItem(type, bytes)).toThrow(
-        MessageItemDecodeError,
-      )
+      expect(() =>
+        registry.decodeItem(type, bytes, standaloneDecodeContext()),
+      ).toThrow(MessageItemDecodeError)
     })
 
     it('rejects truncated and padded bytes with the typed error', () => {
       const registry = registryWith(type, init)
       const { bytes } = registry.encodeItem(samples[0].item)
-      expect(() => registry.decodeItem(type, bytes.slice(0, -1))).toThrow(
-        MessageItemDecodeError,
-      )
       expect(() =>
-        registry.decodeItem(type, Uint8Array.of(...bytes, 0x00)),
+        registry.decodeItem(
+          type,
+          bytes.slice(0, -1),
+          standaloneDecodeContext(),
+        ),
+      ).toThrow(MessageItemDecodeError)
+      expect(() =>
+        registry.decodeItem(
+          type,
+          Uint8Array.of(...bytes, 0x00),
+          standaloneDecodeContext(),
+        ),
       ).toThrow(MessageItemDecodeError)
     })
   })

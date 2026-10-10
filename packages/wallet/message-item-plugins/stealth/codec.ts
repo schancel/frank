@@ -11,7 +11,10 @@ import {
 } from '@frank/codec'
 import type { StealthItem } from '@frank/cashweb/types/messages'
 
-import { MessageItemDecodeError } from '../registry'
+import {
+  MessageItemDecodeError,
+  type MessageItemDecodeContext,
+} from '../registry'
 import { decodeWith, openItemFrame } from '../shared/frame'
 
 export function encodeStealthItem(item: StealthItem): Uint8Array {
@@ -40,8 +43,11 @@ export function encodeStealthItem(item: StealthItem): Uint8Array {
   })
 }
 
-export function decodeStealthItem(bytes: Uint8Array): StealthItem {
-  const parsed = openItemFrame('stealth', bytes)
+export function decodeStealthItem(
+  bytes: Uint8Array,
+  context: MessageItemDecodeContext,
+): StealthItem {
+  const parsed = openItemFrame('stealth', bytes, context)
   if (!isStealthMessageItemFrame(parsed))
     throw new MessageItemDecodeError('stealth', 'not a stealth item frame')
   return decodeWith('stealth', () => {

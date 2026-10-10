@@ -141,7 +141,9 @@ pub(crate) async fn handle_put(
 const EVENT_BUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A message's payments are handed to the node at most once in this long. A repeat of the
-/// same message inside it is answered `delivered` without sending them again.
+/// same message inside it is answered `delivered` without sending them again. That includes a
+/// repeat sent because the first broadcast failed: the window starts at the attempt, not at
+/// a success.
 pub(crate) const REBROADCAST_INTERVAL: std::time::Duration = if cfg!(test) {
     std::time::Duration::from_millis(300)
 } else {
@@ -154,7 +156,8 @@ const BROADCAST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3)
 /// Hand every payment of a delivered message to the node once, all at the same time. The
 /// results are logged and nothing else: a payment the node refused, or one that could not be
 /// sent in time, is simply not sent. A resend of the same message sends them again, once
-/// [`REBROADCAST_INTERVAL`] has passed.
+/// [`REBROADCAST_INTERVAL`] has passed. The interval starts when the payments are handed over,
+/// whether or not the node took them, so a failed broadcast is not retried inside it either.
 ///
 /// Returns what was logged for each payment: the outcome of one that went out, or the reason
 /// one did not.

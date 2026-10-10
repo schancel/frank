@@ -388,7 +388,7 @@ pub enum MonadRpcError {
     },
 
     /// The node returned a non-2xx HTTP status.
-    #[error("HTTP {status} calling {method}: {body}")]
+    #[error("HTTP {status} calling {method}: {}", for_log(body))]
     HttpStatus {
         /// JSON-RPC method being called.
         method: String,
@@ -409,7 +409,7 @@ pub enum MonadRpcError {
     },
 
     /// The submitted tx's nonce was lower than the account's current nonce (already used).
-    #[error("nonce too low calling {method}: {message}")]
+    #[error("nonce too low calling {method}: {}", for_log(message))]
     NonceTooLow {
         /// JSON-RPC method being called.
         method: String,
@@ -418,7 +418,7 @@ pub enum MonadRpcError {
     },
 
     /// The sending account doesn't have enough balance to cover `value + gas * gasPrice`.
-    #[error("insufficient funds calling {method}: {message}")]
+    #[error("insufficient funds calling {method}: {}", for_log(message))]
     InsufficientFunds {
         /// JSON-RPC method being called.
         method: String,
@@ -428,7 +428,10 @@ pub enum MonadRpcError {
 
     /// A transaction with the same nonce is already pending and this one doesn't bump the gas
     /// price enough to replace it.
-    #[error("replacement transaction underpriced calling {method}: {message}")]
+    #[error(
+        "replacement transaction underpriced calling {method}: {}",
+        for_log(message)
+    )]
     ReplacementUnderpriced {
         /// JSON-RPC method being called.
         method: String,
@@ -437,7 +440,7 @@ pub enum MonadRpcError {
     },
 
     /// The node already has this exact transaction (e.g. a duplicate submission).
-    #[error("transaction already known calling {method}: {message}")]
+    #[error("transaction already known calling {method}: {}", for_log(message))]
     AlreadyKnown {
         /// JSON-RPC method being called.
         method: String,
@@ -447,7 +450,11 @@ pub enum MonadRpcError {
 
     /// Any other RPC-level error the node returned, not classified into a more specific variant
     /// above.
-    #[error("RPC error {code} calling {method}: {message} (data: {data:?})")]
+    #[error(
+        "RPC error {code} calling {method}: {} (data: {})",
+        for_log(message),
+        for_log(&data.as_ref().map(Value::to_string).unwrap_or_default())
+    )]
     Rpc {
         /// JSON-RPC method being called.
         method: String,
@@ -519,6 +526,69 @@ impl MonadRpcError {
     }
 }
 
+/// Most of one upstream reply the relay will read. A node's answers to the calls made here are
+/// a few kilobytes; a reply past this is not one of them.
+const MAX_RPC_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+/// Most of an upstream's error text kept with an error.
+const MAX_UPSTREAM_TEXT_BYTES: usize = 2048;
+/// Most of it printed when the error is displayed or logged.
+const MAX_LOGGED_UPSTREAM_BYTES: usize = 200;
+
+/// Read a reply, giving up (`None`) once it passes [`MAX_RPC_RESPONSE_BYTES`].
+async fn read_bounded(mut response: reqwest::Response) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > MAX_RPC_RESPONSE_BYTES - body.len() {
+            return Ok(None);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Some(body))
+}
+
+fn truncated(text: &str, limit: usize) -> &str {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Text an upstream sent, as the relay keeps it: any URL replaced by `<url>` (a provider that
+/// echoes the request URL would otherwise put its API key into every log line and error that
+/// carries this text), and bounded.
+fn from_upstream(text: &str) -> String {
+    let text = truncated(text, MAX_UPSTREAM_TEXT_BYTES);
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = ["https://", "http://", "wss://", "ws://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        kept.push_str(&rest[..at]);
+        kept.push_str("<url>");
+        let url = &rest[at..];
+        let end = url
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | ')' | ',' | '\\')
+            })
+            .unwrap_or(url.len());
+        rest = &url[end..];
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// Upstream text as it is printed: short.
+fn for_log(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.len() <= MAX_LOGGED_UPSTREAM_BYTES {
+        text.into()
+    } else {
+        format!("{}…", truncated(text, MAX_LOGGED_UPSTREAM_BYTES)).into()
+    }
+}
+
 /// Phrasings (lowercase) by which geth/Besu/reth/Nethermind-style nodes say they already hold the
 /// exact transaction. These mean the send is effectively accepted.
 const ALREADY_KNOWN_PHRASES: &[&str] = &[
@@ -565,7 +635,12 @@ const DEFINITIVE_REJECTION_PHRASES: &[&str] = &[
 /// EVM-node error message patterns (these providers, including Alchemy, don't expose stable
 /// error *codes* for these cases, only conventional message text, so classification is
 /// message-pattern based).
-fn classify_rpc_error(method: &str, error: JsonRpcErrorBody) -> MonadRpcError {
+fn classify_rpc_error(method: &str, mut error: JsonRpcErrorBody) -> MonadRpcError {
+    // What an upstream says is kept without any URL it may have echoed, and bounded.
+    error.message = from_upstream(&error.message);
+    error.data = error
+        .data
+        .map(|data| Value::String(from_upstream(&data.to_string())));
     let method = method.to_string();
     let lower = error.message.to_lowercase();
     if says_node_holds_tx(&lower) {
@@ -754,8 +829,14 @@ impl JsonRpcTransport for HttpTransport {
                 continue;
             }
 
-            let body_bytes = match response.bytes().await {
-                Ok(bytes) => bytes,
+            let body_bytes = match read_bounded(response).await {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => {
+                    return Err(MonadRpcError::InvalidResponse {
+                        method: method.to_string(),
+                        reason: format!("response larger than {MAX_RPC_RESPONSE_BYTES} bytes"),
+                    })
+                }
                 Err(source) => {
                     last_error = Some(MonadRpcError::transport(method, source));
                     continue;
@@ -766,7 +847,7 @@ impl JsonRpcTransport for HttpTransport {
                 last_error = Some(MonadRpcError::HttpStatus {
                     method: method.to_string(),
                     status: status.as_u16(),
-                    body: String::from_utf8_lossy(&body_bytes).into_owned(),
+                    body: from_upstream(&String::from_utf8_lossy(&body_bytes)),
                 });
                 if attempt + 1 < num_urls {
                     continue;
@@ -988,6 +1069,96 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// A provider that echoes the request URL in an error must not get its key into the
+    /// relay's logs, and a long error body must not flood them.
+    #[test]
+    fn what_an_upstream_says_is_kept_without_urls_and_printed_short() {
+        let key = "sentinel-api-key";
+        let noise = "x".repeat(10_000);
+        let said = format!(
+            "nonce too low for https://rpc.example/v2/{key}?a=1 and wss://rpc.example/{key} {noise}"
+        );
+        let from_rpc = classify_rpc_error(
+            "eth_sendRawTransaction",
+            JsonRpcErrorBody {
+                code: -32000,
+                message: said.clone(),
+                data: Some(json!({"url": format!("http://rpc.example/{key}"), "noise": noise})),
+            },
+        );
+        // Still classified by what the node said.
+        assert!(matches!(from_rpc, MonadRpcError::NonceTooLow { .. }));
+        assert!(from_rpc.definitively_rejected_send());
+        let other = classify_rpc_error(
+            "eth_call",
+            JsonRpcErrorBody {
+                code: 3,
+                message: format!("execution reverted at http://rpc.example/{key}"),
+                data: Some(json!({"url": format!("http://rpc.example/{key}"), "noise": noise})),
+            },
+        );
+        let status = MonadRpcError::HttpStatus {
+            method: "eth_call".into(),
+            status: 502,
+            body: from_upstream(&said),
+        };
+        for error in [&from_rpc, &other, &status] {
+            let (shown, debugged) = (error.to_string(), format!("{error:?}"));
+            assert!(!shown.contains(key) && !debugged.contains(key), "{shown}");
+            assert!(!shown.contains("rpc.example") && !debugged.contains("rpc.example"));
+            assert!(shown.len() < 600, "{}", shown.len());
+            assert!(
+                debugged.len() < 2 * MAX_UPSTREAM_TEXT_BYTES + 400,
+                "{}",
+                debugged.len()
+            );
+        }
+        assert!(from_rpc
+            .to_string()
+            .contains("nonce too low for <url> and <url>"));
+        // Truncation never splits a character.
+        assert_eq!(
+            for_log(&"é".repeat(300))
+                .chars()
+                .filter(|c| *c == 'é')
+                .count(),
+            100
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_past_the_size_bound_is_refused_not_read() {
+        use axum::{routing, Router};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let reply = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":"{}"}}"#,
+            "a".repeat(MAX_RPC_RESPONSE_BYTES)
+        );
+        tokio::spawn(
+            axum::Server::from_tcp(listener).unwrap().serve(
+                Router::new()
+                    .route(
+                        "/",
+                        routing::post(move || {
+                            let reply = reply.clone();
+                            async move { reply }
+                        }),
+                    )
+                    .into_make_service(),
+            ),
+        );
+        let error = HttpTransport::new(url.parse().unwrap())
+            .call("eth_call", json!([]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, MonadRpcError::InvalidResponse { reason, .. } if reason.contains("larger than")),
+            "{error}"
+        );
+    }
 
     fn rpc_error(message: &str) -> MonadRpcError {
         classify_rpc_error(

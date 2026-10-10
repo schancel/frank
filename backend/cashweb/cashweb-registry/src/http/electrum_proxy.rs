@@ -153,6 +153,48 @@ pub(crate) fn safe_node_reason(message: &str) -> Option<String> {
     (!reason.is_empty()).then(|| reason.to_string())
 }
 
+/// The node's reason, when an Electrum server's error to a broadcast says the node refused
+/// the transaction. Any other error to a broadcast (the server is busy, lost its node, hit
+/// an internal fault) is the server's own trouble and says nothing about the transaction: a
+/// wallet told "refused" would give up on a payment that may yet be sent.
+///
+/// The shapes that mean refused, as the servers in use send them:
+/// - ElectrumX and Fulcrum: code 1 with "the transaction was rejected by network rules",
+///   followed by the node's reason;
+/// - electrs, and servers that pass the node's own error through: bitcoind's rejection codes
+///   -25, -26 and -27, at the top level or quoted in a "sendrawtransaction RPC error".
+pub(crate) fn broadcast_rejection(error: &Value) -> Option<String> {
+    let message = error
+        .as_str()
+        .or_else(|| error.get("message").and_then(Value::as_str))?;
+    let lower = message.to_ascii_lowercase();
+    let node_code = error.get("code").and_then(Value::as_i64);
+    let node_refused = lower.contains("rejected by network rules")
+        || matches!(node_code, Some(-27..=-25))
+        || (lower.contains("sendrawtransaction")
+            && [
+                "\"code\":-25",
+                "\"code\":-26",
+                "\"code\":-27",
+                "code: -25",
+                "code: -26",
+                "code: -27",
+            ]
+            .iter()
+            .any(|code| lower.replace(' ', "").contains(&code.replace(' ', ""))));
+    if !node_refused {
+        return None;
+    }
+    // Lead with the node's own words where the server wrapped them in its preamble.
+    let reason = message
+        .split("network rules.")
+        .nth(1)
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or(message);
+    safe_node_reason(reason).or_else(|| Some("rejected by the node".to_owned()))
+}
+
 /// A connected Electrum server, whatever its transport: one JSON text per message.
 struct Upstream {
     sink: UpstreamSink,
@@ -591,10 +633,7 @@ async fn forward(
                 // A response nobody asked for means the two sides are out of step.
                 let Some(request) = id_key(&id).and_then(|key| pending.remove(&key)) else { break };
                 let refusal = match (&request.kind, value.get("error")) {
-                    (PendingKind::Broadcast, Some(error)) => error
-                        .as_str()
-                        .or_else(|| error.get("message").and_then(Value::as_str))
-                        .and_then(safe_node_reason),
+                    (PendingKind::Broadcast, Some(error)) => broadcast_rejection(error),
                     _ => None,
                 };
                 if value.get("error").is_none_or(Value::is_null) {
@@ -633,6 +672,53 @@ async fn forward(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a node's refusal of the transaction reads as "refused". A server's own fault
+    /// during a broadcast must not, or the wallet gives up on a payment that may yet go out.
+    #[test]
+    fn only_a_node_rejection_of_a_broadcast_reads_as_refused() {
+        for (refused, error) in [
+            (
+                Some("txn-mempool-conflict (code 18)"),
+                json!({"code": 1, "message": "the transaction was rejected by network rules.\n\ntxn-mempool-conflict (code 18)\n"}),
+            ),
+            (
+                Some("bad-txns-inputs-missingorspent"),
+                json!({"code": -25, "message": "bad-txns-inputs-missingorspent"}),
+            ),
+            (
+                Some("sendrawtransaction RPC error: "),
+                json!({"code": 2, "message": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"dust\"}"}),
+            ),
+            (
+                Some("min relay fee not met"),
+                json!({"code": -26, "message": "min relay fee not met"}),
+            ),
+            // The server's own trouble.
+            (None, json!({"code": -32603, "message": "internal error"})),
+            (
+                None,
+                json!({"code": -102, "message": "server busy - request timed out"}),
+            ),
+            (
+                None,
+                json!({"code": -101, "message": "excessive resource usage"}),
+            ),
+            (
+                None,
+                json!({"code": 2, "message": "daemon error: DaemonError({'code': -28, 'message': 'Loading block index'})"}),
+            ),
+            (None, json!({"code": 1, "message": "unknown method"})),
+            (None, json!("connection to daemon lost")),
+            (None, json!({"code": -32000})),
+        ] {
+            assert_eq!(
+                broadcast_rejection(&error).as_deref().map(str::trim),
+                refused.map(str::trim),
+                "{error}"
+            );
+        }
+    }
 
     #[test]
     fn hashes_the_first_eighty_header_bytes() {

@@ -824,6 +824,26 @@ describe('parallel paid messages', () => {
     },
   )
 
+  it('a 409 for a missing directory predecessor is a refusal before anything was stored: the message fails and its coin is free; any other 409 keeps the coin', async () => {
+    const rows = await fundAccounts(2)
+    relay.answer = () => ({
+      status: 409,
+      body: { version: 1, error: 'canonical_directory_predecessor_missing' },
+    })
+    await expect(send(1)).rejects.toThrow(/refused this message/)
+    const claimed = () =>
+      rows.filter(row => alice.pool.claimedBy(row.index) !== undefined).length
+    expect(claimed()).toBe(0)
+    // A conflict of another kind says nothing about exposure: the coin stays claimed.
+    relay.answer = () => ({
+      status: 409,
+      body: { version: 1, error: 'canonical_submission_conflict' },
+    })
+    await send(2).catch(() => undefined)
+    expect(claimed()).toBe(1)
+    relay.answer = undefined
+  })
+
   it('a dead answer that may follow a broadcast keeps the coins claimed until the chain decides', async () => {
     const [row] = await fundAccounts(1)
     relay.answer = identity => ({

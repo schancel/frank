@@ -854,6 +854,18 @@ async function submitStored(
         row: await refuseUnexposed(owner, row, `refused_${error.status}`),
         error,
       }
+    // The relay does not have the directory statement this message was sealed against. It
+    // decides that before it stores or broadcasts anything, and the same bytes can be refused
+    // for ever: the message is failed and its coin freed, not pinned.
+    if (
+      error instanceof CanonicalTransportError &&
+      error.status === 409 &&
+      error.relayError === 'canonical_directory_predecessor_missing'
+    )
+      return {
+        row: await refuseUnexposed(owner, row, error.relayError),
+        error,
+      }
     return { row, error }
   }
   // An older relay's "kept, not delivered yet" is not an answer: submit again later.

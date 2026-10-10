@@ -161,9 +161,16 @@ wallet; nothing but the bot host may send from `E2E_DEMO_MAIN_WALLET_JSON` while
   destination and amount). `FRANK_REAL_STACK_RELAY_URL` uses a relay that is already running.
 - `yarn demo:smoke`: starts exactly what `yarn demo` starts (same `.env`, state directory and
   draw limit; stop a running demo first), then one persistent test user with a real wallet
-  messages Qwen, the picture shop, the raffle and the dealer and each reply is checked for its
-  content; the faucet's payment to that profile is read from the chain; the relay's proxied chain
-  RPC and its CORS headers are checked. The user is given 0.05 MON when it has run dry.
+  messages Qwen, the picture shop, the raffle, the dealer, dice and rock-paper-scissors and each
+  reply is checked for its content; the faucet's payment to that profile is read from the chain;
+  the relay's proxied chain RPC and its CORS headers are checked. Before its prompts the user is
+  topped up to 0.012 MON per prompt (0.072 MON for the six), which a run mostly spends: the wallet
+  pays each message from a single-use account funded with a fee reserve of just under 0.01 MON. The three game bots must each answer with a free message that opens a game: the
+  dealer's `blackjack-hand` challenge (game ID, dealer role, seed commitment, and a text naming
+  the table's bet limits), the dice `table` (roll ID and the commitment to its secret, the secret
+  itself absent) and the rock-paper-scissors `start` (match ID and the commitment to the bot's
+  move, the move absent), each with the table limit named in its text. No bet is placed:
+  `real-games.livecheck.ts` plays for money.
 - `node app/test/autonomous-fullstack-e2e.mjs`: the browser run, against a running `yarn demo`
   (see the header of that file). It gives a throwaway browser account 0.2 MON that does not come
   back.

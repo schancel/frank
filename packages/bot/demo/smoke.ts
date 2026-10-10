@@ -9,7 +9,8 @@
  * content; the faucet's payment and the relay's proxied chain RPC are checked on chain. It spends
  * real testnet funds: whatever the start draws for the bots (refused above
  * FRANK_DEMO_MAX_START_DRAW_WEI, as for `yarn demo`; `--allow-draw` allows it) and, from
- * FRANK_TEST_WALLET_JSON, 0.05 MON for the one persistent test user whenever it has run dry.
+ * FRANK_TEST_WALLET_JSON, what tops the one persistent test user up to 0.012 MON per prompt
+ * (0.072 MON for the six prompts; most of it is spent by a run).
  * Stop a running demo first (one launcher per state directory).
  *
  * Exit code 0 only if every check passes, every bot started funded, and the supervised processes

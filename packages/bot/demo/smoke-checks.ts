@@ -8,9 +8,14 @@ import { request } from 'http'
 
 import { formatEther } from 'ethers'
 
-import type { MessageItem } from '@frank/cashweb/types/messages'
+import type { MessageItem, RpsItem, SatoshiDiceItem } from '@frank/cashweb/types/messages'
+import { BLACKJACK_DEFAULT_MIN_WAGER_WEI } from '@frank/wallet/message-item-plugins/blackjack/game'
+import { isGameId, type HandItem } from '@frank/wallet/message-item-plugins/blackjack/hand'
+import { formatMon } from '@frank/wallet/monad-amount'
 
 import { STUB_REPLY_PREFIX } from '../qwen-reply'
+import { RPS_DEFAULT_MAX_WAGER_WEI } from '../src/bots/rps-bot'
+import { DICE_DEFAULT_MAX_PAYOUT_WEI } from '../src/bots/satoshi-dice-bot'
 import { DemoHandle } from './demo'
 import { RealStack, RealWallet, startRealStack } from './real-stack'
 
@@ -24,10 +29,32 @@ export interface ReplyExpectations {
   qwenMode: 'stub' | 'live'
   raffleEntryPriceWei?: string
   raffleMaxEntries?: number
+  /** The dealer's table minimum (`BLACKJACK_BOT_MIN_WAGER_WEI`); the bot's default when unset. */
+  blackjackMinWagerWei?: bigint
+  /** The dice table limit and the rock-paper-scissors table limit; the bots' defaults when unset
+   * (the demo starts both with their defaults). */
+  diceMaxPayoutWei?: bigint
+  rpsMaxWagerWei?: bigint
 }
 
-/** What each bot must answer, decided from the decoded items of its reply. */
-export function classifyReply(bot: string, items: MessageItem[], expected: ReplyExpectations): SmokeCheck {
+/** A bot's message as the test user received it: its decoded items and what it paid the user. */
+export interface BotReply {
+  items: MessageItem[]
+  stampValueWei: bigint
+}
+
+/** A commitment is the hex of a SHA-256: what the game codecs carry. */
+const isCommitment = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+
+/** What each bot must answer, decided from the decoded items of its reply and what it paid. */
+export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpectations): SmokeCheck {
+  const { items } = reply
+  const no = (detail: string): SmokeCheck => ({ name: bot, ok: false, detail })
+  /** A game's opening message is free: only a payout or a refund carries money (#1384). */
+  const paid = () =>
+    reply.stampValueWei === 0n
+      ? undefined
+      : no(`the message paid ${formatMon(reply.stampValueWei)}; an offer to play carries no money`)
   const text = items.find(i => i.type === 'text') as { text: string } | undefined
   const kind = (type: string, action?: string) =>
     items.find(
@@ -78,11 +105,75 @@ export function classifyReply(bot: string, items: MessageItem[], expected: Reply
       return { name: bot, ok: true, detail: `announced a ${round.maxEntries}-entry round with its seed committed` }
     }
     case 'blackjack': {
-      // The opening move of a hand: the dealer's challenge, with the table's bet limit.
-      const challenge = kind('blackjack-hand', 'challenge') as { gameId?: string } | undefined
-      return challenge?.gameId && /blackjack challenge/i.test(text?.text ?? '')
-        ? { name: bot, ok: true, detail: `dealt a challenge for game ${challenge.gameId.slice(0, 8)}` }
-        : { name: bot, ok: false, detail: `expected a blackjack challenge, got ${describe(items)}` }
+      // The opening move of a hand: the dealer's challenge, committed to its seed before any
+      // bet, with the largest bet it covers; its text names the table minimum and that limit.
+      const challenge = kind('blackjack-hand', 'challenge') as Extract<HandItem, { action: 'challenge' }> | undefined
+      if (!challenge) return no(`expected a blackjack-hand challenge, got ${describe(items)}`)
+      if (!isGameId(challenge.gameId)) return no('the challenge carries no game ID (32 hex characters)')
+      if (challenge.role !== 'dealer') return no(`the challenge is sent as the ${challenge.role}, not the dealer`)
+      if (!isCommitment(challenge.commitment)) return no("the challenge carries no commitment to the dealer's seed")
+      const minWei = expected.blackjackMinWagerWei ?? BLACKJACK_DEFAULT_MIN_WAGER_WEI
+      const maxBetWei = BigInt(challenge.maxBetWei)
+      if (maxBetWei < minWei) {
+        return no(`the challenge offers bets up to ${formatMon(maxBetWei)}, below the table minimum of ${formatMon(minWei)}`)
+      }
+      const said = text?.text ?? ''
+      if (!said.includes(`bet between ${formatMon(minWei)} and ${formatMon(maxBetWei)}`)) {
+        return no(
+          `the challenge's text does not name the table (bet between ${formatMon(minWei)} and ${formatMon(maxBetWei)}): ${JSON.stringify(said.slice(0, 120))}`,
+        )
+      }
+      return (
+        paid() ?? {
+          name: bot,
+          ok: true,
+          detail: `a free dealer challenge for game ${challenge.gameId.slice(0, 8)}, seed committed, bets from ${formatMon(minWei)} to ${formatMon(maxBetWei)}`,
+        }
+      )
+    }
+    case 'dice': {
+      // The roll on offer: its ID and the hash of the bot's secret, published before any bet.
+      // The secret itself comes only with a result.
+      const table = kind('dice', 'table') as SatoshiDiceItem | undefined
+      if (!table) return no(`expected a dice table, got ${describe(items)}`)
+      if (!table.rollId) return no('the table names no roll')
+      if (!isCommitment(table.commitment)) return no('the table carries no commitment to the secret of its roll')
+      if (table.serverSecret !== undefined) return no('the table gives away the secret of its roll before the bet')
+      const limitWei = expected.diceMaxPayoutWei ?? DICE_DEFAULT_MAX_PAYOUT_WEI
+      const said = text?.text ?? ''
+      if (!said.includes(`The most one roll pays is ${formatMon(limitWei)}`) || !/Your stake is what your bet message pays/.test(said)) {
+        return no(`the help does not name the table limit of ${formatMon(limitWei)} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
+      }
+      return (
+        paid() ?? {
+          name: bot,
+          ok: true,
+          detail: `a free table for roll ${table.rollId.slice(0, 8)}, secret committed, paying up to ${formatMon(limitWei)} a roll`,
+        }
+      )
+    }
+    case 'rps': {
+      // A new match: its ID and the hash of the move the bot has already chosen. The move and
+      // its salt come only with the result.
+      const start = kind('rps', 'start') as RpsItem | undefined
+      if (!start) return no(`expected a rock-paper-scissors match start, got ${describe(items)}`)
+      if (!start.matchId) return no('the start names no match')
+      if (!isCommitment(start.commitHash)) return no("the start carries no commitment to the bot's move")
+      if (start.botMove !== undefined || start.secretSalt !== undefined) {
+        return no('the start gives away the bot\'s move or its salt before the player has moved')
+      }
+      const limitWei = expected.rpsMaxWagerWei ?? RPS_DEFAULT_MAX_WAGER_WEI
+      const said = text?.text ?? ''
+      if (!said.includes(`Your stake is what your move message pays me, up to ${formatMon(limitWei)}`)) {
+        return no(`the help does not name the table limit of ${formatMon(limitWei)} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
+      }
+      return (
+        paid() ?? {
+          name: bot,
+          ok: true,
+          detail: `a free start of match ${start.matchId.slice(0, 8)}, move committed, stakes up to ${formatMon(limitWei)}`,
+        }
+      )
     }
     default:
       return { name: bot, ok: false, detail: `no check defined for ${bot}` }
@@ -108,6 +199,10 @@ const PROMPTS: Record<string, MessageItem[]> = {
   vendor: [{ type: 'text', text: 'hello' }],
   raffle: [{ type: 'text', text: 'hello' }],
   blackjack: [{ type: 'text', text: 'deal me in' }],
+  // No bet is placed here (`real-games.livecheck.ts` plays for money): each game bot is asked
+  // what it offers, which it answers with its next commitment.
+  dice: [{ type: 'text', text: 'help' }],
+  rps: [{ type: 'text', text: 'help' }],
 }
 
 /** The origin of the app's dev server (what a browser sends as `Origin`). */
@@ -219,11 +314,23 @@ export async function checkCors(handle: DemoHandle): Promise<SmokeCheck> {
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
-/** What the smoke user's account is given when it holds less than the refill mark: enough for
- * several runs of the four prompts' stamps and the accounts the wallet prepares to pay them from.
- * It stays with the (persistent) test user for the next run. */
-export const SMOKE_USER_FUND_WEI = 50_000_000_000_000_000n // 0.05 MON
-export const SMOKE_USER_REFILL_BELOW_WEI = 20_000_000_000_000_000n // 0.02 MON
+/** What the smoke user's account must hold per prompt before any is sent. The wallet pays each
+ * message from a single-use account it funds with the stamp and a fee reserve, and refuses a
+ * send when its main account cannot cover that (just under 0.01 MON at testnet fees, measured:
+ * 0.0157 MON left the main account for two prompts). What a fee did not use stays in the spent
+ * account. The (persistent) test user is topped up to this, never beyond: a run costs the test
+ * wallet what its prompts take.
+ *
+ * LOWER THIS when the `wallet-parallel-send` work lands: this number is today's wallet, which
+ * funds single-use stamp accounts ahead of each message. That branch brings a message's cost
+ * down to about 0.004 MON, and this constant (the only place the amount is written) should
+ * follow it, re-measured on testnet. */
+export const SMOKE_PROMPT_NEED_WEI = 12_000_000_000_000_000n // 0.012 MON
+
+/** What the test user must hold to send `prompts` prompts. */
+export function smokeUserNeedWei(prompts: number): bigint {
+  return SMOKE_PROMPT_NEED_WEI * BigInt(prompts)
+}
 
 export async function runSmokeChecks(
   handle: DemoHandle,
@@ -243,6 +350,9 @@ export async function runSmokeChecks(
     qwenMode: config.qwenMode,
     raffleEntryPriceWei: config.botProcess.env.RAFFLE_BOT_ENTRY_PRICE_WEI,
     raffleMaxEntries: Number(config.botProcess.env.RAFFLE_BOT_MAX_ENTRIES),
+    blackjackMinWagerWei: config.botProcess.env.BLACKJACK_BOT_MIN_WAGER_WEI
+      ? BigInt(config.botProcess.env.BLACKJACK_BOT_MIN_WAGER_WEI)
+      : undefined,
   }
   const stampValueWei = BigInt(config.minStampWei) * 10n
   let stack: RealStack | undefined
@@ -264,12 +374,12 @@ export async function runSmokeChecks(
       throw new Error('FRANK_TEST_WALLET_JSON is the same wallet as E2E_DEMO_MAIN_WALLET_JSON; it must be a different one')
     }
     // ONE fixed test user, reused on every run: a new profile each time would take a faucet
-    // grant per run. It is funded only when it has run dry.
+    // grant per run. It is topped up to what this run's prompts need.
     const user = await stack.openWallet('smoke-user', { stampValueWei })
     await options.onUser?.(user)
-    if ((await stack.provider.getBalance(user.mainAccount)) < SMOKE_USER_REFILL_BELOW_WEI) {
-      await stack.fund(user.mainAccount, SMOKE_USER_FUND_WEI)
-    }
+    const needWei = smokeUserNeedWei(Object.keys(PROMPTS).filter(bot => handle.addresses[bot]).length)
+    const heldWei = await stack.provider.getBalance(user.mainAccount)
+    if (heldWei < needWei) await stack.fund(user.mainAccount, needWei - heldWei)
 
     for (const [bot, items] of Object.entries(PROMPTS)) {
       if (!handle.addresses[bot]) continue
@@ -287,7 +397,7 @@ export async function runSmokeChecks(
       try {
         await user.receive(message => {
           if (message.senderAddress.raw.toLowerCase() !== handle.addresses[bot].toLowerCase()) return false
-          last = classifyReply(bot, message.items, expected)
+          last = classifyReply(bot, message, expected)
           return last.ok
         }, options.timeoutMs)
       } catch {

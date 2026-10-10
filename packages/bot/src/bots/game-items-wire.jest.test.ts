@@ -3,35 +3,20 @@
  * bot emits in a played-through exchange is encoded as the paid send path encodes it (before any
  * funding) and read back as a recipient reads it. A reply the wire refuses would never be sent.
  */
-import {
-  encodeFrame,
-  standaloneItemBudget,
-  validateFrame,
-  type Encodable,
-} from "@frank/codec";
 import type { BotContext, BotMessageContext } from "@frank/bot-framework";
 import type {
   MessageItem,
   RpsItem,
   SatoshiDiceItem,
 } from "@frank/cashweb/types/messages";
-import { createDefaultMessageItemRegistry } from "@frank/wallet/message-item-plugins/default-registry";
-import { pluginCapabilitiesNotYetAvailable } from "@frank/wallet/message-item-plugins/registry";
-import {
-  MessageItemNotCarriedError,
-  decodeItemFrames,
-  encodeItemFrames,
-} from "@frank/wallet/message-item-plugins/wire";
+import { MessageItemNotCarriedError } from "@frank/wallet/message-item-plugins/wire";
 
 import { harness as botHarness } from "./bot-harness.testutil";
+import { overTheWire } from "./wire.testutil";
 import { RaffleBot } from "./raffle-bot";
 import { RpsBot } from "./rps-bot";
 import { SatoshiDiceBot } from "./satoshi-dice-bot";
 import { VendorBot } from "./vendor-bot";
-
-const registry = createDefaultMessageItemRegistry(
-  pluginCapabilitiesNotYetAvailable
-);
 
 const ALICE = "0x" + "a1".repeat(20);
 const BOB = "0x" + "b2".repeat(20);
@@ -41,27 +26,6 @@ const BOT = "0x" + "dd".repeat(20);
 /** The item as it is after a JSON round trip: no `undefined` properties. */
 const plain = (item: MessageItem): MessageItem =>
   JSON.parse(JSON.stringify(item));
-
-/** Encodes as the send path does and reads back as a recipient does. */
-function overTheWire(items: MessageItem[]): MessageItem[] {
-  const frames = encodeItemFrames(registry, items);
-  const revision = validateFrame(
-    encodeFrame(
-      { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
-      new Map<number, Encodable>([
-        [0, "frank"],
-        [1, frames],
-      ])
-    )
-  );
-  if (revision.kind !== "parsed" || revision.typed?.type !== 8)
-    throw new Error("expected a revision");
-  return decodeItemFrames(
-    registry,
-    revision.typed.items,
-    standaloneItemBudget()
-  );
-}
 
 /** A bot's table: `say` delivers one message from a player, with the payments it came with, and
  * `sent` is every message the bot sent, in order. */

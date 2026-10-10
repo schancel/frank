@@ -54,8 +54,10 @@ function relayProxyTarget(env) {
 }
 
 /** The `devServer.proxy` entries for the relay's routes. */
-function relayDevProxy(env) {
-  const target = relayProxyTarget(env)
+function relayDevProxy(env, configEnv = {}) {
+  // Quasar exposes dotenv values to this config as import.meta.env, not process.env.
+  // Explicit shell settings retain precedence over the file-backed configuration.
+  const target = relayProxyTarget({ ...configEnv, ...env })
   return Object.fromEntries(
     RELAY_ROUTES.map(({ path, ws }) => [
       path,

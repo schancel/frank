@@ -455,7 +455,11 @@ export default configure(ctx => {
       // through the same dev server origin without CORS or loopback binding constraints.
       // Which routes and which relay: config/relay-dev-proxy.cjs.
       proxy: {
-        ...relayDevProxy(process.env),
+        ...relayDevProxy(process.env, {
+          FRANK_DEMO_RELAY_PORT: import.meta.env.FRANK_DEMO_RELAY_PORT,
+          QCLI_MONAD_RELAY_BASE_URL: import.meta.env.QCLI_MONAD_RELAY_BASE_URL,
+          QCLI_E2E_DEMO_RELAY_URL: import.meta.env.QCLI_E2E_DEMO_RELAY_URL,
+        }),
         '/docs': {
           target: `http://127.0.0.1:${
             process.env.FRANK_DOCS_DEV_PORT ||

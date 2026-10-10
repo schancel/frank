@@ -33,6 +33,19 @@ describe('the dev server forwards relay routes to the relay the app is configure
     expect(proxy['/chain-rpc'].ws).toBe(true)
   })
 
+  it('uses the relay loaded from dotenv by Quasar, with shell settings taking precedence', () => {
+    const configEnv = { QCLI_MONAD_RELAY_BASE_URL: 'http://127.0.0.1:28198' }
+    expect(relayDevProxy({}, configEnv)['/oracle'].target).toBe(
+      'http://127.0.0.1:28198',
+    )
+    expect(
+      relayDevProxy(
+        { QCLI_MONAD_RELAY_BASE_URL: 'http://127.0.0.1:28199' },
+        configEnv,
+      )['/oracle'].target,
+    ).toBe('http://127.0.0.1:28199')
+  })
+
   it('a relay on another host is forwarded to as configured', () => {
     expect(
       relayProxyTarget({
@@ -59,7 +72,12 @@ describe('the dev server forwards relay routes to the relay the app is configure
       resolve(__dirname, '../../../quasar.config.js'),
       'utf8',
     )
-    expect(source).toContain('...relayDevProxy(process.env),')
-    expect(source).not.toMatch(/FRANK_DEMO_RELAY_PORT/)
+    expect(source).toContain('...relayDevProxy(process.env, {')
+    expect(source).toContain(
+      'QCLI_MONAD_RELAY_BASE_URL: import.meta.env.QCLI_MONAD_RELAY_BASE_URL',
+    )
+    expect(source).toContain(
+      'FRANK_DEMO_RELAY_PORT: import.meta.env.FRANK_DEMO_RELAY_PORT',
+    )
   })
 })

@@ -7,7 +7,7 @@
  *   CASHWEBD_BIN=<relay built from the tree under test> FRANK_TEST_WALLET_JSON=<funded test wallet> \
  *   FRANK_DEMO_ENV_FILE=<repo .env> yarn tsx parallel-send.livecheck.ts
  *
- *   PHASES=a,d,e,f,b   which phases, in this order (also: inspect, review)
+ *   PHASES=e,d,b,a,f   which phases, in this order (also: unfreeze, inspect, review)
  *   MESSAGES=10        how many messages phase a sends together
  *   FUNDED=3           how many accounts phase b funds ahead
  *   SENDER=bob         swap the two wallets' roles
@@ -338,7 +338,7 @@ async function ensureMain(stack: RealStack, alice: RealWallet, wei: bigint) {
 }
 
 async function main() {
-  const phases = (process.env.PHASES ?? "a,d,e,f,b").split(",");
+  const phases = (process.env.PHASES ?? "e,d,b,a,f").split(",");
   const funded = Number(process.env.FUNDED ?? "3");
   const messages = Number(process.env.MESSAGES ?? "10");
   const budget = BigInt(process.env.BUDGET_WEI ?? "100000000000000000");
@@ -351,7 +351,10 @@ async function main() {
   // SENDER names the persistent wallet that sends (and is called alice below); the other one
   // of the pair receives.
   const senderLabel = process.env.SENDER === "bob" ? "bob" : "alice";
-  let alice = await stack.openWallet(senderLabel);
+  // The sender's configured default stamp is the fee floor too, so that funding ahead (which
+  // funds for the default stamp) is funding for the messages sent here.
+  const floorNow = 21_000n * BigInt(await provider.send("eth_gasPrice", []));
+  let alice = await stack.openWallet(senderLabel, { stampValueWei: floorNow });
   const bob = await stack.openWallet(senderLabel === "bob" ? "alice" : "bob");
   let tap = intercept(alice);
   const startedAt = Date.now() - 60_000;
@@ -448,10 +451,9 @@ async function main() {
 
     // ---- a + c -------------------------------------------------------------------------
     let costOfMainPaid: bigint | undefined;
-    if (
-      phases.includes("a") &&
-      (await affordable("a", BigInt(messages) * (floor + txFee) + txFee))
-    ) {
+    const runA = async () => {
+      if (!(await affordable("a", BigInt(messages) * (floor + txFee) + txFee)))
+        return;
       // The stamps and their fees, the native send's fee, and the headroom the last message
       // must show (its fee at the cap) before it may sign.
       await ensureMain(
@@ -534,7 +536,7 @@ async function main() {
       };
       say("a", JSON.stringify(results.a, null, 1));
       say("c", JSON.stringify(results.c, null, 1));
-    }
+    };
 
     // ---- b -----------------------------------------------------------------------------
     const runB = async () => {
@@ -545,14 +547,46 @@ async function main() {
         !(await affordable("b", BigInt(funded) * (each + txFee)))
       )
         return;
+      // First the wallet's own fund-ahead (one message's accounts, from the main account):
+      // what it funds is read back from the pool and from chain.
+      await ensureMain(stack, alice, each + txFee + floor / 4n);
+      const usable = async () =>
+        (
+          await alice.handle.pool.fundedCapacities(provider, reserve, {
+            fromBalance: true,
+            maxCacheAgeMs: 0,
+          })
+        ).filter((account) => account.capacityWei >= floor);
+      const usableBefore = (await usable()).map((account) => account.index);
+      const aheadStarted = Date.now();
+      const ahead = await alice.chain.directMessages.fundAhead!({
+        wallet: alice.handle,
+      });
+      const aheadMs = Date.now() - aheadStarted;
+      const fundedAhead = (await usable()).filter(
+        (account) => !usableBefore.includes(account.index)
+      );
+      const aheadTransfers = await Promise.all(
+        ahead.fundingTxHashes.map(async (hash) => {
+          const receipt = await provider.getTransactionReceipt(hash);
+          const tx = await provider.getTransaction(hash);
+          return `${tx?.to} value ${tx ? mon(tx.value) : "?"} nonce ${
+            tx?.nonce
+          } block ${receipt?.blockNumber} status ${receipt?.status}`;
+        })
+      );
+      // Then accounts funded from outside, up to FUNDED in all.
+      const direct = Math.max(0, funded - fundedAhead.length);
       const before = alice.handle.pool.records().length;
-      const targets = alice.handle.pool
-        .ensureSize(before + funded)
-        .slice(before);
+      const added = alice.handle.pool.ensureSize(before + direct).slice(before);
       await alice.handle.pool.flush();
       const fundingStarted = Date.now();
-      for (const row of targets) await stack.fund(row.address, each);
+      for (const row of added) await stack.fund(row.address, each);
       const fundingMs = Date.now() - fundingStarted;
+      const targets = [
+        ...fundedAhead.map((account) => ({ address: account.address })),
+        ...added,
+      ];
       const nonce0 = await mainNonce(stack, alice);
       const started = Date.now();
       const sent = await Promise.all(
@@ -575,6 +609,13 @@ async function main() {
         )
       ).flat();
       results.b = {
+        fundAhead: {
+          outcome: ahead.outcome,
+          reason: ahead.reason,
+          ms: aheadMs,
+          transfers: aheadTransfers,
+          accountsItMadeUsableForAFloorStamp: fundedAhead.length,
+        },
         fundedAccounts: targets.length,
         fundingMs,
         wallMs,
@@ -605,31 +646,56 @@ async function main() {
       say("b", JSON.stringify(results.b, null, 1));
     };
 
-    if (phases.includes("b") && phases.indexOf("b") < phases.indexOf("d"))
-      await runB();
-
     // ---- d -----------------------------------------------------------------------------
-    // Two messages at most: the one after the refusal, and the refused one itself should the
-    // relay turn out not to refuse it for good (it is then delivered by the resend pass).
-    if (phases.includes("d") && (await affordable("d", 2n * (floor + txFee)))) {
-      const withNative = process.env.D_NATIVE !== "0";
+    /** At once after a refusal: a paid send and a native send, and what the chain shows. */
+    const proveMainFree = async (label: string) => {
+      const heldBefore = heldBy(alice, alice.mainAccount);
+      const started = Date.now();
+      const paid = await sendPaid(alice, bob.address, `${label} ${started}`);
+      const paidMs = Date.now() - started;
+      const native = await sendNativeReported(
+        stack,
+        alice,
+        bob.mainAccount,
+        1_000_000_000_000n
+      );
+      await settle(alice, [paid.digest]);
+      const raw = tap.of(paid.digest)[0]?.rawTransactions[0];
+      const paidOnChain = raw ? await onChain(stack, raw) : undefined;
+      return {
+        mainHeldByRightAfterTheRefusal: heldBefore,
+        paidSendMs: paidMs,
+        paidSendNonce: paidOnChain?.nonce,
+        paidSendStatus: paidOnChain?.status,
+        paidSendFrom: paidOnChain?.from,
+        native,
+      };
+    };
+    const runD = async () => {
+      // Up to three messages and two native sends: one paid send after each refusal, and the
+      // "refused" one itself should the relay turn out not to refuse it for good.
+      if (!(await affordable("d", 3n * (floor + txFee) + 2n * txFee))) return;
       await ensureMain(
         stack,
         alice,
-        perMessage + (floor + txFee) + (withNative ? txFee : 0n) + floor
+        perMessage + 2n * (floor + txFee) + 2n * txFee + floor
       );
       const nonce0 = await mainNonce(stack, alice);
-      // d1: no directory entry. Refused before anything is claimed or signed.
+      // d1: no directory entry.
       const nobody = "0x" + "d1".repeat(20);
+      const requestsBefore = tap.submitted.length;
       const d1 = await sendPaid(alice, nobody, "to nobody").then(
         () => "SENT (unexpected)",
         (error) => `${(error as Error).name}: ${(error as Error).message}`
       );
-      const heldAfterD1 = heldBy(alice, alice.mainAccount);
+      const d1Requests = tap.submitted.length - requestsBefore;
+      const afterD1 = await proveMainFree("d1 after");
       // d2: a signed, stored message whose request the relay cannot read (its multipart
       // boundary is replaced on the way out, this once): the relay refuses the request.
-      let refusal: { status?: number; body?: string } = {};
+      const refusal: { status?: number; answer?: string } = {};
+      let refusedRequest: Submitted | undefined;
       tap.onNext(async (_send, init, url) => {
+        refusedRequest = tap.submitted[tap.submitted.length - 1];
         const response = await defaultCanonicalFetch(url, {
           ...init,
           headers: {
@@ -648,59 +714,61 @@ async function main() {
         (sent) => `SENT ${sent.digest} (${sent.how})`,
         (error) => `${(error as Error).name}: ${(error as Error).message}`
       );
-      const refused = tap.submitted[tap.submitted.length - 1];
-      const heldAfterD2 = heldBy(alice, alice.mainAccount);
+      const d2Ms = Date.now() - d2Started;
+      const refused = refusedRequest as Submitted | undefined;
       const refusedPayment = refused?.rawTransactions[0]
         ? Transaction.from(refused.rawTransactions[0])
         : undefined;
-      // At once: a normal paid send and a native send.
-      const after = Date.now();
-      const paid = await sendPaid(alice, bob.address, `d after ${after}`);
-      const paidMs = Date.now() - after;
-      const nativeStarted = Date.now();
-      const native = withNative
-        ? await sendNativeReported(
-            stack,
-            alice,
-            bob.mainAccount,
-            1_000_000_000_000n
-          )
-        : undefined;
-      void nativeStarted;
-      await settle(alice, [paid.digest]);
-      const paidOnChain = await onChain(
-        stack,
-        tap.of(paid.digest)[0].rawTransactions[0]
-      );
-      results.d = {
-        d1,
-        mainHeldAfterD1: heldAfterD1,
-        d2,
-        d2Ms: after - d2Started,
-        relayAnswerToBrokenRequest: refusal.status,
-        refusedPaymentNonce: refusedPayment?.nonce,
-        refusedPaymentState: refused
-          ? alice.chain.directMessages.paymentsOf?.({
+      const refusedState = refused
+        ? {
+            status: (
+              await alice.chain.directMessages.reconcileAttempts({
+                wallet: alice.handle,
+                payloadDigests: [refused.digest],
+              })
+            )[refused.digest],
+            payments: alice.chain.directMessages.paymentsOf?.({
               wallet: alice.handle,
               payloadDigest: refused.digest,
-            })
-          : undefined,
-        refusedPaymentOnChain: refusedPayment
-          ? (await provider.getTransactionReceipt(refusedPayment.hash!)) !== null
-          : undefined,
-        mainHeldAfterD2: heldAfterD2,
-        nextPaidSendMs: paidMs,
-        nextPaidSendNonce: paidOnChain.nonce,
-        nextPaidSendMined: paidOnChain.status === 1,
-        native: native ?? "not sent (D_NATIVE=0)",
+            }),
+          }
+        : undefined;
+      const afterD2 = await proveMainFree("d2 after");
+      results.d = {
+        d1: {
+          result: d1,
+          requestsThatReachedTheRelay: d1Requests,
+          then: afterD1,
+        },
+        d2: {
+          result: d2,
+          ms: d2Ms,
+          relayAnswerToBrokenRequest: refusal.status,
+          signedPaymentNonce: refusedPayment?.nonce,
+          walletRecord: refusedState,
+          signedPaymentOnChain: refusedPayment
+            ? (await provider.getTransactionReceipt(refusedPayment.hash!)) !==
+              null
+            : undefined,
+          recipientCopies: refused
+            ? (
+                await bob.chain.directMessages.fetchSince({
+                  wallet: bob.handle,
+                  sinceMs: startedAt,
+                })
+              ).filter((m) => m.payloadDigest === refused.digest).length
+            : undefined,
+          then: afterD2,
+        },
         mainNonceBefore: nonce0,
         mainNonceAfter: await mainNonce(stack, alice),
       };
       say("d", JSON.stringify(results.d, null, 1));
-    }
+    };
 
     // ---- e -----------------------------------------------------------------------------
-    if (phases.includes("e") && (await affordable("e", floor + txFee))) {
+    const runE = async () => {
+      if (!(await affordable("e", floor + txFee))) return;
       await ensureMain(stack, alice, perMessage + floor / 4n);
       // Let whatever alice's last native send left be decided before the process is replaced.
       await sleep(3000);
@@ -733,7 +801,7 @@ async function main() {
             relayAnswer: string;
           })
         : undefined;
-      alice = await stack.openWallet(senderLabel);
+      alice = await stack.openWallet(senderLabel, { stampValueWei: floorNow });
       tap = intercept(alice);
       if (!killed) {
         results.e = { exit, error: "the child left no note" };
@@ -765,10 +833,10 @@ async function main() {
         };
       }
       say("e", JSON.stringify(results.e, null, 1));
-    }
+    };
 
     // ---- f -----------------------------------------------------------------------------
-    if (phases.includes("f")) {
+    const runF = async () => {
       const messageId = randomUUID();
       const items = [{ type: "text" as const, text: `f unpaid ${Date.now()}` }];
       const first: { status?: number } = {};
@@ -817,13 +885,66 @@ async function main() {
           : undefined,
       };
       say("f", JSON.stringify(results.f, null, 1));
-    }
+    };
 
-    if (
-      phases.includes("b") &&
-      !(phases.includes("d") && phases.indexOf("b") < phases.indexOf("d"))
-    )
-      await runB();
+    // ---- unfreeze ----------------------------------------------------------------------
+    /** A native transfer whose nonce went to another transaction: what the wallet lists as
+     * unresolved, and whether the main account is busy, before and after one look at the
+     * chain (the look every native send and every funds reading makes). Costs nothing. */
+    const runUnfreeze = async () => {
+      const rows = () =>
+        (alice.handle.getNativeOperations?.() ?? [])
+          .filter((row) => !row.cancelled)
+          .flatMap((row) =>
+            row.members
+              .filter((m) => m.signed && !("transactionHash" in m.observation))
+              .map(
+                (m) =>
+                  `${row.operationId} ${row.kind} nonce ${
+                    Transaction.from(m.unsignedTransaction).nonce
+                  } observed ${m.observation.state} accountNonce ${
+                    m.account?.nonce
+                  }`
+              )
+          );
+      const before = {
+        notIncluded: rows(),
+        unresolved: alice.handle.getUnresolvedNativeTransaction?.() ?? null,
+      };
+      const funds = await alice.handle.getContractCallFunds!();
+      results.unfreeze = {
+        mainNonceOnChain: await mainNonce(stack, alice),
+        before,
+        afterOneLook: {
+          mainBusy: funds.mainBusy,
+          notIncluded: rows(),
+          unresolved: alice.handle.getUnresolvedNativeTransaction?.() ?? null,
+        },
+      };
+      say("unfreeze", JSON.stringify(results.unfreeze, null, 1));
+    };
+
+    // The phases, in the order asked for. One that throws is reported and the rest still run.
+    const run: Record<string, () => Promise<void>> = {
+      a: runA,
+      b: runB,
+      d: runD,
+      e: runE,
+      f: runF,
+      unfreeze: runUnfreeze,
+    };
+    for (const phase of phases) {
+      if (!run[phase]) continue;
+      try {
+        await run[phase]();
+      } catch (error) {
+        results[`${phase} FAILED`] =
+          error instanceof Error ? error.stack ?? error.message : String(error);
+        say(phase, "FAILED", results[`${phase} FAILED`]);
+        // Let whatever it left in flight be decided before the next phase signs.
+        await sleep(5000);
+      }
+    }
 
     // ---- g -----------------------------------------------------------------------------
     if (costOfMainPaid !== undefined)
@@ -897,6 +1018,10 @@ async function killedAfterDelivered() {
     recipient: { raw: process.env.PSEND_TO! },
     items: [{ type: "text", text: `e killed ${Date.now()}` }],
     messageId: randomUUID(),
+    // Named, at the fee floor: never the configured default.
+    stampValue: await alice.chain.directMessages.minimumStamp!({
+      wallet: alice.handle,
+    }),
   });
 }
 

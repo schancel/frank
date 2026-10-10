@@ -6,27 +6,35 @@
  *   ACCOUNT_APP_ORIGIN=http://localhost:<app port> E2E_SCREENSHOT_DIR=<dir> \
  *     SWAP_BROWSER_AMOUNT=0.01 node app/test/swap-browser.livecheck.mjs
  *
- * It prints the new account's main address and waits up to ten minutes for it to hold MON:
- * send it a little more than the amount plus about 0.06 MON for gas. The browser helpers are
- * those of `autonomous-fullstack-e2e.mjs`.
+ * The account lives in a PERSISTENT Chrome profile, ~/.frank-e2e-browser/swap-browser
+ * (E2E_PROFILE_DIR; see e2e-profile.mjs): the first run creates it, later runs open the same
+ * account with whatever it still holds, so it needs funding only when it has run low and
+ * nothing is lost with a discarded profile. It prints the account's main address and waits up
+ * to ten minutes for it to hold more than the amount: when it does not already, send it a little
+ * more than the amount plus about 0.06 MON for gas
+ * (`node --import tsx packages/bot/demo/fund.ts <address> <MON>`). The last line names the
+ * account, what it holds and the profile, which is never deleted. The browser helpers are those
+ * of `autonomous-fullstack-e2e.mjs`.
  */
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import {
   mkdir,
-  mkdtemp,
   writeFile,
   readFile,
   readdir,
   open,
   stat,
 } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
+import { accountLine, persistentProfile } from './e2e-profile.mjs'
+
 const origin = process.env.ACCOUNT_APP_ORIGIN ?? 'http://localhost:8080'
-const directory = await mkdtemp(join(tmpdir(), 'frank-e2e-run-'))
-// Where screenshots go; defaults to a folder inside this run's temp directory.
+const profile = await persistentProfile('swap-browser')
+const directory = profile.directory
+// Where screenshots go; defaults to a folder inside the profile directory.
 const screenshotDir = resolve(
   process.env.E2E_SCREENSHOT_DIR ?? join(directory, 'screenshots'),
 )
@@ -306,8 +314,33 @@ const text = selector =>
   )
 const t = id => text(`[data-testid="${id}"]`)
 
+let accountAddress
+
+/** Where the money is when the run ends, pass or fail. */
+async function printAccount() {
+  if (!accountAddress) return
+  try {
+    const held = await evaluate(
+      `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getBalance()).toString())`,
+    )
+    console.log(accountLine(directory, accountAddress, held))
+  } catch {
+    console.log(`ACCOUNT ${accountAddress}: balance not read; its keys are in the persistent profile ${directory} (do not delete it)`)
+  }
+}
+
 async function run() {
   await launch()
+  const sessionModule = `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name)`
+  if (profile.account) {
+    // The profile already holds an account: open it, do not create another.
+    await call('Page.navigate', { url: origin + '/#/wallet' })
+    await until(
+      `${sessionModule}.then(m => m.accountSession.getWallet()).then(w => !!w, () => false)`,
+      60000,
+      `the account saved in ${directory} to open (do not delete this profile while its account ${profile.account.receive} holds money; set E2E_PROFILE_DIR to use another)`,
+    )
+  } else {
   await call('Page.navigate', { url: origin + '/#/setup' })
   await until(
     `document.querySelector('[data-test="new-account"]')`,
@@ -360,11 +393,17 @@ async function run() {
   await until(`location.hash !== '#/setup'`, 20000, 'left setup')
   await new Promise(r => setTimeout(r, 2000))
 
+  }
+
   const session = `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name)`
   const main = await evaluate(
     `${session}.then(async m => (await (await m.accountSession.getWallet()).getReceiveAddress()).raw)`,
   )
-  console.log(`MAIN ACCOUNT ${main}  (fund it now)`)
+  if (!profile.account) await profile.recordAccount({ receive: main })
+  accountAddress = main
+  console.log(
+    `MAIN ACCOUNT ${main}  (${profile.account ? 'reused; it is funded only if it holds too little' : 'new: fund it now'})`,
+  )
 
   await evaluate(`location.hash = '#/wallet/monad'`)
   await click('[data-testid="wallet-tab-swap"]')
@@ -478,4 +517,7 @@ run()
     console.log('frontend errors:', JSON.stringify(frontendErrors.slice(0, 10)))
     process.exitCode = 1
   })
-  .finally(stop)
+  .finally(async () => {
+    await printAccount()
+    await stop()
+  })

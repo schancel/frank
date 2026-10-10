@@ -19,6 +19,7 @@
   "scripts": {
     "demo": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/demo.ts",
     "demo:smoke": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/smoke.ts",
+    "demo:sweep": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/funds.ts sweep --demo",
     "typecheck": "node --import tsx scripts/typecheck.ts",
     "typecheck:fast": "node --import tsx scripts/typecheck.ts --fast",
     "typecheck:tsc": "node --import tsx scripts/typecheck.ts --tsc",

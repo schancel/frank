@@ -61,7 +61,9 @@ the bots have spent. Before anything starts the launcher works the draw out from
 (`FRANK_DEMO_MAX_START_DRAW_WEI`), saying exactly how much and from which address. Pass
 `--allow-draw` (or raise the variable) to permit it. It also refuses when the wallet cannot cover
 the draw plus the 0.1 MON reserve the host keeps in it. A bot's key, and so whatever its accounts
-hold, lives in the state directory: do not start on a new one, or delete one, as a quick fix.
+hold, lives in the state directory: do not start on a new one, or delete one, as a quick fix. When
+a start funds bot accounts it says how much it places in the state directory; `yarn demo:sweep
+<state dir> --send` returns a finished demo state's funds to the funding wallet (see below).
 
 Source builds also need a usable native `protoc` (libprotoc 3+ with proto3 support). The relay
 launcher validates `PROTOC` when set; otherwise it searches PATH, then the installed `protoc`
@@ -147,7 +149,10 @@ Per-bot commands also exist: `yarn bot` (Qwen), `yarn blackjack`, `yarn raffle`,
 **Configuration** comes only from environment variables and a `.env` file that you provide
 (`FRANK_DEMO_ENV_FILE`, default `<repo>/.env`, gitignored, `KEY=value` lines). The launcher reads
 just the variables in the table below and passes each child only the ones it needs; the process
-environment wins over the file. The launcher reads only the address of the wallet file
+environment wins over the file. A relative wallet-file path written in the env file
+(`E2E_DEMO_MAIN_WALLET_JSON`, `FRANK_TEST_WALLET_JSON`) is relative to that file, so the repo's
+`.env` works from any directory or worktree; one given in the environment is relative to where
+the command was typed. The launcher reads only the address of the wallet file
 (`E2E_DEMO_MAIN_WALLET_JSON`); its key is read by the bot process. RPC URLs and keys are never
 printed.
 
@@ -172,14 +177,52 @@ wallet; nothing but the bot host may send from `E2E_DEMO_MAIN_WALLET_JSON` while
   move, the move absent), each with the table limit named in its text. No bet is placed:
   `real-games.livecheck.ts` plays for money.
 - `node app/test/autonomous-fullstack-e2e.mjs`: the browser run, against a running `yarn demo`
-  (see the header of that file). It gives a throwaway browser account 0.2 MON that does not come
-  back.
+  (see the header of that file). Its account lives in a persistent Chrome profile,
+  `~/.frank-e2e-browser/autonomous-fullstack-e2e` (`E2E_PROFILE_DIR`): created on the first run,
+  reused afterwards, funded (0.2 MON, `E2E_FUND_MON`) only when it holds less than 0.1 MON. Its
+  native-send scenario pays the test wallet, and at the end what the account holds above 0.15 MON
+  (`E2E_FLOAT_MON`) is sent back to the test wallet through the app's send page; anything not sent
+  stays in the account for the next run. The last line names the account and its balance.
+  `app/test/swap-browser.livecheck.mjs` keeps its account the same way in
+  `~/.frank-e2e-browser/swap-browser`. Never delete these profiles: the account's keys are only
+  there.
 
 Every one of these refuses to fund anything without `FRANK_TEST_WALLET_JSON`, and one funding
 transfer is at most 0.5 MON (`FRANK_TEST_MAX_FUND_WEI`).
 
 The harness these use is `packages/bot/demo/real-stack.ts` (`startRealStack`, `openWallet`, `fund`,
-`stop`): real relay, real chain, real wallets, for any other test that needs them.
+`sweep`, `stop`): real relay, real chain, real wallets, for any other test that needs them. A
+script that funds a wallet calls `stack.sweep()` in a `finally`, before `stop()`:
+`test:two-wallets` and `real-games.livecheck.ts` do, pass or fail, and print one line for every
+account the sweep left money in and why (dust under twice the transfer fee, a failed or reverted
+transfer). The smoke's test user is deliberately persistent and is not swept.
+
+**Where the test money is, and getting it back.** Every demo start, harness run and livecheck
+puts testnet MON in accounts whose keys exist only in a state directory. Two commands read those
+directories with the wallet's own derivation (main account, identity, single-use sender accounts
+whatever their state, change accounts) and the chain:
+
+- `yarn --cwd packages/bot funds:report [dir ...]`: per directory, the wallets found, what each
+  account holds, what is worth moving, what is dust and what has no key left. With no directory
+  it looks at `~/.frank-*` and the `frank-*` directories of the temp directory. Read-only.
+- `yarn --cwd packages/bot funds:sweep <dir ...>`: a dry run of sending it back;
+  `--send` does it. One transfer per account, one at a time, each waited for, to the address of
+  the funding wallet (`E2E_DEMO_MAIN_WALLET_JSON`; only its address is read); every transfer is
+  appended to a log file (`--log <file>`, otherwise a file in the temp directory that the last
+  line names). An account under twice the transfer fee (21,000 gas at the node's gas price,
+  about 0.0021 MON) is left as dust. It refuses a directory a running process has open, and a
+  demo state directory unless asked through `yarn demo:sweep`. It never writes to a state
+  directory (pool records are read from a temporary copy) and never prints a key.
+- `yarn demo:sweep <demo state dir> [--send]` (repo root): the same for a demo's bots, for a
+  demo state that is finished with. A stop does NOT sweep: the bots are meant to stay funded
+  between runs. When a start funds bot accounts the launcher prints how much it places in the
+  state directory and this command.
+
+State kept under a temp directory is gone after a reboot, and its money with it: keep state
+directories under the home directory. Until the unmerged `wallet-parallel-send` branch lands (a
+send then funds nothing ahead), every message is paid from a single-use sender account that is
+funded with a fee reserve, and the part the fee did not use (about 0.002 to 0.005 MON) stays in
+the spent account; `funds:sweep` collects those that are above cost, the rest is dust.
 
 **Checks on a local regtest network** (no funds, no `.env`, nothing outside this machine; the
 first run downloads the eCash node into the git-ignored `.regtest-cache/` and checks its SHA-256):

@@ -26,8 +26,10 @@
  * whatever it still holds, so a run funds an account only when it has run dry and nothing is
  * stranded between runs. `stack.sweep()` sends what the opened wallets' main and identity
  * accounts hold, and what is left in their spent single-use sender accounts (the unused part of
- * each message's fee reserve), back to the test wallet; money in a wallet's stamp accounts
- * prepared for coming messages stays with the wallet and is spent by its next messages.
+ * each message's fee reserve), back to the test wallet, and returns what it could not move with
+ * the reason; money in a wallet's stamp accounts prepared for coming messages stays with the
+ * wallet and is spent by its next messages. A script that funds a wallet calls `sweep()` in a
+ * `finally`. What a crashed run leaves is collected by `yarn --cwd packages/bot funds:sweep`.
  *
  * It spends real testnet funds: only what `fund` is asked for plus gas. Transfers from the test
  * wallet are serialised across processes by a lock directory beside the wallet file, each with
@@ -323,6 +325,23 @@ export async function openRealWallet(params: {
   }
 }
 
+/** What a sweep returned and what it could not. */
+export interface SweepOutcome {
+  returnedWei: bigint
+  /** Accounts that still hold something, each with the reason it was not moved. */
+  left: { wallet: string; account: string; address: string; balanceWei: bigint; reason: string }[]
+}
+
+/** One line per account a sweep left money in, for a script's output. */
+export function describeSweep(outcome: SweepOutcome, to: string): string[] {
+  return [
+    `returned ${formatEther(outcome.returnedWei)} MON to ${to}`,
+    ...outcome.left.map(
+      l => `  NOT returned: ${formatEther(l.balanceWei)} MON in ${l.wallet}'s ${l.account} ${l.address}: ${l.reason}`,
+    ),
+  ]
+}
+
 export interface RealStack {
   relayUrl: string
   rpcUrl: string
@@ -333,9 +352,10 @@ export interface RealStack {
   openWallet(label: string, options?: { stampValueWei?: bigint }): Promise<RealWallet>
   /** Sends from the test wallet; refuses above the per-call limit unless `maxWei` raises it. */
   fund(to: string, valueWei: bigint, options?: { maxWei?: bigint }): Promise<string>
-  /** Sends what the opened wallets' main and identity accounts hold back to the test wallet,
-   * where it is worth the fee. Returns the wei returned. Not needed between runs: wallets persist. */
-  sweep(): Promise<bigint>
+  /** Sends what the opened wallets' main and identity accounts and their spent sender accounts
+   * hold back to the test wallet, where it is worth the fee, and says what it left and why.
+   * Every script that funds a wallet calls this in a `finally`, before `stop`. */
+  sweep(): Promise<SweepOutcome>
   /** Closes the wallets and stops the relay (if this started one). Safe to call more than once. */
   stop(): Promise<void>
 }
@@ -373,23 +393,37 @@ export async function startRealStack(options: {
   const wallets: RealWallet[] = []
   let stopped: Promise<void> | undefined
 
-  const sweepKey = async (privateKey: string): Promise<bigint> => {
+  /** Returns one account's balance to the test wallet. `left` says why when it does not. */
+  const sweepKey = async (privateKey: string): Promise<{ address: string; returnedWei: bigint; balanceWei: bigint; left?: string }> => {
     const signer = new Wallet(privateKey, provider)
     const balance = await provider.getBalance(signer.address)
+    if (balance === 0n) return { address: signer.address, returnedWei: 0n, balanceWei: 0n }
     // A plain transfer at the node's gas price costs exactly 21000 x that price. Not worth
     // sending unless it returns at least as much as it costs.
     const gasPrice = BigInt(await provider.send('eth_gasPrice', []))
     const cost = gasPrice * 21_000n
-    if (balance < cost * 2n) return 0n
-    const tx = await signer.sendTransaction({
-      type: 0,
-      to: fundingAddress,
-      value: balance - cost,
-      gasLimit: 21_000n,
-      gasPrice,
-    })
-    await tx.wait(1, 120_000)
-    return balance - cost
+    if (balance < cost * 2n) {
+      return { address: signer.address, returnedWei: 0n, balanceWei: balance, left: `dust: under twice the transfer fee of ${formatEther(cost)} MON` }
+    }
+    try {
+      const tx = await signer.sendTransaction({
+        type: 0,
+        to: fundingAddress,
+        value: balance - cost,
+        gasLimit: 21_000n,
+        gasPrice,
+      })
+      const receipt = await tx.wait(1, 120_000)
+      if (receipt?.status !== 1) return { address: signer.address, returnedWei: 0n, balanceWei: balance, left: `transfer ${tx.hash} reverted` }
+      return { address: signer.address, returnedWei: balance - cost, balanceWei: 0n }
+    } catch (err) {
+      return {
+        address: signer.address,
+        returnedWei: 0n,
+        balanceWei: balance,
+        left: `the transfer failed (${err instanceof Error ? err.message.split('\n')[0].slice(0, 160) : 'error'}); run funds:sweep on the state directory to try again`,
+      }
+    }
   }
 
   return {
@@ -418,8 +452,11 @@ export async function startRealStack(options: {
       return (await fundFromWallet({ rpcUrl, walletJsonPath, to, valueWei, maxWei: fundOptions?.maxWei ?? maxFundWei })).txHash
     },
     async sweep() {
-      if (!fundingAddress) return 0n
-      let returned = 0n
+      const outcome: SweepOutcome = { returnedWei: 0n, left: [] }
+      if (!fundingAddress) return outcome
+      // On Monad a transfer that empties a small account within a few blocks of that account's
+      // last transaction reverts: let the run's last payments settle first.
+      await sleep(2500)
       for (const wallet of wallets) {
         // A wallet pays each message from a single-use sender account funded with the stamp
         // plus a fee reserve; what the fee did not use stays behind in the spent account. That
@@ -433,18 +470,20 @@ export async function startRealStack(options: {
           | undefined
         const spent = (pool?.records() ?? [])
           .filter(record => record.status === 'spent' || record.status === 'retired')
-          .map(record => pool!.keyring.deriveSubAccount(record.index).privateKey)
-        for (const key of [wallet.handle.mainPrivateKey, wallet.handle.identity.toPrivateKeyHex(), ...spent]) {
+          .map(record => ({ account: `spent sender ${record.index}`, key: pool!.keyring.deriveSubAccount(record.index).privateKey }))
+        const accounts = [
+          { account: 'main account', key: wallet.handle.mainPrivateKey },
+          { account: 'identity account', key: wallet.handle.identity.toPrivateKeyHex() },
+          ...spent,
+        ]
+        for (const { account, key } of accounts) {
           if (!key) continue
-          returned += await sweepKey(key).catch(err => {
-            console.error(
-              `[real-stack] could not return funds of ${wallet.label}: ${err instanceof Error ? err.message : String(err)}`,
-            )
-            return 0n
-          })
+          const moved = await sweepKey(key)
+          outcome.returnedWei += moved.returnedWei
+          if (moved.left) outcome.left.push({ wallet: wallet.label, account, address: moved.address, balanceWei: moved.balanceWei, reason: moved.left })
         }
       }
-      return returned
+      return outcome
     },
     stop: () =>
       (stopped ??= (async () => {

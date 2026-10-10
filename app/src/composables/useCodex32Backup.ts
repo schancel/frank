@@ -10,28 +10,43 @@ const PRESETS: ReadonlyArray<readonly [number, number]> = [
   [6, 10],
 ]
 
+/**
+ * State for the Settings backup page. Nothing secret is read or computed until
+ * `generateShares` is called by an explicit user action; choosing a scheme only records the
+ * choice and drops any shares already shown.
+ */
 export function useCodex32Backup() {
-  const showBackupDialog = ref(false)
   const backupLoading = ref(false)
   const backupError = ref('')
   /** This account predates stored account roots: no shares can be issued for it. */
   const backupUnavailable = ref(false)
   const backupShares = ref<string[]>([])
-  const copyStatus = ref('')
   const threshold = ref(2)
   const count = ref(3)
+  let request = 0
 
-  async function generateShares(t = threshold.value, c = count.value) {
-    threshold.value = t
-    count.value = c
-    backupLoading.value = true
-    backupError.value = ''
-    backupUnavailable.value = false
-    // A new set replaces the old one; shares of two sets must never be shown together.
+  /** Drop shown shares and abandon any set still being issued. */
+  function clearShares() {
+    request++
     backupShares.value = []
+    backupError.value = ''
+    backupLoading.value = false
+  }
+
+  async function generateShares() {
+    clearShares()
+    const current = request
+    backupLoading.value = true
+    backupUnavailable.value = false
     try {
-      backupShares.value = await accountSession.backupCodex32(t, c)
+      const shares = await accountSession.backupCodex32(
+        threshold.value,
+        count.value,
+      )
+      // The user left or chose another scheme meanwhile: this set is never shown.
+      if (current === request) backupShares.value = shares
     } catch (err) {
+      if (current !== request) return
       if (err instanceof AccountBackupUnavailableError) {
         backupUnavailable.value = true
       } else {
@@ -39,69 +54,37 @@ export function useCodex32Backup() {
           (err as Error)?.message || 'Failed to generate backup shares'
       }
     } finally {
-      backupLoading.value = false
+      if (current === request) backupLoading.value = false
     }
   }
 
-  async function openBackupDialog() {
-    showBackupDialog.value = true
-    backupError.value = ''
-    copyStatus.value = ''
-    if (backupShares.value.length === 0) {
-      await generateShares(threshold.value, count.value)
-    }
+  function setScheme(t: number, c: number) {
+    if (t < 2 || t > 9 || c < t || c > 31) return
+    clearShares()
+    threshold.value = t
+    count.value = c
   }
 
-  function closeBackupDialog() {
-    showBackupDialog.value = false
-    backupShares.value = []
-    backupError.value = ''
-    backupUnavailable.value = false
-    copyStatus.value = ''
-    threshold.value = 2
-    count.value = 3
-  }
-
-  async function cycleScheme() {
-    let nextIndex = 0
+  function cycleScheme() {
     const currentIndex = PRESETS.findIndex(
       ([t, c]) => t === threshold.value && c === count.value,
     )
-    if (currentIndex >= 0) {
-      nextIndex = (currentIndex + 1) % PRESETS.length
-    }
-    const [nextT, nextC] = PRESETS[nextIndex] ?? [2, 3]
-    await generateShares(nextT, nextC)
-  }
-
-  async function setScheme(t: number, c: number) {
-    if (t < 2 || t > 9 || c < t || c > 31) return
-    await generateShares(t, c)
-  }
-
-  async function copyShare(share: string, index: number) {
-    try {
-      await navigator.clipboard.writeText(share)
-      copyStatus.value = `Share ${index + 1} copied.`
-    } catch {
-      copyStatus.value = 'Failed to copy share.'
-    }
+    const [nextT, nextC] = PRESETS[(currentIndex + 1) % PRESETS.length] ?? [
+      2, 3,
+    ]
+    setScheme(nextT, nextC)
   }
 
   return {
-    showBackupDialog,
     backupLoading,
     backupError,
     backupUnavailable,
     backupShares,
-    copyStatus,
     threshold,
     count,
-    openBackupDialog,
-    closeBackupDialog,
     cycleScheme,
     setScheme,
     generateShares,
-    copyShare,
+    clearShares,
   }
 }

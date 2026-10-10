@@ -102,6 +102,9 @@ export const en = {
     'Write down each paper share. Any {threshold} of these {count} shares restore this account: the same identity, addresses and funds.',
   codex32_backup_sets_do_not_mix:
     'This is a new set. Shares from different sets, including the ones shown when the account was created, cannot be combined. Changing the scheme or reopening this page makes a different set, so finish writing this one down first.',
+  show_recovery_shares: 'Show recovery shares',
+  show_recovery_shares_warning:
+    'Anyone who sees these shares can take this account. Make sure nobody else can see your screen.',
   codex32_backup_unavailable_for_account:
     'This account was created before Frank could issue new backup shares. Only the shares shown when the account was created can restore it, so no shares are shown here.',
   configure_scheme: 'Configure threshold and shares',
@@ -237,6 +240,9 @@ export const fr = {
     'Notez chaque part papier. N’importe quelles {threshold} de ces {count} parts restaurent ce compte : la même identité, les mêmes adresses et les mêmes fonds.',
   codex32_backup_sets_do_not_mix:
     'Ceci est un nouveau jeu de parts. Les parts de jeux différents, y compris celles affichées à la création du compte, ne peuvent pas être combinées. Changer le schéma ou rouvrir cette page crée un jeu différent : terminez d’abord de noter celui-ci.',
+  show_recovery_shares: 'Afficher les parts de récupération',
+  show_recovery_shares_warning:
+    'Quiconque voit ces parts peut s’emparer de ce compte. Assurez-vous que personne d’autre ne voit votre écran.',
   codex32_backup_unavailable_for_account:
     'Ce compte a été créé avant que Frank puisse émettre de nouvelles parts de sauvegarde. Seules les parts affichées à la création du compte peuvent le restaurer ; aucune part n’est donc affichée ici.',
   configure_scheme: 'Configurer le seuil et les parts',

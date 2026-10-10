@@ -69,7 +69,7 @@
               </div>
             </div>
             <div
-              v-if="!backupUnavailable"
+              v-if="backupShares.length > 0"
               class="text-caption text-grey-8 q-mt-xs"
               data-test="backup-explainer"
             >
@@ -159,6 +159,23 @@
             >
               {{ backupError }}
             </div>
+            <div
+              v-else-if="backupShares.length === 0"
+              class="q-pa-sm"
+              data-test="backup-reveal"
+            >
+              <div class="text-body2 q-mb-sm" data-test="backup-reveal-warning">
+                {{ $t('accountRecovery.show_recovery_shares_warning') }}
+              </div>
+              <q-btn
+                unelevated
+                no-caps
+                color="primary"
+                :label="$t('accountRecovery.show_recovery_shares')"
+                data-test="show-recovery-shares"
+                @click="generateShares"
+              />
+            </div>
             <div v-else class="q-gutter-y-sm" data-test="backup-shares-list">
               <div
                 v-for="(share, index) in backupShares"
@@ -225,7 +242,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCodex32Backup } from '../composables/useCodex32Backup'
 import { navigateBack } from '../utils/navigate-back'
@@ -248,6 +265,7 @@ const {
   cycleScheme,
   setScheme,
   generateShares,
+  clearShares,
 } = useCodex32Backup()
 
 const copyStatus = ref('')
@@ -284,9 +302,9 @@ function toggleCustomConfig() {
   }
 }
 
-async function applyCustom() {
+function applyCustom() {
   if (!isCustomValid.value) return
-  await setScheme(Number(customThreshold.value), Number(customCount.value))
+  setScheme(Number(customThreshold.value), Number(customCount.value))
   showCustomConfig.value = false
 }
 
@@ -303,9 +321,9 @@ function cancel() {
   navigateBack(router)
 }
 
-onMounted(async () => {
-  await generateShares(threshold.value, count.value)
-})
+// Nothing is read from custody until the user asks for shares, and whatever was shown
+// (or was still being issued) is dropped when they leave the page.
+onBeforeUnmount(clearShares)
 </script>
 
 <style lang="scss" scoped>

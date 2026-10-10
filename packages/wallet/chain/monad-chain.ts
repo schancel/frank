@@ -154,7 +154,6 @@ import {
   SubAccountLeaseManager,
 } from "../monad-account-lease";
 import { MonadHttpClient } from "../monad-http";
-import { discoverFakeDemoRpc } from "../monad-demo-rpc";
 import {
   createMonadJsonRpcProvider,
   DEFAULT_MONAD_CHAIN_ID,
@@ -368,9 +367,6 @@ export function loadMonadChainConfigFromEnv(overrides?: {
       : readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
   const protocolIdentity = monadProtocolIdentity(rpcChain);
   const rawChainId = readEnv("MONAD_CHAIN_ID");
-  // Quasar emits this explicit flag as a boolean; Node env values are strings.
-  const fakeDemoFlag: unknown = readEnv("FRANK_FAKE_DEMO");
-  const fakeDemoEnabled = fakeDemoFlag === true || fakeDemoFlag === "true";
   let chainId: bigint | undefined;
   if (rawChainId) {
     try {
@@ -388,15 +384,11 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     rpcChain,
     // Known protocol rows are atomic: public overrides must not create a
     // mainnet route with a testnet chain ID (or the inverse).
-    chainId:
-      fakeDemoEnabled && rawChainId !== undefined
-        ? chainId ?? -1n
-        : protocolIdentity?.chainId ?? chainId ?? DEFAULT_MONAD_CHAIN_ID,
+    chainId: protocolIdentity?.chainId ?? chainId ?? DEFAULT_MONAD_CHAIN_ID,
     get relayBaseUrl() {
       return getCustomRelayBaseUrl() ?? getDefaultRelayBaseUrl();
     },
     networkTag:
-      (fakeDemoEnabled ? readEnv("FRANK_NETWORK_TAG") : undefined) ??
       protocolIdentity?.networkTag ??
       readEnv("FRANK_NETWORK_TAG") ??
       "MONT",
@@ -414,14 +406,6 @@ export function loadMonadChainConfigFromEnv(overrides?: {
     subAccountPoolSize: Number(readEnv("MONAD_SUB_ACCOUNT_POOL_SIZE") ?? "8"),
     walletStorageLocation:
       readEnv("MONAD_WALLET_STORAGE_LOCATION") ?? "frank-monad-wallet-state",
-    ...(fakeDemoEnabled
-      ? {
-          fakeDemo: {
-            enabled: true,
-            controlUrl: readEnv("FRANK_DEMO_CONTROL_URL") ?? "",
-          },
-        }
-      : {}),
   };
 }
 
@@ -1859,8 +1843,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
             },
           });
-          const demoRpcUrl = await discoverFakeDemoRpc(config);
-
           const nativeAttemptStore =
             config.nativeAttemptStore ?? defaultNativeTransactionAttemptStore;
           const nativeAttemptKey = nativeTransactionAttemptKey({
@@ -1913,39 +1895,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             }
           }
           await pool.flush();
-          const rpcUrl =
-            demoRpcUrl ??
-            `${config.relayBaseUrl.replace(
-              /\/$/,
-              ""
-            )}/chain-rpc/${encodeURIComponent(config.rpcChain)}/rpc`;
-          const relayAuth =
-            demoRpcUrl === undefined
-              ? {
-                  chain: config.rpcChain,
-                  customer: identity.address.raw,
-                  subject: hexlify(identity.compressedPubKey).slice(2),
-                  networkTag: config.networkTag,
-                  signDigest: (digest: Uint8Array) =>
-                    identity.signHash(Buffer.from(digest)),
-                }
-              : undefined;
+          const rpcUrl = `${config.relayBaseUrl.replace(
+            /\/$/,
+            ""
+          )}/chain-rpc/${encodeURIComponent(config.rpcChain)}/rpc`;
+          const relayAuth = {
+            chain: config.rpcChain,
+            customer: identity.address.raw,
+            subject: hexlify(identity.compressedPubKey).slice(2),
+            networkTag: config.networkTag,
+            signDigest: (digest: Uint8Array) =>
+              identity.signHash(Buffer.from(digest)),
+          };
           const provider = createMonadJsonRpcProvider({
             rpcUrl,
             chainId: config.chainId,
             relayAuth,
-            ...(demoRpcUrl === undefined
-              ? {}
-              : { demoOnlyAbortOnDestroy: true }),
           });
           destroyProvider = () => provider.destroy();
           const httpClient = new MonadHttpClient({
             rpcUrl,
             chainId: config.chainId,
             relayAuth,
-            ...(demoRpcUrl === undefined
-              ? {}
-              : { demoOnlyAbortOnDestroy: true }),
           });
           destroyHttpClient = () => httpClient.destroy();
           const stealthKeyring = new MonadStealthKeyring(undefined, {

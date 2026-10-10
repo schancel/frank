@@ -1,6 +1,5 @@
 /** Generic EVM configuration; runtime/environment composition remains in monad-chain.ts. */
 import type { NativeTransactionAttemptStore } from "./chain-wallet";
-import type { FakeDemoRpcConfig } from "../monad-demo-rpc";
 import type { EvmTransactionBuilder } from "./evm-transaction-builder";
 
 export interface EvmChainConfig {
@@ -28,8 +27,6 @@ export interface EvmChainConfig {
    * sender account or rewind the change derivation path. */
   walletStorageLocation: string | false;
   nativeAttemptStore?: NativeTransactionAttemptStore;
-  /** Explicit disposable fake-service opt-in; never selected by a relay failure. */
-  fakeDemo?: FakeDemoRpcConfig;
 
   /** Unique chain identifier, e.g. "monad-testnet", "monad-mainnet", "hyperliquid-mainnet", "tempo-mainnet". */
   readonly chainIdentifier?: string;

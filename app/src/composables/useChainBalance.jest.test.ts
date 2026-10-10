@@ -111,7 +111,7 @@ jest.mock('src/composables/useActiveWallet', () => ({
 }))
 jest.mock('src/composables/useSwapHistory', () => ({
   useSwapHistory: () => ({
-    swapsForChain: () => ref([]),
+    swapsFor: () => ref([]),
     handleSwapItem: jest.fn(),
     cacheOutcome: jest.fn(),
   }),

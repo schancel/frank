@@ -9,12 +9,15 @@ import {
 
 export type { SwapOutcome, SwapRecord }
 
-/** The account's swaps on one chain, each with the outcome read from the chain when known. */
+/** One account's swaps on one chain, each with the outcome read from the chain when known. */
 export function useSwapHistory() {
   // A component mounted without the app's stores (a narrow test) has no history to show.
   if (!getActivePinia())
     return {
-      swapsForChain: (_chainIdentifier: () => string | undefined) =>
+      swapsFor: (
+        _chainIdentifier: () => string | undefined,
+        _account: () => string | undefined,
+      ) =>
         computed<{ record: SwapRecord; outcome: SwapOutcome | undefined }[]>(
           () => [],
         ),
@@ -23,9 +26,12 @@ export function useSwapHistory() {
     }
   const store = useSwapStore()
   return {
-    swapsForChain: (chainIdentifier: () => string | undefined) =>
+    swapsFor: (
+      chainIdentifier: () => string | undefined,
+      account: () => string | undefined,
+    ) =>
       computed(() =>
-        store.getSwapsForChain(chainIdentifier()).map(record => ({
+        store.getSwaps(chainIdentifier(), account()).map(record => ({
           record,
           outcome: store.outcomes[record.swapId] as SwapOutcome | undefined,
         })),

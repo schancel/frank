@@ -17,7 +17,9 @@ import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 export type SwapRecord = Omit<SwapRecordItem, 'type'>
 
 export interface SwapOutcome {
-  status: 'confirmed' | 'failed'
+  /** `foreign`: the chain says the recorded transaction is not this account's swap on the
+   * recorded exchange. Such a record is never shown. */
+  status: 'confirmed' | 'failed' | 'foreign'
   /** What arrived, in the output asset's smallest unit; absent when the receipt did not show it. */
   amountOut?: string
   /** Network fees charged, in the native coin's smallest unit. */
@@ -27,6 +29,7 @@ export interface SwapOutcome {
 }
 
 export const SWAP_STORAGE_KEY = 'frank_swap_records'
+const MAX_RECORDS = 500
 
 interface Stored {
   records: SwapRecord[]
@@ -56,11 +59,24 @@ export const useSwapStore = defineStore('swaps', {
   state: (): Stored => load(),
 
   getters: {
-    /** The swaps made on one canonical chain, newest first. */
-    getSwapsForChain: state => (chainIdentifier: string | undefined) =>
-      state.records
-        .filter(record => record.chainIdentifier === chainIdentifier)
-        .sort((a, b) => b.timestamp - a.timestamp),
+    /**
+     * The swaps one account made on one canonical chain, newest first. The cache holds every
+     * account this device has signed in as; a list is always one account's, and with no account
+     * named it is empty.
+     */
+    getSwaps:
+      state =>
+      (chainIdentifier: string | undefined, account: string | undefined) =>
+        account
+          ? state.records
+              .filter(
+                record =>
+                  record.chainIdentifier === chainIdentifier &&
+                  record.account.toLowerCase() === account.toLowerCase() &&
+                  state.outcomes[record.swapId]?.status !== 'foreign',
+              )
+              .sort((a, b) => b.timestamp - a.timestamp)
+          : [],
   },
 
   actions: {
@@ -69,7 +85,7 @@ export const useSwapStore = defineStore('swaps', {
         window.localStorage?.setItem(
           SWAP_STORAGE_KEY,
           JSON.stringify({
-            records: this.records.slice(0, 200),
+            records: this.records.slice(0, MAX_RECORDS),
             outcomes: this.outcomes,
           }),
         )
@@ -80,7 +96,13 @@ export const useSwapStore = defineStore('swaps', {
 
     /** One swap record, from a note to self or from this device's wallet journal. Idempotent. */
     handleSwapItem(item: SwapRecordItem): void {
-      if (!item || item.type !== 'swap-record' || !item.swapId) return
+      if (
+        !item ||
+        item.type !== 'swap-record' ||
+        !item.swapId ||
+        typeof item.account !== 'string'
+      )
+        return
       const { type: _type, ...record } = item
       const index = this.records.findIndex(r => r.swapId === record.swapId)
       if (index >= 0)

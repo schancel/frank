@@ -44,18 +44,36 @@ describe('the swap history store', () => {
     expect('type' in store.records[0]).toBe(false)
   })
 
-  it('lists a swap only on the canonical chain it was made on, newest first', () => {
+  it('lists a swap only for the account that made it, on the canonical chain it was made on, newest first', () => {
     const store = useSwapStore()
+    const mine = '0x' + 'bb'.repeat(20)
     store.handleSwapItem(item())
     store.handleSwapItem(item({ swapId: 'b'.repeat(64), timestamp: 5_000 }))
     store.handleSwapItem(
       item({ swapId: 'c'.repeat(64), chainIdentifier: 'monad-mainnet' }),
     )
+    // Another account that signed in on this device.
+    store.handleSwapItem(
+      item({ swapId: 'd'.repeat(64), account: '0x' + 'cc'.repeat(20) }),
+    )
     expect(
-      store.getSwapsForChain('monad-testnet').map(record => record.swapId),
+      store
+        .getSwaps('monad-testnet', mine.toUpperCase().replace('0X', '0x'))
+        .map(record => record.swapId),
     ).toEqual(['b'.repeat(64), 'a'.repeat(64)])
-    expect(store.getSwapsForChain('monad')).toEqual([])
-    expect(store.getSwapsForChain(undefined)).toEqual([])
+    expect(
+      store
+        .getSwaps('monad-testnet', '0x' + 'cc'.repeat(20))
+        .map(r => r.swapId),
+    ).toEqual(['d'.repeat(64)])
+    expect(store.getSwaps('monad', mine)).toEqual([])
+    expect(store.getSwaps(undefined, mine)).toEqual([])
+    expect(store.getSwaps('monad-testnet', undefined)).toEqual([])
+    // A record the chain said is not this account's swap is never listed.
+    store.cacheOutcome('a'.repeat(64), { status: 'foreign' })
+    expect(store.getSwaps('monad-testnet', mine).map(r => r.swapId)).toEqual([
+      'b'.repeat(64),
+    ])
   })
 
   it('ignores anything that is not a swap record', () => {
@@ -98,7 +116,9 @@ describe('the swap history store', () => {
     const other = useSwapStore()
     expect(other.records).toEqual([])
     other.handleSwapItem(item())
-    expect(other.getSwapsForChain('monad-testnet')).toHaveLength(1)
+    expect(
+      other.getSwaps('monad-testnet', '0x' + 'bb'.repeat(20)),
+    ).toHaveLength(1)
   })
 
   it('survives storage that cannot be read or written', () => {

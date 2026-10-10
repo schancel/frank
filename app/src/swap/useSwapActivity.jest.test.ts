@@ -7,13 +7,17 @@ import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 enableAutoUnmount(afterEach)
 
 const mockObserve = jest.fn()
-const mockOpen = jest.fn(async () => ({ dex: { observe: mockObserve } }))
+const mockOpen = jest.fn(async () => ({
+  dex: { observe: mockObserve },
+  account: '0xMAIN',
+}))
 jest.mock('./evm-swap-session', () => ({
   evmSwapVenues: () => [{ id: 'uniswap-v4', displayName: 'Uniswap v4' }],
   openEvmSwapSession: (...args: unknown[]) => mockOpen(...(args as [])),
 }))
 
 import { useSwapStore } from '../stores/swaps'
+import { SwapRecordMismatchError } from '@frank/wallet/swap/evm-dex'
 import { useSwapActivity } from './useSwapActivity'
 
 const note = (over: Partial<SwapRecordItem> = {}): SwapRecordItem => ({
@@ -35,7 +39,8 @@ const note = (over: Partial<SwapRecordItem> = {}): SwapRecordItem => ({
   ...over,
 })
 
-function mountActivity(chain = 'monad-testnet') {
+/** Mounted, with the wallet's main account read (the list is one account's). */
+async function mountActivity(chain = 'monad-testnet') {
   let api!: ReturnType<typeof useSwapActivity>
   mount(
     defineComponent({
@@ -45,6 +50,7 @@ function mountActivity(chain = 'monad-testnet') {
       },
     }),
   )
+  await flushPromises()
   return api
 }
 
@@ -65,7 +71,7 @@ describe('Recent Activity', () => {
       feeWei: 21_131_544_000_000_000n,
       totalFeeWei: 21_131_544_000_000_000n,
     })
-    const api = mountActivity()
+    const api = await mountActivity()
     expect(api.rows.value).toEqual([])
     // The mailbox delivers the note the account sent itself.
     useSwapStore().handleSwapItem(note())
@@ -110,7 +116,7 @@ describe('Recent Activity', () => {
       feeWei: 1n,
       totalFeeWei: 1n,
     })
-    const api = mountActivity()
+    const api = await mountActivity()
     useSwapStore().handleSwapItem(note())
     await flushPromises()
     expect(api.rows.value[0]).toMatchObject({ status: 'failed', toAmount: '0' })
@@ -122,7 +128,7 @@ describe('Recent Activity', () => {
       txHash: note().txHash,
       operationId: '',
     })
-    const api = mountActivity()
+    const api = await mountActivity()
     useSwapStore().handleSwapItem(note())
     useSwapStore().handleSwapItem(
       note({ swapId: 'b'.repeat(64), chainIdentifier: 'monad-mainnet' }),
@@ -132,5 +138,54 @@ describe('Recent Activity', () => {
       ['a'.repeat(64), 'pending'],
     ])
     expect(useSwapStore().outcomes).toEqual({})
+  })
+  it('lists only the swaps of the account the wallet signs from', async () => {
+    mockObserve.mockResolvedValue({ status: 'pending' })
+    const api = await mountActivity()
+    useSwapStore().handleSwapItem(note())
+    useSwapStore().handleSwapItem(
+      note({ swapId: 'b'.repeat(64), account: '0xSomeoneElse' }),
+    )
+    expect(api.rows.value.map(row => row.id)).toEqual(['a'.repeat(64)])
+  })
+
+  it('does not show a record whose transaction the chain says is not this account’s swap, and stops asking', async () => {
+    mockObserve.mockRejectedValue(new SwapRecordMismatchError())
+    const api = await mountActivity()
+    useSwapStore().handleSwapItem(note())
+    await flushPromises()
+    expect(api.rows.value).toEqual([])
+    mockObserve.mockClear()
+    await api.readOutcomes()
+    expect(mockObserve).not.toHaveBeenCalled()
+  })
+
+  it('asks less and less often about a swap whose transaction never appears', async () => {
+    let now = 1_000_000
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      mockObserve.mockResolvedValue({ status: 'pending' })
+      const api = await mountActivity()
+      useSwapStore().handleSwapItem(note())
+      await flushPromises()
+      expect(mockObserve).toHaveBeenCalledTimes(1)
+      // Asked again only when its wait is over: 20 s, then 40 s, then 80 s.
+      const askedAfter = async (ms: number) => {
+        now += ms
+        await api.readOutcomes()
+        return mockObserve.mock.calls.length
+      }
+      expect(await askedAfter(19_000)).toBe(1)
+      expect(await askedAfter(1_000)).toBe(2)
+      expect(await askedAfter(39_000)).toBe(2)
+      expect(await askedAfter(1_000)).toBe(3)
+      expect(await askedAfter(79_000)).toBe(3)
+      expect(await askedAfter(1_000)).toBe(4)
+      // Never rarer than once in ten minutes.
+      for (let i = 0; i < 8; i++) await askedAfter(10 * 60_000)
+      expect(mockObserve).toHaveBeenCalledTimes(12)
+    } finally {
+      clock.mockRestore()
+    }
   })
 })

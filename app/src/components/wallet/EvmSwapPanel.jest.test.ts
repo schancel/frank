@@ -52,7 +52,7 @@ jest.mock('@frank/wallet/chain/dex-deployments', () => {
 })
 jest.mock('src/composables/useSwapHistory', () => ({
   useSwapHistory: () => ({
-    swapsForChain: () => ({ value: [] }),
+    swapsFor: () => ({ value: [] }),
     handleSwapItem: (item: SwapRecordItem) => {
       mockItems.push(item)
     },

@@ -12,7 +12,7 @@
  */
 import { createServer, connect, type Server, type Socket } from 'net'
 
-import { JsonRpcProvider } from 'ethers'
+import { FetchRequest, JsonRpcProvider } from 'ethers'
 
 import type { CheckStack } from '../../parallel-send.livecheck'
 import { openRealWallet, type RealWallet } from '../real-stack'
@@ -59,7 +59,21 @@ async function switchablePort(target: { host: string; port: number }) {
 export async function startCheckStack(options: { relayUrl?: string } = {}): Promise<CheckStack> {
   const { rpcUrl } = await ensureSolonet({ ...process.env, FRANK_SOLONET_RPC_URL: undefined })
   // Reads for the check's own assertions: straight to the chain.
-  const provider = new JsonRpcProvider(rpcUrl, MONAD_REGTEST_CHAIN_ID, { staticNetwork: true, cacheTimeout: -1 })
+  // The solonet's port is forwarded from a VM, and that forward now and then drops a connection
+  // in the middle of an answer ("socket hang up"): such a request is made again.
+  const connection = new FetchRequest(rpcUrl)
+  const getUrl = FetchRequest.createGetUrlFunc()
+  connection.getUrlFunc = async (request, signal) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await getUrl(request, signal)
+      } catch (error) {
+        if (attempt >= 3) throw error
+        await new Promise(resolveWait => setTimeout(resolveWait, 150))
+      }
+    }
+  }
+  const provider = new JsonRpcProvider(connection, MONAD_REGTEST_CHAIN_ID, { staticNetwork: true, cacheTimeout: -1 })
   const wallets: RealWallet[] = []
   const track = (wallet: RealWallet) => {
     const earlier = wallets.findIndex(opened => opened.label === wallet.label)
@@ -115,9 +129,12 @@ export async function startCheckStack(options: { relayUrl?: string } = {}): Prom
   // when a check closes it), one payment at a time.
   const faucet = monad.faucet.connect(provider)
   let paying: Promise<unknown> = Promise.resolve()
+  // The node's count can lag a block behind a payment just mined: never reuse a nonce.
+  let lastNonce = -1
   const fund = (to: string, valueWei: bigint): Promise<string> => {
     const next = paying.then(async () => {
-      const nonce = await provider.getTransactionCount(faucet.address, 'pending')
+      const nonce = Math.max(await provider.getTransactionCount(faucet.address, 'pending'), lastNonce + 1)
+      lastNonce = nonce
       const tx = await faucet.sendTransaction({ to, value: valueWei, nonce, gasLimit: 21_000n })
       for (const deadline = Date.now() + 120_000; ; ) {
         const receipt = await provider.getTransactionReceipt(tx.hash)

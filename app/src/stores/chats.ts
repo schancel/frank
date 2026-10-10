@@ -630,6 +630,38 @@ function carriesWalletRecord(wrapper: ReceivedMessageWrapper): boolean {
 }
 
 /**
+ * A received row that carries nothing but records (today: a swap's note to self) is not a
+ * message. It is never filed into a conversation and never saved as one, in the session or on a
+ * reload: its records go to the store that owns them and the row is left in the mailbox.
+ */
+function carriesOnlyRecords(wrapper: ReceivedMessageWrapper): boolean {
+  return (
+    isInternalMessage(wrapper.message.items) && !carriesWalletRecord(wrapper)
+  )
+}
+
+/**
+ * The swap records of a row the account sent to itself. A swap record in anyone else's row, or
+ * in our own row to someone else, says nothing about this account's swaps and is not handed on.
+ * The wallet's receive rule already refuses those rows; this does not rely on it.
+ */
+function ownSwapRecords(
+  wrapper: ReceivedMessageWrapper,
+  ownAddress: string | null,
+): SwapRecordItem[] {
+  if (
+    !ownAddress ||
+    !sameCanonicalAddress(wrapper.senderAddress, ownAddress) ||
+    !sameCanonicalAddress(wrapper.copartyAddress, ownAddress) ||
+    !Array.isArray(wrapper.message.items)
+  )
+    return []
+  return wrapper.message.items.filter(
+    (item): item is SwapRecordItem => !!item && item.type === 'swap-record',
+  )
+}
+
+/**
  * Cancellation identity of one delivery attempt (e.g. one direct-message poller generation).
  * Whether to notify is decided synchronously, but the delivery mutation itself is queued behind
  * the module-global serialized boundary -- when account replacement stops the old poller and
@@ -3413,6 +3445,22 @@ export const useChatStore = defineStore('chats', {
         toNotify.delete(wrapper.index)
         return false
       })
+      // Rows of records only are taken out here, before anything is filed or saved: what the
+      // session shows and what a reload shows are then the same, because neither has the row.
+      const recordRows = deliverableWrappers.filter(carriesOnlyRecords)
+      if (recordRows.length > 0) {
+        deliverableWrappers = deliverableWrappers.filter(
+          wrapper => !carriesOnlyRecords(wrapper),
+        )
+        const swaps = recordRows.flatMap(wrapper => {
+          toNotify.delete(wrapper.index)
+          return ownSwapRecords(wrapper, ownAddress)
+        })
+        if (swaps.length > 0) {
+          const { useSwapStore } = await import('./swaps')
+          for (const item of swaps) useSwapStore().handleSwapItem(item)
+        }
+      }
       const outboundMatches = new Map<string, OutboundDeliveryMatch>()
       const replacedAccountCollisions = new Map<
         string,
@@ -3808,19 +3856,12 @@ export const useChatStore = defineStore('chats', {
           deliveryDigest: index,
         }
 
-        if (newMsg.items && Array.isArray(newMsg.items)) {
-          for (const item of newMsg.items) {
-            if (item && item.type === 'swap-record') {
-              try {
-                void import('./swaps').then(({ useSwapStore }) => {
-                  useSwapStore().handleSwapItem(item as SwapRecordItem)
-                })
-              } catch {
-                // ignore
-              }
-            }
-          }
-        }
+        // A note to self that carries a swap record beside something to show.
+        const swaps = ownSwapRecords(wrapper, ownAddress)
+        if (swaps.length > 0)
+          void import('./swaps').then(({ useSwapStore }) => {
+            for (const item of swaps) useSwapStore().handleSwapItem(item)
+          })
 
         if (index in this.messages) {
           const existingMessage = this.messages[index]

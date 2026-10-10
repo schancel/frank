@@ -566,6 +566,53 @@ describe('the sequences this was written for', () => {
   })
 })
 
+describe('a note to self that carries only records', () => {
+  it('is in no conversation in the session or after a reload, beside messages that are', async () => {
+    await quietly(async () => {
+      const records = (index: string, sender: string, type: string) => {
+        const wrapper = message(index, sender, WITH_PEER_1, 350)
+        return {
+          ...wrapper,
+          conversationId: undefined,
+          outbound: false,
+          copartyAddress: sender,
+          message: {
+            ...wrapper.message,
+            conversationId: undefined,
+            outbound: false,
+            destinationAddress: ME,
+            items: [{ type, swapId: index }],
+          },
+        } as unknown as ReceivedMessageWrapper
+      }
+      const { chats, session } = await expectReloadShowsTheSession([
+        {
+          kind: 'receive',
+          batch: [
+            message('before', PEER_1, WITH_PEER_1, 300),
+            // Our own swap note, a peer's row built to look like one, and a wallet record
+            // that should never have arrived: none of them is a message.
+            records('own-swap-note', ME, 'swap-record'),
+            records('peer-swap-note', PEER_1, 'swap-record'),
+            records('wallet-record', ME, 'wallet-sync'),
+            message('after', PEER_1, WITH_PEER_1, 400),
+          ],
+        },
+        // The relay hands the note back on a later poll.
+        {
+          kind: 'receive',
+          batch: [records('own-swap-note', ME, 'swap-record')],
+        },
+      ])
+      expect(
+        session.conversations.flatMap(c => c.messages.map(m => m.digest)),
+      ).toEqual(['before', 'after'])
+      expect([...mockDisk.rows.keys()].sort()).toEqual(['after', 'before'])
+      expect(Object.keys(chats.messages).sort()).toEqual(['after', 'before'])
+    })
+  })
+})
+
 describe('a conversation the saved metadata does not know', () => {
   it("is rebuilt as ours with the peer we wrote to, though a stranger's row in it is older", async () => {
     await quietly(async () => {

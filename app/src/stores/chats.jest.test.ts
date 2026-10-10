@@ -140,9 +140,13 @@ function seedConversation(
   return conv
 }
 
+const TEST_SALT = conversationIdSalt(new Uint8Array(32).fill(0x7e))
+
 describe('stores/chats.ts (ticket #42)', () => {
   beforeEach(async () => {
     setActivePinia(createPinia())
+    // An account that can open a chat always has its conversation-ID salt installed.
+    setConversationIdSalt(TEST_SALT)
     jest.restoreAllMocks()
     mockMessageStore =
       (await messageStorePromise) as unknown as MockMessageStore
@@ -3887,10 +3891,13 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect(chats.conversations[id].totalUnreadMessages).toBe(2)
       }
 
-      // The first is what opening the gateway address opens. That does not swallow the second
-      // and allocates nothing.
-      expect(chats.openDirectConversation(GATEWAY_ADDRESS).id).toBe(THREAD_ONE)
-      expect(chats.conversations[THREAD_TWO].defaultDirect).toBeUndefined()
+      // Their IDs are not opening IDs (the gateway names each thread), so none of them is
+      // "the gateway's thread": opening the gateway address opens a conversation of its own,
+      // and swallows neither.
+      const direct = chats.openDirectConversation(GATEWAY_ADDRESS)
+      expect([THREAD_ONE, THREAD_TWO]).not.toContain(direct.id)
+      expect(direct.messages).toHaveLength(0)
+      delete chats.conversations[direct.id]
       expect(Object.keys(chats.conversations)).toHaveLength(2)
 
       // A reply in each thread goes out under that thread's own ID and stays in it.
@@ -3927,7 +3934,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         SENDER_ADDRESS,
       )
       expect(bodies(THREAD_THREE)).toEqual(['three-a'])
-      expect(chats.conversations[THREAD_THREE].defaultDirect).toBeUndefined()
+      expect(chats.chats[GATEWAY_ADDRESS]).toBeUndefined()
       expect(Object.keys(chats.conversations)).toHaveLength(3)
     })
 
@@ -4181,7 +4188,6 @@ describe('stores/chats.ts (ticket #42)', () => {
         formatConversationId(
           allocateOpeningConversationId(salt, peer.toLowerCase()),
         )
-      afterEach(() => setConversationIdSalt(null))
 
       it('is the same however and on whichever device the peer is opened, and never a second thread', () => {
         setConversationIdSalt(MY_SALT)
@@ -4263,16 +4269,16 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect(Object.keys(chats.conversations)).toHaveLength(1)
       })
 
-      it('without a salt allocates a random ID, never one derived from an address, and still one thread', () => {
+      it('refuses to open a chat without a salt instead of allocating a random ID', async () => {
+        setConversationIdSalt(null)
         const chats = useChatStore()
-        const opened = chats.openDirectConversation(RECIPIENT_ADDRESS)
-        expect(opened.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-/)
-        expect(chats.openDirectConversation(RECIPIENT_ADDRESS)).toBe(opened)
-        expect(Object.keys(chats.conversations)).toHaveLength(1)
-        setActivePinia(createPinia())
-        expect(
-          useChatStore().openDirectConversation(RECIPIENT_ADDRESS).id,
-        ).not.toBe(opened.id)
+        expect(() => chats.openDirectConversation(RECIPIENT_ADDRESS)).toThrow(
+          /No conversation-ID salt is installed/,
+        )
+        expect(() => chats.setActiveChat(RECIPIENT_ADDRESS)).toThrow(
+          /No conversation-ID salt is installed/,
+        )
+        expect(Object.keys(chats.conversations)).toHaveLength(0)
       })
     })
 
@@ -4387,7 +4393,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect(explicit?.id).toBe(explicitId)
         expect(explicit).not.toBe(thread)
         // Only the first conversation with a peer is the peer's thread.
-        expect(explicit?.defaultDirect).toBeUndefined()
+        expect(chats.chats[RECIPIENT_ADDRESS]).not.toBe(explicit)
         thread!.name = 'Equal'
         explicit!.name = 'Equal'
         await receive(
@@ -4468,7 +4474,6 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect(otherThread).not.toBe(thread)
         expect(otherThread?.address).toBe(THIRD_ADDRESS)
         expect(Object.keys(chats.conversations)).toHaveLength(2)
-        setConversationIdSalt(null)
       })
 
       it("only a message from the peer itself makes a conversation that peer's thread", async () => {
@@ -4488,7 +4493,6 @@ describe('stores/chats.ts (ticket #42)', () => {
         )
         const filed = threadOf(chats, 'not from the peer')
         expect(filed?.id).toBe(THEIR_ID)
-        expect(filed?.defaultDirect).toBeUndefined()
         expect(chats.chats[RECIPIENT_ADDRESS]).toBeUndefined()
         const opened = chats.openDirectConversation(RECIPIENT_ADDRESS)
         expect(opened).not.toBe(filed)
@@ -4745,37 +4749,105 @@ describe('stores/chats.ts (ticket #42)', () => {
         })
       })
 
-      it('accepted case: both sides opened each other before any message arrived, so each has two conversations', async () => {
+      it('a thread opened here and never used yields to the conversation the peer started', async () => {
         const chats = useChatStore()
         const ours = chats.openDirectConversation(RECIPIENT_ADDRESS)
-        // The peer opened a chat with us too and allocated its own ID. Nothing is merged.
+        chats.setActiveConversation(ours.id)
+        // The peer had opened a chat with us too, under its own ID, and wrote first.
         await receive(chats, incoming('their first', THEIR_ID))
         const theirs = threadOf(chats, 'their first')
         expect(theirs?.id).toBe(THEIR_ID)
-        expect(theirs).not.toBe(ours)
-        expect(theirs?.defaultDirect).toBeUndefined()
-        // Contacts still opens our own thread, and each conversation keeps carrying its ID.
-        expect(chats.openDirectConversation(RECIPIENT_ADDRESS)).toBe(ours)
+        // Theirs is the peer's thread; ours is not left behind as a second, empty one, and
+        // whoever had it open is looking at the peer's thread.
+        expect(chats.chats[RECIPIENT_ADDRESS]).toBe(theirs)
+        expect(chats.openDirectConversation(RECIPIENT_ADDRESS)).toBe(theirs)
+        expect(chats.conversations[ours.id]).toBeUndefined()
+        expect(chats.activeConversation).toBe(theirs)
+        expect(Object.keys(chats.conversations)).toHaveLength(1)
         const send = sendSpy()
-        const wallet = makeWallet(SENDER_ADDRESS)
         await chats.sendMessage({
-          wallet,
+          wallet: makeWallet(SENDER_ADDRESS),
           address: RECIPIENT_ADDRESS,
-          conversationId: THEIR_ID,
-          items: [{ type: 'text', text: 'in theirs' }],
+          items: [{ type: 'text', text: 'reply' }],
         })
-        await chats.sendMessage({
-          wallet,
-          address: RECIPIENT_ADDRESS,
-          items: [{ type: 'text', text: 'in ours' }],
-        })
-        expect(send.mock.calls.map(([p]) => p.conversationId)).toEqual([
-          THEIR_ID,
-          ours.id,
-        ])
-        expect(threadOf(chats, 'in theirs')).toBe(theirs)
-        expect(threadOf(chats, 'in ours')).toBe(ours)
-        expect(Object.keys(chats.conversations)).toHaveLength(2)
+        expect(send.mock.calls[0][0].conversationId).toBe(THEIR_ID)
+      })
+
+      it('accepted case: both sides wrote first in their own conversation, so there are two; the earlier one is the peer thread on every device', async () => {
+        const mine = (text: string, conversationId: string, time: number) => {
+          const row = incoming(text, conversationId)
+          return {
+            ...row,
+            outbound: true,
+            senderAddress: SENDER_ADDRESS,
+            message: {
+              ...row.message,
+              outbound: true,
+              senderAddress: SENDER_ADDRESS,
+              destinationAddress: RECIPIENT_ADDRESS,
+              serverTime: time,
+              receivedTime: time,
+            },
+          } as any
+        }
+        const theirs = (text: string, time: number) => {
+          const row = incoming(text, THEIR_ID)
+          return {
+            ...row,
+            message: { ...row.message, serverTime: time, receivedTime: time },
+          }
+        }
+        const OUR_ID = formatConversationId(
+          allocateOpeningConversationId(
+            TEST_SALT,
+            RECIPIENT_ADDRESS.toLowerCase(),
+          ),
+        )
+        const rows = () => [
+          mine('our first', OUR_ID, 1000),
+          theirs('their first', 2000),
+          theirs('their second', 3000),
+        ]
+        // Two devices of this account read the same mailbox: one in relay order, one in the
+        // opposite order a poll at a time, and one of them had opened the chat before anything
+        // arrived. They agree on the peer's thread and on where every message is.
+        const seen: unknown[] = []
+        for (const device of [
+          { openFirst: false, batches: [rows()] },
+          {
+            openFirst: true,
+            batches: rows()
+              .reverse()
+              .map(row => [row]),
+          },
+        ]) {
+          setActivePinia(createPinia())
+          const chats = useChatStore()
+          if (device.openFirst) chats.openDirectConversation(RECIPIENT_ADDRESS)
+          for (const batch of device.batches)
+            await chats.receiveMessages(batch, SENDER_ADDRESS)
+          expect(chats.chats[RECIPIENT_ADDRESS].id).toBe(OUR_ID)
+          expect(chats.openDirectConversation(RECIPIENT_ADDRESS).id).toBe(
+            OUR_ID,
+          )
+          seen.push(
+            Object.values(chats.conversations)
+              .map(c => [
+                c.id,
+                c.messages.map(m =>
+                  m.items.map(i => (i as { text?: string }).text).join(),
+                ),
+              ])
+              .sort(),
+          )
+        }
+        expect(seen[0]).toEqual(seen[1])
+        expect(seen[0]).toEqual(
+          [
+            [OUR_ID, ['our first']],
+            [THEIR_ID, ['their first', 'their second']],
+          ].sort(),
+        )
       })
     })
   })

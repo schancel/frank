@@ -194,10 +194,7 @@ function productionDeps(): MessagingDeps {
       )
       try {
         const removeDirectory = installCanonicalDirectory(wallet, directory)
-        // The chat store allocates conversation IDs from this account's private salt.
-        setConversationIdSalt(conversationIdSaltOf(wallet))
         return () => {
-          setConversationIdSalt(null)
           removeDirectory()
           removeMessageItems()
         }
@@ -330,7 +327,26 @@ export function messagingWallet(): WalletHandle | undefined {
   return live ? (live.wallet as unknown as WalletHandle) : undefined
 }
 
+/**
+ * Installs the active account's conversation-ID salt in the chat store, if it is not there yet.
+ * Anything that opens a chat outside the messaging start (a route followed at launch) awaits
+ * this first. Resolves without one when no account is ready.
+ */
+export async function ensureConversationIdSalt(): Promise<void> {
+  let d: MessagingDeps
+  try {
+    d = dependencies()
+  } catch {
+    return // This build has no Monad network, so no account that could open a chat.
+  }
+  if (d.session.state.status !== 'ready') return
+  const salt = conversationIdSaltOf(await d.session.getWallet())
+  if (salt) setConversationIdSalt(salt)
+}
+
 export async function stopMessaging(): Promise<void> {
+  // The salt goes with the account, not with the connection to the relay.
+  if (accountStatus.status !== 'ready') setConversationIdSalt(null)
   attempt = undefined
   if (retryTimer !== undefined) clearTimeout(retryTimer)
   retryTimer = undefined
@@ -401,6 +417,10 @@ export async function startMessaging(): Promise<void> {
   try {
     if (d.session.state.status !== 'ready') throw new Error('no account')
     wallet = await d.session.getWallet()
+    // The chat store allocates conversation IDs from this account's private salt. It is
+    // installed as soon as the wallet is at hand, before the relay is asked anything, and
+    // stays through every messaging restart: it belongs to the account, not to the connection.
+    setConversationIdSalt(conversationIdSaltOf(wallet))
     if (d.registerProfile) {
       await d.registerProfile({ relayBaseUrl: d.relayBaseUrl, wallet })
     }

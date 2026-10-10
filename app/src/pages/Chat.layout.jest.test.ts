@@ -36,6 +36,15 @@ jest.mock('../composables/useActiveWallet', () => ({
 
 // jsdom has no TextEncoder/TextDecoder (the wallet/relay modules Chat.vue imports need them).
 import { TextDecoder, TextEncoder } from 'util'
+import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
+import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+
+// An account that can open a chat always has its conversation-ID salt installed.
+beforeEach(() =>
+  installTestConversationIdSalt(
+    testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
+  ),
+)
 Object.assign(globalThis, { TextEncoder, TextDecoder })
 /* eslint-disable @typescript-eslint/no-var-requires */
 const ChatPage = require('./Chat.vue').default

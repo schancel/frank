@@ -80,3 +80,14 @@ export function allocateOpeningConversationId(
     throw new Error('A conversation needs the identifier of its peer')
   return uuidv5Bytes(salt, peer)
 }
+
+/**
+ * Whether `conversationId` (its 8-4-4-4-12 text) is an opening ID: a UUIDv5, the kind an account
+ * allocates when it opens a chat with a peer. An explicitly created further conversation is a
+ * UUIDv4 and is not one. The version is all that tells the two apart on the wire.
+ */
+export function isOpeningConversationId(conversationId: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    conversationId,
+  )
+}

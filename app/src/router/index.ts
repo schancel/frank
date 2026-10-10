@@ -8,7 +8,7 @@ import type { RouteLocationNormalized } from 'vue-router'
 import { createRoutes } from './routes'
 import { startupRestoration } from '../boot/startup-state'
 import { useContactStore } from 'src/stores/contacts'
-import { useChatStore } from 'src/stores/chats'
+import { hasConversationIdSalt, useChatStore } from 'src/stores/chats'
 import { isChainAddress } from 'src/utils/chain-address'
 import { accountSession, accountStatus } from '../accounts/session'
 
@@ -30,6 +30,14 @@ async function ensureChatState(address?: string) {
         .catch(err => {
           console.debug('fetchAndAddContact suppressed error:', err)
         })
+      // Opening a chat allocates its ID from the account's salt. At launch a route can be
+      // followed before the wallet is at hand: wait for it then.
+      if (!hasConversationIdSalt()) {
+        const { ensureConversationIdSalt } = await import(
+          '../utils/monad-identity-session'
+        )
+        await ensureConversationIdSalt()
+      }
       chatStore.setActiveChat(address)
     }
   } catch (ex) {

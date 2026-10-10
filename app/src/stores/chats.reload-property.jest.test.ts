@@ -23,6 +23,8 @@ import { createApp } from 'vue'
 
 import {
   collidedMessageId,
+  peerThread,
+  peerThreadId,
   setConversationIdSalt,
   useChatStore,
   type Conversation,
@@ -93,7 +95,8 @@ const WITH_PEER_1 = '11111111-1111-4111-8111-111111111111'
 const WITH_PEER_2 = '22222222-2222-4222-8222-222222222222'
 const UNOPENED = '33333333-3333-4333-8333-333333333333'
 // An ID allocated by whoever sent the first message in it; nobody here opened it.
-const UNKNOWN = '44444444-4444-4444-8444-444444444444'
+// A UUIDv5: the kind an account allocates when it opens a chat.
+const UNKNOWN = '44444444-4444-5444-8444-444444444444'
 const CONVERSATIONS = [WITH_PEER_1, WITH_PEER_2, UNOPENED]
 const PEER_OF: Record<string, string> = {
   [WITH_PEER_1]: PEER_1,
@@ -221,7 +224,8 @@ function visible(state: {
         peer: c.address,
         kind: c.kind,
         subject: c.name,
-        peerThread: c.defaultDirect === true,
+        // Derived from the messages, the same way in the session and after a reload.
+        peerThread: peerThread(state.conversations, c.address)?.id === c.id,
         deletedAt: c.deletedAt,
         clearedBefore: c.clearedBefore,
         participants: [...c.participants].sort(),
@@ -421,6 +425,86 @@ describe('a reload shows what the session showed, whatever was received', () => 
       }
     })
   }, 120_000)
+
+  // Two devices of one account read the same mailbox. They may read it in any order and in any
+  // batches, and one may have opened chats with both peers before anything arrived. They must
+  // end up agreeing on which conversation is each peer's thread and on the conversation every
+  // message is in. (Message IDs are left unique here, and a named conversation has no third
+  // party in it: which of two messages keeps a contested ID, and who a conversation a stranger
+  // wrote into first is with, both go by arrival and are other properties' subjects.)
+  it(`two devices fed ${seeds.length} seeded mailboxes in different orders agree on every peer's thread and where each message is`, async () => {
+    const filing = (chats: ReturnType<typeof useChatStore>) => ({
+      threads: Object.fromEntries(
+        [PEER_1, PEER_2, STRANGER].map(peer => [
+          peer,
+          peerThreadId(chats.conversations, peer),
+        ]),
+      ),
+      messages: Object.fromEntries(
+        Object.values(chats.conversations)
+          .flatMap(c => c.messages.map(m => [m.payloadDigest, c.id] as const))
+          .sort(([a], [b]) => (a < b ? -1 : 1)),
+      ),
+    })
+    await quietly(async () => {
+      for (const seed of seeds) {
+        const rows = new Map<string, ReceivedMessageWrapper>()
+        for (const step of sequence(seed)) {
+          if (step.kind !== 'receive') continue
+          for (const wrapper of step.batch) {
+            // Our own rows are our own outbox: only those to the conversation's peer exist.
+            if (
+              wrapper.outbound &&
+              wrapper.conversationId !== undefined &&
+              wrapper.copartyAddress !== PEER_OF[String(wrapper.conversationId)]
+            )
+              continue
+            // Who a conversation is with is settled by the first row read into it, so a third
+            // party writing into someone else's conversation makes that depend on the order;
+            // that is the group-bubbles rule's subject, not this one's. Here a named
+            // conversation is written into only by its own peer and by us.
+            if (
+              !wrapper.outbound &&
+              wrapper.conversationId !== undefined &&
+              wrapper.senderAddress !== PEER_OF[String(wrapper.conversationId)]
+            )
+              continue
+            const message = { ...wrapper.message } as Record<string, unknown>
+            delete message.logicalMessageId
+            rows.set(wrapper.index, {
+              ...wrapper,
+              message,
+            } as unknown as ReceivedMessageWrapper)
+          }
+        }
+        const mailbox = [...rows.values()]
+        const random = generator(seed ^ 0x9e3779b9)
+        const shuffled = [...mailbox]
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = random.int(i + 1)
+          ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+        }
+        try {
+          const first = (await openStore()).chats
+          await first.receiveMessages(mailbox, ME)
+          const one = filing(first)
+
+          const second = (await openStore()).chats
+          // This device had opened both chats before anything arrived.
+          second.openDirectConversation(PEER_1)
+          second.openDirectConversation(PEER_2)
+          for (const row of shuffled) await second.receiveMessages([row], ME)
+          expect(filing(second)).toEqual(one)
+        } catch (error) {
+          throw new Error(
+            `seed ${seed} failed (replay with PROPERTY_SEED=${seed}):\n${
+              (error as Error).message
+            }`,
+          )
+        }
+      }
+    })
+  }, 240_000)
 
   // Rows no receive of this version would have saved together: an older version's store, or a
   // stop between two writes. Whatever other people's rows are on disk and however they relate

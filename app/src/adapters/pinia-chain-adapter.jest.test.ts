@@ -27,6 +27,15 @@ import type { DirectMessageReceived, WalletHandle } from '@frank/wallet/chain'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
 
 import { setDirectoryLookup } from '../utils/directory-peer'
+import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
+import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+
+// An account that can open a chat always has its conversation-ID salt installed.
+beforeEach(() =>
+  installTestConversationIdSalt(
+    testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
+  ),
+)
 jest.mock('../utils/notifications', () => ({
   desktopNotify: jest.fn(),
 }))

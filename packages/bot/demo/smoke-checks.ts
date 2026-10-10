@@ -319,7 +319,12 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
  * send when its main account cannot cover that (just under 0.01 MON at testnet fees, measured:
  * 0.0157 MON left the main account for two prompts). What a fee did not use stays in the spent
  * account. The (persistent) test user is topped up to this, never beyond: a run costs the test
- * wallet what its prompts take. */
+ * wallet what its prompts take.
+ *
+ * LOWER THIS when the `wallet-parallel-send` work lands: this number is today's wallet, which
+ * funds single-use stamp accounts ahead of each message. That branch brings a message's cost
+ * down to about 0.004 MON, and this constant (the only place the amount is written) should
+ * follow it, re-measured on testnet. */
 export const SMOKE_PROMPT_NEED_WEI = 12_000_000_000_000_000n // 0.012 MON
 
 /** What the test user must hold to send `prompts` prompts. */

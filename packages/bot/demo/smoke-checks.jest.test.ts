@@ -10,7 +10,7 @@ import { RpsBot } from '../src/bots/rps-bot'
 import { SatoshiDiceBot } from '../src/bots/satoshi-dice-bot'
 import { overTheWire } from '../src/bots/wire.testutil'
 import { DemoHandle } from './demo'
-import { BotReply, checkCors, classifyReply, QWEN_PROMPT, ReplyExpectations, smokeUserNeedWei } from './smoke-checks'
+import { BotReply, checkCors, classifyReply, QWEN_PROMPT, ReplyExpectations, SMOKE_PROMPT_NEED_WEI, smokeUserNeedWei } from './smoke-checks'
 
 /** A free message carrying `items`, as the test user receives it. */
 const free = (items: MessageItem[]): BotReply => ({ items, stampValueWei: 0n })
@@ -192,10 +192,9 @@ describe('classifyReply: each bot is judged on what it said', () => {
     fails({ ...reply, stampValueWei: 1n }, 'an offer to play carries no money')
   })
 
-  it('the test user is topped up to what its prompts need: 0.012 MON each', () => {
-    // Measured on Monad testnet: the wallet refuses a send below 0.00996 MON in the main account.
-    expect(smokeUserNeedWei(6)).toBe(72_000_000_000_000_000n)
-    expect(smokeUserNeedWei(1)).toBeGreaterThan(9_960_000_000_000_000n)
+  it('the test user is topped up to what its prompts need: one named amount per prompt', () => {
+    expect(smokeUserNeedWei(6)).toBe(SMOKE_PROMPT_NEED_WEI * 6n)
+    expect(smokeUserNeedWei(0)).toBe(0n)
   })
 
   it('an unknown bot fails closed', () => {

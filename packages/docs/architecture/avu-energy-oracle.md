@@ -107,16 +107,26 @@ This matches the **US Energy Information Administration (EIA) National Industria
 
 ---
 
-## Genesis Baseline Reference Rates
+## How the app computes AVU values
 
-| Asset | Decimals | Genesis Spot Price | Genesis AVU Rate | Physical Meaning |
-| :--- | :--- | :--- | :--- | :--- |
-| **Monad (`monad`)** | 18 | \$3.50 | **`41.67 AVU`** | 1 MON $\approx$ 41.7 kWh |
-| **Tempo USD (`tempo`)**| 6 | \$1.00 | **`11.90 AVU`** | \$1 $\approx$ 11.9 kWh |
-| **eCash (`ecash`)** | 2 | \$0.000035 | **`0.000417 AVU`** | 100k XEC $\approx$ 41.7 kWh |
-| **Solana (`solana`)** | 9 | \$150.00 | **`1,785.71 AVU`** | 1 SOL $\approx$ 1,786 kWh |
-| **Ethereum (`ethereum`)** | 18 | \$2,600.00 | **`30,952.38 AVU`** | 1 ETH $\approx$ 30,952 kWh |
-| **Hyperliquid (`hyperliquid`)** | 18 | \$40.00 | **`476.19 AVU`** | 1 HYPE $\approx$ 476.2 kWh |
+AVU is a unit of account, not a coin or token: a single conversion number that lets any two
+coins be compared without a pairwise exchange rate.
+
+* One AVU is a fixed `$0.084` (`POW_BASELINE_DOLLARS_PER_KWH` in
+  `packages/wallet/oracle/energy-basket.ts`). The figure is a typed constant; the tables in
+  the sections above are where it was taken from, and nothing recomputes it.
+* A coin's AVU rate is its fetched market price divided by that number
+  (`fetchOracleSnapshot` in `price-oracle.ts`). Prices come from the providers in
+  `packages/price-feeds`; the coins fetched are listed in `ASSET_FEED_SYMBOLS`.
+* There are no stand-in prices. A coin whose price was not fetched has no AVU value, a failed
+  fetch keeps the last fetched price marked with its age, and a coin no provider prices
+  (the Tempo test dollar) never has one. MON is priced as mainnet MON; a testnet MON balance
+  is not valued.
+* The energy basket index in `energy-basket.ts` is not applied: no price source is wired
+  for natural gas or uranium, and none of the providers serves Brent without an API key.
+* Chart history is the candles a provider published (`packages/price-feeds/src/history.ts`).
+  Long-range electricity and gold figures are bundled from EIA and World Bank files by
+  `packages/price-feeds/scripts/build-historical.py`.
 
 ---
 

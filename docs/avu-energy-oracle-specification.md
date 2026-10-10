@@ -161,21 +161,29 @@ The derived Proof-of-Work energy baseline ($\approx \mathbf{\$0.084 / \text{kWh}
 ### 7.1 Package Layout
 The oracle resides in `@frank/wallet/oracle` with zero UI dependencies:
 * `energy-basket.ts`: Thermodynamic constants ($1\text{ AVU} = 1\text{ kWh} = 3.6\text{ MJ}$), multi-chain PoW configs, and weighting models.
-* `price-oracle.ts`: High-precision integer conversion (`convertRawToAvu`), formatting (`formatAvu`), atomic swap parity calculations, and Pyth Network Hermes public feed integration.
+* `price-oracle.ts`: High-precision integer conversion (`convertRawToAvu`), formatting (`formatAvu`), atomic swap parity calculations, and the price fetch (`fetchOracleSnapshot`).
 * `index.ts`: Public module exports.
 
-### 7.2 Genesis Baseline Reference Rates ($1\text{ AVU} = 1\text{ kWh}$)
+### 7.2 How the app computes AVU values
 
-$$\text{AVU Rate} = \text{Spot Price} \times 11.90476\text{ AVU / \$}$$
+AVU is a unit of account, not a coin or token: a single conversion number that lets any two
+coins be compared without a pairwise exchange rate.
 
-| Asset | Precision Decimals | Genesis Spot Price | Genesis AVU Rate | Physical Interpretation |
-| :--- | :--- | :--- | :--- | :--- |
-| **Monad (`monad`)** | 18 | \$3.50 | **`41.67 AVU`** | 1 MON buys 41.7 kWh of energy |
-| **Tempo USD (`tempo`)**| 6 | \$1.00 | **`11.90 AVU`** | \$1 buys 11.9 kWh of energy |
-| **eCash (`ecash`)** | 2 | \$0.000035 | **`0.000417 AVU`** | 100k XEC buys 41.7 kWh of energy |
-| **Solana (`solana`)** | 9 | \$150.00 | **`1,785.71 AVU`** | 1 SOL buys 1,786 kWh of energy |
-| **Ethereum (`ethereum`)** | 18 | \$2,600.00 | **`30,952.38 AVU`** | 1 ETH buys 30,952 kWh of energy |
-| **Hyperliquid (`hyperliquid`)** | 18 | \$40.00 | **`476.19 AVU`** | 1 HYPE buys 476.2 kWh of energy |
+* One AVU is a fixed `$0.084` (`POW_BASELINE_DOLLARS_PER_KWH` in
+  `packages/wallet/oracle/energy-basket.ts`). The figure is a typed constant; the tables in
+  the sections above are where it was taken from, and nothing recomputes it.
+* A coin's AVU rate is its fetched market price divided by that number
+  (`fetchOracleSnapshot` in `price-oracle.ts`). Prices come from the providers in
+  `packages/price-feeds`; the coins fetched are listed in `ASSET_FEED_SYMBOLS`.
+* There are no stand-in prices. A coin whose price was not fetched has no AVU value, a failed
+  fetch keeps the last fetched price marked with its age, and a coin no provider prices
+  (the Tempo test dollar) never has one. MON is priced as mainnet MON; a testnet MON balance
+  is not valued.
+* The energy basket index in `energy-basket.ts` is not applied: no price source is wired
+  for natural gas or uranium, and none of the providers serves Brent without an API key.
+* Chart history is the candles a provider published (`packages/price-feeds/src/history.ts`).
+  Long-range electricity and gold figures are bundled from EIA and World Bank files by
+  `packages/price-feeds/scripts/build-historical.py`.
 
 ---
 

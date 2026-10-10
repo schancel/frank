@@ -45,17 +45,24 @@ export interface FeedBasket {
   entries: FeedBasketEntry[]
 }
 
+/** Metadata for display: how `electricity/aggregate` was built, and from what. */
 export interface FeedElectricity {
-  /** AVU_spot is taken over the daily prices of this many days. */
+  /** The aggregate's trailing window, in days. */
   windowDays: number
-  /** A region with fewer daily prices than this in the window is left out of AVU_spot. */
+  /** A region needs this many daily prices in the window to count in a day's point. */
   minDays: number
-  /**
-   * The regions AVU_spot is taken over, each with its own `electricity/<id>` series and
-   * the credit its source asks for.
-   */
-  regions: Array<{ id: string; label: string; attribution: string }>
+  /** The regional sources behind the aggregate, with the credit each asks for. */
+  regions: Array<{
+    id: string
+    label: string
+    attribution: string
+    /** Start (unix seconds) of the latest day whose aggregate point the region counted in. */
+    lastContributed?: number
+  }>
 }
+
+/** The series AVU_spot is read from: already windowed and averaged over regions. */
+export const ELECTRICITY_AGGREGATE = 'electricity/aggregate'
 
 export interface OracleFeed {
   version: 1
@@ -200,7 +207,9 @@ export function parseOracleFeed(value: unknown): OracleFeed | undefined {
         isRecord(region) &&
         typeof region.id === 'string' &&
         typeof region.label === 'string' &&
-        typeof region.attribution === 'string',
+        typeof region.attribution === 'string' &&
+        (region.lastContributed === undefined ||
+          isTime(region.lastContributed)),
     )
   ) {
     return undefined
@@ -224,6 +233,9 @@ export function parseOracleFeed(value: unknown): OracleFeed | undefined {
         id: region.id,
         label: region.label,
         attribution: region.attribution,
+        ...(region.lastContributed === undefined
+          ? {}
+          : { lastContributed: region.lastContributed }),
       })),
     },
     series: parsed,

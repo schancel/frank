@@ -121,6 +121,10 @@
               },
               "attribution": {
                 "type": "string"
+              },
+              "lastContributed": {
+                "type": "integer",
+                "minimum": 0
               }
             }
           }

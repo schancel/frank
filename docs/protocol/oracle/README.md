@@ -21,9 +21,9 @@ There are two shapes, and only two.
 **Latest** is what the app polls, app-wide, every 10 minutes while its window is visible and
 never while it is hidden. The answer carries the current value of every series and nothing else:
 one point per series (the current smoothed price of each asset, the current difficulty, block
-reward and market capitalisation of each basket chain, the efficiency step in force), and for
-each `electricity/*` series the daily points of the last `windowDays` days. That is about 35
-series of one point and a few of thirty: under 10 kB of JSON before compression. The client
+reward and market capitalisation of each basket chain, the efficiency step in force, the
+latest `electricity/aggregate` point). That is about 35 series of one point: under 10 kB of
+JSON before compression. The client
 appends each latest answer to its local series, and computes the AVU rate of each asset from it
 once.
 
@@ -76,8 +76,8 @@ Values are JSON numbers. Times are whole seconds.
 | `difficulty/<chainId>` | the chain's difficulty | expected hashes per block = difficulty x the basket chain's `hashesPerDifficulty` |
 | `blockReward/<chainId>` | whole coins per block paid to the miner | subsidy only, no fees; where consensus sends part of the subsidy elsewhere (eCash) this is the miner's part |
 | `efficiency/<algorithm>` | hashes per kWh | curated dated steps: the hardware assumed for the algorithm at each date |
-| `electricity/<regionId>` | US dollars per kWh | one point per day, stamped at the start of the day (UTC): the mean wholesale day-ahead price of that day in one region. May be zero or negative. AVU_spot is computed from these. |
-| `electricity/aggregate` | US dollars per kWh | optional, for display: one point per day that reproduces the rule below as nearly as a daily series can: the equally weighted mean of each region's latest daily price at or before that day (a region's last price holds over its weekends and gaps), over the regions that have one within `windowDays`. Not an input of AVU_spot. |
+| `electricity/aggregate` | US dollars per kWh | REQUIRED for AVU_spot. One point per UTC day, stamped at the start of the day, and already windowed: the point for day d is the equally weighted mean, over the regions, of each region's mean daily wholesale day-ahead price in the `windowDays` days ending at d. A region with fewer than `minDays` daily prices in that window is left out of that day's point. A day on which no region qualifies has no point. |
+| `electricity/<regionId>` | US dollars per kWh | optional, for display: one region's daily mean price, one point per UTC day, not windowed. May be zero or negative. |
 
 `assetId` and `chainId` are the canonical chain identifiers of the chain registry
 (`docs/protocol/chains/v1.json`), always the main network's: `btc-mainnet`, `bch-mainnet`,
@@ -106,13 +106,11 @@ point, makes what depends on it unavailable; the client never substitutes a valu
 
 ### What a response must contain
 
-A latest answer: for every series its latest point; for `electricity/*` every daily point of the
-last `windowDays` days.
+A latest answer: for every series its latest point.
 
 A range answer: for every series the points inside the range (thinned to `step`), and in front of
-them what is needed to evaluate the series at `since`: the floor point at `since` (the latest
-point at or before it), and for `electricity/*` the points of the `windowDays` days before
-`since`.
+them the floor point at `since` (the latest point at or before it), so the series can be
+evaluated at the start of the range.
 
 The points of a range answer and of latest answers are the same kind of point. A client keeps one
 local series per name; a point received later for a time it already holds replaces the held one.
@@ -142,14 +140,17 @@ The client hardcodes none of this.
       "minDays": 10,
       "regions": [
         { "id": "de-lu", "label": "Germany-Luxembourg day-ahead",
-          "attribution": "Bundesnetzagentur | SMARD.de, CC BY 4.0" }
+          "attribution": "Bundesnetzagentur | SMARD.de, CC BY 4.0",
+          "lastContributed": 1791504000 }
       ]
     }
 
-`regions` names the regions AVU_spot is taken over; each has an `electricity/<id>` series and
-the attribution its source asks for. `windowDays` is the length of the trailing window and
-`minDays` the fewest daily prices a region needs in it to count. Which regions are listed is the
-relay's configuration.
+Metadata for display; the client computes nothing from it. `windowDays` and `minDays` are the
+window and the threshold `electricity/aggregate` was built with. `regions` names the regional
+sources behind it, with the attribution each asks for and `lastContributed`: the day (unix
+seconds, start of the UTC day) of the latest aggregate point the region counted in, absent if
+it never has. A region whose `lastContributed` is older than the aggregate's latest point is
+not in the current figure, and the client says so.
 
 ## What the client computes from the feed
 
@@ -165,15 +166,11 @@ All of it by the one lookup above, at any time `t` (now, or a point on a chart):
 
     AVU_hash(t) [kWh per $] = sum over entries of weight x 1 / ($/kWh)
 
-    region mean (t) = the mean of the region's daily prices in the `windowDays` days ending
-        at t; a region with fewer than `minDays` prices in the window is left out (and
-        named as stale by the client)
-    AVU_spot(t) [kWh per $] = 1 / (the mean of the region means, each region weighing the
-        same); unavailable when no region qualifies or that mean is not positive.
-        Prices are averaged first and the mean inverted: never the inverse of a single
-        day, never a mean of inverses. Regions weigh equally whatever number of days each
-        has, so a region that trades on weekdays only is not outweighed by one that
-        publishes every day.
+    AVU_spot(t) [kWh per $] = 1 / at(`electricity/aggregate`, t); unavailable when the
+        series has no point at or before t, or the value is not positive. The relay has
+        already averaged prices over the window and across regions; the client only looks
+        the value up and inverts it. (Prices are averaged and the mean inverted: never the
+        inverse of a single day, never a mean of inverses.)
 
     AVU value of an amount of a coin = amount x price(t) x AVU_hash(t)
 

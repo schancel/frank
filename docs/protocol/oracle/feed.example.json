@@ -37,7 +37,8 @@
       {
         "id": "de-lu",
         "label": "Germany-Luxembourg day-ahead",
-        "attribution": "Bundesnetzagentur | SMARD.de, CC BY 4.0"
+        "attribution": "Bundesnetzagentur | SMARD.de, CC BY 4.0",
+        "lastContributed": 1791590400
       }
     ],
     "minDays": 10
@@ -120,6 +121,22 @@
         [
           1791590400,
           -0.0004
+        ]
+      ]
+    },
+    "electricity/aggregate": {
+      "unit": "USD/kWh",
+      "source": "day-ahead wholesale, 30-day mean of regions",
+      "asOf": 1791590400,
+      "stale": false,
+      "points": [
+        [
+          1791504000,
+          0.1021
+        ],
+        [
+          1791590400,
+          0.1019
         ]
       ]
     }

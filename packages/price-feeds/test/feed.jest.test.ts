@@ -17,9 +17,13 @@ describe('the oracle feed contract', () => {
     expect(Object.keys(feed!.series).sort()).toEqual(
       Object.keys(example.series).sort(),
     )
+    // A region's own daily price may be negative; the windowed aggregate is what
+    // AVU_spot reads.
     expect(feed!.series['electricity/de-lu'].points[1]).toEqual([
       1791590400, -0.0004,
     ])
+    expect(feed!.series['electricity/aggregate'].points).toHaveLength(2)
+    expect(feed!.electricity.regions[0].lastContributed).toBe(1791590400)
   })
 
   it('refuses a feed whose series is out of order, misnamed or of another version', () => {

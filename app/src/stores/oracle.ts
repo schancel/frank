@@ -1,5 +1,6 @@
 import { defineStore, getActivePinia } from 'pinia'
 import {
+  type AvuHash,
   type AvuRates,
   type HistoryRange,
   type MiningStats,
@@ -9,13 +10,13 @@ import {
   type SupportedAsset,
   type UsdPrices,
   ASSET_FEED_SYMBOLS,
+  AVU_HASH_CHAINS,
   HISTORY_RANGES,
-  calculateAvuRate,
   convertRawToAvu,
-  fetchMiningStats,
   fetchOracleSnapshot,
   fetchPriceHistory,
   formatAvu,
+  rateOracleSnapshot,
   unavailableOracleSnapshot,
 } from '@frank/wallet/oracle'
 import { translateMessage } from 'src/i18n'
@@ -43,13 +44,13 @@ export interface OracleState {
   snapshot: OracleSnapshot
   observations: PriceObservation[]
   histories: Record<string, AssetHistory>
-  mining: Record<string, MiningStats>
   lastFetched: number
   isRefreshing: boolean
 }
 
-// v2: the v1 records could hold prices that were typed-in constants, so they are never read.
-const STORAGE_KEY_SNAPSHOT = 'frank_oracle_snapshot_v2'
+// v3: the snapshot now holds the mined chains' statistics AVU_hash is computed from.
+// Earlier records are never read.
+const STORAGE_KEY_SNAPSHOT = 'frank_oracle_snapshot_v3'
 const STORAGE_KEY_OBSERVATIONS = 'frank_oracle_observations_v2'
 const HOUR_MS = 60 * 60 * 1000
 /** A year of hourly records is the longest range the chart draws. */
@@ -62,9 +63,10 @@ const HISTORY_TTL_MS: Record<HistoryRange, number> = {
   '30d': 6 * HOUR_MS,
   '1y': 6 * HOUR_MS,
 }
+/** Difficulty, subsidy and supply move slowly: chain statistics are refetched this often. */
 const MINING_TTL_MS = 30 * 60 * 1000
-/** The proof-of-work chains whose mining pay is compared. All three use SHA-256. */
-export const MINING_CHAINS = ['bitcoin', 'bitcoin-cash', 'ecash'] as const
+/** Chain statistics this old have missed several refetches. */
+export const MINING_STALE_AFTER_MS = 2 * HOUR_MS
 
 /**
  * Assets whose wallet here holds test-network coins while the fetched price is the
@@ -96,9 +98,22 @@ function isPositive(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
+function isMiningStats(value: unknown): value is MiningStats {
+  const stats = value as MiningStats | null
+  return (
+    typeof stats?.chain === 'string' &&
+    isPositive(stats.subsidyCoinsPerBlock) &&
+    isPositive(stats.difficulty) &&
+    isPositive(stats.hashesPerBlock) &&
+    isPositive(stats.circulatingCoins) &&
+    isPositive(stats.fetchedAt)
+  )
+}
+
 /**
  * Keeps only what a real fetch can have written: an asset needs a positive price and the
- * time it was fetched. The AVU rate is recomputed from the price, never read back.
+ * time it was fetched; a chain needs every statistic. AVU_hash and the AVU rates are
+ * recomputed from those, never read back.
  */
 function loadStoredSnapshot(): OracleSnapshot {
   const snapshot = unavailableOracleSnapshot()
@@ -111,12 +126,19 @@ function loadStoredSnapshot(): OracleSnapshot {
     const fetchedAt = stored.fetchedAt[asset]
     if (isPositive(price) && isPositive(fetchedAt)) {
       snapshot.prices[asset] = price
-      snapshot.rates[asset] = calculateAvuRate(price)
       snapshot.fetchedAt[asset] = fetchedAt
+      const sources = stored.priceSources?.[asset]
+      if (isPositive(sources)) snapshot.priceSources[asset] = sources
+    }
+  }
+  for (const chain of AVU_HASH_CHAINS) {
+    const stats = stored.mining?.[chain]
+    if (isMiningStats(stats) && stats.chain === chain) {
+      snapshot.mining[chain] = stats
     }
   }
   snapshot.timestamp = isPositive(stored.timestamp) ? stored.timestamp : 0
-  return snapshot
+  return rateOracleSnapshot(snapshot)
 }
 
 function loadStoredObservations(): PriceObservation[] {
@@ -173,7 +195,6 @@ export const useOracleStore = defineStore('oracle', {
     snapshot: loadStoredSnapshot(),
     observations: loadStoredObservations(),
     histories: {},
-    mining: {},
     lastFetched: 0,
     isRefreshing: false,
   }),
@@ -181,6 +202,45 @@ export const useOracleStore = defineStore('oracle', {
   getters: {
     rates(state): AvuRates {
       return state.snapshot.rates
+    },
+
+    /** kWh per dollar read off mining; undefined when no basket coin has all its inputs. */
+    avuHash(state): AvuHash | undefined {
+      return state.snapshot.avuHash
+    },
+
+    /**
+     * How old AVU_hash's oldest input is, when that makes it stale: a basket coin's price
+     * that missed several refreshes, or chain statistics that missed several refetches.
+     * Undefined while every input is current, and when there is no AVU_hash.
+     */
+    avuHashStaleAgeMs(state) {
+      return (now = Date.now()): number | undefined => {
+        const avuHash = state.snapshot.avuHash
+        if (!avuHash) return undefined
+        const priceAge = now - avuHash.pricesAsOf
+        const chainAge = now - avuHash.chainsAsOf
+        const stale = [
+          priceAge > STALE_AFTER_MS ? priceAge : 0,
+          chainAge > MINING_STALE_AFTER_MS ? chainAge : 0,
+        ]
+        return Math.max(...stale) || undefined
+      }
+    },
+
+    /**
+     * How old the oldest stale input of an asset's AVU value is: its own price or
+     * AVU_hash. Undefined while both are current.
+     */
+    valueStaleAgeMs() {
+      return (asset: SupportedAsset, now = Date.now()): number | undefined => {
+        const priceAge = this.priceAgeMs(asset, now)
+        const stale = [
+          priceAge !== undefined && priceAge > STALE_AFTER_MS ? priceAge : 0,
+          this.avuHashStaleAgeMs(now) ?? 0,
+        ]
+        return Math.max(...stale) || undefined
+      }
     },
 
     /** How old an asset's price is, or undefined when it has none. */
@@ -219,8 +279,9 @@ export const useOracleStore = defineStore('oracle', {
     },
 
     /**
-     * "≈ 92.50 AVU", or empty when there is no real price or nothing to value. Valued at a
-     * price that has gone stale, it says how old the price is, as the unit rate line does.
+     * "≈ 92.50 AVU", or empty when there is no real price, no AVU_hash or nothing to
+     * value. Valued at a price or an AVU_hash that has gone stale, it says how old that
+     * is, as the unit rate line does.
      */
     formatAvuAmount() {
       return (
@@ -230,8 +291,8 @@ export const useOracleStore = defineStore('oracle', {
         const avu = this.getAvu(asset, rawAmount)
         if (!(avu > 0)) return ''
         const amount = `≈ ${formatAvu(avu)}`
-        const age = this.priceAgeMs(asset)
-        return age !== undefined && age > STALE_AFTER_MS
+        const age = this.valueStaleAgeMs(asset)
+        return age !== undefined
           ? translate('walletPanel.avuStalePrice', {
               rate: amount,
               age: formatAge(age),
@@ -251,8 +312,8 @@ export const useOracleStore = defineStore('oracle', {
         if (!this.balanceHasMarketValue(asset)) {
           line = translate('walletPanel.avuMainnetPrice', { rate: line })
         }
-        const age = this.priceAgeMs(asset)
-        if (age !== undefined && age > STALE_AFTER_MS) {
+        const age = this.valueStaleAgeMs(asset)
+        if (age !== undefined) {
           line = translate('walletPanel.avuStalePrice', {
             rate: line,
             age: formatAge(age),
@@ -292,25 +353,43 @@ export const useOracleStore = defineStore('oracle', {
 
   actions: {
     /**
-     * Fetches prices. An asset whose price came back is replaced; one that did not keeps
-     * its last fetched price and that price's own time, so it shows as stale, never fresh.
+     * Fetches prices and, when they are due, the mined chains' statistics. An asset whose
+     * price came back is replaced; one that did not keeps its last fetched price and that
+     * price's own time, so it shows as stale, never fresh. Chain statistics are kept the
+     * same way. AVU_hash and every AVU rate are then recomputed from what is held.
      */
     async refresh(): Promise<void> {
       if (this.isRefreshing) return
       this.isRefreshing = true
 
       try {
-        const fetched = await fetchOracleSnapshot()
+        const now = Date.now()
+        const knownMining = Object.fromEntries(
+          Object.entries(this.snapshot.mining).filter(
+            ([, stats]) => now - stats.fetchedAt < MINING_TTL_MS,
+          ),
+        )
+        const fetched = await fetchOracleSnapshot({ knownMining })
         if (Object.keys(fetched.prices).length === 0) return
 
-        this.snapshot = {
+        this.snapshot = rateOracleSnapshot({
           ...fetched,
           prices: { ...this.snapshot.prices, ...fetched.prices },
-          rates: { ...this.snapshot.rates, ...fetched.rates },
           fetchedAt: { ...this.snapshot.fetchedAt, ...fetched.fetchedAt },
-        }
+          priceSources: {
+            ...this.snapshot.priceSources,
+            ...fetched.priceSources,
+          },
+          mining: { ...this.snapshot.mining, ...fetched.mining },
+        })
         this.lastFetched = fetched.timestamp
-        writeJson(STORAGE_KEY_SNAPSHOT, this.snapshot)
+        writeJson(STORAGE_KEY_SNAPSHOT, {
+          timestamp: this.snapshot.timestamp,
+          prices: this.snapshot.prices,
+          fetchedAt: this.snapshot.fetchedAt,
+          priceSources: this.snapshot.priceSources,
+          mining: this.snapshot.mining,
+        })
 
         // One record an hour, of the prices this fetch returned and nothing else.
         const last = this.observations[this.observations.length - 1]
@@ -348,18 +427,6 @@ export const useOracleStore = defineStore('oracle', {
         points: history.points,
         fetchedAt: Date.now(),
       }
-    },
-
-    /** Loads the proof-of-work chains' issuance and hashrate, at most once per TTL. */
-    async loadMiningStats(): Promise<void> {
-      await Promise.all(
-        MINING_CHAINS.map(async chain => {
-          const cached = this.mining[chain]
-          if (cached && Date.now() - cached.fetchedAt < MINING_TTL_MS) return
-          const stats = await fetchMiningStats(chain)
-          if (stats) this.mining[chain] = stats
-        }),
-      )
     },
 
     startBackgroundWorker(intervalMs = 300000): void {
@@ -402,10 +469,12 @@ export function useSafeOracleStore(): OracleStore {
     snapshot: unavailableOracleSnapshot(),
     observations: [],
     histories: {},
-    mining: {},
     lastFetched: 0,
     isRefreshing: false,
     rates: {},
+    avuHash: undefined,
+    avuHashStaleAgeMs: () => undefined,
+    valueStaleAgeMs: () => undefined,
     priceAgeMs: () => undefined,
     balanceHasMarketValue: () => false,
     getAvu: () => 0,
@@ -414,7 +483,6 @@ export function useSafeOracleStore(): OracleStore {
     historyFor: () => none,
     refresh: async () => undefined,
     loadHistory: async () => undefined,
-    loadMiningStats: async () => undefined,
     startBackgroundWorker: () => undefined,
     stopBackgroundWorker: () => undefined,
   } as unknown as OracleStore

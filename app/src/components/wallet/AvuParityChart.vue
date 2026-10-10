@@ -287,7 +287,7 @@
         </svg>
       </div>
 
-      <!-- Mining pay compared across SHA-256 chains, from each chain's fetched statistics -->
+      <!-- Dollars per kWh of mining for each basket entry AVU_hash was computed from -->
       <div v-else class="chart-container" data-test="networks-chart-container">
         <svg
           class="chart-svg"
@@ -305,7 +305,7 @@
           />
           <g
             v-for="bar in networkBars"
-            :key="bar.chain"
+            :key="bar.id"
             class="bar-group"
             data-test="chart-hover-bar"
           >
@@ -366,7 +366,7 @@
         <span>{{ $t('walletPanel.sourcesTitle') }}</span>
       </div>
       <div class="text-caption text-grey-7 q-gutter-y-xs">
-        <div>• {{ $t('walletPanel.sourceUnit', { usd: avuUsdLabel }) }}</div>
+        <div>• {{ $t('walletPanel.sourceUnit') }}</div>
         <div>• {{ $t('walletPanel.sourceFeeds') }}</div>
         <div>• {{ $t('walletPanel.sourceHistorical') }}</div>
         <div>
@@ -380,7 +380,21 @@
         </div>
         <div>
           •
-          {{ $t('walletPanel.sourceHash', { efficiency: MINING_EFFICIENCY }) }}
+          {{
+            $t('walletPanel.sourceHash', {
+              chain: BTC_MINING_SOURCES.chain,
+              subsidy: BTC_MINING_SOURCES.subsidy,
+            })
+          }}
+        </div>
+        <div data-test="source-efficiency">
+          •
+          {{
+            $t('walletPanel.sourceEfficiency', {
+              efficiency: BTC_MINING_SOURCES.efficiency,
+              retrieved: BTC_MINING_SOURCES.retrieved,
+            })
+          }}
         </div>
       </div>
     </q-card>
@@ -393,21 +407,21 @@ import { useQuasar } from 'quasar'
 import {
   useSafeOracleStore,
   formatAge,
-  MINING_CHAINS,
   STALE_AFTER_MS,
 } from 'src/stores/oracle'
 import { UNIT_RATE_ASSET_METRICS } from 'src/utils/avu-units'
 import { useTranslate } from 'src/composables/useTranslate'
 import {
   ASSET_FEED_SYMBOLS,
+  BITCOIN_ENTRY_ID,
+  BTC_MINING_SOURCES,
+  BTC_MONTHLY_AVU_HASH,
   HISTORICAL_SOURCES,
-  POW_BASELINE_DOLLARS_PER_KWH,
-  POW_NETWORKS,
   US_ANNUAL_ELECTRICITY_AND_GOLD,
   US_MONTHLY_INDUSTRIAL_ELECTRICITY,
-  calculateAvuRate,
+  avuPerCoin,
   kwhPerDollar,
-  miningDollarsPerKwh,
+  latestAvuSpot,
   type HistoryRange,
   type SupportedAsset,
 } from '@frank/wallet/oracle'
@@ -432,6 +446,7 @@ const themeColors = computed(() =>
   isDark.value
     ? {
         usd: '#38bdf8',
+        hash: '#4ade80',
         gold: '#f59e0b',
         token: '#c084fc',
         grid: '#334155',
@@ -442,6 +457,7 @@ const themeColors = computed(() =>
       }
     : {
         usd: '#0284c7',
+        hash: '#16a34a',
         gold: '#d97706',
         token: '#7c3aed',
         grid: '#e2e8f0',
@@ -485,9 +501,6 @@ const unit = computed(
 )
 const hasPriceSource = computed(() => Boolean(ASSET_FEED_SYMBOLS[asset.value]))
 
-/** One AVU in US dollars: the single number every coin's AVU value is divided by. */
-const avuUsdLabel = `$${POW_BASELINE_DOLLARS_PER_KWH}`
-
 function formatNumber(value: number, digits = 2): string {
   return value.toLocaleString('en-US', {
     minimumFractionDigits: digits,
@@ -502,55 +515,73 @@ function formatAvuValue(value: number): string {
   return value.toPrecision(3)
 }
 
-// ---- Mining pay, from fetched chain statistics ----------------------------------------
+// ---- AVU_hash and AVU_spot ---------------------------------------------------------------
 
-/** SHA-256 fleet efficiency the dollars-per-kWh figures assume. An assumption, shown as one. */
-const SHA256_JOULES_PER_HASH = POW_NETWORKS.bitcoin.joulesPerHash
-const MINING_EFFICIENCY = `${formatNumber(
-  SHA256_JOULES_PER_HASH * 1e12,
-  1,
-)} J/TH`
-const MINING_CHAIN_NAMES: Record<(typeof MINING_CHAINS)[number], string> = {
-  'bitcoin': 'BTC',
-  'bitcoin-cash': 'BCH',
-  'ecash': 'XEC',
-}
-
-/** Mining statistics older than this are not shown as current: the figure reads unavailable. */
-const MINING_STATS_MAX_AGE_MS = 2 * 60 * 60 * 1000
+/** kWh per dollar read off mining, with the basket entries it was computed from. */
+const avuHash = computed(() => oracle.snapshot?.avuHash)
+/** kWh per dollar at the latest published electricity price. */
+const avuSpot = latestAvuSpot()
 
 const miningRows = computed(() => {
-  const current = (chain: (typeof MINING_CHAINS)[number]) => {
-    const stats = oracle.mining?.[chain]
-    return stats && Date.now() - stats.fetchedAt <= MINING_STATS_MAX_AGE_MS
-      ? stats
-      : undefined
-  }
-  const bitcoin = current('bitcoin')
-  return MINING_CHAINS.flatMap(chain => {
-    const stats = current(chain)
-    const dollarsPerKwh = stats
-      ? miningDollarsPerKwh(stats.usdPerHash, SHA256_JOULES_PER_HASH)
-      : undefined
-    if (!stats || dollarsPerKwh === undefined) return []
-    return [
-      {
-        chain,
-        name: MINING_CHAIN_NAMES[chain],
-        dollarsPerKwh,
-        // Same algorithm, so the ratio of dollars per hash needs no efficiency assumption.
-        spreadPercent:
-          bitcoin && chain !== 'bitcoin'
-            ? (stats.usdPerHash / bitcoin.usdPerHash - 1) * 100
-            : undefined,
-      },
-    ]
-  })
+  const entries = avuHash.value?.entries ?? []
+  const bitcoin = entries.find(entry => entry.id === BITCOIN_ENTRY_ID)
+  return entries.map(entry => ({
+    ...entry,
+    // Against Bitcoin's dollars per kWh. Entries on one algorithm share an efficiency
+    // figure, so between them this ratio does not depend on it.
+    spreadPercent:
+      bitcoin && entry.id !== BITCOIN_ENTRY_ID
+        ? (entry.dollarsPerKwh / bitcoin.dollarsPerKwh - 1) * 100
+        : undefined,
+  }))
 })
 
 function formatSpread(percent: number): string {
   return `${percent >= 0 ? '+' : ''}${formatNumber(percent, 1)}%`
 }
+
+const LEFT_OUT_REASON_KEYS = {
+  efficiency: 'walletPanel.avuHashLeftOutEfficiency',
+  price: 'walletPanel.avuHashLeftOutPrice',
+  chain: 'walletPanel.avuHashLeftOutChain',
+} as const
+
+function formatWeight(weight: number): string {
+  return `${formatNumber(weight * 100, weight < 0.1 ? 1 : 0)}%`
+}
+
+/** Which basket entries AVU_hash used and with what weight, which it left out, and its age. */
+const avuHashNote = computed(() => {
+  const current = avuHash.value
+  if (!current) return t('walletPanel.avuHashUnavailableNote')
+  const parts = [
+    t('walletPanel.avuHashNote', {
+      used: current.entries.length,
+      total: current.basketSize,
+      weights: current.entries
+        .map(entry => `${entry.label} ${formatWeight(entry.weight)}`)
+        .join(', '),
+      month: current.efficiencyMonth,
+    }),
+  ]
+  if (current.leftOut.length > 0) {
+    parts.push(
+      t('walletPanel.avuHashLeftOut', {
+        coins: current.leftOut
+          .map(
+            entry =>
+              `${entry.label} (${t(LEFT_OUT_REASON_KEYS[entry.reason])})`,
+          )
+          .join(', '),
+      }),
+    )
+  }
+  const staleAge = oracle.avuHashStaleAgeMs?.()
+  if (staleAge !== undefined) {
+    parts.push(t('walletPanel.avuHashStale', { age: formatAge(staleAge) }))
+  }
+  return parts.join(' ')
+})
 
 const networkBars = computed(() => {
   const rows = miningRows.value
@@ -560,6 +591,7 @@ const networkBars = computed(() => {
     const height = top > 0 ? (row.dollarsPerKwh / top) * 170 : 0
     return {
       ...row,
+      name: `${row.label} · ${formatWeight(row.weight)}`,
       x: 90 + index * step + (step - 60) / 2,
       y: 230 - height,
       width: 60,
@@ -586,14 +618,10 @@ interface Tile {
   featured?: boolean
 }
 
-const latestGridMonth =
-  US_MONTHLY_INDUSTRIAL_ELECTRICITY[
-    US_MONTHLY_INDUSTRIAL_ELECTRICITY.length - 1
-  ]
-
 const tiles = computed<Tile[]>(() => {
   const price = oracle.snapshot?.prices?.[asset.value]
   const age = oracle.priceAgeMs?.(asset.value)
+  const hash = avuHash.value
   const rateLine = oracle.formatUnitRate?.(asset.value) ?? ''
   let rateNote = t('walletPanel.avuNoPriceSource')
   if (rateLine && price !== undefined && age !== undefined) {
@@ -603,12 +631,21 @@ const tiles = computed<Tile[]>(() => {
         : 'walletPanel.avuPriceFreshNote',
       { usd: `$${price.toPrecision(6)}`, age: formatAge(age) },
     )
+    const sources = oracle.snapshot?.priceSources?.[asset.value]
+    if (sources !== undefined) {
+      rateNote += ` ${
+        sources > 1
+          ? t('walletPanel.avuPriceSources', { count: sources })
+          : t('walletPanel.avuPriceSingleSource')
+      }`
+    }
+  } else if (price !== undefined && !hash) {
+    rateNote = t('walletPanel.avuHashUnavailableNote')
   } else if (hasPriceSource.value) {
     rateNote = t('walletPanel.avuPriceNotFetched')
   }
 
-  const bitcoin = miningRows.value.find(row => row.chain === 'bitcoin')
-  const ecash = miningRows.value.find(row => row.chain === 'ecash')
+  const ecash = miningRows.value.find(row => row.id === 'ecash')
 
   return [
     {
@@ -623,36 +660,45 @@ const tiles = computed<Tile[]>(() => {
       featured: true,
     },
     {
-      id: 'avu-unit',
-      label: t('walletPanel.avuUnitLabel'),
-      icon: 'straighten',
-      color: 'primary',
-      value: `1 AVU = ${avuUsdLabel}`,
-      note: t('walletPanel.avuUnitNote'),
+      id: 'avu-hash',
+      label: t('walletPanel.avuHashLabel'),
+      icon: 'memory',
+      color: 'positive',
+      value: hash ? `${formatNumber(hash.kwhPerDollar, 2)} kWh/$` : '',
+      note: avuHashNote.value,
     },
     {
       id: 'avu-spot',
       label: t('walletPanel.avuSpotLabel'),
       icon: 'bolt',
       color: 'amber-9',
-      value: `${formatNumber(
-        kwhPerDollar(latestGridMonth.centsPerKwh),
-        1,
-      )} kWh/$`,
-      note: t('walletPanel.avuSpotNote', {
-        cents: latestGridMonth.centsPerKwh,
-        month: latestGridMonth.month,
-      }),
+      value: avuSpot ? `${formatNumber(avuSpot.kwhPerDollar, 2)} kWh/$` : '',
+      note: avuSpot
+        ? t('walletPanel.avuSpotNote', {
+            cents: avuSpot.centsPerKwh,
+            month: avuSpot.month,
+          })
+        : '',
     },
     {
-      id: 'avu-hash',
-      label: t('walletPanel.avuHashLabel'),
-      icon: 'memory',
-      color: 'positive',
-      value: bitcoin
-        ? `${formatNumber(1 / bitcoin.dollarsPerKwh, 1)} kWh/$`
-        : '',
-      note: t('walletPanel.avuHashNote', { efficiency: MINING_EFFICIENCY }),
+      id: 'hash-vs-spot',
+      label: t('walletPanel.avuHashVsSpotLabel'),
+      icon: 'compare_arrows',
+      color: 'primary',
+      value:
+        hash && avuSpot
+          ? formatSpread((hash.kwhPerDollar / avuSpot.kwhPerDollar - 1) * 100)
+          : '',
+      note: t('walletPanel.avuHashVsSpotNote'),
+    },
+    {
+      id: 'avu-unit',
+      label: t('walletPanel.avuUnitLabel'),
+      icon: 'straighten',
+      color: 'primary',
+      // One kWh in dollars as mining prices it: the inverse of AVU_hash.
+      value: hash ? `1 AVU = $${formatNumber(1 / hash.kwhPerDollar, 4)}` : '',
+      note: t('walletPanel.avuUnitNote'),
     },
     {
       id: 'arbitrage',
@@ -677,10 +723,12 @@ interface DataPoint {
 }
 
 interface Series {
-  id: 'usd' | 'gold' | 'token'
+  id: 'usd' | 'hash' | 'gold' | 'token'
   label: string
   color: string
   axis: 'left' | 'right'
+  /** Series with the same scale are drawn against one shared axis, so they compare. */
+  scale: 'kwhPerDollar' | 'gold' | 'token'
   format: (value: number) => string
   points: DataPoint[]
 }
@@ -692,6 +740,28 @@ const longRangePoints = computed(() => {
   const firstYear = selectedRange.value === '5y' ? lastYear - 4 : -Infinity
   return US_ANNUAL_ELECTRICITY_AND_GOLD.filter(p => p.year >= firstYear)
 })
+
+/**
+ * AVU_hash for each calendar year the bundled months cover completely: the mean of that
+ * year's twelve monthly values. Bitcoin only.
+ */
+const annualAvuHash = (() => {
+  const byYear = new Map<number, number[]>()
+  for (const month of BTC_MONTHLY_AVU_HASH) {
+    const year = Number(month.month.slice(0, 4))
+    byYear.set(year, [...(byYear.get(year) ?? []), month.kwhPerDollar])
+  }
+  return Array.from(byYear.entries())
+    .filter(([, values]) => values.length === 12)
+    .map(([year, values]) => ({
+      year,
+      kwhPerDollar: values.reduce((sum, v) => sum + v, 0) / 12,
+    }))
+})()
+
+function monthMidpoint(month: string): number {
+  return Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1, 15)
+}
 
 const tokenHistory = computed(() =>
   fetchedRange.value
@@ -710,6 +780,7 @@ const rangeSeries = computed<Series[]>(() => {
         label: t('walletPanel.chartUsdKwh'),
         color: themeColors.value.usd,
         axis: 'left',
+        scale: 'kwhPerDollar',
         format: value => `${formatNumber(value, 1)} kWh/$`,
         points: annual.map(p => ({
           at: p.year,
@@ -717,10 +788,22 @@ const rangeSeries = computed<Series[]>(() => {
         })),
       },
       {
+        id: 'hash',
+        label: t('walletPanel.chartHashKwh'),
+        color: themeColors.value.hash,
+        axis: 'left',
+        scale: 'kwhPerDollar',
+        format: value => `${formatNumber(value, 1)} kWh/$`,
+        points: annualAvuHash
+          .filter(p => p.year >= annual[0].year)
+          .map(p => ({ at: p.year, value: p.kwhPerDollar })),
+      },
+      {
         id: 'gold',
         label: t('walletPanel.chartGoldAvu'),
         color: themeColors.value.gold,
         axis: 'right',
+        scale: 'gold',
         format: value => `${formatNumber(value, 0)} kWh/oz`,
         // A year without a published gold price has no gold point.
         points: annual.flatMap(p =>
@@ -735,19 +818,23 @@ const rangeSeries = computed<Series[]>(() => {
   // The bundled monthly electricity prices reach into the last year; no shorter range has
   // any. Gold has no history here finer than a year, so it has no line on these ranges.
   const oldest = Date.now() - 366 * 24 * 3_600_000
-  const monthlyGrid =
+  const lastYear = (months: readonly { month: string; value: number }[]) =>
     fetchedRange.value === '1y'
-      ? US_MONTHLY_INDUSTRIAL_ELECTRICITY.flatMap(m => {
-          const at = Date.UTC(
-            Number(m.month.slice(0, 4)),
-            Number(m.month.slice(5, 7)) - 1,
-            15,
-          )
-          return at >= oldest
-            ? [{ at, value: kwhPerDollar(m.centsPerKwh) }]
-            : []
+      ? months.flatMap(m => {
+          const at = monthMidpoint(m.month)
+          return at >= oldest ? [{ at, value: m.value }] : []
         })
       : []
+  const monthlyGrid = lastYear(
+    US_MONTHLY_INDUSTRIAL_ELECTRICITY.map(m => ({
+      month: m.month,
+      value: kwhPerDollar(m.centsPerKwh),
+    })),
+  )
+  const monthlyHash = lastYear(
+    BTC_MONTHLY_AVU_HASH.map(m => ({ month: m.month, value: m.kwhPerDollar })),
+  )
+  const hash = avuHash.value
 
   return [
     {
@@ -755,20 +842,34 @@ const rangeSeries = computed<Series[]>(() => {
       label: t('walletPanel.chartUsdKwh'),
       color: themeColors.value.usd,
       axis: 'right' as const,
+      scale: 'kwhPerDollar' as const,
       format: (value: number) => `${formatNumber(value, 1)} kWh/$`,
       points: monthlyGrid,
+    },
+    {
+      id: 'hash' as const,
+      label: t('walletPanel.chartHashKwh'),
+      color: themeColors.value.hash,
+      axis: 'right' as const,
+      scale: 'kwhPerDollar' as const,
+      format: (value: number) => `${formatNumber(value, 1)} kWh/$`,
+      points: monthlyHash,
     },
     {
       id: 'token',
       label: `${unit.value.symbol} (AVU)`,
       color: themeColors.value.token,
       axis: 'left',
+      scale: 'token',
       format: value => `${formatAvuValue(value)} AVU`,
-      // Each point is a price a provider published (or this app fetched), in AVU.
-      points: (tokenHistory.value?.points ?? []).map(p => ({
-        at: p.timestamp,
-        value: calculateAvuRate(p.price) * unit.value.multiplier,
-      })),
+      // Each point is a price a provider published (or this app fetched) times the
+      // current AVU_hash. Without AVU_hash there is no AVU value and so no point.
+      points: (tokenHistory.value?.points ?? []).flatMap(p => {
+        const value = avuPerCoin(p.price, hash)
+        return value === undefined
+          ? []
+          : [{ at: p.timestamp, value: value * unit.value.multiplier }]
+      }),
     },
   ]
 })
@@ -822,7 +923,10 @@ const drawnLines = computed(() =>
   series.value
     .filter(s => s.points.length > 0)
     .map(s => {
-      const values = s.points.map(p => p.value)
+      // One scale for every series measured in the same unit.
+      const values = series.value
+        .filter(other => other.scale === s.scale)
+        .flatMap(other => other.points.map(p => p.value))
       const low = Math.min(...values)
       const high = Math.max(...values)
       // Pad the scale so a flat or single-point series sits mid-chart instead of on an edge.
@@ -920,8 +1024,8 @@ const inspected = computed<Column | null>(
 const inspectedCells = computed(() => {
   if (selectedRange.value === 'networks') {
     return miningRows.value.map(row => ({
-      id: row.chain,
-      label: row.name,
+      id: row.id,
+      label: row.label,
       color: themeColors.value.textPrimary,
       value: `$${formatNumber(row.dollarsPerKwh, 3)}/kWh`,
     }))
@@ -946,16 +1050,29 @@ const inspectedCells = computed(() => {
 /** Says what is drawn, from where, and when that is little or nothing. */
 const dataNote = computed(() => {
   if (selectedRange.value === 'networks') {
-    return miningRows.value.length > 0
-      ? t('walletPanel.chartNoteNetworks', { efficiency: MINING_EFFICIENCY })
+    return avuHash.value
+      ? t('walletPanel.chartNoteNetworks', {
+          month: avuHash.value.efficiencyMonth,
+        })
       : t('walletPanel.chartNoteNetworksUnavailable')
   }
   if (!fetchedRange.value) {
     const years = longRangePoints.value
-    return t('walletPanel.chartNoteAnnual', {
-      from: years[0].year,
-      to: years[years.length - 1].year,
-    })
+    const hashYears = annualAvuHash.filter(p => p.year >= years[0].year)
+    return [
+      t('walletPanel.chartNoteAnnual', {
+        from: years[0].year,
+        to: years[years.length - 1].year,
+      }),
+      hashYears.length > 0
+        ? t('walletPanel.chartNoteAnnualHash', {
+            from: hashYears[0].year,
+            to: hashYears[hashYears.length - 1].year,
+          })
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
   }
   if (!hasPriceSource.value) {
     return t('walletPanel.chartNoteNoSource', { symbol: unit.value.symbol })
@@ -965,6 +1082,7 @@ const dataNote = computed(() => {
   if (!history || count === 0) {
     return t('walletPanel.chartNoteNoHistory', { symbol: unit.value.symbol })
   }
+  if (!avuHash.value) return t('walletPanel.chartNoteNoHash')
   const first = formatAt(history.points[0].timestamp)
   const note =
     history.source === 'observed'
@@ -977,7 +1095,10 @@ const dataNote = computed(() => {
   const testnet = oracle.balanceHasMarketValue?.(asset.value)
     ? ''
     : ` ${t('walletPanel.chartNoteMainnetPrice')}`
-  return `${note}${testnet}`
+  const currentHash = t('walletPanel.chartNoteCurrentHash', {
+    rate: formatNumber(avuHash.value.kwhPerDollar, 2),
+  })
+  return `${note} ${currentHash}${testnet}`
 })
 
 // Fetch what the open view needs. Nothing is drawn until real data arrives.
@@ -985,13 +1106,6 @@ watch(
   [asset, fetchedRange],
   ([currentAsset, range]) => {
     if (range) void oracle.loadHistory?.(currentAsset, range)
-  },
-  { immediate: true },
-)
-watch(
-  selectedRange,
-  () => {
-    void oracle.loadMiningStats?.()
   },
   { immediate: true },
 )

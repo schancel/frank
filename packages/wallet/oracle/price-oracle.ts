@@ -1,5 +1,16 @@
-import { calculateAvuRate } from "./energy-basket";
-import { PriceFeedsClient } from "@frank/price-feeds";
+import {
+  AVU_HASH_BASKET,
+  HASHING_EFFICIENCY,
+  avuPerCoin,
+  computeAvuHash,
+  type AvuHash,
+  type PriceReading,
+} from "./energy-basket";
+import {
+  PriceFeedsClient,
+  fetchMiningStats,
+  type MiningStats,
+} from "@frank/price-feeds";
 
 export type SupportedAsset =
   | "monad"
@@ -55,10 +66,19 @@ export interface OracleSnapshot {
   timestamp: number;
   /** Fetched market prices. */
   prices: UsdPrices;
-  /** The same prices in AVU: price divided by the dollar value of one AVU. */
+  /** The same prices in AVU (kWh per coin): price times AVU_hash. Empty without AVU_hash. */
   rates: AvuRates;
   /** When each asset's price was fetched (Unix ms). An old time means a stale price. */
   fetchedAt: Partial<Record<SupportedAsset, number>>;
+  /**
+   * How many providers' prices each asset's price is the median of. One means the price
+   * rests on a single source.
+   */
+  priceSources: Partial<Record<SupportedAsset, number>>;
+  /** Fetched chain statistics of the mined coins in the basket, by Blockchair chain name. */
+  mining: Record<string, MiningStats>;
+  /** kWh per dollar read off mining. Absent when no basket entry has all its inputs. */
+  avuHash?: AvuHash;
 }
 
 export interface SwapParityResult {
@@ -76,7 +96,43 @@ export function unavailableOracleSnapshot(): OracleSnapshot {
     prices: {},
     rates: {},
     fetchedAt: {},
+    priceSources: {},
+    mining: {},
   };
+}
+
+/** The Blockchair chains of every basket entry that has an efficiency series to compute with. */
+export const AVU_HASH_CHAINS: readonly string[] = AVU_HASH_BASKET.filter(
+  (entry) => HASHING_EFFICIENCY[entry.algorithm]
+).flatMap((entry) => entry.chains.map((chain) => chain.chain));
+
+/**
+ * Computes AVU_hash from the snapshot's prices and chain statistics and restates every
+ * price in AVU with it. Whatever `rates` and `avuHash` held before is discarded: they are
+ * only ever derived from the prices and statistics beside them.
+ */
+export function rateOracleSnapshot(snapshot: OracleSnapshot): OracleSnapshot {
+  const readings: Record<string, PriceReading> = {};
+  const assets = Object.entries(ASSET_FEED_SYMBOLS) as Array<
+    [SupportedAsset, string]
+  >;
+  for (const [asset, symbol] of assets) {
+    const usd = snapshot.prices[asset];
+    const fetchedAt = snapshot.fetchedAt[asset];
+    if (usd !== undefined && fetchedAt !== undefined) {
+      readings[symbol] = { usd, fetchedAt };
+    }
+  }
+  const avuHash = computeAvuHash(readings, snapshot.mining);
+  const rates: AvuRates = {};
+  for (const [asset] of assets) {
+    const rate = avuPerCoin(snapshot.prices[asset] ?? 0, avuHash);
+    if (rate !== undefined) rates[asset] = rate;
+  }
+  const rated: OracleSnapshot = { ...snapshot, rates };
+  if (avuHash) rated.avuHash = avuHash;
+  else delete rated.avuHash;
+  return rated;
 }
 
 /**
@@ -156,66 +212,75 @@ export function calculateSwapParity(
   return { parityPercent, status, sendAvu, receiveAvu };
 }
 
+export interface FetchOracleOptions {
+  fetchFn?: typeof fetch;
+  timeoutMs?: number;
+  client?: PriceFeedsClient;
+  /** Chain statistics still fresh enough to reuse; these chains are not refetched. */
+  knownMining?: Record<string, MiningStats>;
+  /** Reads one chain's statistics. The seam tests stub. */
+  fetchStats?: (chain: string) => Promise<MiningStats | null>;
+}
+
 /**
  * Fetches the market price of every asset in ASSET_FEED_SYMBOLS across the configured
- * providers (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance) and states each in AVU.
- *
- * AVU is a unit of account, not a coin: one AVU is the fixed dollar amount
- * POW_BASELINE_DOLLARS_PER_KWH (energy-basket.ts), so an asset's rate is its fetched price
- * divided by that one number and any two assets compare through it.
+ * providers (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance) and the chain
+ * statistics of the mined coins in the basket, computes AVU_hash from them
+ * (energy-basket.ts) and states each price in AVU: price times AVU_hash, kWh per coin.
  *
  * Nothing is substituted. An asset whose price did not come back is absent from the
- * snapshot. If the fetch fails the snapshot is the unavailable one.
+ * snapshot. Without AVU_hash no asset has an AVU rate. If the price fetch fails the
+ * snapshot is the unavailable one.
  */
 export async function fetchOracleSnapshot(
-  fetchFn: typeof fetch = globalThis.fetch,
-  timeoutMs = 4000,
-  client?: PriceFeedsClient
+  options: FetchOracleOptions = {}
 ): Promise<OracleSnapshot> {
-  if (typeof fetchFn !== "function" && !client) {
+  const fetchFn = options.fetchFn ?? globalThis.fetch;
+  const timeoutMs = options.timeoutMs ?? 4000;
+  if (typeof fetchFn !== "function" && !options.client) {
     return unavailableOracleSnapshot();
   }
 
   try {
     const feedsClient =
-      client ||
+      options.client ||
       new PriceFeedsClient({
         fetchFn,
         timeoutMs,
         defaultStrategy: "median",
       });
+    const fetchStats =
+      options.fetchStats ??
+      ((chain: string) => fetchMiningStats(chain, { fetchFn }));
+    const knownMining = options.knownMining ?? {};
 
     const assets = Object.entries(ASSET_FEED_SYMBOLS) as Array<
       [SupportedAsset, string]
     >;
-    const sampled = await feedsClient.getSnapshot(
-      assets.map(([, symbol]) => symbol)
-    );
+    const [sampled, stats] = await Promise.all([
+      feedsClient.getSnapshot(assets.map(([, symbol]) => symbol)),
+      Promise.all(
+        AVU_HASH_CHAINS.filter((chain) => !knownMining[chain]).map((chain) =>
+          fetchStats(chain).catch(() => null)
+        )
+      ),
+    ]);
 
     const snapshot = unavailableOracleSnapshot();
     for (const [asset, symbol] of assets) {
       const price = sampled[symbol]?.price;
       if (typeof price === "number" && Number.isFinite(price) && price > 0) {
         snapshot.prices[asset] = price;
-        snapshot.rates[asset] = calculateAvuRate(price);
         snapshot.fetchedAt[asset] = snapshot.timestamp;
+        snapshot.priceSources[asset] = sampled[symbol].sampleCount;
       }
     }
-    return snapshot;
+    snapshot.mining = { ...knownMining };
+    for (const chainStats of stats) {
+      if (chainStats) snapshot.mining[chainStats.chain] = chainStats;
+    }
+    return rateOracleSnapshot(snapshot);
   } catch {
     return unavailableOracleSnapshot();
   }
-}
-
-/**
- * Dollars of newly issued coin per kWh of mining, from dollars issued per hash and the
- * energy one hash is taken to cost. The joules-per-hash figure is an assumption about the
- * mining fleet, not a measurement; callers must say which one they used.
- */
-export function miningDollarsPerKwh(
-  usdPerHash: number,
-  joulesPerHash: number
-): number | undefined {
-  if (!(usdPerHash > 0) || !(joulesPerHash > 0)) return undefined;
-  return (usdPerHash / joulesPerHash) * 3.6e6;
 }

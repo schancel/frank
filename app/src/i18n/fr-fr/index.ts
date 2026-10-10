@@ -445,7 +445,7 @@ export default {
     avuDialogTitle: 'Unité de Valeur Arbitraire (AVU)',
     avuDialogSubtitle: '1 AVU ≡ 1 Kilowattheure (kWh) d’énergie physique',
     avuDialogDesc:
-      'Frank écarte les monnaies fiduciaires de son interface principale. Les soldes sont comparés en AVU, une unité de compte : 1 AVU est un nombre de conversion fixe valant 0,084 $, le prix d’1 kWh d’électricité retenu à sa définition. Ce n’est ni une crypto ni un jeton ; il permet de comparer deux cryptos quelconques par un seul nombre.',
+      'Frank écarte les monnaies fiduciaires de son interface principale. Les soldes sont comparés en AVU, une unité de compte : 1 AVU vaut 1 kWh d’énergie. Le nombre de kWh que vaut un dollar est lu sur le minage par preuve de travail (prix, subvention de bloc, difficulté et efficacité du matériel d’un panier de cryptos minées), et la valeur en AVU d’une crypto est son prix multiplié par ce nombre. Ce n’est ni une crypto ni un jeton ; il permet de comparer deux cryptos quelconques par un seul nombre.',
     avuMemeHeading: 'Refuser le mème du dollar (USD)',
     avuMemeDesc:
       'Le dollar américain est un mème social entretenu par les logiciels par défaut et les décrets des banques centrales. Refuser d’afficher l’USD dans les portefeuilles auto-détenus brise ce monopole psychologique et affaiblit ce mème, réancrant la valeur dans les lois invariantes de la thermodynamique.',
@@ -495,16 +495,37 @@ export default {
     viewInExplorer: 'Voir dans l’explorateur',
     avuTooltip:
       '1 AVU ≡ 1 kWh (3,6 MJ) d’énergie physique. Un étalon thermodynamique infalsifiable de pouvoir d’achat réel.',
-    avuHashLabel: 'Prix de l’énergie du minage Bitcoin',
+    avuHashLabel: 'AVU_hash : kWh par dollar, d’après le minage',
     avuHashNote:
-      'Bitcoins émis par kWh de minage, inversé. Suppose des mineurs à {efficiency} ; frais non comptés.',
-    avuSpotLabel: 'Électricité du réseau américain',
+      'Moyenne pondérée par la capitalisation sur {used} des {total} entrées du panier, Bitcoin plafonné à 60 % : {weights}. Efficacité du matériel : estimation de Cambridge pour {month}, une donnée sélectionnée ; tout le reste est récupéré.',
+    avuSpotLabel: 'AVU_spot : kWh par dollar, d’après le réseau',
     avuSpotNote:
-      'Moyenne industrielle américaine, {cents} ¢/kWh, {month} (EIA).',
-    avuUnitLabel: 'AVU, unité de compte',
+      'Moyenne industrielle américaine, {cents} ¢/kWh, {month} (EIA). Dépend d’un prix publié ; AVU_hash non.',
+    avuUnitLabel: '1 AVU = 1 kWh',
     avuUnitNote:
-      'Un nombre de conversion fixe pour comparer les cryptos. Ni une crypto ni un jeton.',
+      'Un kWh en dollars tel que le minage le valorise : 1 ÷ AVU_hash. Une unité de compte, ni une crypto ni un jeton.',
     avuUnavailable: 'Indisponible',
+    sourceEfficiency:
+      'Efficacité du matériel (donnée sélectionnée, pas une lecture en direct) : {efficiency} Récupéré le {retrieved}.',
+    chartNoteNoHash:
+      'AVU_hash est indisponible : les prix ne peuvent pas être exprimés en AVU et rien n’est tracé.',
+    chartNoteCurrentHash:
+      'Chaque point est ce prix multiplié par l’AVU_hash du jour ({rate} kWh/$) ; AVU_hash n’est pas recalculé le long de la courbe.',
+    chartNoteAnnualHash:
+      'AVU_hash est tracé de {from} à {to}, chaque année étant la moyenne de douze valeurs mensuelles calculées à partir du prix, de la subvention et de la difficulté de Bitcoin et de l’estimation d’efficacité de Cambridge. Bitcoin seul : l’historique d’aucune autre crypto n’est intégré.',
+    chartHashKwh: 'AVU_hash, Bitcoin seul (kWh/$)',
+    avuPriceSingleSource: 'Un seul fournisseur.',
+    avuPriceSources: 'Médiane de {count} fournisseurs.',
+    avuHashVsSpotNote:
+      'Écart de la lecture du minage au-dessus (+) ou au-dessous (−) de celle du réseau. Les deux devraient à peu près concorder.',
+    avuHashVsSpotLabel: 'AVU_hash face à AVU_spot',
+    avuHashStale: 'Périmé : donnée la plus ancienne récupérée il y a {age}.',
+    avuHashLeftOutEfficiency: 'pas de données d’efficacité du matériel',
+    avuHashLeftOutPrice: 'pas de prix récupéré',
+    avuHashLeftOutChain: 'pas de statistiques de chaîne',
+    avuHashLeftOut: 'Omis : {coins}.',
+    avuHashUnavailableNote:
+      'AVU_hash n’a pas pu être calculé : aucune crypto minée du panier n’a de prix récupéré et de statistiques de chaîne. Aucune valeur en AVU n’est affichée d’ici là.',
     avuNoPriceSource:
       'Aucun fournisseur ne publie de prix de marché pour cette crypto.',
     avuPriceNotFetched: 'Le prix n’a pas pu être récupéré.',
@@ -513,14 +534,14 @@ export default {
       'Périmé : dernier prix de marché {usd}, récupéré il y a {age}.',
     avuMainnetPrice:
       '{rate} (prix mainnet ; les cryptos de testnet n’ont pas de valeur de marché)',
-    avuStalePrice: '{rate} (prix vieux de {age})',
+    avuStalePrice: '{rate} (vieux de {age})',
     resetZoom: 'Réinitialiser le zoom',
     arbitrageMargin: 'Rémunération du minage eCash vs Bitcoin',
     arbitrageNote:
-      'Nouvelles pièces émises par hash, eCash rapporté à Bitcoin, sur 24 h. Subvention de bloc entière ; frais non comptés.',
+      'Dollars gagnés par kWh de minage sur eCash rapportés à Bitcoin, d’après le prix, la subvention et la difficulté de chaque chaîne. Les mineurs eCash reçoivent 58 % de la subvention ; frais non comptés.',
     miningBaseline: 'Référence',
-    chartUsdKwh: 'Pouvoir d’achat USD (kWh/$)',
-    chartGoldAvu: 'Or en énergie du réseau (kWh/oz)',
+    chartUsdKwh: 'AVU_spot (kWh/$)',
+    chartGoldAvu: 'Or à AVU_spot (kWh/oz)',
     rangeAll: 'Tout',
     range5Y: '5 ans',
     range1Y: '1 an',
@@ -529,9 +550,9 @@ export default {
     range24H: '24 h',
     rangeNetworks: 'Réseaux',
     chartNoteAnnual:
-      'Chiffres annuels publiés, de {from} à {to} : kWh qu’un dollar achetait au prix industriel américain de l’électricité, et une once d’or exprimée dans cette énergie. Les années qu’une source ne couvre pas sont omises.',
+      'Chiffres annuels publiés, de {from} à {to} : AVU_spot, les kWh qu’un dollar achetait au prix industriel américain de l’électricité, et une once d’or exprimée dans cette énergie. Les années qu’une source ne couvre pas sont omises.',
     chartNoteProvider:
-      '{count} prix de marché publiés par {provider}, depuis {first}. Chaque point est un prix réel divisé par le taux AVU.',
+      '{count} prix de marché publiés par {provider}, depuis {first}.',
     chartNoteObserved:
       'Aucun fournisseur n’a d’historique pour cette crypto. {count} prix récupérés par cette application, depuis {first} ; c’est tout l’historique existant.',
     chartNoteNoHistory:
@@ -541,19 +562,19 @@ export default {
     chartNoteMainnetPrice:
       'C’est le prix de marché de la crypto mainnet ; les cryptos de testnet n’ont pas de valeur de marché.',
     chartNoteNetworks:
-      'Dollars de nouvelles pièces émises par kWh de minage sur 24 h, d’après l’émission, le taux de hachage et le prix publiés de chaque chaîne. Suppose des mineurs à {efficiency}. Les pourcentages comparent l’émission par hash à Bitcoin.',
+      'Dollars gagnés par kWh de minage pour chaque entrée du panier : prix × subvention du mineur ÷ hashs par bloc × hashs par kWh, avec son poids dans AVU_hash. L’efficacité du matériel est l’estimation de Cambridge pour {month}. Les pourcentages comparent à Bitcoin.',
     chartNoteNetworksUnavailable:
-      'Les statistiques de minage n’ont pas pu être récupérées : rien n’est tracé.',
+      'AVU_hash n’a pas pu être calculé : rien n’est tracé.',
     sourcesTitle: 'Méthodologie et sources de données',
     sourceUnit:
-      'AVU : une unité de compte, fixée à {usd} par AVU (le prix d’un kWh d’électricité retenu à sa définition). Chaque valeur en AVU est un prix de marché récupéré, divisé par ce seul nombre.',
+      'AVU : 1 AVU = 1 kWh. AVU_hash est le nombre de kWh que vaut un dollar, moyenné sur un panier de cryptos minées selon leur capitalisation, Bitcoin plafonné à 60 % ; pour chacune, dollars par kWh = prix × subvention ÷ hashs par bloc × hashs par kWh. Chaque valeur en AVU est un prix récupéré multiplié par AVU_hash.',
     sourceFeeds:
       'Prix : récupérés auprès de Coinbase, Kraken, CoinGecko, Binance et Chainlink ; la valeur médiane est retenue. Une crypto sans prix récupéré n’affiche aucune valeur.',
     sourceHistorical:
       'Historique des prix : les chandeliers publiés par un seul fournisseur pour la période (Coinbase, Kraken, Binance.US ou CoinGecko). Rien n’est interpolé.',
     sourceGrid: 'Données de long terme, intégrées : {electricity}. {gold}',
     sourceHash:
-      'Minage : émission sur 24 h, taux de hachage et prix issus des statistiques publiques de Blockchair. L’efficacité de {efficiency} est une hypothèse.',
+      'Minage, en direct : subvention, difficulté et offre issues des statistiques publiques de Blockchair (une seule source), prix issus des flux ci-dessus. Minage, historique : {chain} {subsidy}',
     activeTokenCardTitle: '{symbol} en AVU',
     inspectingDate: 'Inspection',
     latestValue: 'Dernière valeur',

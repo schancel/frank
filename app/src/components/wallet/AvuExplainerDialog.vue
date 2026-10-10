@@ -149,11 +149,7 @@ import { computed } from 'vue'
 import { useSafeOracleStore } from '../../stores/oracle'
 import { UNIT_RATE_ASSET_METRICS } from '../../utils/avu-units'
 import { useTranslate } from '../../composables/useTranslate'
-import {
-  ASSET_FEED_SYMBOLS,
-  AVU_PER_DOLLAR,
-  type SupportedAsset,
-} from '@frank/wallet/oracle'
+import { ASSET_FEED_SYMBOLS, type SupportedAsset } from '@frank/wallet/oracle'
 
 defineProps<{
   modelValue: boolean
@@ -175,8 +171,8 @@ interface EquivalencyRow {
 
 /**
  * One row per coin that has a price source, showing the price that was fetched. A coin
- * whose price has not been fetched says so; nothing stands in for it. The last row is the
- * unit itself: AVU is a fixed number of dollars, not a coin.
+ * whose price has not been fetched says so; nothing stands in for it. The last row is
+ * AVU_hash itself: the kWh one dollar is worth as mining prices it, or "Unavailable".
  */
 const equivalencyRows = computed<EquivalencyRow[]>(() => {
   const rows = (Object.keys(ASSET_FEED_SYMBOLS) as SupportedAsset[]).map(
@@ -198,10 +194,12 @@ const equivalencyRows = computed<EquivalencyRow[]>(() => {
   rows.push({
     asset: 'usd' as SupportedAsset,
     label: '1 USD',
-    rateFormatted: `1 USD = ${AVU_PER_DOLLAR.toLocaleString('en-US', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })} AVU`,
+    rateFormatted: oracle.snapshot?.avuHash
+      ? `1 USD = ${oracle.snapshot.avuHash.kwhPerDollar.toLocaleString(
+          'en-US',
+          { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+        )} AVU`
+      : t('walletPanel.avuUnavailable'),
     usdFormatted: '$1.00',
   })
   return rows

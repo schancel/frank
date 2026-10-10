@@ -13,13 +13,12 @@ import * as oracleSdk from '@frank/wallet/oracle'
 jest.mock('@frank/wallet/oracle', () => ({
   ...jest.requireActual('@frank/wallet/oracle'),
   fetchPriceHistory: jest.fn(),
-  fetchMiningStats: jest.fn(),
   fetchOracleSnapshot: jest.fn(),
 }))
 
 const fetchPriceHistory = oracleSdk.fetchPriceHistory as jest.Mock
-const fetchMiningStats = oracleSdk.fetchMiningStats as jest.Mock
-const AVU_USD = oracleSdk.POW_BASELINE_DOLLARS_PER_KWH
+const BTC_USD = 80_000
+const XEC_USD = 0.00001
 const NOW = Date.now()
 const HOUR = 3_600_000
 
@@ -108,11 +107,62 @@ function setPrice(
   asset: oracleSdk.SupportedAsset,
   usd: number,
   fetchedAt = NOW,
+  sources = 4,
 ) {
   const oracle = useOracleStore()
   oracle.snapshot.prices[asset] = usd
-  oracle.snapshot.rates[asset] = usd / AVU_USD
   oracle.snapshot.fetchedAt[asset] = fetchedAt
+  oracle.snapshot.priceSources[asset] = sources
+  oracle.snapshot = oracleSdk.rateOracleSnapshot(oracle.snapshot)
+}
+
+const HASHES_PER_KWH = oracleSdk.latestHashingEfficiency('sha256')!.hashesPerKwh
+
+function chainStats(
+  chain: string,
+  subsidyCoinsPerBlock: number,
+  hashesPerBlock: number,
+  circulatingCoins: number,
+  fetchedAt: number,
+) {
+  return {
+    chain,
+    subsidyCoinsPerBlock,
+    difficulty: hashesPerBlock / 2 ** 32,
+    hashesPerBlock,
+    circulatingCoins,
+    fetchedAt,
+  }
+}
+
+/**
+ * Gives the oracle a bitcoin price and bitcoin chain statistics at which the real formula,
+ * with the bundled efficiency, makes AVU_hash exactly `kwhPerDollar`:
+ * kWh/$ = hashes per block / (price x subsidy x hashes per kWh).
+ */
+function setHash(kwhPerDollar = 12, fetchedAt = NOW) {
+  const oracle = useOracleStore()
+  oracle.snapshot.mining.bitcoin = chainStats(
+    'bitcoin',
+    3.125,
+    kwhPerDollar * BTC_USD * 3.125 * HASHES_PER_KWH,
+    20_000_000,
+    fetchedAt,
+  )
+  setPrice('bitcoin', BTC_USD)
+}
+
+/** Adds eCash at `kwhPerDollar`; its miners receive 58% of the 3,125,000 XEC subsidy. */
+function setEcashMining(kwhPerDollar: number) {
+  const oracle = useOracleStore()
+  oracle.snapshot.mining.ecash = chainStats(
+    'ecash',
+    3_125_000,
+    kwhPerDollar * XEC_USD * 3_125_000 * 0.58 * HASHES_PER_KWH,
+    20_000_000_000_000,
+    NOW,
+  )
+  setPrice('ecash', XEC_USD, NOW, 1)
 }
 
 beforeEach(() => {
@@ -124,11 +174,12 @@ beforeEach(() => {
     provider: null,
     points: [],
   })
-  fetchMiningStats.mockReset().mockResolvedValue(null)
+  // AVU_hash is 12 kWh per dollar unless a test says otherwise.
+  setHash()
 })
 
 describe('the drawn lines are data, never a formula', () => {
-  it('draws exactly the price points the provider published, each divided by the AVU rate', async () => {
+  it('draws exactly the price points the provider published, each times AVU_hash', async () => {
     const points = [
       { timestamp: NOW - 3 * HOUR, price: 108.5 },
       { timestamp: NOW - 2 * HOUR, price: 111.25 },
@@ -147,12 +198,12 @@ describe('the drawn lines are data, never a formula', () => {
     expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(3)
     expect(wrapper.find('[data-test="chart-line-token"]').exists()).toBe(true)
 
-    // Every plotted value is one published price over the single AVU rate.
+    // Every plotted value is one published price times AVU_hash (12 kWh per dollar).
     const columns = wrapper.findAll('[data-test="chart-hover-point"]')
     expect(columns).toHaveLength(3)
     for (const [index, point] of points.entries()) {
       await columns[index].trigger('mouseenter')
-      const expected = (point.price / AVU_USD).toLocaleString('en-US', {
+      const expected = (point.price * 12).toLocaleString('en-US', {
         minimumFractionDigits: 1,
         maximumFractionDigits: 1,
       })
@@ -160,8 +211,44 @@ describe('the drawn lines are data, never a formula', () => {
         wrapper.find('[data-test="inspection-cell-token"]').text(),
       ).toContain(`${expected} AVU`)
     }
+    const note = wrapper.find('[data-test="chart-data-note"]').text()
+    expect(note).toContain('3 market prices published by coinbase')
+    // The line uses today's AVU_hash throughout, and says so.
+    expect(note).toContain(
+      'Each point is that price times today’s AVU_hash (12.00 kWh/$); AVU_hash is not recomputed along the line.',
+    )
+  })
+
+  it('moves every plotted value in step with AVU_hash: there is no fixed rate in the line', async () => {
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'coinbase',
+      points: [{ timestamp: NOW - HOUR, price: 100 }],
+    })
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+    const cell = () =>
+      wrapper.find('[data-test="inspection-cell-token"]').text()
+    expect(cell()).toContain('1,200.0 AVU')
+    setHash(24)
+    await flushPromises()
+    expect(cell()).toContain('2,400.0 AVU')
+  })
+
+  it('draws no price line while AVU_hash is unavailable, and says why', async () => {
+    fetchPriceHistory.mockResolvedValue({
+      asset: 'SOL',
+      range: '24h',
+      provider: 'coinbase',
+      points: [{ timestamp: NOW - HOUR, price: 100 }],
+    })
+    useOracleStore().snapshot = oracleSdk.unavailableOracleSnapshot()
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    await openRange(wrapper, '24h')
+    expect(wrapper.findAll('[data-test="chart-point-token"]')).toHaveLength(0)
     expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
-      '3 market prices published by coinbase',
+      'AVU_hash is unavailable',
     )
   })
 
@@ -262,7 +349,7 @@ describe('dragging across the chart zooms to that stretch', () => {
   })
 })
 
-describe('the one-year view also draws the bundled monthly electricity prices', () => {
+describe('the one-year view also draws the bundled monthly AVU_spot and AVU_hash', () => {
   it('shows only the published months that fall inside the last year, and none on shorter ranges', async () => {
     const wrapper = mountChart({ selectedWallet: 'solana' })
     await openRange(wrapper, '1y')
@@ -278,8 +365,22 @@ describe('the one-year view also draws the bundled monthly electricity prices', 
     expect(wrapper.findAll('[data-test="chart-point-usd"]')).toHaveLength(
       published.length,
     )
+    // AVU_hash by month, from the bundled Bitcoin inputs, over the same year.
+    const hashMonths = oracleSdk.BTC_MONTHLY_AVU_HASH.filter(
+      m =>
+        Date.UTC(
+          Number(m.month.slice(0, 4)),
+          Number(m.month.slice(5, 7)) - 1,
+          15,
+        ) >= yearAgo,
+    )
+    expect(hashMonths.length).toBeGreaterThan(0)
+    expect(wrapper.findAll('[data-test="chart-point-hash"]')).toHaveLength(
+      hashMonths.length,
+    )
     await openRange(wrapper, '30d')
     expect(wrapper.findAll('[data-test="chart-point-usd"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-test="chart-point-hash"]')).toHaveLength(0)
   })
 })
 
@@ -318,6 +419,34 @@ describe('bundled long-range data is loaded as data', () => {
     )
   })
 
+  it('draws AVU_hash beside AVU_spot for every year the bundled Bitcoin months cover in full', async () => {
+    const wrapper = mountChart()
+    await flushPromises()
+    const months = oracleSdk.BTC_MONTHLY_AVU_HASH
+    const fullYears = Array.from(
+      new Set(months.map(m => m.month.slice(0, 4))),
+    ).filter(year => months.filter(m => m.month.startsWith(year)).length === 12)
+    expect(fullYears.length).toBeGreaterThan(10)
+    expect(wrapper.findAll('[data-test="chart-point-hash"]')).toHaveLength(
+      fullYears.length,
+    )
+    expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
+      `AVU_hash is drawn for ${fullYears[0]} to ${
+        fullYears[fullYears.length - 1]
+      }`,
+    )
+    // 2024: the mean of that year's twelve monthly values.
+    const year2024 = months.filter(m => m.month.startsWith('2024'))
+    const mean = year2024.reduce((sum, m) => sum + m.kwhPerDollar, 0) / 12
+    const annual = oracleSdk.US_ANNUAL_ELECTRICITY_AND_GOLD
+    await wrapper
+      .findAll('[data-test="chart-hover-point"]')
+      [annual.findIndex(p => p.year === 2024)].trigger('mouseenter')
+    expect(wrapper.find('[data-test="inspection-cell-hash"]').text()).toContain(
+      `${mean.toFixed(1)} kWh/$`,
+    )
+  })
+
   it('5Y is the last five bundled years', async () => {
     const wrapper = mountChart()
     await openRange(wrapper, '5y')
@@ -328,6 +457,14 @@ describe('bundled long-range data is loaded as data', () => {
     const text = mountChart().find('[data-test="chart-sources"]').text()
     expect(text).toContain('EIA Monthly Energy Review Table 9.8')
     expect(text).toContain('World Bank Commodity Price Data')
+    expect(text).toContain('blockchain.com charts API')
+    // The efficiency series is named as the one curated input, with its source and date.
+    const efficiency = mountChart()
+      .find('[data-test="source-efficiency"]')
+      .text()
+    expect(efficiency).toContain('curated, not a live reading')
+    expect(efficiency).toContain('Cambridge Bitcoin Electricity Consumption')
+    expect(efficiency).toContain(oracleSdk.BTC_MINING_SOURCES.retrieved)
   })
 })
 
@@ -345,11 +482,33 @@ describe('figures are fetched, bundled or the stated unit; a failure is never a 
     setPrice('solana', 110.06)
     await flushPromises()
     expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
-      '1 SOL ≈ 1,310.24 AVU',
+      '1 SOL ≈ 1,320.72 AVU',
+    )
+    const card = wrapper.find('[data-test="metric-card-token-rate"]').text()
+    expect(card).toContain('Market price $110.060')
+    expect(card).toContain('Median of 4 providers.')
+  })
+
+  it('says when a price rests on a single provider', async () => {
+    const wrapper = mountChart({ selectedWallet: 'ecash' })
+    setPrice('ecash', 7.2e-6, NOW, 1)
+    await flushPromises()
+    expect(
+      wrapper.find('[data-test="metric-card-token-rate"]').text(),
+    ).toContain('One provider only.')
+  })
+
+  it('shows a fetched price as "Unavailable" in AVU while AVU_hash is unavailable', async () => {
+    useOracleStore().snapshot = oracleSdk.unavailableOracleSnapshot()
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    setPrice('solana', 110.06)
+    await flushPromises()
+    expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
+      'Unavailable',
     )
     expect(
       wrapper.find('[data-test="metric-card-token-rate"]').text(),
-    ).toContain('Market price $110.060')
+    ).toContain('AVU_hash could not be computed')
   })
 
   it('marks an old price as stale with its age instead of showing it as current', async () => {
@@ -357,7 +516,7 @@ describe('figures are fetched, bundled or the stated unit; a failure is never a 
     setPrice('solana', 110.06, NOW - 3 * HOUR)
     await flushPromises()
     expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
-      '1 SOL ≈ 1,310.24 AVU (price 3 h old)',
+      '1 SOL ≈ 1,320.72 AVU (3 h old)',
     )
     expect(
       wrapper.find('[data-test="metric-card-token-rate"]').text(),
@@ -389,13 +548,17 @@ describe('figures are fetched, bundled or the stated unit; a failure is never a 
     expect(oracle.getAvu('monad', 5_000_000_000_000_000_000n)).toBe(0)
   })
 
-  it('states AVU as a fixed unit of account, not as a coin', () => {
+  it('states the unit as 1 kWh and its dollar value as the inverse of AVU_hash', () => {
     const wrapper = mountChart()
+    expect(wrapper.find('[data-test="metric-card-avu-unit"]').text()).toContain(
+      '1 AVU = 1 kWh',
+    )
+    // AVU_hash is 12 kWh per dollar, so one kWh is 1/12 of a dollar.
     expect(wrapper.find('[data-test="metric-value-avu-unit"]').text()).toBe(
-      `1 AVU = $${AVU_USD}`,
+      '1 AVU = $0.0833',
     )
     expect(wrapper.find('[data-test="metric-card-avu-unit"]').text()).toContain(
-      'Not a coin or token',
+      'not a coin or token',
     )
   })
 
@@ -403,7 +566,7 @@ describe('figures are fetched, bundled or the stated unit; a failure is never a 
     const months = oracleSdk.US_MONTHLY_INDUSTRIAL_ELECTRICITY
     const latest = months[months.length - 1]
     const card = mountChart().find('[data-test="metric-card-avu-spot"]').text()
-    expect(card).toContain(`${(100 / latest.centsPerKwh).toFixed(1)} kWh/$`)
+    expect(card).toContain(`${(100 / latest.centsPerKwh).toFixed(2)} kWh/$`)
     expect(card).toContain(latest.month)
   })
 
@@ -424,64 +587,92 @@ describe('figures are fetched, bundled or the stated unit; a failure is never a 
   })
 })
 
-describe('mining pay comes from fetched chain statistics', () => {
-  const stats = (chain: string, usdPerHash: number) => ({
-    chain,
-    issuanceUsdPerSecond: 1,
-    hashrateHps: 1 / usdPerHash,
-    usdPerHash,
-    fetchedAt: Date.now(),
-  })
-
-  it('shows "Unavailable" and draws no bars when the statistics cannot be fetched', async () => {
+describe('AVU_hash is computed from fetched prices and chain statistics', () => {
+  it('shows "Unavailable" everywhere and draws no bars when it cannot be computed', async () => {
+    useOracleStore().snapshot = oracleSdk.unavailableOracleSnapshot()
     const wrapper = mountChart()
     await openRange(wrapper, 'networks')
-    expect(wrapper.find('[data-test="metric-value-arbitrage"]').text()).toBe(
-      'Unavailable',
-    )
-    expect(wrapper.find('[data-test="metric-value-avu-hash"]').text()).toBe(
-      'Unavailable',
+    for (const tile of ['avu-hash', 'avu-unit', 'hash-vs-spot', 'arbitrage']) {
+      expect(wrapper.find(`[data-test="metric-value-${tile}"]`).text()).toBe(
+        'Unavailable',
+      )
+    }
+    expect(wrapper.find('[data-test="metric-card-avu-hash"]').text()).toContain(
+      'AVU_hash could not be computed',
     )
     expect(wrapper.findAll('[data-test="chart-hover-bar"]')).toHaveLength(0)
     expect(wrapper.find('[data-test="chart-data-note"]').text()).toContain(
-      'Mining statistics could not be fetched',
+      'AVU_hash could not be computed',
     )
+    // AVU_spot does not depend on mining and is still shown.
+    expect(
+      wrapper.find('[data-test="metric-value-avu-spot"]').text(),
+    ).toContain('kWh/$')
   })
 
-  it('shows statistics fetched hours ago as unavailable, not as current figures', async () => {
-    fetchMiningStats.mockImplementation(async (chain: string) => ({
-      ...stats(chain, 4.5e-19),
-      fetchedAt: Date.now() - 3 * HOUR,
-    }))
+  it('shows AVU_hash beside AVU_spot, the coins used with their weights, and those left out', async () => {
+    // Bitcoin at 12 kWh/$ and eCash at 6 kWh/$. Bitcoin's market cap dwarfs eCash's, so
+    // it is capped at 60%: AVU_hash = 0.6 x 12 + 0.4 x 6 = 9.6 kWh/$.
+    setEcashMining(6)
     const wrapper = mountChart()
     await openRange(wrapper, 'networks')
     expect(wrapper.find('[data-test="metric-value-avu-hash"]').text()).toBe(
-      'Unavailable',
+      '9.60 kWh/$',
     )
-    expect(wrapper.findAll('[data-test="chart-hover-bar"]')).toHaveLength(0)
-  })
+    const note = wrapper.find('[data-test="metric-card-avu-hash"]').text()
+    expect(note).toContain('2 of 5 basket entries')
+    expect(note).toContain('BTC 60%, XEC 40%')
+    expect(note).toContain(
+      `Cambridge estimate for ${
+        oracleSdk.latestHashingEfficiency('sha256')!.month
+      }`,
+    )
+    expect(note).toContain(
+      'Left out: BCH (no fetched price), LTC+DOGE (no hardware efficiency data), XMR (no hardware efficiency data).',
+    )
+    expect(note).not.toContain('Stale')
 
-  it('computes the eCash spread from the two chains’ fetched dollars per hash', async () => {
-    fetchMiningStats.mockImplementation(async (chain: string) =>
-      chain === 'bitcoin'
-        ? stats(chain, 4.5e-19)
-        : chain === 'ecash'
-        ? stats(chain, 9.0e-19)
-        : null,
+    // Side by side with AVU_spot, and how far apart the two are.
+    const spot = oracleSdk.latestAvuSpot()!
+    expect(wrapper.find('[data-test="metric-value-avu-spot"]').text()).toBe(
+      `${spot.kwhPerDollar.toFixed(2)} kWh/$`,
     )
-    const wrapper = mountChart()
-    await openRange(wrapper, 'networks')
+    const gap = (9.6 / spot.kwhPerDollar - 1) * 100
+    expect(wrapper.find('[data-test="metric-value-hash-vs-spot"]').text()).toBe(
+      `${gap >= 0 ? '+' : ''}${gap.toFixed(1)}%`,
+    )
+
+    // eCash mining earns 1/6 $ per kWh against Bitcoin's 1/12: twice as much.
     expect(wrapper.find('[data-test="metric-value-arbitrage"]').text()).toBe(
       '+100.0%',
     )
-    // 4.5e-19 $/hash at 17.5 J/TH is $0.0926/kWh, 10.8 kWh per dollar.
-    expect(wrapper.find('[data-test="metric-value-avu-hash"]').text()).toBe(
-      '10.8 kWh/$',
-    )
     const bars = wrapper.findAll('[data-test="chart-hover-bar"]')
     expect(bars).toHaveLength(2)
-    expect(bars[0].text()).toContain('BTC')
-    expect(bars[0].text()).toContain('$0.093/kWh')
+    expect(bars[0].text()).toContain('BTC · 60%')
+    expect(bars[0].text()).toContain('$0.083/kWh')
+    expect(bars[1].text()).toContain('XEC · 40%')
+    expect(bars[1].text()).toContain('$0.167/kWh')
     expect(bars[1].text()).toContain('+100.0%')
+  })
+
+  it('marks AVU_hash and every value with the age of chain statistics that have gone stale', async () => {
+    setHash(12, NOW - 3 * HOUR)
+    const wrapper = mountChart({ selectedWallet: 'solana' })
+    setPrice('solana', 110.06)
+    await flushPromises()
+    expect(wrapper.find('[data-test="metric-value-avu-hash"]').text()).toBe(
+      '12.00 kWh/$',
+    )
+    expect(wrapper.find('[data-test="metric-card-avu-hash"]').text()).toContain(
+      'Stale: oldest input fetched 3 h ago.',
+    )
+    expect(wrapper.find('[data-test="metric-value-token-rate"]').text()).toBe(
+      '1 SOL ≈ 1,320.72 AVU (3 h old)',
+    )
+  })
+
+  it('contains no typed-in rate or efficiency', () => {
+    const source = readFileSync(join(__dirname, 'AvuParityChart.vue'), 'utf8')
+    expect(source).not.toMatch(/0\.084|11\.9|17\.5|POW_BASELINE|joulesPerHash/)
   })
 })

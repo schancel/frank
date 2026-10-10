@@ -73,11 +73,25 @@ describe('AvuExplainerDialog component', () => {
     setActivePinia(createPinia())
     const oracle = useOracleStore()
     oracle.snapshot.prices.solana = 110.06
-    oracle.snapshot.rates.solana = 110.06 / 0.084
+    oracle.snapshot.rates.solana = 110.06 * 12
     oracle.snapshot.fetchedAt.solana = Date.now()
-    const row = mountDialog().find('[data-test="avu-rate-row-solana"]').text()
-    expect(row).toContain('1 SOL ≈ 1,310.24 AVU')
+    oracle.snapshot.avuHash = {
+      kwhPerDollar: 12,
+      entries: [],
+      leftOut: [],
+      basketSize: 5,
+      efficiencyMonth: '2026-09',
+      pricesAsOf: Date.now(),
+      chainsAsOf: Date.now(),
+    }
+    const wrapper = mountDialog()
+    const row = wrapper.find('[data-test="avu-rate-row-solana"]').text()
+    expect(row).toContain('1 SOL ≈ 1,320.72 AVU')
     expect(row).toContain('$110.060')
+    // The dollar row is AVU_hash: the kWh a dollar is worth as mining prices it.
+    expect(wrapper.find('[data-test="avu-rate-row-usd"]').text()).toContain(
+      '1 USD = 12.00 AVU',
+    )
   })
 
   test('lists no row for a coin without a price source, and none for AVU itself', () => {
@@ -87,10 +101,10 @@ describe('AvuExplainerDialog component', () => {
       false,
     )
     expect(wrapper.find('[data-test="avu-rate-row-avu"]').exists()).toBe(false)
-    // The dollar row states the unit: a fixed number, not a market price.
-    expect(wrapper.find('[data-test="avu-rate-row-usd"]').text()).toContain(
-      '1 USD = 11.90 AVU',
-    )
+    // Without AVU_hash the dollar row has no figure: there is no fixed rate to fall back on.
+    const usdRow = wrapper.find('[data-test="avu-rate-row-usd"]').text()
+    expect(usdRow).toContain('Unavailable')
+    expect(usdRow).not.toContain('1 USD =')
   })
 
   test('does not render when modelValue is false', () => {

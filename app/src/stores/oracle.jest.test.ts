@@ -14,27 +14,58 @@ jest.mock('@frank/wallet/oracle', () => ({
   ...jest.requireActual('@frank/wallet/oracle'),
   fetchOracleSnapshot: jest.fn(),
   fetchPriceHistory: jest.fn(),
-  fetchMiningStats: jest.fn(),
 }))
 
 const fetchOracleSnapshot = oracleSdk.fetchOracleSnapshot as jest.Mock
 const fetchPriceHistory = oracleSdk.fetchPriceHistory as jest.Mock
-const AVU_USD = oracleSdk.POW_BASELINE_DOLLARS_PER_KWH
+const BTC_USD = 80_000
 const HOUR = 3_600_000
 const ONE_SOL = 1_000_000_000n
 const ONE_MON = 1_000_000_000_000_000_000n
 
-function fetched(prices: oracleSdk.UsdPrices, timestamp = Date.now()) {
+/**
+ * Bitcoin chain statistics at which AVU_hash, computed by the real formula with the
+ * bundled efficiency, comes to exactly `kwhPerDollar` when bitcoin is BTC_USD:
+ * kWh/$ = hashes per block / (price x subsidy x hashes per kWh).
+ */
+function bitcoinStats(kwhPerDollar: number, fetchedAt: number) {
+  const hashesPerKwh = oracleSdk.latestHashingEfficiency('sha256')!.hashesPerKwh
+  const hashesPerBlock = kwhPerDollar * BTC_USD * 3.125 * hashesPerKwh
+  return {
+    chain: 'bitcoin',
+    subsidyCoinsPerBlock: 3.125,
+    difficulty: hashesPerBlock / 2 ** 32,
+    hashesPerBlock,
+    circulatingCoins: 20_000_000,
+    fetchedAt,
+  }
+}
+
+/**
+ * What a fetch returns: the given prices and bitcoin's, with bitcoin's chain statistics
+ * (unless `kwhPerDollar` is null: the statistics did not arrive). AVU_hash is 12 kWh/$
+ * unless stated.
+ */
+function fetched(
+  prices: oracleSdk.UsdPrices,
+  timestamp = Date.now(),
+  kwhPerDollar: number | null = 12,
+  miningAt = timestamp,
+) {
   const snapshot = oracleSdk.unavailableOracleSnapshot()
   snapshot.timestamp = timestamp
-  for (const [asset, price] of Object.entries(prices) as Array<
-    [oracleSdk.SupportedAsset, number]
-  >) {
+  for (const [asset, price] of Object.entries({
+    ...prices,
+    bitcoin: BTC_USD,
+  }) as Array<[oracleSdk.SupportedAsset, number]>) {
     snapshot.prices[asset] = price
-    snapshot.rates[asset] = price / AVU_USD
     snapshot.fetchedAt[asset] = timestamp
+    snapshot.priceSources[asset] = 4
   }
-  return snapshot
+  if (kwhPerDollar !== null) {
+    snapshot.mining.bitcoin = bitcoinStats(kwhPerDollar, miningAt)
+  }
+  return oracleSdk.rateOracleSnapshot(snapshot)
 }
 
 describe('useOracleStore', () => {
@@ -67,19 +98,96 @@ describe('useOracleStore', () => {
     }
   })
 
-  it('values a balance at the fetched price divided by the AVU rate', async () => {
+  it('values a balance at the fetched price times AVU_hash', async () => {
     fetchOracleSnapshot.mockResolvedValue(fetched({ solana: 110.06 }))
     const store = useOracleStore()
     await store.refresh()
 
-    expect(store.getAvu('solana', 2n * ONE_SOL)).toBeCloseTo(
-      (2 * 110.06) / AVU_USD,
-      6,
-    )
-    expect(store.formatAvuAmount('solana', 2n * ONE_SOL)).toBe('≈ 2,620.5 AVU')
-    expect(store.formatUnitRate('solana')).toBe('1 SOL ≈ 1,310.24 AVU')
+    // AVU_hash is 12 kWh per dollar, so 1 SOL at $110.06 is 1,320.72 kWh.
+    expect(store.avuHash?.kwhPerDollar).toBeCloseTo(12, 9)
+    expect(store.getAvu('solana', 2n * ONE_SOL)).toBeCloseTo(2 * 110.06 * 12, 6)
+    expect(store.formatAvuAmount('solana', 2n * ONE_SOL)).toBe('≈ 2,641.4 AVU')
+    expect(store.formatUnitRate('solana')).toBe('1 SOL ≈ 1,320.72 AVU')
     expect(store.formatAvuAmount('solana', 0n)).toBe('')
     expect(store.formatAvuAmount('solana', null)).toBe('')
+  })
+
+  it('has no constant in the path: every AVU value moves in step with the mining inputs', async () => {
+    const store = useOracleStore()
+    fetchOracleSnapshot.mockResolvedValue(
+      fetched({ solana: 110.06, ethereum: 2500, ecash: 7.2e-6 }),
+    )
+    await store.refresh()
+    const before = { ...store.rates }
+    // The same prices; twice the hashes per block means twice the kWh per dollar.
+    fetchOracleSnapshot.mockResolvedValue(
+      fetched(
+        { solana: 110.06, ethereum: 2500, ecash: 7.2e-6 },
+        Date.now(),
+        24,
+      ),
+    )
+    await store.refresh()
+    expect(Object.keys(store.rates).sort()).toEqual(
+      ['bitcoin', 'ecash', 'ethereum', 'solana'].sort(),
+    )
+    for (const asset of Object.keys(before) as oracleSdk.SupportedAsset[]) {
+      expect(store.rates[asset]! / before[asset]!).toBeCloseTo(2, 9)
+    }
+    expect(store.formatUnitRate('solana')).toBe('1 SOL ≈ 2,641.44 AVU')
+  })
+
+  it('shows no AVU value for anything while AVU_hash is unavailable: there is no fallback rate', async () => {
+    fetchOracleSnapshot.mockResolvedValue(
+      fetched({ solana: 110.06 }, Date.now(), null),
+    )
+    const store = useOracleStore()
+    await store.refresh()
+    expect(store.snapshot.prices.solana).toBe(110.06)
+    expect(store.avuHash).toBeUndefined()
+    expect(store.rates).toEqual({})
+    expect(store.formatUnitRate('solana')).toBe('')
+    expect(store.formatAvuAmount('solana', ONE_SOL)).toBe('')
+    expect(store.getAvu('solana', ONE_SOL)).toBe(0)
+  })
+
+  it('keeps the last chain statistics when they fail to arrive, and marks every value with their age once stale', async () => {
+    const then = Date.now() - 5 * HOUR
+    const store = useOracleStore()
+    fetchOracleSnapshot.mockResolvedValue(fetched({ solana: 100 }, then))
+    await store.refresh()
+
+    // Prices arrive now; the chain statistics do not.
+    fetchOracleSnapshot.mockResolvedValue(
+      fetched({ solana: 110.06 }, Date.now(), null),
+    )
+    await store.refresh()
+    expect(store.snapshot.mining.bitcoin.fetchedAt).toBe(then)
+    expect(store.avuHash?.kwhPerDollar).toBeCloseTo(12, 9)
+    expect(store.avuHashStaleAgeMs()).toBeGreaterThanOrEqual(5 * HOUR)
+    expect(store.formatUnitRate('solana')).toBe(
+      '1 SOL ≈ 1,320.72 AVU (5 h old)',
+    )
+    expect(store.formatAvuAmount('solana', ONE_SOL)).toBe(
+      '≈ 1,320.7 AVU (5 h old)',
+    )
+  })
+
+  it('refetches chain statistics only once they are half an hour old', async () => {
+    const store = useOracleStore()
+    const recent = Date.now() - 10 * 60_000
+    fetchOracleSnapshot.mockResolvedValue(fetched({ solana: 100 }, recent))
+    await store.refresh()
+    expect(fetchOracleSnapshot.mock.calls[0][0]).toEqual({ knownMining: {} })
+
+    await store.refresh()
+    expect(
+      Object.keys(fetchOracleSnapshot.mock.calls[1][0].knownMining),
+    ).toEqual(['bitcoin'])
+
+    store.snapshot.mining.bitcoin.fetchedAt = Date.now() - 31 * 60_000
+    await store.refresh()
+    expect(fetchOracleSnapshot.mock.calls[2][0]).toEqual({ knownMining: {} })
   })
 
   it('shows nothing for a coin whose price did not come back, even when others did', async () => {
@@ -99,7 +207,7 @@ describe('useOracleStore', () => {
     expect(store.rates).toEqual({})
     expect(store.formatUnitRate('monad')).toBe('')
     expect(store.observations).toEqual([])
-    expect(localStorage.getItem('frank_oracle_snapshot_v2')).toBeNull()
+    expect(localStorage.getItem('frank_oracle_snapshot_v3')).toBeNull()
 
     fetchOracleSnapshot.mockRejectedValue(new Error('offline'))
     await store.refresh()
@@ -121,19 +229,23 @@ describe('useOracleStore', () => {
     expect(store.snapshot.prices.solana).toBe(110.06)
     expect(store.snapshot.fetchedAt.solana).toBe(then)
     expect(store.formatUnitRate('solana')).toBe(
-      '1 SOL ≈ 1,310.24 AVU (price 3 h old)',
+      '1 SOL ≈ 1,320.72 AVU (3 h old)',
     )
-    expect(store.formatUnitRate('ethereum')).toBe('1 ETH ≈ 29,761.90 AVU')
+    expect(store.formatUnitRate('ethereum')).toBe('1 ETH ≈ 30,000.00 AVU')
     // A balance valued at the stale price says so too; one at a fresh price does not.
     expect(store.formatAvuAmount('solana', ONE_SOL)).toBe(
-      '≈ 1,310.2 AVU (price 3 h old)',
+      '≈ 1,320.7 AVU (3 h old)',
     )
-    expect(store.formatAvuAmount('ethereum', 10n ** 18n)).toBe('≈ 29,761.9 AVU')
+    expect(store.formatAvuAmount('ethereum', 10n ** 18n)).toBe('≈ 30,000 AVU')
 
     // Then nothing comes back: both remain, both aged, neither replaced by a default.
     fetchOracleSnapshot.mockResolvedValue(oracleSdk.unavailableOracleSnapshot())
     await store.refresh()
-    expect(store.snapshot.prices).toEqual({ solana: 110.06, ethereum: 2500 })
+    expect(store.snapshot.prices).toEqual({
+      solana: 110.06,
+      ethereum: 2500,
+      bitcoin: BTC_USD,
+    })
     expect(store.priceAgeMs('solana')).toBeGreaterThanOrEqual(3 * HOUR)
   })
 
@@ -167,26 +279,49 @@ describe('useOracleStore', () => {
     expect(store.formatUnitRate('monad')).toBe('')
   })
 
-  it('restores a saved snapshot only from fetched prices, recomputing the AVU value', () => {
+  it('restores a saved snapshot only from fetched prices and chain statistics, recomputing AVU_hash and every value', () => {
     const fetchedAt = Date.now() - HOUR
-    localStorage.setItem(
-      'frank_oracle_snapshot_v2',
-      JSON.stringify({
-        timestamp: fetchedAt,
-        prices: { solana: 110.06, ethereum: 2496.78, bitcoin: -1 },
-        // A stored rate is ignored: it is recomputed from the price.
-        rates: { solana: 999999, monad: 41.67 },
-        fetchedAt: { solana: fetchedAt },
-      }),
-    )
+    const saved = {
+      timestamp: fetchedAt,
+      prices: {
+        solana: 110.06,
+        ethereum: 2496.78,
+        hyperliquid: -1,
+        bitcoin: BTC_USD,
+      },
+      // Stored rates and a stored AVU_hash are ignored: both are recomputed.
+      rates: { solana: 999999, monad: 41.67 },
+      avuHash: { kwhPerDollar: 999 },
+      fetchedAt: {
+        solana: fetchedAt,
+        bitcoin: fetchedAt,
+        hyperliquid: fetchedAt,
+      },
+      priceSources: { solana: 3, bitcoin: 0 },
+      mining: {
+        'bitcoin': bitcoinStats(12, fetchedAt),
+        // Incomplete statistics are not restored.
+        'bitcoin-cash': { chain: 'bitcoin-cash', difficulty: 5 },
+      },
+    }
+    localStorage.setItem('frank_oracle_snapshot_v3', JSON.stringify(saved))
     setActivePinia(createPinia())
     const store = useOracleStore()
-    // ETH has no fetch time and MON no price, so neither is restored.
-    expect(Object.keys(store.rates)).toEqual(['solana'])
-    expect(store.rates.solana).toBeCloseTo(110.06 / AVU_USD, 6)
+    // ETH has no fetch time, HYPE no real price and MON no price: none is restored.
+    expect(Object.keys(store.rates).sort()).toEqual(['bitcoin', 'solana'])
+    expect(Object.keys(store.snapshot.mining)).toEqual(['bitcoin'])
+    expect(store.avuHash?.kwhPerDollar).toBeCloseTo(12, 9)
+    expect(store.snapshot.priceSources).toEqual({ solana: 3 })
+    expect(store.rates.solana).toBeCloseTo(110.06 * 12, 6)
     expect(store.formatUnitRate('solana')).toBe(
-      '1 SOL ≈ 1,310.24 AVU (price 1 h old)',
+      '1 SOL ≈ 1,320.72 AVU (1 h old)',
     )
+
+    // The v2 record, written when AVU was a typed-in rate, is never read.
+    localStorage.clear()
+    localStorage.setItem('frank_oracle_snapshot_v2', JSON.stringify(saved))
+    setActivePinia(createPinia())
+    expect(useOracleStore().snapshot.prices).toEqual({})
   })
 
   it('records its own fetched prices at most once an hour, and only what was fetched', async () => {
@@ -204,8 +339,11 @@ describe('useOracleStore', () => {
     await store.refresh()
 
     expect(store.observations).toEqual([
-      { timestamp: start, prices: { solana: 100 } },
-      { timestamp: start + HOUR + 1, prices: { ecash: 7.24e-6 } },
+      { timestamp: start, prices: { solana: 100, bitcoin: BTC_USD } },
+      {
+        timestamp: start + HOUR + 1,
+        prices: { ecash: 7.24e-6, bitcoin: BTC_USD },
+      },
     ])
     expect(
       JSON.parse(localStorage.getItem('frank_oracle_observations_v2')!),

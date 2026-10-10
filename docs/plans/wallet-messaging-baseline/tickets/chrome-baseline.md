@@ -2,7 +2,7 @@
 
 ## Summary
 
-Build repeatable cold/warm startup, wallet open, conversation switch, typing, blocked/disjoint send, reconciliation and restart scenarios in an isolated Chrome profile. Leave current owner state untouched; obtain explicitly authorized sanitized reproduction evidence before any owner-state access or reset. Compare an owner-authorized sanitized reproduction of the failing state with clean fixtures; if unavailable, explicitly leave the reported corruption unreproduced. Trace CPU/long tasks, address derivation counts, network waits and persistence. Use fake-chain/loopback fixtures for automated sends; live funded reproduction needs an explicit network/amount scope.
+Build repeatable cold/warm startup, wallet open, conversation switch, typing, blocked/disjoint send, reconciliation and restart scenarios in an isolated Chrome profile. Leave current owner state untouched; obtain explicitly authorized sanitized reproduction evidence before any owner-state access or reset. Compare an owner-authorized sanitized reproduction of the failing state with clean fixtures; if unavailable, explicitly leave the reported corruption unreproduced. Trace CPU/long tasks, address derivation counts, network waits and persistence. Automated sends run against the real relay on a loopback port and Monad testnet (`packages/bot/demo/real-stack.ts`; there is no simulated chain), funded in small bounded amounts from a separate test wallet; anything larger needs an explicit network/amount scope.
 
 ## Current evidence and reproduction
 

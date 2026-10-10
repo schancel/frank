@@ -30,34 +30,22 @@ function readEnv(key: string): string | undefined {
 
 function isLocalAddress(url?: string): boolean {
   if (!url) return false
-  return (
-    url.includes(':18545') || url.includes(':18546') || url.includes(':8545')
-  )
+  return url.includes(':8545')
 }
 
 /**
- * Checks if the RPC chain or stack is pointing to localhost, local development, or a chain shim/mock.
+ * Checks if the RPC chain is a local development node (which no public explorer indexes).
  */
 export function isLocalRpcChain(options?: ExplorerOptions): boolean {
   if (options?.isLocal !== undefined) {
     return options.isLocal
   }
 
-  // Explicit opt-in flags
-  if (
-    readEnv('FRANK_LOCAL_STACK') === 'true' ||
-    readEnv('FRANK_FAKE_DEMO') === 'true'
-  ) {
-    return true
-  }
-
   // Check explicit options
   const optRpcChain = options?.rpcChain ?? readEnv('MONAD_RPC_CHAIN')
   if (
     optRpcChain &&
-    /^(local|localhost|local-stack|shim|chain-shim|hardhat|anvil|mock|dev)$/i.test(
-      optRpcChain,
-    )
+    /^(local|localhost|anvil|dev)$/i.test(optRpcChain)
   ) {
     return true
   }
@@ -73,19 +61,11 @@ export function isLocalRpcChain(options?: ExplorerOptions): boolean {
   // Check configured chain environment if available
   try {
     const config = loadMonadChainConfigFromEnv()
-    if (config.fakeDemo) {
-      return true
-    }
-    if (
-      config.rpcChain &&
-      /^(local|localhost|local-stack|shim|chain-shim|hardhat|anvil|mock|dev)$/i.test(
-        config.rpcChain,
-      )
-    ) {
+    if (config.rpcChain && /^(local|localhost|anvil|dev)$/i.test(config.rpcChain)) {
       return true
     }
     // In non-test mode or when explicitly set, check relay base url for local chain ports
-    if (config.relayBaseUrl && /(18545|18546|8545)/.test(config.relayBaseUrl)) {
+    if (config.relayBaseUrl && /:8545\b/.test(config.relayBaseUrl)) {
       return true
     }
   } catch {

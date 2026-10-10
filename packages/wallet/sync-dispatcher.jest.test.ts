@@ -222,4 +222,64 @@ describe("applyWalletSyncItem (Issue #1118)", () => {
     });
     expect(res.putUtxos?.length).toBe(2);
   });
+
+  describe("a received-coin note", () => {
+    const note = {
+      type: "received-coin" as const,
+      chainIdentifier: "monad-testnet",
+      address: "0x" + "CC".repeat(20),
+      origin: "stamp" as const,
+      stampSharedPoint: "02" + "ab".repeat(32),
+      childIndex: 0,
+      claimedAmountWei: "1000",
+      timestamp: 1,
+    };
+
+    it("goes to the wallet's coin list and to nothing else", async () => {
+      const wallet = {
+        chainIdentifier: "monad-testnet",
+        recordReceivedCoin: jest.fn().mockResolvedValue(true),
+        pool: { processSyncTransaction: jest.fn() },
+        putUtxo: jest.fn(),
+        deleteUtxo: jest.fn(),
+      };
+      expect(await applyWalletSyncItem(wallet, note)).toEqual({
+        recordedCoins: ["0x" + "cc".repeat(20)],
+      });
+      expect(wallet.recordReceivedCoin).toHaveBeenCalledWith(note);
+      expect(wallet.pool.processSyncTransaction).not.toHaveBeenCalled();
+      expect(wallet.putUtxo).not.toHaveBeenCalled();
+      expect(wallet.deleteUtxo).not.toHaveBeenCalled();
+    });
+
+    it("reports nothing when the wallet's keys do not open the account, or it has no coin list", async () => {
+      expect(
+        await applyWalletSyncItem(
+          { recordReceivedCoin: jest.fn().mockResolvedValue(false) },
+          note
+        )
+      ).toEqual({});
+      expect(await applyWalletSyncItem({}, note)).toEqual({});
+    });
+
+    it("is refused for another chain before the coin list is asked", async () => {
+      const recordReceivedCoin = jest.fn();
+      await expect(
+        applyWalletSyncItem(
+          { chainIdentifier: "ethereum-sepolia", recordReceivedCoin },
+          note
+        )
+      ).rejects.toBeInstanceOf(WalletSyncItemRejectedError);
+      expect(recordReceivedCoin).not.toHaveBeenCalled();
+    });
+
+    it("a failed write rejects, so the caller reads the note again", async () => {
+      await expect(
+        applyWalletSyncItem(
+          { recordReceivedCoin: jest.fn().mockRejectedValue(new Error("disk")) },
+          note
+        )
+      ).rejects.toThrow("disk");
+    });
+  });
 });

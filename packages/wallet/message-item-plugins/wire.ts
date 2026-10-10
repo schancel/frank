@@ -103,6 +103,14 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  *   outcome, which is read from the chain. Because it is carried only here, a record another
  *   person sends is never written into that history.
  *
+ * - `received-coin`: how the key of one coin this account received is derived (the chain, the
+ *   one-time account, and the stealth ephemeral key or the stamp's shared point and child index).
+ *   The wallet writes one for the money a message brought, so the coin is found by the account's
+ *   other devices and after a restore from the seed without the message. A receiver derives the
+ *   key itself and records the coin only if it opens the named account; the wallet consumes the
+ *   item and never hands it to a host. Because it is carried only here, another person cannot
+ *   make a wallet list a coin.
+ *
  * Sending one to anyone else is refused before anything is paid. One that arrives in a message
  * whose authenticated sender is not the receiving wallet's own identity is kept as an unsupported
  * item and is not interpreted: another person must not be able to hand a wallet a record of its
@@ -112,6 +120,7 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
 export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set([
   'wallet-sync',
   'swap-record',
+  'received-coin',
 ])
 
 /** Who one message is between, as far as the item rule needs to know. */

@@ -20,6 +20,7 @@ import { initP2pkhPlugin } from './p2pkh/plugin'
 import { initPaymentTransferPlugin } from './payment-transfer/plugin'
 import { initPokerPlugin } from './poker/plugin'
 import { initRafflePlugin } from './raffle/plugin'
+import { initReceivedCoinPlugin } from './received-coin/plugin'
 import { initReplyPlugin } from './reply/plugin'
 import { initRpsPlugin } from './rps/plugin'
 import { initStealthPlugin } from './stealth/plugin'
@@ -51,6 +52,7 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['device-claim', initDeviceClaimPlugin],
   ['swap-offer', initSwapOfferPlugin],
   ['swap-record', initSwapRecordPlugin],
+  ['received-coin', initReceivedCoinPlugin],
   ['digital-goods', initDigitalGoodsPlugin],
   ['raffle', initRafflePlugin],
   ['blackjack-move', initBlackjackMovePlugin],

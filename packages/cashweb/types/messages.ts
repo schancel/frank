@@ -282,6 +282,37 @@ export interface SwapRecordAsset {
   decimals: number
 }
 
+/**
+ * How the key of one coin this account received is derived, carried in a note the account sends
+ * itself. Money a message brings (a stealth payment, a stamp) sits at a one-time account whose key
+ * is derived from the seed and from data only that message carries. The note repeats that data
+ * and nothing else of the message, so every frontend of the account, and a wallet restored from
+ * the seed, finds the coin whether or not the message still exists anywhere.
+ *
+ * It holds no key. A receiver derives the key itself and records the coin only if the derived
+ * account is `address`; the amount is the sender's claim until the chain is read.
+ */
+export interface ReceivedCoinItem {
+  type: 'received-coin'
+  chainIdentifier: string
+  /** The one-time account the money is at. */
+  address: string
+  origin: 'stealth' | 'stamp'
+  /** A stealth coin: the sender's ephemeral public key, hex. */
+  ephemeralPubKey?: string
+  /** A stamp coin: the message's public shared point, hex, and which of its payments this is. */
+  stampSharedPoint?: string
+  childIndex?: number
+  /** What the message said the amount was, in the chain's smallest unit. Never a balance. */
+  claimedAmountWei: string
+  /** The transfers the message carried for this coin, hex: signed transactions or hashes. */
+  transactions?: string[]
+  /** The payload hash of the message the coin came from, hex. */
+  payloadDigest?: string
+  /** When the message was received (relay time, ms). */
+  timestamp: number
+}
+
 export interface DeviceClaimItem {
   type: 'device-claim'
   instanceId: string
@@ -544,6 +575,7 @@ export type MessageItem =
   | RaffleItem
   | SwapOfferItem
   | SwapRecordItem
+  | ReceivedCoinItem
   | DeviceClaimItem
   | RpsItem
   | SatoshiDiceItem

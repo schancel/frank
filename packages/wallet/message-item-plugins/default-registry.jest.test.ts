@@ -29,6 +29,7 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'raffle': true,
   'swap-offer': true,
   'swap-record': true,
+  'received-coin': true,
   'device-claim': true,
   'rps': true,
   'dice': true,

@@ -296,7 +296,8 @@ impl BitcoinProxyRuntime {
             chronik_quota: FixedHourQuota::new(conf.anonymous_chronik_requests_per_hour),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
             cooldowns: UpstreamCooldownTracker::default(),
-            customer_quota: Arc::new(FixedHourQuota::new(10_000)),
+            // As the EVM proxy's default: bounds a runaway client, not a user.
+            customer_quota: Arc::new(FixedHourQuota::new(1_000_000)),
         });
         // Only a bad configuration stops the relay. An upstream that is down or is the wrong
         // chain leaves that chain unserved.

@@ -56,7 +56,9 @@ use crate::{
 /// Largest single upstream message forwarded to a client.
 const MAX_UPSTREAM_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_PENDING_REQUESTS: usize = 64;
-const MAX_SUBSCRIPTIONS: usize = 256;
+/// Addresses one connection may watch. A wallet watches every address it has used, so this is
+/// far above any wallet and only bounds the memory one connection can take.
+const MAX_SUBSCRIPTIONS: usize = 100_000;
 const HEADER_BYTES: usize = 80;
 const IDENTITY_REQUEST_ID: &str = "frank-relay-identity";
 const HEADERS_SUBSCRIPTION: &str = "__headers__";

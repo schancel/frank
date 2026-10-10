@@ -195,18 +195,13 @@ fn exact_pending_survives_restart_and_publication_is_once_only() {
 }
 
 #[test]
-fn exact_retry_at_capacity_and_conflicting_wrapper_preserve_authority() {
+fn exact_retry_and_conflicting_wrapper_preserve_authority() {
     let root = tempdir::TempDir::new("forum-capacity").unwrap();
     let legacy = root.path().join("db.rocksdb");
     let original = observation(0, None, false);
     let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
     store.admit(original.clone()).unwrap();
-    store.pending_count = 4096;
     assert!(store.admit(original.clone()).is_ok());
-    assert!(matches!(
-        store.admit(observation(1, None, false)),
-        Err(ForumError::Capacity)
-    ));
     let TopicEvent::Post(post) = &original.event else {
         panic!()
     };
@@ -497,29 +492,27 @@ fn actual_predecessor_reopens_unused_and_populated_without_forum_loss() {
     }
 }
 
+/// The forum used to refuse the 4,097th post or vote still waiting on its payment, and again
+/// past 64 MiB of them. With the node slow or down that closed the forum. Nothing counts them
+/// against a ceiling now; the count is kept, survives a restart and falls as payments confirm.
 #[test]
-fn actual_pending_limit_survives_rebuild_and_permits_only_exact_retry() {
-    let root = tempdir::TempDir::new("forum-real-capacity").unwrap();
+fn posts_waiting_on_their_payment_are_never_refused_for_how_many_there_are() {
+    let root = tempdir::TempDir::new("forum-no-pending-limit").unwrap();
     let legacy = root.path().join("db.rocksdb");
     let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
     let first = observation(0, None, false);
-    for nonce in 0..4096 {
+    for nonce in 0..4100 {
         store.admit(observation(nonce, None, false)).unwrap();
     }
-    assert_eq!(store.pending_count, 4096);
-    assert!(store.pending_bytes > 0 && store.pending_bytes <= 64 * 1024 * 1024);
-    assert!(matches!(
-        store.admit(observation(4096, None, false)),
-        Err(ForumError::Capacity)
-    ));
+    assert_eq!(store.pending_count, 4100);
     let charge = store.pending_bytes;
+    // An exact repeat is the same post, not another one.
     store.admit(first.clone()).unwrap();
-    assert_eq!(store.pending_bytes, charge);
+    assert_eq!((store.pending_count, store.pending_bytes), (4100, charge));
+    let (count, bytes) = (store.pending_count, store.pending_bytes);
     drop(store);
     let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
-    assert_eq!(store.pending_count, 4096);
-    assert_eq!(store.pending_bytes, charge);
-    store.admit(first.clone()).unwrap();
+    assert_eq!((store.pending_count, store.pending_bytes), (count, bytes));
     store
         .confirm(
             &first.checked.decoded.tx_hash.0,
@@ -530,48 +523,29 @@ fn actual_pending_limit_survives_rebuild_and_permits_only_exact_retry() {
             },
         )
         .unwrap();
-    assert_eq!(store.pending_count, 4095);
-    store.admit(observation(4096, None, false)).unwrap();
-    assert_eq!(store.pending_count, 4096);
+    assert_eq!(store.pending_count, count - 1);
 }
 
+/// Nor for their total size: this passes the old 64 MiB ceiling.
 #[test]
-fn actual_pending_byte_ceiling_is_durable_and_preserves_exact_retry() {
-    let root = tempdir::TempDir::new("forum-real-byte-capacity").unwrap();
+fn posts_waiting_on_their_payment_are_never_refused_for_their_total_size() {
+    let root = tempdir::TempDir::new("forum-no-pending-byte-limit").unwrap();
     let legacy = root.path().join("db.rocksdb");
     let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
     let title = "x".repeat(262_000);
-    let first = observation_fields(0, None, false, 7, "test.topic", &title);
-    let mut refused = None;
-    for nonce in 0..4096 {
-        let op = observation_fields(nonce, None, false, 7, "test.topic", &title);
-        match store.admit(op.clone()) {
-            Ok(_) => (),
-            Err(ForumError::Capacity) => {
-                refused = Some(op);
-                break;
-            }
-            Err(error) => panic!("unexpected admission failure: {error}"),
-        }
+    for nonce in 0..260 {
+        store
+            .admit(observation_fields(
+                nonce,
+                None,
+                false,
+                7,
+                "test.topic",
+                &title,
+            ))
+            .unwrap();
     }
-    let refused = refused.expect("byte ceiling must precede record ceiling");
-    assert!(store.pending_count > 0 && store.pending_count < 4096);
-    assert!(store.pending_bytes <= 64 * 1024 * 1024);
-    assert!(store.pending_bytes + refused.charge().unwrap() > 64 * 1024 * 1024);
-    assert!(store
-        .operation(&refused.checked.decoded.tx_hash.0)
-        .unwrap()
-        .is_none());
-    let count = store.pending_count;
-    let bytes = store.pending_bytes;
-    store.admit(first.clone()).unwrap();
-    assert_eq!((store.pending_count, store.pending_bytes), (count, bytes));
-    drop(store);
-    let mut store = Store::open(&legacy, "monad-testnet", policy()).unwrap();
-    assert_eq!((store.pending_count, store.pending_bytes), (count, bytes));
-    store.admit(first).unwrap();
-    assert!(matches!(store.admit(refused), Err(ForumError::Capacity)));
-    assert_eq!((store.pending_count, store.pending_bytes), (count, bytes));
+    assert!(store.pending_bytes > 64 * 1024 * 1024);
 }
 
 #[test]

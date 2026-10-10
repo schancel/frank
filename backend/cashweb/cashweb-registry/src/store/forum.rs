@@ -557,9 +557,6 @@ impl Store {
             .pending_bytes
             .checked_add(observation.charge()?)
             .ok_or(ForumError::Capacity)?;
-        if count > 4096 || bytes > 64 * 1024 * 1024 {
-            return Err(ForumError::Capacity);
-        }
         let mut batch = WriteBatch::default();
         batch.put(key(b'e', &hash), encode(&observation.value())?);
         batch.put(
@@ -759,9 +756,6 @@ impl Store {
                         .pending_bytes
                         .checked_add(op.charge()?)
                         .ok_or(ForumError::Unavailable)?;
-                    if self.pending_count > 4096 || self.pending_bytes > 64 * 1024 * 1024 {
-                        return Err(ForumError::Unavailable);
-                    }
                     batch.put(key(b'p', op.event.target_hash()), encode(&post.value())?);
                 }
                 Self::accounting(&mut batch, self.pending_count, self.pending_bytes)?;

@@ -308,7 +308,7 @@ async fn connect_verified(
     let cooldowns = runtime.upstream_cooldowns();
     for url in cooldowns.splay_order(&chain.urls) {
         let attempt = async {
-            let mut upstream = Upstream::connect(&url, max_message_bytes).await.ok()?;
+            let mut upstream = Upstream::connect(url, max_message_bytes).await.ok()?;
             match upstream.serves_chain(chain).await {
                 true => Some(upstream),
                 false => {
@@ -323,10 +323,10 @@ async fn connect_verified(
         };
         match tokio::time::timeout(timeout, attempt).await {
             Ok(Some(upstream)) => {
-                cooldowns.mark_success(&url);
+                cooldowns.mark_success(url);
                 return Some(upstream);
             }
-            _ => cooldowns.mark_failure(&url),
+            _ => cooldowns.mark_failure(url),
         }
     }
     None
@@ -563,7 +563,7 @@ async fn forward(
                 }
                 // A response nobody asked for means the two sides are out of step.
                 let Some(request) = id_key(&id).and_then(|key| pending.remove(&key)) else { break };
-                if value.get("error").map_or(true, Value::is_null) {
+                if value.get("error").is_none_or(Value::is_null) {
                     match request.kind {
                         PendingKind::Subscribe(name) => {
                             subscriptions.insert(name);

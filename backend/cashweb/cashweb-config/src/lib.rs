@@ -2155,11 +2155,20 @@ continuity_file = "/var/lib/frank/continuity"
             );
             conf.registry.evm_rpc.validate().unwrap();
             assert!(conf.registry.bitcoin_proxy.enabled, "{name}");
-            assert_eq!(conf.registry.bitcoin_proxy.chains.len(), 1, "{name}");
-            assert_eq!(
-                conf.registry.bitcoin_proxy.chains[0].id, "xec-testnet",
-                "{name}"
-            );
+            // eCash on Chronik everywhere; the local config adds the Electrum testnets.
+            let bitcoin_chains: Vec<_> = conf
+                .registry
+                .bitcoin_proxy
+                .chains
+                .iter()
+                .map(|chain| (chain.id.as_str(), chain.electrum_upstream_env.as_deref()))
+                .collect();
+            let mut expected_chains = vec![("xec-testnet", None)];
+            if name == "cashwebd.local.toml" {
+                expected_chains.push(("btc-testnet", Some("BTC_TESTNET_ELECTRUM_URL")));
+                expected_chains.push(("bch-testnet", Some("BCH_TESTNET_ELECTRUM_URL")));
+            }
+            assert_eq!(bitcoin_chains, expected_chains, "{name}");
             assert_eq!(
                 conf.registry.bitcoin_proxy.chains[0]
                     .chronik_upstream_env

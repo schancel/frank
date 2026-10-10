@@ -314,6 +314,47 @@ describe('the lines', () => {
     }
   })
 
+  // 2026-10-10: with 1 MON and gold both scaled on the right, each line drew its own
+  // label at the same corner and the two figures were printed over each other.
+  it('print the scale ends of two lines on the same side one after another, never on top of each other', async () => {
+    const feed = twoEntryFeed()
+    // Inputs held since 2015, so the yearly gold points of the last five years exist.
+    for (const held of Object.values(feed.series)) {
+      held.points = [
+        [Date.UTC(2015, 0, 1) / 1000, held.points[0][1]],
+        ...held.points,
+      ]
+    }
+    receive(feed)
+    const wrapper = mountChart()
+    await openRange(wrapper, '5y')
+    const svg = wrapper.get('[data-test="macro-chart-svg"]')
+    expect(
+      svg.findAll('[data-test="chart-point-gold"]').length,
+    ).toBeGreaterThan(0)
+    for (const end of ['max', 'min']) {
+      // One text at the right corner, holding both figures in their own colours.
+      const corner = svg.findAll(`[data-test="chart-${end}-label-right"]`)
+      expect(corner).toHaveLength(1)
+      const token = corner[0].get(`[data-test="chart-scale-${end}-token"]`)
+      const gold = corner[0].get(`[data-test="chart-scale-${end}-gold"]`)
+      expect(token.text()).toMatch(/AVU$/)
+      expect(gold.text()).toMatch(/AVU\/oz$/)
+      expect(gold.attributes('fill')).not.toBe(token.attributes('fill'))
+      // The second figure starts after the first, with a gap.
+      expect(Number(gold.attributes('dx'))).toBeGreaterThan(0)
+    }
+  })
+
+  // Layout is not computed under jest: this pins the rule; the widths were measured in a
+  // browser at 1272 px (2026-10-10: the right-hand cards ran past the page edge).
+  it('the figure cards share the width they are given: a column never grows to its longest label', () => {
+    const source = readFileSync(join(__dirname, 'AvuParityChart.vue'), 'utf8')
+    const style = source.slice(source.indexOf('<style'))
+    expect(style).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));')
+    expect(style).not.toMatch(/grid-template-columns: (repeat\(2, )?1fr\)?;/)
+  })
+
   it('have no point where an input is missing: the first value is not extended backwards', async () => {
     const feed = twoEntryFeed()
     // Monad's price exists only from a minute ago.

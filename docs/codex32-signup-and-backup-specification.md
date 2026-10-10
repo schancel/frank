@@ -828,10 +828,25 @@ descriptor and expected-account identity.
 
 ### 7.2 Reconstruction
 
-At exactly `k` accepted shares, the library reconstructs a candidate `M`.
-Additional shares are not opportunistically mixed into interpolation. The app
+Owner decision, 2026-10-09 (supersedes "exactly `k` shares"): restore accepts
+`k` shares or more, so that a wrong share among them can be found. Shares are
+decoded one by one and grouped by backup set (identifier and threshold); sets are
+never mixed. Within a set every `k`-sized subset is interpolated and a result is
+accepted only if its embedded `V` validates; every share of the set is then
+checked against each valid `M` at its own index. The user is told, by position,
+which shares were used, which do not belong to the restored backup, which come
+from a different set, which were entered twice and which could not be read. Because
+every subset is tried, one set may hold at most 31 shares for `k` of 2 or 3, 20 for
+`k` = 4, 16 for `k` = 5 and 14 for `k` from 6 to 9; more is refused with the number
+allowed. If the shares contain complete sets of more than one valid account,
+nothing is chosen automatically: every account is shown with its identity address
+and the user picks one, unless a pinned descriptor selects it. The identity
+address is shown again before activation.
+
+With exactly `k` shares the library reconstructs one candidate `M`. The app
 first validates the candidate's embedded `V`. Failure reports that the shares do
-not reconstruct a valid Frank master, without blaming a particular share. It
+not reconstruct a valid Frank master; with only `k` shares no particular share can
+be blamed, and the message says that one more share would identify it. It
 then increments the attempt generation to fence stale work; clears candidate
 `M`, accepted shares and strings, and all derived intermediates; retains only
 the complete immutable independently authenticated descriptor, including

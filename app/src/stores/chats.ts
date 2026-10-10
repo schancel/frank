@@ -173,6 +173,10 @@ export interface Conversation {
   createdAt?: number
   updatedAt?: number
   deletedAt?: number
+  /** Messages no newer than this are gone for good: the latest time the conversation was
+   * deleted at. It outlives the conversation being opened again, so that old messages do not
+   * come back with it. */
+  clearedBefore?: number
   verifiedGateway?: boolean
 }
 
@@ -259,6 +263,91 @@ export function collidedMessageId(
   payloadDigest: string,
 ): string {
   return uuidv5(NULL_CONVERSATION_NAMESPACE, `${messageId}:${payloadDigest}`)
+}
+
+/**
+ * The ID a message is filed under: the one it named, unless a different message already holds
+ * it, in which case the derived one, and so on while the derived ID is itself held. The same
+ * routine decides on receive and on reload, and always returns an ID nothing else holds.
+ */
+function freeMessageId(
+  named: string,
+  payloadDigest: string,
+  heldByAnother: (id: string) => boolean,
+): string {
+  let id = named
+  for (let round = 0; round < 8 && heldByAnother(id); round++)
+    id = collidedMessageId(id, payloadDigest)
+  if (!heldByAnother(id)) return id
+  // No sender's own ID has this shape. Each try can be held only by a distinct existing
+  // message, so this ends.
+  for (let n = 0; ; n++) {
+    const fallback = `collided:${payloadDigest}:${n}`
+    if (!heldByAnother(fallback)) return fallback
+  }
+}
+
+/** Whether a holder of a message ID is a different message from one in this conversation by
+ * this sender. (The same sender using the ID again in the same conversation is a revision.) */
+function isAnotherMessage(
+  holder: { conversationId: string; senderAddress: string } | undefined,
+  conversationId: string,
+  senderAddress: string,
+): boolean {
+  return (
+    holder !== undefined &&
+    (holder.conversationId !== conversationId ||
+      !sameCanonicalAddress(holder.senderAddress, senderAddress))
+  )
+}
+
+/**
+ * What a message means for a conversation the user has deleted, now or earlier. Deleting means
+ * its old messages do not come back: a message no newer than a deletion is gone, whoever sent
+ * it and even after the conversation was opened again. While the conversation is deleted,
+ * anything from someone other than us or its peer is gone too, and a newer message from us or
+ * the peer reopens it. The same rule decides on receive (before anything is saved) and on
+ * reload.
+ */
+function inDeletedConversation(
+  conversation: Conversation,
+  message: { outbound: boolean; senderAddress: string; serverTime: number },
+  reopenedAlready = false,
+): 'live' | 'reopens' | 'gone' {
+  const deletedAt = reopenedAlready ? undefined : conversation.deletedAt
+  const clearedBefore = Math.max(
+    conversation.clearedBefore ?? -Infinity,
+    conversation.deletedAt ?? -Infinity,
+  )
+  if (message.serverTime <= clearedBefore) return 'gone'
+  if (deletedAt === undefined) return 'live'
+  return speaksForConversation(conversation, message) ? 'reopens' : 'gone'
+}
+
+/** Brings a deleted conversation back, without the messages it was deleted with. */
+function reopenConversation(conversation: Conversation): void {
+  if (conversation.deletedAt === undefined) return
+  conversation.clearedBefore = Math.max(
+    conversation.clearedBefore ?? -Infinity,
+    conversation.deletedAt,
+  )
+  conversation.deletedAt = undefined
+}
+
+/** Relay time, then payload hash: one order for a conversation's messages, however they came. */
+function byRelayTime(
+  a: { serverTime?: number; receivedTime?: number; payloadDigest: string },
+  b: { serverTime?: number; receivedTime?: number; payloadDigest: string },
+): number {
+  return (
+    (a.serverTime ?? a.receivedTime ?? 0) -
+      (b.serverTime ?? b.receivedTime ?? 0) ||
+    (a.payloadDigest < b.payloadDigest
+      ? -1
+      : a.payloadDigest > b.payloadDigest
+      ? 1
+      : 0)
+  )
 }
 
 /** Our own messages, including a note to self that arrives as an inbound row (it is addressed
@@ -895,7 +984,7 @@ function openDefaultConversation(
         ]),
       )
     }
-    existing.deletedAt = undefined
+    reopenConversation(existing)
     return existing
   }
   const derivedId = makeConversationId(participants)
@@ -1023,8 +1112,21 @@ export async function rehydateChat(
     conversations[conversation.id] = conversation
   }
 
-  for (const { wrapper, conversationId, internal } of validatedRows) {
-    const { message, copartyAddress, index } = wrapper
+  // Rows are read in the order they were received in: relay time, then payload hash.
+  const orderedRows = [...validatedRows].sort((a, b) =>
+    byRelayTime(
+      { ...a.wrapper.message, payloadDigest: a.wrapper.index },
+      { ...b.wrapper.message, payloadDigest: b.wrapper.index },
+    ),
+  )
+  // A conversation the saved metadata does not know is rebuilt from its rows. Our own rows say
+  // who it is with, so they are read first: whoever else wrote into it, and whenever, cannot
+  // make it theirs and then contradict our own outbox.
+  for (const { wrapper, conversationId, internal } of [
+    ...orderedRows.filter(row => row.wrapper.message.outbound),
+    ...orderedRows.filter(row => !row.wrapper.message.outbound),
+  ]) {
+    const { message, copartyAddress } = wrapper
     const peer = safeChainDisplayAddress(copartyAddress) || copartyAddress
     const existing = conversationId ? conversations[conversationId] : undefined
     // Internal records never reconstruct a chat or dispatch item effects. Check any explicit
@@ -1045,44 +1147,9 @@ export async function rehydateChat(
     })
   }
 
-  // Two different stored messages that name one message ID never stop the store from loading.
-  // As on receive, the earlier one keeps the ID and the later one is read under the ID derived
-  // from the named ID and its own payload hash.
-  const logicalOwners = new Map<
-    string,
-    { conversationId: string; senderAddress: string }
-  >()
-  for (const { wrapper, conversationId, internal } of [...validatedRows].sort(
-    (a, b) =>
-      a.wrapper.message.serverTime - b.wrapper.message.serverTime ||
-      (a.wrapper.index < b.wrapper.index ? -1 : 1),
-  )) {
-    if (internal) continue
-    const { message, index } = wrapper
-    const held = (id: string) => {
-      const owner = logicalOwners.get(id)
-      return (
-        owner !== undefined &&
-        (owner.conversationId !== conversationId ||
-          !sameCanonicalAddress(owner.senderAddress, message.senderAddress))
-      )
-    }
-    let logicalId = message.logicalMessageId || index
-    if (held(logicalId)) {
-      logicalId = collidedMessageId(logicalId, index)
-      message.logicalMessageId = logicalId
-    }
-    if (!logicalOwners.has(logicalId))
-      logicalOwners.set(logicalId, {
-        conversationId: conversationId!,
-        senderAddress: message.senderAddress,
-      })
-  }
-
-  // An internal row may precede the conversational row that establishes its explicit owner.
-  // Check that reference against the complete prepared owner set, independent of iterator order.
+  // Only our own records are bound to the conversation's peer, as with conversational rows.
   for (const { wrapper, conversationId, internal } of validatedRows) {
-    if (!internal || !conversationId) continue
+    if (!internal || !conversationId || !wrapper.message.outbound) continue
     const owner = conversations[conversationId]
     if (owner) assertConversationPeer(owner, wrapper.copartyAddress)
   }
@@ -1130,6 +1197,34 @@ export async function rehydateChat(
     }
   }
 
+  // Two different stored messages that name one message ID never stop the store from loading.
+  // The routine is the one receive uses: the earlier keeps the ID, the later is read under a
+  // derived one.
+  const logicalOwners = new Map<
+    string,
+    { conversationId: string; senderAddress: string }
+  >()
+  for (const { wrapper, conversationId, internal } of orderedRows) {
+    if (internal) continue
+    const { message, index } = wrapper
+    const named = message.logicalMessageId || index
+    const logicalId = freeMessageId(named, index, id =>
+      isAnotherMessage(
+        logicalOwners.get(id),
+        conversationId!,
+        message.senderAddress,
+      ),
+    )
+    if (logicalId !== named) message.logicalMessageId = logicalId
+    if (!logicalOwners.has(logicalId))
+      logicalOwners.set(logicalId, {
+        conversationId: conversationId!,
+        senderAddress: message.senderAddress,
+      })
+  }
+
+  // An internal row may precede the conversational row that establishes its explicit owner.
+  // Check that reference against the complete prepared owner set, independent of iterator order.
   // Only an admitted empty/internal-only collection may take a fresh-state exit.
   // Raw internal records remain in MessageStore without conversation indexes or effects.
   if (!canReconstruct) return freshChatsState()
@@ -1146,7 +1241,7 @@ export async function rehydateChat(
       .filter(({ message }) => message.status === 'confirmed')
       .map(row => row.index),
   )
-  for (const { wrapper, conversationId, internal } of validatedRows) {
+  for (const { wrapper, conversationId, internal } of orderedRows) {
     const { index, message: newMsg, copartyAddress } = wrapper
     if (internal) {
       messages[index] = { payloadDigest: index, ...newMsg }
@@ -1180,13 +1275,15 @@ export async function rehydateChat(
     const conv = conversations[conversationId!]
 
     message.conversationId = conv.id
-    if (conv.deletedAt !== undefined && !speaksForConversation(conv, message)) {
-      // As on receive, where such a row is never saved: someone other than the peer wrote into
-      // a deleted conversation. It is not shown or counted and joins nobody; only its ID is
-      // held, so a later message naming the same ID is told apart from it.
+    const deleted = inDeletedConversation(conv, message)
+    if (deleted === 'gone') {
+      // Receive never saves such a row. One that is on disk all the same is not shown or
+      // counted and joins nobody; only its ID is held, so a later message naming the same ID
+      // is told apart from it.
       recordLogicalMessage(logicalMessages, message, conv.id)
       continue
     }
+    if (deleted === 'reopens') reopenConversation(conv)
     messages[index] = message
     if (!conv.messages.some(m => m.payloadDigest === message.payloadDigest)) {
       conv.messages.push(message)
@@ -1222,11 +1319,7 @@ export async function rehydateChat(
 
   // Resort conversations and recompute deterministic accounting from deduplicated messages
   for (const conv of Object.values(conversations)) {
-    conv.messages.sort(
-      (messageA, messageB) =>
-        (messageA.serverTime ?? messageA.receivedTime ?? 0) -
-        (messageB.serverTime ?? messageB.receivedTime ?? 0),
-    )
+    conv.messages.sort(byRelayTime)
     conv.totalUnreadMessages = 0
     conv.totalUnreadValue = 0
     conv.totalValue = 0
@@ -3028,6 +3121,10 @@ export const useChatStore = defineStore('chats', {
       const clearedPayloads = new Set<string>()
       for (const message of clearingMessages) {
         clearedPayloads.add(message.payloadDigest)
+        // A cleared message no longer holds its ID, as after a reload.
+        const logicalId = message.logicalMessageId || message.payloadDigest
+        if (this.logicalMessages[logicalId]?.conversationId === chat.id)
+          delete this.logicalMessages[logicalId]
         delete this.messages[message.payloadDigest]
         const attempt = message.delivery?.attemptDigest
         if (attempt) delete this.messages[attempt]
@@ -3394,6 +3491,8 @@ export const useChatStore = defineStore('chats', {
       >()
       // The ID each received row is filed under: the one it named, or the derived one.
       const receivedLogicalIds = new Map<string, string>()
+      // Deleted conversations a row of this batch brings back.
+      const reopened = new Set<string>()
       const preparedConversations = { ...this.conversations }
       // One row that cannot be filed must never stop the rest: a refused row is skipped,
       // quarantined so the mailbox cursor moves past it, and reported once.
@@ -3423,18 +3522,6 @@ export const useChatStore = defineStore('chats', {
         // when the message is stored below.
         if (conv && (loopback || wrapper.outbound))
           assertConversationPeer(conv, peer)
-        // A deleted conversation is brought back only by us or its own peer. Anyone else's
-        // message into it is not kept at all: not saved, not shown, not counted.
-        if (
-          conv &&
-          conv.deletedAt !== undefined &&
-          !loopback &&
-          !speaksForConversation(conv, wrapper.message)
-        ) {
-          throw new Error(
-            `Conversation ${conv.id} was deleted and the sender is not its peer`,
-          )
-        }
         const existing = this.messages[wrapper.index]
         if (
           existing?.conversationId &&
@@ -3453,33 +3540,45 @@ export const useChatStore = defineStore('chats', {
             ? newConversation({ id, address: peer, participants })
             : openDefaultConversation(preparedConversations, peer, participants)
         }
+        // What deleting a conversation means is decided here, before anything is saved: a row
+        // that would not be shown is not kept at all.
+        if (!loopback) {
+          const deleted = inDeletedConversation(
+            conv,
+            wrapper.message,
+            reopened.has(conv.id),
+          )
+          if (deleted === 'gone') {
+            if (created) delete preparedConversations[conv.id]
+            throw new Error(
+              `Conversation ${conv.id} was deleted; this message does not reopen it`,
+            )
+          }
+          if (deleted === 'reopens') reopened.add(conv.id)
+        }
         const sender = loopback?.message.senderAddress ?? wrapper.senderAddress
-        let logicalId =
+        const named =
           loopback?.message.logicalMessageId ||
           wrapper.message.logicalMessageId ||
           wrapper.index
-        // The ID is already held by a different message when it belongs to another
-        // conversation or another sender. (The same sender using it again in the same
-        // conversation is a revision of that message, and the same payload again is the same
-        // message.) A different message is filed under the derived ID instead.
-        const heldByAnother = (id: string): boolean => {
-          const held = this.logicalMessages[id]
-          const inBatch = receivedLogicalOwners.get(id)
-          return (
-            (inBatch !== undefined &&
-              (inBatch.conversationId !== conv.id ||
-                !sameCanonicalAddress(inBatch.senderAddress, sender))) ||
-            (held !== undefined &&
-              !replacedAccountCollisions.has(wrapper.index) &&
-              (held.conversationId !== conv.id ||
-                !sameCanonicalAddress(held.senderAddress, sender)))
-          )
-        }
-        if (!loopback && heldByAnother(logicalId)) {
-          logicalId = collidedMessageId(logicalId, wrapper.index)
-        }
+        const conversationId = conv.id
+        const heldByAnother = (id: string): boolean =>
+          isAnotherMessage(
+            receivedLogicalOwners.get(id),
+            conversationId,
+            sender,
+          ) ||
+          (!replacedAccountCollisions.has(wrapper.index) &&
+            isAnotherMessage(this.logicalMessages[id], conversationId, sender))
+        // Our own outbox message keeps the ID it was sent under, and a row we already hold
+        // keeps the ID it was filed under the first time.
+        const filedAs = replacedAccountCollisions.has(wrapper.index)
+          ? undefined
+          : existing?.logicalMessageId
+        const logicalId = loopback
+          ? named
+          : filedAs ?? freeMessageId(named, wrapper.index, heldByAnother)
         if (heldByAnother(logicalId)) {
-          // A conversation opened only for this row is not kept.
           if (created) delete preparedConversations[conv.id]
           throw new Error(
             `Logical message ${logicalId} already belongs to another conversation`,
@@ -3680,14 +3779,10 @@ export const useChatStore = defineStore('chats', {
         // it: nothing, unless we or the conversation's own peer sent it.
         const speaks = speaksForConversation(conv, newMsg)
 
-        // Tombstone check: ignore replayed/older messages for a deleted conversation
-        if (conv.deletedAt !== undefined) {
-          if (newMsg.serverTime <= conv.deletedAt) {
-            continue
-          }
-          // Newer message: reopen the conversation!
-          conv.deletedAt = undefined
-        }
+        // Every row that reaches this point was saved above and is recorded in full below:
+        // nothing here may skip it. A row into a deleted conversation got this far only
+        // because it reopens the conversation.
+        reopenConversation(conv)
 
         // Renaming: update conversation name if provided
         if (
@@ -3737,11 +3832,7 @@ export const useChatStore = defineStore('chats', {
           })
           if (!conv.messages.some(m => m.payloadDigest === index)) {
             conv.messages.push(this.messages[index])
-            conv.messages.sort(
-              (a, b) =>
-                (a.serverTime ?? a.receivedTime ?? 0) -
-                (b.serverTime ?? b.receivedTime ?? 0),
-            )
+            conv.messages.sort(byRelayTime)
           }
           if (emailItem && speaks) {
             conv.kind = 'email'
@@ -3766,11 +3857,7 @@ export const useChatStore = defineStore('chats', {
         this.messages[index] = message
         if (!conv.messages.some(m => m.payloadDigest === index)) {
           conv.messages.push(message)
-          conv.messages.sort(
-            (a, b) =>
-              (a.serverTime ?? a.receivedTime ?? 0) -
-              (b.serverTime ?? b.receivedTime ?? 0),
-          )
+          conv.messages.sort(byRelayTime)
         }
         if (!message.outbound) {
           const key = wrapper.copartyPubKey?.toBuffer?.()

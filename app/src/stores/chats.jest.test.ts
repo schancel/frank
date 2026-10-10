@@ -3439,8 +3439,10 @@ describe('stores/chats.ts (ticket #42)', () => {
         expect(conversationFor(restored, SENDER_ADDRESS)).toBeUndefined()
         expect(
           restored.conversations[first.id].messages.map(m => m.payloadDigest),
-        ).toEqual(['first-incoming'])
-        expect(restored.conversations[first.id].totalUnreadMessages).toBe(1)
+        ).toEqual([])
+        // The conversation was deleted after that message: it does not come back, is not
+        // counted, and its ID stays held.
+        expect(restored.conversations[first.id].totalUnreadMessages).toBe(0)
         expect(restored.conversations[first.id].deletedAt).toBe(50)
         expect(
           restored.conversations[second.id].messages.map(m => m.payloadDigest),

@@ -1058,7 +1058,11 @@ export default {
       'Recipient transaction reverted on {network}. Network fees may have been paid.',
     partial:
       'Some funding transactions are included on {network}; recipient payment is not recorded as included.',
-    pending: 'Recipient payment is pending on {network}.',
+    pending: 'In the mempool on {network}: sent, waiting for a block.',
+    missing:
+      '{network} does not have this transfer yet. It is being offered again.',
+    watching:
+      'Watching the network. This updates by itself when the transfer is in a block.',
     unknown:
       'Payment outcome is unresolved on {network}. Funds may have moved.',
     cancelled: 'Unsigned transfer cancelled.',

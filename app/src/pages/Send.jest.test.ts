@@ -1002,12 +1002,9 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
             .trigger('click')
           await flushPromises()
           const outcome = wrapper.get('[data-test="native-operation-outcome"]')
-          const payment =
-            state === 'included-revert'
-              ? 'reverted'
-              : state === 'missing'
-              ? 'unknown'
-              : state
+          // A transfer the node answers for and does not know is `missing`; `unknown` is left
+          // for a chain that never answered.
+          const payment = state === 'included-revert' ? 'reverted' : state
           expect(outcome.text()).toContain(
             t(messages, `nativeOperation.${payment}`, {
               network: messages.setup.networkTitle,
@@ -1085,10 +1082,20 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
           wrapper.find('[data-test="review-confirm-button"]').exists(),
         ).toBe(false)
         // An included payment is a completed send whether or not the wallet has recorded telling
-        // its other devices ('unrecorded'): notify and go back, as for 'complete'.
+        // its other devices ('unrecorded'): the page says Sent with the block and the fee, and
+        // stays on that until the user goes back.
         if (evidence === 'complete' || evidence === 'unrecorded') {
           expect(sentTransactionNotify).toHaveBeenCalledWith(fixture.hash)
-          expect(navigateBack).toHaveBeenCalledTimes(1)
+          expect(navigateBack).not.toHaveBeenCalled()
+          const outcome = wrapper.get('[data-test="native-operation-outcome"]')
+          expect(outcome.text()).toContain('Sent on Monad Testnet.')
+          expect(outcome.text()).toContain('Block 69526794')
+          expect(wrapper.get('[data-test="native-operation-fee"]').text()).toBe(
+            'Observed network fees: 0.002142 MON',
+          )
+          expect(
+            wrapper.find('[data-test="native-operation-recovery"]').exists(),
+          ).toBe(false)
         } else {
           expect(sentTransactionNotify).not.toHaveBeenCalled()
           expect(navigateBack).not.toHaveBeenCalled()
@@ -1099,6 +1106,112 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
         await (
           wrapper.vm as unknown as { confirmSend(): Promise<void> }
         ).confirmSend()
+        expect(mockSend).toHaveBeenCalledTimes(1)
+      } finally {
+        wrapper.unmount()
+        await fixture.close()
+      }
+    },
+  )
+
+  // Seen in the browser on Monad testnet: the transfer was mined (status 1) and the page kept
+  // "Payment outcome is unresolved. Funds may have moved." with "Recovery is currently
+  // unavailable", because it read the journal once, right after the broadcast, and never again.
+  it.each(['pending', 'missing'] as const)(
+    'a transfer that is %s after the send keeps being watched: when the chain shows it mined the page says Sent with its block and fee, also from a journal reopened meanwhile',
+    async state => {
+      const fixture = await includedNativeTransfer(false, { observed: false })
+      await fixture.journal.recordObservation(
+        fixture.journal.beginCapture(fixture.operationId, 0),
+        { state },
+        null,
+      )
+      let looked!: () => void
+      let look = new Promise<void>(resolve => (looked = resolve))
+      const watchNativeOperation = jest.fn(async (operationId: string) => {
+        // The wallet's next look at the chain; the test decides when it comes.
+        await look
+        look = new Promise<void>(resolve => (looked = resolve))
+        expect(operationId).toBe(fixture.operationId)
+      })
+      mockCaptureWallet.mockResolvedValue({
+        wallet: {
+          family: 'evm',
+          chainIdentifier: 'monad-testnet',
+          getNativeOperations: () => fixture.journal.list(),
+          watchNativeOperation,
+        },
+        assertCurrent: mockAssertCurrent,
+        isCurrent: () => true,
+      })
+      mockSend.mockImplementation(async ({ onSigned }) => {
+        await onSigned({ txHash: fixture.hash })
+        throw new Error(
+          'Original native member has not been observed successful',
+        )
+      })
+      const wrapper = mountSend()
+      try {
+        await reviewNative(wrapper)
+        await wrapper
+          .get('[data-test="review-confirm-button"]')
+          .trigger('click')
+        await flushPromises()
+        const outcome = () =>
+          wrapper.get('[data-test="native-operation-outcome"]').text()
+        expect(outcome()).toContain(
+          state === 'pending'
+            ? 'In the mempool on Monad Testnet'
+            : 'Monad Testnet does not have this transfer yet',
+        )
+        // Not "unresolved", and not "recovery unavailable": it is being watched.
+        expect(outcome()).not.toContain('unresolved')
+        expect(
+          wrapper.find('[data-test="native-operation-recovery"]').exists(),
+        ).toBe(false)
+        expect(
+          wrapper.find('[data-test="native-operation-watching"]').exists(),
+        ).toBe(true)
+        expect(watchNativeOperation).toHaveBeenCalledTimes(1)
+
+        // A look that learns nothing new: still watched.
+        looked()
+        await flushPromises()
+        expect(watchNativeOperation).toHaveBeenCalledTimes(2)
+        expect(sentTransactionNotify).not.toHaveBeenCalled()
+
+        // The wallet's store is reopened (as after a reload of another tab's wallet), the
+        // chain shows the transfer mined, and the next look records it.
+        await fixture.reopen()
+        await fixture.journal.recordObservation(
+          fixture.journal.beginCapture(fixture.operationId, 0),
+          {
+            state: 'included-success',
+            transactionHash: fixture.hash,
+            blockHash: '0x' + '12'.repeat(32),
+            blockNumber: 69526801,
+            transactionIndex: 0,
+            feeWei: '2142000000000000',
+          },
+          null,
+        )
+        looked()
+        await flushPromises()
+        expect(outcome()).toContain('Sent on Monad Testnet.')
+        expect(outcome()).toContain('Block 69526801')
+        expect(wrapper.get('[data-test="native-operation-fee"]').text()).toBe(
+          'Observed network fees: 0.002142 MON',
+        )
+        expect(
+          wrapper.find('[data-test="native-operation-watching"]').exists(),
+        ).toBe(false)
+        expect(sentTransactionNotify).toHaveBeenCalledWith(fixture.hash)
+        // Final: nothing looks again.
+        expect(watchNativeOperation).toHaveBeenCalledTimes(2)
+        // And the same review can never send a second payment.
+        expect(
+          wrapper.find('[data-test="review-confirm-button"]').exists(),
+        ).toBe(false)
         expect(mockSend).toHaveBeenCalledTimes(1)
       } finally {
         wrapper.unmount()

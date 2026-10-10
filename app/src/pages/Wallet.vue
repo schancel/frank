@@ -338,7 +338,11 @@
                           }}
                         </p>
                         <p
-                          v-if="operation.payment !== 'included'"
+                          v-if="
+                            operation.payment !== 'included' &&
+                            operation.payment !== 'pending' &&
+                            operation.payment !== 'missing'
+                          "
                           data-testid="wallet-native-operation-recovery"
                         >
                           {{ $t('nativeOperation.recoveryUnavailable') }}

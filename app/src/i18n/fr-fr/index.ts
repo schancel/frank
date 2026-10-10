@@ -1084,7 +1084,11 @@ export default {
       'La transaction du destinataire a été annulée par le réseau {network}. Des frais de réseau peuvent avoir été payés.',
     partial:
       'Certaines transactions de financement sont incluses sur {network} ; le paiement au destinataire n’est pas enregistré comme inclus.',
-    pending: 'Le paiement au destinataire est en attente sur {network}.',
+    pending: 'Dans le mempool sur {network} : envoyé, en attente d’un bloc.',
+    missing:
+      '{network} n’a pas encore ce transfert. Il lui est proposé de nouveau.',
+    watching:
+      'Surveillance du réseau en cours. Ceci se met à jour dès que le transfert est dans un bloc.',
     unknown:
       'Le résultat du paiement reste indéterminé sur {network}. Des fonds peuvent avoir été transférés.',
     cancelled: 'Transfert non signé annulé.',

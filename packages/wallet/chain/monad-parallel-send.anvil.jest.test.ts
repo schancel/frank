@@ -508,4 +508,39 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
       await automine(true)
     }
   })
+
+  it('a transfer a host signs itself with the identity key goes through the claim: held until mined, and the next one waits', async () => {
+    const identity = alice.identity.address.raw
+    const signer = new Wallet(alice.identity.toPrivateKeyHex(), chain)
+    const to = Wallet.createRandom().address
+    await (
+      await dev.sendTransaction({ to: identity, value: 10n ** 17n })
+    ).wait()
+    const own = () =>
+      alice.runOwnTransfer!(
+        async () => {
+          const nonce = await chain.getTransactionCount(identity, 'pending')
+          const tx = await signer.sendTransaction({ to, value: 9n, nonce })
+          return { txHash: tx.hash, from: identity, nonce }
+        },
+        { mainAccountWaitMs: 1_500 },
+      )
+    await automine(false)
+    try {
+      const first = await own()
+      expect(alice.pool.accountClaimedBy(identity)).toMatch(NATIVE_HOLDER)
+      // Not mined: a second transfer does not sign behind it.
+      await expect(own()).rejects.toThrow(/wait given for it ran out/)
+      expect(await chain.getTransactionCount(identity, 'pending')).toBe(
+        first.nonce + 1,
+      )
+      await mine()
+      const second = await own()
+      expect(second.nonce).toBe(first.nonce + 1)
+      await mine()
+      expect(await chain.getBalance(to)).toBe(18n)
+    } finally {
+      await automine(true)
+    }
+  })
 })

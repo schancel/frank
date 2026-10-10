@@ -74,11 +74,15 @@ const FEE_TTL_MS = 6_000
 export const BUSY_LOOK_MS = 1_000
 
 /**
- * Resolves once `address` has sent no transaction in the last `blocks` blocks, so a value
- * transfer signed now is not one the chain's spacing rule reverts (Monad's reserve balance:
- * see `EvmChainConfig.spendSpacingBlocks`). The caller holds the account's claim, so nothing of
- * this wallet signs from it meanwhile. Two reads a look, a look every 400 ms; rejects, having
- * signed nothing, when the chain cannot be read for 20 s. `blocks` 0 or absent: no wait.
+ * Resolves once `address` has sent no transaction in the last `blocks` blocks AND has none the
+ * node still holds unmined, so a value transfer signed now is not one the chain's spacing rule
+ * reverts (Monad's reserve balance: see `EvmChainConfig.spendSpacingBlocks`). A transaction in
+ * the mempool counts: it will be mined inside the window (a funding transfer whose receipt
+ * wait ran out, a transfer some other code signed with the same key), and signing behind it
+ * would also stack a nonce. The caller holds the account's claim, so nothing of this wallet
+ * signs from it meanwhile, and reads the nonce AFTER this returns. Three reads a look, a look
+ * every 400 ms; rejects, having signed nothing, when the chain cannot be read for 20 s.
+ * `blocks` 0 or absent: no wait and no request.
  */
 export async function waitForSpendSpacing(
   provider: Provider,
@@ -90,12 +94,14 @@ export async function waitForSpendSpacing(
   for (;;) {
     try {
       const head = await provider.getBlockNumber()
-      if (head < blocks) return
-      const [now, before] = await Promise.all([
+      const [now, before, pending] = await Promise.all([
         provider.getTransactionCount(address, head),
-        provider.getTransactionCount(address, head - blocks),
+        head < blocks
+          ? Promise.resolve(undefined)
+          : provider.getTransactionCount(address, head - blocks),
+        provider.getTransactionCount(address, 'pending'),
       ])
-      if (now === before) return
+      if ((before === undefined || now === before) && pending <= now) return
       failingSince = undefined
     } catch (error) {
       failingSince ??= Date.now()
@@ -124,6 +130,10 @@ export interface EvmStampPayerConfig {
 }
 
 export class EvmStampPayer {
+  /** Lower-case address -> the highest nonce of a payment of this wallet seen in a block. A
+   * node that lags right after that block still answers the old count; the next payment is
+   * never signed at or below this. */
+  private readonly settledNonce = new Map<string, number>()
   private fee: { value: StampFee; atMs: number } | undefined
   private feeRead: Promise<StampFee> | undefined
   constructor(private readonly config: EvmStampPayerConfig) {}
@@ -260,14 +270,32 @@ export class EvmStampPayer {
               account.address,
               this.config.spendSpacingBlocks,
             )
+            // Read again now that the wait is over and the account is this payment's: the
+            // nonce (never at or below one this wallet saw mined, whatever a lagging node
+            // says), the balance, and the fee, which a long wait has made stale.
+            const settled = this.settledNonce.get(account.address.toLowerCase())
+            const [balanceNow, counted, feeNow] = await Promise.all([
+              provider.getBalance(account.address),
+              provider.getTransactionCount(account.address, 'pending'),
+              waiting ? this.currentFee() : Promise.resolve(fee),
+            ])
+            const reserveNow =
+              STAMP_GAS_LIMIT * (feeNow.maxFeePerGas ?? feeNow.gasPrice)!
+            if (balanceNow < input.stampValueWei + reserveNow) {
+              pool.releaseAccountClaim(input.holder, account.address)
+              continue
+            }
             return {
               holder: input.holder,
-              fee,
+              fee: feeNow,
               accounts: [
                 {
                   source: account.source,
                   address: account.address.toLowerCase(),
-                  nonce,
+                  nonce:
+                    settled !== undefined && settled + 1 > counted
+                      ? settled + 1
+                      : counted,
                   paymentValueWei: input.stampValueWei,
                 },
               ],
@@ -402,8 +430,12 @@ export class EvmStampPayer {
     const { provider } = this.config
     const tx = Transaction.from(rawTx)
     const receipt = await provider.getTransactionReceipt(tx.hash!)
-    if (receipt !== null)
+    if (receipt !== null) {
+      const from = tx.from!.toLowerCase()
+      if ((this.settledNonce.get(from) ?? -1) < tx.nonce)
+        this.settledNonce.set(from, tx.nonce)
       return { state: 'included', reverted: receipt.status === 0 }
+    }
     const used = await provider.getTransactionCount(tx.from!, 'latest')
     if (used <= tx.nonce) return { state: 'pending' }
     // The nonce is consumed and this node shows no receipt. That is what a replaced payment

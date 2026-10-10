@@ -1197,6 +1197,38 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       clearTimeout(timer);
     }
   };
+  /**
+   * A transfer signed from the identity or main account outside the native journal (a transfer
+   * to a contact, a bot host's own payout): the two accounts are taken through the claim, the
+   * turn and the chain's spacing are waited for, and the account `sign` reports it spent stays
+   * claimed until the chain shows the transaction mined or its nonce consumed. The transfer
+   * has no durable record of its own, so that hold lasts for this session only.
+   */
+  const runUnjournalledTransfer = <
+    T extends { txHash: string; from: string; nonce: number }
+  >(
+    wallet: EvmChainWalletHandle,
+    sign: () => Promise<T>,
+    waitMs?: number
+  ): Promise<T> =>
+    runMainAccountExclusive(
+      wallet,
+      async () => {
+        const sent = await sign();
+        const from = sent.from.toLowerCase();
+        if (mainAccountAddresses(wallet).includes(from)) {
+          let transfers = unjournalledTransfers.get(wallet);
+          if (!transfers)
+            unjournalledTransfers.set(wallet, (transfers = new Map()));
+          transfers.set(from, [
+            ...(transfers.get(from) ?? []),
+            { txHash: sent.txHash, nonce: sent.nonce },
+          ]);
+        }
+        return sent;
+      },
+      { waitMs, waitForOwn: true }
+    );
   const runMainAccountExclusive = <T>(
     wallet: EvmChainWalletHandle,
     task: () => Promise<T>,
@@ -2834,6 +2866,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               primaryBalanceCache = undefined;
               return result;
             },
+            runOwnTransfer: (sign, options) =>
+              runUnjournalledTransfer(wallet, sign, options?.mainAccountWaitMs),
             getContractCallFunds: () =>
               nativeOperationOwner(wallet).contractCallFunds(),
             getUnresolvedContractCalls: () =>

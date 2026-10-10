@@ -7,15 +7,17 @@ import type { Provider } from 'ethers'
 import { waitForSpendSpacing } from './evm-stamp-payer'
 
 /** A node at block `head` where the account's transactions were mined in `minedAt` blocks. */
-function node(state: { head: number; minedAt: number[] }) {
+function node(state: { head: number; minedAt: number[]; inMempool?: number }) {
   const reads: string[] = []
   const provider = {
     getBlockNumber: async () => {
       return state.head
     },
-    getTransactionCount: async (_address: string, block: number) => {
+    getTransactionCount: async (_address: string, block: number | 'pending') => {
       reads.push(`count@${block}`)
-      return state.minedAt.filter(mined => mined <= block).length
+      return block === 'pending'
+        ? state.minedAt.length + (state.inMempool ?? 0)
+        : state.minedAt.filter(mined => mined <= block).length
     },
   } as unknown as Provider
   return { provider, reads }
@@ -46,6 +48,26 @@ describe('waitForSpendSpacing', () => {
     await new Promise(resolve => setTimeout(resolve, 600))
     expect(done).toBe(false)
     state.head = 102 // nothing in 100..102
+    await waiting
+    expect(done).toBe(true)
+  })
+
+  it('waits while the node still holds an unmined transaction of the account, however old its last mined one', async () => {
+    // A funding transfer whose receipt wait ran out, or a transfer other code signed with the
+    // same key: it will be mined inside the window, and signing behind it stacks a nonce.
+    const state = { head: 100, minedAt: [50], inMempool: 1 }
+    const { provider } = node(state)
+    let done = false
+    const waiting = waitForSpendSpacing(provider, ADDRESS, 3).then(() => (done = true))
+    await new Promise(resolve => setTimeout(resolve, 900))
+    expect(done).toBe(false)
+    // It is mined at 101: the mempool is empty, and now the three blocks count from there.
+    state.inMempool = 0
+    state.minedAt.push(101)
+    state.head = 101
+    await new Promise(resolve => setTimeout(resolve, 900))
+    expect(done).toBe(false)
+    state.head = 104
     await waiting
     expect(done).toBe(true)
   })

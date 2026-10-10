@@ -635,33 +635,48 @@ export class FrankBotHost {
           if (botBalance < needed)
             throw new BotBalanceShortError(definition.id, botBalance, needed);
 
-          let tx: any;
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-              const nextNonce = await this.provider.getTransactionCount(
-                botAddress,
-                "pending"
-              );
-              tx = await botWallet.sendTransaction({
-                to,
-                data: data ?? "0x",
-                value: valueWei,
-                nonce: nextNonce,
-              });
-              break;
-            } catch (err: any) {
-              const isNonceError =
-                String(err).includes("nonce") ||
-                String(err).includes("NONCE_EXPIRED") ||
-                err?.code === "NONCE_EXPIRED";
-              if (isNonceError && attempt < 3) {
-                await new Promise((r) => setTimeout(r, 600 * attempt));
-                continue;
+          // The identity account is also a coin the wallet pays stamps from: the transfer is
+          // signed while the wallet holds that account in its claim, so it never shares a nonce
+          // with a message payment or a native send, and the account stays held until the
+          // chain shows this transfer.
+          const signed = async () => {
+            let tx: any;
+            let nextNonce = 0;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                nextNonce = await this.provider.getTransactionCount(
+                  botAddress,
+                  "pending"
+                );
+                tx = await botWallet.sendTransaction({
+                  to,
+                  data: data ?? "0x",
+                  value: valueWei,
+                  nonce: nextNonce,
+                });
+                break;
+              } catch (err: any) {
+                const isNonceError =
+                  String(err).includes("nonce") ||
+                  String(err).includes("NONCE_EXPIRED") ||
+                  err?.code === "NONCE_EXPIRED";
+                if (isNonceError && attempt < 3) {
+                  await new Promise((r) => setTimeout(r, 600 * attempt));
+                  continue;
+                }
+                throw err;
               }
-              throw err;
             }
-          }
-          return { txHash: tx.hash };
+            return {
+              txHash: tx.hash as string,
+              from: botAddress,
+              nonce: nextNonce,
+            };
+          };
+          const sent = await (wallet.runOwnTransfer
+            ? wallet.runOwnTransfer(signed)
+            : signed());
+          return { txHash: sent.txHash };
           });
         },
 
@@ -706,13 +721,26 @@ export class FrankBotHost {
           if (botBalance < needed)
             throw new BotBalanceShortError(definition.id, botBalance, needed);
 
-          const populated = await botWallet.populateTransaction({
-            to,
-            value: valueWei,
-          });
-          const rawTx = await botWallet.signTransaction(populated);
-          const txHash = (await this.provider.broadcastTransaction(rawTx)).hash;
-          return { rawTx, txHash };
+          // Through the wallet's claim, as `sendTransaction` above.
+          const signed = async () => {
+            const populated = await botWallet.populateTransaction({
+              to,
+              value: valueWei,
+            });
+            const rawTx = await botWallet.signTransaction(populated);
+            const txHash = (await this.provider.broadcastTransaction(rawTx))
+              .hash;
+            return {
+              rawTx,
+              txHash,
+              from: botAddress,
+              nonce: Number(populated.nonce ?? 0),
+            };
+          };
+          const sent = await (wallet.runOwnTransfer
+            ? wallet.runOwnTransfer(signed)
+            : signed());
+          return { rawTx: sent.rawTx, txHash: sent.txHash };
           });
         },
 

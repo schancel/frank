@@ -79,6 +79,21 @@ export interface EvmChainWalletHandle
   ): Promise<void>;
   readonly mainAccount?: Wallet;
   readonly mainPrivateKey?: string;
+  /**
+   * For a host that signs a transfer from this wallet's identity or main account with the key
+   * itself (a bot's own payout): runs `sign` while this wallet holds both accounts in its one
+   * account claim, having waited its turn and the chain's spacing, so the transfer cannot be
+   * signed at a nonce a message payment or a native send is using. `sign` reads the nonce
+   * itself, broadcasts, and says what it sent; the account it spent stays claimed until the
+   * chain shows that transaction mined or its nonce consumed (for this session: the transfer
+   * has no durable record here). Rejects with what `sign` rejects with; then nothing is held.
+   */
+  runOwnTransfer?<
+    T extends { txHash: string; from: string; nonce: number }
+  >(
+    sign: () => Promise<T>,
+    options?: { mainAccountWaitMs?: number }
+  ): Promise<T>;
   readonly chainUtxoPool?: ChainUtxoPool;
   invalidateBalanceCache?(networkTag?: string): void;
   close(): Promise<void>;

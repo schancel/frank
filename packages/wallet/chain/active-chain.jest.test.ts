@@ -48,21 +48,29 @@ describe('parseAddressWithOptionalRelay', () => {
 })
 
 describe('ActiveChain contract address helpers', () => {
-  it('returns canonical contract addresses on MonadChain', async () => {
-    const { MonadChain } = await import('./monad-chain')
-    expect(MonadChain.getStateChannelAddress()).toBe(
-      '0x18E98e3B789F0b84c7060Bb28bF4385809F3aF57',
-    )
-    expect(MonadChain.getHtlcAddress()).toBe(
-      '0x391a080Bd6FF21CB4598adF063Dc94018CD186E5',
-    )
-    // Deprecated aliases also resolve
-    expect(MonadChain.getChannelVaultAddress()).toBe(
-      '0x18E98e3B789F0b84c7060Bb28bF4385809F3aF57',
-    )
-    expect(MonadChain.getTablePotVaultAddress()).toBe(
-      '0x391a080Bd6FF21CB4598adF063Dc94018CD186E5',
-    )
+  it("returns the addresses of the chain's own network, or throws when none is deployed there", async () => {
+    const { createEvmChain } = await import('./monad-chain')
+    const { PROTOCOL_CHAINS } = await import('./chains-registry')
+    const chain = createEvmChain({
+      relayBaseUrl: 'http://127.0.0.1:8098',
+      rpcUrl: 'http://127.0.0.1:8545',
+      chainId: 10143,
+      chainIdentifier: 'monad-testnet',
+      networkTag: 'MONT',
+      isTestnet: true,
+    } as any)
+    const contracts = PROTOCOL_CHAINS['monad-testnet'].contracts
+    if (contracts) {
+      expect(chain.getHtlcAddress()).toBe(contracts.htlc)
+      expect(chain.getStateChannelAddress()).toBe(contracts.stateChannel)
+    } else {
+      expect(() => chain.getHtlcAddress()).toThrow(
+        'GenericHTLC is not deployed on monad-testnet',
+      )
+      expect(() => chain.getStateChannelAddress()).toThrow(
+        'StateChannel is not deployed on monad-testnet',
+      )
+    }
   })
 
   it('throws a clear error if network does not support the requested contract', async () => {
@@ -76,10 +84,10 @@ describe('ActiveChain contract address helpers', () => {
     } as any)
 
     expect(() => unsupportedChain.getStateChannelAddress()).toThrow(
-      'StateChannel contract is not configured for network UNSUPPORTED_TAG',
+      'Unknown chain identifier "UNSUPPORTED_TAG"',
     )
     expect(() => unsupportedChain.getHtlcAddress()).toThrow(
-      'GenericHTLC contract is not configured for network UNSUPPORTED_TAG',
+      'Unknown chain identifier "UNSUPPORTED_TAG"',
     )
   })
 })

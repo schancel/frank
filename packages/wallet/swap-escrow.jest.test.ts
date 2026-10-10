@@ -18,6 +18,7 @@ import {
 } from "./swap-escrow";
 import type { SwapLockRecord } from "./swap-escrow";
 import { SOLANA_GENERIC_HTLC_PROGRAM_ID } from "./solana-game-escrow";
+import { PROTOCOL_CHAINS } from "./chain/chains-registry";
 
 describe("swap-escrow service & calldata builders", () => {
   const iface = new ethers.Interface(EVM_GENERIC_HTLC_ABI);
@@ -47,11 +48,33 @@ describe("swap-escrow service & calldata builders", () => {
     expect(normalized.length).toBe(66);
   });
 
-  it("resolves HTLC contracts for registered chains", () => {
-    const monadConfig = resolveHtlcContract("monad-testnet");
-    expect(monadConfig.family).toBe("evm");
-    expect(monadConfig.contractAddress).toMatch(/^0x[a-fA-F0-9]{40}$/);
+  it("resolves the HTLC of a network from the registry, and refuses instead of defaulting", () => {
+    for (const id of ["monad-testnet", "monad-mainnet", "ethereum-sepolia"]) {
+      const htlc = PROTOCOL_CHAINS[id].contracts?.htlc;
+      if (htlc) {
+        expect(resolveHtlcContract(id)).toEqual({
+          family: "evm",
+          contractAddress: htlc,
+        });
+      } else {
+        expect(() => resolveHtlcContract(id)).toThrow(
+          `GenericHTLC is not deployed on ${id}`
+        );
+      }
+    }
 
+    // An unknown identifier is not treated as an EVM chain.
+    expect(() => resolveHtlcContract("nonexistent")).toThrow(
+      'Unknown chain identifier "nonexistent"'
+    );
+    expect(() => resolveHtlcContract("evm")).toThrow(
+      'Unknown chain identifier "evm"'
+    );
+    expect(() => resolveHtlcContract("xec-mainnet")).toThrow(
+      "HTLC swaps are not supported on xec-mainnet"
+    );
+
+    // Solana still resolves to a placeholder program id; no program is deployed.
     const solanaConfig = resolveHtlcContract("solana-testnet");
     expect(solanaConfig.family).toBe("solana");
     expect(solanaConfig.contractAddress).toBe(SOLANA_GENERIC_HTLC_PROGRAM_ID);
@@ -66,7 +89,9 @@ describe("swap-escrow service & calldata builders", () => {
     const amount = ethers.parseEther("2.5");
 
     // 1. Lock
+    const htlc = "0x9999999999999999999999999999999999999999";
     const lockTx = encodeEvmHtlcLock({
+      contractAddress: htlc,
       lockId,
       recipient,
       refundAddress: refund,
@@ -75,6 +100,7 @@ describe("swap-escrow service & calldata builders", () => {
       amountWei: amount,
     });
     expect(lockTx.value).toBe(amount);
+    expect(lockTx.to).toBe(htlc);
     const parsedLock = iface.parseTransaction({ data: lockTx.data });
     expect(parsedLock?.name).toBe("lock");
     expect(parsedLock?.args[0]).toBe(lockId);
@@ -86,9 +112,11 @@ describe("swap-escrow service & calldata builders", () => {
     // 2. Withdraw
     const preimage = "0x" + "44".repeat(32);
     const withdrawTx = encodeEvmHtlcWithdraw({
+      contractAddress: htlc,
       lockId,
       preimage,
     });
+    expect(withdrawTx.to).toBe(htlc);
     const parsedWithdraw = iface.parseTransaction({ data: withdrawTx.data });
     expect(parsedWithdraw?.name).toBe("withdraw");
     expect(parsedWithdraw?.args[0]).toBe(lockId);
@@ -96,8 +124,10 @@ describe("swap-escrow service & calldata builders", () => {
 
     // 3. Refund
     const refundTx = encodeEvmHtlcRefund({
+      contractAddress: htlc,
       lockId,
     });
+    expect(refundTx.to).toBe(htlc);
     const parsedRefund = iface.parseTransaction({ data: refundTx.data });
     expect(parsedRefund?.name).toBe("refund");
     expect(parsedRefund?.args[0]).toBe(lockId);

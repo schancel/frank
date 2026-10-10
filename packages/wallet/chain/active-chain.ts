@@ -625,14 +625,10 @@ export interface NativeAssetChain {
   parseAddress(input: string): ChainAddress | undefined;
   createWallet(seed: HDSeed): Promise<NativeWalletHandle>;
   nativeTransfers: NativeTransferClient;
-  /** Returns the address of the StateChannel contract on the active network, or throws if unsupported. */
+  /** Returns the address of the StateChannel contract on this chain's network, or throws if it is not deployed there. */
   getStateChannelAddress?(): string;
-  /** Returns the address of the GenericHTLC contract on the active network, or throws if unsupported. */
+  /** Returns the address of the GenericHTLC contract on this chain's network, or throws if it is not deployed there. */
   getHtlcAddress?(): string;
-  /** @deprecated Use getStateChannelAddress. */
-  getChannelVaultAddress?(): string;
-  /** @deprecated Use getHtlcAddress. */
-  getTablePotVaultAddress?(): string;
 }
 
 /** Full Frank application capability set. The selected implementation remains Monad. */
@@ -663,14 +659,10 @@ export interface ActiveChain extends NativeAssetChain {
   ): Promise<ProfileInfo | undefined>;
   directMessages: DirectMessageClient;
   topics: TopicBroadcastClient;
-  /** Returns the address of the StateChannel contract on the active network, or throws if unsupported. */
+  /** Returns the address of the StateChannel contract on this chain's network, or throws if it is not deployed there. */
   getStateChannelAddress(): string;
-  /** Returns the address of the GenericHTLC contract on the active network, or throws if unsupported. */
+  /** Returns the address of the GenericHTLC contract on this chain's network, or throws if it is not deployed there. */
   getHtlcAddress(): string;
-  /** @deprecated Use getStateChannelAddress. */
-  getChannelVaultAddress(): string;
-  /** @deprecated Use getHtlcAddress. */
-  getTablePotVaultAddress(): string;
 }
 
 /** Parsed result of {@link parseAddressWithOptionalRelay}. */

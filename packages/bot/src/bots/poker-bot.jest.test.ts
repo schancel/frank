@@ -1,6 +1,9 @@
 import { PokerBot } from './poker-bot'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 
+// No deployment record: the registry has no GenericHTLC address for any network.
+jest.mock('../../../contracts/deployments', () => ({ DEPLOYMENTS: {} }))
+
 describe("Texas Hold'em Poker Bot Coordinator", () => {
   let bot: PokerBot
   let mockBotCtx: BotContext
@@ -78,9 +81,10 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(replyFold.mock.calls[0][0][0].text).toContain(otherAddress.slice(0, 8))
   })
 
-  it('broadcasts GenericHTLC.batchDistribute on settlement when sendTransaction is available', async () => {
+  it('sends no settlement transaction while GenericHTLC is not deployed on the bot\'s network', async () => {
     const mockSendTx = jest.fn(async () => ({ txHash: '0xsettletx999' }))
     mockBotCtx.sendTransaction = mockSendTx
+    ;(mockBotCtx as { networkTag: string }).networkTag = 'MONT'
 
     // 1. Create table
     await bot.onMessage({
@@ -114,16 +118,13 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       reply: replyFold,
     } as unknown as BotMessageContext, mockBotCtx)
 
-    expect(mockSendTx).toHaveBeenCalledTimes(1)
-    const callArgs = mockSendTx.mock.calls[0][0]
-    expect(callArgs.to).toBe('0x391a080Bd6FF21CB4598adF063Dc94018CD186E5') // Canonical HTLC
-    expect(callArgs.data).toMatch(/^0x/)
+    // The registry has no GenericHTLC address for this network, so nothing is sent: a call
+    // to an address without code would be mined and shown as a settlement that moved nothing.
+    expect(mockSendTx).not.toHaveBeenCalled()
 
     const textReply = replyFold.mock.calls[0][0][0].text
-    expect(textReply).toContain('On-Chain Settlement')
-    expect(textReply).toContain('0xsettletx999')
-
-    const itemReply = replyFold.mock.calls[0][0][1]
-    expect(itemReply.txHash).toBe('0xsettletx999')
+    expect(textReply).toContain('HAND SETTLED')
+    expect(textReply).not.toContain('On-Chain Settlement')
+    expect(replyFold.mock.calls[0][0][1].txHash).toBeUndefined()
   })
 })

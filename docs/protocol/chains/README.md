@@ -44,6 +44,22 @@ registration is removed: supporting a network requires a protocol definition and
 client extension. Unknown direct lookups return `undefined`; existing alias/kind helpers are
 separate consumer seams and do not add networks.
 
+Contract addresses are per network and have one source: the deployment records in
+`packages/contracts/deployments/<chainIdentifier>.json`, written by the deploy script after it
+reads the code back from the chain and listed in `packages/contracts/deployments/index.ts`. The
+client registry copies an EVM network's addresses from its own record. A network without a
+record has no contract address, and `requireChainContract` throws for it; there is no address
+shared between networks and no default. Deploy and check a deployment with:
+
+```sh
+yarn --cwd packages/contracts test
+yarn --cwd packages/contracts deploy --chain <chainIdentifier> --rpc <url> --wallet-json <file> --dry-run
+yarn --cwd packages/contracts deploy --chain <chainIdentifier> --rpc <url> --wallet-json <file>
+yarn --cwd packages/contracts htlc-round --chain <chainIdentifier> --rpc <url> --wallet-json <file>
+```
+
+The Solana rows still carry placeholder program IDs; no Solana program is deployed.
+
 Operator-specific or credential-bearing endpoints do not belong in public defaults. There is
 no generated identity copy and no generator or regeneration command. Checks cover all three
 families, exact supported and omitted sets, source agreement, mutation through the same

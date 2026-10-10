@@ -1,4 +1,5 @@
 import protocolChains from "../../../docs/protocol/chains/v1.json";
+import { DEPLOYMENTS } from "../../contracts/deployments";
 import {
   projectProtocolChains,
   type ProtocolChainFacts,
@@ -21,23 +22,35 @@ export type SupportedCurve = "secp256k1" | "ed25519";
 export interface ChainContracts {
   readonly stateChannel?: string;
   readonly htlc?: string;
-  readonly channelVault?: string;
-  readonly tablePotVault?: string;
 }
 
-export const CANONICAL_EVM_CONTRACTS: Readonly<ChainContracts> = Object.freeze({
-  stateChannel: "0x18E98e3B789F0b84c7060Bb28bF4385809F3aF57",
-  htlc: "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5",
-  channelVault: "0x18E98e3B789F0b84c7060Bb28bF4385809F3aF57",
-  tablePotVault: "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5",
-});
+/**
+ * The contract addresses of one EVM network, taken from its deployment record in
+ * packages/contracts/deployments. A network without a record gets no `contracts` at all:
+ * there is no address shared between networks and no default.
+ */
+function deployedContracts(
+  chainIdentifier: string
+): { readonly contracts?: ChainContracts } {
+  const record = DEPLOYMENTS[chainIdentifier];
+  if (!record) return {};
+  if (record.chainIdentifier !== chainIdentifier) {
+    throw new Error(
+      `Deployment record listed for ${chainIdentifier} is for ${record.chainIdentifier}`
+    );
+  }
+  return {
+    contracts: Object.freeze({
+      stateChannel: record.contracts.StateChannel.address,
+      htlc: record.contracts.GenericHTLC.address,
+    }),
+  };
+}
 
 export const CANONICAL_SOLANA_CONTRACTS: Readonly<ChainContracts> =
   Object.freeze({
     stateChannel: "CHAN111111111111111111111111111111111111111",
     htlc: "HTLC111111111111111111111111111111111111111",
-    channelVault: "CHAN111111111111111111111111111111111111111",
-    tablePotVault: "HTLC111111111111111111111111111111111111111",
   });
 
 export type ExchangeAdapterType =
@@ -91,7 +104,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Monad Testnet",
       unit: "MONT",
       networkTag: "MONT",
-      contracts: CANONICAL_EVM_CONTRACTS,
+      ...deployedContracts("monad-testnet"),
       exchange: Object.freeze({
         pluginId: "uniswap-universal-router",
         routerName: "Uniswap Universal Router",
@@ -111,7 +124,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Monad",
       unit: "MON",
       networkTag: "MON1",
-      contracts: CANONICAL_EVM_CONTRACTS,
+      ...deployedContracts("monad-mainnet"),
       exchange: Object.freeze({
         pluginId: "uniswap-universal-router",
         routerName: "Uniswap Universal Router",
@@ -235,7 +248,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
         "https://ethereum-sepolia-rpc.publicnode.com",
         "https://rpc.sepolia.org",
       ]),
-      contracts: CANONICAL_EVM_CONTRACTS,
+      ...deployedContracts("ethereum-sepolia"),
       exchange: Object.freeze({
         pluginId: "uniswap-universal-router",
         routerName: "Uniswap Universal Router",
@@ -255,7 +268,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Ethereum",
       unit: "ETH",
       networkTag: "ETH1",
-      contracts: CANONICAL_EVM_CONTRACTS,
+      ...deployedContracts("ethereum-mainnet"),
       exchange: Object.freeze({
         pluginId: "uniswap-universal-router",
         routerName: "Uniswap Universal Router",
@@ -275,7 +288,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Hyperliquid",
       unit: "HYPE",
       networkTag: "HYPE",
-      contracts: CANONICAL_EVM_CONTRACTS,
+      ...deployedContracts("hyperliquid-mainnet"),
       exchange: Object.freeze({
         pluginId: "hyperliquid-l1",
         routerName: "Hyperliquid L1 Orderbook Router",
@@ -295,7 +308,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Hyperliquid Testnet",
       unit: "tHYPE",
       networkTag: "HYPT",
-      contracts: CANONICAL_EVM_CONTRACTS,
+      ...deployedContracts("hyperliquid-testnet"),
       exchange: Object.freeze({
         pluginId: "hyperliquid-l1",
         routerName: "Hyperliquid L1 Orderbook Router",
@@ -315,7 +328,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Tempo",
       unit: "USD",
       networkTag: "TMPO",
-      contracts: CANONICAL_EVM_CONTRACTS,
+      ...deployedContracts("tempo-mainnet"),
       exchange: Object.freeze({
         pluginId: "tempo-router",
         routerName: "Tempo Settlement Engine",
@@ -335,7 +348,7 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       name: "Tempo Moderato",
       unit: "tUSD",
       networkTag: "TMPT",
-      contracts: CANONICAL_EVM_CONTRACTS,
+      ...deployedContracts("tempo-testnet"),
       exchange: Object.freeze({
         pluginId: "tempo-router",
         routerName: "Tempo Settlement Engine",
@@ -439,6 +452,32 @@ export function getChainRegistryEntry(
   if (id === "ecash-testnet") return PROTOCOL_CHAINS["xec-testnet"];
   if (id === "ecash-mainnet") return PROTOCOL_CHAINS["xec-mainnet"];
   return PROTOCOL_CHAINS[id];
+}
+
+const CONTRACT_NAMES: Readonly<Record<keyof ChainContracts, string>> = {
+  htlc: "GenericHTLC",
+  stateChannel: "StateChannel",
+};
+
+/**
+ * The address of a Frank contract on one network, by canonical `chainIdentifier`.
+ * Throws when the identifier is unknown or the contract is not deployed there.
+ */
+export function requireChainContract(
+  chainIdentifier: string,
+  contract: keyof ChainContracts
+): string {
+  const entry = PROTOCOL_CHAINS[chainIdentifier];
+  if (!entry) {
+    throw new Error(`Unknown chain identifier "${chainIdentifier}"`);
+  }
+  const address = entry.contracts?.[contract];
+  if (!address) {
+    throw new Error(
+      `${CONTRACT_NAMES[contract]} is not deployed on ${chainIdentifier}`
+    );
+  }
+  return address;
 }
 
 export function getChainRegistryByKind(

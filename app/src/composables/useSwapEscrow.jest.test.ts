@@ -30,6 +30,31 @@ const mockProvider = {
   getNetwork: jest.fn().mockResolvedValue({ chainId: 10143n }),
 }
 
+// The EVM tests below need a GenericHTLC address for monad-testnet. Addresses come only from
+// deployment records, so this file supplies one; ethereum-sepolia is left without.
+jest.mock('../../../packages/contracts/deployments', () => {
+  const contract = (address: string) => ({
+    address,
+    deployedVia: 'create2-proxy',
+    transactionHash: '0x' + '00'.repeat(32),
+    blockNumber: 1,
+  })
+  return {
+    DEPLOYMENTS: {
+      'monad-testnet': {
+        chainIdentifier: 'monad-testnet',
+        chainId: '10143',
+        contracts: {
+          GenericHTLC: contract('0x00000000000000000000000000000000000000A1'),
+          StateChannel: contract('0x00000000000000000000000000000000000000A2'),
+        },
+      },
+    },
+  }
+})
+
+const mockSubmitRawTransaction = jest.fn().mockResolvedValue('0xmockedevmtxhash123')
+
 jest.mock('../utils/clients', () => ({
   useMonadWallet: () => ({
     provider: mockProvider,
@@ -37,7 +62,7 @@ jest.mock('../utils/clients', () => ({
       toPrivateKeyHex: () => '0x' + '11'.repeat(32),
     },
     httpClient: {
-      submitRawTransaction: jest.fn().mockResolvedValue('0xmockedevmtxhash123'),
+      submitRawTransaction: mockSubmitRawTransaction,
       getTransactionReceipt: jest.fn().mockResolvedValue({ status: 1 }),
     },
   }),
@@ -101,6 +126,41 @@ describe('useSwapEscrow', () => {
     })
 
     expect(res.txHash).toBe('0xmockedevmtxhash123')
+  })
+
+  it('refuses to lock, claim or refund on a network where GenericHTLC is not deployed', async () => {
+    const { depositLock, claimLock, refundLock } = useSwapEscrow()
+    mockSubmitRawTransaction.mockClear()
+    const notDeployed = 'GenericHTLC is not deployed on ethereum-sepolia'
+
+    await expect(
+      depositLock({
+        swapId: 'swap-test-id-2',
+        chain: 'ethereum-sepolia',
+        amount: '1.5',
+        recipient: '0x2222222222222222222222222222222222222222',
+      }),
+    ).rejects.toThrow(notDeployed)
+    await expect(
+      claimLock({
+        swapId: 'swap-test-id-2',
+        chain: 'ethereum-sepolia',
+        preimage: '0x' + '33'.repeat(32),
+      }),
+    ).rejects.toThrow(notDeployed)
+    await expect(
+      refundLock({ swapId: 'swap-test-id-2', chain: 'ethereum-sepolia' }),
+    ).rejects.toThrow(notDeployed)
+    await expect(
+      depositLock({
+        swapId: 'swap-test-id-2',
+        chain: 'not-a-chain',
+        amount: '1.5',
+        recipient: '0x2222222222222222222222222222222222222222',
+      }),
+    ).rejects.toThrow('Unknown chain identifier "not-a-chain"')
+
+    expect(mockSubmitRawTransaction).not.toHaveBeenCalled()
   })
 
   it('deposits funds on Solana chain', async () => {

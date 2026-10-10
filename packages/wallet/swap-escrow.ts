@@ -17,9 +17,8 @@ import { sha256 } from "@noble/hashes/sha256";
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { fromHex, toHex } from "@frank/codec";
 import {
-  CANONICAL_EVM_CONTRACTS,
-  CANONICAL_SOLANA_CONTRACTS,
   PROTOCOL_CHAINS,
+  requireChainContract,
 } from "./chain/chains-registry";
 import {
   buildSolanaHtlcLockInstruction,
@@ -84,18 +83,21 @@ export interface EvmHtlcLockTxParams {
   hashLock: string | Uint8Array;
   durationSeconds: bigint | number;
   amountWei: bigint;
-  contractAddress?: string;
+  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
+  contractAddress: string;
 }
 
 export interface EvmHtlcWithdrawTxParams {
   lockId: string | Uint8Array;
   preimage: string | Uint8Array;
-  contractAddress?: string;
+  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
+  contractAddress: string;
 }
 
 export interface EvmHtlcRefundTxParams {
   lockId: string | Uint8Array;
-  contractAddress?: string;
+  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
+  contractAddress: string;
 }
 
 /**
@@ -150,35 +152,24 @@ export function deriveSwapSecret(params: {
 }
 
 /**
- * Resolves the HTLC contract or program ID for a given chain.
+ * Resolves the HTLC contract or program ID for a canonical `chainIdentifier`.
+ * Throws for an unknown identifier, for a chain family without an HTLC, and for a network
+ * the contract is not deployed on. There is no default network and no default address.
  */
 export function resolveHtlcContract(chainIdentifier: string): {
-  family: "evm" | "solana" | "bitcoin";
+  family: "evm" | "solana";
   contractAddress: string;
 } {
   const entry = PROTOCOL_CHAINS[chainIdentifier];
-  if (entry?.family === "solana") {
-    return {
-      family: "solana",
-      contractAddress:
-        entry.contracts?.htlc ??
-        CANONICAL_SOLANA_CONTRACTS.htlc ??
-        SOLANA_GENERIC_HTLC_PROGRAM_ID,
-    };
+  if (!entry) {
+    throw new Error(`Unknown chain identifier "${chainIdentifier}"`);
   }
-  if (entry?.family === "evm") {
-    return {
-      family: "evm",
-      contractAddress:
-        entry.contracts?.htlc ??
-        CANONICAL_EVM_CONTRACTS.htlc ??
-        "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5",
-    };
+  if (entry.family !== "evm" && entry.family !== "solana") {
+    throw new Error(`HTLC swaps are not supported on ${chainIdentifier}`);
   }
   return {
-    family: entry?.family ?? "evm",
-    contractAddress:
-      entry?.contracts?.htlc ?? CANONICAL_EVM_CONTRACTS.htlc ?? "",
+    family: entry.family,
+    contractAddress: requireChainContract(chainIdentifier, "htlc"),
   };
 }
 
@@ -190,10 +181,7 @@ export function encodeEvmHtlcLock(params: EvmHtlcLockTxParams): {
   data: string;
   value: bigint;
 } {
-  const htlc =
-    params.contractAddress ??
-    CANONICAL_EVM_CONTRACTS.htlc ??
-    "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5";
+  const htlc = params.contractAddress;
   const lockId = toBytes32Hex(params.lockId);
   const hashLock = toBytes32Hex(params.hashLock);
   const refund = params.refundAddress ?? params.recipient;
@@ -217,10 +205,7 @@ export function encodeEvmHtlcWithdraw(params: EvmHtlcWithdrawTxParams): {
   to: string;
   data: string;
 } {
-  const htlc =
-    params.contractAddress ??
-    CANONICAL_EVM_CONTRACTS.htlc ??
-    "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5";
+  const htlc = params.contractAddress;
   const lockId = toBytes32Hex(params.lockId);
   const preimageBytes =
     typeof params.preimage === "string"
@@ -249,10 +234,7 @@ export function encodeEvmHtlcRefund(params: EvmHtlcRefundTxParams): {
   to: string;
   data: string;
 } {
-  const htlc =
-    params.contractAddress ??
-    CANONICAL_EVM_CONTRACTS.htlc ??
-    "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5";
+  const htlc = params.contractAddress;
   const lockId = toBytes32Hex(params.lockId);
 
   const data = evmHtlcInterface.encodeFunctionData("refund", [lockId]);

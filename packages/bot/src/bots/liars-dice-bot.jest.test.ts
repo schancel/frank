@@ -1,6 +1,9 @@
 import { LiarsDiceBot } from './liars-dice-bot'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 
+// No deployment record: the registry has no GenericHTLC address for any network.
+jest.mock('../../../contracts/deployments', () => ({ DEPLOYMENTS: {} }))
+
 describe("Liar's Dice Bot Table Coordinator", () => {
   let bot: LiarsDiceBot
   let mockBotCtx: BotContext
@@ -106,9 +109,10 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(item.challengeResult).toBeDefined()
   })
 
-  it('broadcasts GenericHTLC.batchDistribute on game resolution when sendTransaction is available', async () => {
+  it('sends no settlement transaction while GenericHTLC is not deployed on the bot\'s network', async () => {
     const mockSendTx = jest.fn(async () => ({ txHash: '0xdicetx777' }))
     mockBotCtx.sendTransaction = mockSendTx
+    ;(mockBotCtx as { networkTag: string }).networkTag = 'MONT'
 
     // 1. Create table
     await bot.onMessage({
@@ -153,15 +157,13 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     } as unknown as BotMessageContext, mockBotCtx)
 
     expect(game.status).toBe('resolved')
-    expect(mockSendTx).toHaveBeenCalledTimes(1)
-    expect(mockSendTx.mock.calls[0][0].to).toBe('0x391a080Bd6FF21CB4598adF063Dc94018CD186E5')
+    // The registry has no GenericHTLC address for this network, so nothing is sent: a call
+    // to an address without code would be mined and shown as a settlement that moved nothing.
+    expect(mockSendTx).not.toHaveBeenCalled()
 
     const msg = replyLiar.mock.calls[0][0][0].text
     expect(msg).toContain('GAME OVER')
-    expect(msg).toContain('On-Chain Settlement')
-    expect(msg).toContain('0xdicetx777')
-
-    const item = replyLiar.mock.calls[0][0][1]
-    expect(item.txHash).toBe('0xdicetx777')
+    expect(msg).not.toContain('On-Chain Settlement')
+    expect(replyLiar.mock.calls[0][0][1].txHash).toBeUndefined()
   })
 })

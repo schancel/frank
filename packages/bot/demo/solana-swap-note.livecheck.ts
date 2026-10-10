@@ -65,7 +65,7 @@ import {
   type SolanaSwapSender,
 } from '@frank/wallet/solana-swap'
 import { SolanaWallet } from '@frank/wallet/solana-wallet'
-import { DirectoryManager } from '@frank/bot-framework/src/directory-manager'
+import { DirectoryManager } from '@frank/bot-framework/directory-manager'
 
 const MESSAGING_CHAIN = 'monad-testnet'
 const CHAIN = 'solana-devnet'
@@ -440,10 +440,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().then(
-  () => process.exit(0),
-  error => {
-    console.error(error instanceof Error ? error.stack ?? error.message : error)
-    process.exit(1)
-  },
-)
+if (require.main === module) {
+  main().then(
+    () => process.exit(0),
+    error => {
+      console.error(error instanceof Error ? error.stack ?? error.message : error)
+      process.exit(1)
+    },
+  )
+}

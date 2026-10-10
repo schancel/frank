@@ -35,7 +35,7 @@ import {
   rehydrateState,
   useChatStore,
   collidedMessageId,
-  makeConversationId,
+  setConversationIdSalt,
   type Conversation,
   uuidv5,
   NULL_CONVERSATION_NAMESPACE,
@@ -43,6 +43,11 @@ import {
   type RestorableState,
   type ChatMessage,
 } from './chats'
+import {
+  allocateOpeningConversationId,
+  conversationIdSalt,
+  formatConversationId,
+} from '@frank/cashweb/relay/conversation-id'
 import { useProfileStore } from './my-profile'
 import { useContactStore } from './contacts'
 import { store as messageStorePromise } from '../adapters/level-message-store'
@@ -135,9 +140,13 @@ function seedConversation(
   return conv
 }
 
+const TEST_SALT = conversationIdSalt(new Uint8Array(32).fill(0x7e))
+
 describe('stores/chats.ts (ticket #42)', () => {
   beforeEach(async () => {
     setActivePinia(createPinia())
+    // An account that can open a chat always has its conversation-ID salt installed.
+    setConversationIdSalt(TEST_SALT)
     jest.restoreAllMocks()
     mockMessageStore =
       (await messageStorePromise) as unknown as MockMessageStore
@@ -3467,33 +3476,6 @@ describe('stores/chats.ts (ticket #42)', () => {
   })
 
   describe('ticket #69: conversation-oriented and group-ready storage', () => {
-    it('generates deterministic RFC 4122 UUIDv5 identifiers for conversations', () => {
-      const uuidv5Regex =
-        /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-
-      // Standard direct conversation without topic
-      const id1 = makeConversationId([SENDER_ADDRESS, RECIPIENT_ADDRESS])
-      const id2 = makeConversationId([RECIPIENT_ADDRESS, SENDER_ADDRESS])
-      expect(id1).toMatch(uuidv5Regex)
-      expect(id1).toBe(id2)
-
-      // Direct conversation with topic
-      const topicId = makeConversationId(
-        [SENDER_ADDRESS, RECIPIENT_ADDRESS],
-        'project-x',
-      )
-      expect(topicId).toMatch(uuidv5Regex)
-      expect(topicId).not.toBe(id1)
-
-      // Third party with same topic produces a different UUIDv5
-      const thirdPartyId = makeConversationId(
-        [THIRD_ADDRESS, RECIPIENT_ADDRESS],
-        'project-x',
-      )
-      expect(thirdPartyId).toMatch(uuidv5Regex)
-      expect(thirdPartyId).not.toBe(topicId)
-    })
-
     it('proves two direct conversations with one peer stay separate without address-key collision', async () => {
       const chats = useChatStore()
       const convAlpha = chats.createConversation({
@@ -3854,6 +3836,110 @@ describe('stores/chats.ts (ticket #42)', () => {
       textBody: 'Please update your security password immediately.',
     }
 
+    it('keeps two email threads through one gateway apart, also with equal subjects, and answers each under its own ID', async () => {
+      const chats = useChatStore()
+      mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
+      // The gateway cuts its thread IDs from a hash, so some look like a UUIDv5. An email
+      // thread is still never the gateway's opening thread.
+      const THREAD_ONE = '11111111-1111-5111-8111-111111111111'
+      const THREAD_TWO = '22222222-2222-5222-8222-222222222222'
+      let serial = 0
+      const mail = (conversationId: string, textBody: string) => {
+        const index = `gateway-thread-${++serial}`
+        return {
+          outbound: false,
+          senderAddress: GATEWAY_ADDRESS,
+          copartyAddress: GATEWAY_ADDRESS,
+          copartyPubKey: {} as any,
+          index,
+          stampValue: 10,
+          message: {
+            conversationId,
+            outbound: false,
+            status: 'confirmed',
+            // Equal subjects: the conversation ID alone tells the threads apart.
+            items: [{ ...emailPayload, messageId: `<${index}@x>`, textBody }],
+            serverTime: 500 + serial,
+            receivedTime: 500 + serial,
+            outpoints: [],
+            senderAddress: GATEWAY_ADDRESS,
+            destinationAddress: SENDER_ADDRESS,
+          } as any,
+        }
+      }
+      const bodies = (id: string) =>
+        chats.conversations[id]?.messages.flatMap(m =>
+          m.items.map(i => (i as EmailItem).textBody),
+        )
+
+      await chats.receiveMessages(
+        [mail(THREAD_ONE, 'one-a'), mail(THREAD_TWO, 'two-a')],
+        SENDER_ADDRESS,
+      )
+      await chats.receiveMessages(
+        [mail(THREAD_TWO, 'two-b'), mail(THREAD_ONE, 'one-b')],
+        SENDER_ADDRESS,
+      )
+      // Two conversations, each with its own messages and its own unread count.
+      expect(Object.keys(chats.conversations).sort()).toEqual([
+        THREAD_ONE,
+        THREAD_TWO,
+      ])
+      expect(bodies(THREAD_ONE)).toEqual(['one-a', 'one-b'])
+      expect(bodies(THREAD_TWO)).toEqual(['two-a', 'two-b'])
+      for (const id of [THREAD_ONE, THREAD_TWO]) {
+        expect(chats.conversations[id].kind).toBe('email')
+        expect(chats.conversations[id].address).toBe(GATEWAY_ADDRESS)
+        expect(chats.conversations[id].totalUnreadMessages).toBe(2)
+      }
+
+      // Their IDs are not opening IDs (the gateway names each thread), so none of them is
+      // "the gateway's thread": opening the gateway address opens a conversation of its own,
+      // and swallows neither.
+      const direct = chats.openDirectConversation(GATEWAY_ADDRESS)
+      expect([THREAD_ONE, THREAD_TWO]).not.toContain(direct.id)
+      expect(direct.messages).toHaveLength(0)
+      delete chats.conversations[direct.id]
+      expect(Object.keys(chats.conversations)).toHaveLength(2)
+
+      // A reply in each thread goes out under that thread's own ID and stays in it.
+      const send = jest
+        .spyOn(activeChain.directMessages, 'send')
+        .mockImplementation(async () => ({
+          payloadDigest: `gateway-reply-${++serial}`,
+          stampValueWei: 1n,
+          stampPayments: [],
+          preparationTxHashes: [],
+        }))
+      const wallet = makeWallet(SENDER_ADDRESS)
+      for (const [conversationId, textBody] of [
+        [THREAD_TWO, 'reply-two'],
+        [THREAD_ONE, 'reply-one'],
+      ])
+        await chats.sendMessage({
+          wallet,
+          address: GATEWAY_ADDRESS,
+          conversationId,
+          items: [{ ...emailPayload, messageId: `<${textBody}@x>`, textBody }],
+        })
+      expect(send.mock.calls.map(([p]) => p.conversationId)).toEqual([
+        THREAD_TWO,
+        THREAD_ONE,
+      ])
+      expect(bodies(THREAD_ONE)).toEqual(['one-a', 'one-b', 'reply-one'])
+      expect(bodies(THREAD_TWO)).toEqual(['two-a', 'two-b', 'reply-two'])
+
+      // A third thread arriving later is a third conversation.
+      const THREAD_THREE = '33333333-3333-4333-8333-333333333333'
+      await chats.receiveMessages(
+        [mail(THREAD_THREE, 'three-a')],
+        SENDER_ADDRESS,
+      )
+      expect(bodies(THREAD_THREE)).toEqual(['three-a'])
+      expect(chats.chats[GATEWAY_ADDRESS]).toBeUndefined()
+      expect(Object.keys(chats.conversations)).toHaveLength(3)
+    })
+
     it('classifies incoming email item from verified gateway as verifiedGateway: true', async () => {
       const chats = useChatStore()
       mockOwnAddress.mockReturnValue(SENDER_ADDRESS)
@@ -4096,17 +4182,728 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(chats.getSortedChatOrder).toHaveLength(1)
     })
 
-    it('does not designate an explicit ID as default merely because it equals a derived peer ID', () => {
-      const chats = useChatStore()
-      const explicit = chats.createConversation({
-        address: RECIPIENT_ADDRESS,
-        participants: [RECIPIENT_ADDRESS],
-        conversationId: makeConversationId([RECIPIENT_ADDRESS]),
+    describe('opening a chat allocates its ID from the account private salt', () => {
+      // Two accounts: each salt comes from that account's own secret root.
+      const MY_SALT = conversationIdSalt(new Uint8Array(32).fill(0x11))
+      const OTHER_SALT = conversationIdSalt(new Uint8Array(32).fill(0x22))
+      const idFor = (salt: Uint8Array, peer: string) =>
+        formatConversationId(
+          allocateOpeningConversationId(salt, peer.toLowerCase()),
+        )
+
+      it('is the same however and on whichever device the peer is opened, and never a second thread', () => {
+        setConversationIdSalt(MY_SALT)
+        const chats = useChatStore()
+        // Whoever else is listed as a participant, the ID is that of the peer and no topic.
+        const opened = chats.openDirectConversation(RECIPIENT_ADDRESS, [
+          SENDER_ADDRESS,
+          RECIPIENT_ADDRESS,
+        ])
+        expect(opened.id).toBe(idFor(MY_SALT, RECIPIENT_ADDRESS))
+        expect(chats.openDirectConversation(RECIPIENT_ADDRESS)).toBe(opened)
+        chats.setActiveChat(RECIPIENT_ADDRESS)
+        expect(chats.activeConversation).toBe(opened)
+        expect(Object.keys(chats.conversations)).toHaveLength(1)
+
+        // A second device of the same account (a fresh store, the same salt) opens the same ID.
+        setActivePinia(createPinia())
+        expect(
+          useChatStore().openDirectConversation(RECIPIENT_ADDRESS).id,
+        ).toBe(opened.id)
       })
-      const defaultThread = chats.openDirectConversation(RECIPIENT_ADDRESS)
-      expect(defaultThread.id).not.toBe(explicit.id)
-      expect(chats.chats[RECIPIENT_ADDRESS]).toBe(defaultThread)
-      expect(explicit.defaultDirect).toBeUndefined()
+
+      it('differs for every peer and for every other account, and notes to self are not derivable from an address', () => {
+        setConversationIdSalt(MY_SALT)
+        const mine = useChatStore()
+        const withPeer = mine.openDirectConversation(RECIPIENT_ADDRESS).id
+        const withThird = mine.openDirectConversation(THIRD_ADDRESS).id
+        const notesToSelf = mine.openDirectConversation(SENDER_ADDRESS).id
+        expect(new Set([withPeer, withThird, notesToSelf]).size).toBe(3)
+
+        // Another account opening a chat with the same peer allocates a different ID, so two
+        // senders never hand one recipient the same conversation.
+        setActivePinia(createPinia())
+        setConversationIdSalt(OTHER_SALT)
+        const theirs = useChatStore()
+        expect(theirs.openDirectConversation(RECIPIENT_ADDRESS).id).not.toBe(
+          withPeer,
+        )
+        // Nor can anyone compute my notes-to-self ID (or any other) from public addresses: it
+        // changes with the salt, and their own notes ID for my address is not mine.
+        expect(theirs.openDirectConversation(SENDER_ADDRESS).id).not.toBe(
+          notesToSelf,
+        )
+        expect(notesToSelf).toBe(idFor(MY_SALT, SENDER_ADDRESS))
+      })
+
+      it('adopts the conversation another device of this account already opened and sent in', async () => {
+        setConversationIdSalt(MY_SALT)
+        const chats = useChatStore()
+        const openingId = idFor(MY_SALT, RECIPIENT_ADDRESS)
+        // Read back from our own mailbox: a message our other device sent in its thread.
+        await chats.receiveMessages(
+          [
+            {
+              outbound: true,
+              senderAddress: SENDER_ADDRESS,
+              copartyAddress: RECIPIENT_ADDRESS,
+              copartyPubKey: {} as any,
+              index: 'other-device-1',
+              stampValue: 10,
+              message: {
+                conversationId: openingId,
+                outbound: true,
+                status: 'confirmed',
+                items: [{ type: 'text', text: 'from my other device' }],
+                serverTime: 400,
+                receivedTime: 400,
+                outpoints: [],
+                senderAddress: SENDER_ADDRESS,
+                destinationAddress: RECIPIENT_ADDRESS,
+              } as any,
+            },
+          ],
+          SENDER_ADDRESS,
+        )
+        const opened = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        expect(opened.id).toBe(openingId)
+        expect(opened.messages).toHaveLength(1)
+        expect(Object.keys(chats.conversations)).toHaveLength(1)
+      })
+
+      it('refuses to open a chat without a salt instead of allocating a random ID', async () => {
+        setConversationIdSalt(null)
+        const chats = useChatStore()
+        expect(() => chats.openDirectConversation(RECIPIENT_ADDRESS)).toThrow(
+          /No conversation-ID salt is installed/,
+        )
+        expect(() => chats.setActiveChat(RECIPIENT_ADDRESS)).toThrow(
+          /No conversation-ID salt is installed/,
+        )
+        expect(Object.keys(chats.conversations)).toHaveLength(0)
+      })
+    })
+
+    describe('a conversation ID is allocated by whoever starts and then carried', () => {
+      let serial = 0
+      const incoming = (text: string, conversationId: string | undefined) => {
+        const index = `carried-${++serial}`
+        return {
+          outbound: false,
+          senderAddress: RECIPIENT_ADDRESS,
+          copartyAddress: RECIPIENT_ADDRESS,
+          copartyPubKey: {} as any,
+          index,
+          stampValue: 10,
+          conversationId,
+          message: {
+            conversationId,
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text' as const, text }],
+            serverTime: 400 + serial,
+            receivedTime: 400 + serial,
+            outpoints: [],
+            senderAddress: RECIPIENT_ADDRESS,
+            destinationAddress: SENDER_ADDRESS,
+          },
+        }
+      }
+      const threadOf = (chats: ReturnType<typeof useChatStore>, text: string) =>
+        Object.values(chats.conversations).find(c =>
+          c.messages.some(m =>
+            m.items.some(i => i.type === 'text' && i.text === text),
+          ),
+        )
+      const sendSpy = () =>
+        jest
+          .spyOn(activeChain.directMessages, 'send')
+          .mockImplementation(async () => ({
+            payloadDigest: `sent-${++serial}`,
+            stampValueWei: 1n,
+            stampPayments: [],
+            preparationTxHashes: [],
+          }))
+      const receive = (
+        chats: ReturnType<typeof useChatStore>,
+        ...wrappers: ReturnType<typeof incoming>[]
+      ) => chats.receiveMessages(wrappers, SENDER_ADDRESS)
+      // The ID the peer allocated when it opened a chat with us: its own business, carried.
+      const THEIR_ID = '77777777-7777-5777-8777-777777777777'
+
+      it('A opens B and sends: each side has one thread, and B opening A from Contacts opens it', async () => {
+        // A's side: opening B allocates the ID; the message and every later one carries it.
+        const a = useChatStore()
+        const opened = a.openDirectConversation(RECIPIENT_ADDRESS)
+        const send = sendSpy()
+        await a.sendMessage({
+          wallet: makeWallet(SENDER_ADDRESS),
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'hello from A' }],
+        })
+        expect(send.mock.calls[0][0].conversationId).toBe(opened.id)
+        // B replies in the thread it filed the message under, so the reply carries A's ID.
+        await receive(a, incoming('reply from B', opened.id))
+        expect(threadOf(a, 'reply from B')).toBe(opened)
+        expect(Object.keys(a.conversations)).toHaveLength(1)
+        send.mockRestore()
+        setActivePinia(createPinia())
+
+        // B's side (the same store code; RECIPIENT is now the peer who opened first).
+        const b = useChatStore()
+        await receive(b, incoming('hello from A', THEIR_ID))
+        const thread = threadOf(b, 'hello from A')
+        expect(thread?.id).toBe(THEIR_ID)
+        // The first conversation with a peer is that peer's thread: Contacts opens it.
+        expect(b.openDirectConversation(RECIPIENT_ADDRESS)).toBe(thread)
+        b.setActiveChat(RECIPIENT_ADDRESS)
+        expect(b.activeConversation).toBe(thread)
+        const reply = sendSpy()
+        await b.sendMessage({
+          wallet: makeWallet(SENDER_ADDRESS),
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'reply from B' }],
+        })
+        expect(reply.mock.calls[0][0].conversationId).toBe(THEIR_ID)
+        expect(threadOf(b, 'reply from B')).toBe(thread)
+        expect(Object.keys(b.conversations)).toHaveLength(1)
+      })
+
+      it('two messages from a sender that named no conversation of its own land in one thread', async () => {
+        // A bot or the CLI names none; the sending layer fills in the one ID it allocates for
+        // this recipient (`prepareDirectMessage`), so both messages carry the same ID.
+        const chats = useChatStore()
+        await receive(chats, incoming('first', THEIR_ID))
+        await receive(chats, incoming('second', THEIR_ID))
+        expect(threadOf(chats, 'second')).toBe(threadOf(chats, 'first'))
+        expect(chats.openDirectConversation(RECIPIENT_ADDRESS)).toBe(
+          threadOf(chats, 'first'),
+        )
+        expect(Object.keys(chats.conversations)).toHaveLength(1)
+      })
+
+      it('an explicitly created conversation stays separate, also with an equal subject', async () => {
+        const chats = useChatStore()
+        const explicitId = '44444444-4444-4444-8444-444444444444'
+        await receive(
+          chats,
+          incoming('in their thread', THEIR_ID),
+          incoming('in explicit', explicitId),
+        )
+        const thread = threadOf(chats, 'in their thread')
+        const explicit = threadOf(chats, 'in explicit')
+        expect(explicit?.id).toBe(explicitId)
+        expect(explicit).not.toBe(thread)
+        // Only the first conversation with a peer is the peer's thread.
+        expect(chats.chats[RECIPIENT_ADDRESS]).not.toBe(explicit)
+        thread!.name = 'Equal'
+        explicit!.name = 'Equal'
+        await receive(
+          chats,
+          incoming('their thread again', THEIR_ID),
+          incoming('explicit again', explicitId),
+        )
+        expect(threadOf(chats, 'their thread again')).toBe(thread)
+        expect(threadOf(chats, 'explicit again')).toBe(explicit)
+        expect(chats.chats[RECIPIENT_ADDRESS]).toBe(thread)
+
+        // One we create ourselves gets a random ID and is a third.
+        const ours = chats.createConversation({
+          address: RECIPIENT_ADDRESS,
+          participants: [RECIPIENT_ADDRESS],
+          name: 'Equal',
+        })
+        expect(ours.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-/)
+        const send = sendSpy()
+        const wallet = makeWallet(SENDER_ADDRESS)
+        for (const conversationId of [explicitId, ours.id, thread!.id])
+          await chats.sendMessage({
+            wallet,
+            address: RECIPIENT_ADDRESS,
+            conversationId,
+            items: [{ type: 'text', text: `reply in ${conversationId}` }],
+          })
+        // Every reply carries the ID of the conversation it was written in.
+        expect(send.mock.calls.map(([p]) => p.conversationId)).toEqual([
+          explicitId,
+          ours.id,
+          THEIR_ID,
+        ])
+        expect(Object.keys(chats.conversations)).toHaveLength(3)
+      })
+
+      it('a message with no ID is filed under the conversation this side opens with the sender, and the reply carries that ID', async () => {
+        const NO_ID_SALT = conversationIdSalt(new Uint8Array(32).fill(0x33))
+        setConversationIdSalt(NO_ID_SALT)
+        const chats = useChatStore()
+        await receive(chats, incoming('from an old client', undefined))
+        const thread = threadOf(chats, 'from an old client')
+        expect(thread?.id).toBe(
+          formatConversationId(
+            allocateOpeningConversationId(
+              NO_ID_SALT,
+              RECIPIENT_ADDRESS.toLowerCase(),
+            ),
+          ),
+        )
+        await receive(chats, incoming('again, still no ID', undefined))
+        expect(threadOf(chats, 'again, still no ID')).toBe(thread)
+        expect(chats.openDirectConversation(RECIPIENT_ADDRESS)).toBe(thread)
+
+        const send = sendSpy()
+        await chats.sendMessage({
+          wallet: makeWallet(SENDER_ADDRESS),
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'reply' }],
+        })
+        expect(send.mock.calls[0][0].conversationId).toBe(thread!.id)
+        expect(Object.keys(chats.conversations)).toHaveLength(1)
+
+        // Another sender with no ID gets its own bucket, not this one.
+        const other = incoming('another old client', undefined)
+        await chats.receiveMessages(
+          [
+            {
+              ...other,
+              senderAddress: THIRD_ADDRESS,
+              copartyAddress: THIRD_ADDRESS,
+              message: { ...other.message, senderAddress: THIRD_ADDRESS },
+            },
+          ],
+          SENDER_ADDRESS,
+        )
+        const otherThread = threadOf(chats, 'another old client')
+        expect(otherThread).not.toBe(thread)
+        expect(otherThread?.address).toBe(THIRD_ADDRESS)
+        expect(Object.keys(chats.conversations)).toHaveLength(2)
+      })
+
+      it("only a message from the peer itself makes a conversation that peer's thread", async () => {
+        const chats = useChatStore()
+        // A message in a conversation with RECIPIENT whose sender is someone else: filed under
+        // the ID it carries, but that does not make it what Contacts opens for RECIPIENT.
+        const foreign = incoming('not from the peer', THEIR_ID)
+        await chats.receiveMessages(
+          [
+            {
+              ...foreign,
+              senderAddress: THIRD_ADDRESS,
+              message: { ...foreign.message, senderAddress: THIRD_ADDRESS },
+            },
+          ],
+          SENDER_ADDRESS,
+        )
+        const filed = threadOf(chats, 'not from the peer')
+        expect(filed?.id).toBe(THEIR_ID)
+        expect(chats.chats[RECIPIENT_ADDRESS]).toBeUndefined()
+        const opened = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        expect(opened).not.toBe(filed)
+      })
+
+      describe('the subject goes on the wire', () => {
+        const withSubject = (
+          wrapper: ReturnType<typeof incoming>,
+          conversationName: string,
+          from: string = RECIPIENT_ADDRESS,
+        ) => ({
+          ...wrapper,
+          senderAddress: from,
+          message: {
+            ...wrapper.message,
+            conversationName,
+            senderAddress: from,
+          },
+        })
+        const say = (
+          chats: ReturnType<typeof useChatStore>,
+          conversationId: string,
+          text: string,
+        ) =>
+          chats.sendMessage({
+            wallet: makeWallet(SENDER_ADDRESS),
+            address: RECIPIENT_ADDRESS,
+            conversationId,
+            items: [{ type: 'text', text }],
+          })
+
+        it('rides on the first message of a conversation that has one and on a rename, and on nothing else', async () => {
+          const chats = useChatStore()
+          const conversation = chats.createConversation({
+            address: RECIPIENT_ADDRESS,
+            participants: [RECIPIENT_ADDRESS],
+            name: 'Weekend plans',
+          })
+          const send = sendSpy()
+          await say(chats, conversation.id, 'first')
+          await say(chats, conversation.id, 'second')
+          chats.renameConversation(conversation.id, 'Sunday plans')
+          await say(chats, conversation.id, 'third')
+          await say(chats, conversation.id, 'fourth')
+          expect(
+            send.mock.calls.map(([p]) => [
+              p.conversationId,
+              (p as any).conversationName,
+            ]),
+          ).toEqual([
+            [conversation.id, 'Weekend plans'],
+            [conversation.id, undefined],
+            [conversation.id, 'Sunday plans'],
+            [conversation.id, undefined],
+          ])
+          // Ordinary messages do not even carry the key.
+          expect('conversationName' in send.mock.calls[1][0]).toBe(false)
+
+          // A conversation with no subject never carries one.
+          const plain = chats.openDirectConversation(THIRD_ADDRESS)
+          await chats.sendMessage({
+            wallet: makeWallet(SENDER_ADDRESS),
+            address: THIRD_ADDRESS,
+            conversationId: plain.id,
+            items: [{ type: 'text', text: 'no subject' }],
+          })
+          expect('conversationName' in send.mock.calls[4][0]).toBe(false)
+        })
+
+        it('a send that fails keeps the subject for the next message', async () => {
+          const chats = useChatStore()
+          const conversation = chats.createConversation({
+            address: RECIPIENT_ADDRESS,
+            participants: [RECIPIENT_ADDRESS],
+            name: 'Weekend plans',
+          })
+          const send = jest
+            .spyOn(activeChain.directMessages, 'send')
+            .mockRejectedValueOnce(new Error('relay refused'))
+            .mockResolvedValue({
+              payloadDigest: 'subject-retry-1',
+              stampValueWei: 1n,
+              stampPayments: [],
+              preparationTxHashes: [],
+            })
+          await say(chats, conversation.id, 'lost')
+          await say(chats, conversation.id, 'arrives')
+          expect(
+            send.mock.calls.map(([p]) => (p as any).conversationName),
+          ).toEqual(['Weekend plans', 'Weekend plans'])
+        })
+
+        it('the peer sees the subject, and a rename by the peer replaces it; I do not send it back', async () => {
+          const chats = useChatStore()
+          await receive(
+            chats,
+            withSubject(incoming('opening', THEIR_ID), 'Weekend plans'),
+            incoming('follow-up without a subject', THEIR_ID),
+          )
+          const conversation = chats.conversations[THEIR_ID]
+          expect(conversation.name).toBe('Weekend plans')
+
+          const send = sendSpy()
+          await say(chats, THEIR_ID, 'reply')
+          expect('conversationName' in send.mock.calls[0][0]).toBe(false)
+
+          await receive(
+            chats,
+            withSubject(incoming('renamed', THEIR_ID), 'Sunday plans'),
+          )
+          expect(conversation.name).toBe('Sunday plans')
+          await say(chats, THEIR_ID, 'reply again')
+          expect('conversationName' in send.mock.calls[1][0]).toBe(false)
+
+          // My own rename then goes out once.
+          chats.renameConversation(THEIR_ID, 'Monday plans')
+          await say(chats, THEIR_ID, 'my rename')
+          expect((send.mock.calls[2][0] as any).conversationName).toBe(
+            'Monday plans',
+          )
+        })
+
+        it('ignores a subject from anyone but the conversation peer, and an unusable one', async () => {
+          const chats = useChatStore()
+          await receive(
+            chats,
+            withSubject(incoming('opening', THEIR_ID), 'Weekend plans'),
+          )
+          const conversation = chats.conversations[THEIR_ID]
+          // A third party's message in this conversation carrying a subject.
+          await receive(
+            chats,
+            withSubject(
+              incoming('third party', THEIR_ID),
+              'Hijacked',
+              THIRD_ADDRESS,
+            ),
+          )
+          expect(conversation.name).toBe('Weekend plans')
+          // Whitespace and control characters are not a subject.
+          await receive(
+            chats,
+            withSubject(incoming('blank', THEIR_ID), '   '),
+            withSubject(incoming('control', THEIR_ID), 'a\u0007b'),
+          )
+          expect(conversation.name).toBe('Weekend plans')
+        })
+
+        it('a rename I made on another device arrives with my own message, and of two renames the later relay time wins', async () => {
+          const at = (wrapper: ReturnType<typeof incoming>, time: number) => ({
+            ...wrapper,
+            message: {
+              ...wrapper.message,
+              serverTime: time,
+              receivedTime: time,
+            },
+          })
+          const mine = (text: string, subject: string, time: number) => {
+            const echo = at(
+              withSubject(incoming(text, THEIR_ID), subject, SENDER_ADDRESS),
+              time,
+            )
+            return {
+              ...echo,
+              outbound: true,
+              message: {
+                ...echo.message,
+                outbound: true,
+                destinationAddress: RECIPIENT_ADDRESS,
+              },
+            } as any
+          }
+          const theirs = (text: string, subject: string, time: number) =>
+            at(withSubject(incoming(text, THEIR_ID), subject), time)
+          const rows = () => [
+            theirs('opening', 'Weekend plans', 1000),
+            mine('my rename, other device', 'Sunday plans', 3000),
+            theirs('their rename', 'Monday plans', 2000),
+          ]
+
+          // Read in relay order, in the opposite order, and one poll at a time: the subject is
+          // the one with the latest relay time, mine, every time.
+          for (const order of [
+            (r: any[]) => [r],
+            (r: any[]) => [[...r].reverse()],
+            (r: any[]) => r.map(row => [row]),
+            (r: any[]) => [...r].reverse().map(row => [row]),
+          ]) {
+            setActivePinia(createPinia())
+            const chats = useChatStore()
+            for (const batch of order(rows()))
+              await chats.receiveMessages(batch, SENDER_ADDRESS)
+            expect(chats.conversations[THEIR_ID].name).toBe('Sunday plans')
+            // It has been carried already: my next message here does not resend it.
+            const send = sendSpy()
+            await say(chats, THEIR_ID, 'next')
+            expect('conversationName' in send.mock.calls[0][0]).toBe(false)
+            send.mockRestore()
+          }
+
+          // A later rename by the peer then replaces mine.
+          const chats = useChatStore()
+          await receive(
+            chats,
+            theirs('their later rename', 'Tuesday plans', 4000),
+          )
+          expect(chats.conversations[THEIR_ID].name).toBe('Tuesday plans')
+        })
+
+        it('two conversations with one peer and equal subjects stay two', async () => {
+          const chats = useChatStore()
+          const other = '44444444-4444-4444-8444-444444444444'
+          await receive(
+            chats,
+            withSubject(incoming('in one', THEIR_ID), 'Equal'),
+            withSubject(incoming('in the other', other), 'Equal'),
+          )
+          expect(chats.conversations[THEIR_ID].name).toBe('Equal')
+          expect(chats.conversations[other].name).toBe('Equal')
+          expect(threadOf(chats, 'in one')).not.toBe(
+            threadOf(chats, 'in the other'),
+          )
+          expect(Object.keys(chats.conversations)).toHaveLength(2)
+        })
+
+        it('an email thread keeps the subject of its email whatever a message carries', async () => {
+          const chats = useChatStore()
+          const emailThread = incoming('unused', THEIR_ID)
+          await receive(chats, {
+            ...emailThread,
+            message: {
+              ...emailThread.message,
+              conversationName: 'Wire subject',
+              items: [
+                {
+                  type: 'email',
+                  messageId: '<a@x>',
+                  from: { address: 'a@example.com' },
+                  to: [{ address: 'me@frank.org' }],
+                  subject: 'Email subject',
+                  textBody: 'body',
+                },
+              ],
+            },
+          } as any)
+          const conversation = chats.conversations[THEIR_ID]
+          expect(conversation.kind).toBe('email')
+          expect(conversation.name).toBe('Email subject')
+          await receive(
+            chats,
+            withSubject(incoming('later text', THEIR_ID), 'Wire subject'),
+          )
+          expect(conversation.name).toBe('Email subject')
+        })
+      })
+
+      it('a message of ours the relay has not timed yet does not decide the peer thread', async () => {
+        const chats = useChatStore()
+        const ours = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        // Still pending, stamped with this device's clock, far earlier than anything real.
+        chats.sendMessageLocal({
+          address: RECIPIENT_ADDRESS,
+          conversationId: ours.id,
+          senderAddress: SENDER_ADDRESS,
+          index: 'pending-local-1',
+          items: [{ type: 'text', text: 'not sent yet' }],
+          outpoints: [],
+          stampValueWei: 10n,
+          status: 'pending',
+          previousHash: null,
+          timestamp: 1,
+        })
+        await receive(chats, incoming('their first', THEIR_ID))
+        // Another device of this account sees only the peer's message; so does the rule here.
+        expect(chats.chats[RECIPIENT_ADDRESS].id).toBe(THEIR_ID)
+        // Our thread holds a message, so it is kept: it is simply not the peer's thread.
+        expect(chats.conversations[ours.id].messages).toHaveLength(1)
+      })
+
+      it('leads a dialog or a view still holding a dropped thread to the one that replaced it', async () => {
+        const chats = useChatStore()
+        const ours = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        const droppedId = ours.id
+        await receive(chats, incoming('their first', THEIR_ID))
+        expect(chats.conversations[droppedId]).toBeUndefined()
+        // A subject edit that was open on the dropped thread saves onto its replacement.
+        chats.renameConversation(droppedId, 'Renamed while it changed')
+        expect(chats.conversations[THEIR_ID].name).toBe(
+          'Renamed while it changed',
+        )
+        // So does a route or a click that still names it.
+        chats.setActiveConversation(null)
+        chats.setActiveConversation(droppedId)
+        expect(chats.activeConversationId).toBe(THEIR_ID)
+        expect(() => chats.setActiveConversation('no-such-id')).toThrow(
+          /Unknown conversation/,
+        )
+      })
+
+      it('a peer thread read before the salt arrived is read again when it does', () => {
+        const chats = useChatStore()
+        const opened = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        // The same store as a view sees it before the account's wallet is at hand.
+        setConversationIdSalt(null)
+        expect(chats.chats[RECIPIENT_ADDRESS]).toBeUndefined()
+        setConversationIdSalt(TEST_SALT)
+        expect(chats.chats[RECIPIENT_ADDRESS]).toBe(opened)
+      })
+
+      it('a thread opened here and never used yields to the conversation the peer started', async () => {
+        const chats = useChatStore()
+        const ours = chats.openDirectConversation(RECIPIENT_ADDRESS)
+        chats.setActiveConversation(ours.id)
+        // The peer had opened a chat with us too, under its own ID, and wrote first.
+        await receive(chats, incoming('their first', THEIR_ID))
+        const theirs = threadOf(chats, 'their first')
+        expect(theirs?.id).toBe(THEIR_ID)
+        // Theirs is the peer's thread; ours is not left behind as a second, empty one, and
+        // whoever had it open is looking at the peer's thread.
+        expect(chats.chats[RECIPIENT_ADDRESS]).toBe(theirs)
+        expect(chats.openDirectConversation(RECIPIENT_ADDRESS)).toBe(theirs)
+        expect(chats.conversations[ours.id]).toBeUndefined()
+        expect(chats.activeConversation).toBe(theirs)
+        expect(Object.keys(chats.conversations)).toHaveLength(1)
+        const send = sendSpy()
+        await chats.sendMessage({
+          wallet: makeWallet(SENDER_ADDRESS),
+          address: RECIPIENT_ADDRESS,
+          items: [{ type: 'text', text: 'reply' }],
+        })
+        expect(send.mock.calls[0][0].conversationId).toBe(THEIR_ID)
+      })
+
+      it('accepted case: both sides wrote first in their own conversation, so there are two; the earlier one is the peer thread on every device', async () => {
+        const mine = (text: string, conversationId: string, time: number) => {
+          const row = incoming(text, conversationId)
+          return {
+            ...row,
+            outbound: true,
+            senderAddress: SENDER_ADDRESS,
+            message: {
+              ...row.message,
+              outbound: true,
+              senderAddress: SENDER_ADDRESS,
+              destinationAddress: RECIPIENT_ADDRESS,
+              serverTime: time,
+              receivedTime: time,
+            },
+          } as any
+        }
+        const theirs = (text: string, time: number) => {
+          const row = incoming(text, THEIR_ID)
+          return {
+            ...row,
+            message: { ...row.message, serverTime: time, receivedTime: time },
+          }
+        }
+        const OUR_ID = formatConversationId(
+          allocateOpeningConversationId(
+            TEST_SALT,
+            RECIPIENT_ADDRESS.toLowerCase(),
+          ),
+        )
+        const rows = () => [
+          mine('our first', OUR_ID, 1000),
+          theirs('their first', 2000),
+          theirs('their second', 3000),
+        ]
+        // Two devices of this account read the same mailbox: one in relay order, one in the
+        // opposite order a poll at a time, and one of them had opened the chat before anything
+        // arrived. They agree on the peer's thread and on where every message is.
+        const seen: unknown[] = []
+        for (const device of [
+          { openFirst: false, batches: [rows()] },
+          {
+            openFirst: true,
+            batches: rows()
+              .reverse()
+              .map(row => [row]),
+          },
+        ]) {
+          setActivePinia(createPinia())
+          const chats = useChatStore()
+          if (device.openFirst) chats.openDirectConversation(RECIPIENT_ADDRESS)
+          for (const batch of device.batches)
+            await chats.receiveMessages(batch, SENDER_ADDRESS)
+          expect(chats.chats[RECIPIENT_ADDRESS].id).toBe(OUR_ID)
+          expect(chats.openDirectConversation(RECIPIENT_ADDRESS).id).toBe(
+            OUR_ID,
+          )
+          seen.push(
+            Object.values(chats.conversations)
+              .map(c => [
+                c.id,
+                c.messages.map(m =>
+                  m.items.map(i => (i as { text?: string }).text).join(),
+                ),
+              ])
+              .sort(),
+          )
+        }
+        expect(seen[0]).toEqual(seen[1])
+        expect(seen[0]).toEqual(
+          [
+            [OUR_ID, ['our first']],
+            [THEIR_ID, ['their first', 'their second']],
+          ].sort(),
+        )
+      })
     })
   })
 

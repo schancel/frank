@@ -4,6 +4,15 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createApp, defineComponent, h, nextTick } from 'vue'
 import { TextDecoder, TextEncoder } from 'util'
 import type { MessageWrapper } from '@frank/cashweb/types/messages'
+import { setConversationIdSalt as installTestConversationIdSalt } from '../stores/chats'
+import { conversationIdSalt as testConversationIdSalt } from '@frank/cashweb/relay/conversation-id'
+
+// An account that can open a chat always has its conversation-ID salt installed.
+beforeEach(() =>
+  installTestConversationIdSalt(
+    testConversationIdSalt(new Uint8Array(32).fill(0x7e)),
+  ),
+)
 
 Object.assign(globalThis, { TextEncoder, TextDecoder })
 const mockRows = new Map<string, MessageWrapper>()

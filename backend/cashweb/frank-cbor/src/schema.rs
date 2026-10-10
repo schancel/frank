@@ -590,7 +590,7 @@ pub(crate) enum Draft {
         message_id: Vec<u8>,
         revision_frame: Vec<u8>,
         content_digest: Vec<u8>,
-        conversation_id: Vec<u8>,
+        conversation_id: Option<Vec<u8>>,
         conversation_name: Option<String>,
         unknown: Vec<(u64, CborValue)>,
     },
@@ -1349,7 +1349,13 @@ pub(crate) fn parse_draft(
             }
         }
         crate::limits::TYPE_ENCRYPTED_CONTENT => {
-            let map = fields(Some(payload), path, &[0, 1, 2, 3, 4], &[5], true, allow)?;
+            // Field 4 is optional on the wire: writers should send it, readers accept absence.
+            let map = fields(Some(payload), path, &[0, 1, 2, 3], &[4, 5], true, allow)?;
+            let conversation_id = if map.has(4) {
+                Some(bstr(map.get(4), &format!("{path}.4"), 16, 16)?)
+            } else {
+                None
+            };
             let conversation_name = if map.has(5) {
                 Some(conversation_name(map.get(5), &format!("{path}.5"))?)
             } else {
@@ -1360,7 +1366,7 @@ pub(crate) fn parse_draft(
                 message_id: bstr(map.get(1), &format!("{path}.1"), 16, 16)?,
                 revision_frame: framed(map.get(2), &format!("{path}.2"))?,
                 content_digest: bstr(map.get(3), &format!("{path}.3"), 32, 32)?,
-                conversation_id: bstr(map.get(4), &format!("{path}.4"), 16, 16)?,
+                conversation_id,
                 conversation_name,
                 unknown: map.unknown,
             })

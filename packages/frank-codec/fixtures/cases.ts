@@ -2847,7 +2847,7 @@ rej(
 const t6 = (
   id: Uint8Array,
   digest: Uint8Array,
-  convId: Uint8Array = bytesOf(16, 8),
+  convId: Uint8Array | null = bytesOf(16, 8),
   convName?: string,
 ) => {
   const entries: [number, any][] = [
@@ -2855,8 +2855,9 @@ const t6 = (
     [1, id],
     [2, rev8Frame()],
     [3, digest],
-    [4, convId],
   ]
+  // `null`: a client that sent no conversation ID.
+  if (convId !== null) entries.push([4, convId])
   if (convName !== undefined) {
     entries.push([5, convName])
   }
@@ -2890,6 +2891,12 @@ acc(
   'r2-conv-id-16-bytes',
   'conversation_id of 16 bytes.',
   t6(bytesOf(16, 7), bytesOf(32, 1), bytesOf(16, 8)),
+  ['T1a'],
+)
+acc(
+  'r2-conv-id-absent',
+  'conversation_id absent: accepted; writers should send one.',
+  t6(bytesOf(16, 7), bytesOf(32, 1), null),
   ['T1a'],
 )
 rej(

@@ -3,7 +3,8 @@
  *
  * Seeded random sequences of the events that matter are applied to the real chat store over an
  * in-memory message store: messages from this user, two peers and a stranger; into live, deleted
- * and reopened conversations and one nobody opened; with message IDs that are fresh, reused
+ * and reopened conversations and one nobody opened; carrying a conversation ID nobody here has
+ * seen, or none at all; some carrying a subject (a first message or a rename); with message IDs that are fresh, reused
  * within and across conversations, or equal to another message's derived ID; relay times before
  * and after a deletion; replays of earlier rows; delivered in one batch or over several polls;
  * with deletions in between. After each sequence the store is saved and restored through its own
@@ -22,11 +23,15 @@ import { createApp } from 'vue'
 
 import {
   collidedMessageId,
+  peerThread,
+  peerThreadId,
+  setConversationIdSalt,
   useChatStore,
   type Conversation,
   type RestorableState,
 } from './chats'
 import { useContactStore } from './contacts'
+import { conversationIdSalt } from '@frank/cashweb/relay/conversation-id'
 import { displayNetwork } from '../utils/constants'
 import { STORE_SCHEMA_VERSION } from 'src/boot/pinia'
 import type { ReceivedMessageWrapper } from '@frank/cashweb/types/user-interface'
@@ -89,11 +94,15 @@ const STRANGER = '0x5555555555555555555555555555555555555555'
 const WITH_PEER_1 = '11111111-1111-4111-8111-111111111111'
 const WITH_PEER_2 = '22222222-2222-4222-8222-222222222222'
 const UNOPENED = '33333333-3333-4333-8333-333333333333'
+// An ID allocated by whoever sent the first message in it; nobody here opened it.
+// A UUIDv5: the kind an account allocates when it opens a chat.
+const UNKNOWN = '44444444-4444-5444-8444-444444444444'
 const CONVERSATIONS = [WITH_PEER_1, WITH_PEER_2, UNOPENED]
 const PEER_OF: Record<string, string> = {
   [WITH_PEER_1]: PEER_1,
   [WITH_PEER_2]: PEER_2,
   [UNOPENED]: PEER_1,
+  [UNKNOWN]: PEER_2,
 }
 
 /** mulberry32: small, seeded, repeatable. */
@@ -143,15 +152,23 @@ function sequence(seed: number): Step[] {
       // The relay hands an earlier row back.
       batch.push(random.pick(sent))
     } else {
-      const conversationId = random.pick(CONVERSATIONS)
+      // Mostly a conversation this device knows; sometimes an ID it has never seen, and
+      // sometimes none at all (a client that sent none).
+      const where = random.int(10)
+      const conversationId =
+        where < 7 ? random.pick(CONVERSATIONS) : where < 9 ? UNKNOWN : undefined
       const sender = random.pick([PEER_1, PEER_2, STRANGER, ME, PEER_1])
       const outbound = sender === ME
       // Our own row names who it was sent to: usually the conversation's peer.
       const coparty = outbound
-        ? random.chance(0.8)
+        ? conversationId !== undefined && random.chance(0.8)
           ? PEER_OF[conversationId]
           : PEER_2
         : sender
+      // A first message or a rename carries the subject.
+      const subject = random.chance(0.25)
+        ? random.pick(['Subject A', 'Subject B'])
+        : undefined
       const named = random.pick(['shared-1', 'shared-2'])
       const idKind = random.int(20)
       const messageId =
@@ -163,7 +180,7 @@ function sequence(seed: number): Step[] {
             collidedMessageId(named, digest(random.int(count)))
       const time = 1 + random.int(100)
       const wrapper = {
-        conversationId,
+        ...(conversationId === undefined ? {} : { conversationId }),
         outbound,
         senderAddress: sender,
         copartyAddress: coparty,
@@ -171,7 +188,8 @@ function sequence(seed: number): Step[] {
         index: digest(n),
         stampValue: 0,
         message: {
-          conversationId,
+          ...(conversationId === undefined ? {} : { conversationId }),
+          ...(subject === undefined ? {} : { conversationName: subject }),
           outbound,
           status: 'confirmed',
           senderAddress: sender,
@@ -206,6 +224,8 @@ function visible(state: {
         peer: c.address,
         kind: c.kind,
         subject: c.name,
+        // Derived from the messages, the same way in the session and after a reload.
+        peerThread: peerThread(state.conversations, c.address)?.id === c.id,
         deletedAt: c.deletedAt,
         clearedBefore: c.clearedBefore,
         participants: [...c.participants].sort(),
@@ -238,7 +258,15 @@ type Persistence = {
   ) => Promise<RestorableState>
 }
 
+// What the previous case opened. Thousands of cases run in one process: each lets go of its
+// store, its spy and what the silenced console recorded before the next one starts.
+let release: (() => void) | undefined
+
 async function openStore() {
+  release?.()
+  // Every mock here records its calls with their arguments (the silenced console, the
+  // notification and profile stand-ins): forget them, keeping what the mocks do.
+  jest.clearAllMocks()
   mockDisk.rows.clear()
   mockDisk.suppressed.clear()
   const pinia = createPinia()
@@ -249,8 +277,19 @@ async function openStore() {
   })
   createApp({}).use(pinia)
   setActivePinia(pinia)
+  // The account's salt: a message with no conversation ID is filed under the ID allocated from
+  // it for the sender.
+  setConversationIdSalt(conversationIdSalt(new Uint8Array(32).fill(0x11)))
   const chats = useChatStore()
-  jest.spyOn(useContactStore(), 'refresh').mockResolvedValue(undefined)
+  const contacts = useContactStore()
+  // Replaced outright rather than spied on: the runner keeps every spy's target until the file
+  // ends, and with it the whole store of every case.
+  Object.assign(contacts, { refresh: async () => undefined })
+  release = () => {
+    chats.$dispose()
+    contacts.$dispose()
+    release = undefined
+  }
   chats.createConversation({
     participants: [ME, PEER_1],
     address: PEER_1,
@@ -403,6 +442,106 @@ describe('a reload shows what the session showed, whatever was received', () => 
     })
   }, 120_000)
 
+  // Two devices of one account read the same mailbox. They may read it in any order and in any
+  // batches, and one may have opened chats with both peers before anything arrived. They must
+  // end up agreeing on which conversation is each peer's thread and on the conversation every
+  // message is in. (Message IDs are left unique here, and a named conversation has no third
+  // party in it: which of two messages keeps a contested ID, and who a conversation a stranger
+  // wrote into first is with, both go by arrival and are other properties' subjects.)
+  it(`two devices fed ${seeds.length} seeded mailboxes in different orders agree on every peer's thread and where each message is`, async () => {
+    const filing = (chats: ReturnType<typeof useChatStore>) => ({
+      threads: Object.fromEntries(
+        [PEER_1, PEER_2, STRANGER].map(peer => [
+          peer,
+          peerThreadId(chats.conversations, peer),
+        ]),
+      ),
+      messages: Object.fromEntries(
+        Object.values(chats.conversations)
+          .flatMap(c =>
+            c.messages
+              // What the relay holds; a message still pending on one device is that device's.
+              .filter(m => !m.outbound || m.status === 'confirmed')
+              .map(m => [m.payloadDigest, c.id] as const),
+          )
+          .sort(([a], [b]) => (a < b ? -1 : 1)),
+      ),
+    })
+    await quietly(async () => {
+      for (const seed of seeds) {
+        const rows = new Map<string, ReceivedMessageWrapper>()
+        for (const step of sequence(seed)) {
+          if (step.kind !== 'receive') continue
+          for (const wrapper of step.batch) {
+            // Our own rows are our own outbox: only those to the conversation's peer exist.
+            if (
+              wrapper.outbound &&
+              wrapper.conversationId !== undefined &&
+              wrapper.copartyAddress !== PEER_OF[String(wrapper.conversationId)]
+            )
+              continue
+            // Who a conversation is with is settled by the first row read into it, so a third
+            // party writing into someone else's conversation makes that depend on the order;
+            // that is the group-bubbles rule's subject, not this one's. Here a named
+            // conversation is written into only by its own peer and by us.
+            if (
+              !wrapper.outbound &&
+              wrapper.conversationId !== undefined &&
+              wrapper.senderAddress !== PEER_OF[String(wrapper.conversationId)]
+            )
+              continue
+            const message = { ...wrapper.message } as Record<string, unknown>
+            delete message.logicalMessageId
+            rows.set(wrapper.index, {
+              ...wrapper,
+              message,
+            } as unknown as ReceivedMessageWrapper)
+          }
+        }
+        const mailbox = [...rows.values()]
+        const random = generator(seed ^ 0x9e3779b9)
+        const shuffled = [...mailbox]
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = random.int(i + 1)
+          ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+        }
+        try {
+          const first = (await openStore()).chats
+          await first.receiveMessages(mailbox, ME)
+          const one = filing(first)
+
+          const second = (await openStore()).chats
+          // This device had opened both chats before anything arrived.
+          const opened = second.openDirectConversation(PEER_1)
+          second.openDirectConversation(PEER_2)
+          // And it has a message of its own still pending there, stamped with its own clock,
+          // earlier than anything the relay timed: no other device sees it, so it decides
+          // nothing.
+          second.sendMessageLocal({
+            address: PEER_1,
+            conversationId: opened.id,
+            senderAddress: ME,
+            index: `case${seed}-pending`,
+            items: [{ type: 'text', text: 'not sent yet' }],
+            outpoints: [],
+            stampValueWei: 0n,
+            status: 'pending',
+            previousHash: null,
+            timestamp: 0,
+          })
+          for (const row of shuffled) await second.receiveMessages([row], ME)
+          expect(filing(second)).toEqual(one)
+        } catch (error) {
+          throw new Error(
+            `seed ${seed} failed (replay with PROPERTY_SEED=${seed}):\n${
+              (error as Error).message
+            }`,
+          )
+        }
+      }
+    })
+  }, 240_000)
+
   // Rows no receive of this version would have saved together: an older version's store, or a
   // stop between two writes. Whatever other people's rows are on disk and however they relate
   // to each other, the store loads, and what it loaded loads again. (Only loading is claimed
@@ -429,6 +568,9 @@ describe('a reload shows what the session showed, whatever was received', () => 
                   PEER_OF[String(wrapper.conversationId)])
             )
               continue
+            // A row is saved under the conversation it was filed in, so no saved row lacks one:
+            // a message that carried no ID reaches the disk only through `receiveMessages`.
+            if (wrapper.conversationId === undefined) continue
             const kept = row(wrapper)
             // Sometimes already re-filed, under an ID something else may also hold.
             if (random.chance(0.2))

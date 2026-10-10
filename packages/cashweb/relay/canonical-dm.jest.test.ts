@@ -1018,7 +1018,9 @@ function selfOpenRoles() {
     })
   return role
 }
-test('ticket #970: conversationId defaults to messageId and conversationName is undefined when omitted', () => {
+test('a message whose caller names no conversation carries none, never the message ID', () => {
+  // Allocating an ID needs the sender's private salt, which the wallet-side caller holds and
+  // this layer does not; with none passed in, none is encoded.
   const messageId = new Uint8Array(16).fill(0x11)
   const role = selfOpenRoles()
   const prepared = prepareDirectMessage({
@@ -1026,21 +1028,22 @@ test('ticket #970: conversationId defaults to messageId and conversationName is 
     senderCurrent: current,
     recipientCurrent: current,
     messageId,
-    items: [directMessageText('default conversation')],
+    items: [directMessageText('no conversation named')],
     roles: role,
   })
-  expect(toHex(prepared.conversationId)).toBe(toHex(messageId))
-  expect(prepared.conversationName).toBeUndefined()
-
+  expect(prepared.conversationId).toBeUndefined()
+  const content = parseFrame(prepared.content)
+  if (content.kind !== 'parsed' || content.typed?.type !== 6)
+    throw new Error('expected type 6 content')
+  expect(content.typed.conversationId).toBeUndefined()
+  expect(toHex(content.typed.messageId)).toBe(toHex(messageId))
   const opened = openDirectMessage({
     ...receive(role),
     payload: prepared.payload,
     context: prepared.context,
   })
-  expect(toHex(opened.conversationId)).toBe(toHex(messageId))
-  expect(opened.conversationName).toBeUndefined()
+  expect(opened.conversationId).toBeUndefined()
   expect(opened.mode).toBe('receive')
-
   const selfOpened = openOwnDirectMessage({
     network: corpus.network,
     payload: prepared.payload,
@@ -1049,9 +1052,52 @@ test('ticket #970: conversationId defaults to messageId and conversationName is 
     senderCurrent: current,
     recipientCurrent: current,
   })
-  expect(toHex(selfOpened.conversationId)).toBe(toHex(messageId))
-  expect(selfOpened.conversationName).toBeUndefined()
+  expect(selfOpened.conversationId).toBeUndefined()
   expect(selfOpened.mode).toBe('send')
+})
+test('a message from a client that sent no conversation ID opens with none', () => {
+  // Our own writer always sends one; this is another client's message, sealed by hand.
+  const revision = encodeFrame(
+    { typeId: 8, schemaVersion: 1, minReaderVersion: 1 },
+    cborMap([
+      [0, 'frank'],
+      [1, [directMessageText('from a foreign client')]],
+    ]),
+  )
+  const foreign = encodeFrame(
+    { typeId: 6, schemaVersion: 2, minReaderVersion: 1 },
+    cborMap([
+      [0, corpus.network],
+      [1, new Uint8Array(16).fill(0x21)],
+      [2, revision],
+      [3, messageContentDigest(revision)],
+    ]),
+  )
+  const sender = roles()
+  sender.sealMessage = input =>
+    seal({
+      ...input,
+      suiteId: 1,
+      senderPrivateKey: fromHex(v.message_secret_test_only),
+      senderPublicKey: current.messageKey.keyBytes,
+      plaintext: foreign,
+    })
+  const sealed = prepareDirectMessage({
+    network: corpus.network,
+    senderCurrent: current,
+    recipientCurrent: current,
+    messageId: new Uint8Array(16).fill(0x21),
+    items: [directMessageText('valid outer authoring')],
+    roles: sender,
+  })
+  const opened = openDirectMessage({
+    ...receive(),
+    payload: sealed.payload,
+    context: sealed.context,
+  })
+  expect(toHex(opened.messageId)).toBe('21'.repeat(16))
+  expect(opened.conversationId).toBeUndefined()
+  expect('conversationId' in opened).toBe(false)
 })
 test('ticket #970: explicit conversationId and conversationName are preserved across prepare and open', () => {
   const messageId = new Uint8Array(16).fill(0x22)

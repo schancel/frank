@@ -2504,6 +2504,52 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         expect(later.payloadDigest).not.toBe(again.payloadDigest)
       },
     )
+
+    it('an unpaid message the relay retained is repeated byte for byte, conversation ID and subject included', async () => {
+      await directories()
+      const sealing = jest.spyOn(canonicalOpen, 'prepareDirectMessage')
+      const messageId = '00000000-0000-4000-8000-0000000000ab'
+      const conversationId = '11111111-2222-4333-8444-555555555555'
+      f.setPhase('retained')
+      await expect(
+        f.chain.directMessages.send({
+          wallet: f.alice,
+          recipient: f.bob.identity.address,
+          items: text('unpaid, with a subject'),
+          stampValue: 0n,
+          messageId,
+          conversationId,
+          conversationName: 'Weekend plans',
+        }),
+      ).rejects.toBeInstanceOf(UnpaidDirectMessageNotDeliveredError)
+      // What was sealed into the kept envelope.
+      expect(sealing).toHaveBeenCalledTimes(1)
+      expect(toHex(sealing.mock.calls[0][0].conversationId!)).toBe(
+        conversationId.replace(/-/g, ''),
+      )
+      expect(sealing.mock.calls[0][0].conversationName).toBe('Weekend plans')
+
+      // The repeat, even asked with another conversation and subject, is the kept envelope:
+      // nothing is sealed again and the bytes, with their ID and subject, are the same.
+      f.setPhase('delivered')
+      const requests = f.requests.length
+      const again = await f.chain.directMessages.send({
+        wallet: f.alice,
+        recipient: f.bob.identity.address,
+        items: text('unpaid, with a subject'),
+        stampValue: 0n,
+        messageId,
+        conversationName: 'Another subject',
+      })
+      expect(sealing).toHaveBeenCalledTimes(1)
+      expect(f.requests).toHaveLength(requests + 1)
+      const first = restoreCanonicalRequest(f.requests[requests - 1])
+      const repeat = restoreCanonicalRequest(f.requests[requests])
+      expect(toHex(repeat.parts.delivery)).toBe(toHex(first.parts.delivery))
+      expect(toHex(repeat.parts.context)).toBe(toHex(first.parts.context))
+      expect(repeat.identity.payload_hash).toBe(again.payloadDigest)
+      sealing.mockRestore()
+    })
   })
 
   it('sends from an unfunded wallet by funding inventory first', async () => {

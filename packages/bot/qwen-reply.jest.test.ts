@@ -45,38 +45,14 @@ describe('qwenBotConfigFromEnv', () => {
     )
   })
 
-  it('keeps running by default: unlimited replies, no idle exit', () => {
-    const c = qwenBotConfigFromEnv({ QWEN_BOT_MODE: 'stub' })
-    expect(c.maxReplies).toBe(Infinity)
-    expect(c.idleTimeoutMs).toBe(0)
-  })
-
-  it('exits after N replies only when QWEN_BOT_MAX_REPLIES asks for it', () => {
+  it('has no reply count or idle exit: the bot runs until it is stopped', () => {
     const c = qwenBotConfigFromEnv({
       QWEN_BOT_MODE: 'stub',
       QWEN_BOT_MAX_REPLIES: '1',
+      QWEN_BOT_IDLE_TIMEOUT_MS: '5000',
     })
-    expect(c.maxReplies).toBe(1)
-    expect(c.idleTimeoutMs).toBe(10 * 60 * 1000)
-    expect(
-      qwenBotConfigFromEnv({ QWEN_BOT_MODE: 'stub', QWEN_BOT_MAX_REPLIES: '0' })
-        .maxReplies,
-    ).toBe(Infinity)
-  })
-
-  it('honours an explicit idle timeout and rejects junk numbers', () => {
-    expect(
-      qwenBotConfigFromEnv({
-        QWEN_BOT_MODE: 'stub',
-        QWEN_BOT_IDLE_TIMEOUT_MS: '5000',
-      }).idleTimeoutMs,
-    ).toBe(5000)
-    expect(() =>
-      qwenBotConfigFromEnv({
-        QWEN_BOT_MODE: 'stub',
-        QWEN_BOT_MAX_REPLIES: 'lots',
-      }),
-    ).toThrow(/QWEN_BOT_MAX_REPLIES/)
+    expect(c).not.toHaveProperty('maxReplies')
+    expect(c).not.toHaveProperty('idleTimeoutMs')
   })
 })
 

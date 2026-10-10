@@ -19,7 +19,6 @@ export type QwenBotMode = 'live' | 'stub'
 export const STUB_REPLY_PREFIX = '[STUB -- no model, offline canned reply]'
 
 const STUB_ECHO_MAX_CHARS = 200
-const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000
 /** One whole model answer, connection and stream together. */
 export const DEFAULT_MODEL_TIMEOUT_MS = 45_000
 /** Model calls made for one message before the user is told it failed. */
@@ -75,10 +74,6 @@ export interface QwenBotConfig {
   apiKey?: string
   endpoint?: string
   model: string
-  /** `Infinity` means keep running (the default); a finite value exits after that many replies. */
-  maxReplies: number
-  /** `0` disables the idle exit. Defaults to disabled when `maxReplies` is unlimited. */
-  idleTimeoutMs: number
   /** Limit for one whole model call, in milliseconds. */
   modelTimeoutMs: number
   /** Model calls made for one message before the user is told it failed. At least 1. */
@@ -121,13 +116,6 @@ export function qwenBotConfigFromEnv(env: NodeJS.ProcessEnv): QwenBotConfig {
     endpoint = env.QWEN_OPENAI_COMPATIBLE_ENDPOINT
   }
 
-  // 0 or unset = keep running; QWEN_BOT_MAX_REPLIES=1 is the explicit exit-after-one flag.
-  const maxRepliesRaw = nonNegativeInt(env, 'QWEN_BOT_MAX_REPLIES')
-  const maxReplies = maxRepliesRaw ? maxRepliesRaw : Infinity
-  const idleRaw = nonNegativeInt(env, 'QWEN_BOT_IDLE_TIMEOUT_MS')
-  const idleTimeoutMs =
-    idleRaw ?? (Number.isFinite(maxReplies) ? DEFAULT_IDLE_TIMEOUT_MS : 0)
-
   const modelTimeoutMs =
     nonNegativeInt(env, 'QWEN_MODEL_TIMEOUT_MS') ?? DEFAULT_MODEL_TIMEOUT_MS
   if (modelTimeoutMs === 0) {
@@ -145,8 +133,6 @@ export function qwenBotConfigFromEnv(env: NodeJS.ProcessEnv): QwenBotConfig {
     apiKey,
     endpoint,
     model: env.QWEN_MODEL || 'qwen3.8-max',
-    maxReplies,
-    idleTimeoutMs,
     modelTimeoutMs,
     modelTries,
     thinking: rawThinking === '1',

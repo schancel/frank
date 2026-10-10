@@ -8,10 +8,8 @@
  *
  * Run `qwen-bot.livecheck.ts` first (it registers its identity and writes its address to
  * `QWEN_BOT_HANDOFF_JSON`, default `/tmp/qwen-bot-handoff.json`), then run this in a separate
- * process/shell while the bot is polling. `qwen-bot.livecheck.ts` must be started with
- * `QWEN_BOT_MAX_REPLIES` set to at least the number of messages this script will send, since
- * that's the bot's own reply quota -- unrelated to sub-account funding, which both scripts now do
- * lazily per-send (see `setUpFundedStampClient`'s doc comment, "Lazy per-send funding").
+ * process/shell while the bot is polling. The bot has no reply quota. Sub-account funding is
+ * done lazily per-send (see `setUpFundedStampClient`'s doc comment, "Lazy per-send funding").
  *
  * `QWEN_BOT_MESSAGES` (a JSON array of strings) sends more than one turn, sequentially -- waiting
  * for each reply before sending the next -- for a real multi-turn "conversation" (the bot's own
@@ -236,9 +234,7 @@ async function main() {
       throw new Error(
         `No reply from ${botAddress} within ${replyTimeoutMs}ms for turn ${
           turnIndex + 1
-        } -- is qwen-bot.livecheck.ts running with QWEN_BOT_MAX_REPLIES >= ${
-          messages.length
-        }?`,
+        } -- is qwen-bot.livecheck.ts running?`,
       )
     }
   }

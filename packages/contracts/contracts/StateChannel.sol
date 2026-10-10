@@ -63,18 +63,15 @@ contract StateChannel {
         bool cooperative
     );
 
-    event ChannelRefunded(
-        bytes32 indexed channelId,
-        address indexed partyA,
-        uint256 amount
-    );
-
     error ChannelAlreadyExists();
     error ChannelNotFound();
     error ChannelAlreadySettled();
     error ChannelExpired();
     error ChallengeNotExpired();
     error ChallengeNotActive();
+    error ChallengeAlreadyActive();
+    error AlreadyJoined();
+    error ZeroDeposit();
     error StaleSequence();
     error InvalidBalanceSum();
     error InvalidSignature();
@@ -152,6 +149,11 @@ contract StateChannel {
     /**
      * @notice Counterparty joins the channel and funds their initial balance with explicit deposit amount.
      * Supports both native coin and ERC-20 channels.
+     *
+     * A channel is joined once, with a non-zero deposit, before any checkpoint or challenge.
+     * Every co-signed state must add up to the channel's total, so a later deposit would
+     * change the total and make every state the other party holds unusable: a party who
+     * had lost could post an old checkpoint, add one wei, and close on the old balances.
      * @param channelId Unique channel identifier.
      * @param depositB Amount to fund from partyB.
      */
@@ -172,20 +174,38 @@ contract StateChannel {
         if (ch.participants[0] == address(0)) revert ChannelNotFound();
         if (ch.settled) revert ChannelAlreadySettled();
         if (msg.sender != ch.participants[1]) revert Unauthorized();
+        if (ch.balances[1] != 0 || ch.currentSeq != 0 || ch.challengeExpiresAt != 0) revert AlreadyJoined();
+        if (depositB == 0) revert ZeroDeposit();
 
         if (ch.token == address(0)) {
             if (msg.value != depositB) revert TransferFailed();
-            ch.balances[1] += msg.value;
-            emit ChannelJoined(channelId, msg.sender, msg.value);
         } else {
             if (msg.value != 0) revert TransferFailed();
-            if (depositB > 0) {
-                bool success = IERC20(ch.token).transferFrom(msg.sender, address(this), depositB);
-                if (!success) revert TransferFailed();
-            }
-            ch.balances[1] += depositB;
-            emit ChannelJoined(channelId, msg.sender, depositB);
+            bool success = IERC20(ch.token).transferFrom(msg.sender, address(this), depositB);
+            if (!success) revert TransferFailed();
         }
+        ch.balances[1] = depositB;
+        emit ChannelJoined(channelId, msg.sender, depositB);
+    }
+
+    /**
+     * @notice Starts the challenge window on the balances currently recorded on-chain,
+     * when no checkpoint has started one yet. This is the way out when the other party
+     * never joins, joins with an amount no co-signed state matches, or stops signing:
+     * after the window `closeAfterChallenge` pays out the recorded balances. The other
+     * party answers a challenge by posting a newer co-signed state with `checkpoint`.
+     * @param channelId Unique channel identifier.
+     */
+    function startChallenge(bytes32 channelId) external nonReentrant {
+        Channel storage ch = channels[channelId];
+        if (ch.participants[0] == address(0)) revert ChannelNotFound();
+        if (ch.settled) revert ChannelAlreadySettled();
+        if (msg.sender != ch.participants[0] && msg.sender != ch.participants[1]) revert Unauthorized();
+        if (ch.challengeExpiresAt != 0) revert ChallengeAlreadyActive();
+
+        ch.challengeExpiresAt = block.timestamp + ch.challengeDuration;
+
+        emit Checkpointed(channelId, ch.currentSeq, ch.balances, ch.challengeExpiresAt);
     }
 
     /**
@@ -343,34 +363,6 @@ contract StateChannel {
         }
 
         emit ChannelSettled(channelId, [bal0, bal1], false);
-    }
-
-    /**
-     * @notice Unilaterally refunds partyA if partyB never joined and funding timeout elapsed.
-     * Supports both native coin and ERC-20 channels.
-     * @param channelId Unique channel identifier.
-     */
-    function refundTimeout(bytes32 channelId) external nonReentrant {
-        Channel storage ch = channels[channelId];
-        if (ch.participants[0] == address(0)) revert ChannelNotFound();
-        if (ch.settled) revert ChannelAlreadySettled();
-        if (ch.balances[1] != 0 || ch.currentSeq != 0) revert Unauthorized();
-        if (msg.sender != ch.participants[0]) revert Unauthorized();
-
-        ch.settled = true;
-        uint256 amount = ch.balances[0];
-
-        if (amount > 0) {
-            if (ch.token == address(0)) {
-                (bool success, ) = payable(ch.participants[0]).call{value: amount}("");
-                if (!success) revert TransferFailed();
-            } else {
-                bool success = IERC20(ch.token).transfer(ch.participants[0], amount);
-                if (!success) revert TransferFailed();
-            }
-        }
-
-        emit ChannelRefunded(channelId, ch.participants[0], amount);
     }
 
     /**

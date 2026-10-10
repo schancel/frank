@@ -10,7 +10,10 @@ import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { PokerItem, PokerPlayerView, PokerActionType } from "@frank/cashweb/types/messages";
 import { formatMon, parseMon } from "@frank/wallet/monad-amount";
 import { keccak256, toUtf8Bytes } from "ethers";
-import { CANONICAL_EVM_CONTRACTS } from "@frank/wallet/chain/chains-registry";
+import {
+  requireChainContract,
+  resolveChainIdentifier,
+} from "@frank/wallet/chain/chains-registry";
 import { encodeBatchDistributeCall } from "@frank/wallet/game-escrow";
 import {
   createPokerTable,
@@ -83,7 +86,12 @@ export class PokerBot implements FrankBotDefinition {
         payouts,
         preimage: escrow.preimage,
       });
-      const htlcAddress = CANONICAL_EVM_CONTRACTS.htlc!;
+      // The HTLC of the network this bot runs on; throws when none is deployed there.
+      const networkTag = String(ctx.networkTag);
+      const htlcAddress = requireChainContract(
+        resolveChainIdentifier(networkTag)?.id ?? networkTag,
+        "htlc"
+      );
       const res = await ctx.sendTransaction({
         to: htlcAddress,
         data: callData,

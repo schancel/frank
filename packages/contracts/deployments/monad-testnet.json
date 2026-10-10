@@ -1,0 +1,48 @@
+{
+  "chainIdentifier": "monad-testnet",
+  "chainId": "10143",
+  "create2": {
+    "proxy": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+    "salt": "0x968a67c27b5a425e8ba2a93acaaf146992afd7e125b89f87bf57c84684bd01b8"
+  },
+  "contracts": {
+    "GenericHTLC": {
+      "address": "0xda33153b25F24f5E43Ad8A344256c75bA1DfaE96",
+      "deployer": "0xE128CC764bBCD085C525CB873ad30520DD8cC4B9",
+      "deployedVia": "create2-proxy",
+      "transactionHash": "0xd468e11ca9a964db9c9ecbda09a2751841cabca711057e3f98c818910e6c1d14",
+      "blockNumber": 69755287,
+      "initCodeHash": "0x19f020febbf4438773df6c09d329a91e5866bac60eb297b8a91e74c2aa6254b0",
+      "runtimeCodeHash": "0x214390bce48c8b9162a94ecbf10eaff77d20516d9885a7ceaa6080cc4c8bbaca",
+      "compiler": {
+        "version": "0.8.37+commit.f401782d.Emscripten.clang",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "cancun"
+        }
+      }
+    },
+    "StateChannel": {
+      "address": "0x85a0095c9F5305B200289Ee0b9a422239408809A",
+      "deployer": "0xE128CC764bBCD085C525CB873ad30520DD8cC4B9",
+      "deployedVia": "create2-proxy",
+      "transactionHash": "0xc64a6f11414406e2e0c467178ce856327e6e6f6dc0490d783aa33a52ff44d253",
+      "blockNumber": 69755305,
+      "initCodeHash": "0xdff4f2cdd39599b9d4718b1ab9bb20505dc1900aa8e2a7a76998e1530297bf7c",
+      "runtimeCodeHash": "0x4a6ab149bbea7bfa828e1544f4577abb16967b71d42cac35829a1649f7d84214",
+      "compiler": {
+        "version": "0.8.37+commit.f401782d.Emscripten.clang",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "cancun"
+        }
+      }
+    }
+  }
+}

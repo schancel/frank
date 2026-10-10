@@ -130,7 +130,7 @@ import {
 } from "../message-item-plugins/wire";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
-import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
+import { requireChainContract, resolveChainIdentifier } from "./chains-registry";
 
 import {
   createMonadWalletMaterial,
@@ -862,6 +862,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     config.chainIdentifier ??
     config.rpcChain ??
     (isTestnet ? "monad-testnet" : "monad-mainnet");
+  // A configured network tag that names no registered network must not fall back to
+  // another network's contracts.
+  const contractChainIdentifier = (): string =>
+    config.networkTag
+      ? resolveChainIdentifier(config.networkTag)?.id ?? config.networkTag
+      : chainIdentifier;
   const transactionBuilder =
     config.transactionBuilder ?? defaultNativeEvmTransactionBuilder;
   const walletsByIdentity = new Map<
@@ -2846,42 +2852,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     topics,
 
     getStateChannelAddress(): string {
-      const entry = config.networkTag
-        ? resolveChainIdentifier(config.networkTag)
-        : PROTOCOL_CHAINS[isTestnet ? "monad-testnet" : "monad-mainnet"];
-      const addr =
-        entry?.contracts?.stateChannel || entry?.contracts?.channelVault;
-      if (!addr) {
-        throw new Error(
-          `StateChannel contract is not configured for network ${
-            config.networkTag || "unknown"
-          }`
-        );
-      }
-      return addr;
+      return requireChainContract(contractChainIdentifier(), "stateChannel");
     },
 
     getHtlcAddress(): string {
-      const entry = config.networkTag
-        ? resolveChainIdentifier(config.networkTag)
-        : PROTOCOL_CHAINS[isTestnet ? "monad-testnet" : "monad-mainnet"];
-      const addr = entry?.contracts?.htlc;
-      if (!addr) {
-        throw new Error(
-          `GenericHTLC contract is not configured for network ${
-            config.networkTag || "unknown"
-          }`
-        );
-      }
-      return addr;
-    },
-
-    getChannelVaultAddress(): string {
-      return this.getStateChannelAddress();
-    },
-
-    getTablePotVaultAddress(): string {
-      return this.getHtlcAddress();
+      return requireChainContract(contractChainIdentifier(), "htlc");
     },
   };
 }

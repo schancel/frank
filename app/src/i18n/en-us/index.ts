@@ -670,6 +670,8 @@ export default {
     cancelBtnLabel: 'Cancel',
   },
   chatMessageSwap: {
+    notAvailableYet:
+      'Atomic swaps are not available yet. Nothing can be locked, claimed or refunded from here.',
     title: 'Atomic Swap Offer',
     offered: 'Offered',
     for: 'For',

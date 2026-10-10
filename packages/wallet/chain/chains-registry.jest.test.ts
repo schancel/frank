@@ -1,8 +1,8 @@
 import { readFileSync } from "fs";
 import { join } from "path";
+import { DEPLOYMENTS } from "../../contracts/deployments";
 import {
   PROTOCOL_CHAINS,
-  CANONICAL_EVM_CONTRACTS,
   CANONICAL_SOLANA_CONTRACTS,
   getChainRegistryEntry,
   getChainRegistryByKind,
@@ -10,6 +10,7 @@ import {
   getChainRegistryByCaip2,
   getChainsByCurve,
   resolveChainIdentifier,
+  requireChainContract,
   getAllChainsByKind,
   getChainsByFamily,
   getChainExchangeConfig,
@@ -77,7 +78,6 @@ describe("chains-registry", () => {
       caip2: "eip155:10143",
       nativeChainId: 10143,
       networkTag: "MONT",
-      contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: "uniswap-universal-router",
         routerName: "Uniswap Universal Router",
@@ -100,7 +100,6 @@ describe("chains-registry", () => {
       caip2: "eip155:143",
       nativeChainId: 143,
       networkTag: "MON1",
-      contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: "uniswap-universal-router",
         routerName: "Uniswap Universal Router",
@@ -235,7 +234,6 @@ describe("chains-registry", () => {
         "https://ethereum-sepolia-rpc.publicnode.com",
         "https://rpc.sepolia.org",
       ],
-      contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: "uniswap-universal-router",
         routerName: "Uniswap Universal Router",
@@ -258,7 +256,6 @@ describe("chains-registry", () => {
       caip2: "eip155:1",
       nativeChainId: 1,
       networkTag: "ETH1",
-      contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: "uniswap-universal-router",
         routerName: "Uniswap Universal Router",
@@ -281,7 +278,6 @@ describe("chains-registry", () => {
       caip2: "eip155:999",
       nativeChainId: 999,
       networkTag: "HYPE",
-      contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: "hyperliquid-l1",
         routerName: "Hyperliquid L1 Orderbook Router",
@@ -304,7 +300,6 @@ describe("chains-registry", () => {
       caip2: "eip155:998",
       nativeChainId: 998,
       networkTag: "HYPT",
-      contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: "hyperliquid-l1",
         routerName: "Hyperliquid L1 Orderbook Router",
@@ -327,7 +322,6 @@ describe("chains-registry", () => {
       caip2: "eip155:4217",
       nativeChainId: 4217,
       networkTag: "TMPO",
-      contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: "tempo-router",
         routerName: "Tempo Settlement Engine",
@@ -350,7 +344,6 @@ describe("chains-registry", () => {
       caip2: "eip155:42431",
       nativeChainId: 42431,
       networkTag: "TMPT",
-      contracts: CANONICAL_EVM_CONTRACTS,
       exchange: {
         pluginId: "tempo-router",
         routerName: "Tempo Settlement Engine",
@@ -585,30 +578,63 @@ describe("chains-registry", () => {
     expect(resolveChainIdentifier("nonexistent")).toBeUndefined();
   });
 
-  it("exposes canonical smart contract addresses for EVM chains and undefined for non-EVM", () => {
-    expect(CANONICAL_EVM_CONTRACTS.stateChannel).toBe(
-      "0x18E98e3B789F0b84c7060Bb28bF4385809F3aF57"
-    );
-    expect(CANONICAL_EVM_CONTRACTS.htlc).toBe(
-      "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5"
-    );
-    expect(CANONICAL_EVM_CONTRACTS.channelVault).toBe(
-      "0x18E98e3B789F0b84c7060Bb28bF4385809F3aF57"
-    );
-    expect(CANONICAL_EVM_CONTRACTS.tablePotVault).toBe(
-      "0x391a080Bd6FF21CB4598adF063Dc94018CD186E5"
-    );
+  it("gives an EVM network the contract addresses of its own deployment record and nothing otherwise", () => {
+    for (const entry of getChainsByFamily("evm")) {
+      const record = DEPLOYMENTS[entry.id];
+      if (!record) {
+        expect([entry.id, entry.contracts]).toEqual([entry.id, undefined]);
+        expect(() => requireChainContract(entry.id, "htlc")).toThrow(
+          `GenericHTLC is not deployed on ${entry.id}`
+        );
+        expect(() => requireChainContract(entry.id, "stateChannel")).toThrow(
+          `StateChannel is not deployed on ${entry.id}`
+        );
+        continue;
+      }
+      expect(record.chainIdentifier).toBe(entry.id);
+      expect(record.chainId).toBe(String(entry.nativeChainId));
+      expect(entry.contracts).toEqual({
+        htlc: record.contracts.GenericHTLC.address,
+        stateChannel: record.contracts.StateChannel.address,
+      });
+      expect(requireChainContract(entry.id, "htlc")).toBe(
+        record.contracts.GenericHTLC.address
+      );
+    }
+  });
 
-    expect(PROTOCOL_CHAINS["monad-testnet"].contracts).toEqual(
-      CANONICAL_EVM_CONTRACTS
+  it("lists deployment records only for client-supported EVM networks, one address per network", () => {
+    const addresses: string[] = [];
+    for (const [id, record] of Object.entries(DEPLOYMENTS)) {
+      expect([id, PROTOCOL_CHAINS[id]?.family]).toEqual([id, "evm"]);
+      for (const contract of Object.values(record.contracts)) {
+        expect(contract.address).toMatch(/^0x[0-9a-fA-F]{40}$/);
+        expect(contract.transactionHash).toMatch(/^0x[0-9a-f]{64}$/);
+        addresses.push(`${id}:${contract.address}`);
+      }
+    }
+    expect(new Set(addresses).size).toBe(addresses.length);
+  });
+
+  it("has no contract address for a network that is not EVM or Solana, or is unknown", () => {
+    expect(PROTOCOL_CHAINS["xec-mainnet"].contracts).toBeUndefined();
+    expect(() => requireChainContract("xec-mainnet", "htlc")).toThrow(
+      "GenericHTLC is not deployed on xec-mainnet"
     );
-    expect(PROTOCOL_CHAINS["monad-mainnet"].contracts).toEqual(
-      CANONICAL_EVM_CONTRACTS
+    expect(() => requireChainContract("monad", "htlc")).toThrow(
+      'Unknown chain identifier "monad"'
     );
+    expect(() => requireChainContract("evm", "htlc")).toThrow(
+      'Unknown chain identifier "evm"'
+    );
+    // The addresses once registered for every EVM network never held code anywhere.
+    expect(JSON.stringify(PROTOCOL_CHAINS)).not.toMatch(
+      /391a080Bd6FF21CB4598adF063Dc94018CD186E5|18E98e3B789F0b84c7060Bb28bF4385809F3aF57/i
+    );
+    // Solana still carries placeholder program ids; no program is deployed there.
     expect(PROTOCOL_CHAINS["solana-mainnet"].contracts).toEqual(
       CANONICAL_SOLANA_CONTRACTS
     );
-    expect(PROTOCOL_CHAINS["xec-mainnet"].contracts).toBeUndefined();
   });
 
   describe("multi-testnet and family queries", () => {

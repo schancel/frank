@@ -82,14 +82,6 @@ export interface RegisterEscrowStealthPayoutParams {
   timestampMs?: number
 }
 
-const CHANNEL_VAULT_ABI = [
-  'function settle(bytes32 sessionId, address winner, uint256 payout, bytes calldata jointSig) external',
-]
-
-const TABLE_POT_VAULT_ABI = [
-  'function settleTable(bytes32 tableId, tuple(address recipient, uint256 amount)[] calldata payouts, bytes calldata hostSig) external',
-]
-
 const STATE_CHANNEL_ABI = [
   'function closeCooperative(bytes32 channelId, uint256 seq, uint256[2] calldata balances, address payout0, address payout1, bytes calldata sig0, bytes calldata sig1) external',
   'function checkpoint(bytes32 channelId, uint256 seq, uint256[2] calldata balances, bytes calldata sig0, bytes calldata sig1) external',
@@ -102,8 +94,6 @@ const GENERIC_HTLC_ABI = [
   'function refund(bytes32 lockId) external',
 ]
 
-const channelVaultInterface = new Interface(CHANNEL_VAULT_ABI)
-const tablePotVaultInterface = new Interface(TABLE_POT_VAULT_ABI)
 const stateChannelInterface = new Interface(STATE_CHANNEL_ABI)
 const genericHtlcInterface = new Interface(GENERIC_HTLC_ABI)
 
@@ -242,38 +232,6 @@ export function prepareTableStealthSettlement(params: {
     stealthPlans,
     digest,
   }
-}
-
-/**
- * Encodes the calldata for ChannelVault.settle(sessionId, winner, payout, jointSig).
- */
-export function encodeChannelSettlementCall(params: {
-  sessionId: string
-  winnerAddress: string
-  payoutWei: bigint
-  jointSig: string
-}): string {
-  return channelVaultInterface.encodeFunctionData('settle', [
-    params.sessionId,
-    params.winnerAddress,
-    params.payoutWei,
-    params.jointSig,
-  ])
-}
-
-/**
- * Encodes the calldata for TablePotVault.settleTable(tableId, payouts, hostSig).
- */
-export function encodeTableSettlementCall(params: {
-  tableId: string
-  payouts: TablePayoutRecipient[]
-  hostSig: string
-}): string {
-  return tablePotVaultInterface.encodeFunctionData('settleTable', [
-    params.tableId,
-    params.payouts,
-    params.hostSig,
-  ])
 }
 
 /**

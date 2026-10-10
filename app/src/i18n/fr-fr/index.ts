@@ -685,6 +685,8 @@ export default {
     cancelBtnLabel: 'Annuler',
   },
   chatMessageSwap: {
+    notAvailableYet:
+      'Les échanges atomiques ne sont pas encore disponibles. Rien ne peut être verrouillé, réclamé ou remboursé d’ici.',
     title: 'Offre d’échange atomique',
     offered: 'Proposé',
     for: 'Pour',

@@ -12,10 +12,10 @@ export const CONTRACT_NAMES = {
   IERC20: 'IERC20',
 } as const
 
-export { compileContracts } from './scripts/compile'
 export {
-  deployAll,
-  CREATE2_FACTORY,
+  DEPLOYMENTS,
+  type ContractDeployment,
+  type DeployedContractName,
   type DeploymentRecord,
-} from './scripts/deploy'
+} from './deployments'
 export * from './solana-escrow'

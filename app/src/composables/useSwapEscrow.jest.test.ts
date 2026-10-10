@@ -30,14 +30,25 @@ const mockProvider = {
   getNetwork: jest.fn().mockResolvedValue({ chainId: 10143n }),
 }
 
+// A wallet that could sign and submit, so the tests can show that nothing asks it to.
+const mockSubmitRawTransaction = jest
+  .fn()
+  .mockResolvedValue('0xmockedevmtxhash123')
+const mockToPrivateKeyHex = jest.fn(() => '0x' + '11'.repeat(32))
+const mockBuildAndSignCall = jest.fn()
+
+jest.mock('@frank/wallet/monad-account-tx', () => ({
+  MonadAccountTxSigner: jest.fn().mockImplementation(() => ({
+    buildAndSignCall: mockBuildAndSignCall,
+  })),
+}))
+
 jest.mock('../utils/clients', () => ({
   useMonadWallet: () => ({
     provider: mockProvider,
-    identity: {
-      toPrivateKeyHex: () => '0x' + '11'.repeat(32),
-    },
+    identity: { toPrivateKeyHex: mockToPrivateKeyHex },
     httpClient: {
-      submitRawTransaction: jest.fn().mockResolvedValue('0xmockedevmtxhash123'),
+      submitRawTransaction: mockSubmitRawTransaction,
       getTransactionReceipt: jest.fn().mockResolvedValue({ status: 1 }),
     },
   }),
@@ -45,6 +56,7 @@ jest.mock('../utils/clients', () => ({
 
 describe('useSwapEscrow', () => {
   beforeEach(() => {
+    jest.clearAllMocks()
     setActivePinia(createPinia())
   })
 
@@ -63,57 +75,48 @@ describe('useSwapEscrow', () => {
     expect(makerPhase.canClaim).toBe(false)
   })
 
-  it('deposits and locks funds on EVM chain', async () => {
-    const { depositLock } = useSwapEscrow()
+  // Atomic swaps are being rebuilt. Until then these refuse on every chain, with a wallet
+  // that could sign, and never hand back a transaction hash (they used to return a random
+  // one for Solana and when no submitter was present).
+  it.each([
+    'monad-testnet',
+    'ethereum-sepolia',
+    'solana-testnet',
+    'not-a-chain',
+  ])(
+    'refuses to lock, claim or refund on %s, and signs and submits nothing',
+    async chain => {
+      const { depositLock, claimLock, refundLock, error } = useSwapEscrow()
+      const refused = 'Atomic swaps are not available yet'
 
-    const res = await depositLock({
-      swapId: 'swap-test-id-1',
-      chain: 'monad-testnet',
-      amount: '1.5',
-      recipient: '0x2222222222222222222222222222222222222222',
-      durationSeconds: 3600,
-    })
+      await expect(
+        depositLock({
+          swapId: 'swap-test-id-1',
+          chain,
+          amount: '1.5',
+          recipient: '0x2222222222222222222222222222222222222222',
+          refundAddress: '0x3333333333333333333333333333333333333333',
+          hashLock: '0x' + '44'.repeat(32),
+          durationSeconds: 3600,
+        }),
+      ).rejects.toThrow(refused)
+      await expect(
+        claimLock({
+          swapId: 'swap-test-id-1',
+          chain,
+          preimage: '0x' + '33'.repeat(32),
+        }),
+      ).rejects.toThrow(refused)
+      await expect(
+        refundLock({ swapId: 'swap-test-id-1', chain }),
+      ).rejects.toThrow(refused)
 
-    expect(res.txHash).toBe('0xmockedevmtxhash123')
-    expect(res.hashLock).toBeDefined()
-    expect(res.preimageHex).toBeDefined()
-    expect(res.lockId).toBeDefined()
-  })
-
-  it('claims funds with preimage on EVM chain', async () => {
-    const { claimLock } = useSwapEscrow()
-
-    const res = await claimLock({
-      swapId: 'swap-test-id-1',
-      chain: 'monad-testnet',
-      preimage: '0x' + '33'.repeat(32),
-    })
-
-    expect(res.txHash).toBe('0xmockedevmtxhash123')
-  })
-
-  it('refunds expired funds on EVM chain', async () => {
-    const { refundLock } = useSwapEscrow()
-
-    const res = await refundLock({
-      swapId: 'swap-test-id-1',
-      chain: 'monad-testnet',
-    })
-
-    expect(res.txHash).toBe('0xmockedevmtxhash123')
-  })
-
-  it('deposits funds on Solana chain', async () => {
-    const { depositLock } = useSwapEscrow()
-
-    const res = await depositLock({
-      swapId: 'swap-solana-1',
-      chain: 'solana-testnet',
-      amount: '2.5',
-      recipient: '11111111111111111111111111111111',
-    })
-
-    expect(res.txHash).toBeDefined()
-    expect(res.hashLock).toBeDefined()
-  })
+      expect(error.value).toBe(refused)
+      expect(mockToPrivateKeyHex).not.toHaveBeenCalled()
+      expect(mockBuildAndSignCall).not.toHaveBeenCalled()
+      expect(mockSubmitRawTransaction).not.toHaveBeenCalled()
+      expect(mockProvider.estimateGas).not.toHaveBeenCalled()
+      expect(mockProvider.getTransactionCount).not.toHaveBeenCalled()
+    },
+  )
 })

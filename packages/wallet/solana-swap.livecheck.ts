@@ -33,9 +33,10 @@ import {
   fetchSwapTokenBalances,
   listSolanaDexEntries,
   NATIVE_SOL_MINT,
-  createSolanaLegacySender,
+  trackSolanaSwap,
   type SolanaDex,
   type SolanaDexWallet,
+  type SolanaLegacyJournal,
   type SolanaLegacyJournalEntry,
   type SolanaSwapSender,
   type SolanaSwapOutcome,
@@ -74,15 +75,27 @@ async function open(network: Network, keyfile: string, entry: SolanaSwapVenue) {
         'https://api.mainnet-beta.solana.com',
     'confirmed',
   )
+  // A journal in memory is enough here: this script follows each swap to its end in one run.
+  let entries: SolanaLegacyJournalEntry[] = []
+  const journal: SolanaLegacyJournal = {
+    list: () => entries,
+    put: record => {
+      entries = [...entries, { record }]
+      console.log('journaled before sending:', record.transactionId)
+    },
+    settle: (id, status) => console.log('journal: settled', status, id),
+    remove: id => {
+      entries = entries.filter(e => e.record.transactionId !== id)
+    },
+  }
   const wallet = await SolanaWallet.fromSeed({
     connection,
     seed,
     chainIdentifier: network,
     networkId: network,
     genesisHash: GENESIS[network],
+    legacy: { journal },
   })
-  // A journal in memory is enough here: this script follows each swap to its end in one run.
-  let journal: SolanaLegacyJournalEntry[] = []
   const chain = connection as unknown as SolanaDexWallet['chain'] &
     SolanaSwapSender
   const dex = createSolanaDex(
@@ -90,21 +103,11 @@ async function open(network: Network, keyfile: string, entry: SolanaSwapVenue) {
     entry,
     {
       chain,
-      ...createSolanaLegacySender({
-        connection: chain,
-        signer: async () => wallet,
-        journal: {
-          list: () => journal,
-          put: record => {
-            journal = [...journal, { record }]
-            console.log('journaled before sending:', record.transactionId)
-          },
-          settle: (id, status) => console.log('journal: settled', status, id),
-          remove: id => {
-            journal = journal.filter(e => e.record.transactionId !== id)
-          },
-        },
-      }),
+      // The wallet's own checked send: the only way it signs a swap.
+      sendLegacyTransaction: (prepared, intent, onSubmitted) =>
+        wallet.sendLegacyTransaction(prepared, intent, onSubmitted),
+      legacyTransactionOutcome: record =>
+        trackSolanaSwap(chain, journal, record),
     },
     { apiKey: process.env.JUPITER_API_KEY },
   )
@@ -137,6 +140,7 @@ function describe(
       quote.platformFee &&
       amount(quote.platformFee.amount, quote.platformFee.mint),
     networkFeeLamports: quote.networkFeeLamports,
+    priorityFeeLamports: quote.priorityFeeLamports,
     accountRentLamports: quote.accountRentLamports,
     temporaryRentLamports: quote.temporaryRentLamports,
     lastValidBlockHeight: quote.lastValidBlockHeight,

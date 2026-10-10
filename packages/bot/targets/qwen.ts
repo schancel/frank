@@ -30,7 +30,9 @@ async function main() {
   process.on("SIGTERM", shutdown);
 }
 
-main().catch((err) => {
-  console.error("[qwen-target] Fatal error:", err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("[qwen-target] Fatal error:", err);
+    process.exit(1);
+  });
+}

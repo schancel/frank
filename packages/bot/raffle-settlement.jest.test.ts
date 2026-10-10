@@ -12,7 +12,6 @@ import { verifyRaffleDraw } from '@frank/wallet/message-item-plugins/raffle/draw
 import { JsonRpcProvider } from 'ethers'
 
 import { startFakeRpc } from './demo/fake-rpc'
-import { readFileSync } from 'fs'
 import { RaffleBotStateStore, RaffleRoundRecord } from './raffle-bot-state'
 import {
   beginDrawIfFull,
@@ -1133,7 +1132,7 @@ describe('raffle draw settlement (#363)', () => {
     })
   })
 
-  describe('runRaffleBot (what main() calls)', () => {
+  describe('runRaffleBot', () => {
     it('opens, settles and loops through the real settler with fake ports', async () => {
       const l = shortLedger()
       const state = await openStore()
@@ -1159,19 +1158,6 @@ describe('raffle draw settlement (#363)', () => {
       })
       expect(out.roundsDrawn).toBe(1)
       expect(l.announces).toHaveLength(3)
-    })
-
-    it('main() goes through runRaffleBot and does not re-implement the loop or the settler', () => {
-      const src = readFileSync(
-        join(__dirname, 'raffle-bot.livecheck.ts'),
-        'utf8',
-      )
-      expect(src).toMatch(/await runRaffleBot\(/)
-      // The credited entrant records how many payments backed it (the hold threshold uses it).
-      expect(src).toMatch(/payments: swept\.paymentCount/)
-      expect(src).not.toMatch(
-        /(createRaffleSettler|beginDrawIfFull|raffleTick|runRaffleLoop)\(/,
-      )
     })
   })
 

@@ -2,6 +2,7 @@
 module.exports = {
   testEnvironment: 'node',
   testTimeout: 10000,
+  setupFiles: ['<rootDir>/jest.setup-env.js'],
   testMatch: ['<rootDir>/**/*.jest.(spec|test).+(ts|js)'],
   moduleFileExtensions: ['js', 'json', 'ts'],
   moduleNameMapper: {

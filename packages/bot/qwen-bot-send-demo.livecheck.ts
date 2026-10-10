@@ -253,9 +253,11 @@ async function main() {
   })
 }
 
-main()
-  .finally(() => closeFundedSetup?.())
-  .catch(err => {
-    console.error('\nQWEN BOT SEND DEMO FAILED:', err)
-    process.exit(1)
-  })
+if (require.main === module) {
+  main()
+    .finally(() => closeFundedSetup?.())
+    .catch(err => {
+      console.error('\nQWEN BOT SEND DEMO FAILED:', err)
+      process.exit(1)
+    })
+}

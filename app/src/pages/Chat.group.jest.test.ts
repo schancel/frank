@@ -144,7 +144,10 @@ function received(sender: string, text: string, fill: number) {
   }
 }
 
-async function openConversation(table: unknown = en, peer = ALICE) {
+async function openConversation(
+  table: unknown = en,
+  peer: string | null = ALICE,
+) {
   const pinia = createPinia()
   setActivePinia(pinia)
   const chats = useChatStore()
@@ -167,11 +170,14 @@ async function openConversation(table: unknown = en, peer = ALICE) {
       },
     })
   }
-  chats.createConversation({
-    participants: [mockOwn, peer],
-    address: peer,
-    conversationId: CONVERSATION,
-  })
+  if (peer)
+    chats.createConversation({
+      participants: [mockOwn, peer],
+      address: peer,
+      conversationId: CONVERSATION,
+    })
+  // With no peer given, the conversation is opened by a stranger's first message.
+  else await chats.receiveMessages([received(STRANGER, 'first', 9)] as never)
   const push = jest.fn()
   const wrapper = mount(ChatPage as never, {
     global: {
@@ -401,5 +407,28 @@ describe('an email item sent by a third person', () => {
     ])
     expect(chat.chats.conversations[CONVERSATION].kind).toBe('direct')
     expect(chat.chats.conversations[CONVERSATION].name).toBeUndefined()
+  })
+})
+
+describe('a conversation that a stranger opened, which a contact then posts into', () => {
+  it("is the stranger's conversation: the contact is shown as a third person, and the composer names the stranger as who receives a reply", async () => {
+    const chat = await openConversation(en, null)
+    await chat.receive(received(ALICE, 'second', 1))
+    const conversation = chat.chats.conversations[CONVERSATION]
+    expect(conversation.address).toBe(STRANGER)
+    expect(
+      (chat.wrapper.vm as unknown as { recipientAddress: string })
+        .recipientAddress,
+    ).toBe(STRANGER)
+    // Each message under its own sender; Alice's is not taken for the peer's.
+    expect(chat.bubbles()).toEqual([
+      '0x5555...5555 | name | avatar',
+      'Alice | name | avatar',
+    ])
+    expect(
+      chat.wrapper.get('[data-testid="chat-group-recipient"]').text(),
+    ).toBe(
+      'Your messages here go to 0x5555...5555 only, not to everyone in this conversation.',
+    )
   })
 })

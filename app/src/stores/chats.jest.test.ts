@@ -1511,7 +1511,6 @@ describe('stores/chats.ts (ticket #42)', () => {
             receivedTime: wrapper.message.receivedTime,
           },
         ],
-        refusedReceipts: [],
         cancelled: false,
       })
       expect(mockMessageStore.saveMessage).not.toHaveBeenCalled()
@@ -2158,7 +2157,7 @@ describe('stores/chats.ts (ticket #42)', () => {
         )
 
         const result = await chats.receiveMessages([first, second])
-        expect(result.refusedReceipts).toEqual([])
+        expect(result.cancelled).toBe(false)
         expect(chats.conversations[firstId].messages).toEqual([
           expect.objectContaining({
             payloadDigest: 'collide-first',
@@ -2284,9 +2283,6 @@ describe('stores/chats.ts (ticket #42)', () => {
           const result = await chats.receiveMessages(batch, SENDER_ADDRESS)
           expect(result).toEqual({
             suppressedReceipts: [],
-            refusedReceipts: [
-              { payloadDigest: 'mixed-own-wrong-peer', receivedTime: 400 },
-            ],
             cancelled: false,
           })
           expect(
@@ -2314,7 +2310,7 @@ describe('stores/chats.ts (ticket #42)', () => {
           // A later poll hands the same rows back: nothing is stored or reported again.
           mockMessageStore.saveMessage.mockClear()
           const again = await chats.receiveMessages(batch, SENDER_ADDRESS)
-          expect(again.refusedReceipts).toEqual([])
+          expect(again.cancelled).toBe(false)
           expect(
             mockMessageStore.saveMessage.mock.calls.map(([row]) => row.index),
           ).not.toContain('mixed-own-wrong-peer')
@@ -2482,10 +2478,8 @@ describe('stores/chats.ts (ticket #42)', () => {
           /* reported here */
         })
         try {
-          const result = await chats.receiveMessages([own])
-          expect(result.refusedReceipts).toEqual([
-            { payloadDigest: 'own-misfiled', receivedTime: 100 },
-          ])
+          await chats.receiveMessages([own], SENDER_ADDRESS)
+          expect(warn).toHaveBeenCalledTimes(1)
         } finally {
           warn.mockRestore()
         }
@@ -2590,14 +2584,153 @@ describe('stores/chats.ts (ticket #42)', () => {
           expect(conversation.name).toBe('Urgent: from your bank')
         })
 
-        it('a deleted conversation is not brought back by a third person', async () => {
-          const { chats, conversation } = namedWithPeer()
-          await chats.deleteConversation(firstId, 150)
-          await chats.receiveMessages([fromThird('third-after-delete', 200)])
-          expect(conversation.deletedAt).toBe(150)
-          expect(conversation.messages).toHaveLength(0)
-          await chats.receiveMessages([incoming(firstId, 'peer-returns', 300)])
-          expect(conversation.deletedAt).toBeUndefined()
+        describe('into a deleted conversation', () => {
+          const quarantine = () =>
+            (
+              mockMessageStore as unknown as {
+                quarantineRelayReceipts: jest.Mock
+              }
+            ).quarantineRelayReceipts
+          let warn: jest.SpyInstance
+          beforeEach(() => {
+            quarantine().mockClear()
+            warn = jest.spyOn(console, 'warn').mockImplementation(() => {
+              /* refused rows are reported here */
+            })
+          })
+          afterEach(() => warn.mockRestore())
+          const saved = () =>
+            mockMessageStore.saveMessage.mock.calls.map(([row]) => row)
+          // What a user sees of a conversation, for comparing a session with its reload.
+          const shown = (state: {
+            conversations: Record<string, Conversation | undefined>
+          }) =>
+            Object.fromEntries(
+              Object.values(state.conversations).map(c => [
+                c!.id,
+                {
+                  deleted: c!.deletedAt !== undefined,
+                  participants: c!.participants,
+                  unread: c!.totalUnreadMessages,
+                  messages: c!.messages.map(m => [
+                    m.payloadDigest,
+                    m.senderAddress,
+                    m.logicalMessageId,
+                  ]),
+                },
+              ]),
+            )
+          const reload = async (chats: ReturnType<typeof useChatStore>) => {
+            mockMessageStore.getIterator.mockResolvedValueOnce(saved())
+            return rehydrateState(chats.$state)
+          }
+
+          it("a third person's message is not kept at all: not saved, shown or counted, and the peer still brings the conversation back; a reload shows the same", async () => {
+            const { chats, conversation } = namedWithPeer()
+            await chats.deleteConversation(firstId, 150)
+            await chats.receiveMessages(
+              [fromThird('third-after-delete', 200)],
+              SENDER_ADDRESS,
+            )
+            expect(conversation.deletedAt).toBe(150)
+            expect(conversation.messages).toHaveLength(0)
+            expect(conversation.participants).not.toContain(THIRD_ADDRESS)
+            expect(conversation.totalUnreadMessages).toBe(0)
+            expect(saved()).toEqual([])
+            expect(quarantine()).toHaveBeenCalledWith(SENDER_ADDRESS, [
+              { payloadDigest: 'third-after-delete', receivedTime: 200 },
+            ])
+            expect(shown(await reload(chats))).toEqual(shown(chats.$state))
+
+            await chats.receiveMessages([
+              incoming(firstId, 'peer-returns', 300),
+            ])
+            expect(conversation.deletedAt).toBeUndefined()
+            expect(shown(await reload(chats))).toEqual(shown(chats.$state))
+          })
+
+          it('then the same message ID in another conversation: both sessions load, and the reload shows what the session showed', async () => {
+            const { chats } = namedWithPeer()
+            await chats.deleteConversation(firstId, 150)
+            const first = fromThird('stall-1', 200)
+            first.message.logicalMessageId = 'stall-id'
+            await chats.receiveMessages([first], SENDER_ADDRESS)
+            // A later poll: the same sender, the same ID, another conversation.
+            const second = fromThird('stall-2', 300)
+            second.conversationId = secondId
+            second.message.conversationId = secondId
+            second.message.logicalMessageId = 'stall-id'
+            await chats.receiveMessages([second], SENDER_ADDRESS)
+
+            expect(saved().map(row => row.index)).toEqual(['stall-2'])
+            expect(chats.conversations[firstId].messages).toHaveLength(0)
+            expect(
+              chats.conversations[secondId].messages.map(m => [
+                m.payloadDigest,
+                m.logicalMessageId,
+              ]),
+            ).toEqual([['stall-2', 'stall-id']])
+            for (let attempt = 0; attempt < 2; attempt++) {
+              expect(shown(await reload(chats))).toEqual(shown(chats.$state))
+            }
+          })
+
+          it('a store that already holds both rows, saved before this rule, loads: the earlier keeps the ID and stays out of the deleted conversation', async () => {
+            const { chats } = namedWithPeer()
+            await chats.deleteConversation(firstId, 150)
+            const row = (
+              index: string,
+              conversationId: string,
+              time: number,
+            ) => ({
+              index,
+              outbound: false,
+              senderAddress: THIRD_ADDRESS,
+              copartyAddress: THIRD_ADDRESS,
+              message: {
+                outbound: false,
+                status: 'confirmed',
+                senderAddress: THIRD_ADDRESS,
+                destinationAddress: SENDER_ADDRESS,
+                conversationId,
+                logicalMessageId: 'old-id',
+                items: [{ type: 'text', text: index }],
+                serverTime: time,
+                receivedTime: time,
+                outpoints: [],
+              },
+            })
+            // Listed later-first, as a store ordered by digest may hand them back.
+            const rows = [
+              row('old-second', secondId, 300),
+              row('old-first', firstId, 200),
+            ]
+            for (let attempt = 0; attempt < 2; attempt++) {
+              mockMessageStore.getIterator.mockResolvedValueOnce(
+                JSON.parse(JSON.stringify(rows)),
+              )
+              const reopened = await rehydrateState(chats.$state)
+              expect(reopened.conversations[firstId].deletedAt).toBe(150)
+              expect(reopened.conversations[firstId].messages).toHaveLength(0)
+              expect(
+                reopened.conversations[firstId].participants,
+              ).not.toContain(THIRD_ADDRESS)
+              expect(reopened.conversations[firstId].totalUnreadMessages).toBe(
+                0,
+              )
+              expect(
+                reopened.conversations[secondId].messages.map(m => [
+                  m.payloadDigest,
+                  m.logicalMessageId,
+                ]),
+              ).toEqual([
+                ['old-second', collidedMessageId('old-id', 'old-second')],
+              ])
+              expect(reopened.logicalMessages['old-id']?.conversationId).toBe(
+                firstId,
+              )
+            }
+          })
         })
       })
 
@@ -2982,7 +3115,7 @@ describe('stores/chats.ts (ticket #42)', () => {
       expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
     })
 
-    it('preflights owner affinity and logical ownership before pruning a valid earlier row', async () => {
+    it('preflights owner affinity before pruning a valid earlier row, and loads two rows that name one message ID', async () => {
       const chats = useChatStore()
       chats.createConversation({
         conversationId: ownerId,
@@ -3021,8 +3154,22 @@ describe('stores/chats.ts (ticket #42)', () => {
           confirmed,
           conflict,
         ])
-        await expect(rehydrateState(chats.$state)).rejects.toThrow()
-        expect(pending.message.status).toBe('pending')
+        if (mode === 'affinity') {
+          await expect(rehydrateState(chats.$state)).rejects.toThrow()
+          expect(pending.message.status).toBe('pending')
+        } else {
+          // Two stored messages naming one ID never stop the store from loading: the later
+          // one is read under the derived ID.
+          const reopened = await rehydrateState(chats.$state)
+          expect(reopened.logicalMessages['same-logical']?.conversationId).toBe(
+            ownerId,
+          )
+          expect(
+            reopened.conversations[other.id].messages.map(
+              m => m.logicalMessageId,
+            ),
+          ).toEqual([collidedMessageId('same-logical', 'other-message')])
+        }
         expect(mockMessageStore.deleteMessage).not.toHaveBeenCalled()
       }
     })

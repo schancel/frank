@@ -19,6 +19,7 @@
   "scripts": {
     "demo": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/demo.ts",
     "demo:smoke": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/smoke.ts",
+    "demo:sweep": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/funds.ts sweep --demo",
     "typecheck": "node --import tsx scripts/typecheck.ts",
     "typecheck:fast": "node --import tsx scripts/typecheck.ts --fast",
     "typecheck:tsc": "node --import tsx scripts/typecheck.ts --tsc",
@@ -26,7 +27,6 @@
     "test:contracts": "yarn --cwd packages/contracts test",
     "deploy:contracts": "yarn --cwd packages/contracts deploy",
     "test:two-wallets": "TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx packages/bot/demo/two-wallets.ts",
-    "test:mail-gateway-emulated-relay": "TSX_TSCONFIG_PATH=packages/cli/tsconfig.json node --import tsx test/mail-gateway-emulated-relay-check.ts",
     "docs:dev": "yarn workspace @frank/docs dev",
     "docs:build": "yarn workspace @frank/docs build",
     "docs:preview": "yarn workspace @frank/docs preview",

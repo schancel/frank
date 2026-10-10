@@ -64,9 +64,9 @@ import {
   EvmNativeOperationPendingError,
 } from './evm-legacy-consolidator'
 import { LevelStampPaymentJournal } from '../storage/stamp-payment-journal'
-import { MonadStampClient } from '../monad-stamp-client'
 import * as topicModule from '../monad-topic-post-client'
 import { MonadHttpClient } from '../monad-http'
+import * as coinStoreModule from '../storage/evm-coin-store'
 import { createServer } from 'http'
 import type { AddressInfo } from 'net'
 
@@ -439,7 +439,6 @@ test('typed DM entrypoints stay pending without a verified directory, before pla
     throw new Error('plaintext touched')
   })
   Object.defineProperty(items, 'map', { get: plaintextRead })
-  const resume = jest.spyOn(MonadStampClient.prototype, 'resumePendingAttempts')
   const network = jest
     .spyOn(globalThis, 'fetch')
     .mockRejectedValue(new Error('network touched'))
@@ -477,7 +476,6 @@ test('typed DM entrypoints stay pending without a verified directory, before pla
   expect(plaintextRead).not.toHaveBeenCalled()
   expect(network).not.toHaveBeenCalled()
   expect(signer).not.toHaveBeenCalled()
-  expect(resume).not.toHaveBeenCalled()
   await wallet.close()
 })
 
@@ -1147,15 +1145,16 @@ test('construction failure closes opened stores and wipes owned messaging root',
 
 test('construction failure after both clients exist destroys both providers', async () => {
   const providers = jest.spyOn(providerModule, 'createMonadJsonRpcProvider')
-  jest
-    .spyOn(MonadStampClient.prototype, 'resumePendingAttempts')
-    .mockRejectedValue(new Error('fixture resume failure'))
+  // The first step after both clients are built: the coin list's store.
+  jest.spyOn(coinStoreModule, 'MemoryRecordStore').mockImplementation(() => {
+    throw new Error('fixture construction failure')
+  })
   await expect(
     createEvmChain(config).createWallet({
       mnemonic:
         'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
     }),
-  ).rejects.toThrow('fixture resume failure')
+  ).rejects.toThrow('fixture construction failure')
   expect(providers.mock.results).toHaveLength(2)
   expect(providers.mock.results.every(result => result.value.destroyed)).toBe(
     true,

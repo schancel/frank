@@ -5,8 +5,9 @@
  *   yarn test:two-wallets            (from the repo root; needs .env, see real-stack.ts)
  *
  * The two accounts (alice, bob) are kept in the harness's persistent state directory and reused:
- * an account is given 0.012 testnet MON from the TEST wallet (FRANK_TEST_WALLET_JSON) only when
- * it cannot pay for a transfer. Alice sends Bob a stamped message, Bob reads it and answers,
+ * an account is given 0.012 testnet MON from the TEST wallet (FRANK_TEST_WALLET_JSON) when it
+ * cannot pay for a transfer, and what the accounts hold at the end goes back to that wallet
+ * (pass or fail), with a line for anything that could not be moved. Alice sends Bob a stamped message, Bob reads it and answers,
  * Alice reads the answer. For every stamp payment a message reports, the transaction must be
  * mined successfully on chain, pay the address and amount the wallet reported from another
  * account, the destination must hold it, and the amounts must add up to the stamp. Exit code 0
@@ -17,7 +18,7 @@ import { formatEther, type JsonRpcProvider } from 'ethers'
 import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain'
 
 import { redact } from './demo'
-import { RealStack, RealWallet, startRealStack } from './real-stack'
+import { RealStack, RealWallet, describeSweep, startRealStack } from './real-stack'
 
 const FUND_WEI = 12_000_000_000_000_000n // 0.012 MON each
 const REUSE_MIN_WEI = 2_000_000_000_000_000n // 0.002 MON
@@ -118,6 +119,14 @@ export async function runTwoWallets(env: Record<string, string | undefined> = pr
   } catch (err) {
     checks.push({ name: 'setup', ok: false, detail: redact(err instanceof Error ? err.message : String(err), []) })
   } finally {
+    // Whatever happened above, what the two accounts still hold goes back to the test wallet.
+    if (stack) {
+      const lines = await stack.sweep().then(
+        outcome => describeSweep(outcome, stack!.fundingAddress),
+        err => [`funds NOT returned (${redact(err instanceof Error ? err.message : String(err), [])}); the keys are under ${stack!.stateDir}: yarn --cwd packages/bot funds:sweep ${stack!.stateDir} --send`],
+      )
+      for (const line of lines) console.log(`[two-wallets] ${line}`)
+    }
     await stack?.stop().catch(err => checks.push({ name: 'teardown', ok: false, detail: String(err) }))
   }
   for (const check of checks) console.log(`${check.ok ? 'PASS' : 'FAIL'}  ${check.name}: ${check.detail}`)

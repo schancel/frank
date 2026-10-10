@@ -293,6 +293,16 @@ export interface FundingNeed {
   low: string[]
 }
 
+/** What a start that funds bot accounts says about the money it places: how much, that the keys
+ * to it live only in the state directory, and the command that returns it. */
+export function placementNotice(stateDir: string, transfersWei: bigint, newStateDir: boolean): string[] {
+  return [
+    `${newStateDir ? 'NEW state directory' : 'state directory'} ${stateDir}: this start places ${formatEther(transfersWei)} testnet MON in its bots' accounts.`,
+    `  The keys to those accounts exist only in that directory: deleting it, or starting on another one, strands the money.`,
+    `  The bots stay funded between runs. To return what they hold to the funding wallet when this demo state is finished with: yarn demo:sweep ${stateDir} --send`,
+  ]
+}
+
 /** What the bot host will draw from the funding wallet when the bots start, read from the chain
  * and worked out by the host's own rules: a transfer account under its refill mark is brought up
  * to the refill amount, a stamp account under 0.1 MON to 0.5; each is one plain transfer. Reads
@@ -464,6 +474,8 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
 
   const logDir = join(config.stateDir, 'logs')
   try {
+    // A state directory no bot has lived in: this start puts money there, under keys kept only there.
+    const newStateDir = !existsSync(config.botProcess.hostStateDir)
     prepareStateDir(config.stateDir)
     // One launcher per state dir. A leftover run record is NEVER acted on (no process is killed
     // from a file): it is only reported, with commands for the operator to inspect it.
@@ -498,6 +510,9 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
         ? '[demo] every bot account is already funded: this start draws nothing from the funding wallet'
         : `[demo] ${need.low.length} bot accounts need funding: this start DRAWS ${formatEther(need.drawWei)} testnet MON from ${fundingAddress} (allowed${config.maxStartDrawWei === undefined ? ' by --allow-draw' : `: the limit is ${formatEther(config.maxStartDrawWei)} MON`})`,
     )
+    if (need.low.length > 0) {
+      for (const line of placementNotice(config.stateDir, need.transfersWei, newStateDir)) print(`[demo] ${line}`)
+    }
     abortIfStopping()
 
     let publicRelayUrl = config.publicRelayUrl
@@ -544,7 +559,7 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     const prebuiltBin = existsSync(releaseBin) ? releaseBin : (existsSync(debugBin) ? debugBin : undefined)
     const effectiveCashwebdBin = config.cashwebdBin ?? prebuiltBin
 
-    const relayDb = join(config.stateDir, 'relay', 'registry.rocksdb')
+    const relayDb = config.relayDbPath ?? join(config.stateDir, 'relay', 'registry.rocksdb')
     mkdirSync(dirname(relayDb), { recursive: true, mode: 0o700 })
     const relay = supervisor.start({
       name: 'relay',
@@ -921,6 +936,7 @@ export async function main(argv: string[], env: Record<string, string | undefine
     const config = resolveDemoConfig({
       env,
       envFile: readEnvFile(envFilePath),
+      envFileDir: dirname(envFilePath),
       ngrokFlag: argv.includes('--ngrok'),
       allowDrawFlag: argv.includes('--allow-draw'),
       // `yarn demo` runs inside packages/bot; relative paths mean relative to where the user typed it.

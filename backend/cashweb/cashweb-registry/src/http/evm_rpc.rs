@@ -46,7 +46,7 @@ use crate::{
         upstream_cooldown::UpstreamCooldownTracker,
     },
     monad_http::Address,
-    store::monad_messages::ChallengeConsumption,
+    monad_mailbox::ChallengeConsumption,
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -296,11 +296,18 @@ impl RpcAuthState {
         mac.finalize().into_bytes().into()
     }
 
+    /// Signing state for this process only.
     pub(crate) fn new() -> Self {
-        let mut epoch = [0; 32];
-        let mut secret = [0; 32];
-        rand::thread_rng().fill_bytes(&mut epoch);
-        rand::thread_rng().fill_bytes(&mut secret);
+        Self::for_session(&crate::monad_mailbox::SessionSecret::random(), "process")
+    }
+
+    /// Signing state derived from the relay's session secret, so challenges and capabilities
+    /// issued before a restart are still good after it. Each proxy names its own `purpose`.
+    pub(crate) fn for_session(
+        session: &crate::monad_mailbox::SessionSecret,
+        purpose: &str,
+    ) -> Self {
+        let (epoch, secret) = session.derive(purpose);
         Self { epoch, secret }
     }
 
@@ -527,6 +534,18 @@ impl EvmRpcRuntime {
         network_tag: Vec<u8>,
         env: impl Fn(&str) -> Option<String>,
     ) -> Result<Option<Arc<Self>>, EvmRpcStartError> {
+        let session = crate::monad_mailbox::SessionSecret::random();
+        Self::from_conf_with_session(conf, network_tag, env, &session).await
+    }
+
+    /// As [`Self::from_conf_with_env`], signing challenges and capabilities with a key derived
+    /// from the relay's session secret so they survive a restart.
+    pub async fn from_conf_with_session(
+        conf: &EvmRpcConf,
+        network_tag: Vec<u8>,
+        env: impl Fn(&str) -> Option<String>,
+        session: &crate::monad_mailbox::SessionSecret,
+    ) -> Result<Option<Arc<Self>>, EvmRpcStartError> {
         conf.validate().map_err(EvmRpcStartError::InvalidConfig)?;
         if !conf.enabled {
             return Ok(None);
@@ -602,7 +621,7 @@ impl EvmRpcRuntime {
         let runtime = Arc::new(Self {
             chains,
             client,
-            auth: RpcAuthState::new(),
+            auth: RpcAuthState::for_session(session, "evm-rpc"),
             network_tag,
             permits: Arc::new(Semaphore::new(conf.max_concurrency)),
             ingress_permits: Arc::new(Semaphore::new(conf.max_concurrency)),

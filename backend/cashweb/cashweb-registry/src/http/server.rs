@@ -1,7 +1,5 @@
 //! Module containing [`RegistryServer`] to run the registry HTTP server.
 
-#[allow(deprecated)]
-use crate::http::monad_message::handle_put_monad_message;
 use crate::{
     http::bitcoin_proxy::{
         issue_chronik_challenge, proxy_chronik, proxy_chronik_capability, BitcoinProxyRuntime,
@@ -13,10 +11,6 @@ use crate::{
         handle_issue_rpc_capability, handle_issue_rpc_capability_challenge,
         handle_issue_rpc_challenge, handle_proxy_rpc, handle_proxy_rpc_capability, handle_proxy_ws,
         EvmRpcRuntime, RPC_CORS_HEADERS,
-    },
-    http::monad_message::{
-        handle_ack_private_monad_recovery, handle_get_private_monad_messages,
-        handle_get_private_monad_recovery, handle_issue_mailbox_challenge,
     },
     http::monad_profile::{
         fetch_profile_raw_or_not_found, handle_get_monad_profile, handle_list_monad_profiles,
@@ -315,23 +309,6 @@ fn safe_log_path(path: &str) -> Cow<'_, str> {
         ["message", "inbox", _] => Cow::Borrowed("/message/inbox/:recipient"),
         ["message", "mailbox", _] => Cow::Borrowed("/message/mailbox/:address"),
         ["message", "mailbox", _, "ws"] => Cow::Borrowed("/message/mailbox/:address/ws"),
-        ["message", "recovery", _] => Cow::Borrowed("/message/recovery/:recipient"),
-        ["message", "recovery", _, _, _, "ack"] => {
-            Cow::Borrowed("/message/recovery/:recipient/:payload_hash/:obligation_id/ack")
-        }
-        ["message", "monad", "cbor"] => Cow::Borrowed("/message/monad/cbor"),
-        ["message", "monad", "cbor", "auth", _] => {
-            Cow::Borrowed("/message/monad/cbor/auth/:recipient")
-        }
-        ["message", "monad", "cbor", "inbox", _] => {
-            Cow::Borrowed("/message/monad/cbor/inbox/:recipient")
-        }
-        ["message", "monad", "cbor", "mailbox", _] => {
-            Cow::Borrowed("/message/monad/cbor/mailbox/:address")
-        }
-        ["message", "monad", "cbor", "mailbox", _, "ws"] => {
-            Cow::Borrowed("/message/monad/cbor/mailbox/:address/ws")
-        }
         ["message", "monad", "topics"] => Cow::Borrowed("/message/monad/topics"),
         ["message", "monad", "topics", "vote"] => Cow::Borrowed("/message/monad/topics/vote"),
         ["message", "monad", "topics", "discover"] => {
@@ -520,39 +497,6 @@ impl RegistryServer {
                 "/message/:payload_hash",
                 routing::any(|| async { StatusCode::GONE }),
             );
-        // Private mailbox rows are never exposed by the legacy unauthenticated GET routes.
-        // Authenticated recipient reads are installed separately once their challenge is proven.
-        // Note: The /message/monad protobuf transport is deprecated; canonical CBOR
-        // (/message/monad/cbor) is the active path.
-        let router = if mailbox_enabled {
-            #[allow(deprecated)]
-            router
-                .route(
-                    "/message/monad",
-                    routing::put(handle_put_monad_message).get(|| async { StatusCode::NOT_FOUND }),
-                )
-                .route(
-                    "/message/monad/auth/:recipient",
-                    routing::post(handle_issue_mailbox_challenge),
-                )
-                .route(
-                    "/message/monad/inbox/:recipient",
-                    routing::get(handle_get_private_monad_messages),
-                )
-                .route(
-                    "/message/monad/recovery/:recipient",
-                    routing::get(handle_get_private_monad_recovery),
-                )
-                .route(
-                    "/message/monad/recovery/:recipient/:payload_hash/:obligation_id/ack",
-                    routing::post(handle_ack_private_monad_recovery),
-                )
-        } else {
-            router.route(
-                "/message/monad",
-                routing::any(|| async { StatusCode::NOT_FOUND }),
-            )
-        };
         let router = if rpc_enabled {
             router
                 .route("/chain-rpc/:chain/rpc", routing::post(handle_proxy_rpc))
@@ -638,11 +582,10 @@ impl RegistryServer {
             );
         if canonical_enabled {
             use crate::http::monad_message_cbor::{
-                handle_ack, handle_challenge, handle_inbox, handle_mailbox, handle_mailbox_ws,
-                handle_put, handle_recovery,
+                handle_challenge, handle_inbox, handle_mailbox, handle_mailbox_ws, handle_put,
             };
             router = router
-                // Canonical network-agnostic message routes
+                // The one message transport.
                 .route(
                     "/message",
                     routing::on(
@@ -656,46 +599,6 @@ impl RegistryServer {
                 .route(
                     "/message/mailbox/:address/ws",
                     routing::get(handle_mailbox_ws),
-                )
-                .route(
-                    "/message/recovery/:recipient",
-                    routing::get(handle_recovery),
-                )
-                .route(
-                    "/message/recovery/:recipient/:payload_hash/:obligation_id/ack",
-                    routing::post(handle_ack),
-                )
-                // Backwards-compatible legacy aliases
-                .route(
-                    "/message/monad/cbor",
-                    routing::on(
-                        routing::MethodFilter::POST | routing::MethodFilter::PUT,
-                        handle_put,
-                    ),
-                )
-                .route(
-                    "/message/monad/cbor/auth/:recipient",
-                    routing::post(handle_challenge),
-                )
-                .route(
-                    "/message/monad/cbor/inbox/:recipient",
-                    routing::get(handle_inbox),
-                )
-                .route(
-                    "/message/monad/cbor/mailbox/:address",
-                    routing::get(handle_mailbox),
-                )
-                .route(
-                    "/message/monad/cbor/mailbox/:address/ws",
-                    routing::get(handle_mailbox_ws),
-                )
-                .route(
-                    "/message/monad/cbor/recovery/:recipient",
-                    routing::get(handle_recovery),
-                )
-                .route(
-                    "/message/monad/cbor/recovery/:recipient/:payload_hash/:obligation_id/ack",
-                    routing::post(handle_ack),
                 );
         }
         if let Some(runtime) = directory {

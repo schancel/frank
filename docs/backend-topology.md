@@ -112,9 +112,10 @@ orders them without turning checkpoint contents into relay-visible protocol fiel
 
 The former `GET /message/monad?since=...` global feed (every client downloaded every retained
 encrypted message and filtered on the envelope's plaintext routing fields) was removed in PR #197.
-Clients now read a recipient-scoped inbox (`POST /message/monad/auth/:recipient` challenge, identity
-signature, `GET /message/monad/inbox/:recipient`; client: `packages/cashweb/relay/monad-mailbox-client.ts`),
-which is still a polled inbox, not yet the ordered journal described above. A scoped-but-unauthenticated
+Clients now read their own mailbox (`POST /message/auth/:recipient` challenge, identity
+signature, then `GET /message/inbox/:recipient` or `GET /message/mailbox/:address`; client:
+`packages/cashweb/relay/monad-mailbox-client.ts`), which is still a polled mailbox, not yet the
+ordered journal described above. The earlier protobuf transport under `/message/monad` is gone. A scoped-but-unauthenticated
 address query would have been only a migration aid, not the final privacy boundary: normal mailbox reads must authenticate control of
 the destination identity without signing the message contents or creating transferable authorship
 evidence.
@@ -163,12 +164,13 @@ then closes RocksDB.
 
 ### Monad mailbox default (today's `cashwebd`)
 
-The durable Monad mailbox (`PUT /message/monad` and the authenticated inbox/recovery routes) is
+Direct messages (`PUT /message` and the signed inbox and mailbox reads under `/message/`) are
 **enabled by default** in both shipped configs (`backend/cashweb/cashwebd.local.toml`,
 `backend/docker/cashwebd.toml`) via `[registry.monad_mailbox]`: `enabled = true`,
-`min_value_wei = "1000000000000"`, `expected_chain_id = 10143` (Monad testnet; mainnet is 143). A
-relay with the mailbox disabled answers 404 for every `/message/monad` route except the topic
-routes, so a disabled default would leave the app unable to send or receive direct messages.
+`min_value_wei = "1000000000000"`, `expected_chain_id = 10143` (Monad testnet; mainnet is 143),
+together with `[registry.directory]`, without which there are no message routes at all. A relay
+with the mailbox disabled answers 404 on every `/message` route except the topic routes, so a
+disabled default would leave the app unable to send or receive direct messages.
 
 Two values are deliberately not in the files and must come from the environment:
 
@@ -184,10 +186,18 @@ missing. `docker-compose.yml` defaults the tag to `MONT`; `run-local-monad.sh` d
 A production operator must: set `MONAD_TESTNET_HTTP_RPC_URL` to their own provider endpoint; for a
 mainnet relay set `expected_chain_id = 143`, `FRANK_NETWORK_TAG=MON1`, the `monad-mainnet` proxy
 row's registry-pinned genesis checkpoint, and an RPC URL for the same network; review
-`min_value_wei` for their spam-resistance policy; persist `/data`; and snapshot
-before upgrading (older binaries cannot read newer outbox rows). Disabling the mailbox
-(`enabled = false`) is the supported rollback. Outbox rate and capacity limits are live on every
-default deployment; known residual gaps are tracked in ticket #231.
+`min_value_wei` for their spam-resistance policy; and persist `/data`.
+
+What the relay keeps there: the registry database (`registry.rocksdb`), the message store beside
+it (`registry.messages-v2`), and the session secret (`registry.session-secret`) that signs login
+challenges, page cursors and RPC capabilities so they survive a restart. None of them holds a
+wallet key or funds.
+
+**Development reset.** Frank has no users yet, so a stored format changes without migration. A
+relay started beside a database from an earlier build refuses to start and prints the paths to
+delete: the registry database and every message store beside it. Deleting them loses the relay's
+messages, profiles, topics and directory entries; wallets keep their own keys and republish
+their entries the next time they connect.
 
 Copy-paste local recipe (from the repository root):
 

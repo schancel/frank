@@ -9,8 +9,6 @@ pub mod directory_usernames;
 pub(crate) mod forum;
 pub mod metadata;
 pub(crate) mod monad_dm_cbor;
-pub mod monad_messages;
-pub mod monad_outbox;
 pub mod monad_profiles;
 pub mod monad_topics;
 pub mod pubkeyhash;

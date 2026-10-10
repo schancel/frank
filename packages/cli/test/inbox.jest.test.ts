@@ -1,162 +1,85 @@
 import { mkdirSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import * as bip39 from 'bip39'
 
-import { buildEnvelope } from '@frank/cashweb/relay/monad-message-envelope'
-import * as monadMessageFeedModule from '@frank/cashweb/relay/monad-message-feed'
-import { serializeMessageItems } from '@frank/wallet/chain/monad-chain'
-import * as monadIdentityModule from '@frank/wallet/monad-identity'
+import type { DirectMessageReceived } from '@frank/wallet/chain/active-chain'
 
+import * as accountModule from '../src/account'
 import { inboxCommand, listenCommand } from '../src/commands/inbox'
-import { saveIdentity } from '../src/config'
 
-describe('Inbox and Listen Commands', () => {
-  let testDataDir: string
+function received(digest: string, receivedTime: number, text: string): DirectMessageReceived {
+  return {
+    senderAddress: { raw: '0x1111111111111111111111111111111111111111' },
+    recipientAddress: { raw: '0x2222222222222222222222222222222222222222' },
+    items: [{ type: 'text', text }],
+    payloadDigest: digest,
+    stampValueWei: 0n,
+    stampPayments: [],
+    receivedTime,
+  } as DirectMessageReceived
+}
+
+/** The messaging account is replaced at its one seam; reading from a real relay is exercised by
+ * the real-stack run, not here. */
+function stubAccount(messages: DirectMessageReceived[]) {
+  const account: accountModule.CliAccount = {
+    address: '0x2222222222222222222222222222222222222222',
+    mainAccount: '0x3333333333333333333333333333333333333333',
+    send: jest.fn(async () => ''),
+    receivedSince: jest.fn(async (sinceMs: number) => messages.filter(m => m.receivedTime >= sinceMs)),
+    close: jest.fn(async () => {}),
+  }
+  jest.spyOn(accountModule, 'openCliAccount').mockResolvedValue(account)
+  return account
+}
+
+describe('inbox', () => {
+  let dataDir: string
   let logSpy: jest.SpyInstance
-  let errorSpy: jest.SpyInstance
-  let recipientIdentity: monadIdentityModule.MonadIdentity
-  let senderIdentity: monadIdentityModule.MonadIdentity
-  let mnemonic: string
 
-  beforeEach(async () => {
-    testDataDir = join(
-      tmpdir(),
-      `signet-inbox-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    )
-    mkdirSync(testDataDir, { recursive: true })
+  beforeEach(() => {
+    dataDir = join(tmpdir(), `frank-cli-inbox-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    mkdirSync(join(dataDir, 'account'), { recursive: true })
     logSpy = jest.spyOn(console, 'log').mockImplementation(() => {})
-    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {})
-
-    mnemonic = bip39.generateMnemonic()
-    recipientIdentity = monadIdentityModule.MonadIdentity.fromSeed({ mnemonic })
-    senderIdentity = monadIdentityModule.MonadIdentity.fromSeed({
-      mnemonic: bip39.generateMnemonic(),
-    })
-
-    await saveIdentity(testDataDir, {
-      identity: recipientIdentity,
-      mnemonic,
-    })
+    jest.spyOn(console, 'error').mockImplementation(() => {})
   })
 
   afterEach(() => {
-    logSpy.mockRestore()
-    errorSpy.mockRestore()
     jest.restoreAllMocks()
-    try {
-      rmSync(testDataDir, { recursive: true, force: true })
-    } catch {}
+    process.exitCode = 0
+    rmSync(dataDir, { recursive: true, force: true })
   })
 
-  it('outputs empty inbox message when no messages are found', async () => {
-    jest
-      .spyOn(monadMessageFeedModule, 'fetchMonadMessagesSince')
-      .mockResolvedValue([])
+  const printed = () => JSON.parse(logSpy.mock.calls.map(call => call[0]).join('\n'))
 
-    await inboxCommand({ dataDir: testDataDir })
-
-    expect(logSpy).toHaveBeenCalledWith('Inbox is empty.')
+  it('lists what the account received, oldest first, and honours --limit', async () => {
+    const account = stubAccount([received('aa', 1000, 'first'), received('bb', 2000, 'second')])
+    await inboxCommand({ dataDir, json: true })
+    expect(printed().map((m: { text: string }) => m.text)).toEqual(['first', 'second'])
+    expect(account.close).toHaveBeenCalledTimes(1)
+    logSpy.mockClear()
+    await inboxCommand({ dataDir, json: true, limit: '1' })
+    expect(printed().map((m: { payloadDigest: string }) => m.payloadDigest)).toEqual(['bb'])
   })
 
-  it('outputs empty JSON array when --json is provided and inbox is empty', async () => {
-    jest
-      .spyOn(monadMessageFeedModule, 'fetchMonadMessagesSince')
-      .mockResolvedValue([])
-
-    await inboxCommand({ dataDir: testDataDir, json: true })
-
-    expect(logSpy).toHaveBeenCalledWith('[]')
+  it('--unread returns each message once: the next run starts after the newest one seen', async () => {
+    const messages = [received('aa', 1000, 'first')]
+    const account = stubAccount(messages)
+    await inboxCommand({ dataDir, json: true, unread: true })
+    expect(printed()).toHaveLength(1)
+    logSpy.mockClear()
+    messages.push(received('bb', 2000, 'second'))
+    await inboxCommand({ dataDir, json: true, unread: true })
+    expect(printed().map((m: { text: string }) => m.text)).toEqual(['second'])
+    expect(account.receivedSince).toHaveBeenLastCalledWith(1001)
   })
 
-  it('decrypts and displays messages from inbox', async () => {
-    const envelope = buildEnvelope({
-      fromAddress: senderIdentity.displayAddress,
-      fromPrivateKey: senderIdentity.toNakamotoPrivateKey(),
-      toAddress: recipientIdentity.displayAddress,
-      toPubKey: recipientIdentity.compressedPubKey,
-      plaintext: serializeMessageItems([
-        { type: 'text', text: 'Hello Signet!' },
-      ]),
-      networkTag: 'monad-devnet',
-    })
-
-    const fakeRecord: any = {
-      timestamp: 1600000000000,
-      message: {
-        payloadHash: Buffer.from('payloadhash123', 'utf8'),
-        encryptedPayload: envelope,
-      },
-    }
-
-    jest
-      .spyOn(monadMessageFeedModule, 'fetchMonadMessagesSince')
-      .mockResolvedValue([fakeRecord])
-    jest.spyOn(monadIdentityModule, 'fetchMonadProfile').mockResolvedValue({
-      address: { raw: senderIdentity.displayAddress },
-      pubKey: senderIdentity.compressedPubKey,
-    } as any)
-
-    await inboxCommand({ dataDir: testDataDir, json: true })
-
-    expect(logSpy).toHaveBeenCalled()
-    const lastCall = logSpy.mock.calls[logSpy.mock.calls.length - 1][0]
-    const parsed = JSON.parse(lastCall)
-    expect(parsed).toHaveLength(1)
-    expect(parsed[0].sender).toBe(senderIdentity.displayAddress)
-    expect(parsed[0].recipient).toBe(recipientIdentity.displayAddress)
-    expect(parsed[0].text).toBe('Hello Signet!')
-  })
-
-  it('handles --unread flag and preserves cursor', async () => {
-    const envelope = buildEnvelope({
-      fromAddress: senderIdentity.displayAddress,
-      fromPrivateKey: senderIdentity.toNakamotoPrivateKey(),
-      toAddress: recipientIdentity.displayAddress,
-      toPubKey: recipientIdentity.compressedPubKey,
-      plaintext: serializeMessageItems([{ type: 'text', text: 'Unread 1' }]),
-      networkTag: 'monad-devnet',
-    })
-
-    const fakeRecord: any = {
-      timestamp: 1700000000000,
-      message: {
-        payloadHash: Buffer.from('payloadhash456', 'utf8'),
-        encryptedPayload: envelope,
-      },
-    }
-
-    jest
-      .spyOn(monadMessageFeedModule, 'fetchMonadMessagesSince')
-      .mockResolvedValue([fakeRecord])
-    jest.spyOn(monadIdentityModule, 'fetchMonadProfile').mockResolvedValue({
-      address: { raw: senderIdentity.displayAddress },
-      pubKey: senderIdentity.compressedPubKey,
-    } as any)
-
-    await inboxCommand({ dataDir: testDataDir, unread: true, json: true })
-    const parsedFirst = JSON.parse(
-      logSpy.mock.calls[logSpy.mock.calls.length - 1][0],
-    )
-    expect(parsedFirst).toHaveLength(1)
-
-    // Second read should filter out <= lastRead timestamp
-    await inboxCommand({ dataDir: testDataDir, unread: true, json: true })
-    const parsedSecond = JSON.parse(
-      logSpy.mock.calls[logSpy.mock.calls.length - 1][0],
-    )
-    expect(parsedSecond).toHaveLength(0)
-  })
-
-  it('runs listen command once when follow is not set', async () => {
-    jest
-      .spyOn(monadMessageFeedModule, 'fetchMonadMessagesSince')
-      .mockResolvedValue([])
-
-    await listenCommand({ dataDir: testDataDir, follow: false })
-
-    expect(logSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`Listening for incoming messages on`),
-    )
+  it('listen prints what arrived in the last minute and closes the account when not following', async () => {
+    const now = Date.now()
+    const account = stubAccount([received('old', now - 3_600_000, 'stale'), received('new', now - 1000, 'fresh')])
+    await listenCommand({ dataDir, json: true })
+    const lines = logSpy.mock.calls.map(call => JSON.parse(call[0]))
+    expect(lines.map((m: { text: string }) => m.text)).toEqual(['fresh'])
+    expect(account.close).toHaveBeenCalledTimes(1)
   })
 })

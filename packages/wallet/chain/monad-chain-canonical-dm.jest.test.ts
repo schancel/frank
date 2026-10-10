@@ -1,7 +1,6 @@
 import * as canonicalOpen from "@frank/cashweb/relay/canonical-dm";
 import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 import * as legacyEnvelope from "@frank/cashweb/relay/monad-message-envelope";
-import * as legacyFeed from "@frank/cashweb/relay/monad-message-feed";
 import * as legacyProfile from "../monad-identity";
 import * as legacyStamp from "../monad-stamp-client";
 /**
@@ -451,8 +450,6 @@ function relayMailbox(
           limit: Number(query.get('limit')),
           max_bytes: Number(query.get('max_bytes')),
           network_tag: '4d4f4e54',
-          recovery_payload_hash: null,
-          recovery_obligation_id: null,
         } satisfies MailboxChallenge),
       )
       media = 'application/json'
@@ -1293,8 +1290,6 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
             limit: Number(query.get('limit')),
             max_bytes: Number(query.get('max_bytes')),
             network_tag: '4d4f4e54',
-            recovery_payload_hash: null,
-            recovery_obligation_id: null,
           }
           bytes = Buffer.from(JSON.stringify(challenge))
           media = 'application/json'
@@ -3244,78 +3239,6 @@ describe('two typed wallets on the open directory', () => {
     }
   );
 
-  it.each(["wallet-sync", "payment-transfer"])(
-    "keeps a legacy decoded %s as unsupported with the canonical service installed, and the read does not stop",
-    async (type) => {
-      await online("alice", f.alice);
-      mailboxPage.mockResolvedValueOnce({ records: [] });
-      const decode = jest
-        .spyOn(legacyEnvelope, "decryptEnvelope")
-        .mockReturnValue(JSON.stringify([{ type }]));
-      const parse = jest
-        .spyOn(legacyEnvelope, "parseEnvelope")
-        .mockReturnValue({
-          v: 1,
-          networkTag: "MONT",
-          from: f.bob.identity.address.raw,
-          to: f.alice.identity.address.raw,
-          salt: "",
-          ciphertext: "",
-        });
-      const feed = jest
-        .spyOn(legacyFeed, "fetchMonadMessagesSince")
-        .mockResolvedValue([
-          {
-            timestamp: 20,
-            networkTag: new Uint8Array(),
-            message: {
-              encryptedPayload: new Uint8Array(),
-              payloadHash: new Uint8Array(32).fill(9),
-              stampPayments: [],
-            },
-          },
-        ]);
-      const profile = jest
-        .spyOn(legacyProfile, "fetchMonadProfile")
-        .mockResolvedValue({
-          address: f.bob.identity.address.raw,
-          pubKey: f.bob.identity.compressedPubKey,
-        } as Awaited<ReturnType<typeof legacyProfile.fetchMonadProfile>>);
-      const recovery = jest
-        .spyOn(legacyStamp, "recoverMonadStampPayments")
-        .mockReturnValue([]);
-      const dispatch = jest
-        .spyOn(syncDispatch, "applyWalletSyncItem")
-        .mockResolvedValue({});
-      const before = f.alice.stampPaymentJournal?.getAll();
-      try {
-        // The legacy mailbox goes through the same receive rule as a canonical message: the
-        // record is not an item, reaches no wallet state, and one peer's message cannot stop
-        // the inbox (the read used to reject as a whole, on every poll).
-        const received = await f.chain.directMessages.fetchSince({
-          wallet: f.alice,
-          sinceMs: 0,
-        });
-        expect(received.map((message) => message.items)).toEqual([
-          [
-            {
-              type: "unsupported",
-              reason: "unknown-type",
-              itemType: type,
-              frame: Buffer.from(JSON.stringify({ type }), "utf8").toString(
-                "hex"
-              ),
-            },
-          ],
-        ]);
-        expect(dispatch).not.toHaveBeenCalled();
-        expect(f.alice.stampPaymentJournal?.getAll()).toEqual(before);
-      } finally {
-        for (const spy of [decode, parse, feed, profile, recovery, dispatch])
-          spy.mockRestore();
-      }
-    }
-  );
 
   it('message each other in both directions knowing only an address', async () => {
     await online('alice', f.alice)

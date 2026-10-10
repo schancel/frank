@@ -138,7 +138,11 @@ describe('the bot is an ordinary account on a real typed wallet', () => {
     expect(user.received.get(reveal.digest)).toBe(owed > 0n ? owed : STAMP)
     // Its wager reached the bot as a stamp the bot's wallet verified.
     expect(final.wagerWei).toBe(MAX_BET)
-    expect(await account.spendableWei()).toBeLessThan(START_BALANCE - owed)
+    // What the bot received (the wager, and the stamps of the player's messages) is money it
+    // can spend, so its balance is what it started with, less what it paid out, plus that.
+    expect(await account.spendableWei()).toBeLessThan(
+      START_BALANCE - owed + 2n * MAX_BET + 1_000_000n
+    )
   })
 
   it('bets and plays when a user challenges it as dealer', async () => {

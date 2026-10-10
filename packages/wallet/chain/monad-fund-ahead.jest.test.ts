@@ -311,10 +311,13 @@ describe("funding the next message ahead (#1235 Q4)", () => {
 
   it("a pass racing a send funds one pair between them", async () => {
     const [ahead, sent] = await Promise.all([fundAhead(), send("racing")]);
-    expect(ahead.outcome).toBe("funded");
+    // The send pays from the main account and funds nothing; which of the two takes the
+    // account first is not fixed. The pass either funds its one pair or, coming second, finds
+    // it cannot and says so. Never more than one pair, never an account twice.
+    expect(["funded", "not-funded"]).toContain(ahead.outcome);
     expect(sent.preparationTxHashes).toEqual([]);
-    expect(mockFunded).toHaveLength(2);
-    expect(new Set(mockFunded.map((tx) => tx.to)).size).toBe(2);
+    expect(mockFunded).toHaveLength(ahead.outcome === "funded" ? 2 : 0);
+    expect(new Set(mockFunded.map((tx) => tx.to)).size).toBe(mockFunded.length);
   });
 
   it("moves at most two transfers and the stamp value plus two fee reserves in one call, and nothing when the main account cannot pay", async () => {

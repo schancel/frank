@@ -34,6 +34,29 @@ describePluginContract({
       },
       preview: 'Conversation state',
     },
+    {
+      item: {
+        type: 'conversation-state',
+        conversationId: CONVERSATION,
+        peer: PEER,
+        subject: 'Audit thread',
+        subjectSetAt: 1760000000002,
+      },
+      preview: 'Conversation state',
+    },
+    {
+      // A removed subject, with the other facts beside it.
+      item: {
+        type: 'conversation-state',
+        conversationId: CONVERSATION,
+        peer: PEER,
+        clearedBefore: 1760000000000,
+        readUpTo: 1760000000001,
+        subject: '',
+        subjectSetAt: 1760000000002,
+      },
+      preview: 'Conversation state',
+    },
   ],
 })
 
@@ -66,6 +89,29 @@ describe('a conversation-state note must state a fact', () => {
         bytes,
         standaloneDecodeContext(),
       ),
+    ).toThrow(MessageItemDecodeError)
+  })
+
+  it('carries a subject only with the time it was set, and a time only with a subject', () => {
+    for (const half of [{ subject: 'Audit thread' }, { subjectSetAt: 5 }]) {
+      expect(() =>
+        registry.encodeItem({
+          type: 'conversation-state',
+          conversationId: CONVERSATION,
+          peer: PEER,
+          ...half,
+        } as ConversationStateItem),
+      ).toThrow(MessageItemEncodeError)
+    }
+    const bytes = encodeCanonical(
+      new Map<bigint, string>([
+        [0n, CONVERSATION],
+        [1n, PEER],
+        [4n, 'Audit thread'],
+      ]),
+    )
+    expect(() =>
+      registry.decodeItem('conversation-state', bytes, standaloneDecodeContext()),
     ).toThrow(MessageItemDecodeError)
   })
 })

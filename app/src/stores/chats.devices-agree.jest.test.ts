@@ -1,7 +1,7 @@
 /**
  * Two frontends of one account end with the same conversation list.
  *
- * What one device does to a conversation (deletes it, reads it) is noted to the account's own mailbox as a
+ * What one device does to a conversation (deletes it, reads it, names it) is noted to the account's own mailbox as a
  * free message to self carrying a `conversation-state` item. The account's other devices read
  * the note, and so does a device restored later from the seed, which replays the whole mailbox.
  *
@@ -261,6 +261,7 @@ function shown(target: Device) {
         // Messages no newer than this never come back.
         goneUpTo: Math.max(c.clearedBefore ?? -1, c.deletedAt ?? -1),
         unread: c.totalUnreadMessages,
+        subject: c.name,
         messages: c.messages.map(m => m.payloadDigest),
       })),
     onDisk: [...target.disk.rows.keys()].sort(),
@@ -690,6 +691,262 @@ describe('a conversation read on one device', () => {
       const other = device(`order ${n}`)
       await deliver(other, ...batches)
       expect(shown(other)).toEqual(shown(one))
+    }
+  })
+})
+
+describe('a conversation subject set on one device', () => {
+  const NEW_THREAD = '22222222-2222-4222-8222-222222222222'
+  const subjectNote = (rows: ReceivedMessageWrapper[]) =>
+    rows.map(each => {
+      const note = each.message.items[0] as ConversationStateItem
+      return [note.subject, note.subjectSetAt]
+    })
+  const at = (time: number) => jest.spyOn(Date, 'now').mockReturnValue(time)
+
+  /** Device one holds the conversation and names it at `time` by this device's clock. */
+  async function namedOnDeviceOne(subject = 'Audit thread', time = 2500) {
+    const one = device('one')
+    await deliver(one, HISTORY)
+    at(time)
+    await on(one, chats => chats.renameConversation(WITH_PEER, subject))
+    const note = await notes(one)
+    expect(note).toHaveLength(1)
+    return { one, note }
+  }
+
+  it('is noted to self once, with the time it was set', async () => {
+    const { one, note } = await namedOnDeviceOne()
+    expect(note[0].message.items).toEqual([
+      {
+        type: 'conversation-state',
+        conversationId: WITH_PEER,
+        peer: PEER,
+        subject: 'Audit thread',
+        subjectSetAt: 2500,
+      },
+    ])
+    expect(await notes(one)).toEqual([])
+    await deliver(one, note, note)
+    expect(await notes(one)).toEqual([])
+    expect(shown(one).conversations[0].subject).toBe('Audit thread')
+  })
+
+  it('is the subject on a device that was online, and on one restored later', async () => {
+    const two = device('two')
+    await deliver(two, HISTORY)
+    const { one, note } = await namedOnDeviceOne()
+    await deliver(two, note)
+    expect(shown(two)).toEqual(shown(one))
+    expect(shown(two).conversations[0].subject).toBe('Audit thread')
+    expect(await notes(two)).toEqual([])
+
+    const restored = device('restored')
+    await deliver(restored, [...HISTORY, ...note])
+    expect(shown(restored)).toEqual(shown(one))
+    expect(await notes(restored)).toEqual([])
+  })
+
+  it('is the subject whatever order the note and the messages are read in, and however often', async () => {
+    const { one, note } = await namedOnDeviceOne()
+    const orders: ReceivedMessageWrapper[][][] = [
+      [note, HISTORY],
+      [HISTORY, note, HISTORY, note],
+      [[HISTORY[1]], note, [HISTORY[0], HISTORY[2]]],
+      [[...note, ...HISTORY]],
+    ]
+    for (const [n, batches] of orders.entries()) {
+      const other = device(`order ${n}`)
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+    }
+  })
+
+  it('removed on one device, it is removed on the others', async () => {
+    const { one, note: named } = await namedOnDeviceOne()
+    at(2600)
+    await on(one, chats => chats.renameConversation(WITH_PEER, ''))
+    const removed = await notes(one)
+    expect(subjectNote(removed)).toEqual([['', 2600]])
+    expect(shown(one).conversations[0].subject).toBeUndefined()
+    for (const [n, batches] of [
+      [HISTORY, named, removed],
+      [removed, named, HISTORY],
+      [named, HISTORY, removed, named],
+    ].entries()) {
+      const other = device(`order ${n}`)
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+    }
+  })
+
+  it('set twice: the later one is the subject, in either order', async () => {
+    const { one, note: first } = await namedOnDeviceOne('First name', 2500)
+    // The device's clock has not moved: the second naming is still the later one.
+    at(2500)
+    await on(one, chats => chats.renameConversation(WITH_PEER, 'Second name'))
+    const second = await notes(one)
+    expect(subjectNote(second)).toEqual([['Second name', 2501]])
+    for (const [n, batches] of [
+      [HISTORY, first, second],
+      [HISTORY, second, first],
+      [second, first, HISTORY, first],
+    ].entries()) {
+      const other = device(`order ${n}`)
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+      expect(shown(other).conversations[0].subject).toBe('Second name')
+    }
+  })
+
+  it('an older message that carried the old subject does not bring it back', async () => {
+    const named = [
+      row({ digest: 'peer-1', time: 1000, subject: 'Old subject' }),
+      ...HISTORY.slice(1),
+    ]
+    const one = device('one')
+    await deliver(one, named)
+    expect(shown(one).conversations[0].subject).toBe('Old subject')
+    // Named at the very time of the message that carried the old subject, by a slow clock.
+    at(1000)
+    await on(one, chats => chats.renameConversation(WITH_PEER, 'A new one'))
+    const note = await notes(one)
+    // The relay hands the old rows back.
+    await deliver(one, named)
+    expect(shown(one).conversations[0].subject).toBe('A new one')
+    for (const [n, batches] of [
+      [named, note],
+      [note, named],
+      [named, note, named],
+    ].entries()) {
+      const other = device(`order ${n}`)
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+    }
+  })
+
+  it('against a subject the peer sets by message, the later one wins on every device', async () => {
+    for (const [peerTime, winner] of [
+      [3000, 'The peer’s subject'],
+      [2400, 'Audit thread'],
+    ] as const) {
+      const { one, note } = await namedOnDeviceOne('Audit thread', 2500)
+      const fromPeer = row({
+        digest: `peer-names-${peerTime}`,
+        time: peerTime,
+        subject: 'The peer’s subject',
+      })
+      await deliver(one, [fromPeer])
+      expect(shown(one).conversations[0].subject).toBe(winner)
+      for (const [n, batches] of [
+        [HISTORY, note, [fromPeer]],
+        [HISTORY, [fromPeer], note],
+        [note, [fromPeer], HISTORY],
+        [[fromPeer], HISTORY, note, [fromPeer]],
+      ].entries()) {
+        const other = device(`peer at ${peerTime}, order ${n}`)
+        await deliver(other, ...batches)
+        expect(shown(other)).toEqual(shown(one))
+        expect(await notes(other)).toEqual([])
+      }
+      // The device that named it has nothing more to note either.
+      expect(await notes(one)).toEqual([])
+    }
+  })
+
+  it('two devices name it at the same moment: both end with the same subject', async () => {
+    const one = device('one')
+    const two = device('two')
+    await deliver(one, HISTORY)
+    await deliver(two, HISTORY)
+    at(2500)
+    await on(one, chats => chats.renameConversation(WITH_PEER, 'Alpha'))
+    await on(two, chats => chats.renameConversation(WITH_PEER, 'Beta'))
+    const fromOne = await notes(one)
+    const fromTwo = await notes(two)
+    await deliver(one, fromTwo, fromOne)
+    await deliver(two, fromOne, fromTwo)
+    expect(shown(one).conversations[0].subject).toBe('Beta')
+    expect(shown(two)).toEqual(shown(one))
+    expect(await notes(one)).toEqual([])
+    expect(await notes(two)).toEqual([])
+    const restored = device('restored')
+    await deliver(restored, [...fromTwo, ...HISTORY, ...fromOne])
+    expect(shown(restored)).toEqual(shown(one))
+  })
+
+  it('a conversation created with a subject appears on the other devices before any message', async () => {
+    const one = device('one')
+    at(2500)
+    await on(one, chats =>
+      chats.createConversation({
+        kind: 'direct',
+        name: 'Audit thread',
+        participants: [PEER],
+        address: PEER,
+        conversationId: NEW_THREAD,
+      }),
+    )
+    const note = await notes(one)
+    expect(subjectNote(note)).toEqual([['Audit thread', 2500]])
+
+    const two = device('two')
+    await deliver(two, note)
+    expect(shown(two)).toEqual(shown(one))
+    expect(shown(two).listed).toEqual([NEW_THREAD])
+    expect(shown(two).conversations[0]).toMatchObject({
+      peer: PEER,
+      subject: 'Audit thread',
+      messages: [],
+    })
+
+    // The first message in it is filed into that conversation on both.
+    const first = row({
+      digest: 'peer-in-thread',
+      time: 3000,
+      conversationId: NEW_THREAD,
+    })
+    await deliver(one, [first])
+    await deliver(two, [first])
+    expect(shown(two)).toEqual(shown(one))
+    const restored = device('restored')
+    await deliver(restored, [first], note)
+    expect(shown(restored)).toEqual(shown(one))
+  })
+
+  it('named, read and deleted: every order of the mailbox ends the same', async () => {
+    const { one } = await namedOnDeviceOne('Audit thread', 2500)
+    await on(one, chats => {
+      chats.setActiveConversation(WITH_PEER)
+      chats.setActiveConversation(null)
+    })
+    await notes(one)
+    await on(one, chats => chats.deleteConversation(WITH_PEER, 5000))
+    await notes(one)
+    const after = row({ digest: 'peer-3', time: 6000 })
+    await deliver(one, [after])
+    expect(shown(one).conversations[0]).toMatchObject({
+      subject: 'Audit thread',
+      messages: ['peer-3'],
+      unread: 1,
+    })
+    const mailbox = [...HISTORY, ...sent.map(entry => entry.row), after]
+    expect(mailbox).toHaveLength(HISTORY.length + 4)
+    const rotations = mailbox.map((_, i) => [
+      ...mailbox.slice(i),
+      ...mailbox.slice(0, i),
+    ])
+    for (const [n, order] of [
+      mailbox,
+      [...mailbox].reverse(),
+      ...rotations,
+    ].entries()) {
+      const inOneRead = device(`order ${n}, one read`)
+      await deliver(inOneRead, order)
+      expect(shown(inOneRead)).toEqual(shown(one))
+      const rowByRow = device(`order ${n}, row by row`)
+      await deliver(rowByRow, ...order.map(each => [each]))
+      expect(shown(rowByRow)).toEqual(shown(one))
     }
   })
 })

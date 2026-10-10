@@ -112,9 +112,9 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  *   make a wallet list a coin.
  *
  * - `conversation-state`: what one device notes about a conversation for the account's other
- *   devices (it was deleted up to a time, read up to a time). The wallet does not interpret
- *   it: a host hands it to its conversation list. Because it is carried only here, another person cannot delete or
- *   change a conversation in someone's list.
+ *   devices (deleted up to a time, read up to a time, its subject). The wallet does not
+ *   interpret it: a host hands it to its conversation list. Because it is carried only here,
+ *   another person cannot delete, mark or rename a conversation in someone's list.
  *
  * Sending one to anyone else is refused before anything is paid. One that arrives in a message
  * whose authenticated sender is not the receiving wallet's own identity is kept as an unsupported

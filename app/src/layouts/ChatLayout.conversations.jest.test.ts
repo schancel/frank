@@ -533,13 +533,22 @@ it.each([false, true])(
       ).toContain('Renamed subject')
       expect(app.router.currentRoute.value.params.address).toBe(first)
       await edit('Same subject', true)
+      // An edit changes the subject and when it was set (each edit is later than the last),
+      // and nothing else.
       const {
         name: _name,
         updatedAt: _updatedAt,
+        nameSetAt: editedAt,
         ...unchanged
       } = mockClone(app.chats.conversations[first])
-      const { name: _oldName, updatedAt: _oldTime, ...before } = original
+      const {
+        name: _oldName,
+        updatedAt: _oldTime,
+        nameSetAt: createdAt,
+        ...before
+      } = original
       expect(unchanged).toEqual(before)
+      expect(editedAt).toBeGreaterThan(createdAt)
       expect(app.chats.conversations[second]).toEqual(sibling)
       await edit('Canceled subject', false)
       expect(app.chats.conversations[first].name).toBe('Same subject')

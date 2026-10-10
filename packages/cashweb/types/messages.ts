@@ -325,6 +325,10 @@ export interface ReceivedCoinItem {
  *   this account brings the conversation back without them.
  * - `readUpTo`: the peer's messages up to this relay time (ms) have been read. The highest wins.
  *   One mark per conversation, not one per message.
+ * - `subject` with `subjectSetAt`: the conversation's subject was set to this text (empty: the
+ *   subject was removed) at this time (ms). The later time wins, against other notes and against
+ *   a subject carried by a message (whose time is the message's relay time); at the same time
+ *   the greater text wins.
  *
  * `peer` is the conversation's peer address, so a frontend that has not seen the conversation
  * yet can record the fact for it.
@@ -336,6 +340,8 @@ export interface ConversationStateItem {
   peer: string
   clearedBefore?: number
   readUpTo?: number
+  subject?: string
+  subjectSetAt?: number
 }
 
 export interface DeviceClaimItem {

@@ -270,6 +270,7 @@ live('two devices of one account, through the real relay', () => {
           deleted: c.deletedAt !== undefined,
           goneUpTo: Math.max(c.clearedBefore ?? -1, c.deletedAt ?? -1),
           unread: c.totalUnreadMessages,
+          subject: c.name,
           messages: c.messages.map(m => m.payloadDigest),
         })),
     }
@@ -406,5 +407,72 @@ live('two devices of one account, through the real relay', () => {
     expect(unread(one)).toBe(1)
     for (const each of devices) expect(shown(each)).toEqual(shown(one))
     expect(one.notes).toHaveLength(notedBefore + 1)
+  }, 600_000)
+
+  it('a subject set on one device, and a conversation created with one, are on the online devices and on one restored later', async () => {
+    for (const each of devices) await sync(each)
+    const [conversationId] = shown(one).listed
+    const subject = (target: Device, id: string) =>
+      shown(target).conversations.find(c => c.id === id)?.subject
+
+    // Device one names the conversation; no message is sent in it.
+    const notedBefore = one.notes.length
+    await on(one, chats =>
+      chats.renameConversation(conversationId, 'Audit thread'),
+    )
+    await on(one, chats =>
+      chats.noteConversationStates(one.wallet.handle as never),
+    )
+    expect(one.notes).toHaveLength(notedBefore + 1)
+    expect(one.notes[notedBefore].items).toMatchObject([
+      { type: 'conversation-state', conversationId, subject: 'Audit thread' },
+    ])
+    expect(one.notes[notedBefore].result.stampValueWei).toBe(0n)
+    expect(one.notes[notedBefore].result.stampPayments).toEqual([])
+
+    for (const each of devices.slice(1)) {
+      await sync(each)
+      expect(subject(each, conversationId)).toBe('Audit thread')
+      expect(shown(each)).toEqual(shown(one))
+      expect(each.notes).toEqual([])
+    }
+
+    // A second conversation with the same peer, created with a subject and still empty.
+    const created = await on(one, chats =>
+      chats.createConversation({
+        kind: 'direct',
+        name: 'Second thread',
+        participants: [peer.address],
+        address: peer.address,
+      }),
+    )
+    await on(one, chats =>
+      chats.noteConversationStates(one.wallet.handle as never),
+    )
+    expect(one.notes).toHaveLength(notedBefore + 2)
+    for (const each of devices.slice(1)) {
+      await sync(each)
+      expect(subject(each, created.id)).toBe('Second thread')
+      expect(shown(each)).toEqual(shown(one))
+    }
+
+    const restored = await openDevice('device-six')
+    await sync(restored)
+    expect(subject(restored, conversationId)).toBe('Audit thread')
+    expect(subject(restored, created.id)).toBe('Second thread')
+    expect(shown(restored)).toEqual(shown(one))
+    expect(restored.notes).toEqual([])
+
+    // Removing the subject reaches them too, and reading everything again changes nothing.
+    await on(one, chats => chats.renameConversation(conversationId, ''))
+    await on(one, chats =>
+      chats.noteConversationStates(one.wallet.handle as never),
+    )
+    for (const each of [...devices, ...devices]) await sync(each)
+    for (const each of devices) {
+      expect(subject(each, conversationId)).toBeUndefined()
+      expect(shown(each)).toEqual(shown(one))
+    }
+    expect(one.notes).toHaveLength(notedBefore + 3)
   }, 600_000)
 })

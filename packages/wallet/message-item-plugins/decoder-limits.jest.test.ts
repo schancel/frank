@@ -482,6 +482,8 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       peer: A,
       clearedBefore: 1760000000000,
       readUpTo: 1760000000001,
+      subject: 'Audit thread',
+      subjectSetAt: 1760000000002,
     },
     cases: [
       ...each(
@@ -498,6 +500,9 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('peer', [1], BAD_CHAIN_ADDRESSES),
       ...each('clearedBefore', [2], BAD_TIMESTAMPS),
       ...each('readUpTo', [3], BAD_TIMESTAMPS),
+      ['subject: 513 bytes', [4], 'x'.repeat(513)],
+      ['subject: not text', [4], 1],
+      ...each('subjectSetAt', [5], BAD_TIMESTAMPS),
     ],
   },
   {

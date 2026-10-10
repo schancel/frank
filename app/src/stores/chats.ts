@@ -193,6 +193,10 @@ export interface Conversation {
    * device has noted to the account's other devices, or read from a note of theirs. A fact
    * beyond these is noted by the next pass of `noteConversationStates`. */
   noted?: { clearedBefore?: number; readUpTo?: number }
+  /** The user set or removed the subject here (`name`, at `nameSetAt`) and the account's
+   * mailbox does not say so yet. Cleared once the note is sent, or a later subject replaces
+   * this one. */
+  subjectToNote?: boolean
   verifiedGateway?: boolean
 }
 
@@ -778,7 +782,13 @@ function conversationStateToNote(
     note.clearedBefore = Math.trunc(cleared)
   const read = readUpTo(conversation)
   if (read > (conversation.noted?.readUpTo ?? 0)) note.readUpTo = read
-  return note.clearedBefore === undefined && note.readUpTo === undefined
+  if (conversation.subjectToNote && conversation.kind === 'direct') {
+    note.subject = usableSubject(conversation.name) ?? ''
+    note.subjectSetAt = conversation.nameSetAt ?? 0
+  }
+  return note.clearedBefore === undefined &&
+    note.readUpTo === undefined &&
+    note.subject === undefined
     ? undefined
     : note
 }
@@ -815,6 +825,14 @@ function recordNoted(
   if (note.readUpTo !== undefined)
     noted.readUpTo = Math.max(noted.readUpTo ?? 0, note.readUpTo)
   conversation.noted = noted
+  // The mailbox says exactly what the user set here: nothing is left to note. (A subject set
+  // again while the note was on its way is still to be noted.)
+  if (
+    note.subject !== undefined &&
+    note.subjectSetAt === (conversation.nameSetAt ?? 0) &&
+    note.subject === (usableSubject(conversation.name) ?? '')
+  )
+    conversation.subjectToNote = undefined
 }
 
 /** The ID of the note stating exactly these facts: the same on every device, so two devices
@@ -824,7 +842,7 @@ function conversationNoteId(note: ConversationStateItem): Uint8Array {
     new Uint8Array(16),
     `frank-conversation-state:${note.conversationId}:${
       note.clearedBefore ?? ''
-    }:${note.readUpTo ?? ''}`,
+    }:${note.readUpTo ?? ''}:${note.subjectSetAt ?? ''}:${note.subject ?? ''}`,
   )
 }
 
@@ -1165,13 +1183,43 @@ function applyCarriedSubject(
       message.outbound ||
       sameCanonicalAddress(message.senderAddress, conversation.address)
     ) ||
-    message.serverTime < (conversation.nameSetAt ?? 0)
+    !subjectReplaces(conversation, subject, message.serverTime)
   )
     return
-  if (conversation.name !== subject) conversation.updatedAt = Date.now()
-  conversation.name = subject
+  setSubject(conversation, subject, message.serverTime)
   conversation.nameOnWire = subject
-  conversation.nameSetAt = message.serverTime
+}
+
+/**
+ * Whether a subject set at `setAt` replaces the conversation's current one. One rule for every
+ * way a subject arrives (carried by a message, at the message's relay time; noted by another
+ * device of this account, at the time the user set it): the later one wins, whatever order they
+ * are read in; of two set at the same time, the greater text. So every device of the account
+ * ends with the same subject, and reading the same one again changes nothing.
+ */
+function subjectReplaces(
+  conversation: Conversation,
+  subject: string | undefined,
+  setAt: number,
+): boolean {
+  const current = conversation.nameSetAt ?? 0
+  if (setAt !== current) return setAt > current
+  return (subject ?? '') >= (usableSubject(conversation.name) ?? '')
+}
+
+/** Gives the conversation a subject that {@link subjectReplaces} its current one. A subject
+ * the user set here and has not noted yet is replaced with it: there is nothing left to note. */
+function setSubject(
+  conversation: Conversation,
+  subject: string | undefined,
+  setAt: number,
+): void {
+  if (conversation.name !== subject) {
+    conversation.updatedAt = Date.now()
+    conversation.subjectToNote = undefined
+  }
+  conversation.name = subject
+  conversation.nameSetAt = setAt
 }
 
 /** The subject the next message sent in `conversation` must carry, if any: its subject when no
@@ -3693,6 +3741,13 @@ export const useChatStore = defineStore('chats', {
       for (const member of Object.values(conv.members ?? {}))
         member.role = initialRole
       this.conversations[id] = conv
+      // A conversation the user created with a subject: the account's other devices learn
+      // of it, and of its subject, now, and not only once a message is sent in it.
+      if (kind === 'direct' && usableSubject(name) !== undefined) {
+        this.conversations[id].nameSetAt = Date.now()
+        this.conversations[id].subjectToNote = true
+        void this.noteConversationStates()
+      }
       return this.conversations[id]
     },
     renameConversation(id: string, subject: string): void {
@@ -3702,6 +3757,14 @@ export const useChatStore = defineStore('chats', {
       // An empty subject clears it: the conversation is shown by its peer alone again.
       conversation.name = subject.trim() || undefined
       conversation.updatedAt = Date.now()
+      // The user's subject is the newest one this device knows of, and the account's other
+      // devices are told. (The peer is told by the next message, which carries it.)
+      conversation.nameSetAt = Math.max(
+        Date.now(),
+        (conversation.nameSetAt ?? 0) + 1,
+      )
+      conversation.subjectToNote = true
+      void this.noteConversationStates()
     },
     createEmailConversation({
       recipientEmail,
@@ -3790,6 +3853,21 @@ export const useChatStore = defineStore('chats', {
       }
       if (note.clearedBefore !== undefined)
         await this.applyClearedBeforeExclusive(conv, note.clearedBefore)
+      // The subject set on another device: the later one wins (`subjectReplaces`). An email
+      // thread's subject is the email's, and a group's is not one person's to set.
+      if (
+        note.subject !== undefined &&
+        note.subjectSetAt !== undefined &&
+        conv.kind === 'direct'
+      ) {
+        const subject =
+          note.subject === '' ? undefined : usableSubject(note.subject)
+        if (
+          (note.subject === '' || subject !== undefined) &&
+          subjectReplaces(conv, subject, note.subjectSetAt)
+        )
+          setSubject(conv, subject, note.subjectSetAt)
+      }
       // Read on another device: the highest mark wins, and what is unread is counted again.
       if (note.readUpTo !== undefined && note.readUpTo > conv.lastRead) {
         conv.lastRead = note.readUpTo
@@ -3834,8 +3912,8 @@ export const useChatStore = defineStore('chats', {
     },
     /**
      * Notes to the account's own mailbox what this device knows about its conversations and
-     * the mailbox does not say yet (deleted up to when, read up to when): a free message to
-     * self per conversation, read by the
+     * the mailbox does not say yet (deleted up to when, read up to when, its subject): a free
+     * message to self per conversation, read by the
      * account's other devices and by one restored later from the seed. A note that could not
      * be sent is sent by a later pass (the mailbox poll starts one every time the relay
      * answers). Nothing is paid, and nothing is sent when there is nothing to say.

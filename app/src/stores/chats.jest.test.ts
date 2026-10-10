@@ -2135,6 +2135,14 @@ describe('stores/chats.ts (ticket #42)', () => {
         after.conversations[first.id].name = before.conversations[first.id].name
         after.conversations[first.id].updatedAt =
           before.conversations[first.id].updatedAt
+        // The user's subject is the newest one: later than the one it replaces, whatever
+        // this device's clock says. (It is noted to the account's other devices.)
+        expect(after.conversations[first.id].nameSetAt).toBe(
+          before.conversations[first.id].nameSetAt + 1,
+        )
+        expect(after.conversations[first.id].subjectToNote).toBe(true)
+        after.conversations[first.id].nameSetAt =
+          before.conversations[first.id].nameSetAt
         expect(after).toEqual(before)
         chats.renameConversation(first.id, second.name!)
         expect(first.name).toBe(second.name)

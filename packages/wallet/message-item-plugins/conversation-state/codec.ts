@@ -7,6 +7,7 @@ import {
   matching,
   opt,
   req,
+  str,
   timestampMs,
   type ItemCodec,
 } from '../shared/cbor-fields'
@@ -22,13 +23,21 @@ const fields = cborItemCodec<ConversationStateItem>('conversation-state', {
   peer: req(1, chainAddress),
   clearedBefore: opt(2, timestampMs),
   readUpTo: opt(3, timestampMs),
+  // Empty: the subject was removed. What a subject may contain is the chat store's rule.
+  subject: opt(4, str(512)),
+  subjectSetAt: opt(5, timestampMs),
 })
 
 /** The facts one note may state. A note that states none says nothing and is refused. */
-const FACTS = ['clearedBefore', 'readUpTo'] as const
+const FACTS = ['clearedBefore', 'readUpTo', 'subject'] as const
 
-function statesAFact(item: ConversationStateItem): boolean {
-  return FACTS.some(fact => item[fact] !== undefined)
+/** Why the item cannot be a note, if it cannot. */
+function refusal(item: ConversationStateItem): string | undefined {
+  if ((item.subject === undefined) !== (item.subjectSetAt === undefined))
+    return 'item: a subject and the time it was set go together'
+  if (!FACTS.some(fact => item[fact] !== undefined))
+    return 'item: states no fact about the conversation'
+  return undefined
 }
 
 /**
@@ -38,20 +47,15 @@ function statesAFact(item: ConversationStateItem): boolean {
  */
 export const conversationStateCodec: ItemCodec<ConversationStateItem> = {
   encode(item) {
-    if (!statesAFact(item))
-      throw new MessageItemEncodeError(
-        'conversation-state',
-        'item: states no fact about the conversation',
-      )
-    return fields.encode(item)
+    const bytes = fields.encode(item)
+    const refused = refusal(item)
+    if (refused) throw new MessageItemEncodeError('conversation-state', refused)
+    return bytes
   },
   decode(bytes, context) {
     const item = fields.decode(bytes, context)
-    if (!statesAFact(item))
-      throw new MessageItemDecodeError(
-        'conversation-state',
-        'item: states no fact about the conversation',
-      )
+    const refused = refusal(item)
+    if (refused) throw new MessageItemDecodeError('conversation-state', refused)
     return item
   },
 }

@@ -136,13 +136,6 @@ describe("chains-registry", () => {
       caip2: "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
       networkTag: "SOLD",
       contracts: CANONICAL_SOLANA_CONTRACTS,
-      exchange: {
-        pluginId: "jupiter-aggregator",
-        routerName: "Jupiter Aggregator v6",
-        adapterType: "dex-aggregator",
-        defaultPair: { from: "SOL", to: "USDC", defaultAmount: "1" },
-        supportedAssets: ["SOL", "USDC", "USDT"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["solana-testnet"]).toMatchObject({
@@ -158,13 +151,6 @@ describe("chains-registry", () => {
       caip2: "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
       networkTag: "SOLT",
       contracts: CANONICAL_SOLANA_CONTRACTS,
-      exchange: {
-        pluginId: "jupiter-aggregator",
-        routerName: "Jupiter Aggregator v6",
-        adapterType: "dex-aggregator",
-        defaultPair: { from: "SOL", to: "USDC", defaultAmount: "1" },
-        supportedAssets: ["SOL", "USDC", "USDT"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["solana-mainnet"]).toMatchObject({
@@ -180,13 +166,6 @@ describe("chains-registry", () => {
       caip2: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
       networkTag: "SOL1",
       contracts: CANONICAL_SOLANA_CONTRACTS,
-      exchange: {
-        pluginId: "jupiter-aggregator",
-        routerName: "Jupiter Aggregator v6",
-        adapterType: "dex-aggregator",
-        defaultPair: { from: "SOL", to: "USDC", defaultAmount: "1" },
-        supportedAssets: ["SOL", "USDC", "USDT"],
-      },
     });
 
     expect(PROTOCOL_CHAINS["ethereum-sepolia"]).toMatchObject({
@@ -379,14 +358,37 @@ describe("chains-registry", () => {
     });
   });
 
-  it("lists an exchange only where one was not computed from constants, and never the AVU unit as an asset", () => {
-    for (const kind of ["monad", "ecash", "ethereum", "hyperliquid", "tempo"])
+  it("lists no exchange computed from constants; Solana exchanges are dex entries, and AVU is never an asset", () => {
+    for (const kind of [
+      "monad",
+      "ecash",
+      "ethereum",
+      "hyperliquid",
+      "tempo",
+      "solana",
+    ])
       expect(getChainExchangeConfig(kind)).toBeUndefined();
-    expect(getChainExchangeConfig("solana")?.pluginId).toBe(
-      "jupiter-aggregator"
-    );
     for (const entry of Object.values(PROTOCOL_CHAINS))
       expect(entry.exchange?.supportedAssets ?? []).not.toContain("AVU");
+    // Each family's row carries its own kind of entry, told apart by `adapter`.
+    expect(
+      PROTOCOL_CHAINS["solana-devnet"].dex?.map((entry) => [
+        entry.id,
+        entry.adapter,
+        entry.enabled,
+      ])
+    ).toEqual([["orca-whirlpools", "orca-whirlpools", true]]);
+    expect(
+      PROTOCOL_CHAINS["solana-mainnet"].dex?.map((entry) => [
+        entry.id,
+        entry.adapter,
+        entry.enabled,
+      ])
+    ).toEqual([
+      ["jupiter", "jupiter", false],
+      ["orca-whirlpools", "orca-whirlpools", false],
+    ]);
+    expect(PROTOCOL_CHAINS["solana-testnet"].dex).toBeUndefined();
   });
   it("resolves entries by id and by kind + isTestnet", () => {
     expect(getChainRegistryEntry("monad-testnet")?.unit).toBe("MONT");

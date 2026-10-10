@@ -1,0 +1,235 @@
+{
+ "note": "Real confirmed devnet swaps by wallet 5wayWDQy8rpri5SZtKFDXSZLqu9sRDbmZmqAXDtjuvmy on the Orca SOL/devUSDC Whirlpool (getTransaction meta, trimmed to the balance fields).",
+ "transactions": {
+  "solToDevUsdcCreatingTokenAccount": {
+   "signature": "5pnAMAJNVZ9kXiSRwqaTVigBA15sa4sfv7biX96iYrEJXtqSvgL1RutXuewRKwmiL6weeF1rHUKdTDpgdYyhNvqd",
+   "meta": {
+    "err": null,
+    "fee": 5000,
+    "preBalances": [
+     1100000000,
+     0,
+     0,
+     106435760,
+     371633200129,
+     2039280,
+     70407360,
+     70407360,
+     70407360,
+     0,
+     5938070540,
+     1509155950425,
+     1,
+     20369267856,
+     8211461600,
+     2141440,
+     41509609334
+    ],
+    "postBalances": [
+     1088506560,
+     0,
+     1488440,
+     106435760,
+     371643200129,
+     2039280,
+     70407360,
+     70407360,
+     70407360,
+     0,
+     5938070540,
+     1509155950425,
+     1,
+     20369267856,
+     8211461600,
+     2141440,
+     41509609334
+    ],
+    "preTokenBalances": [
+     {
+      "accountIndex": 4,
+      "mint": "So11111111111111111111111111111111111111112",
+      "owner": "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "371631160849",
+       "decimals": 9,
+       "uiAmount": 371.631160849,
+       "uiAmountString": "371.631160849"
+      }
+     },
+     {
+      "accountIndex": 5,
+      "mint": "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k",
+      "owner": "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "6938699928",
+       "decimals": 6,
+       "uiAmount": 6938.699928,
+       "uiAmountString": "6938.699928"
+      }
+     }
+    ],
+    "postTokenBalances": [
+     {
+      "accountIndex": 2,
+      "mint": "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k",
+      "owner": "5wayWDQy8rpri5SZtKFDXSZLqu9sRDbmZmqAXDtjuvmy",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "222201",
+       "decimals": 6,
+       "uiAmount": 0.222201,
+       "uiAmountString": "0.222201"
+      }
+     },
+     {
+      "accountIndex": 4,
+      "mint": "So11111111111111111111111111111111111111112",
+      "owner": "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "371641160849",
+       "decimals": 9,
+       "uiAmount": 371.641160849,
+       "uiAmountString": "371.641160849"
+      }
+     },
+     {
+      "accountIndex": 5,
+      "mint": "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k",
+      "owner": "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "6938477727",
+       "decimals": 6,
+       "uiAmount": 6938.477727,
+       "uiAmountString": "6938.477727"
+      }
+     }
+    ]
+   }
+  },
+  "devUsdcToSol": {
+   "signature": "3f5KCq41gL4JNGgPWsnDnHfjZQcvLeBQCDQuQZVBcWszNDfbxnCXfqMzPtU2d2QB3s7FQXgf2Z2GbNEvG9f3qPgw",
+   "meta": {
+    "err": null,
+    "fee": 5000,
+    "preBalances": [
+     1088506560,
+     0,
+     106435760,
+     371643200129,
+     1488440,
+     2039280,
+     70407360,
+     70407360,
+     70407360,
+     0,
+     5938070540,
+     1509155950425,
+     1,
+     20369267856,
+     2141440,
+     41509609334,
+     8211461600
+    ],
+    "postBalances": [
+     1098461537,
+     0,
+     106435760,
+     371633240152,
+     1488440,
+     2039280,
+     70407360,
+     70407360,
+     70407360,
+     0,
+     5938070540,
+     1509155950425,
+     1,
+     20369267856,
+     2141440,
+     41509609334,
+     8211461600
+    ],
+    "preTokenBalances": [
+     {
+      "accountIndex": 3,
+      "mint": "So11111111111111111111111111111111111111112",
+      "owner": "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "371641160849",
+       "decimals": 9,
+       "uiAmount": 371.641160849,
+       "uiAmountString": "371.641160849"
+      }
+     },
+     {
+      "accountIndex": 4,
+      "mint": "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k",
+      "owner": "5wayWDQy8rpri5SZtKFDXSZLqu9sRDbmZmqAXDtjuvmy",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "222201",
+       "decimals": 6,
+       "uiAmount": 0.222201,
+       "uiAmountString": "0.222201"
+      }
+     },
+     {
+      "accountIndex": 5,
+      "mint": "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k",
+      "owner": "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "6938477727",
+       "decimals": 6,
+       "uiAmount": 6938.477727,
+       "uiAmountString": "6938.477727"
+      }
+     }
+    ],
+    "postTokenBalances": [
+     {
+      "accountIndex": 3,
+      "mint": "So11111111111111111111111111111111111111112",
+      "owner": "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "371631200872",
+       "decimals": 9,
+       "uiAmount": 371.631200872,
+       "uiAmountString": "371.631200872"
+      }
+     },
+     {
+      "accountIndex": 4,
+      "mint": "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k",
+      "owner": "5wayWDQy8rpri5SZtKFDXSZLqu9sRDbmZmqAXDtjuvmy",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "0",
+       "decimals": 6,
+       "uiAmount": null,
+       "uiAmountString": "0"
+      }
+     },
+     {
+      "accountIndex": 5,
+      "mint": "BRjpCHtyQLNCo8gqRUr8jtdAj5AjPYQaoqbvcZiHok1k",
+      "owner": "3KBZiL2g8C7tiJ32hTv5v3KM7aK9htpqTw4cTXz1HvPt",
+      "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "uiTokenAmount": {
+       "amount": "6938699928",
+       "decimals": 6,
+       "uiAmount": 6938.699928,
+       "uiAmountString": "6938.699928"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

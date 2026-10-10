@@ -48,8 +48,10 @@ import {
 import {
   minimumOutput,
   platformFeeAmount,
+  simulateAndCheckSwap,
   SolanaSwapError,
   type SolanaSwapConnection,
+  type SwapCheck,
 } from './swap'
 import {
   getSolanaSwapVenue,
@@ -609,6 +611,120 @@ describe('the safety check on what a transaction would do (recorded simulations,
     ).rejects.toMatchObject({
       code: 'unsafe-transaction',
       detail: expect.stringMatching(/controls the wallet/),
+    })
+  })
+})
+
+/**
+ * A wallet described by hand, for the cases no recording has: paying SOL for devUSDC, holding
+ * its devUSDC account (the swap's output) and a second devUSDC account that is not.
+ */
+describe('the safety check on a wallet described by hand', () => {
+  const mint = new PublicKey(DEV_USDC)
+  const outputAccount = new PublicKey(DEVNET.pools[1])
+  const secondAccount = new PublicKey(DEVNET.pools[2])
+  const RENT = 2_039_280n
+  const tokenAccount = (amount: bigint) => ({
+    mint,
+    owner: OWNER,
+    amount,
+    delegate: null,
+    closeAuthority: null,
+  })
+  const check: SwapCheck = {
+    owner: OWNER,
+    state: {
+      lamports: 1_000_000_000n,
+      input: {
+        mint: new PublicKey(NATIVE_SOL_MINT),
+        native: true,
+        decimals: 9,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenAccount: STRANGER,
+        tokenAccountLamports: 0n,
+        account: undefined,
+      },
+      output: {
+        mint,
+        native: false,
+        decimals: 6,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        tokenAccount: outputAccount,
+        tokenAccountLamports: RENT,
+        account: tokenAccount(100n),
+      },
+    },
+    inputAmount: 10_000_000n,
+    minOutputAmount: 200n,
+    networkFeeLamports: 5000n,
+    walletAccounts: [
+      { address: outputAccount, state: tokenAccount(100n) },
+      { address: secondAccount, state: tokenAccount(500n) },
+    ],
+  }
+  const simulatedToken = (amount: bigint) => {
+    const data = Buffer.alloc(165)
+    Buffer.from(mint.toBytes()).copy(data, 0)
+    Buffer.from(OWNER.toBytes()).copy(data, 32)
+    data.writeBigUInt64LE(amount, 64)
+    return {
+      lamports: RENT,
+      owner: TOKEN_PROGRAM_ID.toBase58(),
+      data: [toBase64(data), 'base64'],
+    }
+  }
+  /** A chain whose simulation ends with these balances. */
+  const chain = (after: {
+    lamports?: bigint
+    output?: bigint
+    second?: bigint
+    fee?: bigint | null
+    preLamports?: bigint
+  }) =>
+    ({
+      simulateTransaction: async () => ({
+        value: {
+          err: null,
+          logs: [],
+          fee: after.fee === undefined ? 5000n : after.fee,
+          ...(after.preLamports === undefined
+            ? {}
+            : { preBalances: [after.preLamports] }),
+          accounts: [
+            {
+              lamports:
+                after.lamports ?? 1_000_000_000n - 10_000_000n - 5000n,
+              owner: SystemProgram.programId.toBase58(),
+              data: ['', 'base64'],
+            },
+            simulatedToken(after.output ?? 322n),
+            simulatedToken(after.output ?? 322n),
+            simulatedToken(after.second ?? 500n),
+          ],
+        },
+      }),
+    } as unknown as SolanaSwapConnection)
+  const run = (
+    after: Parameters<typeof chain>[0],
+    overrides: Partial<SwapCheck> = {},
+  ) =>
+    simulateAndCheckSwap(chain(after), {} as VersionedTransaction, {
+      ...check,
+      ...overrides,
+    })
+
+  it('passes the swap as agreed', async () => {
+    await expect(run({})).resolves.toEqual({
+      outputAmount: 222n,
+      accountRentLamports: 0n,
+    })
+  })
+
+  it("refuses a transaction that takes from another of the wallet's accounts of the output token", async () => {
+    // 300 leave the second account while 222 arrive in the output account.
+    await expect(run({ second: 200n })).rejects.toMatchObject({
+      code: 'unsafe-transaction',
+      detail: expect.stringMatching(/not part of the swap/),
     })
   })
 })

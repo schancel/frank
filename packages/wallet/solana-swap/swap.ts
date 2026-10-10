@@ -422,7 +422,6 @@ export async function simulateAndCheckSwap(
   // Every token account the wallet already has: only the swap's own two may change amount,
   // and none may change hands.
   const inputMint = input.mint.toBase58()
-  const outputMint = output.mint.toBase58()
   let inputDebited = 0n
   let wrappedBefore = 0n
   let wrappedAfter = 0n
@@ -446,7 +445,11 @@ export async function simulateAndCheckSwap(
       refuse('changes who may spend from or close a token account')
     }
     if (mint === inputMint) inputDebited += before.amount - now.amount
-    else if (mint !== outputMint && mint !== NATIVE_SOL_MINT) {
+    else if (
+      mint !== NATIVE_SOL_MINT &&
+      !account.address.equals(output.tokenAccount)
+    ) {
+      // Every other account, another account of the output token included.
       if (now.amount < before.amount) {
         refuse('moves a token that is not part of the swap')
       }

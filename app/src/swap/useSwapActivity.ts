@@ -1,5 +1,9 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 import { SwapRecordMismatchError } from '@frank/wallet/swap/evm-dex'
+import {
+  solanaSwapActivity,
+  SolanaSwapRecordMismatchError,
+} from 'src/composables/useSolanaSwap'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { exactTokenAmount, readableTokenAmount } from './amounts'
 import { evmSwapVenues, openEvmSwapSession } from './evm-swap-session'
@@ -43,10 +47,15 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
     const chain = chainIdentifier.value
     const mine = ++accountFor
     account.value = undefined
-    if (!chain || evmSwapVenues(chain).length === 0) return
+    if (!chain) return
     try {
-      const session = await openEvmSwapSession(chain)
-      if (mine === accountFor) account.value = session.account
+      // Each chain family says whose swaps its network's are.
+      const solana = solanaSwapActivity(chain)
+      if (!solana && evmSwapVenues(chain).length === 0) return
+      const own = solana
+        ? await solana.account()
+        : (await openEvmSwapSession(chain)).account
+      if (mine === accountFor) account.value = own
     } catch {
       /* No wallet for this chain now: nothing to list. */
     }
@@ -80,9 +89,11 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
             ),
       toAsset: record.assetOut.symbol,
       route:
+        solanaSwapActivity(record.chainIdentifier)?.venueName(record.venueId) ??
         evmSwapVenues(record.chainIdentifier).find(
           venue => venue.id === record.venueId,
-        )?.displayName ?? record.venueId,
+        )?.displayName ??
+        record.venueId,
       // A record the chain disowned is not listed at all (the store leaves it out).
       status:
         outcome && outcome.status !== 'foreign' ? outcome.status : 'pending',
@@ -117,8 +128,31 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
     if (unknown.length === 0) return
     reading = true
     try {
+      const solana = solanaSwapActivity(chain)
       for (const { record } of unknown) {
         try {
+          if (solana) {
+            // Solana: the finalized transaction must be this account's call to the exchange.
+            const seen = await solana.observe(record)
+            if (!alive) return
+            if (!seen) missed(record.swapId)
+            else
+              history.cacheOutcome(
+                record.swapId,
+                seen.status === 'confirmed'
+                  ? {
+                      status: 'confirmed',
+                      amountOut: seen.amountOut.toString(),
+                      feeWei: seen.fee.toString(),
+                    }
+                  : {
+                      status: 'failed',
+                      feeWei: seen.fee.toString(),
+                      reason: 'reverted',
+                    },
+              )
+            continue
+          }
           const session = await openEvmSwapSession(chain, record.venueId)
           const result = await session.dex.observe({
             transactionId: record.txHash,
@@ -145,7 +179,10 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
           if (!alive) return
           // The chain says this transaction is someone else's, or not a swap here: the record
           // is not shown as this account's, and is not asked about again.
-          if (error instanceof SwapRecordMismatchError)
+          if (
+            error instanceof SwapRecordMismatchError ||
+            error instanceof SolanaSwapRecordMismatchError
+          )
             history.cacheOutcome(record.swapId, { status: 'foreign' })
           // Not readable now: it stays pending and is asked about again, later each time.
           else missed(record.swapId)

@@ -8,6 +8,7 @@ import {
 } from '@frank/wallet/chain/chains-registry'
 import type { Component } from 'vue'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
+import { solanaSwapVenuePresentations } from 'src/composables/useSolanaSwap'
 import { evmSwapVenues } from './evm-swap-session'
 import type { SwapVenuePresentation } from './venue-presentation'
 
@@ -62,8 +63,10 @@ export function swapVenuesForWallet(
       walletId,
       panels.evm,
     )
-  // The Solana family lists its own venues here; until it does, its one panel names itself.
   if (family === 'solana')
-    return [{ id: 'solana', label: '', panel: panels.solana, panelProps: {} }]
+    return solanaSwapVenuePresentations(
+      resolveNetworkId(walletId, isTestnet),
+      walletId,
+    ).map(venue => ({ ...venue, panel: panels.solana }))
   return []
 }

@@ -8,20 +8,13 @@ import {
   DAppPluginRegistry,
   defaultPluginRegistry,
   createStandardPluginRegistry,
-  JupiterDAppPlugin,
   PredictionEscrowDAppPlugin,
-  findAssociatedTokenAddress,
-  JUPITER_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-  TOKEN_PROGRAM_ID,
-  DEFAULT_JUPITER_FEE_ACCOUNT,
   DEFAULT_PREDICTION_ESCROW_DOMAIN,
   type PredictionOrder,
   type DAppPlugin,
   type DAppQuoteRequest,
 } from './plugins'
 import { EvmChangeKeyring } from './secp256k1-hd-keyring'
-import { SolanaChangeKeyring, SolanaHdKeyring } from './ed25519-hd-keyring'
 
 describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
   const TEST_MNEMONIC =
@@ -30,6 +23,11 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
   describe('DAppPluginRegistry Host', () => {
     let registry: DAppPluginRegistry
     // The registry host is tested with a stand-in: it is not a swap and quotes nothing.
+    const solanaStub = (): DAppPlugin => ({
+      ...evmStub(),
+      id: 'solana-stub',
+      chainType: 'solana',
+    })
     const evmStub = (): DAppPlugin => ({
       id: 'evm-stub',
       name: 'EVM stub',
@@ -51,18 +49,18 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
 
     it('registers, looks up, and lists plugins', () => {
       const evm = evmStub()
-      const jupiter = new JupiterDAppPlugin()
+      const solana = solanaStub()
       const prediction = new PredictionEscrowDAppPlugin()
 
       registry.register(evm)
-      registry.register(jupiter)
+      registry.register(solana)
       registry.register(prediction)
 
       expect(registry.has(evm.id)).toBe(true)
-      expect(registry.has(jupiter.id)).toBe(true)
+      expect(registry.has(solana.id)).toBe(true)
       expect(registry.has(prediction.id)).toBe(true)
       expect(registry.get(evm.id)).toBe(evm)
-      expect(registry.require(jupiter.id)).toBe(jupiter)
+      expect(registry.require(solana.id)).toBe(solana)
       expect(registry.list()).toHaveLength(3)
     })
 
@@ -88,26 +86,22 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
 
     it('filters plugins by chain type', () => {
       const evm = evmStub() // evm
-      const jupiter = new JupiterDAppPlugin() // solana
+      const solana = solanaStub() // solana
       const prediction = new PredictionEscrowDAppPlugin() // evm
 
       registry.register(evm)
-      registry.register(jupiter)
+      registry.register(solana)
       registry.register(prediction)
 
       const evmPlugins = registry.getByChainType('evm')
       expect(evmPlugins.map(p => p.id)).toEqual([evm.id, prediction.id])
 
       const solanaPlugins = registry.getByChainType('solana')
-      expect(solanaPlugins.map(p => p.id)).toEqual([jupiter.id])
+      expect(solanaPlugins.map(p => p.id)).toEqual([solana.id])
     })
 
     it('provides valid metadata for each plugin', () => {
-      const jupiter = new JupiterDAppPlugin()
       const prediction = new PredictionEscrowDAppPlugin()
-
-      expect(jupiter.getMetadata().chainType).toBe('solana')
-      expect(jupiter.getMetadata().id).toBe('jupiter-aggregator')
 
       expect(prediction.getMetadata().chainType).toBe('evm')
       expect(prediction.getMetadata().id).toBe('prediction-escrow')
@@ -124,105 +118,9 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
           'tempo-router',
           'hyperliquid-l1',
           'prediction-escrow',
+          'jupiter-aggregator',
         ])
           expect(registry.has(removed)).toBe(false)
-    })
-  })
-
-  describe('Jupiter Aggregator Reference Plugin (Solana)', () => {
-    const plugin = new JupiterDAppPlugin()
-    let solanaChangeKeyring: SolanaChangeKeyring
-
-    beforeAll(async () => {
-      solanaChangeKeyring = await SolanaChangeKeyring.fromMnemonic(
-        TEST_MNEMONIC,
-      )
-    })
-
-    it('calculates quote with platform fee sharing (8.75 bps) for SOL -> USDC', async () => {
-      // 1 SOL = 1,000,000,000 lamports
-      const inputAmount = 1_000_000_000n
-      const quote = await plugin.getQuote({
-        inputToken: 'SOL',
-        outputToken: 'USDC',
-        inputAmount,
-      })
-
-      // 8.75 bps fee on 1,000,000,000 lamports = 875,000 lamports
-      expect(quote.feeAmount).toBe(875_000n)
-      expect(quote.feeBps).toBe(8.75)
-      expect(quote.feeRecipient).toBe(DEFAULT_JUPITER_FEE_ACCOUNT)
-
-      // Expected output at $150 / SOL for net ~0.999125 SOL:
-      // ~149.868750 USDC (6 decimals -> ~149,868,750 units)
-      expect(quote.expectedOutputAmount).toBeGreaterThan(149_000_000n)
-      expect(quote.expectedOutputAmount).toBeLessThan(151_000_000n)
-      expect(quote.minOutputAmount).toBe(
-        (quote.expectedOutputAmount * 9950n) / 10000n,
-      )
-
-      // Verify Jupiter raw quote payload structure
-      const rawQuote = quote.rawQuote as any
-      expect(rawQuote.platformFee.amount).toBe('875000')
-      expect(rawQuote.platformFee.feeBps).toBe(8.75)
-      expect(rawQuote.platformFee.feeAccount).toBe(DEFAULT_JUPITER_FEE_ACCOUNT)
-    })
-
-    it('builds transaction setting up destination ATA for fresh HD change address', async () => {
-      // Derive fresh Solana change address (SLIP-0010 m/44'/501'/0'/1'/0')
-      const changeAccount = await solanaChangeKeyring.deriveChangeAccount(0)
-      const freshChangeAddress = changeAccount.address
-
-      // Derive spend address (SLIP-0010 m/44'/501'/0'/0'/0')
-      const solanaSpendKeyring = await SolanaHdKeyring.fromMnemonic(
-        TEST_MNEMONIC,
-      )
-      const spendAccount = await solanaSpendKeyring.deriveSubAccount(0)
-      const userAddress = spendAccount.address
-
-      const quote = await plugin.getQuote({
-        inputToken: 'SOL',
-        outputToken: 'USDC',
-        inputAmount: 2_000_000_000n,
-      })
-
-      const preparedTx = await plugin.buildTransaction({
-        quote,
-        userAddress,
-        destinationAddress: freshChangeAddress,
-      })
-
-      expect(preparedTx.chainType).toBe('solana')
-      expect(preparedTx.recipient).toBe(freshChangeAddress)
-      expect(preparedTx.instructions).toBeDefined()
-      expect(preparedTx.instructions!.length).toBeGreaterThanOrEqual(2)
-
-      // 1. Destination ATA setup instruction
-      const ataIx = preparedTx.instructions![0] as any
-      expect(ataIx.programId.toBase58()).toBe(ASSOCIATED_TOKEN_PROGRAM_ID)
-      // Check that owner account of the ATA is the fresh change address
-      expect(ataIx.keys[2].pubkey.toBase58()).toBe(freshChangeAddress)
-
-      // 2. Jupiter Swap instruction
-      const swapIx = preparedTx.instructions![1] as any
-      expect(swapIx.programId.toBase58()).toBe(JUPITER_PROGRAM_ID)
-      // Destination token account matches the derived destination ATA
-      const [expectedDestinationAta] = await findAssociatedTokenAddress(
-        freshChangeAddress,
-        plugin.resolveToken('USDC').mint,
-      )
-      expect(swapIx.keys[1].pubkey.toBase58()).toBe(
-        expectedDestinationAta.toBase58(),
-      )
-
-      // 3. Platform fee transfer instruction
-      if (preparedTx.instructions!.length >= 3) {
-        const feeIx = preparedTx.instructions![2] as any
-        expect(feeIx.programId.toBase58()).toBe(TOKEN_PROGRAM_ID)
-        expect(feeIx.keys[1].pubkey.toBase58()).toBe(
-          DEFAULT_JUPITER_FEE_ACCOUNT,
-        )
-      }
     })
   })
 
@@ -414,29 +312,6 @@ describe('DAppPlugin Host & Triple Reference Plugins (Ticket #1154)', () => {
 
       registry.clear()
       expect(registry.list()).toHaveLength(0)
-    })
-
-    it('rejects zero amounts in Jupiter', async () => {
-      const jupiter = new JupiterDAppPlugin()
-
-      await expect(
-        jupiter.getQuote({
-          inputToken: 'SOL',
-          outputToken: 'USDC',
-          inputAmount: -5n,
-        }),
-      ).rejects.toThrow(RangeError)
-
-      await expect(
-        jupiter.buildTransaction({
-          quote: await jupiter.getQuote({
-            inputToken: 'SOL',
-            outputToken: 'USDC',
-            inputAmount: 100_000_000n,
-          }),
-          userAddress: 'So11111111111111111111111111111111111111112',
-        }),
-      ).rejects.toThrow(/destinationAddress/)
     })
   })
 })

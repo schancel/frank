@@ -297,7 +297,6 @@ async function stop() {
   }
 }
 
-
 const amount = process.env.SWAP_BROWSER_AMOUNT ?? '0.01'
 const text = selector =>
   evaluate(
@@ -310,9 +309,17 @@ const t = id => text(`[data-testid="${id}"]`)
 async function run() {
   await launch()
   await call('Page.navigate', { url: origin + '/#/setup' })
-  await until(`document.querySelector('[data-test="new-account"]')`, 30000, 'setup page')
+  await until(
+    `document.querySelector('[data-test="new-account"]')`,
+    30000,
+    'setup page',
+  )
   await click('[data-test="new-account"]')
-  await until(`document.querySelector('[data-test="backup-policy"]')`, 10000, 'backup policy')
+  await until(
+    `document.querySelector('[data-test="backup-policy"]')`,
+    10000,
+    'backup policy',
+  )
   await evaluate(
     `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
   )
@@ -326,17 +333,29 @@ async function run() {
     document.querySelector('[data-test="generate-backups"]').click();
     document.querySelector('[data-test="generate-backups"]').click();
   })()`)
-  await until(`document.querySelector('[data-test="backup-share"]')`, 10000, 'shares')
+  await until(
+    `document.querySelector('[data-test="backup-share"]')`,
+    10000,
+    'shares',
+  )
   const shares = []
   for (let i = 0; i < 3; i++) {
     shares.push(await getValue('[data-test="backup-share"]'))
     await click('[data-test="next-share"]')
   }
-  await until(`document.querySelector('[data-test="confirm-shares"]')`, 10000, 'confirm')
+  await until(
+    `document.querySelector('[data-test="confirm-shares"]')`,
+    10000,
+    'confirm',
+  )
   await typeInput('[data-test="confirm-shares"]', shares.slice(0, 2).join('\n'))
   await typeInput('[data-test="display-name"]', 'Swap Browser Check')
   await click('[data-test="verify-backups"]')
-  await until(`document.querySelector('[data-test="activate-account"]')`, 15000, 'activate')
+  await until(
+    `document.querySelector('[data-test="activate-account"]')`,
+    15000,
+    'activate',
+  )
   await click('[data-test="activate-account"]')
   await until(`location.hash !== '#/setup'`, 20000, 'left setup')
   await new Promise(r => setTimeout(r, 2000))
@@ -349,14 +368,23 @@ async function run() {
 
   await evaluate(`location.hash = '#/wallet/monad'`)
   await click('[data-testid="wallet-tab-swap"]')
-  await until(`document.querySelector('[data-testid="evm-swap-panel"]')`, 30000, 'swap panel')
+  await until(
+    `document.querySelector('[data-testid="evm-swap-panel"]')`,
+    30000,
+    'swap panel',
+  )
   await until(
     `/Available: [0-9]/.test(document.querySelector('[data-testid="swap-pay-balance"]')?.innerText ?? '')`,
     60000,
     'balances read from the chain',
   )
   console.log('venue:', await t('swap-venue'), '|', await t('swap-venue-note'))
-  console.log('unfunded:', await t('swap-pay-balance'), '|', await t('swap-receive-balance'))
+  console.log(
+    'unfunded:',
+    await t('swap-pay-balance'),
+    '|',
+    await t('swap-receive-balance'),
+  )
   await captureScreenshot('swap_01_empty.png')
 
   await until(
@@ -369,7 +397,11 @@ async function run() {
   console.log('funded:', await t('swap-pay-balance'))
 
   await typeInput('[data-testid="swap-pay-amount"]', amount)
-  await until(`document.querySelector('[data-testid="swap-details"]')`, 30000, 'a quote')
+  await until(
+    `document.querySelector('[data-testid="swap-details"]')`,
+    30000,
+    'a quote',
+  )
   for (const id of [
     'swap-receive-amount',
     'swap-rate',
@@ -380,7 +412,12 @@ async function run() {
   ])
     console.log(`${id}:`, await t(id))
   console.log('fee line present:', (await t('swap-interface-fee')) !== null)
-  console.log('token options:', await evaluate(`(() => { document.querySelector('[data-testid="swap-receive-token"]').click(); return new Promise(r => setTimeout(() => { const o = [...document.querySelectorAll('.q-menu .q-item')].map(e => e.innerText.trim()); document.body.click(); r(o.join(' / ')) }, 500)) })()`))
+  console.log(
+    'token options:',
+    await evaluate(
+      `(() => { document.querySelector('[data-testid="swap-receive-token"]').click(); return new Promise(r => setTimeout(() => { const o = [...document.querySelectorAll('.q-menu .q-item')].map(e => e.innerText.trim()); document.body.click(); r(o.join(' / ')) }, 500)) })()`,
+    ),
+  )
   await new Promise(r => setTimeout(r, 500))
   await key('Escape', 'Escape', 27)
   await captureScreenshot('swap_02_quote.png')
@@ -391,7 +428,11 @@ async function run() {
     'review enabled',
   )
   await click('[data-testid="swap-review-btn"]')
-  await until(`document.querySelector('[data-testid="swap-review"]')`, 30000, 'review card')
+  await until(
+    `document.querySelector('[data-testid="swap-review"]')`,
+    30000,
+    'review card',
+  )
   console.log('review:', await t('swap-review-summary'))
   console.log('move line:', await t('swap-review-move'))
   await captureScreenshot('swap_03_review.png')

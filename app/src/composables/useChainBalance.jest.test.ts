@@ -6,7 +6,7 @@ import { useOracleStore } from '../stores/oracle'
 
 const mockMonadBalance = {
   balance: ref<bigint | null>(1000n),
-  // The balance that is shown: the wallet's figure plus the profile address.
+  // The complete wallet balance, including the profile address.
   total: ref<bigint | null>(1000n),
   formattedBalance: ref('10 MON'),
   loaded: ref(true),
@@ -246,7 +246,7 @@ describe('useChainBalance', () => {
   )
 
   it('the Monad balance in the list and the headline is the shown total, profile address included', () => {
-    mockMonadBalance.balance.value = 0n // a new account: only the faucet's grant
+    mockMonadBalance.balance.value = 100n // includes the faucet's grant
     mockMonadBalance.total.value = 100n
     try {
       const expected = {
@@ -261,11 +261,9 @@ describe('useChainBalance', () => {
     }
   })
 
-  // 2026-10-10: "≈ 15.89 mAVU" in the wallet list and "≈ 16.4 mAVU" under the balance, for
-  // one balance: the list converted the wallet's own figure, the page the shown total.
   it('the raw Monad balance an AVU conversion reads is the shown balance, in every view', () => {
-    mockMonadBalance.balance.value = 1589n
-    mockMonadBalance.total.value = 1640n // with the money at the profile address
+    mockMonadBalance.balance.value = 1640n
+    mockMonadBalance.total.value = 1640n // already includes the profile address
     try {
       const shown = useChainBalance('monad').presentation.value
       expect(shown.status).toBe('available')
@@ -274,6 +272,7 @@ describe('useChainBalance', () => {
       expect(figure).toBe(1640n)
       expect(useMultichainBalance().getRawBalance('monad')).toBe(figure)
       expect(useChainBalance('monad').balance.value).toBe(figure)
+      expect(figure).toBe(mockMonadBalance.balance.value)
       mockMonadBalance.loaded.value = false
       expect(useMultichainBalance().getRawBalance('monad')).toBeNull()
     } finally {

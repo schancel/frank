@@ -546,6 +546,21 @@ describe('useBalance', () => {
   // Funds at the profile (identity) address are part of the wallet's own balance now: the wallet
   // spends them like any other coin, so nothing is reported beside the balance any more.
 
+  it('shows the complete wallet balance once, including profile and sending accounts', async () => {
+    mockGetBalance.mockResolvedValue(1640n)
+    const wrapper = mount(Consumer)
+    await advance(0)
+    const api = useBalance()
+    expect(api.balance.value).toBe(1640n)
+    expect(api.total.value).toBe(1640n)
+    expect(api.cordoned.value).toBe(0n)
+    expect(wrapper.text()).toBe('1640 MON')
+    // Opening the Wallet page must not add a second profile-address observation.
+    await api.refreshCordoned()
+    expect(api.total.value).toBe(1640n)
+    expect(wrapper.text()).toBe('1640 MON')
+  })
+
   it('allows useBalance().refresh() to be invoked outside an active component instance', async () => {
     mockGetBalance.mockResolvedValue(500n)
     const api = useBalance()

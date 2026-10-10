@@ -80,11 +80,9 @@ function observedTokens(observation: TokenObservation) {
 }
 
 /**
- * THE Monad balance figure the app shows, as a raw amount: `useBalance().total`, the one
- * shown-balance figure there is. Every place that shows the Monad balance or converts it
- * (to AVU, to anything) reads it here, so two figures for one balance cannot appear side
- * by side (2026-10-10: the wallet list valued the balance without the profile address's
- * money and the Wallet page valued it with). null while not loaded.
+ * The wallet's complete `getBalance()` figure, exposed by `useBalance().total`.
+ * It already includes the profile address and sending accounts; every displayed balance
+ * and AVU conversion reads it once. Null until the wallet's first successful read.
  */
 function shownMonadBalance(
   monad: ReturnType<typeof useBalance>,

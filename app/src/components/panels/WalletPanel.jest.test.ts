@@ -411,8 +411,7 @@ test('renders universal AVU tooltips on portfolio total and drawer header', () =
 })
 
 test('the main wallet and the portfolio total value the balance its line shows, not another figure', () => {
-  // The Monad mock above reports `monad.balance` 0n: the wallet's own narrower figure, which
-  // this panel valued on 2026-10-10 while the Wallet page valued the shown total.
+  // Only the shared balance reader owns the figure the panel should value.
   mockRawBalances.value = { monad: 1640n }
   mockFormatAvuAmount.mockImplementation(
     (asset, raw) => `≈ ${asset} ${raw} AVU`,

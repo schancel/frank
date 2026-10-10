@@ -214,14 +214,13 @@ part of this stage. Process-exit and boundary-fault tests establish the stated
 old-or-complete-new recovery behavior, not hardware power-loss guarantees.
 
 Before adoption, rollback can remove the unused additive facade and namespace
-definition while preserving any created sidecar records. The actual reviewed-base
-registry opener can reopen both unused and populated registry paths because
-preview never adds descriptors to the legacy MANIFEST. The rollback integration
-test uses a helper built from exact base production source when
-`FRANK_DIRECTORY_BASE_OPENER` is supplied; ordinary CI additionally pins legacy
-CF names and exact preexisting bytes. Earlier unlanded eager-CF artifacts are
-not migrated, deleted, or silently adopted by this repair; their preservation
-does not authorize widening the old binary or rewriting a legacy database.
+definition while preserving any created sidecar records. The directory never
+adds a table to the registry database and never changes a value already in it;
+an integration test pins the registry's table list and a pre-existing value
+across directory use. Rolling back to a binary from before the message
+transport was reduced to one is not supported: the registry's table list
+changed, a database from an earlier build is refused at startup, and Frank has
+no users whose data would need it.
 Once records are relied upon,
 changes to their meaning require an explicit migration. Trust provisioning,
 client persistence (#749), publication/routes and atomic directory-plus-secret

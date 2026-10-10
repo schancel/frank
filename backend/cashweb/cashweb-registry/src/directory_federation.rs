@@ -504,7 +504,7 @@ impl Federation {
         }
         let answer = match self
             .client
-            .put(join(&target, "/message/monad/cbor"))
+            .put(join(&target, "/message"))
             .header("content-type", &row.content_type)
             .body(body)
             .send()

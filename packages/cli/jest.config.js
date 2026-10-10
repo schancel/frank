@@ -11,6 +11,7 @@ module.exports = {
       '<rootDir>/../directory-admission/src/browser.ts',
     '^@frank/directory-admission/node$':
       '<rootDir>/../directory-admission/src/node.ts',
+    '^@frank/bot-framework/(.*)$': '<rootDir>/../bot-framework/src/$1',
     '^@frank/nakamoto/(.*)$': '<rootDir>/../nakamoto/src/$1',
     '^@frank/nakamoto$': '<rootDir>/../nakamoto/src/index.ts',
     '^@frank/crypto-box/(.*)$': '<rootDir>/../crypto-box/src/$1',

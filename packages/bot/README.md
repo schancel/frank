@@ -249,6 +249,7 @@ that start their own stack. How a regtest network proves its identity is in
 | `FRANK_DEMO_ENV_FILE`              | launcher         | <repo>/.env if it exists                           | Path of the .env file to read (KEY=value lines). The process environment wins over the file. Never committed; you provide it.                                                                                                                                                                                                                                     |
 | `FRANK_DEMO_STATE_DIR`             | launcher         | ~/.frank-demo                                      | One directory holding every bot identity, bot state, the relay database and the logs. Reused across runs.                                                                                                                                                                                                                                                         |
 | `FRANK_DEMO_RELAY_PORT`            | relay            | 8098                                               | Port the local relay listens on (127.0.0.1).                                                                                                                                                                                                                                                                                                                      |
+| `FRANK_DEMO_RELAY_DB_PATH`         | relay            | <state dir>/relay/registry.rocksdb                 | Where the relay keeps its database. Set it to start the relay on a fresh database without touching the one in the state directory (a relay refuses a database written by an earlier build).                                                                                                                                                                       |
 | `FRANK_DEMO_NGROK`                 | launcher         | 0                                                  | Set to 1 (same as the --ngrok flag) to automatically expose the demo stack via local ngrok tunnels.                                                                                                                                                                                                                                                               |
 | `FRANK_DEMO_NGROK_BIN`             | launcher         | ngrok                                              | Executable name or path for the ngrok CLI.                                                                                                                                                                                                                                                                                                                        |
 | `FRANK_DEMO_NGROK_CONFIG`          | launcher         | unset                                              | Path to an existing ngrok configuration file to merge with the demo tunnels.                                                                                                                                                                                                                                                                                      |
@@ -364,7 +365,7 @@ chatbot with blockchain flavor text sprinkled on top.
 
 ```
  human/script                         cashweb-registry relay                    bot
- (qwen-bot-send-demo.livecheck.ts)    (real HTTP server, real Monad RPC)   (qwen-bot.livecheck.ts)
+ (a wallet: the app, `yarn demo:smoke`) (real HTTP server, real Monad RPC)   (qwen-bot.livecheck.ts)
  ─────────────────────────────        ──────────────────────────────      ─────────────────────
  1. register identity  ───PUT /metadata/:addr────────────────────────────────▶ (same, on startup)
  2. encrypt msg (ECDH), burn MON,
@@ -391,10 +392,9 @@ Library code (reusable, no side effects at import time):
   vectors), signing, `PUT`/`GET /metadata/:addr`.
 - `monad-message-envelope.ts` — the E2E encryption + recipient-addressing convention (see "The
   recipient-filtering gap" below), reusing `../relay/crypto.ts`'s existing ECDH+AES code.
-- `monad-message-feed.ts` / `monad-mailbox-client.ts` — the authenticated recipient mailbox
-  client (`POST /message/monad/auth/:me` challenge, identity-key signature, then
-  `GET /message/monad/inbox/:me` with cursor paging). It replaced ticket #37's unauthenticated
-  `GET /message/monad?since=<t>`, which PR #197 removed.
+- `monad-mailbox-client.ts` — the authenticated mailbox client (`POST /message/auth/:me`
+  challenge, identity-key signature, then `GET /message/inbox/:me` or `/message/mailbox/:me` with
+  cursor paging). Bots read through the wallet's own message path, which uses it.
 - `qwen-client.ts` — Qwen 3.8 Max streaming chat client (SSE, hand-parsed; the endpoint rejects
   non-streaming requests — see "Qwen API notes" below).
 - `qwen-bot-common.ts` — shared identity/funding/sub-account-pool setup for both scripts below,
@@ -404,14 +404,15 @@ Runnable entry points (`.livecheck.ts`, this app's existing convention for scrip
 real network — excluded from `jest`'s `testMatch`, meant to be run manually):
 
 - `qwen-bot.livecheck.ts` — the agent itself.
-- `qwen-bot-send-demo.livecheck.ts` — the "human/script" side, for driving a live demo
-  conversation (supports multiple sequential turns via `QWEN_BOT_MESSAGES`).
+
+The "human" side of a live conversation is a wallet: the app, or the smoke user of
+`yarn demo:smoke`, which sends each bot a real message and checks its reply.
 
 ## How the recipient-filtering gap was solved for this demo
 
 > **Historical (pre-PR #197).** The relay now serves each recipient only its own inbox behind a
-> signed challenge, so bots read `fetchMonadMessagesSince({ ...mailboxAuthFor(identity, relayBaseUrl),
-sinceMs })` and no longer download the global feed. The envelope's `to` check below is retained as
+> signed challenge, so bots read their own mailbox through the wallet's message path and no
+> longer download the global feed. The envelope's `to` check below is retained as
 > defence in depth.
 
 Ticket #37's `GET /message/monad?since=<t>` returns **every** stored message — there's no
@@ -597,7 +598,7 @@ Alongside its Qwen-reply behavior, `qwen-bot.livecheck.ts` also polls the live
 `GET /metadata/monad?since=<t>` route (ticket #75, via `fetchMonadProfilesSince`,
 `@frank/wallet/monad-identity`) for newly-registered Monad profiles. For each one seen after the
 bot's own startup (never itself), it sends a real greeting DM (the same stamped-message path used
-for Qwen replies, factored into `qwen-bot-common.ts`'s `sendDirectMessageText`) and funds the new
+for Qwen replies) and funds the new
 address with a small amount of real testnet MON, sent directly via `MonadAccountTxSigner.
 buildAndSignTransfer` on the main funded wallet -- see `qwen-bot.livecheck.ts`'s own header comment
 (point 5) for why that primitive was used instead of `fanOutFundSubAccounts`

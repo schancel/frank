@@ -60,13 +60,24 @@ import {
   fetchMonadMailboxRecoveryPage,
   mailboxAuthDigest,
 } from "./monad-mailbox-client";
-import { fetchMonadMessagesSince } from "./monad-message-feed";
 import {
   DEFAULT_MOCK_MAX_USED_CHALLENGES,
   MockMailboxRelay,
   MockStoredMessage,
 } from "./monad-mailbox-mock-relay.testutil";
 import { MonadStampedMessage, MonadStampPayment } from "./monad-mailbox-compat";
+
+/** Every message of the earlier reader's inbox since a time; what its tests call. */
+async function fetchMonadMessagesSince(
+  params: Parameters<typeof fetchMonadMailboxInbox>[0] & {
+    onTruncated?: (reason: MonadMailboxError) => void;
+  }
+) {
+  const { onTruncated, ...rest } = params;
+  const result = await fetchMonadMailboxInbox(rest);
+  if (result.truncatedBy !== undefined) onTruncated?.(result.truncatedBy);
+  return result.messages;
+}
 
 const BASE = "https://relay.example.com";
 const RUST = {
@@ -948,11 +959,9 @@ import {
   type CanonicalStreamResponse,
 } from "./canonical-dm-transport";
 import {
-  ackCanonicalRecovery,
   connectCanonicalMailboxStream,
   fetchCanonicalInboxPage,
   fetchCanonicalMailboxPage,
-  fetchCanonicalRecoveryPage,
   type CanonicalMailboxAuthParams,
 } from "./monad-mailbox-client";
 
@@ -1207,8 +1216,6 @@ describe("canonical private mailbox", () => {
           limit: Number(query.get("limit")),
           max_bytes: Number(query.get("max_bytes")),
           network_tag: "4d4f4e54",
-          recovery_payload_hash: query.get("recovery_payload_hash"),
-          recovery_obligation_id: query.get("recovery_obligation_id"),
           ...challengeOverrides,
         };
         return canonicalStream(
@@ -1218,20 +1225,6 @@ describe("canonical private mailbox", () => {
           { "content-type": "application/json" }
         );
       }
-      if (url.endsWith("/ack"))
-        return canonicalStream(
-          url,
-          200,
-          canonicalText(
-            JSON.stringify({
-              version: 1,
-              acknowledged: true,
-              payload_hash: challenge.recovery_payload_hash,
-              obligation_id: challenge.recovery_obligation_id,
-            })
-          ),
-          { "content-type": "application/json" }
-        );
       return canonicalStream(url, requestStatus, page, pageHeaders);
     };
     auth = {
@@ -1569,16 +1562,14 @@ describe("canonical private mailbox", () => {
       fetchCanonicalInboxPage({ ...auth, maxBytes: page.length + 5 })
     ).rejects.toThrow(/byte limit|byte budget/);
   });
-  test.each([false, true])(
+  test.each([false])(
     "complete %s page charges full cursor header: exact fit or one byte over",
     async (recovery) => {
       page = canonicalPage(recovery);
       const cursor = "opaque",
         budget = page.length + 31 + cursor.length;
       pageHeaders["x-frank-mailbox-next-cursor"] = cursor;
-      const fetchPage = recovery
-        ? fetchCanonicalRecoveryPage
-        : fetchCanonicalInboxPage;
+      const fetchPage = fetchCanonicalInboxPage;
       const exact = await fetchPage({ ...auth, maxBytes: budget });
       expect(exact.records).toHaveLength(1);
       expect(exact.nextCursor).toBe(cursor);
@@ -1634,98 +1625,6 @@ describe("canonical private mailbox", () => {
     expect(reads).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalledTimes(1);
   });
-  test("actual recovery contains raw order and exact index with confirmed-prefix metadata", async () => {
-    page = canonicalPage(true);
-    const result = await fetchCanonicalRecoveryPage(auth);
-    expect(result.records[0].parts.transactions).toEqual([canonicalRaw]);
-    expect(result.records[0].confirmedChildren).toEqual([0]);
-    expect(challenge.limit).toBe(20);
-    expect(result.records[0].identity.submission_identity).toBe(
-      result.records[0].submissionIdentity
-    );
-  });
-  test.each([
-    { confirmed_children: [0, 0] },
-    { confirmed_children: [1] },
-    { submission_identity: "00".repeat(32) },
-    { payload_hash: "00".repeat(32) },
-    { lifecycle: "terminal:new_authority" },
-    { lifecycle: ["pending"] },
-    { lifecycle: [["pending"]] },
-    { lifecycle: ["fully_confirmed"] },
-    { lifecycle: [["delivered"]] },
-    { lifecycle: [] },
-  ])("recovery rejects invalid import metadata %j", async (overrides) => {
-    page = canonicalPage(true, overrides);
-    await expect(fetchCanonicalRecoveryPage(auth)).rejects.toThrow();
-  });
-  test("oversized recovery context rejects before delivery/context ownership copies", async () => {
-    const original = canonicalPage(true),
-      contextBytes = fromHex(canonicalWire.context),
-      delivery = canonicalDelivery();
-    const at = Buffer.from(original).indexOf(contextBytes);
-    if (at < 0) throw new Error("Fixture exact context location");
-    page = canonicalConcat(
-      original.subarray(0, at),
-      new Uint8Array(7 * 1024 * 1024),
-      original.subarray(at + contextBytes.length)
-    );
-    const originalFetch = auth.fetch!;
-    auth.fetch = async (url, input) => {
-      if (input.method !== "GET") return originalFetch(url, input);
-      let sent = false;
-      return {
-        url,
-        status: 200,
-        headers: { get: (name) => pageHeaders[name] ?? null },
-        body: {
-          getReader: () => ({
-            read: async () =>
-              sent
-                ? { done: true }
-                : ((sent = true), { done: false, value: page }),
-            cancel: async () => undefined,
-            releaseLock: () => undefined,
-          }),
-        },
-      };
-    };
-    let largeCopies = 0,
-      deliveryCopies = 0;
-    const originalFrom = Uint8Array.from;
-    const spy = jest.spyOn(Uint8Array, "from").mockImplementation(((
-      source: ArrayLike<number>
-    ) => {
-      if (source.length > 4096) largeCopies++;
-      if (
-        source.length === delivery.length &&
-        delivery.every((byte, i) => source[i] === byte)
-      )
-        deliveryCopies++;
-      return originalFrom.call(Uint8Array, source as Uint8Array);
-    }) as typeof Uint8Array.from);
-    try {
-      await expect(fetchCanonicalRecoveryPage(auth)).rejects.toThrow(
-        /Canonical part limits/
-      );
-      expect(largeCopies).toBe(0);
-      expect(deliveryCopies).toBe(0);
-    } finally {
-      spy.mockRestore();
-    }
-  });
-  test("ack is distinct exact T3/generation identity with original zero-byte signing binding", async () => {
-    const payloadHashHex = canonicalWire.t3,
-      obligationIdHex = "aa".repeat(32);
-    await ackCanonicalRecovery({ ...auth, payloadHashHex, obligationIdHex });
-    expect(challenge.max_bytes).toBe(0);
-    expect(challenge.limit).toBe(1);
-    expect(challenge.since).toBe(0);
-    expect(requests[1][0]).toBe(
-      `${auth.relayBaseUrl}/message/recovery/${auth.recipient}/${payloadHashHex}/${obligationIdHex}/ack`
-    );
-    expect(requests[1][1].body).toBeUndefined();
-  });
   test("pre-abort and cancellation during signing prevent publication", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -1742,38 +1641,6 @@ describe("canonical private mailbox", () => {
       fetchCanonicalInboxPage({ ...auth, signal: active.signal })
     ).rejects.toThrow(/aborted/);
     expect(requests).toHaveLength(1);
-  });
-  test("canonical recovery page returns empty records and ack resolves when relay indicates retired (HTTP 410)", async () => {
-    const originalFetch = auth.fetch!;
-    auth.fetch = async (url, input) => {
-      if (url.includes("/recovery/")) {
-        return {
-          url,
-          status: 410,
-          headers: {
-            get: (name: string) =>
-              name.toLowerCase() === "content-type" ? "application/json" : null,
-          },
-          body: {
-            getReader: () => ({
-              read: async () => ({ done: true }),
-              cancel: async () => undefined,
-              releaseLock: () => undefined,
-            }),
-          },
-        };
-      }
-      return originalFetch(url, input);
-    };
-    const result = await fetchCanonicalRecoveryPage(auth);
-    expect(result.records).toEqual([]);
-    await expect(
-      ackCanonicalRecovery({
-        ...auth,
-        payloadHashHex: "aa".repeat(32),
-        obligationIdHex: "bb".repeat(32),
-      })
-    ).resolves.toBeUndefined();
   });
   test("connectCanonicalMailboxStream appends ngrok-skip-browser-warning on ngrok origins", async () => {
     mockWsInstances.length = 0;

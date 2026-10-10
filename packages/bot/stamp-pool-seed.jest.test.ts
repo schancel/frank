@@ -154,29 +154,6 @@ describe('stamp pool seed persistence (#313)', () => {
     expect(readFileSync(join(dir, 'identity.json'), 'utf8')).toBe('{"privateKeyHex":"aa"}')
     expect(await firstSubAccount(dir)).toBe(address)
   })
-
-  it('setUpFundedStampClient with a stateDir reuses the pool across restarts, and without one does not', async () => {
-    const walletPath = join(dir, 'wallet.json')
-    writeFileSync(walletPath, JSON.stringify(DUMMY_WALLET))
-    const base = {
-      rpcUrl: 'http://127.0.0.1:1',
-      relayBaseUrl: 'http://127.0.0.1:2',
-      mainWalletJsonPath: walletPath,
-      stampValueWei: 1n,
-      label: 'test',
-    }
-    const addr = async (stateDir?: string) => {
-      const setup = await setUpFundedStampClient({ ...base, stateDir })
-      setup.pool.ensureSize(1)
-      const a = setup.pool.records()[0].address
-      await setup.closePool()
-      return a
-    }
-    const state = join(dir, 'state')
-    const first = await addr(state)
-    expect(await addr(state)).toBe(first)
-    expect(await addr()).not.toBe(await addr()) // in-memory: fresh every time
-  })
 })
 
 describe('stamp pool seed hardening (#313 review)', () => {

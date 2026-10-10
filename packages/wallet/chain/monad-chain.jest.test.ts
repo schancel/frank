@@ -3,7 +3,7 @@ import * as syncDispatch from "@frank/cashweb/sync-dispatcher";
 /**
  * Unit tests for `monad-chain.ts` (ticket #41): verifies `MonadChain` (via `createEvmChain`)
  * wires the real Monad wallet clients together correctly. Per the ticket's own instructions, this
- * mocks the underlying Monad clients (`MonadStampClient`, `MonadTopicPostClient`,
+ * mocks the underlying Monad clients (`MonadTopicPostClient`,
  * `MonadTopicVoteClient`, `monad-message-feed.ts`, `monad-topic-tally-client.ts`, and
  * `monad-identity.ts`'s HTTP-touching `fetchMonadProfile`) rather than `axios` directly -- those
  * clients already have their own tested HTTP layer (see each client's own `*.jest.test.ts`); this
@@ -76,10 +76,6 @@ jest.mock("../monad-stamp-client", () => {
   const actual = jest.requireActual("../monad-stamp-client");
   return {
     ...actual,
-    MonadStampClient: jest.fn().mockImplementation(() => ({
-      submitStampedMessage: jest.fn(),
-      resumePendingAttempts: jest.fn().mockResolvedValue([]),
-    })),
     quoteMonadStampPaymentGasReserve: jest.fn().mockResolvedValue(100n),
   };
 });
@@ -121,12 +117,8 @@ jest.mock("../monad-account-tx", () => {
     MonadAccountTxSigner: jest.fn(),
   };
 });
-jest.mock("@frank/cashweb/relay/monad-message-feed", () => ({
-  fetchMonadMessagesSince: jest.fn(),
-}));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { MonadStampClient } = jest.requireMock("../monad-stamp-client");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { MonadTopicPostClient } = jest.requireMock("../monad-topic-post-client");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -139,7 +131,6 @@ import {
   fetchMonadTopicPostsSince,
 } from "../monad-topic-tally-client";
 import { fetchMonadProfile } from "../monad-identity";
-import { fetchMonadMessagesSince } from "@frank/cashweb/relay/monad-message-feed";
 const mockedFetchMonadTopicPostsSince =
   fetchMonadTopicPostsSince as jest.MockedFunction<
     typeof fetchMonadTopicPostsSince
@@ -153,10 +144,6 @@ const mockedFetchDiscoveredTopics =
 const mockedFetchMonadProfile = fetchMonadProfile as jest.MockedFunction<
   typeof fetchMonadProfile
 >;
-const mockedFetchMonadMessagesSince =
-  fetchMonadMessagesSince as jest.MockedFunction<
-    typeof fetchMonadMessagesSince
-  >;
 
 const TEST_CONFIG: EvmChainConfig = {
   networkId: "monad-test",
@@ -682,272 +669,6 @@ describe("createEvmChain: directMessages", () => {
     );
   });
 
-  describe("the legacy JSON mailbox goes through the canonical receive rule", () => {
-    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
-    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX);
-    const jsonHex = (value: unknown) =>
-      Buffer.from(JSON.stringify(value), "utf8").toString("hex");
-    let spies: jest.SpyInstance[];
-    let dispatch: jest.SpyInstance;
-    let recovery: jest.SpyInstance;
-
-    /** One message in Alice's legacy inbox whose decrypted plaintext is `plaintext`, from Bob. */
-    function legacyInbox(plaintext: string) {
-      dispatch = jest
-        .spyOn(syncDispatch, "applyWalletSyncItem")
-        .mockResolvedValue({});
-      recovery = jest
-        .spyOn(
-          jest.requireMock<typeof import("../monad-stamp-client")>(
-            "../monad-stamp-client"
-          ),
-          "recoverMonadStampPayments"
-        )
-        .mockReturnValue([]);
-      spies = [
-        dispatch,
-        recovery,
-        jest.spyOn(legacyEnvelope, "parseEnvelope").mockReturnValue({
-          v: 1,
-          from: bob.address.raw,
-          to: alice.address.raw,
-          networkTag: "MONT",
-          salt: "",
-          ciphertext: "",
-        }),
-        jest.spyOn(legacyEnvelope, "decryptEnvelope").mockReturnValue(plaintext),
-      ];
-      mockedFetchMonadProfile.mockResolvedValue({
-        address: bob.address.raw,
-        pubKey: bob.compressedPubKey,
-      } as Awaited<ReturnType<typeof fetchMonadProfile>>);
-      mockedFetchMonadMessagesSince.mockResolvedValue([
-        {
-          timestamp: 10,
-          networkTag: new Uint8Array(),
-          message: {
-            encryptedPayload: new Uint8Array(),
-            payloadHash: new Uint8Array(32),
-            stampPayments: [],
-          },
-        },
-      ]);
-    }
-    afterEach(() => {
-      for (const spy of spies ?? []) spy.mockRestore();
-      spies = [];
-    });
-    const read = (wallet = withItems(makeWallet(alice))) =>
-      createEvmChain(TEST_CONFIG).directMessages.fetchSince({
-        wallet,
-        sinceMs: 0,
-      });
-
-    it.each(NEVER_FROM_A_PEER_SAMPLES.map((item) => [item.type, item] as const))(
-      "a legacy %s item arrives as unsupported beside its text, and the read does not stop",
-      async (type, item) => {
-        legacyInbox(JSON.stringify([{ type: "text", text: "look" }, item]));
-        // Twice: nothing about the message pins or fails a later read.
-        for (let pass = 0; pass < 2; pass++) {
-          const received = await read();
-          expect(received).toHaveLength(1);
-          expect(received[0].senderAddress.raw.toLowerCase()).toBe(
-            bob.address.raw.toLowerCase()
-          );
-          expect(received[0].items).toEqual([
-            { type: "text", text: "look" },
-            {
-              type: "unsupported",
-              reason: "unknown-type",
-              itemType: type,
-              frame: jsonHex(item),
-            },
-          ]);
-        }
-        // A wallet sync record from the legacy mailbox reaches no wallet state.
-        expect(dispatch).not.toHaveBeenCalled();
-      }
-    );
-
-    it("an accepted swap offer from a peer is not delivered as an offer", async () => {
-      const offer = {
-        ...NEVER_FROM_A_PEER_SAMPLES.find((item) => item.type === "swap-offer")!,
-        status: "accepted",
-      };
-      legacyInbox(JSON.stringify([offer]));
-      const [message] = await read();
-      expect(message.items.map((item) => item.type)).toEqual(["unsupported"]);
-      expect(JSON.stringify(message.items)).not.toContain("accepted");
-    });
-
-    it("a legacy text message still arrives as text, and only what the plugin read of it", async () => {
-      legacyInbox(
-        JSON.stringify([{ type: "text", text: "ordinary", status: "accepted" }])
-      );
-      const received = await read();
-      expect(received[0].items).toEqual([{ type: "text", text: "ordinary" }]);
-    });
-
-    it("a known type its plugin refuses arrives as malformed", async () => {
-      legacyInbox(JSON.stringify([{ type: "dice", action: "cheat" }]));
-      const received = await read();
-      expect(received[0].items).toEqual([
-        {
-          type: "unsupported",
-          reason: "malformed",
-          itemType: "dice",
-          frame: jsonHex({ type: "dice", action: "cheat" }),
-        },
-      ]);
-    });
-
-    it("stamp payments are still discovered for a message whose items are unsupported", async () => {
-      legacyInbox(JSON.stringify([{ type: "wallet-sync" }]));
-      const wallet = withItems(makeWallet(alice));
-      wallet.stampPaymentJournal = new InMemoryStampPaymentJournal();
-      const received = await read(wallet);
-      expect(received[0].items.map((item) => item.type)).toEqual([
-        "unsupported",
-      ]);
-      expect(recovery).toHaveBeenCalledTimes(1);
-      expect(dispatch).not.toHaveBeenCalled();
-    });
-
-    it("an untyped wallet with no registry installed still reads, and every item is unsupported, never raw", async () => {
-      const items = [
-        { type: "text", text: "ordinary" },
-        { type: "swap-offer", status: "accepted" },
-      ];
-      legacyInbox(JSON.stringify(items));
-      const received = await read(makeWallet(alice));
-      expect(received[0].items).toEqual(
-        items.map((item) => ({
-          type: "unsupported",
-          reason: "unknown-type",
-          itemType: item.type,
-          frame: jsonHex(item),
-        }))
-      );
-    });
-
-    it("a legacy message too long to parse is refused as a whole and reported so the cursor passes", async () => {
-      legacyInbox(
-        JSON.stringify([{ type: "text", text: "x".repeat(1024 * 1024) }])
-      );
-      const parse = jest.spyOn(JSON, "parse");
-      const passed: [number, string][] = [];
-      try {
-        const received = await createEvmChain(
-          TEST_CONFIG
-        ).directMessages.fetchSince({
-          wallet: withItems(makeWallet(alice)),
-          sinceMs: 0,
-          onQuarantinedTimestamp: (time, digest) => passed.push([time, digest]),
-        });
-        expect(received).toEqual([]);
-        expect(passed).toEqual([[10, "00".repeat(32)]]);
-        expect(parse).not.toHaveBeenCalled();
-      } finally {
-        parse.mockRestore();
-      }
-    });
-  });
-
-  it("reports no stamp value for a legacy message, whatever payments it claims", async () => {
-    const chain = createEvmChain(TEST_CONFIG);
-    const alice = MonadIdentity.fromPrivateKeyHex(ALICE_PRIVATE_KEY_HEX);
-    const bob = MonadIdentity.fromPrivateKeyHex(BOB_PRIVATE_KEY_HEX);
-    const wallet = withItems(makeWallet(alice));
-
-    const txSigner = new Wallet(BOB_PRIVATE_KEY_HEX);
-    const dest1 = "0x" + "aa".repeat(20);
-    const dest2 = "0x" + "bb".repeat(20);
-    const rawTx1 = await txSigner.signTransaction({
-      to: dest1,
-      value: 12345n,
-      nonce: 0,
-      gasLimit: 21000,
-      gasPrice: 1000000000n,
-      chainId: 10143,
-    });
-    const rawTx2 = await txSigner.signTransaction({
-      to: dest2,
-      value: 67890n,
-      nonce: 1,
-      gasLimit: 21000,
-      gasPrice: 1000000000n,
-      chainId: 10143,
-    });
-
-    const parsedTx1 = Transaction.from(rawTx1);
-    const parsedTx2 = Transaction.from(rawTx2);
-
-    const envelopeBytes = buildEnvelope({
-      fromAddress: bob.address.raw,
-      fromPrivateKey: bob.toNakamotoPrivateKey(),
-      toAddress: alice.address.raw,
-      toPubKey: getBytes(alice.compressedPubKey),
-      plaintext: serializeMessageItems([{ type: "text", text: "hello alice" }]),
-      networkTag: "MONT",
-    });
-
-    const payloadHashBytes = getBytes("0x" + "11".repeat(32));
-    mockedFetchMonadMessagesSince.mockResolvedValueOnce([
-      {
-        message: {
-          encryptedPayload: envelopeBytes,
-          payloadHash: payloadHashBytes,
-          stampPayments: [
-            { childIndex: 0, rawTx: getBytes(rawTx1) },
-            { childIndex: 1, rawTx: getBytes(rawTx2) },
-          ],
-        },
-        timestamp: 1600000000000,
-        networkTag: getBytes("0x4d4f4e54"),
-      },
-    ]);
-
-    mockedFetchMonadProfile.mockResolvedValueOnce({
-      address: bob.address.raw,
-      pubKey: getBytes(bob.compressedPubKey),
-    } as any);
-
-    const received = await chain.directMessages.fetchSince({
-      wallet,
-      sinceMs: 0,
-    });
-
-    // The transactions a legacy message carries are its sender's claim: the relay delivers the
-    // message whether or not they confirm, and these two do not even pay this wallet. Nothing is
-    // reported as paid. (This test used to pin their sum, 80235 wei, as the stamp value.)
-    expect(received).toHaveLength(1);
-    expect(parsedTx1.value + parsedTx2.value).toBe(80235n);
-    expect(received[0].stampValueWei).toBe(0n);
-    // Where they pay is still listed: a stamp address is derived from the message, so this list
-    // is what lets the funds be swept to a seed-derived address before the message is deleted.
-    expect(received[0].stampPayments).toEqual([
-      {
-        txHash: parsedTx1.hash,
-        destinationAddress: parsedTx1.to,
-        valueWei: parsedTx1.value,
-      },
-      {
-        txHash: parsedTx2.hash,
-        destinationAddress: parsedTx2.to,
-        valueWei: parsedTx2.value,
-      },
-    ]);
-
-    expect(received[0].items).toEqual([{ type: "text", text: "hello alice" }]);
-    expect(received[0].senderAddress.raw.toLowerCase()).toBe(
-      bob.address.raw.toLowerCase()
-    );
-    expect(received[0].recipientAddress.raw.toLowerCase()).toBe(
-      alice.address.raw.toLowerCase()
-    );
-    expect(received[0].payloadDigest).toBe("11".repeat(32));
-    expect(received[0].receivedTime).toBe(1600000000000);
-  });
 });
 
 describe("createEvmChain: one per-wallet queue for every account-spending operation", () => {
@@ -1477,7 +1198,6 @@ it("public revision-zero bridge rejects a valid foreign network descriptor witho
       })
     ).toThrow("actual installed wallet descriptor");
     expect(MonadAccountTxSigner).not.toHaveBeenCalled();
-    expect(MonadStampClient).not.toHaveBeenCalled();
     expect(MonadTopicPostClient).not.toHaveBeenCalled();
     expect(MonadTopicVoteClient).not.toHaveBeenCalled();
     expect(wallet.pool.records()).toEqual(statuses);

@@ -104,8 +104,6 @@ describe('the dated miner share', () => {
   it('is applied to the bundled eCash history', () => {
     const all = bundledSeries()
     const reward = all['blockReward/xec-mainnet']
-    // Bundled only once Blockchair's eCash aggregates were downloaded.
-    if (!reward) return
     const before = at(reward.points, seconds('2023-11-14'))![1]
     const after = at(reward.points, seconds('2023-11-15'))![1]
     expect(after / before).toBeCloseTo(0.58 / 0.92, 6)

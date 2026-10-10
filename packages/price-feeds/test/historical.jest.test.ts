@@ -236,6 +236,24 @@ describe('bundled monthly history of the other basket chains', () => {
     }
   })
 
+  it('covers the five chains of the basket that are not Bitcoin, each back to 2020 or its start', () => {
+    expect(Object.keys(MINED_CHAINS_MONTHLY).sort()).toEqual([
+      'bch-mainnet',
+      'doge-mainnet',
+      'ltc-mainnet',
+      'xec-mainnet',
+      'xmr-mainnet',
+    ])
+    const first = (chain: string) => MINED_CHAINS_MONTHLY[chain].monthly[0][0]
+    expect(first('ltc-mainnet') <= '2020-01').toBe(true)
+    expect(first('doge-mainnet')).toBe('2020-01')
+    expect(first('bch-mainnet')).toBe('2017-09')
+    // eCash began with the chain split of 15 November 2020.
+    expect(first('xec-mainnet')).toBe('2020-12')
+    // RandomX activated on 30 November 2019.
+    expect(first('xmr-mainnet')).toBe('2019-12')
+  })
+
   it('holds the consensus subsidies the chains really paid', () => {
     const month = (chain: string, m: string) =>
       MINED_CHAINS_MONTHLY[chain].monthly.find(row => row[0] === m)

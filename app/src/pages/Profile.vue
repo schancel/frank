@@ -11,6 +11,7 @@
           v-model:name="name"
           v-model:username="username"
           :username-error="usernameError"
+          :held-username="heldUsername"
           v-model:location="location"
           v-model:bio="bio"
           v-model:avatar="avatar"
@@ -69,6 +70,7 @@ import Profile, { type ProfileLinkItem } from '../components/Profile.vue'
 import { errorNotify } from '../utils/notifications'
 import { navigateBack } from '../utils/navigate-back'
 import { claimOwnUsername, usernameErrorKey } from '../utils/username-claim'
+import { ownUsername, setOwnUsername } from '../utils/own-username'
 
 type ProfileData = {
   name?: string
@@ -105,7 +107,11 @@ export default defineComponent({
     return {
       name: myProfile.profile.name,
       username: myProfile.profile.username,
-      usernameError: '',
+      // A saved name the relay refused to give back at startup is said so on the field.
+      usernameError:
+        ownUsername.problem && ownUsername.wanted === myProfile.profile.username
+          ? this.$t(ownUsername.problem)
+          : '',
       location: myProfile.profile.location,
       bio: myProfile.profile.bio,
       avatar: myProfile.profile.avatar,
@@ -120,6 +126,10 @@ export default defineComponent({
     }
   },
   computed: {
+    /** The name the relay confirms this account holds, or '' when it holds none. */
+    heldUsername(): string {
+      return ownUsername.held ?? ''
+    },
     profile(): ProfileData {
       return {
         name: this.name,
@@ -204,18 +214,6 @@ export default defineComponent({
           return
         }
         this.username = usernameResult.normalized
-        // The relay gives a name to one account only. A name that is taken or refused stops
-        // the save here, before it is stored or published as this account's.
-        try {
-          await claimOwnUsername(usernameResult.normalized ?? '')
-          this.usernameError = ''
-        } catch (err: unknown) {
-          this.usernameError = this.$t(usernameErrorKey(err))
-          errorNotify(err, { safeMessage: this.usernameError })
-          return
-        }
-      } else {
-        this.usernameError = ''
       }
 
       // Avatar downscaling and compression before submitting
@@ -238,6 +236,21 @@ export default defineComponent({
           fallbackKey: 'profileDialog.avatarTooLarge',
         })
         return
+      }
+
+      // Claim the username last of the checks, once nothing local can still stop the save: the
+      // relay gives a name to one account only, and a claim that succeeded must not be
+      // followed by a local failure that leaves the profile showing the old name. A name that
+      // is taken or refused stops the save here, before it is stored or published as ours.
+      this.usernameError = ''
+      if (this.username) {
+        try {
+          setOwnUsername(await claimOwnUsername(this.username))
+        } catch (err: unknown) {
+          this.usernameError = this.$t(usernameErrorKey(err))
+          errorNotify(err, { safeMessage: this.usernameError })
+          return
+        }
       }
 
       // Save locally to store first

@@ -83,12 +83,11 @@
                       item.contact.profile?.name ||
                       formatShortAddress(item.address)
                     }}
-                    <span
+                    <username-handle
                       v-if="item.contact.profile?.username"
-                      class="text-caption text-grey-6 q-ml-xs"
-                    >
-                      @{{ item.contact.profile.username }}
-                    </span>
+                      :username="item.contact.profile.username"
+                      class="q-ml-xs"
+                    />
                   </q-item-label>
                   <q-item-label caption class="text-grey-6 font-mono">
                     {{ formatShortAddress(item.address) }}
@@ -190,12 +189,11 @@
                     contact?.profile?.name ||
                     formatShortAddress(acceptedLookup?.resolvedAddress || '')
                   }}
-                  <span
+                  <username-handle
                     v-if="contact?.profile?.username"
-                    class="text-caption text-grey-6 q-ml-xs"
-                  >
-                    @{{ contact?.profile?.username }}
-                  </span>
+                    :username="contact.profile.username"
+                    class="q-ml-xs"
+                  />
                 </q-item-label>
                 <q-item-label
                   caption
@@ -341,6 +339,8 @@ import {
   type ContactLookupFailure,
 } from 'src/utils/directory-peer'
 import IdentityQrDialog from 'src/components/dialogs/IdentityQrDialog.vue'
+import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
+import { relayHandleOf, resolveUsername } from 'src/utils/contact-username'
 
 type ChainAddress = Parameters<typeof activeChain.fetchProfile>[0]
 
@@ -352,6 +352,7 @@ type AcceptedLookup = {
 export default defineComponent({
   components: {
     IdentityQrDialog,
+    UsernameHandle,
   },
   data() {
     return {
@@ -428,10 +429,11 @@ export default defineComponent({
       contact: ContactState
     }> {
       const q = this.address.trim().toLowerCase()
-      if (!q || EMAIL_REGEX.test(q)) {
+      // "@name" is a username: who holds it is the relay's answer (see the address watcher),
+      // never a guess from the names saved contacts happen to carry.
+      if (!q || EMAIL_REGEX.test(q) || q.startsWith('@')) {
         return []
       }
-      const cleanQ = q.replace(/^@/, '')
       const entries = Object.entries(this.allContacts)
       const matches: Array<{ address: string; contact: ContactState }> = []
 
@@ -439,14 +441,11 @@ export default defineComponent({
         if (!contact) continue
         const name = contact.profile?.name?.toLowerCase() || ''
         const signedName = contact.profile?.signedName?.toLowerCase() || ''
-        const username = contact.profile?.username?.toLowerCase() || ''
         const addressLower = addr.toLowerCase()
 
         if (
-          name.includes(cleanQ) ||
           name.includes(q) ||
-          signedName.includes(cleanQ) ||
-          username.includes(cleanQ) ||
+          signedName.includes(q) ||
           addressLower.includes(q)
         ) {
           matches.push({ address: addr, contact })
@@ -521,6 +520,26 @@ export default defineComponent({
         return
       }
 
+      // "@name": ask the relay who holds the name. The answer is an address; from there on the
+      // contact is that address, whatever the name points to later.
+      if (newAddress.trim().startsWith('@')) {
+        this.lookupPending = true
+        const fireUsername = () => {
+          this.lookupSchedule.timer = null
+          this.lookupSchedule.lastFiredAt = Date.now()
+          void this.lookupByUsername(generation, newAddress.trim())
+        }
+        if (busy) {
+          this.lookupSchedule.timer = setTimeout(
+            fireUsername,
+            LOOKUP_DEBOUNCE_MS,
+          )
+        } else {
+          fireUsername()
+        }
+        return
+      }
+
       // Check if it's an exact match for an existing contact
       const exactContact = this.findExactExistingContact(newAddress)
       if (exactContact) {
@@ -558,20 +577,17 @@ export default defineComponent({
       query: string,
     ): { address: string; contact: ContactState } | null {
       const q = query.trim().toLowerCase()
-      if (!q || EMAIL_REGEX.test(q)) return null
-      const cleanQ = q.replace(/^@/, '')
+      if (!q || EMAIL_REGEX.test(q) || q.startsWith('@')) return null
 
       for (const [addr, contact] of Object.entries(this.allContacts)) {
         if (!contact) continue
         const name = contact.profile?.name?.toLowerCase()
         const signedName = contact.profile?.signedName?.toLowerCase()
-        const username = contact.profile?.username?.toLowerCase()
         const addressLower = addr.toLowerCase()
 
         if (
-          (name && (name === q || name === cleanQ)) ||
-          (signedName && (signedName === q || signedName === cleanQ)) ||
-          (username && (username === q || username === cleanQ)) ||
+          (name && name === q) ||
+          (signedName && signedName === q) ||
           addressLower === q
         ) {
           return { address: addr, contact }
@@ -637,10 +653,47 @@ export default defineComponent({
         this.lookupSchedule.timer = null
       }
     },
+    /** Resolve a typed "@name" through the relay's name store, then look that address up. */
+    async lookupByUsername(generation: number, typed: string) {
+      try {
+        const holder = await resolveUsername(typed)
+        if (generation !== this.lookupGeneration) {
+          return
+        }
+        const normalized = holder && this.canonicalizeAddress(holder.address)
+        if (!holder || !normalized) {
+          this.lookupPending = false
+          return
+        }
+        const existing = this.allContacts[normalized.resolvedAddress]
+        if (existing) {
+          // Already a contact: it stays as it was added.
+          this.selectExistingContact(
+            normalized.resolvedAddress,
+            existing,
+            false,
+          )
+          return
+        }
+        await this.lookup(
+          generation,
+          normalized.chainAddress,
+          normalized.resolvedAddress,
+          holder.username,
+        )
+      } catch {
+        if (generation === this.lookupGeneration) {
+          this.lookupPending = false
+        }
+      }
+    },
+    /** `resolvedUsername`: the name the relay resolved to this address, when the user typed
+     * one. It is recorded as the name the contact was added by. */
     async lookup(
       generation: number,
       chainAddress: ChainAddress,
       resolvedAddress: string,
+      resolvedUsername?: string,
     ) {
       try {
         if (generation !== this.lookupGeneration) {
@@ -661,6 +714,15 @@ export default defineComponent({
         if (returnedProfileAddress !== resolvedAddress) {
           return
         }
+        // The handle shown is the one the relay says this address holds, never the one its
+        // profile declares.
+        const username =
+          resolvedUsername ??
+          (await relayHandleOf(resolvedAddress))?.username ??
+          null
+        if (generation !== this.lookupGeneration) {
+          return
+        }
         this.acceptedLookup = {
           resolvedAddress,
           contact: {
@@ -668,6 +730,8 @@ export default defineComponent({
               ...defaultRelayData.profile,
               name: profileInfo.name ?? '',
               signedName: profileInfo.name ?? null,
+              username,
+              addedByUsername: resolvedUsername ?? null,
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
               isBot: profileInfo.bot === true,

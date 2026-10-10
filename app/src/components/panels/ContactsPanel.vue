@@ -169,12 +169,7 @@
             <q-item-section class="col" style="min-width: 0">
               <div class="row items-center no-wrap">
                 <q-item-label lines="1" class="text-weight-medium ellipsis">
-                  {{
-                    res.name ||
-                    (res.username
-                      ? `@${res.username}`
-                      : formatAddrCompact(res.address))
-                  }}
+                  {{ res.name || formatAddrCompact(res.address) }}
                 </q-item-label>
                 <account-badge
                   :address="res.address"
@@ -185,8 +180,11 @@
                 />
               </div>
               <q-item-label caption lines="1" class="ellipsis">
-                <span v-if="res.username">@{{ res.username }} • </span
-                >{{ formatAddrCompact(res.address) }}
+                <username-handle
+                  v-if="res.username"
+                  :username="res.username"
+                  class="q-mr-xs"
+                />{{ formatAddrCompact(res.address) }}
               </q-item-label>
             </q-item-section>
             <q-item-section side style="padding-left: 4px">
@@ -273,6 +271,7 @@ import {
   usernamesOfAddresses,
 } from '@frank/cashweb/relay/username-client'
 import AccountBadge from 'src/components/contacts/AccountBadge.vue'
+import UsernameHandle from 'src/components/contacts/UsernameHandle.vue'
 
 interface NetworkSearchResult {
   address: string
@@ -289,6 +288,7 @@ export default defineComponent({
   components: {
     IdentityQrDialog,
     AccountBadge,
+    UsernameHandle,
   },
   emits: ['closeDrawer'],
   setup(props, { emit }) {
@@ -549,6 +549,8 @@ export default defineComponent({
               ...(pendingRelayData?.profile ?? {}),
               name: item.name,
               username: item.username,
+              // Pinned: this contact is this address from now on, whoever holds the name later.
+              addedByUsername: item.username ?? null,
               bio: item.bio ?? '',
               avatar: item.avatar ?? null,
               pubKey: null,

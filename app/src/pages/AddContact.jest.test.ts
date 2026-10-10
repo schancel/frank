@@ -74,6 +74,13 @@ jest.mock('bitcore-lib-xpi', () => ({
   PublicKey: { fromBuffer: jest.fn(() => ({ kind: 'public-key' })) },
 }))
 jest.mock('src/utils/routes', () => ({ openChat: jest.fn() }))
+// The relay's name store: who holds a username, and which username an address holds.
+const mockResolveUsername = jest.fn()
+const mockRelayHandleOf = jest.fn()
+jest.mock('src/utils/contact-username', () => ({
+  resolveUsername: (...args: unknown[]) => mockResolveUsername(...args),
+  relayHandleOf: (...args: unknown[]) => mockRelayHandleOf(...args),
+}))
 const mockOwnAddress = jest.fn()
 jest.mock('src/utils/own-address', () => ({
   getOwnCanonicalAddress: () => mockOwnAddress(),
@@ -1117,9 +1124,15 @@ describe('AddContact latest lookup', () => {
       it('typing existing contact username with @ resolves contact and starts topic thread', async () => {
         wrapper.unmount()
         wrapper = mountPage({ query: { mode: 'conversation' } })
+        // The relay says @alice is held by address A, which is already a contact.
+        mockResolveUsername.mockResolvedValue({
+          username: 'alice',
+          address: 'a',
+        })
 
         await type(wrapper, '@alice')
         await settle()
+        expect(mockResolveUsername).toHaveBeenCalledWith('@alice')
 
         expect(
           wrapper.find('[data-test="selected-contact-section"]').exists(),
@@ -1208,6 +1221,107 @@ describe('AddContact latest lookup', () => {
         expect(wrapper.vm.selectedExistingAddress).toBeNull()
         expect(wrapper.vm.contact).toBeNull()
       })
+    })
+  })
+
+  describe('AddContact usernames resolve through the relay and pin the address', () => {
+    let wrapper: VueWrapper
+
+    beforeEach(() => {
+      mockResolveUsername.mockReset()
+      mockRelayHandleOf.mockReset()
+      mockRelayHandleOf.mockResolvedValue(undefined)
+      chain.parseAddress.mockImplementation(
+        (text: string) => parsedAddresses[text] ?? null,
+      )
+      chain.formatAddress.mockImplementation((a: ChainAddress) => a.raw)
+      chain.fetchProfile.mockImplementation(async (a: ChainAddress) =>
+        profile(a.raw, a.raw === ADDRESS_B ? 'Qwen' : 'Someone'),
+      )
+      mockOwnAddress.mockResolvedValue(ADDRESS_OWN)
+      // Contact A is an impostor: its display name is "qwen", and its stored record carries
+      // the username "qwen" (as an old or forged profile would have left it).
+      mockExistingContacts = {
+        [ADDRESS_A]: {
+          lastUpdateTime: Date.now(),
+          notify: true,
+          relayURL: null,
+          profile: {
+            name: 'qwen',
+            signedName: 'qwen',
+            username: 'qwen',
+            bio: '',
+            avatar: '',
+            pubKey: PROFILE_PUBKEY as any,
+          },
+          inbox: {},
+        },
+      }
+    })
+    afterEach(() => {
+      wrapper?.unmount()
+    })
+
+    async function typeAndWait(text: string) {
+      await wrapper.find('input').setValue(text)
+      jest.advanceTimersByTime(DEBOUNCE_MS * 2)
+      for (let i = 0; i < 6; i++) await settle()
+    }
+
+    it('typing @qwen adds the account the relay says holds it, not the contact that calls itself qwen', async () => {
+      mockResolveUsername.mockResolvedValue({ username: 'qwen', address: 'b' })
+      wrapper = mountPage()
+      await typeAndWait('@qwen')
+
+      expect(mockResolveUsername).toHaveBeenCalledWith('@qwen')
+      // No local suggestion offers the impostor for a typed handle.
+      expect(
+        wrapper.find('[data-test="existing-contacts-suggestions"]').exists(),
+      ).toBe(false)
+      expect((wrapper.vm as any).acceptedLookup.resolvedAddress).toBe(ADDRESS_B)
+      ;(wrapper.vm as any).addContactOnly()
+      expect(mockAddContactToStore).toHaveBeenCalledTimes(1)
+      const added = mockAddContactToStore.mock.calls[0][0]
+      // Pinned to the address the name resolved to, with the name it was added by.
+      expect(added.address).toBe(ADDRESS_B)
+      expect(added.contact.profile.username).toBe('qwen')
+      expect(added.contact.profile.addedByUsername).toBe('qwen')
+    })
+
+    it('typing @qwen when nobody holds it finds nobody, whatever saved contacts are called', async () => {
+      mockResolveUsername.mockResolvedValue(undefined)
+      wrapper = mountPage()
+      await typeAndWait('@qwen')
+
+      expect((wrapper.vm as any).acceptedLookup).toBeNull()
+      expect((wrapper.vm as any).canAdd).toBe(false)
+      expect(chain.fetchProfile).not.toHaveBeenCalled()
+      ;(wrapper.vm as any).addContactOnly()
+      expect(mockAddContactToStore).not.toHaveBeenCalled()
+    })
+
+    it('a relay that cannot be asked resolves nothing', async () => {
+      mockResolveUsername.mockRejectedValue(new Error('offline'))
+      wrapper = mountPage()
+      await typeAndWait('@qwen')
+      expect((wrapper.vm as any).acceptedLookup).toBeNull()
+      expect((wrapper.vm as any).lookupPending).toBe(false)
+    })
+
+    it('an address typed directly shows the handle the relay confirms and is not marked as added by a name', async () => {
+      mockRelayHandleOf.mockResolvedValue({
+        username: 'bee',
+        reassigned: false,
+      })
+      wrapper = mountPage()
+      await typeAndWait('b')
+
+      expect(mockResolveUsername).not.toHaveBeenCalled()
+      expect(mockRelayHandleOf).toHaveBeenCalledWith(ADDRESS_B)
+      const accepted = (wrapper.vm as any).acceptedLookup
+      expect(accepted.contact.profile.username).toBe('bee')
+      expect(accepted.contact.profile.addedByUsername).toBeNull()
+      expect(wrapper.find('[data-test="username-handle"]').text()).toBe('@bee')
     })
   })
 })

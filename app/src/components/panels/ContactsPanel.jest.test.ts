@@ -387,7 +387,21 @@ describe('ContactsPanel navigation', () => {
 
       const results = wrapper.findAll('[data-test="directory-search-result"]')
       expect(results.length).toBe(1)
-      expect(results[0].text()).toContain('@charlie')
+      expect(results[0].find('[data-test="username-handle"]').text()).toBe(
+        '@charlie',
+      )
+
+      // Adding it pins the contact to the address the name resolved to.
+      await results[0].find('button[data-icon="person_add"]').trigger('click')
+      expect(mockAddContact).toHaveBeenCalledWith({
+        address: '0x4444444444444444444444444444444444444444',
+        contact: expect.objectContaining({
+          profile: expect.objectContaining({
+            username: 'charlie',
+            addedByUsername: 'charlie',
+          }),
+        }),
+      })
     })
 
     it('shows the handle the relay says an account holds, never the one its profile claims', async () => {
@@ -419,7 +433,19 @@ describe('ContactsPanel navigation', () => {
       expect(results.length).toBe(2)
       expect(results[0].text()).toContain('Qwen')
       expect(results[0].text()).not.toContain('@qwen')
-      expect(results[1].text()).toContain('@qwen')
+      expect(results[0].find('[data-test="username-handle"]').exists()).toBe(
+        false,
+      )
+      expect(results[1].find('[data-test="username-handle"]').text()).toBe(
+        '@qwen',
+      )
+
+      // Added from the row, the impostor carries no handle and no name it was "added by".
+      await results[0].find('button[data-icon="person_add"]').trigger('click')
+      const added = mockAddContact.mock.calls[0][0]
+      expect(added.address).toBe(impostor)
+      expect(added.contact.profile.username).toBeUndefined()
+      expect(added.contact.profile.addedByUsername).toBeNull()
     })
 
     it('lists an account once when both its username and its display name match', async () => {

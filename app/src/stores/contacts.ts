@@ -1,4 +1,5 @@
 import { fetchContactProfile } from '../utils/directory-peer'
+import { relayHandleOf } from '../utils/contact-username'
 import { defineStore } from 'pinia'
 
 import { useChatStore } from './chats'
@@ -91,7 +92,15 @@ type Profile = {
   /** Name carried by the last signed profile lookup. Kept separate from `name`, which may be a
    * relay-curated, address, or user-facing fallback label. */
   signedName?: string | null
+  /** The @username the relay says this address holds. Filled only from the relay's name
+   * store (`utils/contact-username`), never from what a profile says about itself. */
   username?: string | null
+  /** The username this contact was added by. The contact is pinned to its address: this is
+   * kept only to notice when the name later points to a different account. */
+  addedByUsername?: string | null
+  /** `addedByUsername` is now held by another account. This contact is still the address that
+   * was added; it is never re-pointed. */
+  usernameReassigned?: boolean
   bio: string | null
   avatar: string | null
   location?: string | null
@@ -164,6 +173,9 @@ type RestorableContactState = {
   profile: {
     name: string | null
     signedName?: string | null
+    username?: string | null
+    addedByUsername?: string | null
+    usernameReassigned?: boolean
     bio: string | null
     avatar: string | null
     pubKey: Uint8Array | null
@@ -201,6 +213,13 @@ export async function rehydrateContacts(
         ...contact,
         profile: {
           ...profile,
+          // A username saved before handles came only from the relay's name store was copied
+          // from the contact's own profile and proves nothing. Such a record has no
+          // `usernameReassigned` field; its username is dropped until the relay confirms one.
+          username:
+            profile?.usernameReassigned === undefined
+              ? null
+              : profile.username ?? null,
           pubKey: profile?.pubKey
             ? markRaw(profilePubKeyFromBytes(profile.pubKey))
             : null,
@@ -329,6 +348,10 @@ export const useContactStore = defineStore('contacts', {
         profile: {
           name: contact.profile?.name ?? null,
           signedName: contact.profile?.signedName,
+          // Callers pass a username only when the relay's name store gave it to them.
+          username: contact.profile?.username ?? null,
+          addedByUsername: contact.profile?.addedByUsername ?? null,
+          usernameReassigned: contact.profile?.usernameReassigned ?? false,
           bio: contact.profile?.bio ?? null,
           avatar: contact.profile?.avatar ?? null,
           isBot: contact.profile?.isBot,
@@ -430,6 +453,7 @@ export const useContactStore = defineStore('contacts', {
         if (!profileInfo) {
           return
         }
+        const handle = await relayHandleOf(displayAddress)
         this.addContact({
           address: displayAddress,
           contact: {
@@ -440,7 +464,7 @@ export const useContactStore = defineStore('contacts', {
                 ? shortAddressLabel(displayAddress)
                 : (profileInfo.name as string),
               signedName: profileInfo.name ?? null,
-              username: profileInfo.username ?? null,
+              username: handle?.username ?? null,
               bio: profileInfo.bio ?? '',
               avatar: profileInfo.avatar ?? '',
               location: profileInfo.location ?? null,
@@ -585,6 +609,19 @@ export const useContactStore = defineStore('contacts', {
           if (!chainAddress) {
             throw new Error(`Invalid ${activeChain.name} address: ${address}`)
           }
+          // The handle is whatever the relay's name store says this address holds now. When
+          // the relay cannot be asked, what was known is kept.
+          const handle = await relayHandleOf(
+            canonical,
+            oldContactInfo.profile?.addedByUsername,
+          )
+          const handleFields =
+            handle === undefined
+              ? {}
+              : {
+                  username: handle.username,
+                  usernameReassigned: handle.reassigned,
+                }
           const profileInfo = await fetchContactProfile(chainAddress)
           if (!profileInfo) {
             console.debug(`No registered profile found for ${address}`)
@@ -599,6 +636,7 @@ export const useContactStore = defineStore('contacts', {
               address,
               profile: {
                 ...oldContactInfo.profile,
+                ...handleFields,
                 name,
                 signedName: oldContactInfo.profile.signedName ?? null,
                 isBot: oldContactInfo.profile.isBot ?? false,
@@ -626,8 +664,7 @@ export const useContactStore = defineStore('contacts', {
                     safeToChainDisplayAddress(address) ?? address,
                   ),
               signedName: profileInfo.name ?? null,
-              username:
-                profileInfo.username ?? oldContactInfo.profile.username ?? null,
+              ...handleFields,
               bio: profileInfo.bio ?? oldContactInfo.profile.bio,
               avatar: profileInfo.avatar ?? oldContactInfo.profile.avatar,
               location:

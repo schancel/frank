@@ -22,11 +22,25 @@
         </div>
         <div
           v-if="contact?.profile?.username"
-          class="text-subtitle2 text-grey-7 q-mt-xs"
+          class="q-mt-xs"
           data-test="info-contact-username"
         >
-          @{{ formattedUsername }}
+          <username-handle :username="contact.profile.username" />
         </div>
+        <q-banner
+          v-if="contact?.profile?.usernameReassigned"
+          dense
+          rounded
+          class="bg-warning text-black q-mt-sm text-center"
+          style="max-width: 400px"
+          data-test="info-contact-username-reassigned"
+        >
+          {{
+            $t('chatRightDrawer.usernameReassigned', {
+              username: contact.profile.addedByUsername,
+            })
+          }}
+        </q-banner>
         <div
           v-if="contact?.profile?.bio"
           class="text-body2 text-grey-7 q-mt-xs text-center"
@@ -158,6 +172,7 @@ import { activeChain } from '@frank/wallet/chain'
 import { pubKeyToColor } from 'src/utils/formatting'
 import { profileAvatar } from 'src/utils/avatar'
 import { addressCopiedNotify } from '../../utils/notifications'
+import UsernameHandle from '../contacts/UsernameHandle.vue'
 
 /**
  * The full-pane "Info" view for a chat -- replaces `ChatRightDrawer.vue`'s narrow side drawer
@@ -171,6 +186,7 @@ export default defineComponent({
   components: {
     ClearHistoryDialog,
     DeleteChatDialog,
+    UsernameHandle,
   },
   emits: ['deleted', 'chat'],
   setup() {
@@ -212,11 +228,6 @@ export default defineComponent({
     displayAddress(): string {
       const parsed = activeChain.parseAddress(this.address)
       return parsed ? activeChain.formatAddress(parsed) : this.address
-    },
-    formattedUsername(): string {
-      const u = this.contact?.profile?.username
-      if (!u) return ''
-      return u.startsWith('@') ? u.slice(1) : u
     },
     contactLinks(): Array<{ type: string; url: string; label?: string }> {
       const links = this.contact?.profile?.links

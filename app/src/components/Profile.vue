@@ -50,7 +50,7 @@
                     outlined
                     v-model="internalUsername"
                     :label="$t('profile.username')"
-                    :hint="$t('profile.usernameHint')"
+                    :hint="usernameHint"
                     prefix="@"
                     lazy-rules
                     style="width: 100%"
@@ -385,6 +385,11 @@ export default defineComponent({
       type: String,
       default: '',
     },
+    /** The name the relay confirms this account holds; '' when it holds none. */
+    heldUsername: {
+      type: String,
+      default: '',
+    },
     location: {
       type: String,
       default: () => '',
@@ -450,6 +455,17 @@ export default defineComponent({
     }
   },
   computed: {
+    /** Under the username field: what the account holds on the relay, when that differs from
+     * what is typed. A held name cannot be given up, only replaced by claiming another. */
+    usernameHint(): string {
+      const typed = (this.internalUsername ?? '').trim().replace(/^@/, '')
+      if (this.heldUsername && typed.toLowerCase() !== this.heldUsername) {
+        return this.$t('profile.usernameStillHeld', {
+          username: this.heldUsername,
+        })
+      }
+      return this.$t('profile.usernameHint')
+    },
     resolvedIdentityAddress(): string {
       return this.identityAddress || this.internalIdentityAddress
     },

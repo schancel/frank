@@ -9,7 +9,6 @@ import {
   type PendingCodex32Restore,
   type RecoveredCodex32Account,
 } from '@frank/account-recovery'
-import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import { requireValidProfileDisplayName } from '@frank/wallet/profile-display-name'
 import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { toHex } from '@frank/codec'
@@ -141,13 +140,13 @@ export function createAccountCeremony() {
         restore = undefined
         await assertLegacyUnchanged(captured.legacyRevision)
         if (token !== epoch) throw new Error('Ceremony cancelled')
-        const roots = recovered.roots
+        // Custody keeps the account root only; every purpose root is derived from it
+        // each time the account is opened.
         await accountSession.stage({
           ...captured,
           displayName,
           custodyEpoch: 1,
           metadata: recovered.metadata,
-          roots: DOMAIN_PURPOSES.map(purpose => roots[purpose]),
           accountRoot: recovered.accountRoot,
         })
         if (token !== epoch)

@@ -51,6 +51,20 @@ export interface AccountSessionState {
 }
 
 /**
+ * The active account has no key material for this purpose. That only happens for an account
+ * stored before the app kept account roots: it runs on the roots saved at the time and cannot
+ * derive one added since. Restoring it from its signup shares gives it every purpose.
+ */
+export class AccountPurposeUnavailableError extends Error {
+  readonly code = 'account-purpose-unavailable'
+
+  constructor(readonly purpose: string) {
+    super(`This account has no ${purpose} key material`)
+    this.name = 'AccountPurposeUnavailableError'
+  }
+}
+
+/**
  * This account was stored before the app kept account roots. Nothing held here can
  * reproduce the account, so no shares are issued: only the shares shown at signup restore it.
  */
@@ -368,7 +382,7 @@ export function createAccountSession(deps: {
           throw new CustodyError('conflict')
         roots = capability.takeRoots()
         const found = roots.find(r => r.purpose === purpose)
-        if (!found) throw new CustodyError('locked')
+        if (!found) throw new AccountPurposeUnavailableError(purpose)
         return new Uint8Array(found.bytes)
       } finally {
         roots.forEach(r => r.bytes.fill(0))

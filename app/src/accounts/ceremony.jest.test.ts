@@ -39,16 +39,15 @@ async function signup() {
     shares: [0, 1, 2].map(index => ceremony.share(index)),
   }
 }
-test('does not stage before exact confirmation; wipes all caller roots after staging', async () => {
+test('does not stage before exact confirmation; stages only the account root and wipes it after', async () => {
   const f = await signup()
   expect(accountSession.stage).not.toHaveBeenCalled()
   await f.ceremony.confirm(f.shares.slice(0, 2), '  Synthetic account  ')
   const staged = jest.mocked(accountSession.stage).mock.calls[0][0]
   expect(staged.displayName).toBe('Synthetic account')
   expect(staged.expectedActive).toEqual({ revision: 0, accountId: null })
-  expect(staged.roots.every(root => root.bytes.every(byte => byte === 0))).toBe(
-    true,
-  )
+  expect(staged.accountRoot.every(byte => byte === 0)).toBe(true)
+  expect('roots' in staged).toBe(false)
   expect(f.ceremony.share(0)).toBe('')
   await expect(
     f.ceremony.confirm(f.shares.slice(0, 2), 'Again'),

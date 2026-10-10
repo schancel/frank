@@ -1,4 +1,4 @@
-import { DERIVATION_REGISTRY_ID, DOMAIN_PURPOSES, RECOVERY_FORMAT_ID, type DomainRoot } from '@frank/domain-roots'
+import { DERIVATION_REGISTRY_ID, DOMAIN_PURPOSES, RECOVERY_FORMAT_ID, deriveDomainRoot, type DomainRoot } from '@frank/domain-roots'
 import { VaultError, type VaultContext, type VaultReceipt, type VaultWriteIntent } from './types.js'
 
 export const POLICY = 'browser-preview-aes-gcm-v1'
@@ -90,50 +90,63 @@ export function same(a: VaultReceipt, b: VaultReceipt): boolean {
 }
 
 /**
- * Encode typed roots followed by the account root they were derived from, copying
- * synchronously before the first asynchronous boundary. Framing version 2.
+ * The record is the account root alone (framing 3), copied synchronously before the first
+ * asynchronous boundary. Every purpose root is derived from it when the record is opened.
  */
-export function plaintext(roots: readonly DomainRoot[], accountRoot: Uint8Array, c: VaultContext): Uint8Array<ArrayBuffer> {
-  const count = c.purposes.length
-  if (!Array.isArray(roots) || roots.length !== count) reject()
-  const output = new Uint8Array(2 + count * 33 + 32)
-  try {
-    output[0] = 2; output[1] = count
-    for (let i = 0; i < count; i++) {
-      const root = roots[i]
-      if (!root || root.registry !== DERIVATION_REGISTRY_ID || root.purpose !== c.purposes[i]) reject()
-      output[2 + 33 * i] = DOMAIN_PURPOSES.indexOf(c.purposes[i]) + 1
-      output.set(secret(root.bytes), 3 + 33 * i)
-    }
-    output.set(secret(accountRoot), 2 + 33 * count)
-    return output
-  } catch (error) { output.fill(0); throw error }
+export function plaintext(accountRoot: Uint8Array): Uint8Array<ArrayBuffer> {
+  if (!(accountRoot instanceof Uint8Array) || accountRoot.byteLength !== 32 || !(accountRoot.buffer instanceof ArrayBuffer)) reject()
+  const output = new Uint8Array(33)
+  output[0] = 3
+  output.set(accountRoot, 1)
+  return output
 }
 
-function secret(bytes: unknown): Uint8Array {
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== 32 || !(bytes.buffer instanceof ArrayBuffer)) reject()
-  return bytes
-}
-
-/** Version 1 records predate the stored account root: they hold the typed roots only. */
-function framed(bytes: Uint8Array, c: VaultContext): 1 | 2 {
-  const version = bytes[0], roots = 2 + c.purposes.length * 33
+/**
+ * Framing 3: the account root alone. Framing 2 (written briefly before 3): typed roots, then
+ * the account root; the stored roots are ignored. Framing 1 (before the account root was
+ * kept): typed roots only. Returns the offset of the account root, or -1 for framing 1.
+ */
+function accountRootOffset(bytes: Uint8Array, c: VaultContext): number {
+  const version = bytes[0]
+  if (version === 3) {
+    if (bytes.length !== 33) throw new VaultError('corrupt')
+    return 1
+  }
+  const roots = 2 + c.purposes.length * 33
   if ((version !== 1 && version !== 2) || bytes.length !== roots + (version === 2 ? 32 : 0) || bytes[1] !== c.purposes.length) throw new VaultError('corrupt')
   // Validate the whole payload before publishing any independently owned secret.
   for (let i = 0; i < c.purposes.length; i++) {
     if (bytes[2 + i * 33] !== DOMAIN_PURPOSES.indexOf(c.purposes[i]) + 1) throw new VaultError('corrupt')
   }
-  return version
+  return version === 2 ? roots : -1
 }
 
+/**
+ * The roots an account runs on. With a stored account root they are derived here, in memory,
+ * for every purpose in the registry as it is now, so a purpose added after the account was
+ * created is simply there on the next open. A framing 1 record has no account root: it
+ * yields exactly the roots stored in it and can never gain a purpose.
+ */
 export function decode(bytes: Uint8Array, c: VaultContext): readonly DomainRoot[] {
-  framed(bytes, c)
-  return Object.freeze(c.purposes.map((purpose, i) => Object.freeze({
-    purpose, registry: DERIVATION_REGISTRY_ID, bytes: bytes.slice(3 + i * 33, 35 + i * 33),
-  })))
+  const offset = accountRootOffset(bytes, c)
+  if (offset < 0) {
+    return Object.freeze(c.purposes.map((purpose, i) => Object.freeze({
+      purpose, registry: DERIVATION_REGISTRY_ID, bytes: bytes.slice(3 + i * 33, 35 + i * 33),
+    })))
+  }
+  const accountRoot = bytes.subarray(offset, offset + 32)
+  const derived: DomainRoot[] = []
+  try {
+    for (const purpose of DOMAIN_PURPOSES) derived.push(deriveDomainRoot(accountRoot, purpose))
+    return Object.freeze(derived)
+  } catch {
+    for (const root of derived) root.bytes.fill(0)
+    throw new VaultError('corrupt')
+  }
 }
 
-/** The stored account root, or null for a version 1 record that never held one. */
+/** The stored account root, or null for a framing 1 record that never held one. */
 export function decodeAccountRoot(bytes: Uint8Array, c: VaultContext): Uint8Array | null {
-  return framed(bytes, c) === 2 ? bytes.slice(2 + c.purposes.length * 33) : null
+  const offset = accountRootOffset(bytes, c)
+  return offset < 0 ? null : bytes.slice(offset, offset + 32)
 }

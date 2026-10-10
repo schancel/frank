@@ -15,12 +15,14 @@ that exact secret before any account becomes durable.
 
 Owner decision, 2026-10-09 (supersedes the earlier rule that the master must not
 be resident or re-offered): Frank keeps the 32-byte account root `R` in the local
-vault, in the same encrypted record and under the same protection as the domain
-roots. It is kept so that an unlocked account can issue a new, independent set of
-backup shares that restores the same account; without it, the only honest answer
-to "back up my account" after signup is "you cannot". The original shares are
-still never stored or shown again, and `R` is read only when the user explicitly
-asks for new shares. Where later sections say `M` is discarded or absent from
+vault as the one stored secret of an account. Every domain root is derived from
+`R` each time the account is opened, so a purpose or chain added to the registry
+later gets its proper keys for every existing account automatically, and an
+unlocked account can issue a new, independent set of backup shares that restores
+the same account. The original shares are still never stored or shown again. `R`
+is read to derive at open and when the user explicitly asks for new shares, and is
+not held by the running session; anyone who can decrypt the local vault obtains
+`R` and with it every present and future key of the account. Where later sections say `M` is discarded or absent from
 resident state, read them subject to this paragraph: the master payload and the
 shares are discarded; `R` is retained in the vault.
 

@@ -1,4 +1,4 @@
-import { DOMAIN_PURPOSES, DERIVATION_REGISTRY_ID, RECOVERY_FORMAT_ID, type DomainRoot } from '@frank/domain-roots'
+import { DOMAIN_PURPOSES, DERIVATION_REGISTRY_ID, RECOVERY_FORMAT_ID, deriveDomainRoot, type DomainRoot } from '@frank/domain-roots'
 import { aad } from '../src/encoding.js'
 import { createVaultWriteIntent, openPreviewVault, VaultError, type VaultContext, type VaultReceipt, type VaultWriteIntent } from '../src/index.js'
 
@@ -19,9 +19,9 @@ function context(id: string): VaultContext {
     registry: DERIVATION_REGISTRY_ID, purposes: DOMAIN_PURPOSES, custodyEpoch: 1,
     recoveryFingerprint: 'public-fixture-fingerprint', retirementContext: '' }
 }
+/** What opening a record staged with accountRoot(seed) must yield: the registry derivation. */
 function roots(seed = 17): DomainRoot[] {
-  return DOMAIN_PURPOSES.map((purpose, index) => ({ purpose, registry: DERIVATION_REGISTRY_ID,
-    bytes: Uint8Array.from({ length: 32 }, (_, byte) => (seed + index * 32 + byte) & 255) }))
+  return DOMAIN_PURPOSES.map(purpose => deriveDomainRoot(accountRoot(seed), purpose))
 }
 function accountRoot(seed = 17): Uint8Array {
   return Uint8Array.from({ length: 32 }, (_, byte) => (seed * 7 + 201 + byte * 3) & 255)
@@ -84,10 +84,10 @@ export async function run(phase: string) {
     const vault = await openPreviewVault({ namespace: 'restart' })
     const intent = initial('restart')
     if (phase === 'create') {
-      await vault.stage(intent, roots(), accountRoot())
+      await vault.stage(intent, accountRoot())
       await vault.discardIntent(initial('restart-absent-discard'))
       const committedDiscard = initial('restart-committed-discard')
-      await vault.stage(committedDiscard, roots(), accountRoot())
+      await vault.stage(committedDiscard, accountRoot())
       await vault.discardIntent(committedDiscard)
       // Only public coordinator state, never plaintext, is serialized.
       localStorage.setItem('vault-intent', JSON.stringify(intent))
@@ -101,7 +101,7 @@ export async function run(phase: string) {
       await vault.discardIntent(discarded)
       ok(await vault.reconcile(discarded.receipt) === 'removed', 'discard retry survives process restart')
       await fails(() => vault.open(discarded.receipt), 'locked')
-      await fails(() => vault.stage(discarded, roots(), accountRoot()), 'conflict')
+      await fails(() => vault.stage(discarded, accountRoot()), 'conflict')
       await fails(() => vault.discardIntent(createVaultWriteIntent({ context: discarded.receipt.context,
         expected: null, operationId: 'foreign-operation' })), 'conflict')
     }
@@ -124,7 +124,7 @@ export async function run(phase: string) {
   SubtleCrypto.prototype.encrypt = async function (...args: Parameters<SubtleCrypto['encrypt']>) {
     beginCancel(); await cancelGate; return encryptBeforeCancel.apply(this, args)
   }
-  const cancelledStage = vault.stage(cancelled, roots(), accountRoot())
+  const cancelledStage = vault.stage(cancelled, accountRoot())
   try {
     await cancelStarted
     ok(await other.reconcile(cancelled.receipt) === 'absent', 'paused initial stage is absent')
@@ -141,15 +141,15 @@ export async function run(phase: string) {
 
   // Commit-before-cancel and simultaneous calls across independent facade connections.
   const preserved = initial('discard-preserved'), committedDiscard = initial('discard-committed')
-  await vault.stage(preserved, roots(44), accountRoot(44))
-  await vault.stage(committedDiscard, roots(), accountRoot())
+  await vault.stage(preserved, accountRoot(44))
+  await vault.stage(committedDiscard, accountRoot())
   let resumeReplacement!: () => void, beginReplacement!: () => void
   const replacementGate = new Promise<void>(resolve => { resumeReplacement = resolve })
   const replacementStarted = new Promise<void>(resolve => { beginReplacement = resolve })
   SubtleCrypto.prototype.encrypt = async function (...args: Parameters<SubtleCrypto['encrypt']>) {
     beginReplacement(); await replacementGate; return encryptBeforeCancel.apply(this, args)
   }
-  const lateReplacement = vault.stage(next(committedDiscard.receipt), roots(33), accountRoot(33))
+  const lateReplacement = vault.stage(next(committedDiscard.receipt), accountRoot(33))
   try {
     await replacementStarted
     await other.discardIntent(committedDiscard)
@@ -163,7 +163,7 @@ export async function run(phase: string) {
   }
   for (let i = 0; i < 4; i++) {
     const item = initial(`discard-race-${i}`)
-    const results = await Promise.allSettled([vault.stage(item, roots(), accountRoot()), other.discardIntent(item)])
+    const results = await Promise.allSettled([vault.stage(item, accountRoot()), other.discardIntent(item)])
     ok(results[1].status === 'fulfilled', 'concurrent discard succeeds in either ordering')
     if (results[0].status === 'rejected') ok(results[0].reason instanceof VaultError && results[0].reason.code === 'conflict', 'late stage conflicts')
     ok(await vault.reconcile(item.receipt) === 'removed', 'no live material after concurrent discard success')
@@ -181,8 +181,8 @@ export async function run(phase: string) {
   }
   equalRoots(await vault.open(preserved.receipt), roots(44))
   const superseded = initial('discard-superseded'), replacement = next(superseded.receipt)
-  await vault.stage(superseded, roots(), accountRoot())
-  await vault.stage(replacement, roots(55), accountRoot(55))
+  await vault.stage(superseded, accountRoot())
+  await vault.stage(replacement, accountRoot(55))
   await fails(() => other.discardIntent(superseded), 'conflict')
   equalRoots(await vault.open(replacement.receipt), roots(55))
   await other.discardIntent(replacement)
@@ -192,7 +192,7 @@ export async function run(phase: string) {
   await fails(() => vault.discardIntent(absentReplacement), 'conflict')
   ok(await vault.reconcile(absentReplacement.receipt) === 'absent', 'absent replacement leaves no fence')
   const legacy = initial('discard-legacy')
-  await vault.stage(legacy, roots(), accountRoot()); await vault.remove(legacy.receipt)
+  await vault.stage(legacy, accountRoot()); await vault.remove(legacy.receipt)
   await fails(() => vault.discardIntent(legacy), 'conflict')
   await vault.remove(legacy.receipt)
   ok(await vault.reconcile(legacy.receipt) === 'removed', 'legacy removal remains readable and retryable')
@@ -214,7 +214,7 @@ export async function run(phase: string) {
   // Missing authorization and orphan material must be preserved for coordinator recovery.
   for (const damage of ['missing-fence', 'orphan-record', 'orphan-key', 'bad-fence', 'bad-revision', 'bad-evidence', 'live-evidence']) {
     const item = initial(`discard-damage-${damage}`), id = item.receipt.context.creationId
-    await vault.stage(item, roots(), accountRoot())
+    await vault.stage(item, accountRoot())
     if (damage === 'missing-fence' || damage.startsWith('orphan-')) {
       await change(ns, 'fences', id, () => undefined)
       if (damage === 'orphan-record') await change(ns, 'keys', id, () => undefined)
@@ -233,7 +233,7 @@ export async function run(phase: string) {
   }
   // As with remove, an exact live fence can authorize cleanup of damaged material.
   const damagedMaterial = initial('discard-damaged-material')
-  await vault.stage(damagedMaterial, roots(), accountRoot())
+  await vault.stage(damagedMaterial, accountRoot())
   await change(ns, 'keys', damagedMaterial.receipt.context.creationId, () => undefined)
   await change(ns, 'records', damagedMaterial.receipt.context.creationId, r => ({ ...r, ciphertext: new Uint8Array(1) }))
   await vault.discardIntent(damagedMaterial)
@@ -244,7 +244,7 @@ export async function run(phase: string) {
   for (const absent of [false, true]) {
     for (const failure of ['abort', 'put', 'delete']) {
       const item = initial(`discard-failure-${absent}-${failure}`)
-      if (!absent) await vault.stage(item, roots(), accountRoot())
+      if (!absent) await vault.stage(item, accountRoot())
       IDBObjectStore.prototype.put = function (...args: Parameters<IDBObjectStore['put']>) {
         if (this.name === 'fences' && failure !== 'delete') {
           if (failure === 'abort') this.transaction.abort()
@@ -275,27 +275,9 @@ export async function run(phase: string) {
   try { await fails(() => vault.discardIntent(preserved), 'storage-failed') }
   finally { IDBDatabase.prototype.transaction = discardTransaction }
   equalRoots(await vault.open(preserved.receipt), roots(44))
-  for (const kind of ['accessor', 'proxy']) {
-    const original = initial(`purpose-${kind}`)
-    await vault.stage(original, roots(), accountRoot())
-    const replacement = next(original.receipt)
-    const replacementRoots = roots(45)
-    let reads = 0
-    const purpose = () => ++reads === 1 ? DOMAIN_PURPOSES[0] : DOMAIN_PURPOSES[1]
-    replacementRoots[0] = kind === 'accessor'
-      ? { ...replacementRoots[0], get purpose() { return purpose() } }
-      : new Proxy(replacementRoots[0], { get(target, key, receiver) {
-        return key === 'purpose' ? purpose() : Reflect.get(target, key, receiver)
-      } })
-    await vault.stage(replacement, replacementRoots, accountRoot())
-    equalRoots(await vault.open(replacement.receipt), roots(45))
-    ok(reads === 1, `${kind} purpose read once and replacement remains readable`)
-  }
   const first = initial('first')
-  const input = roots()
   const inputAccountRoot = accountRoot()
-  const staged = vault.stage(first, input, inputAccountRoot)
-  input.forEach(r => r.bytes.fill(0))
+  const staged = vault.stage(first, inputAccountRoot)
   inputAccountRoot.fill(0)
   await staged
   equalRoots(await vault.open(first.receipt), roots())
@@ -304,30 +286,41 @@ export async function run(phase: string) {
   kept!.fill(0)
   equalBytes(await vault.openAccountRoot(first.receipt), accountRoot(), 'returned account root is caller-owned')
   for (const bad of [undefined, null, new Uint8Array(31), new Uint8Array(33), Array.from(accountRoot()), roots()[0]]) {
-    await fails(() => vault.stage(initial('bad-account-root'), roots(), bad as Uint8Array), 'invalid-input')
+    await fails(() => vault.stage(initial('bad-account-root'), bad as Uint8Array), 'invalid-input')
   }
   ok(await vault.reconcile(initial('bad-account-root').receipt) === 'absent', 'invalid account root has no storage effects')
 
   // A record written before account roots were stored still opens, and reports that it has none.
   const older = initial('before-account-root')
-  await vault.stage(older, roots(71), accountRoot(71))
+  await vault.stage(older, accountRoot(71))
   const olderKey = (await row(ns, 'keys', 'before-account-root')).key as CryptoKey
   const version1 = new Uint8Array(2 + DOMAIN_PURPOSES.length * 33)
   version1[0] = 1; version1[1] = DOMAIN_PURPOSES.length
-  roots(71).forEach((root, i) => { version1[2 + i * 33] = i + 1; version1.set(root.bytes, 3 + i * 33) })
+  // Stored roots that are deliberately NOT what accountRoot(71) derives: a framing 1 record is
+  // opened from exactly what it holds.
+  const stored = roots(71).map(root => ({ ...root, bytes: root.bytes.map(byte => byte ^ 0x5a) }))
+  stored.forEach((root, i) => { version1[2 + i * 33] = i + 1; version1.set(root.bytes, 3 + i * 33) })
   const olderIv = crypto.getRandomValues(new Uint8Array(12))
   const olderCiphertext = new Uint8Array(await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: olderIv, additionalData: aad(older.receipt), tagLength: 128 }, olderKey, version1))
   await change(ns, 'records', 'before-account-root', r => ({ ...r, iv: olderIv, ciphertext: olderCiphertext }))
-  equalRoots(await vault.open(older.receipt), roots(71))
+  equalRoots(await vault.open(older.receipt), stored)
   ok(await vault.openAccountRoot(older.receipt) === null, 'a record without an account root says so')
-  // Neither framing accepts the other's length, and unknown versions stay corrupt.
-  for (const forged of [Uint8Array.of(2, ...version1.subarray(1)), Uint8Array.of(1, ...version1.subarray(1), ...accountRoot(71)),
-    Uint8Array.of(3, ...version1.subarray(1), ...accountRoot(71))]) {
+  const reseal = async (plain: Uint8Array<ArrayBuffer>) => {
     const iv = crypto.getRandomValues(new Uint8Array(12))
     const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv, additionalData: aad(older.receipt), tagLength: 128 }, olderKey, forged))
+      { name: 'AES-GCM', iv, additionalData: aad(older.receipt), tagLength: 128 }, olderKey, plain))
     await change(ns, 'records', 'before-account-root', r => ({ ...r, iv, ciphertext }))
+  }
+  // Framing 2 carried both: the account root is the truth, the roots beside it are ignored.
+  await reseal(Uint8Array.of(2, ...version1.subarray(1), ...accountRoot(71)))
+  equalRoots(await vault.open(older.receipt), roots(71))
+  equalBytes(await vault.openAccountRoot(older.receipt), accountRoot(71), 'framing 2 account root')
+  // No framing accepts another's length, and unknown versions stay corrupt.
+  for (const forged of [Uint8Array.of(2, ...version1.subarray(1)), Uint8Array.of(1, ...version1.subarray(1), ...accountRoot(71)),
+    Uint8Array.of(3, ...version1.subarray(1)), Uint8Array.of(3, ...version1.subarray(1), ...accountRoot(71)),
+    Uint8Array.of(1, ...accountRoot(71)), Uint8Array.of(4, ...accountRoot(71)), Uint8Array.of(3, ...accountRoot(71).subarray(1))]) {
+    await reseal(forged)
     await fails(() => vault.open(older.receipt), 'corrupt')
     await fails(() => vault.openAccountRoot(older.receipt), 'corrupt')
   }
@@ -336,7 +329,7 @@ export async function run(phase: string) {
   output[0].bytes.fill(0)
   equalRoots(await vault.open(first.receipt), roots())
   ok(await vault.reconcile(first.receipt) === 'committed', 'lost acknowledgement reconciliation')
-  await fails(() => vault.stage(first, roots(45), accountRoot(45)), 'conflict')
+  await fails(() => vault.stage(first, accountRoot(45)), 'conflict')
   equalRoots(await vault.open(first.receipt), roots())
   ok(await vault.reconcile(initial('never').receipt) === 'absent', 'unstaged intent absent')
 
@@ -354,29 +347,18 @@ export async function run(phase: string) {
     { ...context('bad'), purposes: ['evm-wallet', 'evm-wallet'] }, { ...context('bad'), accountId: 'x'.repeat(129) },
     { ...context('bad'), custodyEpoch: -1 }, { ...context('bad'), recoveryFormat: 'bip39' },
   ]) await fails(() => createVaultWriteIntent({ context: bad as VaultContext, expected: null, operationId: 'bad' }), 'invalid-input')
-  for (const badRoots of [[], [{ ...roots()[0], bytes: new Uint8Array(31) }, ...roots().slice(1)],
-    [{ ...roots()[0], registry: 'other' }, ...roots().slice(1)], roots().reverse()]) {
-    await fails(() => vault.stage(initial('bad-input'), badRoots as DomainRoot[], accountRoot()), 'invalid-input')
-  }
-  ok(await vault.reconcile(initial('bad-input').receipt) === 'absent', 'invalid input has no storage effects')
   const thrown = new Error('caller-controlled-secret-like-error')
-  const throwingRoot = { ...roots()[0], get bytes(): Uint8Array { throw thrown } }
-  await fails(() => vault.stage(initial('throwing-input'), [throwingRoot, ...roots().slice(1)], accountRoot()), 'invalid-input')
   await fails(() => createVaultWriteIntent({ get context(): VaultContext { throw thrown }, expected: null, operationId: 'bad' }), 'invalid-input')
   await fails(() => vault.open({ ...first.receipt, get context(): VaultContext { throw thrown } }), 'invalid-input')
-  let purposeLengthReads = 0, rootLengthReads = 0
+  let purposeLengthReads = 0
   const purposeProxy = new Proxy([...DOMAIN_PURPOSES], { get(target, key, receiver) {
     if (key === Symbol.iterator) throw new Error('caller iterator must not run')
     if (key === 'length') { purposeLengthReads++; return purposeLengthReads === 1 ? 5 : 1000000000 }
     return Reflect.get(target, key, receiver)
   } })
   const boundedIntent = createVaultWriteIntent({ context: { ...context('bounded-input'), purposes: purposeProxy }, expected: null, operationId: 'bounded-input' })
-  const rootProxy = new Proxy(roots(), { get(target, key, receiver) {
-    if (key === 'length') { rootLengthReads++; return rootLengthReads === 1 ? 5 : 1000000000 }
-    return Reflect.get(target, key, receiver)
-  } })
-  await vault.stage(boundedIntent, rootProxy, accountRoot())
-  ok(purposeLengthReads === 1 && rootLengthReads === 1, 'caller collection bounds read exactly once')
+  await vault.stage(boundedIntent, accountRoot())
+  ok(purposeLengthReads === 1, 'caller collection bounds read exactly once')
   equalRoots(await vault.open(boundedIntent.receipt), roots())
 
   // Observe owned plaintext passed to WebCrypto, then ensure the vault zeroes it on either outcome.
@@ -388,13 +370,13 @@ export async function run(phase: string) {
     return originalEncrypt.apply(this, args)
   }
   const wipe = initial('wipe')
-  try { await vault.stage(wipe, roots(), accountRoot()) } finally { SubtleCrypto.prototype.encrypt = originalEncrypt }
+  try { await vault.stage(wipe, accountRoot()) } finally { SubtleCrypto.prototype.encrypt = originalEncrypt }
   ok(owned?.every(b => b === 0), 'temporary plaintext wiped after success')
   SubtleCrypto.prototype.encrypt = function (...args: Parameters<SubtleCrypto['encrypt']>) {
     owned = args[2] as Uint8Array
     return Promise.reject(new DOMException('fixture failure'))
   }
-  try { await fails(() => vault.stage(next(wipe.receipt), roots(44), accountRoot(44)), 'storage-failed') }
+  try { await fails(() => vault.stage(next(wipe.receipt), accountRoot(44)), 'storage-failed') }
   finally { SubtleCrypto.prototype.encrypt = originalEncrypt }
   ok(owned?.every(b => b === 0), 'temporary plaintext wiped after failure')
   equalRoots(await vault.open(wipe.receipt), roots())
@@ -417,14 +399,14 @@ export async function run(phase: string) {
       }
       return originalPut.apply(this, args)
     }
-    try { await fails(() => vault.stage(next(wipe.receipt, kind), roots(66), accountRoot(66)), 'storage-failed') }
+    try { await fails(() => vault.stage(next(wipe.receipt, kind), accountRoot(66)), 'storage-failed') }
     finally { IDBObjectStore.prototype.put = originalPut }
     equalRoots(await vault.open(wipe.receipt), roots())
     ok(await vault.reconcile(wipe.receipt) === 'committed', `${kind} preserves old receipt`)
   }
 
   const writerA = next(first.receipt, 'writer-a'), writerB = next(first.receipt, 'writer-b')
-  const race = await Promise.allSettled([vault.stage(writerA, roots(61), accountRoot(61)), other.stage(writerB, roots(62), accountRoot(62))])
+  const race = await Promise.allSettled([vault.stage(writerA, accountRoot(61)), other.stage(writerB, accountRoot(62))])
   ok(race.filter(r => r.status === 'fulfilled').length === 1, 'one concurrent CAS winner')
   const loser = race.find(r => r.status === 'rejected') as PromiseRejectedResult
   ok(loser.reason instanceof VaultError && loser.reason.code === 'conflict', 'stale writer rejected')
@@ -445,7 +427,7 @@ export async function run(phase: string) {
 
   for (const damage of ['iv', 'ciphertext', 'tag', 'oversized', 'missing-key', 'malformed-key', 'extractable-key', 'missing-record', 'context', 'bad-payload']) {
     const item = initial(`damage-${damage}`)
-    await vault.stage(item, roots(), accountRoot())
+    await vault.stage(item, accountRoot())
     if (damage === 'missing-key') await change(ns, 'keys', item.receipt.context.creationId, () => undefined)
     else if (damage === 'malformed-key' || damage === 'extractable-key') {
       const key = damage === 'extractable-key'
@@ -462,7 +444,7 @@ export async function run(phase: string) {
         return originalEncrypt.apply(this, args)
       }
       const replacement = next(item.receipt)
-      try { await vault.stage(replacement, roots(), accountRoot()) } finally { SubtleCrypto.prototype.encrypt = originalEncrypt }
+      try { await vault.stage(replacement, accountRoot()) } finally { SubtleCrypto.prototype.encrypt = originalEncrypt }
       const replacementKey = (await row(ns, 'keys', item.receipt.context.creationId)).key
       const malformed = new Uint8Array(167); malformed[0] = 1; malformed[1] = 5
       const encrypted = await crypto.subtle.encrypt(params!, replacementKey, malformed)
@@ -487,7 +469,7 @@ export async function run(phase: string) {
   // Change all stored metadata consistently: the AEAD itself must reject the altered context.
   for (const field of ['accountId', 'recoveryFingerprint', 'retirementContext', 'custodyEpoch', 'operationId', 'revision']) {
     const item = initial(`aad-${field}`)
-    await vault.stage(item, roots(), accountRoot())
+    await vault.stage(item, accountRoot())
     const changed: any = structuredClone(item.receipt)
     if (field === 'operationId') changed.operationId = 'altered'
     else if (field === 'revision') { changed.previousRevision = 1; changed.revision = 2 }
@@ -501,10 +483,10 @@ export async function run(phase: string) {
   }
 
   const keyChange = initial('key-change')
-  await vault.stage(keyChange, roots(), accountRoot())
+  await vault.stage(keyChange, accountRoot())
   const previousKey = (await row(ns, 'keys', 'key-change')).key
   const keyReplacement = next(keyChange.receipt)
-  await vault.stage(keyReplacement, roots(), accountRoot())
+  await vault.stage(keyReplacement, accountRoot())
   await change(ns, 'keys', 'key-change', r => ({ ...r, key: previousKey }))
   await fails(() => vault.open(keyReplacement.receipt), 'corrupt')
   await vault.remove(keyReplacement.receipt)
@@ -520,7 +502,7 @@ export async function run(phase: string) {
 
   // Reads also recheck their receipt after crypto, before exposing roots.
   const reading = initial('reading')
-  await vault.stage(reading, roots(), accountRoot())
+  await vault.stage(reading, accountRoot())
   let resumeRead!: () => void, beginRead!: () => void
   const readGate = new Promise<void>(resolve => { resumeRead = resolve })
   const readStarted = new Promise<void>(resolve => { beginRead = resolve })
@@ -543,14 +525,14 @@ export async function run(phase: string) {
   SubtleCrypto.prototype.encrypt = async function (...args: Parameters<SubtleCrypto['encrypt']>) {
     entered(); await paused; return originalEncrypt.apply(this, args)
   }
-  const delayed = vault.stage(next(winner.receipt, 'delayed'), roots(91), accountRoot(91))
+  const delayed = vault.stage(next(winner.receipt, 'delayed'), accountRoot(91))
   await started
   await other.remove(winner.receipt)
   release()
   try { await fails(() => delayed, 'conflict') } finally { SubtleCrypto.prototype.encrypt = originalEncrypt }
   await vault.remove(winner.receipt)
   ok(await vault.reconcile(winner.receipt) === 'removed', 'removal reconciles idempotently')
-  await fails(() => vault.stage(first, roots(), accountRoot()), 'conflict')
+  await fails(() => vault.stage(first, accountRoot()), 'conflict')
   await fails(() => vault.open(winner.receipt), 'locked')
   const fence = await row(ns, 'fences', 'first')
   ok(fence.receipt === null && Object.keys(fence).length === 2, 'minimal removal fence')
@@ -593,7 +575,7 @@ export async function run(phase: string) {
 
   const capped = await openPreviewVault({ namespace: 'bounded' })
   const cappedFirst = initial('capped-first')
-  await capped.stage(cappedFirst, roots(), accountRoot())
+  await capped.stage(cappedFirst, accountRoot())
   const db = await raw('bounded')
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('fences', 'readwrite')
@@ -615,10 +597,10 @@ export async function run(phase: string) {
   }
   cappedOther.close()
   const excess = initial('over-capacity')
-  await fails(() => capped.stage(excess, roots(), accountRoot()), 'capacity')
+  await fails(() => capped.stage(excess, accountRoot()), 'capacity')
   ok(await capped.reconcile(excess.receipt) === 'absent', 'capacity leaves no partial inventory')
   const cappedReplacement = next(cappedFirst.receipt)
-  await capped.stage(cappedReplacement, roots(), accountRoot())
+  await capped.stage(cappedReplacement, accountRoot())
   await capped.discardIntent(cappedReplacement)
   await capped.discardIntent(cappedReplacement)
   ok(await capped.reconcile(cappedReplacement.receipt) === 'removed', 'live discard and exact retry need no new capacity')
@@ -628,7 +610,7 @@ export async function run(phase: string) {
     const item = initial('malformed-fence')
     await change('malformed', 'fences', item.receipt.context.creationId, () => value)
     await fails(() => malformed.reconcile(item.receipt), 'corrupt')
-    await fails(() => malformed.stage(item, roots(), accountRoot()), 'corrupt')
+    await fails(() => malformed.stage(item, accountRoot()), 'corrupt')
   }
   malformed.close()
   return { assertions }

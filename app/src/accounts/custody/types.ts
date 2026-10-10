@@ -54,11 +54,10 @@ export interface StageAccount {
   readonly displayName: string
   readonly custodyEpoch: number
   readonly metadata: RecoveryPublicMetadata
-  readonly roots: readonly DomainRoot[]
   /**
-   * The 32-byte account root the roots were derived from. Custody keeps it beside them so
-   * a later backup splits the account itself; staging refuses a root that is not this
-   * account's.
+   * The 32-byte account root. It is the only secret custody stores for an account: every
+   * purpose root is derived from it each time the account is opened. Staging refuses a
+   * root that does not reproduce the account's public fingerprint.
    */
   readonly accountRoot: Uint8Array
 }

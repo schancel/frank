@@ -173,7 +173,7 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
       const captured = capture(input)
       try {
         return await run(async () => {
-          const { account, expectedActive, roots, accountRoot } = captured
+          const { account, expectedActive, accountRoot } = captured
           const state = await update(current => {
             if (!matches(current, expectedActive))
               throw new CustodyError('conflict')
@@ -202,28 +202,17 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           const status = await vault.reconcile(account.receipt)
           if (status === 'absent') {
             try {
-              await vault.stage(writeIntent(account), roots, accountRoot)
+              await vault.stage(writeIntent(account), accountRoot)
             } catch (error) {
               // Concurrent same-intent writes and lost acknowledgements resolve by exact receipt.
               if ((await vault.reconcile(account.receipt)) !== 'committed')
                 throw error
             }
           } else if (status !== 'committed') throw new CustodyError('locked')
-          const opened = await vault.open(account.receipt)
-          try {
-            if (
-              opened.length !== roots.length ||
-              opened.some((root, i) =>
-                root.bytes.some((byte, j) => byte !== roots[i].bytes[j]),
-              )
-            ) {
-              throw new CustodyError('conflict')
-            }
-          } finally {
-            wipe(opened)
-          }
-          // Read the account root back as well: a record that cannot reproduce this
-          // account must surface now, not at the first backup.
+          // The record must open, and (below) hold exactly this account's root.
+          wipe(await vault.open(account.receipt))
+          // A record that cannot reproduce this account must surface now, not at the
+          // first open or the first backup.
           if (!(await accountRootIntact(account)))
             throw new CustodyError('conflict')
           const latest = await read()
@@ -231,7 +220,6 @@ function facade(db: IDBDatabase, vault: PreviewVault): AccountCustody {
           return latest
         })
       } finally {
-        wipe(captured.roots)
         captured.accountRoot.fill(0)
       }
     },

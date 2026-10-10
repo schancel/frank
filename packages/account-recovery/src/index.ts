@@ -19,7 +19,8 @@ import {
   type DomainPurpose,
   type DomainRoot,
 } from '@frank/domain-roots'
-import { AccountRecoveryError } from './errors.js'
+import { AccountRecoveryError, type ShareVerdict } from './errors.js'
+import { searchShares } from './share-search.js'
 import {
   deriveRecoveryPublicMetadata,
   snapshotBytes,
@@ -31,6 +32,8 @@ import {
 export {
   AccountRecoveryError,
   type AccountRecoveryErrorCode,
+  type ShareStatus,
+  type ShareVerdict,
 } from './errors.js'
 export {
   decodeRecoveryDescriptor,
@@ -109,7 +112,34 @@ export interface PendingCodex32Restore<
   readonly descriptor: T
   /** Invalid M can retry; a valid M with a different fingerprint consumes the ceremony. */
   recover(shares: readonly string[]): RecoveredCodex32Account
+  /**
+   * Recover from the threshold number of shares or more, tolerating bad ones. See
+   * recoverFromAnyShares. With a pinned descriptor only the matching account is returned.
+   * Success consumes the ceremony.
+   */
+  recoverAny(
+    shares: readonly string[],
+    options?: { readonly maxReconstructions?: number },
+  ): Codex32ShareRecovery
   cancel(): void
+}
+
+/** One account that a threshold-sized subset of the supplied shares reconstructs. */
+export interface Codex32RecoveryCandidate {
+  /** Caller-owned; wipe every candidate, chosen or not, with destroyRecoveredAccount. */
+  readonly account: RecoveredCodex32Account
+  /** Positions of the supplied shares that belong to this account's share set. */
+  readonly supporting: readonly number[]
+}
+
+/**
+ * The outcome of examining a pile of shares. One candidate is the normal case. More than
+ * one means the pile contains complete share sets of different accounts: the caller must
+ * show them and let the user choose; nothing here prefers one.
+ */
+export interface Codex32ShareRecovery {
+  readonly candidates: readonly Codex32RecoveryCandidate[]
+  readonly shares: readonly ShareVerdict[]
 }
 
 export interface BeginCodex32SignupInput {
@@ -260,6 +290,82 @@ export function recoverCodex32Shares(
 }
 
 /**
+ * Recover from any number of shares from the threshold up, some of which may be wrong.
+ *
+ * Every share is decoded on its own; shares are grouped by backup set (identifier and
+ * threshold); threshold-sized subsets are searched, within a work cap, for ones that
+ * reconstruct a valid Frank master; and every share is then classified against what was
+ * found. Throws an AccountRecoveryError carrying the per-share findings when no account can
+ * be reconstructed, or `too-many-inconsistent-shares` when the cap is reached first.
+ *
+ * If `expected` is given, only the account with that fingerprint is returned
+ * (`descriptor-mismatch` if none has it). Without it, every reconstructible account is
+ * returned and the caller must not choose between several on the user's behalf.
+ */
+export function recoverFromAnyShares(
+  candidateShares: readonly string[],
+  options: {
+    readonly expected?: PublicRecoveryDescriptor
+    readonly maxReconstructions?: number
+  } = {},
+): Codex32ShareRecovery {
+  const shares = snapshotShares(candidateShares)
+  const expected =
+    options.expected !== undefined
+      ? snapshotPublicDescriptor(options.expected).publicRecoveryFingerprint
+      : undefined
+  const found = searchShares(shares, options.maxReconstructions)
+  const candidates: Codex32RecoveryCandidate[] = []
+  try {
+    for (const { master, supporting } of found.masters) {
+      candidates.push({ account: accountFrom(master), supporting })
+    }
+    if (expected === undefined) {
+      const result = Object.freeze({
+        candidates: Object.freeze(
+          candidates.map(value => Object.freeze(value)),
+        ),
+        shares: found.shares,
+      })
+      candidates.length = 0 // ownership moved to the caller
+      return result
+    }
+    const wanted = candidates.findIndex(candidate =>
+      equalBytes(
+        candidate.account.metadata.descriptor.publicRecoveryFingerprint,
+        expected,
+      ),
+    )
+    if (wanted < 0) {
+      throw new AccountRecoveryError('descriptor-mismatch', found.shares)
+    }
+    const [chosen] = candidates.splice(wanted, 1)
+    return Object.freeze({
+      candidates: Object.freeze([
+        Object.freeze(chosen as Codex32RecoveryCandidate),
+      ]),
+      // Shares of any other account in the pile are simply not part of this one.
+      shares: Object.freeze(
+        found.shares.map(share =>
+          share.status !== 'supports'
+            ? share
+            : Object.freeze({
+                ...share,
+                status:
+                  share.candidate === wanted ? 'supports' : 'inconsistent',
+                candidate: share.candidate === wanted ? 0 : null,
+              } as ShareVerdict),
+        ),
+      ),
+    })
+  } finally {
+    for (const { master } of found.masters) master.fill(0)
+    for (const candidate of candidates)
+      destroyRecoveredAccount(candidate.account)
+  }
+}
+
+/**
  * Pin an independently trusted decoded descriptor before accepting shares.
  * The caller owns descriptor provenance and ceremony/account binding. This API
  * checks equality with that authority; decoding a descriptor does not authenticate it.
@@ -302,6 +408,25 @@ export function beginCodex32Restore(
       } finally {
         recovered.secret.fill(0)
         recovered.payloadSymbols.fill(0)
+      }
+    },
+    recoverAny(
+      candidateShares: readonly string[],
+      options: { readonly maxReconstructions?: number } = {},
+    ): Codex32ShareRecovery {
+      if (!active) throw new AccountRecoveryError('ceremony-consumed')
+      try {
+        const recovery = recoverFromAnyShares(candidateShares, {
+          expected: descriptor,
+          maxReconstructions: options.maxReconstructions,
+        })
+        active = false
+        return recovery
+      } catch (error) {
+        // As with recover: a wrong account for a pinned descriptor ends the ceremony.
+        if ((error as AccountRecoveryError)?.code === 'descriptor-mismatch')
+          active = false
+        throw error
       }
     },
     cancel(): void {

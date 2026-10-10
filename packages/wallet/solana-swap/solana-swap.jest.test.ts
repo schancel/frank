@@ -1375,9 +1375,18 @@ describe("the wallet's legacy send: record, send, follow", () => {
   }
 
   type Status = null | { err: unknown; confirmationStatus?: any } | Error
-  function sender(script: { statuses: Status[]; heights?: number[] }) {
+  /**
+   * `heights`: the finalized block height at each read; that node's slot is the height plus
+   * 1000. `statusSlots`: the slot of the node answering each status read (default: far ahead).
+   */
+  function sender(script: {
+    statuses: Status[]
+    heights?: number[]
+    statusSlots?: number[]
+  }) {
     const sent: Uint8Array[] = []
     let heightIndex = 0
+    let statusIndex = 0
     const connection: SolanaSwapSender = {
       sendRawTransaction: async raw => {
         sent.push(raw)
@@ -1389,11 +1398,16 @@ describe("the wallet's legacy send: record, send, follow", () => {
             ? script.statuses.shift()!
             : script.statuses[0]
         if (next instanceof Error) throw next
-        return { value: [next] }
+        const slots = script.statusSlots ?? [1_000_000]
+        return {
+          context: { slot: slots[Math.min(statusIndex++, slots.length - 1)] },
+          value: [next],
+        }
       },
-      getBlockHeight: async () => {
+      getEpochInfo: async () => {
         const heights = script.heights ?? [0]
-        return heights[Math.min(heightIndex++, heights.length - 1)]
+        const blockHeight = heights[Math.min(heightIndex++, heights.length - 1)]
+        return { absoluteSlot: blockHeight + 1000, blockHeight }
       },
       getTransaction: async () => ({
         meta: confirmedSwaps.transactions.solToDevUsdcCreatingTokenAccount
@@ -1448,6 +1462,43 @@ describe("the wallet's legacy send: record, send, follow", () => {
     // It never reached the chain: nothing is settled or announced, the entry just leaves.
     expect(store.settled).toEqual([])
     expect(store.list()).toEqual([])
+  })
+
+  it('a node that has not itself reached the expiry height cannot say the swap expired', async () => {
+    // The height passed 100 at slot 1101 on one node. The node answering the status reads is
+    // still at slot 1000: its "never seen it" says nothing about blocks it has not processed.
+    // Asked five times; then a node that is past the expiry answers, and has the swap.
+    const store = memoryJournal([record])
+    const { connection } = sender({
+      statuses: [
+        null,
+        null,
+        null,
+        null,
+        null,
+        { err: null, confirmationStatus: 'finalized' },
+      ],
+      heights: [101],
+      statusSlots: [1000, 1000, 1000, 1000, 1100, 1101],
+    })
+    await expect(
+      trackSolanaSwap(connection, store, record, track),
+    ).resolves.toMatchObject({ status: 'confirmed', finalized: true })
+
+    // The same lagging answers, then three from a node past the expiry: expired.
+    const lagging = sender({
+      statuses: [null],
+      heights: [101],
+      statusSlots: [1000, 1000, 1000, 1000, 1101],
+    })
+    let polls = 0
+    await expect(
+      trackSolanaSwap(lagging.connection, memoryJournal([record]), record, {
+        ...track,
+        sleep: async () => void polls++,
+      }),
+    ).resolves.toEqual({ status: 'expired', signature: 'sig' })
+    expect(polls).toBe(6)
   })
 
   it('does not expire a swap that one node had not seen and another then reports', async () => {

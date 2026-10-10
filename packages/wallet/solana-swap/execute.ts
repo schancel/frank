@@ -8,9 +8,11 @@
  * - failed: the chain FINALIZED the transaction with an error (nothing swapped, fee paid).
  *   An error seen at a weaker commitment is not final: that fork can be dropped and the same
  *   transaction can still succeed, so it stays pending;
- * - expired: finalized block height passed the last valid height and the chain still has no
- *   record of the signature, on several separate checks (the relay rotates between RPC nodes,
- *   so one node's height and another's status are not proof together).
+ * - expired: a finalized slot is known whose block height is past the last valid height (slot
+ *   and height from one response), and a node that had itself reached that slot has no record
+ *   of the signature, on several separate checks. The relay rotates between RPC nodes, so one
+ *   node's height and another's status are not proof together: a lagging node's "never seen
+ *   it" counts for nothing until its own slot is past the expiry.
  * Until one of those, the same signed bytes may be re-sent (that cannot swap twice), but a
  * NEW swap must not be built in its place.
  *
@@ -203,12 +205,17 @@ export interface SolanaSwapSender {
     signatures: string[],
     config: { searchTransactionHistory: boolean },
   ): Promise<{
+    /** The slot the answering node had reached. */
+    context: { slot: bigint | number }
     value: ({
       err: unknown
       confirmationStatus?: 'processed' | 'confirmed' | 'finalized' | null
     } | null)[]
   }>
-  getBlockHeight(commitment: 'finalized'): Promise<bigint | number>
+  /** One node's slot and the block height at that slot, from the same response. */
+  getEpochInfo(
+    commitment: 'finalized',
+  ): Promise<{ absoluteSlot: bigint | number; blockHeight?: bigint | number }>
   getTransaction(
     signature: string,
     config: { commitment: 'confirmed'; maxSupportedTransactionVersion: 0 },
@@ -376,7 +383,7 @@ const mintOf = (asset: SwapAsset) => asset.address ?? NATIVE_SOL_MINT
 const defaultSleep = (ms: number) =>
   new Promise<void>(resolve => setTimeout(resolve, ms))
 
-/** Separate checks, each finding the height passed and the signature unknown, before expiry. */
+/** Separate checks, each by a node past the expiry that does not know the signature. */
 const EXPIRY_CONFIRMATIONS = 3
 /** The signed bytes are re-sent on every this-many-th poll while the chain has not seen them. */
 const RESEND_EVERY_POLLS = 5
@@ -437,21 +444,34 @@ export async function trackSolanaSwap(
 
   let failures = 0
   let expiredChecks = 0
+  /** A finalized slot at which the block height had passed the last valid height. */
+  let expiredAtSlot: bigint | undefined
   for (let poll = 0; ; poll++) {
     try {
-      const current = (
-        await connection.getSignatureStatuses([signature], {
-          searchTransactionHistory: true,
-        })
-      ).value[0]
+      const status = await connection.getSignatureStatuses([signature], {
+        searchTransactionHistory: true,
+      })
+      const current = status.value[0]
       if (current === null) {
-        const height = BigInt(await connection.getBlockHeight('finalized'))
-        if (height > lastValid) {
-          if (++expiredChecks >= EXPIRY_CONFIRMATIONS) {
+        if (expiredAtSlot === undefined) {
+          const tip = await connection.getEpochInfo('finalized')
+          if (
+            tip.blockHeight !== undefined &&
+            BigInt(tip.blockHeight) > lastValid
+          ) {
+            expiredAtSlot = BigInt(tip.absoluteSlot)
+          }
+        }
+        if (expiredAtSlot !== undefined) {
+          // Only a node that has itself processed every block the transaction could be in
+          // can say it is in none of them.
+          if (
+            BigInt(status.context.slot) >= expiredAtSlot &&
+            ++expiredChecks >= EXPIRY_CONFIRMATIONS
+          ) {
             return finish({ status: 'expired', signature: signature })
           }
         } else {
-          expiredChecks = 0
           if (poll % RESEND_EVERY_POLLS === 0) {
             // Not seen yet and still valid: sending the same signed bytes again is harmless.
             await connection

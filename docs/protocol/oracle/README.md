@@ -76,8 +76,8 @@ Values are JSON numbers. Times are whole seconds.
 | `difficulty/<chainId>` | the chain's difficulty | expected hashes per block = difficulty x the basket chain's `hashesPerDifficulty` |
 | `blockReward/<chainId>` | whole coins per block paid to the miner | subsidy only, no fees; where consensus sends part of the subsidy elsewhere (eCash) this is the miner's part |
 | `efficiency/<algorithm>` | hashes per kWh | curated dated steps: the hardware assumed for the algorithm at each date |
-| `electricity/aggregate` | US dollars per kWh | one point per day, stamped at the start of the day (UTC): the mean, over the regional sources the relay had for that day, of each region's mean wholesale day-ahead price. May be zero or negative. This is the series AVU_spot is computed from. |
-| `electricity/<regionId>` | US dollars per kWh | optional, for display with attribution: one region's daily mean, same stamping. |
+| `electricity/<regionId>` | US dollars per kWh | one point per day, stamped at the start of the day (UTC): the mean wholesale day-ahead price of that day in one region. May be zero or negative. AVU_spot is computed from these. |
+| `electricity/aggregate` | US dollars per kWh | optional, for display: one point per day that reproduces the rule below as nearly as a daily series can: the equally weighted mean of each region's latest daily price at or before that day (a region's last price holds over its weekends and gaps), over the regions that have one within `windowDays`. Not an input of AVU_spot. |
 
 `assetId` and `chainId` are the canonical chain identifiers of the chain registry
 (`docs/protocol/chains/v1.json`), always the main network's: `btc-mainnet`, `bch-mainnet`,
@@ -139,16 +139,17 @@ The client hardcodes none of this.
 
     "electricity": {
       "windowDays": 30,
+      "minDays": 10,
       "regions": [
         { "id": "de-lu", "label": "Germany-Luxembourg day-ahead",
           "attribution": "Bundesnetzagentur | SMARD.de, CC BY 4.0" }
       ]
     }
 
-`windowDays` is the length of the trailing mean AVU_spot is taken over. `regions` names the
-regional sources behind `electricity/aggregate`, with the attribution each source asks for; a
-region listed here may also have its own `electricity/<regionId>` series. Which regions go into
-the aggregate is the relay's configuration; the client reads only the aggregate.
+`regions` names the regions AVU_spot is taken over; each has an `electricity/<id>` series and
+the attribution its source asks for. `windowDays` is the length of the trailing window and
+`minDays` the fewest daily prices a region needs in it to count. Which regions are listed is the
+relay's configuration.
 
 ## What the client computes from the feed
 
@@ -164,10 +165,15 @@ All of it by the one lookup above, at any time `t` (now, or a point on a chart):
 
     AVU_hash(t) [kWh per $] = sum over entries of weight x 1 / ($/kWh)
 
-    AVU_spot(t) [kWh per $] = 1 / (mean of the `electricity/aggregate` daily prices over the
-        `windowDays` days ending at t); unavailable when there is no point in the window or
-        the mean is not positive. The prices are averaged first and the mean inverted: never
-        the inverse of a single day, never a mean of inverses.
+    region mean (t) = the mean of the region's daily prices in the `windowDays` days ending
+        at t; a region with fewer than `minDays` prices in the window is left out (and
+        named as stale by the client)
+    AVU_spot(t) [kWh per $] = 1 / (the mean of the region means, each region weighing the
+        same); unavailable when no region qualifies or that mean is not positive.
+        Prices are averaged first and the mean inverted: never the inverse of a single
+        day, never a mean of inverses. Regions weigh equally whatever number of days each
+        has, so a region that trades on weekdays only is not outweighed by one that
+        publishes every day.
 
     AVU value of an amount of a coin = amount x price(t) x AVU_hash(t)
 

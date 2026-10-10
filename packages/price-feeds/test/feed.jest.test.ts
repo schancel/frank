@@ -17,7 +17,7 @@ describe('the oracle feed contract', () => {
     expect(Object.keys(feed!.series).sort()).toEqual(
       Object.keys(example.series).sort(),
     )
-    expect(feed!.series['electricity/aggregate'].points[1]).toEqual([
+    expect(feed!.series['electricity/de-lu'].points[1]).toEqual([
       1791590400, -0.0004,
     ])
   })

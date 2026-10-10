@@ -46,14 +46,16 @@ export interface FeedBasket {
 }
 
 export interface FeedElectricity {
-  /** AVU_spot is taken over the mean daily price of this many days. */
+  /** AVU_spot is taken over the daily prices of this many days. */
   windowDays: number
-  /** The regional sources behind `electricity/aggregate`, with the credit each asks for. */
+  /** A region with fewer daily prices than this in the window is left out of AVU_spot. */
+  minDays: number
+  /**
+   * The regions AVU_spot is taken over, each with its own `electricity/<id>` series and
+   * the credit its source asks for.
+   */
   regions: Array<{ id: string; label: string; attribution: string }>
 }
-
-/** The series AVU_spot is computed from. */
-export const ELECTRICITY_AGGREGATE = 'electricity/aggregate'
 
 export interface OracleFeed {
   version: 1
@@ -190,6 +192,8 @@ export function parseOracleFeed(value: unknown): OracleFeed | undefined {
   if (
     !Number.isInteger(electricity.windowDays) ||
     !((electricity.windowDays as number) >= 1) ||
+    !Number.isInteger(electricity.minDays) ||
+    !((electricity.minDays as number) >= 1) ||
     !Array.isArray(electricity.regions) ||
     !electricity.regions.every(
       region =>
@@ -213,6 +217,7 @@ export function parseOracleFeed(value: unknown): OracleFeed | undefined {
     basket: { weightCap: { entry: cap.entry, max: cap.max }, entries },
     electricity: {
       windowDays: electricity.windowDays as number,
+      minDays: electricity.minDays as number,
       regions: (
         electricity.regions as FeedElectricity['regions']
       ).map(region => ({

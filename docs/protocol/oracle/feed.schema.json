@@ -95,6 +95,7 @@
       "type": "object",
       "required": [
         "windowDays",
+        "minDays",
         "regions"
       ],
       "properties": {
@@ -123,6 +124,10 @@
               }
             }
           }
+        },
+        "minDays": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

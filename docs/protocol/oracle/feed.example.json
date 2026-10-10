@@ -39,7 +39,8 @@
         "label": "Germany-Luxembourg day-ahead",
         "attribution": "Bundesnetzagentur | SMARD.de, CC BY 4.0"
       }
-    ]
+    ],
+    "minDays": 10
   },
   "series": {
     "price/btc-mainnet": {
@@ -106,9 +107,9 @@
         ]
       ]
     },
-    "electricity/aggregate": {
+    "electricity/de-lu": {
       "unit": "USD/kWh",
-      "source": "mean of regional day-ahead prices",
+      "source": "day-ahead auction, daily mean",
       "asOf": 1791590400,
       "stale": false,
       "points": [

@@ -208,7 +208,7 @@ export class CanonicalSenderUnpublishedError extends MonadStampTerminalError {
 export interface StoredPayment {
   /** The coin it spends: a funded sub-account of the pool (with its index), the main account or
    * the identity account; and that account's address. */
-  source: 'pool' | 'main' | 'identity'
+  source: 'pool' | 'main' | 'identity' | 'coin'
   index?: number
   address: string
   /** The exact signed bytes. The same bytes are re-sent; nothing is ever signed again. */

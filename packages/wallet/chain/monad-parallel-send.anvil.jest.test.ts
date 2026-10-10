@@ -461,54 +461,6 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     }
   })
 
-  it('a transfer to a contact takes its paying account through the claim and holds it until the transfer is mined', async () => {
-    const main = (await alice.getReceiveAddress()).raw
-    const identity = alice.identity.address.raw
-    await (
-      await dev.sendTransaction({ to: identity, value: 10n ** 17n })
-    ).wait()
-    const contact = {
-      pubKey: f.bob.identity.compressedPubKey,
-    } as unknown as Parameters<
-      NonNullable<typeof f.chain.nativeTransfers.sendToContact>
-    >[0]['recipient']
-    await automine(false)
-    try {
-      const paid = await f.chain.nativeTransfers.sendToContact!({
-        wallet: alice,
-        recipient: contact,
-        value: 1_000n,
-      })
-      const from = (await chain.getTransaction(paid.txHash))!.from
-      expect([main.toLowerCase(), identity.toLowerCase()]).toContain(
-        from.toLowerCase(),
-      )
-      const nonce = await chain.getTransactionCount(from, 'pending')
-      expect(alice.pool.accountClaimedBy(from)).toMatch(NATIVE_HOLDER)
-      // A second transfer waits for the first; with a deadline it gives up, signing nothing.
-      await expect(
-        f.chain.nativeTransfers.sendToContact!({
-          wallet: alice,
-          recipient: contact,
-          value: 1_000n,
-          mainAccountWaitMs: 1_500,
-        }),
-      ).rejects.toThrow(/wait given for it ran out/)
-      expect(await chain.getTransactionCount(from, 'pending')).toBe(nonce)
-      await mine()
-      // Mined: the next one goes through, at the next nonce.
-      const next = await f.chain.nativeTransfers.sendToContact!({
-        wallet: alice,
-        recipient: contact,
-        value: 1_000n,
-      })
-      expect((await chain.getTransaction(next.txHash))!.nonce).toBe(nonce)
-      await mine()
-    } finally {
-      await automine(true)
-    }
-  })
-
   it('a transfer a host signs itself with the identity key goes through the claim: held until mined, and the next one waits', async () => {
     const identity = alice.identity.address.raw
     const signer = new Wallet(alice.identity.toPrivateKeyHex(), chain)

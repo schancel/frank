@@ -23,7 +23,7 @@ export { InsufficientStampFundsError }
 
 /** Where a paying coin comes from: a funded single-use sub-account of the pool, the wallet's
  * main account, or its identity account. A caller may filter by it; nothing is excluded. */
-export type StampCoinSource = 'pool' | 'main' | 'identity'
+export type StampCoinSource = 'pool' | 'main' | 'identity' | 'coin'
 
 /** One signed payment of a stamp: the account it spends and the exact bytes. */
 export interface StampPayment {
@@ -127,6 +127,24 @@ export interface EvmStampPayerConfig {
   }[]
   /** Called when a payment takes funded sub-accounts (there are now fewer ready). */
   onPoolCoinsClaimed?: () => void
+  /**
+   * Received coins (money that arrived at one-time addresses this wallet can spend from) that
+   * may pay a stamp, tried after the wallet's own accounts. Read at each claim. A coin is one
+   * account at its current nonce and pays the whole stamp in one transfer, like the main
+   * account.
+   */
+  coins?: () => readonly { address: string; privateKey: () => string }[]
+  /** Called when a payment takes a received coin (its balance is about to change). */
+  onCoinClaimed?: (address: string) => void
+  /**
+   * True while `address` is held outside this claim by something whose signed transfer is not
+   * to be broadcast yet (a payment to a contact waiting for its message). Its next nonce is
+   * that transfer's, so no stamp is paid from it, and a payment that could only have been paid
+   * from it is refused AT ONCE with `heldRefusal` rather than waiting: the holder may be
+   * waiting for this very message.
+   */
+  accountHeld?: (address: string) => boolean
+  heldRefusal?: () => Error
 }
 
 export class EvmStampPayer {
@@ -248,8 +266,20 @@ export class EvmStampPayer {
         }
         // The account an earlier operation holds that could pay this stamp, if any.
         let busy: string | undefined
-        for (const account of this.config.accounts) {
+        let heldElsewhere = false
+        const candidates = [
+          ...this.config.accounts,
+          ...(this.config.coins?.() ?? []).map(coin => ({
+            source: 'coin' as const,
+            ...coin,
+          })),
+        ]
+        for (const account of candidates) {
           if (!allowed(account.source)) continue
+          if (this.config.accountHeld?.(account.address)) {
+            heldElsewhere = true
+            continue
+          }
           if (pool.accountClaimedBy(account.address) !== undefined) {
             busy ??= account.address
             continue
@@ -281,10 +311,15 @@ export class EvmStampPayer {
             ])
             const reserveNow =
               STAMP_GAS_LIMIT * (feeNow.maxFeePerGas ?? feeNow.gasPrice)!
-            if (balanceNow < input.stampValueWei + reserveNow) {
+            if (
+              balanceNow < input.stampValueWei + reserveNow ||
+              this.config.accountHeld?.(account.address)
+            ) {
               pool.releaseAccountClaim(input.holder, account.address)
               continue
             }
+            if (account.source === 'coin')
+              this.config.onCoinClaimed?.(account.address)
             return {
               holder: input.holder,
               fee: feeNow,
@@ -303,6 +338,8 @@ export class EvmStampPayer {
           }
           busy ??= account.address
         }
+        if (busy === undefined && heldElsewhere && this.config.heldRefusal)
+          throw this.config.heldRefusal()
         if (busy === undefined)
           throw new InsufficientStampFundsError(
             `No funds cover a stamp of ${input.stampValueWei} wei plus its fee of up to ${feeReserveWei} wei`,
@@ -345,9 +382,13 @@ export class EvmStampPayer {
         coin.source === 'pool'
           ? this.config.pool.getSigner(coin.index!, this.config)
           : new MonadAccountTxSigner({
-              privateKey: this.config.accounts
-                .find(account => account.source === coin.source)!
-                .privateKey(),
+              privateKey: (coin.source === 'coin'
+                ? (this.config.coins?.() ?? []).find(
+                    candidate => candidate.address.toLowerCase() === coin.address,
+                  )
+                : this.config.accounts.find(
+                    account => account.source === coin.source,
+                  ))!.privateKey(),
               provider: this.config.provider,
               httpClient: this.config.httpClient,
             })

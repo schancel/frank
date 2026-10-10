@@ -3160,7 +3160,26 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 const holder = `${identity.address.raw.toLowerCase()}:native:${hexlify(
                   randomBytes(8)
                 )}`;
+                // A source that is not a pool row (a received coin; the main and identity
+                // accounts are already this operation's through the native holder) is taken
+                // by address in the same claim, so a stamp being paid from that coin at this
+                // moment and a sweep of it cannot both sign.
+                const addresses = sources.flatMap((source) =>
+                  source.kind === "spend" ||
+                  pool.accountClaimedBy(source.address) === mainAccountHolder(wallet)
+                    ? []
+                    : [source.address]
+                );
+                const taken = addresses.find(
+                  (address) => pool.accountClaimedBy(address) !== undefined
+                );
+                if (taken !== undefined)
+                  throw new RangeError(
+                    `${taken} is held by another operation; plan the send again`
+                  );
                 pool.restoreClaim(holder, indices);
+                for (const address of addresses)
+                  pool.restoreAccountClaim(holder, address);
                 return () => pool.releaseClaim(holder);
               },
               sign: async (source, unsignedTransaction) => {
@@ -3569,7 +3588,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               );
             // The message is owed once the transfer is out, and it costs a stamp: refused here,
             // before anything, when the wallet cannot pay for both.
-            const stampWei = params.stampValue ?? config.defaultStampValueWei;
+            // The stamp the message will really carry: the configured default is raised to the
+            // chain's fee floor by `send`, so the accounts funded for it below are funded for
+            // that, not for a default the message will not use.
+            let stampWei = params.stampValue ?? config.defaultStampValueWei;
+            if (params.stampValue === undefined && stampWei > 0n) {
+              const floor = await canonicalMessaging
+                .get(wallet)
+                ?.minimumStamp()
+                .catch(() => undefined);
+              if (floor !== undefined && floor > stampWei) stampWei = floor;
+            }
             if ((await wallet.getBalance()) < params.value + stampWei)
               throw new RangeError(
                 "Insufficient funds for the payment and its message stamp"
@@ -4394,7 +4423,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   // cannot cover this stamp, the largest funded coin that can, and that no native
                   // operation holds, funds the stamp accounts instead.
                   const coinNeedWei =
-                    stampValueWei +
+                    input.stampValueWei +
                     BigInt(2 * STAMP_PAIR_TRANSFERS) * defaultGasReserveWei;
                   if (
                     mainBal < coinNeedWei &&
@@ -4467,6 +4496,33 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               spendSpacingBlocks: config.spendSpacingBlocks,
               // A message took funded accounts: the next fund-ahead call looks again.
               onPoolCoinsClaimed: () => fundAheadBackoffs.delete(wallet),
+              // Received coins pay for stamps like any other funds, after the wallet's own
+              // accounts. One that a native operation (a sweep, a send) is spending is left out.
+              coins: () =>
+                spendableCoins(coinStore.all())
+                  .filter(
+                    (coin) =>
+                      nativeOperationOwners
+                        .get(wallet)
+                        ?.holdsSource(coin.address) !== true
+                  )
+                  .sort((a, b) =>
+                    BigInt(a.amountWei) > BigInt(b.amountWei) ? -1 : 1
+                  )
+                  .map((coin) => ({
+                    address: coin.address,
+                    privateKey: () => coin.privateKey,
+                  })),
+              // Its balance is about to change: the coin list reads the chain again.
+              onCoinClaimed: () => {
+                coinsReadAtMs = 0;
+              },
+              // An account holding the signed, not yet broadcast transfer of a payment to a
+              // contact pays no stamp: its next nonce is that transfer's. A message that could
+              // only be paid from it is refused at once (the payment may be waiting for that
+              // very message), exactly as its funding used to be.
+              accountHeld: (address) => sourceIsHeld(wallet, address),
+              heldRefusal: () => new Error(SOURCE_HELD_FOR_CONTACT_PAYMENT),
               accounts: [
                 {
                   source: "main" as const,

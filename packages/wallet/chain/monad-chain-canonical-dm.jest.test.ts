@@ -769,7 +769,8 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     expect(all.filter(coin => coin.origin === 'stamp')).toEqual([
       expect.objectContaining({
         status: 'pending',
-        claimedAmountWei: 1_000n,
+        // The stamp the message carried: the default, raised to the chain's fee floor.
+        claimedAmountWei: sent.stampValueWei,
         spendable: false,
         payloadDigest: sent.payloadDigest,
         childIndex: 0,
@@ -1873,7 +1874,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
       await f.alice.close()
       // The record as the earlier code wrote it: the same fields, no boundary.
       const name = messageId.replace(/-/g, '')
-      const store = await LevelCanonicalLinkStore.open(storageLocation)
+      const store = await LevelOutgoingMessageStore.open(storageLocation)
       const kept = store.unpaid(name)!
       expect(kept.digest).toMatch(/^[0-9a-f]{64}$/)
       await store.setUnpaid(name, {

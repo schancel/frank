@@ -1513,7 +1513,11 @@ export class EvmLegacyConsolidator {
           left.push(source.address)
           continue
         }
-        const row = await journal.prepare({
+        // Through the same claim as every other plan: a coin a stamp is being paid from at
+        // this moment is not swept under it.
+        let row: EvmNativeOperation
+        try {
+          row = await this.reserve(lifetime, {
           kind: 'native',
           recipient,
           intendedValueWei: (balance - cost).toString(),
@@ -1530,6 +1534,12 @@ export class EvmLegacyConsolidator {
             },
           ],
         })
+        } catch (reason) {
+          // Claimed by another operation at this very moment: held, like a journal hold.
+          if (!(reason instanceof RangeError)) throw reason
+          held.push(source.address)
+          continue
+        }
         planned(row.operationId)
         operationIds.push(row.operationId)
         try {

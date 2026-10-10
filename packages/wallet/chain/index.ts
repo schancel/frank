@@ -232,7 +232,11 @@ export type {
   SolanaStealthPaymentResult,
 } from "../solana-stealth";
 
-export { ElectrumClient, toElectrumScriptHash } from "./electrum-client";
+export {
+  ElectrumClient,
+  ElectrumRpcError,
+  toElectrumScriptHash,
+} from "./electrum-client";
 export type {
   ElectrumUtxo,
   ElectrumHistoryItem,
@@ -240,17 +244,9 @@ export type {
   ElectrumClientOptions,
 } from "./electrum-client";
 
-export {
-  ElectrumUtxoIndexer,
-  ChronikUtxoIndexer,
-  createUtxoIndexer,
-  resolveElectrumScriptHash,
-} from "./utxo-indexer";
-export type {
-  UtxoItem,
-  UtxoIndexer,
-  CreateUtxoIndexerOptions,
-} from "./utxo-indexer";
+export { electrumIndexer, relayElectrumUrl } from "./electrum-indexer";
+export { createUtxoChain } from "./utxo-chain";
+export type { UtxoChain, UtxoChainConfig } from "./utxo-chain";
 
 export {
   summarizeEvmNativeOperation,

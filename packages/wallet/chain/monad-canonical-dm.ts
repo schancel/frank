@@ -1383,6 +1383,12 @@ async function send(
           ),
         ),
       )
+      // A payment from the main or identity account holds that account for the next payment:
+      // one look at the chain now, so a block that already has it frees the account at once.
+      if (signed.some(payment => payment.source !== 'pool'))
+        row = await owner
+          .lifetime(() => settlePayments(owner, row, true))
+          .catch(() => row)
     } finally {
       work.busy = undefined
       ended()

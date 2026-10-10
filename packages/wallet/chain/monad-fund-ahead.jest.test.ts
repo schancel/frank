@@ -232,9 +232,8 @@ describe("funding the next message ahead (#1235 Q4)", () => {
     expect(payersAtRelay(0)).toEqual([main]);
     expect(atRelay!.chainHttp).toEqual([]);
     expect(alice.pool.records()).toEqual([]);
-    // The main account is held until the chain shows that payment.
-    expect(alice.pool.accountClaimedBy(main)).toBeDefined();
-    await tick();
+    // The send looked at the chain once after its own broadcast: the payment is in a block
+    // (the relay stand-in mines it), so the main account is free for the next payment already.
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined();
 
     const ahead = await fundAhead();

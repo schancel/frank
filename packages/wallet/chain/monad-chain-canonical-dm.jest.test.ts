@@ -1209,7 +1209,10 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     return found
   }
 
-  it.each(['lost', 'bad_request'] as const)(
+  // A 400 answer is no longer in this table: the relay refuses such a request before it stores
+  // or broadcasts anything, so the message is failed and its coins are freed (see
+  // monad-parallel-send.jest.test.ts).
+  it.each(['lost'] as const)(
     'retains exact payments after %s responses, exhaustion, discard, partial broadcast and restart',
     async response => {
       const { directory, digest, row } = await exposedAttempt()
@@ -1290,92 +1293,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     },
   )
 
-  it('retains a late relay rejection across discard, delayed broadcast and restart', async () => {
-    const { directory, digest, row } = await exposedAttempt()
-    f.setPhase('undeliverable')
-    expect(
-      await f.chain.directMessages.reconcileAttempts({
-        wallet: f.alice,
-        payloadDigests: [digest],
-      }),
-    ).toEqual({ [digest]: 'dead' })
-    expect(await retainedAttempt(f.alice, row)).toMatchObject({
-      outcome: 'dead',
-      reason: 'undeliverable',
-    })
-    // The relay ended it, yet its signed payments are out there: both accounts stay held.
-    expect(paymentStates(f.alice, digest)).toEqual(['pending', 'pending'])
-    expect(claimedIndices(f.alice)).toEqual(row.payments.map(p => p.index))
-    await f.chain.directMessages.discardAttempt({
-      wallet: f.alice,
-      payloadDigest: 'all',
-    })
-    await f.alice.close()
-    f.alice = await reopen(directory)
-    await retainedAttempt(f.alice, row)
-    expect(claimedIndices(f.alice)).toEqual(row.payments.map(p => p.index))
-    expect(f.requests).toHaveLength(2)
-    // #1323: the ended attempt does not refuse a later message as pending. This wallet has no
-    // money outside the ended attempt's accounts, and those are held, so the later message finds
-    // nothing to pay with instead of reusing them.
-    const later = () =>
-      f.chain.directMessages.send({
-        wallet: f.alice,
-        recipient: f.bob.identity.address,
-        items: text('a later message'),
-      })
-    await expect(later()).rejects.toBeInstanceOf(InsufficientStampFundsError)
-    expect(f.requests).toHaveLength(2)
-    await retainedAttempt(f.alice, row)
-    // Rejection did not revoke bytes already held by the relay or recipient.
-    f.broadcast(0)
-    for (let pass = 0; pass < 2; pass++) {
-      expect(
-        await f.chain.directMessages.reconcileAttempts({
-          wallet: f.alice,
-          payloadDigests: [digest],
-        }),
-      ).toEqual({ [digest]: 'dead' })
-      // The chain shows both payments: the accounts are spent, never free again.
-      expect(paymentStates(f.alice, digest)).toEqual(['spent', 'spent'])
-      await retainedAttempt(f.alice, row)
-    }
-    expect([...f.broadcastPayments.values()].reduce((a, b) => a + b, 0n)).toBe(
-      400_000n,
-    )
-    // Nothing was submitted or broadcast again by this wallet for the ended attempt.
-    expect(f.requests).toHaveLength(2)
-    expect(mockWalletBroadcasts).toHaveLength(0)
-    await expect(later()).rejects.toBeInstanceOf(InsufficientStampFundsError)
-    expect(f.requests).toHaveLength(2)
-    expect(await retainedAttempt(f.alice, row)).toMatchObject({ outcome: 'dead' })
-  })
 
-  it('keeps sender_unpublished payment evidence reserved instead of claiming no financial effect', async () => {
-    const directory = await f.directoryFor('alice', f.alice, f.bob)
-    installCanonicalDirectory(f.alice, directory)
-    f.setPhase('sender_unpublished')
-    let digest = ''
-    await expect(
-      f.chain.directMessages.send({
-        wallet: f.alice,
-        recipient: f.bob.identity.address,
-        items: text('unpublished sender'),
-        onAttemptCreated: value => void (digest = value),
-      }),
-      // #1323: the send reports the relay's final answer; the accounts stay reserved.
-    ).rejects.toBeInstanceOf(CanonicalSenderUnpublishedError)
-    const [row] = await rowsOf(f.alice)
-    expect(row).toMatchObject({
-      digest,
-      outcome: 'dead',
-      reason: 'sender_unpublished',
-    })
-    expect(paymentStates(f.alice, digest)).toEqual(['pending'])
-    // The signed payment's account is still held: nothing else can select it.
-    expect(claimedIndices(f.alice)).toEqual(row.payments.map(p => p.index))
-    expect(mockWalletBroadcasts).toHaveLength(0)
-  })
 
   it('keeps reporting a delivered attempt no message recorded across wallet reopens, and never pays for it twice', async () => {
     const { directory, digest } = await interruptedSend('orphan')
@@ -3156,35 +3074,6 @@ describe('two typed wallets on the open directory', () => {
       expect(f.requests).toHaveLength(1)
     })
 
-    it('retains a rejected cross-relay attempt, its accounts still reserved', async () => {
-      relay.infoOverride = { forwarding: true }
-      await online('alice', f.alice)
-      f.setPhase('undeliverable')
-      let digest = ''
-      await expect(f.chain.directMessages.send({
-        wallet: f.alice,
-        recipient: f.bob.identity.address,
-        items: text('relay cannot deliver'),
-        onAttemptCreated: value => void (digest = value),
-        // #1323: the send reports the relay's final answer; the accounts stay reserved.
-      })).rejects.toBeInstanceOf(CanonicalRecipientUndeliverableError)
-      expect(
-        f.chain.directMessages.paymentsOf!({
-          wallet: f.alice,
-          payloadDigest: digest,
-        }),
-      ).toEqual(['pending'])
-      // The signed payment's account is still held: nothing else can select it.
-      const held = f.alice.pool
-        .records()
-        .filter(r => f.alice.pool.claimedBy(r.index) !== undefined)
-      expect(held).toHaveLength(1)
-      expect(f.alice.pool.isSpendReserved(held[0].index)).toBe(true)
-      expect(await f.chain.directMessages.unattributedAttempts({
-        wallet: f.alice, knownDigests: [],
-      })).toEqual([digest])
-      expect(f.requests).toHaveLength(1)
-    })
   })
 })
 

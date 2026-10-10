@@ -579,12 +579,17 @@ describe('parallel paid messages', () => {
   it('the record of a settled payment is written before its coin is released: a failed write keeps the claim', async () => {
     const main = (await alice.getReceiveAddress()).raw.toLowerCase()
     mockBalances.set(main, 10n ** 17n)
+    offlineChain.relayBroadcasts = false
+    offlineChain.broadcastDown = true
     await send(1)
+    offlineChain.broadcastDown = false
+    await tick() // broadcasts the payment; it is now in a block
     mockMessageWrite.mode = 'dropped'
     await tick().catch(() => undefined)
     // The chain shows the payment, but the wallet's record of that is not on disk.
+    expect(mockMessageWrite.mode).toBe('ok')
     expect(alice.pool.accountClaimedBy(main)).toBeDefined()
-    await tick()
+    for (let pass = 0; pass < 8; pass++) await tick()
     expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
   })
 

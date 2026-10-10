@@ -13,6 +13,7 @@ __pycache__/
 *.pyc
 .worktrees/
 scratchpad/
+.regtest-cache/
 .wallets/
 *.wallet.json
 .serena/

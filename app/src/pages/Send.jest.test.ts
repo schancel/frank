@@ -960,22 +960,27 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     ] as const)(
       'keeps %s recipient evidence and fees distinct',
       async state => {
-        const fixture = await includedNativeTransfer(state === 'partial')
+        // `unknown` is a transfer the chain has never answered for. An included one cannot be
+        // made unknown again: a read that got no answer does not erase a receipt already seen.
+        const fixture = await includedNativeTransfer(state === 'partial', {
+          observed: state !== 'unknown',
+        })
         const index = state === 'partial' ? 1 : 0
-        await fixture.journal.recordObservation(
-          fixture.journal.beginCapture(fixture.operationId, index),
-          state === 'included-revert'
-            ? {
-                state,
-                transactionHash: fixture.hash,
-                blockHash: '0x' + '12'.repeat(32),
-                blockNumber: 69526794,
-                transactionIndex: index,
-                feeWei: '2142000000000000',
-              }
-            : { state: state === 'partial' ? 'missing' : state },
-          null,
-        )
+        if (state !== 'unknown')
+          await fixture.journal.recordObservation(
+            fixture.journal.beginCapture(fixture.operationId, index),
+            state === 'included-revert'
+              ? {
+                  state,
+                  transactionHash: fixture.hash,
+                  blockHash: '0x' + '12'.repeat(32),
+                  blockNumber: 69526794,
+                  transactionIndex: index,
+                  feeWei: '2142000000000000',
+                }
+              : { state: state === 'partial' ? 'missing' : state },
+            null,
+          )
         mockCaptureWallet.mockResolvedValue({
           wallet: {
             family: 'evm',

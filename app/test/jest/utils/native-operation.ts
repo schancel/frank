@@ -4,8 +4,18 @@ import { join } from 'path'
 import { Transaction, Wallet } from 'ethers'
 import { EvmNativeOperationJournal } from '@frank/wallet/storage/evm-native-operation-journal'
 
-/** Real disposable owner, with deterministic test-only signing material. */
-export async function includedNativeTransfer(fanIn = false) {
+/**
+ * Real disposable owner, with deterministic test-only signing material.
+ *
+ * `observed: false` leaves the last member signed and handed out but never observed: the
+ * journal has no answer from the chain for it (`unknown`). That state cannot be reached by
+ * recording `unknown` over an included member, because the journal does not let the absence of
+ * an answer replace what the chain was already seen to say.
+ */
+export async function includedNativeTransfer(
+  fanIn = false,
+  { observed = true }: { observed?: boolean } = {},
+) {
   const location = await mkdtemp(join(tmpdir(), 'frank-native-ui-'))
   const signer = new Wallet('0x' + '41'.repeat(32))
   const staging = new Wallet('0x' + '42'.repeat(32))
@@ -48,6 +58,7 @@ export async function includedNativeTransfer(fanIn = false) {
     )
     hash = row.members[index]!.signed!.transactionHash
     await journal.markExposed(row.operationId, index)
+    if (!observed && index === signers.length - 1) break
     await journal.recordObservation(
       journal.beginCapture(row.operationId, index),
       {

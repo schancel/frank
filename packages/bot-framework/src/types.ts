@@ -204,4 +204,7 @@ export interface BotHostOptions {
   /** How long the host keeps trying to deliver a stored reply before it gives up on it, logs
    * the peer and message at error level and lets that conversation go on. Default: one hour. */
   replyGiveUpMs?: number;
+  /** The longest one relay or wallet call of a bot's poll, or one send of a stored reply, may
+   * take before the host stops waiting for it. Default: 30 seconds. */
+  callTimeoutMs?: number;
 }

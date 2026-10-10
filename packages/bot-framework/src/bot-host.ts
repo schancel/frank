@@ -94,14 +94,17 @@ const TOP_UP_RECEIPT_MS = 60_000;
 // an error and its next poll starts afresh; the other bots never waited for it.
 const POLL_CALL_TIMEOUT_MS = 30_000;
 
-/** `call`, or a rejection naming `what` once it has taken `POLL_CALL_TIMEOUT_MS`. */
-function bounded<T>(call: Promise<T>, what: string): Promise<T> {
+/** `call`, or a rejection naming `what` once it has taken `limitMs`. */
+function bounded<T>(
+  call: Promise<T>,
+  what: string,
+  limitMs: number
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () =>
-        reject(new Error(`${what} took over ${POLL_CALL_TIMEOUT_MS / 1000}s`)),
-      POLL_CALL_TIMEOUT_MS
+      () => reject(new Error(`${what} took over ${limitMs / 1000}s`)),
+      limitMs
     );
     timer.unref?.();
   });
@@ -280,6 +283,7 @@ export class FrankBotHost {
           : "maxRepliesPerPeer"
       ),
       replyGiveUpMs: options.replyGiveUpMs ?? REPLY_GIVE_UP_MS,
+      callTimeoutMs: options.callTimeoutMs ?? POLL_CALL_TIMEOUT_MS,
     };
 
     const cursorFile = join(this.options.stateDir, "registration-cursor.json");
@@ -965,7 +969,8 @@ export class FrankBotHost {
                     wallet: instance.wallet,
                     payloadDigests: [outbound],
                   }),
-                  "Asking the wallet about a reply"
+                  "Asking the wallet about a reply",
+          this.options.callTimeoutMs
                 )
               )[outbound] ?? "unknown";
           } catch (error) {
@@ -1010,7 +1015,8 @@ export class FrankBotHost {
                 wallet: instance.wallet,
                 payloadDigests: [],
               }),
-              "Retrying the wallet's earlier payments"
+              "Retrying the wallet's earlier payments",
+          this.options.callTimeoutMs
             );
             this.walletRetryWarned.delete(id);
           } catch (error) {
@@ -1045,7 +1051,8 @@ export class FrankBotHost {
             wallet: instance.wallet,
             sinceMs: instance.operations.scanFloor(instance.lastPollTimestamp),
           }),
-          "Reading the mailbox"
+          "Reading the mailbox",
+          this.options.callTimeoutMs
         );
         const accepted: {
           identity: InboundIdentity;
@@ -1398,16 +1405,25 @@ export class FrankBotHost {
     }
     const text = await instance.operations.replyText(digest);
     try {
-      await this.chain.directMessages.send({
-        wallet: instance.wallet,
-        recipient: toChainAddress(row.peerAddress),
-        items: [{ type: "text", text }],
-        conversationId: row.conversationId,
-        messageId: replyMessageId(instance.operations.owner, digest),
-        stampValue: BigInt(row.reply.stampValue),
-        onAttemptCreated: (outbound) =>
-          instance.operations.linkReply(digest, outbound),
-      });
+      // Bounded like the poll's other calls: a send that hangs must not hold this peer's lane
+      // and the retry pass. The call left behind cannot lead to a second payment: the next
+      // send carries the same message identity, the wallet runs sends one at a time, and it
+      // answers the repeat with the first attempt or refuses it while that one is unresolved.
+      await bounded(
+        this.chain.directMessages.send({
+          wallet: instance.wallet,
+          recipient: toChainAddress(row.peerAddress),
+          items: [{ type: "text", text }],
+          conversationId: row.conversationId,
+          messageId: replyMessageId(instance.operations.owner, digest),
+          stampValue: BigInt(row.reply.stampValue),
+          onAttemptCreated: (outbound) =>
+            // The row may be finished by the time an abandoned call reports.
+            instance.operations.linkReply(digest, outbound).catch(() => {}),
+        }),
+        "Sending a reply",
+          this.options.callTimeoutMs
+      );
     } catch (error) {
       instance.operations.assertOpen(); // a failed journal write holds everything
       if (error instanceof DirectMessageAlreadyAttemptedError)

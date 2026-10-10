@@ -1016,6 +1016,65 @@ describe("FrankBotHost replies", () => {
       expect(await finished(instance, message)).toBe(true);
     });
 
+    // On 16218e9f this send had no bound: one that hung held its peer's lane and the single
+    // retry pass, so no other waiting reply was sent either.
+    it("whose send hangs is let go at the call bound and sent again; the wallet's one-payment rule covers the call left behind", async () => {
+      const seen: string[] = [];
+      const { host, instance } = await start(answering(seen), {
+        callTimeoutMs: 40,
+      });
+      jest.spyOn(console, "warn").mockImplementation(() => {});
+      // A wallet stand-in that keeps the wallet's rule, which is what makes letting go safe:
+      // one payment per message identity, sends one at a time. The first call hangs before
+      // it has journalled anything.
+      const paid = new Map<string, string>();
+      let release!: () => void;
+      mockSend.mockReset().mockImplementation(async (params) => {
+        if (mockSend.mock.calls.length === 1)
+          await new Promise<void>((resolve) => (release = resolve));
+        const original = paid.get(params.messageId);
+        if (original)
+          throw new DirectMessageAlreadyAttemptedError(
+            params.messageId,
+            original,
+            "02" + "aa".repeat(32)
+          );
+        const digest = (0xd0 + paid.size).toString(16).repeat(32);
+        paid.set(params.messageId, digest);
+        await params.onAttemptCreated?.(digest);
+        return { payloadDigest: digest, stampValueWei: STAMP, stampPayments: [], preparationTxHashes: [] };
+      });
+      mockReconcile.mockImplementation(async ({ payloadDigests }) =>
+        Object.fromEntries(
+          payloadDigests.map((d: string) => [d, "delivered"])
+        )
+      );
+      const stuck = inbound("one");
+      const other = inbound("two", { from: otherPeer });
+
+      await poll(host, [stuck]);
+      await drain(instance);
+      expect(await finished(instance, stuck)).toBe(false);
+      // The lane and the retry pass are free again: another peer is answered, and the reply is
+      // sent again under the same identity.
+      await poll(host, [stuck, other]);
+      await drain(instance);
+      expect(await finished(instance, other)).toBe(true);
+      expect(await finished(instance, stuck)).toBe(true);
+      // The call left behind finishes late: it finds the payment made and makes no other.
+      release();
+      await new Promise((r) => setTimeout(r, 10));
+      await poll(host, [stuck, other]);
+      await drain(instance);
+      expect(paid.size).toBe(2);
+      expect(seen).toEqual(["one", "two"]);
+      const ids = mockSend.mock.calls
+        .filter(([p]) => p.items[0].text === "re:one")
+        .map(([p]) => p.messageId);
+      expect(ids.length).toBeGreaterThan(1);
+      expect(new Set(ids).size).toBe(1);
+    });
+
     it("replaces a reply text the journal cannot store by the failure reply", async () => {
       jest.spyOn(console, "error").mockImplementation(() => {});
       const { host, instance } = await start(

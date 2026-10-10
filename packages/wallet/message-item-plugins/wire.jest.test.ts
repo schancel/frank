@@ -37,6 +37,7 @@ import {
   MessageItemBudgetExceededError,
   MessageItemNotCarriedError,
   NOT_CARRIED_ITEM_TYPES,
+  SELF_ONLY_ITEM_TYPES,
   decodeItemFrames,
   encodeItemFrames,
   itemFrameRule,
@@ -111,6 +112,67 @@ describe('the dispatch rule', () => {
       true,
     )
     expect([...NOT_CARRIED_ITEM_TYPES].every(t => registry.has(t))).toBe(true)
+    expect([...SELF_ONLY_ITEM_TYPES].every(t => registry.has(t))).toBe(true)
+  })
+
+  it('carries a self-only type in a message a wallet addresses to itself, and in no other', () => {
+    expect([...SELF_ONLY_ITEM_TYPES]).toEqual(['wallet-sync'])
+    for (const type of SELF_ONLY_ITEM_TYPES) {
+      expect(NOT_CARRIED_ITEM_TYPES.has(type)).toBe(false)
+      expect(itemFrameRule(type)).toEqual({ carried: 'no' })
+      expect(itemFrameRule(type, { selfAddressed: false })).toEqual({
+        carried: 'no',
+      })
+      expect(itemFrameRule(type, { selfAddressed: true })).toEqual({
+        carried: 'generic',
+        frameType: TYPE_PLUGIN_MESSAGE_ITEM,
+      })
+    }
+    // Writing to oneself opens nothing else: a type that is not carried stays not carried.
+    for (const type of NOT_CARRIED_ITEM_TYPES)
+      expect(itemFrameRule(type, { selfAddressed: true })).toEqual({
+        carried: 'no',
+      })
+  })
+
+  it('a self-only item round-trips only when both ends say the message is self-addressed', () => {
+    const note: MessageItem = {
+      type: 'wallet-sync',
+      direction: 'out',
+      chainIdentifier: 'monad-testnet',
+      txHash: '0x' + 'ab'.repeat(32),
+      rawTx: '0x02abcd',
+      spentInputs: [{ address: '0xA', nonce: 3, valueWei: '150' }],
+      createdOutputs: [{ address: '0xB', valueWei: '100' }],
+      timestamp: 1760000000000,
+    }
+    expect(() => encodeItemFrames(registry, [note])).toThrow(
+      MessageItemNotCarriedError,
+    )
+    expect(() =>
+      encodeItemFrames(registry, [note], { selfAddressed: false }),
+    ).toThrow(MessageItemNotCarriedError)
+    const frames = encodeItemFrames(registry, [note], { selfAddressed: true })
+    expect(frames.map(frameType)).toEqual([TYPE_PLUGIN_MESSAGE_ITEM])
+    expect(
+      decodeItemFrames(registry, children(frames), standaloneItemBudget(), {
+        selfAddressed: true,
+      }),
+    ).toEqual([note])
+    // The same bytes in a message from anyone else are not the item.
+    const kept = {
+      type: 'unsupported',
+      reason: 'unknown-type',
+      itemType: 'wallet-sync',
+      frameType: 27,
+      frame: toHex(frames[0]),
+    }
+    expect(receive(frames)).toEqual([kept])
+    expect(
+      decodeItemFrames(registry, children(frames), standaloneItemBudget(), {
+        selfAddressed: false,
+      }),
+    ).toEqual([kept])
   })
 
   it('a type nobody listed travels in the generic frame: a new plugin needs no allocation', () => {
@@ -359,7 +421,7 @@ describe('receiving', () => {
     ])
   })
 
-  it.each([...NOT_CARRIED_ITEM_TYPES])(
+  it.each([...NOT_CARRIED_ITEM_TYPES, ...SELF_ONLY_ITEM_TYPES])(
     'does not interpret a %s item from a peer',
     type => {
       const sample: Record<string, MessageItem> = {

@@ -89,7 +89,9 @@ import {
   getAddress,
   getBytes,
   hexlify,
+  keccak256,
   parseEther,
+  toUtf8Bytes,
 } from "ethers";
 
 import {
@@ -107,8 +109,12 @@ import {
   TopicPostOutcomeUnknownError,
   NativeWalletHandle,
   WalletHandle,
+  DirectMessageAlreadyAttemptedError,
 } from "./active-chain";
-import { MessageItem } from "@frank/cashweb/types/messages";
+import { MessageItem, WalletSyncItem } from "@frank/cashweb/types/messages";
+import { WalletSyncItemRejectedError } from "@frank/cashweb/sync-dispatcher";
+import { applyWalletSyncItem } from "../sync-dispatcher";
+import { SELF_ONLY_ITEM_TYPES } from "../message-item-plugins/wire";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import { resolveChainIdentifier, PROTOCOL_CHAINS } from "./chains-registry";
@@ -127,6 +133,7 @@ import {
   FundAheadRefusedError,
   MonadSubAccountPool,
   STAMP_PAIR_TRANSFERS,
+  SubAccountSpendRefusedError,
 } from "../monad-account-pool";
 import { ChainUtxoPool } from "../chain-utxo-pool";
 import {
@@ -972,6 +979,67 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       throw new TopicBurnPreparationError(reason, { cause: err });
     }
   };
+  // The wallet sync boundary for a note this account wrote to itself from another device (or
+  // from this one): the items the wire rule carries only in a self-addressed message. They are
+  // decoded as real items only when the message's authenticated sender is this wallet, and they
+  // are consumed here, through `applyWalletSyncItem` (chain affinity first, then the pool's own
+  // checks of the signed transaction), never handed to a host as a chat message.
+  //
+  // Runs outside the wallet's operation queue, as `applyWalletSyncItem` requires. Applying a note
+  // twice changes nothing; a digest applied in this session is not applied again.
+  const appliedSelfNotes = new WeakMap<object, Set<string>>();
+  const consumeSelfNotes = async (
+    wallet: EvmChainWalletHandle,
+    message: DirectMessageReceived
+  ): Promise<
+    | { kind: "none" }
+    | { kind: "consumed"; rest: DirectMessageReceived | undefined }
+    | { kind: "retry" }
+  > => {
+    const own = wallet.identity.address.raw.toLowerCase();
+    if (
+      message.senderAddress.raw.toLowerCase() !== own ||
+      message.recipientAddress.raw.toLowerCase() !== own
+    )
+      return { kind: "none" };
+    const notes = message.items.filter((item) =>
+      SELF_ONLY_ITEM_TYPES.has(item.type)
+    );
+    if (notes.length === 0) return { kind: "none" };
+    const others = message.items.filter(
+      (item) => !SELF_ONLY_ITEM_TYPES.has(item.type)
+    );
+    const rest = others.length > 0 ? { ...message, items: others } : undefined;
+    let applied = appliedSelfNotes.get(wallet);
+    if (applied === undefined) {
+      applied = new Set();
+      appliedSelfNotes.set(wallet, applied);
+    }
+    if (applied.has(message.payloadDigest)) return { kind: "consumed", rest };
+    try {
+      for (const note of notes)
+        await applyWalletSyncItem(wallet, note as WalletSyncItem);
+    } catch (error) {
+      // A typed refusal wrote nothing and would be repeated word for word: the note is for
+      // another chain, or does not agree with its own transaction. It is reported and passed.
+      // Anything else (a row held by another operation, a closing wallet) is tried again on the
+      // next read, and the row stays in the caller's replay window until then.
+      const final =
+        error instanceof WalletSyncItemRejectedError ||
+        (error instanceof SubAccountSpendRefusedError &&
+          error.code !== "held" &&
+          error.code !== "no-applier");
+      console.warn(
+        `[wallet-sync] a note this wallet wrote to itself was ${
+          final ? "refused" : "not applied yet"
+        } (${message.payloadDigest}):`,
+        error instanceof Error ? error.message : error
+      );
+      if (!final) return { kind: "retry" };
+    }
+    applied.add(message.payloadDigest);
+    return { kind: "consumed", rest };
+  };
   const directMessages: DirectMessageClient = {
     async send(params): Promise<DirectMessageSendResult> {
       const wallet = asMonadWallet(params.wallet, config.networkId);
@@ -1044,7 +1112,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           if (digest) {
             seenDigests.add(digest);
           }
-          received.push(msg);
+          const taken = await consumeSelfNotes(wallet, msg);
+          if (taken.kind === "none") received.push(msg);
+          else if (taken.kind === "retry")
+            params.onIncompleteTimestamp?.(msg.receivedTime);
+          else if (taken.rest !== undefined) received.push(taken.rest);
+          // Nothing of the row is a message: the caller's cursor may pass it.
+          else
+            params.onQuarantinedTimestamp?.(
+              msg.receivedTime,
+              msg.payloadDigest
+            );
         }
       }
 
@@ -1173,7 +1251,23 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       const wallet = asMonadWallet(params.wallet, config.networkId);
       const canonical = canonicalMessagingFor(wallet);
       if (canonical?.subscribeMailboxStream) {
-        return canonical.subscribeMailboxStream(params);
+        return canonical.subscribeMailboxStream({
+          ...params,
+          // The same boundary as a polled read. A note not applied yet is left to the poll.
+          onRecord: (record) => {
+            void consumeSelfNotes(wallet, record).then(
+              (taken) => {
+                if (taken.kind === "none") params.onRecord(record);
+                else if (taken.kind === "consumed" && taken.rest !== undefined)
+                  params.onRecord(taken.rest);
+              },
+              (error) =>
+                params.onError?.(
+                  error instanceof Error ? error : new Error(String(error))
+                )
+            );
+          },
+        });
       }
       return () => {};
     },
@@ -2315,12 +2409,49 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // queue hold. This device's own record is caller A's, above.
               onSyncTransaction: async (item) => {
                 // This callback runs outside the native financial queue. Failure remains retryable.
-                await directMessages.send({
-                  wallet,
-                  recipient: toChainAddress(identity.address.raw),
-                  items: [item],
-                  stampValue: 0n
-                });
+                // The note goes to this wallet's own mailbox, where its other devices read it. Its
+                // message identity is fixed by the transaction it reports, so asking again after
+                // a failure never pays for a second note: the wallet answers with the first
+                // attempt, and this waits for that one to be delivered.
+                const recipient = toChainAddress(identity.address.raw);
+                const messageId = getBytes(
+                  keccak256(
+                    toUtf8Bytes(
+                      `frank-wallet-sync:${item.chainIdentifier}:${item.txHash}`
+                    )
+                  )
+                ).slice(0, 16);
+                let payloadDigest: string;
+                try {
+                  ({ payloadDigest } = await directMessages.send({
+                    wallet,
+                    recipient,
+                    items: [item],
+                    // The wallet's default stamp, as for any message: the relay delivers nothing
+                    // for less, and it is paid to this wallet's own stamp key.
+                    messageId
+                  }));
+                } catch (error) {
+                  if (!(error instanceof DirectMessageAlreadyAttemptedError))
+                    throw error;
+                  ({ payloadDigest } = error);
+                  const status = (
+                    await directMessages.reconcileAttempts({
+                      wallet,
+                      payloadDigests: [payloadDigest]
+                    })
+                  )[payloadDigest];
+                  if (status !== "delivered") throw error;
+                }
+                // The wallet's own note: no chat message will ever point at its payment record,
+                // so it is accounted for here and a host is not asked about it. Bookkeeping
+                // only; the note is delivered whether or not this is saved.
+                await directMessages
+                  .resolveUnattributedAttempts({
+                    wallet,
+                    payloadDigests: [payloadDigest]
+                  })
+                  .catch(() => undefined);
               }
             })
           );

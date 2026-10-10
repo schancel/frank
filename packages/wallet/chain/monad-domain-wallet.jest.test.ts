@@ -1780,7 +1780,8 @@ test('a pool-sourced legacy send still ends in the pending error, from the trans
       first.operation.members[0]!.signed!.transactionHash,
     )
     expect(pending.operation.operationId).toBe(first.operation.operationId)
-    // Self-sync is still unsupported: the refusal is the transport's, not the pool's.
+    // This wallet has no directory, so its note to itself cannot be sent: the refusal is the
+    // transport's, not the pool's.
     expect(pending.reason).not.toBeInstanceOf(SubAccountSpendRefusedError)
     await expect(first.transport.mock.results[0]!.value).rejects.toBe(
       pending.reason,

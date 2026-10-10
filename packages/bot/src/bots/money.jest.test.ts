@@ -379,3 +379,65 @@ describe("a bot's own messages carry no stamp", () => {
     expect(await outbox.owedWei(h.ctx)).toBe(0n);
   });
 });
+
+describe("a message the host hands back after a crash", () => {
+  const settleTwice = async (outbox: Outbox, h: ReturnType<typeof harness>) => {
+    await outbox.settle(h.ctx);
+    await outbox.settle(h.ctx);
+  };
+
+  test("never written down (the crash came before the bot's first write): what it paid is refunded once", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(7n)]);
+    const outbox = new Outbox("test");
+    await outbox.interrupted(h.ctx, message);
+    await outbox.interrupted(h.ctx, message);
+    await settleTwice(outbox, h);
+    await new Outbox("test").interrupted(h.ctx, message);
+    await settleTwice(new Outbox("test"), h);
+    expect(h.sent.map((m) => [m.to, m.valueWei])).toEqual([[PLAYER, 7n]]);
+  });
+
+  test("already settled (its result was owed before the crash): nothing is refunded", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(7n)]);
+    const outbox = new Outbox("test");
+    await outbox.handle(message, h.ctx, async () => {
+      await outbox.owe(
+        h.ctx,
+        "result",
+        { to: PLAYER, items: [{ type: "text", text: "you win" }], valueWei: 14n },
+        { digest: message.payloadDigest }
+      );
+    }, 0);
+    await new Outbox("test").interrupted(h.ctx, message);
+    await settleTwice(new Outbox("test"), h);
+    expect(h.sent.map((m) => m.valueWei)).toEqual([14n]);
+  });
+
+  test("kept by the game: nothing is refunded", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(7n)]);
+    const outbox = new Outbox("test");
+    await outbox.handle(message, h.ctx, () => outbox.keep(h.ctx, message.payloadDigest), 0);
+    await new Outbox("test").interrupted(h.ctx, message);
+    await settleTwice(new Outbox("test"), h);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  test("a refusal and its late refund are one write", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const message = h.message([], [h.pay(5n, { mined: false })]);
+    const batches: number[] = [];
+    const batch = h.ctx.state.batch;
+    (h.ctx.state as any).batch = async (ops: any[]) => {
+      batches.push(ops.filter((op) => String(op.key).startsWith("outbox:owed:")).length);
+      return batch(ops);
+    };
+    h.failSends(new Error("down"));
+    await refuse(outbox, message, h.ctx, await confirmReceived(message, h.ctx, 0), "No.");
+    expect(batches.filter((n) => n > 0)).toEqual([2]);
+  });
+});
+

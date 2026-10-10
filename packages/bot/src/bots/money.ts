@@ -18,9 +18,11 @@
  *    kept as FAILED, reported, and never counted as sent.
  */
 import { createHash } from "crypto";
+import { claimTransfer } from "@frank/bot-framework";
 import type {
   BotContext,
   BotMessageContext,
+  InterruptedMessage,
   BotScheduleDefinition,
   BotStateStore,
   MessageItem,
@@ -77,21 +79,10 @@ export interface Received {
   unconfirmed: Payment[];
 }
 
-/** Claims are made one at a time, so one transfer is never credited to two messages. */
-let claimTurn: Promise<unknown> = Promise.resolve();
-
-/** Credits a confirmed transfer to `digest` unless another message already has it. */
-function claim(ctx: BotContext, txHash: string, digest: string): Promise<boolean> {
-  const run = async () => {
-    const key = `received:${txHash.toLowerCase()}`;
-    const creditedTo = await ctx.state.get(key);
-    if (creditedTo === undefined) await ctx.state.put(key, digest);
-    return creditedTo === undefined || creditedTo === digest;
-  };
-  const next = claimTurn.then(run, run);
-  claimTurn = next.catch(() => undefined);
-  return next;
-}
+/** Credits a confirmed transfer to `digest` unless another message already has it: the host's
+ * and every bot's claims go through the one queue (`claimTransfer`). */
+const claim = (ctx: BotContext, txHash: string, digest: string) =>
+  claimTransfer(ctx.state, txHash, digest);
 
 async function confirm(
   digest: string,
@@ -191,6 +182,18 @@ function messageIdFor(botId: string, id: string, tries = 0): string {
   )}-${hex.slice(20)}`;
 }
 
+/** What a bot says it owes: who, what, and what the message pays. */
+export interface OwedEntry {
+  to: string;
+  conversationId?: string;
+  items: MessageItem[];
+  valueWei?: bigint;
+  /** Needs `awaitsFor`: the digest of the message these transfers came with. */
+  awaits?: Payment[];
+  awaitsFor?: string;
+  onlyWithValue?: boolean;
+}
+
 export class Outbox {
   private tail: Promise<unknown> = Promise.resolve();
   /** The host's long-lived context: an entry is sent with it, never with the context of the one
@@ -275,11 +278,47 @@ export class Outbox {
     }
   }
 
+  /** A message whose handler the host started and a crash cut off, handed back by the host
+   * with its transfers. If it was never written down (the crash came before `handle`'s first
+   * write) it is written down now, so the next `settle` returns what it paid; if it is already
+   * written down, or was settled, nothing changes. */
+  interrupted(ctx: BotContext, message: InterruptedMessage): Promise<void> {
+    const digest = message.payloadDigest;
+    const payments = (message.stampPayments ?? []).map(payable);
+    return this.serial(async () => {
+      if (!payments.length || this.active.has(digest)) return;
+      const index = await this.index(ctx.state);
+      if (
+        index.pending.includes(digest) ||
+        (await ctx.state.get(`${K}done:${digest}`)) !== undefined
+      )
+        return;
+      const pending: Pending = {
+        peer: message.peerAddress,
+        conversationId: message.conversationId,
+        payments,
+        sinceMs: Date.now(),
+      };
+      await ctx.state.batch([
+        { type: "put", key: `${K}pending:${digest}`, value: JSON.stringify(pending) },
+        {
+          type: "put",
+          key: `${K}index`,
+          value: JSON.stringify({ ...index, pending: [...index.pending, digest] }),
+        },
+      ]);
+    });
+  }
+
   /** The writes that take `digest` off the list of unsettled messages. */
   private settled(index: Index, digest: string | undefined): BatchOp[] {
     if (digest === undefined || !index.pending.includes(digest)) return [];
     index.pending = index.pending.filter((other) => other !== digest);
-    return [{ type: "del", key: `${K}pending:${digest}` }];
+    return [
+      { type: "del", key: `${K}pending:${digest}` },
+      // Remembered as settled: a message handed back after a crash is never refunded then.
+      { type: "put", key: `${K}done:${digest}`, value: "1" },
+    ];
   }
 
   /** The game keeps the money of message `digest`: `writes` (the game's own record of it) and
@@ -301,16 +340,16 @@ export class Outbox {
   owe(
     ctx: BotContext,
     id: string,
-    entry: {
-      to: string;
-      conversationId?: string;
-      items: MessageItem[];
-      valueWei?: bigint;
-      /** Needs `awaitsFor`: the digest of the message these transfers came with. */
-      awaits?: Payment[];
-      awaitsFor?: string;
-      onlyWithValue?: boolean;
-    },
+    entry: OwedEntry,
+    settles?: { digest?: string; writes?: BatchOp[] }
+  ): Promise<void> {
+    return this.oweAll(ctx, [[id, entry]], settles);
+  }
+
+  /** `owe` for several messages at once: all of them, and what they settle, in one write. */
+  oweAll(
+    ctx: BotContext,
+    entries: readonly (readonly [id: string, entry: OwedEntry])[],
     settles?: { digest?: string; writes?: BatchOp[] }
   ): Promise<void> {
     return this.serial(async () => {
@@ -319,7 +358,8 @@ export class Outbox {
         ...(settles?.writes ?? []),
         ...this.settled(index, settles?.digest),
       ];
-      if (!(await this.known(ctx, id))) {
+      for (const [id, entry] of entries) {
+        if (index.owed.includes(id) || (await this.known(ctx, id))) continue;
         const owed: Owed = {
           to: entry.to,
           conversationId: entry.conversationId,
@@ -625,31 +665,41 @@ export async function refuse(
     (late
       ? " A payment you sent with it is not confirmed on chain yet; it is returned if it lands."
       : "");
-  await outbox.owe(
+  // The refusal and the later return of what has not landed yet: one write, so a crash never
+  // leaves the refusal said and the late payment forgotten.
+  const entries: [string, OwedEntry][] = [
+    [
+      `refund:${message.payloadDigest}`,
+      {
+        to: message.peerAddress,
+        conversationId: message.conversationId,
+        items: [...items, { type: "text", text: text + back }],
+        valueWei: received.confirmedWei,
+      },
+    ],
+  ];
+  if (late)
+    entries.push([
+      `late-refund:${message.payloadDigest}`,
+      {
+        to: message.peerAddress,
+        conversationId: message.conversationId,
+        items: [
+          {
+            type: "text",
+            text: "The payment you sent earlier has now landed. Nothing was played or sold for it; it is returned with this message.",
+          },
+        ],
+        awaits: received.unconfirmed,
+        awaitsFor: message.payloadDigest,
+        onlyWithValue: true,
+      },
+    ]);
+  await outbox.oweAll(
     ctx,
-    `refund:${message.payloadDigest}`,
-    {
-      to: message.peerAddress,
-      conversationId: message.conversationId,
-      items: [...items, { type: "text", text: text + back }],
-      valueWei: received.confirmedWei,
-    },
+    entries,
     { digest: message.payloadDigest }
   );
-  if (late)
-    await outbox.owe(ctx, `late-refund:${message.payloadDigest}`, {
-      to: message.peerAddress,
-      conversationId: message.conversationId,
-      items: [
-        {
-          type: "text",
-          text: "The payment you sent earlier has now landed. Nothing was played or sold for it; it is returned with this message.",
-        },
-      ],
-      awaits: received.unconfirmed,
-      awaitsFor: message.payloadDigest,
-      onlyWithValue: true,
-    });
   await outbox.settle(ctx);
 }
 

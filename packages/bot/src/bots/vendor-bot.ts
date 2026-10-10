@@ -4,6 +4,7 @@ import type {
   BotProfile,
   BotContext,
   BotMessageContext,
+  InterruptedMessage,
   NewUserEvent,
 } from "@frank/bot-framework";
 import type { DigitalGoodsItem, MessageItem } from "@frank/cashweb/types/messages";
@@ -67,6 +68,11 @@ export class VendorBot implements FrankBotDefinition {
     } catch (err) {
       console.warn(`[vendor] Failed to send catalog to new user ${user.address}:`, err);
     }
+  }
+
+  /** A message cut off by a crash: what it paid is accounted for (see `Outbox.interrupted`). */
+  onInterrupted(message: InterruptedMessage, ctx: BotContext): Promise<void> {
+    return this.outbox.interrupted(ctx, message);
   }
 
   async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {

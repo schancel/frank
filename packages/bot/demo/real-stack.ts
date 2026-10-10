@@ -25,8 +25,9 @@
  * the same account every run (its keys are in `<dir>/<relay>/wallets/alice`, mode 0600), with
  * whatever it still holds, so a run funds an account only when it has run dry and nothing is
  * stranded between runs. `stack.sweep()` sends what the opened wallets' main and identity
- * accounts hold back to the test wallet; money in a wallet's prepared stamp accounts stays with
- * the wallet and is spent by its next messages.
+ * accounts hold, and what is left in their spent single-use sender accounts (the unused part of
+ * each message's fee reserve), back to the test wallet; money in a wallet's stamp accounts
+ * prepared for coming messages stays with the wallet and is spent by its next messages.
  *
  * It spends real testnet funds: only what `fund` is asked for plus gas. Transfers from the test
  * wallet are serialised across processes by a lock directory beside the wallet file, each with
@@ -420,7 +421,20 @@ export async function startRealStack(options: {
       if (!fundingAddress) return 0n
       let returned = 0n
       for (const wallet of wallets) {
-        for (const key of [wallet.handle.mainPrivateKey, wallet.handle.identity.toPrivateKeyHex()]) {
+        // A wallet pays each message from a single-use sender account funded with the stamp
+        // plus a fee reserve; what the fee did not use stays behind in the spent account. That
+        // is most of what a run leaves, so spent (never reused) sender accounts are returned
+        // too. Accounts still funded for a coming message are the wallet's and stay.
+        const pool = wallet.handle.pool as unknown as
+          | {
+              records(): { index: number; status: string }[]
+              keyring: { deriveSubAccount(index: number): { privateKey: string } }
+            }
+          | undefined
+        const spent = (pool?.records() ?? [])
+          .filter(record => record.status === 'spent' || record.status === 'retired')
+          .map(record => pool!.keyring.deriveSubAccount(record.index).privateKey)
+        for (const key of [wallet.handle.mainPrivateKey, wallet.handle.identity.toPrivateKeyHex(), ...spent]) {
           if (!key) continue
           returned += await sweepKey(key).catch(err => {
             console.error(

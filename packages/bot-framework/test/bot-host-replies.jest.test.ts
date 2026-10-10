@@ -497,6 +497,46 @@ describe("FrankBotHost replies", () => {
     });
   });
 
+  it("hands a message whose handler was cut off back to its bot, once it is known interrupted, with the transfers it came with", async () => {
+    jest.spyOn(console, "error").mockImplementation(() => {});
+    const handedBack: unknown[] = [];
+    const definition = {
+      ...bot("handed-back-bot", async () => {}),
+      onInterrupted: async (message: unknown) => {
+        handedBack.push(message);
+      },
+    };
+    const { host, instance } = await start(definition);
+    // The handler was started and the process died before its message was finished: the bot
+    // may not have written anything down.
+    jest
+      .spyOn(instance.operations, "complete")
+      .mockRejectedValueOnce(new Error("killed"));
+    const message = inbound("a paid bet", { stampValueWei: STAMP });
+    await poll(host, [message]);
+    await drain(instance);
+    expect(handedBack).toEqual([]);
+    // The started row carries the transfers, durably.
+    expect(instance.operations.get(message.payloadDigest).payments).toEqual(
+      message.stampPayments.map((payment: any) => ({
+        ...payment,
+        valueWei: payment.valueWei.toString(),
+      }))
+    );
+    await poll(host, [message]);
+    await drain(instance);
+    expect(handedBack).toEqual([
+      {
+        payloadDigest: message.payloadDigest,
+        peerAddress: message.senderAddress.raw,
+        conversationId: message.conversationId,
+        stampPayments: message.stampPayments,
+      },
+    ]);
+    // And the peer is still told its message failed.
+    expect(textsSent()).toEqual([FAILED_REPLY_TEXT]);
+  });
+
   // On 21a868a2 the first refusal fails the handler: the wallet is called once, the row stays
   // started for good and the message is never answered.
   describe("a reply a handler sends itself", () => {

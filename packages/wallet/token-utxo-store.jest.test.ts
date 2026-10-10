@@ -16,7 +16,7 @@ import {
 } from './token-utxo-store'
 
 describe('TokenRegistry (ticket #1152)', () => {
-  it('whitelists standard assets: USDC, USDT, AVU, and native coins MON, SOL, ETH, XEC', () => {
+  it('whitelists standard assets: USDC, USDT, and native coins MON, SOL, ETH, XEC; AVU is a unit, not a token', () => {
     // USDC
     const monadUsdc = getToken(
       'monad',
@@ -50,14 +50,12 @@ describe('TokenRegistry (ticket #1152)', () => {
     expect(ethUsdt).toBeDefined()
     expect(ethUsdt?.symbol).toBe('USDT')
 
-    // AVU
-    const monadAvu = getToken(
-      'monad',
-      '0x0000000000000000000000000000000000000A70',
-    )
-    expect(monadAvu).toBeDefined()
-    expect(monadAvu?.symbol).toBe('AVU')
-    expect(monadAvu?.decimals).toBe(18)
+    // AVU is a unit of account, never a token
+    expect(
+      getToken('monad', '0x0000000000000000000000000000000000000A70'),
+    ).toBeUndefined()
+    for (const chain of ['monad', 'ethereum', 'solana', 'xec'])
+      expect(listTokensForChain(chain).map(t => t.symbol)).not.toContain('AVU')
 
     // Native coins
     const mon = getToken('monad', 'MON')
@@ -93,7 +91,6 @@ describe('TokenRegistry (ticket #1152)', () => {
     const monadTokens = listTokensForChain('monad')
     expect(monadTokens.map(t => t.symbol)).toContain('USDC')
     expect(monadTokens.map(t => t.symbol)).toContain('USDT')
-    expect(monadTokens.map(t => t.symbol)).toContain('AVU')
     expect(monadTokens.map(t => t.symbol)).toContain('MON')
 
     const solTokens = listTokensForChain('solana')
@@ -185,14 +182,14 @@ describe('TokenUtxoStore (ticket #1153)', () => {
       derivationIndex: 1,
     }
 
-    // Note 3: Different token (AVU)
-    const avuAddr = '0x0000000000000000000000000000000000000A70'
+    // Note 3: a different token
+    const otherTokenAddr = '0x88b8E2161DEDC77EF4ab7585569D2415a1C10552'
     const note3: TokenUtxoRecord = {
       id: 'note-3',
       chainId: 'monad',
-      tokenAddress: avuAddr,
+      tokenAddress: otherTokenAddr,
       recipientAddress: '0x1111111111111111111111111111111111111111',
-      amount: 10_000_000_000_000_000_000n, // 10 AVU
+      amount: 10_000_000n, // 10 USDT
       status: 'unspent',
       receivedAt: Date.now() + 2000,
     }
@@ -214,8 +211,8 @@ describe('TokenUtxoStore (ticket #1153)', () => {
     const totalUsdc = await store.getTotalBalance('monad', tokenAddr)
     expect(totalUsdc).toBe(75_000_000n)
 
-    const totalAvu = await store.getTotalBalance('monad', avuAddr)
-    expect(totalAvu).toBe(10_000_000_000_000_000_000n)
+    const totalOther = await store.getTotalBalance('monad', otherTokenAddr)
+    expect(totalOther).toBe(10_000_000n)
 
     // Mark note1 as spent
     await store.markSpent('note-1', '0xspendtxhash123')

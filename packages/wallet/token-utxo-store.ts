@@ -1,7 +1,7 @@
 /**
  * LevelDB-backed Token UTXO Store (tickets #1152, #1153).
  *
- * Tracks received tokens (USDC, USDT, AVU, etc.) and native notes locally.
+ * Tracks received tokens (USDC, USDT, etc.) and native notes locally.
  * Aggregated balance calculation is computed locally from LevelDB:
  *   Balance = \sum unspent notes
  *

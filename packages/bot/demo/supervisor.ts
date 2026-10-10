@@ -105,6 +105,8 @@ export class Supervisor {
       flags: 'a',
       mode: 0o600,
     })
+    // A log that cannot be written (its directory was removed) must never take the launcher down.
+    log.on('error', () => {})
     const proc = spawn(params.command, params.args, {
       cwd: params.cwd,
       env: childEnv(this.baseEnv, params.env),
@@ -119,6 +121,8 @@ export class Supervisor {
         tailLines.push(`failed to start: ${err.message}`)
         unexpectedExit ??= !this.stopping
         exitedFlag = true
+        // A command that never started never emits 'close': end its log here.
+        log.end()
         resolve('error')
       })
       // `exited` (the promise) resolves on 'close', when the stdio pipes have ended too. The flag

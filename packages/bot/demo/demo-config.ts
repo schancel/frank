@@ -42,9 +42,16 @@ export interface DemoVar {
 export const DEMO_DEFAULT_BURN_ADDRESS = '0x000000000000000000000000000000000000dEaD'
 /** Default `FAUCET_AMOUNT_WEI`: small, the faucet spends real testnet funds. */
 export const DEMO_FAUCET_AMOUNT_WEI = '50000000000000000' // 0.05 MON
-/** A bot address below this is not funded: the bot host tops an address up from the funding wallet
- * when it holds less (0.1 MON, ten default stamps). The launcher checks it on chain. */
+/** A bot account below this is not funded (0.1 MON, ten default stamps): the launcher checks
+ * every bot account against it on chain after the bots have started. */
 export const DEMO_MIN_BOT_BALANCE_WEI = 100_000_000_000_000_000n
+/** What the bot host is told for the account a bot pays transfers and payouts from: refill it to
+ * 0.6 MON when it holds less than 0.3 (`FRANK_BOT_TOP_UP_BELOW_WEI` / `FRANK_BOT_TOP_UP_TO_WEI`).
+ * 0.3 MON covers the largest game payout (about 0.25 MON). */
+export const DEMO_BOT_TOP_UP_BELOW_WEI = 300_000_000_000_000_000n
+export const DEMO_BOT_TOP_UP_TO_WEI = 600_000_000_000_000_000n
+/** The host's own rule for the account a bot pays stamps from: 0.5 MON when it holds less than 0.1. */
+export const DEMO_STAMP_ACCOUNT_TOP_UP_WEI = 500_000_000_000_000_000n
 /** The raffle round size the demo uses (the bot's own default is unchanged). */
 export const DEMO_RAFFLE_MAX_ENTRIES = '5'
 /** Least a funded profile needs for one minimum-bet blackjack hand: the table minimum, the default
@@ -240,28 +247,65 @@ export const DEMO_VARS: readonly DemoVar[] = [
   {
     name: 'QWEN_API_KEY',
     scope: 'qwen',
-    default: 'unset = stub mode',
+    default: 'required unless QWEN_BOT_MODE=stub',
     description:
-      'Set to run the Qwen bot against a real model (needs QWEN_OPENAI_COMPATIBLE_ENDPOINT). Unset: the bot runs in offline STUB mode and its replies say so.',
+      'Key of the model provider. Without it (and without an explicit stub) the Qwen bot fails to start, is reported by name, and the other bots run.',
     secret: true,
   },
   {
     name: 'QWEN_OPENAI_COMPATIBLE_ENDPOINT',
     scope: 'qwen',
-    default: 'required with QWEN_API_KEY',
+    default: 'required unless QWEN_BOT_MODE=stub',
     description: 'OpenAI-compatible base URL of the model provider.',
   },
   {
     name: 'QWEN_MODEL',
     scope: 'qwen',
     default: 'qwen3.8-max',
-    description: 'Model name for live mode.',
+    description: 'Model name.',
   },
   {
     name: 'QWEN_BOT_MODE',
     scope: 'qwen',
-    default: 'live if QWEN_API_KEY, else stub',
-    description: 'Force "stub" or "live". "live" without a key is an error, never a silent stub.',
+    default: 'live',
+    description: 'Set to "stub" to ask for the offline stub explicitly (its replies say so). Never chosen for you.',
+  },
+  {
+    name: 'QWEN_MODEL_TIMEOUT_MS',
+    scope: 'qwen',
+    default: '45000',
+    description: 'How long one model call may take.',
+  },
+  {
+    name: 'QWEN_MODEL_TRIES',
+    scope: 'qwen',
+    default: '3',
+    description: 'Model calls tried for one message before the user is told it failed.',
+  },
+  {
+    name: 'QWEN_ENABLE_THINKING',
+    scope: 'qwen',
+    default: '0',
+    description: "Set to 1 to turn the model's thinking on (slower replies).",
+  },
+  {
+    name: 'QWEN_SYSTEM_PROMPT',
+    scope: 'qwen',
+    default: "the bot's own",
+    description: 'Replaces the system prompt the bot sends the model.',
+  },
+  {
+    name: 'FRANK_BOT_TOP_UP_BELOW_WEI',
+    scope: 'bots',
+    default: DEMO_BOT_TOP_UP_BELOW_WEI.toString(),
+    description:
+      'The bot host refills the account a bot pays transfers and payouts from when it holds less than this (0.3 MON).',
+  },
+  {
+    name: 'FRANK_BOT_TOP_UP_TO_WEI',
+    scope: 'bots',
+    default: DEMO_BOT_TOP_UP_TO_WEI.toString(),
+    description: 'What that account is refilled to (0.6 MON), from the funding wallet.',
   },
   {
     name: 'RAFFLE_BOT_ENTRY_PRICE_WEI',
@@ -370,6 +414,11 @@ const PASSTHROUGH = [
   'FAUCET_MIN_RESERVE_WEI',
   'FRANK_BOT_PEER_DENYLIST',
   'FRANK_BOT_MAX_REPLIES_PER_PEER',
+  'QWEN_MODEL',
+  'QWEN_MODEL_TIMEOUT_MS',
+  'QWEN_MODEL_TRIES',
+  'QWEN_ENABLE_THINKING',
+  'QWEN_SYSTEM_PROMPT',
 ] as const
 
 export const TOOLCHAIN_VARS = ['PROTOC', 'CARGO', 'CARGO_HOME', 'CARGO_TARGET_DIR', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN'] as const
@@ -650,14 +699,9 @@ export function resolveDemoConfig(params: {
   if (requestedMode && requestedMode !== 'stub' && requestedMode !== 'live') {
     problems.push(`QWEN_BOT_MODE must be "stub" or "live", got "${requestedMode}"`)
   }
-  const qwenMode: 'stub' | 'live' =
-    requestedMode === 'stub' || requestedMode === 'live' ? requestedMode : qwenKey ? 'live' : 'stub'
-  if (qwenMode === 'live') {
-    if (!qwenKey) problems.push('QWEN_BOT_MODE=live needs QWEN_API_KEY (or use QWEN_BOT_MODE=stub)')
-    if (!merged.QWEN_OPENAI_COMPATIBLE_ENDPOINT) {
-      problems.push('QWEN_API_KEY is set, so QWEN_OPENAI_COMPATIBLE_ENDPOINT is required')
-    }
-  }
+  // The stub only when it is asked for by name. A missing key or endpoint is not a launcher
+  // error: the Qwen bot refuses to start, is reported by name, and the other bots run.
+  const qwenMode: 'stub' | 'live' = requestedMode === 'stub' ? 'stub' : 'live'
 
   const faucetAmountWei = wei(
     'FAUCET_AMOUNT_WEI',
@@ -698,14 +742,16 @@ export function resolveDemoConfig(params: {
     BOT_STATE_DIR: hostStateDir,
     FRANK_BOTS: names.join(','),
     RAFFLE_BOT_MAX_ENTRIES: raffleMax,
-    QWEN_BOT_MODE: qwenMode,
-    ...(qwenMode === 'live'
-      ? {
-          QWEN_API_KEY: qwenKey as string,
-          QWEN_OPENAI_COMPATIBLE_ENDPOINT: merged.QWEN_OPENAI_COMPATIBLE_ENDPOINT as string,
-          ...(merged.QWEN_MODEL ? { QWEN_MODEL: merged.QWEN_MODEL } : {}),
-        }
-      : {}),
+    ...(qwenMode === 'stub'
+      ? { QWEN_BOT_MODE: 'stub' }
+      : {
+          ...(qwenKey ? { QWEN_API_KEY: qwenKey } : {}),
+          ...(merged.QWEN_OPENAI_COMPATIBLE_ENDPOINT
+            ? { QWEN_OPENAI_COMPATIBLE_ENDPOINT: merged.QWEN_OPENAI_COMPATIBLE_ENDPOINT }
+            : {}),
+        }),
+    FRANK_BOT_TOP_UP_BELOW_WEI: wei('FRANK_BOT_TOP_UP_BELOW_WEI', merged.FRANK_BOT_TOP_UP_BELOW_WEI, DEMO_BOT_TOP_UP_BELOW_WEI.toString(), []),
+    FRANK_BOT_TOP_UP_TO_WEI: wei('FRANK_BOT_TOP_UP_TO_WEI', merged.FRANK_BOT_TOP_UP_TO_WEI, DEMO_BOT_TOP_UP_TO_WEI.toString(), []),
     ...(noFaucet ? {} : { FAUCET_AMOUNT_WEI: faucetAmountWei, FAUCET_MAX_PER_RUN: '1000' }),
   }
   for (const name of names) {

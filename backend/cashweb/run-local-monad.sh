@@ -115,6 +115,9 @@ cd -- "$script_dir"
 #                           endpoint), e.g. 127.0.0.1:18098
 #   FRANK_RELAY_PUBLIC_URL  the origin clients reach this relay at when it is not the listen
 #                           address (a tunnel or proxy); becomes the directory endpoint
+#   FRANK_RELAY_ID          this relay's 16-byte id (32 hex) in the directory section
+#   FRANK_RELAY_IDENTITY    this relay's compressed public key (66 hex) in the directory section;
+#                           two relays run side by side need their own id and identity
 #   FRANK_RELAY_DB_PATH     RocksDB directory (default data/registry.rocksdb under backend/cashweb)
 #   FRANK_RELAY_EXTRA_TOML  file of extra TOML appended to the config (curated defaults)
 if [[ -n "${FRANK_RELAY_LISTEN:-}" && ! "${FRANK_RELAY_LISTEN}" =~ ^[0-9.]+:[0-9]+$ ]]; then
@@ -127,6 +130,14 @@ case "${FRANK_RELAY_DB_PATH:-}" in
         exit 64
         ;;
 esac
+if [[ -n "${FRANK_RELAY_ID:-}" && ! "${FRANK_RELAY_ID}" =~ ^[0-9a-f]{32}$ ]]; then
+    echo "run-local-monad: FRANK_RELAY_ID must be 32 lowercase hex characters" >&2
+    exit 64
+fi
+if [[ -n "${FRANK_RELAY_IDENTITY:-}" && ! "${FRANK_RELAY_IDENTITY}" =~ ^0[23][0-9a-f]{64}$ ]]; then
+    echo "run-local-monad: FRANK_RELAY_IDENTITY must be a compressed public key (66 lowercase hex characters)" >&2
+    exit 64
+fi
 case "${FRANK_RELAY_PUBLIC_URL:-}" in
     '' | http://* | https://*) ;;
     *)
@@ -258,6 +269,18 @@ fi
 if [[ -n "${FRANK_RELAY_PUBLIC_URL:-}" ]]; then
     runtime_config="$(printf '%s\n' "$runtime_config" | awk '
         /^endpoint = / { print "endpoint = \"" ENVIRON["FRANK_RELAY_PUBLIC_URL"] "\""; next }
+        { print }
+    ')"
+fi
+if [[ -n "${FRANK_RELAY_ID:-}" ]]; then
+    runtime_config="$(printf '%s\n' "$runtime_config" | awk '
+        /^relay_id = / { print "relay_id = \"" ENVIRON["FRANK_RELAY_ID"] "\""; next }
+        { print }
+    ')"
+fi
+if [[ -n "${FRANK_RELAY_IDENTITY:-}" ]]; then
+    runtime_config="$(printf '%s\n' "$runtime_config" | awk '
+        /^relay_identity = / { print "relay_identity = \"" ENVIRON["FRANK_RELAY_IDENTITY"] "\""; next }
         { print }
     ')"
 fi

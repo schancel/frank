@@ -569,7 +569,7 @@ process.stdin.on('end', () => {
 
   describe('the funding wallet is checked before anything is started', () => {
     it('refuses to start, naming the wallet and the shortfall, when it cannot fund the bots', async () => {
-      const { fundingShortfall } = await import('./demo')
+      const { fundingNeed, fundingShortfall } = await import('./demo')
       const c = await config()
       const bots = [{ name: 'rps' as const, identityJson: 'x' }, { name: 'faucet' as const, identityJson: 'y' }]
       const balances: Record<string, bigint> = { '0xfund': 2n * 10n ** 17n }
@@ -579,17 +579,23 @@ process.stdin.on('end', () => {
         fundingAddress: '0xfund',
         getBalance: async (a: string) => balances[a] ?? 0n,
       }
-      // Three accounts need funding (the faucet's identity address does not): 0.3 MON > 0.2 MON.
+      // Three accounts need funding (the faucet's identity address does not). With the host's
+      // defaults that is 0.5 MON each: 1.5 MON, and the wallet holds 0.2.
       const short = await fundingShortfall({ ...c, bots }, params)
-      expect(short![0]).toMatch(/funding wallet 0xfund holds 0\.2 testnet MON, but 3 bot accounts .* at least 0\.3 MON/)
+      expect(short![0]).toMatch(/funding wallet 0xfund holds 0\.2 testnet MON, but 3 bot accounts need funding and the bot host will draw about 1\.5 MON/)
       expect(short!.join('\n')).toContain('Nothing was started and nothing was spent')
       expect(short!.join('\n')).toContain('rps identity address, rps stamp account, faucet stamp account')
+      // With the launcher's refill settings: rps's transfer account to 0.6, two stamp accounts 0.5 each.
+      const tuned = { ...c, bots, botProcess: { ...c.botProcess, env: { FRANK_BOT_TOP_UP_BELOW_WEI: '300000000000000000', FRANK_BOT_TOP_UP_TO_WEI: '600000000000000000' } } }
+      expect((await fundingNeed(tuned, params)).neededWei).toBe(16n * 10n ** 17n)
       // Enough in the wallet, or bots already funded: nothing to report.
-      balances['0xfund'] = 3n * 10n ** 17n
+      balances['0xfund'] = 15n * 10n ** 17n
       expect(await fundingShortfall({ ...c, bots }, params)).toBeUndefined()
       balances['0xfund'] = 0n
       for (const a of ['0xrps', '0xrpsmain', '0xfaucetmain']) balances[a] = 10n ** 17n
       expect(await fundingShortfall({ ...c, bots }, params)).toBeUndefined()
+      // A transfer account between 0.1 and the 0.3 refill mark is refilled by the difference only.
+      expect(await fundingNeed(tuned, params)).toEqual({ neededWei: 5n * 10n ** 17n, low: ['rps identity address'] })
     })
 
     it('a missing wallet file stops the start before the relay is started', async () => {

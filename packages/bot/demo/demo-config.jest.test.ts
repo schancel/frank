@@ -159,37 +159,50 @@ describe('resolveDemoConfig', () => {
   })
 
   describe('Qwen mode', () => {
-    it('is stub without a key, and never carries a key or endpoint then', () => {
-      const c = REAL()
-      expect(c.qwenMode).toBe('stub')
-      expect(c.botProcess.env).toMatchObject({
-        QWEN_BOT_MODE: 'stub',
-      })
-      expect(c.botProcess.env).not.toHaveProperty('QWEN_API_KEY')
-    })
-
-    it('is live with a key (and needs the endpoint)', () => {
+    it('is the live model unless the stub is asked for by name; settings are passed through', () => {
       const c = REAL({
         QWEN_API_KEY: 'dummy-qwen-key',
         QWEN_OPENAI_COMPATIBLE_ENDPOINT: 'https://q.example.invalid/v1',
+        QWEN_MODEL_TIMEOUT_MS: '9000',
+        QWEN_MODEL_TRIES: '2',
+        QWEN_ENABLE_THINKING: '1',
+        QWEN_SYSTEM_PROMPT: 'be brief',
       })
       expect(c.qwenMode).toBe('live')
-      expect(c.botProcess.env.QWEN_API_KEY).toBe('dummy-qwen-key')
+      expect(c.botProcess.env).toMatchObject({
+        QWEN_API_KEY: 'dummy-qwen-key',
+        QWEN_OPENAI_COMPATIBLE_ENDPOINT: 'https://q.example.invalid/v1',
+        QWEN_MODEL_TIMEOUT_MS: '9000',
+        QWEN_MODEL_TRIES: '2',
+        QWEN_ENABLE_THINKING: '1',
+        QWEN_SYSTEM_PROMPT: 'be brief',
+      })
+      expect(c.botProcess.env).not.toHaveProperty('QWEN_BOT_MODE')
       expect(c.secrets).toContain('dummy-qwen-key')
-      expect(problemsOf(() => REAL({ QWEN_API_KEY: 'k' }))).toEqual([
-        'QWEN_API_KEY is set, so QWEN_OPENAI_COMPATIBLE_ENDPOINT is required',
-      ])
     })
 
-    it('explicit live without a key is an error, not a silent stub', () => {
-      expect(problemsOf(() => REAL({ QWEN_BOT_MODE: 'live' }))[0]).toMatch(/needs QWEN_API_KEY/)
-    })
-
-    it('explicit stub wins even when a key is present', () => {
-      const c = REAL({ QWEN_API_KEY: 'k', QWEN_BOT_MODE: 'stub' })
-      expect(c.qwenMode).toBe('stub')
+    it('without a key the launcher still starts and never falls back to a stub: the Qwen bot reports its own failure', () => {
+      const c = REAL()
+      expect(c.qwenMode).toBe('live')
+      expect(c.botProcess.env).not.toHaveProperty('QWEN_BOT_MODE')
       expect(c.botProcess.env).not.toHaveProperty('QWEN_API_KEY')
     })
+
+    it('an explicit stub is passed on, and carries no key', () => {
+      const c = REAL({ QWEN_API_KEY: 'k', QWEN_BOT_MODE: 'stub' })
+      expect(c.qwenMode).toBe('stub')
+      expect(c.botProcess.env.QWEN_BOT_MODE).toBe('stub')
+      expect(c.botProcess.env).not.toHaveProperty('QWEN_API_KEY')
+      expect(problemsOf(() => REAL({ QWEN_BOT_MODE: 'offline' }))[0]).toMatch(/must be "stub" or "live"/)
+    })
+  })
+
+  it('tells the bot host a modest refill for transfer accounts (0.6 MON below 0.3), overridable', () => {
+    expect(REAL().botProcess.env).toMatchObject({
+      FRANK_BOT_TOP_UP_BELOW_WEI: '300000000000000000',
+      FRANK_BOT_TOP_UP_TO_WEI: '600000000000000000',
+    })
+    expect(REAL({ FRANK_BOT_TOP_UP_TO_WEI: '7' }).botProcess.env.FRANK_BOT_TOP_UP_TO_WEI).toBe('7')
   })
 
   it('validates ports, wei amounts and the raffle size', () => {
@@ -203,7 +216,7 @@ describe('resolveDemoConfig', () => {
       REAL({
         FRANK_DEMO_RELAY_PORT: 'x',
         RAFFLE_BOT_MAX_ENTRIES: '0',
-        QWEN_BOT_MODE: 'live',
+        QWEN_BOT_MODE: 'neither',
       }),
     )
     expect(p.length).toBeGreaterThanOrEqual(3)

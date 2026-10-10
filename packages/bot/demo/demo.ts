@@ -25,7 +25,7 @@ import { ensurePrivateDir } from '../stamp-pool-seed'
 import { renderCuratedDefaultsToml } from '../print-curated-defaults'
 import { prepareBotIdentities } from './demo-identities'
 import { chainBalanceWei } from './chain-rpc'
-import { DEMO_MIN_BOT_BALANCE_WEI, DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig, resolveDirectoryDemoConfig } from './demo-config'
+import { DEMO_MIN_BOT_BALANCE_WEI, DEMO_STAMP_ACCOUNT_TOP_UP_WEI, DemoBot, DemoConfig, DemoConfigError, minBlackjackFundsWei, resolveDemoConfig, resolveDirectoryDemoConfig } from './demo-config'
 import { EnvFileError, readEnvFile } from './env-file'
 import {
   acquireLock,
@@ -280,8 +280,35 @@ export function fundingTargets(
   ]
 }
 
+/** What the bot host will draw from the funding wallet when the bots start, read from the chain:
+ * each transfer account below the refill mark is refilled to the refill amount, each stamp account
+ * below 0.1 MON gets 0.5 MON. Reads balances only; nothing is sent. */
+export async function fundingNeed(
+  config: DemoConfig,
+  params: {
+    addresses: Record<string, string>
+    mainAccounts: Record<string, string>
+    getBalance: (address: string) => Promise<bigint>
+  },
+): Promise<{ neededWei: bigint; low: string[] }> {
+  const below = BigInt(config.botProcess.env.FRANK_BOT_TOP_UP_BELOW_WEI ?? DEMO_MIN_BOT_BALANCE_WEI)
+  const to = BigInt(config.botProcess.env.FRANK_BOT_TOP_UP_TO_WEI ?? DEMO_STAMP_ACCOUNT_TOP_UP_WEI)
+  let neededWei = 0n
+  const low: string[] = []
+  for (const bot of config.bots) {
+    for (const target of fundingTargets(bot.name, params.addresses, params.mainAccounts)) {
+      const balance = await params.getBalance(target.address)
+      const stamp = target.label === 'stamp account'
+      if (balance >= (stamp ? DEMO_MIN_BOT_BALANCE_WEI : below)) continue
+      neededWei += stamp ? DEMO_STAMP_ACCOUNT_TOP_UP_WEI : to - balance
+      low.push(`${bot.name} ${target.label}`)
+    }
+  }
+  return { neededWei, low }
+}
+
 /** Lines explaining why the funding wallet cannot fund this run's bots, or undefined when it can
- * (or nothing needs funding). Reads balances only; nothing is sent. */
+ * (or nothing needs funding). */
 export async function fundingShortfall(
   config: DemoConfig,
   params: {
@@ -291,18 +318,12 @@ export async function fundingShortfall(
     getBalance: (address: string) => Promise<bigint>
   },
 ): Promise<string[] | undefined> {
-  const low: string[] = []
-  for (const bot of config.bots) {
-    for (const target of fundingTargets(bot.name, params.addresses, params.mainAccounts)) {
-      if ((await params.getBalance(target.address)) < DEMO_MIN_BOT_BALANCE_WEI) low.push(`${bot.name} ${target.label}`)
-    }
-  }
+  const { neededWei, low } = await fundingNeed(config, params)
   if (low.length === 0) return undefined
-  const needed = DEMO_MIN_BOT_BALANCE_WEI * BigInt(low.length)
   const balance = await params.getBalance(params.fundingAddress)
-  if (balance >= needed) return undefined
+  if (balance >= neededWei) return undefined
   return [
-    `the funding wallet ${params.fundingAddress} holds ${formatEther(balance)} testnet MON, but ${low.length} bot accounts are below ${formatEther(DEMO_MIN_BOT_BALANCE_WEI)} MON and funding them takes at least ${formatEther(needed)} MON.`,
+    `the funding wallet ${params.fundingAddress} holds ${formatEther(balance)} testnet MON, but ${low.length} bot accounts need funding and the bot host will draw about ${formatEther(neededWei)} MON for them.`,
     `  Send testnet MON to ${params.fundingAddress} (E2E_DEMO_MAIN_WALLET_JSON) and start again. Nothing was started and nothing was spent.`,
     `  Unfunded: ${low.join(', ')}`,
   ]
@@ -444,6 +465,12 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     const fundingAddress = `0x${walletAddress(config.mainWalletJson) as string}`
     const short = await fundingShortfall(config, { addresses, mainAccounts, fundingAddress, getBalance })
     if (short) throw new DemoConfigError(short)
+    const need = await fundingNeed(config, { addresses, mainAccounts, getBalance })
+    print(
+      need.low.length === 0
+        ? '[demo] every bot account is already funded: this start draws nothing from the funding wallet'
+        : `[demo] ${need.low.length} bot accounts need funding: this start draws about ${formatEther(need.neededWei)} testnet MON from ${fundingAddress}`,
+    )
     abortIfStopping()
 
     let publicRelayUrl = config.publicRelayUrl
@@ -474,6 +501,11 @@ export async function startDemo(config: DemoConfig, options: StartOptions = {}):
     abortIfStopping()
 
     // The shipped relay config carries the directory section; only the curated defaults are extra.
+    //
+    // RESERVED USERNAMES GO HERE: when the relay accepts `reserved_usernames` (name -> the one key
+    // allowed to claim it, branch `usernames`), append a `[registry.directory.reserved_usernames]`
+    // table built from the bots' identities (`addresses` above; the usernames work provides the
+    // helper) to this extra TOML, so nobody can claim a bot's name before the bot does.
     const curatedPath = join(config.stateDir, 'relay-curated.toml')
     writeFileSync(curatedPath, renderCuratedDefaultsToml(curated), { mode: 0o600 })
     abortIfStopping()
@@ -720,7 +752,7 @@ export function printSummary(handle: DemoHandle, print: (line: string) => void):
   }
   print(
     config.qwenMode === 'stub'
-      ? '  Qwen:    STUB mode (offline canned replies; set QWEN_API_KEY for a real model)'
+      ? '  Qwen:    STUB mode, as asked (offline canned replies; unset QWEN_BOT_MODE for the model)'
       : '  Qwen:    live model',
   )
   if (handle.appStarted) {

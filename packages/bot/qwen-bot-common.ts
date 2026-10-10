@@ -97,8 +97,6 @@ import {
 } from "@frank/wallet/chain/monad-chain";
 import type { EvmChainConfig } from "@frank/wallet/chain/evm-chain-config";
 import type { MonadRootBundle } from '@frank/wallet/monad-wallet-material'
-import type { QwenCanonicalSender } from './qwen-response-workflow'
-import type { QwenCanonicalInbound } from './qwen-inbound-workflow'
 import { computeAddress } from 'ethers'
 import { mkdirSync } from 'fs'
 import { dirname } from 'path'
@@ -627,15 +625,6 @@ export interface QwenCanonicalWallet {
   close(): Promise<void>
 }
 
-export interface CanonicalQwenSetup {
-  accountAddress: string
-  identityAddress: string
-  /** The #703 outbound boundary handed to `QwenResponseWorkflow`. */
-  sender: QwenCanonicalSender
-  /** The #778 inbound source handed to `QwenInboundWorkflow`. */
-  inbound: QwenCanonicalInbound
-}
-
 /** The env-configured chain row with Qwen's own relay and a durable canonical wallet root. */
 export function qwenCanonicalChainConfig(params: {
   relayBaseUrl: string
@@ -878,110 +867,3 @@ export function openQwenDirectory(params: {
  * `publishBotDirectoryEntry`, the one implementation every bot uses.
  */
 export const publishQwenDirectoryEntry = publishBotDirectoryEntry
-
-/**
- * #703/#778 canonical composition over the one live typed wallet and the open directory.
- * Sealing and opening use the wallet's own scoped message roles; inventory is funded by the
- * wallet from its own account under its ordinary admission; submission and journaling are the
- * wallet's canonical consumer. Nothing here signs, funds, replays or contacts the relay until a
- * workflow asks, and replay waits for `QwenResponseWorkflow.recover()`.
- *
- * The legacy `setUpDurableFundedStampClient`/`sendDirectMessageItems` helpers above are left
- * exactly as they were for the other bots and for Qwen's legacy mode.
- */
-export function setUpCanonicalQwenSender(params: {
-  wallet: QwenCanonicalWallet
-  networkTag: 'MONT' | 'MON1'
-  directory: QwenCanonicalDirectory
-  overrides?: MonadTxOverrides
-  /** Deterministic no-network test seam. Production callers omit it. */
-  fetch?: CanonicalFetch
-  label: string
-}): CanonicalQwenSetup {
-  const { wallet, directory } = params
-  // Checked before any canonical consumer is taken.
-  if (wallet.subject !== directory.selfSubject)
-    throw new QwenStartRefusal('wallet-not-directory-subject')
-  const network = canonicalNetworkDescriptor(params.networkTag).network
-  if (network !== directory.network)
-    throw new QwenStartRefusal('network-mismatch')
-  const client = canonicalMonadStampClient(wallet.handle)
-  console.log(
-    `[${params.label}] canonical stamp account: ${wallet.accountAddress}`,
-  )
-  const mailbox: CanonicalMailboxAuthParams = {
-    relayBaseUrl: directory.homeEndpoint,
-    recipient: wallet.identityAddress,
-    expectedNetworkTag: params.networkTag,
-    subject: wallet.subject,
-    getCurrent: () => directory.selfCurrent(),
-    signDigest: digest => wallet.handle.identity.signHash(Buffer.from(digest)),
-    fetch: params.fetch,
-  }
-  return {
-    accountAddress: wallet.accountAddress,
-    identityAddress: wallet.identityAddress,
-    inbound: {
-      network,
-      subject: wallet.subject,
-      recipient: wallet.identityAddress,
-      relayBaseUrl: directory.homeEndpoint,
-      fetchPage: page => fetchCanonicalInboxPage({ ...mailbox, ...page }),
-      selfCurrent: () => directory.selfCurrent(),
-      peerCurrent: (peer, refresh) => directory.peerCurrent(peer, refresh),
-      roles: self => createCanonicalMessageRoles(wallet.handle, self),
-    },
-    sender: {
-      wallet: client,
-      // The peer is the key the inbound envelope was opened under, resolved again through its
-      // own verified directory entry for every preparation: the reply is sealed to the message
-      // key that entry names.
-      currents: async row => {
-        const recipientCurrent = await directory.peerCurrent(
-          row.senderPubKeyHex,
-        )
-        return recipientCurrent
-          ? { senderCurrent: await directory.selfCurrent(), recipientCurrent }
-          : undefined
-      },
-      seal: (row, currents) => {
-        const session = createCanonicalMessageRoles(
-          wallet.handle,
-          currents.senderCurrent,
-        )
-        try {
-          const sealed = prepareDirectMessage({
-            network,
-            senderCurrent: currents.senderCurrent,
-            recipientCurrent: currents.recipientCurrent,
-            messageId: new Uint8Array(randomBytes(16)),
-            items: [directMessageText(row.response)],
-            roles: session,
-          })
-          // Only opaque bytes and public identity leave this function. The authenticated
-          // plaintext fields of the producer result are never copied or stored.
-          return {
-            payload: sealed.payload,
-            context: sealed.context,
-            t3: sealed.t3,
-            messageId: sealed.messageId,
-            contentDigest: sealed.contentDigest,
-          }
-        } finally {
-          session.dispose()
-        }
-      },
-      // Funded by the wallet from its own account, under its own admission.
-      prepareInventory: async input => {
-        try {
-          await prepareCanonicalStampInventory(wallet.handle, input)
-        } catch (err) {
-          console.error('[bot] prepareInventory FAILED:', err)
-          throw err
-        }
-      },
-      overrides: params.overrides,
-      fetch: params.fetch,
-    },
-  }
-}

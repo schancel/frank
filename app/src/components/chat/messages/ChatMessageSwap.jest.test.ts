@@ -18,13 +18,10 @@ function translator(messages: unknown) {
   }
 }
 
-const mockEscrow = {
-  depositLock: jest.fn(async () => ({ txHash: '0x' })),
-  claimLock: jest.fn(async () => ({ txHash: '0x' })),
-  refundLock: jest.fn(async () => ({ txHash: '0x' })),
-}
+// The card must not even reach for the escrow composable.
+const mockUseSwapEscrow = jest.fn()
 jest.mock('../../../composables/useSwapEscrow', () => ({
-  useSwapEscrow: () => mockEscrow,
+  useSwapEscrow: (...args: unknown[]) => mockUseSwapEscrow(...args),
 }))
 
 describe('ChatMessageSwap', () => {
@@ -116,55 +113,37 @@ describe('ChatMessageSwap', () => {
     ).toBe(false)
   })
 
-  it('shows Lock button for outbound pending swap offer and calls depositLegA', async () => {
-    const wrapper = mountComponent({ outbound: true, status: 'pending' })
-    const lockBtn = wrapper.find('[data-testid="swap-lock-btn"]')
-    expect(lockBtn.exists()).toBe(true)
-
-    await lockBtn.trigger('click')
-    expect(wrapper.emitted('deposit')).toHaveLength(1)
-  })
-
-  it('shows Claim button when ready to claim', async () => {
-    // Maker claiming Leg B
-    const wrapperMaker = mountComponent({
-      outbound: true,
-      status: 'locked',
-      legBTxHash: '0x' + 'bb'.repeat(32),
-    })
-    const claimBtnMaker = wrapperMaker.find('[data-testid="swap-claim-btn"]')
-    expect(claimBtnMaker.exists()).toBe(true)
-    await claimBtnMaker.trigger('click')
-    expect(wrapperMaker.emitted('claim')).toHaveLength(1)
-
-    expect(mockEscrow.claimLock).toHaveBeenCalledTimes(1)
-  })
-
-  it('shows Refund button when its own offer is expired', async () => {
-    const wrapper = mountComponent({ outbound: true, status: 'expired' })
-    const refundBtn = wrapper.find('[data-testid="swap-refund-btn"]')
-    expect(refundBtn.exists()).toBe(true)
-
-    await refundBtn.trigger('click')
-    expect(wrapper.emitted('refund')).toHaveLength(1)
-  })
-
-  // A received offer is its sender's claims. An inbound item saying 'accepted' used to show
-  // "Accept & Lock", one click from a deposit to the sender.
-  describe('a received offer moves no funds', () => {
+  // Atomic swaps are not available yet. The card used to offer "Deposit & Lock" on the
+  // user's own offer, one click from locking real funds under a secret anyone could compute.
+  describe('the card moves no funds, for any offer in any state', () => {
     const FUND_BUTTONS = ['swap-lock-btn', 'swap-claim-btn', 'swap-refund-btn']
-    it.each([
-      ['accepted', {}],
-      ['locked', {}],
-      ['locked', { legBTxHash: '0x' + 'bb'.repeat(32) }],
-      ['locked', { preimage: '0x' + 'aa'.repeat(32) }],
-      ['locked', { claimTxHash: '0x' + '22'.repeat(32) }],
-      ['expired', {}],
-    ])(
-      'status %s %j: no lock, claim or refund button, and nothing to click sends funds',
-      async (status, extra) => {
+    const STATUSES = [
+      'pending',
+      'accepted',
+      'locked',
+      'settled',
+      'cancelled',
+      'expired',
+      'error',
+    ]
+    const EXTRAS = [
+      {},
+      { legATxHash: '0x' + '11'.repeat(32) },
+      { legBTxHash: '0x' + 'bb'.repeat(32) },
+      { preimage: '0x' + 'aa'.repeat(32) },
+      { claimTxHash: '0x' + '22'.repeat(32) },
+    ]
+    const cases = [true, false].flatMap(outbound =>
+      STATUSES.flatMap(status =>
+        EXTRAS.map(extra => [outbound, status, extra] as const),
+      ),
+    )
+
+    it.each(cases)(
+      'outbound=%s status=%s %j: no lock, claim or refund button; the note says so',
+      async (outbound, status, extra) => {
         const wrapper = mountComponent({
-          outbound: false,
+          outbound,
           status,
           hashLock: '0x' + 'cc'.repeat(32),
           recipientAddress: '0x' + '0b'.repeat(20),
@@ -174,59 +153,28 @@ describe('ChatMessageSwap', () => {
           expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(false)
         expect(
           wrapper.find('[data-testid="swap-unavailable-note"]').text(),
-        ).toBe(enUS.walletPanel.swapUnavailableDescription)
+        ).toBe(enUS.chatMessageSwap.notAvailableYet)
         // Every control the card does render, clicked.
         for (const button of wrapper.findAll('button'))
           await button.trigger('click')
-        for (const call of Object.values(mockEscrow))
-          expect(call).not.toHaveBeenCalled()
+        expect(mockUseSwapEscrow).not.toHaveBeenCalled()
         for (const event of ['deposit', 'claim', 'refund'])
           expect(wrapper.emitted(event)).toBeUndefined()
       },
     )
 
-    it('a pending received offer can still be answered, with no fund action beside it', async () => {
-      const wrapper = mountComponent({ outbound: false, status: 'pending' })
-      expect(wrapper.find('[data-testid="swap-accept-btn"]').exists()).toBe(
-        true,
-      )
-      expect(
-        wrapper.find('[data-testid="swap-unavailable-note"]').exists(),
-      ).toBe(false)
-      for (const id of FUND_BUTTONS)
-        expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(false)
-      for (const button of wrapper.findAll('button'))
-        await button.trigger('click')
-      for (const call of Object.values(mockEscrow))
-        expect(call).not.toHaveBeenCalled()
-    })
-
-    it('the handlers refuse too: called directly on a received offer they do nothing', async () => {
-      const wrapper = mountComponent({
-        outbound: false,
-        status: 'locked',
-        preimage: '0x' + 'aa'.repeat(32),
-      })
-      const vm = wrapper.vm as unknown as Record<string, () => Promise<void>>
+    it('has no handler left that could deposit, claim or refund', () => {
+      const vm = mountComponent({ outbound: true }).vm as unknown as Record<
+        string,
+        unknown
+      >
       for (const handler of [
+        'handleDepositLegA',
         'handleDepositLegB',
         'handleClaim',
         'handleRefund',
       ])
-        await vm[handler]()
-      for (const call of Object.values(mockEscrow))
-        expect(call).not.toHaveBeenCalled()
-      for (const event of ['deposit', 'claim', 'refund'])
-        expect(wrapper.emitted(event)).toBeUndefined()
-    })
-
-    it('the note is not shown on an offer this user made', () => {
-      for (const status of ['pending', 'accepted', 'locked', 'expired'])
-        expect(
-          mountComponent({ outbound: true, status })
-            .find('[data-testid="swap-unavailable-note"]')
-            .exists(),
-        ).toBe(false)
+        expect(vm[handler]).toBeUndefined()
     })
   })
 

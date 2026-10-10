@@ -14,6 +14,7 @@ import {
   confirmedSender,
   createProvider,
   deployContracts,
+  loadWalletJson,
   planDeployment,
   predictCreate2Address,
   registryChainId,
@@ -202,6 +203,9 @@ describe('deploying to a local EVM node', () => {
     expect(() => registryChainId('monad')).toThrow(/not a chain identifier/)
     expect(() => registryChainId('evm')).toThrow(/not a chain identifier/)
     expect(() => registryChainId('btc-mainnet')).toThrow(/not an EVM network/)
+    // Mainnets are refused outright, whatever wallet or node is given.
+    expect(() => registryChainId('monad-mainnet')).toThrow(/only deploy to testnets/)
+    expect(() => registryChainId('ethereum-mainnet')).toThrow(/only deploy to testnets/)
 
     const walletJson = path.join(outDir, 'wallet.json')
     const wallet = ethers.Wallet.createRandom()
@@ -209,6 +213,29 @@ describe('deploying to a local EVM node', () => {
     await expect(
       resolveCliTarget(['--chain', 'monad-testnet', '--rpc', anvil.url, '--wallet-json', walletJson]),
     ).rejects.toThrow(/reports chain id 31337, expected 10143 for monad-testnet/)
+    await expect(
+      resolveCliTarget(['--chain', 'monad-mainnet', '--rpc', anvil.url, '--wallet-json', walletJson]),
+    ).rejects.toThrow(/only deploy to testnets/)
+
+    // A wallet file that cannot be read is reported without any of its content.
+    const secret = 'ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
+    const broken = path.join(outDir, 'broken.json')
+    for (const content of [
+      `${secret}`,
+      `{"privateKey": "0x${secret}`,
+      `{"privateKey": "0x${secret.slice(0, 40)}"}`,
+      `{"address": "0x0000000000000000000000000000000000000001", "privateKey": "0x${secret}"}`,
+    ]) {
+      fs.writeFileSync(broken, content)
+      let message = ''
+      try {
+        loadWalletJson(broken)
+      } catch (err) {
+        message = (err as Error).message
+      }
+      expect(message).toContain(broken)
+      expect(message).not.toMatch(/ac0974|4f2ff80|bec39a/)
+    }
     await expect(resolveCliTarget(['--local', '--rpc', anvil.url])).rejects.toThrow(/--out-dir/)
     await expect(
       resolveCliTarget(['--chain', 'monad-testnet', '--local', '--rpc', anvil.url]),

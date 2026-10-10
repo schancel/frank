@@ -79,7 +79,8 @@ export type SwapStepPhase =
 export interface EvmHtlcLockTxParams {
   lockId: string | Uint8Array;
   recipient: string;
-  refundAddress?: string;
+  /** Where the funds return after the timelock: the sender's own address. Never the recipient. */
+  refundAddress: string;
   hashLock: string | Uint8Array;
   durationSeconds: bigint | number;
   amountWei: bigint;
@@ -125,11 +126,14 @@ export function toBytes32Hex(input: string | Uint8Array): string {
 }
 
 /**
- * Derives a cryptographic preimage and SHA256 hashlock from a swapId and optional seed.
+ * Derives a preimage and SHA256 hashlock from a swapId and a secret seed.
+ *
+ * The seed is what makes the preimage secret: the swapId is in the offer and on chain. It
+ * must be 32 bytes that only the party creating the hash lock knows. There is no default.
  */
 export function deriveSwapSecret(params: {
   swapId: string | Uint8Array;
-  seed?: Uint8Array;
+  seed: Uint8Array;
 }): {
   preimage: Uint8Array;
   hashLock: Uint8Array;
@@ -138,7 +142,13 @@ export function deriveSwapSecret(params: {
 } {
   const swapIdBytes = to32ByteHash(params.swapId);
   const tag = toUtf8Bytes("frank:swap-secret:v1:");
-  const entropy = params.seed ?? new Uint8Array(32);
+  const entropy = params.seed;
+  if (!(entropy instanceof Uint8Array) || entropy.length !== 32) {
+    throw new Error("deriveSwapSecret needs a 32-byte secret seed");
+  }
+  if (entropy.every((byte) => byte === 0)) {
+    throw new Error("deriveSwapSecret refuses an all-zero seed");
+  }
 
   const preimage = sha256(concat([tag, swapIdBytes, entropy]));
   const hashLock = sha256(preimage);
@@ -184,7 +194,13 @@ export function encodeEvmHtlcLock(params: EvmHtlcLockTxParams): {
   const htlc = params.contractAddress;
   const lockId = toBytes32Hex(params.lockId);
   const hashLock = toBytes32Hex(params.hashLock);
-  const refund = params.refundAddress ?? params.recipient;
+  const refund = params.refundAddress;
+  if (!refund) {
+    throw new Error("encodeEvmHtlcLock needs the sender's refund address");
+  }
+  if (refund.toLowerCase() === params.recipient.toLowerCase()) {
+    throw new Error("The refund address of a lock must not be its recipient");
+  }
 
   const data = evmHtlcInterface.encodeFunctionData(
     "lock(bytes32,address,address,bytes32,uint256)",

@@ -25,8 +25,13 @@ describe("swap-escrow service & calldata builders", () => {
 
   it("derives deterministic preimage and hashlock", () => {
     const swapId = "swap-12345-abcde";
-    const secret1 = deriveSwapSecret({ swapId });
-    const secret2 = deriveSwapSecret({ swapId });
+    const seed = new Uint8Array(32).fill(7);
+    const secret1 = deriveSwapSecret({ swapId, seed });
+    const secret2 = deriveSwapSecret({ swapId, seed });
+    // Another seed gives another secret: the swapId alone does not determine it.
+    expect(
+      deriveSwapSecret({ swapId, seed: new Uint8Array(32).fill(8) }).preimageHex
+    ).not.toBe(secret1.preimageHex);
 
     expect(secret1.preimage.length).toBe(32);
     expect(secret1.hashLock.length).toBe(32);
@@ -36,6 +41,39 @@ describe("swap-escrow service & calldata builders", () => {
     // Verify sha256(preimage) === hashLock
     const manualHash = ethers.sha256(secret1.preimage);
     expect(manualHash).toBe(secret1.hashLockHex);
+  });
+
+  it("refuses to derive a swap secret without a real seed", () => {
+    const swapId = "swap-12345-abcde";
+    const derive = deriveSwapSecret as (params: {
+      swapId: string;
+      seed?: Uint8Array;
+    }) => unknown;
+    expect(() => derive({ swapId })).toThrow("needs a 32-byte secret seed");
+    expect(() => derive({ swapId, seed: new Uint8Array(16).fill(1) })).toThrow(
+      "needs a 32-byte secret seed"
+    );
+    expect(() => derive({ swapId, seed: new Uint8Array(32) })).toThrow(
+      "refuses an all-zero seed"
+    );
+  });
+
+  it("refuses a lock whose refund address is missing or is the recipient", () => {
+    const base = {
+      contractAddress: "0x9999999999999999999999999999999999999999",
+      lockId: "0x" + "11".repeat(32),
+      recipient: "0x1111111111111111111111111111111111111111",
+      hashLock: "0x" + "33".repeat(32),
+      durationSeconds: 3600,
+      amountWei: 1n,
+    };
+    const encode = encodeEvmHtlcLock as (params: typeof base & {
+      refundAddress?: string;
+    }) => unknown;
+    expect(() => encode(base)).toThrow("needs the sender's refund address");
+    expect(() =>
+      encode({ ...base, refundAddress: base.recipient.toUpperCase().replace("0X", "0x") })
+    ).toThrow("must not be its recipient");
   });
 
   it("normalizes lockIds and hashes into 32-byte hex buffers", () => {

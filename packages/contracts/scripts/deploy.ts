@@ -5,8 +5,9 @@
  *   yarn --cwd packages/contracts deploy --chain monad-testnet --rpc <url> --wallet-json <file>
  *   yarn --cwd packages/contracts deploy --local --rpc http://127.0.0.1:8545 --out-dir <dir>
  *
- * `--chain` is a canonical `chainIdentifier` from docs/protocol/chains/v1.json; the node must
- * report that row's native chain id. `--local` is for a local dev node (chain id 31337) and
+ * `--chain` is a canonical `chainIdentifier` from docs/protocol/chains/v1.json that the
+ * registry marks as a testnet (any other network is refused); the node must report that
+ * row's native chain id. `--local` is for a local dev node (chain id 31337) and
  * needs `--out-dir`, so a local run can never write a public network's record.
  * `--wallet-json` is a file `{"address","privateKey"}`, the format of the demo funding wallet.
  *
@@ -292,24 +293,37 @@ async function requireRuntimeCode(
   throw new Error(`${contract}: eth_getCode at ${address} is ${seen}`)
 }
 
-/** Reads a `{"address","privateKey"}` wallet file and checks the two agree. */
+/**
+ * Reads a `{"address","privateKey"}` wallet file and checks the two agree. Errors never
+ * carry anything read from the file: a parser's message can quote the text it choked on.
+ */
 export function loadWalletJson(file: string): ethers.Wallet {
-  const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as {
-    address?: string
-    privateKey?: string
+  let parsed: { address?: unknown; privateKey?: unknown }
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch (err) {
+    const missing = (err as NodeJS.ErrnoException).code === 'ENOENT'
+    throw new Error(`${file} ${missing ? 'does not exist' : 'is not valid JSON'}`)
   }
-  if (!parsed.privateKey) throw new Error(`${file} has no privateKey`)
-  const wallet = new ethers.Wallet(parsed.privateKey)
+  if (typeof parsed?.privateKey !== 'string') {
+    throw new Error(`${file} has no privateKey`)
+  }
+  let wallet: ethers.Wallet
+  try {
+    wallet = new ethers.Wallet(parsed.privateKey)
+  } catch {
+    throw new Error(`${file}: privateKey is not a valid private key`)
+  }
   if (
-    parsed.address &&
-    ethers.getAddress(parsed.address) !== wallet.address
+    typeof parsed.address !== 'string' ||
+    parsed.address.toLowerCase() !== wallet.address.toLowerCase()
   ) {
     throw new Error(`${file}: address does not belong to privateKey`)
   }
   return wallet
 }
 
-/** The native chain id the protocol registry gives a canonical EVM `chainIdentifier`. */
+/** The native chain id the protocol registry gives a canonical EVM testnet `chainIdentifier`. */
 export function registryChainId(chainIdentifier: string): bigint {
   const row = protocolChains.chains.find(c => c.id === chainIdentifier)
   if (!row) {
@@ -319,6 +333,12 @@ export function registryChainId(chainIdentifier: string): bigint {
   }
   if (row.family !== 'evm' || !('native_chain_id' in row)) {
     throw new Error(`"${chainIdentifier}" is not an EVM network`)
+  }
+  // Only testnets for now: nothing here has been approved for a network with real money.
+  if (row.network !== 'testnet') {
+    throw new Error(
+      `"${chainIdentifier}" is a ${row.network} network; these scripts only deploy to testnets`,
+    )
   }
   return BigInt(row.native_chain_id as string)
 }

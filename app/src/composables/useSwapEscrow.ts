@@ -1,35 +1,29 @@
 /**
  * Composable for Cross-Chain Atomic Swap HTLC Escrows.
  *
- * Coordinates reading and executing deposits, claims (sweeps with preimage),
- * and refunds on GenericHTLC (EVM) and generic-htlc (Solana) contracts.
+ * Reads lock state on GenericHTLC (EVM) and generic-htlc (Solana). Depositing, claiming
+ * and refunding are refused: atomic swaps are not available yet.
  * Integrates with `useLeaderStore` to prevent duplicate or conflicting automated reactions.
  */
 import { ref } from 'vue'
-import { Contract, parseEther } from 'ethers'
+import { Contract } from 'ethers'
 import type { Provider } from 'ethers'
-import { Connection, PublicKey, TransactionInstruction } from '@solana/web3.js'
+import { Connection } from '@solana/web3.js'
 import {
-  deriveSwapSecret,
-  encodeEvmHtlcLock,
-  encodeEvmHtlcWithdraw,
-  encodeEvmHtlcRefund,
   decodeEvmHtlcLockState,
   decodeSolanaHtlcLockState,
-  buildSolanaSwapLockInstruction,
-  buildSolanaSwapWithdrawInstruction,
-  buildSolanaSwapRefundInstruction,
   evaluateSwapStepPhase,
   resolveHtlcContract,
   toBytes32Hex,
   EVM_GENERIC_HTLC_ABI,
 } from '@frank/wallet/swap-escrow'
-import type { SwapLockRecord, SwapStepPhase } from '@frank/wallet/swap-escrow'
+import type { SwapLockRecord } from '@frank/wallet/swap-escrow'
 import { findSolanaLockPda } from '@frank/wallet/solana-game-escrow'
 import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
-import { MonadAccountTxSigner } from '@frank/wallet/monad-account-tx'
 import { useLeaderStore } from '../stores/leader'
 import { useMonadWallet } from '../utils/clients'
+
+export const SWAPS_NOT_AVAILABLE = 'Atomic swaps are not available yet'
 
 export interface DepositLockParams {
   swapId: string
@@ -118,252 +112,31 @@ export function useSwapEscrow() {
     return null
   }
 
-  /**
-   * Deposits and locks funds into the GenericHTLC escrow contract.
-   */
-  async function depositLock(params: DepositLockParams): Promise<{
+  // Atomic swaps are being rebuilt after the wallet unification. Until then nothing here
+  // moves funds: these three refuse before deriving a secret, building a transaction or
+  // touching a key, and never return a transaction hash.
+  async function depositLock(_params: DepositLockParams): Promise<{
     txHash: string
     lockId: string
     hashLock: string
     preimageHex?: string
   }> {
-    loading.value = true
-    error.value = null
-
-    try {
-      const resolved = resolveHtlcContract(params.chain)
-      const secret = deriveSwapSecret({ swapId: params.swapId })
-      const hashLock = params.hashLock ?? secret.hashLockHex
-      const durationSeconds = params.durationSeconds ?? 86400
-
-      if (resolved.family === 'evm') {
-        const wallet = useMonadWallet() as any
-        const amountWei = parseEther(params.amount)
-        const lockParams = encodeEvmHtlcLock({
-          lockId: params.swapId,
-          recipient: params.recipient,
-          refundAddress: params.refundAddress,
-          hashLock,
-          durationSeconds,
-          amountWei,
-          contractAddress: resolved.contractAddress,
-        })
-
-        // Sign and broadcast
-        let txHash: string
-        if (wallet.httpClient?.submitRawTransaction && wallet.identity) {
-          const signer = new MonadAccountTxSigner({
-            privateKey: wallet.identity.toPrivateKeyHex(),
-            provider: wallet.provider,
-            httpClient: wallet.httpClient,
-          })
-          const signed = await signer.buildAndSignCall(
-            lockParams.to,
-            lockParams.value,
-            lockParams.data,
-          )
-          txHash = await wallet.httpClient.submitRawTransaction(signed.rawTx)
-        } else {
-          // Fallback / mock environment
-          txHash =
-            '0x' +
-            Array.from(crypto.getRandomValues(new Uint8Array(32)))
-              .map(b => b.toString(16).padStart(2, '0'))
-              .join('')
-        }
-
-        return {
-          txHash,
-          lockId: toBytes32Hex(params.swapId),
-          hashLock,
-          preimageHex: secret.preimageHex,
-        }
-      }
-
-      if (resolved.family === 'solana') {
-        // Solana generic-htlc lock
-        const amountLamports = BigInt(
-          Math.round(parseFloat(params.amount) * 1e9),
-        )
-        const senderPubkey = params.refundAddress ?? params.recipient
-        await buildSolanaSwapLockInstruction({
-          sender: senderPubkey,
-          recipient: params.recipient,
-          refundAddress: params.refundAddress,
-          lockId: params.swapId,
-          hashLock,
-          amountLamports,
-          durationSeconds,
-          programId: resolved.contractAddress,
-        })
-
-        const txHash = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join('')
-
-        return {
-          txHash,
-          lockId: toBytes32Hex(params.swapId),
-          hashLock,
-          preimageHex: secret.preimageHex,
-        }
-      }
-
-      throw new Error(
-        `Unsupported chain family for deposit: ${resolved.family}`,
-      )
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      error.value = msg
-      throw err
-    } finally {
-      loading.value = false
-    }
+    return refuse()
   }
 
-  /**
-   * Sweeps / claims funds from the HTLC contract using the secret preimage.
-   */
-  async function claimLock(
-    params: ClaimLockParams,
-  ): Promise<{ txHash: string }> {
-    loading.value = true
-    error.value = null
-
-    try {
-      const resolved = resolveHtlcContract(params.chain)
-      const secret = deriveSwapSecret({ swapId: params.swapId })
-      const preimage = params.preimage ?? secret.preimageHex
-
-      if (resolved.family === 'evm') {
-        const wallet = useMonadWallet() as any
-        const withdrawParams = encodeEvmHtlcWithdraw({
-          lockId: params.swapId,
-          preimage,
-          contractAddress: resolved.contractAddress,
-        })
-
-        let txHash: string
-        if (wallet.httpClient?.submitRawTransaction && wallet.identity) {
-          const signer = new MonadAccountTxSigner({
-            privateKey: wallet.identity.toPrivateKeyHex(),
-            provider: wallet.provider,
-            httpClient: wallet.httpClient,
-          })
-          const signed = await signer.buildAndSignCall(
-            withdrawParams.to,
-            0n,
-            withdrawParams.data,
-          )
-          txHash = await wallet.httpClient.submitRawTransaction(signed.rawTx)
-        } else {
-          txHash =
-            '0x' +
-            Array.from(crypto.getRandomValues(new Uint8Array(32)))
-              .map(b => b.toString(16).padStart(2, '0'))
-              .join('')
-        }
-
-        return { txHash }
-      }
-
-      if (resolved.family === 'solana') {
-        const caller =
-          params.recipient ??
-          new PublicKey(new Uint8Array(32).fill(1)).toBase58()
-        await buildSolanaSwapWithdrawInstruction({
-          caller,
-          recipient: caller,
-          lockId: params.swapId,
-          preimage,
-          programId: resolved.contractAddress,
-        })
-
-        const txHash = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join('')
-        return { txHash }
-      }
-
-      throw new Error(`Unsupported chain family for claim: ${resolved.family}`)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      error.value = msg
-      throw err
-    } finally {
-      loading.value = false
-    }
+  async function claimLock(_params: ClaimLockParams): Promise<{ txHash: string }> {
+    return refuse()
   }
 
-  /**
-   * Refunds expired funds after the timelock expires.
-   */
   async function refundLock(
-    params: RefundLockParams,
+    _params: RefundLockParams,
   ): Promise<{ txHash: string }> {
-    loading.value = true
-    error.value = null
+    return refuse()
+  }
 
-    try {
-      const resolved = resolveHtlcContract(params.chain)
-
-      if (resolved.family === 'evm') {
-        const wallet = useMonadWallet() as any
-        const refundParams = encodeEvmHtlcRefund({
-          lockId: params.swapId,
-          contractAddress: resolved.contractAddress,
-        })
-
-        let txHash: string
-        if (wallet.httpClient?.submitRawTransaction && wallet.identity) {
-          const signer = new MonadAccountTxSigner({
-            privateKey: wallet.identity.toPrivateKeyHex(),
-            provider: wallet.provider,
-            httpClient: wallet.httpClient,
-          })
-          const signed = await signer.buildAndSignCall(
-            refundParams.to,
-            0n,
-            refundParams.data,
-          )
-          txHash = await wallet.httpClient.submitRawTransaction(signed.rawTx)
-        } else {
-          txHash =
-            '0x' +
-            Array.from(crypto.getRandomValues(new Uint8Array(32)))
-              .map(b => b.toString(16).padStart(2, '0'))
-              .join('')
-        }
-
-        return { txHash }
-      }
-
-      if (resolved.family === 'solana') {
-        const caller =
-          params.refundAddress ??
-          new PublicKey(new Uint8Array(32).fill(1)).toBase58()
-        const recipient = params.recipient ?? caller
-        await buildSolanaSwapRefundInstruction({
-          caller,
-          lockId: params.swapId,
-          refundAddress: params.refundAddress,
-          programId: resolved.contractAddress,
-        })
-
-        const txHash = Array.from(crypto.getRandomValues(new Uint8Array(32)))
-          .map(b => b.toString(16).padStart(2, '0'))
-          .join('')
-        return { txHash }
-      }
-
-      throw new Error(`Unsupported chain family for refund: ${resolved.family}`)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      error.value = msg
-      throw err
-    } finally {
-      loading.value = false
-    }
+  function refuse(): never {
+    error.value = SWAPS_NOT_AVAILABLE
+    throw new Error(SWAPS_NOT_AVAILABLE)
   }
 
   return {

@@ -197,12 +197,8 @@ describe('compactAmountText (amount text from a balance observation)', () => {
   })
 
   it('preserves loading and status text as-is', () => {
-    expect(compactAmountText('Loading balance…')).toBe(
-      'Loading balance…',
-    )
-    expect(compactAmountText('Balance unavailable')).toBe(
-      'Balance unavailable',
-    )
+    expect(compactAmountText('Loading balance…')).toBe('Loading balance…')
+    expect(compactAmountText('Balance unavailable')).toBe('Balance unavailable')
     expect(compactAmountText('')).toBe('')
   })
 })
@@ -216,7 +212,9 @@ describe('the compact and the full form agree', () => {
     expect(compactAmountText('0.022719999999999999 MON')).toBe('22.71 mMON')
     // The old list rule rounded 0.08849 up to "88.5 m" beside "0.0884" elsewhere.
     expect(compactAmountText('0.08849 MONT')).toBe('88.49 mMONT')
-    expect(formatDisplayAmount(monad, parseEther('0.08849'))).toBe('0.08849 MON')
+    expect(formatDisplayAmount(monad, parseEther('0.08849'))).toBe(
+      '0.08849 MON',
+    )
   })
 
   it('never shows a non-zero amount as zero and keeps exact prefix boundaries', () => {

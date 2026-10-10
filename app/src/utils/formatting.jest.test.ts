@@ -16,11 +16,7 @@ import {
 } from '@frank/nakamoto'
 
 import { colorSalt } from './constants'
-import {
-  addressColor,
-  addressColorFromStr,
-  pubKeyToColor,
-} from './formatting'
+import { addressColor, addressColorFromStr, pubKeyToColor } from './formatting'
 
 function digestOf(bytes: Uint8Array): Buffer {
   const hashed = sha256(Uint8Array.from(bytes))

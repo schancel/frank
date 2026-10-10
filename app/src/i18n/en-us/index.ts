@@ -921,7 +921,6 @@ export default {
     receiveMonad: 'Receive MON',
     profile: 'Profile',
     settings: 'Settings',
-    wipeAndSave: 'Delete relay messages',
     changeLog: 'Changelog',
     showSeed: 'Show Seed',
     confirmSeed: 'Confirm Recovery Phrase',
@@ -1185,15 +1184,6 @@ export default {
       'Need to receive coins or tokens instead? Your Receive Address is managed in your Wallet.',
     goToWallet: 'Go to Wallet',
     scanPrompt: 'Scan to add as a contact on Frank',
-  },
-  wipeWallet: {
-    warning: 'Delete all relay messages?',
-    warningMsg:
-      'This permanently deletes every message stored on the relay server, along with the local copies in this app. Your wallet, seed phrase, and funds are not touched.',
-    cannotBeUndone: 'This cannot be undone.',
-    cancel: 'Cancel',
-    wipe: 'Delete All Messages',
-    spinnerText: 'Deleting messages…',
   },
   seedPhraseDialog: {
     seedPhrase: 'Recovery Phrase',

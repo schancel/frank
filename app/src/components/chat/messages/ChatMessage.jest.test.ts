@@ -111,6 +111,17 @@ describe('ChatMessage Retry and Discard', () => {
     expect(deleteMessage).not.toHaveBeenCalled()
   })
 
+  it('Retry of a message with no recorded stamp also goes to the store and deletes nothing', async () => {
+    retryOutgoing.mockResolvedValue({ state: 'busy' })
+    const { wrapper } = mountFailed()
+    const message = { ...wrapper.props('message') } as Record<string, unknown>
+    delete message.stampValueWei
+    await wrapper.setProps({ message: message as never })
+    await (wrapper.vm as unknown as { resend: () => Promise<void> }).resend()
+    expect(retryOutgoing).toHaveBeenCalledTimes(1)
+    expect(deleteMessage).not.toHaveBeenCalled()
+  })
+
   it('moves focus to the message status before the Retry button unmounts', async () => {
     let focusedBeforeRetry = false
     retryOutgoing.mockImplementation(async () => {

@@ -42,7 +42,6 @@
                   :style="messageScrollMarginStyle"
                   :ref="msg.payloadDigest"
                   :focus-after-retry="focusComposerAfterRetry"
-                  :focus-failed-after-retry="focusFailedAfterRetry"
                   @replyClicked="({ payloadDigest }) => setReply(payloadDigest)"
                   @forwardClicked="handleForwardClicked"
                   @replyDivClick="scrollToMessage"
@@ -413,16 +412,6 @@ export default defineComponent({
         ;(this.$refs.chatInput as { focus?: () => void } | undefined)?.focus?.()
       })
     },
-    focusFailedAfterRetry() {
-      void this.$nextTick(() => {
-        if (!this.retryFocusLost()) return
-        const failed = [...this.messages]
-          .reverse()
-          .find(message => message.outbound && message.status === 'error')
-        if (!failed) return
-        this.focusMessageStatus(failed.payloadDigest)
-      })
-    },
     /** True when keyed removal left focus on the viewport, not on a live control. */
     retryFocusLost() {
       const active = document.activeElement
@@ -434,14 +423,6 @@ export default defineComponent({
         return true
       }
       return !active.isConnected
-    },
-    focusMessageStatus(digest: string) {
-      const raw = this.$refs[digest] as
-        | { focusRetryStatus?: () => void }
-        | Array<{ focusRetryStatus?: () => void }>
-        | undefined
-      const message = Array.isArray(raw) ? raw[0] : raw
-      message?.focusRetryStatus?.()
     },
     resizeHandler() {
       const chatScroll = this.chatScroll

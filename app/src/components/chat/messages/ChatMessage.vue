@@ -318,7 +318,6 @@ export default defineComponent({
     const chats = useChatStore()
     return {
       deleteMessage: chats.deleteMessage,
-      getStampAmount: chats.getStampAmount,
       sendDirectMessage: chats.sendMessage,
       retryOutgoing: chats.retryOutgoing,
       getMessageItemPreview: (item: MessageItem) =>
@@ -367,22 +366,11 @@ export default defineComponent({
       required: false,
       default: undefined,
     },
-    /** Legacy failure replaces the deleted bubble; the parent focuses that error row. */
-    focusFailedAfterRetry: {
-      type: Function as PropType<() => void>,
-      required: false,
-      default: undefined,
-    },
   },
   methods: {
     openImage(image: string) {
       this.openedImage = image
       this.imageDialog = true
-    },
-    focusRetryStatus() {
-      ;(
-        this.$refs.suffix as { focusStatus?: () => void } | undefined
-      )?.focusStatus?.()
     },
     handleReplyDivClick(args: string) {
       this.$emit('replyDivClick', args)
@@ -425,68 +413,41 @@ export default defineComponent({
         ],
       })
     },
-    /** Manual Retry of a failed message. For a Monad message this never deletes it first: the
-     * store asks the wallet whether the earlier payment is still live and re-sends the same bytes
-     * if so (see `stores/chats.ts`, `sendMessage`); a new payment happens only if the earlier one
-     * can no longer be delivered. */
+    /** Manual Retry of a failed message. It never deletes the message first: the store asks
+     * the wallet whether the earlier payment is still live and re-sends the same bytes if so
+     * (see `stores/chats.ts`, `sendMessage`); a new payment happens only if the earlier one can
+     * no longer be delivered. */
     async resend(confirmed = false) {
       // The Retry button unmounts as soon as the state changes; keep focus on this message.
       ;(
         this.$refs.suffix as { focusStatus?: () => void } | undefined
       )?.focusStatus?.()
-      if (this.message.stampValueWei !== undefined) {
-        try {
-          const outcome = await this.retryOutgoing({
-            wallet: useMonadWallet(),
-            address: this.address,
-            payloadDigest: this.payloadDigest,
-            confirmed,
-          })
-          if (outcome.state === 'needs-confirmation') {
-            this.$q
-              .dialog({
-                title: this.$t('outgoing.sendAgainTitle'),
-                message:
-                  outcome.reason === 'recovered'
-                    ? this.$t('outgoing.sendAgainRecovered')
-                    : this.$t('outgoing.sendAgainUnverified'),
-                ok: { label: this.$t('outgoing.sendAgain') },
-                cancel: true,
-                persistent: true,
-              })
-              .onOk(() => void this.resend(true))
-          } else if (outcome.state === 'sent') {
-            // The store rekeys this bubble from its optimistic id to the final payload digest.
-            // Ask the stable Chat parent to take focus after this component unmounts.
-            this.focusAfterRetry?.()
-          }
-        } catch (error) {
-          errorNotify(error instanceof Error ? error : new Error(String(error)))
-        }
-        return
-      }
-
-      // Compatibility path for legacy Lotus messages. Construction can emit messageSendError
-      // and fulfill undefined; that is not delivery. Rejection after delete has no bubble left.
       try {
-        await this.deleteMessage({
+        const outcome = await this.retryOutgoing({
+          wallet: useMonadWallet(),
           address: this.address,
           payloadDigest: this.payloadDigest,
+          confirmed,
         })
-        const stampAmount = this.getStampAmount(this.address)
-        const outcome = await this.$relayClient.sendMessageImpl({
-          address: this.address,
-          items: this.message.items,
-          stampAmount,
-        })
-        if (outcome === undefined || outcome === null) {
-          this.focusFailedAfterRetry?.()
-          return outcome
+        if (outcome.state === 'needs-confirmation') {
+          this.$q
+            .dialog({
+              title: this.$t('outgoing.sendAgainTitle'),
+              message:
+                outcome.reason === 'recovered'
+                  ? this.$t('outgoing.sendAgainRecovered')
+                  : this.$t('outgoing.sendAgainUnverified'),
+              ok: { label: this.$t('outgoing.sendAgain') },
+              cancel: true,
+              persistent: true,
+            })
+            .onOk(() => void this.resend(true))
+        } else if (outcome.state === 'sent') {
+          // The store rekeys this bubble from its optimistic id to the final payload digest.
+          // Ask the stable Chat parent to take focus after this component unmounts.
+          this.focusAfterRetry?.()
         }
-        this.focusAfterRetry?.()
-        return outcome
       } catch (error) {
-        this.focusFailedAfterRetry?.()
         errorNotify(error instanceof Error ? error : new Error(String(error)))
       }
     },

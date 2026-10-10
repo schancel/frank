@@ -943,7 +943,6 @@ export default {
     receiveMonad: 'Recevoir des MON',
     profile: 'Profil',
     settings: 'Configuration',
-    wipeAndSave: 'Supprimer les messages du relais',
     changeLog: 'Journal des modifications',
     showSeed: 'Montrer la phrase de passe',
     confirmSeed: 'Confirmer la phrase de récupération',
@@ -1218,15 +1217,6 @@ export default {
       'Besoin de recevoir des pièces ou jetons ? Votre adresse de réception est gérée dans votre portefeuille.',
     goToWallet: 'Aller au portefeuille',
     scanPrompt: 'Scannez pour ajouter comme contact sur Frank',
-  },
-  wipeWallet: {
-    warning: 'Supprimer tous les messages du relais ?',
-    warningMsg:
-      'Cette opération supprime définitivement tous les messages stockés sur le serveur relais, ainsi que les copies locales dans cette application. Votre portefeuille, votre phrase de récupération et vos fonds ne sont pas concernés.',
-    cannotBeUndone: 'Cette opération est irréversible.',
-    cancel: 'Annuler',
-    wipe: 'Supprimer tous les messages',
-    spinnerText: 'Suppression des messages…',
   },
   seedPhraseDialog: {
     close: 'Fermer',

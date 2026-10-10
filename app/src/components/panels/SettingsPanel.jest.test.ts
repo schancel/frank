@@ -2,12 +2,6 @@
 
 import { shallowMount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { legacyLotusModeForFlag } from 'src/utils/legacy-mode'
-
-let mockLegacyFlag: string | undefined
-jest.mock('src/utils/runtime-mode', () => ({
-  legacyLotusModeEnabled: () => legacyLotusModeForFlag(mockLegacyFlag),
-}))
 
 jest.mock('../../adapters/level-utxo-store', () => ({
   store: Promise.resolve({}),
@@ -40,7 +34,6 @@ import SettingsPanel from './SettingsPanel.vue'
 describe('SettingsPanel wallet-action split (#399)', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    mockLegacyFlag = undefined
     mockRouterPush.mockReset()
     mockRouterReplace.mockReset()
     mockCurrentPath = '/forum'
@@ -137,25 +130,6 @@ describe('SettingsPanel wallet-action split (#399)', () => {
       .find(b => b.text() === 'SettingPanel.settings')
     await settingsBtn!.trigger('click')
     expect(wrapper.emitted('closeDrawer')).toBeUndefined()
-    wrapper.unmount()
-  })
-
-  it('does not offer legacy relay deletion in default Monad settings', () => {
-    const { wrapper, router } = mountPanel()
-    expect(wrapper.text()).not.toContain('SettingPanel.wipeAndSave')
-    expect(router.push).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('opens the legacy confirmation route only in explicit Lotus mode', async () => {
-    mockLegacyFlag = 'false'
-    const { wrapper, router } = mountPanel()
-    const action = wrapper
-      .findAll('button')
-      .find(button => button.text() === 'SettingPanel.wipeAndSave')
-    expect(action).toBeDefined()
-    await action!.trigger('click')
-    expect(router.push).toHaveBeenCalledWith('/wipe-wallet')
     wrapper.unmount()
   })
 

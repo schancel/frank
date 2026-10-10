@@ -51,9 +51,12 @@ pub struct OracleConf {
     /// Days kept at full resolution; older points are thinned to the last one of each day.
     #[serde(default = "default_full_resolution_days")]
     pub full_resolution_days: u64,
-    /// AVU_spot is taken over the mean daily electricity price of this many days.
+    /// `electricity/aggregate` is each region's mean daily price over this many days.
     #[serde(default = "default_electricity_window_days")]
     pub electricity_window_days: u64,
+    /// A region with fewer daily prices than this in the window is left out of the aggregate.
+    #[serde(default = "default_electricity_min_days")]
+    pub electricity_min_days: u64,
     /// Complete timeout of one upstream request.
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
@@ -125,6 +128,12 @@ pub struct OracleStatsChainConf {
     pub name: String,
     /// Base units per coin are `10^decimals`.
     pub decimals: u32,
+    /// For a chain that retargets every block (Dogecoin), whose difficulty swings between
+    /// readings: the chain's target block time in seconds. The feed then carries a 24-hour
+    /// figure, the provider's 24-hour hash rate times this, as difficulty (per 2^32 hashes),
+    /// instead of the difficulty of the moment. Only for chains with Bitcoin's difficulty rule.
+    #[serde(default)]
+    pub hashrate_block_seconds: Option<u64>,
     /// The part of the block subsidy the miner receives, as a decimal (`"0.58"`). Default 1.
     #[serde(default)]
     pub miner_share: Option<String>,
@@ -150,9 +159,9 @@ pub struct OracleElectricityConf {
     pub label: String,
     /// The attribution the source asks for.
     pub attribution: String,
-    /// Weight of this region's daily mean in `electricity/aggregate`. Zero keeps it out.
-    #[serde(default = "default_weight")]
-    pub weight: u32,
+    /// Whether this region counts in `electricity/aggregate`. Default true.
+    #[serde(default = "default_true")]
+    pub in_aggregate: bool,
     /// The code that reads this source.
     pub adapter: OracleElectricityAdapter,
     /// The endpoint. For `eia` this is the complete v2 data URL without `api_key`.
@@ -270,6 +279,9 @@ impl OracleConf {
         }
         if !(1..=366).contains(&self.electricity_window_days) {
             return Err(InvalidSetting("electricity_window_days"));
+        }
+        if !(1..=self.electricity_window_days).contains(&self.electricity_min_days) {
+            return Err(InvalidSetting("electricity_min_days"));
         }
         if self.timeout_ms == 0 || self.timeout_ms > 120_000 {
             return Err(InvalidSetting("timeout_ms"));
@@ -397,8 +409,11 @@ fn default_full_resolution_days() -> u64 {
 fn default_electricity_window_days() -> u64 {
     30
 }
-fn default_weight() -> u32 {
-    1
+fn default_electricity_min_days() -> u64 {
+    10
+}
+fn default_true() -> bool {
+    true
 }
 fn default_timeout_ms() -> u64 {
     10_000

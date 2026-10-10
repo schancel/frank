@@ -536,17 +536,27 @@ impl Collector {
                 "stats" => self.stats_round(now).await,
                 _ => self.electricity_round(now).await,
             };
+            // A round in which a provider failed comes round again once the shortest rest is
+            // over, not a whole interval later: a daily source that was down is asked again
+            // the same day. Resting providers are not asked, so this costs no extra requests.
+            let mut ran_at = now;
             match result {
-                Ok(report) => tracing::info!(
-                    round = kind,
-                    requests = ?report.requests,
-                    failures = ?report.failures,
-                    points = report.points,
-                    "oracle: round finished"
-                ),
+                Ok(report) => {
+                    if !report.failures.is_empty() {
+                        ran_at = now - interval.saturating_sub(BACKOFF_BASE_S);
+                        next = next.min(BACKOFF_BASE_S);
+                    }
+                    tracing::info!(
+                        round = kind,
+                        requests = ?report.requests,
+                        failures = ?report.failures,
+                        points = report.points,
+                        "oracle: round finished"
+                    )
+                }
                 Err(error) => tracing::error!(round = kind, %error, "oracle: store failed"),
             }
-            if let Err(error) = self.feed.store().set_meta(&key, now) {
+            if let Err(error) = self.feed.store().set_meta(&key, ran_at) {
                 tracing::error!(%error, "oracle: store failed");
             }
             if kind == "electricity" {
@@ -962,8 +972,22 @@ symbols = { btc-mainnet = "BTC", xec-mainnet = "XEC" }
         let latest: serde_json::Value = serde_json::from_slice(&feed.latest().body)?;
         assert_eq!(latest["generatedAt"], T0);
         assert!(latest["series"]["efficiency/sha256"]["points"].is_array());
-        // Not due again until the interval has passed, however often the task wakes.
+        // Nothing is asked again before the providers have rested, however often the task
+        // wakes; then the hourly and daily rounds come round again too, not an interval later.
         assert_eq!(collector.tick(T0 + 60, &mut rng).await, 540);
+        assert_eq!(
+            feed.store().meta("last-round/electricity")?,
+            Some(T0 + 600 - 86_400)
+        );
+        collector.tick(T0 + 600, &mut rng).await;
+        assert_eq!(
+            feed.store().meta("last-round/electricity")?,
+            Some(T0 + 1200 - 86_400)
+        );
+        assert!(
+            !collector.rested("de-lu", T0 + 601),
+            "asked again, failed again, rests longer"
+        );
         Ok(())
     }
 
@@ -1000,6 +1024,10 @@ miner_share = "0.58"
 [chain_stats.chains.xmr-mainnet]
 name = "monero"
 decimals = 12
+[chain_stats.chains.doge-mainnet]
+name = "dogecoin"
+decimals = 8
+hashrate_block_seconds = 60
 
 [[electricity]]
 region = "de-lu"
@@ -1047,6 +1075,11 @@ fx_url = "http://stub/fx"
         );
         // No price collected for eCash: no market cap is made up.
         assert_eq!(at("marketCap/xec-mainnet"), None);
+        // Dogecoin retargets every block (56.1M at that moment): the feed carries the 24-hour
+        // hash rate, 3,826,509,895,446,723 H/s over 60-second blocks, as difficulty.
+        let doge = at("difficulty/doge-mainnet").expect("doge difficulty");
+        assert_eq!(doge, 3_826_509_895_446_723.0 * 60.0 / 4_294_967_296.0);
+        assert!((53.0e6..54.0e6).contains(&doge), "{doge}");
         // Monero: difficulty, and no block reward because Blockchair publishes no issuance.
         assert_eq!(at("difficulty/xmr-mainnet"), Some(740_020_798_194.0));
         assert_eq!(at("blockReward/xmr-mainnet"), None);

@@ -193,7 +193,9 @@ bch-mainnet = { name = "bitcoin-cash", decimals = 8 }
 # eCash consensus pays the miner 58% of the subsidy (32% miner fund, 10% staking reward).
 xec-mainnet = { name = "ecash", decimals = 2, miner_share = "0.58" }
 ltc-mainnet = { name = "litecoin", decimals = 8 }
-doge-mainnet = { name = "dogecoin", decimals = 8 }
+# Dogecoin retargets every block and its difficulty swings about 15% between readings: the
+# feed carries a 24-hour figure, the 24-hour hash rate over its 60-second blocks.
+doge-mainnet = { name = "dogecoin", decimals = 8, hashrate_block_seconds = 60 }
 xmr-mainnet = { name = "monero", decimals = 12 }
 
 # Wholesale day-ahead electricity, one request a day per region plus one for the euro rates.

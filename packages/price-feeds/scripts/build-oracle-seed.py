@@ -8,7 +8,11 @@ this directory). This script fetches nothing; it only reshapes those files into 
     basket.json                       -> basket (verbatim, without "about")
     btc-mining-monthly.json           -> price/, difficulty/, blockReward/, marketCap/ for
                                          btc-mainnet and efficiency/sha256, one point a month
-    curated-steps.json (if present)   -> efficiency/<algorithm> dated steps
+    mined-chains-monthly.json         -> the same four series for the other basket chains, one
+      (if present)                       point a month; block reward times the dated miner share
+                                         from curated-steps.json
+    curated-steps.json (if present)   -> efficiency/<algorithm> dated steps (estimatedBefore
+                                         where the early steps are estimates)
     wholesale-electricity-daily.json  -> electricity/<region> daily points and the regions'
       (if present)                       labels (the aggregate is computed by the relay)
 
@@ -79,6 +83,38 @@ def build():
             max(unix(row["retrieved"]) for row in rows),
             [(unix(row["from"]), row["hashesPerSecond"] * JOULES_PER_KWH / row["watts"])
              for row in rows])
+        # Steps marked as estimates come first; the first step that is not one ends them.
+        measured = [unix(row["from"]) for row in rows if not row.get("estimate")]
+        if measured and any(row.get("estimate") for row in rows):
+            out[f"efficiency/{algorithm}"]["estimatedBefore"] = min(measured)
+
+    # Dated miner-share steps: the part of the subsidy consensus pays the miner.
+    shares = {chain: sorted((unix(step["from"]), step["share"]) for step in entry["steps"])
+              for chain, entry in ((steps or {}).get("minerShare") or {}).items()
+              if isinstance(entry, dict) and entry.get("steps")}
+
+    def miner_share(chain, time):
+        in_force = [share for start, share in shares.get(chain, []) if start <= time]
+        return in_force[-1] if in_force else 1.0
+
+    mined = load("mined-chains-monthly.json")
+    if mined:
+        column = {name: index for index, name in enumerate(mined["columns"])}
+        as_of = unix(mined["retrieved"])
+        for chain, entry in mined["chains"].items():
+            rows = [(unix(row[column["month"]]), row) for row in entry["monthly"]]
+            pick = lambda name: [(t, row[column[name]]) for t, row in rows]
+            source = "Blockchair block aggregates, monthly"
+            out[f"price/{chain}"] = series("USD", source, as_of, pick("priceUsd"))
+            out[f"difficulty/{chain}"] = series("difficulty", source, as_of, pick("difficulty"))
+            out[f"blockReward/{chain}"] = series(
+                "coins per block to the miner", source + "; miner's share of the subsidy", as_of,
+                [(t, value * miner_share(chain, t))
+                 for t, value in pick("subsidyCoinsPerBlock") if value is not None])
+            out[f"marketCap/{chain}"] = series(
+                "USD", "price x coins in existence (Blockchair)", as_of,
+                [(t, row[column["priceUsd"]] * row[column["circulatingCoins"]]) for t, row in rows
+                 if row[column["priceUsd"]] and row[column["circulatingCoins"]]])
 
     power = load("wholesale-electricity-daily.json")
     for region, entry in ((power or {}).get("regions") or {}).items():

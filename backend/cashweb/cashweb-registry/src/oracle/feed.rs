@@ -1,8 +1,8 @@
 //! Builds the answers of `GET /oracle/v1/feed` from the store and the seed.
 //!
 //! One series is read through [`Feed::points`]: bundled points up to the first collected point,
-//! collected points from there on. `electricity/aggregate` is not stored: it is the weighted
-//! mean of the regions that have a point for the day, computed when read.
+//! collected points from there on. `electricity/aggregate` is not stored: it is derived from the
+//! regions' daily series when read (see [`Feed::aggregate`]), so it can never disagree with them.
 //!
 //! The latest answer is built after each collector round and kept in memory; serving it reads
 //! nothing.
@@ -106,9 +106,9 @@ impl Feed {
         &self.store
     }
 
-    /// Regions in the aggregate and their weights: configured rows, then regions only the seed
-    /// knows (weight 1).
-    fn regions(&self) -> Vec<(String, String, String, u32)> {
+    /// Regions: configured rows, then regions only the seed knows (which count in the aggregate).
+    /// `(id, label, attribution, counts in the aggregate)`.
+    fn regions(&self) -> Vec<(String, String, String, bool)> {
         let mut regions = self
             .plan
             .conf
@@ -119,7 +119,7 @@ impl Feed {
                     row.region.clone(),
                     row.label.clone(),
                     row.attribution.clone(),
-                    row.weight,
+                    row.in_aggregate,
                 )
             })
             .collect::<Vec<_>>();
@@ -129,29 +129,63 @@ impl Feed {
                     region.id.clone(),
                     region.label.clone(),
                     region.attribution.clone(),
-                    1,
+                    true,
                 ));
             }
         }
         regions
     }
 
-    fn aggregate(&self, from: u64, to: u64) -> Result<Vec<(u64, f64)>> {
-        let mut days = BTreeMap::<u64, (f64, f64)>::new();
-        for (region, _, _, weight) in self.regions() {
-            if weight == 0 {
-                continue;
-            }
-            for (day, price) in self.stored(&format!("electricity/{region}"), from, to)? {
-                let entry = days.entry(day - day % DAY_S).or_insert((0.0, 0.0));
-                entry.0 += price * f64::from(weight);
-                entry.1 += f64::from(weight);
+    /// `electricity/aggregate` over all time, and per region the latest day it counted in.
+    ///
+    /// The point for day `d` is the equally weighted mean, over the regions, of each region's
+    /// mean daily price in the `electricity_window_days` days ending at `d`. A region with
+    /// fewer than `electricity_min_days` prices in that window is left out of that day; a day
+    /// on which no region qualifies has no point. Only days some region has a price for are
+    /// considered: the series is never carried past the newest data.
+    fn aggregate(&self) -> Result<(Vec<(u64, f64)>, BTreeMap<String, u64>)> {
+        let window = self.plan.conf.electricity_window_days;
+        let min_days = self.plan.conf.electricity_min_days as usize;
+        let mut regions = Vec::new();
+        for (region, _, _, counts) in self.regions() {
+            if counts {
+                let daily = self
+                    .stored(&format!("electricity/{region}"), 0, u64::MAX)?
+                    .into_iter()
+                    .map(|(time, price)| (time / DAY_S, price))
+                    .collect::<Vec<_>>();
+                regions.push((region, daily));
             }
         }
-        Ok(days
-            .into_iter()
-            .map(|(day, (sum, weight))| (day, sum / weight))
-            .collect())
+        // One candidate day per day any counting region has a price for, as the client's
+        // `windowedElectricityAggregate` (packages/price-feeds/src/electricity-aggregate.ts).
+        let days = regions
+            .iter()
+            .flat_map(|(_, daily)| daily.iter().map(|(day, _)| *day))
+            .collect::<BTreeSet<_>>();
+        let mut points = Vec::new();
+        let mut last_contributed = BTreeMap::new();
+        for day in days {
+            let mut sum = 0.0;
+            let mut qualifying = 0u32;
+            for (region, daily) in &regions {
+                // The region's prices of the days (day - window, day].
+                let end = daily.partition_point(|(at, _)| *at <= day);
+                let start = daily.partition_point(|(at, _)| *at + window <= day);
+                let in_window = &daily[start..end];
+                if in_window.is_empty() || in_window.len() < min_days {
+                    continue;
+                }
+                sum +=
+                    in_window.iter().map(|(_, price)| price).sum::<f64>() / in_window.len() as f64;
+                qualifying += 1;
+                last_contributed.insert(region.clone(), day * DAY_S);
+            }
+            if qualifying > 0 {
+                points.push((day * DAY_S, sum / f64::from(qualifying)));
+            }
+        }
+        Ok((points, last_contributed))
     }
 
     /// Seed points before the first collected point, collected points from it on.
@@ -177,7 +211,9 @@ impl Feed {
     /// The points of a served series with `from <= time <= to`, oldest first.
     pub fn points(&self, name: &str, from: u64, to: u64) -> Result<Vec<(u64, f64)>> {
         if name == ELECTRICITY_AGGREGATE {
-            self.aggregate(from, to)
+            let (mut points, _) = self.aggregate()?;
+            points.retain(|(time, _)| (from..=to).contains(time));
+            Ok(points)
         } else {
             self.stored(name, from, to)
         }
@@ -186,7 +222,7 @@ impl Feed {
     /// The latest point of a served series at or before `time`.
     pub fn floor(&self, name: &str, time: u64) -> Result<Option<(u64, f64)>> {
         if name == ELECTRICITY_AGGREGATE {
-            return Ok(self.aggregate(0, time)?.pop());
+            return Ok(self.points(name, 0, time)?.pop());
         }
         if let Some(point) = self.store.floor(name, time)? {
             return Ok(Some(point));
@@ -260,13 +296,14 @@ impl Feed {
                 let regions = self
                     .regions()
                     .into_iter()
-                    .filter(|(_, _, _, weight)| *weight > 0)
+                    .filter(|(_, _, _, counts)| *counts)
                     .map(|(id, ..)| id)
                     .collect::<Vec<_>>();
                 (
                     "USD/kWh",
                     format!(
-                        "mean of the regions with a price that day: {}",
+                        "mean of each region's {}-day mean wholesale price: {}",
+                        conf.electricity_window_days,
                         regions.join(", ")
                     ),
                     conf.electricity_interval_s,
@@ -312,57 +349,72 @@ impl Feed {
             Some(time) => now.saturating_sub(time) > STALE_AFTER_INTERVALS * interval,
             None => promised,
         };
-        Ok(Some(serde_json::json!({
+        let mut entry = serde_json::json!({
             "unit": unit,
             "source": source,
             "asOf": newest_collected.or(seed_as_of).unwrap_or(0),
             "stale": stale,
             "points": points,
-        })))
+        });
+        // Bundled points before this time are estimates; the seed says so and the feed repeats it.
+        let estimated = self
+            .seed
+            .series
+            .get(name)
+            .and_then(|series| series.estimated_before);
+        if let Some(estimated_before) = estimated {
+            entry["estimatedBefore"] = estimated_before.into();
+        }
+        Ok(Some(entry))
     }
 
     fn envelope(
         &self,
         now: u64,
         series: serde_json::Map<String, serde_json::Value>,
-    ) -> serde_json::Value {
+    ) -> Result<serde_json::Value> {
+        let (_, last_contributed) = self.aggregate()?;
         let regions = self
             .regions()
             .into_iter()
             .map(|(id, label, attribution, _)| {
-                serde_json::json!({ "id": id, "label": label, "attribution": attribution })
+                let mut region =
+                    serde_json::json!({ "id": id, "label": label, "attribution": attribution });
+                if let Some(day) = last_contributed.get(&id) {
+                    region["lastContributed"] = (*day).into();
+                }
+                region
             })
             .collect::<Vec<_>>();
-        serde_json::json!({
+        Ok(serde_json::json!({
             "version": 1,
             "generatedAt": now,
             "basket": self.seed.basket,
             "electricity": {
                 "windowDays": self.plan.conf.electricity_window_days,
+                "minDays": self.plan.conf.electricity_min_days,
                 "regions": regions,
             },
             "series": series,
-        })
+        }))
     }
 
-    fn window_s(&self) -> u64 {
-        self.plan.conf.electricity_window_days * DAY_S
-    }
-
+    /// The latest answer: exactly one point per series, its latest. (A day-ahead electricity
+    /// price is stamped at the start of its day, so the latest point may be today's.)
     fn build_latest(&self, now: u64) -> Result<serde_json::Value> {
         let mut series = serde_json::Map::new();
         for name in self.names()? {
-            let points = if name.starts_with("electricity/") {
-                // Day-ahead prices are stamped at the start of their day, which may be tomorrow.
-                self.points(&name, now.saturating_sub(self.window_s()), u64::MAX)?
+            let horizon = if name.starts_with("electricity/") {
+                now + DAY_S
             } else {
-                self.floor(&name, now)?.into_iter().collect()
+                now
             };
+            let points = self.floor(&name, horizon)?.into_iter().collect();
             if let Some(entry) = self.series(&name, points, now)? {
                 series.insert(name, entry);
             }
         }
-        Ok(self.envelope(now, series))
+        self.envelope(now, series)
     }
 
     /// Rebuilds the cached latest answer. Called after each collector round. On a store error
@@ -390,9 +442,8 @@ impl Feed {
         )
     }
 
-    /// A range answer: per series, what is needed to evaluate it at `since` (the floor point;
-    /// for electricity the window of days before), then the points in `(since, until]` thinned
-    /// to the last of each `step` seconds.
+    /// A range answer: per series the floor point at `since`, then the points in
+    /// `(since, until]` thinned to the last of each `step` seconds.
     pub fn range(
         &self,
         since: u64,
@@ -410,11 +461,7 @@ impl Feed {
         Ok((|| {
             let mut series = serde_json::Map::new();
             for name in self.names()? {
-                let mut points = if name.starts_with("electricity/") {
-                    self.points(&name, since.saturating_sub(self.window_s()), since)?
-                } else {
-                    self.floor(&name, since)?.into_iter().collect()
-                };
+                let mut points: Vec<_> = self.floor(&name, since)?.into_iter().collect();
                 if since < until {
                     points.extend(thin(self.points(&name, since + 1, until)?, step));
                 }
@@ -422,7 +469,7 @@ impl Feed {
                     series.insert(name, entry);
                 }
             }
-            Ok(Answer::new(&self.envelope(now, series)))
+            Ok(Answer::new(&self.envelope(now, series)?))
         })())
     }
 }
@@ -475,6 +522,7 @@ fx_url = "http://127.0.0.1:1/fx"
             unit: "u".to_owned(),
             source: source.to_owned(),
             as_of: 5_000_000,
+            estimated_before: (source == "curated").then_some(2 * DAY_S),
             points: points.to_vec(),
         };
         Seed {
@@ -564,47 +612,84 @@ fx_url = "http://127.0.0.1:1/fx"
         Ok(())
     }
 
-    /// The aggregate is the mean of the regions that have a price for the day; a day one region
-    /// lacks is that of the other alone; a zero weight keeps a region out.
+    /// A three-day window needing two days, so the arithmetic fits in a comment.
+    fn short_window() -> String {
+        format!("electricity_window_days = 3\nelectricity_min_days = 2\n{CONF}")
+    }
+
+    /// The aggregate point of a day is the mean, over regions, of each region's mean price in
+    /// the window ending that day; a region with too few days in the window is left out, a day
+    /// nobody qualifies has no point, and each region reports the last day it counted in.
     #[test]
-    fn the_aggregate_is_the_mean_of_the_regions_present_each_day() -> Result<()> {
+    fn the_aggregate_is_the_mean_of_each_regions_window_mean() -> Result<()> {
         let dir = tempdir::TempDir::new("oracle-feed")?;
-        let feed = feed(&dir, CONF);
+        let feed = feed(&dir, &short_window());
+        // de-lu: day 58 (bundled) 0.10, then collected; us-pjm-west (bundled): 58 0.04, 59 0.06.
         feed.store().write(
             &[],
             &[
                 point("electricity/de-lu", 59 * DAY_S, -0.02),
                 point("electricity/de-lu", 60 * DAY_S, 0.2),
+                point("electricity/de-lu", 61 * DAY_S, 0.3),
             ],
         )?;
         let aggregate = feed.points(ELECTRICITY_AGGREGATE, 0, u64::MAX)?;
-        assert_eq!(aggregate.len(), 3);
-        assert!(
-            (aggregate[0].1 - 0.07).abs() < 1e-12,
-            "day 58: (0.10 + 0.04) / 2"
-        );
-        assert!(
-            (aggregate[1].1 - 0.02).abs() < 1e-12,
-            "day 59: (-0.02 + 0.06) / 2, negatives kept"
-        );
-        assert_eq!(aggregate[2], (60 * DAY_S, 0.2), "day 60: de-lu alone");
-
-        let weighted = CONF.replace("zone = \"DE-LU\"", "zone = \"DE-LU\"\nweight = 0");
-        let dir = tempdir::TempDir::new("oracle-feed")?;
-        let only_us = super::tests::feed(&dir, &weighted);
+        let days = aggregate
+            .iter()
+            .map(|(time, _)| time / DAY_S)
+            .collect::<Vec<_>>();
+        assert_eq!(days, [59, 60, 61], "day 58: one day each, nobody qualifies");
+        let close = |index: usize, expected: f64| (aggregate[index].1 - expected).abs() < 1e-12;
+        // 59: de (0.10 - 0.02) / 2 = 0.04, us (0.04 + 0.06) / 2 = 0.05. Negative days are kept.
+        assert!(close(0, 0.045), "{aggregate:?}");
+        // 60: de (0.10 - 0.02 + 0.2) / 3, us still 0.05 from its two days in the window.
+        assert!(close(1, (0.28 / 3.0 + 0.05) / 2.0), "{aggregate:?}");
+        // 61: us has one day left in the window and is left out; de (-0.02 + 0.2 + 0.3) / 3.
+        assert!(close(2, 0.16), "{aggregate:?}");
         assert_eq!(
-            only_us.points(ELECTRICITY_AGGREGATE, 0, u64::MAX)?,
-            vec![(58 * DAY_S, 0.04), (59 * DAY_S, 0.06)]
+            feed.floor(ELECTRICITY_AGGREGATE, 61 * DAY_S - 1)?,
+            Some(aggregate[1])
         );
+
+        let answer = json(
+            &feed
+                .range(0, 100 * DAY_S, DAY_S, 100 * DAY_S)
+                .expect("valid")?,
+        );
+        assert_eq!(
+            answer["electricity"],
+            serde_json::json!({
+                "windowDays": 3,
+                "minDays": 2,
+                "regions": [
+                    { "id": "de-lu", "label": "Germany-Luxembourg day-ahead",
+                      "attribution": "Bundesnetzagentur | SMARD.de, CC BY 4.0",
+                      "lastContributed": 61 * DAY_S },
+                    { "id": "us-pjm-west", "label": "PJM West", "attribution": "ICE via EIA",
+                      "lastContributed": 60 * DAY_S },
+                ],
+            })
+        );
+
+        // A region configured out of the aggregate is still served, and does not count.
+        let out =
+            short_window().replace("zone = \"DE-LU\"", "zone = \"DE-LU\"\nin_aggregate = false");
+        let dir = tempdir::TempDir::new("oracle-feed")?;
+        let only_us = super::tests::feed(&dir, &out);
+        let aggregate = only_us.points(ELECTRICITY_AGGREGATE, 0, u64::MAX)?;
+        assert_eq!(aggregate.len(), 1);
+        assert_eq!(aggregate[0].0, 59 * DAY_S);
+        assert!((aggregate[0].1 - 0.05).abs() < 1e-12);
+        assert_eq!(only_us.points("electricity/de-lu", 0, u64::MAX)?.len(), 1);
         Ok(())
     }
 
-    /// What the app polls: one point per series, the electricity window, and metadata that
-    /// tells a live series from a bundled one and a fresh one from a stale one.
+    /// What the app polls: exactly one point per series, and metadata that tells a live series
+    /// from a bundled one and a fresh one from a stale one.
     #[test]
-    fn the_latest_answer_has_one_point_per_series_and_the_electricity_window() -> Result<()> {
+    fn the_latest_answer_has_exactly_one_point_per_series() -> Result<()> {
         let dir = tempdir::TempDir::new("oracle-feed")?;
-        let feed = feed(&dir, CONF);
+        let feed = feed(&dir, &short_window());
         let now = 60 * DAY_S + 1200;
         feed.store().write(
             &[],
@@ -612,21 +697,18 @@ fx_url = "http://127.0.0.1:1/fx"
                 point("price/btc-mainnet", now - 1200, 300.0),
                 point("price/btc-mainnet", now - 600, 301.0),
                 point("difficulty/btc-mainnet", now - 5 * 3600, 7.0),
+                point("electricity/de-lu", 59 * DAY_S, 0.1),
                 point("electricity/de-lu", 60 * DAY_S, 0.2),
-                point("electricity/de-lu", 20 * DAY_S, 0.9),
             ],
         )?;
         feed.rebuild_latest(now);
         let latest = json(&feed.latest());
         assert_eq!(latest["version"], 1);
         assert_eq!(latest["generatedAt"], now);
-        assert_eq!(latest["electricity"]["windowDays"], 30);
-        assert_eq!(latest["electricity"]["regions"][0]["id"], "de-lu");
-        assert_eq!(
-            latest["electricity"]["regions"][1]["attribution"],
-            "ICE via EIA"
-        );
-        let series = &latest["series"];
+        let series = latest["series"].as_object().expect("series");
+        for (name, entry) in series {
+            assert_eq!(entry["points"].as_array().map(Vec::len), Some(1), "{name}");
+        }
         let price = &series["price/btc-mainnet"];
         assert_eq!(price["points"], serde_json::json!([[now - 600, 301.0]]));
         assert_eq!(price["asOf"], now - 600);
@@ -634,24 +716,23 @@ fx_url = "http://127.0.0.1:1/fx"
         assert_eq!(price["source"], "relay: smoothed over a, b");
         // Five hours without chain statistics on an hourly round: stale, and it says so.
         assert_eq!(series["difficulty/btc-mainnet"]["stale"], true);
-        // Curated steps are bundled: one point, the bundle's date, never stale.
-        assert_eq!(
-            series["efficiency/sha256"]["points"],
-            serde_json::json!([[DAY_S, 5e16]])
-        );
-        assert_eq!(series["efficiency/sha256"]["asOf"], 5_000_000);
-        assert_eq!(series["efficiency/sha256"]["stale"], false);
-        // Electricity: the window only (day 20 is outside thirty days), every day in it.
+        // Curated steps are bundled: the bundle's date, never stale, estimates marked.
+        let efficiency = &series["efficiency/sha256"];
+        assert_eq!(efficiency["points"], serde_json::json!([[DAY_S, 5e16]]));
+        assert_eq!(efficiency["asOf"], 5_000_000);
+        assert_eq!(efficiency["stale"], false);
+        assert_eq!(efficiency["estimatedBefore"], 2 * DAY_S);
+        assert!(price.get("estimatedBefore").is_none());
+        // Electricity: today's day-ahead point, and today's aggregate:
+        // de (0.10 + 0.1 + 0.2) / 3 and us (0.04 + 0.06) / 2, averaged.
         assert_eq!(
             series["electricity/de-lu"]["points"],
             serde_json::json!([[60 * DAY_S, 0.2]])
         );
-        assert_eq!(
-            series[ELECTRICITY_AGGREGATE]["points"]
-                .as_array()
-                .map(Vec::len),
-            Some(3)
-        );
+        let aggregate = &series[ELECTRICITY_AGGREGATE]["points"][0];
+        assert_eq!(aggregate[0], 60 * DAY_S);
+        assert!((aggregate[1].as_f64().unwrap() - (0.4 / 3.0 + 0.05) / 2.0).abs() < 1e-12);
+        assert_eq!(series[ELECTRICITY_AGGREGATE]["stale"], false);
         // A region with bundled history only and no collector row.
         assert_eq!(series["electricity/us-pjm-west"]["asOf"], 5_000_000);
         // Nothing the relay has no point for is listed.
@@ -690,10 +771,10 @@ fx_url = "http://127.0.0.1:1/fx"
         assert_eq!(price[1], serde_json::json!([start + 2 * 3600 - 600, 311.0]));
         assert_eq!(price[5], serde_json::json!([start + 6 * 3600 - 600, 335.0]));
         assert_eq!(price.len(), 1 + 5);
-        // Electricity is led by its window, not by one point.
+        // Electricity is led by its floor point like any other series.
         assert_eq!(
             answer["series"]["electricity/de-lu"]["points"],
-            serde_json::json!([[58 * DAY_S, 0.1], [59 * DAY_S, 0.1]])
+            serde_json::json!([[59 * DAY_S, 0.1]])
         );
         // An instant: just what evaluates the series there.
         let instant = json(&feed.range(since, since, 1, until).expect("valid")?);

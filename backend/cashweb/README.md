@@ -150,10 +150,9 @@ efficiency and electricity prices: the inputs of every AVU figure the app shows.
 (series names, lookup semantics, formulas) is `docs/protocol/oracle/README.md`. The relay serves
 the inputs and does not compute AVU. The feed is for display and valuation, never a quote.
 
-- `?latest` (or no query): one current point per series and the last `electricity_window_days`
-  daily electricity points. Built after each collector round and served from memory; about 6 kB
-  with the shipped configuration. `Cache-Control: public, max-age=600` and an `ETag`
-  (`If-None-Match` answers `304`).
+- `?latest` (or no query): exactly one point per series, its latest. Built after each collector
+  round and served from memory; about 7 kB with the shipped configuration (1.5 kB gzipped).
+  `Cache-Control: public, max-age=600` and an `ETag` (`If-None-Match` answers `304`).
 - `?since=<unixSeconds>&until=<unixSeconds>&step=<seconds>`: history for a chart: per series the
   point in force at `since`, then the last point of each step. At most 1000 steps per request; a
   smaller `step` is refused with `400` naming the smallest allowed. Cacheable for a day once
@@ -172,7 +171,9 @@ contacted before the relay is listening, and no provider failure reaches message
 provider that fails (non-2xx, timeout, unreadable answer) is skipped for the round and left
 alone for 10 minutes, doubling with each further failure up to 6 hours. Failures are logged with
 the provider's name and the kind of failure only: never a URL (it may carry a key) and never
-upstream text. A round that is not yet due after a restart is not repeated.
+upstream text. A round in which a provider failed comes round again after 10 minutes (resting
+providers are not asked), so a daily source that was down is asked again the same day. A round
+that is not yet due after a restart is not repeated.
 
 - Prices, every `price_interval_s` (10 minutes): two providers are drawn at random and each is
   asked once for every asset it lists. Per asset: two answers within `agree_tolerance_bps` (2%)
@@ -190,13 +191,20 @@ upstream text. A round that is not yet due after a restart is not repeated.
   asset the two drawn do not.
 - Chain statistics, every `stats_interval_s` (1 hour): one Blockchair `/stats` request gives
   every chain's difficulty, coins in existence and the subsidy it paid per block over 24 hours.
-  `blockReward/<chain>` is that subsidy times `miner_share`; `marketCap/<chain>` is coins in
-  existence times the relay's smoothed price.
+  `blockReward/<chain>` is that subsidy times `miner_share` (eCash: 0.58);
+  `marketCap/<chain>` is coins in existence times the relay's smoothed price. A chain with
+  `hashrate_block_seconds` (Dogecoin: 60) retargets every block and swings about 15% between
+  readings, so its difficulty is a 24-hour figure: the 24-hour hash rate times the block time.
 - Electricity, every `electricity_interval_s` (1 day): per region one request for day-ahead
-  prices and one for the ECB euro reference rates. Each complete UTC day becomes one point: the
-  mean price in US dollars per kWh. `electricity/aggregate`, the series AVU_spot uses, is the
-  weighted mean (`weight`, default 1) of the regions that have a point for the day, computed
-  when read. Zero and negative days are kept.
+  prices and one for the ECB euro reference rates. Each complete UTC day becomes one point of
+  `electricity/<region>`: the day's mean price in US dollars per kWh, zero and negative days
+  included. `electricity/aggregate`, the series AVU_spot is read from, is derived when read
+  and never stored: its point for a day is the equally weighted mean, over the regions with
+  `in_aggregate` (default true), of each region's mean daily price in the
+  `electricity_window_days` (30) days ending that day; a region with fewer than
+  `electricity_min_days` (10) prices in that window is left out, and the series ends at the
+  latest day any region has a price for. The feed's `electricity` block names each region,
+  its attribution and the last day it counted.
 
 Keys stay on the server. A row with `key_env` is used only when that environment variable is
 set; the key is sent to its provider and appears in no log and no answer. The shipped

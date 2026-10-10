@@ -41,6 +41,9 @@ pub struct SeedSeries {
     pub source: String,
     /// When the data was retrieved, unix seconds.
     pub as_of: u64,
+    /// Points before this time are estimates, not measurements.
+    #[serde(default)]
+    pub estimated_before: Option<u64>,
     /// `[unixSeconds, value]`, oldest first, strictly increasing times.
     pub points: Vec<(u64, f64)>,
 }

@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from 'fs'
+import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -102,6 +102,26 @@ describe('Identity Commands', () => {
     expect(parsed.encryptionPublicKey).toBe(created.encryptionPublicKey)
     expect(parsed.registered).toBe(false)
     expect(parsed.profile).toBeNull()
+    // No message command has run, so there is no messaging account yet.
+    expect(parsed.messagingAddress).toBeNull()
+  })
+
+  it('shows the messaging account address, which is not the identity address', async () => {
+    await createIdentityCommand({ dataDir: testDataDir, json: true })
+    const created = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0])
+    mkdirSync(join(testDataDir, 'account'), { recursive: true })
+    writeFileSync(join(testDataDir, 'account', 'account-root.hex'), '11'.repeat(32))
+    jest.spyOn(monadIdentityModule, 'fetchMonadProfile').mockResolvedValueOnce(undefined)
+
+    await showIdentityCommand({ dataDir: testDataDir, json: true })
+    const parsed = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0])
+    expect(parsed.messagingAddress).toMatch(/^0x[0-9a-fA-F]{40}$/)
+    expect(parsed.messagingAddress).not.toBe(created.address)
+
+    await showIdentityCommand({ dataDir: testDataDir })
+    const text = logSpy.mock.calls.map(call => call[0]).join('\n')
+    expect(text).toContain(`Messaging Address:      ${parsed.messagingAddress}`)
+    expect(text).toContain('separate account')
   })
 
   it('reports error when showing identity but none exists', async () => {

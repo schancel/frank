@@ -8,6 +8,7 @@ import {
   saveIdentity,
 } from '../config'
 import { outputError, outputResult } from '../util'
+import { cliAccountAddress } from '../account'
 
 export interface IdentityCreateOptions {
   json?: boolean
@@ -100,6 +101,8 @@ export async function showIdentityCommand(
       relayUrl: config.relayUrl,
       registered: profile !== null,
       profile,
+      // Messages are sent and received as a separate account with its own address.
+      messagingAddress: cliAccountAddress(dataDir) ?? null,
     }
 
     outputResult(
@@ -109,6 +112,17 @@ export async function showIdentityCommand(
         console.log(`  Address:                ${result.address}`)
         console.log(`  Encryption Public Key:  ${result.encryptionPublicKey}`)
         console.log(`  Relay URL:              ${result.relayUrl}`)
+        console.log(
+          `  Messaging Address:      ${
+            result.messagingAddress ?? '(created by the first send or inbox)'
+          }`,
+        )
+        console.log(
+          '    Messages use this separate account, not the address above: give this one to',
+        )
+        console.log(
+          '    correspondents, and fund its own main address (shown by a failed paid send).',
+        )
         if (result.profile) {
           console.log(`  Relay Profile:          Registered`)
           if (result.profile.name)

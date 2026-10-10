@@ -26,6 +26,7 @@ import {
   loadMonadChainConfigFromEnv,
 } from '@frank/wallet/chain/monad-chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
+import { MonadIdentity } from '@frank/wallet/monad-identity'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
 import { pluginCapabilitiesNotYetAvailable } from '@frank/wallet/message-item-plugins/registry'
 
@@ -45,6 +46,26 @@ export interface CliAccount {
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 
+function accountRootFile(dataDir: string): string {
+  return join(dataDir, 'account', 'account-root.hex')
+}
+
+/** The messaging account's address, or undefined when no message command has run yet (the
+ * account is created by the first one). Reads the root file; contacts nothing. */
+export function cliAccountAddress(dataDir: string): string | undefined {
+  const rootFile = accountRootFile(dataDir)
+  if (!existsSync(rootFile)) return undefined
+  const rootHex = readFileSync(rootFile, 'utf8').trim()
+  if (!/^[0-9a-f]{64}$/i.test(rootHex)) return undefined
+  const accountRoot = Uint8Array.from(Buffer.from(rootHex, 'hex'))
+  try {
+    return MonadIdentity.fromDomainRoot(deriveDomainRoot(accountRoot, 'identity-authentication'))
+      .address.raw
+  } finally {
+    accountRoot.fill(0)
+  }
+}
+
 export async function openCliAccount(params: {
   dataDir: string
   config: SignetConfig
@@ -53,7 +74,7 @@ export async function openCliAccount(params: {
   const relayBaseUrl = (params.relayUrl ?? params.config.relayUrl).replace(/\/+$/, '')
   const dir = join(params.dataDir, 'account')
   mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const rootFile = join(dir, 'account-root.hex')
+  const rootFile = accountRootFile(params.dataDir)
   if (!existsSync(rootFile)) {
     writeFileSync(rootFile, randomBytes(32).toString('hex'), { mode: 0o600, flag: 'wx' })
   }

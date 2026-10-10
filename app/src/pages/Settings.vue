@@ -151,7 +151,7 @@
                         chain registry. -->
                         <q-badge
                           :color="
-                            chainStatus(chain) === 'send'
+                            chainStatus(chain) === 'available'
                               ? isTestnetMode
                                 ? 'warning'
                                 : 'primary'
@@ -414,11 +414,9 @@ export default defineComponent({
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
       chainStatus,
       chainStatusKey: (chain: { id: string }) =>
-        ({
-          'send': 'settings.chainSendReceive',
-          'receive-only': 'settings.chainReceiveOnly',
-          'unsupported': 'settings.chainUnsupported',
-        }[chainStatus(chain)]),
+        chainStatus(chain) === 'available'
+          ? 'settings.chainSendReceive'
+          : 'settings.chainUnsupported',
     }
   },
   data() {

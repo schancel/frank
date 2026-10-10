@@ -69,20 +69,30 @@ yarn --cwd packages/contracts htlc-round --chain <chainIdentifier> --rpc <url> -
 
 The Solana rows still carry placeholder program IDs; no Solana program is deployed.
 
-`wallet` in a client extension says what the app's own wallet does on a network: which proxy
-capability it reads through (`json-rpc`, `chronik` or `electrum`; the projection rejects one the
-protocol does not permit for that chain) and whether Send is offered. The app's balance reader,
-Send routing, wallet list and Settings all read this one setting. A network without it shows no
-deposit address. `send: false` means receive only; set it to `true` for a chain only after a
-confirmed send has been seen on that network, for example with a funded test wallet:
+`wallet` in a client extension says the app has its own wallet on a network (balance, receive and
+send) and which proxy capability it reads through (`json-rpc`, `chronik` or `electrum`; the
+projection rejects one the protocol does not permit for that chain). The app's balance reader,
+Send routing, wallet list and Settings all read this one setting. A network without it is shown
+as not supported, with no deposit address.
+
+The funded send check, one command per UTXO testnet, against a running relay
+(`backend/cashweb/run-local-monad.sh`) and a test wallet whose 64-hex seed is in a file outside
+the repository:
 
 ```sh
-# against a running relay (backend/cashweb/run-local-monad.sh)
-FRANK_LIVE_RELAY_URL=http://127.0.0.1:8098 FRANK_LIVE_UTXO_SEED_HEX=<64 hex> FRANK_LIVE_SEND=1 \
-  yarn --cwd packages/wallet test --runInBand --runTestsByPath utxo-chains.live.jest.test.ts
+cd packages/wallet
+export FRANK_LIVE_RELAY_URL=http://127.0.0.1:8098 FRANK_UTXO_TEST_SEED_FILE=<seed file>
+export TSX_TSCONFIG_PATH=tsconfig.livecheck.json
+node --import tsx utxo-funded-send.livecheck.ts xec-testnet
+node --import tsx utxo-funded-send.livecheck.ts btc-testnet
+node --import tsx utxo-funded-send.livecheck.ts bch-testnet
 ```
 
-The first run prints each wallet's testnet address to fund. Client extensions no longer list
+Unfunded, each prints the address to fund and exits 2. Funded, it sends a small amount to the
+wallet's next unused address, waits for the indexer to show it, and exits 0 (1 on failure). As of
+2026-10-10 no funded send has been observed on any of the three: the test wallets were empty.
+
+Client extensions no longer list
 Electrum servers: the app reaches Electrum only through its relay, whose operator configures the
 upstreams (`backend/cashweb/cashwebd.local.toml`).
 

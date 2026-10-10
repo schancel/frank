@@ -180,6 +180,20 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         }
         return getEcashTransactionStatus(config, transaction);
       },
+      async estimateLegacyFee({ wallet, recipient, value }) {
+        if (!(wallet instanceof EcashWallet)) {
+          throw new Error(`Expected an eCash wallet, got ${wallet.family}`);
+        }
+        const canonicalRecipient = parseEcashAddress(config, recipient.raw);
+        if (canonicalRecipient === undefined) {
+          throw new Error("Invalid eCash recipient for the configured network");
+        }
+        const totalFee = await wallet.estimateFee({
+          recipient: canonicalRecipient,
+          value,
+        });
+        return { totalFee, inputCount: 1, deliveryFee: totalFee };
+      },
     },
   };
 }

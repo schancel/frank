@@ -91,22 +91,16 @@ export interface ChainRegistryEntry extends ProtocolChainFacts {
 }
 
 /**
- * The wallet the app offers for a network. A network without one is listed as unsupported and
- * shows no deposit address, because money sent there could not be seen.
+ * The wallet the app offers for a network: balance, receive and send. A network without one is
+ * listed as unsupported and shows no deposit address, because money sent there could not be seen.
  */
 export interface ChainWalletSupport {
   /** How the wallet reads the chain, always through the relay's proxy of this kind. */
   readonly indexer: "json-rpc" | "chronik" | "electrum";
-  /**
-   * Whether Send is offered. False means receive only: the balance is real, but a confirmed
-   * send has not been observed on this network yet. See docs/protocol/chains/README.md.
-   */
-  readonly send: boolean;
 }
 
 const JSON_RPC_WALLET: ChainWalletSupport = Object.freeze({
   indexer: "json-rpc",
-  send: true,
 });
 
 export type ClientChainExtension = Omit<
@@ -160,9 +154,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       }),
     }),
     "xec-testnet": Object.freeze({
-      // The SDK wallet on the relay's Chronik proxy. Opened and read on testnet through the
-      // relay; a confirmed send has not been observed (the test wallet had no coins).
-      wallet: Object.freeze({ indexer: "chronik", send: false }),
+      // The eCash SDK wallet on the relay's Chronik proxy.
+      wallet: Object.freeze({ indexer: "chronik" }),
       kind: "ecash",
       curve: "secp256k1",
       keyType: 1,
@@ -397,9 +390,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       networkTag: "BTC1",
     }),
     "btc-testnet": Object.freeze({
-      // utxo-wallet.ts on the relay's Electrum route. Read on testnet3 through the relay; a
-      // confirmed send has not been observed (the test wallet had no coins).
-      wallet: Object.freeze({ indexer: "electrum", send: false }),
+      // utxo-wallet.ts on the relay's Electrum route (testnet3).
+      wallet: Object.freeze({ indexer: "electrum" }),
       kind: "bitcoin",
       curve: "secp256k1",
       keyType: 1,
@@ -425,9 +417,8 @@ const CLIENT_CHAIN_EXTENSIONS: Readonly<Record<string, ClientChainExtension>> =
       networkTag: "BCH1",
     }),
     "bch-testnet": Object.freeze({
-      // utxo-wallet.ts on the relay's Electrum route (Bitcoin Cash testnet3, not chipnet). Read
-      // through the relay; a confirmed send has not been observed (the test wallet had no coins).
-      wallet: Object.freeze({ indexer: "electrum", send: false }),
+      // utxo-wallet.ts on the relay's Electrum route (Bitcoin Cash testnet3, not chipnet).
+      wallet: Object.freeze({ indexer: "electrum" }),
       kind: "bitcoincash",
       curve: "secp256k1",
       keyType: 1,

@@ -10,10 +10,11 @@ it.each([
   ['solana-devnet', false, 'solana-devnet'],
   ['unknown', true, undefined],
   ['monad', true, 'monad-testnet'],
-  // Receive only: the registry offers a wallet but not Send.
-  ['ecash', true, undefined],
-  ['bitcoin', true, undefined],
-  ['bitcoincash', true, undefined],
+  // Bitcoin-family testnet wallets send through the same page.
+  ['ecash', true, 'xec-testnet'],
+  ['bitcoin', true, 'btc-testnet'],
+  ['bitcoincash', true, 'bch-testnet'],
+  ['ecash', false, undefined],
   // No wallet at all.
   ['dogecoin', true, undefined],
   ['ethereum', true, undefined],

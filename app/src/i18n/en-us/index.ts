@@ -378,9 +378,6 @@ export default {
     balanceUnsupported: 'Balance not shown for this network yet.',
     walletUnsupported:
       'This network is not supported yet. No address is shown because the app could not see money sent to it.',
-    receiveOnly: 'Receive only',
-    receiveOnlyTooltip:
-      'You can receive and see your balance here. Sending is not available on this network yet.',
     notSupported: 'Not supported',
     cordoned: '{amount} cordoned',
     cordonedTooltip:
@@ -999,6 +996,7 @@ export default {
     amount: 'Amount',
     estimatedFee: 'Estimated Fee',
     feeUnavailable: 'Unavailable',
+    refused: 'The network refused this transaction. Nothing was sent.',
     maxTotal: 'Amount + network fee',
     maxTotalWithFee: '{amount} {unit} (+ network fee)',
     irreversibleWarning:
@@ -1076,7 +1074,6 @@ export default {
       'Mainnet switching is locked for safety during protocol beta.',
     supportedChainsTitle: 'Supported Settlement Networks',
     chainSendReceive: 'Send and receive',
-    chainReceiveOnly: 'Receive only',
     chainUnsupported: 'Not supported',
   },
   profile: {

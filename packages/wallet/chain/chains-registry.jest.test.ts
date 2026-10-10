@@ -889,14 +889,13 @@ describe("wallet support", () => {
         .map((chain) => [chain.id, chain.wallet])
     );
     expect(supported).toEqual({
-      "monad-testnet": { indexer: "json-rpc", send: true },
-      "monad-mainnet": { indexer: "json-rpc", send: true },
-      "solana-devnet": { indexer: "json-rpc", send: true },
-      "solana-mainnet": { indexer: "json-rpc", send: true },
-      // Receive only until a confirmed send has been observed on each network.
-      "xec-testnet": { indexer: "chronik", send: false },
-      "btc-testnet": { indexer: "electrum", send: false },
-      "bch-testnet": { indexer: "electrum", send: false },
+      "monad-testnet": { indexer: "json-rpc" },
+      "monad-mainnet": { indexer: "json-rpc" },
+      "solana-devnet": { indexer: "json-rpc" },
+      "solana-mainnet": { indexer: "json-rpc" },
+      "xec-testnet": { indexer: "chronik" },
+      "btc-testnet": { indexer: "electrum" },
+      "bch-testnet": { indexer: "electrum" },
     });
   });
 

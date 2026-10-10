@@ -262,11 +262,11 @@ test('says for each wallet exactly what the app can do with it', () => {
     const label = view.find(`[data-test="${id}-wallet-capability"]`)
     return label.exists() ? label.text() : undefined
   }
-  // Send and receive needs no remark.
+  // A wallet (balance, receive and send) needs no remark.
   expect(capability('monad')).toBeUndefined()
   expect(capability('solana')).toBeUndefined()
   for (const id of ['ecash', 'bitcoin', 'bitcoincash'])
-    expect(capability(id)).toBe('Receive only')
+    expect(capability(id)).toBeUndefined()
   for (const id of ['dogecoin', 'ethereum', 'tempo', 'hyperliquid'])
     expect(capability(id)).toBe('Not supported')
 })

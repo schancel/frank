@@ -45,6 +45,7 @@ import type {
 import {
   ChainAddress,
   ChainTransaction,
+  NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
   NativeWalletHandle,
 } from "./chain/chain-wallet";
@@ -118,7 +119,8 @@ export interface IndexedOutput {
 
 /** The node answered and refused the transaction: it was not broadcast by this call. */
 export class UtxoBroadcastRefused extends Error {
-  constructor(readonly reason: unknown) {
+  /** `reason` is the node's wording, when the indexer passed one on. */
+  constructor(readonly reason?: string) {
     super("The network refused the transaction");
     this.name = "UtxoBroadcastRefused";
   }
@@ -469,9 +471,7 @@ export class UtxoWallet implements NativeWalletHandle {
         if (reason instanceof UtxoBroadcastRefused) {
           // Refused outright: nothing was sent, so the coins are free again.
           this.dropPending(txid);
-          throw new Error(
-            "The network refused the transaction; nothing was sent"
-          );
+          throw new NativeTransactionRefusedError(reason.reason);
         }
         // No answer is not a refusal. Keep the record; the next send or restart finishes it.
         this.unresolved = new NativeTransactionSubmissionError({

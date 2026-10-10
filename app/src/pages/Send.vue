@@ -150,6 +150,21 @@
           </q-banner>
         </q-card-section>
 
+        <!-- The network answered no: nothing was sent, and its reason is shown as given. -->
+        <q-card-section
+          v-if="refusal !== undefined && !dispatched"
+          class="q-pt-none"
+          role="alert"
+          data-test="send-refused"
+        >
+          <q-banner dense rounded class="bg-red-1 text-red-10">
+            {{ $t('sendAddressDialog.refused') }}
+            <div v-if="refusal" class="text-caption text-break">
+              {{ refusal }}
+            </div>
+          </q-banner>
+        </q-card-section>
+
         <q-card-section
           v-if="dispatched"
           data-test="native-operation-outcome"
@@ -263,6 +278,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { sentTransactionNotify, errorNotify } from '../utils/notifications'
 import {
   activeChain,
+  NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
   findEvmNativeOperationStatus,
   type EvmNativeOperationStatus,
@@ -291,6 +307,8 @@ export default defineComponent({
     const operation = shallowRef<EvmNativeOperationStatus>()
     const outcomeHash = ref<string>()
     const estimatedFeeText = ref('')
+    // Set when the network refused the last attempt outright; holds the node's reason.
+    const refusal = ref<string>()
 
     const route = useRoute()
     const context = shallowRef<NativeTransferContext>()
@@ -385,6 +403,7 @@ export default defineComponent({
           : '',
       ),
       estimatedFeeText,
+      refusal,
       isValid: computed(() => parsedTransfer.value !== undefined),
       formattedRecipient,
       networkName,
@@ -499,6 +518,7 @@ export default defineComponent({
             },
           }
           // No post-dispatch error proves that a fresh payment is safe.
+          refusal.value = undefined
           dispatched.value = true
           const result = client.sendLegacy
             ? await client.sendLegacy(params)
@@ -521,6 +541,12 @@ export default defineComponent({
             errorNotify(err, {
               fallbackKey: 'sendAddressDialog.definitelyNotBroadcast',
             })
+            return
+          }
+          // The one exception: the network answered and refused, so nothing was sent.
+          if (err instanceof NativeTransactionRefusedError) {
+            dispatched.value = false
+            refusal.value = err.reason
             return
           }
           if (err instanceof NativeTransactionSubmissionError)

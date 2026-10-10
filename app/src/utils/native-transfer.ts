@@ -7,7 +7,7 @@ import {
 } from '@frank/wallet/chain'
 
 /**
- * The canonical chain a wallet row can send on, or undefined when Send is not offered there.
+ * The canonical chain a wallet row can send on, or undefined when the app has no wallet there.
  * Decided by the registry's wallet setting, not by a list of names. Wallet-page aliases are
  * resolved here once; Send's route carries only canonical identifiers.
  */
@@ -16,7 +16,7 @@ export function nativeSendChainIdentifier(
   isTestnet: boolean,
 ): string | undefined {
   const entry = getChainRegistryEntry(resolveNetworkId(wallet, isTestnet))
-  if (!entry?.wallet?.send) return undefined
+  if (!entry?.wallet) return undefined
   // The only EVM wallet the app builds is the active chain's.
   if (entry.family === 'evm' && entry.id !== activeChain.chainIdentifier)
     return undefined

@@ -8,6 +8,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import Send from './Send.vue'
 import {
   activeChain,
+  NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
 } from '@frank/wallet/chain'
 import { createSolanaChain } from '@frank/wallet/chain/solana-chain'
@@ -37,6 +38,9 @@ jest.mock('@frank/wallet/chain', () => ({
   NativeTransactionSubmissionError: jest.requireActual(
     '@frank/wallet/chain/chain-wallet',
   ).NativeTransactionSubmissionError,
+  NativeTransactionRefusedError: jest.requireActual(
+    '@frank/wallet/chain/chain-wallet',
+  ).NativeTransactionRefusedError,
   activeChain: {
     chainIdentifier: 'monad-testnet',
     name: 'monad',
@@ -449,6 +453,36 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
       false,
     )
     expect(errorNotify).not.toHaveBeenCalled()
+  })
+
+  it('shows the node reason when the network refuses, and lets the same review be confirmed again', async () => {
+    mockSend.mockRejectedValueOnce(
+      new NativeTransactionRefusedError('min relay fee not met'),
+    )
+
+    const wrapper = mountSend()
+    await wrapper
+      .get('[data-test="send-address-input"]')
+      .setValue('0x000000000000000000000000000000000000dead')
+    await wrapper.get('[data-test="send-amount-input"]').setValue('0.5')
+    await wrapper.get('[data-test="send-review-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+
+    const refused = wrapper.get('[data-test="send-refused"]').text()
+    expect(refused).toContain('Nothing was sent')
+    expect(refused).toContain('min relay fee not met')
+    // Not presented as a payment that may have moved funds.
+    expect(
+      wrapper.find('[data-test="native-operation-outcome"]').exists(),
+    ).toBe(false)
+    expect(sentTransactionNotify).not.toHaveBeenCalled()
+    // Nothing was sent, so confirming again is offered and clears the notice.
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    expect(mockSend).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-test="send-refused"]').exists()).toBe(false)
   })
 
   it('renders review state and warnings in French (fr-FR parity)', async () => {

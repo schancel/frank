@@ -465,13 +465,9 @@ describe('Wallet detail page (#570)', () => {
       'ectest:qz3fjd36tzd3qr6p7cqjytx4ftl9f4mghqdsk9xhj9',
     )
 
-    // Receive only: no Send button is offered, and the page says so.
-    expect(wrapper.find('[data-testid="wallet-send-action"]').exists()).toBe(
-      false,
-    )
-    expect(wrapper.find('[data-testid="wallet-receive-only"]').exists()).toBe(
-      true,
-    )
+    const sendBtn = wrapper.get('[data-testid="wallet-send-action"]')
+    expect(sendBtn.text()).toBe('walletPanel.sendAsset:tXEC')
+    expect(sendBtn.attributes('disabled')).toBeUndefined()
 
     wrapper.unmount()
   })
@@ -665,9 +661,6 @@ describe('Wallet detail page (#570)', () => {
       expect(wrapper.find('[data-testid="wallet-qr-container"]').exists()).toBe(
         false,
       )
-      expect(wrapper.find('[data-testid="wallet-send-action"]').exists()).toBe(
-        false,
-      )
       expect(
         (wrapper.vm as unknown as { displayAddress: string }).displayAddress,
       ).toBe('')
@@ -678,7 +671,7 @@ describe('Wallet detail page (#570)', () => {
     },
   )
 
-  it('shows the Bitcoin testnet wallet address as receive only', async () => {
+  it('shows the Bitcoin testnet wallet address and offers Send', async () => {
     mockRoute.value = { query: { chain: 'bitcoin' }, path: '/wallet' }
     const wrapper = mountWallet()
     await flush()
@@ -687,11 +680,8 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.get('[data-testid="wallet-qr"]').attributes('value')).toBe(
       'tb1q6rz28mcfaxtmd6v789l9rrlrusdprr9pqcpvkl',
     )
-    expect(wrapper.find('[data-testid="wallet-receive-only"]').exists()).toBe(
-      true,
-    )
     expect(wrapper.find('[data-testid="wallet-send-action"]').exists()).toBe(
-      false,
+      true,
     )
     wrapper.unmount()
   })

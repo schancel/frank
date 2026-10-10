@@ -42,18 +42,12 @@ jest.mock('@solana/web3.js', () => ({
     return mockConnection
   }),
 }))
-const mockRegistryOverride = jest.fn((_id: string): unknown => undefined)
-jest.mock('@frank/wallet/chain', () => {
-  const actual = jest.requireActual('@frank/wallet/chain')
-  return {
-    ...actual,
-    getChainRegistryEntry: (id: string) =>
-      mockRegistryOverride(id) ?? actual.getChainRegistryEntry(id),
-    loadMonadChainConfigFromEnv: () => ({
-      relayBaseUrl: 'https://relay.invalid',
-    }),
-  }
-})
+jest.mock('@frank/wallet/chain', () => ({
+  ...jest.requireActual('@frank/wallet/chain'),
+  loadMonadChainConfigFromEnv: () => ({
+    relayBaseUrl: 'https://relay.invalid',
+  }),
+}))
 const mockOpenUtxoWallet = jest.fn()
 jest.mock('./utxo-wallets', () => ({
   openUtxoWallet: (chainIdentifier: string) =>
@@ -286,8 +280,8 @@ it('invalidates the captured presentation synchronously when the account changes
 })
 
 describe('Bitcoin-family chains', () => {
-  it.each(['xec-testnet', 'btc-testnet', 'bch-testnet', 'doge-testnet'])(
-    'refuses Send on %s while the registry does not offer it, without opening a wallet',
+  it.each(['doge-testnet', 'xec-mainnet', 'btc-mainnet'])(
+    'refuses Send on %s, which has no wallet, without opening one',
     async chainIdentifier => {
       await expect(
         createNativeTransferContext(chainIdentifier),
@@ -297,27 +291,17 @@ describe('Bitcoin-family chains', () => {
     },
   )
 
-  it('sends through the session wallet of the chain once the registry offers Send', async () => {
-    const actual = jest.requireActual('@frank/wallet/chain')
-    mockRegistryOverride.mockImplementation((id: string) =>
-      id === 'btc-testnet'
-        ? {
-            ...actual.getChainRegistryEntry(id),
-            wallet: { indexer: 'electrum', send: true },
-          }
-        : undefined,
-    )
-    const wallet = { chainIdentifier: 'btc-testnet', family: 'bitcoin' }
-    const chain = { chainIdentifier: 'btc-testnet', family: 'bitcoin' }
-    mockOpenUtxoWallet.mockResolvedValue({ chain, wallet })
-    try {
-      const context = await createNativeTransferContext('btc-testnet')
+  it.each(['xec-testnet', 'btc-testnet', 'bch-testnet'])(
+    'sends on %s through the session wallet of that chain',
+    async chainIdentifier => {
+      const wallet = { chainIdentifier, family: 'bitcoin' }
+      const chain = { chainIdentifier, family: 'bitcoin' }
+      mockOpenUtxoWallet.mockResolvedValue({ chain, wallet })
+      const context = await createNativeTransferContext(chainIdentifier)
       expect(context.chain).toBe(chain)
       const binding = await context.captureWallet()
       expect(binding.wallet).toBe(wallet)
-      expect(mockOpenUtxoWallet).toHaveBeenCalledWith('btc-testnet')
-    } finally {
-      mockRegistryOverride.mockImplementation(() => undefined)
-    }
-  })
+      expect(mockOpenUtxoWallet).toHaveBeenCalledWith(chainIdentifier)
+    },
+  )
 })

@@ -8,6 +8,10 @@
  * wallet across runs; with FRANK_LIVE_SEND=1 and a funded wallet it sends 10 XEC to itself.
  */
 import { ChronikClient } from "chronik-client";
+import { encodeCashAddress } from "ecashaddrjs";
+import { getBytes, HDNodeWallet } from "ethers";
+import { ripemd160 } from "@noble/hashes/ripemd160";
+import { sha256 } from "@noble/hashes/sha256";
 import { createEcashChain } from "./chain/ecash-chain";
 import { InMemoryNativeTransactionAttemptStore } from "./chain/chain-wallet";
 
@@ -32,10 +36,23 @@ async function main() {
   });
   const address = (await wallet.getReceiveAddress()).raw;
   const balance = await wallet.getBalance();
+  // The address the app showed as the eCash deposit address before it had this wallet
+  // (app/src/accounts/session.ts: m/44'/1899'/0'/0/0 of the same root). It must be the wallet's
+  // first address, so money already sent there is this wallet's money.
+  const legacyNode = HDNodeWallet.fromSeed(bytes).derivePath("m/44'/1899'/0'/0/0");
+  const legacyAddress = encodeCashAddress(
+    "ectest",
+    "p2pkh",
+    ripemd160(sha256(getBytes(legacyNode.publicKey)))
+  );
   const result: Record<string, unknown> = {
+    firstAddress: wallet.identity.displayAddress,
+    addressShownBefore: legacyAddress,
     address,
     balance: balance.toString(),
     parses: chain.parseAddress(address)?.raw === address,
+    walletChain: wallet.chainIdentifier,
+    chain: chain.chainIdentifier,
   };
   if (balance === 0n) {
     // An empty wallet cannot pay: the SDK refuses to build, so nothing is signed or broadcast.

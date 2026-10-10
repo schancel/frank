@@ -534,9 +534,9 @@ describe('Settings Gateways Tab and Email Gateway Configuration (#1133)', () => 
       expect(status).toEqual({
         monad: 'settings.chainSendReceive',
         solana: 'settings.chainSendReceive',
-        ecash: 'settings.chainReceiveOnly',
-        bitcoin: 'settings.chainReceiveOnly',
-        bitcoincash: 'settings.chainReceiveOnly',
+        ecash: 'settings.chainSendReceive',
+        bitcoin: 'settings.chainSendReceive',
+        bitcoincash: 'settings.chainSendReceive',
         dogecoin: 'settings.chainUnsupported',
         tempo: 'settings.chainUnsupported',
         ethereum: 'settings.chainUnsupported',

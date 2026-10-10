@@ -58,7 +58,7 @@ export function electrumIndexer(client: ElectrumClient): UtxoIndexer {
         await client.broadcastTransaction(rawHex);
       } catch (error) {
         if (error instanceof ElectrumRpcError) {
-          throw new UtxoBroadcastRefused(error);
+          throw new UtxoBroadcastRefused(error.serverMessage);
         }
         throw error;
       }

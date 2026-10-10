@@ -9,6 +9,7 @@ import {
 import {
   InMemoryNativeTransactionAttemptStore,
   nativeTransactionAttemptKey,
+  NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
 } from "./chain/chain-wallet";
 import type { ChronikClient } from "chronik-client";
@@ -666,7 +667,7 @@ describe("EcashWallet", () => {
     nativeAttemptStore.put(
       nativeTransactionAttemptKey({
         family: "bitcoin",
-        chainIdentifier: ECASH_MAINNET_CHECKPOINT_HASH,
+        chainIdentifier: "xec-mainnet",
         address: ADDRESS,
       }),
       { txHash: "newer-attempt" }
@@ -700,7 +701,7 @@ describe("EcashWallet", () => {
     nativeAttemptStore.delete(
       nativeTransactionAttemptKey({
         family: "bitcoin",
-        chainIdentifier: ECASH_MAINNET_CHECKPOINT_HASH,
+        chainIdentifier: "xec-mainnet",
         address: ADDRESS,
       })
     );
@@ -904,6 +905,58 @@ describe("EcashWallet", () => {
     });
   });
 
+  it.each([
+    ["the SDK reports it", "result"],
+    ["the broadcast call throws it", "throw"],
+  ])("says why the node refused a send and leaves nothing to reconcile (%s)", async (_how, mode) => {
+    const refusal =
+      "Error: Failed getting /broadcast-txs: Broadcast failed: Transaction rejected by mempool: min relay fee not met";
+    const backend = makeBackend({ success: false, broadcasted: [], errors: [refusal] });
+    if (mode === "throw")
+      backend.broadcast.mockRejectedValue(new Error(refusal.slice("Error: ".length)));
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
+      nativeAttemptStore,
+      walletFactory: () => backend,
+    });
+    const error = await wallet
+      .sendNative({ recipient: { raw: ADDRESS }, value: 1n })
+      .catch((caught) => caught);
+    expect(error).toBeInstanceOf(NativeTransactionRefusedError);
+    expect(error.message).toBe(
+      "The network refused the transaction: Broadcast failed: Transaction rejected by mempool: min relay fee not met"
+    );
+    expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
+    expect([...(nativeAttemptStore as any).attempts.keys()]).toEqual([]);
+    // The next send is not blocked.
+    backend.broadcast.mockResolvedValue({ success: true, broadcasted: ["attempted"] });
+    await expect(
+      wallet.sendNative({ recipient: { raw: ADDRESS }, value: 1n })
+    ).resolves.toEqual({ txHash: "attempted" });
+  });
+
+  it("estimates the fee without building a spend", async () => {
+    const backend = makeBackend();
+    const inspect = jest.fn(() => ({ fee: () => 219n }));
+    backend.action.mockImplementation(() => ({ build: jest.fn(), inspect }) as never);
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
+      chronik: makeChronik(),
+      networkId: "ecash-mainnet",
+      nativeAttemptStore,
+      walletFactory: () => backend,
+    });
+    await expect(
+      wallet.estimateFee({ recipient: { raw: ADDRESS }, value: 1_000n })
+    ).resolves.toBe(219n);
+    expect(backend.action).toHaveBeenCalledWith({
+      outputs: [{ address: ADDRESS, sats: 1_000n }],
+    });
+    expect(backend.broadcast).not.toHaveBeenCalled();
+  });
+
   it("asks the backend for testnet addresses on the testnet", async () => {
     const chronik = makeChronik();
     jest.spyOn(chronik, "block").mockResolvedValue({
@@ -922,9 +975,19 @@ describe("EcashWallet", () => {
       nativeAttemptStore,
       walletFactory: factory,
     });
+    const wallet = await EcashWallet.fromDomainRoot({
+      domainRoot: ROOT,
+      chronik,
+      networkId: "xec-testnet",
+      nativeAttemptStore,
+      walletFactory: factory,
+    });
     expect(factory).toHaveBeenCalledWith(
       expect.objectContaining({ addressPrefix: "ectest" })
     );
+    // The Send page compares this with the chain it reviewed.
+    expect(wallet.chainIdentifier).toBe("xec-testnet");
+    expect(wallet.networkId).toBe("xec-testnet");
   });
 
   it("shares the unresolved guard across backend address case aliases", async () => {

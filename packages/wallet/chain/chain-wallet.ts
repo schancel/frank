@@ -37,6 +37,24 @@ export class NativeTransactionSubmissionError extends Error {
   }
 }
 
+/**
+ * The network answered and refused the transaction, so it was not broadcast and the same money
+ * can be sent again. `reason` is the node's own wording where the relay passed it on.
+ */
+export class NativeTransactionRefusedError extends Error {
+  readonly reason: string;
+
+  constructor(reason?: string) {
+    super(
+      reason
+        ? `The network refused the transaction: ${reason}`
+        : "The network refused the transaction; nothing was sent"
+    );
+    this.name = "NativeTransactionRefusedError";
+    this.reason = reason ?? "";
+  }
+}
+
 /** Durable guard record; signed replay material may remain wallet-specific and in memory. */
 export interface NativeTransactionAttemptStore {
   /** Coordination reach of this store. Cross-process stores require a host lock not yet exposed. */

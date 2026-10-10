@@ -71,8 +71,8 @@ export async function createNativeTransferContext(
     chain = primaryChain
   } else if (
     entry.family === 'solana' &&
-    entry.wallet?.send &&
-    // The Solana adapter's own network type; the registry decides whether Send is offered.
+    entry.wallet &&
+    // The Solana adapter's own network type; the registry decides whether a wallet exists.
     (chainIdentifier === 'solana-devnet' ||
       chainIdentifier === 'solana-mainnet')
   ) {
@@ -118,7 +118,7 @@ export async function createNativeTransferContext(
         root.fill(0)
       }
     }
-  } else if (entry.family === 'bitcoin' && entry.wallet?.send) {
+  } else if (entry.family === 'bitcoin' && entry.wallet) {
     // eCash on Chronik, Bitcoin and Bitcoin Cash on Electrum: one wallet per chain for the
     // session, shared with the balance reader.
     const { openUtxoWallet } = await import('./utxo-wallets')

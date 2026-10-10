@@ -2,6 +2,7 @@ import {
   ChainAddress,
   ChainTransaction,
   defaultNativeTransactionAttemptStore,
+  NativeTransactionRefusedError,
   nativeTransactionAttemptKey,
   NativeTransactionAttemptStore,
   NativeTransactionSubmissionError,
@@ -160,7 +161,16 @@ export interface EcashWalletBackend {
     outputs: ReadonlyArray<{ address: string; sats: bigint }>;
   }): {
     build(): EcashBuiltAction;
+    /** Builds without touching the wallet's coins, to learn the fee. */
+    inspect?(): { fee(): bigint };
   };
+}
+
+/** The node's wording when Chronik answered and refused a broadcast; undefined otherwise. */
+function chronikRefusal(reason: unknown): string | undefined {
+  const text = reason instanceof Error ? reason.message : String(reason);
+  const match = /Failed getting \S+: (.*)$/s.exec(text);
+  return match ? match[1].trim() : undefined;
 }
 
 export type EcashWalletFactory = (params: {
@@ -297,7 +307,6 @@ export class EcashWallet implements NativeWalletHandle {
     const canonicalId = canonicalEcashNetworkId(params.networkId);
     const isTestnet = canonicalId === "xec-testnet";
     const addressPrefix: EcashAddressPrefix = isTestnet ? "ectest" : "ecash";
-    const checkpointHash = ECASH_CHECKPOINTS[canonicalId].hash;
     const primaryAddress = canonicalEcashAddress(
       backend.getReceiveAddress(0),
       addressPrefix
@@ -306,7 +315,9 @@ export class EcashWallet implements NativeWalletHandle {
       backend,
       primaryAddress,
       canonicalId,
-      checkpointHash,
+      // The canonical chain identifier everywhere, including the attempt record's key. It was
+      // the checkpoint hash, which no caller comparing against `xec-testnet` could match.
+      canonicalId,
       params.nativeAttemptStore ?? defaultNativeTransactionAttemptStore,
       params.getTransactionStatus ?? (async () => "unknown"),
       params.chainUtxoPool,
@@ -444,6 +455,23 @@ export class EcashWallet implements NativeWalletHandle {
     });
   }
 
+  /** The network fee a send of `value` to `recipient` would pay right now. */
+  async estimateFee(params: {
+    recipient: ChainAddress;
+    value: bigint;
+  }): Promise<bigint> {
+    return this.runExclusive(async () => {
+      await this.backend.sync();
+      const action = this.backend.action({
+        outputs: [{ address: params.recipient.raw, sats: params.value }],
+      });
+      if (action.inspect === undefined) {
+        throw new Error("This eCash wallet backend cannot estimate a fee");
+      }
+      return action.inspect().fee();
+    });
+  }
+
   getUnresolvedNativeTransaction(): ChainTransaction | undefined {
     return this.unresolvedNative?.error.transaction;
   }
@@ -563,6 +591,13 @@ export class EcashWallet implements NativeWalletHandle {
     return this.broadcastNativeAction(built, params.onSigned);
   }
 
+  /** Forget a refused attempt: it was never broadcast, so nothing is left to reconcile. */
+  private refused(reason: string): NativeTransactionRefusedError {
+    this.nativeAttemptStore.delete(this.nativeAttemptKey);
+    this.unresolvedNative = undefined;
+    return new NativeTransactionRefusedError(reason);
+  }
+
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.operationQueue.then(operation);
     this.operationQueue = run.then(
@@ -609,6 +644,8 @@ export class EcashWallet implements NativeWalletHandle {
     try {
       result = await built.broadcast({ retryOnUtxoConflict: false });
     } catch (reason) {
+      const refusal = chronikRefusal(reason);
+      if (refusal !== undefined) throw this.refused(refusal);
       const error = new NativeTransactionSubmissionError({
         transaction: attemptedTransaction,
         reason,
@@ -620,6 +657,14 @@ export class EcashWallet implements NativeWalletHandle {
     // A finalization timeout is reported as success:false even though Chronik accepted every
     // listed transaction. Treat those ids as submitted; only an empty accepted set is failure.
     if (result.broadcasted.length === 0) {
+      // Every error is the node's own refusal: nothing was broadcast.
+      const refusals = (result.errors ?? []).map(chronikRefusal);
+      if (
+        refusals.length > 0 &&
+        refusals.every((refusal): refusal is string => refusal !== undefined)
+      ) {
+        throw this.refused(refusals[0]);
+      }
       const error = new NativeTransactionSubmissionError({
         transaction: attemptedTransaction,
         reason:

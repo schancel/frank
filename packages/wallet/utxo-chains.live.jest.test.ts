@@ -8,9 +8,8 @@
  *   FRANK_LIVE_RELAY_URL=http://127.0.0.1:8098 yarn --cwd packages/wallet test --runInBand \
  *     --runTestsByPath utxo-chains.live.jest.test.ts
  *
- * Nothing here is simulated. No test spends: the wallets are new and empty. A confirmed send
- * needs testnet coins at the address the test prints (set FRANK_LIVE_UTXO_SEED_HEX to keep one
- * wallet across runs, fund it, and set FRANK_LIVE_SEND=1).
+ * Nothing here is simulated. No test spends: the wallets are new and empty. The funded send
+ * check is `utxo-funded-send.livecheck.ts`.
  */
 import { execFileSync } from "child_process";
 import path from "path";
@@ -58,6 +57,10 @@ live("eCash testnet through the relay's Chronik proxy", () => {
     const result = JSON.parse(output.trim().split("\n").pop()!);
     console.info(`eCash testnet wallet: ${JSON.stringify(result)}`);
     expect(result.address.startsWith("ectest:q")).toBe(true);
+    // Money sent to the address the app used to show belongs to this wallet.
+    expect(result.firstAddress).toBe(result.addressShownBefore);
+    expect(result.walletChain).toBe("xec-testnet");
+    expect(result.chain).toBe("xec-testnet");
     expect(result.parses).toBe(true);
     expect(BigInt(result.balance)).toBeGreaterThanOrEqual(0n);
     if (result.balance === "0") {
@@ -98,9 +101,13 @@ live("eCash testnet through the relay's Chronik proxy", () => {
   });
 
   it("gets an explicit refusal for a transaction the node cannot accept", async () => {
-    await expect(chronik().broadcastTxs([UNFUNDED_LEGACY])).rejects.toThrow(
-      /^Failed getting /
-    );
+    const error = await chronik()
+      .broadcastTxs([UNFUNDED_LEGACY])
+      .catch((caught: Error) => caught);
+    console.info(`xec-testnet refusal: ${(error as Error).message}`);
+    expect((error as Error).message).toMatch(/^Failed getting /);
+    // The relay passes the node's reason on, not its generic placeholder.
+    expect((error as Error).message).not.toContain("upstream Chronik error");
   });
 });
 
@@ -200,9 +207,14 @@ live.each([
   });
 
   it("gets an explicit refusal for a transaction the node cannot accept", async () => {
-    await expect(electrumIndexer(client).broadcast(unfunded)).rejects.toBeInstanceOf(
-      UtxoBroadcastRefused
-    );
+    const error = await electrumIndexer(client)
+      .broadcast(unfunded)
+      .catch((caught) => caught);
+    expect(error).toBeInstanceOf(UtxoBroadcastRefused);
+    console.info(`${chainIdentifier} refusal: ${error.reason}`);
+    // The relay passes the node's reason on, not its generic placeholder.
+    expect(error.reason).toBeTruthy();
+    expect(error.reason).not.toBe("upstream RPC error");
   });
 
   it("is refused methods outside the wallet's needs", async () => {

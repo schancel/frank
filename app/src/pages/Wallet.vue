@@ -245,7 +245,6 @@
                         @click="openSendContact"
                       />
                       <q-btn
-                        v-if="walletStatus === 'send'"
                         no-caps
                         :label="$t(sendLabel.key, sendLabel.params ?? {})"
                         color="primary"
@@ -254,18 +253,6 @@
                         data-test="wallet-legacy-send-action"
                         @click="openSend"
                       />
-                      <q-badge
-                        v-else
-                        outline
-                        color="grey-7"
-                        class="q-ml-sm q-py-xs"
-                        :label="$t('walletPanel.receiveOnly')"
-                        data-testid="wallet-receive-only"
-                      >
-                        <q-tooltip>{{
-                          $t('walletPanel.receiveOnlyTooltip')
-                        }}</q-tooltip>
-                      </q-badge>
                     </q-card-actions>
                   </q-card-section>
 
@@ -629,7 +616,7 @@ export default defineComponent({
       nativeSendChainIdentifier(selectedWallet.value, isTestnet.value),
     )
 
-    // What this wallet can do, from the chain registry: send, receive only, or nothing.
+    // Whether the app has a wallet for this network, from the chain registry.
     const support = computed(() =>
       walletSupport(selectedWallet.value, isTestnet.value),
     )

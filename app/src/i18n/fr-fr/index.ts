@@ -386,9 +386,6 @@ export default {
     balanceUnsupported: 'Le solde de ce réseau n’est pas encore affiché.',
     walletUnsupported:
       'Ce réseau n’est pas encore pris en charge. Aucune adresse n’est affichée, car l’application ne pourrait pas voir l’argent qui y serait envoyé.',
-    receiveOnly: 'Réception seule',
-    receiveOnlyTooltip:
-      'Vous pouvez recevoir et voir votre solde ici. L’envoi n’est pas encore disponible sur ce réseau.',
     notSupported: 'Non pris en charge',
     cordoned: '{amount} mis à l’écart',
     cordonedTooltip:
@@ -1022,6 +1019,7 @@ export default {
     amount: 'Montant',
     estimatedFee: 'Frais estimés',
     feeUnavailable: 'Indisponible',
+    refused: 'Le réseau a refusé cette transaction. Rien n’a été envoyé.',
     maxTotal: 'Montant + frais de réseau',
     maxTotalWithFee: '{amount} {unit} (+ frais de réseau)',
     irreversibleWarning:
@@ -1103,7 +1101,6 @@ export default {
       'Le passage au réseau principal est verrouillé par sécurité pendant la version bêta.',
     supportedChainsTitle: 'Réseaux de règlement pris en charge',
     chainSendReceive: 'Envoi et réception',
-    chainReceiveOnly: 'Réception seule',
     chainUnsupported: 'Non pris en charge',
   },
   profile: {

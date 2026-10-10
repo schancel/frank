@@ -96,21 +96,14 @@
               <q-item-label caption :data-test="wallet.chainDataTest">
                 {{ getWalletChainLabel(wallet) }}
               </q-item-label>
-              <!-- What the app can do here, from the chain registry. Nothing said means send
-              and receive. -->
+              <!-- A network the app has no wallet for says so. -->
               <q-item-label
-                v-if="getWalletStatus(wallet) !== 'send'"
+                v-if="getWalletStatus(wallet) === 'unsupported'"
                 caption
                 class="wallet-muted"
                 :data-test="`${wallet.id}-wallet-capability`"
               >
-                {{
-                  $t(
-                    getWalletStatus(wallet) === 'receive-only'
-                      ? 'walletPanel.receiveOnly'
-                      : 'walletPanel.notSupported',
-                  )
-                }}
+                {{ $t('walletPanel.notSupported') }}
               </q-item-label>
               <q-item-label
                 caption

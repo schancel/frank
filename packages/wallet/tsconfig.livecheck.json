@@ -1,0 +1,14 @@
+{
+  // For `node --import tsx` scripts (*.livecheck.ts) that load @frank/nakamoto: its package
+  // exports are import-only, so point at its source the way jest.config.js does.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@frank/codec": ["../frank-codec/src/index.ts"],
+      "@frank/price-feeds": ["../price-feeds/src/index.ts"],
+      "@frank/cashweb/*": ["../cashweb/*"],
+      "@frank/wallet/*": ["./*"],
+      "@frank/nakamoto": ["../nakamoto/src/index.ts"]
+    }
+  }
+}

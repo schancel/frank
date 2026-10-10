@@ -4,7 +4,10 @@ import { ripemd160 } from "@noble/hashes/ripemd160";
 import { HDNodeWallet } from "ethers";
 import { decodeCashAddress } from "ecashaddrjs";
 import { parseTransaction } from "@frank/nakamoto";
-import { NativeTransactionSubmissionError } from "./chain/chain-wallet";
+import {
+  NativeTransactionRefusedError,
+  NativeTransactionSubmissionError,
+} from "./chain/chain-wallet";
 import {
   IndexedOutput,
   memoryUtxoWalletStore,
@@ -43,7 +46,8 @@ function makeIndexer() {
     feeRate: async () => 2n,
     broadcast: async (raw) => {
       broadcasts.push(raw);
-      if (broadcastOutcome === "refuse") throw new UtxoBroadcastRefused("no");
+      if (broadcastOutcome === "refuse")
+        throw new UtxoBroadcastRefused("min relay fee not met");
       if (broadcastOutcome === "lost") throw new Error("socket closed");
       spend(raw);
       if (broadcastOutcome === "lost-but-sent") throw new Error("socket closed");
@@ -403,9 +407,14 @@ describe.each([
     const { wallet, backend } = await open(network);
     fund(backend, network, (await wallet.getReceiveAddress()).raw, 70_000n, "a");
     backend.setOutcome("refuse");
-    await expect(
-      wallet.sendNative({ recipient: { raw: recipient }, value: 10_000n })
-    ).rejects.toThrow("nothing was sent");
+    const refused = await wallet
+      .sendNative({ recipient: { raw: recipient }, value: 10_000n })
+      .catch((error) => error);
+    // The caller learns it was refused, and why, in the node's words.
+    expect(refused).toBeInstanceOf(NativeTransactionRefusedError);
+    expect(refused.message).toBe(
+      "The network refused the transaction: min relay fee not met"
+    );
     expect(wallet.getUnresolvedNativeTransaction()).toBeUndefined();
     expect(await wallet.getBalance()).toBe(70_000n);
   });

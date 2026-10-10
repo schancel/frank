@@ -6,6 +6,7 @@ import {
   beginCodex32Signup,
   destroyRecoveredAccount,
   exportCodex32Backup,
+  maxSharesForThreshold,
   recoverFromAnyShares,
   type Codex32ShareRecovery,
   type RecoveredCodex32Account,
@@ -112,7 +113,7 @@ describe('restoring from more shares than the threshold', () => {
       position: 1,
       index: shares[1]![8],
       identifier: shares[1]!.slice(4, 8),
-      candidate: null,
+      candidates: [],
     })
     release(recovery)
   })
@@ -179,7 +180,8 @@ describe('restoring from more shares than the threshold', () => {
     // Even though the genuine account has more shares behind it, it is not preferred.
     expect(new Set(statuses(recovery))).toEqual(new Set(['supports']))
     for (const share of recovery.shares) {
-      expect(recovery.candidates[share.candidate!]!.supporting).toContain(
+      expect(share.candidates).toHaveLength(1)
+      expect(recovery.candidates[share.candidates[0]!]!.supporting).toContain(
         share.position,
       )
     }
@@ -327,49 +329,108 @@ describe('restoring from more shares than the threshold', () => {
   })
 })
 
-describe('the search is bounded', () => {
-  it('finds the account among 31 shares of a 9-of-31 with several bad ones, without trying every subset', () => {
+describe('the search tries every subset, so the number of shares per backup set is limited', () => {
+  it.each([
+    [2, 31],
+    [3, 31],
+    [4, 20],
+    [5, 16],
+    [6, 14],
+    [9, 14],
+  ])(
+    'threshold %i: at most %i shares, and never fewer than the threshold plus two',
+    (threshold, limit) => {
+      expect(maxSharesForThreshold(threshold)).toBe(limit)
+      expect(limit).toBeGreaterThanOrEqual(threshold + 2)
+    },
+  )
+
+  it('at the limit: restores, names the bad shares, and is quick', () => {
     const original = account()
-    const shares = backup(original, 9, 31)
-    for (const position of [0, 1, 2, 17])
+    const shares = backup(original, 9, 14)
+    for (const position of [0, 5, 13])
       shares[position] = poisoned(shares[position]!)
     const started = Date.now()
     const recovery = recoverFromAnyShares(shares)
-    expect(Date.now() - started).toBeLessThan(5000)
+    expect(Date.now() - started).toBeLessThan(3000)
     expect(recovery.candidates).toHaveLength(1)
     expect(fingerprint(recovery.candidates[0]!.account)).toBe(
       fingerprint(original),
     )
     expect(
       recovery.shares
-        .filter(s => s.status === 'inconsistent')
-        .map(s => s.position),
-    ).toEqual([0, 1, 2, 17])
+        .filter(share => share.status === 'inconsistent')
+        .map(share => share.position),
+    ).toEqual([0, 5, 13])
     release(recovery)
   })
 
-  it('gives up with a clear error on an adversarial pile of inconsistent shares, in bounded time', () => {
+  it('the slowest allowed input, every share wrong, is refused in well under a second or two', () => {
     const original = account()
-    const shares = backup(original, 9, 31).map(poisoned)
-    const started = Date.now()
-    const error = failure(() => recoverFromAnyShares(shares))
-    expect(Date.now() - started).toBeLessThan(10000)
-    expect(error.code).toBe('too-many-inconsistent-shares')
-    expect(error.shares).toHaveLength(31)
+    for (const [threshold, count] of [
+      [4, 20],
+      [5, 16],
+      [9, 14],
+    ] as const) {
+      const shares = backup(original, threshold, count).map(poisoned)
+      const started = Date.now()
+      const error = failure(() => recoverFromAnyShares(shares))
+      expect(Date.now() - started).toBeLessThan(3000)
+      expect(error.code).toBe('not-account-backup')
+      expect(error.shares).toHaveLength(count)
+    }
   })
 
-  it('honours a smaller cap, and never answers when it could not finish looking', () => {
+  it('one share over the limit is refused with the limit, before anything is searched', () => {
     const original = account()
-    const shares = backup(original, 4, 10)
-    for (const position of [0, 1, 2, 3, 4, 5])
-      shares[position] = poisoned(shares[position]!)
-    // 210 subsets, one of them good: found when allowed to look at all of them.
-    const full = recoverFromAnyShares(shares)
-    expect(full.candidates).toHaveLength(1)
-    release(full)
+    for (const [threshold, limit] of [
+      [5, 16],
+      [9, 14],
+    ] as const) {
+      const shares = backup(original, threshold, limit + 1)
+      const error = failure(() => recoverFromAnyShares(shares))
+      expect(error.code).toBe('too-many-shares')
+      expect(error.maxShares).toBe(limit)
+      // Even a pinned descriptor does not lift it: the answer is to enter fewer shares.
+      expect(
+        failure(() =>
+          recoverFromAnyShares(shares, {
+            expected: original.metadata.descriptor,
+          }),
+        ).code,
+      ).toBe('too-many-shares')
+      const allowed = recoverFromAnyShares(shares.slice(0, limit))
+      expect(allowed.candidates).toHaveLength(1)
+      release(allowed)
+    }
+  })
+
+  it('the limit is per backup set: shares of another set neither count against it nor are mixed in', () => {
+    const original = account()
+    const other = account()
+    const mine = backup(original, 5, 16)
+    const theirs = backup(other, 5, 15)
+    const both = recoverFromAnyShares([...theirs, ...mine])
+    expect(both.candidates.map(c => fingerprint(c.account)).sort()).toEqual(
+      [fingerprint(original), fingerprint(other)].sort(),
+    )
+    release(both)
     expect(
-      failure(() => recoverFromAnyShares(shares, { maxReconstructions: 3 }))
-        .code,
-    ).toBe('too-many-inconsistent-shares')
+      failure(() => recoverFromAnyShares([...theirs, ...mine, mine[0]!]))
+        .maxShares,
+    ).toBe(31)
+    // A set too small to reconstruct anything is reported as a different set.
+    const stray = recoverFromAnyShares([...theirs.slice(0, 4), ...mine])
+    expect(stray.candidates).toHaveLength(1)
+    expect(fingerprint(stray.candidates[0]!.account)).toBe(
+      fingerprint(original),
+    )
+    expect(stray.shares.slice(0, 4).map(share => share.status)).toEqual([
+      'different-set',
+      'different-set',
+      'different-set',
+      'different-set',
+    ])
+    release(stray)
   })
 })

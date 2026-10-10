@@ -502,7 +502,7 @@ describe('Setup page restore from more shares than the threshold', () => {
     identifier: 'abcd',
     index: 'qpzry9'[position],
     status,
-    candidate: status === 'supports' ? 0 : null,
+    candidates: status === 'supports' ? [0] : [],
     code: null,
     ...extra,
   })
@@ -589,7 +589,7 @@ describe('Setup page restore from more shares than the threshold', () => {
           isRestore: true,
           report: [0, 1, 2, 3].map(position => ({
             ...verdict(position, 'supports'),
-            candidate: position % 2,
+            candidates: [position % 2],
           })),
           candidates: [
             { address: '0xAAAA', descriptor: 'desc-a', supporting: [0, 2] },

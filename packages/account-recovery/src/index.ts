@@ -21,6 +21,8 @@ import {
 } from '@frank/domain-roots'
 import { AccountRecoveryError, type ShareVerdict } from './errors.js'
 import { searchShares } from './share-search.js'
+
+export { maxSharesForThreshold } from './share-search.js'
 import {
   deriveRecoveryPublicMetadata,
   snapshotBytes,
@@ -117,10 +119,7 @@ export interface PendingCodex32Restore<
    * recoverFromAnyShares. With a pinned descriptor only the matching account is returned.
    * Success consumes the ceremony.
    */
-  recoverAny(
-    shares: readonly string[],
-    options?: { readonly maxReconstructions?: number },
-  ): Codex32ShareRecovery
+  recoverAny(shares: readonly string[]): Codex32ShareRecovery
   cancel(): void
 }
 
@@ -293,28 +292,29 @@ export function recoverCodex32Shares(
  * Recover from any number of shares from the threshold up, some of which may be wrong.
  *
  * Every share is decoded on its own; shares are grouped by backup set (identifier and
- * threshold); threshold-sized subsets are searched, within a work cap, for ones that
- * reconstruct a valid Frank master; and every share is then classified against what was
- * found. Throws an AccountRecoveryError carrying the per-share findings when no account can
- * be reconstructed, or `too-many-inconsistent-shares` when the cap is reached first.
+ * threshold) and never mixed across sets; every threshold-sized subset of each set is tried
+ * for one that reconstructs a valid Frank master; and every share is then classified against
+ * what was found. To keep that exhaustive search small, one set may hold at most
+ * maxSharesForThreshold(threshold) shares (`too-many-shares` otherwise). Throws an
+ * AccountRecoveryError carrying the per-share findings when no account can be reconstructed.
  *
- * If `expected` is given, only the account with that fingerprint is returned
- * (`descriptor-mismatch` if none has it). Without it, every reconstructible account is
- * returned and the caller must not choose between several on the user's behalf.
+ * Without `expected`, every reconstructible account is returned and the caller must not
+ * choose between several on the user's behalf. With `expected`, only the account with that
+ * fingerprint is returned (`descriptor-mismatch` if none has it).
  */
 export function recoverFromAnyShares(
   candidateShares: readonly string[],
-  options: {
-    readonly expected?: PublicRecoveryDescriptor
-    readonly maxReconstructions?: number
-  } = {},
+  options: { readonly expected?: PublicRecoveryDescriptor } = {},
 ): Codex32ShareRecovery {
+  if (Array.isArray(candidateShares) && candidateShares.length > 31) {
+    throw new AccountRecoveryError('too-many-shares', undefined, 31)
+  }
   const shares = snapshotShares(candidateShares)
   const expected =
     options.expected !== undefined
       ? snapshotPublicDescriptor(options.expected).publicRecoveryFingerprint
       : undefined
-  const found = searchShares(shares, options.maxReconstructions)
+  const found = searchShares(shares)
   const candidates: Codex32RecoveryCandidate[] = []
   try {
     for (const { master, supporting } of found.masters) {
@@ -340,6 +340,7 @@ export function recoverFromAnyShares(
       throw new AccountRecoveryError('descriptor-mismatch', found.shares)
     }
     const [chosen] = candidates.splice(wanted, 1)
+    const mine = new Set((chosen as Codex32RecoveryCandidate).supporting)
     return Object.freeze({
       candidates: Object.freeze([
         Object.freeze(chosen as Codex32RecoveryCandidate),
@@ -351,9 +352,8 @@ export function recoverFromAnyShares(
             ? share
             : Object.freeze({
                 ...share,
-                status:
-                  share.candidate === wanted ? 'supports' : 'inconsistent',
-                candidate: share.candidate === wanted ? 0 : null,
+                status: mine.has(share.position) ? 'supports' : 'inconsistent',
+                candidates: Object.freeze(mine.has(share.position) ? [0] : []),
               } as ShareVerdict),
         ),
       ),
@@ -410,15 +410,11 @@ export function beginCodex32Restore(
         recovered.payloadSymbols.fill(0)
       }
     },
-    recoverAny(
-      candidateShares: readonly string[],
-      options: { readonly maxReconstructions?: number } = {},
-    ): Codex32ShareRecovery {
+    recoverAny(candidateShares: readonly string[]): Codex32ShareRecovery {
       if (!active) throw new AccountRecoveryError('ceremony-consumed')
       try {
         const recovery = recoverFromAnyShares(candidateShares, {
           expected: descriptor,
-          maxReconstructions: options.maxReconstructions,
         })
         active = false
         return recovery

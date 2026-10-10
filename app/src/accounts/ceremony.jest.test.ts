@@ -240,6 +240,25 @@ test('complete share sets of two accounts: nothing is staged until the user pick
   a.ceremony.cancel()
   b.ceremony.cancel()
 })
+test('more shares of one backup than the app checks are refused with the number allowed', async () => {
+  const f = await signup()
+  const restore = createAccountCeremony()
+  await restore.beginRestore()
+  // A 2-of-n backup allows 31; 32 entries is over any limit.
+  const error = await restore
+    .confirm(
+      Array.from({ length: 32 }, () => f.shares[0]),
+      'Restored',
+    )
+    .then(
+      () => undefined,
+      (failure: unknown) => failure,
+    )
+  expect(error).toMatchObject({ code: 'too-many-shares', maxShares: 31 })
+  expect(recoveryErrorMessage(error)).toMatch(/Enter at most 31 shares/)
+  expect(accountSession.stage).not.toHaveBeenCalled()
+  f.ceremony.cancel()
+})
 test('a pinned descriptor selects its account from a pile holding two, without asking', async () => {
   const a = await signup(),
     b = await signup()

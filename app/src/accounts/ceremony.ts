@@ -249,8 +249,6 @@ export function recoveryErrorMessage(error: unknown): string {
       'These shares do not reconstruct the account you just backed up. Start again.',
     'not-account-backup':
       'These shares do not reconstruct a Frank account, so nothing was restored. At least one share is wrong, or they are not an account backup. Enter one more share from the same backup and the app can identify which share is wrong.',
-    'too-many-inconsistent-shares':
-      'Too many of these shares are inconsistent to determine a valid set, so nothing was restored. Remove shares you are unsure of and try again.',
     'duplicate-share': 'Each backup share must have a different index.',
     'wrong-share-count': 'Enter exactly the required number of backup shares.',
     'inconsistent-share':
@@ -269,6 +267,10 @@ export function recoveryErrorMessage(error: unknown): string {
     'wrong-recovery-format': 'This backup uses an unsupported recovery format.',
     'conflict':
       'The account state changed. Review the current account before starting again.',
+  }
+  if (code === 'too-many-shares') {
+    const most = (error as { maxShares?: number })?.maxShares
+    return `That is more shares than the app checks at once, so nothing was restored. Enter at most ${most} shares for this backup.`
   }
   return (
     messages[code ?? ''] ??

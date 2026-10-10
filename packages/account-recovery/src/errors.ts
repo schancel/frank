@@ -12,12 +12,12 @@ export type AccountRecoveryErrorCode =
   | 'descriptor-mismatch'
   /** The shares are valid Codex32 but do not carry a Frank account master. */
   | 'not-account-backup'
-  /** The search for a valid share set was stopped at its work cap without an answer. */
-  | 'too-many-inconsistent-shares'
+  /** More shares of one backup set were supplied than restore examines; see `maxShares`. */
+  | 'too-many-shares'
 
 /**
- * What one supplied share turned out to be. `supports`: it lies on the split of candidate
- * number `candidate`. `inconsistent`: right header, but on no reconstructed account.
+ * What one supplied share turned out to be. `supports`: it lies on the split of each account
+ * listed in `candidates`. `inconsistent`: right header, but on no reconstructed account.
  * `different-set`: another backup set's header. `duplicate`: a repeat of an earlier share.
  * `invalid`: it did not decode (`code` says why).
  */
@@ -35,7 +35,8 @@ export interface ShareVerdict {
   readonly identifier: string | null
   readonly index: string | null
   readonly status: ShareStatus
-  readonly candidate: number | null
+  /** Candidate numbers this share supports. A share can lie on more than one split. */
+  readonly candidates: readonly number[]
   readonly code: Codex32ErrorCode | null
 }
 
@@ -45,13 +46,18 @@ export class AccountRecoveryError extends Error {
   /** Per-share findings when the failure came from examining a set of shares. */
   readonly shares?: readonly ShareVerdict[]
 
+  /** With `too-many-shares`: the most shares of one backup set that may be entered. */
+  readonly maxShares?: number
+
   constructor(
     code: AccountRecoveryErrorCode,
     shares?: readonly ShareVerdict[],
+    maxShares?: number,
   ) {
     super(`Frank account recovery failed: ${code}`)
     this.name = 'AccountRecoveryError'
     this.code = code
     if (shares) this.shares = shares
+    if (maxShares !== undefined) this.maxShares = maxShares
   }
 }

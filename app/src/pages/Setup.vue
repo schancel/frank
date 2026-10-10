@@ -860,7 +860,8 @@ const shareReportLines = computed(() =>
   shareReport.value.map(share => {
     // A share of an account the user did not restore is, for them, a share that does not fit.
     const status =
-      share.status === 'supports' && share.candidate !== reportCandidate.value
+      share.status === 'supports' &&
+      !share.candidates.includes(reportCandidate.value)
         ? 'inconsistent'
         : share.status
     return {

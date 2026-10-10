@@ -132,6 +132,7 @@
         v-model:message="message"
         v-model:attachments="attachments"
         v-model:stamp-amount="stampAmount"
+        :minimum-stamp-wei="minimumStampWei"
         @sendMessage="sendMessage"
       />
     </q-footer>
@@ -293,6 +294,9 @@ export default defineComponent({
       // Pictures held by the composer for the next message (see utils/chat-attachments.ts).
       attachments: [] as PostAttachment[],
       stampPreparationStatus: null as string | null,
+      // The smallest stamp the wallet sends right now, read from it (`refreshMinimumStamp`).
+      // Until the first answer, the configured default.
+      minimumStampWei: activeChain.defaultStampValue as bigint,
       sendingMessage: false,
       activeSendCount: 0,
       blackjackDialog: false,
@@ -327,6 +331,7 @@ export default defineComponent({
   },
   emits: ['giveLotusClicked'],
   mounted() {
+    void this.refreshMinimumStamp()
     if (
       this.address &&
       typeof this.chatStore?.setActiveConversation === 'function'
@@ -563,6 +568,19 @@ export default defineComponent({
         this.scrollDigest = null
         this.$nextTick(() => message.$el.scrollIntoView({ behavior: 'smooth' }))
       }, 50)()
+    },
+    /** Asks the wallet for the smallest stamp it sends right now: one transfer's fee at the
+     * node's gas price. A wallet that cannot say leaves the last known value. */
+    async refreshMinimumStamp() {
+      try {
+        const minimum = await activeChain.directMessages.minimumStamp?.({
+          wallet: useMonadWallet(),
+        })
+        if (typeof minimum === 'bigint' && minimum > 0n)
+          this.minimumStampWei = minimum
+      } catch {
+        // No wallet yet, or the node did not answer: keep what is known.
+      }
     },
     async sendMessage(message: string) {
       const recipient = this.recipientAddress || this.address
@@ -1178,6 +1196,10 @@ export default defineComponent({
           return
         }
         if (rawAmount < 0n) return
+        // A paid stamp is never smaller than what the wallet will send (the fee of moving it);
+        // zero stays zero: a free message.
+        if (rawAmount > 0n && rawAmount < this.minimumStampWei)
+          rawAmount = this.minimumStampWei
         const target = this.conversation?.id || this.recipientAddress
         if (!target) return
         this.chatStore.setStampWei({
@@ -1188,10 +1210,14 @@ export default defineComponent({
       },
       get(): string {
         const target = this.conversation?.id || this.recipientAddress
+        const chosen = target
+          ? this.chatStore.getStampWei(target)
+          : activeChain.defaultStampValue
+        // Never shown below what the wallet will send; zero stays zero (a free message).
         return activeChain.toDisplayAmount(
-          target
-            ? this.chatStore.getStampWei(target)
-            : activeChain.defaultStampValue,
+          chosen > 0n && chosen < this.minimumStampWei
+            ? this.minimumStampWei
+            : chosen,
         )
       },
     },
@@ -1204,6 +1230,7 @@ export default defineComponent({
       ) {
         this.chatStore.setActiveConversation(newAddr)
       }
+      void this.refreshMinimumStamp()
       // Another conversation opens on its newest message, wherever the last one was left.
       this.followBottom = true
       this.$nextTick(() => this.pinScrollToBottom())

@@ -204,6 +204,7 @@
             :outbound="message.outbound"
             :failure-reason="message.delivery?.failureReason ?? ''"
             :payment-state="paymentState"
+            :waiting-for-previous-payment="waitingForPreviousPayment"
             @infoClick="transactionDialog = true"
             @deleteClick="deleteDialog = true"
             @replyClick="replyClicked({ address, payloadDigest })"
@@ -224,6 +225,7 @@
 import { defineComponent, PropType } from 'vue'
 
 import { useChatStore } from '../../../stores/chats'
+import { sendsWaitingForPreviousPayment } from '../../../utils/outgoing-waiting'
 
 import moment from 'moment'
 import ChatMessageReply from './ChatMessageReply.vue'
@@ -524,6 +526,9 @@ export default defineComponent({
         if (inline.has(position)) indexes.add(index)
       })
       return indexes
+    },
+    waitingForPreviousPayment(): boolean {
+      return sendsWaitingForPreviousPayment.has(this.payloadDigest)
     },
     paymentState(): string {
       const delivery = this.message.delivery

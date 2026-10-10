@@ -28,7 +28,7 @@
         v-if="status === 'pending' && outbound"
         data-testid="outgoing-sending"
         class="q-mr-xs"
-        >{{ $t('outgoing.sending') }}</span
+        >{{ sendingText }}</span
       >
       <time
         v-if="stamp"
@@ -120,7 +120,7 @@
           v-if="status === 'pending' && outbound"
           data-testid="outgoing-sending"
           class="q-mr-xs"
-          >{{ $t('outgoing.sending') }}</span
+          >{{ sendingText }}</span
         >
         <template v-if="stamp">
           <span data-testid="outgoing-stamp">{{ stamp }}</span>
@@ -196,6 +196,12 @@ export default defineComponent({
       required: false,
       default: 'checking',
     },
+    /** The send is waiting for the account's previous payment to be seen on chain. */
+    waitingForPreviousPayment: {
+      type: Boolean,
+      required: false,
+      default: false,
+    },
     /** Why the message failed (`OutgoingFailureReason`), shown next to "Failed to send". */
     failureReason: {
       type: String,
@@ -237,6 +243,13 @@ export default defineComponent({
     'discardClick',
   ],
   computed: {
+    /** What a message being sent says: that it is being sent, or, while its payment waits for
+     * the account's previous payment to be mined, that it is waiting for that. */
+    sendingText(): string {
+      return this.waitingForPreviousPayment
+        ? this.$t('outgoing.waitingForPreviousPayment')
+        : this.$t('outgoing.sending')
+    },
     paymentText(): string {
       if (this.paymentState === 'live')
         return this.$t('outgoing.paymentPending')
@@ -246,7 +259,7 @@ export default defineComponent({
     },
     announcement(): string {
       if (this.status === 'pending' && this.outbound) {
-        return this.$t('outgoing.sending')
+        return this.sendingText
       }
       if (this.status === 'payment-pending') return this.paymentText
       if (this.status === 'error') {

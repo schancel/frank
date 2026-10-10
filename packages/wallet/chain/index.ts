@@ -135,7 +135,6 @@ export {
   TopicPostOutcomeUnknownError,
 } from "./active-chain";
 export {
-  CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
   CanonicalRelayCannotForwardError,
 } from "./monad-canonical-dm";

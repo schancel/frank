@@ -204,20 +204,6 @@ export class CanonicalSenderUnpublishedError extends MonadStampTerminalError {
   }
 }
 
-/** No wallet state raises this any more: a message is never held behind another one. The class
- * remains only because hosts still import it; delete it with their imports. */
-export class CanonicalMessagingHoldError extends Error {
-  readonly cause?: unknown
-  constructor(
-    message = 'An earlier canonical payment record cannot be matched to a saved message.',
-    cause?: unknown,
-  ) {
-    super(message)
-    this.name = 'CanonicalMessagingHoldError'
-    if (cause !== undefined) this.cause = cause
-  }
-}
-
 /** What the wallet knows of one signed stamp payment of a stored message. */
 export interface StoredPayment {
   /** The coin it spends: a funded sub-account of the pool (with its index), the main account or
@@ -687,7 +673,7 @@ function sealUnpaid(
   }
   const payload = parseFrame(sealed.payload)
   if (payload.kind !== 'parsed' || payload.typed?.type !== 5)
-    throw new CanonicalMessagingHoldError()
+    throw new Error('canonical-wallet:payload-required')
   const digest = recipientPayloadDigest(directory.network, sealed.payload)
   const account = (ref: { keyType: number; keyBytes: Uint8Array }) =>
     cborMap([
@@ -1266,7 +1252,8 @@ async function send(
         // The only coin that could pay is spent by an earlier payment: this send waits its
         // turn, and meanwhile asks the chain about that one payment (never the relay).
         whileBusy: busyHolder => settleHolder(owner, busyHolder),
-        onWaiting: () => params.onPreparationProgress?.({ stage: 'checking' }),
+        onWaiting: () =>
+          params.onPreparationProgress?.({ stage: 'waiting-for-payment' }),
       }),
     )
     // Fresh snapshots after any wait: the message is sealed to the Current pair in force.

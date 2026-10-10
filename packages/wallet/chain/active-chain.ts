@@ -171,6 +171,9 @@ export interface DirectMessageSendResult {
 
 export type DirectMessagePreparationProgress =
   | { stage: "checking" }
+  /** The only coin that can pay is the main (or identity) account, and an earlier payment from
+   * it has not been seen on chain yet: this one waits its turn. Nothing has been signed. */
+  | { stage: "waiting-for-payment" }
   | {
       stage: "funding";
       completed: number;

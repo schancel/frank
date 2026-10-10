@@ -33,6 +33,33 @@ function mountSuffix(props: Record<string, unknown>, messages: unknown = enUS) {
 }
 
 describe('ChatMessageSuffix outgoing states (#269, #270)', () => {
+  it.each([
+    ['en-us', enUS],
+    ['fr-fr', frFR],
+  ])(
+    'a message whose payment waits for the previous one says so on the bubble, in place of "Sending" (%s)',
+    (_name, messages) => {
+      const t = translator(messages)
+      const sending = mountSuffix({ status: 'pending', inline: true }, messages)
+      expect(sending.get('[data-testid="outgoing-sending"]').text()).toBe(
+        t('outgoing.sending'),
+      )
+      const waiting = mountSuffix(
+        { status: 'pending', inline: true, waitingForPreviousPayment: true },
+        messages,
+      )
+      expect(waiting.get('[data-testid="outgoing-sending"]').text()).toBe(
+        t('outgoing.waitingForPreviousPayment'),
+      )
+      expect(t('outgoing.waitingForPreviousPayment')).not.toBe(
+        'outgoing.waitingForPreviousPayment',
+      )
+      expect(t('outgoing.waitingForPreviousPayment')).not.toBe(
+        t('outgoing.paymentChecking'),
+      )
+    },
+  )
+
   it('a failed message shows one localized failure line and offers Retry and Discard', async () => {
     const wrapper = mountSuffix({
       status: 'error',

@@ -205,8 +205,9 @@ describe('parallel paid messages', () => {
 
   it('twenty sends started together claim twenty different accounts and are in flight together', async () => {
     const rows = await fundAccounts(21)
-    // One send on its own, for the time one send takes with a relay that answers in 2 s.
-    relay.delayMs = 2_000
+    // One send on its own, for the time one send takes with a relay that answers in 5 s (long
+    // enough that sealing twenty messages on one thread, on a busy machine, fits inside it).
+    relay.delayMs = 5_000
     const startOne = Date.now()
     const first = await send(100)
     const oneMs = Date.now() - startOne
@@ -233,8 +234,8 @@ describe('parallel paid messages', () => {
     expect(bobMailbox).toHaveLength(21)
     // All twenty relay requests were in flight at the same time: nothing queued them.
     expect(relay.mostAtOnce).toBe(20)
-    // One after another they would take twenty relay answers (40 s); together, about one.
-    expect(twentyMs).toBeLessThan(5 * relay.delayMs)
+    // One after another they would take twenty relay answers (100 s); together, about one.
+    expect(twentyMs).toBeLessThan(3 * relay.delayMs)
     expect(mockFunded).toHaveLength(0)
 
     // The background pass learns "spent" from the chain for every one of them.
@@ -621,7 +622,15 @@ describe('parallel paid messages', () => {
     offlineChain.relayBroadcasts = false
     offlineChain.broadcastDown = true
     await send(2) // paid from main; its payment cannot land while the node is down
-    const waiting = send(3)
+    const stages: string[] = []
+    const waiting = f.chain.directMessages.send({
+      wallet: alice,
+      recipient: f.bob.identity.address,
+      items: [{ type: 'text', text: 'message 3' }],
+      stampValue: STAMP,
+      messageId: ID(3),
+      onPreparationProgress: progress => stages.push(progress.stage),
+    })
     const relayRequests = relay.bodies.length
     providerRequests.length = 0
     await new Promise(resolve => setTimeout(resolve, 2_500))
@@ -630,6 +639,9 @@ describe('parallel paid messages', () => {
     expect(
       providerRequests.filter(m => m === 'getTransactionReceipt').length,
     ).toBeLessThanOrEqual(4)
+    // The host is told, once, that this send is waiting for the previous payment: its own
+    // stage, not the "checking accounts" one.
+    expect(stages).toEqual(['waiting-for-payment'])
     offlineChain.broadcastDown = false
     await tick()
     await tick()

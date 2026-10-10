@@ -191,7 +191,6 @@ import {
 } from "./monad-canonical-dm";
 import { EvmStampPayer } from "../evm-stamp-payer";
 export {
-  CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
   CanonicalRecipientUndeliverableError,
@@ -1255,7 +1254,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           onProgress,
           claimFor: leaseHolder,
         });
-      }, FUNDING_FROM_MAIN);
+      }, {
+        ...FUNDING_FROM_MAIN,
+        onWaiting: () => onProgress?.({ stage: "waiting-for-payment" }),
+      });
       return { leaseIndex: preparation.index, leaseHolder };
     } catch (err) {
       const reason =

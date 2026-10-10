@@ -14,13 +14,14 @@ import {
   toChainDisplayAddress,
 } from '../utils/chain-address'
 import { acquireOutgoingLock, withOutgoingLock } from '../utils/outgoing-lock'
+import { sendsWaitingForPreviousPayment } from '../utils/outgoing-waiting'
 import { activeChain } from '@frank/wallet/chain'
 import { messageItems } from '../utils/message-items'
 
 import {
-  CanonicalMessagingHoldError,
   CanonicalRecipientNotPublishedError,
   ContactPaymentReleasedError,
+  DirectMessageStampBelowFeeError,
   type DirectMessageAttemptStatus,
   type DirectMessagePreparationProgress,
   type DirectMessageSendResult,
@@ -748,20 +749,12 @@ function isInsufficientFundsError(error: unknown): boolean {
   )
 }
 
-/** The original failure a `CanonicalMessagingHoldError` was raised for, if it carries one. */
-function heldCause(error: unknown): unknown {
-  return error instanceof Error && error.name === 'CanonicalMessagingHoldError'
-    ? (error as { cause?: unknown }).cause
-    : undefined
-}
-
 /** Maps a failed send to the reason class shown to the user, and says whether the message must
  * keep its payment attempt (so a later retry asks the wallet about it instead of paying again). */
 function classifySendFailure(
   error: unknown,
   ownDigest: string | undefined,
 ): { reason: OutgoingFailureReason; keepDigest?: string } {
-  const held = heldCause(error)
   if (error instanceof MonadStampRecoveredAttemptError) {
     return { reason: 'recovered' }
   }
@@ -781,26 +774,15 @@ function classifySendFailure(
   if (
     error instanceof CanonicalRecipientNotPublishedError ||
     (error instanceof Error &&
-      error.name === 'CanonicalRecipientNotPublishedError') ||
-    held instanceof CanonicalRecipientNotPublishedError ||
-    (held instanceof Error &&
-      held.name === 'CanonicalRecipientNotPublishedError')
+      error.name === 'CanonicalRecipientNotPublishedError')
   ) {
     return { reason: 'recipient-unregistered' }
   }
   if (isInsufficientFundsError(error)) {
     return { reason: 'insufficient-funds' }
   }
-  // An earlier payment that could not be finished holds this send. Show why it could not be
-  // finished; whatever payment set this message already has stays on it.
-  if (isInsufficientFundsError(held)) {
-    return { reason: 'insufficient-funds', keepDigest: ownDigest }
-  }
   return {
-    reason:
-      isNoResponseError(error) || isNoResponseError(held)
-        ? 'unreachable'
-        : 'error',
+    reason: isNoResponseError(error) ? 'unreachable' : 'error',
     // Any failure after the payment set was journaled leaves that set on the message.
     keepDigest: ownDigest,
   }
@@ -3019,10 +3001,14 @@ export const useChatStore = defineStore('chats', {
             ...(message.stampValueWei === undefined
               ? {}
               : { stampValue: message.stampValueWei }),
-            ...(onPreparationProgress === undefined
-              ? {}
-              : { onPreparationProgress }),
+            onPreparationProgress: progress => {
+              // Its payment waits for the previous one to be mined: the bubble says so.
+              if (progress.stage === 'waiting-for-payment')
+                sendsWaitingForPreviousPayment.add(id)
+              onPreparationProgress?.(progress)
+            },
             onAttemptCreated: async attemptDigest => {
+              sendsWaitingForPreviousPayment.delete(id)
               ownDigest = attemptDigest
               // Strict: this write must be durable before the relay sees any byte of the set.
               // If it fails, the send stops before any relay request. The wallet does NOT roll the
@@ -3045,6 +3031,20 @@ export const useChatStore = defineStore('chats', {
           break
         } catch (error) {
           lastSendError = error
+          sendsWaitingForPreviousPayment.delete(id)
+          // The chain's fee rose past this stamp between the composer's reading of the minimum
+          // and the send. The wallet paid and sent nothing; the stamp is raised to the minimum
+          // it names, saved on the message, and the send is made once more.
+          if (
+            error instanceof DirectMessageStampBelowFeeError &&
+            ownDigest === undefined &&
+            sendAttempt < maxSendAttempts &&
+            stillCurrent()
+          ) {
+            message.stampValueWei = error.floorWei
+            await this.setOutgoingState(address, id, 'pending', {})
+            continue
+          }
           if (error instanceof MonadStampPendingAttemptError) {
             // Own payment set journaled but not yet confirmed: keep it, keep re-sending the same
             // bytes. Without an own set, an earlier attempt is still pending and this message has
@@ -3112,6 +3112,7 @@ export const useChatStore = defineStore('chats', {
         }
       }
 
+      sendsWaitingForPreviousPayment.delete(id)
       if (!result) {
         const failure = classifySendFailure(lastSendError, ownDigest)
         await this.setOutgoingState(address, id, 'error', {

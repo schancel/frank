@@ -13,6 +13,8 @@ export function stampPreparationStatus(
   fee: { format: (raw: bigint) => string; unit: string },
 ): string {
   if (progress.stage === 'checking') return t('chat.stampPreparationChecking')
+  if (progress.stage === 'waiting-for-payment')
+    return t('chat.stampPreparationWaiting')
   if (progress.stage === 'funding') {
     return t('chat.stampPreparationFunding', {
       completed: progress.completed,

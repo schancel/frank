@@ -1,32 +1,16 @@
 import { createHash } from "crypto";
 import { computeAddress, getAddress } from "ethers";
-import type {
-  DirectMessageAttemptStatus,
-  DirectMessageReceived,
-} from "@frank/wallet/chain/active-chain";
+import type { DirectMessageReceived } from "@frank/wallet/chain/active-chain";
 import { LevelBotStateStore } from "./state-store";
-import type { PreparedReply } from "./types";
 
 const PREFIX = "host-inbound:v1:";
 const OWNER = PREFIX + "owner";
 const ROW = PREFIX + "dispatch:";
-// Staged reply text and commit value: outside the `host-inbound:` open scan and the row map.
+// The text of a staged reply: outside the `host-inbound:` open scan and the in-memory row map.
 const STAGED = "host-prepared:v1:";
-const MAX_DISPATCHES = 1024;
-const MAX_REPLIES = 64;
-// The codec's text-string and direct-message-frame limits (frank-codec constants.ts).
-const MAX_PREPARED_TEXT_BYTES = 262_144;
-const MAX_PREPARED_VALUE_BYTES = 1_048_576;
-/** OD-6: answers staged ahead of a refused send, bot-wide, before further prompts wait deferred. */
-export const MAX_STAGED_UNSENT = 16;
-// Host-owned key spaces of the root store a plugin commit may not name.
-const RESERVED_KEYS = [
-  "host-inbound:",
-  "host-prepared:",
-  "digest:",
-  "cursor:",
-  "greeted:",
-];
+// The codec's text-string limit (frank-codec constants.ts).
+const MAX_REPLY_TEXT_BYTES = 262_144;
+
 export interface InboundOwner {
   chainIdentifier: string;
   botId: string;
@@ -37,31 +21,28 @@ export interface InboundIdentity {
   digest: string;
   peerSubject: string;
   peerAddress: string;
-  conversationId: string;
+  /** Absent: the default thread with this peer. */
+  conversationId?: string;
   messageId: string;
   receivedTime: number;
 }
-export interface ReplyCall {
-  recipient: string;
-  conversationId?: string;
+/** The one text reply the host owes for a message. Its text is stored beside the row. The
+ * wallet owns the payment; `digest` is the wallet's attempt for it once the host knows it. */
+export interface StagedReply {
   stampValue: string;
+  /** When it was staged, in milliseconds: a reply is not retried for ever. */
+  since: number;
   digest?: string;
-  observation?: DirectMessageAttemptStatus;
 }
-/** A staged reply: the stamp it was authorised with, and one opaque plugin value to commit at
- * `stateKey` when the reply delivers. The host stores hashes only and never parses the value. */
-export interface PreparedCommit {
-  stampValue: string;
-  textSha256: string;
-  valueSha256: string;
-  stateKey: string;
-  expectedSha256: string | null;
-}
+/** An inbound message the bot has not finished with. `deferred`: retained, handler not run.
+ * `started`: the handler was given the message, once. A finished message has no row, only its
+ * `digest:` marker. */
 export interface InboundDispatch extends InboundIdentity {
-  version: 1;
-  phase: "deferred" | "started" | "completed";
-  replies: ReplyCall[];
-  prepared?: PreparedCommit;
+  version: 2;
+  phase: "deferred" | "started";
+  /** A reply the handler sent itself reached the wallet's journal. */
+  replied?: true;
+  reply?: StagedReply;
 }
 /** Handling order. The wallet sorts a fetch by time only, so equal times are tied by digest. */
 export const inboundOrder = (a: InboundIdentity, b: InboundIdentity): number =>
@@ -82,42 +63,10 @@ const hold = (): never => {
 };
 const hash = (s: unknown): s is string =>
   typeof s === "string" && /^[0-9a-f]{64}$/.test(s);
-const sha256 = (s: string): string =>
-  createHash("sha256").update(s, "utf8").digest("hex");
 const stamp = (s: unknown): s is string =>
   typeof s === "string" && /^(0|[1-9][0-9]{0,77})$/.test(s);
-// Printable ASCII without `!`, the sublevel separator, so a commit stays in the root namespace.
-const stateKey = (s: unknown): s is string =>
-  typeof s === "string" &&
-  /^[\x20\x22-\x7e]{1,512}$/.test(s) &&
-  !RESERVED_KEYS.some((prefix) => s.startsWith(prefix));
-/** Well-formed Unicode within a UTF-8 byte bound, so the stored bytes hash back exactly. */
-function bounded(value: unknown, maxBytes: number): string {
-  if (
-    typeof value !== "string" ||
-    value.length > maxBytes ||
-    /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(
-      value
-    ) ||
-    Buffer.byteLength(value, "utf8") > maxBytes
-  )
-    return hold();
-  return value;
-}
 const sameConversation = (a: InboundIdentity, b: InboundIdentity): boolean =>
   a.peerSubject === b.peerSubject && a.conversationId === b.conversationId;
-/** A prepared reply whose commit is still owed. */
-const owed = (row: InboundDispatch): boolean =>
-  !!row.prepared && row.phase !== "completed";
-/** A slot the wallet never linked. Once no send is in flight it can never link, so the reply can
- * never commit: it is held for good. */
-const unlinked = (row: InboundDispatch): boolean =>
-  row.replies.length === 1 && row.replies[0].digest === undefined;
-/** OD-1 (answered with a gap): an owed reply keeps later prompts of its conversation waiting,
- * except one held on an unlinked slot. Evaluated on the conversation's lane, where no send of
- * that conversation is in flight. */
-const blocksConversation = (row: InboundDispatch): boolean =>
-  owed(row) && !unlinked(row);
 const subject = (s: unknown): s is string =>
   typeof s === "string" && /^(02|03)[0-9a-f]{64}$/.test(s);
 const object = (value: unknown): Record<string, unknown> => {
@@ -140,6 +89,17 @@ export function conversationIdentity(value: unknown): string {
     12,
     16
   )}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+/** The sealed message identity of the staged reply to one inbound message, the same in every
+ * process lifetime. The wallet makes at most one payment for one identity, so sending the reply
+ * again under it can only finish the first attempt, never pay a second time. */
+export function replyMessageId(owner: InboundOwner, inbound: string): string {
+  return conversationIdentity(
+    createHash("sha256")
+      .update(`frank-bot-reply:v1:${owner.subject}:${inbound}`, "utf8")
+      .digest("hex")
+      .slice(0, 32)
+  );
 }
 function address(value: unknown): string {
   if (typeof value !== "string") return hold();
@@ -196,14 +156,17 @@ export function inboundIdentity(
     message.receivedTime >= Number.MAX_SAFE_INTEGER
   )
     return hold();
-  return {
+  const identity: InboundIdentity = {
     digest: message.payloadDigest,
     peerSubject,
     peerAddress: address(message.senderAddress.raw),
-    conversationId: conversationIdentity(message.conversationId),
     messageId: conversationIdentity(message.messageId),
     receivedTime: message.receivedTime,
   };
+  // No conversation ID on the wire is the default thread with the peer, not a malformed message.
+  if (message.conversationId !== undefined)
+    identity.conversationId = conversationIdentity(message.conversationId);
+  return identity;
 }
 function validateRow(value: unknown): InboundDispatch {
   const r = object(value);
@@ -217,94 +180,48 @@ function validateRow(value: unknown): InboundDispatch {
       "conversationId",
       "messageId",
       "receivedTime",
-      "replies",
-      "prepared",
+      "replied",
+      "reply",
     ]) ||
-    r.version !== 1 ||
-    !["deferred", "started", "completed"].includes(String(r.phase)) ||
+    r.version !== 2 ||
+    !["deferred", "started"].includes(String(r.phase)) ||
     !hash(r.digest) ||
     !subject(r.peerSubject) ||
     address(r.peerAddress) !== r.peerAddress ||
     address(r.peerAddress) !== keyAddress(r.peerSubject) ||
-    conversationIdentity(r.conversationId) !== r.conversationId ||
+    (r.conversationId !== undefined &&
+      conversationIdentity(r.conversationId) !== r.conversationId) ||
     conversationIdentity(r.messageId) !== r.messageId ||
     !Number.isSafeInteger(r.receivedTime) ||
     Number(r.receivedTime) < 0 ||
     Number(r.receivedTime) >= Number.MAX_SAFE_INTEGER ||
-    !Array.isArray(r.replies) ||
-    r.replies.length > MAX_REPLIES ||
-    (r.phase === "deferred" && r.replies.length > 0)
+    (r.replied !== undefined && r.replied !== true) ||
+    (r.phase === "deferred" && (r.replied || r.reply !== undefined))
   )
     return hold();
-  for (const raw of r.replies) {
-    const call = object(raw);
+  if (r.reply !== undefined) {
+    const reply = object(r.reply);
     if (
-      !keys(call, [
-        "recipient",
-        "conversationId",
-        "stampValue",
-        "digest",
-        "observation",
-      ]) ||
-      address(call.recipient) !== call.recipient ||
-      !stamp(call.stampValue) ||
-      (call.conversationId !== undefined &&
-        conversationIdentity(call.conversationId) !== call.conversationId) ||
-      (call.digest !== undefined && !hash(call.digest)) ||
-      (call.observation !== undefined &&
-        (!call.digest ||
-          !["live", "unknown", "dead", "delivered"].includes(
-            String(call.observation)
-          ))) ||
-      (r.phase === "completed" && call.observation !== "delivered")
-    )
-      return hold();
-  }
-  if (r.prepared !== undefined) {
-    const p = object(r.prepared);
-    const call = r.replies.length ? object(r.replies[0]) : undefined;
-    if (
-      !keys(p, [
-        "stampValue",
-        "textSha256",
-        "valueSha256",
-        "stateKey",
-        "expectedSha256",
-      ]) ||
-      !stamp(p.stampValue) ||
-      !hash(p.textSha256) ||
-      !hash(p.valueSha256) ||
-      !stateKey(p.stateKey) ||
-      (p.expectedSha256 !== null && !hash(p.expectedSha256)) ||
-      r.phase === "deferred" ||
-      r.replies.length > 1 ||
-      (r.phase === "completed" && !call) ||
-      (call &&
-        (call.recipient !== r.peerAddress ||
-          call.conversationId !== r.conversationId ||
-          call.stampValue !== p.stampValue))
+      !keys(reply, ["stampValue", "since", "digest"]) ||
+      !stamp(reply.stampValue) ||
+      !Number.isSafeInteger(reply.since) ||
+      (reply.digest !== undefined && !hash(reply.digest))
     )
       return hold();
   }
   return r as unknown as InboundDispatch;
 }
 
-/** Invocation/correlation owner only. Wallet owns exact requests, reservations and settlement.
- * A fetched message is retained as `deferred` before any handler runs; `start` is the single
- * permission to invoke the handler. A started invocation is never executed again, even if every
- * recorded reply later delivers.
+/** The host's record of inbound messages it has not finished with. The wallet owns payments,
+ * reservations and delivery; this store owns only which messages were handed to a handler and
+ * which text reply the host still owes.
  *
- * A handler may instead stage one prepared reply: its text and one plugin value are durable
- * before the reply is first sent, and the value is committed, once, in the batch that completes
- * the row when that same reply is observed delivered. A send is only ever begun from "prepared,
- * no slot". The compare-and-set on the plugin key is atomic against this store's operations
- * only: the plugin holds the same root store and can write the key directly, which yields a
- * held conflict, never an overwrite. */
+ * A fetched message is retained as `deferred` before any handler runs; `start` is the single
+ * permission to invoke the handler, so a handler never runs twice for one message. A message is
+ * finished by `complete`, which deletes its row and leaves a `digest:` marker so a later fetch of
+ * the same message is recognised and not handled again. */
 export class InboundOperationStore {
   private readonly rows = new Map<string, InboundDispatch>();
-  /** Prepared slots persisted by this instance. Process memory only, so an unlinked slot found
-   * at open can never be retracted. */
-  private readonly begun = new Set<string>();
   private tail: Promise<unknown> = Promise.resolve();
   private faulted = false;
   private closed = false;
@@ -358,30 +275,20 @@ export class InboundOperationStore {
       )
         return hold();
     }
+    // Every row: there is no limit on how many messages a bot may have unfinished.
     const entries = await state.readEntries(
       "host-inbound:",
-      MAX_DISPATCHES + 2
+      Number.MAX_SAFE_INTEGER
     );
-    if (entries.length > MAX_DISPATCHES + 1) return hold();
-    const digests = new Set<string>();
-    const stateKeys = new Set<string>();
     for (const [key, value] of entries) {
       if (key === OWNER) continue;
-      const row = validateRow(parse(value));
-      if (key !== ROW + row.digest) return hold();
-      // No send is in flight at open, so only replies that can still commit share-check a key.
-      if (row.prepared && blocksConversation(row)) {
-        if (stateKeys.has(row.prepared.stateKey)) return hold();
-        stateKeys.add(row.prepared.stateKey);
+      const raw = object(parse(value));
+      if (raw.version === 1) {
+        await instance.dropEarlierFormat(key, raw);
+        continue;
       }
-      for (const call of row.replies)
-        if (call.digest) {
-          if (digests.has(call.digest)) return hold();
-          digests.add(call.digest);
-        }
-      const completed = await state.get("digest:" + row.digest);
-      if ((row.phase === "completed") !== (completed !== undefined))
-        return hold();
+      const row = validateRow(raw);
+      if (key !== ROW + row.digest) return hold();
       instance.rows.set(row.digest, row);
     }
     const cursor = await state.get("cursor:lastPollTimestamp");
@@ -390,13 +297,42 @@ export class InboundOperationStore {
       (!/^[0-9]+$/.test(cursor) || !Number.isSafeInteger(Number(cursor)))
     )
       return hold();
-    for (const row of instance.rows.values())
-      if (
-        row.phase === "completed" &&
-        (cursor === undefined || Number(cursor) <= row.receivedTime)
-      )
-        return hold();
     return instance;
+  }
+  /** Development reset of rows written before finished rows were deleted (format 1). The host
+   * journal only: no key, wallet record or plugin state is touched. A completed row is history
+   * and goes, keeping its marker. A message whose handler never ran is kept and handled. One
+   * whose handler had started cannot be finished in this format: whether its reply was paid for
+   * is not recorded in a form this version may act on, so it is dropped and said so. */
+  private async dropEarlierFormat(
+    key: string,
+    raw: Record<string, unknown>
+  ): Promise<void> {
+    if (raw.phase === "deferred") {
+      const { replies: _replies, ...identity } = raw;
+      const row = validateRow({ ...identity, version: 2 });
+      if (key !== ROW + row.digest) return hold();
+      await this.save(row);
+      return;
+    }
+    if (raw.phase !== "completed")
+      console.error(
+        `[bot-host] [${this.owner.botId}] Message ${String(
+          raw.messageId
+        )} from ${String(
+          raw.peerAddress
+        )} was left unfinished by an earlier version and is dropped unanswered`
+      );
+    const ops: Parameters<LevelBotStateStore["durableBatch"]>[0] = [
+      { type: "del", key },
+    ];
+    if (hash(raw.digest))
+      ops.push(
+        { type: "put", key: "digest:" + raw.digest, value: "completed" },
+        { type: "del", key: `${STAGED}${raw.digest}:text` },
+        { type: "del", key: `${STAGED}${raw.digest}:value` }
+      );
+    await this.persist(ops);
   }
   assertOpen(): void {
     if (this.faulted || this.closed) hold();
@@ -427,10 +363,12 @@ export class InboundOperationStore {
     ]);
     this.rows.set(row.digest, row);
   }
-  listIncomplete(): InboundDispatch[] {
+  /** Messages whose handler was started and which are not finished. */
+  listStarted(): InboundDispatch[] {
     this.assertOpen();
     return [...this.rows.values()]
       .filter((r) => r.phase === "started")
+      .sort(inboundOrder)
       .map(copy);
   }
   listDeferred(): InboundDispatch[] {
@@ -452,66 +390,55 @@ export class InboundOperationStore {
     const row = this.rows.get(digest);
     return row && copy(row);
   }
+  /** Whether this message was finished earlier: it has a marker and no row. */
+  async finished(digest: string): Promise<boolean> {
+    this.assertOpen();
+    return (
+      !this.rows.has(digest) &&
+      (await this.state.get("digest:" + digest)) !== undefined
+    );
+  }
   private known(input: InboundIdentity): InboundDispatch | undefined {
     const existing = this.rows.get(input.digest);
     if (existing && MATCHED.some((key) => existing[key] !== input[key]))
       return hold();
     return existing;
   }
-  /** Capacity is not a fault: "full" leaves the message unretained and the journal usable. */
-  retain(input: InboundIdentity): Promise<"retained" | "known" | "full"> {
+  /** "finished": this message was completed earlier and is not handled again. Nothing limits
+   * how many messages are retained: a backlog never stops a bot taking new ones. */
+  retain(input: InboundIdentity): Promise<"retained" | "known" | "finished"> {
     return this.mutate(async () => {
       const row = validateRow({
-        version: 1,
+        version: 2,
         ...copy(input),
         phase: "deferred",
-        replies: [],
       });
       if (this.known(input)) return "known";
       if ((await this.state.get("digest:" + input.digest)) !== undefined)
-        return hold();
-      if (this.rows.size >= MAX_DISPATCHES) return "full";
+        return "finished";
       await this.save(row);
       return "retained";
     });
   }
-  /** True only for the one call that moves the row from deferred to started. A conversation is
-   * one peer lane, so the rules read durable rows only: a row waits for (a) an earlier deferred
-   * row of its conversation, (b) a reply of its conversation whose commit is still owed, and
-   * (d) room among the answers staged bot-wide ahead of a send. */
+  /** True only for the one call that moves the row from deferred to started. Replies to one
+   * conversation go out in order: a row waits for every earlier unfinished message of its own
+   * conversation, and for nothing else. */
   start(input: InboundIdentity): Promise<boolean> {
     return this.mutate(async () => {
       const existing = this.known(input);
       if (!existing) return hold();
       if (existing.phase !== "deferred") return false;
-      let unsent = 0;
-      for (const other of this.rows.values()) {
-        if (owed(other) && !other.replies.length) unsent++;
+      for (const other of this.rows.values())
         if (
+          other.digest !== existing.digest &&
           sameConversation(other, existing) &&
-          ((other.phase === "deferred" && inboundOrder(other, existing) < 0) ||
-            blocksConversation(other))
+          (other.phase === "started" || inboundOrder(other, existing) < 0)
         )
           return false;
-      }
-      if (unsent >= MAX_STAGED_UNSENT) return false;
       const row = copy(existing);
       row.phase = "started";
       await this.save(row);
       return true;
-    });
-  }
-  beginReply(
-    digest: string,
-    input: Omit<ReplyCall, "digest" | "observation">
-  ): Promise<number> {
-    return this.mutate(async () => {
-      const row = this.started(digest);
-      if (row.prepared || row.replies.length >= MAX_REPLIES) return hold();
-      const index = row.replies.length;
-      row.replies.push(copy(input));
-      await this.save(row);
-      return index;
     });
   }
   private started(digest: string): InboundDispatch {
@@ -519,141 +446,68 @@ export class InboundOperationStore {
     if (!row || row.phase !== "started") return hold();
     return row;
   }
-  /** Staged content is read one value at a time and must hash to what the row recorded. */
-  private async staged(
-    digest: string,
-    part: "text" | "value",
-    expected: string
-  ): Promise<string> {
-    const content = await this.state.get(`${STAGED}${digest}:${part}`);
-    if (content === undefined || sha256(content) !== expected) return hold();
-    return content;
+  /** Records that a reply the handler sent itself reached the wallet's journal. */
+  markReplied(digest: string): Promise<void> {
+    return this.mutate(async () => {
+      const row = this.started(digest);
+      if (row.replied) return;
+      row.replied = true;
+      await this.save(row);
+    });
   }
-  /** Compare-and-set: the plugin key still holds exactly what the handler read. */
-  private async unchanged(prepared: PreparedCommit): Promise<void> {
-    const current = await this.state.get(prepared.stateKey);
-    if (
-      (current === undefined ? null : sha256(current)) !==
-      prepared.expectedSha256
-    )
-      hold();
-  }
-  /** Stages the handler's reply and commit value with the row, in one batch. A refusal writes
-   * nothing and does not fault the journal; the row stays started and the answer is lost. */
-  prepare(
+  /** Stages the one text reply the host owes for this message, with the row, in one batch. */
+  stageReply(
     digest: string,
-    reply: PreparedReply,
-    stampValue: string
+    text: unknown,
+    stampValue: string,
+    since: number
   ): Promise<void> {
     return this.mutate(async () => {
       const row = this.started(digest);
-      if (row.prepared || row.replies.length) return hold();
-      const input = object(reply);
-      const commit = object(input.commit);
       if (
-        !keys(input, ["kind", "text", "commit"]) ||
-        input.kind !== "prepared-reply" ||
-        !keys(commit, ["key", "expectedSha256", "value"])
+        row.reply ||
+        typeof text !== "string" ||
+        !text ||
+        text.length > MAX_REPLY_TEXT_BYTES ||
+        // Well-formed Unicode only, so the stored bytes are the text that is sent.
+        /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(
+          text
+        ) ||
+        Buffer.byteLength(text, "utf8") > MAX_REPLY_TEXT_BYTES
       )
         return hold();
-      const text = bounded(input.text, MAX_PREPARED_TEXT_BYTES);
-      const value = bounded(commit.value, MAX_PREPARED_VALUE_BYTES);
-      if (!stateKey(commit.key)) return hold();
-      const expectedSha256 = hash(commit.expectedSha256)
-        ? commit.expectedSha256
-        : commit.expectedSha256 === null
-        ? null
-        : hold();
-      // One owed reply per key, so two conversations cannot commit over each other. A reply of
-      // this same conversation held on an unlinked slot can never commit and is not counted.
-      for (const other of this.rows.values())
-        if (
-          owed(other) &&
-          other.prepared?.stateKey === commit.key &&
-          !(sameConversation(other, row) && unlinked(other))
-        )
-          return hold();
-      row.prepared = {
-        stampValue,
-        textSha256: sha256(text),
-        valueSha256: sha256(value),
-        stateKey: commit.key,
-        expectedSha256,
-      };
+      row.reply = { stampValue, since };
       validateRow(row);
       await this.persist([
         { type: "put", key: ROW + digest, value: JSON.stringify(row) },
         { type: "put", key: `${STAGED}${digest}:text`, value: text },
-        { type: "put", key: `${STAGED}${digest}:value`, value },
       ]);
       this.rows.set(digest, row);
     });
   }
-  /** Persists the one reply slot of a prepared row and returns the verified text to send. The
-   * only way a send of a prepared reply begins: from "prepared, no slot", with the plugin key
-   * unchanged. */
-  beginPreparedReply(digest: string): Promise<string> {
+  /** The text of a staged reply, exactly as staged. */
+  async replyText(digest: string): Promise<string> {
+    if (!this.started(digest).reply) return hold();
+    const text = await this.state.get(`${STAGED}${digest}:text`);
+    return text === undefined ? hold() : text;
+  }
+  /** Records the wallet's attempt for the staged reply. It never changes once known. */
+  linkReply(digest: string, outbound: string): Promise<void> {
     return this.mutate(async () => {
       const row = this.started(digest);
-      if (!row.prepared || row.replies.length) return hold();
-      await this.unchanged(row.prepared);
-      const text = await this.staged(digest, "text", row.prepared.textSha256);
-      row.replies.push({
-        recipient: row.peerAddress,
-        conversationId: row.conversationId,
-        stampValue: row.prepared.stampValue,
-      });
-      await this.save(row);
-      this.begun.add(digest);
-      return text;
-    });
-  }
-  /** Back to "prepared, no slot". The caller vouches that the send it made for this slot was
-   * rejected with the wallet's not-attempted label and reported no attempt; the store can only
-   * check that the slot is unlinked and was persisted by this instance. */
-  retractReply(digest: string): Promise<void> {
-    return this.mutate(async () => {
-      const row = this.started(digest);
-      if (!row.prepared || !unlinked(row) || !this.begun.has(digest))
+      if (
+        !hash(outbound) ||
+        !row.reply ||
+        (row.reply.digest !== undefined && row.reply.digest !== outbound)
+      )
         return hold();
-      row.replies = [];
-      await this.save(row);
-      this.begun.delete(digest);
-    });
-  }
-  link(digest: string, index: number, outbound: string): Promise<void> {
-    return this.mutate(async () => {
-      if (!hash(outbound)) return hold();
-      const row = this.started(digest),
-        call = row.replies[index];
-      if (!call || (call.digest !== undefined && call.digest !== outbound))
-        return hold();
-      for (const other of this.rows.values())
-        for (let i = 0; i < other.replies.length; i++)
-          if (
-            (other.digest !== digest || i !== index) &&
-            other.replies[i].digest === outbound
-          )
-            return hold();
-      call.digest = outbound;
+      if (row.reply.digest === outbound) return;
+      row.reply.digest = outbound;
       await this.save(row);
     });
   }
-  observe(
-    digest: string,
-    index: number,
-    outbound: string,
-    observation: DirectMessageAttemptStatus
-  ): Promise<void> {
-    return this.mutate(async () => {
-      const row = this.started(digest),
-        call = row.replies[index];
-      if (!call || call.digest !== outbound) return hold();
-      if (call.observation === "delivered") return; // preserve authenticated delivery knowledge
-      call.observation = observation;
-      await this.save(row);
-    });
-  }
+  /** Finishes a started message: its row and staged text are deleted, its marker is written and
+   * the scan cursor moves, in one batch. Returns the cursor now stored. */
   complete(digest: string, cursor: number): Promise<number> {
     return this.mutate(async () => {
       if (!Number.isSafeInteger(cursor) || cursor < 0) return hold();
@@ -664,30 +518,14 @@ export class InboundOperationStore {
       )
         return hold();
       cursor = Math.max(cursor, Number(previous ?? 0));
-      const row = this.started(digest);
-      row.phase = "completed";
-      validateRow(row);
-      const ops: Parameters<LevelBotStateStore["durableBatch"]>[0] = [
-        { type: "put", key: ROW + digest, value: JSON.stringify(row) },
+      this.started(digest);
+      await this.persist([
+        { type: "del", key: ROW + digest },
+        { type: "del", key: `${STAGED}${digest}:text` },
         { type: "put", key: "digest:" + digest, value: "completed" },
         { type: "put", key: "cursor:lastPollTimestamp", value: String(cursor) },
-      ];
-      if (row.prepared) {
-        // The plugin value is committed in the batch that completes the row, or not at all.
-        const value = await this.staged(
-          digest,
-          "value",
-          row.prepared.valueSha256
-        );
-        await this.unchanged(row.prepared);
-        ops.unshift({ type: "put", key: row.prepared.stateKey, value });
-        ops.push(
-          { type: "del", key: `${STAGED}${digest}:text` },
-          { type: "del", key: `${STAGED}${digest}:value` }
-        );
-      }
-      await this.persist(ops);
-      this.rows.set(digest, row);
+      ]);
+      this.rows.delete(digest);
       return cursor;
     });
   }

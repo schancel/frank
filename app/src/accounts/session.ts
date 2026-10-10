@@ -10,7 +10,10 @@ import {
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import { Platform } from 'quasar'
 import type { DomainRoot } from '@frank/domain-roots'
-import { createMasterPayload, splitCodex32 } from '@frank/codex32'
+import {
+  decodeRecoveryDescriptor,
+  exportCodex32Backup,
+} from '@frank/account-recovery'
 import {
   openAccountCustody,
   CustodyError,
@@ -41,39 +44,18 @@ export interface AccountSessionState {
   error: string | null
 }
 
-export const CODEX32_SHARE_INDICES = [
-  'q',
-  'p',
-  'z',
-  'r',
-  'y',
-  '9',
-  'x',
-  '8',
-  'g',
-  'f',
-  '2',
-  't',
-  'v',
-  'd',
-  'w',
-  '0',
-  '3',
-  'j',
-  'n',
-  '5',
-  '4',
-  'k',
-  'h',
-  'c',
-  'e',
-  '6',
-  'm',
-  'u',
-  'a',
-  '7',
-  'l',
-] as const
+/**
+ * This account was stored before the app kept account roots. Nothing held here can
+ * reproduce the account, so no shares are issued: only the shares shown at signup restore it.
+ */
+export class AccountBackupUnavailableError extends Error {
+  readonly code = 'account-backup-unavailable'
+
+  constructor() {
+    super('This account cannot issue new backup shares')
+    this.name = 'AccountBackupUnavailableError'
+  }
+}
 
 /** The only runtime owner. Its reactive projection contains public data only. */
 export function createAccountSession(deps: {
@@ -362,9 +344,6 @@ export function createAccountSession(deps: {
         capability.close()
       }
     },
-    async getActiveWalletRoot(): Promise<Uint8Array> {
-      return this.getActiveDomainRoot('evm-wallet')
-    },
     getCachedChainAddress(chain: string): string | undefined {
       const isTestnet = activeChain.isTestnet ?? false
       const netId = resolveNetworkId(chain, isTestnet)
@@ -629,33 +608,36 @@ export function createAccountSession(deps: {
       curveKeyInFlight.set(curve, promise)
       return promise
     },
-    async backupCodex32(threshold = 2, count = 3): Promise<string[]> {
-      const root = await this.getActiveWalletRoot()
-      let master: { ok: boolean; value?: Uint8Array } | undefined
+    /**
+     * Issue a new, independent set of backup shares for the active account. They are
+     * split from the stored account root, the same secret the signup shares carry, so
+     * they restore this account: same identity, same roots, same addresses.
+     */
+    async backupCodex32(threshold: number, count: number): Promise<string[]> {
+      const checkCurrent = captureDerivation()
+      await session.initialize()
+      checkCurrent()
+      if (!custody || closed || state.status !== 'ready')
+        throw new CustodyError('locked')
+      const exported = await custody.exportAccountRoot()
       try {
-        master = createMasterPayload(root)
-        if (!master.ok || !master.value)
-          throw new Error('Failed to create master payload')
-        const safeThreshold = Math.max(
-          2,
-          Math.min(9, Math.floor(threshold)),
-        ) as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
-        const safeCount = Math.max(
-          safeThreshold,
-          Math.min(CODEX32_SHARE_INDICES.length, Math.floor(count)),
-        )
-        const split = splitCodex32({
-          threshold: safeThreshold,
-          identifier: 'frnk',
-          indices: CODEX32_SHARE_INDICES.slice(0, safeCount),
-          secret: master.value,
-          randomBytes: length => crypto.getRandomValues(new Uint8Array(length)),
-        })
-        if (!split.ok) throw new Error(split.error.code)
-        return [...split.value]
+        checkCurrent()
+        if (exported.account.receipt.context.accountId !== walletAccount)
+          throw new CustodyError('conflict')
+        if (!exported.accountRoot) throw new AccountBackupUnavailableError()
+        return [
+          ...exportCodex32Backup({
+            accountRoot: exported.accountRoot,
+            // The root must reproduce this account's own recorded fingerprint.
+            expected: decodeRecoveryDescriptor(exported.account.descriptor),
+            threshold: threshold as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+            shareCount: count,
+            randomBytes: length =>
+              crypto.getRandomValues(new Uint8Array(length)),
+          }),
+        ]
       } finally {
-        root.fill(0)
-        master?.value?.fill(0)
+        exported.accountRoot?.fill(0)
       }
     },
     async snapshot() {

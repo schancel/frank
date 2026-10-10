@@ -429,7 +429,7 @@ describe('Codex32 account ceremony', () => {
           },
           shares: split.value,
         }),
-      'bad-format',
+      'not-account-backup',
     )
   })
 
@@ -600,7 +600,7 @@ describe('Codex32 account ceremony', () => {
       if (split.ok) {
         expectRecoveryError(
           () => recoverCodex32Shares(split.value),
-          'bad-format',
+          'not-account-backup',
         )
       }
 

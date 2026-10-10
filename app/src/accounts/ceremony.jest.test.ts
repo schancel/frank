@@ -1,4 +1,5 @@
 import { webcrypto } from 'crypto'
+import { splitCodex32 } from '@frank/codex32'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
 import { accountSession } from './session'
 import { assertLegacyUnchanged } from './legacy'
@@ -104,6 +105,54 @@ test('restore without descriptor recovers valid roots and stages account', async
   expect(staged.displayName).toBe('Restored Account')
   f.ceremony.cancel()
 })
+test('stages the account root with the roots and wipes its own copy afterwards', async () => {
+  const f = await signup()
+  let seen: number[] = []
+  jest.mocked(accountSession.stage).mockImplementationOnce(async input => {
+    seen = Array.from(input.accountRoot)
+  })
+  await f.ceremony.confirm(f.shares.slice(0, 2), 'Fixture')
+  expect(seen).toHaveLength(32)
+  expect(seen.some(byte => byte !== 0)).toBe(true)
+  const staged = jest.mocked(accountSession.stage).mock.calls[0][0]
+  expect(staged.accountRoot.every(byte => byte === 0)).toBe(true)
+})
+test('each signup names its own share set', async () => {
+  const a = await signup(),
+    b = await signup()
+  const id = (share: string) => share.slice(4, 8)
+  expect(new Set(a.shares.map(id)).size).toBe(1)
+  expect(id(a.shares[0])).not.toBe(id(b.shares[0]))
+  a.ceremony.cancel()
+  b.ceremony.cancel()
+})
+test.each([
+  ['a derived root on its own', 32],
+  ['unrelated bytes of master length', 64],
+])(
+  'default restore refuses shares that carry %s instead of an account',
+  async (_name, length) => {
+    const split = splitCodex32({
+      threshold: 2,
+      identifier: 'test',
+      indices: ['q', 'p', 'z'],
+      secret: webcrypto.getRandomValues(new Uint8Array(length)),
+      randomBytes: n => webcrypto.getRandomValues(new Uint8Array(n)),
+    })
+    if (!split.ok) throw new Error('fixture')
+    const restore = createAccountCeremony()
+    await restore.beginRestore()
+    const error = await restore
+      .confirm(split.value.slice(0, 2), 'Restored')
+      .then(
+        () => undefined,
+        (failure: unknown) => failure,
+      )
+    expect(error).toMatchObject({ code: 'not-account-backup' })
+    expect(recoveryErrorMessage(error)).toMatch(/nothing was restored/)
+    expect(accountSession.stage).not.toHaveBeenCalled()
+  },
+)
 test('cancel during legacy-state check never stages recovered roots', async () => {
   const f = await signup()
   let resolve!: () => void

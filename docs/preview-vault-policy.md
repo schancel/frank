@@ -16,9 +16,17 @@ profile. This policy does not protect those bytes from a profile thief.
 ## Facade and ownership
 
 `@frank/account-vault` accepts typed 32-byte purpose roots from the existing frozen
-registry and bounded public `VaultContext` metadata. It never derives or accepts
-an account root R, master M, Codex32 shares or mnemonic phrases. Validation cannot
-detect a caller that falsely labels arbitrary bytes as a purpose root. It rejects
+registry, the 32-byte account root R they were derived from, and bounded public
+`VaultContext` metadata. R is sealed in the same record as the purpose roots, under
+the same key and authenticated context, and is returned only by `openAccountRoot`
+so that a new set of backup shares can be issued for the account; ordinary `open`
+never returns it. Holding R adds no exposure for the account's existing keys, which
+all derive from the five purpose roots already in the record; it would also yield
+any purpose added to the registry later, which the five roots alone would not. The
+vault never derives anything and never accepts a master M, Codex32 shares or
+mnemonic phrases. Validation cannot detect a caller that falsely labels arbitrary
+bytes as a purpose root or account root; the custody facade checks both against the
+account's public fingerprint and the registry derivation before staging. It rejects
 wrong registry/format, unknown/duplicate/out-of-order purposes, wrong root lengths,
 shared buffers, invalid revisions and oversized metadata before storage effects.
 It snapshots metadata and copies input roots synchronously before asynchronous
@@ -118,7 +126,10 @@ linearization point, not revocation of plaintext already returned to a caller.
 
 There are at most 1,024 creation slots including retained fences per namespace;
 replacement does not consume another slot. A slot has at most five roots, a
-167-byte plaintext and a 183-byte ciphertext including its 128-bit tag. Public
+199-byte plaintext and a 215-byte ciphertext including its 128-bit tag (framing 2:
+the roots followed by the account root). Records written before the account root
+was stored use framing 1, 32 bytes shorter; they still open, and `openAccountRoot`
+returns `null` for them. Nothing rewrites a framing 1 record. Public
 strings contain at most 128 printable ASCII characters. All strings are nonempty
 except retirement context, which may be empty. Revisions/epochs are bounded to
 `0..0xfffffffe` (live revision at least one); removal can produce `0xffffffff`.
@@ -142,10 +153,11 @@ numbers are u32 big-endian except the purpose count, which is a single byte:
 
 Recovery format is `codex32-master-v1`; registry is `frank-domain-roots-v1`.
 Purposes form a nonempty ordered subset of the frozen registry order.
-Plaintext is byte `1`, one-byte purpose count, then for each purpose a one-byte
-registry code (`1..5` in frozen registry order) and exactly 32 root bytes.
-Plaintext length, version, count and every code must match before any roots are
-returned. Every field in the receipt is authenticated; IV/ciphertext/tag changes
+Plaintext is byte `2`, one-byte purpose count, then for each purpose a one-byte
+registry code (`1..5` in frozen registry order) and exactly 32 root bytes, then
+the 32-byte account root. Byte `1` is the earlier framing without the trailing
+account root. Plaintext length, version, count and every code must match before
+any roots are returned. Every field in the receipt is authenticated; IV/ciphertext/tag changes
 fail authentication. This encoding is private local storage, not a wire format.
 
 ## Capability and process restart

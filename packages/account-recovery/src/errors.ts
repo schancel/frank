@@ -10,6 +10,8 @@ export type AccountRecoveryErrorCode =
   | 'invalid-descriptor'
   | 'invalid-fingerprint'
   | 'descriptor-mismatch'
+  /** The shares are valid Codex32 but do not carry a Frank account master. */
+  | 'not-account-backup'
 
 export class AccountRecoveryError extends Error {
   readonly code: AccountRecoveryErrorCode

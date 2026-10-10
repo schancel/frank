@@ -1,8 +1,12 @@
 import {
   beginCodex32Signup,
+  decodeRecoveryDescriptor,
+  exportCodex32Backup,
+  recoverCodex32Shares,
   type RecoveryPublicMetadata,
 } from '@frank/account-recovery'
 import { createVaultWriteIntent, openPreviewVault } from '@frank/account-vault'
+import { aad } from '../../../../../packages/account-vault/src/encoding'
 import { DOMAIN_PURPOSES } from '@frank/domain-roots'
 import {
   openAccountCustody,
@@ -62,10 +66,12 @@ function fixture(
     custodyEpoch: 1,
     metadata: recovered.metadata,
     roots: DOMAIN_PURPOSES.map(purpose => recovered.roots[purpose]),
+    accountRoot: recovered.accountRoot,
   }
 }
 function erase(input: StageAccount) {
   for (const root of input.roots) root.bytes.fill(0)
+  input.accountRoot.fill(0)
 }
 function current(state: CustodySnapshot): ExpectedActive {
   return {
@@ -381,7 +387,8 @@ async function regressions() {
         bytes: new Uint8Array(32).fill(99),
       })),
     }
-    await rejects(() => api.stage(altered), 'conflict')
+    // Roots that the account root does not derive are refused outright.
+    await rejects(() => api.stage(altered), 'invalid-input')
     equal(
       await api.reconcile(input.attemptId),
       'ready',
@@ -389,6 +396,159 @@ async function regressions() {
     )
     erase(input)
     erase(altered)
+  })
+
+  await test('only the account root of the staged account is accepted for later backups', async () => {
+    const api = await open('account-root-input'),
+      input = fixture('account-root-input'),
+      other = fixture('account-root-other', undefined, 5)
+    for (const accountRoot of [
+      // The defect this guards: a derived domain root offered as the account root.
+      ...input.roots.map(root => root.bytes),
+      other.accountRoot,
+      new Uint8Array(32).fill(9),
+      new Uint8Array(31),
+      undefined as unknown as Uint8Array,
+    ])
+      await rejects(() => api.stage({ ...input, accountRoot }), 'invalid-input')
+    equal(
+      (await api.snapshot()).pending,
+      null,
+      'a wrong account root persists nothing',
+    )
+    erase(input)
+    erase(other)
+  })
+
+  await test('a backup issued from stored custody restores the same account in a fresh store', async () => {
+    const original = fixture('backup-original', undefined, 21)
+    const expectedRoots = original.roots.map(root => Array.from(root.bytes))
+    let api = await open('backup-source')
+    const staged = await api.stage(original)
+    const descriptor = staged.pending!.account.descriptor
+    await api.activate(original.attemptId, original.expectedActive)
+    erase(original)
+    // Nothing from signup survives in memory: reopen custody as a later session would.
+    api.close()
+    api = await open('backup-source')
+    const issue = async () => {
+      const exported = await api.exportAccountRoot()
+      assert(exported.accountRoot !== null, 'new accounts keep their root')
+      equal(exported.account.descriptor, descriptor, 'export names the account')
+      assert(
+        !JSON.stringify(exported.account).includes('bytes'),
+        'exported account metadata is public',
+      )
+      try {
+        return exportCodex32Backup({
+          accountRoot: exported.accountRoot,
+          expected: decodeRecoveryDescriptor(exported.account.descriptor),
+          threshold: 2,
+          shareCount: 3,
+          randomBytes: length => crypto.getRandomValues(new Uint8Array(length)),
+        })
+      } finally {
+        exported.accountRoot.fill(0)
+      }
+    }
+    const first = await issue(),
+      second = await issue()
+    for (const [name, shares] of [
+      ['first', first.slice(0, 2)],
+      ['second', second.slice(1, 3)],
+    ] as const) {
+      const recovered = recoverCodex32Shares(shares)
+      const restored = await open(`backup-restored-${name}`)
+      const input: StageAccount = {
+        attemptId: `backup-restored-${name}`,
+        accountId: `restored-${name}`,
+        displayName: 'Restored account',
+        expectedActive: { revision: 0, accountId: null },
+        custodyEpoch: 1,
+        metadata: recovered.metadata,
+        roots: DOMAIN_PURPOSES.map(purpose => recovered.roots[purpose]),
+        accountRoot: recovered.accountRoot,
+      }
+      const pending = await restored.stage(input)
+      equal(
+        pending.pending!.account.descriptor,
+        descriptor,
+        'restored account has the original public descriptor',
+      )
+      await restored.activate(input.attemptId, input.expectedActive)
+      erase(input)
+      const capability = await restored.openActive()
+      const roots = capability.takeRoots()
+      equal(
+        roots.map(root => Array.from(root.bytes)),
+        expectedRoots,
+        'every restored root equals the original',
+      )
+      roots.forEach(root => root.bytes.fill(0))
+      capability.close()
+      // And the restored device can issue its own honest backup.
+      const again = await restored.exportAccountRoot()
+      assert(again.accountRoot !== null, 'restored accounts keep their root')
+      again.accountRoot.fill(0)
+    }
+    let mixed = ''
+    try {
+      recoverCodex32Shares([first[0], second[1]])
+    } catch (error) {
+      mixed = (error as { code?: string }).code ?? ''
+    }
+    equal(mixed, 'inconsistent-share', 'shares of two backups do not combine')
+  })
+
+  await test('an account stored before account roots were kept reports that it has none', async () => {
+    const api = await open('backup-older'),
+      input = fixture('backup-older', undefined, 22)
+    const expectedRoots = input.roots.map(root => Array.from(root.bytes))
+    const staged = await api.stage(input)
+    const receipt = staged.pending!.account.receipt
+    await api.activate(input.attemptId, input.expectedActive)
+    // Rewrite the vault record in the framing used before this change: typed roots only.
+    const older = new Uint8Array(2 + input.roots.length * 33)
+    older[0] = 1
+    older[1] = input.roots.length
+    input.roots.forEach((root, i) => {
+      older[2 + i * 33] = DOMAIN_PURPOSES.indexOf(root.purpose) + 1
+      older.set(root.bytes, 3 + i * 33)
+    })
+    erase(input)
+    let key: CryptoKey | undefined
+    await storage('backup-older', true, ['keys'], tx => {
+      const request = tx.objectStore('keys').get(input.attemptId)
+      request.onsuccess = () => {
+        key = request.result.key
+      }
+    })
+    const iv = crypto.getRandomValues(new Uint8Array(12))
+    const ciphertext = new Uint8Array(
+      await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv, additionalData: aad(receipt), tagLength: 128 },
+        key!,
+        older,
+      ),
+    )
+    await storage('backup-older', true, ['records'], tx => {
+      const store = tx.objectStore('records'),
+        request = store.get(input.attemptId)
+      request.onsuccess = () => {
+        store.put({ ...request.result, iv, ciphertext }, input.attemptId)
+      }
+    })
+    const exported = await api.exportAccountRoot()
+    equal(exported.accountRoot, null, 'no account root, and none is invented')
+    const capability = await api.openActive()
+    const roots = capability.takeRoots()
+    equal(
+      roots.map(root => Array.from(root.bytes)),
+      expectedRoots,
+      'the older account still opens with its own roots',
+    )
+    roots.forEach(root => root.bytes.fill(0))
+    capability.close()
   })
 
   await test('intent abort and crash after intent keep account incomplete; stable same-input retry', async () => {
@@ -648,6 +808,7 @@ async function regressions() {
               operationId: 'foreign',
             }),
             input.roots,
+            input.accountRoot,
           )
         vault.close()
       }
@@ -681,6 +842,7 @@ async function regressions() {
       ...root,
       bytes: root.bytes.slice(),
     }))
+    const originalAccountRoot = Array.from(input.accountRoot)
     let descriptorReads = 0
     const descriptor = input.metadata.descriptor
     const metadata: RecoveryPublicMetadata = {
@@ -737,12 +899,23 @@ async function regressions() {
         'no serialized raw roots',
       )
     assert(
+      !json.includes(JSON.stringify(originalAccountRoot)),
+      'no serialized account root',
+    )
+    assert(
       Object.isFrozen(staged) &&
         Object.isFrozen(staged.pending!.account.receipt.context.purposes),
       'public snapshots do not permit mutation',
     )
     await api.activate(input.attemptId, input.expectedActive)
     await assertActive(api, { ...input, roots: originalRoots })
+    const kept = await api.exportAccountRoot()
+    equal(
+      Array.from(kept.accountRoot ?? []),
+      originalAccountRoot,
+      'account root captured before the caller erased its copy',
+    )
+    kept.accountRoot?.fill(0)
     const capability = await api.openActive()
     api.close()
     let code = ''

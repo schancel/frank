@@ -77,7 +77,7 @@ function inspect(value: Inventory): Inventory {
     const current = fence.receipt
     if (!row || !same(receipt(row.receipt), current) ||
         !(row.iv instanceof Uint8Array) || row.iv.length !== 12 ||
-        !(row.ciphertext instanceof Uint8Array) || row.ciphertext.length !== 18 + 33 * current.context.purposes.length) throw 0
+        !(row.ciphertext instanceof Uint8Array) || !recordLengths(current.context.purposes.length).includes(row.ciphertext.length)) throw 0
     if (!key) throw new VaultError('locked')
     if (!same(receipt(key.receipt), current) || !validKey(key.key)) throw 0
     return { fence, record: { ...row, receipt: current }, key: { ...key, receipt: current } }
@@ -196,4 +196,10 @@ export function discardIntent(db: IDBDatabase, target: VaultWriteIntent): Promis
       }
     }, fail)
   })
+}
+
+/** Ciphertext sizes: typed roots plus tag, without (framing 1) or with (framing 2) the 32-byte account root. */
+function recordLengths(purposes: number): readonly number[] {
+  const withoutAccountRoot = 18 + 33 * purposes
+  return [withoutAccountRoot, withoutAccountRoot + 32]
 }

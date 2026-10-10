@@ -324,4 +324,188 @@ suite('ten paid messages sent together on a real EVM node (anvil)', () => {
     // network waits. The wallet-level suite shows all requests in flight at once.
     expect(nineMs).toBeLessThan(9 * Math.max(oneMs, 500))
   })
+
+  // From here the node mines only when told to, so "not mined yet" lasts as long as a test needs.
+  const automine = (on: boolean) => chain.send('evm_setAutomine', [on])
+  const mine = () => chain.send('evm_mine', [])
+  const pause = (ms: number) =>
+    new Promise(resolve => setTimeout(resolve, ms))
+  const NATIVE_HOLDER = /:main-account$/
+  /** Runs `started` and reports, after `ms`, whether it has finished. */
+  async function stillWaiting<T>(started: Promise<T>, ms: number) {
+    let done = false
+    void started.then(
+      () => (done = true),
+      () => (done = true),
+    )
+    await pause(ms)
+    return !done
+  }
+
+  it('a native send waits for a message payment from the main account to be mined, then holds the account itself until its own transfer is mined', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    const nonce = await chain.getTransactionCount(main, 'latest')
+    await automine(false)
+    try {
+      // Every funded account is spent: this message is paid from the main account.
+      const first = await send(3, 0)
+      expect(alice.pool.accountClaimedBy(main)).toBeDefined()
+      expect(alice.pool.accountClaimedBy(main)).not.toMatch(NATIVE_HOLDER)
+      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
+
+      const recipient = Wallet.createRandom().address
+      const native = alice.sendNative({
+        recipient: { raw: recipient },
+        value: 12_345n,
+      })
+      // It waits its turn: no error, and no second transaction signed over the first.
+      expect(await stillWaiting(native, 2_500)).toBe(true)
+      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
+      await mine()
+      const transfer = await native
+      expect((await chain.getTransaction(transfer.txHash))!.nonce).toBe(
+        nonce + 1,
+      )
+
+      // The send has returned and its transfer is not mined: the account is still held, and
+      // the next message waits for it instead of signing at a third nonce.
+      expect(alice.pool.accountClaimedBy(main)).toMatch(NATIVE_HOLDER)
+      const second = send(3, 1)
+      expect(await stillWaiting(second, 2_500)).toBe(true)
+      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 2)
+      await mine()
+      const sent = await second
+      await mine()
+      await automine(true)
+      await settle([first.payloadDigest, sent.payloadDigest])
+      expect((await chain.getTransactionReceipt(transfer.txHash))!.status).toBe(
+        1,
+      )
+      expect(await chain.getBalance(recipient)).toBe(12_345n)
+      expect(
+        (await chain.getTransaction(sent.stampPayments[0]!.txHash))!.nonce,
+      ).toBe(nonce + 2)
+      expect(await chain.getTransactionCount(main, 'latest')).toBe(nonce + 3)
+    } finally {
+      await automine(true)
+    }
+  })
+
+  it('a native send given a deadline gives up when it passes, having signed nothing', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    const nonce = await chain.getTransactionCount(main, 'latest')
+    await automine(false)
+    try {
+      const message = await send(4, 0)
+      await expect(
+        alice.sendNative({
+          recipient: { raw: Wallet.createRandom().address },
+          value: 1n,
+          mainAccountWaitMs: 1_500,
+        }),
+      ).rejects.toThrow(/wait given for it ran out/)
+      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
+      await mine()
+      await automine(true)
+      await settle([message.payloadDigest])
+    } finally {
+      await automine(true)
+    }
+  })
+
+  it('a contract call takes the main account like every other spender and holds it until the chain decides; one that is never handed to the network holds nothing', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    const nonce = await chain.getTransactionCount(main, 'latest')
+    const target = Wallet.createRandom().address
+    await automine(false)
+    try {
+      const call = await alice.sendContractCall!({
+        to: { raw: target },
+        data: '0x1234',
+        value: 7n,
+        gasLimit: 60_000n,
+      })
+      expect(alice.pool.accountClaimedBy(main)).toMatch(NATIVE_HOLDER)
+      const message = send(5, 0)
+      expect(await stillWaiting(message, 2_500)).toBe(true)
+      expect(await chain.getTransactionCount(main, 'pending')).toBe(nonce + 1)
+      await mine()
+      const sent = await message
+      await mine()
+      await automine(true)
+      await settle([sent.payloadDigest])
+      expect((await chain.getTransactionReceipt(call.txHash))!.status).toBe(1)
+      expect(
+        (await chain.getTransaction(sent.stampPayments[0]!.txHash))!.nonce,
+      ).toBe(nonce + 1)
+
+      // Signed, and the caller could not record it: it is discarded before any broadcast, the
+      // main account is free at once, and the next message does not wait.
+      await expect(
+        alice.sendContractCall!({
+          to: { raw: target },
+          data: '0x1234',
+          value: 7n,
+          gasLimit: 60_000n,
+          onSigned: async () => {
+            throw new Error('the caller could not record it')
+          },
+        }),
+      ).rejects.toThrow('the caller could not record it')
+      expect(alice.pool.accountClaimedBy(main)).toBeUndefined()
+      const after = await send(5, 1)
+      await settle([after.payloadDigest])
+      expect(await chain.getTransactionCount(main, 'latest')).toBe(nonce + 3)
+    } finally {
+      await automine(true)
+    }
+  })
+
+  it('a transfer to a contact takes its paying account through the claim and holds it until the transfer is mined', async () => {
+    const main = (await alice.getReceiveAddress()).raw
+    const identity = alice.identity.address.raw
+    await (
+      await dev.sendTransaction({ to: identity, value: 10n ** 17n })
+    ).wait()
+    const contact = {
+      pubKey: f.bob.identity.compressedPubKey,
+    } as unknown as Parameters<
+      NonNullable<typeof f.chain.nativeTransfers.sendToContact>
+    >[0]['recipient']
+    await automine(false)
+    try {
+      const paid = await f.chain.nativeTransfers.sendToContact!({
+        wallet: alice,
+        recipient: contact,
+        value: 1_000n,
+      })
+      const from = (await chain.getTransaction(paid.txHash))!.from
+      expect([main.toLowerCase(), identity.toLowerCase()]).toContain(
+        from.toLowerCase(),
+      )
+      const nonce = await chain.getTransactionCount(from, 'pending')
+      expect(alice.pool.accountClaimedBy(from)).toMatch(NATIVE_HOLDER)
+      // A second transfer waits for the first; with a deadline it gives up, signing nothing.
+      await expect(
+        f.chain.nativeTransfers.sendToContact!({
+          wallet: alice,
+          recipient: contact,
+          value: 1_000n,
+          mainAccountWaitMs: 1_500,
+        }),
+      ).rejects.toThrow(/wait given for it ran out/)
+      expect(await chain.getTransactionCount(from, 'pending')).toBe(nonce)
+      await mine()
+      // Mined: the next one goes through, at the next nonce.
+      const next = await f.chain.nativeTransfers.sendToContact!({
+        wallet: alice,
+        recipient: contact,
+        value: 1_000n,
+      })
+      expect((await chain.getTransaction(next.txHash))!.nonce).toBe(nonce)
+      await mine()
+    } finally {
+      await automine(true)
+    }
+  })
 })

@@ -395,6 +395,10 @@ export interface CanonicalMessagingOwner {
   signDigest(digest: Uint8Array): Uint8Array
   /** Runs `operation` as part of the open wallet: close waits for it. Not a queue. */
   lifetime<T>(operation: () => Promise<T>): Promise<T>
+  /** A payment is waiting for the main or identity account and what holds it is not a message
+   * of this wallet (a native send, a contract call, a transfer to a contact): one look at the
+   * chain for that holder's own transaction, releasing the account when it is decided. */
+  settleOtherHolder?(holder: string): Promise<void>
   directory(): CanonicalDirectory | undefined
   /** The message-item registry composition installed for this wallet
    * ({@link installMessageItemRegistry}). Every item sent or received goes through it. */
@@ -933,10 +937,14 @@ async function settleHolder(
   holder: string,
 ): Promise<void> {
   const prefix = `${owner.subject}:`
-  if (!holder.startsWith(prefix)) return
-  const consumerId = holder.slice(prefix.length)
-  const row = owner.messages.get(consumerId)
-  if (!row || !row.payments.some(isPending)) return
+  const consumerId = holder.startsWith(prefix)
+    ? holder.slice(prefix.length)
+    : undefined
+  const row =
+    consumerId === undefined ? undefined : owner.messages.get(consumerId)
+  if (consumerId === undefined || !row)
+    return void (await owner.settleOtherHolder?.(holder))
+  if (!row.payments.some(isPending)) return
   const work = workOf(owner, consumerId)
   if (work.creating) return
   if (work.busy) return void (await work.busy)

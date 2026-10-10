@@ -545,6 +545,10 @@ export interface NativeTransferClient {
     /** The fee the user reviewed, as a ceiling, for chains that estimate one before sending. */
     maxFee?: bigint;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<ChainTransaction>;
   getTransactionStatus(params: {
     wallet: NativeWalletHandle;
@@ -562,6 +566,10 @@ export interface NativeTransferClient {
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<LegacySendResult>;
 
   /** Computes the estimated network fee required to deliver `value` to a legacy destination. */
@@ -592,6 +600,10 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
      * caller persist "this hash may be paid" durably first, so a lost broadcast response or a
      * killed app can never leave a paid transfer with no record. */
     onSigned?: (signed: ChainTransaction) => Promise<void>;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<ChainTransaction>;
   /** What the node says about a transaction hash: mined ok (`confirmed`), mined but reverted
    * (`failed`), known but not mined (`pending`), or not known to the node (`unknown`; only
@@ -608,6 +620,10 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
     onProgress?: (progress: LegacySendProgress) => void;
     onSigned?: (signed: ChainTransaction) => Promise<void>;
     priorityFeeMicroLamports?: bigint;
+    /** While an earlier payment from the main account has not been seen on chain this send
+     * waits its turn, however long that takes. With this it gives up after so many
+     * milliseconds, having signed nothing. Wallets with no such account ignore it. */
+    mainAccountWaitMs?: number;
   }): Promise<LegacySendResult>;
 
   estimateLegacyFee?(params: {

@@ -47,6 +47,12 @@ export interface SendLegacyParams {
   value: bigint
   onProgress?: (progress: LegacySendProgress) => void
   onSigned?: (signed: ChainTransaction) => Promise<void>
+  /**
+   * The main account is one coin: while an earlier payment from it has not been seen on chain
+   * this send waits its turn. By default it waits however long that takes; with this, it gives
+   * up after so many milliseconds, having signed nothing.
+   */
+  mainAccountWaitMs?: number
 }
 /** One call to a contract from the main account, recorded and recovered like a native send. */
 export interface ContractCallParams {
@@ -65,6 +71,8 @@ export interface ContractCallParams {
   record?: EvmContractCallRecord
   /** After signing and before broadcast, so the caller can record the exact operation first. */
   onSigned?: (signed: ContractCallResult) => Promise<void>
+  /** As `SendLegacyParams.mainAccountWaitMs`. */
+  mainAccountWaitMs?: number
 }
 export interface ContractCallResult {
   operationId: string
@@ -413,6 +421,71 @@ export class EvmLegacyConsolidator {
     }
     if (wanted && !wanted()) return
     await journal.recordObservation(capture, observation, account)
+  }
+  /** The signed, exposed members spending `address` that the chain has not answered for: not seen in a
+   * block (successful or reverted), and the account's nonce not seen past theirs. */
+  private unsettledAt(
+    address: string,
+  ): { operationId: string; index: number }[] {
+    const key = address.toLowerCase()
+    return this.config.journal.list().flatMap(row =>
+      row.cancelled
+        ? []
+        : row.members.flatMap((member, index) =>
+            member.source.address === key &&
+            member.signed !== null &&
+            // Bytes that never left this device cannot land: only a member handed to the
+            // network holds its account.
+            member.exposed &&
+            member.observation.state !== 'included-success' &&
+            member.observation.state !== 'included-revert' &&
+            // The nonce consumed by another transaction: this one can never land, and the
+            // account is at its next nonce either way.
+            !(
+              member.account !== null &&
+              member.account.nonce >
+                Transaction.from(member.unsignedTransaction).nonce
+            )
+              ? [{ operationId: row.operationId, index }]
+              : [],
+          ),
+    )
+  }
+  /**
+   * True while a signed transaction of this journal spends `address` and the chain has not shown
+   * what became of it (mined, or its nonce consumed by another). Journal only: no request. This
+   * is what holds the main or identity account in the wallet's one claim after a native send, a
+   * contract call or a consolidation returns; a discarded or cancelled operation holds nothing.
+   */
+  holdsSource(address: string): boolean {
+    try {
+      return this.unsettledAt(address).length > 0
+    } catch {
+      // A journal that cannot be read frees nothing.
+      return true
+    }
+  }
+  /** One look at the chain for each transaction `holdsSource(address)` is true for; one the node
+   * does not know is handed to it again (the same bytes). Never rejects: a read that fails
+   * records nothing and the account stays held. */
+  async lookAtSource(address: string): Promise<void> {
+    const pass = async (lifetime?: WalletOperationLifetime) => {
+      for (const { operationId, index } of this.unsettledAt(address)) {
+        await this.observe(operationId, index, lifetime)
+        // The node knows neither the transaction nor a receipt: the same signed bytes are
+        // handed to it again, so a lost broadcast cannot hold the account for good.
+        const member = this.config.journal.get(operationId).members[index]!
+        if (member.observation.state === 'missing' && member.signed)
+          await this.config.provider
+            .broadcastTransaction(member.signed.rawTransaction)
+            .catch(() => undefined)
+      }
+    }
+    try {
+      await (this.config.runLifetime ? this.config.runLifetime(pass) : pass())
+    } catch {
+      /* Closed, or the chain could not be read: nothing is known, nothing changes. */
+    }
   }
   private async sources(
     lifetime?: WalletOperationLifetime,

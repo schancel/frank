@@ -224,8 +224,11 @@ impl Owner {
     /// Store a checked message in the recipient's inbox, in one durable write. An exact repeat
     /// returns what is already stored. A refusal (a payment already used for another message)
     /// leaves nothing behind. The number of messages already stored never refuses one.
+    ///
+    /// `now` is the caller's clock. The delivery time is decided here, under the store's lock:
+    /// see [`deliver`].
     pub(crate) fn claim(&self, input: CanonicalPaymentInput, now: i64) -> Result<Claim> {
-        let candidate = input.into_claim(now)?;
+        let mut candidate = input.into_claim(now)?;
         let (claim, stored) = self
             .with(true, |db| {
                 if let Some(existing) = find_request_locked(db, &candidate.request)? {
@@ -255,6 +258,7 @@ impl Owner {
                     }
                 }
                 let mut batch = WriteBatch::default();
+                deliver(db, &mut batch, &mut candidate, now)?;
                 append_owner(&mut batch, &candidate.policy.payload_hash, &candidate)?;
                 for member in &candidate.members {
                     batch.put(
@@ -267,13 +271,12 @@ impl Owner {
                     identity_key(&candidate.request),
                     candidate.policy.payload_hash,
                 );
-                publish(&mut batch, &candidate, now)?;
                 write(db, batch)?;
                 Ok((candidate, true))
             })?
             .ok_or(CanonicalError::Unavailable)?;
         if stored {
-            self.announce(&claim, now);
+            self.announce(&claim);
         }
         Ok(claim)
     }
@@ -308,30 +311,32 @@ impl Owner {
                 if matches!(claim.phase, Phase::Delivered(_)) {
                     return Ok((claim, false));
                 }
-                claim.phase = Phase::Delivered(now);
-                claim.updated = now;
                 claim.reservation = false;
                 let mut batch = WriteBatch::default();
+                deliver(db, &mut batch, &mut claim, now)?;
                 append_owner(&mut batch, hash, &claim)?;
-                publish(&mut batch, &claim, now)?;
                 write(db, batch)?;
                 Ok((claim, true))
             })?
             .ok_or(CanonicalError::Unavailable)?;
         if newly_finalized {
-            self.announce(&claim, now);
+            self.announce(&claim);
         }
         Ok(claim)
     }
     /// Tell open mailbox sockets about a message that has just been delivered.
-    fn announce(&self, claim: &Claim, now: i64) {
-        if let (Ok(sender), Ok(recipient)) = (claim.policy.sender(), claim.policy.recipient()) {
+    fn announce(&self, claim: &Claim) {
+        if let (Ok(sender), Ok(recipient), Phase::Delivered(time)) = (
+            claim.policy.sender(),
+            claim.policy.recipient(),
+            &claim.phase,
+        ) {
             let _ = self.broadcast.send(FinalizedEnvelope {
                 sender,
                 recipient,
                 payload_hash: claim.policy.payload_hash,
                 submission_identity: claim.request.submission_identity(),
-                timestamp: now,
+                timestamp: *time,
                 delivery: claim.request.delivery().to_vec(),
                 context: claim.request.context().to_vec(),
             });
@@ -1160,12 +1165,40 @@ fn mailbox_key(kind: u8, address: Address, time: i64, hash: &[u8; 32]) -> Vec<u8
     key.extend_from_slice(hash);
     key
 }
-fn publish(batch: &mut WriteBatch, claim: &Claim, now: i64) -> Result<()> {
+/// Where the last delivery time issued by this store is kept.
+const LAST_DELIVERY_KEY: &[u8] = b"L";
+
+/// Deliver a message as part of `batch`: give it its delivery time and put it in the
+/// recipient's inbox and the sender's own mailbox under that time.
+///
+/// A reader asks for "everything after the last time I saw", so a delivery time must never
+/// be equal to or earlier than one already issued, or a reader who has moved past it would
+/// never be given the message. The time is therefore taken here, under the store's lock at
+/// commit, and is the clock or one millisecond after the last time issued, whichever is
+/// later: two messages in the same millisecond, or a clock that steps back, still get
+/// increasing times. The last time issued is stored with the message, so this holds across
+/// restarts.
+fn deliver(db: &rocksdb::DB, batch: &mut WriteBatch, claim: &mut Claim, now: i64) -> Result<()> {
+    let last = match db
+        .get_pinned(LAST_DELIVERY_KEY)
+        .map_err(|_| CanonicalError::Unavailable)?
+    {
+        Some(raw) => i64::from_be_bytes(
+            raw.as_ref()
+                .try_into()
+                .map_err(|_| CanonicalError::Unavailable)?,
+        ),
+        None => i64::MIN,
+    };
+    let time = now.max(last.checked_add(1).ok_or(CanonicalError::Unavailable)?);
+    claim.phase = Phase::Delivered(time);
+    claim.updated = time;
+    batch.put(LAST_DELIVERY_KEY, time.to_be_bytes());
     let hash = &claim.policy.payload_hash;
     let (sender, recipient) = (claim.policy.sender()?, claim.policy.recipient()?);
-    batch.put(mailbox_key(b'I', recipient, now, hash), hash);
+    batch.put(mailbox_key(b'I', recipient, time, hash), hash);
     if sender != recipient {
-        batch.put(mailbox_key(b'O', sender, now, hash), hash);
+        batch.put(mailbox_key(b'O', sender, time, hash), hash);
     }
     Ok(())
 }

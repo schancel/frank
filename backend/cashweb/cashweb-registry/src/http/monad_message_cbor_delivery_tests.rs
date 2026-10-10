@@ -872,6 +872,117 @@ async fn a_restart_between_storing_and_broadcasting_is_repaired_by_the_resend() 
     fixture.stop().await;
 }
 
+fn delivery_time(claim: &crate::store::monad_dm_cbor::Claim) -> i64 {
+    let crate::store::monad_dm_cbor::Phase::Delivered(time) = claim.phase else {
+        panic!("a stored message is delivered");
+    };
+    time
+}
+
+/// A reader asks for everything after the last delivery time it has seen. That is a complete
+/// answer only if no message is ever given a time equal to or earlier than one already issued.
+#[tokio::test]
+async fn delivery_times_only_ever_increase_so_reading_after_the_last_one_misses_nothing() {
+    let relay = Relay::start(|_| Answer::Accepted).await;
+    let first = message(400_000, 0);
+    delivered(&relay.put(&first).await, &first);
+    let policy = relay
+        .owner()
+        .get(&payload_hash(&first))
+        .unwrap()
+        .unwrap()
+        .policy;
+    let input = |tag: u32| {
+        let request = message(tag, 0);
+        let mut policy = policy.clone();
+        policy.payload_hash = payload_hash(&request);
+        crate::monad_outbox::financial::CanonicalPaymentInput::without_directory(request, policy)
+            .unwrap()
+    };
+    let owner = relay.owner();
+    let clock = now_ms() + 60_000;
+
+    // Two messages in the same millisecond get different, increasing times.
+    let a = owner.claim(input(400_001), clock).unwrap();
+    let b = owner.claim(input(400_002), clock).unwrap();
+    assert_eq!(delivery_time(&a), clock);
+    assert_eq!(delivery_time(&b), clock + 1);
+    // The clock steps back an hour: the next message is still after the last one.
+    let c = owner.claim(input(400_003), clock - 3_600_000).unwrap();
+    assert_eq!(delivery_time(&c), clock + 2);
+    // A reader who has seen up to `b` and asks for what came after gets exactly `c`.
+    let after_b: Vec<_> = owner
+        .inbox(relay.recipient(), delivery_time(&b) + 1, None, 100)
+        .unwrap()
+        .iter()
+        .map(|claim| claim.policy.payload_hash)
+        .collect();
+    assert_eq!(after_b, [c.policy.payload_hash]);
+    // The sender's own mailbox holds each message under the same time as the inbox.
+    let sent = owner.mailbox(relay.sender(), clock, None, 100).unwrap();
+    assert_eq!(
+        sent.iter()
+            .map(|(claim, _)| delivery_time(claim))
+            .collect::<Vec<_>>(),
+        [clock, clock + 1, clock + 2]
+    );
+
+    // Writers and a reader at the same time, every writer on one stuck clock. The reader
+    // polls as the app does, from one past the newest time it has seen, and ends up with
+    // every message: none was committed at or before a time it had already read past.
+    const WRITERS: u32 = 4;
+    const EACH: u32 = 50;
+    let inputs: Vec<Vec<_>> = (0..WRITERS)
+        .map(|writer| {
+            (0..EACH)
+                .map(|n| input(410_000 + writer * 1000 + n))
+                .collect()
+        })
+        .collect();
+    let recipient = relay.recipient();
+    let done = std::sync::atomic::AtomicBool::new(false);
+    let seen = std::thread::scope(|scope| {
+        let reader = scope.spawn(|| {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut since = clock + 3;
+            loop {
+                let finished = done.load(std::sync::atomic::Ordering::SeqCst);
+                for claim in owner.inbox(recipient, since, None, 10_000).unwrap() {
+                    since = since.max(delivery_time(&claim) + 1);
+                    assert!(seen.insert(claim.policy.payload_hash));
+                }
+                if finished {
+                    return seen;
+                }
+            }
+        });
+        let writers: Vec<_> = inputs
+            .into_iter()
+            .map(|inputs| {
+                scope.spawn(move || {
+                    for input in inputs {
+                        owner.claim(input, clock - 5_000).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+        reader.join().unwrap()
+    });
+    assert_eq!(seen.len(), (WRITERS * EACH) as usize);
+
+    // After a restart the store still remembers the last time it issued.
+    let fixture = relay.shut_down().await.reopen().await;
+    let owner = fixture.registry.canonical_dm();
+    let last = clock + 2 + i64::from(WRITERS * EACH);
+    let next = owner.claim(input(420_000), clock - 3_600_000).unwrap();
+    assert_eq!(delivery_time(&next), last + 1);
+    fixture.stop().await;
+}
+
 /// The relay used to stop at 128 messages per recipient and 4,096 in all, for ever. Nothing
 /// counts stored messages now, so nothing refuses one for how many there are.
 #[tokio::test]

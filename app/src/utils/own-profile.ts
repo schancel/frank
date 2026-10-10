@@ -17,7 +17,7 @@
  *   account's profile is must not replace it.
  *
  * Two devices that edit at the same time: the relay keeps the later publish, and the other
- * device adopts it at its next start.
+ * device adopts it on its next mailbox poll.
  */
 import type { ProfileInfo } from '@frank/wallet/chain'
 import {
@@ -118,8 +118,10 @@ export async function syncOwnProfile(options: {
   address: string
   fetchPublished: () => Promise<ProfileInfo | undefined>
   publish: (profile: StoredProfile) => Promise<void>
+  isCancelled?: () => boolean
 }): Promise<OwnProfileOutcome> {
   const { store, address } = options
+  if (options.isCancelled?.()) return 'unreachable'
   claimProfileStore(store, address)
   let published: ProfileInfo | undefined
   try {
@@ -129,7 +131,8 @@ export async function syncOwnProfile(options: {
   }
   // The account changed while the relay was being asked: this answer is not for the copy that
   // is stored now.
-  if (!sameAddress(store.owner, address)) return 'unreachable'
+  if (options.isCancelled?.() || !sameAddress(store.owner, address))
+    return 'unreachable'
   const relayProfile = published ? storedProfileOf(published) : {}
   const relayHasProfile = hasContent(relayProfile)
 
@@ -164,6 +167,7 @@ export function syncOwnProfileWithRelay(options: {
   relayBaseUrl: string
   identity: MonadIdentity
   network?: string
+  isCancelled?: () => boolean
 }): Promise<OwnProfileOutcome | undefined> {
   const { relayBaseUrl, identity, network } = options
   const run = async (): Promise<OwnProfileOutcome | undefined> => {
@@ -174,8 +178,10 @@ export function syncOwnProfileWithRelay(options: {
       return undefined
     }
     await store.restored
+    if (options.isCancelled?.()) return undefined
     return syncOwnProfile({
       store,
+      isCancelled: options.isCancelled,
       address: identity.address.raw,
       fetchPublished: () =>
         fetchMonadProfile({ relayBaseUrl, address: identity.address }),

@@ -162,7 +162,10 @@ export interface DirectMessagePolling {
  * account's profile is brought in line with the relay again. A relay that has no profile for the
  * account is given this device's copy; one that has a profile keeps it (`../utils/own-profile`).
  */
-export async function autoRecoverProfile(wallet: WalletHandle): Promise<void> {
+export async function autoRecoverProfile(
+  wallet: WalletHandle,
+  isCancelled?: () => boolean,
+): Promise<void> {
   const identity = (wallet as unknown as { identity?: MonadIdentity }).identity
   if (!identity) return
   try {
@@ -171,10 +174,11 @@ export async function autoRecoverProfile(wallet: WalletHandle): Promise<void> {
         (wallet as { relayBaseUrl?: string }).relayBaseUrl ??
         loadMonadChainConfigFromEnv().relayBaseUrl,
       identity,
+      isCancelled,
       network: loadMonadChainConfigFromEnv().rpcChain,
     })
   } catch (err) {
-    console.warn('auto-register profile after 401 failed', err)
+    console.warn('own profile sync failed', err)
   }
 }
 
@@ -199,6 +203,7 @@ export function startDirectMessagePolling({
   let unavailableFailures = 0
   let otherFailures = 0
   let lastErrorKey: string | undefined
+  let profileRefresh: Promise<void> | undefined
 
   // Polls are chained (next one is scheduled when this one settles), never overlapping, so the
   // delay can adapt to what the relay just told us.
@@ -250,6 +255,15 @@ export function startDirectMessagePolling({
       otherFailures = 0
       lastErrorKey = undefined
       mailboxStatus.setOk()
+      // Profile publication belongs to the relay. Refresh even when the mailbox is empty,
+      // and retry a failed startup read on the next poll without delaying message delivery.
+      if (!profileRefresh) {
+        profileRefresh = autoRecoverProfile(wallet, () => stopped).finally(
+          () => {
+            profileRefresh = undefined
+          },
+        )
+      }
       // The relay answers: what this device has to note to the account's other devices about
       // its conversations (a deletion or a read mark not sent yet) goes out now. Free, and not waited for.
       void chats.noteConversationStates(wallet).catch(() => undefined)
@@ -482,6 +496,15 @@ export function startDirectMessagePolling({
       unsubscribeStream?.()
       // A stopped poller (e.g. the wallet was switched) must not leave its last problem on screen.
       mailboxStatus.setOk()
+      // Profile publication belongs to the relay. Refresh even when the mailbox is empty,
+      // and retry a failed startup read on the next poll without delaying message delivery.
+      if (!profileRefresh) {
+        profileRefresh = autoRecoverProfile(wallet, () => stopped).finally(
+          () => {
+            profileRefresh = undefined
+          },
+        )
+      }
       if (timer !== undefined) clearTimeout(timer)
       if (
         typeof document !== 'undefined' &&

@@ -2273,9 +2273,10 @@ describe('stores/chats.ts (ticket #42)', () => {
         incoming(first.id, 'first-delete', 100),
         incoming(second.id, 'second-keep', 200),
       ])
-      await chats.deleteConversation(first.id, 300)
+      await chats.deleteConversation(first.id)
       expect(first.messages).toHaveLength(0)
-      expect(first.deletedAt).toBe(300)
+      // Deleted up to the newest message it held, by the relay's time.
+      expect(first.deletedAt).toBe(100)
       expect(second.messages.map(m => m.payloadDigest)).toEqual(['second-keep'])
       expect(second.deletedAt).toBeUndefined()
       expect(chats.messages['second-keep']).toBeDefined()
@@ -2773,12 +2774,13 @@ describe('stores/chats.ts (ticket #42)', () => {
 
           it("a third person's message is not kept at all: not saved, shown or counted, and the peer still brings the conversation back; a reload shows the same", async () => {
             const { chats, conversation } = namedWithPeer()
-            await chats.deleteConversation(firstId, 150)
+            await chats.deleteConversation(firstId)
             await chats.receiveMessages(
               [fromThird('third-after-delete', 200)],
               SENDER_ADDRESS,
             )
-            expect(conversation.deletedAt).toBe(150)
+            // It held nothing the relay had timed: the deletion covers nothing.
+            expect(conversation.deletedAt).toBe(1)
             expect(conversation.messages).toHaveLength(0)
             expect(conversation.participants).not.toContain(THIRD_ADDRESS)
             expect(conversation.totalUnreadMessages).toBe(0)
@@ -2797,7 +2799,7 @@ describe('stores/chats.ts (ticket #42)', () => {
 
           it('then the same message ID in another conversation: both sessions load, and the reload shows what the session showed', async () => {
             const { chats } = namedWithPeer()
-            await chats.deleteConversation(firstId, 150)
+            await chats.deleteConversation(firstId)
             const first = fromThird('stall-1', 200)
             first.message.logicalMessageId = 'stall-id'
             await chats.receiveMessages([first], SENDER_ADDRESS)
@@ -2823,7 +2825,7 @@ describe('stores/chats.ts (ticket #42)', () => {
 
           it('a store that already holds both rows, saved before this rule, loads: the earlier keeps the ID and stays out of the deleted conversation', async () => {
             const { chats } = namedWithPeer()
-            await chats.deleteConversation(firstId, 150)
+            await chats.deleteConversation(firstId)
             const row = (
               index: string,
               conversationId: string,
@@ -2856,7 +2858,7 @@ describe('stores/chats.ts (ticket #42)', () => {
                 JSON.parse(JSON.stringify(rows)),
               )
               const reopened = await rehydrateState(chats.$state)
-              expect(reopened.conversations[firstId].deletedAt).toBe(150)
+              expect(reopened.conversations[firstId].deletedAt).toBe(1)
               expect(reopened.conversations[firstId].messages).toHaveLength(0)
               expect(
                 reopened.conversations[firstId].participants,
@@ -3774,23 +3776,32 @@ describe('stores/chats.ts (ticket #42)', () => {
         name: 'Temporary Thread',
       })
 
-      // Send initial message at time 100
-      chats.sendMessageLocal({
-        address: RECIPIENT_ADDRESS,
-        conversationId: conv.id,
-        senderAddress: SENDER_ADDRESS,
-        index: 'm1',
-        items: [{ type: 'text', text: 'first message' }],
-        outpoints: [],
-        status: 'confirmed',
-        previousHash: null,
-        timestamp: 100,
-      })
+      // The peer's first message, timed 100 by the relay
+      await chats.receiveMessages([
+        {
+          outbound: false,
+          senderAddress: RECIPIENT_ADDRESS,
+          copartyAddress: RECIPIENT_ADDRESS,
+          copartyPubKey: {} as any,
+          index: 'm1',
+          stampValue: 10,
+          message: {
+            conversationId: conv.id,
+            outbound: false,
+            status: 'confirmed',
+            items: [{ type: 'text', text: 'first message' }],
+            serverTime: 100,
+            receivedTime: 100,
+            outpoints: [],
+            senderAddress: RECIPIENT_ADDRESS,
+          } as any,
+        },
+      ])
       expect(chats.conversations[conv.id]?.messages).toHaveLength(1)
 
-      // Delete conversation at time 200
-      await chats.deleteConversation(conv.id, 200)
-      expect(chats.conversations[conv.id]?.deletedAt).toBe(200)
+      // Delete conversation: it reaches up to the newest message shown (relay time 100)
+      await chats.deleteConversation(conv.id)
+      expect(chats.conversations[conv.id]?.deletedAt).toBe(100)
       expect(chats.conversations[conv.id]?.messages).toHaveLength(0)
 
       // Replayed message with timestamp 100 (<= deletedAt) is ignored

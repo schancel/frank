@@ -332,3 +332,46 @@ it('an edit made while the publish was on its way stays unpublished', async () =
   expect(one.store.unpublished).toBe(true)
   expect(one.store.profile.name).toBe('Ada Lovelace')
 })
+
+it('a stopped session cannot adopt or publish a profile after its read finishes', async () => {
+  const one = device()
+  const identity = MonadIdentity.generate()
+  claimProfileStore(one.store, identity.address.raw)
+  one.store.profile = { name: 'Local copy' }
+  let stopped = false
+  const publish = jest.fn(async () => undefined)
+  const outcome = await syncOwnProfile({
+    store: one.store,
+    address: identity.address.raw,
+    isCancelled: () => stopped,
+    fetchPublished: async () => {
+      stopped = true
+      return { name: 'Other device edit', accountType: 0 } as ProfileInfo
+    },
+    publish,
+  })
+  expect(outcome).toBe('unreachable')
+  expect(one.store.profile.name).toBe('Local copy')
+  expect(publish).not.toHaveBeenCalled()
+})
+
+it('a queued refresh of a stopped session cannot reclaim another account profile store', async () => {
+  const one = device()
+  const previous = MonadIdentity.generate()
+  const current = MonadIdentity.generate()
+  claimProfileStore(one.store, current.address.raw)
+  one.store.profile = { name: 'Current account' }
+  const fetchPublished = jest.fn(async () => undefined)
+  expect(
+    await syncOwnProfile({
+      store: one.store,
+      address: previous.address.raw,
+      isCancelled: () => true,
+      fetchPublished,
+      publish: async () => undefined,
+    }),
+  ).toBe('unreachable')
+  expect(one.store.owner).toBe(current.address.raw.toLowerCase())
+  expect(one.store.profile.name).toBe('Current account')
+  expect(fetchPublished).not.toHaveBeenCalled()
+})

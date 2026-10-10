@@ -107,6 +107,9 @@ export type ChatMessage = {
   logicalMessageId?: string
   revisionDigest?: string
   deliveryDigest?: string
+  /** `serverTime` is this device's clock: the message was written here and its row has not
+   * been read back from the relay, which is what gives it the time every device sees. */
+  localTime?: boolean
 }
 
 /** Conversation metadata is owned by conversations[id]; messages are owned by the message store.
@@ -197,6 +200,10 @@ export interface Conversation {
    * mailbox does not say so yet. Cleared once the note is sent, or a later subject replaces
    * this one. */
   subjectToNote?: boolean
+  /** The account whose user last deleted, named or created this conversation on this device
+   * (`accountTag`). Only that account notes the deletion and the subject: the store can still
+   * hold conversations of an account that was replaced here. */
+  actedBy?: string
   verifiedGateway?: boolean
 }
 
@@ -745,10 +752,44 @@ function ownConversationStates(
 }
 
 /** A message of ours the relay has not timed yet: its time is this device's clock, which no
- * other device sees. A deletion noted from elsewhere never covers it. */
+ * other device sees. No deletion time is taken from it, and a deletion noted from elsewhere
+ * never covers it. */
 function isUntimedOutgoing(message: ChatMessage): boolean {
-  return message.outbound && message.status !== 'confirmed'
+  return (
+    message.outbound &&
+    (message.status !== 'confirmed' || message.localTime === true)
+  )
 }
+
+/** The newest time the relay gave a message this conversation holds; zero when it holds none
+ * the relay has timed. */
+function newestRelayTime(conversation: Conversation): number {
+  let newest = 0
+  for (const message of conversation.messages)
+    if (!isUntimedOutgoing(message) && message.serverTime > newest)
+      newest = message.serverTime
+  return newest
+}
+
+/**
+ * A private mark of the active account, the same on each of its devices and unknown to anyone
+ * else: what a conversation is tagged with when the account's user acts on it. `undefined`
+ * while no account is active.
+ */
+function accountTag(): string | undefined {
+  const salt = conversationIdSalt.value
+  return salt
+    ? formatConversationId(
+        allocateOpeningConversationId(salt, 'frank:conversation-notes'),
+      )
+    : undefined
+}
+
+/** While a conversation is open, its read mark is noted at most this often. It is noted at
+ * once when the conversation is closed. */
+export const READ_NOTE_INTERVAL_MS = 10_000
+/** When this session last noted a read mark for each conversation. */
+const readNotedAt = new Map<string, number>()
 
 /** The time up to which a conversation's messages are gone, if it was ever deleted. */
 function clearedUpTo(conversation: Conversation): number | undefined {
@@ -768,6 +809,7 @@ function clearedUpTo(conversation: Conversation): number | undefined {
 function conversationStateToNote(
   conversation: Conversation,
   ownAddress: string,
+  activeConversationId: string | null,
 ): ConversationStateItem | undefined {
   if (!isChainAddress(conversation.address)) return undefined
   const note: ConversationStateItem = {
@@ -775,15 +817,27 @@ function conversationStateToNote(
     conversationId: conversation.id,
     peer: conversation.address,
   }
+  // A deletion and a subject are noted by the account whose user made them.
+  const ours =
+    conversation.actedBy !== undefined && conversation.actedBy === accountTag()
   const cleared = clearedUpTo(conversation)
   if (
+    ours &&
     cleared !== undefined &&
     cleared > (conversation.noted?.clearedBefore ?? -1)
   )
     note.clearedBefore = Math.trunc(cleared)
+  // A read mark moves with every message that arrives in an open conversation: there it is
+  // noted once per interval, and when the conversation is closed.
   const read = readUpTo(conversation, ownAddress)
-  if (read > (conversation.noted?.readUpTo ?? 0)) note.readUpTo = read
-  if (conversation.subjectToNote && conversation.kind === 'direct') {
+  if (
+    read > (conversation.noted?.readUpTo ?? 0) &&
+    (conversation.id !== activeConversationId ||
+      Date.now() - (readNotedAt.get(conversation.id) ?? -Infinity) >=
+        READ_NOTE_INTERVAL_MS)
+  )
+    note.readUpTo = read
+  if (ours && conversation.subjectToNote && conversation.kind === 'direct') {
     note.subject = usableSubject(conversation.name) ?? ''
     note.subjectSetAt = conversation.nameSetAt ?? 0
   }
@@ -2326,6 +2380,7 @@ export const useChatStore = defineStore('chats', {
         stampPayments,
         senderAddress,
         destinationAddress: displayAddress,
+        localTime: true,
         messageHash: payloadDigest,
         delivery,
         conversationId: conv?.id || conversationId,
@@ -3752,6 +3807,7 @@ export const useChatStore = defineStore('chats', {
       if (kind === 'direct' && usableSubject(name) !== undefined) {
         this.conversations[id].nameSetAt = Date.now()
         this.conversations[id].subjectToNote = true
+        this.conversations[id].actedBy = accountTag()
         void this.noteConversationStates()
       }
       return this.conversations[id]
@@ -3770,6 +3826,7 @@ export const useChatStore = defineStore('chats', {
         (conversation.nameSetAt ?? 0) + 1,
       )
       conversation.subjectToNote = true
+      conversation.actedBy = accountTag()
       void this.noteConversationStates()
     },
     createEmailConversation({
@@ -3795,29 +3852,39 @@ export const useChatStore = defineStore('chats', {
         verifiedGateway: true,
       })
     },
-    async deleteChat(addressOrId: string, deletedAt = Date.now()) {
+    async deleteChat(addressOrId: string) {
       const conversation =
         this.conversations[addressOrId] ??
         this.chats[safeChainDisplayAddress(addressOrId) || addressOrId]
-      if (conversation)
-        await this.deleteConversation(conversation.id, deletedAt)
+      if (conversation) await this.deleteConversation(conversation.id)
     },
-    async deleteConversation(conversationId: string, deletedAt = Date.now()) {
+    /**
+     * Deletes a conversation with everything it shows now.
+     *
+     * The deletion is timed by the RELAY's clock, never this device's: it reaches exactly as
+     * far as the newest message it removed that the relay has timed. So it covers what the user
+     * saw and nothing else: a message the relay times later, on any device, is newer than the
+     * deletion and brings the conversation back, however wrong this device's clock is. (The
+     * relay hands a mailbox over in the order of its times, so a message this device has not
+     * seen yet is newer than every one it has.)
+     *
+     * A conversation with nothing the relay has timed is deleted "up to" where it was already
+     * cleared, or up to time 1: nothing is covered, the conversation is hidden, and the first
+     * message in it brings it back.
+     */
+    async deleteConversation(conversationId: string) {
       if (!this.conversations[conversationId]) return
       return serializeDeliveryMutation(async () => {
         const conv = this.conversations[conversationId]
         if (!conv) return
-        // The deletion covers everything shown when it was made. Its time is this device's
-        // clock; a message the relay timed later than that (a clock that runs behind) was
-        // deleted with the rest, so the deletion is at least as late as the newest of them.
-        const newestCleared = Math.max(
-          -Infinity,
-          ...conv.messages
-            .filter(message => !isUntimedOutgoing(message))
-            .map(message => message.serverTime),
+        const deletedAt = Math.max(
+          newestRelayTime(conv),
+          clearedUpTo(conv) ?? 0,
+          1,
         )
         await this.clearChatExclusive(conversationId)
-        conv.deletedAt = Math.max(deletedAt, newestCleared)
+        conv.deletedAt = deletedAt
+        conv.actedBy = accountTag()
         if (this.activeConversationId === conversationId)
           this.activeConversationId = null
         // The account's other devices, and one restored later, delete it too.
@@ -3934,11 +4001,22 @@ export const useChatStore = defineStore('chats', {
       }
       const ownAddress = activeChain.formatAddress(wallet.identity.address)
       const pass = async (): Promise<void> => {
+        // A note that cannot be sent is left for a later pass and the others go on: one
+        // conversation's failure never holds back another's note. It is not tried again in
+        // this pass, so a change made meanwhile does not turn a failure into a loop.
+        const failed = new Set<string>()
         do {
           noteConversationsAgain = false
           for (const id of Object.keys(this.conversations)) {
             const conv = this.conversations[id]
-            const note = conv && conversationStateToNote(conv, ownAddress)
+            const note =
+              conv && !failed.has(id)
+                ? conversationStateToNote(
+                    conv,
+                    ownAddress,
+                    this.activeConversationId,
+                  )
+                : undefined
             if (!note) continue
             try {
               await activeChain.directMessages.send({
@@ -3949,10 +4027,14 @@ export const useChatStore = defineStore('chats', {
                 messageId: conversationNoteId(note),
               })
             } catch (error) {
-              // The relay is asked once per pass; the next pass tries again.
-              console.warn('conversation note not sent; will retry:', error)
-              return
+              failed.add(id)
+              console.warn(
+                `conversation note for ${id} not sent; will retry:`,
+                error,
+              )
+              continue
             }
+            if (note.readUpTo !== undefined) readNotedAt.set(id, Date.now())
             const current = this.conversations[id]
             if (current) recordNoted(current, note)
           }
@@ -3995,7 +4077,11 @@ export const useChatStore = defineStore('chats', {
         : undefined
       if (conversationId && !conv)
         throw new Error(`Unknown conversation ${conversationId}`)
+      const closed = this.activeConversationId
       this.activeConversationId = conv?.id ?? null
+      // What was read in the conversation just closed is noted now.
+      if (closed !== null && closed !== this.activeConversationId)
+        void this.noteConversationStates()
       if (conv) {
         if (isChainAddress(conv.address))
           useContactStore().refresh(conv.address)

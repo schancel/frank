@@ -135,6 +135,7 @@ interface Device {
   activate: () => void
   disk: Disk
   chats: ReturnType<typeof useChatStore>
+  changeAccount: () => void
 }
 
 const opened: Device[] = []
@@ -143,6 +144,7 @@ const opened: Device[] = []
 let relayClock = 0
 let sent: Array<{ by: string; row: ReceivedMessageWrapper }> = []
 let sendFails = false
+const failedConversations = new Set<string>()
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex')
 
 /**
@@ -179,7 +181,11 @@ function device(name: string): Device {
     jest
       .spyOn(activeChain.directMessages, 'send')
       .mockImplementation(async (params: any) => {
-        if (sendFails) throw new Error('relay unreachable')
+        if (
+          sendFails ||
+          failedConversations.has(params.items[0]?.conversationId)
+        )
+          throw new Error('relay unreachable')
         // A note to self, and free.
         expect(params.wallet).toBe(WALLET)
         expect(params.recipient).toEqual({ raw: ME })
@@ -204,6 +210,10 @@ function device(name: string): Device {
       })
     made = {
       name,
+      changeAccount: () =>
+        chatsModule.setConversationIdSalt(
+          conversationIdSalt(new Uint8Array(32).fill(0x22)),
+        ),
       pinia,
       activate: () => setActivePinia(pinia),
       disk: { rows: new Map(), suppressed: new Set<string>() },
@@ -272,6 +282,7 @@ beforeEach(() => {
   relayClock = 10_000
   sent = []
   sendFails = false
+  failedConversations.clear()
   jest.spyOn(console, 'log').mockImplementation(() => undefined)
   jest.spyOn(console, 'warn').mockImplementation(() => undefined)
   jest.spyOn(console, 'debug').mockImplementation(() => undefined)
@@ -292,10 +303,11 @@ const HISTORY = [
 
 describe('a conversation deleted on one device', () => {
   /** Device one holds the conversation, deletes it, and notes that. */
-  async function deletedOnDeviceOne(deletedAt = 5000) {
+  async function deletedOnDeviceOne(deviceTime = 9000) {
     const one = device('one')
     await deliver(one, HISTORY)
-    await on(one, chats => chats.deleteConversation(WITH_PEER, deletedAt))
+    jest.spyOn(Date, 'now').mockReturnValue(deviceTime)
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
     const note = await notes(one)
     expect(note).toHaveLength(1)
     return { one, note }
@@ -308,7 +320,7 @@ describe('a conversation deleted on one device', () => {
         type: 'conversation-state',
         conversationId: WITH_PEER,
         peer: PEER,
-        clearedBefore: 5000,
+        clearedBefore: 2000,
       },
     ])
     // Another pass, and reading its own note back, sends nothing more and changes nothing.
@@ -404,12 +416,12 @@ describe('a conversation deleted on one device', () => {
     const { one, note: first } = await deletedOnDeviceOne(5000)
     const between = row({ digest: 'peer-3', time: 6000 })
     await deliver(one, [between])
-    await on(one, chats => chats.deleteConversation(WITH_PEER, 7000))
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
     const second = await notes(one)
     expect(second).toHaveLength(1)
     expect(
       (second[0].message.items[0] as ConversationStateItem).clearedBefore,
-    ).toBe(7000)
+    ).toBe(6000)
     const later = row({ digest: 'peer-4', time: 8000 })
     await deliver(one, [later])
     expect(shown(one).conversations[0].messages).toEqual(['peer-4'])
@@ -442,11 +454,91 @@ describe('a conversation deleted on one device', () => {
     expect(shown(restored).listed).toEqual([])
   })
 
+  it('a fast device clock does not erase a peer reply before the deletion note reaches the relay', async () => {
+    const { one, note } = await deletedOnDeviceOne(9000)
+    expect(
+      (note[0].message.items[0] as ConversationStateItem).clearedBefore,
+    ).toBe(2000)
+    const reply = row({ digest: 'reply-between', time: 6000 })
+    await deliver(one, [reply])
+    for (const batches of [
+      [HISTORY, [reply], note],
+      [note, HISTORY, [reply]],
+      [[...note, reply, ...HISTORY]],
+    ]) {
+      const other = device('reply between deletion and note')
+      await deliver(other, ...batches)
+      expect(shown(other)).toEqual(shown(one))
+      expect(shown(other).conversations[0].messages).toEqual(['reply-between'])
+    }
+  })
+
+  it('deleting an empty conversation covers no future peer message', async () => {
+    const one = device('empty')
+    await on(one, chats =>
+      chats.createConversation({
+        kind: 'direct',
+        participants: [PEER],
+        address: PEER,
+        conversationId: WITH_PEER,
+      }),
+    )
+    jest.spyOn(Date, 'now').mockReturnValue(9_000_000)
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
+    const note = await notes(one)
+    expect(
+      (note[0].message.items[0] as ConversationStateItem).clearedBefore,
+    ).toBe(1)
+    const reply = row({ digest: 'first-in-empty', time: 6000 })
+    await deliver(one, [reply])
+    const restored = device('restored empty')
+    await deliver(restored, [reply], note)
+    expect(shown(restored)).toEqual(shown(one))
+    expect(shown(restored).conversations[0].messages).toEqual([
+      'first-in-empty',
+    ])
+  })
+
+  it('one failed conversation note does not stop another conversation from syncing', async () => {
+    const one = device('one')
+    const otherId = '22222222-2222-4222-8222-222222222222'
+    await deliver(one, [
+      ...HISTORY,
+      row({ digest: 'other-thread', time: 3000, conversationId: otherId }),
+    ])
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
+    await on(one, chats => chats.deleteConversation(otherId))
+    failedConversations.add(WITH_PEER)
+    const sentNow = await notes(one)
+    expect(
+      sentNow.map(
+        n => (n.message.items[0] as ConversationStateItem).conversationId,
+      ),
+    ).toEqual([otherId])
+    failedConversations.clear()
+    expect(
+      (await notes(one)).map(
+        n => (n.message.items[0] as ConversationStateItem).conversationId,
+      ),
+    ).toEqual([WITH_PEER])
+  })
+
+  it('a replacement account does not publish the previous account deletion or subject', async () => {
+    const one = device('one')
+    await deliver(one, HISTORY)
+    await on(one, chats =>
+      chats.renameConversation(WITH_PEER, 'Old account subject'),
+    )
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
+    one.changeAccount()
+    expect(await notes(one)).toEqual([])
+  })
+
   it('a note that could not be sent is sent by a later pass, once', async () => {
     const one = device('one')
     await deliver(one, HISTORY)
     sendFails = true
-    await on(one, chats => chats.deleteConversation(WITH_PEER, 5000))
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
     expect(await notes(one)).toEqual([])
     expect(await notes(one)).toEqual([])
     sendFails = false
@@ -629,6 +721,10 @@ describe('a conversation read on one device', () => {
     await on(one, chats => chats.setActiveConversation(WITH_PEER))
     await notes(one)
     await deliver(one, [row({ digest: 'peer-3', time: 3000 })])
+    // While open, the next interval publishes the accumulated read mark.
+    expect(await notes(one)).toEqual([])
+    const now = Date.now()
+    jest.spyOn(Date, 'now').mockReturnValue(now + 10_000)
     const note = await notes(one)
     expect(readNote(note).map(each => each.readUpTo)).toEqual([3000])
 
@@ -637,6 +733,18 @@ describe('a conversation read on one device', () => {
     expect(shown(two).conversations[0].unread).toBe(3)
     await deliver(two, note)
     expect(shown(two).conversations[0].unread).toBe(0)
+  })
+
+  it('closing the conversation immediately publishes a read mark accumulated within the interval', async () => {
+    const one = device('one')
+    await deliver(one, HISTORY)
+    jest.spyOn(Date, 'now').mockReturnValue(10_000)
+    await on(one, chats => chats.setActiveConversation(WITH_PEER))
+    await notes(one)
+    await deliver(one, [row({ digest: 'new-read', time: 3000 })])
+    expect(await notes(one)).toEqual([])
+    await on(one, chats => chats.setActiveConversation(null))
+    expect(readNote(await notes(one)).map(n => n.readUpTo)).toEqual([3000])
   })
 
   it('the mark is a relay time: a message of ours on its way does not move it', async () => {
@@ -687,7 +795,7 @@ describe('a conversation read on one device', () => {
 
   it('reading and deleting are noted together and applied together', async () => {
     const { one } = await readOnDeviceOne()
-    await on(one, chats => chats.deleteConversation(WITH_PEER, 5000))
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
     const deletion = await notes(one)
     const after = row({ digest: 'peer-3', time: 6000 })
     await deliver(one, [after])
@@ -936,7 +1044,7 @@ describe('a conversation subject set on one device', () => {
       chats.setActiveConversation(null)
     })
     await notes(one)
-    await on(one, chats => chats.deleteConversation(WITH_PEER, 5000))
+    await on(one, chats => chats.deleteConversation(WITH_PEER))
     await notes(one)
     const after = row({ digest: 'peer-3', time: 6000 })
     await deliver(one, [after])

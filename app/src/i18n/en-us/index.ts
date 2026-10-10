@@ -125,6 +125,15 @@ export default {
     reasonEmpty: 'empty image',
     reasonDimensionsTooLarge: 'dimensions too large',
   },
+  raffle: {
+    enter: 'Enter',
+    confirmGroupLabel: 'Confirm raffle entry',
+    confirmPrompt: 'Pay {amount} to enter?',
+    confirm: 'Confirm',
+    cancel: 'Cancel',
+    insufficient: 'That is more than you can spend now ({balance}).',
+    balanceUnknown: 'Your balance is not known yet.',
+  },
   raffleDraw: {
     verified: 'Draw matches the seed commitment',
     failed: 'Verification failed: {reason}',

@@ -127,6 +127,16 @@ export default {
     reasonEmpty: 'image vide',
     reasonDimensionsTooLarge: 'dimensions trop grandes',
   },
+  raffle: {
+    enter: 'Participer',
+    confirmGroupLabel: 'Confirmer la participation à la tombola',
+    confirmPrompt: 'Payer {amount} pour participer ?',
+    confirm: 'Confirmer',
+    cancel: 'Annuler',
+    insufficient:
+      'C’est plus que ce que vous pouvez dépenser maintenant ({balance}).',
+    balanceUnknown: 'Votre solde n’est pas encore connu.',
+  },
   raffleDraw: {
     verified: "Le tirage correspond à l'engagement de la graine",
     failed: 'Échec de la vérification : {reason}',

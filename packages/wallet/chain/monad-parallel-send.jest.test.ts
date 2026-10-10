@@ -813,6 +813,112 @@ describe('parallel paid messages', () => {
     },
   )
 
+  it('a native send waiting out the chain spacing keeps the main account: a message waiting for it cannot let its claim go', async () => {
+    // Seen on Monad testnet: while a native send that had claimed the main account waited
+    // three blocks, a waiting message released that claim as a settled leftover, took the
+    // account, and both signed the same nonce.
+    await alice.close()
+    await f.close()
+    offlineChain.reset()
+    mockBalances.clear()
+    mailboxes.clear()
+    f = await fixture({ spendSpacingBlocks: 3 })
+    alice = f.alice
+    bobMailbox = []
+    mailboxes.set(toHex(f.bob.identity.compressedPubKey), bobMailbox)
+    f.setMailbox(bobMailbox)
+    installCanonicalDirectory(alice, await f.directoryFor('alice', f.alice, f.bob))
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    mockBalances.set(main, 10n ** 17n)
+    // The node: at block 100, and until `spaced` it shows a transaction of the main account
+    // inside the last three blocks.
+    let spaced = true
+    jest.spyOn(alice.provider, 'getBlockNumber').mockResolvedValue(100)
+    const count = alice.provider.getTransactionCount.bind(alice.provider)
+    jest
+      .spyOn(alice.provider, 'getTransactionCount')
+      .mockImplementation(async (address, tag) => {
+        const now = await count(address)
+        return !spaced && tag === 97 && now > 0 ? now - 1 : now
+      })
+    await send(1) // paid from main, mined
+    spaced = false
+    const native = alice
+      .sendNative({ recipient: { raw: '0x' + '77'.repeat(20) }, value: 5n })
+      .catch(error => error)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    expect(alice.pool.accountClaimedBy(main)).toMatch(/:main-account$/)
+    const message = send(2).catch(error => error)
+    // The message looks at whoever holds the account about once a second.
+    await new Promise(resolve => setTimeout(resolve, 2_600))
+    expect(alice.pool.accountClaimedBy(main)).toMatch(/:main-account$/)
+    const fromMain = () =>
+      [...offlineChain.mined.values()].filter(from => from === main).length
+    // Nothing was signed over the native send's head: still the one payment.
+    expect(fromMain()).toBe(1)
+    // The spacing passes; what the offline chain then makes of the native send is not this
+    // test's subject (its own suites cover it), so neither is waited for long.
+    spaced = true
+    await Promise.race([
+      Promise.allSettled([native, message]),
+      new Promise(resolve => setTimeout(resolve, 4_000)),
+    ])
+    expect(new Set([...offlineChain.mined.keys()]).size).toBe(
+      offlineChain.mined.size,
+    )
+  })
+
+  it('an unpaid named message whose answer was lost is repeated as the very same request, byte for byte', async () => {
+    // The relay recognises a repeat by the request's exact bytes. On the real relay the same
+    // envelope under a new multipart boundary was answered 409, never `delivered`.
+    const unpaid = () =>
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'free' }],
+        stampValue: 0n,
+        messageId: ID(77),
+      })
+    // Every request the wallet hands over, answered or not.
+    const handed: { body: string; contentType: string }[] = []
+    const watch = () =>
+      installCanonicalDirectory(alice, {
+        ...directory,
+        fetch: (url, init) => {
+          handed.push({
+            body: toHex(new Uint8Array(init.body!)),
+            contentType: init.headers['Content-Type'],
+          })
+          return directory.fetch!(url, init)
+        },
+      })
+    watch()
+    f.setPhase('fail')
+    await expect(unpaid()).rejects.toThrow()
+    f.setPhase('delivered')
+    const sent = await unpaid()
+    expect(sent.stampPayments).toEqual([])
+    expect(handed).toHaveLength(2)
+    expect(handed[1]).toEqual(handed[0])
+    // And across a restart: the kept envelope carries its boundary.
+    f.setPhase('fail')
+    const again = () =>
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: 'free again' }],
+        stampValue: 0n,
+        messageId: ID(78),
+      })
+    await expect(again()).rejects.toThrow()
+    await reopen()
+    watch()
+    f.setPhase('delivered')
+    await again()
+    expect(handed).toHaveLength(4)
+    expect(handed[3]).toEqual(handed[2])
+  })
+
   it('a wallet that still has the old link store says so once at open, names the reset, and touches nothing', async () => {
     const opened = jest.spyOn(LevelOutgoingMessageStore, 'open')
     await reopen()

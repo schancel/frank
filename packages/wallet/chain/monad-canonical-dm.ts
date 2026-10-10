@@ -1298,7 +1298,12 @@ async function send(
         stampValueWei,
         // The only coin that could pay is spent by an earlier payment: this send waits its
         // turn, and meanwhile asks the chain about that one payment (never the relay).
-        whileBusy: busyHolder => settleHolder(owner, busyHolder),
+        whileBusy: busyHolder => {
+          // A wallet being closed ends the wait (`payer()` refuses a closed wallet): nothing
+          // was signed, the claim loop lets go, and close is not held up by a waiting send.
+          owner.payer()
+          return settleHolder(owner, busyHolder)
+        },
         onWaiting: () =>
           params.onPreparationProgress?.({ stage: 'waiting-for-payment' }),
       }),

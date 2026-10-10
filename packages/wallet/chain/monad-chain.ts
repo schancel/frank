@@ -1122,7 +1122,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     options: MainAccountWait = {}
   ): Promise<void> => {
     const pool = wallet.pool;
-    if (typeof pool.claimAccount !== "function") return;
+    if (typeof pool.claimAccount !== "function") {
+      runningMainTasks.set(wallet, (runningMainTasks.get(wallet) ?? 0) + 1);
+      return;
+    }
     const holder = mainAccountHolder(wallet);
     const addresses = mainAccountAddresses(wallet);
     const others = () =>
@@ -1145,6 +1148,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       if (held.length === 0 && own().length === 0) {
         for (const address of addresses)
           pool.restoreAccountClaim(holder, address);
+        // From this moment an operation is running under the holder: counted in the same
+        // synchronous step as the claim, so a message that is waiting for the account cannot
+        // take the claim for a settled leftover and let it go while this operation is still
+        // waiting out the spacing below. (Seen on testnet: it did, and a native send and a
+        // message payment were both signed at one nonce.)
+        runningMainTasks.set(wallet, (runningMainTasks.get(wallet) ?? 0) + 1);
         // Held now, so nothing else can sign from them: wait out the chain's spacing rule
         // after whatever last spent each (a message payment just mined, say).
         try {
@@ -1155,6 +1164,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               config.spendSpacingBlocks
             );
         } catch (error) {
+          runningMainTasks.set(wallet, runningMainTasks.get(wallet)! - 1);
           await releaseSettledMainAccounts(wallet, false);
           throw error;
         }
@@ -1214,8 +1224,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       owner.store.coordinationScope,
       async () => {
         await reconcileNativeAdmission(owner);
+        // Returns holding the accounts, with this operation counted as running.
         await holdMainAccounts(wallet, options);
-        runningMainTasks.set(wallet, (runningMainTasks.get(wallet) ?? 0) + 1);
         try {
           return await task();
         } finally {

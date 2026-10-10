@@ -364,11 +364,13 @@ export function exportCodex32Backup(
         randomBytes: length => secureRandom(randomBytes, length),
       }),
     )
-    // Read back both ends of the set: every share is covered once shareCount >= threshold.
-    for (const subset of [
-      shares.slice(0, threshold),
-      shares.slice(-threshold),
-    ]) {
+    // Read every share back: each one, together with the threshold - 1 shares that
+    // follow it (wrapping round), must reconstruct exactly the master that was split.
+    for (let first = 0; first < shares.length; first += 1) {
+      const subset = Array.from(
+        { length: threshold },
+        (_, offset) => shares[(first + offset) % shares.length] ?? '',
+      )
       const check = recoverMaster(subset)
       try {
         if (!equalBytes(check.secret, master)) {

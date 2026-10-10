@@ -130,16 +130,32 @@ export interface StampInventoryPreparationResult {
 export const STAMP_PAIR_TRANSFERS = 2;
 
 /**
+ * How long a fund-ahead pass waits for the receipt of a transfer it submitted: 12 looks, 250 ms
+ * apart. It holds the wallet's queues while it waits, and nobody asked for it, so it does not
+ * take the minute a send gives its own funding. When the wait ends the row stays `funding` with
+ * its recorded bytes, and the next pass or the next send finishes that same transfer.
+ */
+export const FUND_AHEAD_RECEIPT_POLL_MS = 250;
+export const FUND_AHEAD_RECEIPT_WAIT_MS = 3_000;
+
+/**
  * Why a fund-ahead pass (`MonadSubAccountPool.fundStampInventoryAhead`) moved nothing more. Thrown
  * before the transfer concerned is written or submitted: a signature made for it is discarded.
  * - `unresolved-funding`: an earlier funding transfer has no observed outcome. Nothing is funded
  *   on top of an unknown; the pass only looked at it once and offered its exact bytes again.
  * - `over-bound`: the planned transfers exceed the pass's count or value limit.
  * - `uneconomic`: a transfer's maximum fee exceeds the value it would move.
+ * - `insufficient-funds`: the main account cannot pay for what is missing (the whole pair, or the
+ *   rest of one). A pass never settles for one account holding the whole stamp: that is a send's
+ *   own last resort, and the money it needs is left where the send can use it.
  */
 export class FundAheadRefusedError extends Error {
   constructor(
-    readonly code: "unresolved-funding" | "over-bound" | "uneconomic",
+    readonly code:
+      | "unresolved-funding"
+      | "over-bound"
+      | "uneconomic"
+      | "insufficient-funds",
     detail: string
   ) {
     super(`Funding ahead refused (${code}): ${detail}`);
@@ -968,7 +984,11 @@ export class MonadSubAccountPool {
    *
    * - An earlier `funding` row is looked at ONCE (its recorded bytes are offered again, never
    *   re-signed) instead of polled for a minute, and while any row is still `funding` afterwards
-   *   the pass funds nothing (`unresolved-funding`).
+   *   the pass funds nothing (`unresolved-funding`). That look comes first: the fee reserve is
+   *   not even quoted (`gasReserveWei` may be a function) until it has passed.
+   * - It waits `FUND_AHEAD_RECEIPT_WAIT_MS` for each receipt of its own, not a minute.
+   * - It funds the pair or the rest of a pair, never one account holding the whole stamp: when
+   *   the main account cannot pay for that, it funds nothing (`insufficient-funds`).
    * - Bounded: at most `STAMP_PAIR_TRANSFERS` transfers, moving at most `maxValueWei` in total.
    *   A plan over either limit is refused before anything is signed (`over-bound`).
    * - A transfer whose maximum fee exceeds the value it moves is refused after signing and before
@@ -988,16 +1008,47 @@ export class MonadSubAccountPool {
     mainAccountSigner: MonadAccountTxSigner;
     provider: Provider;
     stampValueWei: bigint;
-    gasReserveWei: bigint;
+    /** The reserve, or how to quote it once the pass knows it has something to fund. */
+    gasReserveWei: bigint | (() => Promise<bigint>);
     /** Upper limit on the combined value of this pass's transfers (fees excluded). */
     maxValueWei: bigint;
     fundingOverrides?: MonadTxOverrides;
+    /** The wait for this pass's own receipts. Default: `FUND_AHEAD_RECEIPT_WAIT_MS`. */
     receipt?: FundingReceiptOptions;
   }): Promise<StampInventoryPreparationResult> {
-    const { maxValueWei, ...preparation } = params;
-    const run = this.preparationQueue.then(() =>
-      this.prepareStampInventoryExclusive(preparation, { maxValueWei })
-    );
+    const { maxValueWei, gasReserveWei, ...rest } = params;
+    const run = this.preparationQueue.then(async () => {
+      const resumedTxHashes = await this.resumeFundingAttempts({
+        mainAccountSigner: params.mainAccountSigner,
+        receipt: { ...params.receipt, maxAttempts: 0 },
+        quiet: true,
+      });
+      const unresolved = this.store
+        .getAll()
+        .filter((record) => record.status === "funding");
+      if (unresolved.length > 0) {
+        throw new FundAheadRefusedError(
+          "unresolved-funding",
+          `sub-account ${unresolved
+            .map((record) => record.index)
+            .join(", ")} has a funding transfer with no observed outcome`
+        );
+      }
+      return this.prepareStampInventoryExclusive(
+        {
+          ...rest,
+          gasReserveWei:
+            typeof gasReserveWei === "function"
+              ? await gasReserveWei()
+              : gasReserveWei,
+          receipt: params.receipt ?? {
+            intervalMs: FUND_AHEAD_RECEIPT_POLL_MS,
+            maxAttempts: FUND_AHEAD_RECEIPT_WAIT_MS / FUND_AHEAD_RECEIPT_POLL_MS,
+          },
+        },
+        { maxValueWei, resumedTxHashes }
+      );
+    });
     this.preparationQueue = run.then(
       () => undefined,
       () => undefined
@@ -1015,8 +1066,9 @@ export class MonadSubAccountPool {
       onProgress?: (progress: StampInventoryPreparationProgress) => void;
       receipt?: FundingReceiptOptions;
     },
-    /** Set for a pass that runs ahead of any message: see `fundStampInventoryAhead`. */
-    ahead?: { maxValueWei: bigint }
+    /** Set for a pass that runs ahead of any message: see `fundStampInventoryAhead`, which has
+     * already looked at every `funding` row and found none unresolved. */
+    ahead?: { maxValueWei: bigint; resumedTxHashes: string[] }
   ): Promise<StampInventoryPreparationResult> {
     const zero = BigInt(0);
     if (params.stampValueWei <= zero) {
@@ -1031,24 +1083,16 @@ export class MonadSubAccountPool {
     }
     params.onProgress?.({ stage: "checking" });
 
-    const fundingTxHashes = await this.reconcileBeforePreparation(
+    const fundingTxHashes =
       ahead === undefined
-        ? params
-        : { ...params, receipt: { ...params.receipt, maxAttempts: 0 }, quiet: true }
-    );
-    if (ahead !== undefined) {
-      const unresolved = this.store
-        .getAll()
-        .filter((record) => record.status === "funding");
-      if (unresolved.length > 0) {
-        throw new FundAheadRefusedError(
-          "unresolved-funding",
-          `sub-account ${unresolved
-            .map((record) => record.index)
-            .join(", ")} has a funding transfer with no observed outcome`
-        );
-      }
-    }
+        ? await this.reconcileBeforePreparation(params)
+        : [
+            ...ahead.resumedTxHashes,
+            ...(await this.reconcileBeforePreparation({
+              ...params,
+              resumed: true,
+            })),
+          ];
 
     let accounts = await this.fundedCapacities(
       params.provider,
@@ -1062,10 +1106,10 @@ export class MonadSubAccountPool {
       );
     }
     let selection = this.selectFundedCapacity(params.stampValueWei, accounts);
-    if (
-      selection.length >= 2 ||
-      (params.stampValueWei === BigInt(1) && selection.length === 1)
-    ) {
+    // Ready is what the payment intent accepts: any accounts that cover the value, one included.
+    // Asking for a second account here when one already covers the stamp sent a wallet with
+    // nothing left in its main account to fund a top-up it could not pay for.
+    if (selection.length >= 1) {
       params.onProgress?.({ stage: "ready", fundingTxHashes });
       return {
         fundingTxHashes,
@@ -1080,13 +1124,10 @@ export class MonadSubAccountPool {
       (total, account) => total + account.capacityWei,
       zero
     );
+    // Not ready, so what exists covers less than the value: fund the rest, or the whole pair.
     let capacities =
       existingCapacity > zero
-        ? [
-            existingCapacity < params.stampValueWei
-              ? params.stampValueWei - existingCapacity
-              : preferredFirstCapacity,
-          ]
+        ? [params.stampValueWei - existingCapacity]
         : [
             preferredFirstCapacity,
             params.stampValueWei - preferredFirstCapacity,
@@ -1140,6 +1181,12 @@ export class MonadSubAccountPool {
       provider: params.provider,
       overrides: params.fundingOverrides,
     });
+    if (ahead !== undefined && requiredMainBalance > availableMainBalance) {
+      throw new FundAheadRefusedError(
+        "insufficient-funds",
+        `need up to ${requiredMainBalance} wei, have ${availableMainBalance} wei`
+      );
+    }
     if (
       requiredMainBalance > availableMainBalance &&
       existingCapacity === zero &&
@@ -1225,21 +1272,18 @@ export class MonadSubAccountPool {
   }
 
   /**
-   * Shared first step of every preparation: finish any durable in-flight funding attempt (resuming
-   * the exact signed transaction, never signing a second one for the same child) and retire legacy
-   * `available` records that are empty or already used. Returns the hashes of resumed attempts.
+   * Finishes every durable in-flight funding attempt it can: the exact recorded transaction is
+   * offered again and its receipt read, never a second one signed for the same child. Returns the
+   * hashes of the attempts that are now resolved; one that is not stays `funding`.
    */
-  private async reconcileBeforePreparation(params: {
+  private async resumeFundingAttempts(params: {
     mainAccountSigner: MonadAccountTxSigner;
-    provider: Provider;
-    gasReserveWei: bigint;
     receipt?: FundingReceiptOptions;
     /** A pass no message waits on repeats; it does not log each look at a pending transfer. */
     quiet?: boolean;
   }): Promise<string[]> {
     const fundingTxHashes: string[] = [];
-    const allRecords = this.store.getAll();
-    for (const record of allRecords) {
+    for (const record of this.store.getAll()) {
       if (record.status === "funding") {
         try {
           const txHash = await this.finishFundingAttempt(
@@ -1258,6 +1302,25 @@ export class MonadSubAccountPool {
         }
       }
     }
+    return fundingTxHashes;
+  }
+
+  /**
+   * Shared first step of every preparation: finish any durable in-flight funding attempt (resuming
+   * the exact signed transaction, never signing a second one for the same child) and retire legacy
+   * `available` records that are empty or already used. Returns the hashes of resumed attempts.
+   */
+  private async reconcileBeforePreparation(params: {
+    mainAccountSigner: MonadAccountTxSigner;
+    provider: Provider;
+    gasReserveWei: bigint;
+    receipt?: FundingReceiptOptions;
+    /** The caller already ran `resumeFundingAttempts`; only the `available` rows are checked. */
+    resumed?: boolean;
+  }): Promise<string[]> {
+    const fundingTxHashes =
+      params.resumed === true ? [] : await this.resumeFundingAttempts(params);
+    const allRecords = this.store.getAll();
     // A reserved row belongs to the native operation that spends from it until that resolves.
     // Retiring it here (a status with no checkpoint) would be a second writer of the same
     // account's state: the input admission then holds the address for the pool against the
@@ -1558,9 +1621,9 @@ export class MonadSubAccountPool {
 
   /**
    * Whether a stamp of `stampValueWei` can be paid now without funding anything: the accounts that
-   * are `available`, unreserved and not in `heldIndices` cover it, each keeping `feeReserveWei`
-   * for its own fee, as two payments (two accounts of at least 3/8 of the value, or any set the
-   * send's own selection would split over two or more). A value of 1 wei cannot be split.
+   * are `available`, unreserved and not in `heldIndices` cover it between them, each keeping
+   * `feeReserveWei` for its own fee. That is exactly what the payment intent accepts, whether it
+   * takes one account or several, so a send this passes is never sent to fund a top-up.
    * Makes no request for an account whose balance is remembered (see `fundedCapacities`).
    */
   async hasStampInventory(params: {
@@ -1577,18 +1640,9 @@ export class MonadSubAccountPool {
         maxCacheAgeMs: params.maxCacheAgeMs,
       })
     ).filter((account) => params.heldIndices?.has(account.index) !== true);
-    const total = accounts.reduce(
-      (sum, account) => sum + account.capacityWei,
-      BigInt(0)
-    );
-    if (total < params.stampValueWei) return false;
-    if (params.stampValueWei === BigInt(1)) return true;
-    const pairShare = (params.stampValueWei * BigInt(3)) / BigInt(8);
     return (
-      accounts.filter((account) => account.capacityWei >= pairShare).length >=
-        STAMP_PAIR_TRANSFERS ||
-      this.selectFundedCapacity(params.stampValueWei, accounts).length >=
-        STAMP_PAIR_TRANSFERS
+      accounts.reduce((sum, account) => sum + account.capacityWei, BigInt(0)) >=
+      params.stampValueWei
     );
   }
 

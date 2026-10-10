@@ -545,6 +545,34 @@ const stampFundersAhead = new WeakMap<
   () => Promise<DirectMessageFundAheadResult>
 >();
 /**
+ * A fund-ahead pass that could fund nothing (no money, a pair it cannot afford, an earlier
+ * transfer still unresolved, a failed read) is not repeated on every host tick: the next pass
+ * waits `FUND_AHEAD_BACKOFF_MIN_MS`, doubling while the reason stays the same, up to
+ * `FUND_AHEAD_BACKOFF_MAX_MS`. Until then a call answers what the last pass answered and makes
+ * no request; that is also the schedule on which a stuck transfer's bytes are offered again.
+ * The wait ends early when a send prepares its inventory or when the wallet's own balance read
+ * shows the main account grew. Process memory only: a restart starts with no wait.
+ */
+export const FUND_AHEAD_BACKOFF_MIN_MS = 4_000;
+export const FUND_AHEAD_BACKOFF_MAX_MS = 240_000;
+interface FundAheadBackoff {
+  result: DirectMessageFundAheadResult;
+  delayMs: number;
+  startedAtMs: number;
+  /** The main-account balance the pass saw, when it read one. */
+  mainBalanceWei?: bigint;
+}
+const fundAheadBackoffs = new WeakMap<object, FundAheadBackoff>();
+/** The main account was just read: more money than the last pass saw ends its wait. */
+function noteMainBalanceForFundAhead(wallet: object, balanceWei: bigint): void {
+  const waiting = fundAheadBackoffs.get(wallet);
+  if (
+    waiting?.mainBalanceWei !== undefined &&
+    balanceWei > waiting.mainBalanceWei
+  )
+    fundAheadBackoffs.delete(wallet);
+}
+/**
  * Funds receipt-confirmed single-use sender accounts for one canonical stamp of `stampValueWei`,
  * from the wallet's own EVM main account, through the same pool machinery and owner admission as
  * every other inventory preparation. Call it before `prepareIntent`, which selects only funded
@@ -1868,6 +1896,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                     provider,
                   });
                 }
+                noteMainBalanceForFundAhead(wallet, mainBalance);
 
                 if (
                   material.canonicalRoles !== undefined ||
@@ -2416,6 +2445,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               onProgress,
             }) =>
               runWalletExclusive(wallet, async () => {
+                // A send changes what there is to fund: the next fund-ahead call looks again.
+                fundAheadBackoffs.delete(wallet);
                 // Accounts funded ahead (or left by an earlier preparation) are ready: nothing
                 // is funded, quoted or reconciled, and the send goes straight to its payment.
                 let ready = false;
@@ -2495,60 +2526,71 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             });
             const fundAheadPass = (): Promise<DirectMessageFundAheadResult> =>
               runWalletExclusive(wallet, async () => {
+                let mainBalanceWei: bigint | undefined;
+                let result: DirectMessageFundAheadResult;
                 try {
                   // An earlier transfer with no observed outcome is looked at before anything
                   // else, whatever the inventory or the balance.
                   const unresolved = pool
                     .records()
                     .some((record) => record.status === "funding");
-                  if (!unresolved) {
-                    if (
-                      await pool.hasStampInventory({
-                        provider,
-                        stampValueWei: stampValueAhead,
-                        feeReserveWei: 0n,
-                        heldIndices: heldByMessages(),
-                        maxCacheAgeMs: Infinity,
-                      })
-                    )
-                      return { outcome: "ready", fundingTxHashes: [] };
-                    // Only the main account pays ahead: it is the one account the lock taken
-                    // below orders. The identity-key fallback stays with a send's own funding.
-                    if (
-                      (await provider.getBalance(mainAccount.address)) <
-                      stampValueAhead
-                    )
-                      return notFunded("insufficient-funds");
+                  if (
+                    !unresolved &&
+                    (await pool.hasStampInventory({
+                      provider,
+                      stampValueWei: stampValueAhead,
+                      feeReserveWei: 0n,
+                      heldIndices: heldByMessages(),
+                      maxCacheAgeMs: Infinity,
+                    }))
+                  )
+                    return { outcome: "ready", fundingTxHashes: [] };
+                  // Only the main account pays ahead: it is the one account the lock taken
+                  // below orders. The identity-key fallback stays with a send's own funding.
+                  if (!unresolved)
+                    mainBalanceWei = await provider.getBalance(
+                      mainAccount.address
+                    );
+                  if (
+                    mainBalanceWei !== undefined &&
+                    mainBalanceWei < stampValueAhead
+                  )
+                    result = notFunded("insufficient-funds");
+                  else {
+                    const mainAccountSigner = new MonadAccountTxSigner({
+                      privateKey: mainAccount.privateKey,
+                      provider,
+                      httpClient,
+                    });
+                    const preparation = await runMainAccountExclusive(
+                      wallet,
+                      () =>
+                        pool.fundStampInventoryAhead({
+                          mainAccountSigner,
+                          provider,
+                          stampValueWei: stampValueAhead,
+                          // Quoted only once the pool has nothing unresolved to wait for. No
+                          // recipient yet: the wallet's own key stands in for the quote.
+                          gasReserveWei: () =>
+                            quoteMonadStampPaymentGasReserve({
+                              signer: mainAccountSigner,
+                              recipientPublicKey: identity.compressedPubKey,
+                            }).catch(() => defaultGasReserveWei),
+                          maxValueWei: maxValueAheadWei,
+                        })
+                    );
+                    result = {
+                      outcome:
+                        preparation.fundingTxHashes.length > 0
+                          ? "funded"
+                          : "ready",
+                      fundingTxHashes: preparation.fundingTxHashes,
+                    };
                   }
-                  const mainAccountSigner = new MonadAccountTxSigner({
-                    privateKey: mainAccount.privateKey,
-                    provider,
-                    httpClient,
-                  });
-                  const preparation = await runMainAccountExclusive(
-                    wallet,
-                    async () =>
-                      pool.fundStampInventoryAhead({
-                        mainAccountSigner,
-                        provider,
-                        stampValueWei: stampValueAhead,
-                        // No recipient yet: the wallet's own key stands in for the fee quote.
-                        gasReserveWei: await quoteMonadStampPaymentGasReserve({
-                          signer: mainAccountSigner,
-                          recipientPublicKey: identity.compressedPubKey,
-                        }).catch(() => defaultGasReserveWei),
-                        maxValueWei: maxValueAheadWei,
-                      })
-                  );
-                  return {
-                    outcome:
-                      preparation.fundingTxHashes.length > 0 ? "funded" : "ready",
-                    fundingTxHashes: preparation.fundingTxHashes,
-                  };
                 } catch (error) {
                   // A funding failure is not the caller's: whatever was recorded is resumed by
                   // the next pass or the next send, and a send funds its own accounts regardless.
-                  return notFunded(
+                  result = notFunded(
                     error instanceof FundAheadRefusedError
                       ? error.code
                       : error instanceof Error
@@ -2556,10 +2598,28 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       : String(error)
                   );
                 }
+                if (result.outcome === "not-funded") {
+                  const last = fundAheadBackoffs.get(wallet);
+                  fundAheadBackoffs.set(wallet, {
+                    result,
+                    delayMs:
+                      last !== undefined && last.result.reason === result.reason
+                        ? Math.min(last.delayMs * 2, FUND_AHEAD_BACKOFF_MAX_MS)
+                        : FUND_AHEAD_BACKOFF_MIN_MS,
+                    startedAtMs: Date.now(),
+                    mainBalanceWei,
+                  });
+                } else fundAheadBackoffs.delete(wallet);
+                return result;
               });
-            // Single flight: a call made while a pass runs gets that pass's answer.
+            // Single flight: a call made while a pass runs gets that pass's answer. A call made
+            // while the last pass's wait runs gets that pass's answer too, and nothing is asked.
             let fundingAhead: Promise<DirectMessageFundAheadResult> | undefined;
             stampFundersAhead.set(wallet, () => {
+              const waiting = fundAheadBackoffs.get(wallet);
+              const waited = Date.now() - (waiting?.startedAtMs ?? 0);
+              if (waiting && waited >= 0 && waited < waiting.delayMs)
+                return Promise.resolve(waiting.result);
               fundingAhead ??= fundAheadPass().finally(() => {
                 fundingAhead = undefined;
               });

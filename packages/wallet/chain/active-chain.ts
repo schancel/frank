@@ -341,14 +341,19 @@ export interface DirectMessageClient {
    * operation holds, pays only from the wallet's main account, and one call signs at most two
    * transfers moving at most the default stamp value plus two fee reserves (a reserve is capped
    * at the stamp value); it moves nothing when a transfer's fee would exceed the value moved or
-   * while an earlier funding transfer is unresolved. While it runs it holds the wallet's queue as
-   * a send's own funding does.
+   * while an earlier funding transfer is unresolved. It funds the pair or nothing: when the main
+   * account cannot pay for both accounts it leaves the money for the send, whose own funding may
+   * settle for one. While it runs it holds the wallet's queue as a send's own funding does, but
+   * waits only a few seconds for each receipt; a transfer still unconfirmed then stays recorded
+   * and is finished later.
    *
    * The HOST decides when: after its recovery pass has run, after a message was sent, when the
    * balance grew. Never at wallet open. Calls are single flight and repeatable: with the accounts
-   * ready a call makes no request. Do not await it in a poll; catch its rejection. It rejects only
-   * for a closed or foreign handle or when the wallet's queue refuses the operation; a funding
-   * failure resolves as `not-funded`.
+   * ready a call makes no request, and after a pass that could fund nothing the wallet waits
+   * (seconds, doubling to minutes) before it looks again, answering `not-funded` meanwhile with
+   * no request; a send, or a balance read that shows more money, ends that wait. Do not await it
+   * in a poll; catch its rejection. It rejects only for a closed or foreign handle or when the
+   * wallet's queue refuses the operation; a funding failure resolves as `not-funded`.
    */
   fundAhead?(params: {
     wallet: WalletHandle;

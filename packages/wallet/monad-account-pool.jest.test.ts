@@ -26,6 +26,8 @@ import { MonadHdKeyring, subAccountPath } from "./monad-hd-keyring";
 import {
   CAPACITY_CACHE_TTL_MS,
   DEFAULT_TOPUP_BUFFER_SIZE,
+  FUND_AHEAD_RECEIPT_POLL_MS,
+  FUND_AHEAD_RECEIPT_WAIT_MS,
   MonadSubAccountPool,
   SubAccountSpendRefusedError,
 } from "./monad-account-pool";
@@ -1105,15 +1107,16 @@ describe("MonadSubAccountPool", () => {
         ]);
         expect([f.pool.getRecord(0), f.pool.getRecord(1)]).toEqual(held);
 
-        // A funded row that becomes reserved stops counting: the next pass replaces it.
-        reserved.add(2);
-        expect(
-          await f.pool.hasStampInventory({
+        // A funded row that becomes reserved stops counting: what is left no longer covers.
+        const covered = () =>
+          f.pool.hasStampInventory({
             provider: f.provider,
             stampValueWei: STAMP,
-            feeReserveWei: 0n,
-          })
-        ).toBe(false);
+            feeReserveWei: RESERVE,
+          });
+        expect(await covered()).toBe(true);
+        reserved.add(2);
+        expect(await covered()).toBe(false);
       });
 
       it("looks once at an earlier transfer that has no receipt, offers the same bytes again, and funds nothing on top of it", async () => {
@@ -1171,6 +1174,210 @@ describe("MonadSubAccountPool", () => {
         ]);
         expect(sign).toHaveBeenCalledTimes(2);
         expect(statuses(f.pool)).toEqual(["available", "available", "unfunded"]);
+      });
+
+      // Review of a03ea904. There the pass settled for ONE account holding the whole stamp when
+      // the main account could not pay for the pair, and the send's check then asked for two:
+      // every send after it failed with "Insufficient main account balance", with the stamp
+      // parked. The tests of this block fail on a03ea904 unless they say they are a pin.
+      describe("only as a pair, and one covering account is ready (review of a03ea904)", () => {
+        const S = 1_000_000n;
+        const R = 100_000n;
+        const FEE = 21_000n; // one funding transfer at the overrides above
+        const ONE_ACCOUNT = S + R + FEE; // what a send's last resort costs
+        const PAIR = S + 2n * R + 2n * FEE;
+        /** A fixture whose chain debits the sender, so the main balance is what is left. */
+        function wallet(mainBalance: bigint) {
+          const f = setupPreparation();
+          const main = f.mainAddress.toLowerCase();
+          f.balances.set(main, mainBalance);
+          f.httpClient.submitRawTransaction.mockImplementation(async (rawTx) => {
+            const tx = Transaction.from(rawTx);
+            const to = tx.to!.toLowerCase();
+            f.balances.set(to, (f.balances.get(to) ?? 0n) + tx.value);
+            f.balances.set(
+              main,
+              (f.balances.get(main) ?? 0n) -
+                tx.value -
+                tx.gasLimit * tx.maxFeePerGas!
+            );
+            return tx.hash!;
+          });
+          const passAhead = () =>
+            ahead(f, f.pool, {
+              stampValueWei: S,
+              gasReserveWei: R,
+              maxValueWei: S + 2n * R,
+            });
+          /** What a send does: prepare, then pay from whatever covers the stamp. */
+          const send = async () => {
+            const prepared = await f.pool.prepareStampInventory({
+              mainAccountSigner: f.mainAccountSigner,
+              provider: f.provider,
+              stampValueWei: S,
+              gasReserveWei: R,
+              fundingOverrides,
+              receipt: { intervalMs: 0, maxAttempts: 1 },
+            });
+            const payable = await f.pool.hasStampInventory({
+              provider: f.provider,
+              stampValueWei: S,
+              feeReserveWei: R,
+            });
+            return { prepared, payable };
+          };
+          return { ...f, main, passAhead, send };
+        }
+
+        it("a main account that can pay for one account but not the pair: the pass funds nothing, and the send funds its one account exactly as without a pass", async () => {
+          const w = wallet(PAIR - 1n);
+          const sign = jest.spyOn(w.mainAccountSigner, "buildAndSignTransfer");
+
+          await expect(w.passAhead()).rejects.toMatchObject({
+            name: "FundAheadRefusedError",
+            code: "insufficient-funds",
+          });
+          expect(sign).not.toHaveBeenCalled();
+          expect(w.httpClient.submitRawTransaction).not.toHaveBeenCalled();
+          expect(w.balances.get(w.main)).toBe(PAIR - 1n);
+          expect(statuses(w.pool)).toEqual(["unfunded", "unfunded", "unfunded"]);
+
+          const sent = await w.send();
+          expect(sent.prepared.fundingTxHashes).toHaveLength(1);
+          expect(sent.prepared.selectedAccountCount).toBe(1);
+          expect(sent.payable).toBe(true);
+          expect(submitted(w).map((tx) => tx.value)).toEqual([S + R]);
+        });
+
+        // The same trap without any pass, and on main before this stage too: a send funds one
+        // whole-stamp account, fails later for another reason, and is retried.
+        it("a send retried after it funded one whole-stamp account is ready: no top-up is asked of an empty main account", async () => {
+          const w = wallet(ONE_ACCOUNT);
+          const first = await w.send();
+          expect(first.prepared.fundingTxHashes).toHaveLength(1);
+          expect(w.balances.get(w.main)).toBe(0n);
+
+          const retry = await w.send();
+
+          expect(retry.prepared).toEqual({
+            fundingTxHashes: [],
+            selectedAccountCount: 1,
+          });
+          expect(retry.payable).toBe(true);
+          expect(w.httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+          // And a pass sees the same thing: nothing to fund.
+          expect((await w.passAhead()).fundingTxHashes).toEqual([]);
+          expect(w.httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+        });
+
+        it("over main balances from nothing to three stamps: no balance at which a send succeeds without a pass and fails after one", async () => {
+          const balances: bigint[] = [];
+          for (let b = 0n; b <= 3n * S; b += S / 100n) balances.push(b);
+          for (const edge of [ONE_ACCOUNT, PAIR])
+            balances.push(edge - 1n, edge, edge + 1n);
+          const outcome = async (balance: bigint, withPass: boolean) => {
+            const w = wallet(balance);
+            let funded = 0;
+            if (withPass)
+              funded = await w.passAhead().then(
+                (result) => result.fundingTxHashes.length,
+                () => 0
+              );
+            const ok = await w.send().then(
+              (sent) => sent.payable,
+              () => false
+            );
+            return { ok, funded };
+          };
+          const tally = { both: 0, neither: 0, brokenByPass: [] as bigint[], pairs: 0 };
+          for (const balance of balances) {
+            const without = await outcome(balance, false);
+            const withPass = await outcome(balance, true);
+            if (without.ok && !withPass.ok) tally.brokenByPass.push(balance);
+            if (without.ok && withPass.ok) tally.both++;
+            if (!without.ok && !withPass.ok) tally.neither++;
+            if (withPass.funded === 2) tally.pairs++;
+            // The thresholds themselves: one account from ONE_ACCOUNT, the pair from PAIR.
+            expect(without.ok).toBe(balance >= ONE_ACCOUNT);
+            expect(withPass.funded).toBe(balance >= PAIR ? 2 : 0);
+          }
+          expect(tally.brokenByPass).toEqual([]);
+          expect(tally.both + tally.neither).toBe(balances.length);
+          // The sweep crossed both regimes and the window between them.
+          expect(tally.neither).toBeGreaterThan(100);
+          expect(tally.pairs).toBeGreaterThan(100);
+          expect(tally.both - tally.pairs).toBeGreaterThan(5);
+        }, 120_000);
+
+        it("an unresolved transfer is found before any fee is quoted", async () => {
+          const f = setupPreparation();
+          const broadcasted = new Set<string>();
+          receiptOnceBroadcast(f, broadcasted);
+          f.httpClient.submitRawTransaction.mockImplementation(async (rawTx) =>
+            Transaction.from(rawTx).hash!
+          );
+          jest
+            .spyOn(f.mainAccountSigner, "getTransactionCount")
+            .mockResolvedValue(0n);
+          await expect(ahead(f, f.pool)).rejects.toThrow("still pending");
+          const quote = jest.fn(async () => RESERVE);
+
+          await expect(
+            ahead(f, f.pool, { gasReserveWei: quote })
+          ).rejects.toMatchObject({ code: "unresolved-funding" });
+
+          expect(quote).not.toHaveBeenCalled();
+          // Pin: with nothing unresolved the same function is asked once.
+          const clean = setupPreparation();
+          await ahead(clean, clean.pool, { gasReserveWei: quote });
+          expect(quote).toHaveBeenCalledTimes(1);
+        });
+
+        it("waits FUND_AHEAD_RECEIPT_WAIT_MS for its own receipt, not a minute, and leaves the row funding", async () => {
+          const f = setupPreparation();
+          f.httpClient.submitRawTransaction.mockImplementation(async (rawTx) =>
+            Transaction.from(rawTx).hash!
+          );
+          f.httpClient.getTransactionReceipt.mockResolvedValue(undefined);
+          jest
+            .spyOn(f.mainAccountSigner, "getTransactionCount")
+            .mockResolvedValue(0n);
+          jest.useFakeTimers({
+            doNotFake: ["nextTick", "setImmediate", "queueMicrotask"],
+          });
+          try {
+            let ended: string | undefined;
+            void pool_fundAheadWithDefaultWait(f).then(
+              () => (ended = "resolved"),
+              (error) => (ended = String(error))
+            );
+            // The wait itself is under the bound; the reads after it need a few more turns.
+            let waitedMs = 0;
+            for (; ended === undefined && waitedMs < 60_000; waitedMs += 50)
+              await jest.advanceTimersByTimeAsync(50);
+            expect(ended).toContain("still pending");
+            expect(waitedMs).toBeLessThanOrEqual(FUND_AHEAD_RECEIPT_WAIT_MS);
+          } finally {
+            jest.useRealTimers();
+          }
+          expect(
+            FUND_AHEAD_RECEIPT_WAIT_MS / FUND_AHEAD_RECEIPT_POLL_MS
+          ).toBe(12);
+          // One look after the submit, then twelve polls: far from the 240 a send allows.
+          expect(f.httpClient.getTransactionReceipt).toHaveBeenCalledTimes(13);
+          expect(f.httpClient.submitRawTransaction).toHaveBeenCalledTimes(1);
+          expect(statuses(f.pool)).toEqual(["funding", "unfunded", "unfunded"]);
+        });
+        function pool_fundAheadWithDefaultWait(f: Fixture) {
+          return f.pool.fundStampInventoryAhead({
+            mainAccountSigner: f.mainAccountSigner,
+            provider: f.provider,
+            stampValueWei: STAMP,
+            gasReserveWei: RESERVE,
+            maxValueWei: MAX_VALUE,
+            fundingOverrides,
+          });
+        }
       });
 
       describe("stopped part way, with a real store closed and reopened", () => {
@@ -1472,6 +1679,14 @@ describe("MonadSubAccountPool", () => {
       it("is false for two accounts that cannot cover the value between them (main counted them as ready)", async () => {
         const f = inventory([375n, 375n]);
         expect(await f.ready(0n)).toBe(false);
+      });
+
+      // Review of a03ea904, which asked for two accounts here: a wallet that held one account
+      // with the whole stamp was sent to fund a top-up. Fails there (false).
+      it("is true for ONE account that covers the value and its own fee, which is what the payment intent accepts", async () => {
+        const f = inventory([1_000n + 100n]);
+        expect(await f.ready(100n)).toBe(true);
+        expect(await f.ready(101n)).toBe(false);
       });
 
       it("does not count an account a message holds", async () => {
@@ -3379,11 +3594,11 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
         fundingOverrides: FUNDING,
         receipt: { maxAttempts: 0 },
       });
-    const prepareStamp = () =>
+    const prepareStamp = (stampValueWei = 1_000n) =>
       pool.prepareStampInventory({
         mainAccountSigner,
         provider,
-        stampValueWei: 1_000n,
+        stampValueWei,
         gasReserveWei: 10n,
         fundingOverrides: FUNDING,
         receipt: { maxAttempts: 0 },
@@ -3523,7 +3738,9 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
 
     // The released row is the next funding target again; the reverted member's row is not.
     expect((await f.prepareBurn()).index).toBe(0);
-    await f.prepareStamp();
+    // A stamp of twice the burn account's capacity: one account that covers a stamp is ready
+    // as it is, so only a larger one makes the preparation choose a second funding target.
+    await f.prepareStamp(2_000n);
     expect(f.fundedTargets()).toEqual([f.address(0), f.address(2)]);
     expect(f.statuses().slice(0, 3)).toEqual([
       "available",
@@ -3543,7 +3760,7 @@ describe("spend reservation: a sub-account a native member spends from (#1235)",
     expect(f.pool.selectForStamp()).toBeUndefined();
     const burn = await f.prepareBurn();
     expect(burn.index).toBe(3);
-    const stamp = await f.prepareStamp();
+    const stamp = await f.prepareStamp(2_000n);
     expect(stamp.selectedAccountCount).toBeGreaterThanOrEqual(1);
     // Every funding transfer went to an account derived after the reserved ones.
     expect(f.fundedTargets().length).toBeGreaterThanOrEqual(2);

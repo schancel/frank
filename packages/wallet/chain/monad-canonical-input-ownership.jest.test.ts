@@ -27,6 +27,7 @@
  * reached the wallet's journal and the relay, not only which error came back.
  *
  * Tests labelled "pin" assert today's blocking and are inverted by the stage named in the label.
+ * The last test is the proof for #1323: an attempt the relay ended no longer blocks later sends.
  */
 // First: the mock factories below load this file while the wallet modules are still loading.
 import {
@@ -74,6 +75,7 @@ import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journ
 import { LevelCanonicalStampAttemptJournal } from '../storage/stamp-attempt-journal'
 import {
   CanonicalMessagingHoldError,
+  CanonicalRecipientUndeliverableError,
   LevelCanonicalLinkStore,
   type CanonicalDirectory,
 } from './monad-canonical-dm'
@@ -1246,29 +1248,76 @@ describe('paid-message input ownership (#1236 Stage 0)', () => {
     expect(new Set(relayBodies.map(r => restoreCanonicalRequest(r).identity.submission_identity)).size).toBe(1)
   })
 
-  // PIN (inverted by Stage 3, and the final status by #1323): a relay-ended attempt keeps refusing
-  // later sends, and keeps its accounts reserved, because its signed payments may still land.
-  it('pin (Stage 3): a relay-ended attempt keeps refusing later sends and keeps its accounts reserved', async () => {
+  // PROOF for #1323 (was a pin of the opposite): an attempt the relay ended is final and no longer
+  // refuses later sends. They are delivered from other accounts; A's record and accounts are kept,
+  // because its signed payments may still land.
+  it('#1323: after the relay ended A, later sends are delivered from other accounts and A keeps its record and its accounts reserved', async () => {
     relayMode = 'ended'
-    let digest = ''
-    const ended = await send('message A', { onAttemptCreated: d => void (digest = d) })
-    // The relay's terminal answer is kept; the send still reports the unresolved attempt.
-    expect(ended.error).toBeInstanceOf(MonadStampPendingAttemptError)
+    const ended = await send('message A')
+    // The send reports the relay's final answer, not an unresolved attempt.
+    expect(ended.error).toBeInstanceOf(CanonicalRecipientUndeliverableError)
+    expect(ended.error).not.toBeInstanceOf(MonadStampPendingAttemptError)
+    expect(counts()).toMatchObject({ intents: 0, attempts: 1, paymentSets: 1 })
+    const recordA = journal().getAll()[0]
+    const bytesA = JSON.stringify(recordA)
     const heldByA = heldIndices()
     expect(heldByA.size).toBeGreaterThan(0)
+    const addressesOfA = [...heldByA].map(index =>
+      alice.pool.getRecord(index)!.address.toLowerCase(),
+    )
     sign.mockClear()
     const funded = mockFunded.length
 
+    relayMode = 'fixture'
+    f.setPhase('delivered')
     for (const text of ['message B', 'message C']) {
-      const refused = await send(text)
-      expect(refused.error).toBeInstanceOf(MonadStampPendingAttemptError)
-      expect((refused.error as MonadStampPendingAttemptError).payloadHashes).toEqual([digest])
+      const later = await send(text)
+      expect(later.error).toBeUndefined()
     }
 
-    expect(counts()).toMatchObject({ intents: 0, attempts: 1, paymentSets: 1 })
-    expect(heldIndices()).toEqual(heldByA)
+    // One intent and one payment set for each of B and C, both delivered. Their finished records
+    // stay in the journal behind A, which is the only one not cleaned up.
+    expect(prepareIntent).toHaveBeenCalledTimes(3)
+    expect(counts()).toMatchObject({ intents: 0, attempts: 3, paymentSets: 3 })
+    expect(bobInbox).toHaveLength(2)
+    expect(mockFunded.length).toBeGreaterThan(funded)
+    expect(sign).toHaveBeenCalled()
+    const finished = journal()
+      .getAll()
+      .filter(attempt => attempt.attemptRef !== recordA.attemptRef)
+    expect(finished).toHaveLength(2)
+    for (const attempt of finished) expect(attempt.cleanupComplete).toBe(true)
+    // B and C spend from accounts disjoint from A's and from each other's.
+    const laterIndices = finished.flatMap(attempt =>
+      attempt.reservations.map(r => r.index),
+    )
+    expect(new Set(laterIndices).size).toBe(laterIndices.length)
+    for (const index of laterIndices) expect(heldByA.has(index)).toBe(false)
+    expect(heldIndices()).toEqual(new Set([...heldByA, ...laterIndices]))
+    for (const request of relayBodies.slice(1))
+      for (const raw of restoreCanonicalRequest(request).parts.transactions)
+        expect(addressesOfA).not.toContain(
+          Transaction.from(hexlify(raw)).from!.toLowerCase(),
+        )
+    // A is exactly as it was: same record, not cleaned up, its accounts still in-use, and its
+    // bytes were handed to the relay once.
+    expect(
+      JSON.stringify(
+        journal()
+          .getAll()
+          .find(attempt => attempt.attemptRef === recordA.attemptRef),
+      ),
+    ).toBe(bytesA)
+    expect(recordA.cleanupComplete).toBe(false)
     for (const index of heldByA) expect(status(index)).toBe('in-use')
-    expect(mockFunded.length).toBe(funded)
-    expect(sign).not.toHaveBeenCalled()
+    const identityOfA = restoreCanonicalRequest(relayBodies[0]).identity
+      .submission_identity
+    expect(
+      relayBodies.filter(
+        request =>
+          restoreCanonicalRequest(request).identity.submission_identity ===
+          identityOfA,
+      ),
+    ).toHaveLength(1)
   })
 })

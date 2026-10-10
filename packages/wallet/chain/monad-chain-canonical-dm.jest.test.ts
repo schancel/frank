@@ -82,7 +82,11 @@ import {
 import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import { InMemoryNativeTransactionAttemptStore } from './chain-wallet'
-import { LevelCanonicalLinkStore } from './monad-canonical-dm'
+import {
+  CanonicalRecipientUndeliverableError,
+  CanonicalSenderUnpublishedError,
+  LevelCanonicalLinkStore,
+} from './monad-canonical-dm'
 import {
   isDirectMessageNotAttempted,
   type DirectMessageClient,
@@ -1814,7 +1818,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         wallet: f.alice,
         payloadDigests: [digest],
       }),
-    ).toEqual({ [digest]: 'live' })
+    ).toEqual({ [digest]: 'dead' })
     expect(retainedAttempt(f.alice, attempt).terminal).toMatchObject({
       phase: 'dead',
     })
@@ -1832,20 +1836,26 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
           wallet: f.alice,
           payloadDigests: [digest],
         }),
-      ).toEqual({ [digest]: 'live' })
+      ).toEqual({ [digest]: 'dead' })
       retainedAttempt(f.alice, attempt)
     }
     expect([...f.broadcastPayments.values()].reduce((a, b) => a + b, 0n)).toBe(
       400_000n,
     )
     expect(f.requests).toHaveLength(2)
+    // #1323: the ended attempt no longer refuses a later message as pending. This wallet has no
+    // money outside the ended attempt's accounts, and those stay reserved, so the later message
+    // stops at funding instead of reusing them. (A later message that is paid and delivered from
+    // other accounts is proved in `monad-canonical-ended-attempt.jest.test.ts`.)
     await expect(
       f.chain.directMessages.send({
         wallet: f.alice,
         recipient: f.bob.identity.address,
-        items: text('replacement prohibited'),
+        items: text('a later message'),
       }),
-    ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+    ).rejects.toThrow(/Insufficient main account balance/)
+    expect(f.requests).toHaveLength(2)
+    retainedAttempt(f.alice, attempt)
   })
 
   it('holds a journaled payment with a missing workflow link over restart and discard', async () => {
@@ -1891,7 +1901,7 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
     }
   })
 
-  it('keeps sender_unpublished payment evidence pending instead of claiming no financial effect', async () => {
+  it('keeps sender_unpublished payment evidence reserved instead of claiming no financial effect', async () => {
     const directory = await f.directoryFor('alice', f.alice, f.bob)
     installCanonicalDirectory(f.alice, directory)
     f.setPhase('sender_unpublished')
@@ -1901,7 +1911,8 @@ describe('typed wallet direct messages use the canonical path (#778)', () => {
         recipient: f.bob.identity.address,
         items: text('unpublished sender'),
       }),
-    ).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+      // #1323: the send reports the relay's final answer; the accounts stay reserved.
+    ).rejects.toBeInstanceOf(CanonicalSenderUnpublishedError)
     expect(f.alice.pool.records().map(r => r.status)).toContain('in-use')
   })
 
@@ -3143,7 +3154,7 @@ describe('two typed wallets on the open directory', () => {
       expect(f.requests).toHaveLength(1)
     })
 
-    it('retains a rejected cross-relay attempt as unresolved', async () => {
+    it('retains a rejected cross-relay attempt, its accounts still reserved', async () => {
       relay.infoOverride = { forwarding: true }
       await online('alice', f.alice)
       f.setPhase('undeliverable')
@@ -3153,7 +3164,8 @@ describe('two typed wallets on the open directory', () => {
         recipient: f.bob.identity.address,
         items: text('relay cannot deliver'),
         onAttemptCreated: value => void (digest = value),
-      })).rejects.toBeInstanceOf(MonadStampPendingAttemptError)
+        // #1323: the send reports the relay's final answer; the accounts stay reserved.
+      })).rejects.toBeInstanceOf(CanonicalRecipientUndeliverableError)
       expect(f.alice.pool.records().map(r => r.status)).toContain('in-use')
       expect(await f.chain.directMessages.unattributedAttempts({
         wallet: f.alice, knownDigests: [],

@@ -218,9 +218,12 @@ export type RecoveredStampPaymentSweepResult =
     };
 
 /** What the sender's client knows about one earlier outgoing attempt (ticket #269/#270); see
- * `MonadStampAttemptStatus` in `../monad-stamp-client.ts` for the exact meaning. `dead` means it
- * can never land, so a new payment is the only way to send; anything else means "do not pay
- * again without the user's explicit say-so". */
+ * `MonadStampAttemptStatus` in `../monad-stamp-client.ts` for the legacy path's meaning. On the
+ * canonical path `dead` is final: the relay answered that it ended delivery of that exact payment
+ * set, so the message was not delivered and never will be by that attempt. It does not say the
+ * signed payments cannot land: the wallet keeps them and their reserved accounts, and other
+ * messages send from other accounts. Never pay again for the same message on any status without
+ * the user's explicit say-so. */
 export type DirectMessageAttemptStatus =
   | "live"
   | "delivered"

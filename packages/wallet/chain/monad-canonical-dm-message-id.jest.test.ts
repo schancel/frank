@@ -40,6 +40,7 @@ import * as chainIndex from './index'
 import {
   CanonicalMessagingHoldError,
   CanonicalMessagingPendingError,
+  CanonicalRecipientUndeliverableError,
   LevelCanonicalLinkStore,
   type CanonicalDirectory,
 } from './monad-canonical-dm'
@@ -546,11 +547,15 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       messageId: ID_A,
       onAttemptCreated: value => void (digest = value),
     })
-    expect(first.error).toBeInstanceOf(MonadStampPendingAttemptError)
+    // The send reports the relay's final answer, and the link holds the final status (#1323).
+    expect(first.error).toBeInstanceOf(CanonicalRecipientUndeliverableError)
     expect(first.labelled).toBe(false)
     expect(first.intents).toBe(1)
     expect(journalHas(ID_A)).toBe(true)
-    expect((await links())[0]).toMatchObject({ reason: 'undeliverable' })
+    expect((await links())[0]).toMatchObject({
+      outcome: 'dead',
+      reason: 'undeliverable',
+    })
 
     expectAlreadyAttempted(await attempt({ messageId: ID_A }), ID_A, digest!)
     await reopen()
